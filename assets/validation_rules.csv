@@ -1,0 +1,6 @@
+RuleName,ScanPosition,MinLength,MaxLength,SliceStart,SliceEnd,Description
+Token-Conti,1,13,13,0,13,泅前钎
+Token-Conti,2,16,29,0,13,力前1
+Token-Conti,3,16,29,0,13,力前2
+Token-Conti,4,16,29,0,13,力前3
+Token-Conti,5,31,50,13,26,能萍 扼骇

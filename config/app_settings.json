@@ -1,0 +1,55 @@
+{
+    "custom_save_path": "",
+    "ui_settings": {
+        "base_font_size": 11,
+        "header_font_scale": 1.4,
+        "status_font_scale": 1.1,
+        "big_display_font_scale": 4.0,
+        "treeview_row_height_scale": 3.0,
+        "default_font": "Segoe UI",
+        "column_padding": 20
+    },
+    "colors": {
+        "background": "#ECEFF1",
+        "card_background": "#FFFFFF",
+        "border": "#BDBDBD",
+        "text": "#212121",
+        "text_subtle": "#616161",
+        "text_strong": "#000000",
+        "primary": "#455A64",
+        "primary_active": "#263238",
+        "success": "#2E7D32",
+        "success_light": "#E8F5E9",
+        "danger": "#C62828",
+        "danger_light": "#FFCDD2",
+        "heading_background": "#FFFFFF"
+    },
+    "sound_files": {
+        "scan_1": "one.wav",
+        "scan_2": "two.wav",
+        "scan_3": "three.wav",
+        "scan_4": "four.wav",
+        "pass": "pass.wav",
+        "fail": "error.wav"
+    },
+    "ui_persistence": {
+        "scale_factor": 2.8000000000000016,
+        "tree_font_size": 19,
+        "sash_position": 1415,
+        "summary_col_widths": {
+            "Code": 197,
+            "Count": 197
+        },
+        "history_col_widths": {
+            "Set": 53,
+            "Input1": 222,
+            "Input2": 185,
+            "Input3": 191,
+            "Input4": 192,
+            "Input5": 192,
+            "Result": 167,
+            "Timestamp": 148
+        }
+    },
+    "worker_name": "포장실"
+}
