@@ -75,7 +75,7 @@ def download_and_apply_update(url):
 chcp 65001 > nul
 echo.
 echo ==========================================================
-echo   프로그램을 업데이트합니다. 이 창을 닫지 마세요.
+echo    프로그램을 업데이트합니다. 이 창을 닫지 마세요.
 echo ==========================================================
 echo.
 echo 잠시 후 프로그램이 자동으로 종료됩니다...
@@ -89,7 +89,7 @@ echo 임시 업데이트 파일을 삭제합니다...
 rmdir /s /q "{temp_update_folder}"
 echo.
 echo ========================================
-echo   업데이트 완료!
+echo    업데이트 완료!
 echo ========================================
 echo.
 echo 3초 후에 프로그램을 다시 시작합니다.
@@ -146,7 +146,9 @@ class DataManager:
         self.log_thread = threading.Thread(target=self._log_writer_thread, daemon=True)
         self.log_thread.start()
     def _get_log_filepath(self):
-        filename = f"{self.process_name}작업이벤트로그_{self.worker_name}_{datetime.now().strftime('%Y%m%d')}.csv"
+        # ### 수정된 부분 ###
+        # 파일명에 worker_name 대신 unique_id(컴퓨터 이름)를 사용합니다.
+        filename = f"{self.process_name}작업이벤트로그_{self.unique_id}_{datetime.now().strftime('%Y%m%d')}.csv"
         return os.path.join(self.save_directory, filename)
     def _log_writer_thread(self):
         while True:
@@ -468,7 +470,9 @@ class BarcodeScannerApp(tk.Tk):
             completed_sets = {}
             voided_set_ids = set()
             cancelled_set_ids = set()
-            log_filename = f"{self.Worker.PACKAGING}작업이벤트로그_{self.worker_name}_{datetime.now().strftime('%Y%m%d')}.csv"
+            # ### 수정된 부분 ###
+            # 로그 파일을 읽을 때 worker_name 대신 unique_id(컴퓨터 이름)를 사용합니다.
+            log_filename = f"{self.Worker.PACKAGING}작업이벤트로그_{self.unique_id}_{datetime.now().strftime('%Y%m%d')}.csv"
             filepath = os.path.join(self.save_directory, log_filename)
             if os.path.exists(filepath):
                 try:
@@ -574,8 +578,8 @@ class BarcodeScannerApp(tk.Tk):
             master_code = self.current_set_info['parsed'][0]
             
             if scan_pos < 5 and len(raw_input) <= MASTER_LABEL_LENGTH:
-                 self._handle_input_error(raw_input, f"제품/라벨 바코드는 {MASTER_LABEL_LENGTH}자리보다 길어야 합니다.")
-                 return
+                self._handle_input_error(raw_input, f"제품/라벨 바코드는 {MASTER_LABEL_LENGTH}자리보다 길어야 합니다.")
+                return
             
             if scan_pos == 5 and len(raw_input) < 31:
                 self._handle_input_error(raw_input, "마지막 라벨지는 31자리 이상이어야 합니다.")
@@ -670,7 +674,7 @@ class BarcodeScannerApp(tk.Tk):
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
         
         if result == self.Results.PASS:
-             self.set_details_map[set_id_for_log] = details
+            self.set_details_map[set_id_for_log] = details
 
         if self.history_tree.exists(set_id_for_log):
             current_values = list(self.history_tree.item(set_id_for_log, 'values'))
