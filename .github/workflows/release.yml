@@ -36,11 +36,9 @@ jobs:
           pip install pyinstaller
 
       # 4. PyInstaller로 .exe 파일을 빌드합니다.
-      # --onefile: 하나의 exe 파일로 만듭니다.
-      # --windowed: 실행 시 콘솔 창(검은 창)이 뜨지 않도록 합니다.
-      # --name: 생성될 exe 파일의 이름을 지정합니다.
+      # --add-data 로 assets, config 폴더를, --hidden-import 로 pygame 을 포함시킵니다.
       - name: Build with PyInstaller
-        run: pyinstaller --onefile --windowed --name="Label_Match_Setup" Label_Match.py
+        run: pyinstaller --onefile --windowed --name="Label_Match_Setup" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame Label_Match.py
 
       # 5. 빌드된 .exe 파일을 압축합니다. (Windows runner의 PowerShell 명령어 사용)
       # github.ref_name은 워크플로우를 실행시킨 태그 이름(예: v1.0.7)입니다.
