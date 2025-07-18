@@ -1,50 +1,41 @@
-# .github/workflows/release.yml
-
-name: Create GitHub Release
+name: Create GitHub Release for Label_Match
 
 on:
   push:
     tags:
       - 'v*'
 
-# 워크플로우에 저장소 쓰기 권한을 부여합니다.
 permissions:
   contents: write
 
 jobs:
   build-and-release:
-    # .exe 파일을 빌드해야 하므로 Windows 환경에서 실행합니다.
     runs-on: windows-latest
 
-    # 작업 단계들을 정의합니다.
     steps:
-      # 1. 소스 코드를 가져옵니다 (Checkout).
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Python 환경을 설정합니다.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      # 3. 필요한 라이브러리를 설치합니다.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # 4. PyInstaller로 .exe 파일을 빌드합니다.
-      - name: Build with PyInstaller
-        run: pyinstaller --onefile --windowed --name="Label_Match_Setup" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame Label_Match.py
+      - name: Build with PyInstaller (One-Folder mode)
+        # 아이콘 지정 및 hidden-import 옵션을 포함한 최종 명령어
+        run: pyinstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame --hidden-import Pillow Label_Match.py
 
-      # 5. 빌드된 .exe 파일을 압축합니다.
-      - name: Zip the executable
+      - name: Zip the build folder
+        # 빌드된 폴더 전체(dist/Label_Match)를 압축합니다.
         run: |
-          Compress-Archive -Path dist/Label_Match_Setup.exe -DestinationPath "Label_Match-${{ github.ref_name }}.zip"
+          Compress-Archive -Path dist/Label_Match -DestinationPath "Label_Match-${{ github.ref_name }}.zip"
       
-      # 6. GitHub Release를 생성하고 압축 파일을 Asset으로 업로드합니다.
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
@@ -52,4 +43,4 @@ jobs:
           name: "Release ${{ github.ref_name }}"
           body: "New release version ${{ github.ref_name }}"
           draft: false
-          prerlease: false
+          prerelease: false
