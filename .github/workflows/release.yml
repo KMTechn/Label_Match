@@ -2,14 +2,15 @@
 
 name: Create GitHub Release
 
-# 이 워크플로우가 언제 실행될지 정의합니다.
-# 'v'로 시작하는 태그(예: v1.0.7)가 푸시될 때 실행됩니다.
 on:
   push:
     tags:
       - 'v*'
 
-# 실행될 작업들을 정의합니다.
+# 워크플로우에 저장소 쓰기 권한을 부여합니다.
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     # .exe 파일을 빌드해야 하므로 Windows 환경에서 실행합니다.
@@ -22,7 +23,6 @@ jobs:
         uses: actions/checkout@v4
 
       # 2. Python 환경을 설정합니다.
-      # 사용하시는 파이썬 버전에 맞게 수정할 수 있습니다. (예: '3.9', '3.10', '3.11')
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -36,12 +36,10 @@ jobs:
           pip install pyinstaller
 
       # 4. PyInstaller로 .exe 파일을 빌드합니다.
-      # --add-data 로 assets, config 폴더를, --hidden-import 로 pygame 을 포함시킵니다.
       - name: Build with PyInstaller
         run: pyinstaller --onefile --windowed --name="Label_Match_Setup" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame Label_Match.py
 
-      # 5. 빌드된 .exe 파일을 압축합니다. (Windows runner의 PowerShell 명령어 사용)
-      # github.ref_name은 워크플로우를 실행시킨 태그 이름(예: v1.0.7)입니다.
+      # 5. 빌드된 .exe 파일을 압축합니다.
       - name: Zip the executable
         run: |
           Compress-Archive -Path dist/Label_Match_Setup.exe -DestinationPath "Label_Match-${{ github.ref_name }}.zip"
@@ -50,12 +48,8 @@ jobs:
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
-          # 업로드할 파일 목록
           files: "Label_Match-${{ github.ref_name }}.zip"
-          # 릴리스 제목
           name: "Release ${{ github.ref_name }}"
-          # 릴리스 본문 (비워두면 태그의 커밋 메시지가 자동으로 들어갑니다)
           body: "New release version ${{ github.ref_name }}"
-          # 초안(draft)이나 사전 릴리스(prerelease)가 아님을 명시
           draft: false
-          prerelease: false
+          prerlease: false
