@@ -21,7 +21,7 @@ import subprocess
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v1.0.5"
+APP_VERSION = "v2.0.0" # 버전 업데이트
 
 def check_for_updates():
     """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
@@ -242,10 +242,7 @@ class BarcodeScannerApp(tk.Tk):
         self.unique_id = socket.gethostname()
         self.worker_name = self.app_settings.get("worker_name", self.Worker.PACKAGING)
         self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
-        self.current_set_info = {
-            'id': None, 'parsed': [], 'raw': [],
-            'start_time': None, 'error_count': 0, 'has_error_or_reset': False
-        }
+        self.current_set_info = {} # Reset in _reset_current_set
         self.is_blinking = False
         self.scan_count = defaultdict(lambda: defaultdict(int))
         self.global_scanned_set = set()
@@ -259,8 +256,9 @@ class BarcodeScannerApp(tk.Tk):
         self.history_col_widths = {}
         self.sash_position = None
         self._load_ui_persistence_settings()
+        # ### 수정된 부분: '누적 통과 코드' 테이블에 '차수' 열 추가 ###
         self.hist_proportions = {"Set": 4, "Input1": 14, "Input2": 14, "Input3": 14, "Input4": 14, "Input5": 14, "Result": 8, "Timestamp": 18}
-        self.summary_proportions = {"Date": 20, "Code": 60, "Count": 20}
+        self.summary_proportions = {"Date": 18, "Code": 52, "Phase": 10, "Count": 20}
         self.default_font_name = self.ui_cfg.get("default_font", "Malgun Gothic")
         self.style = ttk.Style(self)
         self._configure_base_styles()
@@ -440,7 +438,10 @@ class BarcodeScannerApp(tk.Tk):
                     self.data_manager.delete_current_state()
                     messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
                     return
-            self.current_set_info = state_data['current_set_info']
+            # ### 수정된 부분: 저장된 상태를 안전하게 복원 ###
+            saved_set_info = state_data.get('current_set_info', {})
+            self.current_set_info.update(saved_set_info)
+            
             if self.current_set_info.get('start_time') and isinstance(self.current_set_info['start_time'], str):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
             self.data_manager.log_event(self.Events.SET_RESTORED, {"restored_set": self.current_set_info, "continued_by": self.worker_name})
@@ -522,8 +523,10 @@ class BarcodeScannerApp(tk.Tk):
                 if not details.get('has_error_or_reset'):
                     passed_code = details.get('item_code')
                     production_date = details.get('production_date')
+                    # ### 수정된 부분: 차수 정보를 가져와 통계에 반영 ###
+                    phase = details.get('phase', '-') # 과거 로그 호환성을 위해 기본값 '-' 사용
                     if passed_code and production_date:
-                        temp_scan_count[production_date][passed_code] += 1
+                        temp_scan_count[production_date][(passed_code, phase)] += 1
                 raw_scans = details.get('scanned_product_barcodes', [])
                 if raw_scans and len(raw_scans) > 1:
                     temp_global_scanned_set.update(raw_scans[1:])
@@ -556,6 +559,29 @@ class BarcodeScannerApp(tk.Tk):
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
             messagebox.showerror("UI 업데이트 오류", f"결과를 화면에 표시하는 중 오류가 발생했습니다:\n{e}")
 
+    # ### 추가된 부분: 신규 현품표 파싱 함수 ###
+    def _parse_new_format_label(self, raw_input):
+        """
+        새로운 Key-Value 형식의 바코드를 파싱합니다.
+        예: PHS=1|CLC=AAA2270730200|WID=...
+        파싱된 데이터 딕셔너리 또는 형식이 맞지 않으면 None을 반환합니다.
+        """
+        if '|' not in raw_input or '=' not in raw_input:
+            return None
+        try:
+            parsed_data = {
+                item.split('=', 1)[0].strip().upper(): item.split('=', 1)[1].strip()
+                for item in raw_input.split('|') if '=' in item
+            }
+            # 필수 키(고객사코드, 공급사코드, 차수) 검증
+            if all(key in parsed_data for key in ['CLC', 'SPC', 'PHS']):
+                return parsed_data
+            else:
+                return None
+        except Exception as e:
+            print(f"신규 라벨 형식 파싱 오류: {e}")
+            return None
+
     def process_input(self, event=None):
         if self.is_blinking or not self.initialized_successfully: return
         raw_input = self.entry.get().strip()
@@ -564,23 +590,40 @@ class BarcodeScannerApp(tk.Tk):
         
         self.data_manager.log_event(self.Events.SCAN_ATTEMPT, {"raw_input": raw_input, "scan_pos": len(self.current_set_info['raw']) + 1})
         scan_pos = len(self.current_set_info['raw']) + 1
-        MASTER_LABEL_LENGTH = 13
         
+        # ### 수정된 부분: 신규/구규 현품표 분기 처리 ###
         if scan_pos == 1:
-            if len(raw_input) != MASTER_LABEL_LENGTH:
-                self._handle_input_error(raw_input, f"현품표는 {MASTER_LABEL_LENGTH}자리여야 합니다.")
-                return
-            if raw_input not in self.items_data:
-                self._handle_input_error(raw_input, "미등록 현품표입니다. (Item.csv 확인)")
-                return
-            self._update_on_success_scan(raw_input, raw_input)
+            new_label_data = self._parse_new_format_label(raw_input)
+            if new_label_data:
+                # --- 신규 현품표 처리 로직 ---
+                client_code = new_label_data.get('CLC')
+                supplier_code = new_label_data.get('SPC')
+                phase = new_label_data.get('PHS')
+                
+                self.current_set_info['phase'] = phase
+                # 신규 라벨의 공급사 코드를 품명으로 사용 (Item.csv 조회 대체)
+                self.current_set_info['item_name_override'] = supplier_code 
+                
+                # 고객사 코드를 이후 검사의 기준 코드로 사용
+                self._update_on_success_scan(raw_input, client_code)
+            else:
+                # --- 구규 현품표 처리 로직 (기존 로직) ---
+                MASTER_LABEL_LENGTH = 13
+                if len(raw_input) != MASTER_LABEL_LENGTH:
+                    self._handle_input_error(raw_input, f"현품표는 {MASTER_LABEL_LENGTH}자리여야 합니다.")
+                    return
+                if raw_input not in self.items_data:
+                    self._handle_input_error(raw_input, "미등록 현품표입니다. (Item.csv 확인)")
+                    return
+                self._update_on_success_scan(raw_input, raw_input)
+        
         elif 2 <= scan_pos <= 5:
             master_code = self.current_set_info['parsed'][0]
             
-            if scan_pos < 5 and len(raw_input) <= MASTER_LABEL_LENGTH:
-                self._handle_input_error(raw_input, f"제품/라벨 바코드는 {MASTER_LABEL_LENGTH}자리보다 길어야 합니다.")
-                return
-            
+            # 제품/라벨 바코드 길이 검증 (기존 로직 유지)
+            if scan_pos < 5 and len(raw_input) <= len(master_code):
+                 self._handle_input_error(raw_input, f"제품/라벨 바코드는 현품표 코드보다 길어야 합니다.")
+                 return
             if scan_pos == 5 and len(raw_input) < 31:
                 self._handle_input_error(raw_input, "마지막 라벨지는 31자리 이상이어야 합니다.")
                 return
@@ -644,16 +687,28 @@ class BarcodeScannerApp(tk.Tk):
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
         item_code = parsed_scans_to_log[0] if parsed_scans_to_log else "N/A"
-        item_info = self.items_data.get(item_code, {})
+        
+        # ### 수정된 부분: 품명 처리 방식 변경 ###
+        item_name_override = self.current_set_info.get('item_name_override')
+        if item_name_override:
+            # 신규 라벨: SPC(공급사 코드)를 품명으로 사용
+            item_info = {"Item Name": item_name_override, "Spec": ""}
+        else:
+            # 구규 라벨: Item.csv에서 품명 조회
+            item_info = self.items_data.get(item_code, {})
+
         start_time = self.current_set_info.get('start_time')
         work_time_sec = (datetime.now() - start_time).total_seconds() if start_time else 0.0
         production_date = self.current_set_info.get('production_date')
-        
+        # ### 수정된 부분: 차수 정보 가져오기 ###
+        phase = self.current_set_info.get('phase', '-') # 차수 정보가 없으면(구규 라벨) '-'로 기록
+
         set_id_for_log = str(self.current_set_info['id'])
 
         if result == self.Results.PASS:
             if item_code != "N/A" and production_date:
-                self.scan_count[production_date][item_code] += 1
+                # ### 수정된 부분: 차수를 포함하여 통계 집계 ###
+                self.scan_count[production_date][(item_code, phase)] += 1
                 self.global_scanned_set.update(raw_scans_to_log[1:])
 
         details = {
@@ -669,7 +724,8 @@ class BarcodeScannerApp(tk.Tk):
             'is_partial_submission': False, 'start_time': start_time,
             'end_time': datetime.now(),
             'production_date': production_date,
-            'set_id': set_id_for_log 
+            'set_id': set_id_for_log,
+            'phase': phase # ### 추가된 부분: 로그에 차수 정보 기록 ###
         }
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
         
@@ -732,12 +788,16 @@ class BarcodeScannerApp(tk.Tk):
                 if result == self.Results.PASS:
                     production_date = deleted_details.get('production_date')
                     passed_code = deleted_details.get('item_code')
-                    if production_date and passed_code and production_date in self.scan_count and passed_code in self.scan_count[production_date]:
-                        self.scan_count[production_date][passed_code] -= 1
-                        if self.scan_count[production_date][passed_code] == 0:
-                            del self.scan_count[production_date][passed_code]
-                        if not self.scan_count[production_date]:
-                            del self.scan_count[production_date]
+                    # ### 수정된 부분: 차수 정보를 포함하여 통계에서 제외 ###
+                    phase = deleted_details.get('phase', '-')
+                    if production_date and passed_code:
+                        key = (passed_code, phase)
+                        if production_date in self.scan_count and key in self.scan_count[production_date]:
+                            self.scan_count[production_date][key] -= 1
+                            if self.scan_count[production_date][key] == 0:
+                                del self.scan_count[production_date][key]
+                            if not self.scan_count[production_date]:
+                                del self.scan_count[production_date]
                     raw_scans_to_remove = deleted_details.get('scanned_product_barcodes', [])
                     if len(raw_scans_to_remove) > 1:
                         for barcode in raw_scans_to_remove[1:]:
@@ -760,9 +820,12 @@ class BarcodeScannerApp(tk.Tk):
             self.current_set_info['has_error_or_reset'] = True
         if from_finalize or full_reset:
             self._delete_current_set_state()
+        
+        # ### 수정된 부분: 차수 및 품명 오버라이드 필드 추가 ###
         self.current_set_info = {
             'id': None, 'parsed': [], 'raw': [],
-            'start_time': None, 'error_count': 0, 'has_error_or_reset': False
+            'start_time': None, 'error_count': 0, 'has_error_or_reset': False,
+            'phase': None, 'item_name_override': None, 'production_date': None
         }
         self.progress_bar['value'] = 0
         if self.initialized_successfully:
@@ -872,10 +935,14 @@ class BarcodeScannerApp(tk.Tk):
             })
             production_date = target_details.get('production_date')
             item_code = target_details.get('item_code')
-            if production_date and item_code and production_date in self.scan_count and item_code in self.scan_count[production_date]:
-                self.scan_count[production_date][item_code] -= 1
-                if self.scan_count[production_date][item_code] == 0: del self.scan_count[production_date][item_code]
-                if not self.scan_count[production_date]: del self.scan_count[production_date]
+            # ### 수정된 부분: 차수 정보를 포함하여 통계에서 제외 ###
+            phase = target_details.get('phase', '-')
+            if production_date and item_code:
+                key = (item_code, phase)
+                if production_date in self.scan_count and key in self.scan_count[production_date]:
+                    self.scan_count[production_date][key] -= 1
+                    if self.scan_count[production_date][key] == 0: del self.scan_count[production_date][key]
+                    if not self.scan_count[production_date]: del self.scan_count[production_date]
             raw_scans_to_remove = target_details.get('scanned_product_barcodes', [])
             if len(raw_scans_to_remove) > 1:
                 for barcode in raw_scans_to_remove[1:]: self.global_scanned_set.discard(barcode)
@@ -1044,18 +1111,23 @@ class BarcodeScannerApp(tk.Tk):
         tree_frame_sum.grid(row=1, column=0, sticky='nsew')
         tree_frame_sum.grid_rowconfigure(0, weight=1)
         tree_frame_sum.grid_columnconfigure(0, weight=1)
+        
+        # ### 수정된 부분: '누적 통과 코드' 테이블 정의 ###
         summary_cols = list(self.summary_proportions.keys())
         v_scroll_sum = ttk.Scrollbar(tree_frame_sum, orient=tk.VERTICAL)
         self.summary_tree = ttk.Treeview(tree_frame_sum, columns=summary_cols, show="headings", yscrollcommand=v_scroll_sum.set)
         v_scroll_sum.config(command=self.summary_tree.yview)
         self.summary_tree.heading("Date", text="날짜", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Date", False))
         self.summary_tree.heading("Code", text="코드", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Code", False))
+        self.summary_tree.heading("Phase", text="차수", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Phase", False))
         self.summary_tree.heading("Count", text="No", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Count", False))
         v_scroll_sum.pack(side=tk.RIGHT, fill=tk.Y)
         self.summary_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.summary_tree.column("Date", anchor="center")
         self.summary_tree.column("Code", anchor="center")
+        self.summary_tree.column("Phase", anchor="center")
         self.summary_tree.column("Count", anchor="center")
+
         self.summary_tree.bind("<Configure>", self._resize_all_columns)
         self.summary_tree.bind("<ButtonRelease-1>", self._on_summary_tree_resize_release)
         
@@ -1175,7 +1247,7 @@ class BarcodeScannerApp(tk.Tk):
         if not self.initialized_successfully: return
         try:
             items = [item for item in tv.get_children('') if item != 'loading']
-            if col == 'Set' or col == 'Count':
+            if col == 'Set' or col == 'Count' or col == 'Phase':
                 l = sorted([(int(tv.set(k, col)), k) for k in items if tv.set(k,col)], reverse=reverse)
             elif col == 'Date':
                 l = sorted([(tv.set(k, col), k) for k in items if tv.set(k,col)], reverse=reverse, key=lambda x: datetime.strptime(x[0], '%m/%d'))
@@ -1207,14 +1279,20 @@ class BarcodeScannerApp(tk.Tk):
         else:
             if sound_key in self.sounds:
                 print(f"경고: 사운드 키 '{sound_key}'가 존재하지만, 로드되지 않았습니다. 파일 경로를 확인하세요.")
+    
     def _update_summary_tree(self):
         if not self.initialized_successfully: return
         self.summary_tree.delete(*self.summary_tree.get_children())
+        # ### 수정된 부분: 변경된 통계 구조를 UI에 반영 ###
         for date in sorted(self.scan_count.keys(), reverse=True):
             month_day = datetime.strptime(date, '%Y-%m-%d').strftime('%m/%d')
-            for code, count in sorted(self.scan_count[date].items(), key=lambda x: x[1], reverse=True):
+            # 수량 기준으로 내림차순 정렬
+            sorted_items = sorted(self.scan_count[date].items(), key=lambda item: item[1], reverse=True)
+            for (code, phase), count in sorted_items:
                 if count > 0:
-                    self.summary_tree.insert("", "end", values=(month_day, code, count))
+                    # '차수' 열에 데이터 추가
+                    self.summary_tree.insert("", "end", values=(month_day, code, phase, count))
+
     def _update_status_label(self):
         if not self.initialized_successfully: return
         num_scans = len(self.current_set_info['parsed'])
