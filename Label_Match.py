@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, TclError, simpledialog
 from collections import defaultdict
 import csv
-from datetime import datetime
+from datetime import datetime, date
 import threading
 import time
 import sys
@@ -15,13 +15,14 @@ import socket
 import requests
 import zipfile
 import subprocess
+from tkcalendar import Calendar 
 
 # #####################################################################
 # 자동 업데이트 설정 (Auto-Updater Configuration)
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.0" # 버전 업데이트
+APP_VERSION = "v2.2.1" # [수정] 버그 픽스 버전 업데이트
 
 def check_for_updates():
     """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
@@ -102,7 +103,7 @@ del "%~f0"
     except Exception as e:
         root_alert = tk.Tk()
         root_alert.withdraw()
-        messagebox.showerror("업데이트 실패", f"업데이트 적용 중 오류가 발생했습니다.\n\n{e}\n\n프로그램을 다시 시작해주세요.", parent=root_alert)
+        messagebox.showerror("업데이트 실패", f"업데이트 파일을 적용하는 중 예상치 못한 오류가 발생했습니다.\n프로그램을 다시 시작하여 업데이트를 재시도해주세요.\n\n[오류 상세 정보]\n{e}", parent=root_alert)
         root_alert.destroy()
         sys.exit(1)
 
@@ -113,21 +114,21 @@ def threaded_update_check():
     if download_url:
         root_alert = tk.Tk()
         root_alert.withdraw()
-        if messagebox.askyesno("업데이트 발견", f"새로운 버전({new_version})이 발견되었습니다.\n지금 업데이트하시겠습니까? (현재: {APP_VERSION})", parent=root_alert):
+        if messagebox.askyesno("업데이트 발견", f"새로운 버전({new_version})이 있습니다.\n지금 업데이트하시겠습니까? (현재 버전: {APP_VERSION})", parent=root_alert):
             root_alert.destroy()
             download_and_apply_update(download_url)
         else:
             print("사용자가 업데이트를 거부했습니다.")
             root_alert.destroy()
     else:
-        print("업데이트 확인 완료. 새 버전이 없거나 오류 발생.")
+        print("업데이트 확인 완료. 최신 버전이거나 확인 중 오류가 발생했습니다.")
 
 # #####################################################################
 # 애플리케이션 코드 시작
 # #####################################################################
 class DateTimeEncoder(json.JSONEncoder):
     def default(self, o):
-        if isinstance(o, datetime):
+        if isinstance(o, (datetime, date)):
             return o.isoformat()
         return super().default(o)
 def resource_path(relative_path: str) -> str:
@@ -136,6 +137,34 @@ def resource_path(relative_path: str) -> str:
     except AttributeError:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
+
+class CalendarWindow(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("날짜 선택")
+        self.transient(parent)
+        self.grab_set()
+        self.result = None
+
+        self.cal = Calendar(self, selectmode='day', year=datetime.now().year, month=datetime.now().month, day=datetime.now().day,
+                              locale='ko_KR', background="white", foreground="black", headersbackground="#EAEAEA")
+        self.cal.pack(pady=20, padx=20, fill="both", expand=True)
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=(0, 10))
+
+        select_btn = ttk.Button(btn_frame, text="선택", command=self.on_select)
+        select_btn.pack(side="left", padx=5)
+        cancel_btn = ttk.Button(btn_frame, text="취소", command=self.destroy)
+        cancel_btn.pack(side="left", padx=5)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window(self)
+
+    def on_select(self):
+        self.result = self.cal.selection_get()
+        self.destroy()
+
 class DataManager:
     def __init__(self, save_dir, process_name, worker_name, unique_id):
         self.save_directory = save_dir
@@ -145,10 +174,10 @@ class DataManager:
         self.log_queue = queue.Queue()
         self.log_thread = threading.Thread(target=self._log_writer_thread, daemon=True)
         self.log_thread.start()
-    def _get_log_filepath(self):
-        # ### 수정된 부분 ###
-        # 파일명에 worker_name 대신 unique_id(컴퓨터 이름)를 사용합니다.
-        filename = f"{self.process_name}작업이벤트로그_{self.unique_id}_{datetime.now().strftime('%Y%m%d')}.csv"
+    def _get_log_filepath(self, target_date=None):
+        if target_date is None:
+            target_date = datetime.now()
+        filename = f"{self.process_name}작업이벤트로그_{self.unique_id}_{target_date.strftime('%Y%m%d')}.csv"
         return os.path.join(self.save_directory, filename)
     def _log_writer_thread(self):
         while True:
@@ -222,7 +251,7 @@ class BarcodeScannerApp(tk.Tk):
         try:
             pygame.mixer.init()
         except pygame.error as e:
-            messagebox.showerror("오디오 초기화 오류", f"Pygame 오디오 시스템을 시작할 수 없습니다.\n오류: {e}")
+            messagebox.showerror("오디오 초기화 오류", f"프로그램 효과음을 재생하는 데 필요한 오디오 장치를 시작할 수 없습니다.\n스피커 또는 사운드 드라이버에 문제가 없는지 확인해주세요.\n\n(효과음 없이 프로그램은 계속 실행됩니다.)\n\n[상세 오류]\n{e}")
         self._setup_paths()
         self.app_settings = self._load_app_settings()
         self.custom_save_path = "C:\\Sync"
@@ -256,7 +285,6 @@ class BarcodeScannerApp(tk.Tk):
         self.history_col_widths = {}
         self.sash_position = None
         self._load_ui_persistence_settings()
-        # ### 수정된 부분: '누적 통과 코드' 테이블에 '차수' 열 추가 ###
         self.hist_proportions = {"Set": 4, "Input1": 14, "Input2": 14, "Input3": 14, "Input4": 14, "Input5": 14, "Result": 8, "Timestamp": 18}
         self.summary_proportions = {"Date": 18, "Code": 52, "Phase": 10, "Count": 20}
         self.default_font_name = self.ui_cfg.get("default_font", "Malgun Gothic")
@@ -271,7 +299,7 @@ class BarcodeScannerApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.bind_all("<Control-MouseWheel>", self.on_ctrl_wheel)
         self.bind("<Button-1>", self._on_root_click)
-        
+
     def _on_root_click(self, event):
         if event.widget not in [self.history_tree, self.summary_tree]:
             self.history_tree.selection_remove(self.history_tree.selection())
@@ -291,7 +319,7 @@ class BarcodeScannerApp(tk.Tk):
             result = self.initial_load_queue.get_nowait()
             if "error" in result:
                 self.hide_loading_overlay()
-                messagebox.showerror("초기화 오류", f"프로그램 시작에 필요한 파일을 불러올 수 없습니다.\n\n오류: {result['error']}")
+                messagebox.showerror("초기화 오류", f"프로그램 시작에 필요한 중요 파일을 불러올 수 없습니다.\n프로그램이 설치된 폴더가 손상되었거나 파일이 없을 수 있습니다.\n\n[오류 원인]\n{result['error']}\n\n프로그램을 종료합니다.")
                 self.destroy()
                 return
             self.items_data = result.get('items', {})
@@ -314,7 +342,7 @@ class BarcodeScannerApp(tk.Tk):
             self.after(100, self._process_initial_load_queue)
         except Exception as e:
             self.hide_loading_overlay()
-            messagebox.showerror("초기화 오류", f"초기화 마무리 중 오류가 발생했습니다: {e}")
+            messagebox.showerror("초기화 오류", f"프로그램을 시작하는 마지막 단계에서 오류가 발생했습니다.\n일시적인 문제일 수 있으니 프로그램을 다시 시작해보세요.\n\n[상세 오류]\n{e}\n\n프로그램을 종료합니다.")
             self.destroy()
 
     def show_loading_overlay(self):
@@ -389,21 +417,22 @@ class BarcodeScannerApp(tk.Tk):
             with open(items_path, 'r', encoding='utf-8-sig') as f:
                 return {row['Item Code']: row for row in csv.DictReader(f)}
         except FileNotFoundError:
-            print(f"경고: 품목 정보 파일({self.FILES.ITEMS})이 없어 품목명을 기록할 수 없습니다.")
+            messagebox.showwarning("기준 정보 파일 없음", f"품목 정보 파일({self.FILES.ITEMS})이 없어 품목명을 표시할 수 없습니다.\n프로그램 폴더 내 'assets' 폴더를 확인해주세요.")
             return {}
         except Exception as e:
-            print(f"품목 정보 로드 오류: {e}")
+            messagebox.showerror("기준 정보 로드 오류", f"품목 정보를 불러오는 중 오류가 발생했습니다.\n\n[상세 오류]\n{e}")
             return {}
 
     def on_closing(self):
         if not self.initialized_successfully:
             self.destroy()
             return
-        self.is_blinking = False
-        self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
-        self.data_manager.log_queue.put(None)
-        self._save_app_settings()
-        self.destroy()
+        if messagebox.askokcancel("종료 확인", "프로그램을 종료하시겠습니까?"):
+            self.is_blinking = False
+            self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
+            self.data_manager.log_queue.put(None)
+            self._save_app_settings()
+            self.destroy()
 
     def _save_current_set_state(self):
         if not self.initialized_successfully or not self.current_set_info['raw']: return
@@ -438,10 +467,9 @@ class BarcodeScannerApp(tk.Tk):
                     self.data_manager.delete_current_state()
                     messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
                     return
-            # ### 수정된 부분: 저장된 상태를 안전하게 복원 ###
             saved_set_info = state_data.get('current_set_info', {})
             self.current_set_info.update(saved_set_info)
-            
+
             if self.current_set_info.get('start_time') and isinstance(self.current_set_info['start_time'], str):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
             self.data_manager.log_event(self.Events.SET_RESTORED, {"restored_set": self.current_set_info, "continued_by": self.worker_name})
@@ -455,29 +483,35 @@ class BarcodeScannerApp(tk.Tk):
     def _delete_current_set_state(self):
         self.data_manager.delete_current_state()
 
-    def _load_history_and_rebuild_summary(self):
-        print("과거 기록 비동기 로드 시작...")
+    def _load_history_and_rebuild_summary(self, target_date=None):
+        print(f"과거 기록 비동기 로드 시작... (대상 날짜: {target_date or '오늘'})")
         self.scan_count.clear()
         self.history_tree.delete(*self.history_tree.get_children())
         self.summary_tree.delete(*self.summary_tree.get_children())
         self.global_scanned_set.clear()
         self.set_details_map.clear()
+
+        if target_date:
+            date_str = target_date.strftime('%Y-%m-%d')
+            self.hist_header_label.config(text=f"스캔 기록 ({date_str})")
+        else:
+            self.hist_header_label.config(text="스캔 기록 (오늘)")
+
         self.history_tree.insert("", "end", iid="loading", values=("", "기록을 불러오는 중입니다...", "", "", "", "", "", ""), tags=("in_progress",))
-        loader_thread = threading.Thread(target=self._async_load_history_task, args=(self.history_queue,), daemon=True)
+        loader_thread = threading.Thread(target=self._async_load_history_task, args=(self.history_queue, target_date), daemon=True)
         loader_thread.start()
 
-    def _async_load_history_task(self, result_queue):
+    def _async_load_history_task(self, result_queue, target_date=None):
         try:
             completed_sets = {}
             voided_set_ids = set()
             cancelled_set_ids = set()
-            # ### 수정된 부분 ###
-            # 로그 파일을 읽을 때 worker_name 대신 unique_id(컴퓨터 이름)를 사용합니다.
-            log_filename = f"{self.Worker.PACKAGING}작업이벤트로그_{self.unique_id}_{datetime.now().strftime('%Y%m%d')}.csv"
-            filepath = os.path.join(self.save_directory, log_filename)
-            if os.path.exists(filepath):
+
+            log_filepath = self.data_manager._get_log_filepath(target_date)
+
+            if os.path.exists(log_filepath):
                 try:
-                    with open(filepath, 'r', encoding='utf-8-sig') as f:
+                    with open(log_filepath, 'r', encoding='utf-8-sig') as f:
                         reader = csv.DictReader(f)
                         for row in reader:
                             event = row.get('event')
@@ -496,23 +530,23 @@ class BarcodeScannerApp(tk.Tk):
                             if event == self.Events.TRAY_COMPLETION_CANCELLED and details.get('cancelled_set_id'):
                                 cancelled_set_ids.add(details.get('cancelled_set_id'))
                                 continue
-                            
+
                             if set_id is None: continue
 
                             if event == self.Events.TRAY_COMPLETE:
                                 displays = details.get('parsed_product_barcodes', [])
                                 first_scan = displays[0] if displays else "N/A"
                                 other_scans = displays[1:5]
-                                
+
                                 timestamp_str = datetime.fromisoformat(row.get('timestamp', '')).strftime('%H:%M:%S')
                                 result_display = self.Results.PASS if not details.get('has_error_or_reset') else self.Results.FAIL_MISMATCH
                                 values_to_display = (set_id, first_scan, *other_scans + [""]*(4-len(other_scans)), result_display, timestamp_str)
-                                
+
                                 completed_sets[set_id] = {'values': values_to_display, 'tags': ("success" if result_display == self.Results.PASS else "error",), 'details': details}
 
                 except Exception as e:
-                    print(f"기록 파일 로드 오류 ({filepath}): {e}")
-            
+                    print(f"기록 파일 로드 오류 ({log_filepath}): {e}")
+
             final_sets = {sid: data for sid, data in completed_sets.items() if sid not in voided_set_ids and sid not in cancelled_set_ids}
             sorted_final_sets = sorted(final_sets.items(), key=lambda item: item[1]['details'].get('end_time'))
             temp_scan_count = defaultdict(lambda: defaultdict(int))
@@ -523,17 +557,13 @@ class BarcodeScannerApp(tk.Tk):
                 if not details.get('has_error_or_reset'):
                     passed_code = details.get('item_code')
                     production_date = details.get('production_date')
-                    # ### 수정된 부분: 차수 정보를 가져와 통계에 반영 ###
-                    phase = details.get('phase', '-') # 과거 로그 호환성을 위해 기본값 '-' 사용
+                    phase = details.get('phase', '-')
                     if passed_code and production_date:
                         temp_scan_count[production_date][(passed_code, phase)] += 1
                 raw_scans = details.get('scanned_product_barcodes', [])
-                # ### 수정된 부분: 신규 고유 현품표도 중복 체크셋에 추가 ###
                 if raw_scans:
-                    # 제품 바코드 추가 (스캔 2-5)
                     if len(raw_scans) > 1:
                         temp_global_scanned_set.update(raw_scans[1:])
-                    # 첫 번째 스캔이 신규 현품표 형식인 경우, 중복 검사를 위해 추가
                     first_scan = raw_scans[0]
                     if '|' in first_scan and '=' in first_scan:
                         temp_global_scanned_set.add(first_scan)
@@ -548,7 +578,7 @@ class BarcodeScannerApp(tk.Tk):
             result = self.history_queue.get_nowait()
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
             if 'error' in result:
-                messagebox.showerror("기록 로딩 오류", f"과거 기록을 불러오는 중 오류가 발생했습니다:\n{result['error']}")
+                messagebox.showerror("기록 로딩 오류", f"작업 기록을 불러오는 중 오류가 발생했습니다.\n로그 파일이 손상되었을 수 있습니다.\n\n[오류 원인]\n{result['error']}")
                 return
             self.scan_count = result['scan_count']
             self.global_scanned_set = result['global_scanned_set']
@@ -565,15 +595,9 @@ class BarcodeScannerApp(tk.Tk):
         except Exception as e:
             print(f"UI 업데이트 중 오류 발생: {e}")
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
-            messagebox.showerror("UI 업데이트 오류", f"결과를 화면에 표시하는 중 오류가 발생했습니다:\n{e}")
+            messagebox.showerror("UI 업데이트 오류", f"기록을 화면에 표시하는 과정에서 예상치 못한 오류가 발생했습니다.\n프로그램을 다시 시작해주세요.\n\n[상세 오류]\n{e}")
 
-    # ### 추가된 부분: 신규 현품표 파싱 함수 ###
     def _parse_new_format_label(self, raw_input):
-        """
-        새로운 Key-Value 형식의 바코드를 파싱합니다.
-        예: PHS=1|CLC=AAA2270730200|WID=...
-        파싱된 데이터 딕셔너리 또는 형식이 맞지 않으면 None을 반환합니다.
-        """
         if '|' not in raw_input or '=' not in raw_input:
             return None
         try:
@@ -581,7 +605,6 @@ class BarcodeScannerApp(tk.Tk):
                 item.split('=', 1)[0].strip().upper(): item.split('=', 1)[1].strip()
                 for item in raw_input.split('|') if '=' in item
             }
-            # 필수 키(고객사코드, 공급사코드, 차수) 검증
             if all(key in parsed_data for key in ['CLC', 'SPC', 'PHS']):
                 return parsed_data
             else:
@@ -595,70 +618,90 @@ class BarcodeScannerApp(tk.Tk):
         raw_input = self.entry.get().strip()
         self.entry.delete(0, tk.END)
         if not raw_input: return
-        
+
         self.data_manager.log_event(self.Events.SCAN_ATTEMPT, {"raw_input": raw_input, "scan_pos": len(self.current_set_info['raw']) + 1})
         scan_pos = len(self.current_set_info['raw']) + 1
-        
-        # ### 수정된 부분: 신규/구규 현품표 분기 처리 ###
+
         if scan_pos == 1:
             new_label_data = self._parse_new_format_label(raw_input)
             if new_label_data:
-                # --- 신규 현품표 처리 로직 ---
-                # ### 신규 고유 현품표 중복 검사 ###
                 if raw_input in self.global_scanned_set:
-                    self._handle_input_error(raw_input, "이미 처리된 고유 현품표입니다.")
+                    self._handle_input_error(
+                        raw_input,
+                        title="[현품표 중복 스캔]",
+                        reason=f"이미 다른 세트에서 사용 완료된 현품표입니다.\n\n- 중복 현품표: {raw_input}\n\n→ 새로운 현품표로 세트를 시작하세요."
+                    )
                     return
 
                 client_code = new_label_data.get('CLC')
                 supplier_code = new_label_data.get('SPC')
                 phase = new_label_data.get('PHS')
-                
+
                 self.current_set_info['phase'] = phase
-                # 신규 라벨의 공급사 코드를 품명으로 사용 (Item.csv 조회 대체)
-                self.current_set_info['item_name_override'] = supplier_code 
-                
-                # 고객사 코드를 이후 검사의 기준 코드로 사용
+                self.current_set_info['item_name_override'] = supplier_code
                 self._update_on_success_scan(raw_input, client_code)
             else:
-                # --- 구규 현품표 처리 로직 (기존 로직) ---
                 MASTER_LABEL_LENGTH = 13
                 if len(raw_input) != MASTER_LABEL_LENGTH:
-                    self._handle_input_error(raw_input, f"현품표는 {MASTER_LABEL_LENGTH}자리여야 합니다.")
+                    self._handle_input_error(
+                        raw_input,
+                        title="[현품표 형식 오류]",
+                        reason=f"인식할 수 없는 현품표 바코드입니다.\n길이가 13자리가 아니거나, 정해진 형식이 아닙니다.\n\n- 입력된 값: {raw_input}\n\n→ 올바른 현품표를 다시 스캔해주세요."
+                    )
                     return
                 if raw_input not in self.items_data:
-                    self._handle_input_error(raw_input, "미등록 현품표입니다. (Item.csv 확인)")
+                    self._handle_input_error(
+                        raw_input,
+                        title="[미등록 현품표]",
+                        reason=f"기준 정보에 등록되지 않은 현품표입니다.\n\n- 미등록 코드: {raw_input}\n\n→ 'assets/Item.csv' 파일을 확인하거나, 올바른 현품표를 사용하세요."
+                    )
                     return
                 self._update_on_success_scan(raw_input, raw_input)
-        
+
         elif 2 <= scan_pos <= 5:
             master_code = self.current_set_info['parsed'][0]
-            
-            # 제품/라벨 바코드 길이 검증 (기존 로직 유지)
+
             if scan_pos < 5 and len(raw_input) <= len(master_code):
-                 self._handle_input_error(raw_input, f"제품/라벨 바코드는 현품표 코드보다 길어야 합니다.")
-                 return
+               self._handle_input_error(raw_input, title="[바코드 종류 오류]", reason=f"잘못된 종류의 바코드입니다.\n\n[스캔된 코드]\n{raw_input}\n\n현품표가 아닌 제품 바코드를 스캔하세요.")
+               return
             if scan_pos == 5 and len(raw_input) < 31:
-                self._handle_input_error(raw_input, "마지막 라벨지는 31자리 이상이어야 합니다.")
+                self._handle_input_error(
+                    raw_input,
+                    title="[라벨 형식 오류]",
+                    reason=f"마지막 포장 라벨지의 길이가 너무 짧습니다.\n\n- 입력된 길이: {len(raw_input)}자리\n- 최소 길이: 31자리\n\n→ 올바른 포장 라벨지를 스캔하세요."
+                )
                 return
 
             if master_code not in raw_input:
-                self._handle_mismatch(raw_input, raw_input, master_code)
+                self._handle_mismatch(raw_input, master_code)
                 return
             if raw_input in self.current_set_info['raw']:
-                self._handle_input_error(raw_input, "현재 세트 내 중복된 바코드입니다.")
+                self._handle_input_error(
+                    raw_input,
+                    title="[세트 내 중복 스캔]",
+                    reason=f"이번 세트에서 이미 스캔한 제품입니다.\n\n- 중복된 제품: {raw_input}\n\n→ 세트 내의 다른 제품을 스캔해주세요."
+                )
                 return
             if raw_input in self.global_scanned_set:
-                self._handle_input_error(raw_input, "전체 기록에서 이미 스캔된 바코드입니다.")
+                self._handle_input_error(
+                    raw_input,
+                    title="[전체 작업 내 중복 스캔]",
+                    reason=f"이 제품은 이미 다른 세트에서 포장 완료 처리되었습니다.\n\n- 중복된 제품: {raw_input}\n\n→ 새 제품으로 교체 후 다시 스캔해주세요."
+                )
                 return
-            
+
             production_date = None
             if scan_pos == 5:
                 production_date = self._extract_production_date(raw_input)
                 if not production_date:
-                    self._handle_input_error(raw_input, "생산 날짜(6D 필드)를 추출할 수 없습니다.")
+                    self._handle_input_error(
+                        raw_input,
+                        title="[생산일자 누락]",
+                        reason=f"마지막 포장 라벨에서 생산일자를 찾을 수 없습니다.\n라벨에 '6D'로 시작하는 8자리 날짜(YYYYMMDD)가 포함되어야 합니다.\n\n- 스캔한 라벨: {raw_input}\n\n→ 라벨 형식을 확인하거나 올바른 라벨을 사용하세요."
+                    )
                     return
                 self.current_set_info['production_date'] = production_date
-            
+
             self._update_on_success_scan(raw_input, master_code)
 
     def _extract_production_date(self, raw_input):
@@ -679,10 +722,10 @@ class BarcodeScannerApp(tk.Tk):
         if len(self.current_set_info['raw']) == 0:
             self.current_set_info['id'] = str(time.time_ns())
             self.current_set_info['start_time'] = datetime.now()
-        
+
         self.current_set_info['raw'].append(raw)
         self.current_set_info['parsed'].append(parsed)
-        
+
         num_scans = len(self.current_set_info['parsed'])
         self._play_sound(f"scan_{num_scans}")
         self.progress_bar['value'] = num_scans
@@ -696,37 +739,29 @@ class BarcodeScannerApp(tk.Tk):
     def _finalize_set(self, result, error_details=""):
         if result == self.Results.PASS:
             self._play_sound("pass")
-        
+
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
         item_code = parsed_scans_to_log[0] if parsed_scans_to_log else "N/A"
-        
-        # ### 수정된 부분: 품명 처리 방식 변경 ###
+
         item_name_override = self.current_set_info.get('item_name_override')
         if item_name_override:
-            # 신규 라벨: SPC(공급사 코드)를 품명으로 사용
             item_info = {"Item Name": item_name_override, "Spec": ""}
         else:
-            # 구규 라벨: Item.csv에서 품명 조회
             item_info = self.items_data.get(item_code, {})
 
         start_time = self.current_set_info.get('start_time')
         work_time_sec = (datetime.now() - start_time).total_seconds() if start_time else 0.0
         production_date = self.current_set_info.get('production_date')
-        # ### 수정된 부분: 차수 정보 가져오기 ###
-        phase = self.current_set_info.get('phase', '-') # 차수 정보가 없으면(구규 라벨) '-'로 기록
+        phase = self.current_set_info.get('phase', '-')
 
         set_id_for_log = str(self.current_set_info['id'])
 
         if result == self.Results.PASS:
             if item_code != "N/A" and production_date:
-                # ### 수정된 부분: 차수를 포함하여 통계 집계 ###
                 self.scan_count[production_date][(item_code, phase)] += 1
-                
-                # ### 수정된 부분: 신규/구규 라벨에 따라 중복 체크셋 업데이트 ###
-                # 제품 바코드는 항상 추가
+
                 self.global_scanned_set.update(raw_scans_to_log[1:])
-                # 신규 형식의 고유 현품표(첫 스캔)도 중복 방지를 위해 추가
                 if item_name_override and raw_scans_to_log:
                     self.global_scanned_set.add(raw_scans_to_log[0])
 
@@ -744,10 +779,10 @@ class BarcodeScannerApp(tk.Tk):
             'end_time': datetime.now(),
             'production_date': production_date,
             'set_id': set_id_for_log,
-            'phase': phase # ### 추가된 부분: 로그에 차수 정보 기록 ###
+            'phase': phase
         }
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
-        
+
         if result == self.Results.PASS:
             self.set_details_map[set_id_for_log] = details
 
@@ -755,59 +790,59 @@ class BarcodeScannerApp(tk.Tk):
             current_values = list(self.history_tree.item(set_id_for_log, 'values'))
             display_id = current_values[0]
             final_timestamp = datetime.now().strftime('%H:%M:%S')
-            
+
             first_scan_display = parsed_scans_to_log[0] if parsed_scans_to_log else ""
             other_scans_display = parsed_scans_to_log[1:5]
             values_to_update = (display_id, first_scan_display, *other_scans_display + [""]*(4-len(other_scans_display)), result, final_timestamp)
-            
+
             self.history_tree.item(set_id_for_log, values=values_to_update, tags=("success" if result == self.Results.PASS else "error",))
-            
+
         self.save_status_label.config(text=f"✓ 기록됨 ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
         self._reset_current_set(from_finalize=True)
 
-    def _handle_input_error(self, raw, reason):
+    def _handle_input_error(self, raw, title="[입력 오류]", reason="알 수 없는 입력 오류가 발생했습니다."):
         self.data_manager.log_event(self.Events.ERROR_INPUT, {"raw": raw, "reason": reason})
         self.current_set_info['error_count'] += 1
         self.current_set_info['has_error_or_reset'] = True
         self.update_big_display(str(raw), "red")
-        self.status_label.config(text=f"❌ 입력 오류: {reason}", style="Error.TLabel")
-        self._trigger_modal_error(f"입력값이 올바르지 않습니다.\n({reason})", self.Results.FAIL_INPUT_ERROR, raw)
-        
-    def _handle_mismatch(self, raw, edited, master):
-        self.data_manager.log_event(self.Events.ERROR_MISMATCH, {"raw": raw, "edited": edited, "master": master})
+        self.status_label.config(text=f"❌ {title}: {reason.split(chr(10))[0]}", style="Error.TLabel")
+        self._trigger_modal_error(title, reason, self.Results.FAIL_INPUT_ERROR, raw)
+
+    def _handle_mismatch(self, raw, master):
+        self.data_manager.log_event(self.Events.ERROR_MISMATCH, {"raw": raw, "master": master})
         self.current_set_info['error_count'] += 1
         self.current_set_info['has_error_or_reset'] = True
-        error_message = f"불일치: {edited}\n(기준: {master})"
+        title = "[제품 불일치]"
+        error_message = f"현품표와 제품 정보가 일치하지 않습니다.\n\n- 현품표 코드: '{master}' (포함 필요)\n- 스캔한 제품: '{raw}'\n\n→ 현품표에 맞는 올바른 제품을 스캔하세요."
         self.update_big_display(raw, "red")
-        self.status_label.config(text=f"❌ {error_message.replace(chr(10), ' ')}", style="Error.TLabel")
-        self._trigger_modal_error(error_message, self.Results.FAIL_MISMATCH, edited)
+        self.status_label.config(text=f"❌ 불일치: 현품표 코드({master}) 없음", style="Error.TLabel")
+        self._trigger_modal_error(title, error_message, self.Results.FAIL_MISMATCH, raw)
 
     def _delete_selected_row(self):
         selected_iids = self.history_tree.selection()
         if not selected_iids:
-            messagebox.showwarning("경고", "삭제할 행을 선택하세요.")
+            messagebox.showwarning("선택 필요", "삭제할 기록을 목록에서 선택하세요.")
             return
 
-        if not messagebox.askyesno("삭제 확인", f"선택된 {len(selected_iids)}개 기록을 삭제(무효화)합니다.\n이 작업은 되돌릴 수 없습니다. 계속하시겠습니까?"):
+        if not messagebox.askyesno("삭제 확인", f"선택된 {len(selected_iids)}개의 기록을 정말 삭제(무효화)하시겠습니까?\n이 작업은 되돌릴 수 없습니다.", icon="warning"):
             return
 
         for iid in selected_iids:
-            if iid == 'loading': 
+            if iid == 'loading':
                 continue
-            
+
             deleted_details = self.set_details_map.get(iid)
             values = self.history_tree.item(iid, 'values')
             log_details = {'set_id': iid, 'deleted_values': values, 'original_details': deleted_details}
             self.data_manager.log_event(self.Events.SET_DELETED, log_details)
-            
+
             if deleted_details:
                 result = values[6]
                 if result == self.Results.PASS:
                     production_date = deleted_details.get('production_date')
                     passed_code = deleted_details.get('item_code')
-                    # ### 수정된 부분: 차수 정보를 포함하여 통계에서 제외 ###
                     phase = deleted_details.get('phase', '-')
                     if production_date and passed_code:
                         key = (passed_code, phase)
@@ -817,18 +852,10 @@ class BarcodeScannerApp(tk.Tk):
                                 del self.scan_count[production_date][key]
                             if not self.scan_count[production_date]:
                                 del self.scan_count[production_date]
-                    
-                    # ### 수정된 부분: 삭제 시 중복 체크셋에서도 제거 ###
+
                     raw_scans_to_remove = deleted_details.get('scanned_product_barcodes', [])
-                    if raw_scans_to_remove:
-                        # 제품 바코드 제거
-                        if len(raw_scans_to_remove) > 1:
-                            for barcode in raw_scans_to_remove[1:]:
-                                self.global_scanned_set.discard(barcode)
-                        # 신규 현품표인 경우, 첫 스캔도 제거
-                        first_scan = raw_scans_to_remove[0]
-                        if '|' in first_scan and '=' in first_scan:
-                            self.global_scanned_set.discard(first_scan)
+                    for barcode in raw_scans_to_remove:
+                        self.global_scanned_set.discard(barcode)
 
             self.history_tree.delete(iid)
 
@@ -836,7 +863,7 @@ class BarcodeScannerApp(tk.Tk):
                 del self.set_details_map[iid]
 
         self._update_summary_tree()
-        messagebox.showinfo("완료", f"{len(selected_iids)}개 기록이 삭제 처리되었습니다. 통계가 업데이트 되었습니다.")
+        messagebox.showinfo("삭제 완료", f"{len(selected_iids)}개의 기록이 삭제 처리되었습니다.")
 
     def _reset_current_set(self, full_reset=False, from_finalize=False):
         if self.is_blinking: return
@@ -847,8 +874,7 @@ class BarcodeScannerApp(tk.Tk):
             self.current_set_info['has_error_or_reset'] = True
         if from_finalize or full_reset:
             self._delete_current_set_state()
-        
-        # ### 수정된 부분: 차수 및 품명 오버라이드 필드 추가 ###
+
         self.current_set_info = {
             'id': None, 'parsed': [], 'raw': [],
             'start_time': None, 'error_count': 0, 'has_error_or_reset': False,
@@ -859,7 +885,7 @@ class BarcodeScannerApp(tk.Tk):
             self._update_status_label()
             self.update_big_display("바코드를 스캔하세요.", "")
             self.entry.focus_set()
-            
+
     def _close_popup(self, popup, result, error_details):
         if popup.winfo_exists():
             popup.grab_release()
@@ -869,11 +895,11 @@ class BarcodeScannerApp(tk.Tk):
         if not self.current_set_info.get('id'):
             self.current_set_info['id'] = str(time.time_ns())
         self.after(10, lambda: self._finalize_set(result, error_details))
-        
+
     def _play_error_siren_loop(self):
         sound = self.sound_objects.get("fail")
         if not sound:
-            self.after_idle(lambda: messagebox.showwarning("사운드 설정 오류", "오류 사운드('fail')가 로드되지 않았습니다."))
+            self.after_idle(lambda: messagebox.showwarning("사운드 설정 오류", "경고음 파일을 찾을 수 없습니다.\n(assets 폴더의 fail.wav 파일 확인 필요)\n\n오류 발생 시 경고음이 울리지 않습니다."))
             return
         try:
             sound.play(loops=-1)
@@ -881,28 +907,29 @@ class BarcodeScannerApp(tk.Tk):
                 time.sleep(0.1)
             sound.stop()
         except Exception as e:
-            self.after_idle(lambda: messagebox.showerror("사운드 재생 오류", f"사운드 재생 중 오류가 발생했습니다.\n{e}"))
-            
-    def _trigger_modal_error(self, message, result, error_details):
+            self.after_idle(lambda: messagebox.showerror("사운드 재생 오류", f"경고음을 재생하는 중 오류가 발생했습니다.\n스피커 또는 사운드 드라이버를 확인해주세요.\n\n[상세 오류]\n{e}"))
+
+    def _trigger_modal_error(self, title, message, result, error_details):
         if self.is_blinking: return
         self.is_blinking = True
         threading.Thread(target=self._play_error_siren_loop, daemon=True).start()
         self.after(0, self._blink_background_loop)
         try:
             popup = tk.Toplevel(self)
-            popup.title("⚠️ 시스템 경고")
+            popup.title(f"⚠️ {title}")
             popup.attributes('-fullscreen', True)
             popup.attributes('-topmost', True)
             popup_frame = tk.Frame(popup, bg=self.colors.get("danger", "#E74C3C"))
             popup_frame.pack(expand=True, fill='both')
-            label = tk.Label(popup_frame, text=f"⚠️\n\n{message}", font=("Impact", 80, "bold"), fg='white', bg=self.colors.get("danger", "#E74C3C"), anchor='center', justify='center', wraplength=self.winfo_screenwidth() - 100)
+            label = tk.Label(popup_frame, text=f"⚠️\n\n{message}", font=("Impact", 60, "bold"), fg='white', bg=self.colors.get("danger", "#E74C3C"), anchor='center', justify='center', wraplength=self.winfo_screenwidth() - 100)
             label.pack(pady=40, expand=True, fill='both')
             btn_frame = tk.Frame(popup_frame, bg=self.colors.get("danger", "#E74C3C"))
             btn_frame.pack(pady=40)
-            btn = tk.Button(btn_frame, text="확인", command=lambda: self._close_popup(popup, result, error_details), font=("Impact", 36, "bold"), bg="yellow", fg="black", relief="raised", borderwidth=5)
+            btn = tk.Button(btn_frame, text="확인 (Enter)", command=lambda: self._close_popup(popup, result, error_details), font=("Impact", 36, "bold"), bg="yellow", fg="black", relief="raised", borderwidth=5)
             btn.pack(ipady=20, ipadx=50)
             popup.focus_force()
             btn.focus_set()
+            btn.bind("<Return>", lambda e: self._close_popup(popup, result, error_details))
             popup.protocol("WM_DELETE_WINDOW", lambda: self._close_popup(popup, result, error_details))
             self.update_idletasks()
             popup.transient(self)
@@ -912,83 +939,94 @@ class BarcodeScannerApp(tk.Tk):
             self.is_blinking = False
             fail_sound = self.sound_objects.get("fail")
             if fail_sound: fail_sound.stop()
-            messagebox.showerror("시스템 오류", f"치명적인 오류가 발생하여 경고창을 표시할 수 없습니다.\n\n[기존 오류 메시지]\n{message}")
+            messagebox.showerror("시스템 오류", f"오류 경고창을 표시하는 데 실패했습니다.\n프로그램을 재시작해야 할 수 있습니다.\n\n[기존 오류 메시지]\n{message}")
             self._reset_current_set(full_reset=True)
 
     def _prompt_and_cancel_completed_tray(self):
         if not self.initialized_successfully: return
+
         master_label = simpledialog.askstring("완료된 트레이 취소",
-                                              "취소할 트레이의 현품표(13자리)를 스캔하거나 입력하세요:",
+                                              "취소할 트레이의 현품표를 스캔하거나 입력하세요:",
                                               parent=self)
         if not master_label: return
         master_label = master_label.strip()
+
         if not master_label:
             messagebox.showwarning("입력 오류", "현품표가 입력되지 않았습니다.", parent=self)
             return
-        self._cancel_completed_tray_by_master_label(master_label)
-        
-    def _cancel_completed_tray_by_master_label(self, master_label_to_cancel):
+
+        self._cancel_completed_tray_by_label(master_label)
+
+    def _cancel_completed_tray_by_label(self, label_to_cancel):
         found_sets = []
         for set_id, details in self.set_details_map.items():
-            if details.get('master_label_code') == master_label_to_cancel and not details.get('has_error_or_reset'):
-                end_time_str = details.get('end_time')
-                if end_time_str and isinstance(end_time_str, str):
-                    try:
-                        end_time_dt = datetime.fromisoformat(end_time_str)
-                        found_sets.append({'set_id': set_id, 'details': details, 'end_time': end_time_dt})
-                    except ValueError:
-                        continue
+            raw_scans = details.get('scanned_product_barcodes', [])
+            first_raw_scan = raw_scans[0] if raw_scans else None
+
+            is_match = (details.get('master_label_code') == label_to_cancel or
+                        first_raw_scan == label_to_cancel)
+
+            if is_match and not details.get('has_error_or_reset'):
+                try:
+                    end_time_dt = datetime.fromisoformat(details.get('end_time'))
+                    found_sets.append({'set_id': set_id, 'details': details, 'end_time': end_time_dt})
+                except (ValueError, TypeError):
+                    continue
+
         if not found_sets:
-            messagebox.showerror("찾기 실패", f"현품표 '{master_label_to_cancel}'에 해당하는 '통과'된 완료 기록을 찾을 수 없습니다.", parent=self)
+            messagebox.showerror("찾기 실패", f"입력하신 현품표 '{label_to_cancel}'에 해당하는 '통과' 기록을 현재 조회된 내역에서 찾을 수 없습니다.", parent=self)
             return
+
         found_sets.sort(key=lambda x: x['end_time'], reverse=True)
         latest_set = found_sets[0]
         target_set_id = latest_set['set_id']
         target_details = latest_set['details']
-        end_time_display = datetime.fromisoformat(target_details.get('end_time')).strftime('%H:%M:%S')
+
+        end_time_display = latest_set['end_time'].strftime('%H:%M:%S')
         item_name = target_details.get('item_name', '알 수 없음')
-        confirm_msg = (f"다음 기록을 '포장 대기' 상태로 되돌리시겠습니까?\n\n"
-                       f"현품표: {master_label_to_cancel}\n"
+
+        confirm_msg = (f"다음 기록을 취소하시겠습니까?\n\n"
+                       f"현품표: {target_details.get('master_label_code')}\n"
                        f"품명: {item_name}\n"
                        f"완료 시간: {end_time_display}\n\n"
-                       f"이 작업은 기록에 남으며, 통계에서 제외됩니다.")
-        if not messagebox.askyesno("취소 확인", confirm_msg, icon='warning', parent=self): return
-        
+                       f"취소 시 통계와 기록이 모두 변경됩니다.")
+
+        if not messagebox.askyesno("취소 확인", confirm_msg, icon='warning', parent=self):
+            return
+
         try:
             self.data_manager.log_event(self.Events.TRAY_COMPLETION_CANCELLED, {
                 'cancelled_set_id': target_set_id,
-                'master_label_code': master_label_to_cancel,
+                'cancelled_by_label': label_to_cancel,
                 'details': target_details
             })
+
             production_date = target_details.get('production_date')
             item_code = target_details.get('item_code')
-            # ### 수정된 부분: 차수 정보를 포함하여 통계에서 제외 ###
             phase = target_details.get('phase', '-')
             if production_date and item_code:
                 key = (item_code, phase)
                 if production_date in self.scan_count and key in self.scan_count[production_date]:
                     self.scan_count[production_date][key] -= 1
-                    if self.scan_count[production_date][key] == 0: del self.scan_count[production_date][key]
-                    if not self.scan_count[production_date]: del self.scan_count[production_date]
-            
-            # ### 수정된 부분: 취소 시 중복 체크셋에서도 제거 ###
+                    if self.scan_count[production_date][key] <= 0:
+                        del self.scan_count[production_date][key]
+                    if not self.scan_count[production_date]:
+                        del self.scan_count[production_date]
+
             raw_scans_to_remove = target_details.get('scanned_product_barcodes', [])
-            if raw_scans_to_remove:
-                # 제품 바코드 제거
-                if len(raw_scans_to_remove) > 1:
-                    for barcode in raw_scans_to_remove[1:]: self.global_scanned_set.discard(barcode)
-                # 신규 현품표인 경우, 첫 스캔도 제거
-                first_scan = raw_scans_to_remove[0]
-                if '|' in first_scan and '=' in first_scan:
-                    self.global_scanned_set.discard(first_scan)
+            for barcode in raw_scans_to_remove:
+                self.global_scanned_set.discard(barcode)
 
             if target_set_id in self.set_details_map: del self.set_details_map[target_set_id]
             if self.history_tree.exists(target_set_id): self.history_tree.delete(target_set_id)
+
             self._update_summary_tree()
-            messagebox.showinfo("처리 완료", f"현품표 '{master_label_to_cancel}' 트레이가 '포장 대기'로 처리되었습니다.", parent=self)
+
+            messagebox.showinfo("처리 완료", f"해당 작업이 정상적으로 취소되었습니다.", parent=self)
+
         except Exception as e:
-            messagebox.showerror("처리 오류", f"취소 작업 중 오류가 발생했습니다: {e}", parent=self)
-            self.data_manager.log_event(self.Events.UI_ERROR, {"context": "tray_cancellation", "error": str(e)})
+            messagebox.showerror("처리 오류", f"취소 작업을 처리하는 중 오류가 발생했습니다.\n프로그램을 다시 시작하여 확인해주세요.\n\n[상세 오류]\n{e}", parent=self)
+            self.data_manager.log_event(self.Events.UI_ERROR, {"context": "tray_cancellation_by_label", "error": str(e)})
 
     def open_settings_window(self):
         if self.current_set_info.get('id'):
@@ -1015,15 +1053,62 @@ class BarcodeScannerApp(tk.Tk):
         cancel_button.pack(side=tk.LEFT)
     def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str):
         if not new_worker_name.strip():
-            messagebox.showerror("오류", "작업자 이름은 비워둘 수 없습니다.", parent=window)
+            messagebox.showerror("입력 오류", "작업자 이름은 비워둘 수 없습니다.", parent=window)
             return
         self.worker_name = new_worker_name.strip()
         self._save_app_settings()
         self._update_save_directory()
         self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
         self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
-        messagebox.showinfo("저장 완료", f"설정이 변경되었습니다.\n\n- 저장 경로: {self.save_directory} (고정)\n- 작업자: {self.worker_name}\n\n과거 기록을 새로 불러오려면 앱을 다시 시작해주세요.", parent=window)
+        messagebox.showinfo("저장 완료", f"설정이 변경되었습니다.\n- 작업자: {self.worker_name}", parent=self)
         window.destroy()
+
+    def _show_about_window(self):
+        about_win = tk.Toplevel(self)
+        about_win.title("정보")
+        about_win.geometry("500x350")
+        about_win.resizable(False, False)
+        about_win.transient(self)
+        about_win.grab_set()
+        about_win.configure(bg=self.colors["background"])
+
+        header_font = (self.default_font_name, 18, "bold")
+        title_font = (self.default_font_name, 11, "bold")
+        text_font = (self.default_font_name, 11)
+
+        main_frame = ttk.Frame(about_win, padding=25)
+        main_frame.pack(expand=True, fill=tk.BOTH)
+
+        ttk.Label(main_frame, text="바코드 세트 검증기", font=header_font).pack(pady=(0, 5))
+        ttk.Label(main_frame, text=f"Version {APP_VERSION}", font=(self.default_font_name, 10, "italic")).pack(pady=(0, 20))
+
+        info_frame = ttk.Frame(main_frame)
+        info_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(info_frame, text="제작:", font=title_font, width=12).grid(row=0, column=0, sticky='w')
+        ttk.Label(info_frame, text="KMTechn", font=text_font).grid(row=0, column=1, sticky='w')
+        ttk.Label(info_frame, text="Copyright:", font=title_font, width=12).grid(row=1, column=0, sticky='w')
+        ttk.Label(info_frame, text="© 2024 KMTechn. All rights reserved.", font=text_font).grid(row=1, column=1, sticky='w')
+
+        ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=15)
+
+        keys_frame = ttk.Frame(main_frame)
+        keys_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(keys_frame, text="주요 단축키", font=title_font).pack(anchor='w', pady=(0, 5))
+
+        key_map = {
+            "현재 세트 취소": "F1",
+            "완료된 트레이 취소": "F2",
+            "선택 항목 삭제": "Delete",
+            "UI 확대/축소": "Ctrl + 마우스 휠"
+        }
+        for i, (desc, key) in enumerate(key_map.items()):
+            ttk.Label(keys_frame, text=f"• {desc}", font=text_font).grid(row=i, column=0, sticky='w', padx=10)
+            ttk.Label(keys_frame, text=key, font=(self.default_font_name, 11, "bold")).grid(row=i, column=1, sticky='e', padx=10)
+        keys_frame.grid_columnconfigure(1, weight=1)
+
+        close_button = ttk.Button(main_frame, text="닫기", command=about_win.destroy, style="TButton")
+        close_button.pack(side=tk.BOTTOM, pady=(20, 0))
+
 
     def _configure_base_styles(self):
         self.style.theme_use('clam')
@@ -1049,8 +1134,7 @@ class BarcodeScannerApp(tk.Tk):
         overlay_bg = self.colors["background"]
         self.style.configure("Overlay.TFrame", background=overlay_bg)
         self.style.configure("Loading.TLabel", background=overlay_bg, foreground=self.colors["text"], font=(self.default_font_name, 24, "bold"))
-        
-        # 버튼 크기를 키우기 위해 폰트와 패딩 값을 조정합니다.
+
         self.style.configure("Action.TButton", font=(self.default_font_name, 15, "bold"), padding=15)
         self.style.map("Action.TButton",
                        foreground=[('disabled', self.colors["text_subtle"]), ('active', 'white'), ('!disabled', 'white')],
@@ -1066,13 +1150,16 @@ class BarcodeScannerApp(tk.Tk):
         self.history_tree.tag_configure("in_progress", foreground=self.colors["text_subtle"], background=self.colors["card_background"])
 
     def _show_history_context_menu(self, event):
-        """오른쪽 클릭 시 컨텍스트 메뉴를 표시합니다."""
         iid = self.history_tree.identify_row(event.y)
         if iid:
-            # 클릭된 행이 현재 선택 영역에 포함되지 않은 경우, 현재 선택을 지우고 클릭된 행만 선택합니다.
             if iid not in self.history_tree.selection():
                 self.history_tree.selection_set(iid)
             self.history_context_menu.post(event.x_root, event.y_root)
+
+    # [추가] 오늘 기록을 다시 불러오는 헬퍼 함수
+    def _reload_today_history(self):
+        self._load_history_and_rebuild_summary(None)
+        self._process_history_queue()
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="30")
@@ -1084,8 +1171,15 @@ class BarcodeScannerApp(tk.Tk):
         self.top_card.grid_columnconfigure(0, weight=1)
         self.big_display_label = ttk.Label(self.top_card, text="바코드를 스캔하세요.", anchor="center", wraplength=1400, font=(self.default_font_name, 50, "bold"))
         self.big_display_label.grid(row=0, column=0, sticky="ew", pady=(30, 40), ipady=15)
-        settings_button = ttk.Button(self.top_card, text="⚙️", command=self.open_settings_window, style='Control.TButton')
-        settings_button.place(relx=1.0, rely=0.0, x=-30, y=30, anchor='ne')
+
+        top_right_frame = ttk.Frame(self.top_card, style="Borderless.TFrame")
+        top_right_frame.place(relx=1.0, rely=0.0, x=-30, y=30, anchor='ne')
+
+        about_button = ttk.Button(top_right_frame, text="❓", command=self._show_about_window, style='Control.TButton')
+        about_button.pack(side=tk.RIGHT, padx=(5, 0))
+        settings_button = ttk.Button(top_right_frame, text="⚙️", command=self.open_settings_window, style='Control.TButton')
+        settings_button.pack(side=tk.RIGHT)
+
         input_frame = ttk.Frame(self.top_card, style='Borderless.TFrame')
         input_frame.grid(row=1, column=0, sticky="ew")
         input_frame.grid_columnconfigure(1, weight=1)
@@ -1109,13 +1203,24 @@ class BarcodeScannerApp(tk.Tk):
         hist_header_frame = ttk.Frame(history_card, style="Borderless.TFrame")
         hist_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 15))
         hist_header_frame.grid_columnconfigure(1, weight=1)
-        ttk.Label(hist_header_frame, text="스캔 기록", style="Header.TLabel", background=self.colors["card_background"]).grid(row=0, column=0, sticky="w")
-        font_control_frame = ttk.Frame(hist_header_frame, style="Borderless.TFrame")
-        font_control_frame.grid(row=0, column=2, sticky="e")
-        decrease_font_btn = ttk.Button(font_control_frame, text="-", style="Control.TButton", command=self._decrease_tree_font)
+
+        self.hist_header_label = ttk.Label(hist_header_frame, text="스캔 기록", style="Header.TLabel", background=self.colors["card_background"])
+        self.hist_header_label.grid(row=0, column=0, sticky="w")
+
+        hist_control_frame = ttk.Frame(hist_header_frame, style="Borderless.TFrame")
+        hist_control_frame.grid(row=0, column=2, sticky="e")
+
+        # [수정] 오늘 버튼 command 변경
+        today_btn = ttk.Button(hist_control_frame, text="오늘", style="Control.TButton", command=self._reload_today_history)
+        today_btn.pack(side=tk.LEFT, padx=(0, 5))
+        date_search_btn = ttk.Button(hist_control_frame, text="📅 날짜 조회", style="Control.TButton", command=self._prompt_for_date_and_reload)
+        date_search_btn.pack(side=tk.LEFT, padx=(0, 15))
+
+        decrease_font_btn = ttk.Button(hist_control_frame, text="-", style="Control.TButton", command=self._decrease_tree_font)
         decrease_font_btn.pack(side=tk.LEFT, padx=(0, 0))
-        increase_font_btn = ttk.Button(font_control_frame, text="+", style="Control.TButton", command=self._increase_tree_font)
+        increase_font_btn = ttk.Button(hist_control_frame, text="+", style="Control.TButton", command=self._increase_tree_font)
         increase_font_btn.pack(side=tk.LEFT)
+
         tree_frame_hist = ttk.Frame(history_card, style="Card.TFrame")
         tree_frame_hist.grid(row=1, column=0, sticky='nsew')
         tree_frame_hist.grid_rowconfigure(0, weight=1)
@@ -1132,8 +1237,7 @@ class BarcodeScannerApp(tk.Tk):
         self.history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.history_tree.bind("<Configure>", self._resize_all_columns)
         self.history_tree.bind("<ButtonRelease-1>", self._on_history_tree_resize_release)
-        
-        # 오른쪽 클릭 메뉴 생성 및 바인딩
+
         self.history_context_menu = tk.Menu(self, tearoff=0, font=(self.default_font_name, 14))
         self.history_context_menu.add_command(label="선택 항목 삭제", command=self._delete_selected_row)
         self.history_tree.bind("<Button-3>", self._show_history_context_menu)
@@ -1147,8 +1251,7 @@ class BarcodeScannerApp(tk.Tk):
         tree_frame_sum.grid(row=1, column=0, sticky='nsew')
         tree_frame_sum.grid_rowconfigure(0, weight=1)
         tree_frame_sum.grid_columnconfigure(0, weight=1)
-        
-        # ### 수정된 부분: '누적 통과 코드' 테이블 정의 ###
+
         summary_cols = list(self.summary_proportions.keys())
         v_scroll_sum = ttk.Scrollbar(tree_frame_sum, orient=tk.VERTICAL)
         self.summary_tree = ttk.Treeview(tree_frame_sum, columns=summary_cols, show="headings", yscrollcommand=v_scroll_sum.set)
@@ -1166,20 +1269,20 @@ class BarcodeScannerApp(tk.Tk):
 
         self.summary_tree.bind("<Configure>", self._resize_all_columns)
         self.summary_tree.bind("<ButtonRelease-1>", self._on_summary_tree_resize_release)
-        
+
         bottom_frame = ttk.Frame(main_frame)
         bottom_frame.grid(row=2, column=0, sticky="ew", pady=(30, 0))
         bottom_frame.grid_columnconfigure(2, weight=1)
-        
+
         reset_button = ttk.Button(bottom_frame, text="현재 세트 취소 (F1)", command=lambda: self._reset_current_set(full_reset=True), style="Action.TButton", takefocus=0)
         reset_button.grid(row=0, column=0, sticky="w")
         self.bind("<F1>", lambda e: self._reset_current_set(full_reset=True))
-        
+
         cancel_tray_button = ttk.Button(bottom_frame, text="완료된 트레이 취소 (F2)", command=self._prompt_and_cancel_completed_tray, style="Action.TButton", takefocus=0)
         cancel_tray_button.grid(row=0, column=1, sticky="w", padx=(20, 0))
         self.bind("<F2>", lambda e: self._prompt_and_cancel_completed_tray())
         self.bind("<Delete>", lambda e: self._delete_selected_row())
-        
+
         self.save_status_label = ttk.Label(bottom_frame, text="", style="Save.Success.TLabel", background=self.colors["background"])
         self.save_status_label.grid(row=0, column=2, sticky="w", padx=30)
         self.clock_label = ttk.Label(bottom_frame, text="", style="TLabel", background=self.colors["background"])
@@ -1191,6 +1294,21 @@ class BarcodeScannerApp(tk.Tk):
         loading_label.pack(pady=(0, 15))
         self.loading_progressbar = ttk.Progressbar(loading_content_frame, mode='indeterminate', length=400)
         self.loading_progressbar.pack(pady=15)
+
+    def _prompt_for_date_and_reload(self):
+        if not self.initialized_successfully: return
+
+        cal_win = CalendarWindow(self)
+        selected_date = cal_win.result
+
+        if selected_date:
+            try:
+                target_datetime = datetime.combine(selected_date, datetime.min.time())
+                self._load_history_and_rebuild_summary(target_datetime)
+                self._process_history_queue()
+            except Exception as e:
+                messagebox.showerror("조회 오류", f"기록을 조회하는 중 오류가 발생했습니다.\n\n[상세 오류]\n{e}", parent=self)
+
     def _increase_tree_font(self):
         if not self.initialized_successfully: return
         self.tree_font_size = min(20, self.tree_font_size + 1)
@@ -1262,7 +1380,7 @@ class BarcodeScannerApp(tk.Tk):
                 for col, prop in self.hist_proportions.items():
                     width = int(hist_width * (prop / total_prop))
                     self.history_tree.column(col, width=width)
-            
+
             summary_width = self.summary_tree.winfo_width() - padding
             if summary_width > 1:
                 total_prop = sum(self.summary_proportions.values())
@@ -1294,7 +1412,7 @@ class BarcodeScannerApp(tk.Tk):
         except (ValueError, TclError) as e:
             print(f"정렬 오류: {e}")
             pass
-            
+
     def _update_clock(self):
         if self.initialized_successfully:
             self.clock_label.config(text=time.strftime('%Y-%m-%d %H:%M:%S'))
@@ -1315,19 +1433,20 @@ class BarcodeScannerApp(tk.Tk):
         else:
             if sound_key in self.sounds:
                 print(f"경고: 사운드 키 '{sound_key}'가 존재하지만, 로드되지 않았습니다. 파일 경로를 확인하세요.")
-    
+
     def _update_summary_tree(self):
         if not self.initialized_successfully: return
         self.summary_tree.delete(*self.summary_tree.get_children())
-        # ### 수정된 부분: 변경된 통계 구조를 UI에 반영 ###
-        for date in sorted(self.scan_count.keys(), reverse=True):
-            month_day = datetime.strptime(date, '%Y-%m-%d').strftime('%m/%d')
-            # 수량 기준으로 내림차순 정렬
-            sorted_items = sorted(self.scan_count[date].items(), key=lambda item: item[1], reverse=True)
-            for (code, phase), count in sorted_items:
-                if count > 0:
-                    # '차수' 열에 데이터 추가
-                    self.summary_tree.insert("", "end", values=(month_day, code, phase, count))
+        for date_str in sorted(self.scan_count.keys(), reverse=True):
+            try:
+                month_day = datetime.strptime(date_str, '%Y-%m-%d').strftime('%m/%d')
+                sorted_items = sorted(self.scan_count[date_str].items(), key=lambda item: item[1], reverse=True)
+                for (code, phase), count in sorted_items:
+                    if count > 0:
+                        self.summary_tree.insert("", "end", values=(month_day, code, phase, count))
+            except (ValueError, TypeError) as e:
+                print(f"요약 트리 업데이트 중 날짜 형식 오류: {date_str}, 오류: {e}")
+
 
     def _update_status_label(self):
         if not self.initialized_successfully: return
@@ -1348,7 +1467,7 @@ class BarcodeScannerApp(tk.Tk):
         if num_scans == 0: return
         set_id = str(self.current_set_info['id'])
         timestamp = datetime.now().strftime("%H:%M:%S")
-        
+
         display_scans = self.current_set_info['parsed']
         first_scan_display = display_scans[0] if display_scans else ""
         other_scans_display = display_scans[1:]
