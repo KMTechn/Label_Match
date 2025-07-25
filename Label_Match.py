@@ -75,7 +75,7 @@ def download_and_apply_update(url):
 chcp 65001 > nul
 echo.
 echo ==========================================================
-echo    프로그램을 업데이트합니다. 이 창을 닫지 마세요.
+echo   프로그램을 업데이트합니다. 이 창을 닫지 마세요.
 echo ==========================================================
 echo.
 echo 잠시 후 프로그램이 자동으로 종료됩니다...
@@ -89,7 +89,7 @@ echo 임시 업데이트 파일을 삭제합니다...
 rmdir /s /q "{temp_update_folder}"
 echo.
 echo ========================================
-echo    업데이트 완료!
+echo   업데이트 완료!
 echo ========================================
 echo.
 echo 3초 후에 프로그램을 다시 시작합니다.
@@ -528,8 +528,16 @@ class BarcodeScannerApp(tk.Tk):
                     if passed_code and production_date:
                         temp_scan_count[production_date][(passed_code, phase)] += 1
                 raw_scans = details.get('scanned_product_barcodes', [])
-                if raw_scans and len(raw_scans) > 1:
-                    temp_global_scanned_set.update(raw_scans[1:])
+                # ### 수정된 부분: 신규 고유 현품표도 중복 체크셋에 추가 ###
+                if raw_scans:
+                    # 제품 바코드 추가 (스캔 2-5)
+                    if len(raw_scans) > 1:
+                        temp_global_scanned_set.update(raw_scans[1:])
+                    # 첫 번째 스캔이 신규 현품표 형식인 경우, 중복 검사를 위해 추가
+                    first_scan = raw_scans[0]
+                    if '|' in first_scan and '=' in first_scan:
+                        temp_global_scanned_set.add(first_scan)
+
             result_queue.put({'sorted_sets': sorted_final_sets, 'scan_count': temp_scan_count, 'global_scanned_set': temp_global_scanned_set, 'set_details_map': temp_set_details_map})
         except Exception as e:
             print(f"백그라운드 기록 로딩 오류: {e}")
@@ -596,6 +604,11 @@ class BarcodeScannerApp(tk.Tk):
             new_label_data = self._parse_new_format_label(raw_input)
             if new_label_data:
                 # --- 신규 현품표 처리 로직 ---
+                # ### 신규 고유 현품표 중복 검사 ###
+                if raw_input in self.global_scanned_set:
+                    self._handle_input_error(raw_input, "이미 처리된 고유 현품표입니다.")
+                    return
+
                 client_code = new_label_data.get('CLC')
                 supplier_code = new_label_data.get('SPC')
                 phase = new_label_data.get('PHS')
@@ -709,7 +722,13 @@ class BarcodeScannerApp(tk.Tk):
             if item_code != "N/A" and production_date:
                 # ### 수정된 부분: 차수를 포함하여 통계 집계 ###
                 self.scan_count[production_date][(item_code, phase)] += 1
+                
+                # ### 수정된 부분: 신규/구규 라벨에 따라 중복 체크셋 업데이트 ###
+                # 제품 바코드는 항상 추가
                 self.global_scanned_set.update(raw_scans_to_log[1:])
+                # 신규 형식의 고유 현품표(첫 스캔)도 중복 방지를 위해 추가
+                if item_name_override and raw_scans_to_log:
+                    self.global_scanned_set.add(raw_scans_to_log[0])
 
         details = {
             'master_label_code': item_code, 'item_code': item_code,
@@ -798,10 +817,18 @@ class BarcodeScannerApp(tk.Tk):
                                 del self.scan_count[production_date][key]
                             if not self.scan_count[production_date]:
                                 del self.scan_count[production_date]
+                    
+                    # ### 수정된 부분: 삭제 시 중복 체크셋에서도 제거 ###
                     raw_scans_to_remove = deleted_details.get('scanned_product_barcodes', [])
-                    if len(raw_scans_to_remove) > 1:
-                        for barcode in raw_scans_to_remove[1:]:
-                            self.global_scanned_set.discard(barcode)
+                    if raw_scans_to_remove:
+                        # 제품 바코드 제거
+                        if len(raw_scans_to_remove) > 1:
+                            for barcode in raw_scans_to_remove[1:]:
+                                self.global_scanned_set.discard(barcode)
+                        # 신규 현품표인 경우, 첫 스캔도 제거
+                        first_scan = raw_scans_to_remove[0]
+                        if '|' in first_scan and '=' in first_scan:
+                            self.global_scanned_set.discard(first_scan)
 
             self.history_tree.delete(iid)
 
@@ -943,9 +970,18 @@ class BarcodeScannerApp(tk.Tk):
                     self.scan_count[production_date][key] -= 1
                     if self.scan_count[production_date][key] == 0: del self.scan_count[production_date][key]
                     if not self.scan_count[production_date]: del self.scan_count[production_date]
+            
+            # ### 수정된 부분: 취소 시 중복 체크셋에서도 제거 ###
             raw_scans_to_remove = target_details.get('scanned_product_barcodes', [])
-            if len(raw_scans_to_remove) > 1:
-                for barcode in raw_scans_to_remove[1:]: self.global_scanned_set.discard(barcode)
+            if raw_scans_to_remove:
+                # 제품 바코드 제거
+                if len(raw_scans_to_remove) > 1:
+                    for barcode in raw_scans_to_remove[1:]: self.global_scanned_set.discard(barcode)
+                # 신규 현품표인 경우, 첫 스캔도 제거
+                first_scan = raw_scans_to_remove[0]
+                if '|' in first_scan and '=' in first_scan:
+                    self.global_scanned_set.discard(first_scan)
+
             if target_set_id in self.set_details_map: del self.set_details_map[target_set_id]
             if self.history_tree.exists(target_set_id): self.history_tree.delete(target_set_id)
             self._update_summary_tree()

@@ -33,13 +33,14 @@
         "fail": "fail.wav"
     },
     "ui_persistence": {
-        "scale_factor": 2.400000000000001,
+        "scale_factor": 1.7000000000000002,
         "tree_font_size": 19,
         "sash_position": 1216,
         "summary_col_widths": {
-            "Date": 115,
-            "Code": 333,
-            "Count": 115
+            "Date": 102,
+            "Code": 287,
+            "Phase": 60,
+            "Count": 114
         },
         "history_col_widths": {
             "Set": 47,
