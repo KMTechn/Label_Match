@@ -22,7 +22,7 @@ from tkcalendar import Calendar
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.1" # [수정] 버그 픽스 버전 업데이트
+APP_VERSION = "v2.0.0" # [수정] 버그 픽스 버전 업데이트
 
 def check_for_updates():
     """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
@@ -220,6 +220,7 @@ class DataManager:
         if os.path.exists(state_path):
             try: os.remove(state_path)
             except Exception as e: print(f"임시 상태 파일 삭제 실패: {e}")
+
 class BarcodeScannerApp(tk.Tk):
     class FILES:
         CURRENT_STATE = "_current_set_state_packaging.json"
@@ -629,7 +630,7 @@ class BarcodeScannerApp(tk.Tk):
                     self._handle_input_error(
                         raw_input,
                         title="[현품표 중복 스캔]",
-                        reason=f"이미 다른 세트에서 사용 완료된 현품표입니다.\n\n- 중복 현품표: {raw_input}\n\n→ 새로운 현품표로 세트를 시작하세요."
+                        reason=f"이미 처리된 현품표입니다.\n\n- 중복 스캔: {self._truncate_string(raw_input)}\n\n→ 새 현품표로 다시 시작하세요."
                     )
                     return
 
@@ -646,14 +647,14 @@ class BarcodeScannerApp(tk.Tk):
                     self._handle_input_error(
                         raw_input,
                         title="[현품표 형식 오류]",
-                        reason=f"인식할 수 없는 현품표 바코드입니다.\n길이가 13자리가 아니거나, 정해진 형식이 아닙니다.\n\n- 입력된 값: {raw_input}\n\n→ 올바른 현품표를 다시 스캔해주세요."
+                        reason=f"잘못된 현품표 형식입니다 (13자리 아님).\n\n- 입력 값: {self._truncate_string(raw_input)}\n\n→ 올바른 현품표를 스캔하세요."
                     )
                     return
                 if raw_input not in self.items_data:
                     self._handle_input_error(
                         raw_input,
                         title="[미등록 현품표]",
-                        reason=f"기준 정보에 등록되지 않은 현품표입니다.\n\n- 미등록 코드: {raw_input}\n\n→ 'assets/Item.csv' 파일을 확인하거나, 올바른 현품표를 사용하세요."
+                        reason=f"미등록 현품표입니다.\n\n- 미등록 코드: {self._truncate_string(raw_input)}\n\n→ Item.csv를 확인하세요."
                     )
                     return
                 self._update_on_success_scan(raw_input, raw_input)
@@ -662,13 +663,17 @@ class BarcodeScannerApp(tk.Tk):
             master_code = self.current_set_info['parsed'][0]
 
             if scan_pos < 5 and len(raw_input) <= len(master_code):
-               self._handle_input_error(raw_input, title="[바코드 종류 오류]", reason=f"잘못된 종류의 바코드입니다.\n\n[스캔된 코드]\n{raw_input}\n\n현품표가 아닌 제품 바코드를 스캔하세요.")
+               self._handle_input_error(
+                   raw_input,
+                   title="[바코드 종류 오류]",
+                   reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
+                )
                return
             if scan_pos == 5 and len(raw_input) < 31:
                 self._handle_input_error(
                     raw_input,
                     title="[라벨 형식 오류]",
-                    reason=f"마지막 포장 라벨지의 길이가 너무 짧습니다.\n\n- 입력된 길이: {len(raw_input)}자리\n- 최소 길이: 31자리\n\n→ 올바른 포장 라벨지를 스캔하세요."
+                    reason=f"포장 라벨 길이가 너무 짧습니다.\n(입력: {len(raw_input)} / 최소: 31)\n\n→ 올바른 라벨을 스캔하세요."
                 )
                 return
 
@@ -679,14 +684,14 @@ class BarcodeScannerApp(tk.Tk):
                 self._handle_input_error(
                     raw_input,
                     title="[세트 내 중복 스캔]",
-                    reason=f"이번 세트에서 이미 스캔한 제품입니다.\n\n- 중복된 제품: {raw_input}\n\n→ 세트 내의 다른 제품을 스캔해주세요."
+                    reason=f"세트 내 중복 스캔입니다.\n\n- 중복 제품: {self._truncate_string(raw_input)}\n\n→ 다른 제품을 스캔하세요."
                 )
                 return
             if raw_input in self.global_scanned_set:
                 self._handle_input_error(
                     raw_input,
                     title="[전체 작업 내 중복 스캔]",
-                    reason=f"이 제품은 이미 다른 세트에서 포장 완료 처리되었습니다.\n\n- 중복된 제품: {raw_input}\n\n→ 새 제품으로 교체 후 다시 스캔해주세요."
+                    reason=f"이미 다른 세트에서 처리된 제품입니다.\n\n- 중복 제품: {self._truncate_string(raw_input)}\n\n→ 새 제품으로 교체하세요."
                 )
                 return
 
@@ -697,7 +702,7 @@ class BarcodeScannerApp(tk.Tk):
                     self._handle_input_error(
                         raw_input,
                         title="[생산일자 누락]",
-                        reason=f"마지막 포장 라벨에서 생산일자를 찾을 수 없습니다.\n라벨에 '6D'로 시작하는 8자리 날짜(YYYYMMDD)가 포함되어야 합니다.\n\n- 스캔한 라벨: {raw_input}\n\n→ 라벨 형식을 확인하거나 올바른 라벨을 사용하세요."
+                        reason=f"라벨에서 생산일자(6D...)를 찾을 수 없습니다.\n\n- 스캔한 라벨: {self._truncate_string(raw_input)}\n\n→ 올바른 라벨을 사용하세요."
                     )
                     return
                 self.current_set_info['production_date'] = production_date
@@ -806,7 +811,9 @@ class BarcodeScannerApp(tk.Tk):
         self.data_manager.log_event(self.Events.ERROR_INPUT, {"raw": raw, "reason": reason})
         self.current_set_info['error_count'] += 1
         self.current_set_info['has_error_or_reset'] = True
-        self.update_big_display(str(raw), "red")
+        
+        self.update_big_display(self._truncate_string(str(raw)), "red")
+        
         self.status_label.config(text=f"❌ {title}: {reason.split(chr(10))[0]}", style="Error.TLabel")
         self._trigger_modal_error(title, reason, self.Results.FAIL_INPUT_ERROR, raw)
 
@@ -815,9 +822,14 @@ class BarcodeScannerApp(tk.Tk):
         self.current_set_info['error_count'] += 1
         self.current_set_info['has_error_or_reset'] = True
         title = "[제품 불일치]"
-        error_message = f"현품표와 제품 정보가 일치하지 않습니다.\n\n- 현품표 코드: '{master}' (포함 필요)\n- 스캔한 제품: '{raw}'\n\n→ 현품표에 맞는 올바른 제품을 스캔하세요."
-        self.update_big_display(raw, "red")
-        self.status_label.config(text=f"❌ 불일치: 현품표 코드({master}) 없음", style="Error.TLabel")
+
+        truncated_raw = self._truncate_string(raw)
+        truncated_master = self._truncate_string(master)
+
+        error_message = f"현품표와 제품이 불일치합니다.\n\n- 현품표: {truncated_master}\n- 스캔 제품: {truncated_raw}\n\n→ 올바른 제품을 스캔하세요."
+
+        self.update_big_display(truncated_raw, "red")
+        self.status_label.config(text=f"❌ 불일치: 현품표({truncated_master}) 없음", style="Error.TLabel")
         self._trigger_modal_error(title, error_message, self.Results.FAIL_MISMATCH, raw)
 
     def _delete_selected_row(self):
@@ -908,10 +920,7 @@ class BarcodeScannerApp(tk.Tk):
             sound.stop()
         except Exception as e:
             self.after_idle(lambda: messagebox.showerror("사운드 재생 오류", f"경고음을 재생하는 중 오류가 발생했습니다.\n스피커 또는 사운드 드라이버를 확인해주세요.\n\n[상세 오류]\n{e}"))
-            
-    # #####################################################################
-    # ##               ↓↓↓ 여기에 수정된 코드를 적용합니다 ↓↓↓               ##
-    # #####################################################################
+
     def _trigger_modal_error(self, title, message, result, error_details):
         if self.is_blinking: return
         self.is_blinking = True
@@ -926,33 +935,26 @@ class BarcodeScannerApp(tk.Tk):
             popup_frame = tk.Frame(popup, bg=self.colors.get("danger", "#E74C3C"))
             popup_frame.pack(expand=True, fill='both')
 
-            # [수정] 버튼 프레임을 먼저 생성하고 화면 하단에 배치합니다.
-            # 이렇게 하면 메시지 라벨이 아무리 길어져도 버튼이 화면 밖으로 밀려나지 않습니다.
             btn_frame = tk.Frame(popup_frame, bg=self.colors.get("danger", "#E74C3C"))
-            btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(20, 60)) # 하단에 여백을 넉넉하게 줍니다.
+            btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(20, 60))
 
-            # [수정] 버튼 텍스트에 ESC 안내를 추가하고, 버튼을 btn_frame 중앙에 배치합니다.
             btn = tk.Button(btn_frame, text="확인 (Enter / ESC)",
                            command=lambda: self._close_popup(popup, result, error_details),
                            font=("Impact", 36, "bold"), bg="yellow", fg="black",
                            relief="raised", borderwidth=5)
-            btn.pack(ipady=20, ipadx=50) # pack을 사용해 중앙에 위치시킵니다.
+            btn.pack(ipady=20, ipadx=50)
 
-            # [수정] 메시지 라벨은 남은 공간을 채우도록 설정합니다.
-            # wraplength를 통해 메시지가 화면 너비를 넘어가지 않도록 자동으로 줄바꿈합니다.
             label = tk.Label(popup_frame, text=f"⚠️\n\n{message}",
                            font=("Impact", 60, "bold"), fg='white',
                            bg=self.colors.get("danger", "#E74C3C"),
                            anchor='center', justify='center',
-                           wraplength=self.winfo_screenwidth() - 150) # 양쪽에 여백을 고려하여 wraplength 설정
+                           wraplength=self.winfo_screenwidth() - 150)
             label.pack(pady=40, expand=True, fill='both')
 
             popup.focus_force()
             btn.focus_set()
 
-            # [추가] ESC 키를 눌렀을 때도 팝업이 닫히도록 바인딩합니다.
             popup.bind("<Escape>", lambda e: self._close_popup(popup, result, error_details))
-
             btn.bind("<Return>", lambda e: self._close_popup(popup, result, error_details))
             popup.protocol("WM_DELETE_WINDOW", lambda: self._close_popup(popup, result, error_details))
             self.update_idletasks()
@@ -966,10 +968,7 @@ class BarcodeScannerApp(tk.Tk):
             if fail_sound: fail_sound.stop()
             messagebox.showerror("시스템 오류", f"오류 경고창을 표시하는 데 실패했습니다.\n프로그램을 재시작해야 할 수 있습니다.\n\n[기존 오류 메시지]\n{message}")
             self._reset_current_set(full_reset=True)
-    # #####################################################################
-    # ##               ↑↑↑ 여기까지가 수정된 코드입니다 ↑↑↑                 ##
-    # #####################################################################
-            
+
     def _prompt_and_cancel_completed_tray(self):
         if not self.initialized_successfully: return
 
@@ -1184,10 +1183,15 @@ class BarcodeScannerApp(tk.Tk):
                 self.history_tree.selection_set(iid)
             self.history_context_menu.post(event.x_root, event.y_root)
 
-    # [추가] 오늘 기록을 다시 불러오는 헬퍼 함수
     def _reload_today_history(self):
         self._load_history_and_rebuild_summary(None)
         self._process_history_queue()
+
+    def _truncate_string(self, text: str, max_len: int = 35) -> str:
+        """문자열이 최대 길이를 초과하면 줄이고 "..."을 추가합니다."""
+        if len(text) > max_len:
+            return text[:max_len] + "..."
+        return text
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="30")
@@ -1238,7 +1242,6 @@ class BarcodeScannerApp(tk.Tk):
         hist_control_frame = ttk.Frame(hist_header_frame, style="Borderless.TFrame")
         hist_control_frame.grid(row=0, column=2, sticky="e")
 
-        # [수정] 오늘 버튼 command 변경
         today_btn = ttk.Button(hist_control_frame, text="오늘", style="Control.TButton", command=self._reload_today_history)
         today_btn.pack(side=tk.LEFT, padx=(0, 5))
         date_search_btn = ttk.Button(hist_control_frame, text="📅 날짜 조회", style="Control.TButton", command=self._prompt_for_date_and_reload)
