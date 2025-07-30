@@ -15,14 +15,14 @@ import socket
 import requests
 import zipfile
 import subprocess
-from tkcalendar import Calendar 
+from tkcalendar import Calendar
 
 # #####################################################################
 # 자동 업데이트 설정 (Auto-Updater Configuration)
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.0" # [수정] 버그 픽스 버전 업데이트
+APP_VERSION = "v2.0.1" # [수정] 버그 픽스 버전 업데이트
 
 def check_for_updates():
     """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
@@ -147,7 +147,7 @@ class CalendarWindow(tk.Toplevel):
         self.result = None
 
         self.cal = Calendar(self, selectmode='day', year=datetime.now().year, month=datetime.now().month, day=datetime.now().day,
-                              locale='ko_KR', background="white", foreground="black", headersbackground="#EAEAEA")
+                             locale='ko_KR', background="white", foreground="black", headersbackground="#EAEAEA")
         self.cal.pack(pady=20, padx=20, fill="both", expand=True)
 
         btn_frame = ttk.Frame(self)
@@ -908,7 +908,10 @@ class BarcodeScannerApp(tk.Tk):
             sound.stop()
         except Exception as e:
             self.after_idle(lambda: messagebox.showerror("사운드 재생 오류", f"경고음을 재생하는 중 오류가 발생했습니다.\n스피커 또는 사운드 드라이버를 확인해주세요.\n\n[상세 오류]\n{e}"))
-
+            
+    # #####################################################################
+    # ##               ↓↓↓ 여기에 수정된 코드를 적용합니다 ↓↓↓               ##
+    # #####################################################################
     def _trigger_modal_error(self, title, message, result, error_details):
         if self.is_blinking: return
         self.is_blinking = True
@@ -919,21 +922,43 @@ class BarcodeScannerApp(tk.Tk):
             popup.title(f"⚠️ {title}")
             popup.attributes('-fullscreen', True)
             popup.attributes('-topmost', True)
+
             popup_frame = tk.Frame(popup, bg=self.colors.get("danger", "#E74C3C"))
             popup_frame.pack(expand=True, fill='both')
-            label = tk.Label(popup_frame, text=f"⚠️\n\n{message}", font=("Impact", 60, "bold"), fg='white', bg=self.colors.get("danger", "#E74C3C"), anchor='center', justify='center', wraplength=self.winfo_screenwidth() - 100)
-            label.pack(pady=40, expand=True, fill='both')
+
+            # [수정] 버튼 프레임을 먼저 생성하고 화면 하단에 배치합니다.
+            # 이렇게 하면 메시지 라벨이 아무리 길어져도 버튼이 화면 밖으로 밀려나지 않습니다.
             btn_frame = tk.Frame(popup_frame, bg=self.colors.get("danger", "#E74C3C"))
-            btn_frame.pack(pady=40)
-            btn = tk.Button(btn_frame, text="확인 (Enter)", command=lambda: self._close_popup(popup, result, error_details), font=("Impact", 36, "bold"), bg="yellow", fg="black", relief="raised", borderwidth=5)
-            btn.pack(ipady=20, ipadx=50)
+            btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(20, 60)) # 하단에 여백을 넉넉하게 줍니다.
+
+            # [수정] 버튼 텍스트에 ESC 안내를 추가하고, 버튼을 btn_frame 중앙에 배치합니다.
+            btn = tk.Button(btn_frame, text="확인 (Enter / ESC)",
+                           command=lambda: self._close_popup(popup, result, error_details),
+                           font=("Impact", 36, "bold"), bg="yellow", fg="black",
+                           relief="raised", borderwidth=5)
+            btn.pack(ipady=20, ipadx=50) # pack을 사용해 중앙에 위치시킵니다.
+
+            # [수정] 메시지 라벨은 남은 공간을 채우도록 설정합니다.
+            # wraplength를 통해 메시지가 화면 너비를 넘어가지 않도록 자동으로 줄바꿈합니다.
+            label = tk.Label(popup_frame, text=f"⚠️\n\n{message}",
+                           font=("Impact", 60, "bold"), fg='white',
+                           bg=self.colors.get("danger", "#E74C3C"),
+                           anchor='center', justify='center',
+                           wraplength=self.winfo_screenwidth() - 150) # 양쪽에 여백을 고려하여 wraplength 설정
+            label.pack(pady=40, expand=True, fill='both')
+
             popup.focus_force()
             btn.focus_set()
+
+            # [추가] ESC 키를 눌렀을 때도 팝업이 닫히도록 바인딩합니다.
+            popup.bind("<Escape>", lambda e: self._close_popup(popup, result, error_details))
+
             btn.bind("<Return>", lambda e: self._close_popup(popup, result, error_details))
             popup.protocol("WM_DELETE_WINDOW", lambda: self._close_popup(popup, result, error_details))
             self.update_idletasks()
             popup.transient(self)
             popup.grab_set()
+
         except Exception as e:
             self.data_manager.log_event(self.Events.UI_ERROR, {"context": "modal_popup_creation", "error": str(e), "original_message": message})
             self.is_blinking = False
@@ -941,7 +966,10 @@ class BarcodeScannerApp(tk.Tk):
             if fail_sound: fail_sound.stop()
             messagebox.showerror("시스템 오류", f"오류 경고창을 표시하는 데 실패했습니다.\n프로그램을 재시작해야 할 수 있습니다.\n\n[기존 오류 메시지]\n{message}")
             self._reset_current_set(full_reset=True)
-
+    # #####################################################################
+    # ##               ↑↑↑ 여기까지가 수정된 코드입니다 ↑↑↑                 ##
+    # #####################################################################
+            
     def _prompt_and_cancel_completed_tray(self):
         if not self.initialized_successfully: return
 
