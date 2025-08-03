@@ -76,7 +76,7 @@ def download_and_apply_update(url):
 chcp 65001 > nul
 echo.
 echo ==========================================================
-echo   프로그램을 업데이트합니다. 이 창을 닫지 마세요.
+echo    프로그램을 업데이트합니다. 이 창을 닫지 마세요.
 echo ==========================================================
 echo.
 echo 잠시 후 프로그램이 자동으로 종료됩니다...
@@ -90,7 +90,7 @@ echo 임시 업데이트 파일을 삭제합니다...
 rmdir /s /q "{temp_update_folder}"
 echo.
 echo ========================================
-echo   업데이트 완료!
+echo    업데이트 완료!
 echo ========================================
 echo.
 echo 3초 후에 프로그램을 다시 시작합니다.
@@ -147,7 +147,7 @@ class CalendarWindow(tk.Toplevel):
         self.result = None
 
         self.cal = Calendar(self, selectmode='day', year=datetime.now().year, month=datetime.now().month, day=datetime.now().day,
-                             locale='ko_KR', background="white", foreground="black", headersbackground="#EAEAEA")
+                            locale='ko_KR', background="white", foreground="black", headersbackground="#EAEAEA")
         self.cal.pack(pady=20, padx=20, fill="both", expand=True)
 
         btn_frame = ttk.Frame(self)
@@ -460,9 +460,9 @@ class BarcodeScannerApp(tk.Tk):
             saved_worker_name = state_data.get('worker_name')
             if saved_worker_name and saved_worker_name != self.worker_name:
                 response = messagebox.askyesnocancel("작업자 불일치",
-                                                     f"이 저장된 세트는 '{saved_worker_name}' 작업자의 것입니다.\n"
-                                                     f"현재 '{self.worker_name}' 작업자가 이어서 하시겠습니까?",
-                                                     icon='warning')
+                                                    f"이 저장된 세트는 '{saved_worker_name}' 작업자의 것입니다.\n"
+                                                    f"현재 '{self.worker_name}' 작업자가 이어서 하시겠습니까?",
+                                                    icon='warning')
                 if response is None: return
                 elif response is False:
                     self.data_manager.delete_current_state()
@@ -624,6 +624,7 @@ class BarcodeScannerApp(tk.Tk):
         scan_pos = len(self.current_set_info['raw']) + 1
 
         if scan_pos == 1:
+            # 첫번째 스캔 (현품표)
             new_label_data = self._parse_new_format_label(raw_input)
             if new_label_data:
                 if raw_input in self.global_scanned_set:
@@ -660,14 +661,40 @@ class BarcodeScannerApp(tk.Tk):
                 self._update_on_success_scan(raw_input, raw_input)
 
         elif 2 <= scan_pos <= 5:
-            master_code = self.current_set_info['parsed'][0]
+            # #####################################################################
+            # [이동 및 수정] 테스트 로그 생성 기능
+            # #####################################################################
+            if scan_pos == 2 and raw_input.upper().startswith("TEST_LOG_"):
+                parts = raw_input.split('_')
+                if len(parts) == 3 and parts[2].isdigit():
+                    num_sets = int(parts[2])
+                    master_code = self.current_set_info['parsed'][0]
+                    
+                    confirm_msg = (f"현재 현품표 기준으로 {num_sets}개의 테스트 기록을 생성하시겠습니까?\n\n"
+                                   f"▶ 현품표 코드: {master_code}\n\n"
+                                   "(이 작업은 현재 진행중인 세트를 취소하고 시작됩니다.)")
+                    
+                    if messagebox.askyesno("테스트 데이터 생성", confirm_msg):
+                        # 현재 진행중인 세트를 완전히 초기화
+                        self._reset_current_set(full_reset=True)
+                        # 시뮬레이션 시작
+                        self.run_test_log_simulation(master_code, num_sets)
+                    return # 테스트 모드 실행 후 함수 종료
+                else:
+                    messagebox.showwarning("입력 형식 오류", "테스트 코드 형식이 올바르지 않습니다.\n(예: TEST_LOG_100)")
+                    return
+            # #####################################################################
+            # [수정 완료]
+            # #####################################################################
 
+            # 일반 스캔 로직
+            master_code = self.current_set_info['parsed'][0]
             if scan_pos < 5 and len(raw_input) <= len(master_code):
                self._handle_input_error(
-                   raw_input,
-                   title="[바코드 종류 오류]",
-                   reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
-                )
+                      raw_input,
+                      title="[바코드 종류 오류]",
+                      reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
+               )
                return
             if scan_pos == 5 and len(raw_input) < 31:
                 self._handle_input_error(
@@ -939,16 +966,16 @@ class BarcodeScannerApp(tk.Tk):
             btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(20, 60))
 
             btn = tk.Button(btn_frame, text="확인 (Enter / ESC)",
-                           command=lambda: self._close_popup(popup, result, error_details),
-                           font=("Impact", 36, "bold"), bg="yellow", fg="black",
-                           relief="raised", borderwidth=5)
+                            command=lambda: self._close_popup(popup, result, error_details),
+                            font=("Impact", 36, "bold"), bg="yellow", fg="black",
+                            relief="raised", borderwidth=5)
             btn.pack(ipady=20, ipadx=50)
 
             label = tk.Label(popup_frame, text=f"⚠️\n\n{message}",
-                           font=("Impact", 60, "bold"), fg='white',
-                           bg=self.colors.get("danger", "#E74C3C"),
-                           anchor='center', justify='center',
-                           wraplength=self.winfo_screenwidth() - 150)
+                            font=("Impact", 60, "bold"), fg='white',
+                            bg=self.colors.get("danger", "#E74C3C"),
+                            anchor='center', justify='center',
+                            wraplength=self.winfo_screenwidth() - 150)
             label.pack(pady=40, expand=True, fill='both')
 
             popup.focus_force()
@@ -973,8 +1000,8 @@ class BarcodeScannerApp(tk.Tk):
         if not self.initialized_successfully: return
 
         master_label = simpledialog.askstring("완료된 트레이 취소",
-                                              "취소할 트레이의 현품표를 스캔하거나 입력하세요:",
-                                              parent=self)
+                                            "취소할 트레이의 현품표를 스캔하거나 입력하세요:",
+                                            parent=self)
         if not master_label: return
         master_label = master_label.strip()
 
@@ -1055,6 +1082,92 @@ class BarcodeScannerApp(tk.Tk):
             messagebox.showerror("처리 오류", f"취소 작업을 처리하는 중 오류가 발생했습니다.\n프로그램을 다시 시작하여 확인해주세요.\n\n[상세 오류]\n{e}", parent=self)
             self.data_manager.log_event(self.Events.UI_ERROR, {"context": "tray_cancellation_by_label", "error": str(e)})
 
+    def run_test_log_simulation(self, master_code_to_test, num_sets):
+        """테스트 시뮬레이션을 위한 스레드를 시작하고 UI를 비활성화합니다."""
+        self.entry.config(state='disabled')
+        self.update_big_display(f"테스트 데이터 생성 시작...", "primary")
+        self.progress_bar['value'] = 0
+        
+        sim_thread = threading.Thread(target=self._execute_test_simulation, args=(master_code_to_test, num_sets,), daemon=True)
+        sim_thread.start()
+
+    def _execute_test_simulation(self, master_code, num_sets):
+        """(스레드에서 실행) 지정된 수량만큼의 '통과' 세트를 시뮬레이션합니다."""
+        item_info = self.items_data.get(master_code, {"Item Name": "테스트 품목", "Spec": "T-SPEC"})
+        
+        for i in range(num_sets):
+            progress_text = f"테스트 진행 중... ({i + 1}/{num_sets})"
+            self.after(0, self.update_big_display, progress_text, "primary")
+
+            set_id = f"TEST_{time.time_ns()}"
+            start_time = datetime.now()
+            time.sleep(0.01)
+            end_time = datetime.now()
+            production_date = datetime.now().strftime('%Y-%m-%d')
+            phase = str((i % 3) + 1)
+
+            scanned_barcodes = [
+                f"CLC={master_code}|SPC={item_info['Item Name']}|PHS={phase}",
+                f"PRODUCT_TEST_{master_code}_{set_id}_1",
+                f"PRODUCT_TEST_{master_code}_{set_id}_2",
+                f"PRODUCT_TEST_{master_code}_{set_id}_3",
+                f"FINAL_LABEL_{master_code}_{set_id}\x1D6D{production_date.replace('-', '')}"
+            ]
+            parsed_scans = [master_code] * 5
+
+            details = {
+                'set_id': set_id,
+                'master_label_code': master_code, 'item_code': master_code,
+                'item_name': item_info.get("Item Name"), 'spec': item_info.get("Spec"),
+                'scan_count': 5,
+                'scanned_product_barcodes': scanned_barcodes,
+                'parsed_product_barcodes': parsed_scans,
+                'work_time_sec': (end_time - start_time).total_seconds(),
+                'error_count': 0, 'has_error_or_reset': False,
+                'is_partial_submission': False, 'start_time': start_time,
+                'end_time': end_time,
+                'production_date': production_date, 'phase': phase
+            }
+
+            self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
+            self.scan_count[production_date][(master_code, phase)] += 1
+            self.global_scanned_set.update(scanned_barcodes)
+            self.set_details_map[set_id] = details
+            self.after(0, self._add_test_set_to_history_ui, set_id, details, i + 1)
+
+        self.after(0, self._finalize_test_simulation, num_sets)
+
+    def _add_test_set_to_history_ui(self, set_id, details, display_index):
+        """(UI 스레드에서 실행) 시뮬레이션된 한 개의 세트를 히스토리 트리에 추가합니다."""
+        if not self.history_tree.winfo_exists(): return
+
+        parsed_scans = details['parsed_product_barcodes']
+        first_scan = parsed_scans[0] if parsed_scans else ""
+        other_scans = parsed_scans[1:5]
+        
+        values_to_display = (
+            len(self.history_tree.get_children()) + 1,
+            first_scan,
+            *other_scans,
+            self.Results.PASS,
+            details['end_time'].strftime('%H:%M:%S')
+        )
+        self.history_tree.insert("", "end", iid=set_id, values=values_to_display, tags=("success",))
+        self.history_tree.yview_moveto(1.0)
+
+    def _finalize_test_simulation(self, num_sets):
+        """(UI 스레드에서 실행) 시뮬레이션 완료 후 UI를 정리합니다."""
+        if not self.winfo_exists(): return
+        
+        self._play_sound("pass")
+        self._update_summary_tree()
+        self.update_big_display(f"테스트 완료: {num_sets}개 생성", "success")
+        messagebox.showinfo("테스트 완료", f"{num_sets}개의 테스트 '통과' 기록 생성이 완료되었습니다.")
+        
+        self.entry.config(state='normal')
+        self.entry.focus_set()
+        self._reset_current_set()
+
     def open_settings_window(self):
         if self.current_set_info.get('id'):
             messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n설정 변경은 다음 작업부터 적용됩니다.")
@@ -1078,6 +1191,7 @@ class BarcodeScannerApp(tk.Tk):
         save_button.pack(side=tk.LEFT, padx=5)
         cancel_button = ttk.Button(button_frame, text="취소", command=settings_window.destroy)
         cancel_button.pack(side=tk.LEFT)
+        
     def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str):
         if not new_worker_name.strip():
             messagebox.showerror("입력 오류", "작업자 이름은 비워둘 수 없습니다.", parent=window)
@@ -1452,6 +1566,7 @@ class BarcodeScannerApp(tk.Tk):
         fg_color = self.colors.get("text_strong", "#000000")
         if color == "red": fg_color = self.colors.get("danger", "#E57370")
         elif color == "green": fg_color = self.colors.get("success", "#00875A")
+        elif color == "primary": fg_color = self.colors.get("primary", "#3B82F6")
         self.big_display_label.config(text=text or "", foreground=fg_color)
     def _play_sound(self, sound_key, block=False):
         if not self.initialized_successfully: return
