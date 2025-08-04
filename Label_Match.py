@@ -22,7 +22,7 @@ from tkcalendar import Calendar
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.1" # [수정] 버그 픽스 버전 업데이트
+APP_VERSION = "v2.0.2" # [수정] 버그 픽스 버전 업데이트
 
 def check_for_updates():
     """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
