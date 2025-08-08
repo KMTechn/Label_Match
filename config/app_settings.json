@@ -33,7 +33,7 @@
         "fail": "fail.wav"
     },
     "ui_persistence": {
-        "scale_factor": 1.7000000000000002,
+        "scale_factor": 1.6,
         "tree_font_size": 19,
         "sash_position": 1351,
         "summary_col_widths": {

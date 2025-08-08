@@ -1,3 +1,13 @@
 TEST_LOG_60
 TEST_LOG_120
 TEST_LOG_180
+
+TEST_LOG_60
+TEST_LOG_120
+TEST_LOG_180
+
+1. 자동화 테스트 스크립트 실행
+_RUN_AUTO_TEST_
+
+2. 테스트용 검사 기록 대량 생성
+TEST_LOG_[수량]
