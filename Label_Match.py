@@ -79,7 +79,7 @@ def download_and_apply_update(url):
 chcp 65001 > nul
 echo.
 echo ==========================================================
-echo   프로그램을 업데이트합니다. 이 창을 닫지 마세요.
+echo    프로그램을 업데이트합니다. 이 창을 닫지 마세요.
 echo ==========================================================
 echo.
 echo 잠시 후 프로그램이 자동으로 종료됩니다...
@@ -93,7 +93,7 @@ echo 임시 업데이트 파일을 삭제합니다...
 rmdir /s /q "{temp_update_folder}"
 echo.
 echo ========================================
-echo   업데이트 완료!
+echo    업데이트 완료!
 echo ========================================
 echo.
 echo 3초 후에 프로그램을 다시 시작합니다.
@@ -842,8 +842,8 @@ class Label_Match(tk.Tk):
                 actual_value = self.current_set_info.get('item_name_override')
                 success = (actual_value == expected_value)
             elif check_action == "check_last_history_error_flag":
-                 children = self.history_tree.get_children()
-                 if children:
+                children = self.history_tree.get_children()
+                if children:
                     last_set_id = children[-1]
                     details = self.set_details_map.get(last_set_id, {})
                     actual_value = details.get('has_error_or_reset', False)
@@ -956,12 +956,12 @@ class Label_Match(tk.Tk):
                 is_test_code = any(s in raw_input for s in ["DEMO", "VALID-", "TEST_"])
                 
                 if not is_test_code and len(raw_input) != MASTER_LABEL_LENGTH and not self.items_data.get(raw_input):
-                     self._handle_input_error(
+                    self._handle_input_error(
                         raw_input,
                         title="[현품표 형식 오류]",
                         reason=f"잘못된 현품표 형식(13자리 아님)이거나 미등록 코드입니다.\n\n- 입력 값: {self._truncate_string(raw_input)}"
                     )
-                     return
+                    return
                 if not is_test_code and raw_input not in self.items_data:
                     self._handle_input_error(
                         raw_input,
@@ -993,9 +993,9 @@ class Label_Match(tk.Tk):
             master_code = self.current_set_info['parsed'][0]
             if scan_pos < 5 and len(raw_input) <= len(master_code):
                 self._handle_input_error(
-                            raw_input,
-                            title="[바코드 종류 오류]",
-                            reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
+                    raw_input,
+                    title="[바코드 종류 오류]",
+                    reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
                 )
                 return
             if scan_pos == 5 and len(raw_input) < 31:
@@ -1287,10 +1287,10 @@ class Label_Match(tk.Tk):
             btn.pack(ipady=20, ipadx=50)
 
             label = tk.Label(popup_frame, text=f"⚠️\n\n{message}",
-                                 font=("Impact", 60, "bold"), fg='white',
-                                 bg=self.colors.get("danger", "#E74C3C"),
-                                 anchor='center', justify='center',
-                                 wraplength=self.winfo_screenwidth() - 150)
+                                   font=("Impact", 60, "bold"), fg='white',
+                                   bg=self.colors.get("danger", "#E74C3C"),
+                                   anchor='center', justify='center',
+                                   wraplength=self.winfo_screenwidth() - 150)
             label.pack(pady=40, expand=True, fill='both')
 
             popup.focus_force()
@@ -1318,8 +1318,8 @@ class Label_Match(tk.Tk):
         master_label = None
         if not self.run_tests:
             master_label = simpledialog.askstring("완료된 트레이 취소",
-                                                "취소할 트레이의 현품표를 스캔하거나 입력하세요:",
-                                                parent=self)
+                                                  "취소할 트레이의 현품표를 스캔하거나 입력하세요:",
+                                                  parent=self)
         if not master_label: return
         master_label = master_label.strip()
 
@@ -1558,7 +1558,9 @@ class Label_Match(tk.Tk):
 
         keys_frame = ttk.Frame(main_frame)
         keys_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(keys_frame, text="주요 단축키", font=title_font).pack(anchor='w', pady=(0, 5))
+        
+        # 수정: .pack()을 .grid()로 변경하고 2개 열에 걸치도록 설정
+        ttk.Label(keys_frame, text="주요 단축키", font=title_font).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 5))
 
         key_map = {
             "현재 세트 취소": "F1",
@@ -1566,9 +1568,12 @@ class Label_Match(tk.Tk):
             "선택 항목 삭제": "Delete",
             "UI 확대/축소": "Ctrl + 마우스 휠"
         }
+        
+        # 수정: 항목이 제목 아래에 오도록 row를 i + 1로 변경
         for i, (desc, key) in enumerate(key_map.items()):
-            ttk.Label(keys_frame, text=f"• {desc}", font=text_font).grid(row=i, column=0, sticky='w', padx=10)
-            ttk.Label(keys_frame, text=key, font=(self.default_font_name, 11, "bold")).grid(row=i, column=1, sticky='e', padx=10)
+            ttk.Label(keys_frame, text=f"• {desc}", font=text_font).grid(row=i + 1, column=0, sticky='w', padx=10)
+            ttk.Label(keys_frame, text=key, font=(self.default_font_name, 11, "bold")).grid(row=i + 1, column=1, sticky='e', padx=10)
+        
         keys_frame.grid_columnconfigure(1, weight=1)
 
         close_button = ttk.Button(main_frame, text="닫기", command=about_win.destroy, style="TButton")

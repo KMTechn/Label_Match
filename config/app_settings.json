@@ -35,22 +35,22 @@
     "ui_persistence": {
         "scale_factor": 1.6,
         "tree_font_size": 19,
-        "sash_position": 1351,
+        "sash_position": 1472,
         "summary_col_widths": {
-            "Date": 194,
-            "Code": 549,
-            "Phase": 110,
-            "Count": 215
+            "Date": 171,
+            "Code": 487,
+            "Phase": 98,
+            "Count": 191
         },
         "history_col_widths": {
-            "Set": 53,
-            "Input1": 178,
-            "Input2": 178,
-            "Input3": 178,
-            "Input4": 179,
-            "Input5": 178,
-            "Result": 103,
-            "Timestamp": 229
+            "Set": 58,
+            "Input1": 195,
+            "Input2": 195,
+            "Input3": 196,
+            "Input4": 195,
+            "Input5": 195,
+            "Result": 113,
+            "Timestamp": 250
         }
     },
     "worker_name": "1.0.5"
