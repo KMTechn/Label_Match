@@ -1068,7 +1068,7 @@ class Label_Match(tk.Tk):
         if num_scans == 5:
             self._finalize_set(self.Results.PASS)
 
-    def _finalize_set(self, result, error_details=""):
+    def _finalize_set(self, result, error_details="", is_manual_complete=False):
         if result == self.Results.PASS and not self.is_running_simulation:
             self._play_sound("pass")
 
@@ -1106,7 +1106,7 @@ class Label_Match(tk.Tk):
             'work_time_sec': work_time_sec,
             'error_count': self.current_set_info.get('error_count', 0),
             'has_error_or_reset': self.current_set_info.get('has_error_or_reset', False) or (result != self.Results.PASS),
-            'is_partial_submission': False, 'start_time': start_time,
+            'is_partial_submission': is_manual_complete, 'start_time': start_time,
             'end_time': datetime.now(),
             'production_date': production_date,
             'set_id': set_id_for_log,
@@ -1287,10 +1287,10 @@ class Label_Match(tk.Tk):
             btn.pack(ipady=20, ipadx=50)
 
             label = tk.Label(popup_frame, text=f"⚠️\n\n{message}",
-                                   font=("Impact", 60, "bold"), fg='white',
-                                   bg=self.colors.get("danger", "#E74C3C"),
-                                   anchor='center', justify='center',
-                                   wraplength=self.winfo_screenwidth() - 150)
+                                     font=("Impact", 60, "bold"), fg='white',
+                                     bg=self.colors.get("danger", "#E74C3C"),
+                                     anchor='center', justify='center',
+                                     wraplength=self.winfo_screenwidth() - 150)
             label.pack(pady=40, expand=True, fill='both')
 
             popup.focus_force()
@@ -1329,34 +1329,71 @@ class Label_Match(tk.Tk):
             return
 
         self._cancel_completed_tray_by_label(master_label)
+    
+    def _prompt_manual_complete(self):
+        """사용자에게 현재 세트를 수동으로 완료할지 확인하고 처리합니다."""
+        if not self.initialized_successfully or self.manual_complete_button['state'] == 'disabled':
+            return
 
+        num_scans = len(self.current_set_info['raw'])
+        msg = (f"현재 {num_scans}개만 스캔되었습니다.\n"
+               f"이 세트를 '통과'로 즉시 완료하시겠습니까?\n\n"
+               f"(샘플 출고 등 소량 작업 시 사용)")
+
+        should_complete = self.run_tests or messagebox.askyesno("수동 완료 확인", msg, icon='question')
+
+        if should_complete:
+            self._finalize_set(self.Results.PASS, is_manual_complete=True)
+
+    # [수정됨] 버그가 수정되고 로직이 개선된 최종 버전
     def _cancel_completed_tray_by_label(self, label_to_cancel):
-        found_sets = []
+        target_set_id = None
+        target_details = None
+
+        # 로직 개선: 고유 현품표(Raw Barcode)를 우선적으로 정확히 찾아냄
+        # 이는 Base64 또는 'CLC=...' 와 같은 고유 식별자를 가진 라벨을 위한 것임
+        is_unique_label_match = False
         for set_id, details in self.set_details_map.items():
             raw_scans = details.get('scanned_product_barcodes', [])
-            first_raw_scan = raw_scans[0] if raw_scans else None
+            if raw_scans and raw_scans[0] == label_to_cancel:
+                target_set_id = set_id
+                is_unique_label_match = True
+                break
+        
+        # 고유 현품표가 아닐 경우, 일반 코드(13자리 등)로 간주하고 가장 최근 기록을 찾음
+        if not is_unique_label_match:
+            found_sets = []
+            for set_id, details in self.set_details_map.items():
+                # 파싱된 코드(master_label_code)와 일치하는 모든 기록을 찾음
+                if details.get('master_label_code') == label_to_cancel:
+                    try:
+                        # [버그 수정] 오류 여부와 관계없이 '통과'된 모든 기록을 대상으로 함
+                        end_time_dt = datetime.fromisoformat(details.get('end_time'))
+                        found_sets.append({'set_id': set_id, 'details': details, 'end_time': end_time_dt})
+                    except (ValueError, TypeError):
+                        continue
+            
+            if found_sets:
+                # 가장 최근에 완료된 기록을 찾기 위해 정렬
+                found_sets.sort(key=lambda x: x['end_time'], reverse=True)
+                latest_set = found_sets[0]
+                target_set_id = latest_set['set_id']
 
-            is_match = (details.get('master_label_code') == label_to_cancel or
-                        first_raw_scan == label_to_cancel)
-
-            if is_match and not details.get('has_error_or_reset'):
-                try:
-                    end_time_dt = datetime.fromisoformat(details.get('end_time'))
-                    found_sets.append({'set_id': set_id, 'details': details, 'end_time': end_time_dt})
-                except (ValueError, TypeError):
-                    continue
-
-        if not found_sets:
+        # 취소할 대상을 찾지 못한 경우
+        if not target_set_id:
             if not self.run_tests:
                 messagebox.showerror("찾기 실패", f"입력하신 현품표 '{label_to_cancel}'에 해당하는 '통과' 기록을 현재 조회된 내역에서 찾을 수 없습니다.", parent=self)
             return
 
-        found_sets.sort(key=lambda x: x['end_time'], reverse=True)
-        latest_set = found_sets[0]
-        target_set_id = latest_set['set_id']
-        target_details = latest_set['details']
+        # --- 확인 및 취소 절차 (기존과 동일) ---
+        target_details = self.set_details_map[target_set_id]
+        
+        try:
+            end_time_dt = datetime.fromisoformat(target_details.get('end_time'))
+            end_time_display = end_time_dt.strftime('%H:%M:%S')
+        except (ValueError, TypeError):
+            end_time_display = "알 수 없음"
 
-        end_time_display = latest_set['end_time'].strftime('%H:%M:%S')
         item_name = target_details.get('item_name', '알 수 없음')
 
         confirm_msg = (f"다음 기록을 취소하시겠습니까?\n\n"
@@ -1531,7 +1568,7 @@ class Label_Match(tk.Tk):
     def _show_about_window(self):
         about_win = tk.Toplevel(self)
         about_win.title("정보")
-        about_win.geometry("500x350")
+        about_win.geometry("500x380")
         about_win.resizable(False, False)
         about_win.transient(self)
         about_win.grab_set()
@@ -1559,17 +1596,16 @@ class Label_Match(tk.Tk):
         keys_frame = ttk.Frame(main_frame)
         keys_frame.pack(fill=tk.X, pady=5)
         
-        # 수정: .pack()을 .grid()로 변경하고 2개 열에 걸치도록 설정
         ttk.Label(keys_frame, text="주요 단축키", font=title_font).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 5))
 
         key_map = {
             "현재 세트 취소": "F1",
             "완료된 트레이 취소": "F2",
+            "현재 세트 수동 완료": "F3",
             "선택 항목 삭제": "Delete",
             "UI 확대/축소": "Ctrl + 마우스 휠"
         }
         
-        # 수정: 항목이 제목 아래에 오도록 row를 i + 1로 변경
         for i, (desc, key) in enumerate(key_map.items()):
             ttk.Label(keys_frame, text=f"• {desc}", font=text_font).grid(row=i + 1, column=0, sticky='w', padx=10)
             ttk.Label(keys_frame, text=key, font=(self.default_font_name, 11, "bold")).grid(row=i + 1, column=1, sticky='e', padx=10)
@@ -1745,7 +1781,7 @@ class Label_Match(tk.Tk):
 
         bottom_frame = ttk.Frame(main_frame)
         bottom_frame.grid(row=2, column=0, sticky="ew", pady=(30, 0))
-        bottom_frame.grid_columnconfigure(2, weight=1)
+        bottom_frame.grid_columnconfigure(3, weight=1)
 
         reset_button = ttk.Button(bottom_frame, text="현재 세트 취소 (F1)", command=lambda: self._reset_current_set(full_reset=True), style="Action.TButton", takefocus=0)
         reset_button.grid(row=0, column=0, sticky="w")
@@ -1754,12 +1790,17 @@ class Label_Match(tk.Tk):
         cancel_tray_button = ttk.Button(bottom_frame, text="완료된 트레이 취소 (F2)", command=self._prompt_and_cancel_completed_tray, style="Action.TButton", takefocus=0)
         cancel_tray_button.grid(row=0, column=1, sticky="w", padx=(20, 0))
         self.bind("<F2>", lambda e: self._prompt_and_cancel_completed_tray())
+        
+        self.manual_complete_button = ttk.Button(bottom_frame, text="현재 세트 완료 (F3)", command=self._prompt_manual_complete, style="Action.TButton", state="disabled", takefocus=0)
+        self.manual_complete_button.grid(row=0, column=2, sticky="w", padx=(20, 0))
+        self.bind("<F3>", lambda e: self._prompt_manual_complete())
+
         self.bind("<Delete>", lambda e: self._delete_selected_row())
 
         self.save_status_label = ttk.Label(bottom_frame, text="", style="Save.Success.TLabel", background=self.colors["background"])
-        self.save_status_label.grid(row=0, column=2, sticky="w", padx=30)
+        self.save_status_label.grid(row=0, column=3, sticky="w", padx=30)
         self.clock_label = ttk.Label(bottom_frame, text="", style="TLabel", background=self.colors["background"])
-        self.clock_label.grid(row=0, column=3, sticky="e", padx=30)
+        self.clock_label.grid(row=0, column=4, sticky="e", padx=30)
         self.loading_overlay = ttk.Frame(main_frame, style="Overlay.TFrame")
         loading_content_frame = ttk.Frame(self.loading_overlay, style="Overlay.TFrame")
         loading_content_frame.pack(expand=True)
@@ -1938,6 +1979,12 @@ class Label_Match(tk.Tk):
         if self.current_set_info.get('has_error_or_reset'):
             status_text += " (오류 발생)"
         self.status_label.config(text=status_text, style="Status.TLabel")
+        
+        if 1 <= num_scans < 5:
+            self.manual_complete_button.config(state="normal")
+        else:
+            self.manual_complete_button.config(state="disabled")
+
     def _update_history_tree_in_progress(self):
         if not self.initialized_successfully: return
         num_scans = len(self.current_set_info['parsed'])
