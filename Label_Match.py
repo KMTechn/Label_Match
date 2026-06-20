@@ -20,6 +20,115 @@ import base64
 import binascii
 import unittest
 
+LABEL_MATCH_SOURCE_SYSTEM = "label_match"
+LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
+LABEL_MATCH_SCAN_CONTRACT_VERSION = "label_match_current_v1"
+
+
+def _plan_b_dispatch_key(event_type):
+    return f"{LABEL_MATCH_SOURCE_SYSTEM}|{LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET}|{event_type}"
+
+
+def _label_match_barcode_role(scan_position):
+    try:
+        position = int(scan_position)
+    except Exception:
+        return "unknown"
+    if position == 1:
+        return "material_master_label"
+    if position in {2, 3, 4}:
+        return "product"
+    if position == 5:
+        return "final_packaging_label"
+    return "unknown"
+
+
+def _label_match_barcode_projection(raw_barcode, parsed_barcode, scan_position):
+    role = _label_match_barcode_role(scan_position)
+    product_barcode = raw_barcode if role == "product" else None
+    return {
+        "scan_contract_version": LABEL_MATCH_SCAN_CONTRACT_VERSION,
+        "scan_position": int(scan_position) if str(scan_position or "").isdigit() else scan_position,
+        "barcode_role": role,
+        "raw_barcode": raw_barcode,
+        "parsed_barcode": parsed_barcode,
+        "product_barcode": product_barcode,
+        "barcode_projection_status": "INCLUDED" if role == "product" else "ROLE_NOT_PRODUCT",
+        "barcode_exclusion_reason_code": None if role == "product" else "NON_PRODUCT_BARCODE_ROLE",
+    }
+
+
+def _label_match_packaging_set_identity(pc_id, set_id):
+    return f"{LABEL_MATCH_SOURCE_SYSTEM}|{pc_id}|{set_id}"
+
+
+def _enrich_label_match_event(event_type, details, pc_id):
+    enriched = dict(details or {})
+    enriched.setdefault("source_system", LABEL_MATCH_SOURCE_SYSTEM)
+    enriched.setdefault("source_transport_or_dataset", LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET)
+    enriched.setdefault("raw_event_name", event_type)
+    enriched.setdefault("canonical_event_name", event_type)
+    enriched.setdefault("dispatch_key", _plan_b_dispatch_key(event_type))
+    enriched.setdefault("identity_class", "LEGACY_FALLBACK")
+    enriched.setdefault("integrity_requirement", "UNSIGNED_LEGACY_ALLOWED")
+    enriched.setdefault("integrity_status", "UNSIGNED_LEGACY")
+    enriched.setdefault("parser_mapping_version", "label-match-plan-b-v1")
+    if "scan_pos" in enriched:
+        projection = _label_match_barcode_projection(
+            enriched.get("raw_input") or enriched.get("raw") or "",
+            enriched.get("parsed") or enriched.get("raw_input") or enriched.get("raw") or "",
+            enriched.get("scan_pos"),
+        )
+        enriched.update({k: v for k, v in projection.items() if k not in enriched})
+    if event_type == "SCAN_OK":
+        scan_position = enriched.get("scan_position") or enriched.get("scan_pos")
+        if not scan_position:
+            scan_position = 0
+        projection = _label_match_barcode_projection(
+            enriched.get("raw") or enriched.get("raw_input") or "",
+            enriched.get("parsed") or enriched.get("raw") or "",
+            scan_position,
+        )
+        enriched.update({k: v for k, v in projection.items() if k not in enriched})
+    set_id = enriched.get("set_id") or enriched.get("cancelled_set_id")
+    if set_id:
+        enriched.setdefault("packaging_set_identity", _label_match_packaging_set_identity(pc_id, set_id))
+    if event_type == "TRAY_COMPLETE":
+        raw_scans = list(enriched.get("scanned_product_barcodes") or [])
+        parsed_scans = list(enriched.get("parsed_product_barcodes") or raw_scans)
+        barcode_roles = [
+            _label_match_barcode_projection(
+                raw_scans[index] if index < len(raw_scans) else "",
+                parsed_scans[index] if index < len(parsed_scans) else "",
+                index + 1,
+            )
+            for index in range(max(len(raw_scans), len(parsed_scans)))
+        ]
+        enriched.setdefault("scan_contract_version", LABEL_MATCH_SCAN_CONTRACT_VERSION)
+        enriched.setdefault("barcode_roles", barcode_roles)
+        enriched.setdefault(
+            "product_sample_barcodes",
+            [row["product_barcode"] for row in barcode_roles if row.get("product_barcode")],
+        )
+        enriched.setdefault("quantity_basis", "PACKAGING_SET")
+        enriched.setdefault("measure_code", "PACKAGING_SET_COUNT")
+        enriched.setdefault("packaging_set_count", 1)
+        enriched.setdefault("packaging_piece_qty", None)
+        enriched.setdefault("confidence", "EVENT_PROJECTION")
+    if event_type in {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}:
+        affected = (
+            enriched.get("affected_completed_packaging_set_identity")
+            or enriched.get("packaging_set_identity")
+        )
+        original_details = enriched.get("original_details") or enriched.get("details") or {}
+        if not affected and isinstance(original_details, dict):
+            original_set_id = original_details.get("set_id")
+            if original_set_id:
+                affected = _label_match_packaging_set_identity(pc_id, original_set_id)
+        if affected:
+            enriched["affected_completed_packaging_set_identity"] = affected
+    return enriched
+
 # #####################################################################
 # 자동 업데이트 설정 (Auto-Updater Configuration)
 # #####################################################################
@@ -200,7 +309,8 @@ class DataManager:
             except Exception as e:
                 print(f"로그 쓰기 스레드 오류: {e}")
     def log_event(self, event_type, details):
-        log_item = [datetime.now().isoformat(), self.worker_name, event_type, json.dumps(details, ensure_ascii=False, cls=DateTimeEncoder)]
+        enriched_details = _enrich_label_match_event(event_type, details or {}, self.unique_id)
+        log_item = [datetime.now().isoformat(), self.worker_name, event_type, json.dumps(enriched_details, ensure_ascii=False, cls=DateTimeEncoder)]
         self.log_queue.put(log_item)
     def save_current_state(self, state_data):
         state_path = os.path.join(self.save_directory, Label_Match.FILES.CURRENT_STATE)
@@ -1063,7 +1173,16 @@ class Label_Match(tk.Tk):
         self.progress_bar['value'] = num_scans
         self._update_status_label()
         self._update_history_tree_in_progress()
-        self.data_manager.log_event(self.Events.SCAN_OK, {"raw": raw, "parsed": parsed, "set_id": self.current_set_info['id']})
+        self.data_manager.log_event(
+            self.Events.SCAN_OK,
+            {
+                "raw": raw,
+                "parsed": parsed,
+                "set_id": self.current_set_info['id'],
+                "scan_position": num_scans,
+                "scan_pos": num_scans,
+            },
+        )
         self._save_current_set_state()
         if num_scans == 5:
             self._finalize_set(self.Results.PASS)
