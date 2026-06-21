@@ -23,6 +23,7 @@ DEFAULT_ENDPOINT_PATH = "/api/producer-ingest/v1/source-file"
 DEFAULT_STREAM_NAME = "label_match_events"
 DEFAULT_SOURCE_SYSTEM = "label_match"
 DEFAULT_SOURCE_TRANSPORT = "legacy_packaging_csv"
+DEFAULT_PRODUCER_ROLE = "label_match"
 DEFAULT_TIMEOUT_SECONDS = 30
 RELAY_STATUS_PENDING = "pending"
 RELAY_STATUS_LEASED = "leased"
@@ -211,7 +212,7 @@ def build_source_file_plan(
     if safe_relative_path.split("/", 1)[0] == DEFAULT_STREAM_NAME:
         raise DirectSyncPushError("relative_path must not include stream_name")
     content_sha256, byte_length = _read_file_digest(file_path)
-    source_file_id = f"{source_host_id}/{DEFAULT_STREAM_NAME}/{safe_relative_path}"
+    source_file_id = f"{source_host_id}/{DEFAULT_PRODUCER_ROLE}/{DEFAULT_STREAM_NAME}/{safe_relative_path}"
     stable_key = f"source-file:{source_file_id}"
     row_count = count_csv_data_rows(file_path)
     metadata = {
@@ -220,6 +221,7 @@ def build_source_file_plan(
         "client_batch_id": client_batch_id or stable_key,
         "idempotency_key": idempotency_key or stable_key,
         "source_host_id": source_host_id,
+        "producer_role": DEFAULT_PRODUCER_ROLE,
         "manifest_hash": manifest_hash(manifest),
         "stream_name": DEFAULT_STREAM_NAME,
         "source_system": DEFAULT_SOURCE_SYSTEM,

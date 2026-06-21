@@ -87,6 +87,7 @@ def make_manifest(tmp_path):
         "apps": ["LabelMatch"],
         "streams": [
             {
+                "producer_role": "label_match",
                 "stream_name": "label_match_events",
                 "source_system": "label_match",
                 "source_transport": "legacy_packaging_csv",
@@ -133,6 +134,7 @@ def test_build_plan_uses_label_match_stream_and_csv_rows(tmp_path):
     assert plan.byte_length == len(content)
     assert count_csv_data_rows(csv_path) == 1
     assert plan.metadata["manifest_hash"] == manifest_hash(manifest)
+    assert plan.metadata["producer_role"] == "label_match"
     assert plan.metadata["stream_name"] == "label_match_events"
     assert plan.metadata["source_system"] == "label_match"
     assert plan.metadata["source_transport"] == "legacy_packaging_csv"
@@ -192,7 +194,7 @@ def test_upload_writes_status_without_storing_secret(tmp_path):
             {
                 "request_id": "request-label-1",
                 "client_batch_id": plan.metadata["client_batch_id"],
-                "server_source_file_id": "label-host-1/label_match_events/legacy_csv/file.csv",
+                "server_source_file_id": "label-host-1/label_match/label_match_events/legacy_csv/file.csv",
                 "committed": True,
                 "status": "accepted",
                 "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -277,7 +279,7 @@ def test_relay_retry_then_success_uses_fresh_signed_request_and_marks_acked(tmp_
         producer_manifest_path=manifest_path,
         credentials=credentials,
     )
-    server_source_file_id = f"{manifest['pc_identity']['source_host_id']}/label_match_events/{row.relative_path}"
+    server_source_file_id = f"{manifest['pc_identity']['source_host_id']}/label_match/label_match_events/{row.relative_path}"
     session = SequenceFakeSession(
         [
             FakeResponse(
