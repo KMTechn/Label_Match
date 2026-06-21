@@ -38,11 +38,33 @@ def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
     }
 
 
+def _source_scan_config(args: argparse.Namespace) -> dict:
+    scan_source_dir = str(getattr(args, "scan_source_dir", "") or "").strip()
+    source_globs = [str(item) for item in (getattr(args, "source_glob", []) or [])]
+    max_enqueue_files = max(0, int(getattr(args, "max_enqueue_files", 100) or 0))
+    return {
+        "enabled": bool(scan_source_dir),
+        "scan_source_dir": str(Path(scan_source_dir).resolve()) if scan_source_dir else "",
+        "source_globs": source_globs,
+        "max_enqueue_files": max_enqueue_files,
+    }
+
+
+def _append_source_scan_args(runner_parts: list[str], source_scan: dict) -> None:
+    if not source_scan["enabled"]:
+        return
+    runner_parts.extend(["--scan-source-dir", source_scan["scan_source_dir"]])
+    for pattern in source_scan["source_globs"]:
+        runner_parts.extend(["--source-glob", pattern])
+    runner_parts.extend(["--max-enqueue-files", str(source_scan["max_enqueue_files"])])
+
+
 def build_install_plan(args: argparse.Namespace) -> dict:
     app_root = Path(args.app_root).resolve()
     python_exe = str(Path(args.python_exe).resolve())
     runner_script = app_root / "tools" / "direct_sync_relay_runner.py"
     paths = _runtime_paths(args.program_data_root)
+    source_scan = _source_scan_config(args)
     runner_parts = [
         python_exe,
         str(runner_script),
@@ -65,6 +87,7 @@ def build_install_plan(args: argparse.Namespace) -> dict:
         "--min-free-bytes",
         str(max(0, int(args.min_free_bytes))),
     ]
+    _append_source_scan_args(runner_parts, source_scan)
     task_action = _quote_cmd(runner_parts)
     create_command = [
         "schtasks.exe",
@@ -88,6 +111,7 @@ def build_install_plan(args: argparse.Namespace) -> dict:
         "task_name": args.task_name,
         "program_data_root": str(Path(args.program_data_root)),
         "runtime_paths": paths,
+        "source_scan": source_scan,
         "runner_script": str(runner_script),
         "runner_command": runner_parts,
         "scheduled_task_create_command": create_command,
@@ -123,6 +147,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task-name", default=DEFAULT_TASK_NAME)
     parser.add_argument("--minute-interval", type=int, default=1)
     parser.add_argument("--min-free-bytes", type=int, default=512 * 1024 * 1024)
+    parser.add_argument("--scan-source-dir", default="")
+    parser.add_argument("--source-glob", action="append", default=[])
+    parser.add_argument("--max-enqueue-files", type=int, default=100)
     parser.add_argument("--report-path", required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--uninstall", action="store_true")

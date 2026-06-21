@@ -48,6 +48,10 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
             str(credential_path),
             "--program-data-root",
             str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+            "--scan-source-dir",
+            str(tmp_path / "sync"),
+            "--source-glob",
+            "포장실작업이벤트로그_*.csv",
             "--report-path",
             str(report_path),
         ],
@@ -62,6 +66,11 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     assert report["status"] == "DRY_RUN"
     assert report["task_name"] == "direct-sync-relay-label-match"
     assert "direct_sync_relay_runner.py" in " ".join(report["runner_command"])
+    assert "--scan-source-dir" in report["runner_command"]
+    assert str((tmp_path / "sync").resolve()) in report["runner_command"]
+    assert "포장실작업이벤트로그_*.csv" in report["runner_command"]
+    assert report["source_scan"]["enabled"] is True
+    assert report["source_scan"]["max_enqueue_files"] == 100
     assert "schtasks.exe" == report["scheduled_task_create_command"][0]
     assert str(credential_path.resolve()) in report["runner_command"]
     assert "install-pack-secret" not in report_text

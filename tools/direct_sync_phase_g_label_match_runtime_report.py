@@ -389,6 +389,9 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
             task_name="direct-sync-relay-label-match",
             minute_interval=1,
             min_free_bytes=512 * 1024 * 1024,
+            scan_source_dir=str(tmp_root / "sync"),
+            source_glob=["포장실작업이벤트로그_*.csv"],
+            max_enqueue_files=100,
             apply=False,
             uninstall=False,
             confirm_production_install=False,
@@ -399,6 +402,8 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
         plan["status"] == "DRY_RUN"
         and plan["scheduled_task_create_command"][0] == "schtasks.exe"
         and "direct_sync_relay_runner.py" in " ".join(plan["runner_command"])
+        and "--scan-source-dir" in plan["runner_command"]
+        and plan["source_scan"]["enabled"] is True
         and "label-phase-g-local-secret" not in serialized
         and plan["secret_redaction"]["raw_secret_in_report"] is False
     )
@@ -407,6 +412,7 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
         "scope": "local scheduled-task install pack dry-run only",
         "task_name": plan["task_name"],
         "program_data_root": plan["program_data_root"],
+        "source_scan": plan["source_scan"],
         "runner_script": plan["runner_script"],
         "secret_redaction": plan["secret_redaction"],
     }
