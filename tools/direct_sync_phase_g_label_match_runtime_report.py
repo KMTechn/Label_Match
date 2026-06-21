@@ -498,6 +498,7 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
         and plan["scheduled_task_create_command"][0] == "schtasks.exe"
         and "direct_sync_relay_runner.py" in " ".join(plan["runner_command"])
         and "--scan-source-dir" in plan["runner_command"]
+        and "--operator-pause-path" in plan["runner_command"]
         and plan["source_scan"]["enabled"] is True
         and "label-phase-g-local-secret" not in serialized
         and plan["secret_redaction"]["raw_secret_in_report"] is False
@@ -508,6 +509,8 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
         "task_name": plan["task_name"],
         "program_data_root": plan["program_data_root"],
         "source_scan": plan["source_scan"],
+        "operator_pause_path": plan["runtime_paths"].get("operator_pause_path", ""),
+        "runner_command": plan["runner_command"],
         "runner_script": plan["runner_script"],
         "secret_redaction": plan["secret_redaction"],
     }

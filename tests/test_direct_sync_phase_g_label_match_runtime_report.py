@@ -35,5 +35,7 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["retry_dead_letter_report"]["status"] == "PASS"
     assert report["lost_ack_replay_report"]["local_replay_report"]["status"] == "PASS"
     assert report["production_install_pack_report"]["local_dry_run_report"]["status"] == "PASS"
+    assert report["production_install_pack_report"]["local_dry_run_report"]["operator_pause_path"]
+    assert "--operator-pause-path" in report["production_install_pack_report"]["local_dry_run_report"]["runner_command"]
     assert "label-phase-g-local-secret" not in report_text
     assert "X-Producer-Signature" not in report_text
