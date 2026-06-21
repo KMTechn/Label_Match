@@ -71,6 +71,8 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     assert "포장실작업이벤트로그_*.csv" in report["runner_command"]
     assert report["source_scan"]["enabled"] is True
     assert report["source_scan"]["max_enqueue_files"] == 100
+    assert "--operator-pause-path" in report["runner_command"]
+    assert report["runtime_paths"]["operator_pause_path"] in report["runner_command"]
     assert "schtasks.exe" == report["scheduled_task_create_command"][0]
     assert str(credential_path.resolve()) in report["runner_command"]
     assert "install-pack-secret" not in report_text

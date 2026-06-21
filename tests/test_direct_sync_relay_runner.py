@@ -104,3 +104,32 @@ def test_runner_scan_source_dir_handles_no_matching_files(tmp_path, capsys):
     assert "direct_sync_relay_status=scan_no_files" in output
     assert "direct_sync_scan_enqueued_count=0" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}
+
+
+def test_runner_honors_operator_pause_before_scan_enqueue(tmp_path, capsys):
+    sync_dir = tmp_path / "sync"
+    write_label_csv(sync_dir)
+    pause_path = tmp_path / "control" / "pause.json"
+    pause_path.parent.mkdir(parents=True)
+    pause_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "direct-sync-relay-operator-pause-v1",
+                "status": "paused",
+                "operator_id": "operator-a",
+                "reason_redacted": "sha256:test",
+                "reason_sha256": "0" * 64,
+                "reason_length": 11,
+                "created_at": "2026-06-22T00:00:00Z",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    args = runner_args(tmp_path, scan_dir=sync_dir) + ["--operator-pause-path", str(pause_path)]
+
+    assert main(args) == 0
+    output = capsys.readouterr().out
+    assert "direct_sync_relay_status=paused_by_operator" in output
+    assert "direct_sync_scan_enqueued_count=0" in output
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}

@@ -29,6 +29,7 @@ from direct_sync_push import (  # noqa: E402
     relay_queue_status,
     upload_source_file,
 )
+from direct_sync_operator import operator_status, pause_relay, resume_relay, retry_dead_relay_batch  # noqa: E402
 from direct_sync_relay_install_pack import build_install_plan  # noqa: E402
 from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once  # noqa: E402
 
@@ -153,6 +154,7 @@ def _runtime_config(tmp_root: Path, *, name: str, min_free_bytes: int = 0) -> Di
         min_free_bytes=min_free_bytes,
         retry_base_seconds=1,
         timeout_seconds=5,
+        operator_pause_path=tmp_root / name / "control" / "pause.json",
     )
 
 
@@ -344,10 +346,14 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
         ),
     )
     review_queue = relay_queue_status(review_config.db_path)
+    review_relay_id = ""
+    with sqlite3.connect(review_config.db_path) as conn:
+        row = conn.execute("SELECT relay_id FROM direct_sync_relay_batches LIMIT 1").fetchone()
+        review_relay_id = row[0] if row else ""
 
     permanent_config = _runtime_config(tmp_root, name="failed-permanent")
     permanent_source = _write_source_file(tmp_root / "failed-permanent")
-    enqueue_completed_source_file(permanent_config, source_file_path=permanent_source)
+    permanent_enqueued = enqueue_completed_source_file(permanent_config, source_file_path=permanent_source)
     permanent_status = run_relay_once(
         permanent_config,
         session=FixedSession(
@@ -362,11 +368,27 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
         ),
     )
     permanent_queue = relay_queue_status(permanent_config.db_path)
+    retried_permanent = retry_dead_relay_batch(
+        db_path=permanent_config.db_path,
+        relay_id=permanent_enqueued.get("last_result", {}).get("relay_id", ""),
+        operator_id="phase-g-operator",
+        reason="local drill retry failed permanent",
+        audit_log_path=tmp_root / "retry-dead" / "operator.jsonl",
+    )
+    blocked_review_retry = retry_dead_relay_batch(
+        db_path=review_config.db_path,
+        relay_id=review_relay_id,
+        operator_id="phase-g-operator",
+        reason="local drill review must not retry",
+        audit_log_path=tmp_root / "retry-dead" / "operator.jsonl",
+    )
     ok = (
         review_status["status"] == "operator_review"
         and review_queue["counts"].get(RELAY_STATUS_OPERATOR_REVIEW) == 1
         and permanent_status["status"] == "failed_permanent"
         and permanent_queue["counts"].get(RELAY_STATUS_FAILED_PERMANENT) == 1
+        and retried_permanent["status"] == "PASS"
+        and blocked_review_retry["status"] == "BLOCKED"
     )
     return {
         "status": "PASS" if ok else "FAIL",
@@ -375,6 +397,79 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
         "operator_review_queue": review_queue,
         "failed_permanent_status": permanent_status["status"],
         "failed_permanent_queue": permanent_queue,
+        "retry_dead_permanent_status": retried_permanent["status"],
+        "operator_review_retry_status": blocked_review_retry["status"],
+    }
+
+
+def _operator_control_report(tmp_root: Path) -> dict:
+    config = _runtime_config(tmp_root, name="operator-control")
+    source_file = _write_source_file(tmp_root / "operator-control")
+    audit_log_path = tmp_root / "operator-control" / "logs" / "operator.jsonl"
+    paused = pause_relay(
+        pause_path=config.operator_pause_path,
+        operator_id="phase-g-operator",
+        reason="local drill pause",
+        audit_log_path=audit_log_path,
+    )
+    paused_enqueue = enqueue_completed_source_file(config, source_file_path=source_file)
+    paused_run = run_relay_once(config, session=EchoAcceptedSession())
+    resumed = resume_relay(
+        pause_path=config.operator_pause_path,
+        operator_id="phase-g-operator",
+        reason="local drill resume",
+        audit_log_path=audit_log_path,
+    )
+    enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+    failed = run_relay_once(
+        config,
+        session=FixedSession(
+            FakeResponse(
+                400,
+                {
+                    "committed": False,
+                    "retryable": False,
+                    "error": {"code": "metadata_invalid", "message": "bad metadata"},
+                },
+            )
+        ),
+    )
+    relay_id = str(enqueued.get("last_result", {}).get("relay_id") or "")
+    retried = retry_dead_relay_batch(
+        db_path=config.db_path,
+        relay_id=relay_id,
+        operator_id="phase-g-operator",
+        reason="local drill retry after permanent failure",
+        audit_log_path=audit_log_path,
+    )
+    acked = run_relay_once(config, session=EchoAcceptedSession())
+    status_report = operator_status(db_path=config.db_path, pause_path=config.operator_pause_path)
+    audit_bytes = Path(audit_log_path).read_bytes()
+    forbidden = (b"label-phase-g-local-secret", b"X-Producer-Signature", b"PRODUCER-HMAC-SHA256-V1")
+    audit_redacted = not any(token in audit_bytes for token in forbidden)
+    ok = (
+        paused["status"] == "PASS"
+        and paused_enqueue["status"] == "paused_by_operator"
+        and paused_run["status"] == "paused_by_operator"
+        and resumed["status"] == "PASS"
+        and failed["status"] == "failed_permanent"
+        and retried["status"] == "PASS"
+        and acked["status"] == "acked"
+        and status_report["queue"]["counts"].get(RELAY_STATUS_ACKED) == 1
+        and audit_redacted
+    )
+    return {
+        "status": "PASS" if ok else "FAIL",
+        "scope": "local operator pause/resume/status/retry-dead proof with fixture relay queue",
+        "pause_status": paused["status"],
+        "paused_enqueue_status": paused_enqueue["status"],
+        "paused_run_status": paused_run["status"],
+        "resume_status": resumed["status"],
+        "retry_dead_status": retried["status"],
+        "final_run_status": acked["status"],
+        "operator_status": status_report,
+        "audit_log_path": str(audit_log_path),
+        "audit_redaction_pass": audit_redacted,
     }
 
 
@@ -427,10 +522,11 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
     retry = _retry_wait_report(tmp_root)
     lost_ack = _lost_ack_replay_report(tmp_root)
     retry_dead_letter = _retry_dead_letter_report(tmp_root)
+    operator_control = _operator_control_report(tmp_root)
     install_pack = _install_pack_dry_run_report(tmp_root)
     local_pass = all(
         item["status"] == "PASS"
-        for item in (runner, stale_lease, disk, retry, lost_ack, retry_dead_letter, install_pack)
+        for item in (runner, stale_lease, disk, retry, lost_ack, retry_dead_letter, operator_control, install_pack)
     )
     report = {
         "report_version": "direct-sync-phase-g-label-match-runtime-v1",
@@ -453,6 +549,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "disk_pressure_report": disk,
         "retry_wait_report": retry,
         "retry_dead_letter_report": retry_dead_letter,
+        "operator_control_report": operator_control,
         "lost_ack_replay_report": {
             "status": "BLOCKED",
             "local_replay_report": lost_ack,

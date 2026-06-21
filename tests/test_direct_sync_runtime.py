@@ -2,6 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from direct_sync_operator import pause_relay, resume_relay
 from direct_sync_push import (
     RELAY_STATUS_ACKED,
     RELAY_STATUS_FAILED_PERMANENT,
@@ -145,6 +146,7 @@ def make_config(tmp_path, *, min_free_bytes=0):
         min_free_bytes=min_free_bytes,
         retry_base_seconds=1,
         timeout_seconds=5,
+        operator_pause_path=tmp_path / "control" / "pause.json",
     )
 
 
@@ -170,6 +172,50 @@ def test_runtime_empty_queue_writes_idle_status_without_posting(tmp_path):
     assert session.calls == []
     assert Path(config.runtime_status_path).is_file()
     assert Path(config.log_path).is_file()
+
+
+def test_runtime_operator_pause_blocks_enqueue_and_drain_before_credentials(tmp_path):
+    base_config = make_config(tmp_path)
+    config = DirectSyncRuntimeConfig(
+        db_path=base_config.db_path,
+        spool_dir=base_config.spool_dir,
+        producer_manifest_path=base_config.producer_manifest_path,
+        credential_path=tmp_path / "missing_credential.json",
+        upload_status_dir=base_config.upload_status_dir,
+        runtime_status_path=base_config.runtime_status_path,
+        log_path=base_config.log_path,
+        min_free_bytes=base_config.min_free_bytes,
+        retry_base_seconds=base_config.retry_base_seconds,
+        timeout_seconds=base_config.timeout_seconds,
+        operator_pause_path=base_config.operator_pause_path,
+    )
+    source_file = write_csv(tmp_path)
+    pause_relay(pause_path=config.operator_pause_path, operator_id="operator-a", reason="local maintenance")
+    session = EchoAcceptedSession()
+
+    enqueue_status = enqueue_completed_source_file(config, source_file_path=source_file)
+    run_status = run_relay_once(config, session=session)
+
+    assert enqueue_status["status"] == "paused_by_operator"
+    assert run_status["status"] == "paused_by_operator"
+    assert run_status["operator_control"]["paused"] is True
+    assert run_status["disk"]["status"] == "not_checked"
+    assert relay_queue_status(config.db_path)["counts"] == {}
+    assert session.calls == []
+
+
+def test_runtime_operator_resume_allows_enqueue_and_drain(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    pause_relay(pause_path=config.operator_pause_path, operator_id="operator-a", reason="local maintenance")
+    resume_relay(pause_path=config.operator_pause_path, operator_id="operator-a", reason="maintenance complete")
+
+    enqueue_status = enqueue_completed_source_file(config, source_file_path=source_file)
+    run_status = run_relay_once(config, session=EchoAcceptedSession())
+
+    assert enqueue_status["status"] == "enqueued"
+    assert run_status["status"] == "acked"
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_ACKED] == 1
 
 
 def test_runtime_enqueue_writes_status_and_redacted_log(tmp_path):

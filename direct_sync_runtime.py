@@ -22,6 +22,7 @@ from direct_sync_push import (
     reset_stale_relay_leases,
     utc_now_text,
 )
+from direct_sync_operator import read_operator_pause
 
 
 DEFAULT_WORKER_ID = "direct-sync-relay-label-match"
@@ -40,6 +41,7 @@ class DirectSyncRuntimeConfig:
     min_free_bytes: int = 0
     retry_base_seconds: int = DEFAULT_RETRY_SECONDS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    operator_pause_path: str | os.PathLike[str] = ""
 
 
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
@@ -138,6 +140,7 @@ def _write_runtime_status(
     disk: Mapping[str, Any],
     stale_leases_reset: int = 0,
     last_result: Mapping[str, Any] | None = None,
+    operator_control: Mapping[str, Any] | None = None,
     error_code: str = "",
     error_message: str = "",
 ) -> dict[str, Any]:
@@ -149,6 +152,7 @@ def _write_runtime_status(
         "disk": dict(disk),
         "stale_leases_reset": int(stale_leases_reset),
         "last_result": dict(last_result or {}),
+        "operator_control": dict(operator_control or {}),
         "error_code": error_code,
         "error_message": error_message,
         "updated_at": utc_now_text(),
@@ -169,6 +173,26 @@ def _append_runtime_event(config: DirectSyncRuntimeConfig, event: str, payload: 
     _append_jsonl(config.log_path, entry)
 
 
+def _paused_by_operator(config: DirectSyncRuntimeConfig) -> dict[str, Any]:
+    return read_operator_pause(config.operator_pause_path)
+
+
+def _write_paused_status(config: DirectSyncRuntimeConfig, *, event: str) -> dict[str, Any]:
+    pause = _paused_by_operator(config)
+    queue = relay_queue_status(config.db_path)
+    status = _write_runtime_status(
+        config,
+        status="paused_by_operator",
+        queue=queue,
+        disk={"status": "not_checked", "reason": "operator_pause"},
+        operator_control=pause,
+        error_code="operator_paused",
+        error_message="direct-sync relay is paused by local operator control",
+    )
+    _append_runtime_event(config, event, status)
+    return status
+
+
 def enqueue_completed_source_file(
     config: DirectSyncRuntimeConfig,
     *,
@@ -177,6 +201,9 @@ def enqueue_completed_source_file(
     credentials: ProducerCredentials | None = None,
 ) -> dict[str, Any]:
     """Spool one completed Label_Match CSV and persist local operator evidence."""
+    if _paused_by_operator(config).get("paused"):
+        return _write_paused_status(config, event="enqueue_paused_by_operator")
+
     disk = _disk_pressure_report(config)
     if disk["status"] != "pass":
         queue = relay_queue_status(config.db_path)
@@ -253,6 +280,9 @@ def run_relay_once(
     now: str = "",
 ) -> dict[str, Any]:
     """Run one bounded relay drain cycle and persist status/log evidence."""
+    if _paused_by_operator(config).get("paused"):
+        return _write_paused_status(config, event="relay_paused_by_operator")
+
     disk = _disk_pressure_report(config)
     if disk["status"] != "pass":
         queue = relay_queue_status(config.db_path)

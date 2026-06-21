@@ -35,6 +35,7 @@ def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
         "upload_status_dir": str(root / "upload_status"),
         "runtime_status_path": str(root / "status" / "direct_sync_relay_status.json"),
         "log_path": str(root / "logs" / "direct_sync_relay.jsonl"),
+        "operator_pause_path": str(root / "control" / "pause.json"),
     }
 
 
@@ -82,6 +83,8 @@ def build_install_plan(args: argparse.Namespace) -> dict:
         paths["runtime_status_path"],
         "--log-path",
         paths["log_path"],
+        "--operator-pause-path",
+        paths["operator_pause_path"],
         "--worker-id",
         args.task_name,
         "--min-free-bytes",

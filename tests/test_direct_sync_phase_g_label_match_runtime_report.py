@@ -27,6 +27,8 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["local_contract_status"] == "PASS"
     assert report["label_match_runtime_relay_report"]["status"] == "BLOCKED"
     assert report["operator_status_report"]["status"] == "PASS"
+    assert report["operator_control_report"]["status"] == "PASS"
+    assert report["operator_control_report"]["audit_redaction_pass"] is True
     assert report["stale_lease_recovery_report"]["status"] == "PASS"
     assert report["disk_pressure_report"]["status"] == "PASS"
     assert report["retry_wait_report"]["status"] == "PASS"
