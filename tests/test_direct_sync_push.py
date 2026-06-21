@@ -1,15 +1,25 @@
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 from direct_sync_push import (
     DEFAULT_ENDPOINT_PATH,
     ProducerCredentials,
+    RELAY_STATUS_ACKED,
+    RELAY_STATUS_LEASED,
+    RELAY_STATUS_PENDING,
+    RELAY_STATUS_RETRY_WAIT,
     build_source_file_plan,
     canonical_json,
     canonical_request_string,
+    claim_next_relay_batch,
     count_csv_data_rows,
+    drain_one_relay_batch,
+    enqueue_source_file_for_relay,
     manifest_hash,
+    relay_queue_status,
+    reset_stale_relay_leases,
     signed_headers,
     upload_source_file,
 )
@@ -43,6 +53,27 @@ class FakeSession:
             }
         )
         return self.response
+
+
+class SequenceFakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def post(self, url, *, data, files, headers, timeout):
+        file_name, file_handle, content_type = files["file"]
+        self.calls.append(
+            {
+                "url": url,
+                "metadata": data["metadata"],
+                "headers": dict(headers),
+                "timeout": timeout,
+                "file_name": file_name,
+                "file_bytes": file_handle.read(),
+                "content_type": content_type,
+            }
+        )
+        return self.responses.pop(0)
 
 
 def make_manifest(tmp_path):
@@ -180,3 +211,137 @@ def test_upload_writes_status_without_storing_secret(tmp_path):
     status_text = Path(result.status_path).read_text(encoding="utf-8")
     assert "label-secret" not in status_text
     assert "X-Producer-Signature" not in status_text
+
+
+def test_relay_enqueue_spools_file_without_storing_auth_secret_or_signature(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+
+    row = enqueue_source_file_for_relay(
+        db_path=tmp_path / "relay.sqlite3",
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+
+    assert row.status == RELAY_STATUS_PENDING
+    assert Path(row.spooled_file_path).read_bytes() == csv_path.read_bytes()
+    status = relay_queue_status(tmp_path / "relay.sqlite3")
+    assert status["counts"][RELAY_STATUS_PENDING] == 1
+    db_bytes = (tmp_path / "relay.sqlite3").read_bytes()
+    assert b"label-secret" not in db_bytes
+    assert b"X-Producer-Signature" not in db_bytes
+    assert b"PRODUCER-HMAC-SHA256-V1" not in db_bytes
+
+
+def test_relay_claim_and_stale_lease_reset(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+
+    claimed = claim_next_relay_batch(
+        db_path=db_path,
+        worker_id="worker-1",
+        lease_seconds=1,
+        now="2999-06-21T00:00:00Z",
+    )
+
+    assert claimed is not None
+    assert claimed.status == RELAY_STATUS_LEASED
+    assert claimed.attempt_count == 1
+    assert claim_next_relay_batch(db_path=db_path, worker_id="worker-2", now="2999-06-21T00:00:00Z") is None
+    assert reset_stale_relay_leases(db_path=db_path, now="2999-06-21T00:00:02Z") == 1
+    status = relay_queue_status(db_path)
+    assert status["counts"][RELAY_STATUS_PENDING] == 1
+
+
+def test_relay_retry_then_success_uses_fresh_signed_request_and_marks_acked(tmp_path):
+    manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    row = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    server_source_file_id = f"{manifest['pc_identity']['source_host_id']}/label_match_events/{row.relative_path}"
+    session = SequenceFakeSession(
+        [
+            FakeResponse(
+                503,
+                {
+                    "committed": False,
+                    "retryable": True,
+                    "error": {"code": "temporary_unavailable", "message": "try later"},
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "request_id": "request-relay-2",
+                    "client_batch_id": row.relay_id,
+                    "server_source_file_id": server_source_file_id,
+                    "committed": True,
+                    "status": "accepted",
+                    "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
+                },
+            ),
+        ]
+    )
+
+    first = drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=session,
+        status_dir=tmp_path / "status",
+        retry_base_seconds=1,
+    )
+
+    assert first.success is False
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        current = conn.execute("SELECT status FROM direct_sync_relay_batches WHERE relay_id = ?", (row.relay_id,)).fetchone()
+        assert current["status"] == RELAY_STATUS_RETRY_WAIT
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET next_attempt_at = ? WHERE relay_id = ?",
+            ("2026-06-21T00:00:00Z", row.relay_id),
+        )
+        conn.commit()
+
+    second = drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=session,
+        status_dir=tmp_path / "status",
+        retry_base_seconds=1,
+    )
+
+    assert second.success is True
+    assert len(session.calls) == 2
+    assert session.calls[0]["headers"]["X-Producer-Nonce"] != session.calls[1]["headers"]["X-Producer-Nonce"]
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        current = conn.execute(
+            """
+            SELECT status, receipt_json, upload_status_path
+            FROM direct_sync_relay_batches
+            WHERE relay_id = ?
+            """,
+            (row.relay_id,),
+        ).fetchone()
+    assert current["status"] == RELAY_STATUS_ACKED
+    assert json.loads(current["receipt_json"])["request_id"] == "request-relay-2"
+    assert Path(current["upload_status_path"]).is_file()

@@ -7,10 +7,11 @@ import hashlib
 import hmac
 import json
 import os
+import sqlite3
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping
 from urllib.parse import urlparse
@@ -23,6 +24,14 @@ DEFAULT_STREAM_NAME = "label_match_events"
 DEFAULT_SOURCE_SYSTEM = "label_match"
 DEFAULT_SOURCE_TRANSPORT = "legacy_packaging_csv"
 DEFAULT_TIMEOUT_SECONDS = 30
+RELAY_STATUS_PENDING = "pending"
+RELAY_STATUS_LEASED = "leased"
+RELAY_STATUS_RETRY_WAIT = "retry_wait"
+RELAY_STATUS_ACKED = "acked"
+RELAY_STATUS_FAILED_PERMANENT = "failed_permanent"
+RELAY_STATUS_OPERATOR_REVIEW = "operator_review"
+DEFAULT_LEASE_SECONDS = 300
+DEFAULT_RETRY_SECONDS = 60
 
 
 class DirectSyncPushError(Exception):
@@ -55,6 +64,18 @@ class UploadResult:
     status_path: str = ""
     error_code: str = ""
     error_message: str = ""
+
+
+@dataclass(frozen=True)
+class RelayQueueRow:
+    relay_id: str
+    status: str
+    spooled_file_path: str
+    producer_manifest_path: str
+    relative_path: str
+    content_sha256: str
+    byte_length: int
+    attempt_count: int
 
 
 def _normalize_for_json(value: Any) -> Any:
@@ -335,3 +356,377 @@ def upload_source_file(
             error_message=result.error_message,
         )
     return result
+
+
+def _connect_relay_db(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def init_relay_queue_schema(db_path: str | os.PathLike[str]) -> None:
+    conn = _connect_relay_db(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS direct_sync_relay_batches (
+                relay_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                source_file_path TEXT NOT NULL,
+                spooled_file_path TEXT NOT NULL,
+                producer_manifest_path TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                byte_length INTEGER NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                next_attempt_at TEXT,
+                last_error_code TEXT,
+                last_error_message TEXT,
+                receipt_json TEXT,
+                upload_status_path TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_direct_sync_relay_status_due
+            ON direct_sync_relay_batches(status, next_attempt_at, created_at)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _relay_row(row: sqlite3.Row) -> RelayQueueRow:
+    return RelayQueueRow(
+        relay_id=str(row["relay_id"]),
+        status=str(row["status"]),
+        spooled_file_path=str(row["spooled_file_path"]),
+        producer_manifest_path=str(row["producer_manifest_path"]),
+        relative_path=str(row["relative_path"]),
+        content_sha256=str(row["content_sha256"]),
+        byte_length=int(row["byte_length"]),
+        attempt_count=int(row["attempt_count"]),
+    )
+
+
+def _copy_file_atomic(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = destination.with_suffix(destination.suffix + ".tmp")
+    with source.open("rb") as src, temp_path.open("wb") as dst:
+        for chunk in iter(lambda: src.read(1024 * 1024), b""):
+            dst.write(chunk)
+        dst.flush()
+        os.fsync(dst.fileno())
+    os.replace(temp_path, destination)
+
+
+def enqueue_source_file_for_relay(
+    *,
+    db_path: str | os.PathLike[str],
+    spool_dir: str | os.PathLike[str],
+    source_file_path: str | os.PathLike[str],
+    producer_manifest_path: str | os.PathLike[str],
+    credentials: ProducerCredentials,
+    relative_path: str = "",
+) -> RelayQueueRow:
+    init_relay_queue_schema(db_path)
+    source_path = Path(source_file_path)
+    if not source_path.is_file():
+        raise DirectSyncPushError(f"source file does not exist: {source_path}")
+    plan = build_source_file_plan(
+        source_file_path=source_path,
+        producer_manifest_path=producer_manifest_path,
+        credentials=credentials,
+        relative_path=relative_path,
+    )
+    relay_id = f"relay-{uuid.uuid4().hex}"
+    spool_path = Path(spool_dir) / f"{relay_id}{source_path.suffix or '.bin'}"
+    _copy_file_atomic(source_path, spool_path)
+    spooled_hash, spooled_bytes = _read_file_digest(spool_path)
+    if spooled_hash != plan.content_sha256 or spooled_bytes != plan.byte_length:
+        raise DirectSyncPushError("spooled file hash or byte length mismatch")
+    now = utc_now_text()
+    conn = _connect_relay_db(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO direct_sync_relay_batches (
+                relay_id, status, source_file_path, spooled_file_path,
+                producer_manifest_path, relative_path, content_sha256,
+                byte_length, attempt_count, next_attempt_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                relay_id,
+                RELAY_STATUS_PENDING,
+                str(source_path),
+                str(spool_path),
+                str(producer_manifest_path),
+                plan.metadata["relative_path"],
+                plan.content_sha256,
+                plan.byte_length,
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM direct_sync_relay_batches WHERE relay_id = ?",
+            (relay_id,),
+        ).fetchone()
+        return _relay_row(row)
+    finally:
+        conn.close()
+
+
+def reset_stale_relay_leases(
+    *,
+    db_path: str | os.PathLike[str],
+    now: str = "",
+) -> int:
+    init_relay_queue_schema(db_path)
+    now = now or utc_now_text()
+    conn = _connect_relay_db(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE direct_sync_relay_batches
+            SET status = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = ?
+            WHERE status = ?
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at <= ?
+            """,
+            (RELAY_STATUS_PENDING, now, RELAY_STATUS_LEASED, now),
+        )
+        conn.commit()
+        return int(cursor.rowcount)
+    finally:
+        conn.close()
+
+
+def claim_next_relay_batch(
+    *,
+    db_path: str | os.PathLike[str],
+    worker_id: str,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    now: str = "",
+) -> RelayQueueRow | None:
+    init_relay_queue_schema(db_path)
+    now = now or utc_now_text()
+    reset_stale_relay_leases(db_path=db_path, now=now)
+    lease_expires_at = (
+        datetime.fromisoformat(now.replace("Z", "+00:00")) + timedelta(seconds=lease_seconds)
+    ).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    conn = _connect_relay_db(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT *
+            FROM direct_sync_relay_batches
+            WHERE status IN (?, ?)
+              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY created_at, relay_id
+            LIMIT 1
+            """,
+            (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        conn.execute(
+            """
+            UPDATE direct_sync_relay_batches
+            SET status = ?,
+                attempt_count = attempt_count + 1,
+                lease_owner = ?,
+                lease_expires_at = ?,
+                updated_at = ?
+            WHERE relay_id = ?
+              AND status IN (?, ?)
+            """,
+            (
+                RELAY_STATUS_LEASED,
+                worker_id,
+                lease_expires_at,
+                now,
+                row["relay_id"],
+                RELAY_STATUS_PENDING,
+                RELAY_STATUS_RETRY_WAIT,
+            ),
+        )
+        conn.commit()
+        claimed = conn.execute(
+            "SELECT * FROM direct_sync_relay_batches WHERE relay_id = ?",
+            (row["relay_id"],),
+        ).fetchone()
+        return _relay_row(claimed)
+    finally:
+        conn.close()
+
+
+def _set_relay_status(
+    *,
+    db_path: str | os.PathLike[str],
+    relay_id: str,
+    status: str,
+    receipt: Mapping[str, Any] | None = None,
+    upload_status_path: str = "",
+    next_attempt_at: str = "",
+    error_code: str = "",
+    error_message: str = "",
+) -> None:
+    now = utc_now_text()
+    conn = _connect_relay_db(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE direct_sync_relay_batches
+            SET status = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                next_attempt_at = ?,
+                last_error_code = ?,
+                last_error_message = ?,
+                receipt_json = ?,
+                upload_status_path = ?,
+                updated_at = ?
+            WHERE relay_id = ?
+            """,
+            (
+                status,
+                next_attempt_at or None,
+                error_code,
+                error_message,
+                json.dumps(dict(receipt or {}), ensure_ascii=False, sort_keys=True) if receipt is not None else None,
+                upload_status_path,
+                now,
+                relay_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _retry_after_seconds(attempt_count: int, base_seconds: int) -> int:
+    multiplier = min(max(1, attempt_count), 5)
+    return max(1, int(base_seconds)) * multiplier
+
+
+def drain_one_relay_batch(
+    *,
+    db_path: str | os.PathLike[str],
+    credentials: ProducerCredentials,
+    worker_id: str = "direct-sync-relay",
+    session: Any = None,
+    status_dir: str | os.PathLike[str] = "",
+    retry_base_seconds: int = DEFAULT_RETRY_SECONDS,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> UploadResult | None:
+    row = claim_next_relay_batch(db_path=db_path, worker_id=worker_id)
+    if row is None:
+        return None
+    plan = build_source_file_plan(
+        source_file_path=row.spooled_file_path,
+        producer_manifest_path=row.producer_manifest_path,
+        credentials=credentials,
+        relative_path=row.relative_path,
+        client_batch_id=row.relay_id,
+    )
+    result = upload_source_file(
+        plan,
+        credentials,
+        session=session,
+        timeout=timeout,
+        status_dir=status_dir,
+    )
+    if result.success:
+        _set_relay_status(
+            db_path=db_path,
+            relay_id=row.relay_id,
+            status=RELAY_STATUS_ACKED,
+            receipt=result.receipt,
+            upload_status_path=result.status_path,
+        )
+    elif result.committed:
+        _set_relay_status(
+            db_path=db_path,
+            relay_id=row.relay_id,
+            status=RELAY_STATUS_OPERATOR_REVIEW,
+            receipt=result.receipt,
+            upload_status_path=result.status_path,
+            error_code=result.error_code,
+            error_message=result.error_message,
+        )
+    elif result.retryable:
+        retry_after = _retry_after_seconds(row.attempt_count, retry_base_seconds)
+        next_attempt_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+        ).isoformat().replace("+00:00", "Z")
+        _set_relay_status(
+            db_path=db_path,
+            relay_id=row.relay_id,
+            status=RELAY_STATUS_RETRY_WAIT,
+            receipt=result.receipt,
+            upload_status_path=result.status_path,
+            next_attempt_at=next_attempt_at,
+            error_code=result.error_code,
+            error_message=result.error_message,
+        )
+    else:
+        _set_relay_status(
+            db_path=db_path,
+            relay_id=row.relay_id,
+            status=RELAY_STATUS_FAILED_PERMANENT,
+            receipt=result.receipt,
+            upload_status_path=result.status_path,
+            error_code=result.error_code,
+            error_message=result.error_message,
+        )
+    return result
+
+
+def relay_queue_status(db_path: str | os.PathLike[str]) -> Dict[str, Any]:
+    init_relay_queue_schema(db_path)
+    conn = _connect_relay_db(db_path)
+    try:
+        counts = {
+            row["status"]: int(row["count"])
+            for row in conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM direct_sync_relay_batches
+                GROUP BY status
+                """
+            ).fetchall()
+        }
+        oldest = conn.execute(
+            """
+            SELECT created_at
+            FROM direct_sync_relay_batches
+            WHERE status IN (?, ?, ?)
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, RELAY_STATUS_LEASED),
+        ).fetchone()
+        return {
+            "counts": counts,
+            "oldest_active_created_at": oldest["created_at"] if oldest else "",
+        }
+    finally:
+        conn.close()
