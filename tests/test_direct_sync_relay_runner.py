@@ -44,9 +44,9 @@ def write_credential(tmp_path):
     return path
 
 
-def write_label_csv(sync_dir):
+def write_label_csv(sync_dir, *, name="포장실작업이벤트로그_runner_20260622.csv"):
     sync_dir.mkdir(parents=True, exist_ok=True)
-    path = sync_dir / "포장실작업이벤트로그_runner_20260622.csv"
+    path = sync_dir / name
     path.write_text(
         "timestamp,worker_name,event,details\n"
         "2026-06-22T00:00:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-1\"\" }\"\n",
@@ -104,6 +104,19 @@ def test_runner_scan_source_dir_handles_no_matching_files(tmp_path, capsys):
     assert "direct_sync_relay_status=scan_no_files" in output
     assert "direct_sync_scan_enqueued_count=0" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}
+
+
+def test_runner_scan_source_dir_stops_on_backpressure(tmp_path, capsys):
+    sync_dir = tmp_path / "sync"
+    write_label_csv(sync_dir)
+    write_label_csv(sync_dir, name="포장실작업이벤트로그_runner2_20260622.csv")
+    args = runner_args(tmp_path, scan_dir=sync_dir) + ["--max-active-queue-count", "1"]
+
+    assert main(args) == 2
+    output = capsys.readouterr().out
+    assert "direct_sync_relay_status=blocked_queue_backpressure" in output
+    assert "direct_sync_scan_enqueued_count=1" in output
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
 
 
 def test_runner_honors_operator_pause_before_scan_enqueue(tmp_path, capsys):

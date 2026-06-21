@@ -142,7 +142,14 @@ def _make_credential(tmp_root: Path) -> Path:
     return path
 
 
-def _runtime_config(tmp_root: Path, *, name: str, min_free_bytes: int = 0) -> DirectSyncRuntimeConfig:
+def _runtime_config(
+    tmp_root: Path,
+    *,
+    name: str,
+    min_free_bytes: int = 0,
+    max_active_queue_count: int = 0,
+    max_active_queue_age_seconds: int = 0,
+) -> DirectSyncRuntimeConfig:
     return DirectSyncRuntimeConfig(
         db_path=tmp_root / name / "direct_sync_relay.sqlite3",
         spool_dir=tmp_root / name / "spool",
@@ -155,6 +162,8 @@ def _runtime_config(tmp_root: Path, *, name: str, min_free_bytes: int = 0) -> Di
         retry_base_seconds=1,
         timeout_seconds=5,
         operator_pause_path=tmp_root / name / "control" / "pause.json",
+        max_active_queue_count=max_active_queue_count,
+        max_active_queue_age_seconds=max_active_queue_age_seconds,
     )
 
 
@@ -271,6 +280,39 @@ def _retry_wait_report(tmp_root: Path) -> dict:
         "scope": "local retryable error records retry_wait and prevents early resend",
         "first_status": first["status"],
         "second_status": second["status"],
+        "queue": queue,
+    }
+
+
+def _queue_backpressure_report(tmp_root: Path) -> dict:
+    config = _runtime_config(tmp_root, name="backpressure")
+    source_file = _write_source_file(tmp_root / "backpressure")
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    blocked_config = DirectSyncRuntimeConfig(
+        **{
+            **_runtime_config(tmp_root, name="backpressure", max_active_queue_count=1).__dict__,
+            "credential_path": tmp_root / "missing_credential.json",
+        }
+    )
+    blocked = enqueue_completed_source_file(blocked_config, source_file_path=source_file)
+    drained = run_relay_once(
+        _runtime_config(tmp_root, name="backpressure", max_active_queue_count=1),
+        session=EchoAcceptedSession(),
+    )
+    queue = relay_queue_status(config.db_path)
+    ok = (
+        blocked["status"] == "blocked_queue_backpressure"
+        and "active_queue_count_threshold" in blocked.get("queue_backpressure", {}).get("reasons", [])
+        and blocked["disk"]["status"] == "not_checked"
+        and drained["status"] == "acked"
+        and queue["counts"].get(RELAY_STATUS_ACKED) == 1
+    )
+    return {
+        "status": "PASS" if ok else "FAIL",
+        "scope": "local active Label_Match relay queue threshold blocks enqueue before credential load while drain remains allowed",
+        "blocked_status": blocked["status"],
+        "blocked_reasons": blocked.get("queue_backpressure", {}).get("reasons", []),
+        "drain_status": drained["status"],
         "queue": queue,
     }
 
@@ -487,6 +529,8 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
             scan_source_dir=str(tmp_root / "sync"),
             source_glob=["포장실작업이벤트로그_*.csv"],
             max_enqueue_files=100,
+            max_active_queue_count=1000,
+            max_active_queue_age_seconds=24 * 60 * 60,
             apply=False,
             uninstall=False,
             confirm_production_install=False,
@@ -499,7 +543,11 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
         and "direct_sync_relay_runner.py" in " ".join(plan["runner_command"])
         and "--scan-source-dir" in plan["runner_command"]
         and "--operator-pause-path" in plan["runner_command"]
+        and "--max-active-queue-count" in plan["runner_command"]
+        and "--max-active-queue-age-seconds" in plan["runner_command"]
         and plan["source_scan"]["enabled"] is True
+        and plan["backpressure"]["max_active_queue_count"] == 1000
+        and plan["backpressure"]["max_active_queue_age_seconds"] == 24 * 60 * 60
         and "label-phase-g-local-secret" not in serialized
         and plan["secret_redaction"]["raw_secret_in_report"] is False
     )
@@ -509,6 +557,7 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
         "task_name": plan["task_name"],
         "program_data_root": plan["program_data_root"],
         "source_scan": plan["source_scan"],
+        "backpressure": plan["backpressure"],
         "operator_pause_path": plan["runtime_paths"].get("operator_pause_path", ""),
         "runner_command": plan["runner_command"],
         "runner_script": plan["runner_script"],
@@ -523,13 +572,24 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
     stale_lease = _stale_lease_report(tmp_root)
     disk = _disk_pressure_report(tmp_root)
     retry = _retry_wait_report(tmp_root)
+    queue_backpressure = _queue_backpressure_report(tmp_root)
     lost_ack = _lost_ack_replay_report(tmp_root)
     retry_dead_letter = _retry_dead_letter_report(tmp_root)
     operator_control = _operator_control_report(tmp_root)
     install_pack = _install_pack_dry_run_report(tmp_root)
     local_pass = all(
         item["status"] == "PASS"
-        for item in (runner, stale_lease, disk, retry, lost_ack, retry_dead_letter, operator_control, install_pack)
+        for item in (
+            runner,
+            stale_lease,
+            disk,
+            retry,
+            queue_backpressure,
+            lost_ack,
+            retry_dead_letter,
+            operator_control,
+            install_pack,
+        )
     )
     report = {
         "report_version": "direct-sync-phase-g-label-match-runtime-v1",
@@ -551,6 +611,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "stale_lease_recovery_report": stale_lease,
         "disk_pressure_report": disk,
         "retry_wait_report": retry,
+        "queue_backpressure_report": queue_backpressure,
         "retry_dead_letter_report": retry_dead_letter,
         "operator_control_report": operator_control,
         "lost_ack_replay_report": {

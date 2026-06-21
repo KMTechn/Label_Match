@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,6 +16,9 @@ from direct_sync_push import (
     DEFAULT_TIMEOUT_SECONDS,
     DirectSyncPushError,
     ProducerCredentials,
+    RELAY_STATUS_LEASED,
+    RELAY_STATUS_PENDING,
+    RELAY_STATUS_RETRY_WAIT,
     UploadResult,
     drain_one_relay_batch,
     enqueue_source_file_for_relay,
@@ -42,6 +46,8 @@ class DirectSyncRuntimeConfig:
     retry_base_seconds: int = DEFAULT_RETRY_SECONDS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     operator_pause_path: str | os.PathLike[str] = ""
+    max_active_queue_count: int = 0
+    max_active_queue_age_seconds: int = 0
 
 
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
@@ -99,6 +105,66 @@ def _disk_pressure_report(config: DirectSyncRuntimeConfig) -> dict[str, Any]:
     }
 
 
+def _parse_utc_text(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _queue_backpressure_report(
+    config: DirectSyncRuntimeConfig,
+    *,
+    now: str = "",
+) -> dict[str, Any]:
+    max_count = max(0, int(config.max_active_queue_count or 0))
+    max_age_seconds = max(0, int(config.max_active_queue_age_seconds or 0))
+    if max_count <= 0 and max_age_seconds <= 0:
+        return {
+            "status": "pass",
+            "enabled": False,
+            "max_active_queue_count": max_count,
+            "max_active_queue_age_seconds": max_age_seconds,
+        }
+    queue = relay_queue_status(config.db_path)
+    counts = dict(queue.get("counts") or {})
+    active_count = sum(
+        int(counts.get(status, 0) or 0)
+        for status in (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, RELAY_STATUS_LEASED)
+    )
+    oldest_active = str(queue.get("oldest_active_created_at") or "")
+    oldest_age_seconds = 0
+    reasons: list[str] = []
+    if max_count > 0 and active_count >= max_count:
+        reasons.append("active_queue_count_threshold")
+    if max_age_seconds > 0 and oldest_active:
+        oldest_dt = _parse_utc_text(oldest_active)
+        now_dt = _parse_utc_text(now) or datetime.now(timezone.utc)
+        if oldest_dt is None:
+            reasons.append("oldest_active_age_unknown")
+        else:
+            oldest_age_seconds = max(0, int((now_dt - oldest_dt).total_seconds()))
+            if oldest_age_seconds >= max_age_seconds:
+                reasons.append("oldest_active_age_threshold")
+    return {
+        "status": "blocked" if reasons else "pass",
+        "enabled": True,
+        "reasons": reasons,
+        "active_queue_count": active_count,
+        "oldest_active_created_at": oldest_active,
+        "oldest_active_age_seconds": oldest_age_seconds,
+        "max_active_queue_count": max_count,
+        "max_active_queue_age_seconds": max_age_seconds,
+        "queue": queue,
+    }
+
+
 def _result_summary(result: UploadResult | None) -> dict[str, Any]:
     if result is None:
         return {
@@ -141,6 +207,7 @@ def _write_runtime_status(
     stale_leases_reset: int = 0,
     last_result: Mapping[str, Any] | None = None,
     operator_control: Mapping[str, Any] | None = None,
+    queue_backpressure: Mapping[str, Any] | None = None,
     error_code: str = "",
     error_message: str = "",
 ) -> dict[str, Any]:
@@ -153,6 +220,7 @@ def _write_runtime_status(
         "stale_leases_reset": int(stale_leases_reset),
         "last_result": dict(last_result or {}),
         "operator_control": dict(operator_control or {}),
+        "queue_backpressure": dict(queue_backpressure or {}),
         "error_code": error_code,
         "error_message": error_message,
         "updated_at": utc_now_text(),
@@ -193,6 +261,25 @@ def _write_paused_status(config: DirectSyncRuntimeConfig, *, event: str) -> dict
     return status
 
 
+def _write_backpressure_status(
+    config: DirectSyncRuntimeConfig,
+    *,
+    backpressure: Mapping[str, Any],
+    event: str,
+) -> dict[str, Any]:
+    status = _write_runtime_status(
+        config,
+        status="blocked_queue_backpressure",
+        queue=backpressure.get("queue") if isinstance(backpressure.get("queue"), Mapping) else relay_queue_status(config.db_path),
+        disk={"status": "not_checked", "reason": "queue_backpressure"},
+        queue_backpressure=backpressure,
+        error_code="queue_backpressure",
+        error_message="direct-sync relay active queue exceeds configured enqueue threshold",
+    )
+    _append_runtime_event(config, event, status)
+    return status
+
+
 def enqueue_completed_source_file(
     config: DirectSyncRuntimeConfig,
     *,
@@ -203,6 +290,14 @@ def enqueue_completed_source_file(
     """Spool one completed Label_Match CSV and persist local operator evidence."""
     if _paused_by_operator(config).get("paused"):
         return _write_paused_status(config, event="enqueue_paused_by_operator")
+
+    backpressure = _queue_backpressure_report(config)
+    if backpressure["status"] != "pass":
+        return _write_backpressure_status(
+            config,
+            backpressure=backpressure,
+            event="enqueue_blocked_queue_backpressure",
+        )
 
     disk = _disk_pressure_report(config)
     if disk["status"] != "pass":

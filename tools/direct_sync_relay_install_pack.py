@@ -60,12 +60,23 @@ def _append_source_scan_args(runner_parts: list[str], source_scan: dict) -> None
     runner_parts.extend(["--max-enqueue-files", str(source_scan["max_enqueue_files"])])
 
 
+def _backpressure_config(args: argparse.Namespace) -> dict:
+    return {
+        "max_active_queue_count": max(0, int(getattr(args, "max_active_queue_count", 1000) or 0)),
+        "max_active_queue_age_seconds": max(
+            0,
+            int(getattr(args, "max_active_queue_age_seconds", 24 * 60 * 60) or 0),
+        ),
+    }
+
+
 def build_install_plan(args: argparse.Namespace) -> dict:
     app_root = Path(args.app_root).resolve()
     python_exe = str(Path(args.python_exe).resolve())
     runner_script = app_root / "tools" / "direct_sync_relay_runner.py"
     paths = _runtime_paths(args.program_data_root)
     source_scan = _source_scan_config(args)
+    backpressure = _backpressure_config(args)
     runner_parts = [
         python_exe,
         str(runner_script),
@@ -89,6 +100,10 @@ def build_install_plan(args: argparse.Namespace) -> dict:
         args.task_name,
         "--min-free-bytes",
         str(max(0, int(args.min_free_bytes))),
+        "--max-active-queue-count",
+        str(backpressure["max_active_queue_count"]),
+        "--max-active-queue-age-seconds",
+        str(backpressure["max_active_queue_age_seconds"]),
     ]
     _append_source_scan_args(runner_parts, source_scan)
     task_action = _quote_cmd(runner_parts)
@@ -115,6 +130,7 @@ def build_install_plan(args: argparse.Namespace) -> dict:
         "program_data_root": str(Path(args.program_data_root)),
         "runtime_paths": paths,
         "source_scan": source_scan,
+        "backpressure": backpressure,
         "runner_script": str(runner_script),
         "runner_command": runner_parts,
         "scheduled_task_create_command": create_command,
@@ -153,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scan-source-dir", default="")
     parser.add_argument("--source-glob", action="append", default=[])
     parser.add_argument("--max-enqueue-files", type=int, default=100)
+    parser.add_argument("--max-active-queue-count", type=int, default=1000)
+    parser.add_argument("--max-active-queue-age-seconds", type=int, default=24 * 60 * 60)
     parser.add_argument("--report-path", required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--uninstall", action="store_true")

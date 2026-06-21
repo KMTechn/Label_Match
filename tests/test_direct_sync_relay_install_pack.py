@@ -73,6 +73,12 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     assert report["source_scan"]["max_enqueue_files"] == 100
     assert "--operator-pause-path" in report["runner_command"]
     assert report["runtime_paths"]["operator_pause_path"] in report["runner_command"]
+    assert report["backpressure"] == {
+        "max_active_queue_age_seconds": 24 * 60 * 60,
+        "max_active_queue_count": 1000,
+    }
+    assert "--max-active-queue-count" in report["runner_command"]
+    assert "--max-active-queue-age-seconds" in report["runner_command"]
     assert "schtasks.exe" == report["scheduled_task_create_command"][0]
     assert str(credential_path.resolve()) in report["runner_command"]
     assert "install-pack-secret" not in report_text

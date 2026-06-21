@@ -32,10 +32,17 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["stale_lease_recovery_report"]["status"] == "PASS"
     assert report["disk_pressure_report"]["status"] == "PASS"
     assert report["retry_wait_report"]["status"] == "PASS"
+    assert report["queue_backpressure_report"]["status"] == "PASS"
+    assert report["queue_backpressure_report"]["blocked_status"] == "blocked_queue_backpressure"
     assert report["retry_dead_letter_report"]["status"] == "PASS"
     assert report["lost_ack_replay_report"]["local_replay_report"]["status"] == "PASS"
     assert report["production_install_pack_report"]["local_dry_run_report"]["status"] == "PASS"
     assert report["production_install_pack_report"]["local_dry_run_report"]["operator_pause_path"]
     assert "--operator-pause-path" in report["production_install_pack_report"]["local_dry_run_report"]["runner_command"]
+    assert report["production_install_pack_report"]["local_dry_run_report"]["backpressure"] == {
+        "max_active_queue_age_seconds": 24 * 60 * 60,
+        "max_active_queue_count": 1000,
+    }
+    assert "--max-active-queue-count" in report["production_install_pack_report"]["local_dry_run_report"]["runner_command"]
     assert "label-phase-g-local-secret" not in report_text
     assert "X-Producer-Signature" not in report_text

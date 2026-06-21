@@ -48,6 +48,8 @@ def _build_config(args: argparse.Namespace) -> DirectSyncRuntimeConfig:
         retry_base_seconds=args.retry_base_seconds,
         timeout_seconds=args.timeout_seconds,
         operator_pause_path=args.operator_pause_path,
+        max_active_queue_count=args.max_active_queue_count,
+        max_active_queue_age_seconds=args.max_active_queue_age_seconds,
     )
 
 
@@ -65,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retry-base-seconds", type=int, default=60)
     parser.add_argument("--timeout-seconds", type=int, default=30)
     parser.add_argument("--operator-pause-path", default="")
+    parser.add_argument("--max-active-queue-count", type=int, default=1000)
+    parser.add_argument("--max-active-queue-age-seconds", type=int, default=24 * 60 * 60)
     parser.add_argument("--enqueue-source-file", default="")
     parser.add_argument("--relative-path", default="")
     parser.add_argument("--scan-source-dir", default="")
@@ -90,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         ):
             current = enqueue_completed_source_file(config, source_file_path=source_file)
             statuses.append(current)
-            if current["status"] == "paused_by_operator":
+            if current["status"] in {"paused_by_operator", "blocked_queue_backpressure", "blocked_disk_pressure"}:
                 break
         status = statuses[-1] if statuses else {"status": "scan_no_files"}
         status["scan_enqueued_count"] = sum(1 for item in statuses if item["status"] == "enqueued")
@@ -99,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"direct_sync_relay_status={status['status']}")
     if "scan_enqueued_count" in status:
         print(f"direct_sync_scan_enqueued_count={status['scan_enqueued_count']}")
-    return 2 if status["status"] == "blocked_disk_pressure" else 0
+    return 2 if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure"} else 0
 
 
 if __name__ == "__main__":
