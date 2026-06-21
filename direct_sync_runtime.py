@@ -199,6 +199,7 @@ def enqueue_completed_source_file(
             producer_manifest_path=config.producer_manifest_path,
             credentials=creds,
             relative_path=relative_path,
+            dedupe_existing=True,
         )
     except DirectSyncPushError as exc:
         queue = relay_queue_status(config.db_path)
@@ -225,6 +226,7 @@ def enqueue_completed_source_file(
             "relative_path": row.relative_path,
             "content_sha256": row.content_sha256,
             "byte_length": row.byte_length,
+            "deduped_existing": row.deduped_existing,
         },
     )
     _append_runtime_event(
@@ -237,6 +239,7 @@ def enqueue_completed_source_file(
             "relative_path": row.relative_path,
             "content_sha256": row.content_sha256,
             "byte_length": row.byte_length,
+            "deduped_existing": row.deduped_existing,
         },
     )
     return status

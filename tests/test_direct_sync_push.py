@@ -238,6 +238,80 @@ def test_relay_enqueue_spools_file_without_storing_auth_secret_or_signature(tmp_
     assert b"PRODUCER-HMAC-SHA256-V1" not in db_bytes
 
 
+def test_relay_enqueue_dedupes_same_completed_file_but_allows_changed_content(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    spool_dir = tmp_path / "spool"
+
+    first = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+    duplicate = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+
+    assert duplicate.relay_id == first.relay_id
+    assert duplicate.deduped_existing is True
+    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_PENDING] == 1
+    assert len(list(spool_dir.iterdir())) == 1
+
+    csv_path.write_text(
+        "timestamp,worker_name,event,details\n"
+        "2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n",
+        encoding="utf-8",
+    )
+    changed = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+
+    assert changed.relay_id != first.relay_id
+    assert changed.deduped_existing is False
+    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_PENDING] == 2
+
+
+def test_relay_enqueue_keeps_legacy_duplicate_behavior_without_dedupe(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+
+    first = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    second = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+
+    assert second.relay_id != first.relay_id
+    assert second.deduped_existing is False
+    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_PENDING] == 2
+
+
 def test_relay_claim_and_stale_lease_reset(tmp_path):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)

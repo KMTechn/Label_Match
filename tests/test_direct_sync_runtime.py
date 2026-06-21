@@ -185,6 +185,39 @@ def test_runtime_enqueue_writes_status_and_redacted_log(tmp_path):
     assert_runtime_artifacts_are_redacted(config)
 
 
+def test_runtime_repeated_source_scan_reuses_existing_relay_row(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+
+    first = enqueue_completed_source_file(config, source_file_path=source_file)
+    duplicate = enqueue_completed_source_file(config, source_file_path=source_file)
+
+    assert duplicate["status"] == "enqueued"
+    assert duplicate["last_result"]["relay_id"] == first["last_result"]["relay_id"]
+    assert duplicate["last_result"]["deduped_existing"] is True
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_PENDING] == 1
+    assert len(list(Path(config.spool_dir).iterdir())) == 1
+    assert_runtime_artifacts_are_redacted(config)
+
+
+def test_runtime_repeated_source_scan_after_ack_does_not_requeue(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+    session = EchoAcceptedSession()
+
+    acked = run_relay_once(config, session=session)
+    duplicate = enqueue_completed_source_file(config, source_file_path=source_file)
+
+    assert acked["status"] == "acked"
+    assert duplicate["last_result"]["relay_id"] == enqueued["last_result"]["relay_id"]
+    assert duplicate["last_result"]["relay_status"] == RELAY_STATUS_ACKED
+    assert duplicate["last_result"]["deduped_existing"] is True
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_ACKED] == 1
+    assert len(session.calls) == 1
+    assert_runtime_artifacts_are_redacted(config)
+
+
 def test_runtime_once_acks_batch_and_records_local_status(tmp_path):
     config = make_config(tmp_path)
     source_file = write_csv(tmp_path)
