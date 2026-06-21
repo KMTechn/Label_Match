@@ -1,0 +1,37 @@
+import json
+import subprocess
+import sys
+
+
+def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked(tmp_path):
+    report_path = tmp_path / "reports" / "phase-g-label-match-runtime.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_phase_g_label_match_runtime_report.py",
+            "--tmp-root",
+            str(tmp_path),
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    report_text = report_path.read_text(encoding="utf-8-sig")
+    assert report["status"] == "BLOCKED"
+    assert report["production_ready"] is False
+    assert report["local_contract_status"] == "PASS"
+    assert report["label_match_runtime_relay_report"]["status"] == "BLOCKED"
+    assert report["operator_status_report"]["status"] == "PASS"
+    assert report["stale_lease_recovery_report"]["status"] == "PASS"
+    assert report["disk_pressure_report"]["status"] == "PASS"
+    assert report["retry_wait_report"]["status"] == "PASS"
+    assert report["retry_dead_letter_report"]["status"] == "PASS"
+    assert report["lost_ack_replay_report"]["local_replay_report"]["status"] == "PASS"
+    assert report["production_install_pack_report"]["local_dry_run_report"]["status"] == "PASS"
+    assert "label-phase-g-local-secret" not in report_text
+    assert "X-Producer-Signature" not in report_text

@@ -1,0 +1,369 @@
+import json
+import sqlite3
+from pathlib import Path
+
+from direct_sync_push import (
+    RELAY_STATUS_ACKED,
+    RELAY_STATUS_FAILED_PERMANENT,
+    RELAY_STATUS_OPERATOR_REVIEW,
+    RELAY_STATUS_PENDING,
+    RELAY_STATUS_RETRY_WAIT,
+    ProducerCredentials,
+    build_source_file_plan,
+    claim_next_relay_batch,
+    relay_queue_status,
+    upload_source_file,
+)
+from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def post(self, url, *, data, files, headers, timeout):
+        file_name, file_handle, content_type = files["file"]
+        self.calls.append(
+            {
+                "url": url,
+                "metadata": data["metadata"],
+                "headers": dict(headers),
+                "timeout": timeout,
+                "file_name": file_name,
+                "file_bytes": file_handle.read(),
+                "content_type": content_type,
+            }
+        )
+        return self.response
+
+
+class EchoAcceptedSession:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, *, data, files, headers, timeout):
+        file_name, file_handle, content_type = files["file"]
+        metadata = json.loads(data["metadata"])
+        self.calls.append(
+            {
+                "url": url,
+                "metadata": data["metadata"],
+                "headers": dict(headers),
+                "timeout": timeout,
+                "file_name": file_name,
+                "file_bytes": file_handle.read(),
+                "content_type": content_type,
+            }
+        )
+        return FakeResponse(
+            200,
+            {
+                "request_id": f"request-{metadata['client_batch_id']}",
+                "client_batch_id": metadata["client_batch_id"],
+                "server_source_file_id": (
+                    f"{metadata['source_host_id']}/{metadata['producer_role']}/"
+                    f"{metadata['stream_name']}/{metadata['relative_path']}"
+                ),
+                "committed": True,
+                "status": "accepted",
+                "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
+            },
+        )
+
+
+def make_manifest(tmp_path):
+    manifest = {
+        "schema_version": "producer-onboarding-manifest-v1",
+        "pc_identity": {
+            "pc_id": "LABEL-PC01",
+            "source_host_id": "label-runtime-host-1",
+            "producer_install_id": "install-label-runtime-1",
+        },
+        "apps": ["LabelMatch"],
+        "streams": [
+            {
+                "producer_role": "label_match",
+                "stream_name": "label_match_events",
+                "source_system": "label_match",
+                "source_transport": "legacy_packaging_csv",
+            }
+        ],
+    }
+    path = tmp_path / "producer_manifest.json"
+    path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return manifest, path
+
+
+def write_csv(tmp_path):
+    path = tmp_path / "label_runtime.csv"
+    path.write_text(
+        "timestamp,worker_name,event,details\n"
+        "2026-06-22T00:00:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-1\"\" }\"\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_credential_file(tmp_path):
+    path = tmp_path / "credential.json"
+    path.write_text(
+        json.dumps(
+            {
+                "producer_id": "producer-runtime-1",
+                "key_id": "key-runtime-1",
+                "secret": "runtime-secret",
+                "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def make_config(tmp_path, *, min_free_bytes=0):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    credential_path = write_credential_file(tmp_path)
+    return DirectSyncRuntimeConfig(
+        db_path=tmp_path / "direct_sync_relay.sqlite3",
+        spool_dir=tmp_path / "spool",
+        producer_manifest_path=manifest_path,
+        credential_path=credential_path,
+        upload_status_dir=tmp_path / "upload_status",
+        runtime_status_path=tmp_path / "runtime_status" / "status.json",
+        log_path=tmp_path / "logs" / "relay.jsonl",
+        min_free_bytes=min_free_bytes,
+        retry_base_seconds=1,
+        timeout_seconds=5,
+    )
+
+
+def assert_runtime_artifacts_are_redacted(config):
+    status_bytes = Path(config.runtime_status_path).read_bytes()
+    log_bytes = Path(config.log_path).read_bytes()
+    assert b"runtime-secret" not in status_bytes
+    assert b"runtime-secret" not in log_bytes
+    assert b"X-Producer-Signature" not in status_bytes
+    assert b"X-Producer-Signature" not in log_bytes
+    assert b"PRODUCER-HMAC-SHA256-V1" not in status_bytes
+    assert b"PRODUCER-HMAC-SHA256-V1" not in log_bytes
+
+
+def test_runtime_empty_queue_writes_idle_status_without_posting(tmp_path):
+    config = make_config(tmp_path)
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "idle"
+    assert status["queue"]["counts"] == {}
+    assert session.calls == []
+    assert Path(config.runtime_status_path).is_file()
+    assert Path(config.log_path).is_file()
+
+
+def test_runtime_enqueue_writes_status_and_redacted_log(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+
+    status = enqueue_completed_source_file(config, source_file_path=source_file)
+
+    assert status["status"] == "enqueued"
+    assert status["queue"]["counts"][RELAY_STATUS_PENDING] == 1
+    assert Path(config.runtime_status_path).is_file()
+    assert Path(config.log_path).is_file()
+    assert_runtime_artifacts_are_redacted(config)
+
+
+def test_runtime_once_acks_batch_and_records_local_status(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "acked"
+    assert status["last_result"]["success"] is True
+    assert status["last_result"]["relay_id"] == enqueued["last_result"]["relay_id"]
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_ACKED] == 1
+    assert relay_queue_status(config.db_path)["oldest_active_created_at"] == ""
+    assert len(session.calls) == 1
+    assert session.calls[0]["headers"]["X-Producer-Nonce"]
+    assert_runtime_artifacts_are_redacted(config)
+
+
+def test_runtime_retryable_failure_records_retry_wait_and_skips_early_retry(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    retry_session = FakeSession(
+        FakeResponse(
+            503,
+            {
+                "committed": False,
+                "retryable": True,
+                "error": {"code": "temporary_unavailable", "message": "try later"},
+            },
+        )
+    )
+
+    status = run_relay_once(config, session=retry_session)
+
+    assert status["status"] == "retry_wait"
+    assert status["last_result"]["retryable"] is True
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_RETRY_WAIT] == 1
+    with sqlite3.connect(config.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT next_attempt_at, last_error_code, upload_status_path
+            FROM direct_sync_relay_batches
+            """
+        ).fetchone()
+    assert row["next_attempt_at"]
+    assert row["last_error_code"] == "temporary_unavailable"
+    assert Path(row["upload_status_path"]).is_file()
+
+    early_success = EchoAcceptedSession()
+    idle = run_relay_once(config, session=early_success)
+
+    assert idle["status"] == "idle"
+    assert early_success.calls == []
+
+
+def test_runtime_committed_with_conflict_moves_to_operator_review(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "request_id": "request-conflict-1",
+                "client_batch_id": "relay-conflict-1",
+                "committed": True,
+                "status": "accepted",
+                "totals": {"inserted": 0, "replayed": 0, "quarantined": 1, "errors": 0},
+            },
+        )
+    )
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "operator_review"
+    assert status["last_result"]["committed"] is True
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
+
+
+def test_runtime_permanent_failure_moves_to_failed_permanent(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    session = FakeSession(
+        FakeResponse(
+            400,
+            {
+                "committed": False,
+                "retryable": False,
+                "error": {"code": "metadata_invalid", "message": "bad metadata"},
+            },
+        )
+    )
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "failed_permanent"
+    assert status["last_result"]["error_code"] == "metadata_invalid"
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_FAILED_PERMANENT] == 1
+
+
+def test_runtime_disk_pressure_blocks_without_claiming_pending_batch(tmp_path):
+    normal_config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(normal_config, source_file_path=source_file)
+    blocked_config = make_config(tmp_path, min_free_bytes=10**20)
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(blocked_config, session=session)
+
+    assert status["status"] == "blocked_disk_pressure"
+    assert relay_queue_status(normal_config.db_path)["counts"][RELAY_STATUS_PENDING] == 1
+    assert session.calls == []
+    assert_runtime_artifacts_are_redacted(blocked_config)
+
+
+def test_runtime_resets_stale_lease_after_reboot_like_pause(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    claimed = claim_next_relay_batch(
+        db_path=config.db_path,
+        worker_id="previous-process",
+        lease_seconds=1,
+        now="2026-06-22T00:00:00Z",
+    )
+    assert claimed is not None
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(config, session=session, now="2026-06-22T00:00:02Z")
+
+    assert status["status"] == "acked"
+    assert status["stale_leases_reset"] == 1
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_ACKED] == 1
+
+
+def test_runtime_lost_ack_retry_reuses_same_batch_and_idempotency_after_stale_lease(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    claimed = claim_next_relay_batch(
+        db_path=config.db_path,
+        worker_id="crashed-process",
+        lease_seconds=1,
+        now="2026-06-22T00:00:00Z",
+    )
+    assert claimed is not None
+    credentials = ProducerCredentials(
+        producer_id="producer-runtime-1",
+        key_id="key-runtime-1",
+        secret="runtime-secret",
+        endpoint_url="https://worker.example.invalid/api/producer-ingest/v1/source-file",
+    )
+    plan = build_source_file_plan(
+        source_file_path=claimed.spooled_file_path,
+        producer_manifest_path=claimed.producer_manifest_path,
+        credentials=credentials,
+        relative_path=claimed.relative_path,
+        client_batch_id=claimed.relay_id,
+    )
+    committed_but_unacked = EchoAcceptedSession()
+    upload = upload_source_file(
+        plan,
+        credentials,
+        session=committed_but_unacked,
+        status_dir=tmp_path / "crash_status",
+    )
+    assert upload.success is True
+
+    retry_session = EchoAcceptedSession()
+    retry = run_relay_once(config, session=retry_session, now="2026-06-22T00:00:02Z")
+
+    assert retry["status"] == "acked"
+    assert retry["stale_leases_reset"] == 1
+    first_metadata = json.loads(committed_but_unacked.calls[0]["metadata"])
+    retry_metadata = json.loads(retry_session.calls[0]["metadata"])
+    assert first_metadata["client_batch_id"] == retry_metadata["client_batch_id"] == claimed.relay_id
+    assert first_metadata["idempotency_key"] == retry_metadata["idempotency_key"]
+    assert first_metadata["content_sha256"] == retry_metadata["content_sha256"]
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_ACKED] == 1
