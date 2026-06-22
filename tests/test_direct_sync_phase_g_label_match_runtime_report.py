@@ -50,9 +50,16 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
         runtime_report["source_scope_key"].encode("utf-8")
     ).hexdigest()
     runner_report = runtime_report["local_runner_status_log_report"]
+    runtime_artifact_path = Path(runtime_report["artifact_path"])
     status_artifact_path = Path(runtime_report["status_json_artifact_path"])
     log_artifact_path = Path(runtime_report["redacted_log_artifact_path"])
     assert runtime_report["queue_db_path"] == runner_report["queue_db_path"]
+    assert runtime_report["artifact_ref"] == str(runtime_artifact_path)
+    assert runtime_report["artifact_sha256"] == hashlib.sha256(runtime_artifact_path.read_bytes()).hexdigest()
+    runtime_artifact = json.loads(runtime_artifact_path.read_text(encoding="utf-8-sig"))
+    assert runtime_artifact["evidence"] == "label_match_runtime_relay_report"
+    assert runtime_artifact["status"] == "BLOCKED"
+    assert runtime_report["artifact_status"] == "BLOCKED"
     assert runtime_report["status_json_artifact_ref"] == str(status_artifact_path)
     assert runtime_report["redacted_log_artifact_ref"] == str(log_artifact_path)
     assert runtime_report["status_json_artifact_sha256"] == hashlib.sha256(

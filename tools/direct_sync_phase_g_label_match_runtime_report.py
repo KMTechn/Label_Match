@@ -169,6 +169,22 @@ def _runtime_artifact_bindings(runtime_status_path: Path, log_path: Path) -> dic
     }
 
 
+def _bind_evidence_artifact(entry: dict, *, report_path: Path, evidence_name: str) -> None:
+    artifact_path = report_path.parent / f"{evidence_name}.artifact.json"
+    artifact = {
+        "evidence": evidence_name,
+        "status": entry["status"],
+        "production_ready": False,
+        "source_scope_key_sha256": entry.get("source_scope_key_sha256", ""),
+        "blocked_reason": entry.get("blocked_reason", ""),
+    }
+    _write_json(artifact_path, artifact)
+    entry["artifact_ref"] = str(artifact_path)
+    entry["artifact_path"] = str(artifact_path)
+    entry["artifact_sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    entry["artifact_status"] = artifact["status"]
+
+
 def _runtime_path_boundary_report(install_pack: dict) -> dict:
     return {
         "status": "PASS" if Path(install_pack["program_data_root"]).is_absolute() else "FAIL",
@@ -944,6 +960,11 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
             "blocked_reason": "No approved Label_Match production install, task/service registration, smoke test, uninstall, or restore evidence.",
         },
     }
+    _bind_evidence_artifact(
+        report["label_match_runtime_relay_report"],
+        report_path=report_path,
+        evidence_name="label_match_runtime_relay_report",
+    )
     _write_json(report_path, report)
     return report
 
