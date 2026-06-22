@@ -319,6 +319,18 @@ def _response_json(response: Any) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _transport_error_result(exc: Exception) -> UploadResult:
+    return UploadResult(
+        success=False,
+        status_code=0,
+        committed=False,
+        retryable=True,
+        receipt={},
+        error_code="transport_error",
+        error_message=f"producer ingest transport error: {type(exc).__name__}",
+    )
+
+
 def upload_source_file(
     plan: SourceFilePlan,
     credentials: ProducerCredentials,
@@ -332,29 +344,33 @@ def upload_source_file(
 
         session = requests.Session()
     headers = signed_headers(credentials, plan.metadata)
-    with Path(plan.source_file_path).open("rb") as handle:
-        response = session.post(
-            credentials.endpoint_url,
-            data={"metadata": canonical_json(plan.metadata)},
-            files={"file": (Path(plan.source_file_path).name, handle, "application/octet-stream")},
-            headers=headers,
-            timeout=timeout,
+    try:
+        with Path(plan.source_file_path).open("rb") as handle:
+            response = session.post(
+                credentials.endpoint_url,
+                data={"metadata": canonical_json(plan.metadata)},
+                files={"file": (Path(plan.source_file_path).name, handle, "application/octet-stream")},
+                headers=headers,
+                timeout=timeout,
+            )
+    except Exception as exc:
+        result = _transport_error_result(exc)
+    else:
+        payload = _response_json(response)
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
+        committed = bool(payload.get("committed")) and 200 <= status_code < 300
+        success = committed and int(totals.get("errors") or 0) == 0 and int(totals.get("quarantined") or 0) == 0
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        result = UploadResult(
+            success=success,
+            status_code=status_code,
+            committed=committed,
+            retryable=bool(payload.get("retryable")) or status_code in {408, 429, 500, 502, 503, 504},
+            receipt=payload,
+            error_code=str(error.get("code") or ""),
+            error_message=str(error.get("message") or ""),
         )
-    payload = _response_json(response)
-    status_code = int(getattr(response, "status_code", 0) or 0)
-    totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
-    committed = bool(payload.get("committed")) and 200 <= status_code < 300
-    success = committed and int(totals.get("errors") or 0) == 0 and int(totals.get("quarantined") or 0) == 0
-    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-    result = UploadResult(
-        success=success,
-        status_code=status_code,
-        committed=committed,
-        retryable=bool(payload.get("retryable")) or status_code in {408, 429, 500, 502, 503, 504},
-        receipt=payload,
-        error_code=str(error.get("code") or ""),
-        error_message=str(error.get("message") or ""),
-    )
     if status_dir:
         suffix = hashlib.sha256(plan.metadata["idempotency_key"].encode("utf-8")).hexdigest()[:12]
         status_path = Path(status_dir) / f"direct_sync_upload_status_{suffix}.json"

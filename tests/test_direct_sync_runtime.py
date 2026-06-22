@@ -52,6 +52,15 @@ class FakeSession:
         return self.response
 
 
+class RaisingSession:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, *, data, files, headers, timeout):
+        self.calls.append({"url": url, "headers": dict(headers), "timeout": timeout})
+        raise TimeoutError("Authorization: Bearer SHOULD-NOT-LEAK raw_payload")
+
+
 class EchoAcceptedSession:
     def __init__(self):
         self.calls = []
@@ -484,6 +493,34 @@ def test_runtime_retryable_failure_records_retry_wait_and_skips_early_retry(tmp_
 
     assert idle["status"] == "idle"
     assert early_success.calls == []
+
+
+def test_runtime_transport_exception_records_retry_wait_and_redacts_status(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    session = RaisingSession()
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "retry_wait"
+    assert status["last_result"]["retryable"] is True
+    assert status["last_result"]["status_code"] == 0
+    assert status["last_result"]["error_code"] == "transport_error"
+    assert "SHOULD-NOT-LEAK" not in json.dumps(status)
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_RETRY_WAIT] == 1
+    with sqlite3.connect(config.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT last_error_code, upload_status_path
+            FROM direct_sync_relay_batches
+            """
+        ).fetchone()
+    assert row["last_error_code"] == "transport_error"
+    status_text = Path(row["upload_status_path"]).read_text(encoding="utf-8")
+    assert "TimeoutError" in status_text
+    assert "SHOULD-NOT-LEAK" not in status_text
 
 
 def test_runtime_committed_with_conflict_moves_to_operator_review(tmp_path):
