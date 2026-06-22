@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -133,6 +134,23 @@ def _make_manifest(tmp_root: Path) -> Path:
     path = tmp_root / "producer_manifest.json"
     _write_json(path, manifest)
     return path
+
+
+def _source_scope_identity(manifest_path: Path) -> dict:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    stream = manifest["streams"][0]
+    source_scope_key = (
+        f"{manifest['pc_identity']['source_host_id']}/"
+        f"{stream['producer_role']}/{stream['stream_name']}"
+    )
+    return {
+        "source_host_id": manifest["pc_identity"]["source_host_id"],
+        "producer_role": stream["producer_role"],
+        "stream_name": stream["stream_name"],
+        "source_transport": stream["source_transport"],
+        "source_scope_key": source_scope_key,
+        "source_scope_key_sha256": hashlib.sha256(source_scope_key.encode("utf-8")).hexdigest(),
+    }
 
 
 def _make_credential(tmp_root: Path) -> Path:
@@ -708,6 +726,7 @@ def _source_scan_admission_report(tmp_root: Path) -> dict:
 
 def build_report(tmp_root: Path, report_path: Path) -> dict:
     manifest_path = _make_manifest(tmp_root)
+    source_identity = _source_scope_identity(manifest_path)
     credential_path = _make_credential(tmp_root)
     runner = _runner_status_log_report(tmp_root)
     stale_lease = _stale_lease_report(tmp_root)
@@ -748,6 +767,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "local_contract_status": "PASS" if local_pass else "FAIL",
         "label_match_runtime_relay_report": {
             "status": "BLOCKED" if local_pass else "FAIL",
+            **source_identity,
             "local_runner_status_log_report": runner,
             "blocked_reason": "No real Label_Match producer-PC scheduled task/service run or production direct receipts.",
         },

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -25,7 +26,16 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["status"] == "BLOCKED"
     assert report["production_ready"] is False
     assert report["local_contract_status"] == "PASS"
-    assert report["label_match_runtime_relay_report"]["status"] == "BLOCKED"
+    runtime_report = report["label_match_runtime_relay_report"]
+    assert runtime_report["status"] == "BLOCKED"
+    assert runtime_report["source_host_id"] == "label-match-phase-g-host"
+    assert runtime_report["producer_role"] == "label_match"
+    assert runtime_report["stream_name"] == "label_match_events"
+    assert runtime_report["source_transport"] == "legacy_packaging_csv"
+    assert runtime_report["source_scope_key"] == "label-match-phase-g-host/label_match/label_match_events"
+    assert runtime_report["source_scope_key_sha256"] == hashlib.sha256(
+        runtime_report["source_scope_key"].encode("utf-8")
+    ).hexdigest()
     assert report["operator_status_report"]["status"] == "PASS"
     assert report["operator_control_report"]["status"] == "PASS"
     assert report["operator_control_report"]["audit_redaction_pass"] is True
