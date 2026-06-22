@@ -33,7 +33,12 @@ from direct_sync_push import (  # noqa: E402
 from direct_sync_operator import operator_status, pause_relay, resume_relay, retry_dead_relay_batch  # noqa: E402
 from direct_sync_relay_install_pack import build_install_plan  # noqa: E402
 from direct_sync_relay_runner import _scan_source_files  # noqa: E402
-from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once  # noqa: E402
+from direct_sync_runtime import (  # noqa: E402
+    DirectSyncRuntimeConfig,
+    enqueue_completed_source_file,
+    load_credentials_from_json,
+    run_relay_once,
+)
 
 
 class FakeResponse:
@@ -142,6 +147,54 @@ def _make_credential(tmp_root: Path) -> Path:
         },
     )
     return path
+
+
+def _credential_secret_ref_report(tmp_root: Path) -> dict:
+    import os
+
+    env_name = "LABEL_PHASE_G_SECRET_REF"
+    secret_value = "label-phase-g-secret-ref-fixture"
+    credential_path = tmp_root / "credential_secret_ref.json"
+    _write_json(
+        credential_path,
+        {
+            "producer_id": "producer-label-phase-g",
+            "key_id": "key-label-phase-g",
+            "secret_ref": f"env:{env_name}",
+            "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+        },
+    )
+    previous = os.environ.get(env_name)
+    os.environ[env_name] = secret_value
+    try:
+        credentials = load_credentials_from_json(credential_path)
+    finally:
+        if previous is None:
+            os.environ.pop(env_name, None)
+        else:
+            os.environ[env_name] = previous
+    payload = json.loads(credential_path.read_text(encoding="utf-8-sig"))
+    raw_secret_field_present = any(key in payload for key in ("secret", "secret_hex", "raw_secret"))
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    ok = (
+        credentials.producer_id == "producer-label-phase-g"
+        and credentials.key_id == "key-label-phase-g"
+        and credentials.secret == secret_value
+        and credentials.endpoint_url == "https://worker.example.invalid/api/producer-ingest/v1/source-file"
+        and payload.get("secret_ref") == f"env:{env_name}"
+        and raw_secret_field_present is False
+        and secret_value not in serialized
+    )
+    return {
+        "status": "PASS" if ok else "FAIL",
+        "scope": "local env secret_ref loader fixture only",
+        "credential_path": str(credential_path),
+        "secret_ref_scheme": "env",
+        "raw_secret_field_present": raw_secret_field_present,
+        "raw_secret_value_in_file": secret_value in serialized,
+        "production_readback_status": "BLOCKED",
+        "blocked_reason": "No real producer-PC wincred:/dpapi: credential bootstrap and readback evidence.",
+    }
 
 
 def _runtime_config(
@@ -667,6 +720,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
     operator_control = _operator_control_report(tmp_root)
     install_pack = _install_pack_dry_run_report(tmp_root)
     source_scan_admission = _source_scan_admission_report(tmp_root)
+    credential_secret_ref = _credential_secret_ref_report(tmp_root)
     local_pass = all(
         item["status"] == "PASS"
         for item in (
@@ -681,6 +735,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
             operator_control,
             install_pack,
             source_scan_admission,
+            credential_secret_ref,
         )
     )
     report = {
@@ -708,6 +763,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "retry_dead_letter_report": retry_dead_letter,
         "operator_control_report": operator_control,
         "source_scan_admission_report": source_scan_admission,
+        "credential_secret_ref_report": credential_secret_ref,
         "lost_ack_replay_report": {
             "status": "BLOCKED",
             "local_replay_report": lost_ack,
