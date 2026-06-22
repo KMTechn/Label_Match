@@ -77,6 +77,9 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert runtime_report["runtime_path_boundary_report"]["status"] == "PASS"
     assert runtime_report["source_scan_admission_report"]["status"] == "PASS"
     assert runtime_report["credential_secret_ref_report"]["status"] == "PASS"
+    assert runtime_report["secret_scan_report"]["status"] == "PASS"
+    assert runtime_report["secret_scan_report"]["runner_artifacts_redacted"] is True
+    assert runtime_report["secret_scan_report"]["credential_secret_material_field_present"] is True
     assert runtime_report["process_kill_recovery_report"]["status"] == "PASS"
     assert runtime_report["queue_backpressure_report"]["status"] == "PASS"
     assert runtime_report["operator_status_report"]["status"] == "PASS"

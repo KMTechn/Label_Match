@@ -233,6 +233,21 @@ def _flow_runtime_required_metrics(runner: dict, install_pack: dict) -> dict:
     }
 
 
+def _flow_secret_scan_report(runner: dict, install_pack: dict, credential_secret_ref: dict) -> dict:
+    install_secret_redaction = install_pack.get("secret_redaction") or {}
+    checks = {
+        "runner_artifacts_redacted": runner.get("redaction_pass") is True,
+        "install_pack_raw_secret_in_report": install_secret_redaction.get("raw_secret_in_report") is False,
+        "credential_secret_material_field_present": credential_secret_ref.get("secret_material_field_present") is False,
+        "credential_secret_material_value_in_file": credential_secret_ref.get("secret_material_value_in_file") is False,
+    }
+    return {
+        "status": "PASS" if all(checks.values()) else "FAIL",
+        "scope": "local runtime report/artifact secret redaction scan",
+        **checks,
+    }
+
+
 def _flow_runtime_subreports(
     *,
     runner: dict,
@@ -252,6 +267,7 @@ def _flow_runtime_subreports(
 ) -> dict:
     return {
         **_flow_runtime_required_metrics(runner, install_pack),
+        "secret_scan_report": _flow_secret_scan_report(runner, install_pack, credential_secret_ref),
         "relay_state_machine_report": runner,
         "lost_ack_replay_report": {
             "status": "BLOCKED",
