@@ -94,6 +94,27 @@ def test_runner_scan_source_dir_enqueues_matching_csv_idempotently(tmp_path, cap
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
 
 
+def test_runner_scan_source_content_conflict_returns_failure_exit_code(tmp_path, capsys):
+    sync_dir = tmp_path / "sync"
+    csv_path = write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+
+    assert main(args) == 0
+    csv_path.write_text(
+        "timestamp,worker_name,event,details\n"
+        "2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n",
+        encoding="utf-8",
+    )
+
+    assert main(args) == 1
+    output = capsys.readouterr().out
+    assert "direct_sync_relay_status=enqueue_error" in output
+    assert "direct_sync_scan_enqueued_count=0" in output
+    assert "direct_sync_scan_attempted_count=1" in output
+    assert "direct_sync_scan_failed_source_file=" in output
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
+
+
 def test_runner_scan_source_dir_filters_broad_csv_glob_to_label_logs(tmp_path, capsys):
     sync_dir = tmp_path / "sync"
     write_label_csv(sync_dir)
@@ -130,6 +151,21 @@ def test_runner_scan_source_dir_handles_no_matching_files(tmp_path, capsys):
     assert "direct_sync_relay_status=scan_no_files" in output
     assert "direct_sync_scan_enqueued_count=0" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}
+
+
+def test_runner_runtime_error_returns_failure_exit_code(tmp_path, capsys):
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+    scan_index = args.index("--scan-source-dir")
+    del args[scan_index : scan_index + 2]
+    glob_index = args.index("--source-glob")
+    del args[glob_index : glob_index + 2]
+    (tmp_path / "relay.sqlite3").write_text("not a sqlite database", encoding="utf-8")
+
+    assert main(args) == 1
+    output = capsys.readouterr().out
+    assert "direct_sync_relay_status=runtime_error" in output
 
 
 def test_runner_scan_source_dir_stops_on_backpressure(tmp_path, capsys):

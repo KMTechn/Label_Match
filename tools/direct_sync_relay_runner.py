@@ -105,23 +105,42 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.scan_source_dir:
         statuses = []
+        enqueued_count = 0
+        attempted_count = 0
+        preflight_status = None
         for source_file in _scan_source_files(
             args.scan_source_dir,
             args.source_glob,
             args.max_enqueue_files,
         ):
             current = enqueue_completed_source_file(config, source_file_path=source_file)
-            statuses.append(current)
             if current["status"] in {"paused_by_operator", "blocked_queue_backpressure", "blocked_disk_pressure"}:
+                preflight_status = current
                 break
-        status = statuses[-1] if statuses else {"status": "scan_no_files"}
-        status["scan_enqueued_count"] = sum(1 for item in statuses if item["status"] == "enqueued")
+            statuses.append(current)
+            attempted_count += 1
+            if current["status"] == "enqueued":
+                enqueued_count += 1
+            else:
+                current["scan_failed_source_file"] = str(source_file)
+                break
+        status = preflight_status or (statuses[-1] if statuses else {"status": "scan_no_files"})
+        status["scan_enqueued_count"] = enqueued_count
+        status["scan_attempted_count"] = attempted_count
     else:
         status = run_relay_once(config)
     print(f"direct_sync_relay_status={status['status']}")
     if "scan_enqueued_count" in status:
         print(f"direct_sync_scan_enqueued_count={status['scan_enqueued_count']}")
-    return 2 if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure"} else 0
+    if "scan_attempted_count" in status:
+        print(f"direct_sync_scan_attempted_count={status['scan_attempted_count']}")
+    if status.get("scan_failed_source_file"):
+        print(f"direct_sync_scan_failed_source_file={status['scan_failed_source_file']}")
+    if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure"}:
+        return 2
+    if status["status"] in {"enqueue_error", "runtime_error"}:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
