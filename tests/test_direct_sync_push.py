@@ -130,22 +130,26 @@ def expect_push_error(callable_obj):
 def test_upload_rejects_unsafe_endpoint_before_signing_or_posting(tmp_path):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
-    credentials = ProducerCredentials(
-        producer_id="producer-label",
-        key_id="key-label",
-        secret="label-secret",
-        endpoint_url="http://localhost/api/producer-ingest/v1/source-file",
-    )
-    plan = build_source_file_plan(
-        source_file_path=csv_path,
-        producer_manifest_path=manifest_path,
-        credentials=credentials,
-    )
-    session = FakeSession(FakeResponse(200, {"committed": True}))
+    for endpoint_url in (
+        "http://localhost/api/producer-ingest/v1/source-file",
+        "https://producer:secret@worker.example.invalid/api/producer-ingest/v1/source-file",
+    ):
+        credentials = ProducerCredentials(
+            producer_id="producer-label",
+            key_id="key-label",
+            secret="label-secret",
+            endpoint_url=endpoint_url,
+        )
+        plan = build_source_file_plan(
+            source_file_path=csv_path,
+            producer_manifest_path=manifest_path,
+            credentials=credentials,
+        )
+        session = FakeSession(FakeResponse(200, {"committed": True}))
 
-    expect_push_error(lambda: upload_source_file(plan, credentials, session=session))
+        expect_push_error(lambda: upload_source_file(plan, credentials, session=session))
 
-    assert session.calls == []
+        assert session.calls == []
 
 
 def test_build_plan_uses_label_match_stream_and_csv_rows(tmp_path):

@@ -283,6 +283,8 @@ def validate_endpoint_url(endpoint_url: str) -> None:
         raise DirectSyncPushError("endpoint_url must use https")
     if not parsed.netloc or not parsed.hostname:
         raise DirectSyncPushError("endpoint_url must include a hostname")
+    if parsed.username or parsed.password:
+        raise DirectSyncPushError("endpoint_url must not include username or password")
     if parsed.path != DEFAULT_ENDPOINT_PATH:
         raise DirectSyncPushError(f"endpoint_url path must be {DEFAULT_ENDPOINT_PATH}")
     if parsed.query or parsed.fragment:
