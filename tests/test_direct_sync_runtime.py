@@ -255,6 +255,22 @@ def test_runtime_rejects_unsafe_endpoint_before_posting_or_claiming(tmp_path):
     assert queue["counts"].get(RELAY_STATUS_LEASED, 0) == 0
 
 
+def test_runtime_corrupt_relay_db_records_runtime_error_without_posting(tmp_path):
+    config = make_config(tmp_path)
+    Path(config.db_path).write_text("not a sqlite database", encoding="utf-8")
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "runtime_error"
+    assert status["error_code"] == "relay_queue_db_error"
+    assert status["error_message"] == "relay queue database error: DatabaseError"
+    assert status["queue"]["status"] == "unavailable"
+    assert status["queue"]["error_code"] == "relay_queue_db_error"
+    assert "not a sqlite database" not in json.dumps(status)
+    assert session.calls == []
+
+
 def assert_runtime_artifacts_are_redacted(config):
     status_bytes = Path(config.runtime_status_path).read_bytes()
     log_bytes = Path(config.log_path).read_bytes()

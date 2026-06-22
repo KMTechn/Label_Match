@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -228,6 +229,23 @@ def _disk_pressure_report(config: DirectSyncRuntimeConfig) -> dict[str, Any]:
     }
 
 
+def _safe_relay_queue_status(db_path: str | os.PathLike[str]) -> dict[str, Any]:
+    try:
+        return relay_queue_status(db_path)
+    except sqlite3.DatabaseError as exc:
+        return {
+            "status": "unavailable",
+            "error_code": "relay_queue_db_error",
+            "error_message": f"relay queue database error: {exc.__class__.__name__}",
+        }
+
+
+def _runtime_error_details(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, sqlite3.DatabaseError):
+        return "relay_queue_db_error", f"relay queue database error: {exc.__class__.__name__}"
+    return "direct_sync_runtime_error", str(exc)
+
+
 def _parse_utc_text(value: str) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -424,7 +442,7 @@ def enqueue_completed_source_file(
 
     disk = _disk_pressure_report(config)
     if disk["status"] != "pass":
-        queue = relay_queue_status(config.db_path)
+        queue = _safe_relay_queue_status(config.db_path)
         status = _write_runtime_status(
             config,
             status="blocked_disk_pressure",
@@ -515,8 +533,9 @@ def run_relay_once(
         _append_runtime_event(config, "relay_blocked_disk_pressure", status)
         return status
 
-    reset_count = reset_stale_relay_leases(db_path=config.db_path, now=now or utc_now_text())
+    reset_count = 0
     try:
+        reset_count = reset_stale_relay_leases(db_path=config.db_path, now=now or utc_now_text())
         creds = credentials or load_credentials_from_json(config.credential_path)
         result = drain_one_relay_batch(
             db_path=config.db_path,
@@ -527,22 +546,23 @@ def run_relay_once(
             retry_base_seconds=config.retry_base_seconds,
             timeout=config.timeout_seconds,
         )
-    except DirectSyncPushError as exc:
-        queue = relay_queue_status(config.db_path)
+    except (DirectSyncPushError, sqlite3.DatabaseError) as exc:
+        queue = _safe_relay_queue_status(config.db_path)
+        error_code, error_message = _runtime_error_details(exc)
         status = _write_runtime_status(
             config,
             status="runtime_error",
             queue=queue,
             disk=disk,
             stale_leases_reset=reset_count,
-            error_code="direct_sync_runtime_error",
-            error_message=str(exc),
+            error_code=error_code,
+            error_message=error_message,
         )
         _append_runtime_event(config, "relay_runtime_error", status)
         return status
 
     result_summary = _result_summary(result)
-    queue = relay_queue_status(config.db_path)
+    queue = _safe_relay_queue_status(config.db_path)
     status = _write_runtime_status(
         config,
         status=result_summary["status"],
