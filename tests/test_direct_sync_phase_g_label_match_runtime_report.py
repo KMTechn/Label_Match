@@ -63,6 +63,18 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     ).hexdigest()
     assert runner_report["status_json_artifact_sha256"] == runtime_report["status_json_artifact_sha256"]
     assert runner_report["redacted_log_artifact_sha256"] == runtime_report["redacted_log_artifact_sha256"]
+    assert runtime_report["relay_state_machine_report"]["status"] == "PASS"
+    assert runtime_report["source_scan_install_pack_report"]["status"] == "PASS"
+    assert runtime_report["runtime_path_boundary_report"]["status"] == "PASS"
+    assert runtime_report["source_scan_admission_report"]["status"] == "PASS"
+    assert runtime_report["credential_secret_ref_report"]["status"] == "PASS"
+    assert runtime_report["process_kill_recovery_report"]["status"] == "PASS"
+    assert runtime_report["queue_backpressure_report"]["status"] == "PASS"
+    assert runtime_report["operator_status_report"]["status"] == "PASS"
+    assert runtime_report["operator_control_report"]["status"] == "PASS"
+    assert runtime_report["lost_ack_replay_report"]["status"] == "BLOCKED"
+    assert runtime_report["lost_ack_replay_report"]["local_replay_report"]["status"] == "PASS"
+    assert runtime_report["reboot_recovery_report"]["status"] == "BLOCKED"
     assert report["operator_status_report"]["status"] == "PASS"
     assert report["operator_control_report"]["status"] == "PASS"
     assert report["operator_control_report"]["audit_redaction_pass"] is True

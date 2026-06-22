@@ -168,6 +168,53 @@ def _runtime_artifact_bindings(runtime_status_path: Path, log_path: Path) -> dic
     }
 
 
+def _runtime_path_boundary_report(install_pack: dict) -> dict:
+    return {
+        "status": "PASS" if Path(install_pack["program_data_root"]).is_absolute() else "FAIL",
+        "scope": "local install-pack program_data_root path boundary dry-run",
+        "program_data_root": install_pack["program_data_root"],
+    }
+
+
+def _flow_runtime_subreports(
+    *,
+    runner: dict,
+    process_kill: dict,
+    reboot_recovery: dict,
+    disk: dict,
+    retry: dict,
+    queue_backpressure: dict,
+    lost_ack: dict,
+    retry_dead_letter: dict,
+    operator_status: dict,
+    operator_control: dict,
+    install_pack: dict,
+    source_scan_admission: dict,
+    credential_secret_ref: dict,
+    lost_ack_blocked_reason: str,
+) -> dict:
+    return {
+        "relay_state_machine_report": runner,
+        "lost_ack_replay_report": {
+            "status": "BLOCKED",
+            "local_replay_report": lost_ack,
+            "blocked_reason": lost_ack_blocked_reason,
+        },
+        "process_kill_recovery_report": process_kill,
+        "reboot_recovery_report": reboot_recovery,
+        "disk_pressure_report": disk,
+        "retry_wait_report": retry,
+        "queue_backpressure_report": queue_backpressure,
+        "retry_dead_letter_report": retry_dead_letter,
+        "operator_status_report": operator_status,
+        "operator_control_report": operator_control,
+        "source_scan_install_pack_report": install_pack,
+        "runtime_path_boundary_report": _runtime_path_boundary_report(install_pack),
+        "source_scan_admission_report": source_scan_admission,
+        "credential_secret_ref_report": credential_secret_ref,
+    }
+
+
 def _make_credential(tmp_root: Path) -> Path:
     path = tmp_root / "credential.json"
     _write_json(
@@ -757,6 +804,14 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
     install_pack = _install_pack_dry_run_report(tmp_root)
     source_scan_admission = _source_scan_admission_report(tmp_root)
     credential_secret_ref = _credential_secret_ref_report(tmp_root)
+    reboot_recovery = {
+        "status": "BLOCKED",
+        "blocked_reason": "No real Windows scheduled task/service reboot, logoff, or sleep/resume evidence.",
+    }
+    operator_status_summary = {
+        "status": runner["status"],
+        "scope": "local generated runtime status JSON and redacted JSONL relay log",
+    }
     local_pass = all(
         item["status"] == "PASS"
         for item in (
@@ -800,13 +855,26 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
             "redacted_log_artifact_ref": runner["redacted_log_artifact_ref"],
             "redacted_log_artifact_path": runner["redacted_log_artifact_path"],
             "redacted_log_artifact_sha256": runner["redacted_log_artifact_sha256"],
+            **_flow_runtime_subreports(
+                runner=runner,
+                process_kill=process_kill,
+                reboot_recovery=reboot_recovery,
+                disk=disk,
+                retry=retry,
+                queue_backpressure=queue_backpressure,
+                lost_ack=lost_ack,
+                retry_dead_letter=retry_dead_letter,
+                operator_status=operator_status_summary,
+                operator_control=operator_control,
+                install_pack=install_pack,
+                source_scan_admission=source_scan_admission,
+                credential_secret_ref=credential_secret_ref,
+                lost_ack_blocked_reason="No real server committed-but-local-ack-lost replay drill from a Label_Match producer PC.",
+            ),
             "local_runner_status_log_report": runner,
             "blocked_reason": "No real Label_Match producer-PC scheduled task/service run or production direct receipts.",
         },
-        "operator_status_report": {
-            "status": runner["status"],
-            "scope": "local generated runtime status JSON and redacted JSONL relay log",
-        },
+        "operator_status_report": operator_status_summary,
         "stale_lease_recovery_report": stale_lease,
         "process_kill_recovery_report": process_kill,
         "disk_pressure_report": disk,
@@ -821,10 +889,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
             "local_replay_report": lost_ack,
             "blocked_reason": "No real server committed-but-local-ack-lost replay drill from a Label_Match producer PC.",
         },
-        "reboot_recovery_report": {
-            "status": "BLOCKED",
-            "blocked_reason": "No real Windows scheduled task/service reboot, logoff, or sleep/resume evidence.",
-        },
+        "reboot_recovery_report": reboot_recovery,
         "reboot_logoff_sleep_report": {
             "status": "BLOCKED",
             "blocked_reason": "No real Windows scheduled task/service reboot, logoff, or sleep/resume evidence.",
