@@ -137,7 +137,8 @@ def _make_manifest(tmp_root: Path) -> Path:
 
 
 def _source_scope_identity(manifest_path: Path) -> dict:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_raw = manifest_path.read_bytes()
+    manifest = json.loads(manifest_raw.decode("utf-8"))
     stream = manifest["streams"][0]
     source_scope_key = (
         f"{manifest['pc_identity']['source_host_id']}/"
@@ -145,10 +146,12 @@ def _source_scope_identity(manifest_path: Path) -> dict:
     )
     return {
         "source_host_id": manifest["pc_identity"]["source_host_id"],
+        "producer_install_id": manifest["pc_identity"]["producer_install_id"],
         "producer_role": stream["producer_role"],
         "stream_name": stream["stream_name"],
         "source_transport": "http_push",
         "manifest_source_transport": stream["source_transport"],
+        "manifest_hash": hashlib.sha256(manifest_raw).hexdigest(),
         "source_scope_key": source_scope_key,
         "source_scope_key_sha256": hashlib.sha256(source_scope_key.encode("utf-8")).hexdigest(),
     }
@@ -291,6 +294,7 @@ def _runner_status_log_report(tmp_root: Path) -> dict:
         "run_status": status["status"],
         "queue": queue,
         "redaction_pass": _artifacts_redacted(config),
+        "queue_db_path": str(config.db_path),
         "runtime_status_path": str(config.runtime_status_path),
         "log_path": str(config.log_path),
         **_runtime_artifact_bindings(config.runtime_status_path, config.log_path),
@@ -781,6 +785,15 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "label_match_runtime_relay_report": {
             "status": "BLOCKED" if local_pass else "FAIL",
             **source_identity,
+            "flow": "LabelMatch",
+            "producer_repo": "Label_Match",
+            "task_or_service_name": install_pack["task_name"],
+            "task_or_service_installed": False,
+            "runtime_kind": "scheduled_task",
+            "queue_db_path": runner["queue_db_path"],
+            "service_task_status": "BLOCKED",
+            "status_log_status": runner["status"],
+            "reboot_logoff_sleep_status": "BLOCKED",
             "status_json_artifact_ref": runner["status_json_artifact_ref"],
             "status_json_artifact_path": runner["status_json_artifact_path"],
             "status_json_artifact_sha256": runner["status_json_artifact_sha256"],
