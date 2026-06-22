@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -228,6 +229,54 @@ def _stale_lease_report(tmp_root: Path) -> dict:
     return {
         "status": "PASS" if ok else "FAIL",
         "scope": "local expired lease reset after simulated process death",
+        "stale_leases_reset": status["stale_leases_reset"],
+        "queue": queue,
+    }
+
+
+def _process_kill_recovery_report(tmp_root: Path) -> dict:
+    config = _runtime_config(tmp_root, name="process-kill")
+    source_file = _write_source_file(tmp_root / "process-kill")
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    claim_script = f"""
+import os
+import sys
+
+sys.path.insert(0, {str(ROOT)!r})
+from direct_sync_push import claim_next_relay_batch
+
+row = claim_next_relay_batch(
+    db_path={str(config.db_path)!r},
+    worker_id="killed-process",
+    lease_seconds=1,
+    now="2099-01-01T00:00:00Z",
+)
+os._exit(17 if row is not None else 31)
+"""
+    killed = subprocess.run(
+        [sys.executable, "-c", claim_script],
+        cwd=str(ROOT),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    with sqlite3.connect(config.db_path) as conn:
+        leased_before_reset = conn.execute(
+            "SELECT COUNT(*) FROM direct_sync_relay_batches WHERE status = 'leased'"
+        ).fetchone()[0]
+    status = run_relay_once(config, session=EchoAcceptedSession(), now="2099-01-01T00:00:02Z")
+    queue = relay_queue_status(config.db_path)
+    ok = (
+        killed.returncode == 17
+        and leased_before_reset == 1
+        and status["stale_leases_reset"] == 1
+        and queue["counts"].get(RELAY_STATUS_ACKED) == 1
+    )
+    return {
+        "status": "PASS" if ok else "FAIL",
+        "scope": "local subprocess exit after claim proves stale lease recovery without duplicate post",
+        "claim_process_exit_code": killed.returncode,
+        "leased_before_reset": int(leased_before_reset),
         "stale_leases_reset": status["stale_leases_reset"],
         "queue": queue,
     }
@@ -609,6 +658,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
     credential_path = _make_credential(tmp_root)
     runner = _runner_status_log_report(tmp_root)
     stale_lease = _stale_lease_report(tmp_root)
+    process_kill = _process_kill_recovery_report(tmp_root)
     disk = _disk_pressure_report(tmp_root)
     retry = _retry_wait_report(tmp_root)
     queue_backpressure = _queue_backpressure_report(tmp_root)
@@ -622,6 +672,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         for item in (
             runner,
             stale_lease,
+            process_kill,
             disk,
             retry,
             queue_backpressure,
@@ -650,6 +701,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
             "scope": "local generated runtime status JSON and redacted JSONL relay log",
         },
         "stale_lease_recovery_report": stale_lease,
+        "process_kill_recovery_report": process_kill,
         "disk_pressure_report": disk,
         "retry_wait_report": retry,
         "queue_backpressure_report": queue_backpressure,
@@ -660,6 +712,10 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
             "status": "BLOCKED",
             "local_replay_report": lost_ack,
             "blocked_reason": "No real server committed-but-local-ack-lost replay drill from a Label_Match producer PC.",
+        },
+        "reboot_recovery_report": {
+            "status": "BLOCKED",
+            "blocked_reason": "No real Windows scheduled task/service reboot, logoff, or sleep/resume evidence.",
         },
         "reboot_logoff_sleep_report": {
             "status": "BLOCKED",

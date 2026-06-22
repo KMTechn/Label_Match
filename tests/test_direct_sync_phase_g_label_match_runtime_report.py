@@ -30,6 +30,8 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["operator_control_report"]["status"] == "PASS"
     assert report["operator_control_report"]["audit_redaction_pass"] is True
     assert report["stale_lease_recovery_report"]["status"] == "PASS"
+    assert report["process_kill_recovery_report"]["status"] == "PASS"
+    assert report["process_kill_recovery_report"]["claim_process_exit_code"] == 17
     assert report["disk_pressure_report"]["status"] == "PASS"
     assert report["retry_wait_report"]["status"] == "PASS"
     assert report["queue_backpressure_report"]["status"] == "PASS"
@@ -44,6 +46,7 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["source_scan_admission_report"]["recursive_glob_rejected"] is True
     assert report["source_scan_admission_report"]["path_glob_rejected"] is True
     assert report["lost_ack_replay_report"]["local_replay_report"]["status"] == "PASS"
+    assert report["reboot_recovery_report"]["status"] == "BLOCKED"
     assert report["production_install_pack_report"]["local_dry_run_report"]["status"] == "PASS"
     assert report["production_install_pack_report"]["local_dry_run_report"]["operator_pause_path"]
     assert "--operator-pause-path" in report["production_install_pack_report"]["local_dry_run_report"]["runner_command"]
