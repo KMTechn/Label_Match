@@ -2,8 +2,11 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from direct_sync_operator import pause_relay, resume_relay
 from direct_sync_push import (
+    DirectSyncPushError,
     RELAY_STATUS_ACKED,
     RELAY_STATUS_FAILED_PERMANENT,
     RELAY_STATUS_LEASED,
@@ -16,7 +19,7 @@ from direct_sync_push import (
     relay_queue_status,
     upload_source_file,
 )
-from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once
+from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, load_credentials_from_json, run_relay_once
 
 
 class FakeResponse:
@@ -131,6 +134,57 @@ def write_credential_file(tmp_path):
         encoding="utf-8",
     )
     return path
+
+
+def test_load_credentials_supports_env_secret_ref(monkeypatch, tmp_path):
+    monkeypatch.setenv("LABEL_RUNTIME_SECRET", "runtime-secret-from-env")
+    path = tmp_path / "credential-ref.json"
+    path.write_text(
+        json.dumps(
+            {
+                "producer_id": "producer-runtime-1",
+                "key_id": "key-runtime-1",
+                "secret_ref": "env:LABEL_RUNTIME_SECRET",
+                "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    credentials = load_credentials_from_json(path)
+
+    assert credentials.secret == "runtime-secret-from-env"
+    assert "runtime-secret-from-env" not in path.read_text(encoding="utf-8")
+
+
+def test_load_credentials_blocks_raw_secret_in_production_profile(monkeypatch, tmp_path):
+    path = write_credential_file(tmp_path)
+    monkeypatch.setenv("APP_ENV", "production")
+
+    with pytest.raises(DirectSyncPushError, match="raw credential secret is disabled in production"):
+        load_credentials_from_json(path)
+
+
+def test_load_credentials_blocks_env_secret_ref_in_production_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("LABEL_RUNTIME_SECRET", "runtime-secret-from-env")
+    monkeypatch.setenv("APP_ENV", "production")
+    path = tmp_path / "credential-ref.json"
+    path.write_text(
+        json.dumps(
+            {
+                "producer_id": "producer-runtime-1",
+                "key_id": "key-runtime-1",
+                "secret_ref": "env:LABEL_RUNTIME_SECRET",
+                "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DirectSyncPushError, match="env secret_ref is disabled in production"):
+        load_credentials_from_json(path)
 
 
 def make_config(tmp_path, *, min_free_bytes=0, max_active_queue_count=0, max_active_queue_age_seconds=0):

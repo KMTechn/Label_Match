@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +33,8 @@ from direct_sync_operator import read_operator_pause
 
 
 DEFAULT_WORKER_ID = "direct-sync-relay-label-match"
+PRODUCTION_PROFILE_ENV_NAMES = ("APP_ENV", "ENV", "LABEL_MATCH_PRODUCTION", "DIRECT_SYNC_PRODUCTION")
+SECRET_REF_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 @dataclass(frozen=True)
@@ -73,16 +77,133 @@ def _append_jsonl(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> N
         os.fsync(handle.fileno())
 
 
+def _production_profile_enabled() -> bool:
+    return any(
+        str(os.getenv(name) or "").strip().lower() in {"1", "true", "prod", "production"}
+        for name in PRODUCTION_PROFILE_ENV_NAMES
+    )
+
+
+def _safe_secret_ref_name(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or not SECRET_REF_NAME_RE.fullmatch(text):
+        raise DirectSyncPushError("secret_ref target name is unsafe")
+    return text
+
+
+def _default_secret_data_dir(credential_path: Path) -> Path:
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "CompanyProducerConnector"
+    return credential_path.parent / "CompanyProducerConnector"
+
+
+def _dpapi_unprotect_current_user(protected: bytes) -> bytes:
+    if sys.platform != "win32":
+        raise DirectSyncPushError("dpapi secret_ref requires Windows")
+    import ctypes
+    from ctypes import byref, c_void_p, wintypes
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", c_void_p)]
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    input_buffer = ctypes.create_string_buffer(protected, len(protected))
+    input_blob = DataBlob(len(protected), ctypes.cast(input_buffer, c_void_p))
+    output_blob = DataBlob()
+    if not crypt32.CryptUnprotectData(byref(input_blob), None, None, None, None, 0, byref(output_blob)):
+        raise DirectSyncPushError("dpapi secret_ref could not be read")
+    try:
+        return ctypes.string_at(output_blob.pbData, output_blob.cbData)
+    finally:
+        kernel32.LocalFree(output_blob.pbData)
+
+
+def _read_wincred_secret(target_name: str) -> str:
+    if sys.platform != "win32":
+        raise DirectSyncPushError("wincred secret_ref requires Windows")
+    import ctypes
+    from ctypes import POINTER, byref, c_void_p, wintypes
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+    class Credential(ctypes.Structure):
+        _fields_ = [
+            ("Flags", wintypes.DWORD),
+            ("Type", wintypes.DWORD),
+            ("TargetName", wintypes.LPWSTR),
+            ("Comment", wintypes.LPWSTR),
+            ("LastWritten", FileTime),
+            ("CredentialBlobSize", wintypes.DWORD),
+            ("CredentialBlob", c_void_p),
+            ("Persist", wintypes.DWORD),
+            ("AttributeCount", wintypes.DWORD),
+            ("Attributes", c_void_p),
+            ("TargetAlias", wintypes.LPWSTR),
+            ("UserName", wintypes.LPWSTR),
+        ]
+
+    advapi32 = ctypes.windll.advapi32
+    credential_ptr = c_void_p()
+    if not advapi32.CredReadW(target_name, 1, 0, byref(credential_ptr)):
+        raise DirectSyncPushError("wincred secret_ref could not be read")
+    try:
+        credential = ctypes.cast(credential_ptr, POINTER(Credential)).contents
+        secret_bytes = ctypes.string_at(credential.CredentialBlob, credential.CredentialBlobSize)
+        return secret_bytes.decode("utf-8")
+    finally:
+        advapi32.CredFree(credential_ptr)
+
+
+def _resolve_secret_ref(secret_ref: str, *, credential_path: Path, secret_data_dir: str = "") -> str:
+    text = str(secret_ref or "").strip()
+    if ":" not in text:
+        raise DirectSyncPushError("secret_ref must start with env:, dpapi:, or wincred:")
+    scheme, target = text.split(":", 1)
+    scheme = scheme.lower()
+    name = _safe_secret_ref_name(target)
+    if scheme == "env":
+        if _production_profile_enabled():
+            raise DirectSyncPushError("env secret_ref is disabled in production")
+        value = os.getenv(name)
+        if not value:
+            raise DirectSyncPushError("env secret_ref is not available")
+        return value
+    if scheme == "dpapi":
+        base_dir = Path(secret_data_dir).expanduser() if secret_data_dir else _default_secret_data_dir(credential_path)
+        protected_path = base_dir / "secrets" / f"{name}.dpapi"
+        if not protected_path.is_file():
+            raise DirectSyncPushError("dpapi secret_ref artifact is missing")
+        return _dpapi_unprotect_current_user(protected_path.read_bytes()).decode("utf-8")
+    if scheme == "wincred":
+        return _read_wincred_secret(f"KMTech.DirectSync.{name}")
+    raise DirectSyncPushError("secret_ref must start with env:, dpapi:, or wincred:")
+
+
 def load_credentials_from_json(path: str | os.PathLike[str]) -> ProducerCredentials:
-    payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    credential_path = Path(path)
+    payload = json.loads(credential_path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise DirectSyncPushError("credential file must be a JSON object")
     producer_id = str(payload.get("producer_id") or "").strip()
     key_id = str(payload.get("key_id") or "").strip()
     secret = payload.get("secret")
+    secret_ref = str(payload.get("secret_ref") or "").strip()
     endpoint_url = str(payload.get("endpoint_url") or "").strip()
+    if secret and secret_ref:
+        raise DirectSyncPushError("credential file must not contain both secret and secret_ref")
+    if secret and _production_profile_enabled():
+        raise DirectSyncPushError("raw credential secret is disabled in production")
+    if secret_ref:
+        secret = _resolve_secret_ref(
+            secret_ref,
+            credential_path=credential_path,
+            secret_data_dir=str(payload.get("secret_data_dir") or ""),
+        )
     if not producer_id or not key_id or not secret or not endpoint_url:
-        raise DirectSyncPushError("credential file is missing producer_id, key_id, secret, or endpoint_url")
+        raise DirectSyncPushError("credential file is missing producer_id, key_id, secret/secret_ref, or endpoint_url")
     validate_endpoint_url(endpoint_url)
     return ProducerCredentials(
         producer_id=producer_id,
