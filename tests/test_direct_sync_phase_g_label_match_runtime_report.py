@@ -31,8 +31,8 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["operator_control_report"]["audit_redaction_pass"] is True
     assert report["credential_secret_ref_report"]["status"] == "PASS"
     assert report["credential_secret_ref_report"]["secret_ref_scheme"] == "env"
-    assert report["credential_secret_ref_report"]["raw_secret_field_present"] is False
-    assert report["credential_secret_ref_report"]["raw_secret_value_in_file"] is False
+    assert report["credential_secret_ref_report"]["secret_material_field_present"] is False
+    assert report["credential_secret_ref_report"]["secret_material_value_in_file"] is False
     assert report["credential_secret_ref_report"]["production_readback_status"] == "BLOCKED"
     assert report["stale_lease_recovery_report"]["status"] == "PASS"
     assert report["process_kill_recovery_report"]["status"] == "PASS"

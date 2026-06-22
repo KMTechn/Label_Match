@@ -174,7 +174,7 @@ def _credential_secret_ref_report(tmp_root: Path) -> dict:
         else:
             os.environ[env_name] = previous
     payload = json.loads(credential_path.read_text(encoding="utf-8-sig"))
-    raw_secret_field_present = any(key in payload for key in ("secret", "secret_hex", "raw_secret"))
+    secret_material_field_present = any(key in payload for key in ("secret", "secret_hex", "raw_secret"))
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     ok = (
         credentials.producer_id == "producer-label-phase-g"
@@ -182,7 +182,7 @@ def _credential_secret_ref_report(tmp_root: Path) -> dict:
         and credentials.secret == secret_value
         and credentials.endpoint_url == "https://worker.example.invalid/api/producer-ingest/v1/source-file"
         and payload.get("secret_ref") == f"env:{env_name}"
-        and raw_secret_field_present is False
+        and secret_material_field_present is False
         and secret_value not in serialized
     )
     return {
@@ -190,8 +190,8 @@ def _credential_secret_ref_report(tmp_root: Path) -> dict:
         "scope": "local env secret_ref loader fixture only",
         "credential_path": str(credential_path),
         "secret_ref_scheme": "env",
-        "raw_secret_field_present": raw_secret_field_present,
-        "raw_secret_value_in_file": secret_value in serialized,
+        "secret_material_field_present": secret_material_field_present,
+        "secret_material_value_in_file": secret_value in serialized,
         "production_readback_status": "BLOCKED",
         "blocked_reason": "No real producer-PC wincred:/dpapi: credential bootstrap and readback evidence.",
     }
