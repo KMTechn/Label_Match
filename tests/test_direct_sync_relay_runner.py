@@ -94,6 +94,32 @@ def test_runner_scan_source_dir_enqueues_matching_csv_idempotently(tmp_path, cap
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
 
 
+def test_runner_scan_source_dir_filters_broad_csv_glob_to_label_logs(tmp_path, capsys):
+    sync_dir = tmp_path / "sync"
+    write_label_csv(sync_dir)
+    write_label_csv(sync_dir, name="unrelated.csv")
+    args = runner_args(tmp_path, scan_dir=sync_dir) + ["--source-glob", "*.csv"]
+
+    assert main(args) == 0
+    output = capsys.readouterr().out
+
+    assert "direct_sync_scan_enqueued_count=1" in output
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
+
+
+def test_runner_scan_source_dir_rejects_recursive_or_path_globs(tmp_path):
+    sync_dir = tmp_path / "sync"
+    write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir) + ["--source-glob", "**/*.csv"]
+
+    try:
+        main(args)
+    except SystemExit as exc:
+        assert "source glob must be a direct-child file pattern" in str(exc)
+        return
+    raise AssertionError("expected SystemExit for recursive source glob")
+
+
 def test_runner_scan_source_dir_handles_no_matching_files(tmp_path, capsys):
     sync_dir = tmp_path / "sync"
     sync_dir.mkdir()

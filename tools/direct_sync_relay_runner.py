@@ -15,15 +15,33 @@ if str(ROOT) not in sys.path:
 from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once  # noqa: E402
 
 
+ALLOWED_SOURCE_PREFIX = "포장실작업이벤트로그_"
+ALLOWED_SOURCE_SUFFIX = ".csv"
+
+
+def _validate_source_glob(pattern: str) -> str:
+    text = str(pattern or "").strip()
+    if not text:
+        raise SystemExit("source glob must not be empty")
+    if "**" in text or "/" in text or "\\" in text:
+        raise SystemExit("source glob must be a direct-child file pattern")
+    return text
+
+
+def _is_allowed_source_file(path: Path) -> bool:
+    return path.name.startswith(ALLOWED_SOURCE_PREFIX) and path.suffix.lower() == ALLOWED_SOURCE_SUFFIX
+
+
 def _scan_source_files(scan_source_dir: str, patterns: list[str], max_files: int) -> list[Path]:
     root = Path(scan_source_dir)
     if not root.is_dir():
         raise SystemExit(f"scan source dir does not exist: {root}")
+    scan_patterns = [_validate_source_glob(pattern) for pattern in (patterns or ["*.csv"])]
     seen: set[str] = set()
     files: list[Path] = []
-    for pattern in patterns or ["*.csv"]:
+    for pattern in scan_patterns:
         for path in root.glob(pattern):
-            if not path.is_file():
+            if not path.is_file() or not _is_allowed_source_file(path):
                 continue
             resolved = str(path.resolve())
             if resolved in seen:
