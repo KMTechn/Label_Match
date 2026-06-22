@@ -5,6 +5,7 @@ from pathlib import Path
 
 from direct_sync_push import (
     DEFAULT_ENDPOINT_PATH,
+    DirectSyncPushError,
     ProducerCredentials,
     RELAY_STATUS_ACKED,
     RELAY_STATUS_LEASED,
@@ -116,6 +117,35 @@ def make_credentials():
         secret="label-secret",
         endpoint_url="https://worker.example.invalid/api/producer-ingest/v1/source-file",
     )
+
+
+def expect_push_error(callable_obj):
+    try:
+        callable_obj()
+    except DirectSyncPushError:
+        return
+    raise AssertionError("expected DirectSyncPushError")
+
+
+def test_upload_rejects_unsafe_endpoint_before_signing_or_posting(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = ProducerCredentials(
+        producer_id="producer-label",
+        key_id="key-label",
+        secret="label-secret",
+        endpoint_url="http://localhost/api/producer-ingest/v1/source-file",
+    )
+    plan = build_source_file_plan(
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    session = FakeSession(FakeResponse(200, {"committed": True}))
+
+    expect_push_error(lambda: upload_source_file(plan, credentials, session=session))
+
+    assert session.calls == []
 
 
 def test_build_plan_uses_label_match_stream_and_csv_rows(tmp_path):

@@ -6,6 +6,7 @@ from direct_sync_operator import pause_relay, resume_relay
 from direct_sync_push import (
     RELAY_STATUS_ACKED,
     RELAY_STATUS_FAILED_PERMANENT,
+    RELAY_STATUS_LEASED,
     RELAY_STATUS_OPERATOR_REVIEW,
     RELAY_STATUS_PENDING,
     RELAY_STATUS_RETRY_WAIT,
@@ -150,6 +151,45 @@ def make_config(tmp_path, *, min_free_bytes=0, max_active_queue_count=0, max_act
         max_active_queue_count=max_active_queue_count,
         max_active_queue_age_seconds=max_active_queue_age_seconds,
     )
+
+
+def test_runtime_rejects_unsafe_endpoint_before_posting_or_claiming(tmp_path):
+    config = make_config(tmp_path)
+    csv_path = write_csv(tmp_path)
+    valid_credentials = ProducerCredentials(
+        producer_id="producer-runtime-1",
+        key_id="key-runtime-1",
+        secret="runtime-secret",
+        endpoint_url="https://worker.example.invalid/api/producer-ingest/v1/source-file",
+    )
+    enqueue_status = enqueue_completed_source_file(
+        config,
+        source_file_path=csv_path,
+        credentials=valid_credentials,
+    )
+    assert enqueue_status["status"] == "enqueued"
+    Path(config.credential_path).write_text(
+        json.dumps(
+            {
+                "producer_id": "producer-runtime-1",
+                "key_id": "key-runtime-1",
+                "secret": "runtime-secret",
+                "endpoint_url": "http://localhost/api/producer-ingest/v1/source-file",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "runtime_error"
+    assert "endpoint_url" in status["error_message"]
+    assert session.calls == []
+    queue = relay_queue_status(config.db_path)
+    assert queue["counts"][RELAY_STATUS_PENDING] == 1
+    assert queue["counts"].get(RELAY_STATUS_LEASED, 0) == 0
 
 
 def assert_runtime_artifacts_are_redacted(config):
@@ -445,12 +485,12 @@ def test_runtime_resets_stale_lease_after_reboot_like_pause(tmp_path):
         db_path=config.db_path,
         worker_id="previous-process",
         lease_seconds=1,
-        now="2026-06-22T00:00:00Z",
+        now="2099-01-01T00:00:00Z",
     )
     assert claimed is not None
     session = EchoAcceptedSession()
 
-    status = run_relay_once(config, session=session, now="2026-06-22T00:00:02Z")
+    status = run_relay_once(config, session=session, now="2099-01-01T00:00:02Z")
 
     assert status["status"] == "acked"
     assert status["stale_leases_reset"] == 1
@@ -465,7 +505,7 @@ def test_runtime_lost_ack_retry_reuses_same_batch_and_idempotency_after_stale_le
         db_path=config.db_path,
         worker_id="crashed-process",
         lease_seconds=1,
-        now="2026-06-22T00:00:00Z",
+        now="2099-01-01T00:00:00Z",
     )
     assert claimed is not None
     credentials = ProducerCredentials(
@@ -491,7 +531,7 @@ def test_runtime_lost_ack_retry_reuses_same_batch_and_idempotency_after_stale_le
     assert upload.success is True
 
     retry_session = EchoAcceptedSession()
-    retry = run_relay_once(config, session=retry_session, now="2026-06-22T00:00:02Z")
+    retry = run_relay_once(config, session=retry_session, now="2099-01-01T00:00:02Z")
 
     assert retry["status"] == "acked"
     assert retry["stale_leases_reset"] == 1

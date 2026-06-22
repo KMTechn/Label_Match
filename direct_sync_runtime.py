@@ -25,6 +25,7 @@ from direct_sync_push import (
     relay_queue_status,
     reset_stale_relay_leases,
     utc_now_text,
+    validate_endpoint_url,
 )
 from direct_sync_operator import read_operator_pause
 
@@ -82,6 +83,7 @@ def load_credentials_from_json(path: str | os.PathLike[str]) -> ProducerCredenti
     endpoint_url = str(payload.get("endpoint_url") or "").strip()
     if not producer_id or not key_id or not secret or not endpoint_url:
         raise DirectSyncPushError("credential file is missing producer_id, key_id, secret, or endpoint_url")
+    validate_endpoint_url(endpoint_url)
     return ProducerCredentials(
         producer_id=producer_id,
         key_id=key_id,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import sqlite3
@@ -250,6 +251,7 @@ def signed_headers(
     timestamp: str = "",
     nonce: str = "",
 ) -> Dict[str, str]:
+    validate_endpoint_url(credentials.endpoint_url)
     parsed = urlparse(credentials.endpoint_url)
     timestamp = timestamp or utc_now_text()
     nonce = nonce or uuid.uuid4().hex
@@ -273,6 +275,27 @@ def signed_headers(
         "X-Producer-Nonce": nonce,
         "X-Producer-Signature": sign_canonical_request(credentials.secret, canonical),
     }
+
+
+def validate_endpoint_url(endpoint_url: str) -> None:
+    parsed = urlparse(str(endpoint_url or "").strip())
+    if parsed.scheme.lower() != "https":
+        raise DirectSyncPushError("endpoint_url must use https")
+    if not parsed.netloc or not parsed.hostname:
+        raise DirectSyncPushError("endpoint_url must include a hostname")
+    if parsed.path != DEFAULT_ENDPOINT_PATH:
+        raise DirectSyncPushError(f"endpoint_url path must be {DEFAULT_ENDPOINT_PATH}")
+    if parsed.query or parsed.fragment:
+        raise DirectSyncPushError("endpoint_url must not include query or fragment")
+    host = parsed.hostname.strip().lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise DirectSyncPushError("endpoint_url must not target localhost")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if address.is_loopback or address.is_unspecified:
+        raise DirectSyncPushError("endpoint_url must not target loopback or unspecified addresses")
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
