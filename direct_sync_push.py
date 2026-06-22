@@ -503,6 +503,34 @@ def _find_existing_relay_batch(
     ).fetchone()
 
 
+def _find_conflicting_relay_batch(
+    conn: sqlite3.Connection,
+    *,
+    source_path: Path,
+    producer_manifest_path: str | os.PathLike[str],
+    plan: SourceFileUploadPlan,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM direct_sync_relay_batches
+        WHERE source_file_path = ?
+          AND producer_manifest_path = ?
+          AND relative_path = ?
+          AND (content_sha256 != ? OR byte_length != ?)
+        ORDER BY created_at, relay_id
+        LIMIT 1
+        """,
+        (
+            str(source_path),
+            str(producer_manifest_path),
+            plan.metadata["relative_path"],
+            plan.content_sha256,
+            plan.byte_length,
+        ),
+    ).fetchone()
+
+
 def enqueue_source_file_for_relay(
     *,
     db_path: str | os.PathLike[str],
@@ -523,9 +551,17 @@ def enqueue_source_file_for_relay(
         credentials=credentials,
         relative_path=relative_path,
     )
-    if dedupe_existing:
-        conn = _connect_relay_db(db_path)
-        try:
+    conn = _connect_relay_db(db_path)
+    try:
+        conflicting = _find_conflicting_relay_batch(
+            conn,
+            source_path=source_path,
+            producer_manifest_path=producer_manifest_path,
+            plan=plan,
+        )
+        if conflicting is not None:
+            raise DirectSyncPushError("source file content conflict for existing relay identity")
+        if dedupe_existing:
             existing = _find_existing_relay_batch(
                 conn,
                 source_path=source_path,
@@ -534,8 +570,8 @@ def enqueue_source_file_for_relay(
             )
             if existing is not None:
                 return _relay_row(existing, deduped_existing=True)
-        finally:
-            conn.close()
+    finally:
+        conn.close()
     relay_id = f"relay-{uuid.uuid4().hex}"
     spool_path = Path(spool_dir) / f"{relay_id}{source_path.suffix or '.bin'}"
     _copy_file_atomic(source_path, spool_path)

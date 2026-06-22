@@ -3,6 +3,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from direct_sync_push import (
     DEFAULT_ENDPOINT_PATH,
     DirectSyncPushError,
@@ -272,7 +274,7 @@ def test_relay_enqueue_spools_file_without_storing_auth_secret_or_signature(tmp_
     assert b"PRODUCER-HMAC-SHA256-V1" not in db_bytes
 
 
-def test_relay_enqueue_dedupes_same_completed_file_but_allows_changed_content(tmp_path):
+def test_relay_enqueue_dedupes_same_completed_file_and_blocks_changed_content(tmp_path):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
     credentials = make_credentials()
@@ -306,18 +308,18 @@ def test_relay_enqueue_dedupes_same_completed_file_but_allows_changed_content(tm
         "2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n",
         encoding="utf-8",
     )
-    changed = enqueue_source_file_for_relay(
-        db_path=db_path,
-        spool_dir=spool_dir,
-        source_file_path=csv_path,
-        producer_manifest_path=manifest_path,
-        credentials=credentials,
-        dedupe_existing=True,
-    )
+    with pytest.raises(DirectSyncPushError, match="source file content conflict"):
+        enqueue_source_file_for_relay(
+            db_path=db_path,
+            spool_dir=spool_dir,
+            source_file_path=csv_path,
+            producer_manifest_path=manifest_path,
+            credentials=credentials,
+            dedupe_existing=True,
+        )
 
-    assert changed.relay_id != first.relay_id
-    assert changed.deduped_existing is False
-    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_PENDING] == 2
+    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_PENDING] == 1
+    assert len(list(spool_dir.iterdir())) == 1
 
 
 def test_relay_enqueue_keeps_legacy_duplicate_behavior_without_dedupe(tmp_path):
