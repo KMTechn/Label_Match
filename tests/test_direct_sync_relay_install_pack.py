@@ -71,6 +71,8 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     assert "포장실작업이벤트로그_*.csv" in report["runner_command"]
     assert report["source_scan"]["enabled"] is True
     assert report["source_scan"]["max_enqueue_files"] == 100
+    assert report["runtime_path_boundary"]["status"] == "PASS"
+    assert report["runtime_path_boundary"]["all_runtime_paths_under_program_data_root"] is True
     assert "--operator-pause-path" in report["runner_command"]
     assert report["runtime_paths"]["operator_pause_path"] in report["runner_command"]
     assert report["backpressure"] == {
@@ -109,3 +111,31 @@ def test_install_pack_apply_without_confirm_is_blocked(tmp_path):
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
     assert report["blocked_reason"] == "apply requires --confirm-production-install"
+
+
+def test_install_pack_blocks_relative_program_data_root(tmp_path):
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-relative-root.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_relay_install_pack.py",
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--program-data-root",
+            "relative-runtime-root",
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["blocked_reason"] == "program_data_root must be an absolute path"
+    assert report["runtime_path_boundary"]["status"] == "FAIL"

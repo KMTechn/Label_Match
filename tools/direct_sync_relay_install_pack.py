@@ -28,7 +28,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
-    root = Path(program_data_root)
+    root = Path(program_data_root).expanduser().resolve()
     return {
         "db_path": str(root / "queue" / "direct_sync_relay.sqlite3"),
         "spool_dir": str(root / "spool"),
@@ -36,6 +36,41 @@ def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
         "runtime_status_path": str(root / "status" / "direct_sync_relay_status.json"),
         "log_path": str(root / "logs" / "direct_sync_relay.jsonl"),
         "operator_pause_path": str(root / "control" / "pause.json"),
+    }
+
+
+def _runtime_path_boundary_report(program_data_root: str | os.PathLike[str], paths: dict[str, str]) -> dict:
+    raw_root = str(program_data_root).strip()
+    if not raw_root:
+        return {
+            "status": "FAIL",
+            "blocked_reason": "program_data_root is required",
+            "all_runtime_paths_under_program_data_root": False,
+        }
+    root_path = Path(raw_root).expanduser()
+    if not root_path.is_absolute():
+        return {
+            "status": "FAIL",
+            "blocked_reason": "program_data_root must be an absolute path",
+            "program_data_root": raw_root,
+            "all_runtime_paths_under_program_data_root": False,
+        }
+    resolved_root = root_path.resolve()
+    escaped_paths: list[str] = []
+    resolved_paths: dict[str, str] = {}
+    for name, path in paths.items():
+        resolved = Path(path).expanduser().resolve()
+        resolved_paths[name] = str(resolved)
+        if not resolved.is_relative_to(resolved_root):
+            escaped_paths.append(name)
+    ok = not escaped_paths
+    return {
+        "status": "PASS" if ok else "FAIL",
+        "blocked_reason": "" if ok else "runtime path escaped program_data_root",
+        "program_data_root": str(resolved_root),
+        "all_runtime_paths_under_program_data_root": ok,
+        "escaped_paths": escaped_paths,
+        "resolved_runtime_paths": resolved_paths,
     }
 
 
@@ -75,6 +110,7 @@ def build_install_plan(args: argparse.Namespace) -> dict:
     python_exe = str(Path(args.python_exe).resolve())
     runner_script = app_root / "tools" / "direct_sync_relay_runner.py"
     paths = _runtime_paths(args.program_data_root)
+    runtime_path_boundary = _runtime_path_boundary_report(args.program_data_root, paths)
     source_scan = _source_scan_config(args)
     backpressure = _backpressure_config(args)
     runner_parts = [
@@ -127,8 +163,9 @@ def build_install_plan(args: argparse.Namespace) -> dict:
         "apply": bool(args.apply),
         "uninstall": bool(args.uninstall),
         "task_name": args.task_name,
-        "program_data_root": str(Path(args.program_data_root)),
+        "program_data_root": str(Path(args.program_data_root).expanduser().resolve()),
         "runtime_paths": paths,
+        "runtime_path_boundary": runtime_path_boundary,
         "source_scan": source_scan,
         "backpressure": backpressure,
         "runner_script": str(runner_script),
@@ -178,6 +215,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     plan = build_install_plan(args)
+    if plan["runtime_path_boundary"]["status"] != "PASS":
+        plan["status"] = "BLOCKED"
+        plan["blocked_reason"] = plan["runtime_path_boundary"]["blocked_reason"]
+        _write_json(Path(args.report_path), plan)
+        print(f"install_pack_report={Path(args.report_path).resolve()}")
+        return 2
+
     if args.apply and not args.confirm_production_install:
         plan["status"] = "BLOCKED"
         plan["blocked_reason"] = "apply requires --confirm-production-install"
