@@ -22,6 +22,7 @@ for path in (ROOT, TOOLS):
 from direct_sync_push import (  # noqa: E402
     RELAY_STATUS_ACKED,
     RELAY_STATUS_FAILED_PERMANENT,
+    RELAY_STATUS_LEASED,
     RELAY_STATUS_OPERATOR_REVIEW,
     RELAY_STATUS_PENDING,
     RELAY_STATUS_RETRY_WAIT,
@@ -176,6 +177,46 @@ def _runtime_path_boundary_report(install_pack: dict) -> dict:
     }
 
 
+def _queue_status_count(queue: dict, status: str) -> int:
+    return int((queue.get("counts") or {}).get(status, 0) or 0)
+
+
+def _flow_runtime_required_metrics(runner: dict, install_pack: dict) -> dict:
+    queue = runner.get("queue") or {}
+    operator_pause_path_present = bool(install_pack.get("operator_pause_path_present"))
+    runner_has_operator_pause = bool(install_pack.get("runner_has_operator_pause"))
+    reboot_resume_proof = False
+    logoff_resume_proof = False
+    sleep_resume_proof = False
+    return {
+        "operator_pause_path_present": operator_pause_path_present,
+        "runner_has_operator_pause": runner_has_operator_pause,
+        "reboot_resume_proof": reboot_resume_proof,
+        "logoff_resume_proof": logoff_resume_proof,
+        "sleep_resume_proof": sleep_resume_proof,
+        "accepted_receipt_count": 0,
+        "local_acked_queue_count": _queue_status_count(queue, RELAY_STATUS_ACKED),
+        "pending_queue_count": _queue_status_count(queue, RELAY_STATUS_PENDING),
+        "leased_queue_count": _queue_status_count(queue, RELAY_STATUS_LEASED),
+        "retry_wait_count": _queue_status_count(queue, RELAY_STATUS_RETRY_WAIT),
+        "failed_queue_count": _queue_status_count(queue, RELAY_STATUS_FAILED_PERMANENT),
+        "operator_review_count": _queue_status_count(queue, RELAY_STATUS_OPERATOR_REVIEW),
+        "missing_server_receipt_count": 1,
+        "runtime_checks": {
+            "operator_pause_path_present": operator_pause_path_present,
+            "runner_has_operator_pause": runner_has_operator_pause,
+            "reboot_resume_proof": reboot_resume_proof,
+            "logoff_resume_proof": logoff_resume_proof,
+            "sleep_resume_proof": sleep_resume_proof,
+            "accepted_receipt_count": 0,
+            "local_acked_queue_count": _queue_status_count(queue, RELAY_STATUS_ACKED),
+            "missing_server_receipt_count": 1,
+            "production_reboot_logoff_sleep_status": "BLOCKED",
+            "blocked_reason": "No real producer-PC reboot, logoff, sleep, or server receipt evidence.",
+        },
+    }
+
+
 def _flow_runtime_subreports(
     *,
     runner: dict,
@@ -194,6 +235,7 @@ def _flow_runtime_subreports(
     lost_ack_blocked_reason: str,
 ) -> dict:
     return {
+        **_flow_runtime_required_metrics(runner, install_pack),
         "relay_state_machine_report": runner,
         "lost_ack_replay_report": {
             "status": "BLOCKED",
@@ -744,6 +786,8 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
         "source_scan": plan["source_scan"],
         "backpressure": plan["backpressure"],
         "operator_pause_path": plan["runtime_paths"].get("operator_pause_path", ""),
+        "operator_pause_path_present": bool(plan["runtime_paths"].get("operator_pause_path")),
+        "runner_has_operator_pause": "--operator-pause-path" in plan["runner_command"],
         "runner_command": plan["runner_command"],
         "runner_script": plan["runner_script"],
         "secret_redaction": plan["secret_redaction"],

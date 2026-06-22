@@ -65,6 +65,8 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert runner_report["redacted_log_artifact_sha256"] == runtime_report["redacted_log_artifact_sha256"]
     assert runtime_report["relay_state_machine_report"]["status"] == "PASS"
     assert runtime_report["source_scan_install_pack_report"]["status"] == "PASS"
+    assert runtime_report["source_scan_install_pack_report"]["operator_pause_path_present"] is True
+    assert runtime_report["source_scan_install_pack_report"]["runner_has_operator_pause"] is True
     assert runtime_report["runtime_path_boundary_report"]["status"] == "PASS"
     assert runtime_report["source_scan_admission_report"]["status"] == "PASS"
     assert runtime_report["credential_secret_ref_report"]["status"] == "PASS"
@@ -75,6 +77,20 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert runtime_report["lost_ack_replay_report"]["status"] == "BLOCKED"
     assert runtime_report["lost_ack_replay_report"]["local_replay_report"]["status"] == "PASS"
     assert runtime_report["reboot_recovery_report"]["status"] == "BLOCKED"
+    assert runtime_report["operator_pause_path_present"] is True
+    assert runtime_report["runner_has_operator_pause"] is True
+    assert runtime_report["reboot_resume_proof"] is False
+    assert runtime_report["logoff_resume_proof"] is False
+    assert runtime_report["sleep_resume_proof"] is False
+    assert runtime_report["accepted_receipt_count"] == 0
+    assert runtime_report["local_acked_queue_count"] == 1
+    assert runtime_report["pending_queue_count"] == 0
+    assert runtime_report["leased_queue_count"] == 0
+    assert runtime_report["retry_wait_count"] == 0
+    assert runtime_report["failed_queue_count"] == 0
+    assert runtime_report["operator_review_count"] == 0
+    assert runtime_report["missing_server_receipt_count"] == 1
+    assert runtime_report["runtime_checks"]["production_reboot_logoff_sleep_status"] == "BLOCKED"
     assert report["operator_status_report"]["status"] == "PASS"
     assert report["operator_control_report"]["status"] == "PASS"
     assert report["operator_control_report"]["audit_redaction_pass"] is True
