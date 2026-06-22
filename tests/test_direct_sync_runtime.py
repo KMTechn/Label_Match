@@ -167,6 +167,34 @@ def test_load_credentials_supports_env_secret_ref(monkeypatch, tmp_path):
     assert "runtime-secret-from-env" not in path.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "secret_ref",
+    [
+        "env:bad/name",
+        "env:CON",
+        "dpapi:.hidden",
+        "wincred:producer-key.",
+    ],
+)
+def test_load_credentials_blocks_unsafe_secret_ref_target_before_resolution(tmp_path, secret_ref):
+    path = tmp_path / "credential-ref.json"
+    path.write_text(
+        json.dumps(
+            {
+                "producer_id": "producer-runtime-1",
+                "key_id": "key-runtime-1",
+                "secret_ref": secret_ref,
+                "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DirectSyncPushError, match="secret_ref target name is unsafe"):
+        load_credentials_from_json(path)
+
+
 def test_load_credentials_blocks_raw_secret_in_production_profile(monkeypatch, tmp_path):
     path = write_credential_file(tmp_path)
     monkeypatch.setenv("APP_ENV", "production")

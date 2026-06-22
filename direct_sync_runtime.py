@@ -36,6 +36,14 @@ from direct_sync_operator import read_operator_pause
 DEFAULT_WORKER_ID = "direct-sync-relay-label-match"
 PRODUCTION_PROFILE_ENV_NAMES = ("APP_ENV", "ENV", "LABEL_MATCH_PRODUCTION", "DIRECT_SYNC_PRODUCTION")
 SECRET_REF_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+WINDOWS_RESERVED_DEVICE_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *{f"COM{index}" for index in range(1, 10)},
+    *{f"LPT{index}" for index in range(1, 10)},
+}
 
 
 @dataclass(frozen=True)
@@ -86,8 +94,15 @@ def _production_profile_enabled() -> bool:
 
 
 def _safe_secret_ref_name(value: str) -> str:
-    text = str(value or "").strip()
-    if not text or not SECRET_REF_NAME_RE.fullmatch(text):
+    text = str(value or "")
+    if not text or text != text.strip():
+        raise DirectSyncPushError("secret_ref target name is unsafe")
+    if text in {".", ".."} or text.startswith(".") or text.endswith("."):
+        raise DirectSyncPushError("secret_ref target name is unsafe")
+    if not SECRET_REF_NAME_RE.fullmatch(text):
+        raise DirectSyncPushError("secret_ref target name is unsafe")
+    reserved_base = text.split(".", 1)[0].upper()
+    if reserved_base in WINDOWS_RESERVED_DEVICE_NAMES:
         raise DirectSyncPushError("secret_ref target name is unsafe")
     return text
 
