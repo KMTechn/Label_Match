@@ -431,6 +431,22 @@ def test_runtime_once_acks_batch_and_records_local_status(tmp_path):
     assert_runtime_artifacts_are_redacted(config)
 
 
+def test_runtime_spool_digest_mismatch_blocks_before_post(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    spooled_file = next(Path(config.spool_dir).iterdir())
+    spooled_file.write_bytes(spooled_file.read_bytes() + b"\n# tampered after enqueue\n")
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(config, session=session)
+
+    assert status["status"] == "failed_permanent"
+    assert status["last_result"]["error_code"] == "spooled_file_digest_mismatch"
+    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_FAILED_PERMANENT] == 1
+    assert session.calls == []
+
+
 def test_runtime_retryable_failure_records_retry_wait_and_skips_early_retry(tmp_path):
     config = make_config(tmp_path)
     source_file = write_csv(tmp_path)

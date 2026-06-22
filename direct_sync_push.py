@@ -712,6 +712,25 @@ def drain_one_relay_batch(
     row = claim_next_relay_batch(db_path=db_path, worker_id=worker_id)
     if row is None:
         return None
+    spooled_hash, spooled_bytes = _read_file_digest(Path(row.spooled_file_path))
+    if spooled_hash != row.content_sha256 or spooled_bytes != row.byte_length:
+        result = UploadResult(
+            success=False,
+            status_code=0,
+            committed=False,
+            retryable=False,
+            receipt={},
+            error_code="spooled_file_digest_mismatch",
+            error_message="spooled file content does not match queued content hash/byte length",
+        )
+        _set_relay_status(
+            db_path=db_path,
+            relay_id=row.relay_id,
+            status=RELAY_STATUS_FAILED_PERMANENT,
+            error_code=result.error_code,
+            error_message=result.error_message,
+        )
+        return result
     plan = build_source_file_plan(
         source_file_path=row.spooled_file_path,
         producer_manifest_path=row.producer_manifest_path,
