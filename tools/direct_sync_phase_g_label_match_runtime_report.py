@@ -153,6 +153,17 @@ def _source_scope_identity(manifest_path: Path) -> dict:
     }
 
 
+def _runtime_artifact_bindings(runtime_status_path: Path, log_path: Path) -> dict:
+    return {
+        "status_json_artifact_ref": str(runtime_status_path),
+        "status_json_artifact_path": str(runtime_status_path),
+        "status_json_artifact_sha256": hashlib.sha256(runtime_status_path.read_bytes()).hexdigest(),
+        "redacted_log_artifact_ref": str(log_path),
+        "redacted_log_artifact_path": str(log_path),
+        "redacted_log_artifact_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest(),
+    }
+
+
 def _make_credential(tmp_root: Path) -> Path:
     path = tmp_root / "credential.json"
     _write_json(
@@ -281,6 +292,7 @@ def _runner_status_log_report(tmp_root: Path) -> dict:
         "redaction_pass": _artifacts_redacted(config),
         "runtime_status_path": str(config.runtime_status_path),
         "log_path": str(config.log_path),
+        **_runtime_artifact_bindings(config.runtime_status_path, config.log_path),
     }
 
 
@@ -768,6 +780,12 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "label_match_runtime_relay_report": {
             "status": "BLOCKED" if local_pass else "FAIL",
             **source_identity,
+            "status_json_artifact_ref": runner["status_json_artifact_ref"],
+            "status_json_artifact_path": runner["status_json_artifact_path"],
+            "status_json_artifact_sha256": runner["status_json_artifact_sha256"],
+            "redacted_log_artifact_ref": runner["redacted_log_artifact_ref"],
+            "redacted_log_artifact_path": runner["redacted_log_artifact_path"],
+            "redacted_log_artifact_sha256": runner["redacted_log_artifact_sha256"],
             "local_runner_status_log_report": runner,
             "blocked_reason": "No real Label_Match producer-PC scheduled task/service run or production direct receipts.",
         },

@@ -2,6 +2,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 
 def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked(tmp_path):
@@ -36,6 +37,19 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert runtime_report["source_scope_key_sha256"] == hashlib.sha256(
         runtime_report["source_scope_key"].encode("utf-8")
     ).hexdigest()
+    runner_report = runtime_report["local_runner_status_log_report"]
+    status_artifact_path = Path(runtime_report["status_json_artifact_path"])
+    log_artifact_path = Path(runtime_report["redacted_log_artifact_path"])
+    assert runtime_report["status_json_artifact_ref"] == str(status_artifact_path)
+    assert runtime_report["redacted_log_artifact_ref"] == str(log_artifact_path)
+    assert runtime_report["status_json_artifact_sha256"] == hashlib.sha256(
+        status_artifact_path.read_bytes()
+    ).hexdigest()
+    assert runtime_report["redacted_log_artifact_sha256"] == hashlib.sha256(
+        log_artifact_path.read_bytes()
+    ).hexdigest()
+    assert runner_report["status_json_artifact_sha256"] == runtime_report["status_json_artifact_sha256"]
+    assert runner_report["redacted_log_artifact_sha256"] == runtime_report["redacted_log_artifact_sha256"]
     assert report["operator_status_report"]["status"] == "PASS"
     assert report["operator_control_report"]["status"] == "PASS"
     assert report["operator_control_report"]["audit_redaction_pass"] is True
