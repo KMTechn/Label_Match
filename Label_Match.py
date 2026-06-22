@@ -243,87 +243,6 @@ class DateTimeEncoder(json.JSONEncoder):
         if isinstance(o, (datetime, date)):
             return o.isoformat()
         return super().default(o)
-
-
-class WorkerRegistry:
-    def __init__(self, registry_path, seed_workers=None):
-        self.registry_path = registry_path
-        self._ensure_seed_workers(seed_workers or [])
-
-    @staticmethod
-    def normalize_name(name):
-        return str(name or "").strip()
-
-    @staticmethod
-    def _validate_name(name):
-        if not name:
-            raise ValueError("작업자 이름은 비워둘 수 없습니다.")
-        if any(ch in name for ch in '\\/:*?"<>|'):
-            raise ValueError("작업자 이름에는 \\ / : * ? \" < > | 문자를 사용할 수 없습니다.")
-
-    def _read_payload(self):
-        if not os.path.exists(self.registry_path):
-            return {"workers": []}
-        try:
-            with open(self.registry_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return {"workers": []}
-        if not isinstance(payload, dict) or not isinstance(payload.get("workers"), list):
-            return {"workers": []}
-        return payload
-
-    def _write_payload(self, payload):
-        os.makedirs(os.path.dirname(self.registry_path), exist_ok=True)
-        tmp_path = f"{self.registry_path}.{os.getpid()}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(tmp_path, self.registry_path)
-
-    def _ensure_seed_workers(self, seed_workers):
-        for worker_name in seed_workers:
-            worker_name = self.normalize_name(worker_name)
-            if worker_name:
-                try:
-                    self.register(worker_name)
-                except ValueError:
-                    pass
-
-    def list_workers(self):
-        workers = []
-        seen = set()
-        for entry in self._read_payload().get("workers", []):
-            if not isinstance(entry, dict) or not entry.get("active", True):
-                continue
-            name = self.normalize_name(entry.get("name"))
-            if name and name not in seen:
-                workers.append(name)
-                seen.add(name)
-        return sorted(workers)
-
-    def has_worker(self, name):
-        return self.normalize_name(name) in set(self.list_workers())
-
-    def register(self, name):
-        name = self.normalize_name(name)
-        self._validate_name(name)
-        payload = self._read_payload()
-        workers = payload.setdefault("workers", [])
-        for entry in workers:
-            if isinstance(entry, dict) and self.normalize_name(entry.get("name")) == name:
-                entry["active"] = True
-                self._write_payload(payload)
-                return name
-        workers.append({
-            "name": name,
-            "active": True,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        })
-        self._write_payload(payload)
-        return name
-
-
 def resource_path(relative_path: str) -> str:
     try:
         base_path = sys._MEIPASS
@@ -420,7 +339,6 @@ class Label_Match(tk.Tk):
         CURRENT_STATE = "_current_set_state_packaging.json"
         SETTINGS = "app_settings.json"
         ITEMS = "Item.csv"
-        WORKERS = "worker_registry.json"
     class Events:
         APP_START = "APP_START"
         APP_CLOSE = "APP_CLOSE"
@@ -460,11 +378,6 @@ class Label_Match(tk.Tk):
                 messagebox.showerror("오디오 초기화 오류", f"프로그램 효과음을 재생하는 데 필요한 오디오 장치를 시작할 수 없습니다.\n스피커 또는 사운드 드라이버에 문제가 없는지 확인해주세요.\n\n(효과음 없이 프로그램은 계속 실행됩니다.)\n\n[상세 오류]\n{e}")
         self._setup_paths()
         self.app_settings = self._load_app_settings()
-        legacy_worker_name = WorkerRegistry.normalize_name(self.app_settings.get("worker_name"))
-        self.worker_registry = WorkerRegistry(
-            os.path.join(self.config_directory, self.FILES.WORKERS),
-            seed_workers=[legacy_worker_name] if legacy_worker_name else [],
-        )
         self.custom_save_path = "C:\\Sync"
         self._update_save_directory()
         self.ui_cfg = self.app_settings.get("ui_settings", {})
@@ -480,8 +393,8 @@ class Label_Match(tk.Tk):
         self.sound_objects = {}
         self.items_data = {}
         self.unique_id = socket.gethostname()
-        self.worker_name = ""
-        self.data_manager = None
+        self.worker_name = self.app_settings.get("worker_name", self.Worker.PACKAGING)
+        self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
         self.current_set_info = {} 
         self.is_blinking = False
         self.scan_count = defaultdict(lambda: defaultdict(int))
@@ -537,14 +450,12 @@ class Label_Match(tk.Tk):
             self.items_data = result.get('items', {})
             self.sound_objects = self._preload_sounds()
             self.hide_loading_overlay()
-            self.entry.config(state='disabled')
-            self._reset_current_set()
-            self.initialized_successfully = True
-            if not self._show_worker_login_dialog(initial=True):
-                return
             self.entry.config(state='normal')
             self.entry.focus_set()
+            self._reset_current_set()
+            self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
             self.data_manager.log_event(self.Events.APP_START, {"message": "Application initialized."})
+            self.initialized_successfully = True
             self.history_queue = queue.Queue()
             self._load_history_and_rebuild_summary()
             self._process_history_queue()
@@ -618,142 +529,6 @@ class Label_Match(tk.Tk):
         except Exception as e:
             print(f"앱 설정 저장 오류: {e}")
 
-    def _refresh_worker_combo(self, combo):
-        if combo and hasattr(combo, "configure"):
-            combo.configure(values=self.worker_registry.list_workers())
-
-    def _register_worker_name(self, worker_name, parent=None):
-        worker_name = WorkerRegistry.normalize_name(worker_name)
-        try:
-            return self.worker_registry.register(worker_name)
-        except ValueError as exc:
-            if not self.run_tests:
-                messagebox.showerror("작업자 등록 오류", str(exc), parent=parent or self)
-            return None
-
-    def _ensure_worker_login_name(self, worker_name, parent=None):
-        worker_name = WorkerRegistry.normalize_name(worker_name)
-        if not worker_name:
-            if not self.run_tests:
-                messagebox.showerror("오류", "작업자 이름을 입력해주세요.", parent=parent or self)
-            return None
-        if self.worker_registry.has_worker(worker_name):
-            return worker_name
-        if self.run_tests:
-            return self._register_worker_name(worker_name, parent=parent)
-        should_register = messagebox.askyesno(
-            "신규 작업자 등록",
-            f"등록되지 않은 작업자입니다.\n\n작업자: {worker_name}\n\n신규 작업자로 등록하시겠습니까?",
-            parent=parent or self,
-        )
-        if not should_register:
-            return None
-        registered = self._register_worker_name(worker_name, parent=parent)
-        if registered:
-            messagebox.showinfo("작업자 등록", f"{registered} 작업자를 등록했습니다.", parent=parent or self)
-        return registered
-
-    def _apply_worker_login(self, worker_name):
-        previous_manager = self.data_manager
-        self.worker_name = worker_name
-        self._update_save_directory()
-        self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
-        if previous_manager:
-            previous_manager.log_queue.put(None)
-        self._save_app_settings()
-        self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
-
-    def _show_worker_login_dialog(self, initial=False):
-        default_worker = WorkerRegistry.normalize_name(self.app_settings.get("worker_name"))
-        if self.run_tests:
-            worker_name = default_worker or self.Worker.PACKAGING
-            registered = self._ensure_worker_login_name(worker_name)
-            if registered:
-                self._apply_worker_login(registered)
-                return True
-            return False
-
-        dialog = tk.Toplevel(self)
-        dialog.title("작업자 로그인")
-        dialog.geometry("560x310")
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.configure(bg=self.colors.get("background", "#ECEFF1"))
-
-        selected_worker = {"name": None}
-        main_frame = ttk.Frame(dialog, padding=28, style="TFrame")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        main_frame.grid_columnconfigure(0, weight=1)
-
-        ttk.Label(
-            main_frame,
-            text="작업자 로그인",
-            font=(self.default_font_name, 20, "bold"),
-            style="TLabel",
-        ).grid(row=0, column=0, sticky="ew", pady=(0, 22))
-        ttk.Label(
-            main_frame,
-            text="등록된 작업자를 선택하거나 새 작업자 이름을 입력하세요.",
-            font=(self.default_font_name, 11),
-            style="TLabel",
-        ).grid(row=1, column=0, sticky="ew", pady=(0, 10))
-
-        worker_var = tk.StringVar()
-        workers = self.worker_registry.list_workers()
-        if default_worker:
-            worker_var.set(default_worker)
-        elif workers:
-            worker_var.set(workers[0])
-        worker_combo = ttk.Combobox(
-            main_frame,
-            textvariable=worker_var,
-            values=workers,
-            state="normal",
-            justify="center",
-            font=(self.default_font_name, 16, "bold"),
-        )
-        worker_combo.grid(row=2, column=0, sticky="ew", ipady=10)
-        worker_combo.focus_set()
-        worker_combo.bind("<Return>", lambda _event: login())
-
-        button_frame = ttk.Frame(main_frame, style="TFrame")
-        button_frame.grid(row=3, column=0, sticky="e", pady=(28, 0))
-
-        def refresh():
-            self._refresh_worker_combo(worker_combo)
-
-        def register_from_input():
-            name = WorkerRegistry.normalize_name(worker_var.get())
-            if not name:
-                name = simpledialog.askstring("신규 작업자 등록", "등록할 작업자 이름을 입력하세요.", parent=dialog)
-            registered = self._register_worker_name(name, parent=dialog)
-            if registered:
-                worker_var.set(registered)
-                refresh()
-                messagebox.showinfo("작업자 등록", f"{registered} 작업자를 등록했습니다.", parent=dialog)
-
-        def login():
-            worker_name = self._ensure_worker_login_name(worker_var.get(), parent=dialog)
-            if not worker_name:
-                return
-            self._apply_worker_login(worker_name)
-            selected_worker["name"] = worker_name
-            dialog.destroy()
-
-        def cancel():
-            if initial:
-                self.destroy()
-            else:
-                dialog.destroy()
-
-        ttk.Button(button_frame, text="신규 등록", command=register_from_input, style="TButton").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(button_frame, text="로그인", command=login, style="TButton").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(button_frame, text="취소", command=cancel, style="TButton").pack(side=tk.LEFT)
-        dialog.protocol("WM_DELETE_WINDOW", cancel)
-        self.wait_window(dialog)
-        return bool(selected_worker["name"])
-
     def _load_ui_persistence_settings(self):
         persistence_settings = self.app_settings.get("ui_persistence", {})
         self.scale_factor = persistence_settings.get("scale_factor", 1.2)
@@ -796,9 +571,8 @@ class Label_Match(tk.Tk):
 
         if do_close:
             self.is_blinking = False
-            if self.data_manager:
-                self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
-                self.data_manager.log_queue.put(None)
+            self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
+            self.data_manager.log_queue.put(None)
             self._save_app_settings()
             self.destroy()
 
@@ -1877,7 +1651,7 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n설정 변경은 다음 작업부터 적용됩니다.")
         settings_window = tk.Toplevel(self)
         settings_window.title("설정")
-        settings_window.geometry("640x240")
+        settings_window.geometry("600x200")
         settings_window.resizable(False, False)
         settings_window.transient(self)
         settings_window.grab_set()
@@ -1887,44 +1661,25 @@ class Label_Match(tk.Tk):
         main_frame.grid_columnconfigure(1, weight=1)
         ttk.Label(main_frame, text="현재 작업자 이름:", font=(self.default_font_name, 11)).grid(row=0, column=0, sticky='w', pady=(20,5), padx=(0, 10))
         self.worker_name_var = tk.StringVar(value=self.worker_name)
-        worker_entry = ttk.Combobox(
-            main_frame,
-            textvariable=self.worker_name_var,
-            values=self.worker_registry.list_workers(),
-            state="normal",
-            font=(self.default_font_name, 12),
-        )
-        worker_entry.grid(row=1, column=0, columnspan=3, sticky='ew', ipady=6)
+        worker_entry = ttk.Entry(main_frame, textvariable=self.worker_name_var, font=(self.default_font_name, 10))
+        worker_entry.grid(row=1, column=0, columnspan=3, sticky='ew')
         button_frame = ttk.Frame(main_frame, padding=(0, 20, 0, 0), style="TFrame")
         button_frame.grid(row=2, column=0, columnspan=3, sticky='e', pady=(20,0))
-        register_button = ttk.Button(
-            button_frame,
-            text="신규 등록",
-            command=lambda: self._register_worker_from_settings(self.worker_name_var, worker_entry, settings_window),
-        )
-        register_button.pack(side=tk.LEFT, padx=5)
         save_button = ttk.Button(button_frame, text="저장", command=lambda: self._save_settings_and_close(settings_window, self.worker_name_var.get()))
         save_button.pack(side=tk.LEFT, padx=5)
         cancel_button = ttk.Button(button_frame, text="취소", command=settings_window.destroy)
         cancel_button.pack(side=tk.LEFT)
 
-    def _register_worker_from_settings(self, worker_var, worker_combo, parent):
-        worker_name = WorkerRegistry.normalize_name(worker_var.get())
-        if not worker_name:
-            worker_name = simpledialog.askstring("신규 작업자 등록", "등록할 작업자 이름을 입력하세요.", parent=parent)
-        registered = self._register_worker_name(worker_name, parent=parent)
-        if not registered:
-            return
-        worker_var.set(registered)
-        self._refresh_worker_combo(worker_combo)
-        if not self.run_tests:
-            messagebox.showinfo("작업자 등록", f"{registered} 작업자를 등록했습니다.", parent=parent)
-
     def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str):
-        worker_name = self._ensure_worker_login_name(new_worker_name, parent=window)
-        if not worker_name:
+        if not new_worker_name.strip():
+            if not self.run_tests:
+                messagebox.showerror("입력 오류", "작업자 이름은 비워둘 수 없습니다.", parent=window)
             return
-        self._apply_worker_login(worker_name)
+        self.worker_name = new_worker_name.strip()
+        self._save_app_settings()
+        self._update_save_directory()
+        self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
+        self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
         if not self.run_tests:
             messagebox.showinfo("저장 완료", f"설정이 변경되었습니다.\n- 작업자: {self.worker_name}", parent=self)
         window.destroy()
