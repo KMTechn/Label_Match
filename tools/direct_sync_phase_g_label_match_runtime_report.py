@@ -31,6 +31,7 @@ from direct_sync_push import (  # noqa: E402
 )
 from direct_sync_operator import operator_status, pause_relay, resume_relay, retry_dead_relay_batch  # noqa: E402
 from direct_sync_relay_install_pack import build_install_plan  # noqa: E402
+from direct_sync_relay_runner import _scan_source_files  # noqa: E402
 from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once  # noqa: E402
 
 
@@ -219,9 +220,9 @@ def _stale_lease_report(tmp_root: Path) -> dict:
         db_path=config.db_path,
         worker_id="previous-process",
         lease_seconds=1,
-        now="2026-06-22T00:00:00Z",
+        now="2099-01-01T00:00:00Z",
     )
-    status = run_relay_once(config, session=EchoAcceptedSession(), now="2026-06-22T00:00:02Z")
+    status = run_relay_once(config, session=EchoAcceptedSession(), now="2099-01-01T00:00:02Z")
     queue = relay_queue_status(config.db_path)
     ok = claimed is not None and status["stale_leases_reset"] == 1 and queue["counts"].get(RELAY_STATUS_ACKED) == 1
     return {
@@ -325,7 +326,7 @@ def _lost_ack_replay_report(tmp_root: Path) -> dict:
         db_path=config.db_path,
         worker_id="crashed-process",
         lease_seconds=1,
-        now="2026-06-22T00:00:00Z",
+        now="2099-01-01T00:00:00Z",
     )
     credentials = ProducerCredentials(
         producer_id="producer-label-phase-g",
@@ -348,7 +349,7 @@ def _lost_ack_replay_report(tmp_root: Path) -> dict:
         status_dir=tmp_root / "lost-ack" / "crash_status",
     )
     retry_session = EchoAcceptedSession()
-    retry = run_relay_once(config, session=retry_session, now="2026-06-22T00:00:02Z")
+    retry = run_relay_once(config, session=retry_session, now="2099-01-01T00:00:02Z")
     first_metadata = json.loads(committed_but_unacked.calls[0]["metadata"]) if committed_but_unacked.calls else {}
     retry_metadata = json.loads(retry_session.calls[0]["metadata"]) if retry_session.calls else {}
     queue = relay_queue_status(config.db_path)
@@ -565,6 +566,44 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
     }
 
 
+def _source_scan_admission_report(tmp_root: Path) -> dict:
+    scan_dir = tmp_root / "source_scan_admission"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    allowed_file = scan_dir / "포장실작업이벤트로그_admission.csv"
+    ignored_file = scan_dir / "unrelated.csv"
+    nested_dir = scan_dir / "nested"
+    nested_dir.mkdir(exist_ok=True)
+    nested_allowed = nested_dir / "포장실작업이벤트로그_nested.csv"
+    allowed_file.write_text("event_id,status\nLM-ADMIT-1,ok\n", encoding="utf-8")
+    ignored_file.write_text("event_id,status\nLM-IGNORE-1,ok\n", encoding="utf-8")
+    nested_allowed.write_text("event_id,status\nLM-NESTED-1,ok\n", encoding="utf-8")
+
+    selected = _scan_source_files(str(scan_dir), ["*.csv"], 100)
+    recursive_rejected = False
+    path_rejected = False
+    try:
+        _scan_source_files(str(scan_dir), ["**/*.csv"], 100)
+    except SystemExit:
+        recursive_rejected = True
+    try:
+        _scan_source_files(str(scan_dir), ["nested/*.csv"], 100)
+    except SystemExit:
+        path_rejected = True
+
+    selected_names = [path.name for path in selected]
+    ok = selected_names == [allowed_file.name] and recursive_rejected and path_rejected
+    return {
+        "status": "PASS" if ok else "FAIL",
+        "scope": "local source scan admission fixture only",
+        "approved_file_family": "포장실작업이벤트로그_*.csv",
+        "broad_glob_selected_files": selected_names,
+        "ignored_file_selected": ignored_file.name in selected_names,
+        "nested_file_selected": nested_allowed.name in selected_names,
+        "recursive_glob_rejected": recursive_rejected,
+        "path_glob_rejected": path_rejected,
+    }
+
+
 def build_report(tmp_root: Path, report_path: Path) -> dict:
     manifest_path = _make_manifest(tmp_root)
     credential_path = _make_credential(tmp_root)
@@ -577,6 +616,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
     retry_dead_letter = _retry_dead_letter_report(tmp_root)
     operator_control = _operator_control_report(tmp_root)
     install_pack = _install_pack_dry_run_report(tmp_root)
+    source_scan_admission = _source_scan_admission_report(tmp_root)
     local_pass = all(
         item["status"] == "PASS"
         for item in (
@@ -589,6 +629,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
             retry_dead_letter,
             operator_control,
             install_pack,
+            source_scan_admission,
         )
     )
     report = {
@@ -614,6 +655,7 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "queue_backpressure_report": queue_backpressure,
         "retry_dead_letter_report": retry_dead_letter,
         "operator_control_report": operator_control,
+        "source_scan_admission_report": source_scan_admission,
         "lost_ack_replay_report": {
             "status": "BLOCKED",
             "local_replay_report": lost_ack,

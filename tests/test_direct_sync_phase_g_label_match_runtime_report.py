@@ -35,6 +35,14 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["queue_backpressure_report"]["status"] == "PASS"
     assert report["queue_backpressure_report"]["blocked_status"] == "blocked_queue_backpressure"
     assert report["retry_dead_letter_report"]["status"] == "PASS"
+    assert report["source_scan_admission_report"]["status"] == "PASS"
+    assert report["source_scan_admission_report"]["broad_glob_selected_files"] == [
+        "포장실작업이벤트로그_admission.csv"
+    ]
+    assert report["source_scan_admission_report"]["ignored_file_selected"] is False
+    assert report["source_scan_admission_report"]["nested_file_selected"] is False
+    assert report["source_scan_admission_report"]["recursive_glob_rejected"] is True
+    assert report["source_scan_admission_report"]["path_glob_rejected"] is True
     assert report["lost_ack_replay_report"]["local_replay_report"]["status"] == "PASS"
     assert report["production_install_pack_report"]["local_dry_run_report"]["status"] == "PASS"
     assert report["production_install_pack_report"]["local_dry_run_report"]["operator_pause_path"]
