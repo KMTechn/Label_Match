@@ -914,6 +914,10 @@ def build_report(tmp_root: Path, report_path: Path) -> dict:
         "credential_path": str(credential_path),
         "local_contract_status": "PASS" if local_pass else "FAIL",
         "label_match_runtime_relay_report": {
+            "evidence": "label_match_runtime_relay_report",
+            "requested_evidence": "label_match_runtime_relay_report",
+            "evidence_scope": "local_fixture",
+            "production_ready": False,
             "status": "BLOCKED" if local_pass else "FAIL",
             **source_identity,
             "flow": "LabelMatch",

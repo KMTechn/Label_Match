@@ -29,6 +29,10 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["local_contract_status"] == "PASS"
     runtime_report = report["label_match_runtime_relay_report"]
     assert runtime_report["status"] == "BLOCKED"
+    assert runtime_report["evidence"] == "label_match_runtime_relay_report"
+    assert runtime_report["requested_evidence"] == "label_match_runtime_relay_report"
+    assert runtime_report["evidence_scope"] == "local_fixture"
+    assert runtime_report["production_ready"] is False
     manifest_path = Path(report["producer_manifest_path"])
     assert runtime_report["flow"] == "LabelMatch"
     assert runtime_report["producer_repo"] == "Label_Match"
