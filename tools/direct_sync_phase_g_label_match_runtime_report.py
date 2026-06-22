@@ -147,7 +147,8 @@ def _source_scope_identity(manifest_path: Path) -> dict:
         "source_host_id": manifest["pc_identity"]["source_host_id"],
         "producer_role": stream["producer_role"],
         "stream_name": stream["stream_name"],
-        "source_transport": stream["source_transport"],
+        "source_transport": "http_push",
+        "manifest_source_transport": stream["source_transport"],
         "source_scope_key": source_scope_key,
         "source_scope_key_sha256": hashlib.sha256(source_scope_key.encode("utf-8")).hexdigest(),
     }

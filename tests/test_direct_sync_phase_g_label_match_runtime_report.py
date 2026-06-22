@@ -32,7 +32,8 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert runtime_report["source_host_id"] == "label-match-phase-g-host"
     assert runtime_report["producer_role"] == "label_match"
     assert runtime_report["stream_name"] == "label_match_events"
-    assert runtime_report["source_transport"] == "legacy_packaging_csv"
+    assert runtime_report["source_transport"] == "http_push"
+    assert runtime_report["manifest_source_transport"] == "legacy_packaging_csv"
     assert runtime_report["source_scope_key"] == "label-match-phase-g-host/label_match/label_match_events"
     assert runtime_report["source_scope_key_sha256"] == hashlib.sha256(
         runtime_report["source_scope_key"].encode("utf-8")
