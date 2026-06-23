@@ -23,6 +23,8 @@ import unittest
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
 LABEL_MATCH_SCAN_CONTRACT_VERSION = "label_match_current_v1"
+LABEL_MATCH_RESULT_PASS = "통과"
+LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
 
 
 def _plan_b_dispatch_key(event_type):
@@ -60,6 +62,119 @@ def _label_match_barcode_projection(raw_barcode, parsed_barcode, scan_position):
 
 def _label_match_packaging_set_identity(pc_id, set_id):
     return f"{LABEL_MATCH_SOURCE_SYSTEM}|{pc_id}|{set_id}"
+
+
+def _label_match_tray_complete_result(details):
+    source = details or {}
+    for key in ("final_result", "result_display", "result"):
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if source.get("has_error_or_reset"):
+        return LABEL_MATCH_RESULT_FAIL_MISMATCH
+    return LABEL_MATCH_RESULT_PASS
+
+
+def _label_match_tray_complete_passed(details):
+    return _label_match_tray_complete_result(details) == LABEL_MATCH_RESULT_PASS
+
+
+def _label_match_manual_complete_block_reason(current_set_info):
+    current = current_set_info or {}
+    scan_count = len(current.get("raw") or current.get("parsed") or [])
+    if scan_count < 2:
+        return "manual_complete_requires_product_scan"
+    if scan_count >= 5:
+        return "manual_complete_only_for_partial_sets"
+    if current.get("has_error_or_reset") or current.get("error_count", 0):
+        return "manual_complete_blocked_after_error"
+    return None
+
+
+def _label_match_manual_complete_allowed(current_set_info):
+    return _label_match_manual_complete_block_reason(current_set_info) is None
+
+
+def _label_match_decode_possible_base64_label(raw_value):
+    text = str(raw_value or "").strip()
+    if not text or "|" in text or len(text) <= 20:
+        return text
+    try:
+        temp_b64 = text.replace('-', '+').replace('_', '/')
+        padded_b64 = temp_b64 + '=' * (-len(temp_b64) % 4)
+        decoded = base64.b64decode(padded_b64).decode('utf-8')
+        return decoded if '|' in decoded and '=' in decoded else text
+    except (binascii.Error, UnicodeDecodeError):
+        return text
+
+
+def _label_match_new_format_identity_key(raw_value):
+    decoded = _label_match_decode_possible_base64_label(raw_value)
+    if '|' not in decoded or '=' not in decoded:
+        return None
+    try:
+        fields = {
+            key.strip().upper(): value.strip()
+            for key, value in (
+                item.split('=', 1)
+                for item in decoded.split('|')
+                if '=' in item
+            )
+        }
+    except Exception:
+        return None
+    if not all(fields.get(key) for key in ('CLC', 'SPC', 'PHS')):
+        return None
+    return f"CLC={fields['CLC']}|SPC={fields['SPC']}|PHS={fields['PHS']}"
+
+
+def _label_match_unique_master_index_keys(raw_value):
+    keys = {str(raw_value or "")}
+    identity_key = _label_match_new_format_identity_key(raw_value)
+    if identity_key:
+        keys.add(identity_key)
+    return {key for key in keys if key}
+
+
+def _label_match_duplicate_index_barcodes(details):
+    source = details or {}
+    if not _label_match_tray_complete_passed(source):
+        return set()
+    raw_scans = list(source.get("scanned_product_barcodes") or [])
+    if not raw_scans:
+        return set()
+    indexed = set(raw_scans[1:])
+    first_scan = raw_scans[0]
+    if _label_match_first_scan_is_unique_master(source):
+        indexed.update(_label_match_unique_master_index_keys(first_scan))
+    return indexed
+
+
+def _label_match_first_scan_is_unique_master(details):
+    source = details or {}
+    raw_scans = list(source.get("scanned_product_barcodes") or [])
+    if not raw_scans:
+        return False
+    first_scan = str(raw_scans[0] or "")
+    return bool(
+        source.get("is_unique_master_label")
+        or source.get("item_name_override")
+        or _label_match_new_format_identity_key(first_scan)
+    )
+
+
+def _label_match_unique_master_labels_equivalent(left, right):
+    left_keys = _label_match_unique_master_index_keys(left)
+    right_keys = _label_match_unique_master_index_keys(right)
+    return bool(left_keys & right_keys)
+
+
+def _label_match_parse_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        return datetime.fromisoformat(value)
+    raise TypeError("expected datetime or ISO datetime string")
 
 
 def _enrich_label_match_event(event_type, details, pc_id):
@@ -110,9 +225,17 @@ def _enrich_label_match_event(event_type, details, pc_id):
             "product_sample_barcodes",
             [row["product_barcode"] for row in barcode_roles if row.get("product_barcode")],
         )
-        enriched.setdefault("quantity_basis", "PACKAGING_SET")
-        enriched.setdefault("measure_code", "PACKAGING_SET_COUNT")
-        enriched.setdefault("packaging_set_count", 1)
+        if enriched.get("is_partial_submission"):
+            enriched.setdefault("quantity_basis", "PARTIAL_SUBMISSION")
+            enriched.setdefault("measure_code", "PACKAGING_SET_COUNT")
+            enriched.setdefault("packaging_set_count", 0)
+            enriched.setdefault("downstream_count_excluded", True)
+            enriched.setdefault("downstream_count_exclusion_reason", "PARTIAL_MANUAL_COMPLETION")
+        else:
+            enriched.setdefault("quantity_basis", "PACKAGING_SET")
+            enriched.setdefault("measure_code", "PACKAGING_SET_COUNT")
+            enriched.setdefault("packaging_set_count", 1)
+            enriched.setdefault("downstream_count_excluded", False)
         enriched.setdefault("packaging_piece_qty", None)
         enriched.setdefault("confidence", "EVENT_PROJECTION")
     if event_type in {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}:
@@ -257,6 +380,7 @@ class CalendarWindow(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.result = None
+        self.resizable(False, False)
 
         self.cal = Calendar(self, selectmode='day', year=datetime.now().year, month=datetime.now().month, day=datetime.now().day,
                             locale='ko_KR', background="white", foreground="black", headersbackground="#EAEAEA")
@@ -270,6 +394,11 @@ class CalendarWindow(tk.Toplevel):
         cancel_btn = ttk.Button(btn_frame, text="취소", command=self.destroy)
         cancel_btn.pack(side="left", padx=5)
 
+        if hasattr(parent, "_center_child_window"):
+            width, height = parent._dialog_size("calendar")
+            parent._center_child_window(self, width, height)
+        self.bind("<Escape>", lambda event: self.destroy())
+        self.cal.focus_set()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.wait_window(self)
 
@@ -284,6 +413,9 @@ class DataManager:
         self.worker_name = worker_name
         self.unique_id = unique_id
         self.log_queue = queue.Queue()
+        self._close_lock = threading.Lock()
+        self._close_requested = False
+        self._writer_errors = []
         self.log_thread = threading.Thread(target=self._log_writer_thread, daemon=True)
         self.log_thread.start()
     def _get_log_filepath(self, target_date=None):
@@ -291,12 +423,17 @@ class DataManager:
             target_date = datetime.now()
         filename = f"{self.process_name}작업이벤트로그_{self.unique_id}_{target_date.strftime('%Y%m%d')}.csv"
         return os.path.join(self.save_directory, filename)
+    def _get_log_filepath_for_item(self, log_item):
+        try:
+            return self._get_log_filepath(datetime.fromisoformat(str(log_item[0])))
+        except Exception:
+            return self._get_log_filepath()
     def _log_writer_thread(self):
         while True:
             try:
                 log_item = self.log_queue.get()
                 if log_item is None: break
-                filepath = self._get_log_filepath()
+                filepath = self._get_log_filepath_for_item(log_item)
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 with open(filepath, 'a', newline='', encoding='utf-8-sig') as f:
@@ -307,11 +444,27 @@ class DataManager:
             except queue.Empty:
                 continue
             except Exception as e:
+                self._writer_errors.append(e)
                 print(f"로그 쓰기 스레드 오류: {e}")
     def log_event(self, event_type, details):
         enriched_details = _enrich_label_match_event(event_type, details or {}, self.unique_id)
         log_item = [datetime.now().isoformat(), self.worker_name, event_type, json.dumps(enriched_details, ensure_ascii=False, cls=DateTimeEncoder)]
-        self.log_queue.put(log_item)
+        with self._close_lock:
+            if self._close_requested:
+                raise RuntimeError("DataManager is closing; new log events are not accepted")
+            self.log_queue.put(log_item)
+    def close(self, timeout=None):
+        with self._close_lock:
+            if not self._close_requested:
+                self._close_requested = True
+                if self.log_thread.is_alive():
+                    self.log_queue.put(None)
+        self.log_thread.join(timeout)
+        if self.log_thread.is_alive():
+            raise TimeoutError("Log writer did not stop before timeout")
+        if self._writer_errors:
+            raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
+        return True
     def save_current_state(self, state_data):
         state_path = os.path.join(self.save_directory, Label_Match.FILES.CURRENT_STATE)
         try:
@@ -335,6 +488,155 @@ class DataManager:
             except Exception as e: print(f"임시 상태 파일 삭제 실패: {e}")
 
 class Label_Match(tk.Tk):
+    UI_PROFILES = {
+        "small": {
+            "outer_padding": 8,
+            "card_padding": 10,
+            "section_gap": 6,
+            "content_gap": 4,
+            "bottom_gap": 6,
+            "big_display_pady": (4, 7),
+            "big_display_ipady": 4,
+            "big_display_cap": 28,
+            "big_display_wrap_ratio": 0.88,
+            "font_scale": 0.82,
+            "effective_scale_max": 1.18,
+            "button_padding": 6,
+            "control_padding": (6, 3),
+            "action_padding": 7,
+            "action_font_scale": 0.88,
+            "header_font_cap": 22,
+            "status_font_cap": 18,
+            "button_font_cap": 16,
+            "control_font_cap": 12,
+            "action_font_cap": 14,
+            "tree_heading_font_cap": 12,
+            "tree_font_cap": 13,
+            "tree_row_height_scale": 2.35,
+            "detail_text_height": 2,
+            "history_ratio": 0.74,
+            "history_ratio_min": 0.66,
+            "history_ratio_max": 0.86,
+            "dialog_scale": 0.84,
+        },
+        "compact": {
+            "outer_padding": 12,
+            "card_padding": 14,
+            "section_gap": 10,
+            "content_gap": 6,
+            "bottom_gap": 8,
+            "big_display_pady": (8, 12),
+            "big_display_ipady": 6,
+            "big_display_cap": 34,
+            "big_display_wrap_ratio": 0.82,
+            "font_scale": 0.86,
+            "effective_scale_max": 1.36,
+            "button_padding": 8,
+            "control_padding": (8, 5),
+            "action_padding": 9,
+            "action_font_scale": 0.95,
+            "header_font_cap": 26,
+            "status_font_cap": 21,
+            "button_font_cap": 18,
+            "control_font_cap": 14,
+            "action_font_cap": 17,
+            "tree_heading_font_cap": 14,
+            "tree_font_cap": 15,
+            "tree_row_height_scale": 2.6,
+            "detail_text_height": 3,
+            "history_ratio": 0.72,
+            "history_ratio_min": 0.62,
+            "history_ratio_max": 0.84,
+            "dialog_scale": 0.88,
+        },
+        "standard": {
+            "outer_padding": 20,
+            "card_padding": 22,
+            "section_gap": 18,
+            "content_gap": 10,
+            "bottom_gap": 14,
+            "big_display_pady": (14, 22),
+            "big_display_ipady": 10,
+            "big_display_cap": 60,
+            "big_display_wrap_ratio": 0.78,
+            "font_scale": 1.0,
+            "effective_scale_max": 1.8,
+            "button_padding": 11,
+            "control_padding": (10, 6),
+            "action_padding": 12,
+            "action_font_scale": 1.0,
+            "header_font_cap": 36,
+            "status_font_cap": 28,
+            "button_font_cap": 24,
+            "control_font_cap": 20,
+            "action_font_cap": 22,
+            "tree_heading_font_cap": 20,
+            "tree_font_cap": 18,
+            "tree_row_height_scale": 2.8,
+            "detail_text_height": 4,
+            "history_ratio": 0.68,
+            "history_ratio_min": 0.58,
+            "history_ratio_max": 0.82,
+            "dialog_scale": 1.0,
+        },
+        "large": {
+            "outer_padding": 30,
+            "card_padding": 28,
+            "section_gap": 24,
+            "content_gap": 14,
+            "bottom_gap": 18,
+            "big_display_pady": (18, 28),
+            "big_display_ipady": 14,
+            "big_display_cap": 76,
+            "big_display_wrap_ratio": 0.72,
+            "font_scale": 1.08,
+            "effective_scale_max": 2.2,
+            "button_padding": 12,
+            "control_padding": (12, 7),
+            "action_padding": 14,
+            "action_font_scale": 1.0,
+            "header_font_cap": 44,
+            "status_font_cap": 34,
+            "button_font_cap": 30,
+            "control_font_cap": 24,
+            "action_font_cap": 26,
+            "tree_heading_font_cap": 24,
+            "tree_font_cap": 20,
+            "tree_row_height_scale": 3.0,
+            "detail_text_height": 5,
+            "history_ratio": 0.66,
+            "history_ratio_min": 0.56,
+            "history_ratio_max": 0.80,
+            "dialog_scale": 1.08,
+        },
+    }
+    STEP_NAMES = ("현품표", "제품1", "제품2", "제품3", "라벨지")
+    BARCODE_DISPLAY_LIMITS = {
+        "small": 14,
+        "compact": 16,
+        "standard": 24,
+        "large": 32,
+    }
+    HISTORY_HEADING_LABELS = {
+        "Set": ("#",),
+        "Input1": ("현품표", "현품"),
+        "Input2": ("제품1", "P1"),
+        "Input3": ("제품2", "P2"),
+        "Input4": ("제품3", "P3"),
+        "Input5": ("라벨지", "라벨"),
+        "Result": ("결과",),
+        "Timestamp": ("시간", "시각"),
+    }
+    SUMMARY_HEADING_LABELS = {
+        "Code": ("기준 코드", "코드"),
+        "Phase": ("차수", "차"),
+        "Count": ("통과수", "수"),
+    }
+    MANUAL_COMPLETE_HINTS = {
+        "manual_complete_requires_product_scan": "제품 1개 이상 스캔 후 가능",
+        "manual_complete_only_for_partial_sets": "이미 5개 완료됨",
+        "manual_complete_blocked_after_error": "오류 세트는 불가",
+    }
     class FILES:
         CURRENT_STATE = "_current_set_state_packaging.json"
         SETTINGS = "app_settings.json"
@@ -354,8 +656,8 @@ class Label_Match(tk.Tk):
         TRAY_COMPLETION_CANCELLED = "TRAY_COMPLETION_CANCELLED"
         BASE64_DECODED = "BASE64_DECODED"
     class Results:
-        PASS = "통과"
-        FAIL_MISMATCH = "불일치"
+        PASS = LABEL_MATCH_RESULT_PASS
+        FAIL_MISMATCH = LABEL_MATCH_RESULT_FAIL_MISMATCH
         FAIL_INPUT_ERROR = "입력오류"
         IN_PROGRESS = "진행중..."
     class Worker:
@@ -382,13 +684,14 @@ class Label_Match(tk.Tk):
         self._update_save_directory()
         self.ui_cfg = self.app_settings.get("ui_settings", {})
         self.base_font_size = self.ui_cfg.get("base_font_size", 14)
-        self.colors = {
+        default_colors = {
             "background": "#F9FAFB", "card_background": "#FFFFFF", "text": "#111827",
             "text_subtle": "#6B7280", "text_strong": "#000000", "primary": "#3B82F6",
-            "primary_active": "#2563EB", "success": "#10B981", "success_light": "#D1FAE5",
-            "danger": "#EF4444", "danger_light": "#FEE2E2", "border": "#D1D5DB",
+            "primary_active": "#2563EB", "success": "#047857", "success_light": "#D1FAE5",
+            "danger": "#B91C1C", "danger_light": "#FEE2E2", "border": "#D1D5DB",
             "heading_background": "#FFFFFF"
         }
+        self.colors = {**default_colors, **self.app_settings.get("colors", {})}
         self.sounds = self.app_settings.get("sound_files", {})
         self.sound_objects = {}
         self.items_data = {}
@@ -400,9 +703,21 @@ class Label_Match(tk.Tk):
         self.scan_count = defaultdict(lambda: defaultdict(int))
         self.global_scanned_set = set()
         self.set_details_map = {}
+        self.history_row_details_map = {}
+        self.history_view_updates_active_state = True
+        self.history_load_generation = 0
+        self.history_load_pending = False
+        self.history_active_load_pending = False
+        self.is_generating_test_logs = False
         self.title(f"바코드 세트 검증기 ({APP_VERSION}) - 로딩 중...")
         self.state('zoomed')
         self.configure(bg=self.colors.get("background", "#ECEFF1"))
+        self.ui_profile_name, self.ui_profile = self._select_ui_profile()
+        self._responsive_after_id = None
+        self._zoom_after_id = None
+        self._ui_redraw_after_id = None
+        self._clock_after_id = None
+        self._applying_responsive_layout = False
         self.scale_factor = 1.2
         self.tree_font_size = 13
         self.summary_col_widths = {}
@@ -410,7 +725,7 @@ class Label_Match(tk.Tk):
         self.sash_position = None
         self._load_ui_persistence_settings()
         self.hist_proportions = {"Set": 4, "Input1": 14, "Input2": 14, "Input3": 14, "Input4": 14, "Input5": 14, "Result": 8, "Timestamp": 18}
-        self.summary_proportions = {"Date": 18, "Code": 52, "Phase": 10, "Count": 20}
+        self.summary_proportions = {"Code": 70, "Phase": 12, "Count": 18}
         self.default_font_name = self.ui_cfg.get("default_font", "Malgun Gothic")
         self.style = ttk.Style(self)
         self._configure_base_styles()
@@ -423,12 +738,16 @@ class Label_Match(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.bind_all("<Control-MouseWheel>", self.on_ctrl_wheel)
         self.bind("<Button-1>", self._on_root_click)
+        self.bind("<Configure>", self._on_window_configure)
 
     def _on_root_click(self, event):
         if event.widget not in [self.history_tree, self.summary_tree]:
             self.history_tree.selection_remove(self.history_tree.selection())
             self.summary_tree.selection_remove(self.summary_tree.selection())
-        self.entry.focus_set()
+        widget_class = event.widget.winfo_class()
+        interactive_classes = {"Button", "TButton", "Entry", "TEntry", "Treeview", "Scrollbar", "TScrollbar"}
+        if widget_class not in interactive_classes and "entry" in self.__dict__:
+            self.entry.focus_set()
 
     def _async_initial_load(self):
         try:
@@ -539,6 +858,368 @@ class Label_Match(tk.Tk):
         self.history_col_widths = persistence_settings.get("history_col_widths", {})
         self.sash_position = persistence_settings.get("sash_position", None)
 
+    def _screen_diagonal_inches(self):
+        try:
+            width_mm = self.winfo_screenmmwidth()
+            height_mm = self.winfo_screenmmheight()
+            if width_mm <= 0 or height_mm <= 0:
+                return None
+            return ((width_mm ** 2 + height_mm ** 2) ** 0.5) / 25.4
+        except TclError:
+            return None
+
+    def _select_ui_profile(self, width=None, height=None):
+        try:
+            screen_width = int(width or self.winfo_width() or self.winfo_screenwidth())
+            screen_height = int(height or self.winfo_height() or self.winfo_screenheight())
+        except TclError:
+            screen_width, screen_height = 1920, 1080
+        screen_diagonal = self._screen_diagonal_inches()
+
+        if screen_width <= 1366 or screen_height <= 800 or (screen_diagonal and screen_diagonal <= 14.6):
+            return "small", self.UI_PROFILES["small"]
+        if (screen_diagonal and screen_diagonal <= 15.8) or screen_width <= 1440 or screen_height <= 900:
+            return "compact", self.UI_PROFILES["compact"]
+        if screen_width >= 2560 and screen_height >= 1400:
+            return "large", self.UI_PROFILES["large"]
+        return "standard", self.UI_PROFILES["standard"]
+
+    def _on_window_configure(self, event):
+        if event.widget is not self or self._applying_responsive_layout:
+            return
+        if self._responsive_after_id:
+            try:
+                self.after_cancel(self._responsive_after_id)
+            except TclError:
+                pass
+        self._responsive_after_id = self.after(
+            150,
+            lambda width=event.width, height=event.height: self._update_responsive_profile(width, height),
+        )
+
+    def _update_responsive_profile(self, width=None, height=None, force=False):
+        if self._applying_responsive_layout:
+            return
+        new_name, new_profile = self._select_ui_profile(width, height)
+        changed = force or new_name != self.__dict__.get("ui_profile_name")
+        self.ui_profile_name = new_name
+        self.ui_profile = new_profile
+        self._apply_responsive_layout()
+        if changed and getattr(self, "initialized_successfully", False):
+            self._update_ui_scaling()
+
+    def _apply_responsive_layout(self):
+        if "main_frame" not in self.__dict__:
+            return
+        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+        self._applying_responsive_layout = True
+        try:
+            self.main_frame.configure(padding=profile["outer_padding"])
+            self.top_card.configure(padding=profile["card_padding"])
+            self.top_card.grid_configure(pady=(0, profile["section_gap"]))
+            self.top_right_frame.place_configure(x=-profile["card_padding"], y=profile["card_padding"])
+            self.big_display_label.grid_configure(
+                pady=profile["big_display_pady"],
+                ipady=profile["big_display_ipady"],
+            )
+            current_width = self.winfo_width()
+            if current_width <= 200:
+                current_width = self.winfo_screenwidth()
+            wrap_width = max(420, int(current_width * profile["big_display_wrap_ratio"]))
+            self.big_display_label.configure(wraplength=wrap_width)
+            self.progress_frame.grid_configure(pady=(profile["content_gap"], 0))
+            self.content_pane.grid_configure(pady=(profile["content_gap"], 0))
+            self.history_card.configure(padding=profile["card_padding"])
+            self.summary_card.configure(padding=profile["card_padding"])
+            self.hist_header_frame.grid_configure(pady=(0, profile["content_gap"]))
+            if "history_detail_frame" in self.__dict__:
+                self.history_detail_frame.grid_configure(pady=(profile["content_gap"], 0))
+            self.summary_header_label.grid_configure(pady=(0, profile["content_gap"]))
+            self.bottom_frame.grid_configure(pady=(profile["bottom_gap"], 0))
+            self.status_label.configure(wraplength=wrap_width)
+            self.view_mode_label.configure(wraplength=wrap_width)
+            self._apply_content_sash_position()
+            self._apply_adaptive_header_fitting()
+        finally:
+            self._applying_responsive_layout = False
+
+    def _apply_content_sash_position(self):
+        if "content_pane" not in self.__dict__:
+            return
+        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+        try:
+            pane_width = self.content_pane.winfo_width()
+            if pane_width <= 200:
+                self.after(80, self._apply_content_sash_position)
+                return
+            desired = int(pane_width * profile["history_ratio"])
+            saved = self.sash_position
+            if isinstance(saved, int) and pane_width > 0:
+                saved_ratio = saved / pane_width
+                if profile["history_ratio_min"] <= saved_ratio <= profile["history_ratio_max"]:
+                    desired = saved
+            desired = max(int(pane_width * profile["history_ratio_min"]), min(desired, int(pane_width * profile["history_ratio_max"])))
+            self.content_pane.sashpos(0, desired)
+        except TclError as e:
+            print(f"Sash 위치 적용 중 오류 발생 (무시 가능): {e}")
+
+    def _text_pixel_width(self, text, font_tuple):
+        try:
+            return tkFont.Font(root=self, font=font_tuple).measure(str(text))
+        except Exception:
+            try:
+                font_size = abs(int(font_tuple[1]))
+            except Exception:
+                font_size = 12
+            weighted_length = sum(1.8 if ord(char) > 127 else 1.0 for char in str(text))
+            return int(weighted_length * font_size * 0.62)
+
+    def _fit_text_to_width(self, text_options, base_size, available_width, min_size=11, weight="bold", margin=12):
+        options = [str(text) for text in text_options if str(text)]
+        if not options:
+            return "", max(min_size, int(base_size or min_size))
+        available_width = max(1, int(available_width or 1))
+        base_size = max(min_size, int(base_size or min_size))
+        for size in range(base_size, min_size - 1, -1):
+            font_tuple = (self.default_font_name, size, weight)
+            for text in options:
+                if self._text_pixel_width(text, font_tuple) + margin <= available_width:
+                    return text, size
+        return options[-1], min_size
+
+    def _heading_text_for_width(self, text_options, available_width, font_tuple, margin=14):
+        options = [str(text) for text in text_options if str(text)]
+        if not options:
+            return ""
+        available_width = max(1, int(available_width or 1))
+        for text in options:
+            if self._text_pixel_width(text, font_tuple) + margin <= available_width:
+                return text
+        return options[-1]
+
+    def _tree_heading_fit_size(self, base_size, min_size=11, margin=14):
+        column_specs = []
+        for tree_name, label_map in (("history_tree", self.HISTORY_HEADING_LABELS), ("summary_tree", self.SUMMARY_HEADING_LABELS)):
+            tree = self.__dict__.get(tree_name)
+            if tree is None:
+                continue
+            for col, labels in label_map.items():
+                try:
+                    column_specs.append((max(1, int(tree.column(col, "width") or 1)), labels))
+                except TclError:
+                    continue
+        if not column_specs:
+            return max(min_size, int(base_size or min_size))
+
+        base_size = max(min_size, int(base_size or min_size))
+        for size in range(base_size, min_size - 1, -1):
+            font_tuple = (self.default_font_name, size, "bold")
+            if all(
+                any(self._text_pixel_width(label, font_tuple) + margin <= width for label in labels)
+                for width, labels in column_specs
+            ):
+                return size
+        return min_size
+
+    def _scaled_widths_to_total(self, min_widths, total_width, floor=42):
+        total_width = max(len(min_widths), int(total_width or 0))
+        floor = max(24, min(floor, total_width // max(len(min_widths), 1)))
+        min_total = sum(min_widths.values())
+        if min_total <= total_width:
+            return dict(min_widths)
+
+        scale = total_width / max(min_total, 1)
+        widths = {col: max(floor, int(width * scale)) for col, width in min_widths.items()}
+        overflow = sum(widths.values()) - total_width
+        while overflow > 0:
+            candidates = [col for col, width in widths.items() if width > floor]
+            if not candidates:
+                break
+            target = max(candidates, key=lambda col: widths[col])
+            widths[target] -= 1
+            overflow -= 1
+        return widths
+
+    def _history_header_text_options(self):
+        full_text = self.__dict__.get("_history_header_full_text")
+        if not full_text and "hist_header_label" in self.__dict__:
+            full_text = self.hist_header_label.cget("text")
+        full_text = full_text or "스캔 기록"
+        options = [full_text]
+        if full_text.startswith("스캔 기록 (") and full_text.endswith(")"):
+            suffix = full_text[full_text.find("(") + 1:-1]
+            short_suffix = suffix[5:] if len(suffix) == 10 and suffix[4] == "-" else suffix
+            options.extend([f"기록 ({short_suffix})", "기록"])
+        elif full_text != "스캔 기록":
+            options.extend(["스캔 기록", "기록"])
+        else:
+            options.append("기록")
+        return tuple(dict.fromkeys(options))
+
+    def _fit_section_header_label(self, label, text_options, available_width, base_size, min_size):
+        text, size = self._fit_text_to_width(text_options, base_size, available_width, min_size=min_size, weight="bold", margin=16)
+        label.configure(text=text, font=(self.default_font_name, size, "bold"), wraplength=max(40, int(available_width or 40)))
+
+    def _configure_history_control_buttons(self, compact=False):
+        style_name = "Compact.Control.TButton" if compact else "Control.TButton"
+        if compact:
+            font_size = max(10, min(18, int(self.__dict__.get("_current_font_size", 14) * 0.72)))
+            self.style.configure(
+                "Compact.Control.TButton",
+                font=(self.default_font_name, font_size, "bold"),
+                padding=(6, 4),
+                background=self.colors["card_background"],
+                foreground=self.colors["text"],
+                relief="groove",
+                borderwidth=2,
+                bordercolor=self.colors["border"],
+                focuscolor=self.colors["primary_active"],
+            )
+            self.style.map(
+                "Compact.Control.TButton",
+                background=[('active', self.colors["background"]), ('focus', self.colors["background"])],
+                relief=[('focus', 'solid')],
+            )
+        for button_name in ("today_button", "date_search_button", "decrease_font_button", "increase_font_button"):
+            button = self.__dict__.get(button_name)
+            if button is not None:
+                button.configure(style=style_name)
+        today_button = self.__dict__.get("today_button")
+        date_button = self.__dict__.get("date_search_button")
+        if today_button is not None:
+            today_button.pack_configure(padx=(0, 4 if compact else 5))
+        if date_button is not None:
+            date_button.pack_configure(padx=(0, 8 if compact else 15))
+
+    def _apply_adaptive_header_fitting(self):
+        required_widgets = ("hist_header_label", "hist_header_frame", "summary_header_label", "summary_header_frame", "summary_date_label", "summary_card", "history_tree", "summary_tree")
+        if any(widget_name not in self.__dict__ for widget_name in required_widgets):
+            return
+        if self.__dict__.get("_adaptive_header_fitting_active"):
+            return
+        self._adaptive_header_fitting_active = True
+        try:
+            profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+            profile_name = self.__dict__.get("ui_profile_name", "standard")
+            base_header_size = self.__dict__.get("_current_header_font_size", 18)
+            min_header_size = 12 if profile_name in {"small", "compact"} else 13
+
+            hist_header_width = self.hist_header_frame.winfo_width()
+            if hist_header_width <= 1:
+                hist_header_width = self.history_card.winfo_width() - (profile.get("card_padding", 16) * 2)
+            hist_header_width = max(120, int(hist_header_width or 120))
+
+            control_frame = self.__dict__.get("hist_control_frame")
+            control_width = 0
+            if control_frame:
+                self._configure_history_control_buttons(compact=False)
+                date_button = self.__dict__.get("date_search_button")
+                if date_button is not None:
+                    date_button.configure(text="조회" if hist_header_width < 620 else "날짜 조회")
+                control_width = max(0, control_frame.winfo_reqwidth())
+                if control_width > hist_header_width - 12:
+                    if date_button is not None:
+                        date_button.configure(text="조회")
+                    self._configure_history_control_buttons(compact=True)
+                    control_width = max(0, control_frame.winfo_reqwidth())
+                should_stack_controls = control_width + max(110, int(hist_header_width * 0.28)) + 18 > hist_header_width
+                if should_stack_controls:
+                    self.hist_header_label.grid_configure(row=0, column=0, columnspan=3, sticky="w")
+                    control_frame.grid_configure(row=1, column=0, columnspan=3, sticky="e", pady=(6, 0))
+                    hist_label_width = hist_header_width - 12
+                else:
+                    self.hist_header_label.grid_configure(row=0, column=0, columnspan=1, sticky="w")
+                    control_frame.grid_configure(row=0, column=2, columnspan=1, sticky="e", pady=0)
+                    hist_label_width = hist_header_width - control_width - 20
+            else:
+                hist_label_width = hist_header_width - 12
+            self._fit_section_header_label(
+                self.hist_header_label,
+                self._history_header_text_options(),
+                max(70, hist_label_width),
+                base_header_size,
+                min_header_size,
+            )
+
+            summary_width = self.summary_header_frame.winfo_width()
+            if summary_width <= 1:
+                summary_width = self.summary_card.winfo_width()
+            if summary_width <= 1:
+                summary_width = self.summary_card.winfo_reqwidth()
+            summary_width = max(90, int(summary_width or 120))
+            date_width = max(0, self.summary_date_label.winfo_reqwidth())
+            should_stack_summary_date = date_width + max(110, int(summary_width * 0.45)) + 12 > summary_width
+            if should_stack_summary_date:
+                self.summary_header_label.grid_configure(row=0, column=0, columnspan=2, sticky="w")
+                self.summary_date_label.grid_configure(row=1, column=0, columnspan=2, sticky="w", padx=0, pady=(4, 0))
+                summary_label_width = summary_width - 8
+            else:
+                self.summary_header_label.grid_configure(row=0, column=0, columnspan=1, sticky="w")
+                self.summary_date_label.grid_configure(row=0, column=1, columnspan=1, sticky="e", padx=(8, 0), pady=0)
+                summary_label_width = summary_width - date_width - 20
+            self._fit_section_header_label(
+                self.summary_header_label,
+                ("누적 통과 코드", "통과 코드", "누적"),
+                summary_label_width,
+                base_header_size,
+                min_header_size,
+            )
+
+            heading_size = self._tree_heading_fit_size(self.__dict__.get("_current_tree_heading_font_size", 14))
+            heading_font = (self.default_font_name, heading_size, "bold")
+            self._current_effective_tree_heading_font_size = heading_size
+            self.style.configure("Treeview.Heading", font=heading_font)
+            for col, labels in self.HISTORY_HEADING_LABELS.items():
+                width = self.history_tree.column(col, "width")
+                self.history_tree.heading(col, text=self._heading_text_for_width(labels, width, heading_font))
+            for col, labels in self.SUMMARY_HEADING_LABELS.items():
+                width = self.summary_tree.column(col, "width")
+                self.summary_tree.heading(col, text=self._heading_text_for_width(labels, width, heading_font))
+        except (TclError, KeyError):
+            pass
+        finally:
+            self._adaptive_header_fitting_active = False
+
+    def _dialog_size(self, kind):
+        base_sizes = {
+            "settings": (600, 240),
+            "about": (620, 500),
+            "calendar": (430, 430),
+            "barcode_detail": (860, 560),
+        }
+        width, height = base_sizes.get(kind, (560, 360))
+        scale = getattr(self, "ui_profile", self.UI_PROFILES["standard"]).get("dialog_scale", 1.0)
+        screen_width = max(self.winfo_screenwidth(), 1)
+        screen_height = max(self.winfo_screenheight(), 1)
+        width = min(int(width * scale), max(420, screen_width - 80))
+        height = min(int(height * scale), max(300, screen_height - 100))
+        return width, height
+
+    def _center_child_window(self, window, width=None, height=None):
+        try:
+            window.update_idletasks()
+            width = width or window.winfo_width()
+            height = height or window.winfo_height()
+            parent_x = self.winfo_rootx()
+            parent_y = self.winfo_rooty()
+            parent_width = max(self.winfo_width(), self.winfo_screenwidth())
+            parent_height = max(self.winfo_height(), self.winfo_screenheight())
+            x = parent_x + max((parent_width - width) // 2, 0)
+            y = parent_y + max((parent_height - height) // 2, 0)
+            window.geometry(f"{width}x{height}+{x}+{y}")
+        except TclError:
+            pass
+
+    def _destroy_modal_and_refocus(self, window):
+        try:
+            window.destroy()
+        finally:
+            if "entry" in self.__dict__:
+                try:
+                    self.after(0, self.entry.focus_set)
+                except Exception:
+                    self.entry.focus_set()
+
     def _load_items_data(self):
         items_path = resource_path(os.path.join("assets", self.FILES.ITEMS))
         if not os.path.exists(items_path):
@@ -564,17 +1245,59 @@ class Label_Match(tk.Tk):
 
     def on_closing(self):
         if not self.initialized_successfully:
+            self._cancel_pending_ui_jobs()
             self.destroy()
             return
+        if self._has_background_work():
+            if not self.run_tests:
+                messagebox.showwarning("작업 진행 중", "테스트 시뮬레이션 또는 테스트 로그 생성이 진행 중입니다.\n작업이 끝난 뒤 프로그램을 종료하세요.")
+            return
         
-        do_close = self.run_tests or self.is_running_simulation or messagebox.askokcancel("종료 확인", "프로그램을 종료하시겠습니까?")
+        do_close = self.run_tests or messagebox.askokcancel("종료 확인", "프로그램을 종료하시겠습니까?")
 
         if do_close:
             self.is_blinking = False
-            self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
-            self.data_manager.log_queue.put(None)
+            self._cancel_pending_ui_jobs()
+            try:
+                self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
+                self.data_manager.close(timeout=None)
+            except Exception as e:
+                self._replace_closed_data_manager_after_close_failure(self.data_manager)
+                if self.run_tests:
+                    raise
+                messagebox.showerror("종료 보류", f"작업 로그 저장을 완료하지 못해 종료를 중단했습니다.\n\n[상세 오류]\n{e}")
+                return
             self._save_app_settings()
             self.destroy()
+
+    def _cancel_pending_ui_jobs(self):
+        for attr_name in ("_responsive_after_id", "_zoom_after_id", "_ui_redraw_after_id", "_clock_after_id"):
+            after_id = self.__dict__.get(attr_name)
+            if not after_id:
+                continue
+            try:
+                self.after_cancel(after_id)
+            except TclError:
+                pass
+            self.__dict__[attr_name] = None
+
+    def _replace_closed_data_manager_after_close_failure(self, failed_manager):
+        if not getattr(failed_manager, '_close_requested', False):
+            return False
+        log_thread = getattr(failed_manager, 'log_thread', None)
+        if log_thread is not None and log_thread.is_alive():
+            return False
+        try:
+            self.data_manager = DataManager(
+                failed_manager.save_directory,
+                failed_manager.process_name,
+                failed_manager.worker_name,
+                failed_manager.unique_id,
+            )
+            return True
+        except Exception as replacement_error:
+            print(f"로그 매니저 복구 실패: {replacement_error}")
+            return False
 
     def _save_current_set_state(self):
         if not self.initialized_successfully or not self.current_set_info['raw']: return
@@ -624,7 +1347,7 @@ class Label_Match(tk.Tk):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
             self.data_manager.log_event(self.Events.SET_RESTORED, {"restored_set": self.current_set_info, "continued_by": self.worker_name})
             self.progress_bar['value'] = len(self.current_set_info['raw'])
-            self.update_big_display(self.current_set_info['parsed'][-1] if self.current_set_info['parsed'] else "", "green")
+            self.update_big_display(self._next_action_text(len(self.current_set_info.get('parsed', []))), "green")
             self._update_status_label()
             self._update_history_tree_in_progress()
         else:
@@ -633,26 +1356,52 @@ class Label_Match(tk.Tk):
     def _delete_current_set_state(self):
         self.data_manager.delete_current_state()
 
+    def _history_load_updates_active_state(self, target_date=None):
+        return target_date is None or target_date.date() == datetime.now().date()
+
+    def _has_background_work(self):
+        state = self.__dict__
+        return bool(state.get('is_running_simulation', False) or state.get('is_generating_test_logs', False))
+
     def _load_history_and_rebuild_summary(self, target_date=None):
         print(f"과거 기록 비동기 로드 시작... (대상 날짜: {target_date or '오늘'})")
-        self.scan_count.clear()
+        self.history_load_generation += 1
+        load_generation = self.history_load_generation
+        while True:
+            try:
+                self.history_queue.get_nowait()
+            except queue.Empty:
+                break
+        updates_active_state = self._history_load_updates_active_state(target_date)
+        self.history_view_updates_active_state = updates_active_state
+        self.history_load_pending = True
+        self.history_active_load_pending = updates_active_state
+        if updates_active_state:
+            self.scan_count.clear()
+            self.global_scanned_set.clear()
+            self.set_details_map.clear()
         self.history_tree.delete(*self.history_tree.get_children())
         self.summary_tree.delete(*self.summary_tree.get_children())
-        self.global_scanned_set.clear()
-        self.set_details_map.clear()
 
         if target_date:
             date_str = target_date.strftime('%Y-%m-%d')
-            self.hist_header_label.config(text=f"스캔 기록 ({date_str})")
+            self._history_header_full_text = f"스캔 기록 ({date_str})"
+            self.hist_header_label.config(text=self._history_header_full_text)
+            self._set_summary_date_label(text=f"날짜 {date_str}")
         else:
-            self.hist_header_label.config(text="스캔 기록 (오늘)")
+            self._history_header_full_text = "스캔 기록 (오늘)"
+            self.hist_header_label.config(text=self._history_header_full_text)
+            self._set_summary_date_label(text=f"날짜 {datetime.now().strftime('%Y-%m-%d')}")
+        self._apply_adaptive_header_fitting()
 
         self.history_tree.insert("", "end", iid="loading", values=("", "기록을 불러오는 중입니다...", "", "", "", "", "", ""), tags=("in_progress",))
-        loader_thread = threading.Thread(target=self._async_load_history_task, args=(self.history_queue, target_date), daemon=True)
+        loader_thread = threading.Thread(target=self._async_load_history_task, args=(self.history_queue, target_date, updates_active_state, load_generation), daemon=True)
         loader_thread.start()
 
-    def _async_load_history_task(self, result_queue, target_date=None):
+    def _async_load_history_task(self, result_queue, target_date=None, updates_active_state=None, load_generation=None):
         try:
+            if updates_active_state is None:
+                updates_active_state = self._history_load_updates_active_state(target_date)
             completed_sets = {}
             voided_set_ids = set()
             cancelled_set_ids = set()
@@ -689,10 +1438,10 @@ class Label_Match(tk.Tk):
                                 other_scans = displays[1:5]
 
                                 timestamp_str = datetime.fromisoformat(row.get('timestamp', '')).strftime('%H:%M:%S')
-                                result_display = self.Results.PASS if not details.get('has_error_or_reset') else self.Results.FAIL_MISMATCH
+                                result_display = _label_match_tray_complete_result(details)
                                 values_to_display = (set_id, first_scan, *other_scans + [""]*(4-len(other_scans)), result_display, timestamp_str)
 
-                                completed_sets[set_id] = {'values': values_to_display, 'tags': ("success" if result_display == self.Results.PASS else "error",), 'details': details}
+                                completed_sets[set_id] = {'values': values_to_display, 'tags': ("success" if _label_match_tray_complete_passed(details) else "error",), 'details': details}
 
                 except Exception as e:
                     print(f"기록 파일 로드 오류 ({log_filepath}): {e}")
@@ -704,45 +1453,62 @@ class Label_Match(tk.Tk):
             temp_set_details_map = {sid: data['details'] for sid, data in final_sets.items()}
             for set_id, data in sorted_final_sets:
                 details = data['details']
-                if not details.get('has_error_or_reset'):
+                if _label_match_tray_complete_passed(details):
                     passed_code = details.get('item_code')
                     production_date = details.get('production_date')
-                    phase = details.get('phase', '-')
+                    phase = details.get('phase') or '-'
                     if passed_code and production_date:
                         temp_scan_count[production_date][(passed_code, phase)] += 1
-                raw_scans = details.get('scanned_product_barcodes', [])
-                if raw_scans:
-                    if len(raw_scans) > 1:
-                        temp_global_scanned_set.update(raw_scans[1:])
-                    first_scan = raw_scans[0]
-                    if '|' in first_scan and '=' in first_scan:
-                        temp_global_scanned_set.add(first_scan)
+                    temp_global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
 
-            result_queue.put({'sorted_sets': sorted_final_sets, 'scan_count': temp_scan_count, 'global_scanned_set': temp_global_scanned_set, 'set_details_map': temp_set_details_map})
+            result_queue.put({
+                'sorted_sets': sorted_final_sets,
+                'scan_count': temp_scan_count,
+                'global_scanned_set': temp_global_scanned_set,
+                'set_details_map': temp_set_details_map,
+                'updates_active_state': updates_active_state,
+                'load_generation': load_generation,
+            })
         except Exception as e:
             print(f"백그라운드 기록 로딩 오류: {e}")
-            result_queue.put({'error': str(e)})
+            result_queue.put({'error': str(e), 'load_generation': load_generation})
 
     def _process_history_queue(self):
         try:
-            result = self.history_queue.get_nowait()
+            while True:
+                result = self.history_queue.get_nowait()
+                if result.get('load_generation') is not None and result.get('load_generation') != self.history_load_generation:
+                    continue
+                break
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
             if 'error' in result:
+                self.history_load_pending = False
+                self.history_active_load_pending = False
                 if not self.run_tests:
                     messagebox.showerror("기록 로딩 오류", f"작업 기록을 불러오는 중 오류가 발생했습니다.\n로그 파일이 손상되었을 수 있습니다.\n\n[오류 원인]\n{result['error']}")
                 return
-            self.scan_count = result['scan_count']
-            self.global_scanned_set = result['global_scanned_set']
-            self.set_details_map = result['set_details_map']
+            updates_active_state = result.get('updates_active_state', True)
+            self.history_view_updates_active_state = updates_active_state
+            self.history_load_pending = False
+            self.history_active_load_pending = False
+            if updates_active_state:
+                self.scan_count = result['scan_count']
+                self.global_scanned_set = result['global_scanned_set']
+                self.set_details_map = result['set_details_map']
+            self.history_row_details_map = result.get('set_details_map', {})
             sorted_final_sets = result['sorted_sets']
             for index, (set_id, data) in enumerate(sorted_final_sets, 1):
                 values = list(data['values'])
                 values[0] = index
-                self.history_tree.insert("", "end", iid=str(set_id), values=tuple(values), tags=data['tags'])
-            self._update_summary_tree()
+                display_values = self._history_values_for_display(values)
+                self.history_tree.insert("", "end", iid=str(set_id), values=display_values, tags=data['tags'])
+            self._render_summary_tree(result['scan_count'] if not updates_active_state else self.scan_count)
+            self._apply_history_view_mode()
+            self._render_history_detail()
             print("비동기 기록 로드 및 UI 적용 완료.")
         except queue.Empty:
-            self.after(100, self._process_history_queue)
+            if self.__dict__.get('history_load_pending', self.__dict__.get('history_active_load_pending', False)):
+                self.after(100, self._process_history_queue)
         except Exception as e:
             print(f"UI 업데이트 중 오류 발생: {e}")
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
@@ -757,7 +1523,8 @@ class Label_Match(tk.Tk):
                 item.split('=', 1)[0].strip().upper(): item.split('=', 1)[1].strip()
                 for item in raw_input.split('|') if '=' in item
             }
-            if all(key in parsed_data for key in ['CLC', 'SPC', 'PHS']):
+            required_keys = ['CLC', 'SPC', 'PHS']
+            if all(parsed_data.get(key, "").strip() for key in required_keys):
                 return parsed_data
             else:
                 return None
@@ -901,7 +1668,11 @@ class Label_Match(tk.Tk):
                 self.entry.insert(0, value)
                 self.process_input()
             elif action == "reset":
-                self._reset_current_set(full_reset=True)
+                if not self._reset_current_set(full_reset=True):
+                    self.is_running_simulation = False
+                    self.entry.config(state='normal')
+                    self.entry.focus_set()
+                    return
                 self.history_tree.delete(*self.history_tree.get_children())
                 self.summary_tree.delete(*self.summary_tree.get_children())
                 self.scan_count.clear()
@@ -909,7 +1680,11 @@ class Label_Match(tk.Tk):
                 self.set_details_map.clear()
             elif action == "action":
                 if value == "reset_set":
-                    self._reset_current_set(full_reset=True)
+                    if not self._reset_current_set(full_reset=True):
+                        self.is_running_simulation = False
+                        self.entry.config(state='normal')
+                        self.entry.focus_set()
+                        return
             elif action.startswith("check_"):
                 step_delay_ms = 100
                 self._verify_test_step(action, value)
@@ -936,9 +1711,18 @@ class Label_Match(tk.Tk):
             elif check_action == "check_summary_count":
                 code, phase, count = expected_value
                 actual_value = 0
+                for raw_values in self.__dict__.get("summary_row_raw_values", {}).values():
+                    if len(raw_values) >= 4 and raw_values[1] == code and raw_values[2] == phase:
+                        actual_value = raw_values[3]
+                        break
                 for item_id in self.summary_tree.get_children():
+                    if actual_value == count:
+                        break
                     values = self.summary_tree.item(item_id)['values']
-                    if values[1] == code and values[2] == phase:
+                    if len(values) >= 3 and values[0] == code and values[1] == phase:
+                        actual_value = values[2]
+                        break
+                    if len(values) >= 4 and values[1] == code and values[2] == phase:
                         actual_value = values[3]
                         break
                 success = (actual_value == count)
@@ -1016,6 +1800,14 @@ class Label_Match(tk.Tk):
         raw_input = self.entry.get().strip()
         self.entry.delete(0, tk.END)
 
+        if self.is_blinking or not self.initialized_successfully: return
+        if not raw_input: return
+        if raw_input in {'_RUN_AUTO_TEST_', '_RUN_DEMO_'}:
+            if self._block_view_only_action("테스트 기능을 실행"):
+                return
+            if self._block_active_history_load_action("테스트 기능을 실행"):
+                return
+
         if raw_input == '_RUN_AUTO_TEST_':
             self._run_auto_test_simulation()
             return
@@ -1025,8 +1817,10 @@ class Label_Match(tk.Tk):
                 self._run_demonstration()
             return
 
-        if self.is_blinking or not self.initialized_successfully: return
-        if not raw_input: return
+        if self._block_view_only_action("스캔"):
+            return
+        if self._block_active_history_load_action("스캔"):
+            return
 
         self.data_manager.log_event(self.Events.SCAN_ATTEMPT, {"raw_input": raw_input, "scan_pos": len(self.current_set_info['raw']) + 1})
         scan_pos = len(self.current_set_info['raw']) + 1
@@ -1048,7 +1842,9 @@ class Label_Match(tk.Tk):
         if scan_pos == 1:
             new_label_data = self._parse_new_format_label(processed_input)
             if new_label_data:
-                if raw_input in self.global_scanned_set:
+                duplicate_keys = _label_match_unique_master_index_keys(raw_input)
+                duplicate_keys.update(_label_match_unique_master_index_keys(processed_input))
+                if duplicate_keys & self.global_scanned_set:
                     self._handle_input_error(
                         raw_input,
                         title="[현품표 중복 스캔]",
@@ -1152,14 +1948,14 @@ class Label_Match(tk.Tk):
                 if field.startswith('6D'):
                     date_str = field[2:]
                     if len(date_str) == 8 and date_str.isdigit():
-                        return f"{int(date_str[:4]):04d}-{int(date_str[4:6]):02d}-{int(date_str[6:8]):02d}"
+                        production_date = datetime.strptime(date_str, "%Y%m%d")
+                        return production_date.strftime("%Y-%m-%d")
             return None
         except Exception as e:
             print(f"생산 날짜 추출 오류: {e}")
             return None
 
     def _update_on_success_scan(self, raw, parsed):
-        self.update_big_display(parsed, "green")
         if len(self.current_set_info['raw']) == 0:
             self.current_set_info['id'] = str(time.time_ns())
             self.current_set_info['start_time'] = datetime.now()
@@ -1168,6 +1964,8 @@ class Label_Match(tk.Tk):
         self.current_set_info['parsed'].append(parsed)
 
         num_scans = len(self.current_set_info['parsed'])
+        next_text = self._next_action_text(num_scans)
+        self.update_big_display(next_text, "green" if num_scans < 5 else "primary")
         if not self.is_running_simulation:
             self._play_sound(f"scan_{num_scans}")
         self.progress_bar['value'] = num_scans
@@ -1204,16 +2002,12 @@ class Label_Match(tk.Tk):
         start_time = self.current_set_info.get('start_time')
         work_time_sec = (datetime.now() - start_time).total_seconds() if start_time else 0.0
         production_date = self.current_set_info.get('production_date')
-        phase = self.current_set_info.get('phase', '-')
+        phase = self.current_set_info.get('phase') or '-'
         set_id_for_log = str(self.current_set_info['id'])
 
         if result == self.Results.PASS:
             if item_code != "N/A" and production_date:
                 self.scan_count[production_date][(item_code, phase)] += 1
-
-                self.global_scanned_set.update(raw_scans_to_log[1:])
-                if item_name_override and raw_scans_to_log:
-                    self.global_scanned_set.add(raw_scans_to_log[0])
 
         details = {
             'master_label_code': item_code, 'item_code': item_code,
@@ -1225,6 +2019,10 @@ class Label_Match(tk.Tk):
             'work_time_sec': work_time_sec,
             'error_count': self.current_set_info.get('error_count', 0),
             'has_error_or_reset': self.current_set_info.get('has_error_or_reset', False) or (result != self.Results.PASS),
+            'final_result': result,
+            'result_display': result,
+            'item_name_override': item_name_override,
+            'is_unique_master_label': bool(item_name_override),
             'is_partial_submission': is_manual_complete, 'start_time': start_time,
             'end_time': datetime.now(),
             'production_date': production_date,
@@ -1233,8 +2031,10 @@ class Label_Match(tk.Tk):
         }
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
 
+        self.__dict__.setdefault("history_row_details_map", {})[set_id_for_log] = details
         if result == self.Results.PASS:
             self.set_details_map[set_id_for_log] = details
+            self.global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
 
         if self.history_tree.exists(set_id_for_log):
             current_values = list(self.history_tree.item(set_id_for_log, 'values'))
@@ -1244,21 +2044,37 @@ class Label_Match(tk.Tk):
             first_scan_display = parsed_scans_to_log[0] if parsed_scans_to_log else ""
             other_scans_display = parsed_scans_to_log[1:5]
             values_to_update = (display_id, first_scan_display, *other_scans_display + [""]*(4-len(other_scans_display)), result, final_timestamp)
+            values_to_update = self._history_values_for_display(values_to_update)
 
             self.history_tree.item(set_id_for_log, values=values_to_update, tags=("success" if result == self.Results.PASS else "error",))
+            self._render_history_detail(set_id_for_log)
 
         self.save_status_label.config(text=f"✓ 기록됨 ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
         self._reset_current_set(from_finalize=True)
+        if "big_display_label" in self.__dict__:
+            if result == self.Results.PASS:
+                self.update_big_display("통과 완료 - 다음 현품표 스캔", "green")
+            else:
+                self.update_big_display("오류 처리 완료 - 새 현품표부터 시작", "red")
+            self.after(1800, self._show_idle_instruction_if_idle)
 
     def _handle_input_error(self, raw, title="[입력 오류]", reason="알 수 없는 입력 오류가 발생했습니다."):
-        self.data_manager.log_event(self.Events.ERROR_INPUT, {"raw": raw, "reason": reason})
-        self.current_set_info['error_count'] += 1
-        self.current_set_info['has_error_or_reset'] = True
+        set_id = self._ensure_current_set_id()
+        self.data_manager.log_event(
+            self.Events.ERROR_INPUT,
+            {
+                "raw": raw,
+                "reason": reason,
+                "set_id": set_id,
+                "scan_pos": len(self.current_set_info.get('raw', [])) + 1,
+            },
+        )
+        self._mark_current_set_error()
 
-        self.update_big_display(self._truncate_string(str(raw)), "red")
-        self.status_label.config(text=f"❌ {title}: {reason.split(chr(10))[0]}", style="Error.TLabel")
+        self.update_big_display("입력 오류 - 새 현품표부터 시작", "red")
+        self.status_label.config(text=f"{title}: {reason.split(chr(10))[0]} | 확인 후 새 현품표부터 시작", style="Error.TLabel")
 
         if self.is_running_simulation:
             print(f"  - 시뮬레이션 오류 처리: {title}")
@@ -1269,16 +2085,29 @@ class Label_Match(tk.Tk):
             self._trigger_modal_error(title, reason, self.Results.FAIL_INPUT_ERROR, raw)
 
     def _handle_mismatch(self, raw, master):
-        self.data_manager.log_event(self.Events.ERROR_MISMATCH, {"raw": raw, "master": master})
-        self.current_set_info['error_count'] += 1
-        self.current_set_info['has_error_or_reset'] = True
+        set_id = self._ensure_current_set_id()
+        self.data_manager.log_event(
+            self.Events.ERROR_MISMATCH,
+            {
+                "raw": raw,
+                "master": master,
+                "set_id": set_id,
+                "scan_pos": len(self.current_set_info.get('raw', [])) + 1,
+            },
+        )
+        self._mark_current_set_error()
         title = "[제품 불일치]"
 
-        truncated_raw = self._truncate_string(raw)
-        truncated_master = self._truncate_string(master)
-        error_message = f"현품표와 제품이 불일치합니다.\n\n- 현품표: {truncated_master}\n- 스캔 제품: {truncated_raw}\n\n→ 올바른 제품을 스캔하세요."
-        self.update_big_display(truncated_raw, "red")
-        self.status_label.config(text=f"❌ 불일치: 현품표({truncated_master}) 없음", style="Error.TLabel")
+        truncated_raw = self._middle_ellipsis(raw, 48)
+        truncated_master = self._middle_ellipsis(master, 48)
+        error_message = (
+            f"현품표와 제품이 불일치합니다.\n\n"
+            f"- 현품표: {truncated_master}\n"
+            f"- 스캔 제품: {truncated_raw}\n\n"
+            "→ 이 세트는 오류 처리됩니다. 제품을 제거하고 확인 후 새 현품표부터 다시 스캔하세요."
+        )
+        self.update_big_display("제품 불일치 - 새 현품표부터 시작", "red")
+        self.status_label.config(text=f"불일치: 확인 후 새 현품표부터 시작 | 스캔 제품: {truncated_raw}", style="Error.TLabel")
 
         if self.is_running_simulation:
             print(f"  - 시뮬레이션 오류 처리: {title}")
@@ -1288,7 +2117,64 @@ class Label_Match(tk.Tk):
         elif not self.run_tests and "DEMO" not in raw:
             self._trigger_modal_error(title, error_message, self.Results.FAIL_MISMATCH, raw)
 
+    def _ensure_current_set_id(self):
+        if not self.current_set_info.get('id'):
+            self.current_set_info['id'] = str(time.time_ns())
+        return self.current_set_info['id']
+
+    def _mark_current_set_error(self):
+        self.current_set_info['error_count'] += 1
+        self.current_set_info['has_error_or_reset'] = True
+        self._update_manual_complete_button_state()
+        if self.current_set_info.get('raw'):
+            self._save_current_set_state()
+
+    def _dict_value_by_string_key(self, mapping, key):
+        if not isinstance(mapping, dict):
+            return None
+        if key in mapping:
+            return mapping[key]
+        key_text = str(key)
+        if key_text in mapping:
+            return mapping[key_text]
+        for existing_key, value in mapping.items():
+            if str(existing_key) == key_text:
+                return value
+        return None
+
+    def _dict_pop_by_string_key(self, mapping, key):
+        if not isinstance(mapping, dict):
+            return None
+        if key in mapping:
+            return mapping.pop(key)
+        key_text = str(key)
+        if key_text in mapping:
+            return mapping.pop(key_text)
+        for existing_key in list(mapping.keys()):
+            if str(existing_key) == key_text:
+                return mapping.pop(existing_key)
+        return None
+
+    def _remove_history_details_for_iid(self, iid):
+        self._dict_pop_by_string_key(self.__dict__.get("set_details_map", {}), iid)
+        self._dict_pop_by_string_key(self.__dict__.get("history_row_details_map", {}), iid)
+
+    def _show_delete_failure(self, error):
+        message = f"기록 삭제 중 오류가 발생했습니다.\n로그 파일 저장 권한 또는 선택된 기록 상태를 확인하세요.\n\n[오류 원인]\n{error}"
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            status_label.config(text="❌ 기록 삭제 실패", style="Error.TLabel")
+        if not self.__dict__.get("run_tests", False):
+            messagebox.showerror("삭제 실패", message, parent=self)
+
     def _delete_selected_row(self):
+        if self._block_active_history_load_action("기록 삭제"):
+            return
+        if not self.history_view_updates_active_state:
+            if not self.run_tests:
+                messagebox.showwarning("조회 모드", "과거 날짜 조회 중에는 기록 삭제를 할 수 없습니다.\n'오늘' 기록으로 돌아온 뒤 다시 시도하세요.")
+            return
+
         selected_iids = self.history_tree.selection()
         if not selected_iids:
             if not self.run_tests:
@@ -1300,21 +2186,29 @@ class Label_Match(tk.Tk):
         if not should_delete:
             return
 
-        for iid in selected_iids:
-            if iid == 'loading':
-                continue
+        deleted_count = 0
+        try:
+            for iid in selected_iids:
+                if iid == 'loading':
+                    continue
+                if not self.history_tree.exists(iid):
+                    continue
 
-            deleted_details = self.set_details_map.get(iid)
-            values = self.history_tree.item(iid, 'values')
-            log_details = {'set_id': iid, 'deleted_values': values, 'original_details': deleted_details}
-            self.data_manager.log_event(self.Events.SET_DELETED, log_details)
+                deleted_details = self._history_details_for_iid(iid)
+                values = tuple(self.history_tree.item(iid, 'values') or ())
+                log_details = {'set_id': str(iid), 'deleted_values': values, 'original_details': deleted_details}
+                self.data_manager.log_event(self.Events.SET_DELETED, log_details)
 
-            if deleted_details:
-                result = values[6]
-                if result == self.Results.PASS:
+                if deleted_details:
+                    result = _label_match_tray_complete_result(deleted_details)
+                    if result != self.Results.PASS and len(values) > 6:
+                        result = values[6]
+                else:
+                    result = values[6] if len(values) > 6 else None
+                if deleted_details and result == self.Results.PASS:
                     production_date = deleted_details.get('production_date')
                     passed_code = deleted_details.get('item_code')
-                    phase = deleted_details.get('phase', '-')
+                    phase = deleted_details.get('phase') or '-'
                     if production_date and passed_code:
                         key = (passed_code, phase)
                         if production_date in self.scan_count and key in self.scan_count[production_date]:
@@ -1324,25 +2218,94 @@ class Label_Match(tk.Tk):
                             if not self.scan_count[production_date]:
                                 del self.scan_count[production_date]
 
-                    raw_scans_to_remove = deleted_details.get('scanned_product_barcodes', [])
-                    for barcode in raw_scans_to_remove:
-                        self.global_scanned_set.discard(barcode)
+                self.history_tree.delete(iid)
+                self._remove_history_details_for_iid(iid)
+                deleted_count += 1
+        except Exception as e:
+            self._show_delete_failure(e)
+            if self.__dict__.get("run_tests", False):
+                raise
+            return
 
-            self.history_tree.delete(iid)
+        if deleted_count == 0:
+            if not self.run_tests:
+                messagebox.showwarning("선택 필요", "삭제할 수 있는 기록이 없습니다.")
+            return
 
-            if iid in self.set_details_map:
-                del self.set_details_map[iid]
-
+        self._rebuild_global_scanned_set_from_details()
         self._update_summary_tree()
+        self._render_history_detail()
         if not self.run_tests:
-            messagebox.showinfo("삭제 완료", f"{len(selected_iids)}개의 기록이 삭제 처리되었습니다.")
+            messagebox.showinfo("삭제 완료", f"{deleted_count}개의 기록이 삭제 처리되었습니다.")
+
+    def _rebuild_global_scanned_set_from_details(self):
+        rebuilt = set()
+        for details in self.set_details_map.values():
+            rebuilt.update(_label_match_duplicate_index_barcodes(details))
+        self.global_scanned_set = rebuilt
+
+    def _block_view_only_action(self, action_name, parent=None):
+        state = self.__dict__
+        if state.get('history_view_updates_active_state', True):
+            return False
+        message = f"과거 기록 조회 중에는 {action_name}할 수 없습니다.\n'오늘' 기록으로 돌아온 뒤 다시 시도하세요."
+        status_label = state.get('status_label')
+        if status_label is not None:
+            status_label.config(text=f"❌ {message.splitlines()[0]}", style="Error.TLabel")
+        if not state.get('run_tests', False):
+            messagebox.showwarning("조회 모드", message, parent=parent or self)
+        return True
+
+    def _block_active_history_load_action(self, action_name, parent=None):
+        state = self.__dict__
+        if not state.get('history_active_load_pending', False):
+            return False
+        message = f"오늘 기록을 불러오는 중에는 {action_name}할 수 없습니다.\n기록 로딩이 끝난 뒤 다시 시도하세요."
+        status_label = state.get('status_label')
+        if status_label is not None:
+            status_label.config(text=f"❌ {message.splitlines()[0]}", style="Error.TLabel")
+        if not state.get('run_tests', False):
+            messagebox.showwarning("기록 로딩 중", message, parent=parent or self)
+        return True
+
+    def _block_duplicate_history_load(self, parent=None):
+        history_load_pending = self.__dict__.get('history_load_pending', False)
+        history_active_load_pending = self.__dict__.get('history_active_load_pending', False)
+        if not (history_load_pending or history_active_load_pending):
+            return False
+        if history_active_load_pending:
+            message = "오늘 기록을 불러오는 중입니다.\n기록 로딩이 끝난 뒤 다시 시도하세요."
+        else:
+            message = "기록을 불러오는 중입니다.\n기록 로딩이 끝난 뒤 다시 시도하세요."
+        status_label = self.__dict__.get('status_label')
+        if status_label is not None:
+            status_label.config(text=f"❌ {message.splitlines()[0]}", style="Error.TLabel")
+        if not self.__dict__.get('run_tests', False):
+            messagebox.showwarning("기록 로딩 중", message, parent=parent or self)
+        return True
+
+    def _block_background_history_reload(self, parent=None):
+        if not self._has_background_work():
+            return False
+        message = "테스트 시뮬레이션 또는 테스트 로그 생성 중에는 기록을 다시 불러올 수 없습니다.\n작업이 끝난 뒤 다시 시도하세요."
+        status_label = self.__dict__.get('status_label')
+        if status_label is not None:
+            status_label.config(text=f"❌ {message.splitlines()[0]}", style="Error.TLabel")
+        if not self.__dict__.get('run_tests', False):
+            messagebox.showwarning("작업 진행 중", message, parent=parent or self)
+        return True
 
     def _reset_current_set(self, full_reset=False, from_finalize=False):
-        if self.is_blinking: return
+        if self.is_blinking: return False
+        if full_reset and not from_finalize and self._block_active_history_load_action("현재 세트를 취소"):
+            return False
+        if full_reset and not from_finalize and self._block_view_only_action("현재 세트를 취소"):
+            return False
         if full_reset and self.current_set_info.get('id'):
             self.data_manager.log_event(self.Events.SET_CANCELLED, {"set_id": self.current_set_info['id'], "cancelled_set": self.current_set_info})
             if self.history_tree.exists(str(self.current_set_info['id'])):
                 self.history_tree.delete(str(self.current_set_info['id']))
+            self.__dict__.setdefault("history_row_details_map", {}).pop(str(self.current_set_info['id']), None)
             self.current_set_info['has_error_or_reset'] = True
         if from_finalize or full_reset:
             self._delete_current_set_state()
@@ -1355,8 +2318,9 @@ class Label_Match(tk.Tk):
         self.progress_bar['value'] = 0
         if self.initialized_successfully:
             self._update_status_label()
-            self.update_big_display("바코드를 스캔하세요.", "")
+            self.update_big_display("1/5 현품표 스캔", "")
             self.entry.focus_set()
+        return True
 
     def _close_popup(self, popup, result, error_details):
         if popup.winfo_exists():
@@ -1433,6 +2397,12 @@ class Label_Match(tk.Tk):
 
     def _prompt_and_cancel_completed_tray(self):
         if not self.initialized_successfully: return
+        if self._block_active_history_load_action("완료된 트레이 취소", parent=self):
+            return
+        if not self.history_view_updates_active_state:
+            if not self.run_tests:
+                messagebox.showwarning("조회 모드", "과거 날짜 조회 중에는 완료된 트레이 취소를 할 수 없습니다.\n'오늘' 기록으로 돌아온 뒤 다시 시도하세요.", parent=self)
+            return
         
         master_label = None
         if not self.run_tests:
@@ -1451,7 +2421,20 @@ class Label_Match(tk.Tk):
     
     def _prompt_manual_complete(self):
         """사용자에게 현재 세트를 수동으로 완료할지 확인하고 처리합니다."""
-        if not self.initialized_successfully or self.manual_complete_button['state'] == 'disabled':
+        if not self.initialized_successfully:
+            return
+        if self._block_active_history_load_action("현재 세트를 완료", parent=self):
+            return
+        if not self.history_view_updates_active_state:
+            if not self.run_tests:
+                messagebox.showwarning("조회 모드", "과거 기록 조회 중에는 현재 세트를 완료할 수 없습니다.\n'오늘' 기록으로 돌아온 뒤 다시 시도하세요.", parent=self)
+            return
+
+        block_reason = _label_match_manual_complete_block_reason(self.current_set_info)
+        if block_reason:
+            self._update_manual_complete_button_state()
+            if not self.run_tests:
+                messagebox.showwarning("수동 완료 불가", "현재 세트는 수동 완료할 수 없습니다.", parent=self)
             return
 
         num_scans = len(self.current_set_info['raw'])
@@ -1473,8 +2456,14 @@ class Label_Match(tk.Tk):
         # 이는 Base64 또는 'CLC=...' 와 같은 고유 식별자를 가진 라벨을 위한 것임
         is_unique_label_match = False
         for set_id, details in self.set_details_map.items():
+            if not _label_match_tray_complete_passed(details):
+                continue
             raw_scans = details.get('scanned_product_barcodes', [])
-            if raw_scans and raw_scans[0] == label_to_cancel:
+            if (
+                raw_scans
+                and _label_match_first_scan_is_unique_master(details)
+                and _label_match_unique_master_labels_equivalent(raw_scans[0], label_to_cancel)
+            ):
                 target_set_id = set_id
                 is_unique_label_match = True
                 break
@@ -1483,11 +2472,12 @@ class Label_Match(tk.Tk):
         if not is_unique_label_match:
             found_sets = []
             for set_id, details in self.set_details_map.items():
+                if not _label_match_tray_complete_passed(details):
+                    continue
                 # 파싱된 코드(master_label_code)와 일치하는 모든 기록을 찾음
                 if details.get('master_label_code') == label_to_cancel:
                     try:
-                        # [버그 수정] 오류 여부와 관계없이 '통과'된 모든 기록을 대상으로 함
-                        end_time_dt = datetime.fromisoformat(details.get('end_time'))
+                        end_time_dt = _label_match_parse_datetime(details.get('end_time'))
                         found_sets.append({'set_id': set_id, 'details': details, 'end_time': end_time_dt})
                     except (ValueError, TypeError):
                         continue
@@ -1508,7 +2498,7 @@ class Label_Match(tk.Tk):
         target_details = self.set_details_map[target_set_id]
         
         try:
-            end_time_dt = datetime.fromisoformat(target_details.get('end_time'))
+            end_time_dt = _label_match_parse_datetime(target_details.get('end_time'))
             end_time_display = end_time_dt.strftime('%H:%M:%S')
         except (ValueError, TypeError):
             end_time_display = "알 수 없음"
@@ -1535,7 +2525,7 @@ class Label_Match(tk.Tk):
 
             production_date = target_details.get('production_date')
             item_code = target_details.get('item_code')
-            phase = target_details.get('phase', '-')
+            phase = target_details.get('phase') or '-'
             if production_date and item_code:
                 key = (item_code, phase)
                 if production_date in self.scan_count and key in self.scan_count[production_date]:
@@ -1545,13 +2535,10 @@ class Label_Match(tk.Tk):
                     if not self.scan_count[production_date]:
                         del self.scan_count[production_date]
 
-            raw_scans_to_remove = target_details.get('scanned_product_barcodes', [])
-            for barcode in raw_scans_to_remove:
-                self.global_scanned_set.discard(barcode)
-
             if target_set_id in self.set_details_map: del self.set_details_map[target_set_id]
             if self.history_tree.exists(target_set_id): self.history_tree.delete(target_set_id)
 
+            self._rebuild_global_scanned_set_from_details()
             self._update_summary_tree()
             
             if not self.run_tests:
@@ -1563,6 +2550,11 @@ class Label_Match(tk.Tk):
             self.data_manager.log_event(self.Events.UI_ERROR, {"context": "tray_cancellation_by_label", "error": str(e)})
 
     def run_test_log_simulation(self, master_code_to_test, num_sets):
+        if self._has_background_work():
+            if not self.run_tests:
+                messagebox.showwarning("작업 진행 중", "이미 테스트 작업이 진행 중입니다.", parent=self)
+            return
+        self.is_generating_test_logs = True
         self.entry.config(state='disabled')
         self.update_big_display(f"테스트 데이터 생성 시작...", "primary")
         self.progress_bar['value'] = 0
@@ -1571,49 +2563,57 @@ class Label_Match(tk.Tk):
         sim_thread.start()
 
     def _execute_test_simulation(self, master_code, num_sets):
-        item_info = self.items_data.get(master_code, {"Item Name": "테스트 품목", "Spec": "T-SPEC"})
+        try:
+            item_info = self.items_data.get(master_code, {"Item Name": "테스트 품목", "Spec": "T-SPEC"})
 
-        for i in range(num_sets):
-            progress_text = f"테스트 진행 중... ({i + 1}/{num_sets})"
-            self.after(0, self.update_big_display, progress_text, "primary")
+            for i in range(num_sets):
+                progress_text = f"테스트 진행 중... ({i + 1}/{num_sets})"
+                self.after(0, self.update_big_display, progress_text, "primary")
 
-            set_id = f"TEST_{time.time_ns()}"
-            start_time = datetime.now()
-            time.sleep(0.01)
-            end_time = datetime.now()
-            production_date = datetime.now().strftime('%Y-%m-%d')
-            phase = str((i % 3) + 1)
+                set_id = f"TEST_{time.time_ns()}"
+                start_time = datetime.now()
+                time.sleep(0.01)
+                end_time = datetime.now()
+                production_date = datetime.now().strftime('%Y-%m-%d')
+                phase = str((i % 3) + 1)
 
-            scanned_barcodes = [
-                f"CLC={master_code}|SPC={item_info['Item Name']}|PHS={phase}",
-                f"PRODUCT_TEST_{master_code}_{set_id}_1",
-                f"PRODUCT_TEST_{master_code}_{set_id}_2",
-                f"PRODUCT_TEST_{master_code}_{set_id}_3",
-                f"FINAL_LABEL_{master_code}_{set_id}\x1D6D{production_date.replace('-', '')}"
-            ]
-            parsed_scans = [master_code] * 5
+                scanned_barcodes = [
+                    f"CLC={master_code}|SPC={item_info['Item Name']}|PHS={phase}",
+                    f"PRODUCT_TEST_{master_code}_{set_id}_1",
+                    f"PRODUCT_TEST_{master_code}_{set_id}_2",
+                    f"PRODUCT_TEST_{master_code}_{set_id}_3",
+                    f"FINAL_LABEL_{master_code}_{set_id}\x1D6D{production_date.replace('-', '')}"
+                ]
+                parsed_scans = [master_code] * 5
 
-            details = {
-                'set_id': set_id,
-                'master_label_code': master_code, 'item_code': master_code,
-                'item_name': item_info.get("Item Name"), 'spec': item_info.get("Spec"),
-                'scan_count': 5,
-                'scanned_product_barcodes': scanned_barcodes,
-                'parsed_product_barcodes': parsed_scans,
-                'work_time_sec': (end_time - start_time).total_seconds(),
-                'error_count': 0, 'has_error_or_reset': False,
-                'is_partial_submission': False, 'start_time': start_time,
-                'end_time': end_time,
-                'production_date': production_date, 'phase': phase
-            }
+                details = {
+                    'set_id': set_id,
+                    'master_label_code': master_code, 'item_code': master_code,
+                    'item_name': item_info.get("Item Name"), 'spec': item_info.get("Spec"),
+                    'scan_count': 5,
+                    'scanned_product_barcodes': scanned_barcodes,
+                    'parsed_product_barcodes': parsed_scans,
+                    'work_time_sec': (end_time - start_time).total_seconds(),
+                    'error_count': 0, 'has_error_or_reset': False,
+                    'final_result': self.Results.PASS, 'result_display': self.Results.PASS,
+                    'is_partial_submission': False, 'start_time': start_time,
+                    'end_time': end_time,
+                    'production_date': production_date, 'phase': phase
+                }
 
-            self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
-            self.scan_count[production_date][(master_code, phase)] += 1
-            self.global_scanned_set.update(scanned_barcodes)
-            self.set_details_map[set_id] = details
-            self.after(0, self._add_test_set_to_history_ui, set_id, details, i + 1)
+                self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
+                self.scan_count[production_date][(master_code, phase)] += 1
+                self.set_details_map[set_id] = details
+                self.global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
+                self.after(0, self._add_test_set_to_history_ui, set_id, details, i + 1)
 
-        self.after(0, self._finalize_test_simulation, num_sets)
+            self.after(0, self._finalize_test_simulation, num_sets)
+        except Exception as e:
+            print(f"테스트 데이터 생성 오류: {e}")
+            try:
+                self.after(0, self._finalize_test_simulation_error, str(e))
+            except Exception:
+                self.is_generating_test_logs = False
 
     def _add_test_set_to_history_ui(self, set_id, details, display_index):
         if not self.history_tree.winfo_exists(): return
@@ -1629,10 +2629,13 @@ class Label_Match(tk.Tk):
             self.Results.PASS,
             details['end_time'].strftime('%H:%M:%S')
         )
+        self.__dict__.setdefault("history_row_details_map", {})[set_id] = details
+        values_to_display = self._history_values_for_display(values_to_display)
         self.history_tree.insert("", "end", iid=set_id, values=values_to_display, tags=("success",))
         self.history_tree.yview_moveto(1.0)
 
     def _finalize_test_simulation(self, num_sets):
+        self.is_generating_test_logs = False
         if not self.winfo_exists(): return
 
         self._play_sound("pass")
@@ -1645,53 +2648,88 @@ class Label_Match(tk.Tk):
         self.entry.focus_set()
         self._reset_current_set()
 
+    def _finalize_test_simulation_error(self, error_message):
+        self.is_generating_test_logs = False
+        if not self.winfo_exists(): return
+
+        self.entry.config(state='normal')
+        self.entry.focus_set()
+        self.update_big_display("테스트 데이터 생성 실패", "red")
+        self.status_label.config(text=f"❌ 테스트 데이터 생성 실패: {error_message}", style="Error.TLabel")
+        if not self.run_tests:
+            messagebox.showerror("테스트 생성 오류", f"테스트 데이터 생성 중 오류가 발생했습니다.\n\n[상세 오류]\n{error_message}", parent=self)
+
     def open_settings_window(self):
         if self.current_set_info.get('id'):
             if not self.run_tests:
                 messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n설정 변경은 다음 작업부터 적용됩니다.")
         settings_window = tk.Toplevel(self)
         settings_window.title("설정")
-        settings_window.geometry("600x200")
         settings_window.resizable(False, False)
         settings_window.transient(self)
         settings_window.grab_set()
         settings_window.configure(bg=self.colors.get("background", "#ECEFF1"))
+        self._center_child_window(settings_window, *self._dialog_size("settings"))
         main_frame = ttk.Frame(settings_window, padding=20, style="TFrame")
         main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.grid_columnconfigure(1, weight=1)
-        ttk.Label(main_frame, text="현재 작업자 이름:", font=(self.default_font_name, 11)).grid(row=0, column=0, sticky='w', pady=(20,5), padx=(0, 10))
+        ttk.Label(main_frame, text="작업자 이름", font=(self.default_font_name, 12, "bold")).grid(row=0, column=0, sticky='w', pady=(8,5), padx=(0, 10))
+        ttk.Label(main_frame, text="저장 후 다음 작업부터 로그 작업자명이 변경됩니다.", style="Status.TLabel").grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
         self.worker_name_var = tk.StringVar(value=self.worker_name)
-        worker_entry = ttk.Entry(main_frame, textvariable=self.worker_name_var, font=(self.default_font_name, 10))
-        worker_entry.grid(row=1, column=0, columnspan=3, sticky='ew')
+        worker_entry = ttk.Entry(main_frame, textvariable=self.worker_name_var, font=(self.default_font_name, 12))
+        worker_entry.grid(row=2, column=0, columnspan=3, sticky='ew')
         button_frame = ttk.Frame(main_frame, padding=(0, 20, 0, 0), style="TFrame")
-        button_frame.grid(row=2, column=0, columnspan=3, sticky='e', pady=(20,0))
+        button_frame.grid(row=3, column=0, columnspan=3, sticky='e', pady=(20,0))
         save_button = ttk.Button(button_frame, text="저장", command=lambda: self._save_settings_and_close(settings_window, self.worker_name_var.get()))
         save_button.pack(side=tk.LEFT, padx=5)
-        cancel_button = ttk.Button(button_frame, text="취소", command=settings_window.destroy)
+        cancel_button = ttk.Button(button_frame, text="취소", command=lambda: self._destroy_modal_and_refocus(settings_window))
         cancel_button.pack(side=tk.LEFT)
+        settings_window.bind("<Escape>", lambda event: self._destroy_modal_and_refocus(settings_window))
+        settings_window.bind("<Return>", lambda event: self._save_settings_and_close(settings_window, self.worker_name_var.get()))
+        worker_entry.focus_set()
+        worker_entry.select_range(0, tk.END)
 
     def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str):
+        active_set = bool(getattr(self, 'current_set_info', {}).get('id'))
+        if active_set or self._has_background_work():
+            if not self.run_tests:
+                messagebox.showwarning("작업 중 설정 변경 불가", "현재 스캔 작업 또는 테스트 시뮬레이션이 진행 중입니다.\n현재 작업을 완료하거나 취소한 뒤 설정을 저장하세요.", parent=window)
+            return
+        if self._block_view_only_action("설정을 저장", parent=window):
+            return
+        if self._block_duplicate_history_load(parent=window):
+            return
         if not new_worker_name.strip():
             if not self.run_tests:
                 messagebox.showerror("입력 오류", "작업자 이름은 비워둘 수 없습니다.", parent=window)
             return
-        self.worker_name = new_worker_name.strip()
+        requested_worker_name = new_worker_name.strip()
+        try:
+            self.data_manager.close(timeout=None)
+        except Exception as e:
+            self._replace_closed_data_manager_after_close_failure(self.data_manager)
+            if self.run_tests:
+                raise
+            messagebox.showerror("저장 보류", f"작업 로그 저장을 완료하지 못해 설정 변경을 중단했습니다.\n\n[상세 오류]\n{e}", parent=window)
+            return
+
+        self.worker_name = requested_worker_name
         self._save_app_settings()
         self._update_save_directory()
         self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
         self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
         if not self.run_tests:
             messagebox.showinfo("저장 완료", f"설정이 변경되었습니다.\n- 작업자: {self.worker_name}", parent=self)
-        window.destroy()
+        self._destroy_modal_and_refocus(window)
 
     def _show_about_window(self):
         about_win = tk.Toplevel(self)
         about_win.title("정보")
-        about_win.geometry("500x380")
         about_win.resizable(False, False)
         about_win.transient(self)
         about_win.grab_set()
         about_win.configure(bg=self.colors["background"])
+        self._center_child_window(about_win, *self._dialog_size("about"))
 
         header_font = (self.default_font_name, 18, "bold")
         title_font = (self.default_font_name, 11, "bold")
@@ -1731,8 +2769,10 @@ class Label_Match(tk.Tk):
         
         keys_frame.grid_columnconfigure(1, weight=1)
 
-        close_button = ttk.Button(main_frame, text="닫기", command=about_win.destroy, style="TButton")
+        close_button = ttk.Button(main_frame, text="닫기", command=lambda: self._destroy_modal_and_refocus(about_win), style="TButton")
         close_button.pack(side=tk.BOTTOM, pady=(20, 0))
+        about_win.bind("<Escape>", lambda event: self._destroy_modal_and_refocus(about_win))
+        close_button.focus_set()
 
 
     def _configure_base_styles(self):
@@ -1744,13 +2784,19 @@ class Label_Match(tk.Tk):
         self.style.configure("ErrorCard.TFrame", background=self.colors["danger"], borderwidth=2, relief='solid', bordercolor=self.colors["danger"])
         self.style.configure("TLabel", background=self.colors["card_background"], foreground=self.colors["text"], font=(self.default_font_name, 14))
         self.style.configure("Header.TLabel", background=self.colors["card_background"], foreground=self.colors["text"], font=(self.default_font_name, 18, "bold"))
-        self.style.configure("TButton", padding=12, relief="flat", borderwidth=0, background=self.colors["primary"], foreground=self.colors["text_strong"], font=(self.default_font_name, 14, "bold"))
-        self.style.map("TButton", background=[('active', self.colors["primary_active"]), ('disabled', self.colors["border"])], foreground=[('disabled', self.colors["text_subtle"])])
-        self.style.configure("Control.TButton", padding=(4, 4), font=(self.default_font_name, 12), background=self.colors["card_background"], foreground=self.colors["text"], relief="groove", borderwidth=2, bordercolor=self.colors["border"])
-        self.style.map("Control.TButton", background=[('active', self.colors["background"])])
+        self.style.configure("TButton", padding=12, relief="flat", borderwidth=2, focuscolor=self.colors["text"], background=self.colors["primary"], foreground="white", font=(self.default_font_name, 14, "bold"))
+        self.style.map("TButton", background=[('active', self.colors["primary_active"]), ('focus', self.colors["primary_active"]), ('disabled', self.colors["border"])], foreground=[('disabled', self.colors["text_subtle"])], relief=[('focus', 'solid')])
+        self.style.configure("Control.TButton", padding=(8, 5), font=(self.default_font_name, 12, "bold"), background=self.colors["card_background"], foreground=self.colors["text"], relief="groove", borderwidth=2, bordercolor=self.colors["border"], focuscolor=self.colors["primary_active"])
+        self.style.map("Control.TButton", background=[('active', self.colors["background"]), ('focus', self.colors["background"])], relief=[('focus', 'solid')])
+        self.style.configure("Danger.Action.TButton", font=(self.default_font_name, 15, "bold"), padding=15)
+        self.style.map("Danger.Action.TButton",
+                       foreground=[('disabled', self.colors["text_subtle"]), ('active', 'white'), ('!disabled', 'white')],
+                       background=[('disabled', '#E5E7EB'), ('active', '#991B1B'), ('!disabled', self.colors["danger"])])
         self.style.configure("Status.TLabel", background=self.colors["card_background"], foreground=self.colors["text_subtle"], font=(self.default_font_name, 14))
+        self.style.configure("SummaryDate.TLabel", background=self.colors["background"], foreground=self.colors["text_subtle"], font=(self.default_font_name, 13, "bold"), padding=(8, 4))
         self.style.configure("Success.TLabel", background=self.colors["card_background"], foreground=self.colors["success"], font=(self.default_font_name, 14, "bold"))
         self.style.configure("Error.TLabel", background=self.colors["card_background"], foreground=self.colors["danger"], font=(self.default_font_name, 14, "bold"))
+        self.style.configure("ViewMode.TLabel", background=self.colors["danger_light"], foreground=self.colors["danger"], font=(self.default_font_name, 13, "bold"), padding=(10, 6))
         self.style.configure("Save.Success.TLabel", background=self.colors["background"], foreground=self.colors["success"], font=(self.default_font_name, 12, "bold"))
         self.style.configure("green.Horizontal.TProgressbar", background=self.colors["success"], troughcolor=self.colors["border"], borderwidth=0)
         self.style.configure("TEntry", bordercolor=self.colors["border"], fieldbackground=self.colors["card_background"])
@@ -1760,10 +2806,11 @@ class Label_Match(tk.Tk):
         self.style.configure("Overlay.TFrame", background=overlay_bg)
         self.style.configure("Loading.TLabel", background=overlay_bg, foreground=self.colors["text"], font=(self.default_font_name, 24, "bold"))
 
-        self.style.configure("Action.TButton", font=(self.default_font_name, 15, "bold"), padding=15)
+        self.style.configure("Action.TButton", font=(self.default_font_name, 15, "bold"), padding=15, focuscolor=self.colors["text"])
         self.style.map("Action.TButton",
                        foreground=[('disabled', self.colors["text_subtle"]), ('active', 'white'), ('!disabled', 'white')],
-                       background=[('disabled', '#E5E7EB'), ('active', self.colors["primary_active"]), ('!disabled', self.colors["primary"])])
+                       background=[('disabled', '#E5E7EB'), ('active', self.colors["primary_active"]), ('focus', self.colors["primary_active"]), ('!disabled', self.colors["primary"])],
+                       relief=[('focus', 'solid')])
 
     def _configure_treeview_styles(self):
         self.style.configure("Treeview", background=self.colors["card_background"], fieldbackground=self.colors["card_background"], foreground=self.colors["text"], borderwidth=0, relief='flat', rowheight=40)
@@ -1779,9 +2826,107 @@ class Label_Match(tk.Tk):
         if iid:
             if iid not in self.history_tree.selection():
                 self.history_tree.selection_set(iid)
+            self._render_history_detail(iid)
             self.history_context_menu.post(event.x_root, event.y_root)
 
+    def _selected_history_iid(self):
+        if "history_tree" not in self.__dict__:
+            return None
+        selection = self.history_tree.selection()
+        return selection[0] if selection else None
+
+    def _render_history_detail(self, iid=None):
+        if "history_detail_text" not in self.__dict__:
+            return
+        iid = iid or self._selected_history_iid()
+        details = self._history_details_for_iid(iid)
+        text = self._barcode_inline_detail_text(details)
+        self.history_detail_text.configure(state="normal")
+        self.history_detail_text.delete("1.0", tk.END)
+        self.history_detail_text.insert("1.0", text)
+        self.history_detail_text.configure(state="disabled")
+        button_state = "normal" if details else "disabled"
+        self.history_detail_copy_button.configure(state=button_state)
+        self.history_detail_modal_button.configure(state=button_state)
+
+    def _on_history_selection_changed(self, event=None):
+        self._render_history_detail()
+
+    def _copy_selected_history_barcodes(self):
+        iid = self._selected_history_iid()
+        details = self._history_details_for_iid(iid)
+        if not details:
+            return
+        text = self._barcode_detail_text(details)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.save_status_label.config(text=f"✓ 바코드 원문 복사됨 ({datetime.now().strftime('%H:%M:%S')})")
+        self.after(2500, lambda: self.save_status_label.config(text=""))
+
+    def _show_selected_history_detail_window(self, event=None):
+        iid = self._selected_history_iid()
+        details = self._history_details_for_iid(iid)
+        if not details:
+            return
+        self._show_barcode_detail_window(details)
+
+    def _show_barcode_detail_window(self, details):
+        detail_win = tk.Toplevel(self)
+        detail_win.title("바코드 원문")
+        detail_win.transient(self)
+        detail_win.grab_set()
+        detail_win.configure(bg=self.colors["background"])
+        width, height = self._dialog_size("barcode_detail")
+        self._center_child_window(detail_win, width, height)
+
+        main_frame = ttk.Frame(detail_win, padding=18, style="TFrame")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.grid_rowconfigure(1, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
+
+        ttk.Label(main_frame, text="바코드 원문", style="Header.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        text_frame = ttk.Frame(main_frame, style="Card.TFrame")
+        text_frame.grid(row=1, column=0, sticky="nsew")
+        text_frame.grid_rowconfigure(0, weight=1)
+        text_frame.grid_columnconfigure(0, weight=1)
+        scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL)
+        detail_text = tk.Text(
+            text_frame,
+            wrap="word",
+            font=("Consolas", max(10, self.tree_font_size)),
+            bg=self.colors["card_background"],
+            fg=self.colors["text"],
+            relief="flat",
+            padx=12,
+            pady=10,
+            height=12,
+        )
+        detail_text.insert("1.0", self._barcode_detail_text(details))
+        detail_text.configure(state="disabled", yscrollcommand=scroll.set)
+        scroll.config(command=detail_text.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        button_frame = ttk.Frame(main_frame, style="TFrame")
+        button_frame.grid(row=2, column=0, sticky="e", pady=(12, 0))
+        copy_button = ttk.Button(button_frame, text="복사", command=lambda: self._copy_text_to_clipboard(self._barcode_detail_text(details)))
+        copy_button.pack(side=tk.LEFT, padx=(0, 8))
+        close_button = ttk.Button(button_frame, text="닫기", command=lambda: self._destroy_modal_and_refocus(detail_win))
+        close_button.pack(side=tk.LEFT)
+        detail_win.bind("<Escape>", lambda event: self._destroy_modal_and_refocus(detail_win))
+        detail_win.bind("<Control-c>", lambda event: self._copy_text_to_clipboard(self._barcode_detail_text(details)))
+        close_button.focus_set()
+
+    def _copy_text_to_clipboard(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
     def _reload_today_history(self):
+        if self._block_background_history_reload(parent=self):
+            return
+        if self._block_duplicate_history_load(parent=self):
+            return
         self._load_history_and_rebuild_summary(None)
         self._process_history_queue()
 
@@ -1790,23 +2935,232 @@ class Label_Match(tk.Tk):
             return text[:max_len] + "..."
         return text
 
+    def _middle_ellipsis(self, text, max_len=None):
+        text = str(text or "")
+        if max_len is None:
+            profile_name = self.__dict__.get("ui_profile_name", "standard")
+            max_len = self.BARCODE_DISPLAY_LIMITS.get(profile_name, self.BARCODE_DISPLAY_LIMITS["standard"])
+        if len(text) <= max_len:
+            return text
+        if max_len <= 10:
+            return text[:max_len - 3] + "..."
+        tail_len = max(6, min(10, max_len // 3))
+        head_len = max_len - tail_len - 3
+        return f"{text[:head_len]}...{text[-tail_len:]}"
+
+    def _barcode_cell_display_limit(self, column=None):
+        profile_name = self.__dict__.get("ui_profile_name", "standard")
+        profile_limit = self.BARCODE_DISPLAY_LIMITS.get(profile_name, self.BARCODE_DISPLAY_LIMITS["standard"])
+        if not column or "history_tree" not in self.__dict__:
+            return profile_limit
+        try:
+            width = int(self.history_tree.column(column, "width"))
+        except Exception:
+            return profile_limit
+        font_size = max(8, int(self.__dict__.get("tree_font_size", 13)))
+        pixel_limit = max(9, int(width / max(7, font_size * 0.72)))
+        return max(9, min(profile_limit, pixel_limit))
+
+    def _format_barcode_cell(self, value, column=None):
+        if column == "Input1":
+            return str(value or "")
+        return self._middle_ellipsis(value, self._barcode_cell_display_limit(column))
+
+    def _summary_code_display_limit(self):
+        profile_name = self.__dict__.get("ui_profile_name", "standard")
+        profile_limit = self.BARCODE_DISPLAY_LIMITS.get(profile_name, self.BARCODE_DISPLAY_LIMITS["standard"])
+        if "summary_tree" not in self.__dict__:
+            return profile_limit
+        try:
+            width = int(self.summary_tree.column("Code", "width"))
+        except Exception:
+            return profile_limit
+        font_size = max(8, int(self.__dict__.get("_current_tree_body_font_size", self.__dict__.get("tree_font_size", 13))))
+        pixel_limit = max(8, int(width / max(7, font_size * 0.72)))
+        return max(8, min(profile_limit, pixel_limit))
+
+    def _format_summary_code_cell(self, value):
+        text = str(value or "")
+        decoded_text = _label_match_decode_possible_base64_label(text)
+        label_data = self._parse_new_format_label(decoded_text)
+        if label_data:
+            item_code = label_data.get("CLC", "").strip()
+            product_name = label_data.get("SPC", "").strip()
+            if item_code and product_name:
+                return f"{item_code} | {product_name}"
+            return product_name or item_code or text
+
+        item_info = self.__dict__.get("items_data", {}).get(text, {})
+        if isinstance(item_info, dict):
+            product_name = str(item_info.get("Item Name", "") or "").strip()
+            if product_name and product_name != "알 수 없음" and product_name != text:
+                return f"{text} | {product_name}"
+        return text
+
+    def _summary_positive_dates(self, scan_count):
+        dates = []
+        for date_str, items in (scan_count or {}).items():
+            if any(count > 0 for count in (items or {}).values()):
+                dates.append(str(date_str))
+        return sorted(set(dates))
+
+    def _summary_date_text(self, scan_count):
+        dates = self._summary_positive_dates(scan_count)
+        if not dates:
+            return "날짜 -"
+        if len(dates) == 1:
+            return f"날짜 {dates[0]}"
+        return f"기간 {dates[0]} ~ {dates[-1]}"
+
+    def _set_summary_date_label(self, scan_count=None, text=None):
+        label = self.__dict__.get("summary_date_label")
+        if label is None:
+            return
+        try:
+            label.configure(text=text or self._summary_date_text(scan_count or {}))
+        except TclError:
+            pass
+
+    def _history_values_for_display(self, values):
+        values = list(values or [])
+        while len(values) < 8:
+            values.append("")
+        display_id = values[0]
+        barcode_columns = ("Input1", "Input2", "Input3", "Input4", "Input5")
+        scans = [
+            self._format_barcode_cell(value, barcode_columns[index])
+            for index, value in enumerate(values[1:6])
+        ]
+        return (display_id, *scans, values[6], values[7])
+
+    def _refresh_summary_tree_display_values(self):
+        raw_rows = self.__dict__.get("summary_row_raw_values", {})
+        if not raw_rows or "summary_tree" not in self.__dict__:
+            return
+        for item_id, raw_values in list(raw_rows.items()):
+            if not self.summary_tree.exists(item_id):
+                raw_rows.pop(item_id, None)
+                continue
+            _date_text, code, phase, count = raw_values
+            self.summary_tree.item(item_id, values=(self._format_summary_code_cell(code), phase, count))
+
+    def _history_values_from_details(self, iid, current_values=None):
+        details = self._history_details_for_iid(iid)
+        if not details:
+            return current_values
+        current_values = list(current_values or [])
+        display_id = current_values[0] if current_values else ""
+        timestamp = current_values[7] if len(current_values) > 7 else ""
+        result = _label_match_tray_complete_result(details)
+        if result == self.Results.PASS and details.get("final_result") == self.Results.IN_PROGRESS:
+            result = self.Results.IN_PROGRESS
+        parsed_scans = list(details.get("parsed_product_barcodes") or [])
+        values = (display_id, *parsed_scans[:5] + [""] * (5 - len(parsed_scans[:5])), result, timestamp)
+        return values
+
+    def _refresh_history_tree_display_values(self):
+        if "history_tree" not in self.__dict__:
+            return
+        try:
+            for iid in self.history_tree.get_children():
+                if iid == "loading":
+                    continue
+                current_values = self.history_tree.item(iid, "values")
+                source_values = self._history_values_from_details(iid, current_values)
+                if source_values:
+                    self.history_tree.item(iid, values=self._history_values_for_display(source_values))
+        except Exception as e:
+            print(f"기록 표시값 갱신 오류: {e}")
+
+    def _details_for_current_set(self):
+        current = self.__dict__.get("current_set_info", {}) or {}
+        return {
+            "set_id": current.get("id"),
+            "scanned_product_barcodes": list(current.get("raw") or []),
+            "parsed_product_barcodes": list(current.get("parsed") or []),
+            "final_result": self.Results.IN_PROGRESS,
+            "phase": current.get("phase") or "-",
+            "production_date": current.get("production_date"),
+        }
+
+    def _history_details_for_iid(self, iid):
+        if not iid:
+            return None
+        details = self._dict_value_by_string_key(self.__dict__.get("history_row_details_map", {}), iid)
+        if details:
+            return details
+        current = self.__dict__.get("current_set_info", {}) or {}
+        if str(current.get("id")) == str(iid):
+            return self._details_for_current_set()
+        return self._dict_value_by_string_key(self.__dict__.get("set_details_map", {}), iid)
+
+    def _barcode_detail_text(self, details):
+        if not details:
+            return "기록을 선택하면 현품표와 제품 바코드 원문이 여기에 표시됩니다."
+        raw_scans = list(details.get("scanned_product_barcodes") or [])
+        parsed_scans = list(details.get("parsed_product_barcodes") or [])
+        lines = [
+            f"결과: {_label_match_tray_complete_result(details)}",
+            f"세트 ID: {details.get('set_id') or '-'}",
+        ]
+        production_date = details.get("production_date")
+        phase = details.get("phase") or "-"
+        if production_date or phase != "-":
+            lines.append(f"생산일/차수: {production_date or '-'} / {phase}")
+        lines.append("")
+        for index, role in enumerate(self.STEP_NAMES):
+            parsed = parsed_scans[index] if index < len(parsed_scans) else ""
+            raw = raw_scans[index] if index < len(raw_scans) else ""
+            if not parsed and not raw:
+                continue
+            lines.append(f"[{index + 1}] {role}")
+            if parsed:
+                lines.append(f"  표시값: {parsed}")
+            if raw and raw != parsed:
+                lines.append(f"  원문: {raw}")
+            elif raw and not parsed:
+                lines.append(f"  원문: {raw}")
+        return "\n".join(lines).strip()
+
+    def _barcode_inline_detail_text(self, details):
+        if not details:
+            return "기록을 선택하면 현품표와 제품 바코드 원문이 여기에 표시됩니다."
+        raw_scans = list(details.get("scanned_product_barcodes") or [])
+        parsed_scans = list(details.get("parsed_product_barcodes") or [])
+        lines = []
+        for index, role in enumerate(self.STEP_NAMES):
+            value = ""
+            if index < len(parsed_scans) and parsed_scans[index]:
+                value = parsed_scans[index]
+            elif index < len(raw_scans):
+                value = raw_scans[index]
+            if value:
+                lines.append(f"{role}: {self._middle_ellipsis(value, 72)}")
+        if not lines:
+            lines.append(f"결과: {_label_match_tray_complete_result(details)}")
+            lines.append(f"세트 ID: {details.get('set_id') or '-'}")
+        return "\n".join(lines)
+
     def _create_widgets(self):
-        main_frame = ttk.Frame(self, padding="30")
+        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+        self.main_frame = ttk.Frame(self, padding=profile["outer_padding"])
+        main_frame = self.main_frame
         main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.grid_rowconfigure(1, weight=1)
         main_frame.grid_columnconfigure(0, weight=1)
-        self.top_card = ttk.Frame(main_frame, style="Card.TFrame", padding=30)
-        self.top_card.grid(row=0, column=0, sticky="ew", pady=(0, 30))
+        self.top_card = ttk.Frame(main_frame, style="Card.TFrame", padding=profile["card_padding"])
+        self.top_card.grid(row=0, column=0, sticky="ew", pady=(0, profile["section_gap"]))
         self.top_card.grid_columnconfigure(0, weight=1)
-        self.big_display_label = ttk.Label(self.top_card, text="바코드를 스캔하세요.", anchor="center", wraplength=1400, font=(self.default_font_name, 50, "bold"))
-        self.big_display_label.grid(row=0, column=0, sticky="ew", pady=(30, 40), ipady=15)
+        self.big_display_label = ttk.Label(self.top_card, text="1/5 현품표 스캔", anchor="center", wraplength=1400, font=(self.default_font_name, 50, "bold"))
+        self.big_display_label.grid(row=0, column=0, sticky="ew", pady=profile["big_display_pady"], ipady=profile["big_display_ipady"])
 
         top_right_frame = ttk.Frame(self.top_card, style="Borderless.TFrame")
-        top_right_frame.place(relx=1.0, rely=0.0, x=-30, y=30, anchor='ne')
+        self.top_right_frame = top_right_frame
+        top_right_frame.place(relx=1.0, rely=0.0, x=-profile["card_padding"], y=profile["card_padding"], anchor='ne')
 
-        about_button = ttk.Button(top_right_frame, text="❓", command=self._show_about_window, style='Control.TButton')
+        about_button = ttk.Button(top_right_frame, text="정보", command=self._show_about_window, style='Control.TButton')
         about_button.pack(side=tk.RIGHT, padx=(5, 0))
-        settings_button = ttk.Button(top_right_frame, text="⚙️", command=self.open_settings_window, style='Control.TButton')
+        settings_button = ttk.Button(top_right_frame, text="설정", command=self.open_settings_window, style='Control.TButton')
         settings_button.pack(side=tk.RIGHT)
 
         input_frame = ttk.Frame(self.top_card, style='Borderless.TFrame')
@@ -1816,38 +3170,63 @@ class Label_Match(tk.Tk):
         self.entry = ttk.Entry(input_frame, style="TEntry", state='disabled', font=(self.default_font_name, 18))
         self.entry.grid(row=0, column=1, sticky="ew")
         self.entry.bind("<Return>", self.process_input)
-        progress_frame = ttk.Frame(self.top_card, style='Borderless.TFrame')
-        progress_frame.grid(row=2, column=0, sticky="ew", pady=(30, 0))
+        self.progress_frame = ttk.Frame(self.top_card, style='Borderless.TFrame')
+        progress_frame = self.progress_frame
+        progress_frame.grid(row=2, column=0, sticky="ew", pady=(profile["content_gap"], 0))
         progress_frame.grid_columnconfigure(0, weight=1)
         self.status_label = ttk.Label(progress_frame, text="첫 번째 바코드를 스캔하세요...", style="Status.TLabel", background=self.colors["card_background"])
         self.status_label.grid(row=0, column=0, sticky="w", padx=15)
+        self.step_rail_frame = ttk.Frame(progress_frame, style="Borderless.TFrame")
+        self.step_rail_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.step_labels = []
+        for index, step_name in enumerate(self.STEP_NAMES):
+            self.step_rail_frame.grid_columnconfigure(index, weight=1, uniform="scan_steps")
+            step_label = tk.Label(
+                self.step_rail_frame,
+                text=f"{index + 1}. {step_name}",
+                font=(self.default_font_name, 11, "bold"),
+                padx=8,
+                pady=5,
+                bd=1,
+                relief="solid",
+                anchor="center",
+            )
+            step_label.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
+            self.step_labels.append(step_label)
         self.progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', length=200, mode='determinate', maximum=5, style="green.Horizontal.TProgressbar")
-        self.progress_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.progress_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.view_mode_label = ttk.Label(self.top_card, text="", style="ViewMode.TLabel", anchor="center")
+        self.view_mode_label.grid(row=3, column=0, sticky="ew", pady=(profile["content_gap"], 0))
+        self.view_mode_label.grid_remove()
         self.content_pane = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
-        self.content_pane.grid(row=1, column=0, sticky="nsew", pady=(15, 0))
-        history_card = ttk.Frame(self.content_pane, style="Card.TFrame", padding=30)
+        self.content_pane.grid(row=1, column=0, sticky="nsew", pady=(profile["content_gap"], 0))
+        history_card = ttk.Frame(self.content_pane, style="Card.TFrame", padding=profile["card_padding"])
+        self.history_card = history_card
         self.content_pane.add(history_card, weight=3)
         history_card.grid_rowconfigure(1, weight=1)
         history_card.grid_columnconfigure(0, weight=1)
         hist_header_frame = ttk.Frame(history_card, style="Borderless.TFrame")
-        hist_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 15))
+        self.hist_header_frame = hist_header_frame
+        hist_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, profile["content_gap"]))
         hist_header_frame.grid_columnconfigure(1, weight=1)
 
-        self.hist_header_label = ttk.Label(hist_header_frame, text="스캔 기록", style="Header.TLabel", background=self.colors["card_background"])
+        self._history_header_full_text = "스캔 기록"
+        self.hist_header_label = ttk.Label(hist_header_frame, text=self._history_header_full_text, style="Header.TLabel", background=self.colors["card_background"])
         self.hist_header_label.grid(row=0, column=0, sticky="w")
 
-        hist_control_frame = ttk.Frame(hist_header_frame, style="Borderless.TFrame")
+        self.hist_control_frame = ttk.Frame(hist_header_frame, style="Borderless.TFrame")
+        hist_control_frame = self.hist_control_frame
         hist_control_frame.grid(row=0, column=2, sticky="e")
 
-        today_btn = ttk.Button(hist_control_frame, text="오늘", style="Control.TButton", command=self._reload_today_history)
-        today_btn.pack(side=tk.LEFT, padx=(0, 5))
-        date_search_btn = ttk.Button(hist_control_frame, text="📅 날짜 조회", style="Control.TButton", command=self._prompt_for_date_and_reload)
-        date_search_btn.pack(side=tk.LEFT, padx=(0, 15))
+        self.today_button = ttk.Button(hist_control_frame, text="오늘", style="Control.TButton", command=self._reload_today_history)
+        self.today_button.pack(side=tk.LEFT, padx=(0, 5))
+        self.date_search_button = ttk.Button(hist_control_frame, text="날짜 조회", style="Control.TButton", command=self._prompt_for_date_and_reload)
+        self.date_search_button.pack(side=tk.LEFT, padx=(0, 15))
 
-        decrease_font_btn = ttk.Button(hist_control_frame, text="-", style="Control.TButton", command=self._decrease_tree_font)
-        decrease_font_btn.pack(side=tk.LEFT, padx=(0, 0))
-        increase_font_btn = ttk.Button(hist_control_frame, text="+", style="Control.TButton", command=self._increase_tree_font)
-        increase_font_btn.pack(side=tk.LEFT)
+        self.decrease_font_button = ttk.Button(hist_control_frame, text="-", style="Control.TButton", command=self._decrease_tree_font)
+        self.decrease_font_button.pack(side=tk.LEFT, padx=(0, 0))
+        self.increase_font_button = ttk.Button(hist_control_frame, text="+", style="Control.TButton", command=self._increase_tree_font)
+        self.increase_font_button.pack(side=tk.LEFT)
 
         tree_frame_hist = ttk.Frame(history_card, style="Card.TFrame")
         tree_frame_hist.grid(row=1, column=0, sticky='nsew')
@@ -1855,26 +3234,71 @@ class Label_Match(tk.Tk):
         tree_frame_hist.grid_columnconfigure(0, weight=1)
         hist_cols = list(self.hist_proportions.keys())
         v_scroll_hist = ttk.Scrollbar(tree_frame_hist, orient=tk.VERTICAL)
-        self.history_tree = ttk.Treeview(tree_frame_hist, columns=hist_cols, show="headings", yscrollcommand=v_scroll_hist.set, selectmode="extended")
+        h_scroll_hist = ttk.Scrollbar(tree_frame_hist, orient=tk.HORIZONTAL)
+        self.history_tree = ttk.Treeview(tree_frame_hist, columns=hist_cols, show="headings", yscrollcommand=v_scroll_hist.set, xscrollcommand=h_scroll_hist.set, selectmode="extended")
         v_scroll_hist.config(command=self.history_tree.yview)
-        col_map = {"Set": "#", "Input1": "현품표", "Input2": "입력 2", "Input3": "입력 3", "Input4": "입력 4", "Input5": "라벨지", "Result": "결과", "Timestamp": "시간"}
-        for col, name in col_map.items():
+        h_scroll_hist.config(command=self.history_tree.xview)
+        for col, labels in self.HISTORY_HEADING_LABELS.items():
+            name = labels[0]
             self.history_tree.heading(col, text=name, anchor="center", command=lambda c=col: self._treeview_sort_column(self.history_tree, c, False))
-            self.history_tree.column(col, anchor="center")
+            self.history_tree.column(col, anchor="center", minwidth=70, stretch=False)
         v_scroll_hist.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scroll_hist.pack(side=tk.BOTTOM, fill=tk.X)
         self.history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.history_tree.bind("<Configure>", self._resize_all_columns)
         self.history_tree.bind("<ButtonRelease-1>", self._on_history_tree_resize_release)
+        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_selection_changed)
+        self.history_tree.bind("<Double-1>", self._show_selected_history_detail_window)
+
+        detail_frame = ttk.Frame(history_card, style="Borderless.TFrame")
+        self.history_detail_frame = detail_frame
+        detail_frame.grid(row=2, column=0, sticky="ew", pady=(profile["content_gap"], 0))
+        detail_frame.grid_columnconfigure(0, weight=1)
+
+        detail_header_frame = ttk.Frame(detail_frame, style="Borderless.TFrame")
+        detail_header_frame.grid(row=0, column=0, sticky="ew")
+        detail_header_frame.grid_columnconfigure(1, weight=1)
+        ttk.Label(detail_header_frame, text="선택 세트 상세", style="Status.TLabel").grid(row=0, column=0, sticky="w")
+        self.history_detail_modal_button = ttk.Button(detail_header_frame, text="원문 보기", style="Control.TButton", command=self._show_selected_history_detail_window, state="disabled")
+        self.history_detail_modal_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
+        self.history_detail_copy_button = ttk.Button(detail_header_frame, text="복사", style="Control.TButton", command=self._copy_selected_history_barcodes, state="disabled")
+        self.history_detail_copy_button.grid(row=0, column=3, sticky="e", padx=(6, 0))
+
+        self.history_detail_text = tk.Text(
+            detail_frame,
+            height=4,
+            wrap="word",
+            font=("Consolas", 10),
+            bg=self.colors["card_background"],
+            fg=self.colors["text"],
+            relief="solid",
+            bd=1,
+            padx=8,
+            pady=6,
+        )
+        self.history_detail_text.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.history_detail_text.insert("1.0", "기록을 선택하면 현품표와 제품 바코드 원문이 여기에 표시됩니다.")
+        self.history_detail_text.configure(state="disabled")
 
         self.history_context_menu = tk.Menu(self, tearoff=0, font=(self.default_font_name, 14))
+        self.history_context_menu.add_command(label="바코드 원문 보기", command=self._show_selected_history_detail_window)
+        self.history_context_menu.add_command(label="바코드 원문 복사", command=self._copy_selected_history_barcodes)
+        self.history_context_menu.add_separator()
         self.history_context_menu.add_command(label="선택 항목 삭제", command=self._delete_selected_row)
         self.history_tree.bind("<Button-3>", self._show_history_context_menu)
 
-        summary_card = ttk.Frame(self.content_pane, style="Card.TFrame", padding=30)
+        summary_card = ttk.Frame(self.content_pane, style="Card.TFrame", padding=profile["card_padding"])
+        self.summary_card = summary_card
         self.content_pane.add(summary_card, weight=1)
         summary_card.grid_rowconfigure(1, weight=1)
         summary_card.grid_columnconfigure(0, weight=1)
-        ttk.Label(summary_card, text="누적 통과 코드", style="Header.TLabel").grid(row=0, column=0, sticky='w', pady=(0, 15))
+        self.summary_header_frame = ttk.Frame(summary_card, style="Borderless.TFrame")
+        self.summary_header_frame.grid(row=0, column=0, sticky='ew', pady=(0, profile["content_gap"]))
+        self.summary_header_frame.grid_columnconfigure(0, weight=1)
+        self.summary_header_label = ttk.Label(self.summary_header_frame, text="누적 통과 코드", style="Header.TLabel")
+        self.summary_header_label.grid(row=0, column=0, sticky='w')
+        self.summary_date_label = ttk.Label(self.summary_header_frame, text="날짜 -", style="SummaryDate.TLabel", anchor="center")
+        self.summary_date_label.grid(row=0, column=1, sticky='e', padx=(8, 0))
         tree_frame_sum = ttk.Frame(summary_card, style="Card.TFrame")
         tree_frame_sum.grid(row=1, column=0, sticky='nsew')
         tree_frame_sum.grid_rowconfigure(0, weight=1)
@@ -1884,33 +3308,34 @@ class Label_Match(tk.Tk):
         v_scroll_sum = ttk.Scrollbar(tree_frame_sum, orient=tk.VERTICAL)
         self.summary_tree = ttk.Treeview(tree_frame_sum, columns=summary_cols, show="headings", yscrollcommand=v_scroll_sum.set)
         v_scroll_sum.config(command=self.summary_tree.yview)
-        self.summary_tree.heading("Date", text="날짜", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Date", False))
-        self.summary_tree.heading("Code", text="코드", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Code", False))
-        self.summary_tree.heading("Phase", text="차수", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Phase", False))
-        self.summary_tree.heading("Count", text="No", anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Count", False))
+        self.summary_tree.heading("Code", text=self.SUMMARY_HEADING_LABELS["Code"][0], anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Code", False))
+        self.summary_tree.heading("Phase", text=self.SUMMARY_HEADING_LABELS["Phase"][0], anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Phase", False))
+        self.summary_tree.heading("Count", text=self.SUMMARY_HEADING_LABELS["Count"][0], anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Count", False))
         v_scroll_sum.pack(side=tk.RIGHT, fill=tk.Y)
         self.summary_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.summary_tree.column("Date", anchor="center")
-        self.summary_tree.column("Code", anchor="center")
-        self.summary_tree.column("Phase", anchor="center")
-        self.summary_tree.column("Count", anchor="center")
+        self.summary_tree.column("Code", anchor="w", minwidth=180, stretch=False)
+        self.summary_tree.column("Phase", anchor="center", minwidth=60, stretch=False)
+        self.summary_tree.column("Count", anchor="center", minwidth=70, stretch=False)
 
         self.summary_tree.bind("<Configure>", self._resize_all_columns)
         self.summary_tree.bind("<ButtonRelease-1>", self._on_summary_tree_resize_release)
 
         bottom_frame = ttk.Frame(main_frame)
-        bottom_frame.grid(row=2, column=0, sticky="ew", pady=(30, 0))
+        self.bottom_frame = bottom_frame
+        bottom_frame.grid(row=2, column=0, sticky="ew", pady=(profile["bottom_gap"], 0))
         bottom_frame.grid_columnconfigure(3, weight=1)
 
-        reset_button = ttk.Button(bottom_frame, text="현재 세트 취소 (F1)", command=lambda: self._reset_current_set(full_reset=True), style="Action.TButton", takefocus=0)
+        reset_button = ttk.Button(bottom_frame, text="현재 세트 취소 (F1)", command=lambda: self._reset_current_set(full_reset=True), style="Danger.Action.TButton")
+        self.reset_button = reset_button
         reset_button.grid(row=0, column=0, sticky="w")
         self.bind("<F1>", lambda e: self._reset_current_set(full_reset=True))
 
-        cancel_tray_button = ttk.Button(bottom_frame, text="완료된 트레이 취소 (F2)", command=self._prompt_and_cancel_completed_tray, style="Action.TButton", takefocus=0)
+        cancel_tray_button = ttk.Button(bottom_frame, text="완료된 트레이 취소 (F2)", command=self._prompt_and_cancel_completed_tray, style="Action.TButton")
+        self.cancel_tray_button = cancel_tray_button
         cancel_tray_button.grid(row=0, column=1, sticky="w", padx=(20, 0))
         self.bind("<F2>", lambda e: self._prompt_and_cancel_completed_tray())
         
-        self.manual_complete_button = ttk.Button(bottom_frame, text="현재 세트 완료 (F3)", command=self._prompt_manual_complete, style="Action.TButton", state="disabled", takefocus=0)
+        self.manual_complete_button = ttk.Button(bottom_frame, text="현재 세트 완료 (F3)", command=self._prompt_manual_complete, style="Action.TButton", state="disabled")
         self.manual_complete_button.grid(row=0, column=2, sticky="w", padx=(20, 0))
         self.bind("<F3>", lambda e: self._prompt_manual_complete())
 
@@ -1927,9 +3352,15 @@ class Label_Match(tk.Tk):
         loading_label.pack(pady=(0, 15))
         self.loading_progressbar = ttk.Progressbar(loading_content_frame, mode='indeterminate', length=400)
         self.loading_progressbar.pack(pady=15)
+        self._update_step_rail(0)
+        self._apply_responsive_layout()
 
     def _prompt_for_date_and_reload(self):
         if not self.initialized_successfully: return
+        if self._block_background_history_reload(parent=self):
+            return
+        if self._block_duplicate_history_load(parent=self):
+            return
         
         selected_date = None
         if not self.run_tests:
@@ -1949,15 +3380,22 @@ class Label_Match(tk.Tk):
         if not self.initialized_successfully: return
         self.tree_font_size = min(20, self.tree_font_size + 1)
         self._apply_tree_font_style()
+        self._resize_all_columns()
+        self._request_ui_redraw()
     def _decrease_tree_font(self):
         if not self.initialized_successfully: return
         self.tree_font_size = max(6, self.tree_font_size - 1)
         self._apply_tree_font_style()
+        self._resize_all_columns()
+        self._request_ui_redraw()
     def _apply_tree_font_style(self):
         try:
-            tree_font = (self.default_font_name, self.tree_font_size)
-            row_height_scale = self.ui_cfg.get("treeview_row_height_scale", 3.0)
-            row_height = int(self.tree_font_size * row_height_scale * 0.8)
+            profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+            display_tree_font_size = min(self.tree_font_size, profile.get("tree_font_cap", self.tree_font_size))
+            self._current_tree_body_font_size = display_tree_font_size
+            tree_font = (self.default_font_name, display_tree_font_size)
+            row_height_scale = profile.get("tree_row_height_scale", self.ui_cfg.get("treeview_row_height_scale", 3.0))
+            row_height = max(28, int(display_tree_font_size * row_height_scale * 0.8))
             self.style.configure("Treeview", font=tree_font, rowheight=row_height)
         except Exception as e:
             print(f"테이블 폰트 적용 오류: {e}")
@@ -1968,61 +3406,162 @@ class Label_Match(tk.Tk):
         return "break"
     def _zoom_in(self):
         self.scale_factor = min(3.0, self.scale_factor + 0.1)
-        self._update_ui_scaling()
+        self._request_ui_scaling()
     def _zoom_out(self):
         self.scale_factor = max(0.5, self.scale_factor - 0.1)
+        self._request_ui_scaling()
+
+    def _request_ui_scaling(self):
+        if not self.initialized_successfully:
+            return
+        pending_after_id = self.__dict__.get("_zoom_after_id")
+        if pending_after_id:
+            try:
+                self.after_cancel(pending_after_id)
+            except TclError:
+                pass
+        self._zoom_after_id = self.after(45, self._flush_pending_ui_scaling)
+
+    def _flush_pending_ui_scaling(self):
+        self._zoom_after_id = None
         self._update_ui_scaling()
+
+    def _request_ui_redraw(self, delay=50):
+        if "main_frame" not in self.__dict__:
+            return
+        pending_after_id = self.__dict__.get("_ui_redraw_after_id")
+        if pending_after_id:
+            try:
+                self.after_cancel(pending_after_id)
+            except TclError:
+                pass
+        self._ui_redraw_after_id = self.after(delay, self._force_ui_redraw)
+
+    def _force_ui_redraw(self):
+        self._ui_redraw_after_id = None
+        if "main_frame" not in self.__dict__:
+            return
+        try:
+            self.update_idletasks()
+            for widget_name in (
+                "main_frame", "top_card", "content_pane", "history_card", "summary_card",
+                "history_tree", "summary_tree", "history_detail_text", "bottom_frame",
+            ):
+                widget = self.__dict__.get(widget_name)
+                if widget is not None and widget.winfo_exists():
+                    widget.event_generate("<Expose>")
+                    widget.update_idletasks()
+            self._redraw_window_now()
+            self.update_idletasks()
+        except TclError:
+            pass
+
+    def _redraw_window_now(self):
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            hwnd = self.winfo_id()
+            flags = 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400
+            ctypes.windll.user32.RedrawWindow(hwnd, None, None, flags)
+        except Exception:
+            pass
+
     def _update_ui_scaling(self):
         if not self.initialized_successfully: return
-        font_size = int(self.base_font_size * self.scale_factor)
+        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+        effective_scale_max = profile.get("effective_scale_max", 2.4)
+        effective_scale = max(0.5, min(effective_scale_max, self.scale_factor * profile.get("font_scale", 1.0)))
+        font_size = max(10, int(self.base_font_size * effective_scale))
         header_scale = self.ui_cfg.get("header_font_scale", 1.5)
         status_scale = self.ui_cfg.get("status_font_scale", 1.2)
         big_display_scale = self.ui_cfg.get("big_display_font_scale", 4.5)
+        header_size = min(int(font_size * header_scale), profile.get("header_font_cap", int(font_size * header_scale)))
+        status_size = min(int(font_size * status_scale), profile.get("status_font_cap", int(font_size * status_scale)))
+        button_size = min(font_size, profile.get("button_font_cap", font_size))
+        control_size = min(max(10, int(font_size * 0.9)), profile.get("control_font_cap", max(10, int(font_size * 0.9))))
+        action_size = min(max(11, int(font_size * profile["action_font_scale"])), profile.get("action_font_cap", max(11, int(font_size * profile["action_font_scale"]))))
+        tree_heading_size = min(int(font_size * 1.2), profile.get("tree_heading_font_cap", int(font_size * 1.2)))
         default_font = (self.default_font_name, font_size)
-        bold_font = (self.default_font_name, font_size, "bold")
-        header_font = (self.default_font_name, int(font_size * header_scale), "bold")
-        status_font = (self.default_font_name, int(font_size * status_scale))
-        status_bold_font = (self.default_font_name, int(font_size * status_scale), "bold")
+        bold_font = (self.default_font_name, button_size, "bold")
+        header_font = (self.default_font_name, header_size, "bold")
+        status_font = (self.default_font_name, status_size)
+        status_bold_font = (self.default_font_name, status_size, "bold")
         save_status_font = (self.default_font_name, int(font_size * 1.0), "bold")
-        tree_heading_font = (self.default_font_name, int(font_size * 1.2), "bold")
-        big_display_font = (self.default_font_name, min(int(font_size * big_display_scale), 80), "bold")
+        tree_heading_font = (self.default_font_name, tree_heading_size, "bold")
+        big_display_font = (self.default_font_name, min(int(font_size * big_display_scale), profile["big_display_cap"]), "bold")
         clock_font = ("Consolas", int(font_size * 1.0))
+        self._current_font_size = font_size
+        self._current_header_font_size = header_font[1]
+        self._current_tree_heading_font_size = tree_heading_font[1]
         self.style.configure("TLabel", font=default_font)
         self.style.configure("Header.TLabel", font=header_font)
         self.entry.configure(font=default_font)
         self.style.configure("Treeview.Heading", font=tree_heading_font)
-        self.style.configure("TButton", font=bold_font)
+        self.style.configure("TButton", font=bold_font, padding=profile["button_padding"])
         self.style.configure("Status.TLabel", font=status_font)
+        self.style.configure("SummaryDate.TLabel", font=(self.default_font_name, max(10, min(control_size, 14)), "bold"), padding=(8, 4))
         self.style.configure("Success.TLabel", font=status_bold_font)
         self.style.configure("Error.TLabel", font=status_bold_font)
+        self.style.configure("ViewMode.TLabel", font=status_bold_font)
         self.style.configure("Save.Success.TLabel", font=save_status_font)
-        self.style.configure("Control.TButton", font=(self.default_font_name, int(font_size * 0.9), "bold"))
+        self.style.configure("Control.TButton", font=(self.default_font_name, control_size, "bold"), padding=profile["control_padding"])
+        action_font = (self.default_font_name, action_size, "bold")
+        self.style.configure("Action.TButton", font=action_font, padding=profile["action_padding"])
+        self.style.configure("Danger.Action.TButton", font=action_font, padding=profile["action_padding"])
         self.big_display_label.config(font=big_display_font)
         self.clock_label.config(font=clock_font)
+        if "step_labels" in self.__dict__:
+            step_font = (self.default_font_name, min(max(10, int(font_size * 0.82)), profile.get("control_font_cap", max(10, int(font_size * 0.82))) + 2), "bold")
+            for label in self.step_labels:
+                label.configure(font=step_font)
+        if "history_detail_text" in self.__dict__:
+            detail_font = ("Consolas", max(9, min(int(font_size * 0.82), 13)))
+            self.history_detail_text.configure(font=detail_font, height=profile["detail_text_height"])
         self._apply_tree_font_style()
         self._resize_all_columns()
-        if self.sash_position is not None:
-            try:
-                self.after(50, lambda: self.content_pane.sashpos(0, self.sash_position))
-            except TclError as e:
-                print(f"Sash 위치 적용 중 오류 발생 (무시 가능): {e}")
+        self._apply_responsive_layout()
+        self._request_ui_redraw()
     def _resize_all_columns(self, event=None):
         if not self.initialized_successfully: return
         padding = self.ui_cfg.get("column_padding", 20)
+        profile_name = self.__dict__.get("ui_profile_name", "standard")
+        is_small_profile = profile_name == "small"
+        is_dense_profile = profile_name in {"small", "compact"}
+        hist_min_widths = {
+            "Set": 44 if is_small_profile else 52,
+            "Input1": 158 if is_small_profile else 172 if is_dense_profile else 190,
+            "Input2": 116 if is_small_profile else 135 if is_dense_profile else 170,
+            "Input3": 116 if is_small_profile else 135 if is_dense_profile else 170,
+            "Input4": 116 if is_small_profile else 135 if is_dense_profile else 170,
+            "Input5": 116 if is_small_profile else 135 if is_dense_profile else 170,
+            "Result": 72 if is_small_profile else 86,
+            "Timestamp": 90 if is_small_profile else 100,
+        }
+        summary_min_widths = {"Code": 190 if is_small_profile else 220, "Phase": 64, "Count": 76}
         try:
             hist_width = self.history_tree.winfo_width() - padding
             if hist_width > 1:
                 total_prop = sum(self.hist_proportions.values())
                 for col, prop in self.hist_proportions.items():
-                    width = int(hist_width * (prop / total_prop))
-                    self.history_tree.column(col, width=width)
+                    width = max(hist_min_widths.get(col, 80), int(hist_width * (prop / total_prop)))
+                    self.history_tree.column(col, width=width, minwidth=hist_min_widths.get(col, 80), stretch=False)
 
             summary_width = self.summary_tree.winfo_width() - padding
             if summary_width > 1:
                 total_prop = sum(self.summary_proportions.values())
-                for col, prop in self.summary_proportions.items():
-                    width = int(summary_width * (prop / total_prop))
-                    self.summary_tree.column(col, width=width)
+                if sum(summary_min_widths.values()) > summary_width:
+                    summary_widths = self._scaled_widths_to_total(summary_min_widths, summary_width, floor=42)
+                else:
+                    summary_widths = {
+                        col: max(summary_min_widths.get(col, 70), int(summary_width * (prop / total_prop)))
+                        for col, prop in self.summary_proportions.items()
+                    }
+                for col, width in summary_widths.items():
+                    self.summary_tree.column(col, width=width, minwidth=max(24, min(width, summary_min_widths.get(col, 70))), stretch=False)
+            self._refresh_history_tree_display_values()
+            self._refresh_summary_tree_display_values()
+            self._apply_adaptive_header_fitting()
         except (TclError, KeyError):
             pass
     def _on_summary_tree_resize_release(self, event):
@@ -2050,9 +3589,11 @@ class Label_Match(tk.Tk):
             pass
 
     def _update_clock(self):
+        if not self.winfo_exists():
+            return
         if self.initialized_successfully:
             self.clock_label.config(text=time.strftime('%Y-%m-%d %H:%M:%S'))
-        self.after(1000, self._update_clock)
+        self._clock_after_id = self.after(1000, self._update_clock)
     def update_big_display(self, text, color=""):
         fg_color = self.colors.get("text_strong", "#000000")
         if color == "red": fg_color = self.colors.get("danger", "#E57370")
@@ -2072,40 +3613,130 @@ class Label_Match(tk.Tk):
                 print(f"경고: 사운드 키 '{sound_key}'가 존재하지만, 로드되지 않았습니다. 파일 경로를 확인하세요.")
 
     def _update_summary_tree(self):
+        self._render_summary_tree(self.scan_count)
+
+    def _render_summary_tree(self, scan_count):
         if not self.initialized_successfully: return
         self.summary_tree.delete(*self.summary_tree.get_children())
-        for date_str in sorted(self.scan_count.keys(), reverse=True):
+        self.summary_row_raw_values = {}
+        self._set_summary_date_label(scan_count)
+        summary_counts = defaultdict(int)
+        for date_str, items in (scan_count or {}).items():
             try:
-                month_day = datetime.strptime(date_str, '%Y-%m-%d').strftime('%m/%d')
-                sorted_items = sorted(self.scan_count[date_str].items(), key=lambda item: item[1], reverse=True)
-                for (code, phase), count in sorted_items:
-                    if count > 0:
-                        self.summary_tree.insert("", "end", values=(month_day, code, phase, count))
+                datetime.strptime(str(date_str), '%Y-%m-%d')
             except (ValueError, TypeError) as e:
                 print(f"요약 트리 업데이트 중 날짜 형식 오류: {date_str}, 오류: {e}")
+                continue
+            for (code, phase), count in (items or {}).items():
+                if count > 0:
+                    summary_counts[(code, phase or "-")] += count
+        sorted_items = sorted(summary_counts.items(), key=lambda item: (-item[1], str(item[0][0]), str(item[0][1])))
+        date_text = self._summary_date_text(scan_count)
+        for (code, phase), count in sorted_items:
+            item_id = self.summary_tree.insert("", "end", values=(self._format_summary_code_cell(code), phase, count))
+            self.summary_row_raw_values[item_id] = (date_text, code, phase, count)
 
+
+    def _next_action_text(self, num_scans=None):
+        if not getattr(self, "history_view_updates_active_state", True):
+            return "과거 기록 조회 중"
+        current = getattr(self, "current_set_info", {}) or {}
+        if num_scans is None:
+            num_scans = len(current.get('parsed', []))
+        if num_scans <= 0:
+            return "1/5 현품표 스캔"
+        if num_scans == 1:
+            return "2/5 제품 1 스캔"
+        if num_scans == 2:
+            return "3/5 제품 2 스캔"
+        if num_scans == 3:
+            return "4/5 제품 3 스캔"
+        if num_scans == 4:
+            return "5/5 라벨지 스캔"
+        return "통과 완료"
+
+    def _manual_complete_hint(self):
+        reason = _label_match_manual_complete_block_reason(getattr(self, "current_set_info", {}))
+        return self.MANUAL_COMPLETE_HINTS.get(reason, "F3 소량 완료 가능")
+
+    def _update_step_rail(self, num_scans=None, error=False):
+        if "step_labels" not in self.__dict__:
+            return
+        current = getattr(self, "current_set_info", {}) or {}
+        if num_scans is None:
+            num_scans = len(current.get('parsed', []))
+        if not getattr(self, "history_view_updates_active_state", True):
+            num_scans = 0
+            error = False
+        for index, label in enumerate(self.step_labels):
+            if error and index == min(num_scans, len(self.step_labels) - 1):
+                bg, fg, relief = self.colors["danger"], "white", "solid"
+            elif index < num_scans:
+                bg, fg, relief = self.colors["success_light"], self.colors["success"], "solid"
+            elif index == num_scans:
+                bg, fg, relief = self.colors["primary"], "white", "solid"
+            else:
+                bg, fg, relief = self.colors["background"], self.colors["text_subtle"], "solid"
+            label.configure(background=bg, foreground=fg, relief=relief, highlightthickness=0)
+
+    def _apply_history_view_mode(self):
+        if "entry" not in self.__dict__:
+            return
+        if self.history_view_updates_active_state:
+            if self.initialized_successfully:
+                self.entry.config(state='normal')
+            self.view_mode_label.grid_remove()
+            current = getattr(self, "current_set_info", {}) or {}
+            if not current.get("id") and not current.get("parsed"):
+                self.update_big_display(self._next_action_text(0), "")
+            self._update_status_label()
+            return
+        self.entry.config(state='disabled')
+        message = "과거 기록 조회 중 - 스캔 입력 비활성. 오늘 버튼으로 복귀하세요."
+        self.view_mode_label.config(text=message)
+        self.view_mode_label.grid()
+        self.update_big_display("과거 기록 조회 중", "primary")
+        self.status_label.config(text=message, style="Error.TLabel")
+        self._update_step_rail(0)
+
+    def _show_idle_instruction_if_idle(self):
+        current = getattr(self, "current_set_info", {}) or {}
+        if current.get("id") or current.get("parsed"):
+            return
+        if not getattr(self, "history_view_updates_active_state", True):
+            return
+        if "big_display_label" in self.__dict__:
+            self.update_big_display("1/5 현품표 스캔", "")
+            self._update_status_label()
 
     def _update_status_label(self):
         if not self.initialized_successfully: return
+        if not getattr(self, "history_view_updates_active_state", True):
+            self._apply_history_view_mode()
+            return
         num_scans = len(self.current_set_info['parsed'])
-        status_text = ""
-        if num_scans == 0:
-            status_text = "1/5: 현품표를 스캔하세요."
-        elif num_scans < 4:
-            status_text = f"{num_scans + 1}/5: 다음 제품을 스캔하세요."
-        elif num_scans == 4:
-            status_text = "5/5: 마지막 라벨지를 스캔하세요."
+        status_text = self._next_action_text(num_scans)
+        if num_scans:
+            last_scan = self._truncate_string(str(self.current_set_info['parsed'][-1]), 28)
+            status_text += f" | 최근 스캔: {last_scan}"
         if self.current_set_info.get('has_error_or_reset'):
             status_text += " (오류 발생)"
+        status_text += f" | F3: {self._manual_complete_hint()}"
         self.status_label.config(text=status_text, style="Status.TLabel")
-        
-        if 1 <= num_scans < 5:
-            self.manual_complete_button.config(state="normal")
+        self._update_step_rail(num_scans, error=self.current_set_info.get('has_error_or_reset', False))
+        self._update_manual_complete_button_state()
+
+    def _update_manual_complete_button_state(self):
+        if not self.initialized_successfully: return
+        if not getattr(self, "history_view_updates_active_state", True):
+            state = "disabled"
         else:
-            self.manual_complete_button.config(state="disabled")
+            state = "normal" if _label_match_manual_complete_allowed(self.current_set_info) else "disabled"
+        self.manual_complete_button.config(state=state)
 
     def _update_history_tree_in_progress(self):
         if not self.initialized_successfully: return
+        if not self.history_view_updates_active_state: return
         num_scans = len(self.current_set_info['parsed'])
         if num_scans == 0: return
         set_id = str(self.current_set_info['id'])
@@ -2121,19 +3752,23 @@ class Label_Match(tk.Tk):
             self.Results.IN_PROGRESS,
             timestamp
         )
+        self.__dict__.setdefault("history_row_details_map", {})[set_id] = self._details_for_current_set()
+        display_values = self._history_values_for_display(values)
         if self.history_tree.exists(set_id):
             try:
                 current_display_id = self.history_tree.item(set_id, 'values')[0]
-                values = (current_display_id, *values[1:])
+                display_values = (current_display_id, *display_values[1:])
             except IndexError:
                 valid_rows = [item for item in self.history_tree.get_children() if item != 'loading']
-                values = (len(valid_rows) + 1, *values[1:])
-            self.history_tree.item(set_id, values=values, tags=("in_progress",))
+                display_values = (len(valid_rows) + 1, *display_values[1:])
+            self.history_tree.item(set_id, values=display_values, tags=("in_progress",))
         else:
             valid_rows = [item for item in self.history_tree.get_children() if item != 'loading']
             display_id = len(valid_rows) + 1
-            values = (display_id, *values[1:])
-            self.history_tree.insert("", 0, values=values, iid=set_id, tags=("in_progress",))
+            display_values = (display_id, *display_values[1:])
+            self.history_tree.insert("", 0, values=display_values, iid=set_id, tags=("in_progress",))
+        if set_id in self.history_tree.selection():
+            self._render_history_detail(set_id)
         self.history_tree.yview_moveto(0)
     def _blink_background_loop(self):
         if not hasattr(self, 'top_card') or not self.top_card.winfo_exists(): return
