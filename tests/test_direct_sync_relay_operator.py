@@ -2,6 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+import direct_sync_operator as direct_sync_operator_module
 from direct_sync_operator import operator_status, retry_dead_relay_batch
 from direct_sync_push import (
     RELAY_STATUS_ACKED,
@@ -37,6 +38,18 @@ def test_operator_status_pause_and_resume_write_redacted_evidence(tmp_path):
     audit_bytes = audit_log_path.read_bytes()
     assert b"runtime-secret" not in audit_bytes
     assert b"X-Producer-Signature" not in audit_bytes
+
+
+def test_operator_relay_db_connection_uses_busy_timeout(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+
+    conn = direct_sync_operator_module._connect_relay_db(config.db_path)
+    try:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] >= direct_sync_operator_module.SQLITE_BUSY_TIMEOUT_MS
+    finally:
+        conn.close()
 
 
 def test_operator_retry_dead_only_allows_failed_permanent_rows(tmp_path):
@@ -107,6 +120,8 @@ def test_operator_retry_dead_blocks_operator_review_rows(tmp_path):
                     "client_batch_id": relay_id,
                     "committed": True,
                     "status": "accepted",
+                    "retryable": False,
+                    "next_retry_after": None,
                     "totals": {"inserted": 0, "replayed": 0, "quarantined": 1, "errors": 0},
                 },
             )

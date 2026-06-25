@@ -33,6 +33,25 @@ def test_new_format_label_requires_non_empty_required_fields():
     assert parse(None, "CLC=AAA2270730100|SPC=Product") is None
 
 
+def test_data_manager_escapes_worker_name_formula_cells(tmp_path):
+    module = load_label_match_module()
+    manager = module.DataManager(
+        str(tmp_path),
+        "포장실",
+        '=HYPERLINK("http://invalid")',
+        "LABEL-PC01",
+    )
+
+    manager.log_event(module.Label_Match.Events.APP_START, {"message": "formula probe"})
+    manager.close(timeout=5)
+
+    [csv_path] = list(tmp_path.glob("포장실작업이벤트로그_LABEL-PC01_*.csv"))
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["worker_name"] == '\'=HYPERLINK("http://invalid")'
+    assert row["event"] == module.Label_Match.Events.APP_START
+
+
 def test_extract_production_date_accepts_real_dates_only():
     module = load_label_match_module()
     extract = module.Label_Match._extract_production_date
@@ -140,6 +159,84 @@ def test_manual_complete_policy_requires_clean_partial_product_scan():
     assert reason({"raw": ["MASTER", "PRODUCT_1"], "error_count": 1}) == "manual_complete_blocked_after_error"
 
 
+def test_prompt_manual_complete_blocks_while_viewing_past_history(monkeypatch):
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.initialized_successfully = True
+    app.history_active_load_pending = False
+    app.history_view_updates_active_state = False
+    app.run_tests = False
+    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"], "error_count": 0, "has_error_or_reset": False}
+    app.status_label = _FakeLabel()
+    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("manual complete should not finalize")
+    )
+    warnings = []
+    monkeypatch.setattr(module.messagebox, "showwarning", lambda *args, **kwargs: warnings.append((args, kwargs)))
+
+    module.Label_Match._prompt_manual_complete(app)
+
+    assert warnings
+    assert "과거 기록 조회 중" in warnings[0][0][1]
+
+
+def test_prompt_manual_complete_blocks_while_today_history_load_is_pending():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.initialized_successfully = True
+    app.history_active_load_pending = True
+    app.history_view_updates_active_state = True
+    app.run_tests = True
+    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"], "error_count": 0, "has_error_or_reset": False}
+    app.status_label = _FakeLabel()
+    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("manual complete should not finalize")
+    )
+
+    module.Label_Match._prompt_manual_complete(app)
+
+    assert "오늘 기록을 불러오는 중" in app.status_label.kwargs["text"]
+
+
+def test_prompt_manual_complete_calls_finalize_for_clean_partial_set():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.initialized_successfully = True
+    app.history_active_load_pending = False
+    app.history_view_updates_active_state = True
+    app.run_tests = True
+    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"], "error_count": 0, "has_error_or_reset": False}
+    calls = []
+    app._finalize_set = lambda *args, **kwargs: calls.append((args, kwargs))
+    app._update_manual_complete_button_state = lambda: (_ for _ in ()).throw(
+        AssertionError("button state should not update for allowed manual completion")
+    )
+
+    module.Label_Match._prompt_manual_complete(app)
+
+    assert calls == [((module.Label_Match.Results.PASS,), {"is_manual_complete": True})]
+
+
+def test_prompt_manual_complete_rejects_unscanned_or_full_sets_without_finalizing():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.initialized_successfully = True
+    app.history_active_load_pending = False
+    app.history_view_updates_active_state = True
+    app.run_tests = True
+    app.current_set_info = {"raw": ["MASTER"], "error_count": 0, "has_error_or_reset": False}
+    updates = []
+    app._update_manual_complete_button_state = lambda: updates.append("updated")
+    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("blocked manual complete should not finalize")
+    )
+
+    module.Label_Match._prompt_manual_complete(app)
+
+    assert updates == ["updated"]
+
+
 def test_history_display_keeps_master_label_full_text_when_narrow():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
@@ -210,6 +307,58 @@ def test_partial_manual_pass_updates_duplicates_without_summary_count():
     assert details["final_result"] == "통과"
     assert details["production_date"] is None
     assert details["set_id"] in app.set_details_map
+
+
+def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
+    module = load_label_match_module()
+
+    class FlushFailingDataManager:
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event_type, details):
+            self.events.append((event_type, details))
+
+        def flush(self, timeout=None):
+            raise RuntimeError("flush failed")
+
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.current_set_info = {
+        "id": "durable-set",
+        "raw": ["MASTER", "PRODUCT-1", "PRODUCT-2", "PRODUCT-3", "FINAL\x1D6D20260622"],
+        "parsed": ["MASTER"] * 5,
+        "start_time": datetime(2026, 6, 22, 10, 0, 0),
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": "A",
+        "item_name_override": None,
+        "production_date": "2026-06-22",
+    }
+    app.items_data = {"MASTER": {"Item Name": "Product", "Spec": "Spec"}}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = set()
+    app.set_details_map = {}
+    app.history_row_details_map = {}
+    app.data_manager = FlushFailingDataManager()
+    app.history_tree = _FailingHistoryTree()
+    app.save_status_label = _FakeLabel()
+    app.is_running_simulation = True
+    app.initialized_successfully = True
+    app.run_tests = True
+    app._play_sound = lambda sound_key: None
+    app._update_summary_tree = lambda: (_ for _ in ()).throw(AssertionError("summary should not update"))
+    app._reset_current_set = lambda **kwargs: (_ for _ in ()).throw(AssertionError("current set should not reset"))
+    app.after = lambda delay, callback: None
+
+    with pytest.raises(RuntimeError, match="flush failed"):
+        module.Label_Match._finalize_set(app, app.Results.PASS)
+
+    assert app.data_manager.events[0][0] == module.Label_Match.Events.TRAY_COMPLETE
+    assert app.scan_count == {}
+    assert app.set_details_map == {}
+    assert app.global_scanned_set == set()
+    assert app.history_row_details_map == {}
 
 
 def test_legacy_pass_normalizes_missing_phase_to_dash():
@@ -345,6 +494,37 @@ def test_data_manager_close_flushes_queue_using_event_timestamp_date(tmp_path):
     assert manager.log_thread.is_alive() is False
 
 
+def test_default_save_path_uses_programdata_durable_root(monkeypatch, tmp_path):
+    module = load_label_match_module()
+    program_data = tmp_path / "ProgramData"
+    monkeypatch.setenv("ProgramData", str(program_data))
+    monkeypatch.delenv(module.LABEL_MATCH_SAVE_DIR_ENV, raising=False)
+    app = object.__new__(module.Label_Match)
+    app.app_settings = {"custom_save_path": ""}
+
+    assert module.Label_Match._resolve_configured_save_path(app) == str(
+        program_data / "KMTech" / "Label_Match" / "data"
+    )
+
+
+def test_configured_save_path_overrides_programdata_default(tmp_path):
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.app_settings = {"custom_save_path": str(tmp_path / "configured")}
+
+    assert module.Label_Match._resolve_configured_save_path(app) == str(tmp_path / "configured")
+
+
+def test_save_path_env_override_applies_when_setting_is_empty(monkeypatch, tmp_path):
+    module = load_label_match_module()
+    override = tmp_path / "env-save-root"
+    monkeypatch.setenv(module.LABEL_MATCH_SAVE_DIR_ENV, str(override))
+    app = object.__new__(module.Label_Match)
+    app.app_settings = {"custom_save_path": ""}
+
+    assert module.Label_Match._resolve_configured_save_path(app) == str(override)
+
+
 def test_data_manager_close_timeout_raises_when_writer_does_not_stop():
     module = load_label_match_module()
 
@@ -383,6 +563,45 @@ def test_data_manager_close_raises_writer_error(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="forced write failure"):
         manager.close(timeout=5.0)
+
+
+def test_data_manager_flush_raises_writer_error_before_close(tmp_path, monkeypatch):
+    module = load_label_match_module()
+
+    def failing_open(*args, **kwargs):
+        raise OSError("forced write failure")
+
+    monkeypatch.setattr(module, "open", failing_open, raising=False)
+    manager = module.DataManager(str(tmp_path), "포장실", "worker-a", "PC01")
+    manager.log_event("TEST_EVENT", {"value": 1})
+
+    with pytest.raises(RuntimeError, match="forced write failure"):
+        manager.flush(timeout=5.0)
+
+    with pytest.raises(RuntimeError, match="forced write failure"):
+        manager.close(timeout=5.0)
+
+
+def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    state_path = tmp_path / module.Label_Match.FILES.CURRENT_STATE
+    state_path.write_text('{"worker_name": "old-worker", "current_set_info": {"raw": ["OLD"]}}', encoding="utf-8")
+
+    manager = object.__new__(module.DataManager)
+    manager.save_directory = str(tmp_path)
+    manager.worker_name = "worker-a"
+
+    def failing_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(module.os, "replace", failing_replace)
+
+    module.DataManager.save_current_state(manager, {"current_set_info": {"raw": ["NEW"]}})
+
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["worker_name"] == "old-worker"
+    assert saved["current_set_info"]["raw"] == ["OLD"]
+    assert list(tmp_path.glob(f"{module.Label_Match.FILES.CURRENT_STATE}.tmp-*")) == []
 
 
 def test_on_closing_replaces_closed_data_manager_after_close_failure(monkeypatch):
@@ -850,6 +1069,130 @@ def test_history_rebuild_uses_final_result_for_display_counts_and_pass_map(tmp_p
     assert "Q0xDPUlURU0xfFNQQz1Qcm9kdWN0fFBIUz1B" in result["global_scanned_set"]
     assert "PRODUCT_ITEM2_1" not in result["global_scanned_set"]
     assert "PRODUCT_ITEM3_1" not in result["global_scanned_set"]
+
+
+def test_history_reload_sorts_completed_rows_without_end_time(tmp_path):
+    module = load_label_match_module()
+    log_path = tmp_path / "events.csv"
+    first = _completed_details(
+        set_id="missing-end-one",
+        master_code="ITEM1",
+        end_time="2026-06-22T10:01:00",
+        raw_scans=["ITEM1", "PRODUCT_ITEM1_1"],
+    )
+    second = _completed_details(
+        set_id="missing-end-two",
+        master_code="ITEM2",
+        end_time="2026-06-22T10:02:00",
+        raw_scans=["ITEM2", "PRODUCT_ITEM2_1"],
+    )
+    first.pop("end_time", None)
+    second.pop("end_time", None)
+
+    with log_path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=["timestamp", "worker_name", "event", "details"])
+        writer.writeheader()
+        writer.writerow(_event_row(module, "2026-06-22T10:01:00", first))
+        writer.writerow(_event_row(module, "2026-06-22T10:02:00", second))
+
+    result_queue = queue.Queue()
+    app = object.__new__(module.Label_Match)
+    app.data_manager = _FakeDataManager(log_path)
+
+    module.Label_Match._async_load_history_task(app, result_queue)
+    result = result_queue.get_nowait()
+
+    assert "error" not in result
+    assert [set_id for set_id, _data in result["sorted_sets"]] == [
+        "missing-end-one",
+        "missing-end-two",
+    ]
+
+
+def test_history_reload_filters_deleted_cancelled_and_keeps_injection_payload_as_plain_data(tmp_path):
+    module = load_label_match_module()
+    malicious_item = '<script>alert("pc")</script>"; DROP TABLE local_history; --'
+    malicious_product = 'PRODUCT-INJECT-1"; DROP TABLE current_state; --'
+    active_details = {
+        "set_id": 'set-injection"; DROP TABLE set_details_map; --',
+        "item_code": malicious_item,
+        "master_label_code": malicious_item,
+        "production_date": "2026-06-22",
+        "phase": "A",
+        "has_error_or_reset": False,
+        "final_result": "통과",
+        "end_time": "2026-06-22T10:03:00",
+        "scanned_product_barcodes": [
+            malicious_item,
+            malicious_product,
+            '<img src=x onerror=alert("barcode")>',
+        ],
+        "parsed_product_barcodes": [
+            malicious_item,
+            malicious_item,
+            malicious_item,
+        ],
+    }
+    deleted_details = _completed_details(
+        set_id="deleted-set",
+        master_code="DELETED",
+        end_time="2026-06-22T10:01:00",
+        raw_scans=["DELETED", "DELETED-PRODUCT"],
+    )
+    cancelled_details = _completed_details(
+        set_id="cancelled-set",
+        master_code="CANCELLED",
+        end_time="2026-06-22T10:02:00",
+        raw_scans=["CANCELLED", "CANCELLED-PRODUCT"],
+    )
+    log_path = tmp_path / "events.csv"
+    with log_path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=["timestamp", "worker_name", "event", "details"])
+        writer.writeheader()
+        writer.writerow(_event_row(module, "2026-06-22T10:01:00", deleted_details))
+        writer.writerow({
+            "timestamp": "2026-06-22T10:01:30",
+            "worker_name": "tester",
+            "event": module.Label_Match.Events.SET_DELETED,
+            "details": json.dumps({"set_id": "deleted-set"}, ensure_ascii=False),
+        })
+        writer.writerow(_event_row(module, "2026-06-22T10:02:00", cancelled_details))
+        writer.writerow({
+            "timestamp": "2026-06-22T10:02:30",
+            "worker_name": "tester",
+            "event": module.Label_Match.Events.TRAY_COMPLETION_CANCELLED,
+            "details": json.dumps({"cancelled_set_id": "cancelled-set"}, ensure_ascii=False),
+        })
+        writer.writerow(_event_row(module, "2026-06-22T10:03:00", active_details))
+
+    result_queue = queue.Queue()
+    app = object.__new__(module.Label_Match)
+    app.data_manager = _FakeDataManager(log_path)
+
+    module.Label_Match._async_load_history_task(
+        app,
+        result_queue,
+        target_date=datetime(2026, 6, 22),
+        updates_active_state=False,
+        load_generation=3,
+    )
+    result = result_queue.get_nowait()
+
+    assert result["updates_active_state"] is False
+    assert [set_id for set_id, _data in result["sorted_sets"]] == [active_details["set_id"]]
+    assert result["scan_count"]["2026-06-22"][(malicious_item, "A")] == 1
+    assert malicious_product in result["global_scanned_set"]
+    assert "DELETED-PRODUCT" not in result["global_scanned_set"]
+    assert "CANCELLED-PRODUCT" not in result["global_scanned_set"]
+
+    app.Results = module.Label_Match.Results
+    app.ui_profile_name = "standard"
+    detail_text = module.Label_Match._barcode_detail_text(app, result["set_details_map"][active_details["set_id"]])
+    inline_text = module.Label_Match._barcode_inline_detail_text(app, result["set_details_map"][active_details["set_id"]])
+    assert malicious_item in detail_text
+    assert malicious_product in detail_text
+    assert "<script" in detail_text
+    assert "DROP TABLE" in inline_text
 
 
 def test_view_only_history_load_does_not_replace_live_scan_state():

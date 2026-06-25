@@ -5,6 +5,17 @@ import sys
 from pathlib import Path
 
 
+def _assert_endpoint_transport_report(report):
+    endpoint = report["endpoint_transport_report"]
+    assert endpoint["status"] == "PASS"
+    assert endpoint["endpoint_scheme"] == "https"
+    assert endpoint["endpoint_path"] == "/api/producer-ingest/v1/source-file"
+    assert len(endpoint["endpoint_url_sha256"]) == 64
+    assert len(endpoint["endpoint_host_sha256"]) == 64
+    assert endpoint["query_or_fragment_present"] is False
+    assert endpoint["userinfo_present"] is False
+
+
 def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked(tmp_path):
     report_path = tmp_path / "reports" / "phase-g-label-match-runtime.json"
     completed = subprocess.run(
@@ -63,6 +74,7 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     runtime_artifact = json.loads(runtime_artifact_path.read_text(encoding="utf-8-sig"))
     assert runtime_artifact["evidence"] == "label_match_runtime_relay_report"
     assert runtime_artifact["status"] == "BLOCKED"
+    _assert_endpoint_transport_report(runtime_artifact["credential_secret_ref_report"])
     assert runtime_report["artifact_status"] == "BLOCKED"
     assert runtime_report["status_json_artifact_ref"] == str(status_artifact_path)
     assert runtime_report["redacted_log_artifact_ref"] == str(log_artifact_path)
@@ -81,6 +93,7 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert runtime_report["runtime_path_boundary_report"]["status"] == "PASS"
     assert runtime_report["source_scan_admission_report"]["status"] == "PASS"
     assert runtime_report["credential_secret_ref_report"]["status"] == "PASS"
+    _assert_endpoint_transport_report(runtime_report["credential_secret_ref_report"])
     assert runtime_report["secret_scan_report"]["status"] == "PASS"
     assert runtime_report["secret_scan_report"]["runner_artifacts_redacted"] is True
     assert runtime_report["secret_scan_report"]["credential_secret_material_field_present"] is True
@@ -113,6 +126,7 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["credential_secret_ref_report"]["secret_material_field_present"] is False
     assert report["credential_secret_ref_report"]["secret_material_value_in_file"] is False
     assert report["credential_secret_ref_report"]["production_readback_status"] == "BLOCKED"
+    _assert_endpoint_transport_report(report["credential_secret_ref_report"])
     assert report["stale_lease_recovery_report"]["status"] == "PASS"
     assert report["process_kill_recovery_report"]["status"] == "PASS"
     assert report["process_kill_recovery_report"]["claim_process_exit_code"] == 17

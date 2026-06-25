@@ -17,6 +17,7 @@ PAUSE_SCHEMA_VERSION = "direct-sync-relay-operator-pause-v1"
 AUDIT_SCHEMA_VERSION = "direct-sync-relay-operator-audit-v1"
 OPERATOR_TOOL_VERSION = "label-match-local-operator-v1"
 RETRYABLE_DEAD_STATUSES = frozenset({RELAY_STATUS_FAILED_PERMANENT})
+SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
@@ -39,6 +40,18 @@ def _append_jsonl(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> N
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _connect_relay_db(db_path: str | os.PathLike[str], *, read_only: bool = False) -> sqlite3.Connection:
+    path = Path(db_path)
+    if read_only:
+        uri = f"file:{path.resolve().as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
+    else:
+        conn = sqlite3.connect(str(path), timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    return conn
 
 
 def _require_text(value: str, *, field_name: str, max_length: int = 512) -> str:
@@ -167,10 +180,8 @@ def read_relay_queue_status_read_only(db_path: str | os.PathLike[str]) -> dict[s
     path = Path(db_path)
     if not path.is_file():
         return {"status": "not_initialized", "counts": {}, "oldest_active_created_at": ""}
-    uri = f"file:{path.resolve().as_posix()}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = _connect_relay_db(path, read_only=True)
     except sqlite3.Error as exc:
         return {"status": "blocked", "counts": {}, "oldest_active_created_at": "", "error_code": "relay_db_open_failed", "error_message": str(exc)}
     try:
@@ -221,8 +232,7 @@ def retry_dead_relay_batch(
         _append_operator_audit(audit_log_path, action="retry-dead-blocked", report=report)
         return report
     now = utc_now_text()
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_relay_db(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(

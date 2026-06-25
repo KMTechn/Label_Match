@@ -1,9 +1,22 @@
+import argparse
+import importlib.util
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
+
+
+def load_install_pack_module():
+    module_path = Path(__file__).resolve().parents[1] / "tools" / "direct_sync_relay_install_pack.py"
+    spec = importlib.util.spec_from_file_location("direct_sync_relay_install_pack_for_tests", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def make_manifest_and_credential(tmp_path):
+    os.environ["INSTALL_PACK_SECRET"] = "install-pack-secret"
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -13,7 +26,13 @@ def make_manifest_and_credential(tmp_path):
                     "source_host_id": "install-pack-host",
                     "producer_install_id": "install-pack-producer",
                 },
-                "streams": [],
+                "streams": [
+                    {
+                        "stream_name": "label_match_events",
+                        "source_system": "label_match",
+                        "source_transport": "legacy_packaging_csv",
+                    }
+                ],
             },
             ensure_ascii=False,
         ),
@@ -25,7 +44,7 @@ def make_manifest_and_credential(tmp_path):
             {
                 "producer_id": "producer-1",
                 "key_id": "key-1",
-                "secret": "install-pack-secret",
+                "secret_ref": "env:INSTALL_PACK_SECRET",
                 "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
             },
             ensure_ascii=False,
@@ -35,9 +54,29 @@ def make_manifest_and_credential(tmp_path):
     return manifest_path, credential_path
 
 
+def make_raw_secret_credential(tmp_path, *, secret="install-pack-secret"):
+    credential_path = tmp_path / "raw-secret-credential.json"
+    credential_path.write_text(
+        json.dumps(
+            {
+                "producer_id": "producer-1",
+                "key_id": "key-1",
+                "secret": secret,
+                "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return credential_path
+
+
 def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack.json"
+    scan_source_dir = tmp_path / "sync"
+    env = os.environ.copy()
+    env["LABEL_MATCH_SAVE_DIR"] = str(scan_source_dir)
     completed = subprocess.run(
         [
             sys.executable,
@@ -49,9 +88,184 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
             "--program-data-root",
             str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
             "--scan-source-dir",
-            str(tmp_path / "sync"),
+            str(scan_source_dir),
             "--source-glob",
             "포장실작업이벤트로그_*.csv",
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    report_text = report_path.read_text(encoding="utf-8-sig")
+    assert report["status"] == "DRY_RUN"
+    assert report["install_preflight"]["status"] == "PASS"
+    assert report["task_name"] == "direct-sync-relay-label-match"
+    assert "direct_sync_relay_runner.py" in " ".join(report["runner_command"])
+    assert "--scan-source-dir" in report["runner_command"]
+    assert str(scan_source_dir.resolve()) in report["runner_command"]
+    assert "포장실작업이벤트로그_*.csv" in report["runner_command"]
+    assert report["source_scan"]["enabled"] is True
+    assert report["source_scan"]["max_enqueue_files"] == 100
+    assert report["source_scan"]["min_source_file_age_seconds"] == 60
+    assert report["runtime_path_boundary"]["status"] == "PASS"
+    assert report["runtime_path_boundary"]["all_runtime_paths_under_program_data_root"] is True
+    assert str(scan_source_dir.resolve()) in report["directories_to_create"]
+    assert str((tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match" / "queue").resolve()) in report["directories_to_create"]
+    assert "--operator-pause-path" in report["runner_command"]
+    assert report["runtime_paths"]["operator_pause_path"] in report["runner_command"]
+    assert report["backpressure"] == {
+        "max_active_queue_age_seconds": 24 * 60 * 60,
+        "max_active_queue_count": 1000,
+    }
+    assert "--max-active-queue-count" in report["runner_command"]
+    assert "--max-active-queue-age-seconds" in report["runner_command"]
+    assert "--min-source-file-age-seconds" in report["runner_command"]
+    assert "60" in report["runner_command"]
+    assert "schtasks.exe" == report["scheduled_task_create_command"][0]
+    assert str(credential_path.resolve()) in report["runner_command"]
+    assert "install-pack-secret" not in report_text
+    assert report["secret_redaction"]["raw_secret_in_report"] is False
+
+
+def test_install_pack_blocks_raw_credential_secret_even_without_production_env(tmp_path):
+    manifest_path, _credential_path = make_manifest_and_credential(tmp_path)
+    credential_path = make_raw_secret_credential(tmp_path, secret="raw-production-secret")
+    report_path = tmp_path / "install-pack-raw-secret.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_relay_install_pack.py",
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    report_text = report_path.read_text(encoding="utf-8-sig")
+    assert report["status"] == "BLOCKED"
+    assert "raw credential secret is disabled for production install packs" in report["blocked_reason"]
+    assert any(
+        check["name"] == "production_credential_secret_policy" and check["status"] == "FAIL"
+        for check in report["install_preflight"]["checks"]
+    )
+    assert "raw-production-secret" not in report_text
+
+
+def test_install_pack_blocks_app_save_path_that_does_not_match_relay_scan_dir(tmp_path):
+    module = load_install_pack_module()
+    app_root = tmp_path / "app-root"
+    config_dir = app_root / "config"
+    config_dir.mkdir(parents=True)
+    for path in [
+        app_root / "direct_sync_push.py",
+        app_root / "direct_sync_runtime.py",
+        app_root / "direct_sync_operator.py",
+        app_root / "tools" / "direct_sync_relay_runner.py",
+    ]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# preflight fixture\n", encoding="utf-8")
+    (config_dir / "app_settings.json").write_text(
+        json.dumps({"custom_save_path": str(tmp_path / "legacy-sync")}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-save-path-mismatch.json"
+    args = argparse.Namespace(
+        app_root=str(app_root),
+        python_exe=str(tmp_path / "missing-python.exe"),
+        program_data_root=str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+        producer_manifest_path=str(manifest_path),
+        credential_path=str(credential_path),
+        task_name="direct-sync-relay-label-match",
+        minute_interval=1,
+        min_free_bytes=123,
+        scan_source_dir=str(tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"),
+        source_glob=None,
+        max_enqueue_files=100,
+        min_source_file_age_seconds=60,
+        max_active_queue_count=1000,
+        max_active_queue_age_seconds=24 * 60 * 60,
+        apply=False,
+        uninstall=False,
+        confirm_production_install=False,
+        report_path=str(report_path),
+    )
+
+    plan = module.build_install_plan(args, run_preflight=True)
+
+    assert plan["install_preflight"]["status"] == "FAIL"
+    assert "app save path does not match relay scan source dir" in plan["install_preflight"]["blocked_reason"]
+    save_path_check = next(
+        check for check in plan["install_preflight"]["checks"]
+        if check["name"] == "app_save_path_matches_relay_scan_dir"
+    )
+    assert save_path_check["status"] == "FAIL"
+    assert save_path_check["custom_save_path_configured"] == "true"
+    assert save_path_check["app_save_path"] == str((tmp_path / "legacy-sync").resolve())
+    assert save_path_check["relay_scan_source_dir"] == str((tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data").resolve())
+
+
+def test_install_pack_defaults_to_label_match_durable_source_dir(tmp_path):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    args = argparse.Namespace(
+        app_root=str(Path(__file__).resolve().parents[1]),
+        python_exe=sys.executable,
+        program_data_root=str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+        producer_manifest_path=str(manifest_path),
+        credential_path=str(credential_path),
+        task_name="direct-sync-relay-label-match",
+        minute_interval=1,
+        min_free_bytes=123,
+        scan_source_dir=module.DEFAULT_LABEL_MATCH_DATA_ROOT,
+        source_glob=None,
+        max_enqueue_files=100,
+        min_source_file_age_seconds=60,
+        max_active_queue_count=1000,
+        max_active_queue_age_seconds=24 * 60 * 60,
+        apply=False,
+        uninstall=False,
+        confirm_production_install=False,
+    )
+
+    plan = module.build_install_plan(args)
+
+    assert plan["source_scan"]["enabled"] is True
+    assert plan["source_scan"]["scan_source_dir"] == str(Path(module.DEFAULT_LABEL_MATCH_DATA_ROOT).resolve())
+    assert plan["source_scan"]["source_globs"] == [module.DEFAULT_SOURCE_GLOB]
+    assert "--scan-source-dir" in plan["runner_command"]
+    assert str(Path(module.DEFAULT_LABEL_MATCH_DATA_ROOT).resolve()) in plan["runner_command"]
+    assert module.DEFAULT_SOURCE_GLOB in plan["runner_command"]
+
+
+def test_install_pack_self_enroll_dry_run_does_not_require_existing_manifest_or_credential(tmp_path):
+    module = load_install_pack_module()
+    report_path = tmp_path / "self-enroll-install-pack.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_relay_install_pack.py",
+            "--self-enroll",
+            "--server-base-url",
+            "https://worker.example.invalid",
+            "--program-data-root",
+            str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+            "--scan-source-dir",
+            str(tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"),
             "--report-path",
             str(report_path),
         ],
@@ -62,29 +276,430 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
 
     assert completed.returncode == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
-    report_text = report_path.read_text(encoding="utf-8-sig")
     assert report["status"] == "DRY_RUN"
-    assert report["task_name"] == "direct-sync-relay-label-match"
-    assert "direct_sync_relay_runner.py" in " ".join(report["runner_command"])
-    assert "--scan-source-dir" in report["runner_command"]
-    assert str((tmp_path / "sync").resolve()) in report["runner_command"]
-    assert "포장실작업이벤트로그_*.csv" in report["runner_command"]
-    assert report["source_scan"]["enabled"] is True
-    assert report["source_scan"]["max_enqueue_files"] == 100
-    assert report["runtime_path_boundary"]["status"] == "PASS"
-    assert report["runtime_path_boundary"]["all_runtime_paths_under_program_data_root"] is True
-    assert "--operator-pause-path" in report["runner_command"]
-    assert report["runtime_paths"]["operator_pause_path"] in report["runner_command"]
-    assert report["backpressure"] == {
-        "max_active_queue_age_seconds": 24 * 60 * 60,
-        "max_active_queue_count": 1000,
-    }
-    assert "--max-active-queue-count" in report["runner_command"]
-    assert "--max-active-queue-age-seconds" in report["runner_command"]
-    assert "schtasks.exe" == report["scheduled_task_create_command"][0]
+    assert report["self_enrollment"]["enabled"] is True
+    assert report["self_enrollment"]["manual_pc_approval_required"] is False
+    assert report["self_enrollment"]["deferred_until_apply"] is True
+    assert report["self_enrollment"]["endpoint_url"] == "https://worker.example.invalid/api/producer-ingest/v1/source-file"
+    assert report["producer_manifest_path"].endswith("producer_manifest.json")
+    assert report["credential_path"].endswith("credential.json")
+    assert report["install_preflight"]["status"] == "NOT_RUN"
+    assert "--producer-manifest-path" in report["runner_command"]
+    assert "--credential-path" in report["runner_command"]
+    assert "PRODUCER_SELF_ENROLL_TOKEN" not in report_path.read_text(encoding="utf-8-sig")
+
+
+def test_install_pack_apply_creates_runtime_and_source_directories_before_schtasks(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-apply.json"
+    program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(scan_source_dir))
+    commands = []
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+
+    result = module.main(
+        [
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--program-data-root",
+            str(program_data_root),
+            "--scan-source-dir",
+            str(scan_source_dir),
+            "--report-path",
+            str(report_path),
+            "--apply",
+            "--confirm-production-install",
+        ]
+    )
+
+    assert result == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "PASS"
+    assert report["directory_create_result"]["status"] == "PASS"
+    assert scan_source_dir.is_dir()
+    assert (program_data_root / "queue").is_dir()
+    assert (program_data_root / "spool").is_dir()
+    assert (program_data_root / "status").is_dir()
+    assert (program_data_root / "logs").is_dir()
+    assert (program_data_root / "control").is_dir()
+    assert report["task_wrapper_write_result"]["status"] == "PASS"
+    assert Path(report["task_wrapper"]["path"]).is_file()
+    assert report["task_launcher_write_result"]["status"] == "PASS"
+    assert Path(report["task_launcher"]["path"]).is_file()
+    assert commands and commands[0][0] == "schtasks.exe"
+    assert "wscript.exe" == commands[0][commands[0].index("/TR") + 1].split()[0]
+
+
+def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    report_path = tmp_path / "install-pack-self-enroll-apply.json"
+    program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    manifest_path = program_data_root / "producer_manifest.json"
+    credential_path = program_data_root / "credential.json"
+    registration_commands = []
+    task_commands = []
+    monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(scan_source_dir))
+    monkeypatch.setenv("INSTALL_PACK_SECRET", "install-pack-secret")
+
+    def fake_registration(args):
+        registration_commands.append(args)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        credential_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "pc_identity": {
+                        "pc_id": "PACK-PC-01",
+                        "source_host_id": "label-match-pack-pc-01",
+                        "producer_install_id": "install-label-match-pack-pc-01",
+                    },
+                    "streams": [
+                        {
+                            "stream_name": "label_match_events",
+                            "source_system": "label_match",
+                            "source_transport": "legacy_packaging_csv",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        credential_path.write_text(
+            json.dumps(
+                {
+                    "producer_id": "producer-label-match-pack-pc-01",
+                    "key_id": "key-label-match-pack-pc-01",
+                    "secret_ref": "env:INSTALL_PACK_SECRET",
+                    "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "returncode": 0,
+            "stdout": "registration_report=fixture\n",
+            "stderr": "",
+            "command_redacted": ["python", "register_label_match_worker_pc.py", "--apply"],
+        }
+
+    monkeypatch.setattr(module, "_run_self_enrollment_registration", fake_registration)
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: task_commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+
+    result = module.main(
+        [
+            "--self-enroll",
+            "--server-base-url",
+            "https://worker.example.invalid",
+            "--program-data-root",
+            str(program_data_root),
+            "--scan-source-dir",
+            str(scan_source_dir),
+            "--report-path",
+            str(report_path),
+            "--apply",
+            "--confirm-production-install",
+        ]
+    )
+
+    assert result == 0
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert registration_commands
+    assert task_commands and task_commands[0][0] == "schtasks.exe"
+    assert report["task_wrapper_write_result"]["status"] == "PASS"
+    assert Path(report["task_wrapper"]["path"]).is_file()
+    assert report["task_launcher_write_result"]["status"] == "PASS"
+    assert Path(report["task_launcher"]["path"]).is_file()
+    assert report["status"] == "PASS"
+    assert report["install_preflight"]["status"] == "PASS"
+    assert report["self_enrollment"]["enabled"] is True
+    assert report["self_enrollment_registration"]["returncode"] == 0
+    assert str(manifest_path.resolve()) in report["runner_command"]
     assert str(credential_path.resolve()) in report["runner_command"]
-    assert "install-pack-secret" not in report_text
-    assert report["secret_redaction"]["raw_secret_in_report"] is False
+
+
+def test_install_pack_uses_windows_quoting_for_scheduled_task_action(tmp_path):
+    module = load_install_pack_module()
+    app_root = tmp_path / "App Root With Spaces"
+    python_exe = tmp_path / "Python Runtime" / "python.exe"
+    args = argparse.Namespace(
+        app_root=str(app_root),
+        python_exe=str(python_exe),
+        program_data_root=str(tmp_path / "Program Data" / "KMTech" / "DirectSync" / "label match"),
+        producer_manifest_path=str(tmp_path / "Producer Manifest.json"),
+        credential_path=str(tmp_path / "Credential File.json"),
+        task_name="direct sync relay",
+        minute_interval=1,
+        min_free_bytes=123,
+        scan_source_dir=str(tmp_path / "Source Folder"),
+        source_glob=["포장실 *.csv"],
+        max_enqueue_files=7,
+        min_source_file_age_seconds=9,
+        max_active_queue_count=11,
+        max_active_queue_age_seconds=13,
+        apply=False,
+        uninstall=False,
+        confirm_production_install=False,
+    )
+
+    plan = module.build_install_plan(args)
+    create_command = plan["scheduled_task_create_command"]
+    task_action = create_command[create_command.index("/TR") + 1]
+
+    assert "'" not in task_action
+    assert "wscript.exe" in task_action
+    assert "//B //NoLogo" in task_action
+    assert str(plan["task_launcher"]["path"]) in task_action
+    wrapper_content = module._task_wrapper_content(plan["runner_command"])
+    launcher_content = module._task_launcher_content(plan["task_wrapper"]["path"])
+    assert str(python_exe.resolve()) in wrapper_content
+    assert str((app_root / "tools" / "direct_sync_relay_runner.py").resolve()) in wrapper_content
+    assert "포장실 *.csv" in wrapper_content
+    assert "powershell.exe" in launcher_content
+    assert "-ExecutionPolicy Bypass" in launcher_content
+    assert str(plan["task_wrapper"]["path"]) in launcher_content
+
+
+def test_install_pack_can_schedule_bundled_runner_exe_without_python_script_command(tmp_path):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    runner_exe = tmp_path / "tools" / "direct_sync_relay_runner.exe"
+    runner_exe.parent.mkdir(parents=True)
+    runner_exe.write_text("fixture exe", encoding="utf-8")
+    args = argparse.Namespace(
+        app_root=str(tmp_path / "App Root"),
+        python_exe=str(tmp_path / "missing-python.exe"),
+        runner_exe=str(runner_exe),
+        registration_exe=str(tmp_path / "tools" / "register_label_match_worker_pc.exe"),
+        program_data_root=str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+        producer_manifest_path=str(manifest_path),
+        credential_path=str(credential_path),
+        task_name="direct-sync-relay-label-match",
+        minute_interval=1,
+        min_free_bytes=123,
+        scan_source_dir=str(tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"),
+        source_glob=None,
+        max_enqueue_files=100,
+        min_source_file_age_seconds=60,
+        max_active_queue_count=1000,
+        max_active_queue_age_seconds=24 * 60 * 60,
+        apply=False,
+        uninstall=False,
+        confirm_production_install=False,
+        self_enroll=True,
+        server_base_url="https://worker.example.invalid",
+        endpoint_url="",
+        enrollment_url="",
+        enrollment_token="",
+        enrollment_token_file="",
+        enrollment_token_env="PRODUCER_SELF_ENROLL_TOKEN",
+        registration_report_path="",
+    )
+
+    plan = module.build_install_plan(args)
+    wrapper_content = module._task_wrapper_content(plan["runner_command"])
+
+    assert plan["runner_command"][0] == str(runner_exe.resolve())
+    assert "direct_sync_relay_runner.py" not in plan["runner_command"]
+    assert str(runner_exe.resolve()) in wrapper_content
+    assert "missing-python.exe" not in wrapper_content
+    assert plan["runner_exe"] == str(runner_exe.resolve())
+
+
+def test_install_pack_blocks_missing_release_runtime_preflight(tmp_path):
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-missing-runtime.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_relay_install_pack.py",
+            "--app-root",
+            str(tmp_path / "Missing App Root"),
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert report["install_preflight"]["status"] == "FAIL"
+    assert any(
+        check["name"] == "runner_script" and check["status"] == "FAIL"
+        for check in report["install_preflight"]["checks"]
+    )
+
+
+def test_install_pack_blocks_missing_manifest_preflight(tmp_path):
+    _manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-missing-manifest.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_relay_install_pack.py",
+            "--producer-manifest-path",
+            str(tmp_path / "missing-manifest.json"),
+            "--credential-path",
+            str(credential_path),
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert any(
+        check["name"] == "producer_manifest_path" and check["status"] == "FAIL"
+        for check in report["install_preflight"]["checks"]
+    )
+
+
+def test_install_pack_blocks_missing_credential_preflight(tmp_path):
+    manifest_path, _credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-missing-credential.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_relay_install_pack.py",
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(tmp_path / "missing-credential.json"),
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert any(
+        check["name"] == "credential_path" and check["status"] == "FAIL"
+        for check in report["install_preflight"]["checks"]
+    )
+
+
+def test_install_pack_apply_with_missing_manifest_does_not_run_schtasks(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    _manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-apply-missing-manifest.json"
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: (_ for _ in ()).throw(AssertionError("schtasks should not run")),
+    )
+
+    result = module.main(
+        [
+            "--producer-manifest-path",
+            str(tmp_path / "missing-manifest.json"),
+            "--credential-path",
+            str(credential_path),
+            "--report-path",
+            str(report_path),
+            "--apply",
+            "--confirm-production-install",
+        ]
+    )
+
+    assert result == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+
+
+def test_install_pack_blocks_manifest_missing_label_match_stream(tmp_path):
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["streams"] = []
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    report_path = tmp_path / "install-pack-missing-stream.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/direct_sync_relay_install_pack.py",
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["install_preflight"]["status"] == "FAIL"
+
+
+def test_install_pack_blocks_manifest_wrong_source_system_or_transport(tmp_path):
+    for field, value in [
+        ("source_system", "other_system"),
+        ("source_transport", "other_transport"),
+    ]:
+        case_dir = tmp_path / field
+        case_dir.mkdir()
+        manifest_path, credential_path = make_manifest_and_credential(case_dir)
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["streams"][0][field] = value
+        manifest_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        report_path = case_dir / "install-pack-wrong-stream.json"
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "tools/direct_sync_relay_install_pack.py",
+                "--producer-manifest-path",
+                str(manifest_path),
+                "--credential-path",
+                str(credential_path),
+                "--report-path",
+                str(report_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert completed.returncode == 2
+        report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+        assert report["status"] == "BLOCKED"
+        assert report["install_preflight"]["status"] == "FAIL"
 
 
 def test_install_pack_apply_without_confirm_is_blocked(tmp_path):

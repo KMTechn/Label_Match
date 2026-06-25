@@ -8,6 +8,7 @@ import time
 import sys
 import os
 import json
+import shutil
 import tkinter.font as tkFont
 import queue
 import pygame
@@ -25,6 +26,25 @@ LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
 LABEL_MATCH_SCAN_CONTRACT_VERSION = "label_match_current_v1"
 LABEL_MATCH_RESULT_PASS = "통과"
 LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
+LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
+LABEL_MATCH_DEFAULT_SAVE_SUBDIR = ("KMTech", "Label_Match", "data")
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _default_label_match_save_path():
+    env_save_dir = os.environ.get(LABEL_MATCH_SAVE_DIR_ENV, "").strip()
+    if env_save_dir:
+        return env_save_dir
+    program_data_root = os.environ.get("ProgramData", r"C:\ProgramData")
+    return os.path.join(program_data_root, *LABEL_MATCH_DEFAULT_SAVE_SUBDIR)
+
+
+def _csv_formula_safe_cell(value):
+    text = "" if value is None else str(value)
+    formula_probe = text.lstrip()
+    if formula_probe and formula_probe[0] in CSV_FORMULA_PREFIXES:
+        return "'" + text
+    return text
 
 
 def _plan_b_dispatch_key(event_type):
@@ -278,6 +298,42 @@ def check_for_updates():
         print(f"업데이트 확인 중 오류 발생 (네트워크 문제일 수 있음): {e}")
         return None, None
 
+
+def _safe_extract_update_zip(zip_ref, destination_path):
+    destination_abs = os.path.abspath(destination_path)
+    destination_prefix = destination_abs + os.sep
+    os.makedirs(destination_abs, exist_ok=True)
+
+    for member in zip_ref.infolist():
+        member_name = member.filename.replace("\\", "/")
+        first_part = member_name.split("/", 1)[0]
+        mode = (member.external_attr >> 16) & 0o170000
+        if (
+            not member_name
+            or "\x00" in member_name
+            or member_name.startswith("/")
+            or member_name == ".."
+            or member_name.startswith("../")
+            or "/../" in member_name
+            or member_name.endswith("/..")
+            or ":" in first_part
+            or mode == 0o120000
+        ):
+            raise ValueError(f"Unsafe update archive member: {member.filename!r}")
+
+        target_path = os.path.abspath(os.path.join(destination_abs, member_name))
+        if target_path != destination_abs and not target_path.startswith(destination_prefix):
+            raise ValueError(f"Unsafe update archive member: {member.filename!r}")
+
+        if member.is_dir():
+            os.makedirs(target_path, exist_ok=True)
+            continue
+
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with zip_ref.open(member, "r") as source, open(target_path, "wb") as target:
+            shutil.copyfileobj(source, target)
+
+
 def download_and_apply_update(url):
     """업데이트 .zip 파일을 다운로드하고, 압축 해제 후 적용 스크립트를 실행합니다."""
     try:
@@ -291,10 +347,9 @@ def download_and_apply_update(url):
                 f.write(chunk)
         temp_update_folder = os.path.join(temp_dir, "temp_update")
         if os.path.exists(temp_update_folder):
-            import shutil
             shutil.rmtree(temp_update_folder)
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(temp_update_folder)
+            _safe_extract_update_zip(zip_ref, temp_update_folder)
         os.remove(zip_path)
         if getattr(sys, 'frozen', False):
             application_path = os.path.dirname(sys.executable)
@@ -430,8 +485,11 @@ class DataManager:
             return self._get_log_filepath()
     def _log_writer_thread(self):
         while True:
+            log_item = None
+            got_item = False
             try:
                 log_item = self.log_queue.get()
+                got_item = True
                 if log_item is None: break
                 filepath = self._get_log_filepath_for_item(log_item)
                 file_exists = os.path.exists(filepath)
@@ -446,9 +504,17 @@ class DataManager:
             except Exception as e:
                 self._writer_errors.append(e)
                 print(f"로그 쓰기 스레드 오류: {e}")
+            finally:
+                if got_item:
+                    self.log_queue.task_done()
     def log_event(self, event_type, details):
         enriched_details = _enrich_label_match_event(event_type, details or {}, self.unique_id)
-        log_item = [datetime.now().isoformat(), self.worker_name, event_type, json.dumps(enriched_details, ensure_ascii=False, cls=DateTimeEncoder)]
+        log_item = [
+            datetime.now().isoformat(),
+            _csv_formula_safe_cell(self.worker_name),
+            event_type,
+            json.dumps(enriched_details, ensure_ascii=False, cls=DateTimeEncoder),
+        ]
         with self._close_lock:
             if self._close_requested:
                 raise RuntimeError("DataManager is closing; new log events are not accepted")
@@ -465,14 +531,32 @@ class DataManager:
         if self._writer_errors:
             raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
         return True
+    def flush(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.log_queue.unfinished_tasks:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Log writer did not flush before timeout")
+            time.sleep(0.01)
+        if self._writer_errors:
+            raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
+        return True
     def save_current_state(self, state_data):
         state_path = os.path.join(self.save_directory, Label_Match.FILES.CURRENT_STATE)
+        temp_path = f"{state_path}.tmp-{os.getpid()}-{threading.get_ident()}"
         try:
             os.makedirs(os.path.dirname(state_path), exist_ok=True)
             state_data_with_worker = {'worker_name': self.worker_name, **state_data}
-            with open(state_path, 'w', encoding='utf-8') as f:
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(state_data_with_worker, f, ensure_ascii=False, indent=4, cls=DateTimeEncoder)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, state_path)
         except Exception as e:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
             print(f"임시 상태 저장 실패: {e}")
     def load_current_state(self):
         state_path = os.path.join(self.save_directory, Label_Match.FILES.CURRENT_STATE)
@@ -680,7 +764,7 @@ class Label_Match(tk.Tk):
                 messagebox.showerror("오디오 초기화 오류", f"프로그램 효과음을 재생하는 데 필요한 오디오 장치를 시작할 수 없습니다.\n스피커 또는 사운드 드라이버에 문제가 없는지 확인해주세요.\n\n(효과음 없이 프로그램은 계속 실행됩니다.)\n\n[상세 오류]\n{e}")
         self._setup_paths()
         self.app_settings = self._load_app_settings()
-        self.custom_save_path = "C:\\Sync"
+        self.custom_save_path = self._resolve_configured_save_path()
         self._update_save_directory()
         self.ui_cfg = self.app_settings.get("ui_settings", {})
         self.base_font_size = self.ui_cfg.get("base_font_size", 14)
@@ -824,6 +908,10 @@ class Label_Match(tk.Tk):
     def _update_save_directory(self):
         self.save_directory = self.custom_save_path
         os.makedirs(self.save_directory, exist_ok=True)
+
+    def _resolve_configured_save_path(self):
+        configured_path = str(self.app_settings.get("custom_save_path", "") or "").strip()
+        return configured_path or _default_label_match_save_path()
 
     def _load_app_settings(self):
         try:
@@ -1356,6 +1444,11 @@ class Label_Match(tk.Tk):
     def _delete_current_set_state(self):
         self.data_manager.delete_current_state()
 
+    def _flush_data_manager_if_supported(self, timeout=5.0):
+        flush = getattr(self.data_manager, "flush", None)
+        if callable(flush):
+            flush(timeout=timeout)
+
     def _history_load_updates_active_state(self, target_date=None):
         return target_date is None or target_date.date() == datetime.now().date()
 
@@ -1447,7 +1540,17 @@ class Label_Match(tk.Tk):
                     print(f"기록 파일 로드 오류 ({log_filepath}): {e}")
 
             final_sets = {sid: data for sid, data in completed_sets.items() if sid not in voided_set_ids and sid not in cancelled_set_ids}
-            sorted_final_sets = sorted(final_sets.items(), key=lambda item: item[1]['details'].get('end_time'))
+            def _history_sort_key(item):
+                set_id, data = item
+                details = data.get('details', {}) if isinstance(data, dict) else {}
+                return (
+                    details.get('end_time')
+                    or details.get('timestamp')
+                    or details.get('start_time')
+                    or str(set_id)
+                )
+
+            sorted_final_sets = sorted(final_sets.items(), key=_history_sort_key)
             temp_scan_count = defaultdict(lambda: defaultdict(int))
             temp_global_scanned_set = set()
             temp_set_details_map = {sid: data['details'] for sid, data in final_sets.items()}
@@ -2005,10 +2108,6 @@ class Label_Match(tk.Tk):
         phase = self.current_set_info.get('phase') or '-'
         set_id_for_log = str(self.current_set_info['id'])
 
-        if result == self.Results.PASS:
-            if item_code != "N/A" and production_date:
-                self.scan_count[production_date][(item_code, phase)] += 1
-
         details = {
             'master_label_code': item_code, 'item_code': item_code,
             'item_name': item_info.get("Item Name", "알 수 없음"),
@@ -2030,9 +2129,12 @@ class Label_Match(tk.Tk):
             'phase': phase
         }
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
+        self._flush_data_manager_if_supported()
 
         self.__dict__.setdefault("history_row_details_map", {})[set_id_for_log] = details
         if result == self.Results.PASS:
+            if item_code != "N/A" and production_date:
+                self.scan_count[production_date][(item_code, phase)] += 1
             self.set_details_map[set_id_for_log] = details
             self.global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
 
@@ -2198,6 +2300,7 @@ class Label_Match(tk.Tk):
                 values = tuple(self.history_tree.item(iid, 'values') or ())
                 log_details = {'set_id': str(iid), 'deleted_values': values, 'original_details': deleted_details}
                 self.data_manager.log_event(self.Events.SET_DELETED, log_details)
+                self._flush_data_manager_if_supported()
 
                 if deleted_details:
                     result = _label_match_tray_complete_result(deleted_details)
@@ -2522,6 +2625,7 @@ class Label_Match(tk.Tk):
                 'cancelled_by_label': label_to_cancel,
                 'details': target_details
             })
+            self._flush_data_manager_if_supported()
 
             production_date = target_details.get('production_date')
             item_code = target_details.get('item_code')

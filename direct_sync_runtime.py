@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,9 @@ WINDOWS_RESERVED_DEVICE_NAMES = {
     *{f"COM{index}" for index in range(1, 10)},
     *{f"LPT{index}" for index in range(1, 10)},
 }
+AUTHORIZATION_TEXT_RE = re.compile(r"(?i)authorization\s*:\s*[^\r\n\t ]+(?:[ \t]+[^\r\n\t ]+)?")
+SENSITIVE_ASSIGNMENT_RE = re.compile(r"(?i)\b(secret|token|signature)\s*=\s*[^ \t\r\n;]+")
+CONTROL_TEXT_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 
 @dataclass(frozen=True)
@@ -67,13 +71,20 @@ class DirectSyncRuntimeConfig:
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = target.with_suffix(target.suffix + ".tmp")
-    with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
-        json.dump(dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temp_path, target)
+    temp_path = target.with_name(f"{target.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _append_jsonl(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
@@ -133,7 +144,7 @@ def _dpapi_unprotect_current_user(protected: bytes) -> bytes:
     try:
         return ctypes.string_at(output_blob.pbData, output_blob.cbData)
     finally:
-        kernel32.LocalFree(output_blob.pbData)
+        kernel32.LocalFree(c_void_p(output_blob.pbData))
 
 
 def _read_wincred_secret(target_name: str) -> str:
@@ -255,10 +266,20 @@ def _safe_relay_queue_status(db_path: str | os.PathLike[str]) -> dict[str, Any]:
         }
 
 
+def _operator_safe_error_message(value: Any, *, limit: int = 300) -> str:
+    text = str(value or "")
+    text = AUTHORIZATION_TEXT_RE.sub("[redacted]", text)
+    text = text.replace("X-Producer-Signature", "[redacted]")
+    text = text.replace("PRODUCER-HMAC-SHA256-V1", "[redacted]")
+    text = SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    text = CONTROL_TEXT_RE.sub(" ", text)
+    return text.strip()[:limit]
+
+
 def _runtime_error_details(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, sqlite3.DatabaseError):
         return "relay_queue_db_error", f"relay queue database error: {exc.__class__.__name__}"
-    return "direct_sync_runtime_error", str(exc)
+    return "direct_sync_runtime_error", _operator_safe_error_message(exc)
 
 
 def _parse_utc_text(value: str) -> datetime | None:
@@ -330,10 +351,18 @@ def _result_summary(result: UploadResult | None) -> dict[str, Any]:
             "retryable": False,
             "status_code": 0,
             "error_code": "",
+            "error_message": "",
         }
     relay_id = ""
     if isinstance(result.receipt, Mapping):
         relay_id = str(result.receipt.get("client_batch_id") or "").strip()
+    receipt_totals = {}
+    if isinstance(result.receipt, Mapping) and isinstance(result.receipt.get("totals"), Mapping):
+        receipt_totals = {
+            key: int(value)
+            for key, value in dict(result.receipt.get("totals") or {}).items()
+            if key in {"inserted", "replayed", "quarantined", "errors"} and type(value) is int
+        }
     if result.success:
         status = "acked"
     elif result.committed:
@@ -342,15 +371,31 @@ def _result_summary(result: UploadResult | None) -> dict[str, Any]:
         status = "retry_wait"
     else:
         status = "failed_permanent"
+    error_code = result.error_code
+    error_message = result.error_message
+    if status == "operator_review" and not error_code:
+        error_code = "operator_review_required"
+        if receipt_totals:
+            error_message = (
+                "server committed upload but operator review is required: "
+                f"inserted={receipt_totals.get('inserted', 0)}, "
+                f"replayed={receipt_totals.get('replayed', 0)}, "
+                f"quarantined={receipt_totals.get('quarantined', 0)}, "
+                f"errors={receipt_totals.get('errors', 0)}"
+            )
+        else:
+            error_message = "server committed upload but operator review is required"
     return {
         "status": status,
         "success": result.success,
         "committed": result.committed,
         "retryable": result.retryable,
         "status_code": result.status_code,
-        "error_code": result.error_code,
+        "error_code": error_code,
+        "error_message": error_message,
         "relay_id": relay_id,
         "upload_status_path": result.status_path,
+        "receipt_totals": receipt_totals,
     }
 
 
@@ -447,28 +492,29 @@ def enqueue_completed_source_file(
     if _paused_by_operator(config).get("paused"):
         return _write_paused_status(config, event="enqueue_paused_by_operator")
 
-    backpressure = _queue_backpressure_report(config)
-    if backpressure["status"] != "pass":
-        return _write_backpressure_status(
-            config,
-            backpressure=backpressure,
-            event="enqueue_blocked_queue_backpressure",
-        )
-
     disk = _disk_pressure_report(config)
-    if disk["status"] != "pass":
-        queue = _safe_relay_queue_status(config.db_path)
-        status = _write_runtime_status(
-            config,
-            status="blocked_disk_pressure",
-            queue=queue,
-            disk=disk,
-            error_code="disk_pressure",
-            error_message="free space is below configured direct-sync relay minimum",
-        )
-        _append_runtime_event(config, "enqueue_blocked_disk_pressure", status)
-        return status
     try:
+        backpressure = _queue_backpressure_report(config)
+        if backpressure["status"] != "pass":
+            return _write_backpressure_status(
+                config,
+                backpressure=backpressure,
+                event="enqueue_blocked_queue_backpressure",
+            )
+
+        if disk["status"] != "pass":
+            queue = _safe_relay_queue_status(config.db_path)
+            status = _write_runtime_status(
+                config,
+                status="blocked_disk_pressure",
+                queue=queue,
+                disk=disk,
+                error_code="disk_pressure",
+                error_message="free space is below configured direct-sync relay minimum",
+            )
+            _append_runtime_event(config, "enqueue_blocked_disk_pressure", status)
+            return status
+
         creds = credentials or load_credentials_from_json(config.credential_path)
         row = enqueue_source_file_for_relay(
             db_path=config.db_path,
@@ -479,17 +525,31 @@ def enqueue_completed_source_file(
             relative_path=relative_path,
             dedupe_existing=True,
         )
-    except DirectSyncPushError as exc:
-        queue = relay_queue_status(config.db_path)
+    except (DirectSyncPushError, sqlite3.DatabaseError, OSError, UnicodeError) as exc:
+        queue = _safe_relay_queue_status(config.db_path)
+        if isinstance(exc, sqlite3.DatabaseError):
+            status_name = "runtime_error"
+            error_code, error_message = _runtime_error_details(exc)
+            event_name = "enqueue_runtime_error"
+        elif isinstance(exc, DirectSyncPushError):
+            status_name = "enqueue_error"
+            error_code = "direct_sync_enqueue_error"
+            error_message = _operator_safe_error_message(exc)
+            event_name = "enqueue_error"
+        else:
+            status_name = "enqueue_error"
+            error_code = "direct_sync_source_file_error"
+            error_message = _operator_safe_error_message(f"{exc.__class__.__name__}: {exc}")
+            event_name = "enqueue_error"
         status = _write_runtime_status(
             config,
-            status="enqueue_error",
+            status=status_name,
             queue=queue,
             disk=disk,
-            error_code="direct_sync_enqueue_error",
-            error_message=str(exc),
+            error_code=error_code,
+            error_message=error_message,
         )
-        _append_runtime_event(config, "enqueue_error", status)
+        _append_runtime_event(config, event_name, status)
         return status
     queue = relay_queue_status(config.db_path)
     status = _write_runtime_status(
@@ -585,6 +645,8 @@ def run_relay_once(
         disk=disk,
         stale_leases_reset=reset_count,
         last_result=result_summary,
+        error_code=result_summary["error_code"] if result_summary["status"] != "acked" else "",
+        error_message=result_summary["error_message"] if result_summary["status"] != "acked" else "",
     )
     _append_runtime_event(config, "relay_runner_once", status)
     return status
