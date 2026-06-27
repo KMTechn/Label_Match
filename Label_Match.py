@@ -2431,6 +2431,7 @@ class Label_Match(tk.Tk):
             popup.destroy()
         self.is_blinking = False
         self.entry.focus_set()
+        self.after(50, self.entry.focus_force)
         if not self.current_set_info.get('id'):
             self.current_set_info['id'] = str(time.time_ns())
         self.after(10, lambda: self._finalize_set(result, error_details))
@@ -2455,9 +2456,19 @@ class Label_Match(tk.Tk):
             threading.Thread(target=self._play_error_siren_loop, daemon=True).start()
         self.after(0, self._blink_background_loop)
         try:
+            self.update_idletasks()
+            popup_width = max(800, int(self.winfo_width()))
+            popup_height = max(600, int(self.winfo_height()))
+            popup_x = int(self.winfo_rootx())
+            popup_y = int(self.winfo_rooty())
+            message_font_size = max(24, min(40, popup_width // 34, popup_height // 20))
+            button_font_size = max(18, min(28, popup_width // 52))
+            message_wraplength = max(560, min(popup_width - 180, int(popup_width * 0.78)))
             popup = tk.Toplevel(self)
             popup.title(f"⚠️ {title}")
-            popup.attributes('-fullscreen', True)
+            popup.geometry(f"{popup_width}x{popup_height}+{popup_x}+{popup_y}")
+            popup.resizable(False, False)
+            popup.configure(bg=self.colors.get("danger", "#E74C3C"))
             popup.attributes('-topmost', True)
 
             popup_frame = tk.Frame(popup, bg=self.colors.get("danger", "#E74C3C"))
@@ -2468,16 +2479,16 @@ class Label_Match(tk.Tk):
 
             btn = tk.Button(btn_frame, text="확인 (Enter / ESC)",
                             command=lambda: self._close_popup(popup, result, error_details),
-                            font=("Impact", 36, "bold"), bg="yellow", fg="black",
+                            font=("Malgun Gothic", button_font_size, "bold"), bg="yellow", fg="black",
                             relief="raised", borderwidth=5)
             btn.pack(ipady=20, ipadx=50)
 
             label = tk.Label(popup_frame, text=f"⚠️\n\n{message}",
-                                     font=("Impact", 60, "bold"), fg='white',
+                                     font=("Malgun Gothic", message_font_size, "bold"), fg='white',
                                      bg=self.colors.get("danger", "#E74C3C"),
                                      anchor='center', justify='center',
-                                     wraplength=self.winfo_screenwidth() - 150)
-            label.pack(pady=40, expand=True, fill='both')
+                                     wraplength=message_wraplength)
+            label.pack(padx=80, pady=(40, 20), expand=True, fill='both')
 
             popup.focus_force()
             btn.focus_set()
