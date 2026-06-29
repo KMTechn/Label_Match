@@ -1,3 +1,4 @@
+import ast
 import base64
 import csv
 import importlib.util
@@ -76,9 +77,10 @@ def test_enriched_tray_complete_preserves_label_match_contract():
                 "PRODUCT_AAA2270730100_1",
                 "PRODUCT_AAA2270730100_2",
                 "PRODUCT_AAA2270730100_3",
+                "PRODUCT_AAA2270730100_4",
                 "FINAL_LABEL_AAA2270730100\x1D6D20260228",
             ],
-            "parsed_product_barcodes": ["AAA2270730100"] * 5,
+            "parsed_product_barcodes": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
             "final_result": "통과",
         },
         "LABEL-PC01",
@@ -97,7 +99,82 @@ def test_enriched_tray_complete_preserves_label_match_contract():
         "PRODUCT_AAA2270730100_1",
         "PRODUCT_AAA2270730100_2",
         "PRODUCT_AAA2270730100_3",
+        "PRODUCT_AAA2270730100_4",
     ]
+
+
+def test_enriched_tray_complete_promotes_input_tag_trace_from_master_label():
+    module = load_label_match_module()
+    master_label = (
+        "PHS=1|CLC=AAA2270730100|SPC=Product|ITG=ITAG-20260628-0001|"
+        "LBL=LBL-20260628-0001|HSH_CORE=core-hash-001|HSH_LABEL=label-hash-001"
+    )
+
+    enriched = module._enrich_label_match_event(
+        "TRAY_COMPLETE",
+        {
+            "set_id": "trace-set",
+            "scanned_product_barcodes": [
+                master_label,
+                "PRODUCT_AAA2270730100_1",
+                "PRODUCT_AAA2270730100_2",
+                "PRODUCT_AAA2270730100_3",
+                "PRODUCT_AAA2270730100_4",
+                "FINAL_LABEL_AAA2270730100\x1D6D20260228",
+            ],
+            "parsed_product_barcodes": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
+            "final_result": "통과",
+        },
+        "LABEL-PC01",
+    )
+
+    assert enriched["input_tag_id"] == "ITAG-20260628-0001"
+    assert enriched["input_tag_label_id"] == "LBL-20260628-0001"
+    assert enriched["input_tag_core_hash"] == "core-hash-001"
+    assert enriched["input_tag_label_hash"] == "label-hash-001"
+    assert enriched["source_session_id"] == "ITAG-20260628-0001"
+    assert enriched["master_label_fields"]["ITG"] == "ITAG-20260628-0001"
+    assert enriched["inspection_trace"]["inspection_session_key"] == "ITAG-20260628-0001"
+    assert enriched["inspection_trace"]["master_label_phase"] == "1"
+    assert enriched["product_sample_barcodes"] == [
+        "PRODUCT_AAA2270730100_1",
+        "PRODUCT_AAA2270730100_2",
+        "PRODUCT_AAA2270730100_3",
+        "PRODUCT_AAA2270730100_4",
+    ]
+
+
+def test_enriched_tray_complete_accepts_label_trace_without_input_tag_id():
+    module = load_label_match_module()
+    master_label = (
+        "PHS=1|CLC=AAA2270730100|SPC=Product|"
+        "LBL=LBL-20260628-0001|HSH_CORE=core-hash-001|HSH_LABEL=label-hash-001"
+    )
+
+    enriched = module._enrich_label_match_event(
+        "TRAY_COMPLETE",
+        {
+            "set_id": "trace-no-itg",
+            "scanned_product_barcodes": [
+                master_label,
+                "PRODUCT_AAA2270730100_1",
+                "PRODUCT_AAA2270730100_2",
+                "PRODUCT_AAA2270730100_3",
+                "PRODUCT_AAA2270730100_4",
+                "FINAL_LABEL_AAA2270730100\x1D6D20260228",
+            ],
+            "parsed_product_barcodes": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
+            "final_result": "통과",
+        },
+        "LABEL-PC01",
+    )
+
+    assert enriched["input_tag_label_id"] == "LBL-20260628-0001"
+    assert enriched["input_tag_core_hash"] == "core-hash-001"
+    assert enriched["input_tag_label_hash"] == "label-hash-001"
+    assert "input_tag_id" not in enriched
+    assert "source_session_id" not in enriched
+    assert enriched["inspection_trace"]["input_tag_label_id"] == "LBL-20260628-0001"
 
 
 def test_partial_manual_tray_complete_is_excluded_from_downstream_set_count():
@@ -120,6 +197,28 @@ def test_partial_manual_tray_complete_is_excluded_from_downstream_set_count():
     assert enriched["packaging_set_count"] == 0
     assert enriched["downstream_count_excluded"] is True
     assert enriched["downstream_count_exclusion_reason"] == "PARTIAL_MANUAL_COMPLETION"
+
+
+def test_failed_tray_complete_is_excluded_from_downstream_set_count():
+    module = load_label_match_module()
+
+    enriched = module._enrich_label_match_event(
+        "TRAY_COMPLETE",
+        {
+            "set_id": "failed-set",
+            "scanned_product_barcodes": ["MASTER1", "PRODUCT_MASTER1_1", "WRONG_PRODUCT"],
+            "parsed_product_barcodes": ["MASTER1", "MASTER1", "OTHER"],
+            "final_result": "입력오류",
+            "has_error_or_reset": True,
+        },
+        "LABEL-PC01",
+    )
+
+    assert enriched["quantity_basis"] == "PACKAGING_SET"
+    assert enriched["measure_code"] == "PACKAGING_SET_COUNT"
+    assert enriched["packaging_set_count"] == 0
+    assert enriched["downstream_count_excluded"] is True
+    assert enriched["downstream_count_exclusion_reason"] == "LABEL_MATCH_FAILED_OR_MISMATCH"
 
 
 def test_tray_complete_result_helper_prefers_explicit_result_with_legacy_fallback():
@@ -154,7 +253,7 @@ def test_manual_complete_policy_requires_clean_partial_product_scan():
     assert reason({"raw": ["MASTER"]}) == "manual_complete_requires_product_scan"
     assert allowed({"raw": ["MASTER", "PRODUCT_1"], "error_count": 0, "has_error_or_reset": False}) is True
     assert allowed({"raw": ["MASTER", "PRODUCT_1", "PRODUCT_2", "PRODUCT_3"]}) is True
-    assert reason({"raw": ["MASTER", "P1", "P2", "P3", "FINAL"]}) == "manual_complete_only_for_partial_sets"
+    assert reason({"raw": ["MASTER", "P1", "P2", "P3", "P4", "FINAL"]}) == "manual_complete_only_for_partial_sets"
     assert reason({"raw": ["MASTER", "PRODUCT_1"], "has_error_or_reset": True}) == "manual_complete_blocked_after_error"
     assert reason({"raw": ["MASTER", "PRODUCT_1"], "error_count": 1}) == "manual_complete_blocked_after_error"
 
@@ -259,6 +358,9 @@ def test_history_display_keeps_master_label_full_text_when_narrow():
         "",
         "",
         "",
+        "",
+        "",
+        "",
         "통과",
         "08:00:00",
     ))
@@ -309,6 +411,115 @@ def test_partial_manual_pass_updates_duplicates_without_summary_count():
     assert details["set_id"] in app.set_details_map
 
 
+def test_finalize_set_preserves_input_tag_trace_from_first_master_label():
+    module = load_label_match_module()
+    master_label = (
+        "PHS=1|CLC=AAA2270730100|SPC=Product|ITG=ITAG-20260628-0001|"
+        "LBL=LBL-20260628-0001|HSH_CORE=core-hash-001|HSH_LABEL=label-hash-001"
+    )
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.current_set_info = {
+        "id": "trace-set",
+        "raw": [
+            master_label,
+            "PRODUCT_AAA2270730100_1",
+            "PRODUCT_AAA2270730100_2",
+            "PRODUCT_AAA2270730100_3",
+            "PRODUCT_AAA2270730100_4",
+            "FINAL_LABEL_AAA2270730100\x1D6D20260622",
+        ],
+        "parsed": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
+        "start_time": datetime(2026, 6, 22, 10, 0, 0),
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": "2",
+        "item_name_override": None,
+        "production_date": "2026-06-22",
+    }
+    app.items_data = {"AAA2270730100": {"Item Name": "Product", "Spec": "Spec"}}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = set()
+    app.set_details_map = {}
+    app.history_row_details_map = {}
+    app.data_manager = _FakeLoggingDataManager()
+    app.history_tree = _FakeHistoryTree()
+    app.save_status_label = _FakeLabel()
+    app.is_running_simulation = True
+    app.initialized_successfully = True
+    app.run_tests = True
+    app._play_sound = lambda sound_key: None
+    app._update_summary_tree = lambda: None
+    app._reset_current_set = lambda **kwargs: None
+    app.after = lambda delay, callback: None
+
+    module.Label_Match._finalize_set(app, app.Results.PASS)
+
+    details = app.data_manager.events[0][1]
+    assert details["input_tag_id"] == "ITAG-20260628-0001"
+    assert details["input_tag_label_id"] == "LBL-20260628-0001"
+    assert details["input_tag_core_hash"] == "core-hash-001"
+    assert details["input_tag_label_hash"] == "label-hash-001"
+    assert details["source_session_id"] == "ITAG-20260628-0001"
+    assert details["master_label_fields"]["ITG"] == "ITAG-20260628-0001"
+    assert details["inspection_trace"]["inspection_session_key"] == "ITAG-20260628-0001"
+    assert details["inspection_trace"]["master_label_phase"] == "1"
+    assert app.set_details_map["trace-set"]["input_tag_id"] == "ITAG-20260628-0001"
+
+
+def test_finalize_set_preserves_label_trace_without_input_tag_id():
+    module = load_label_match_module()
+    master_label = (
+        "PHS=1|CLC=AAA2270730100|SPC=Product|"
+        "LBL=LBL-20260628-0001|HSH_CORE=core-hash-001|HSH_LABEL=label-hash-001"
+    )
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.current_set_info = {
+        "id": "trace-no-itg-set",
+        "raw": [
+            master_label,
+            "PRODUCT_AAA2270730100_1",
+            "PRODUCT_AAA2270730100_2",
+            "PRODUCT_AAA2270730100_3",
+            "PRODUCT_AAA2270730100_4",
+            "FINAL_LABEL_AAA2270730100\x1D6D20260622",
+        ],
+        "parsed": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
+        "start_time": datetime(2026, 6, 22, 10, 0, 0),
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": "2",
+        "item_name_override": None,
+        "production_date": "2026-06-22",
+    }
+    app.items_data = {"AAA2270730100": {"Item Name": "Product", "Spec": "Spec"}}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = set()
+    app.set_details_map = {}
+    app.history_row_details_map = {}
+    app.data_manager = _FakeLoggingDataManager()
+    app.history_tree = _FakeHistoryTree()
+    app.save_status_label = _FakeLabel()
+    app.is_running_simulation = True
+    app.initialized_successfully = True
+    app.run_tests = True
+    app._play_sound = lambda sound_key: None
+    app._update_summary_tree = lambda: None
+    app._reset_current_set = lambda **kwargs: None
+    app.after = lambda delay, callback: None
+
+    module.Label_Match._finalize_set(app, app.Results.PASS)
+
+    details = app.data_manager.events[0][1]
+    assert details["input_tag_label_id"] == "LBL-20260628-0001"
+    assert details["input_tag_core_hash"] == "core-hash-001"
+    assert details["input_tag_label_hash"] == "label-hash-001"
+    assert "input_tag_id" not in details
+    assert "source_session_id" not in details
+    assert details["inspection_trace"]["input_tag_label_id"] == "LBL-20260628-0001"
+
+
 def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     module = load_label_match_module()
 
@@ -326,8 +537,15 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     app.Results = module.Label_Match.Results
     app.current_set_info = {
         "id": "durable-set",
-        "raw": ["MASTER", "PRODUCT-1", "PRODUCT-2", "PRODUCT-3", "FINAL\x1D6D20260622"],
-        "parsed": ["MASTER"] * 5,
+        "raw": [
+            "MASTER",
+            "PRODUCT-1",
+            "PRODUCT-2",
+            "PRODUCT-3",
+            "PRODUCT-4",
+            "FINAL\x1D6D20260622",
+        ],
+        "parsed": ["MASTER"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
         "start_time": datetime(2026, 6, 22, 10, 0, 0),
         "error_count": 0,
         "has_error_or_reset": False,
@@ -373,9 +591,12 @@ def test_legacy_pass_normalizes_missing_phase_to_dash():
             "PROD-AAA2270730100-1",
             "PROD-AAA2270730100-2",
             "PROD-AAA2270730100-3",
+            "PROD-AAA2270730100-4",
+            "PROD-AAA2270730100-5",
+            "PROD-AAA2270730100-6",
             "FINAL-AAA2270730100\x1D6D20260623",
         ],
-        "parsed": ["AAA2270730100"] * 5,
+        "parsed": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
         "start_time": datetime(2026, 6, 23, 10, 0, 0),
         "error_count": 0,
         "has_error_or_reset": False,
@@ -1057,9 +1278,10 @@ def test_history_rebuild_uses_final_result_for_display_counts_and_pass_map(tmp_p
     result = result_queue.get_nowait()
 
     by_set_id = {set_id: data for set_id, data in result["sorted_sets"]}
-    assert by_set_id["set-pass-after-error"]["values"][6] == "통과"
-    assert by_set_id["legacy-failed"]["values"][6] == "불일치"
-    assert by_set_id["explicit-input-error"]["values"][6] == "입력오류"
+    result_index = 1 + module.LABEL_MATCH_TOTAL_SCAN_COUNT
+    assert by_set_id["set-pass-after-error"]["values"][result_index] == "통과"
+    assert by_set_id["legacy-failed"]["values"][result_index] == "불일치"
+    assert by_set_id["explicit-input-error"]["values"][result_index] == "입력오류"
 
     assert result["scan_count"]["2026-06-22"][("ITEM1", "A")] == 1
     assert ("ITEM2", "B") not in result["scan_count"]["2026-06-22"]
@@ -1878,6 +2100,127 @@ def test_delete_selected_row_handles_string_iid_against_numeric_detail_key():
     assert app.global_scanned_set == set()
     assert app.data_manager.events[0][0] == module.Label_Match.Events.SET_DELETED
     assert app.data_manager.events[0][1]["set_id"] == "123"
+
+
+def test_danger_action_button_contract_keeps_cancel_actions_separate():
+    module = load_label_match_module()
+
+    assert module.Label_Match.CURRENT_SET_CANCEL_BUTTON_TEXT == "현재 세트 취소 (F1)"
+    assert module.Label_Match.COMPLETED_TRAY_CANCEL_BUTTON_TEXT == "완료된 트레이 취소 (F2)"
+    assert module.Label_Match.MANUAL_COMPLETE_BUTTON_TEXT == "현재 세트 완료 (F3)"
+    assert module.Label_Match.HISTORY_DELETE_ACTION_TEXT == "선택 항목 삭제"
+    assert module.Label_Match.CURRENT_SET_CANCEL_BUTTON_STYLE == "Danger.Action.TButton"
+    assert module.Label_Match.COMPLETED_TRAY_CANCEL_BUTTON_STYLE == "Danger.Action.TButton"
+    assert module.Label_Match.MANUAL_COMPLETE_BUTTON_STYLE == "Action.TButton"
+
+
+def test_completed_tray_cancel_button_is_constructed_as_danger_action():
+    module = load_label_match_module()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def keyword_expr(call, name):
+        for keyword in call.keywords:
+            if keyword.arg == name:
+                return ast.unparse(keyword.value)
+        return ""
+
+    button_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Button"
+    ]
+
+    assert any(
+        keyword_expr(call, "text") == "self.COMPLETED_TRAY_CANCEL_BUTTON_TEXT"
+        and keyword_expr(call, "command") == "self._prompt_and_cancel_completed_tray"
+        and keyword_expr(call, "style") == "self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE"
+        for call in button_calls
+    )
+
+
+def test_history_result_value_uses_dynamic_index_with_legacy_fallback():
+    module = load_label_match_module()
+
+    values = (
+        "row-1",
+        "MASTER",
+        "PRODUCT-1",
+        "PRODUCT-2",
+        "PRODUCT-3",
+        "PRODUCT-4",
+        "FINAL-LABEL",
+        "통과",
+        "08:00:00",
+    )
+    legacy_values = ("row-1", "MASTER", "PRODUCT-1", "PRODUCT-2", "PRODUCT-3", "PRODUCT-4", "불일치", "08:00:00")
+
+    assert module.Label_Match._history_result_index() == 1 + module.Label_Match.TOTAL_SCAN_COUNT
+    assert module.Label_Match._history_result_value(values) == "통과"
+    assert module.Label_Match._history_result_value(legacy_values) == "불일치"
+
+
+def test_auto_simulation_scenarios_scan_final_label_at_final_position(monkeypatch):
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.is_running_simulation = False
+    app.entry = _FakeWidget()
+    app.update_big_display = lambda *args, **kwargs: None
+    app.after = lambda *args, **kwargs: None
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *args, **kwargs: True)
+
+    module.Label_Match._run_auto_test_simulation(app)
+
+    for scenario in app.simulation_scenarios:
+        scans = [value for action, value in scenario["steps"] if action == "scan"]
+        accepted_position = 0
+        seen_scans = set()
+        final_positions = []
+        for value in scans:
+            if value in seen_scans:
+                continue
+            seen_scans.add(value)
+            accepted_position += 1
+            if str(value).startswith("FINAL_LABEL"):
+                final_positions.append(accepted_position)
+        if final_positions:
+            assert final_positions == [module.LABEL_MATCH_TOTAL_SCAN_COUNT]
+
+
+def test_delete_shortcut_ignores_non_history_focus_without_mutation():
+    module = load_label_match_module()
+    history_tree = object()
+    entry_widget = object()
+    app = object.__new__(module.Label_Match)
+    app.history_tree = history_tree
+    app.focus_get = lambda: entry_widget
+    calls = []
+    app._delete_selected_row = lambda: calls.append("delete")
+    event = type("FakeEvent", (), {"widget": entry_widget})()
+
+    result = module.Label_Match._delete_selected_row_from_shortcut(app, event)
+
+    assert result is None
+    assert calls == []
+
+
+def test_delete_shortcut_runs_only_for_history_tree_focus():
+    module = load_label_match_module()
+    history_tree = object()
+    app = object.__new__(module.Label_Match)
+    app.history_tree = history_tree
+    app.focus_get = lambda: history_tree
+    calls = []
+    app._delete_selected_row = lambda: calls.append("delete")
+    event = type("FakeEvent", (), {"widget": object()})()
+
+    result = module.Label_Match._delete_selected_row_from_shortcut(app, event)
+
+    assert result == "break"
+    assert calls == ["delete"]
 
 
 def test_delete_selected_row_keeps_row_when_delete_log_write_fails(monkeypatch):

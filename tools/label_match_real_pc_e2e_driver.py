@@ -37,6 +37,7 @@ import Label_Match as label_match_module  # noqa: E402
 
 
 GS = "\x1D"
+PRODUCT_SAMPLE_COUNT = 4
 
 
 def _now_utc() -> str:
@@ -146,9 +147,8 @@ def _scan(app: Any, value: str) -> None:
 
 def _run_valid_set(app: Any, master: str, today: str) -> None:
     _scan(app, master)
-    _scan(app, f"PRODUCT_{master}_1")
-    _scan(app, f"PRODUCT_{master}_2")
-    _scan(app, f"PRODUCT_{master}_3")
+    for index in range(1, PRODUCT_SAMPLE_COUNT + 1):
+        _scan(app, f"PRODUCT_{master}_{index}")
     _scan(app, f"FINAL_LABEL_{master}_FIELD_E2E_OK{GS}6D{today}")
 
 
@@ -284,8 +284,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     _wait_for_app_ready(app)
     _wait_for_history_idle(app)
     screenshots.append(_capture_window(app, screenshot_dir, "07_after_restart_restored"))
-    _scan(app, f"PRODUCT_{master_restore}_2")
-    _scan(app, f"PRODUCT_{master_restore}_3")
+    for index in range(2, PRODUCT_SAMPLE_COUNT + 1):
+        _scan(app, f"PRODUCT_{master_restore}_{index}")
     _scan(app, f"FINAL_LABEL_{master_restore}_RESTORED_OK{GS}6D{today}")
     app.data_manager.flush(timeout=5)
     actions.append({"name": "exit_restore_complete", "master": master_restore})

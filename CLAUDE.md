@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Label_Match is a Korean barcode verification system application built with Python/Tkinter. It validates barcode sets through 5-step scanning processes and maintains audit logs. The application features auto-update functionality from GitHub releases and comprehensive UI for tracking scan history and results.
+Label_Match is a Korean barcode verification system application built with Python/Tkinter. Current code validates packaging sets through a 6-step scan process: one material/master label, four product samples, and one final packaging label. It maintains audit logs, includes auto-update functionality from GitHub releases, and provides a comprehensive UI for tracking scan history and results.
 
 ## Key Architecture
 
 ### Main Application Structure
 - **Label_Match.py**: Single-file application (~2000+ lines) containing the main `Label_Match` class that inherits from `tk.Tk`
-- **DataManager class**: Handles logging and state persistence using JSON files
+- **DataManager class**: Handles daily CSV event logging and JSON state persistence
 - **CalendarWindow class**: Date picker dialog for historical data viewing
 
 ### Configuration System
@@ -19,10 +19,10 @@ Label_Match is a Korean barcode verification system application built with Pytho
 - **README.txt**: Comprehensive documentation for barcode validation rules (Korean)
 
 ### Data Flow
-1. Barcode scanning through 5 sequential steps (ScanPosition 1-5)
-2. Validation against configurable rules from CSV files
+1. Barcode scanning through 6 sequential steps: material/master label, product samples 1-4, final packaging label
+2. Validation against `assets/Item.csv` and barcode parsing rules
 3. Real-time audio feedback for each scan step
-4. Automatic logging to daily JSON files
+4. Automatic logging to daily CSV event files with JSON `details`
 5. UI updates for current status and historical summaries
 
 ## Development Commands
@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 The application includes GitHub-based auto-update functionality:
 - **Repository**: KMTechn/Label_Match
-- **Current Version**: v2.0.4 (defined in APP_VERSION variable at Label_Match.py:28)
+- **Current Version**: v2.0.6 (defined in APP_VERSION variable in `Label_Match.py`)
 - **Update Process**: Downloads latest release ZIP, creates batch updater script, applies updates automatically
 
 ## Audio System
@@ -67,8 +67,8 @@ Audio feedback system using pygame with WAV files in assets/:
 - **worker_name**: Application version identifier
 
 ### Barcode Validation Rules
-The system uses configurable CSV-based validation rules (referenced in README.txt):
-- Rules defined by RuleName groups with 5 ScanPosition entries each
+Legacy documentation references `validation_rules.csv`, but the current code uses `assets/Item.csv` as the product catalog and applies barcode parsing/step validation in `Label_Match.py`.
+- Current validation uses the 6-step contract in `Label_Match.py`; old RuleName/5-position descriptions are legacy README context only
 - Length validation (MinLength/MaxLength) for each scan position
 - String slicing (SliceStart/SliceEnd) for code extraction
 - First scan determines which rule set applies based on barcode length

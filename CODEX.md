@@ -6,11 +6,11 @@
 
 ## 프로젝트 목적
 
-`Label_Match`는 포장실 바코드 세트 검증용 Windows Tkinter 앱이다. 현품표 1회와 제품/포장 라벨 4회를 총 5단계로 스캔하고, 품목 불일치, 형식 오류, 중복 스캔을 감지해 작업 로그를 `C:\Sync`에 남긴다.
+`Label_Match`는 포장실 바코드 세트 검증용 Windows Tkinter 앱이다. 현재 코드 기준 일반 작업은 현품표 1회, 제품 4회, 최종 라벨지 1회를 총 6단계로 스캔하고, 품목 불일치, 형식 오류, 중복 스캔을 감지해 작업 로그를 남긴다. 최신 기본 저장소는 `%ProgramData%\KMTech\Label_Match\data`이며, `LABEL_MATCH_SAVE_DIR`로 override할 수 있다.
 
 ## 주요 기능
 
-- 현품표와 제품/포장 라벨을 순서대로 스캔해 하나의 세트를 완성한다.
+- 현품표, 제품 4개, 최종 라벨지를 순서대로 스캔해 하나의 세트를 완성한다.
 - `assets/Item.csv`를 기준으로 품목명/규격 정보를 조회한다.
 - 신규 `CLC|SPC|PHS` 형식과 생산일자 `6D` 필드 중심의 검증 로직을 포함한다.
 - 사운드 피드백, 히스토리/집계 UI, 완료 트레이 취소를 제공한다.
@@ -48,15 +48,16 @@ python -m py_compile Label_Match.py
 ## 데이터와 설정 위치
 
 - 앱 설정: `config/app_settings.json`
-- 기본 저장 루트: 코드 기준 `C:\Sync`
-- 현재 세트 상태: `C:\Sync\_current_set_state_packaging.json`
-- 작업 이벤트 로그: `C:\Sync\포장실작업이벤트로그_[unique_id]_[YYYYMMDD].csv`
+- 기본 저장 루트: `%ProgramData%\KMTech\Label_Match\data`
+- override: `LABEL_MATCH_SAVE_DIR`
+- 현재 세트 상태: `%ProgramData%\KMTech\Label_Match\data\_current_set_state_packaging.json`
+- 작업 이벤트 로그: `%ProgramData%\KMTech\Label_Match\data\포장실작업이벤트로그_[unique_id]_[YYYYMMDD].csv`
 - 품목 DB: `assets/Item.csv`
 
 ## 작업 시 주의점
 
 - `README.txt`는 `validation_rules.csv` 기반 규칙을 설명하지만 현재 폴더에는 해당 파일이 없고 실제 코드는 `assets/Item.csv` 중심이다.
-- GUI 실행은 사운드 장치, `C:\Sync` 쓰기 권한, GitHub 업데이트 네트워크 접근의 영향을 받는다.
+- GUI 실행은 사운드 장치, `%ProgramData%\KMTech\Label_Match\data` 쓰기 권한, GitHub 업데이트 네트워크 접근의 영향을 받는다.
 - 단일 대형 파일이므로 기능 수정 전 관련 메서드와 상태 변수 흐름을 먼저 찾아야 한다.
 - 스캔 순서와 상태 저장 로직은 운영 중단 복구와 연결되어 있어 단순 UI 변경도 데이터 흐름을 확인한다.
-- 2026-06-11 pull 결과: `origin/main` 최신, 작업트리 clean.
+- 저장소 상태 메모는 시간 민감 정보다. 작업 전 `git status -sb`와 remote 상태를 새로 확인한다.

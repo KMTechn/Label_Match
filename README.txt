@@ -5,6 +5,13 @@
 **문서 버전: 2.0**
 **작성일: 2025-07-03**
 
+**최신 코드 주의 (2026-06-28):** 현재 `Label_Match.py`는 이 문서의
+`validation_rules.csv` 기반 규칙 파일을 기준으로 동작하지 않는다. 현재 기준
+데이터는 `assets/Item.csv`이며, 작업 로그는 `%ProgramData%\KMTech\Label_Match\data`
+아래 `포장실작업이벤트로그_[unique_id]_[YYYYMMDD].csv`에
+`timestamp,worker_name,event,details` 형식으로 기록된다. 이 문서의 나머지
+규칙 파일 설명은 legacy 참고로만 사용한다.
+
 이 문서는 '바코드 검증 시스템'의 바코드 판별 규칙을 정의하는
 `validation_rules.csv` 파일의 사용법을 설명합니다.
 

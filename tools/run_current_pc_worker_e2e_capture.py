@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROGRAM_ROOT = ROOT.parent
 DEFAULT_OUTPUT_ROOT = ROOT / "outputs"
 DEFAULT_LABEL_MATCH_DATA = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "KMTech" / "Label_Match" / "data"
+PRODUCT_SAMPLE_COUNT = 4
+TOTAL_SCAN_COUNT = PRODUCT_SAMPLE_COUNT + 2
 CURRENT_PC_DIRECT_SYNC_ROOT = (
     Path(os.environ.get("ProgramData", r"C:\ProgramData"))
     / "KMTech"
@@ -169,15 +171,13 @@ def append_past_history_row(module, data_manager, marker):
         "item_code": f"VALID-PAST-{marker}",
         "item_name": "CODEX E2E PAST",
         "spec": "E2E",
-        "scan_count": 5,
+        "scan_count": TOTAL_SCAN_COUNT,
         "scanned_product_barcodes": [
             f"VALID-PAST-{marker}",
-            f"PRODUCT_VALID-PAST-{marker}_1",
-            f"PRODUCT_VALID-PAST-{marker}_2",
-            f"PRODUCT_VALID-PAST-{marker}_3",
+            *(f"PRODUCT_VALID-PAST-{marker}_{index}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
             f"FINAL_LABEL_VALID-PAST-{marker}\x1D6D{yesterday.strftime('%Y%m%d')}",
         ],
-        "parsed_product_barcodes": [f"VALID-PAST-{marker}"] * 5,
+        "parsed_product_barcodes": [f"VALID-PAST-{marker}"] * TOTAL_SCAN_COUNT,
         "work_time_sec": 1.0,
         "error_count": 0,
         "has_error_or_reset": False,
@@ -216,14 +216,12 @@ def complete_full_tray(app, marker, capture, module, prefix="VALID-E2E"):
     master = f"{prefix}-{marker}"
     values = [
         master,
-        f"PRODUCT_{master}_1",
-        f"PRODUCT_{master}_2",
-        f"PRODUCT_{master}_3",
+        *(f"PRODUCT_{master}_{index}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
         f"FINAL_LABEL_{master}_{marker}\x1D6D{today}",
     ]
     for index, value in enumerate(values, 1):
         scan(app, value)
-        if index in {1, 4}:
+        if index in {1, PRODUCT_SAMPLE_COUNT + 1}:
             capture(f"full_tray_step_{index}_{master}")
     pump(app, 0.5)
     capture(f"full_tray_completed_{master}")
@@ -334,9 +332,7 @@ def main(argv=None):
         today = datetime.now().strftime("%Y%m%d")
         for value in [
             encoded_injection,
-            f"PRODUCT_{injection_code}_1",
-            f"PRODUCT_{injection_code}_2",
-            f"PRODUCT_{injection_code}_3",
+            *(f"PRODUCT_{injection_code}_{index}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
             f"FINAL_LABEL_{injection_code}_{marker}\x1D6D{today}",
         ]:
             scan(app, value)

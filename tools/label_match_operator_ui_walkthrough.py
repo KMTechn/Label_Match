@@ -38,6 +38,8 @@ if str(ROOT) not in sys.path:
 
 GS = "\x1D"
 REAL_MASTER = "AAA2270730100"
+PRODUCT_SAMPLE_COUNT = 4
+TOTAL_SCAN_COUNT = PRODUCT_SAMPLE_COUNT + 2
 
 
 def _sha256_file(path: Path) -> str:
@@ -243,6 +245,24 @@ def _capture_window(app: Any, output_dir: Path, name: str, note: str = "") -> di
         }
     )
     return info
+
+
+def _apply_requested_geometry(app: Any, width: int, height: int, x: int, y: int, *, fit_outer_to_geometry: bool = False) -> None:
+    app.state("normal")
+    app.geometry(f"{width}x{height}+{x}+{y}")
+    app.update_idletasks()
+    app.update()
+    if not fit_outer_to_geometry:
+        return
+    hwnd = int(app.winfo_id())
+    try:
+        hwnd = int(win32gui.GetAncestor(hwnd, win32con.GA_ROOT))
+    except Exception:
+        pass
+    win32gui.MoveWindow(hwnd, x, y, width, height, True)
+    app.update_idletasks()
+    app.update()
+    time.sleep(0.1)
 
 
 def _find_process_window(title_contains: str | None = None, fallback_foreground: bool = False) -> int:
@@ -623,15 +643,13 @@ def _write_past_row(label_match_module: Any, app: Any, marker: str) -> Path:
         "item_code": REAL_MASTER,
         "item_name": "PAST_UI_WALKTHROUGH",
         "spec": "E2E",
-        "scan_count": 5,
+        "scan_count": TOTAL_SCAN_COUNT,
         "scanned_product_barcodes": [
             f"PAST-{marker}",
-            f"PRODUCT_PAST-{marker}_1",
-            f"PRODUCT_PAST-{marker}_2",
-            f"PRODUCT_PAST-{marker}_3",
+            *(f"PRODUCT_PAST-{marker}_{index}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
             f"FINAL_LABEL_PAST-{marker}{GS}6D{yesterday.strftime('%Y%m%d')}",
         ],
-        "parsed_product_barcodes": [f"PAST-{marker}"] * 5,
+        "parsed_product_barcodes": [f"PAST-{marker}"] * TOTAL_SCAN_COUNT,
         "final_result": label_match_module.LABEL_MATCH_RESULT_PASS,
         "result_display": label_match_module.LABEL_MATCH_RESULT_PASS,
         "production_date": yesterday.strftime("%Y-%m-%d"),
@@ -693,9 +711,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         app = label_match_module.Label_Match(run_tests=False)
         app._play_error_siren_loop = lambda: None
-        app.state("normal")
-        app.geometry(f"{width}x{height}+{x}+{y}")
-        app.update()
+        _apply_requested_geometry(app, width, height, x, y, fit_outer_to_geometry=args.fit_outer_to_geometry)
         _wait_until(app, lambda: getattr(app, "initialized_successfully", False), 25, "app initialized")
         _wait_history_idle(app)
         screenshots.append(_capture_window(app, screenshot_dir, "00_startup_idle", "startup idle as first operator"))
@@ -711,11 +727,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             _pump(app, 0.6)
             actions.append({"name": "settings_worker_name_dialog_checked", "worker_name_candidate": worker_name})
 
+        app._show_about_window()
+        _pump(app, 0.5)
+        screenshots.append(_capture_active(screenshot_dir, "02b_about_window", "about dialog visible", title_contains="정보"))
+        for child in app.winfo_children():
+            try:
+                if "정보" in child.title():
+                    child.destroy()
+            except Exception:
+                pass
+        _pump(app, 0.4)
+        actions.append({"name": "about_dialog_checked"})
+
         values = [
             REAL_MASTER,
-            f"PRODUCT_{REAL_MASTER}_1_{marker}",
-            f"PRODUCT_{REAL_MASTER}_2_{marker}",
-            f"PRODUCT_{REAL_MASTER}_3_{marker}",
+            *(f"PRODUCT_{REAL_MASTER}_{index}_{marker}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
             f"FINAL_LABEL_{REAL_MASTER}_{marker}{GS}6D{today}",
         ]
         for index, value in enumerate(values, 1):
@@ -750,9 +776,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         cancel_master = "AAA2270760100"
         cancel_values = [
             cancel_master,
-            f"PRODUCT_{cancel_master}_1_{marker}",
-            f"PRODUCT_{cancel_master}_2_{marker}",
-            f"PRODUCT_{cancel_master}_3_{marker}",
+            *(f"PRODUCT_{cancel_master}_{index}_{marker}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
             f"FINAL_LABEL_{cancel_master}_{marker}{GS}6D{today}",
         ]
         for value in cancel_values:
@@ -828,14 +852,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         app = label_match_module.Label_Match(run_tests=False)
         restore_thread.join(timeout=5)
         app._play_error_siren_loop = lambda: None
-        app.state("normal")
-        app.geometry(f"{width}x{height}+{x}+{y}")
-        app.update()
+        _apply_requested_geometry(app, width, height, x, y, fit_outer_to_geometry=args.fit_outer_to_geometry)
         _wait_until(app, lambda: getattr(app, "initialized_successfully", False), 25, "app reinitialized")
         _wait_history_idle(app)
         screenshots.append(_capture_window(app, screenshot_dir, "18_after_restore", "after accepting restore prompt"))
-        _operator_scan(app, f"PRODUCT_{restore_master}_RESTORE_2_{marker}")
-        _operator_scan(app, f"PRODUCT_{restore_master}_RESTORE_3_{marker}")
+        for index in range(2, PRODUCT_SAMPLE_COUNT + 1):
+            _operator_scan(app, f"PRODUCT_{restore_master}_RESTORE_{index}_{marker}")
         _operator_scan(app, f"FINAL_LABEL_{restore_master}_RESTORE_{marker}{GS}6D{today}")
         screenshots.append(_capture_window(app, screenshot_dir, "19_restored_set_completed", "restored set completed"))
         actions.append({"name": "restore_prompt_and_complete", "master": restore_master})
@@ -925,6 +947,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "screenshots": screenshots,
             "issue_codes": issue_codes,
             "geometry": args.geometry,
+            "fit_outer_to_geometry": args.fit_outer_to_geometry,
             "uses_run_tests_false": True,
             "entry_return_binding_used": True,
             "config_restored": config_restore_ok,
@@ -956,6 +979,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run operator-style Label_Match UI walkthrough")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--geometry", default="1280x900+900+-1390")
+    parser.add_argument("--fit-outer-to-geometry", action="store_true", help="Move the top-level window outer rect to the requested geometry after Tk layout.")
     args = parser.parse_args()
     report = run(args)
     report_path = Path(args.output_dir).resolve() / "label_match_operator_ui_walkthrough_report.json"

@@ -24,6 +24,10 @@ import unittest
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
 LABEL_MATCH_SCAN_CONTRACT_VERSION = "label_match_current_v1"
+LABEL_MATCH_PRODUCT_SAMPLE_COUNT = 4
+LABEL_MATCH_MASTER_SCAN_POSITION = 1
+LABEL_MATCH_FINAL_LABEL_SCAN_POSITION = LABEL_MATCH_PRODUCT_SAMPLE_COUNT + 2
+LABEL_MATCH_TOTAL_SCAN_COUNT = LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
 LABEL_MATCH_RESULT_PASS = "통과"
 LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
@@ -56,11 +60,11 @@ def _label_match_barcode_role(scan_position):
         position = int(scan_position)
     except Exception:
         return "unknown"
-    if position == 1:
+    if position == LABEL_MATCH_MASTER_SCAN_POSITION:
         return "material_master_label"
-    if position in {2, 3, 4}:
+    if LABEL_MATCH_MASTER_SCAN_POSITION < position < LABEL_MATCH_FINAL_LABEL_SCAN_POSITION:
         return "product"
-    if position == 5:
+    if position == LABEL_MATCH_FINAL_LABEL_SCAN_POSITION:
         return "final_packaging_label"
     return "unknown"
 
@@ -104,7 +108,7 @@ def _label_match_manual_complete_block_reason(current_set_info):
     scan_count = len(current.get("raw") or current.get("parsed") or [])
     if scan_count < 2:
         return "manual_complete_requires_product_scan"
-    if scan_count >= 5:
+    if scan_count >= LABEL_MATCH_TOTAL_SCAN_COUNT:
         return "manual_complete_only_for_partial_sets"
     if current.get("has_error_or_reset") or current.get("error_count", 0):
         return "manual_complete_blocked_after_error"
@@ -128,7 +132,7 @@ def _label_match_decode_possible_base64_label(raw_value):
         return text
 
 
-def _label_match_new_format_identity_key(raw_value):
+def _label_match_parse_new_format_fields(raw_value):
     decoded = _label_match_decode_possible_base64_label(raw_value)
     if '|' not in decoded or '=' not in decoded:
         return None
@@ -145,7 +149,31 @@ def _label_match_new_format_identity_key(raw_value):
         return None
     if not all(fields.get(key) for key in ('CLC', 'SPC', 'PHS')):
         return None
+    return fields
+
+
+def _label_match_new_format_identity_key(raw_value):
+    fields = _label_match_parse_new_format_fields(raw_value)
+    if not fields:
+        return None
     return f"CLC={fields['CLC']}|SPC={fields['SPC']}|PHS={fields['PHS']}"
+
+
+def _label_match_inspection_trace_from_master_label(raw_value):
+    fields = _label_match_parse_new_format_fields(raw_value) or {}
+    trace = {
+        "input_tag_id": str(fields.get("ITG") or "").strip(),
+        "input_tag_label_id": str(fields.get("LBL") or "").strip(),
+        "input_tag_core_hash": str(fields.get("HSH_CORE") or "").strip(),
+        "input_tag_label_hash": str(fields.get("HSH_LABEL") or "").strip(),
+        "master_label_phase": str(fields.get("PHS") or "").strip(),
+    }
+    if trace["input_tag_id"]:
+        trace["inspection_session_key"] = trace["input_tag_id"]
+    identity_key = _label_match_new_format_identity_key(raw_value)
+    if identity_key:
+        trace["master_label_identity_key"] = identity_key
+    return {key: value for key, value in trace.items() if value}
 
 
 def _label_match_unique_master_index_keys(raw_value):
@@ -231,6 +259,19 @@ def _enrich_label_match_event(event_type, details, pc_id):
     if event_type == "TRAY_COMPLETE":
         raw_scans = list(enriched.get("scanned_product_barcodes") or [])
         parsed_scans = list(enriched.get("parsed_product_barcodes") or raw_scans)
+        if raw_scans:
+            master_label_fields = _label_match_parse_new_format_fields(raw_scans[0]) or {}
+            if master_label_fields:
+                enriched.setdefault("master_label_fields", master_label_fields)
+                enriched.setdefault("master_label_identity_key", _label_match_new_format_identity_key(raw_scans[0]))
+            inspection_trace = _label_match_inspection_trace_from_master_label(raw_scans[0])
+            if any(inspection_trace.get(key) for key in ("input_tag_id", "input_tag_label_id", "input_tag_core_hash", "input_tag_label_hash")):
+                for key in ("input_tag_id", "input_tag_label_id", "input_tag_core_hash", "input_tag_label_hash"):
+                    if key in inspection_trace:
+                        enriched.setdefault(key, inspection_trace[key])
+                if inspection_trace.get("input_tag_id"):
+                    enriched.setdefault("source_session_id", inspection_trace["input_tag_id"])
+                enriched.setdefault("inspection_trace", inspection_trace)
         barcode_roles = [
             _label_match_barcode_projection(
                 raw_scans[index] if index < len(raw_scans) else "",
@@ -245,7 +286,13 @@ def _enrich_label_match_event(event_type, details, pc_id):
             "product_sample_barcodes",
             [row["product_barcode"] for row in barcode_roles if row.get("product_barcode")],
         )
-        if enriched.get("is_partial_submission"):
+        if not _label_match_tray_complete_passed(enriched):
+            enriched.setdefault("quantity_basis", "PACKAGING_SET")
+            enriched.setdefault("measure_code", "PACKAGING_SET_COUNT")
+            enriched["packaging_set_count"] = 0
+            enriched["downstream_count_excluded"] = True
+            enriched.setdefault("downstream_count_exclusion_reason", "LABEL_MATCH_FAILED_OR_MISMATCH")
+        elif enriched.get("is_partial_submission"):
             enriched.setdefault("quantity_basis", "PARTIAL_SUBMISSION")
             enriched.setdefault("measure_code", "PACKAGING_SET_COUNT")
             enriched.setdefault("packaging_set_count", 0)
@@ -277,7 +324,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.5" # [수정] Item.csv에 신규 아이템 추가 (A16, A17, A19, A20, A21)
+APP_VERSION = "v2.0.6" # [수정] 포장 6단계 스캔 및 이력/trace 표시 개선
 
 def check_for_updates():
     """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
@@ -694,7 +741,24 @@ class Label_Match(tk.Tk):
             "dialog_scale": 1.08,
         },
     }
-    STEP_NAMES = ("현품표", "제품1", "제품2", "제품3", "라벨지")
+    PRODUCT_SAMPLE_COUNT = LABEL_MATCH_PRODUCT_SAMPLE_COUNT
+    TOTAL_SCAN_COUNT = LABEL_MATCH_TOTAL_SCAN_COUNT
+    FINAL_LABEL_SCAN_POSITION = LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
+    CURRENT_SET_CANCEL_ACTION_TEXT = "현재 세트 취소"
+    COMPLETED_TRAY_CANCEL_ACTION_TEXT = "완료된 트레이 취소"
+    MANUAL_COMPLETE_ACTION_TEXT = "현재 세트 수동 완료"
+    HISTORY_DELETE_ACTION_TEXT = "선택 항목 삭제"
+    CURRENT_SET_CANCEL_BUTTON_TEXT = f"{CURRENT_SET_CANCEL_ACTION_TEXT} (F1)"
+    COMPLETED_TRAY_CANCEL_BUTTON_TEXT = f"{COMPLETED_TRAY_CANCEL_ACTION_TEXT} (F2)"
+    MANUAL_COMPLETE_BUTTON_TEXT = "현재 세트 완료 (F3)"
+    CURRENT_SET_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
+    COMPLETED_TRAY_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
+    MANUAL_COMPLETE_BUTTON_STYLE = "Action.TButton"
+    STEP_NAMES = (
+        "현품표",
+        *(f"제품{index}" for index in range(1, LABEL_MATCH_PRODUCT_SAMPLE_COUNT + 1)),
+        "라벨지",
+    )
     BARCODE_DISPLAY_LIMITS = {
         "small": 14,
         "compact": 16,
@@ -703,11 +767,16 @@ class Label_Match(tk.Tk):
     }
     HISTORY_HEADING_LABELS = {
         "Set": ("#",),
-        "Input1": ("현품표", "현품"),
-        "Input2": ("제품1", "P1"),
-        "Input3": ("제품2", "P2"),
-        "Input4": ("제품3", "P3"),
-        "Input5": ("라벨지", "라벨"),
+        **{
+            f"Input{index}": (
+                ("현품표", "현품")
+                if index == LABEL_MATCH_MASTER_SCAN_POSITION
+                else ("라벨지", "라벨")
+                if index == LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
+                else (f"제품{index - 1}", f"P{index - 1}")
+            )
+            for index in range(1, LABEL_MATCH_TOTAL_SCAN_COUNT + 1)
+        },
         "Result": ("결과",),
         "Timestamp": ("시간", "시각"),
     }
@@ -718,7 +787,7 @@ class Label_Match(tk.Tk):
     }
     MANUAL_COMPLETE_HINTS = {
         "manual_complete_requires_product_scan": "제품 1개 이상 스캔 후 가능",
-        "manual_complete_only_for_partial_sets": "이미 5개 완료됨",
+        "manual_complete_only_for_partial_sets": f"이미 {LABEL_MATCH_TOTAL_SCAN_COUNT}개 완료됨",
         "manual_complete_blocked_after_error": "오류 세트는 불가",
     }
     class FILES:
@@ -808,7 +877,10 @@ class Label_Match(tk.Tk):
         self.history_col_widths = {}
         self.sash_position = None
         self._load_ui_persistence_settings()
-        self.hist_proportions = {"Set": 4, "Input1": 14, "Input2": 14, "Input3": 14, "Input4": 14, "Input5": 14, "Result": 8, "Timestamp": 18}
+        self.hist_proportions = {"Set": 4, "Input1": 14}
+        for index in range(2, self.TOTAL_SCAN_COUNT + 1):
+            self.hist_proportions[f"Input{index}"] = 10
+        self.hist_proportions.update({"Result": 8, "Timestamp": 14})
         self.summary_proportions = {"Code": 70, "Phase": 12, "Count": 18}
         self.default_font_name = self.ui_cfg.get("default_font", "Malgun Gothic")
         self.style = ttk.Style(self)
@@ -1487,7 +1559,8 @@ class Label_Match(tk.Tk):
             self._set_summary_date_label(text=f"날짜 {datetime.now().strftime('%Y-%m-%d')}")
         self._apply_adaptive_header_fitting()
 
-        self.history_tree.insert("", "end", iid="loading", values=("", "기록을 불러오는 중입니다...", "", "", "", "", "", ""), tags=("in_progress",))
+        loading_values = ("", "기록을 불러오는 중입니다...", *[""] * (self.TOTAL_SCAN_COUNT - 1), "", "")
+        self.history_tree.insert("", "end", iid="loading", values=loading_values, tags=("in_progress",))
         loader_thread = threading.Thread(target=self._async_load_history_task, args=(self.history_queue, target_date, updates_active_state, load_generation), daemon=True)
         loader_thread.start()
 
@@ -1528,11 +1601,17 @@ class Label_Match(tk.Tk):
                             if event == self.Events.TRAY_COMPLETE:
                                 displays = details.get('parsed_product_barcodes', [])
                                 first_scan = displays[0] if displays else "N/A"
-                                other_scans = displays[1:5]
+                                other_scans = displays[1:self.TOTAL_SCAN_COUNT]
 
                                 timestamp_str = datetime.fromisoformat(row.get('timestamp', '')).strftime('%H:%M:%S')
                                 result_display = _label_match_tray_complete_result(details)
-                                values_to_display = (set_id, first_scan, *other_scans + [""]*(4-len(other_scans)), result_display, timestamp_str)
+                                values_to_display = (
+                                    set_id,
+                                    first_scan,
+                                    *other_scans + [""] * ((self.TOTAL_SCAN_COUNT - 1) - len(other_scans)),
+                                    result_display,
+                                    timestamp_str,
+                                )
 
                                 completed_sets[set_id] = {'values': values_to_display, 'tags': ("success" if _label_match_tray_complete_passed(details) else "error",), 'details': details}
 
@@ -1659,9 +1738,10 @@ class Label_Match(tk.Tk):
                 "steps": [
                     ("reset", None),
                     ("scan", "VALID-MASTER1"),
-                    ("scan", "PRODUCT_VALID-MASTER1_1"),
-                    ("scan", "PRODUCT_VALID-MASTER1_2"),
-                    ("scan", "PRODUCT_VALID-MASTER1_3"),
+                    *[
+                        ("scan", f"PRODUCT_VALID-MASTER1_{index}")
+                        for index in range(1, self.PRODUCT_SAMPLE_COUNT + 1)
+                    ],
                     ("scan", f"FINAL_LABEL_VALID-MASTER1\x1D6D{today}"),
                     ("check_history_len", 1),
                     ("check_last_history_result", self.Results.PASS),
@@ -1688,8 +1768,10 @@ class Label_Match(tk.Tk):
                     ("scan", "PRODUCT_DUPE_TEST_1"),
                     ("check_current_scan_count", 2),
                     ("check_has_error_flag", True),
-                    ("scan", "PRODUCT_DUPE_TEST_2"),
-                    ("scan", "PRODUCT_DUPE_TEST_3"),
+                    *[
+                        ("scan", f"PRODUCT_DUPE_TEST_{index}")
+                        for index in range(2, self.PRODUCT_SAMPLE_COUNT + 1)
+                    ],
                     ("scan", f"FINAL_LABEL_VALID-MASTER1_DUPE\x1D6D{today}"),
                     ("check_history_len", 3),
                     ("check_last_history_result", self.Results.PASS),
@@ -1713,9 +1795,10 @@ class Label_Match(tk.Tk):
                     ("scan", base64.b64encode('CLC=CLC-001|SPC=고객사-제품1|PHS=1'.encode('utf-8')).decode('utf-8')),
                     ("check_current_scan_count", 1),
                     ("check_item_override", "고객사-제품1"),
-                    ("scan", "PRODUCT_CLC-001_1"),
-                    ("scan", "PRODUCT_CLC-001_2"),
-                    ("scan", "PRODUCT_CLC-001_3"),
+                    *[
+                        ("scan", f"PRODUCT_CLC-001_{index}")
+                        for index in range(1, self.PRODUCT_SAMPLE_COUNT + 1)
+                    ],
                     ("scan", f"FINAL_LABEL_CLC-001\x1D6D{today}"),
                     ("check_history_len", 4),
                     ("check_summary_count", ("CLC-001", "1", 1)),
@@ -1809,7 +1892,7 @@ class Label_Match(tk.Tk):
                 children = self.history_tree.get_children()
                 if children:
                     last_item = self.history_tree.item(children[-1])
-                    actual_value = last_item['values'][6]
+                    actual_value = self._history_result_value(last_item.get('values') or ())
                     success = (actual_value == expected_value)
             elif check_action == "check_summary_count":
                 code, phase, count = expected_value
@@ -1874,9 +1957,7 @@ class Label_Match(tk.Tk):
         today = datetime.now().strftime('%Y%m%d')
         demo_barcodes = [
             master_code,
-            f"PRODUCT_{master_code}_DEMO1",
-            f"PRODUCT_{master_code}_DEMO2",
-            f"PRODUCT_{master_code}_DEMO3",
+            *(f"PRODUCT_{master_code}_DEMO{index}" for index in range(1, self.PRODUCT_SAMPLE_COUNT + 1)),
             f"FINAL_LABEL_{master_code}_DEMO\x1D6D{today}"
         ]
 
@@ -1980,7 +2061,7 @@ class Label_Match(tk.Tk):
                     return
                 self._update_on_success_scan(raw_input, raw_input)
 
-        elif 2 <= scan_pos <= 5:
+        elif 2 <= scan_pos <= self.TOTAL_SCAN_COUNT:
             if scan_pos == 2 and raw_input.upper().startswith("TEST_LOG_"):
                 parts = raw_input.split('_')
                 if len(parts) == 3 and parts[2].isdigit():
@@ -2000,14 +2081,14 @@ class Label_Match(tk.Tk):
                     return
 
             master_code = self.current_set_info['parsed'][0]
-            if scan_pos < 5 and len(raw_input) <= len(master_code):
+            if scan_pos < self.FINAL_LABEL_SCAN_POSITION and len(raw_input) <= len(master_code):
                 self._handle_input_error(
                     raw_input,
                     title="[바코드 종류 오류]",
                     reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
                 )
                 return
-            if scan_pos == 5 and len(raw_input) < 31:
+            if scan_pos == self.FINAL_LABEL_SCAN_POSITION and len(raw_input) < 31:
                 self._handle_input_error(
                     raw_input,
                     title="[라벨 형식 오류]",
@@ -2032,7 +2113,7 @@ class Label_Match(tk.Tk):
                 )
                 return
             production_date = None
-            if scan_pos == 5:
+            if scan_pos == self.FINAL_LABEL_SCAN_POSITION:
                 production_date = self._extract_production_date(raw_input)
                 if not production_date:
                     self._handle_input_error(
@@ -2068,7 +2149,7 @@ class Label_Match(tk.Tk):
 
         num_scans = len(self.current_set_info['parsed'])
         next_text = self._next_action_text(num_scans)
-        self.update_big_display(next_text, "green" if num_scans < 5 else "primary")
+        self.update_big_display(next_text, "green" if num_scans < self.TOTAL_SCAN_COUNT else "primary")
         if not self.is_running_simulation:
             self._play_sound(f"scan_{num_scans}")
         self.progress_bar['value'] = num_scans
@@ -2085,7 +2166,7 @@ class Label_Match(tk.Tk):
             },
         )
         self._save_current_set_state()
-        if num_scans == 5:
+        if num_scans == self.TOTAL_SCAN_COUNT:
             self._finalize_set(self.Results.PASS)
 
     def _finalize_set(self, result, error_details="", is_manual_complete=False):
@@ -2107,6 +2188,10 @@ class Label_Match(tk.Tk):
         production_date = self.current_set_info.get('production_date')
         phase = self.current_set_info.get('phase') or '-'
         set_id_for_log = str(self.current_set_info['id'])
+        master_label_raw = raw_scans_to_log[0] if raw_scans_to_log else ""
+        master_label_fields = _label_match_parse_new_format_fields(master_label_raw) or {}
+        master_label_identity_key = _label_match_new_format_identity_key(master_label_raw)
+        inspection_trace = _label_match_inspection_trace_from_master_label(master_label_raw)
 
         details = {
             'master_label_code': item_code, 'item_code': item_code,
@@ -2128,6 +2213,17 @@ class Label_Match(tk.Tk):
             'set_id': set_id_for_log,
             'phase': phase
         }
+        if master_label_fields:
+            details['master_label_fields'] = master_label_fields
+        if master_label_identity_key:
+            details['master_label_identity_key'] = master_label_identity_key
+        if any(inspection_trace.get(key) for key in ("input_tag_id", "input_tag_label_id", "input_tag_core_hash", "input_tag_label_hash")):
+            for key in ("input_tag_id", "input_tag_label_id", "input_tag_core_hash", "input_tag_label_hash"):
+                if key in inspection_trace:
+                    details[key] = inspection_trace[key]
+            if inspection_trace.get('input_tag_id'):
+                details.setdefault('source_session_id', inspection_trace['input_tag_id'])
+            details['inspection_trace'] = inspection_trace
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
         self._flush_data_manager_if_supported()
 
@@ -2144,8 +2240,14 @@ class Label_Match(tk.Tk):
             final_timestamp = datetime.now().strftime('%H:%M:%S')
 
             first_scan_display = parsed_scans_to_log[0] if parsed_scans_to_log else ""
-            other_scans_display = parsed_scans_to_log[1:5]
-            values_to_update = (display_id, first_scan_display, *other_scans_display + [""]*(4-len(other_scans_display)), result, final_timestamp)
+            other_scans_display = parsed_scans_to_log[1:self.TOTAL_SCAN_COUNT]
+            values_to_update = (
+                display_id,
+                first_scan_display,
+                *other_scans_display + [""] * ((self.TOTAL_SCAN_COUNT - 1) - len(other_scans_display)),
+                result,
+                final_timestamp,
+            )
             values_to_update = self._history_values_for_display(values_to_update)
 
             self.history_tree.item(set_id_for_log, values=values_to_update, tags=("success" if result == self.Results.PASS else "error",))
@@ -2304,10 +2406,10 @@ class Label_Match(tk.Tk):
 
                 if deleted_details:
                     result = _label_match_tray_complete_result(deleted_details)
-                    if result != self.Results.PASS and len(values) > 6:
-                        result = values[6]
+                    if result != self.Results.PASS:
+                        result = self._history_result_value(values) or result
                 else:
-                    result = values[6] if len(values) > 6 else None
+                    result = self._history_result_value(values)
                 if deleted_details and result == self.Results.PASS:
                     production_date = deleted_details.get('production_date')
                     passed_code = deleted_details.get('item_code')
@@ -2421,7 +2523,7 @@ class Label_Match(tk.Tk):
         self.progress_bar['value'] = 0
         if self.initialized_successfully:
             self._update_status_label()
-            self.update_big_display("1/5 현품표 스캔", "")
+            self.update_big_display(self._idle_instruction_text(), "")
             self.entry.focus_set()
         return True
 
@@ -2694,18 +2796,16 @@ class Label_Match(tk.Tk):
 
                 scanned_barcodes = [
                     f"CLC={master_code}|SPC={item_info['Item Name']}|PHS={phase}",
-                    f"PRODUCT_TEST_{master_code}_{set_id}_1",
-                    f"PRODUCT_TEST_{master_code}_{set_id}_2",
-                    f"PRODUCT_TEST_{master_code}_{set_id}_3",
+                    *(f"PRODUCT_TEST_{master_code}_{set_id}_{index}" for index in range(1, self.PRODUCT_SAMPLE_COUNT + 1)),
                     f"FINAL_LABEL_{master_code}_{set_id}\x1D6D{production_date.replace('-', '')}"
                 ]
-                parsed_scans = [master_code] * 5
+                parsed_scans = [master_code] * self.TOTAL_SCAN_COUNT
 
                 details = {
                     'set_id': set_id,
                     'master_label_code': master_code, 'item_code': master_code,
                     'item_name': item_info.get("Item Name"), 'spec': item_info.get("Spec"),
-                    'scan_count': 5,
+                    'scan_count': self.TOTAL_SCAN_COUNT,
                     'scanned_product_barcodes': scanned_barcodes,
                     'parsed_product_barcodes': parsed_scans,
                     'work_time_sec': (end_time - start_time).total_seconds(),
@@ -2735,12 +2835,12 @@ class Label_Match(tk.Tk):
 
         parsed_scans = details['parsed_product_barcodes']
         first_scan = parsed_scans[0] if parsed_scans else ""
-        other_scans = parsed_scans[1:5]
+        other_scans = parsed_scans[1:self.TOTAL_SCAN_COUNT]
 
         values_to_display = (
             len(self.history_tree.get_children()) + 1,
             first_scan,
-            *other_scans,
+            *other_scans + [""] * ((self.TOTAL_SCAN_COUNT - 1) - len(other_scans)),
             self.Results.PASS,
             details['end_time'].strftime('%H:%M:%S')
         )
@@ -2871,10 +2971,10 @@ class Label_Match(tk.Tk):
         ttk.Label(keys_frame, text="주요 단축키", font=title_font).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 5))
 
         key_map = {
-            "현재 세트 취소": "F1",
-            "완료된 트레이 취소": "F2",
-            "현재 세트 수동 완료": "F3",
-            "선택 항목 삭제": "Delete",
+            self.CURRENT_SET_CANCEL_ACTION_TEXT: "F1",
+            self.COMPLETED_TRAY_CANCEL_ACTION_TEXT: "F2",
+            self.MANUAL_COMPLETE_ACTION_TEXT: "F3",
+            f"{self.HISTORY_DELETE_ACTION_TEXT} (기록 목록 선택 시)": "Delete",
             "UI 확대/축소": "Ctrl + 마우스 휠"
         }
         
@@ -2943,6 +3043,25 @@ class Label_Match(tk.Tk):
                 self.history_tree.selection_set(iid)
             self._render_history_detail(iid)
             self.history_context_menu.post(event.x_root, event.y_root)
+
+    def _history_tree_has_keyboard_focus(self, event=None):
+        history_tree = self.__dict__.get("history_tree")
+        if history_tree is None:
+            return False
+        event_widget = getattr(event, "widget", None)
+        if event_widget is history_tree:
+            return True
+        try:
+            focus_widget = self.focus_get()
+        except Exception:
+            focus_widget = None
+        return focus_widget is history_tree
+
+    def _delete_selected_row_from_shortcut(self, event=None):
+        if not self._history_tree_has_keyboard_focus(event):
+            return None
+        self._delete_selected_row()
+        return "break"
 
     def _selected_history_iid(self):
         if "history_tree" not in self.__dict__:
@@ -3136,17 +3255,54 @@ class Label_Match(tk.Tk):
         except TclError:
             pass
 
+    @classmethod
+    def _history_barcode_columns(cls):
+        return tuple(f"Input{index}" for index in range(1, cls.TOTAL_SCAN_COUNT + 1))
+
+    @classmethod
+    def _history_result_index(cls):
+        return 1 + cls.TOTAL_SCAN_COUNT
+
+    @classmethod
+    def _history_result_value(cls, values):
+        values = tuple(values or ())
+        result_index = cls._history_result_index()
+        result_labels = {
+            cls.Results.PASS,
+            cls.Results.FAIL_MISMATCH,
+            cls.Results.FAIL_INPUT_ERROR,
+            cls.Results.IN_PROGRESS,
+        }
+        if len(values) > result_index:
+            result = values[result_index]
+            if result in result_labels:
+                return result
+        legacy_result_index = 6
+        if len(values) > legacy_result_index:
+            result = values[legacy_result_index]
+            if result in result_labels:
+                return result
+        if len(values) > result_index:
+            return values[result_index]
+        return None
+
+    def _idle_instruction_text(self):
+        return f"1/{self.TOTAL_SCAN_COUNT} 현품표 스캔"
+
     def _history_values_for_display(self, values):
         values = list(values or [])
-        while len(values) < 8:
+        expected_len = 1 + self.TOTAL_SCAN_COUNT + 2
+        while len(values) < expected_len:
             values.append("")
         display_id = values[0]
-        barcode_columns = ("Input1", "Input2", "Input3", "Input4", "Input5")
+        barcode_columns = self._history_barcode_columns()
         scans = [
             self._format_barcode_cell(value, barcode_columns[index])
-            for index, value in enumerate(values[1:6])
+            for index, value in enumerate(values[1:1 + self.TOTAL_SCAN_COUNT])
         ]
-        return (display_id, *scans, values[6], values[7])
+        result_index = 1 + self.TOTAL_SCAN_COUNT
+        timestamp_index = result_index + 1
+        return (display_id, *scans, values[result_index], values[timestamp_index])
 
     def _refresh_summary_tree_display_values(self):
         raw_rows = self.__dict__.get("summary_row_raw_values", {})
@@ -3165,12 +3321,19 @@ class Label_Match(tk.Tk):
             return current_values
         current_values = list(current_values or [])
         display_id = current_values[0] if current_values else ""
-        timestamp = current_values[7] if len(current_values) > 7 else ""
+        timestamp_index = 1 + self.TOTAL_SCAN_COUNT + 1
+        timestamp = current_values[timestamp_index] if len(current_values) > timestamp_index else ""
         result = _label_match_tray_complete_result(details)
         if result == self.Results.PASS and details.get("final_result") == self.Results.IN_PROGRESS:
             result = self.Results.IN_PROGRESS
         parsed_scans = list(details.get("parsed_product_barcodes") or [])
-        values = (display_id, *parsed_scans[:5] + [""] * (5 - len(parsed_scans[:5])), result, timestamp)
+        scan_values = parsed_scans[:self.TOTAL_SCAN_COUNT]
+        values = (
+            display_id,
+            *scan_values + [""] * (self.TOTAL_SCAN_COUNT - len(scan_values)),
+            result,
+            timestamp,
+        )
         return values
 
     def _refresh_history_tree_display_values(self):
@@ -3266,7 +3429,7 @@ class Label_Match(tk.Tk):
         self.top_card = ttk.Frame(main_frame, style="Card.TFrame", padding=profile["card_padding"])
         self.top_card.grid(row=0, column=0, sticky="ew", pady=(0, profile["section_gap"]))
         self.top_card.grid_columnconfigure(0, weight=1)
-        self.big_display_label = ttk.Label(self.top_card, text="1/5 현품표 스캔", anchor="center", wraplength=1400, font=(self.default_font_name, 50, "bold"))
+        self.big_display_label = ttk.Label(self.top_card, text=self._idle_instruction_text(), anchor="center", wraplength=1400, font=(self.default_font_name, 50, "bold"))
         self.big_display_label.grid(row=0, column=0, sticky="ew", pady=profile["big_display_pady"], ipady=profile["big_display_ipady"])
 
         top_right_frame = ttk.Frame(self.top_card, style="Borderless.TFrame")
@@ -3308,7 +3471,7 @@ class Label_Match(tk.Tk):
             )
             step_label.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
             self.step_labels.append(step_label)
-        self.progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', length=200, mode='determinate', maximum=5, style="green.Horizontal.TProgressbar")
+        self.progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', length=200, mode='determinate', maximum=self.TOTAL_SCAN_COUNT, style="green.Horizontal.TProgressbar")
         self.progress_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.view_mode_label = ttk.Label(self.top_card, text="", style="ViewMode.TLabel", anchor="center")
         self.view_mode_label.grid(row=3, column=0, sticky="ew", pady=(profile["content_gap"], 0))
@@ -3399,7 +3562,7 @@ class Label_Match(tk.Tk):
         self.history_context_menu.add_command(label="바코드 원문 보기", command=self._show_selected_history_detail_window)
         self.history_context_menu.add_command(label="바코드 원문 복사", command=self._copy_selected_history_barcodes)
         self.history_context_menu.add_separator()
-        self.history_context_menu.add_command(label="선택 항목 삭제", command=self._delete_selected_row)
+        self.history_context_menu.add_command(label=self.HISTORY_DELETE_ACTION_TEXT, command=self._delete_selected_row)
         self.history_tree.bind("<Button-3>", self._show_history_context_menu)
 
         summary_card = ttk.Frame(self.content_pane, style="Card.TFrame", padding=profile["card_padding"])
@@ -3440,21 +3603,21 @@ class Label_Match(tk.Tk):
         bottom_frame.grid(row=2, column=0, sticky="ew", pady=(profile["bottom_gap"], 0))
         bottom_frame.grid_columnconfigure(3, weight=1)
 
-        reset_button = ttk.Button(bottom_frame, text="현재 세트 취소 (F1)", command=lambda: self._reset_current_set(full_reset=True), style="Danger.Action.TButton")
+        reset_button = ttk.Button(bottom_frame, text=self.CURRENT_SET_CANCEL_BUTTON_TEXT, command=lambda: self._reset_current_set(full_reset=True), style=self.CURRENT_SET_CANCEL_BUTTON_STYLE)
         self.reset_button = reset_button
         reset_button.grid(row=0, column=0, sticky="w")
         self.bind("<F1>", lambda e: self._reset_current_set(full_reset=True))
 
-        cancel_tray_button = ttk.Button(bottom_frame, text="완료된 트레이 취소 (F2)", command=self._prompt_and_cancel_completed_tray, style="Action.TButton")
+        cancel_tray_button = ttk.Button(bottom_frame, text=self.COMPLETED_TRAY_CANCEL_BUTTON_TEXT, command=self._prompt_and_cancel_completed_tray, style=self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE)
         self.cancel_tray_button = cancel_tray_button
         cancel_tray_button.grid(row=0, column=1, sticky="w", padx=(20, 0))
         self.bind("<F2>", lambda e: self._prompt_and_cancel_completed_tray())
         
-        self.manual_complete_button = ttk.Button(bottom_frame, text="현재 세트 완료 (F3)", command=self._prompt_manual_complete, style="Action.TButton", state="disabled")
+        self.manual_complete_button = ttk.Button(bottom_frame, text=self.MANUAL_COMPLETE_BUTTON_TEXT, command=self._prompt_manual_complete, style=self.MANUAL_COMPLETE_BUTTON_STYLE, state="disabled")
         self.manual_complete_button.grid(row=0, column=2, sticky="w", padx=(20, 0))
         self.bind("<F3>", lambda e: self._prompt_manual_complete())
 
-        self.bind("<Delete>", lambda e: self._delete_selected_row())
+        self.bind("<Delete>", self._delete_selected_row_from_shortcut)
 
         self.save_status_label = ttk.Label(bottom_frame, text="", style="Save.Success.TLabel", background=self.colors["background"])
         self.save_status_label.grid(row=0, column=3, sticky="w", padx=30)
@@ -3645,14 +3808,15 @@ class Label_Match(tk.Tk):
         is_dense_profile = profile_name in {"small", "compact"}
         hist_min_widths = {
             "Set": 44 if is_small_profile else 52,
-            "Input1": 158 if is_small_profile else 172 if is_dense_profile else 190,
-            "Input2": 116 if is_small_profile else 135 if is_dense_profile else 170,
-            "Input3": 116 if is_small_profile else 135 if is_dense_profile else 170,
-            "Input4": 116 if is_small_profile else 135 if is_dense_profile else 170,
-            "Input5": 116 if is_small_profile else 135 if is_dense_profile else 170,
             "Result": 72 if is_small_profile else 86,
             "Timestamp": 90 if is_small_profile else 100,
         }
+        for index in range(1, self.TOTAL_SCAN_COUNT + 1):
+            hist_min_widths[f"Input{index}"] = (
+                158 if is_small_profile else 172 if is_dense_profile else 190
+            ) if index == 1 else (
+                116 if is_small_profile else 135 if is_dense_profile else 170
+            )
         summary_min_widths = {"Code": 190 if is_small_profile else 220, "Phase": 64, "Count": 76}
         try:
             hist_width = self.history_tree.winfo_width() - padding
@@ -3759,15 +3923,11 @@ class Label_Match(tk.Tk):
         if num_scans is None:
             num_scans = len(current.get('parsed', []))
         if num_scans <= 0:
-            return "1/5 현품표 스캔"
-        if num_scans == 1:
-            return "2/5 제품 1 스캔"
-        if num_scans == 2:
-            return "3/5 제품 2 스캔"
-        if num_scans == 3:
-            return "4/5 제품 3 스캔"
-        if num_scans == 4:
-            return "5/5 라벨지 스캔"
+            return self._idle_instruction_text()
+        if num_scans < self.FINAL_LABEL_SCAN_POSITION - 1:
+            return f"{num_scans + 1}/{self.TOTAL_SCAN_COUNT} 제품 {num_scans} 스캔"
+        if num_scans == self.FINAL_LABEL_SCAN_POSITION - 1:
+            return f"{self.FINAL_LABEL_SCAN_POSITION}/{self.TOTAL_SCAN_COUNT} 라벨지 스캔"
         return "통과 완료"
 
     def _manual_complete_hint(self):
@@ -3821,7 +3981,7 @@ class Label_Match(tk.Tk):
         if not getattr(self, "history_view_updates_active_state", True):
             return
         if "big_display_label" in self.__dict__:
-            self.update_big_display("1/5 현품표 스캔", "")
+            self.update_big_display(self._idle_instruction_text(), "")
             self._update_status_label()
 
     def _update_status_label(self):
@@ -3863,7 +4023,8 @@ class Label_Match(tk.Tk):
         values = (
             "...",
             first_scan_display,
-            *other_scans_display[:4] + [""] * (4 - len(other_scans_display)),
+            *other_scans_display[:self.TOTAL_SCAN_COUNT - 1]
+            + [""] * ((self.TOTAL_SCAN_COUNT - 1) - len(other_scans_display[:self.TOTAL_SCAN_COUNT - 1])),
             self.Results.IN_PROGRESS,
             timestamp
         )
