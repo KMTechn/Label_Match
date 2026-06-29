@@ -324,7 +324,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.6" # [수정] 포장 6단계 스캔 및 이력/trace 표시 개선
+APP_VERSION = "v2.0.7" # [수정] 현품표/제품 스캔 효과음 분리
 
 def check_for_updates():
     """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
@@ -2151,7 +2151,9 @@ class Label_Match(tk.Tk):
         next_text = self._next_action_text(num_scans)
         self.update_big_display(next_text, "green" if num_scans < self.TOTAL_SCAN_COUNT else "primary")
         if not self.is_running_simulation:
-            self._play_sound(f"scan_{num_scans}")
+            sound_key = self._sound_key_for_success_scan(num_scans)
+            if sound_key:
+                self._play_sound(sound_key)
         self.progress_bar['value'] = num_scans
         self._update_status_label()
         self._update_history_tree_in_progress()
@@ -2168,6 +2170,18 @@ class Label_Match(tk.Tk):
         self._save_current_set_state()
         if num_scans == self.TOTAL_SCAN_COUNT:
             self._finalize_set(self.Results.PASS)
+
+    @classmethod
+    def _sound_key_for_success_scan(cls, scan_position):
+        try:
+            position = int(scan_position)
+        except Exception:
+            return None
+        if position == LABEL_MATCH_MASTER_SCAN_POSITION:
+            return "scan_master"
+        if LABEL_MATCH_MASTER_SCAN_POSITION < position < cls.FINAL_LABEL_SCAN_POSITION:
+            return f"scan_{position - LABEL_MATCH_MASTER_SCAN_POSITION}"
+        return None
 
     def _finalize_set(self, result, error_details="", is_manual_complete=False):
         if result == self.Results.PASS and not self.is_running_simulation:

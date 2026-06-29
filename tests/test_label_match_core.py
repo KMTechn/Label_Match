@@ -65,6 +65,27 @@ def test_extract_production_date_accepts_real_dates_only():
     assert extract(None, "FINAL_LABEL_WITHOUT_DATE") is None
 
 
+def test_success_scan_sound_mapping_keeps_product_one_as_scan_one():
+    module = load_label_match_module()
+    sound_key = module.Label_Match._sound_key_for_success_scan
+
+    assert sound_key(module.LABEL_MATCH_MASTER_SCAN_POSITION) == "scan_master"
+    assert sound_key(2) == "scan_1"
+    assert sound_key(3) == "scan_2"
+    assert sound_key(4) == "scan_3"
+    assert sound_key(5) == "scan_4"
+    assert sound_key(module.LABEL_MATCH_FINAL_LABEL_SCAN_POSITION) is None
+    assert sound_key("not-a-position") is None
+
+
+def test_default_sound_config_has_master_scan_sound():
+    settings = json.loads((Path(__file__).resolve().parents[1] / "config" / "app_settings.json").read_text(encoding="utf-8-sig"))
+    sound_files = settings["sound_files"]
+
+    assert sound_files["scan_master"] == "success.wav"
+    assert sound_files["scan_1"] == "one.wav"
+
+
 def test_enriched_tray_complete_preserves_label_match_contract():
     module = load_label_match_module()
 

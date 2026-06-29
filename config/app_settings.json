@@ -25,6 +25,7 @@
         "heading_background": "#FFFFFF"
     },
     "sound_files": {
+        "scan_master": "success.wav",
         "scan_1": "one.wav",
         "scan_2": "two.wav",
         "scan_3": "three.wav",
