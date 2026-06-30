@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
 
@@ -54,6 +54,42 @@ jobs:
         run: |
           [System.IO.File]::WriteAllText("dist/Label_Match/tools/enrollment_token.txt.template", "Normal installs use PRODUCER_SELF_ENROLL_ALLOWED_IPS on the server. Do not bundle a deployment token unless an explicit fallback change window requires it.", [System.Text.UTF8Encoding]::new($false))
 
+      - name: Attach install update settings
+        shell: pwsh
+        env:
+          PRIVATE_UPDATE_MANIFEST_URL: ${{ vars.PRIVATE_UPDATE_MANIFEST_URL }}
+          PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL: ${{ vars.PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL }}
+          PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: ${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}
+          PRIVATE_UPDATE_CHANNEL: ${{ vars.PRIVATE_UPDATE_CHANNEL }}
+        run: |
+          $settingsPath = "dist/Label_Match/config/app_settings.json"
+          if (-not (Test-Path -LiteralPath $settingsPath)) {
+            throw "Bundled config missing: $settingsPath"
+          }
+          $settings = Get-Content -Raw -Encoding UTF8 -LiteralPath $settingsPath | ConvertFrom-Json
+          $channel = if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_CHANNEL)) { "stable" } else { $env:PRIVATE_UPDATE_CHANNEL.Trim() }
+          if (-not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_URL) -or -not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)) {
+            if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_URL) -or [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)) {
+              throw "PRIVATE_UPDATE_MANIFEST_URL and PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be set together."
+            }
+            $updateSettings = [ordered]@{
+              provider = "private_manifest"
+              manifest_url = $env:PRIVATE_UPDATE_MANIFEST_URL.Trim()
+              manifest_public_key = $env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY.Trim()
+              channel = $channel
+            }
+            if (-not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL)) {
+              $updateSettings.manifest_signature_url = $env:PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL.Trim()
+            }
+          } else {
+            $updateSettings = [ordered]@{
+              provider = "github"
+              channel = $channel
+            }
+          }
+          $settings | Add-Member -NotePropertyName update_settings -NotePropertyValue ([pscustomobject]$updateSettings) -Force
+          $settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8NoBOM -LiteralPath $settingsPath
+
       - name: Zip the build folder
         # 빌드된 폴더 전체(dist/Label_Match)를 압축합니다.
         run: |
@@ -75,13 +111,26 @@ jobs:
           $zipPath = "Label_Match-${{ github.ref_name }}.zip"
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
           $size = (Get-Item -LiteralPath $zipPath).Length
-          $baseUrl = $env:PRIVATE_UPDATE_ARTIFACT_BASE_URL.TrimEnd("/")
-          $artifactUrl = "$baseUrl/$zipPath"
-          $artifactUri = [System.Uri]$artifactUrl
+          $baseUrl = $env:PRIVATE_UPDATE_ARTIFACT_BASE_URL.Trim().TrimEnd("/")
+          $baseUri = [System.Uri]$baseUrl
+          if ($baseUri.Scheme -ne "https") {
+            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must use HTTPS."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($baseUri.UserInfo)) {
+            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include userinfo."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($baseUri.Fragment)) {
+            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include fragments."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($baseUri.Query)) {
+            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not contain query strings."
+          }
           $blockedHosts = @("github.com", "www.github.com", "api.github.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com")
-          if ($blockedHosts -contains $artifactUri.Host.ToLowerInvariant()) {
+          $artifactHost = $baseUri.Host.ToLowerInvariant()
+          if ($blockedHosts -contains $artifactHost -or $artifactHost.EndsWith(".githubusercontent.com")) {
             throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must point to the private update artifact host, not GitHub release storage."
           }
+          $artifactUrl = "$baseUrl/$zipPath"
           $manifest = [ordered]@{
             schema_version = "kmtech-private-update-manifest-v1"
             manifest_version = 1
@@ -117,7 +166,7 @@ jobs:
           $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM "Label_Match-${{ github.ref_name }}.manifest.json"
 
       - name: Create Release and Upload Asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: |
             Label_Match-${{ github.ref_name }}.zip

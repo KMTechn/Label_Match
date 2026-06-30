@@ -683,6 +683,7 @@ UPDATE_APP_ID = "Label_Match"
 UPDATE_PC_ID_ENV = "LABEL_MATCH_UPDATE_PC_ID"
 UPDATE_ALLOWED_INSTALL_STRATEGIES = {"manual", "robocopy_backup_then_mirror", "replace_exe", "none"}
 UPDATE_DIRECT_GITHUB_ARTIFACT_HOSTS = {"objects.githubusercontent.com", "github-releases.githubusercontent.com"}
+UPDATE_GITHUB_UPDATE_HOSTS = {"api.github.com", "github.com", "www.github.com"}
 UPDATE_SECRET_QUERY_KEYS = {
     "access_token",
     "api_key",
@@ -690,8 +691,11 @@ UPDATE_SECRET_QUERY_KEYS = {
     "github_token",
     "pat",
     "private_key",
+    "sig",
+    "signature",
     "token",
 }
+UPDATE_SECRET_QUERY_PREFIXES = ("x_amz_", "x_goog_")
 
 
 def _parse_update_version(version):
@@ -773,7 +777,7 @@ def _assert_https_update_url(url, *, require_zip=False):
         raise ValueError("Update artifact URL must point to a .zip file")
     for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
         normalized_key = key.lower().replace("-", "_")
-        if normalized_key in UPDATE_SECRET_QUERY_KEYS:
+        if normalized_key in UPDATE_SECRET_QUERY_KEYS or normalized_key.startswith(UPDATE_SECRET_QUERY_PREFIXES):
             raise ValueError("Update URL must not contain raw token query parameters")
 
 
@@ -786,6 +790,12 @@ def _is_direct_github_artifact_url(url):
     if host == "api.github.com" and "/releases/assets/" in path:
         return True
     return host in UPDATE_DIRECT_GITHUB_ARTIFACT_HOSTS
+
+
+def _is_github_hosted_update_url(url):
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    return host in UPDATE_GITHUB_UPDATE_HOSTS or host.endswith(".githubusercontent.com")
 
 
 def _validate_relative_manifest_path(value, field_name):
@@ -863,8 +873,8 @@ def _validate_private_update_manifest_policy(manifest, expected_channel):
     if not _is_sha256(expected_sha256):
         raise ValueError("Update manifest artifact.sha256 must be 64 hex characters")
     _assert_https_update_url(download_url, require_zip=True)
-    if _is_direct_github_artifact_url(download_url):
-        raise ValueError("Update manifest artifact URL must not point directly at GitHub release storage")
+    if _is_github_hosted_update_url(download_url):
+        raise ValueError("Update manifest artifact URL must not point to GitHub-hosted update storage")
 
     archive = manifest.get("archive")
     if not isinstance(archive, dict):
@@ -982,11 +992,15 @@ def _check_private_manifest_for_updates():
     if not public_key_hex:
         raise ValueError("private_manifest updater requires a manifest public key")
     _assert_https_update_url(manifest_url)
+    if _is_github_hosted_update_url(manifest_url):
+        raise ValueError("private_manifest updater manifest URL must not point to GitHub-hosted update storage")
     response = requests.get(manifest_url, timeout=5)
     response.raise_for_status()
     manifest = response.json()
     signature_url = _get_update_manifest_signature_url(manifest_url)
     _assert_https_update_url(signature_url)
+    if _is_github_hosted_update_url(signature_url):
+        raise ValueError("private_manifest updater signature URL must not point to GitHub-hosted update storage")
     signature_response = requests.get(signature_url, timeout=5)
     signature_response.raise_for_status()
     _verify_update_manifest_signature(manifest, signature_response.content, public_key_hex)
@@ -1294,6 +1308,9 @@ def threaded_update_check():
     print("백그라운드 업데이트 확인 시작...")
     candidate = _check_update_candidate()
     if candidate:
+        if not _can_apply_updates():
+            print(f"업데이트 {candidate['version']} 확인됨. 소스 실행 모드에서는 자동 업데이트 적용을 건너뜁니다.")
+            return
         download_url = candidate["url"]
         new_version = candidate["version"]
         root_alert = tk.Tk()

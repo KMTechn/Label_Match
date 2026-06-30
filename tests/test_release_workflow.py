@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import sys
@@ -37,25 +38,44 @@ def test_release_workflow_packages_direct_sync_relay_tools():
 
 def test_release_workflow_generates_private_update_manifest():
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    uses_values = re.findall(r"(?m)^\s+uses:\s+([^\s#]+)", workflow)
 
+    assert uses_values
+    assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses_values)
+    assert "softprops/action-gh-release@v2" not in workflow
     assert "- name: Generate private update manifest" in workflow
     assert "- name: Generate release SHA256 checksum" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
     assert "kmtech-private-update-manifest-v1" in workflow
     assert "app_id = \"Label_Match\"" in workflow
     assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL" in workflow
+    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must use HTTPS." in workflow
+    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include userinfo." in workflow
+    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include fragments." in workflow
+    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not contain query strings." in workflow
     assert "not GitHub release storage" in workflow
+    assert ".githubusercontent.com" in workflow
     assert "$artifactUrl = \"$baseUrl/$zipPath\"" in workflow
     assert "\"$hash  $zipPath\" | Set-Content -Encoding utf8NoBOM \"$zipPath.sha256\"" in workflow
     assert "releases/download" not in workflow
     assert "percentage = 0" in workflow
     assert "Label_Match-${{ github.ref_name }}.manifest.json" in workflow
     assert "Label_Match-${{ github.ref_name }}.zip" in workflow
+    assert "- name: Attach install update settings" in workflow
+    assert "dist/Label_Match/config/app_settings.json" in workflow
+    assert "PRIVATE_UPDATE_MANIFEST_URL" in workflow
+    assert "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY" in workflow
+    assert 'provider = "private_manifest"' in workflow
+    assert 'provider = "github"' in workflow
+    assert "PRIVATE_UPDATE_MANIFEST_URL and PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be set together." in workflow
 
     manifest_step = workflow.index("- name: Generate private update manifest")
     release_step = workflow.index("- name: Create Release and Upload Asset")
+    attach_step = workflow.index("- name: Attach install update settings")
+    zip_step = workflow.index("- name: Zip the build folder")
     upload_block = workflow[release_step:]
 
+    assert attach_step < zip_step
     assert manifest_step < release_step
     assert "files: |" in upload_block
     assert "Label_Match-${{ github.ref_name }}.zip" in upload_block

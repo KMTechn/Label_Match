@@ -2,3 +2,4 @@ Pillow
 pygame
 requests
 tkcalendar
+cryptography
