@@ -135,7 +135,7 @@ if (-not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)) {
     $arguments += @("--enrollment-token-file", $EnrollmentTokenFile)
 }
 if (-not $DryRun.IsPresent) {
-    $arguments += @("--apply", "--confirm-production-install")
+    $arguments += @("--apply")
 }
 
 & $installPackCommand[0] @arguments
