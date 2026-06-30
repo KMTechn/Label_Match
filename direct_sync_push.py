@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import sqlite3
@@ -14,9 +15,10 @@ import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterable, Mapping
 from urllib.parse import urlparse
 
 
@@ -37,6 +39,7 @@ RELAY_STATUS_FAILED_PERMANENT = "failed_permanent"
 RELAY_STATUS_OPERATOR_REVIEW = "operator_review"
 DEFAULT_LEASE_SECONDS = 300
 DEFAULT_RETRY_SECONDS = 60
+MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
 SQLITE_BUSY_TIMEOUT_MS = 30000
 RELAY_METADATA_IDENTITY_FIELDS = (
     "producer_install_id",
@@ -82,6 +85,7 @@ class UploadResult:
     committed: bool
     retryable: bool
     receipt: Dict[str, Any]
+    retry_after_seconds: int | None = None
     status_path: str = ""
     error_code: str = ""
     error_message: str = ""
@@ -104,6 +108,19 @@ class RelayQueueRow:
     lease_owner: str = ""
     deduped_existing: bool = False
     metadata_error: str = ""
+
+
+@dataclass(frozen=True)
+class AckedRelayRetentionCandidate:
+    relay_id: str
+    spooled_file_path: str
+    upload_status_path: str
+    producer_manifest_path: str
+    relative_path: str
+    content_sha256: str
+    byte_length: int
+    metadata: Dict[str, Any]
+    receipt: Dict[str, Any]
 
 
 def _normalize_for_json(value: Any) -> Any:
@@ -413,6 +430,35 @@ def _transport_error_result(exc: Exception) -> UploadResult:
     )
 
 
+def _response_header(response: Any, name: str) -> str:
+    headers = getattr(response, "headers", {}) or {}
+    try:
+        return str(headers.get(name) or headers.get(name.lower()) or "").strip()
+    except AttributeError:
+        return ""
+
+
+def _retry_after_header_seconds(value: str, *, now: datetime | None = None) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        seconds = int(text)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        comparison_now = now or datetime.now(timezone.utc)
+        if comparison_now.tzinfo is None:
+            comparison_now = comparison_now.replace(tzinfo=timezone.utc)
+        seconds = max(0, math.ceil((retry_at - comparison_now.astimezone(retry_at.tzinfo)).total_seconds()))
+        return min(seconds, MAX_RETRY_AFTER_SECONDS)
+    return min(max(0, seconds), MAX_RETRY_AFTER_SECONDS)
+
+
 def _server_source_file_id_from_metadata(metadata: Mapping[str, Any]) -> str:
     return (
         f"{metadata['source_host_id']}/{metadata['producer_role']}/"
@@ -471,6 +517,7 @@ def _upload_response_result(
     payload = _response_json(response)
     safe_payload = _redact_remote_error_payload(payload, credentials=credentials, headers=headers)
     status_code = int(getattr(response, "status_code", 0) or 0)
+    retry_after_seconds = _retry_after_header_seconds(_response_header(response, "Retry-After"))
     committed_value = payload.get("committed")
     if 300 <= status_code < 400:
         return UploadResult(
@@ -521,12 +568,14 @@ def _upload_response_result(
         and totals["quarantined"] == 0
     )
     error = safe_payload.get("error") if isinstance(safe_payload.get("error"), dict) else {}
+    retryable = False if receipt_error_code else payload.get("retryable") is True or status_code in {408, 429, 500, 502, 503, 504}
     return UploadResult(
         success=success,
         status_code=status_code,
         committed=committed,
-        retryable=False if receipt_error_code else payload.get("retryable") is True or status_code in {408, 429, 500, 502, 503, 504},
+        retryable=retryable,
         receipt=safe_payload,
+        retry_after_seconds=retry_after_seconds if retryable else None,
         error_code=receipt_error_code or str(error.get("code") or ""),
         error_message=receipt_error_message or str(error.get("message") or ""),
     )
@@ -553,6 +602,7 @@ def _with_upload_status_artifact(
                 "status_code": result.status_code,
                 "committed": result.committed,
                 "retryable": result.retryable,
+                "retry_after_seconds": result.retry_after_seconds,
                 "receipt": receipt,
                 "error_code": result.error_code,
                 "error_message": result.error_message,
@@ -576,6 +626,7 @@ def _with_upload_status_artifact(
         committed=result.committed,
         retryable=result.retryable,
         receipt=receipt,
+        retry_after_seconds=result.retry_after_seconds,
         status_path=status_path_text,
         error_code=status_error_code or result.error_code,
         error_message=status_error_message or result.error_message,
@@ -636,6 +687,28 @@ def _connect_relay_db(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
     _execute_with_busy_retry(conn, "PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
+
+
+def _connect_relay_db_readonly(db_path: str | os.PathLike[str]) -> sqlite3.Connection | None:
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    return conn
+
+
+def _relay_batches_table_exists(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'direct_sync_relay_batches'
+        LIMIT 1
+        """
+    ).fetchone() is not None
 
 
 def init_relay_queue_schema(db_path: str | os.PathLike[str]) -> None:
@@ -739,6 +812,185 @@ def _relay_row(row: sqlite3.Row, *, deduped_existing: bool = False) -> RelayQueu
         deduped_existing=deduped_existing,
         metadata_error=metadata_error,
     )
+
+
+def _json_object_from_text(text: str) -> Dict[str, Any]:
+    payload = json.loads(str(text or "{}"))
+    if not isinstance(payload, dict):
+        raise DirectSyncPushError("JSON payload must be an object")
+    return payload
+
+
+def _upload_status_artifact_matches_relay(
+    *,
+    status_path: str,
+    plan: SourceFilePlan,
+    receipt: Mapping[str, Any],
+) -> bool:
+    try:
+        status = _json_object_from_text(Path(status_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, DirectSyncPushError):
+        return False
+    return (
+        status.get("success") is True
+        and status.get("committed") is True
+        and status.get("retryable") is False
+        and status.get("receipt") == dict(receipt)
+        and status.get("metadata") == dict(plan.metadata)
+        and str(status.get("source_file_path") or "") == str(plan.source_file_path)
+    )
+
+
+def _acked_relay_retention_report(conn: sqlite3.Connection) -> Dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT spooled_file_path, upload_status_path, created_at
+        FROM direct_sync_relay_batches
+        WHERE status = ?
+        ORDER BY created_at, relay_id
+        """,
+        (RELAY_STATUS_ACKED,),
+    ).fetchall()
+    spooled_bytes = 0
+    missing_spooled_files = 0
+    missing_upload_status_files = 0
+    for row in rows:
+        try:
+            spooled_bytes += Path(str(row["spooled_file_path"] or "")).stat().st_size
+        except OSError:
+            missing_spooled_files += 1
+        upload_status_path = str(row["upload_status_path"] or "")
+        if not upload_status_path or not Path(upload_status_path).is_file():
+            missing_upload_status_files += 1
+    return {
+        "status": "RETAIN_REQUIRED" if rows else "not_applicable",
+        "read_only": True,
+        "cleanup_safe": False,
+        "acked_row_delete_allowed": False,
+        "acked_spool_delete_allowed": False,
+        "acked_upload_status_delete_allowed": False,
+        "acked_count": len(rows),
+        "acked_spool_total_bytes": spooled_bytes,
+        "missing_acked_spool_count": missing_spooled_files,
+        "missing_acked_upload_status_count": missing_upload_status_files,
+        "oldest_acked_created_at": str(rows[0]["created_at"] or "") if rows else "",
+        "blockers": [
+            "acked rows are duplicate/lost-ack replay anchors",
+            "server receipt replay retention proof is not attached",
+            "no prune tombstone manifest exists for acked spool/status artifacts",
+        ],
+    }
+
+
+def _empty_acked_relay_retention_report() -> Dict[str, Any]:
+    return {
+        "status": "not_applicable",
+        "read_only": True,
+        "cleanup_safe": False,
+        "acked_row_delete_allowed": False,
+        "acked_spool_delete_allowed": False,
+        "acked_upload_status_delete_allowed": False,
+        "acked_count": 0,
+        "acked_spool_total_bytes": 0,
+        "missing_acked_spool_count": 0,
+        "missing_acked_upload_status_count": 0,
+        "oldest_acked_created_at": "",
+        "blockers": [
+            "acked rows are duplicate/lost-ack replay anchors",
+            "server receipt replay retention proof is not attached",
+            "no prune tombstone manifest exists for acked spool/status artifacts",
+        ],
+    }
+
+
+def acked_relay_retention_candidates(
+    db_path: str | os.PathLike[str],
+    *,
+    limit: int = 20,
+    excluded_relay_ids: Iterable[str] | None = None,
+) -> tuple[AckedRelayRetentionCandidate, ...]:
+    fetch_limit = max(0, int(limit or 0))
+    if fetch_limit == 0:
+        return tuple()
+    excluded = tuple(str(relay_id) for relay_id in (excluded_relay_ids or ()) if str(relay_id))
+    exclude_clause = ""
+    params: list[Any] = [RELAY_STATUS_ACKED]
+    if excluded:
+        placeholders = ", ".join("?" for _ in excluded)
+        exclude_clause = f"AND relay_id NOT IN ({placeholders})"
+        params.extend(excluded)
+    params.append(max(fetch_limit * 5, fetch_limit))
+    conn = _connect_relay_db_readonly(db_path)
+    if conn is None:
+        return tuple()
+    try:
+        if not _relay_batches_table_exists(conn):
+            return tuple()
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM direct_sync_relay_batches
+            WHERE status = ?
+              AND receipt_json IS NOT NULL
+              AND receipt_json != ''
+              AND upload_status_path IS NOT NULL
+              AND upload_status_path != ''
+              {exclude_clause}
+            ORDER BY updated_at, created_at, relay_id
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    candidates: list[AckedRelayRetentionCandidate] = []
+    for row in rows:
+        try:
+            relay_row = _relay_row(row)
+            plan = _source_file_plan_from_relay_row(relay_row)
+            receipt = _json_object_from_text(str(row["receipt_json"] or "{}"))
+            receipt_error_code, _receipt_error_message = _receipt_identity_error(plan, receipt)
+            if not receipt_error_code:
+                receipt_error_code, _receipt_error_message = _receipt_accepted_shape_error(receipt)
+            if not receipt_error_code:
+                receipt_error_code, _receipt_error_message = _receipt_totals_error(plan, receipt)
+            totals = receipt.get("totals") if isinstance(receipt.get("totals"), dict) else {}
+            if (
+                receipt.get("committed") is not True
+                or receipt_error_code
+                or totals.get("errors") != 0
+                or totals.get("quarantined") != 0
+            ):
+                continue
+            upload_status_path = str(row["upload_status_path"] or "")
+            if not _upload_status_artifact_matches_relay(
+                status_path=upload_status_path,
+                plan=plan,
+                receipt=receipt,
+            ):
+                continue
+            spooled_hash, spooled_bytes = _read_file_digest(Path(relay_row.spooled_file_path))
+            if spooled_hash != relay_row.content_sha256 or spooled_bytes != relay_row.byte_length:
+                continue
+            candidates.append(
+                AckedRelayRetentionCandidate(
+                    relay_id=relay_row.relay_id,
+                    spooled_file_path=relay_row.spooled_file_path,
+                    upload_status_path=upload_status_path,
+                    producer_manifest_path=relay_row.producer_manifest_path,
+                    relative_path=relay_row.relative_path,
+                    content_sha256=relay_row.content_sha256,
+                    byte_length=relay_row.byte_length,
+                    metadata=dict(relay_row.metadata),
+                    receipt=receipt,
+                )
+            )
+        except (OSError, DirectSyncPushError, json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if len(candidates) >= fetch_limit:
+            break
+    return tuple(candidates)
 
 
 def _copy_file_atomic(source: Path, destination: Path) -> None:
@@ -1100,9 +1352,15 @@ def _set_relay_status(
         conn.close()
 
 
-def _retry_after_seconds(attempt_count: int, base_seconds: int) -> int:
+def _retry_after_seconds(attempt_count: int, base_seconds: int, jitter_key: str = "") -> int:
     multiplier = min(max(1, attempt_count), 5)
-    return max(1, int(base_seconds)) * multiplier
+    base_delay = max(1, int(base_seconds)) * multiplier
+    key = str(jitter_key or "").strip()
+    if not key:
+        return base_delay
+    jitter_window = min(max(1, base_delay // 5), max(1, int(base_seconds)), 300)
+    jitter = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) % (jitter_window + 1)
+    return base_delay + jitter
 
 
 def _source_file_plan_from_relay_row(row: RelayQueueRow) -> SourceFilePlan:
@@ -1209,7 +1467,7 @@ def drain_one_relay_batch(
         _set_claimed_relay_status(
             row,
             db_path=db_path,
-            status=RELAY_STATUS_OPERATOR_REVIEW,
+            status=RELAY_STATUS_FAILED_PERMANENT,
             receipt=result.receipt,
             error_code=result.error_code,
             error_message=result.error_message,
@@ -1314,7 +1572,15 @@ def drain_one_relay_batch(
             error_message=result.error_message,
         )
     elif result.retryable:
-        retry_after = _retry_after_seconds(row.attempt_count, retry_base_seconds)
+        retry_after = (
+            result.retry_after_seconds
+            if result.retry_after_seconds is not None
+            else _retry_after_seconds(
+                row.attempt_count,
+                retry_base_seconds,
+                row.relay_id,
+            )
+        )
         next_attempt_at = (
             datetime.now(timezone.utc) + timedelta(seconds=retry_after)
         ).isoformat().replace("+00:00", "Z")
@@ -1342,9 +1608,20 @@ def drain_one_relay_batch(
 
 
 def relay_queue_status(db_path: str | os.PathLike[str]) -> Dict[str, Any]:
-    init_relay_queue_schema(db_path)
-    conn = _connect_relay_db(db_path)
+    conn = _connect_relay_db_readonly(db_path)
+    if conn is None:
+        return {
+            "counts": {},
+            "oldest_active_created_at": "",
+            "acked_retention": _empty_acked_relay_retention_report(),
+        }
     try:
+        if not _relay_batches_table_exists(conn):
+            return {
+                "counts": {},
+                "oldest_active_created_at": "",
+                "acked_retention": _empty_acked_relay_retention_report(),
+            }
         counts = {
             row["status"]: int(row["count"])
             for row in conn.execute(
@@ -1368,6 +1645,7 @@ def relay_queue_status(db_path: str | os.PathLike[str]) -> Dict[str, Any]:
         return {
             "counts": counts,
             "oldest_active_created_at": oldest["created_at"] if oldest else "",
+            "acked_retention": _acked_relay_retention_report(conn),
         }
     finally:
         conn.close()

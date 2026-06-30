@@ -2,6 +2,7 @@ import hashlib
 import json
 import sqlite3
 import typing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -13,10 +14,12 @@ from direct_sync_push import (
     DirectSyncPushError,
     ProducerCredentials,
     RELAY_STATUS_ACKED,
+    RELAY_STATUS_FAILED_PERMANENT,
     RELAY_STATUS_LEASED,
     RELAY_STATUS_OPERATOR_REVIEW,
     RELAY_STATUS_PENDING,
     RELAY_STATUS_RETRY_WAIT,
+    acked_relay_retention_candidates,
     build_source_file_plan,
     canonical_json,
     canonical_request_string,
@@ -30,6 +33,21 @@ from direct_sync_push import (
     signed_headers,
     upload_source_file,
 )
+
+
+def test_retry_after_seconds_uses_stable_bounded_jitter():
+    assert direct_sync_push_module._retry_after_seconds(3, 10) == 30
+    delays = {
+        direct_sync_push_module._retry_after_seconds(3, 10, f"relay-{index:02d}")
+        for index in range(20)
+    }
+
+    assert min(delays) >= 30
+    assert max(delays) <= 36
+    assert len(delays) > 1
+    assert direct_sync_push_module._retry_after_seconds(3, 10, "relay-03") == (
+        direct_sync_push_module._retry_after_seconds(3, 10, "relay-03")
+    )
 
 
 def test_relay_conflict_type_hints_resolve():
@@ -60,9 +78,10 @@ def test_upload_status_atomic_json_write_uses_unique_temp_paths(tmp_path, monkey
 
 
 class FakeResponse:
-    def __init__(self, status_code, payload):
+    def __init__(self, status_code, payload, *, headers=None):
         self.status_code = status_code
         self._payload = payload
+        self.headers = dict(headers or {})
 
     def json(self):
         return self._payload
@@ -683,6 +702,105 @@ def test_relay_retry_then_success_uses_fresh_signed_request_and_marks_acked(tmp_
     assert Path(current["upload_status_path"]).is_file()
 
 
+def test_drain_retry_wait_uses_retry_after_header(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    row = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    session = FakeSession(
+        FakeResponse(
+            503,
+            {
+                "committed": False,
+                "retryable": True,
+                "error": {"code": "temporary_unavailable", "message": "try later"},
+            },
+            headers={"Retry-After": "120"},
+        )
+    )
+
+    before = datetime.now(timezone.utc)
+    result = drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=session,
+        status_dir=tmp_path / "status",
+        retry_base_seconds=1,
+    )
+    after = datetime.now(timezone.utc)
+
+    assert result is not None
+    assert result.success is False
+    assert result.retry_after_seconds == 120
+    status_artifact = json.loads(Path(result.status_path).read_text(encoding="utf-8"))
+    assert status_artifact["retry_after_seconds"] == 120
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        current = conn.execute(
+            "SELECT status, next_attempt_at FROM direct_sync_relay_batches WHERE relay_id = ?",
+            (row.relay_id,),
+        ).fetchone()
+    assert current["status"] == RELAY_STATUS_RETRY_WAIT
+    scheduled = datetime.fromisoformat(current["next_attempt_at"].replace("Z", "+00:00"))
+    assert before + timedelta(seconds=120) <= scheduled <= after + timedelta(seconds=120)
+
+
+def test_drain_retry_wait_preserves_zero_retry_after_header(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    row = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    session = FakeSession(
+        FakeResponse(
+            503,
+            {
+                "committed": False,
+                "retryable": True,
+                "error": {"code": "temporary_unavailable", "message": "try now"},
+            },
+            headers={"Retry-After": "0"},
+        )
+    )
+
+    before = datetime.now(timezone.utc)
+    result = drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=session,
+        status_dir=tmp_path / "status",
+        retry_base_seconds=60,
+    )
+    after = datetime.now(timezone.utc)
+
+    assert result is not None
+    assert result.retry_after_seconds == 0
+    status_artifact = json.loads(Path(result.status_path).read_text(encoding="utf-8"))
+    assert status_artifact["retry_after_seconds"] == 0
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        current = conn.execute(
+            "SELECT status, next_attempt_at FROM direct_sync_relay_batches WHERE relay_id = ?",
+            (row.relay_id,),
+        ).fetchone()
+    assert current["status"] == RELAY_STATUS_RETRY_WAIT
+    scheduled = datetime.fromisoformat(current["next_attempt_at"].replace("Z", "+00:00"))
+    assert before <= scheduled <= after
+
+
 def test_drain_non_2xx_committed_response_requires_operator_review_without_retry(tmp_path):
     manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
@@ -884,7 +1002,7 @@ def test_drain_rejects_changed_producer_credentials_without_upload(tmp_path):
     assert json.loads(current["receipt_json"]) == {"client_batch_id": row.relay_id}
 
 
-def test_drain_marks_missing_spooled_file_for_operator_review(tmp_path):
+def test_drain_marks_missing_spooled_file_failed_permanent(tmp_path):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
     credentials = make_credentials()
@@ -917,7 +1035,7 @@ def test_drain_marks_missing_spooled_file_for_operator_review(tmp_path):
             "SELECT status, last_error_code, receipt_json FROM direct_sync_relay_batches WHERE relay_id = ?",
             (row.relay_id,),
         ).fetchone()
-    assert current["status"] == RELAY_STATUS_OPERATOR_REVIEW
+    assert current["status"] == RELAY_STATUS_FAILED_PERMANENT
     assert current["last_error_code"] == "spooled_file_missing"
     assert json.loads(current["receipt_json"]) == {"client_batch_id": row.relay_id}
 
@@ -1032,3 +1150,101 @@ def test_drain_acks_committed_upload_when_status_artifact_write_fails(tmp_path):
     assert current["upload_status_path"] == ""
     assert current["last_error_code"] == "upload_status_write_failed"
     assert json.loads(current["receipt_json"])["request_id"] == "request-status-write-failed"
+
+
+def test_acked_relay_retention_report_is_read_only_and_candidates_require_full_evidence(tmp_path):
+    manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    row = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    server_source_file_id = f"{manifest['pc_identity']['source_host_id']}/label_match/label_match_events/{row.relative_path}"
+    receipt = {
+        "request_id": "request-retention",
+        "upload_id": "request-retention",
+        "client_batch_id": row.relay_id,
+        "server_source_file_id": server_source_file_id,
+        "committed": True,
+        "status": "accepted",
+        "retryable": False,
+        "next_retry_after": None,
+        "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
+    }
+    result = drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=FakeSession(FakeResponse(200, receipt)),
+        status_dir=tmp_path / "status",
+    )
+
+    assert result.success is True
+    retention = relay_queue_status(db_path)["acked_retention"]
+    assert retention["status"] == "RETAIN_REQUIRED"
+    assert retention["cleanup_safe"] is False
+    assert retention["acked_row_delete_allowed"] is False
+    assert retention["acked_spool_delete_allowed"] is False
+    assert retention["acked_upload_status_delete_allowed"] is False
+    assert retention["acked_count"] == 1
+    assert retention["acked_spool_total_bytes"] == Path(row.spooled_file_path).stat().st_size
+    assert retention["missing_acked_spool_count"] == 0
+    assert retention["missing_acked_upload_status_count"] == 0
+
+    candidates = acked_relay_retention_candidates(db_path)
+    assert len(candidates) == 1
+    assert candidates[0].relay_id == row.relay_id
+    assert candidates[0].receipt == receipt
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET receipt_json = ? WHERE relay_id = ?",
+            (json.dumps({"committed": True, "client_batch_id": row.relay_id}), row.relay_id),
+        )
+        conn.commit()
+    assert acked_relay_retention_candidates(db_path) == ()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET receipt_json = ? WHERE relay_id = ?",
+            (json.dumps(receipt, ensure_ascii=False, sort_keys=True), row.relay_id),
+        )
+        conn.commit()
+    status_receipt_mismatch = dict(receipt)
+    status_receipt_mismatch["request_id"] = "request-wrong-status-artifact"
+    Path(candidates[0].upload_status_path).write_text(
+        json.dumps(
+            {
+                "success": True,
+                "committed": True,
+                "retryable": False,
+                "receipt": status_receipt_mismatch,
+                "metadata": candidates[0].metadata,
+                "source_file_path": candidates[0].spooled_file_path,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert acked_relay_retention_candidates(db_path) == ()
+
+    Path(candidates[0].upload_status_path).write_text(
+        json.dumps({"success": True, "committed": True, "receipt": receipt, "metadata": {"relative_path": "wrong"}}),
+        encoding="utf-8",
+    )
+    assert acked_relay_retention_candidates(db_path) == ()
+
+
+def test_relay_status_and_retention_candidates_do_not_create_missing_db(tmp_path):
+    db_path = tmp_path / "missing-relay.sqlite3"
+
+    status = relay_queue_status(db_path)
+
+    assert status["counts"] == {}
+    assert status["acked_retention"]["read_only"] is True
+    assert status["acked_retention"]["cleanup_safe"] is False
+    assert acked_relay_retention_candidates(db_path) == ()
+    assert not db_path.exists()
