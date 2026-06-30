@@ -62,9 +62,13 @@ jobs:
           PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: ${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}
           PRIVATE_UPDATE_CHANNEL: ${{ vars.PRIVATE_UPDATE_CHANNEL }}
         run: |
-          $settingsPath = "dist/Label_Match/config/app_settings.json"
-          if (-not (Test-Path -LiteralPath $settingsPath)) {
-            throw "Bundled config missing: $settingsPath"
+          $settingsPaths = @(
+            "dist/Label_Match/_internal/config/app_settings.json",
+            "dist/Label_Match/config/app_settings.json"
+          )
+          $settingsPath = $settingsPaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($settingsPath)) {
+            throw "Bundled config missing in expected paths: $($settingsPaths -join ', ')"
           }
           $settings = Get-Content -Raw -Encoding UTF8 -LiteralPath $settingsPath | ConvertFrom-Json
           $channel = if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_CHANNEL)) { "stable" } else { $env:PRIVATE_UPDATE_CHANNEL.Trim() }
@@ -88,7 +92,10 @@ jobs:
             }
           }
           $settings | Add-Member -NotePropertyName update_settings -NotePropertyValue ([pscustomobject]$updateSettings) -Force
-          $settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8NoBOM -LiteralPath $settingsPath
+          foreach ($targetPath in $settingsPaths) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $targetPath) | Out-Null
+            $settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8NoBOM -LiteralPath $targetPath
+          }
 
       - name: Zip the build folder
         # 빌드된 폴더 전체(dist/Label_Match)를 압축합니다.
@@ -162,7 +169,7 @@ jobs:
             }
             install = [ordered]@{
               strategy = "robocopy_backup_then_mirror"
-              preserve_paths = @("config/app_settings.json")
+              preserve_paths = @("config/app_settings.json", "_internal/config/app_settings.json")
               restart_executable = "Label_Match.exe"
             }
             rollout = [ordered]@{
@@ -218,24 +225,27 @@ jobs:
         if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
         shell: pwsh
         env:
-          COMPANY_UPDATE_SSH_HOST: ${{ secrets.COMPANY_UPDATE_SSH_HOST }}
-          COMPANY_UPDATE_SSH_PORT: ${{ secrets.COMPANY_UPDATE_SSH_PORT }}
-          COMPANY_UPDATE_SSH_USER: ${{ secrets.COMPANY_UPDATE_SSH_USER }}
-          COMPANY_UPDATE_SSH_PRIVATE_KEY: ${{ secrets.COMPANY_UPDATE_SSH_PRIVATE_KEY }}
-          COMPANY_UPDATE_FEED_ROOT: ${{ vars.COMPANY_UPDATE_FEED_ROOT }}
+          COMPANY_UPDATE_UPLOAD_URL: ${{ vars.COMPANY_UPDATE_UPLOAD_URL }}
+          COMPANY_UPDATE_UPLOAD_TOKEN: ${{ secrets.COMPANY_UPDATE_UPLOAD_TOKEN }}
           PRIVATE_UPDATE_APP_SLUG: label_match
           PRIVATE_UPDATE_CHANNEL: stable
           PRIVATE_UPDATE_ZIP_PATH: Label_Match-${{ github.ref_name }}.zip
           PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ github.ref_name }}.manifest.json
         run: |
           $ErrorActionPreference = "Stop"
-          foreach ($name in @("COMPANY_UPDATE_SSH_HOST", "COMPANY_UPDATE_SSH_USER", "COMPANY_UPDATE_SSH_PRIVATE_KEY")) {
+          foreach ($name in @("COMPANY_UPDATE_UPLOAD_URL", "COMPANY_UPDATE_UPLOAD_TOKEN")) {
             if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
-              throw "$name secret is required."
+              throw "$name is required."
             }
           }
-          $port = if ([string]::IsNullOrWhiteSpace($env:COMPANY_UPDATE_SSH_PORT)) { "22" } else { $env:COMPANY_UPDATE_SSH_PORT.Trim() }
-          $feedRoot = if ([string]::IsNullOrWhiteSpace($env:COMPANY_UPDATE_FEED_ROOT)) { "/root/WorkerAnalysisGUI-web/static/update-feed" } else { $env:COMPANY_UPDATE_FEED_ROOT.Trim().TrimEnd("/") }
+          $uploadUrl = $env:COMPANY_UPDATE_UPLOAD_URL.Trim()
+          $uploadUri = [System.Uri]$uploadUrl
+          if ($uploadUri.Scheme -ne "https") {
+            throw "COMPANY_UPDATE_UPLOAD_URL must use HTTPS."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($uploadUri.UserInfo) -or -not [string]::IsNullOrWhiteSpace($uploadUri.Query) -or -not [string]::IsNullOrWhiteSpace($uploadUri.Fragment)) {
+            throw "COMPANY_UPDATE_UPLOAD_URL must not contain userinfo, query, or fragment."
+          }
           $appSlug = $env:PRIVATE_UPDATE_APP_SLUG
           $channel = $env:PRIVATE_UPDATE_CHANNEL
           $zipPath = $env:PRIVATE_UPDATE_ZIP_PATH
@@ -246,29 +256,23 @@ jobs:
               throw "Required private update publish file is missing: $path"
             }
           }
-
-          $sshDir = Join-Path $env:RUNNER_TEMP "kmtech-update-ssh"
-          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
-          $keyPath = Join-Path $sshDir "id_ed25519"
-          [System.IO.File]::WriteAllText($keyPath, $env:COMPANY_UPDATE_SSH_PRIVATE_KEY.Replace("`r`n", "`n"))
-          icacls $keyPath /inheritance:r | Out-Null
-          icacls $keyPath /grant:r "$($env:USERNAME):R" | Out-Null
-
-          $target = "$($env:COMPANY_UPDATE_SSH_USER)@$($env:COMPANY_UPDATE_SSH_HOST)"
-          $remoteArtifacts = "$feedRoot/artifacts/$appSlug"
-          $remoteChannel = "$feedRoot/channels/$appSlug/$channel"
-          $sshArgs = @("-i", $keyPath, "-p", $port, "-o", "StrictHostKeyChecking=accept-new", $target)
-          & ssh @sshArgs "mkdir -p '$remoteArtifacts' '$remoteChannel'"
-          if ($LASTEXITCODE -ne 0) { throw "Failed to create private update feed directories." }
-
-          & scp -i $keyPath -P $port -o StrictHostKeyChecking=accept-new $zipPath "$zipPath.sha256" "${target}:$remoteArtifacts/"
-          if ($LASTEXITCODE -ne 0) { throw "Failed to upload private update artifact files." }
-          & scp -i $keyPath -P $port -o StrictHostKeyChecking=accept-new $manifestPath "${target}:$remoteChannel/latest.json.tmp"
-          if ($LASTEXITCODE -ne 0) { throw "Failed to upload private update manifest." }
-          & scp -i $keyPath -P $port -o StrictHostKeyChecking=accept-new $manifestSigPath "${target}:$remoteChannel/latest.json.sig.tmp"
-          if ($LASTEXITCODE -ne 0) { throw "Failed to upload private update manifest signature." }
-          & ssh @sshArgs "mv -f '$remoteChannel/latest.json.tmp' '$remoteChannel/latest.json' && mv -f '$remoteChannel/latest.json.sig.tmp' '$remoteChannel/latest.json.sig'"
-          if ($LASTEXITCODE -ne 0) { throw "Failed to publish private update channel files." }
+          $curlArgs = @(
+            "--fail", "--show-error", "--silent",
+            "--retry", "3", "--retry-all-errors", "--connect-timeout", "30", "--max-time", "900",
+            "-X", "POST",
+            "-H", "Authorization: Bearer $($env:COMPANY_UPDATE_UPLOAD_TOKEN)",
+            "-F", "app_slug=$appSlug",
+            "-F", "channel=$channel",
+            "-F", "artifact=@$zipPath",
+            "-F", "checksum=@$zipPath.sha256",
+            "-F", "manifest=@$manifestPath",
+            "-F", "signature=@$manifestSigPath",
+            $uploadUrl
+          )
+          & curl.exe @curlArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to publish private update feed over HTTPS."
+          }
 
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65

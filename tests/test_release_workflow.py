@@ -66,9 +66,9 @@ def test_release_workflow_generates_private_update_manifest():
     assert "- name: Sign private update manifest" in workflow
     assert "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY" in workflow
     assert "- name: Publish private update feed" in workflow
-    assert "COMPANY_UPDATE_SSH_PRIVATE_KEY" in workflow
+    assert "COMPANY_UPDATE_UPLOAD_TOKEN" in workflow
     assert "PRIVATE_UPDATE_APP_SLUG: label_match" in workflow
-    assert "/root/WorkerAnalysisGUI-web/static/update-feed" in workflow
+    assert "curl.exe" in workflow
     assert "- name: Attach install update settings" in workflow
     assert "dist/Label_Match/config/app_settings.json" in workflow
     assert "PRIVATE_UPDATE_MANIFEST_URL" in workflow
