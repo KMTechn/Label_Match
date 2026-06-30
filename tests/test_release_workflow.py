@@ -35,6 +35,34 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert "tools/register_label_match_worker_pc.py" in packaging_block
 
 
+def test_release_workflow_generates_private_update_manifest():
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "- name: Generate private update manifest" in workflow
+    assert "- name: Generate release SHA256 checksum" in workflow
+    assert "Get-FileHash -Algorithm SHA256" in workflow
+    assert "kmtech-private-update-manifest-v1" in workflow
+    assert "app_id = \"Label_Match\"" in workflow
+    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL" in workflow
+    assert "not GitHub release storage" in workflow
+    assert "$artifactUrl = \"$baseUrl/$zipPath\"" in workflow
+    assert "\"$hash  $zipPath\" | Set-Content -Encoding utf8NoBOM \"$zipPath.sha256\"" in workflow
+    assert "releases/download" not in workflow
+    assert "percentage = 0" in workflow
+    assert "Label_Match-${{ github.ref_name }}.manifest.json" in workflow
+    assert "Label_Match-${{ github.ref_name }}.zip" in workflow
+
+    manifest_step = workflow.index("- name: Generate private update manifest")
+    release_step = workflow.index("- name: Create Release and Upload Asset")
+    upload_block = workflow[release_step:]
+
+    assert manifest_step < release_step
+    assert "files: |" in upload_block
+    assert "Label_Match-${{ github.ref_name }}.zip" in upload_block
+    assert "Label_Match-${{ github.ref_name }}.zip.sha256" in upload_block
+    assert "Label_Match-${{ github.ref_name }}.manifest.json" not in upload_block
+
+
 def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
     source_root = Path.cwd()
     staged_root = tmp_path / "dist" / "Label_Match"
@@ -112,4 +140,4 @@ def test_one_step_installer_uses_bundled_tools_ip_allowlist_and_programdata_path
     assert "--self-enroll" in script
     assert "--runner-exe" in script
     assert "--registration-exe" in script
-    assert "--confirm-production-install" in script
+    assert "--confirm-production-install" not in script

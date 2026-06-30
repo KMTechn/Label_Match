@@ -58,11 +58,70 @@ jobs:
         # 빌드된 폴더 전체(dist/Label_Match)를 압축합니다.
         run: |
           Compress-Archive -Path dist/Label_Match -DestinationPath "Label_Match-${{ github.ref_name }}.zip"
-      
+
+      - name: Generate release SHA256 checksum
+        shell: pwsh
+        run: |
+          $zipPath = "Label_Match-${{ github.ref_name }}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
+          "$hash  $zipPath" | Set-Content -Encoding utf8NoBOM "$zipPath.sha256"
+
+      - name: Generate private update manifest
+        if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
+        shell: pwsh
+        env:
+          PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
+        run: |
+          $zipPath = "Label_Match-${{ github.ref_name }}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $zipPath).Length
+          $baseUrl = $env:PRIVATE_UPDATE_ARTIFACT_BASE_URL.TrimEnd("/")
+          $artifactUrl = "$baseUrl/$zipPath"
+          $artifactUri = [System.Uri]$artifactUrl
+          $blockedHosts = @("github.com", "www.github.com", "api.github.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com")
+          if ($blockedHosts -contains $artifactUri.Host.ToLowerInvariant()) {
+            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must point to the private update artifact host, not GitHub release storage."
+          }
+          $manifest = [ordered]@{
+            schema_version = "kmtech-private-update-manifest-v1"
+            manifest_version = 1
+            app_id = "Label_Match"
+            package_id = "Label_Match"
+            channel = "stable"
+            version = "${{ github.ref_name }}"
+            artifact = [ordered]@{
+              name = $zipPath
+              url = $artifactUrl
+              size_bytes = $size
+              sha256 = $hash
+            }
+            archive = [ordered]@{
+              format = "zip"
+              pyinstaller_layout = "onedir"
+              top_level = "Label_Match"
+              entrypoint = "Label_Match.exe"
+              required_files = @("Label_Match/Label_Match.exe")
+              deny_runtime_state = $true
+            }
+            install = [ordered]@{
+              strategy = "robocopy_backup_then_mirror"
+              preserve_paths = @("config/app_settings.json")
+              restart_executable = "Label_Match.exe"
+            }
+            rollout = [ordered]@{
+              percentage = 0
+              allow_pc_ids = @()
+              deny_pc_ids = @()
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM "Label_Match-${{ github.ref_name }}.manifest.json"
+
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: "Label_Match-${{ github.ref_name }}.zip"
+          files: |
+            Label_Match-${{ github.ref_name }}.zip
+            Label_Match-${{ github.ref_name }}.zip.sha256
           name: "Release ${{ github.ref_name }}"
           body: "New release version ${{ github.ref_name }}"
           draft: false

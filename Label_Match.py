@@ -2,12 +2,14 @@ import tkinter as tk
 from tkinter import ttk, messagebox, TclError, simpledialog
 from collections import defaultdict
 import csv
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import threading
 import time
 import sys
 import os
 import json
+import hashlib
+import re
 import shutil
 import tkinter.font as tkFont
 import queue
@@ -16,6 +18,8 @@ import socket
 import requests
 import zipfile
 import subprocess
+import uuid
+from urllib.parse import parse_qsl, urlparse
 from tkcalendar import Calendar
 import base64
 import binascii
@@ -32,6 +36,15 @@ LABEL_MATCH_RESULT_PASS = "통과"
 LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
 LABEL_MATCH_DEFAULT_SAVE_SUBDIR = ("KMTech", "Label_Match", "data")
+LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP"
+LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV = "LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL"
+LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV = "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID"
+LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
+LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_NAME"
+LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_SECONDS"
+LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
+LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
+LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME = "label_match_direct_sync_install.json"
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 
@@ -41,6 +54,336 @@ def _default_label_match_save_path():
         return env_save_dir
     program_data_root = os.environ.get("ProgramData", r"C:\ProgramData")
     return os.path.join(program_data_root, *LABEL_MATCH_DEFAULT_SAVE_SUBDIR)
+
+
+def _label_match_runtime_app_root():
+    runtime = sys.executable if getattr(sys, "frozen", False) else __file__
+    return os.path.dirname(os.path.abspath(runtime))
+
+
+def _label_match_safe_token(value, fallback):
+    text = str(value or "").strip() or fallback
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("._-")
+    return (text or fallback)[:96].strip("._-") or fallback
+
+
+def _label_match_machine_identity():
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+                value, _value_type = winreg.QueryValueEx(key, "MachineGuid")
+                if value:
+                    return str(value)
+        except OSError:
+            pass
+    return f"{socket.gethostname()}|{uuid.getnode():012x}"
+
+
+def _label_match_direct_sync_source_host_id():
+    override = os.environ.get(LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "").strip()
+    if override:
+        return _label_match_safe_token(override, "label-match-worker").lower()
+    pc_id = _label_match_safe_token(os.environ.get("COMPUTERNAME") or socket.gethostname(), "worker-pc")
+    suffix = hashlib.sha256(_label_match_machine_identity().encode("utf-8")).hexdigest()[:12]
+    return f"label-match-{pc_id}-{suffix}".lower()
+
+
+def _label_match_direct_sync_bootstrap_enabled():
+    value = os.environ.get(LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV, "on").strip().lower()
+    return value not in {"0", "false", "no", "off", "disabled"}
+
+
+def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
+    source_host_id = _label_match_direct_sync_source_host_id()
+    program_data_root = os.environ.get(LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV, "").strip()
+    if not program_data_root:
+        program_data_root = os.path.join(
+            os.environ.get("ProgramData", r"C:\ProgramData"),
+            "KMTech",
+            "DirectSync",
+            source_host_id,
+        )
+    program_data_root = os.path.abspath(program_data_root)
+    scan_source_dir = os.path.abspath(scan_source_dir)
+    task_name = os.environ.get(LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV, "").strip()
+    if not task_name:
+        task_name = f"direct-sync-relay-{source_host_id}"
+    status_dir = os.path.join(program_data_root, "status")
+    return {
+        "app_root": _label_match_runtime_app_root(),
+        "app_settings_path": os.path.abspath(app_settings_path) if app_settings_path else "",
+        "program_data_root": os.path.abspath(program_data_root),
+        "scan_source_dir": scan_source_dir,
+        "server_base_url": os.environ.get(
+            LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV,
+            LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
+        ).strip() or LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
+        "source_host_id": source_host_id,
+        "task_name": task_name,
+        "status_dir": status_dir,
+        "bootstrap_status_path": os.path.join(status_dir, LABEL_MATCH_DIRECT_SYNC_REPORT_NAME),
+        "install_report_path": os.path.join(status_dir, LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME),
+        "registration_report_path": os.path.join(status_dir, "label_match_worker_pc_registration.json"),
+        "manifest_path": os.path.join(program_data_root, "producer_manifest.json"),
+        "credential_path": os.path.join(program_data_root, "credential.json"),
+        "runtime_status_path": os.path.join(status_dir, "direct_sync_relay_status.json"),
+    }
+
+
+def _label_match_json_file(path):
+    try:
+        with open(path, "r", encoding="utf-8-sig") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _label_match_write_json(path, payload):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+    except Exception as exc:
+        print(f"direct-sync bootstrap status write failed: {exc}")
+
+
+def _label_match_subprocess_creationflags():
+    if os.name == "nt":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
+
+
+def _label_match_direct_sync_tool_command(context):
+    tools_dir = os.path.join(context["app_root"], "tools")
+    install_pack_exe = os.path.join(tools_dir, "direct_sync_relay_install_pack.exe")
+    install_pack_script = os.path.join(tools_dir, "direct_sync_relay_install_pack.py")
+    if os.path.isfile(install_pack_exe):
+        return [install_pack_exe]
+    if os.path.isfile(install_pack_script):
+        python_exe = "" if getattr(sys, "frozen", False) else sys.executable
+        if not python_exe:
+            python_exe = shutil.which("python") or shutil.which("py") or ""
+        if python_exe:
+            return [python_exe, install_pack_script]
+    return []
+
+
+def _label_match_optional_tool_exe(context, filename):
+    path = os.path.join(context["app_root"], "tools", filename)
+    return path if os.path.isfile(path) else ""
+
+
+def _label_match_registration_verified(context):
+    payload = _label_match_json_file(context["registration_report_path"])
+    return bool(
+        payload.get("server_registration_verified")
+        or payload.get("status") in {"SELF_ENROLLMENT_REGISTERED", "already_enrolled"}
+        or payload.get("enrollment_status") in {"registered", "already_enrolled"}
+    )
+
+
+def _label_match_recent_runtime_status(context, max_age_seconds=7 * 24 * 60 * 60):
+    path = context["runtime_status_path"]
+    try:
+        if not os.path.isfile(path):
+            return False
+        if time.time() - os.path.getmtime(path) > max_age_seconds:
+            return False
+        payload = _label_match_json_file(path)
+        return payload.get("error_code", "") == "" and payload.get("status") in {"idle", "ok", "PASS", "running"}
+    except Exception:
+        return False
+
+
+def _label_match_existing_direct_sync_task_name(context):
+    if os.name != "nt":
+        return ""
+    powershell = os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"),
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+    )
+    target_root = context["program_data_root"].replace("/", "\\").lower()
+    source_host_id = context["source_host_id"].lower()
+    ps_script = (
+        "$items = @(Get-ScheduledTask -TaskName 'direct-sync-relay*' -ErrorAction SilentlyContinue | "
+        "ForEach-Object { $taskName = $_.TaskName; foreach ($action in $_.Actions) { "
+        "[PSCustomObject]@{ TaskName = $taskName; Execute = $action.Execute; Arguments = $action.Arguments } } }); "
+        "@($items) | ConvertTo-Json -Compress"
+    )
+    if os.path.isfile(powershell):
+        try:
+            completed = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=_label_match_subprocess_creationflags(),
+            )
+            if completed.returncode == 0 and completed.stdout.strip():
+                payload = json.loads(completed.stdout)
+                rows = payload if isinstance(payload, list) else [payload]
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    task_name = str(row.get("TaskName") or "")
+                    text = " ".join(
+                        str(row.get(key) or "")
+                        for key in ("TaskName", "Execute", "Arguments")
+                    ).replace("/", "\\").lower()
+                    if (
+                        task_name == context["task_name"]
+                        or source_host_id in text
+                        or target_root in text
+                    ):
+                        return task_name
+        except Exception as exc:
+            print(f"direct-sync scheduled task query failed: {exc}")
+    try:
+        completed = subprocess.run(
+            ["schtasks.exe", "/Query", "/TN", context["task_name"]],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=_label_match_subprocess_creationflags(),
+        )
+        if completed.returncode == 0:
+            return context["task_name"]
+    except Exception:
+        pass
+    return ""
+
+
+def _label_match_direct_sync_ready(context):
+    if not (os.path.isfile(context["manifest_path"]) and os.path.isfile(context["credential_path"])):
+        return False
+    if not _label_match_registration_verified(context):
+        return False
+    return bool(
+        _label_match_existing_direct_sync_task_name(context)
+        or _label_match_recent_runtime_status(context)
+    )
+
+
+def _label_match_run_direct_sync_task(context):
+    if os.name != "nt":
+        return {"status": "SKIPPED", "reason": "scheduled tasks are Windows-only"}
+    try:
+        completed = subprocess.run(
+            ["schtasks.exe", "/Run", "/TN", context["task_name"]],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=_label_match_subprocess_creationflags(),
+        )
+        return {
+            "status": "PASS" if completed.returncode == 0 else "FAIL",
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-1000:],
+            "stderr": completed.stderr[-1000:],
+        }
+    except Exception as exc:
+        return {"status": "FAIL", "error": str(exc)}
+
+
+def _label_match_auto_bootstrap_direct_sync(context):
+    started_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    base_report = {
+        "report_version": "label-match-direct-sync-auto-bootstrap-v1",
+        "app_version": APP_VERSION,
+        "started_at": started_at,
+        "source_host_id": context["source_host_id"],
+        "task_name": context["task_name"],
+        "program_data_root": context["program_data_root"],
+        "scan_source_dir": context["scan_source_dir"],
+        "server_base_url": context["server_base_url"],
+    }
+    if not _label_match_direct_sync_bootstrap_enabled():
+        _label_match_write_json(context["bootstrap_status_path"], {**base_report, "status": "DISABLED"})
+        return
+    if os.name != "nt":
+        _label_match_write_json(context["bootstrap_status_path"], {**base_report, "status": "SKIPPED", "reason": "windows_only"})
+        return
+    if _label_match_direct_sync_ready(context):
+        _label_match_write_json(context["bootstrap_status_path"], {**base_report, "status": "READY"})
+        return
+
+    command = _label_match_direct_sync_tool_command(context)
+    if not command:
+        _label_match_write_json(
+            context["bootstrap_status_path"],
+            {**base_report, "status": "BLOCKED", "blocked_reason": "direct-sync install pack tool is missing"},
+        )
+        return
+
+    args = command + [
+        "--self-enroll",
+        "--app-root",
+        context["app_root"],
+        "--server-base-url",
+        context["server_base_url"],
+        "--program-data-root",
+        context["program_data_root"],
+        "--scan-source-dir",
+        context["scan_source_dir"],
+        "--task-name",
+        context["task_name"],
+        "--report-path",
+        context["install_report_path"],
+        "--apply",
+    ]
+    if context["app_settings_path"]:
+        args.extend(["--app-settings-path", context["app_settings_path"]])
+    runner_exe = _label_match_optional_tool_exe(context, "direct_sync_relay_runner.exe")
+    if runner_exe:
+        args.extend(["--runner-exe", runner_exe])
+    registration_exe = _label_match_optional_tool_exe(context, "register_label_match_worker_pc.exe")
+    if registration_exe:
+        args.extend(["--registration-exe", registration_exe])
+
+    env = os.environ.copy()
+    env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
+    try:
+        timeout_seconds = max(30, int(os.environ.get(LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV, "180") or "180"))
+    except ValueError:
+        timeout_seconds = 180
+    try:
+        completed = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=env,
+            creationflags=_label_match_subprocess_creationflags(),
+        )
+        run_task_result = _label_match_run_direct_sync_task(context) if completed.returncode == 0 else None
+        _label_match_write_json(
+            context["bootstrap_status_path"],
+            {
+                **base_report,
+                "status": "PASS" if completed.returncode == 0 else "BLOCKED",
+                "returncode": completed.returncode,
+                "install_report_path": context["install_report_path"],
+                "stdout_tail": completed.stdout[-2000:],
+                "stderr_tail": completed.stderr[-2000:],
+                "run_task_result": run_task_result,
+            },
+        )
+    except Exception as exc:
+        _label_match_write_json(
+            context["bootstrap_status_path"],
+            {**base_report, "status": "BLOCKED", "blocked_reason": str(exc)},
+        )
 
 
 def _csv_formula_safe_cell(value):
@@ -324,36 +667,532 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.7" # [수정] 현품표/제품 스캔 효과음 분리
+APP_VERSION = "v2.0.8" # direct-sync auto bootstrap release
+UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
+UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
+UPDATE_MANIFEST_SIGNATURE_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_SIGNATURE_URL"
+UPDATE_MANIFEST_PUBLIC_KEY_ENV = "LABEL_MATCH_UPDATE_MANIFEST_PUBLIC_KEY"
+UPDATE_CHANNEL_ENV = "LABEL_MATCH_UPDATE_CHANNEL"
+UPDATE_PROVIDER_GITHUB = "github"
+UPDATE_PROVIDER_PRIVATE_MANIFEST = "private_manifest"
+UPDATE_PROVIDER_OFF = "off"
+UPDATE_MANIFEST_SCHEMA_VERSION = "kmtech-private-update-manifest-v1"
+UPDATE_MANIFEST_VERSION = 1
+UPDATE_DEFAULT_CHANNEL = "stable"
+UPDATE_APP_ID = "Label_Match"
+UPDATE_PC_ID_ENV = "LABEL_MATCH_UPDATE_PC_ID"
+UPDATE_ALLOWED_INSTALL_STRATEGIES = {"manual", "robocopy_backup_then_mirror", "replace_exe", "none"}
+UPDATE_DIRECT_GITHUB_ARTIFACT_HOSTS = {"objects.githubusercontent.com", "github-releases.githubusercontent.com"}
+UPDATE_SECRET_QUERY_KEYS = {
+    "access_token",
+    "api_key",
+    "client_secret",
+    "github_token",
+    "pat",
+    "private_key",
+    "token",
+}
 
-def check_for_updates():
-    """GitHub에서 최신 릴리스 정보를 확인하고, 업데이트가 필요하면 .zip 파일의 다운로드 URL을 반환합니다."""
+
+def _parse_update_version(version):
+    match = re.match(r"^v?(\d+(?:\.\d+){1,3})", str(version or "").strip(), flags=re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Invalid update version: {version!r}")
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _is_update_version_newer(candidate_version, current_version=APP_VERSION):
+    left = _parse_update_version(candidate_version)
+    right = _parse_update_version(current_version)
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) > right + (0,) * (width - len(right))
+
+
+def _load_update_settings():
     try:
-        api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
-        response = requests.get(api_url, timeout=5)
-        response.raise_for_status()
-        latest_release_data = response.json()
-        latest_version = latest_release_data['tag_name']
-        if latest_version.strip().lower() != APP_VERSION.strip().lower():
-            for asset in latest_release_data['assets']:
-                if asset['name'].endswith('.zip'):
-                    return asset['browser_download_url'], latest_version
-            return None, None
+        path_resolver = globals().get("resource_path")
+        if callable(path_resolver):
+            settings_path = path_resolver(os.path.join("config", "app_settings.json"))
         else:
-            return None, None
-    except requests.exceptions.RequestException as e:
-        print(f"업데이트 확인 중 오류 발생 (네트워크 문제일 수 있음): {e}")
+            settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "app_settings.json")
+        with open(settings_path, "r", encoding="utf-8") as handle:
+            settings = json.load(handle)
+        update_settings = settings.get("update_settings", {})
+        return update_settings if isinstance(update_settings, dict) else {}
+    except Exception:
+        return {}
+
+
+def _get_update_provider():
+    settings = _load_update_settings()
+    provider = os.environ.get(UPDATE_PROVIDER_ENV) or settings.get("provider") or UPDATE_PROVIDER_OFF
+    return str(provider).strip().lower()
+
+
+def _get_update_channel():
+    settings = _load_update_settings()
+    channel = os.environ.get(UPDATE_CHANNEL_ENV) or settings.get("channel") or UPDATE_DEFAULT_CHANNEL
+    return str(channel).strip().lower()
+
+
+def _get_update_manifest_url():
+    settings = _load_update_settings()
+    url = os.environ.get(UPDATE_MANIFEST_URL_ENV) or settings.get("manifest_url") or ""
+    return str(url).strip()
+
+
+def _get_update_manifest_signature_url(manifest_url):
+    settings = _load_update_settings()
+    url = os.environ.get(UPDATE_MANIFEST_SIGNATURE_URL_ENV) or settings.get("manifest_signature_url") or ""
+    return str(url).strip() or f"{manifest_url}.sig"
+
+
+def _get_update_manifest_public_key():
+    settings = _load_update_settings()
+    key = os.environ.get(UPDATE_MANIFEST_PUBLIC_KEY_ENV) or settings.get("manifest_public_key") or ""
+    return str(key).strip()
+
+
+def _is_sha256(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", value.strip()) is not None
+
+
+def _can_apply_updates():
+    return bool(getattr(sys, "frozen", False))
+
+
+def _assert_https_update_url(url, *, require_zip=False):
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError("Update URL must be HTTPS")
+    if parsed.username or parsed.password:
+        raise ValueError("Update URL must not include userinfo")
+    if parsed.fragment:
+        raise ValueError("Update URL must not include fragments")
+    if require_zip and not parsed.path.lower().endswith(".zip"):
+        raise ValueError("Update artifact URL must point to a .zip file")
+    for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
+        normalized_key = key.lower().replace("-", "_")
+        if normalized_key in UPDATE_SECRET_QUERY_KEYS:
+            raise ValueError("Update URL must not contain raw token query parameters")
+
+
+def _is_direct_github_artifact_url(url):
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if host in {"github.com", "www.github.com"} and "/releases/download/" in path:
+        return True
+    if host == "api.github.com" and "/releases/assets/" in path:
+        return True
+    return host in UPDATE_DIRECT_GITHUB_ARTIFACT_HOSTS
+
+
+def _validate_relative_manifest_path(value, field_name):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Update manifest {field_name} must be a non-empty relative path")
+    normalized = value.replace("\\", "/")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        raise ValueError(f"Update manifest {field_name} must be relative")
+    if any(part in {"", ".", ".."} or ":" in part for part in normalized.split("/")):
+        raise ValueError(f"Update manifest {field_name} contains an unsafe path")
+
+
+def _canonical_update_pc_id():
+    pc_id = os.environ.get(UPDATE_PC_ID_ENV) or os.environ.get("COMPUTERNAME") or socket.gethostname()
+    text = str(pc_id or "").strip().lower()
+    if not text:
+        raise ValueError("Update rollout requires a non-empty PC id")
+    return text
+
+
+def _rollout_bucket(app_id, channel, version, pc_id):
+    seed = f"{app_id}|{channel.lower()}|{version}|{pc_id.strip().lower()}".encode("utf-8")
+    return int(hashlib.sha256(seed).hexdigest()[:8], 16) % 100
+
+
+def _rollout_allows_current_pc(manifest):
+    rollout = manifest.get("rollout")
+    if not isinstance(rollout, dict):
+        raise ValueError("Update manifest rollout must be an object")
+    for key in ("allow_pc_ids", "deny_pc_ids"):
+        if key not in rollout or not isinstance(rollout.get(key), list) or not all(isinstance(item, str) for item in rollout.get(key)):
+            raise ValueError(f"Update manifest rollout.{key} must be a list of strings")
+    percentage = rollout.get("percentage")
+    if type(percentage) is not int or not 0 <= percentage <= 100:
+        raise ValueError("Update manifest rollout.percentage must be an integer from 0 to 100")
+    pc_id = _canonical_update_pc_id()
+    deny_pc_ids = {item.strip().lower() for item in rollout["deny_pc_ids"] if item.strip()}
+    allow_pc_ids = {item.strip().lower() for item in rollout["allow_pc_ids"] if item.strip()}
+    if pc_id in deny_pc_ids:
+        return False
+    if pc_id in allow_pc_ids:
+        return True
+    if percentage == 0:
+        return False
+    if percentage == 100:
+        return True
+    return _rollout_bucket(manifest["app_id"], manifest["channel"], manifest["version"], pc_id) < percentage
+
+
+def _validate_private_update_manifest_policy(manifest, expected_channel):
+    if manifest.get("schema_version") != UPDATE_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("Unsupported update manifest schema_version")
+    if manifest.get("manifest_version") != UPDATE_MANIFEST_VERSION:
+        raise ValueError("Unsupported update manifest_version")
+    if manifest.get("app_id") != UPDATE_APP_ID:
+        raise ValueError("Update manifest app_id does not match Label_Match")
+    if manifest.get("package_id") != UPDATE_APP_ID:
+        raise ValueError("Update manifest package_id does not match Label_Match")
+    channel = str(manifest.get("channel", "")).strip().lower()
+    if not channel:
+        raise ValueError("Update manifest channel must be non-empty")
+    if channel != expected_channel:
+        return None
+
+    artifact = _manifest_artifact(manifest)
+    artifact_name = str(artifact.get("name", "")).strip()
+    download_url = str(artifact.get("url", "")).strip()
+    expected_sha256 = str(artifact.get("sha256", "")).strip().lower()
+    latest_version = str(manifest.get("version", "")).strip()
+    expected_name = f"{UPDATE_APP_ID}-{latest_version}.zip"
+    if artifact_name != expected_name:
+        raise ValueError("Update manifest artifact name does not match release version")
+    if type(artifact.get("size_bytes")) is not int or artifact["size_bytes"] < 1:
+        raise ValueError("Update manifest artifact.size_bytes must be an integer >= 1")
+    if not _is_sha256(expected_sha256):
+        raise ValueError("Update manifest artifact.sha256 must be 64 hex characters")
+    _assert_https_update_url(download_url, require_zip=True)
+    if _is_direct_github_artifact_url(download_url):
+        raise ValueError("Update manifest artifact URL must not point directly at GitHub release storage")
+
+    archive = manifest.get("archive")
+    if not isinstance(archive, dict):
+        raise ValueError("Update manifest archive must be an object")
+    if archive.get("format") != "zip":
+        raise ValueError("Update manifest archive.format must be zip")
+    _validate_relative_manifest_path(archive.get("entrypoint"), "archive.entrypoint")
+    required_files = archive.get("required_files")
+    if not isinstance(required_files, list) or not required_files or not all(isinstance(item, str) for item in required_files):
+        raise ValueError("Update manifest archive.required_files must be a non-empty list of strings")
+    for item in required_files:
+        _validate_relative_manifest_path(item, "archive.required_files[]")
+    if archive.get("top_level") is not None:
+        _validate_relative_manifest_path(archive.get("top_level"), "archive.top_level")
+
+    install = manifest.get("install")
+    if not isinstance(install, dict):
+        raise ValueError("Update manifest install must be an object")
+    if install.get("strategy") not in UPDATE_ALLOWED_INSTALL_STRATEGIES:
+        raise ValueError("Update manifest install.strategy is unsupported")
+    preserve_paths = install.get("preserve_paths", [])
+    if not isinstance(preserve_paths, list) or not all(isinstance(item, str) for item in preserve_paths):
+        raise ValueError("Update manifest install.preserve_paths must be a list of strings")
+    for item in preserve_paths:
+        _validate_relative_manifest_path(item, "install.preserve_paths[]")
+
+    return {
+        "artifact": artifact,
+        "artifact_name": artifact_name,
+        "download_url": download_url,
+        "sha256": expected_sha256,
+        "archive": _archive_policy_from_manifest(archive),
+        "version": latest_version,
+    }
+
+
+def _canonical_manifest_bytes(manifest):
+    return json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def _verify_update_manifest_signature(manifest, signature, public_key_hex):
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:
+        raise ValueError("cryptography is required to verify update manifest signatures") from exc
+    try:
+        public_key = bytes.fromhex(str(public_key_hex).strip())
+    except ValueError as exc:
+        raise ValueError("Update manifest public key must be 64 hex characters") from exc
+    if len(public_key) != 32:
+        raise ValueError("Update manifest public key must be 32 bytes")
+    if len(signature) != 64:
+        raise ValueError("Update manifest signature must be 64 bytes")
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key).verify(signature, _canonical_manifest_bytes(manifest))
+    except InvalidSignature as exc:
+        raise ValueError("Update manifest signature verification failed") from exc
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_update_file_hash(path, expected_sha256):
+    if not _is_sha256(str(expected_sha256 or "").strip()):
+        raise ValueError("Downloaded update SHA256 verification requires a 64-character expected hash")
+    actual_sha256 = _sha256_file(path)
+    if actual_sha256.lower() != expected_sha256.strip().lower():
+        raise ValueError(
+            f"Downloaded update SHA256 mismatch: expected {expected_sha256}, got {actual_sha256}"
+        )
+
+
+def _manifest_artifact(manifest):
+    artifact = manifest.get("artifact")
+    if isinstance(artifact, dict):
+        return artifact
+    package = manifest.get("package")
+    if isinstance(package, dict):
+        return package
+    return {}
+
+
+def _update_candidate_from_manifest(manifest, expected_channel):
+    policy = _validate_private_update_manifest_policy(manifest, expected_channel)
+    if policy is None:
+        return None
+
+    latest_version = policy["version"]
+    if not _is_update_version_newer(latest_version):
+        return None
+    if not _rollout_allows_current_pc(manifest):
+        return None
+
+    return {
+        "url": policy["download_url"],
+        "version": latest_version,
+        "sha256": policy["sha256"],
+        "archive": policy["archive"],
+        "provider": UPDATE_PROVIDER_PRIVATE_MANIFEST,
+    }
+
+
+def _check_private_manifest_for_updates():
+    manifest_url = _get_update_manifest_url()
+    if not manifest_url:
+        print("private_manifest updater is enabled, but no manifest URL is configured.")
+        return None
+    public_key_hex = _get_update_manifest_public_key()
+    if not public_key_hex:
+        raise ValueError("private_manifest updater requires a manifest public key")
+    _assert_https_update_url(manifest_url)
+    response = requests.get(manifest_url, timeout=5)
+    response.raise_for_status()
+    manifest = response.json()
+    signature_url = _get_update_manifest_signature_url(manifest_url)
+    _assert_https_update_url(signature_url)
+    signature_response = requests.get(signature_url, timeout=5)
+    signature_response.raise_for_status()
+    _verify_update_manifest_signature(manifest, signature_response.content, public_key_hex)
+    return _update_candidate_from_manifest(manifest, _get_update_channel())
+
+
+def _find_github_release_asset_pair(assets, latest_version):
+    expected_zip_name = f"{UPDATE_APP_ID}-{latest_version}.zip"
+    zip_asset = None
+    for asset in assets:
+        name = str(asset.get("name", "")).strip()
+        if name == expected_zip_name:
+            zip_asset = asset
+            break
+        if zip_asset is None and name.endswith(".zip"):
+            zip_asset = asset
+
+    if not zip_asset:
         return None, None
 
+    zip_name = str(zip_asset.get("name", "")).strip()
+    checksum_names = {f"{zip_name}.sha256"}
+    if zip_name.lower().endswith(".zip"):
+        checksum_names.add(f"{zip_name[:-4]}.sha256")
 
-def _safe_extract_update_zip(zip_ref, destination_path):
+    checksum_asset = None
+    for asset in assets:
+        if str(asset.get("name", "")).strip() in checksum_names:
+            checksum_asset = asset
+            break
+    return zip_asset, checksum_asset
+
+
+def _parse_github_release_sha256(text, expected_filename):
+    match = re.search(r"\b([A-Fa-f0-9]{64})\b", str(text or ""))
+    if not match:
+        raise ValueError(f"GitHub release SHA256 asset is malformed for {expected_filename}")
+    return match.group(1).lower()
+
+
+def _sha256_from_github_asset_digest(asset):
+    digest = str(asset.get("digest", "")).strip().lower()
+    prefix = "sha256:"
+    if digest.startswith(prefix) and _is_sha256(digest[len(prefix):]):
+        return digest[len(prefix):]
+    return ""
+
+
+def _check_github_release_for_updates():
+    api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
+    response = requests.get(api_url, timeout=5)
+    response.raise_for_status()
+    latest_release_data = response.json()
+    latest_version = latest_release_data['tag_name']
+    if not _is_update_version_newer(latest_version):
+        return None
+    zip_asset, checksum_asset = _find_github_release_asset_pair(latest_release_data.get("assets") or [], latest_version)
+    if not zip_asset:
+        return None
+    download_url = str(zip_asset.get("browser_download_url") or "").strip()
+    _assert_https_update_url(download_url, require_zip=True)
+    expected_sha256 = _sha256_from_github_asset_digest(zip_asset)
+    if not expected_sha256 and not checksum_asset:
+        print("업데이트 확인 중 오류 발생: GitHub 릴리스에 SHA256 asset이 없어 업데이트를 건너뜁니다.")
+        return None
+
+    if not expected_sha256:
+        checksum_url = str(checksum_asset.get("browser_download_url") or "").strip()
+        _assert_https_update_url(checksum_url)
+        checksum_response = requests.get(checksum_url, timeout=5)
+        checksum_response.raise_for_status()
+        checksum_text = checksum_response.content.decode("utf-8")
+        expected_sha256 = _parse_github_release_sha256(checksum_text, str(zip_asset.get("name", "")))
+    return {
+        "url": download_url,
+        "version": latest_version,
+        "sha256": expected_sha256,
+        "provider": UPDATE_PROVIDER_GITHUB,
+    }
+
+
+def _check_update_candidate():
+    provider = _get_update_provider()
+    try:
+        if provider in {"", UPDATE_PROVIDER_OFF, "disabled", "none"}:
+            return None
+        if provider == UPDATE_PROVIDER_PRIVATE_MANIFEST:
+            return _check_private_manifest_for_updates()
+        if provider == UPDATE_PROVIDER_GITHUB:
+            return _check_github_release_for_updates()
+        print(f"지원하지 않는 업데이트 provider입니다: {provider}")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"업데이트 확인 중 오류 발생 (네트워크 문제일 수 있음): {e}")
+        return None
+    except Exception as e:
+        print(f"업데이트 manifest 확인 중 오류 발생: {e}")
+        return None
+
+def check_for_updates():
+    """Return (download_url, version) when an update is available."""
+    candidate = _check_update_candidate()
+    if not candidate:
+        return None, None
+    return candidate["url"], candidate["version"]
+
+
+def _archive_policy_from_manifest(archive):
+    policy = {
+        "top_level": archive.get("top_level"),
+        "required_files": list(archive.get("required_files") or []),
+    }
+    return policy
+
+
+def _normalize_update_archive_member_name(member_name):
+    normalized = str(member_name or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.rstrip("/")
+
+
+UPDATE_WINDOWS_RESERVED_ARCHIVE_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def _is_windows_reserved_archive_segment(segment):
+    return segment.split(".", 1)[0].upper() in UPDATE_WINDOWS_RESERVED_ARCHIVE_NAMES
+
+
+def _is_windows_unsafe_archive_segment(segment):
+    return (
+        _is_windows_reserved_archive_segment(segment)
+        or any(ord(char) < 32 for char in segment)
+        or segment.endswith((" ", "."))
+    )
+
+
+def _validate_update_archive_contract(zip_ref, archive_policy=None):
+    top_level = None
+    required_files = []
+    if archive_policy:
+        top_level_value = archive_policy.get("top_level")
+        if top_level_value is not None:
+            top_level = _normalize_update_archive_member_name(top_level_value)
+        required_files = [
+            _normalize_update_archive_member_name(item).lower()
+            for item in archive_policy.get("required_files") or []
+        ]
+
+    seen_members = set()
+    file_paths = set()
+    directory_paths = set()
+
+    for member in zip_ref.infolist():
+        member_name = _normalize_update_archive_member_name(member.filename)
+        parts = member_name.split("/") if member_name else []
+        mode = (member.external_attr >> 16) & 0o170000
+        if (
+            not member_name
+            or "\x00" in member_name
+            or member_name.startswith("/")
+            or re.match(r"^[A-Za-z]:", member_name)
+            or any(part in {"", ".", ".."} or ":" in part or _is_windows_unsafe_archive_segment(part) for part in parts)
+            or mode == 0o120000
+        ):
+            raise ValueError(f"Unsafe update archive member: {member.filename!r}")
+        if top_level and member_name != top_level and not member_name.startswith(top_level + "/"):
+            raise ValueError(f"Unsafe update archive member outside manifest top_level: {member.filename!r}")
+
+        member_key = member_name.lower()
+        if member_key in seen_members:
+            raise ValueError(f"Unsafe update archive member duplicate: {member.filename!r}")
+        seen_members.add(member_key)
+
+        if member.is_dir():
+            directory_paths.add(member_key)
+            continue
+
+        file_paths.add(member_key)
+        for index in range(1, len(parts)):
+            directory_paths.add("/".join(parts[:index]).lower())
+
+    collisions = sorted(file_paths & directory_paths)
+    if collisions:
+        raise ValueError(f"Unsafe update archive member collision: {collisions[0]}")
+
+    missing = [item for item in required_files if item not in file_paths]
+    if missing:
+        raise ValueError(f"Update archive is missing required file: {missing[0]}")
+
+
+def _safe_extract_update_zip(zip_ref, destination_path, archive_policy=None):
+    _validate_update_archive_contract(zip_ref, archive_policy)
     destination_abs = os.path.abspath(destination_path)
     destination_prefix = destination_abs + os.sep
     os.makedirs(destination_abs, exist_ok=True)
 
     for member in zip_ref.infolist():
-        member_name = member.filename.replace("\\", "/")
-        first_part = member_name.split("/", 1)[0]
+        member_name = _normalize_update_archive_member_name(member.filename)
         mode = (member.external_attr >> 16) & 0o170000
         if (
             not member_name
@@ -363,7 +1202,7 @@ def _safe_extract_update_zip(zip_ref, destination_path):
             or member_name.startswith("../")
             or "/../" in member_name
             or member_name.endswith("/..")
-            or ":" in first_part
+            or any(":" in part or _is_windows_unsafe_archive_segment(part) for part in member_name.split("/"))
             or mode == 0o120000
         ):
             raise ValueError(f"Unsafe update archive member: {member.filename!r}")
@@ -381,9 +1220,14 @@ def _safe_extract_update_zip(zip_ref, destination_path):
             shutil.copyfileobj(source, target)
 
 
-def download_and_apply_update(url):
+def download_and_apply_update(url, expected_sha256=None, archive_policy=None):
     """업데이트 .zip 파일을 다운로드하고, 압축 해제 후 적용 스크립트를 실행합니다."""
     try:
+        if not _can_apply_updates():
+            raise RuntimeError("Automatic update apply is only allowed from the packaged executable.")
+        _assert_https_update_url(url, require_zip=True)
+        if not _is_sha256(str(expected_sha256 or "").strip()):
+            raise ValueError("Automatic update apply requires an expected SHA256 hash")
         temp_dir = os.environ.get("TEMP", "C:\\Temp")
         os.makedirs(temp_dir, exist_ok=True)
         zip_path = os.path.join(temp_dir, "update.zip")
@@ -392,11 +1236,12 @@ def download_and_apply_update(url):
         with open(zip_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
+        _verify_update_file_hash(zip_path, expected_sha256)
         temp_update_folder = os.path.join(temp_dir, "temp_update")
         if os.path.exists(temp_update_folder):
             shutil.rmtree(temp_update_folder)
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            _safe_extract_update_zip(zip_ref, temp_update_folder)
+            _safe_extract_update_zip(zip_ref, temp_update_folder, archive_policy=archive_policy)
         os.remove(zip_path)
         if getattr(sys, 'frozen', False):
             application_path = os.path.dirname(sys.executable)
@@ -447,13 +1292,19 @@ del "%~f0"
 def threaded_update_check():
     """백그라운드에서 업데이트를 확인하고 필요한 경우 UI에 프롬프트를 표시합니다."""
     print("백그라운드 업데이트 확인 시작...")
-    download_url, new_version = check_for_updates()
-    if download_url:
+    candidate = _check_update_candidate()
+    if candidate:
+        download_url = candidate["url"]
+        new_version = candidate["version"]
         root_alert = tk.Tk()
         root_alert.withdraw()
         if messagebox.askyesno("업데이트 발견", f"새로운 버전({new_version})이 있습니다.\n지금 업데이트하시겠습니까? (현재 버전: {APP_VERSION})", parent=root_alert):
             root_alert.destroy()
-            download_and_apply_update(download_url)
+            download_and_apply_update(
+                download_url,
+                expected_sha256=candidate.get("sha256"),
+                archive_policy=candidate.get("archive"),
+            )
         else:
             print("사용자가 업데이트를 거부했습니다.")
             root_alert.destroy()
@@ -938,6 +1789,7 @@ class Label_Match(tk.Tk):
             self.after(200, self._update_ui_scaling)
             self._update_clock()
             if not self.run_tests:
+                self._start_direct_sync_auto_bootstrap()
                 threading.Thread(target=threaded_update_check, daemon=True).start()
         except queue.Empty:
             self.after(100, self._process_initial_load_queue)
@@ -946,6 +1798,15 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showerror("초기화 오류", f"프로그램을 시작하는 마지막 단계에서 오류가 발생했습니다.\n일시적인 문제일 수 있으니 프로그램을 다시 시작해보세요.\n\n[상세 오류]\n{e}\n\n프로그램을 종료합니다.")
             self.destroy()
+
+    def _start_direct_sync_auto_bootstrap(self):
+        context = _label_match_direct_sync_context(self.save_directory, self.app_settings_path)
+        self.direct_sync_bootstrap_context = context
+        threading.Thread(
+            target=_label_match_auto_bootstrap_direct_sync,
+            args=(context,),
+            daemon=True,
+        ).start()
 
     def show_loading_overlay(self):
         self.loading_overlay.grid(row=0, column=0, rowspan=3, sticky='nsew')
@@ -2273,6 +3134,7 @@ class Label_Match(tk.Tk):
         self._reset_current_set(from_finalize=True)
         if "big_display_label" in self.__dict__:
             if result == self.Results.PASS:
+                self._show_completion_progress(result)
                 self.update_big_display("통과 완료 - 다음 현품표 스캔", "green")
             else:
                 self.update_big_display("오류 처리 완료 - 새 현품표부터 시작", "red")
@@ -2540,6 +3402,20 @@ class Label_Match(tk.Tk):
             self.update_big_display(self._idle_instruction_text(), "")
             self.entry.focus_set()
         return True
+
+    def _show_completion_progress(self, result):
+        if result != self.Results.PASS:
+            return
+        if not getattr(self, "history_view_updates_active_state", True):
+            return
+        if "progress_bar" in self.__dict__:
+            self.progress_bar['value'] = self.TOTAL_SCAN_COUNT
+        self._update_step_rail(self.TOTAL_SCAN_COUNT)
+        if "status_label" in self.__dict__:
+            self.status_label.config(
+                text=f"{self.TOTAL_SCAN_COUNT}/{self.TOTAL_SCAN_COUNT} 통과 완료 | 다음 현품표 스캔 대기",
+                style="Status.TLabel",
+            )
 
     def _close_popup(self, popup, result, error_details):
         if popup.winfo_exists():
@@ -3995,6 +4871,8 @@ class Label_Match(tk.Tk):
         if not getattr(self, "history_view_updates_active_state", True):
             return
         if "big_display_label" in self.__dict__:
+            if "progress_bar" in self.__dict__:
+                self.progress_bar['value'] = 0
             self.update_big_display(self._idle_instruction_text(), "")
             self._update_status_label()
 

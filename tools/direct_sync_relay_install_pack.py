@@ -162,6 +162,17 @@ def _enrollment_url(args: argparse.Namespace) -> str:
     return _join_url(str(getattr(args, "server_base_url", "") or DEFAULT_SERVER_BASE_URL), DEFAULT_ENROLLMENT_PATH)
 
 
+def _enrollment_token_source(args: argparse.Namespace) -> str:
+    if str(getattr(args, "enrollment_token", "") or "").strip():
+        return "argument"
+    if str(getattr(args, "enrollment_token_file", "") or "").strip():
+        return "file"
+    env_name = str(getattr(args, "enrollment_token_env", "") or "").strip()
+    if env_name and str(os.getenv(env_name) or "").strip():
+        return "env"
+    return "tokenless_ip_allowlist"
+
+
 def _runtime_path_boundary_report(program_data_root: str | os.PathLike[str], paths: dict[str, str]) -> dict:
     raw_root = str(program_data_root).strip()
     if not raw_root:
@@ -203,8 +214,16 @@ def _same_resolved_path(left: str | os.PathLike[str], right: str | os.PathLike[s
     )
 
 
-def _app_save_path_scan_dir_check(app_root: Path, relay_scan_source_dir: str) -> tuple[dict[str, str], str]:
-    settings_path = app_root / "config" / "app_settings.json"
+def _app_save_path_scan_dir_check(
+    app_root: Path,
+    relay_scan_source_dir: str,
+    app_settings_path: str | os.PathLike[str] = "",
+) -> tuple[dict[str, str], str]:
+    settings_path = (
+        Path(app_settings_path).expanduser().resolve()
+        if str(app_settings_path or "").strip()
+        else app_root / "config" / "app_settings.json"
+    )
     expected_save_path = str(Path(DEFAULT_LABEL_MATCH_DATA_ROOT).resolve())
     if not settings_path.is_file():
         return {
@@ -250,6 +269,7 @@ def _install_preflight(
     producer_manifest_path: Path,
     credential_path: Path,
     relay_scan_source_dir: str,
+    app_settings_path: str | os.PathLike[str] = "",
 ) -> dict:
     checks: list[dict[str, str]] = []
     failures: list[str] = []
@@ -274,7 +294,11 @@ def _install_preflight(
             add_file_check(module_name, app_root / module_name)
     add_file_check("producer_manifest_path", producer_manifest_path)
     add_file_check("credential_path", credential_path)
-    save_path_check, save_path_failure = _app_save_path_scan_dir_check(app_root, relay_scan_source_dir)
+    save_path_check, save_path_failure = _app_save_path_scan_dir_check(
+        app_root,
+        relay_scan_source_dir,
+        app_settings_path,
+    )
     checks.append(save_path_check)
     if save_path_failure:
         failures.append(save_path_failure)
@@ -498,6 +522,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         getattr(args, "producer_manifest_path", "") or _default_manifest_path(args.program_data_root)
     ).resolve()
     credential_path = Path(getattr(args, "credential_path", "") or _default_credential_path(args.program_data_root)).resolve()
+    app_settings_path = str(getattr(args, "app_settings_path", "") or "").strip()
     paths = _runtime_paths(args.program_data_root)
     runtime_path_boundary = _runtime_path_boundary_report(args.program_data_root, paths)
     source_scan = _source_scan_config(args)
@@ -595,6 +620,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
                 producer_manifest_path,
                 credential_path,
                 str(source_scan.get("scan_source_dir") or ""),
+                app_settings_path,
             )
             if run_install_preflight
             else {"status": "NOT_RUN"}
@@ -605,19 +631,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             "server_base_url": str(getattr(args, "server_base_url", "") or DEFAULT_SERVER_BASE_URL),
             "endpoint_url": _endpoint_url(args),
             "enrollment_url": _enrollment_url(args),
-            "enrollment_token_source": (
-                "argument"
-                if str(getattr(args, "enrollment_token", "") or "").strip()
-                else (
-                    "file"
-                    if str(getattr(args, "enrollment_token_file", "") or "").strip()
-                    else (
-                        "env"
-                        if str(getattr(args, "enrollment_token_env", "") or "").strip()
-                        else "none"
-                    )
-                )
-            ),
+            "enrollment_token_source": _enrollment_token_source(args),
             "registration_script": str(app_root / "tools" / "register_label_match_worker_pc.py"),
             "registration_report_path": str(
                 Path(
@@ -633,8 +647,9 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         },
         "production_apply_guard": {
             "requires_apply": True,
-            "requires_confirm_production_install": True,
+            "requires_confirm_production_install": False,
             "confirm_production_install": bool(args.confirm_production_install),
+            "confirm_production_install_accepted_legacy_flag": True,
         },
     }
 
@@ -752,6 +767,7 @@ def _run_self_enrollment_registration(args: argparse.Namespace) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Label_Match direct-sync relay scheduled-task install pack")
     parser.add_argument("--app-root", default=str(Path(__file__).resolve().parents[1]))
+    parser.add_argument("--app-settings-path", default="")
     parser.add_argument("--python-exe", default=sys.executable)
     parser.add_argument("--runner-exe", default="")
     parser.add_argument("--registration-exe", default="")
@@ -822,13 +838,6 @@ def main(argv: list[str] | None = None) -> int:
     if not args.uninstall and plan["install_preflight"]["status"] not in {"PASS", "NOT_RUN"}:
         plan["status"] = "BLOCKED"
         plan["blocked_reason"] = f"install preflight failed: {plan['install_preflight']['blocked_reason']}"
-        _write_json(Path(args.report_path), plan)
-        print(f"install_pack_report={Path(args.report_path).resolve()}")
-        return 2
-
-    if args.apply and not args.confirm_production_install:
-        plan["status"] = "BLOCKED"
-        plan["blocked_reason"] = "apply requires --confirm-production-install"
         _write_json(Path(args.report_path), plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2

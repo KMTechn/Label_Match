@@ -86,6 +86,72 @@ def test_default_sound_config_has_master_scan_sound():
     assert sound_files["scan_1"] == "one.wav"
 
 
+def test_direct_sync_bootstrap_context_uses_per_pc_programdata_root(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "Label Match Pack 01")
+
+    context = module._label_match_direct_sync_context(
+        str(tmp_path / "scan-data"),
+        str(tmp_path / "config" / "app_settings.json"),
+    )
+
+    assert context["source_host_id"] == "label-match-pack-01"
+    assert context["program_data_root"] == str(
+        tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label-match-pack-01"
+    )
+    assert context["task_name"] == "direct-sync-relay-label-match-pack-01"
+    assert context["scan_source_dir"] == str(tmp_path / "scan-data")
+    assert context["bootstrap_status_path"].endswith("label_match_direct_sync_auto_bootstrap.json")
+
+
+def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-02")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    context = module._label_match_direct_sync_context(
+        str(tmp_path / "scan-data"),
+        str(tmp_path / "active-config" / "app_settings.json"),
+    )
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "install ok"
+        stderr = ""
+
+    monkeypatch.setattr(module, "_label_match_direct_sync_ready", lambda _context: False)
+    monkeypatch.setattr(module, "_label_match_direct_sync_tool_command", lambda _context: [str(tmp_path / "install-pack.exe")])
+    monkeypatch.setattr(
+        module,
+        "_label_match_optional_tool_exe",
+        lambda _context, filename: str(tmp_path / filename),
+    )
+    monkeypatch.setattr(module, "_label_match_run_direct_sync_task", lambda _context: {"status": "PASS"})
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return Completed()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._label_match_auto_bootstrap_direct_sync(context)
+
+    assert calls
+    command = calls[0][0]
+    assert command[0].endswith("install-pack.exe")
+    assert "--self-enroll" in command
+    assert command[command.index("--server-base-url") + 1] == module.LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
+    assert command[command.index("--program-data-root") + 1] == context["program_data_root"]
+    assert command[command.index("--scan-source-dir") + 1] == context["scan_source_dir"]
+    assert command[command.index("--app-settings-path") + 1] == context["app_settings_path"]
+    assert command[command.index("--runner-exe") + 1].endswith("direct_sync_relay_runner.exe")
+    assert command[command.index("--registration-exe") + 1].endswith("register_label_match_worker_pc.exe")
+    report = json.loads(Path(context["bootstrap_status_path"]).read_text(encoding="utf-8"))
+    assert report["status"] == "PASS"
+    assert report["run_task_result"] == {"status": "PASS"}
+
+
 def test_enriched_tray_complete_preserves_label_match_contract():
     module = load_label_match_module()
 
@@ -2209,6 +2275,69 @@ def test_auto_simulation_scenarios_scan_final_label_at_final_position(monkeypatc
                 final_positions.append(accepted_position)
         if final_positions:
             assert final_positions == [module.LABEL_MATCH_TOTAL_SCAN_COUNT]
+
+
+def test_completion_progress_keeps_all_packaging_steps_filled_after_pass():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.TOTAL_SCAN_COUNT = module.Label_Match.TOTAL_SCAN_COUNT
+    app.history_view_updates_active_state = True
+    app.current_set_info = {"id": None, "parsed": [], "raw": [], "has_error_or_reset": False}
+    app.progress_bar = _FakeProgressBar()
+    app.status_label = _FakeLabel()
+    app.colors = {
+        "danger": "#dc2626",
+        "success_light": "#dcfce7",
+        "success": "#15803d",
+        "primary": "#1d4ed8",
+        "background": "#ffffff",
+        "text_subtle": "#64748b",
+    }
+    app.step_labels = [_FakeLabel() for _ in range(module.Label_Match.TOTAL_SCAN_COUNT)]
+
+    module.Label_Match._show_completion_progress(app, module.Label_Match.Results.PASS)
+
+    assert app.progress_bar["value"] == module.LABEL_MATCH_TOTAL_SCAN_COUNT
+    assert app.status_label.kwargs["text"].startswith("6/6 통과 완료")
+    assert all(label.kwargs["background"] == app.colors["success_light"] for label in app.step_labels)
+
+
+def test_idle_instruction_resets_completion_progress_when_no_active_set():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.TOTAL_SCAN_COUNT = module.Label_Match.TOTAL_SCAN_COUNT
+    app.FINAL_LABEL_SCAN_POSITION = module.Label_Match.FINAL_LABEL_SCAN_POSITION
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.current_set_info = {
+        "id": None,
+        "parsed": [],
+        "raw": [],
+        "has_error_or_reset": False,
+    }
+    app.progress_bar = _FakeProgressBar(value=module.LABEL_MATCH_TOTAL_SCAN_COUNT)
+    app.status_label = _FakeLabel()
+    app.big_display_label = object()
+    app.colors = {
+        "danger": "#dc2626",
+        "success_light": "#dcfce7",
+        "success": "#15803d",
+        "primary": "#1d4ed8",
+        "background": "#ffffff",
+        "text_subtle": "#64748b",
+    }
+    app.step_labels = [_FakeLabel() for _ in range(module.Label_Match.TOTAL_SCAN_COUNT)]
+    app._idle_instruction_text = lambda: "1/6 현품표 스캔"
+    app.update_big_display = lambda *args, **kwargs: None
+    app._update_manual_complete_button_state = lambda: None
+
+    module.Label_Match._show_idle_instruction_if_idle(app)
+
+    assert app.progress_bar["value"] == 0
+    assert app.step_labels[0].kwargs["background"] == app.colors["primary"]
+    assert all(label.kwargs["background"] == app.colors["background"] for label in app.step_labels[1:])
 
 
 def test_delete_shortcut_ignores_non_history_focus_without_mutation():

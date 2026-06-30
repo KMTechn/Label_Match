@@ -219,6 +219,49 @@ def test_install_pack_blocks_app_save_path_that_does_not_match_relay_scan_dir(tm
     assert save_path_check["relay_scan_source_dir"] == str((tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data").resolve())
 
 
+def test_install_pack_preflight_can_use_explicit_app_settings_path(tmp_path):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    active_settings_path = tmp_path / "active-config" / "app_settings.json"
+    active_settings_path.parent.mkdir(parents=True)
+    active_settings_path.write_text(
+        json.dumps({"custom_save_path": str(scan_source_dir)}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        app_root=str(Path(__file__).resolve().parents[1]),
+        app_settings_path=str(active_settings_path),
+        python_exe=sys.executable,
+        program_data_root=str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+        producer_manifest_path=str(manifest_path),
+        credential_path=str(credential_path),
+        task_name="direct-sync-relay-label-match",
+        minute_interval=1,
+        min_free_bytes=123,
+        scan_source_dir=str(scan_source_dir),
+        source_glob=None,
+        max_enqueue_files=100,
+        min_source_file_age_seconds=60,
+        max_active_queue_count=1000,
+        max_active_queue_age_seconds=24 * 60 * 60,
+        apply=False,
+        uninstall=False,
+        confirm_production_install=False,
+        report_path=str(tmp_path / "install-pack-explicit-settings.json"),
+    )
+
+    plan = module.build_install_plan(args, run_preflight=True)
+
+    assert plan["install_preflight"]["status"] == "PASS"
+    save_path_check = next(
+        check for check in plan["install_preflight"]["checks"]
+        if check["name"] == "app_save_path_matches_relay_scan_dir"
+    )
+    assert save_path_check["settings_path"] == str(active_settings_path.resolve())
+    assert save_path_check["app_save_path"] == str(scan_source_dir.resolve())
+
+
 def test_install_pack_defaults_to_label_match_durable_source_dir(tmp_path):
     module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
@@ -702,30 +745,41 @@ def test_install_pack_blocks_manifest_wrong_source_system_or_transport(tmp_path)
         assert report["install_preflight"]["status"] == "FAIL"
 
 
-def test_install_pack_apply_without_confirm_is_blocked(tmp_path):
+def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypatch):
+    module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
-    report_path = tmp_path / "install-pack-blocked.json"
-    completed = subprocess.run(
+    report_path = tmp_path / "install-pack-apply-no-confirm.json"
+    program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    commands = []
+    monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(scan_source_dir))
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+
+    result = module.main(
         [
-            sys.executable,
-            "tools/direct_sync_relay_install_pack.py",
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
             str(credential_path),
+            "--program-data-root",
+            str(program_data_root),
+            "--scan-source-dir",
+            str(scan_source_dir),
             "--report-path",
             str(report_path),
             "--apply",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
+        ]
     )
 
-    assert completed.returncode == 2
+    assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
-    assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"] == "apply requires --confirm-production-install"
+    assert report["status"] == "PASS"
+    assert commands and commands[0][0] == "schtasks.exe"
+    assert report["production_apply_guard"]["requires_confirm_production_install"] is False
 
 
 def test_install_pack_blocks_relative_program_data_root(tmp_path):
