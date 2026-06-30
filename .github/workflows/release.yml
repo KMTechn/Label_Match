@@ -227,6 +227,7 @@ jobs:
         env:
           COMPANY_UPDATE_UPLOAD_URL: ${{ vars.COMPANY_UPDATE_UPLOAD_URL }}
           COMPANY_UPDATE_UPLOAD_TOKEN: ${{ secrets.COMPANY_UPDATE_UPLOAD_TOKEN }}
+          COMPANY_UPDATE_UPLOAD_ORIGIN_IP: ${{ vars.COMPANY_UPDATE_UPLOAD_ORIGIN_IP }}
           PRIVATE_UPDATE_APP_SLUG: label_match
           PRIVATE_UPDATE_CHANNEL: stable
           PRIVATE_UPDATE_ZIP_PATH: Label_Match-${{ github.ref_name }}.zip
@@ -245,6 +246,14 @@ jobs:
           }
           if (-not [string]::IsNullOrWhiteSpace($uploadUri.UserInfo) -or -not [string]::IsNullOrWhiteSpace($uploadUri.Query) -or -not [string]::IsNullOrWhiteSpace($uploadUri.Fragment)) {
             throw "COMPANY_UPDATE_UPLOAD_URL must not contain userinfo, query, or fragment."
+          }
+          $uploadOriginIp = $env:COMPANY_UPDATE_UPLOAD_ORIGIN_IP
+          if ($null -eq $uploadOriginIp) {
+            $uploadOriginIp = ""
+          }
+          $uploadOriginIp = $uploadOriginIp.Trim()
+          if (-not [string]::IsNullOrWhiteSpace($uploadOriginIp) -and -not ($uploadOriginIp -match '^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$')) {
+            throw "COMPANY_UPDATE_UPLOAD_ORIGIN_IP must be an IPv4 address."
           }
           $appSlug = $env:PRIVATE_UPDATE_APP_SLUG
           $channel = $env:PRIVATE_UPDATE_CHANNEL
@@ -269,6 +278,10 @@ jobs:
             "-F", "signature=@$manifestSigPath",
             $uploadUrl
           )
+          if (-not [string]::IsNullOrWhiteSpace($uploadOriginIp)) {
+            $resolvePort = if ($uploadUri.IsDefaultPort) { 443 } else { $uploadUri.Port }
+            $curlArgs = @("--resolve", "$($uploadUri.Host):$($resolvePort):$uploadOriginIp") + $curlArgs
+          }
           & curl.exe @curlArgs
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to publish private update feed over HTTPS."
