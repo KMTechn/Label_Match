@@ -692,6 +692,9 @@ def _connect_relay_db(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
 def _connect_relay_db_readonly(db_path: str | os.PathLike[str]) -> sqlite3.Connection | None:
     path = Path(db_path)
     if not path.exists():
+        parent = path.parent
+        if parent.exists() and not parent.is_dir():
+            raise FileExistsError(str(parent))
         return None
     conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
