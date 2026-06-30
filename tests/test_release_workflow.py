@@ -55,12 +55,20 @@ def test_release_workflow_generates_private_update_manifest():
     assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not contain query strings." in workflow
     assert "not GitHub release storage" in workflow
     assert ".githubusercontent.com" in workflow
+    assert "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE" in workflow
+    assert "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE must be an integer from 0 to 100." in workflow
     assert "$artifactUrl = \"$baseUrl/$zipPath\"" in workflow
     assert "\"$hash  $zipPath\" | Set-Content -Encoding utf8NoBOM \"$zipPath.sha256\"" in workflow
     assert "releases/download" not in workflow
-    assert "percentage = 0" in workflow
+    assert "percentage = $rolloutPercentage" in workflow
     assert "Label_Match-${{ github.ref_name }}.manifest.json" in workflow
     assert "Label_Match-${{ github.ref_name }}.zip" in workflow
+    assert "- name: Sign private update manifest" in workflow
+    assert "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY" in workflow
+    assert "- name: Publish private update feed" in workflow
+    assert "COMPANY_UPDATE_SSH_PRIVATE_KEY" in workflow
+    assert "PRIVATE_UPDATE_APP_SLUG: label_match" in workflow
+    assert "/root/WorkerAnalysisGUI-web/static/update-feed" in workflow
     assert "- name: Attach install update settings" in workflow
     assert "dist/Label_Match/config/app_settings.json" in workflow
     assert "PRIVATE_UPDATE_MANIFEST_URL" in workflow

@@ -107,6 +107,7 @@ jobs:
         shell: pwsh
         env:
           PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
+          PRIVATE_UPDATE_ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}
         run: |
           $zipPath = "Label_Match-${{ github.ref_name }}.zip"
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
@@ -129,6 +130,13 @@ jobs:
           $artifactHost = $baseUri.Host.ToLowerInvariant()
           if ($blockedHosts -contains $artifactHost -or $artifactHost.EndsWith(".githubusercontent.com")) {
             throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must point to the private update artifact host, not GitHub release storage."
+          }
+          $rolloutPercentage = 100
+          if (-not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_ROLLOUT_PERCENTAGE)) {
+            $rolloutPercentage = [int]$env:PRIVATE_UPDATE_ROLLOUT_PERCENTAGE
+          }
+          if ($rolloutPercentage -lt 0 -or $rolloutPercentage -gt 100) {
+            throw "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE must be an integer from 0 to 100."
           }
           $artifactUrl = "$baseUrl/$zipPath"
           $manifest = [ordered]@{
@@ -158,12 +166,109 @@ jobs:
               restart_executable = "Label_Match.exe"
             }
             rollout = [ordered]@{
-              percentage = 0
+              percentage = $rolloutPercentage
               allow_pc_ids = @()
               deny_pc_ids = @()
             }
           }
           $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM "Label_Match-${{ github.ref_name }}.manifest.json"
+
+      - name: Sign private update manifest
+        if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
+        shell: pwsh
+        env:
+          PRIVATE_UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.PRIVATE_UPDATE_MANIFEST_SIGNING_KEY }}
+          PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ github.ref_name }}.manifest.json
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_SIGNING_KEY)) {
+            throw "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY secret is required."
+          }
+          if (-not (Test-Path -LiteralPath $env:PRIVATE_UPDATE_MANIFEST_PATH)) {
+            throw "Private update manifest not found: $env:PRIVATE_UPDATE_MANIFEST_PATH"
+          }
+          $script = @'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          key_text = os.environ["PRIVATE_UPDATE_MANIFEST_SIGNING_KEY"].strip()
+          try:
+              key_bytes = bytes.fromhex(key_text)
+          except ValueError:
+              key_bytes = base64.b64decode(key_text, validate=True)
+          if len(key_bytes) != 32:
+              raise SystemExit("PRIVATE_UPDATE_MANIFEST_SIGNING_KEY must decode to 32 bytes")
+
+          manifest_path = Path(os.environ["PRIVATE_UPDATE_MANIFEST_PATH"])
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+          canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+          signature = Ed25519PrivateKey.from_private_bytes(key_bytes).sign(canonical)
+          manifest_path.with_name(manifest_path.name + ".sig").write_bytes(signature)
+          '@
+          $script | python -
+          $sigPath = "$env:PRIVATE_UPDATE_MANIFEST_PATH.sig"
+          $sig = [System.IO.File]::ReadAllBytes($sigPath)
+          if ($sig.Length -ne 64) {
+            throw "Private update manifest signature must be 64 bytes."
+          }
+
+      - name: Publish private update feed
+        if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
+        shell: pwsh
+        env:
+          COMPANY_UPDATE_SSH_HOST: ${{ secrets.COMPANY_UPDATE_SSH_HOST }}
+          COMPANY_UPDATE_SSH_PORT: ${{ secrets.COMPANY_UPDATE_SSH_PORT }}
+          COMPANY_UPDATE_SSH_USER: ${{ secrets.COMPANY_UPDATE_SSH_USER }}
+          COMPANY_UPDATE_SSH_PRIVATE_KEY: ${{ secrets.COMPANY_UPDATE_SSH_PRIVATE_KEY }}
+          COMPANY_UPDATE_FEED_ROOT: ${{ vars.COMPANY_UPDATE_FEED_ROOT }}
+          PRIVATE_UPDATE_APP_SLUG: label_match
+          PRIVATE_UPDATE_CHANNEL: stable
+          PRIVATE_UPDATE_ZIP_PATH: Label_Match-${{ github.ref_name }}.zip
+          PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ github.ref_name }}.manifest.json
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($name in @("COMPANY_UPDATE_SSH_HOST", "COMPANY_UPDATE_SSH_USER", "COMPANY_UPDATE_SSH_PRIVATE_KEY")) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
+              throw "$name secret is required."
+            }
+          }
+          $port = if ([string]::IsNullOrWhiteSpace($env:COMPANY_UPDATE_SSH_PORT)) { "22" } else { $env:COMPANY_UPDATE_SSH_PORT.Trim() }
+          $feedRoot = if ([string]::IsNullOrWhiteSpace($env:COMPANY_UPDATE_FEED_ROOT)) { "/root/WorkerAnalysisGUI-web/static/update-feed" } else { $env:COMPANY_UPDATE_FEED_ROOT.Trim().TrimEnd("/") }
+          $appSlug = $env:PRIVATE_UPDATE_APP_SLUG
+          $channel = $env:PRIVATE_UPDATE_CHANNEL
+          $zipPath = $env:PRIVATE_UPDATE_ZIP_PATH
+          $manifestPath = $env:PRIVATE_UPDATE_MANIFEST_PATH
+          $manifestSigPath = "$manifestPath.sig"
+          foreach ($path in @($zipPath, "$zipPath.sha256", $manifestPath, $manifestSigPath)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required private update publish file is missing: $path"
+            }
+          }
+
+          $sshDir = Join-Path $env:RUNNER_TEMP "kmtech-update-ssh"
+          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+          $keyPath = Join-Path $sshDir "id_ed25519"
+          [System.IO.File]::WriteAllText($keyPath, $env:COMPANY_UPDATE_SSH_PRIVATE_KEY.Replace("`r`n", "`n"))
+          icacls $keyPath /inheritance:r | Out-Null
+          icacls $keyPath /grant:r "$($env:USERNAME):R" | Out-Null
+
+          $target = "$($env:COMPANY_UPDATE_SSH_USER)@$($env:COMPANY_UPDATE_SSH_HOST)"
+          $remoteArtifacts = "$feedRoot/artifacts/$appSlug"
+          $remoteChannel = "$feedRoot/channels/$appSlug/$channel"
+          $sshArgs = @("-i", $keyPath, "-p", $port, "-o", "StrictHostKeyChecking=accept-new", $target)
+          & ssh @sshArgs "mkdir -p '$remoteArtifacts' '$remoteChannel'"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to create private update feed directories." }
+
+          & scp -i $keyPath -P $port -o StrictHostKeyChecking=accept-new $zipPath "$zipPath.sha256" "${target}:$remoteArtifacts/"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upload private update artifact files." }
+          & scp -i $keyPath -P $port -o StrictHostKeyChecking=accept-new $manifestPath "${target}:$remoteChannel/latest.json.tmp"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upload private update manifest." }
+          & scp -i $keyPath -P $port -o StrictHostKeyChecking=accept-new $manifestSigPath "${target}:$remoteChannel/latest.json.sig.tmp"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upload private update manifest signature." }
+          & ssh @sshArgs "mv -f '$remoteChannel/latest.json.tmp' '$remoteChannel/latest.json' && mv -f '$remoteChannel/latest.json.sig.tmp' '$remoteChannel/latest.json.sig'"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish private update channel files." }
 
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
