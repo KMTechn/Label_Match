@@ -20,6 +20,7 @@ from direct_sync_push import (
     RELAY_STATUS_PENDING,
     RELAY_STATUS_RETRY_WAIT,
     acked_relay_retention_candidates,
+    build_raw_artifact_restore_url,
     build_source_file_plan,
     canonical_json,
     canonical_request_string,
@@ -30,6 +31,8 @@ from direct_sync_push import (
     manifest_hash,
     relay_queue_status,
     reset_stale_relay_leases,
+    restore_metadata_from_upload_metadata,
+    restore_raw_artifact_to_file,
     signed_headers,
     upload_source_file,
 )
@@ -109,6 +112,39 @@ class FakeSession:
         return self.response
 
 
+class FakeRestoreResponse:
+    def __init__(self, status_code, body=b"", *, headers=None, payload=None):
+        self.status_code = status_code
+        self.content = body
+        self.headers = dict(headers or {})
+        self._payload = payload if payload is not None else {}
+
+    def iter_content(self, chunk_size=1024 * 1024):
+        for index in range(0, len(self.content), chunk_size):
+            yield self.content[index : index + chunk_size]
+
+    def json(self):
+        return self._payload
+
+
+class FakeRestoreSession:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def get(self, url, *, headers, timeout, stream=False, allow_redirects=False):
+        self.calls.append(
+            {
+                "url": url,
+                "headers": dict(headers),
+                "timeout": timeout,
+                "stream": stream,
+                "allow_redirects": allow_redirects,
+            }
+        )
+        return self.response
+
+
 class SequenceFakeSession:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -171,6 +207,126 @@ def make_credentials():
         secret="label-secret",
         endpoint_url="https://worker.example.invalid/api/producer-ingest/v1/source-file",
     )
+
+
+def test_restore_raw_artifact_downloads_verified_payload(tmp_path):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    plan = build_source_file_plan(
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    body = csv_path.read_bytes()
+    destination = tmp_path / "spool" / "restored.csv"
+    session = FakeRestoreSession(
+        FakeRestoreResponse(
+            200,
+            body,
+            headers={
+                "X-Content-SHA256": plan.content_sha256,
+                "X-Byte-Length": str(plan.byte_length),
+            },
+        )
+    )
+
+    result = restore_raw_artifact_to_file(
+        credentials=credentials,
+        metadata=plan.metadata,
+        destination_path=destination,
+        session=session,
+    )
+
+    assert result.success is True
+    assert destination.read_bytes() == body
+    assert session.calls[0]["url"] == build_raw_artifact_restore_url(
+        credentials.endpoint_url,
+        content_sha256=plan.content_sha256,
+        byte_length=plan.byte_length,
+    )
+    assert json.loads(session.calls[0]["headers"]["X-Producer-Restore-Metadata"]) == (
+        restore_metadata_from_upload_metadata(plan.metadata)
+    )
+
+
+def test_restore_raw_artifact_falls_back_when_hardlink_is_unavailable(tmp_path, monkeypatch):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    plan = build_source_file_plan(
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    body = csv_path.read_bytes()
+    destination = tmp_path / "spool" / "restored.csv"
+    session = FakeRestoreSession(
+        FakeRestoreResponse(
+            200,
+            body,
+            headers={
+                "X-Content-SHA256": plan.content_sha256,
+                "X-Byte-Length": str(plan.byte_length),
+            },
+        )
+    )
+
+    def hardlink_unavailable(_src, _dst):
+        raise OSError("hard links disabled")
+
+    monkeypatch.setattr(direct_sync_push_module.os, "link", hardlink_unavailable)
+
+    result = restore_raw_artifact_to_file(
+        credentials=credentials,
+        metadata=plan.metadata,
+        destination_path=destination,
+        session=session,
+    )
+
+    assert result.success is True
+    assert destination.read_bytes() == body
+    assert not list(destination.parent.glob("restored.csv.tmp.*"))
+
+
+def test_restore_raw_artifact_does_not_overwrite_file_created_during_download(tmp_path, monkeypatch):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    plan = build_source_file_plan(
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    destination = tmp_path / "spool" / "restored.csv"
+    session = FakeRestoreSession(
+        FakeRestoreResponse(
+            200,
+            csv_path.read_bytes(),
+            headers={
+                "X-Content-SHA256": plan.content_sha256,
+                "X-Byte-Length": str(plan.byte_length),
+            },
+        )
+    )
+
+    def race_create_destination(_src, dst):
+        Path(dst).write_text("operator-race-copy\n", encoding="utf-8")
+        raise FileExistsError
+
+    monkeypatch.setattr(direct_sync_push_module.os, "link", race_create_destination)
+
+    result = restore_raw_artifact_to_file(
+        credentials=credentials,
+        metadata=plan.metadata,
+        destination_path=destination,
+        session=session,
+    )
+
+    assert result.success is False
+    assert result.error_code == "restore_destination_exists"
+    assert destination.read_text(encoding="utf-8") == "operator-race-copy\n"
+    assert not list(destination.parent.glob("restored.csv.tmp.*"))
 
 
 def expect_push_error(callable_obj):
@@ -1199,6 +1355,15 @@ def test_acked_relay_retention_report_is_read_only_and_candidates_require_full_e
     assert len(candidates) == 1
     assert candidates[0].relay_id == row.relay_id
     assert candidates[0].receipt == receipt
+    assert len(
+        acked_relay_retention_candidates(
+            db_path,
+            spool_roots=[tmp_path / "spool"],
+            artifact_roots=[tmp_path / "status"],
+        )
+    ) == 1
+    assert acked_relay_retention_candidates(db_path, spool_roots=[tmp_path / "wrong-spool"]) == ()
+    assert acked_relay_retention_candidates(db_path, artifact_roots=[tmp_path / "wrong-status"]) == ()
 
     with sqlite3.connect(db_path) as conn:
         conn.execute(

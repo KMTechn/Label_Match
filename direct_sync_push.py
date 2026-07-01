@@ -19,17 +19,35 @@ from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 
 CONTRACT_VERSION = "producer-ingest-source-file-v1"
 SIGNATURE_VERSION = "PRODUCER-HMAC-SHA256-V1"
 DEFAULT_ENDPOINT_PATH = "/api/producer-ingest/v1/source-file"
+RAW_ARTIFACT_RESTORE_PATH_PREFIX = "/api/producer-ingest/v1/raw-artifacts"
 DEFAULT_STREAM_NAME = "label_match_events"
 DEFAULT_SOURCE_SYSTEM = "label_match"
 DEFAULT_SOURCE_TRANSPORT = "legacy_packaging_csv"
 DEFAULT_PRODUCER_ROLE = "label_match"
 DEFAULT_TIMEOUT_SECONDS = 30
+RESTORE_REQUIRED_METADATA_FIELDS = (
+    "contract_version",
+    "producer_install_id",
+    "source_host_id",
+    "producer_role",
+    "manifest_hash",
+    "stream_name",
+    "source_system",
+    "source_transport",
+    "content_sha256",
+    "byte_length",
+)
+RESTORE_OPTIONAL_METADATA_FIELDS = (
+    "client_batch_id",
+    "idempotency_key",
+    "relative_path",
+)
 DEFAULT_PRODUCER_USER_AGENT = "KMTech-LabelMatch-DirectSync/producer-ingest-source-file-v1"
 RELAY_STATUS_PENDING = "pending"
 RELAY_STATUS_LEASED = "leased"
@@ -87,6 +105,19 @@ class UploadResult:
     receipt: Dict[str, Any]
     retry_after_seconds: int | None = None
     status_path: str = ""
+    error_code: str = ""
+    error_message: str = ""
+
+
+@dataclass(frozen=True)
+class RawArtifactRestoreResult:
+    success: bool
+    status_code: int
+    restored: bool
+    retryable: bool
+    destination_path: str
+    content_sha256: str
+    byte_length: int
     error_code: str = ""
     error_message: str = ""
 
@@ -348,6 +379,349 @@ def validate_endpoint_url(endpoint_url: str) -> None:
         or address.is_reserved
     ):
         raise DirectSyncPushError("endpoint_url must not target non-public literal IP addresses")
+
+
+def _validate_sha256_hex(value: Any, *, label: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise DirectSyncPushError(f"{label} must be hex SHA-256")
+    return digest
+
+
+def _validate_remote_host_url(parsed: Any, *, label: str) -> None:
+    if parsed.scheme.lower() != "https":
+        raise DirectSyncPushError(f"{label} must use https")
+    if not parsed.netloc or not parsed.hostname:
+        raise DirectSyncPushError(f"{label} must include a hostname")
+    if parsed.username or parsed.password:
+        raise DirectSyncPushError(f"{label} must not include username or password")
+    host = parsed.hostname.strip().lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise DirectSyncPushError(f"{label} must not target localhost")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if (
+        address.is_loopback
+        or address.is_unspecified
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+    ):
+        raise DirectSyncPushError(f"{label} must not target non-public literal IP addresses")
+
+
+def build_raw_artifact_restore_url(endpoint_url: str, *, content_sha256: str, byte_length: int) -> str:
+    validate_endpoint_url(endpoint_url)
+    digest = _validate_sha256_hex(content_sha256, label="content_sha256")
+    try:
+        expected_byte_length = int(byte_length)
+    except (TypeError, ValueError) as exc:
+        raise DirectSyncPushError("byte_length must be an integer") from exc
+    if expected_byte_length < 0:
+        raise DirectSyncPushError("byte_length must be non-negative")
+    parsed = urlparse(str(endpoint_url or "").strip())
+    return parsed._replace(
+        path=f"{RAW_ARTIFACT_RESTORE_PATH_PREFIX}/{digest}/restore",
+        query=urlencode({"byte_length": str(expected_byte_length)}),
+        fragment="",
+    ).geturl()
+
+
+def validate_raw_artifact_restore_url(restore_url: str, *, content_sha256: str, byte_length: int) -> None:
+    parsed = urlparse(str(restore_url or "").strip())
+    _validate_remote_host_url(parsed, label="restore_url")
+    digest = _validate_sha256_hex(content_sha256, label="content_sha256")
+    expected_path = f"{RAW_ARTIFACT_RESTORE_PATH_PREFIX}/{digest}/restore"
+    if parsed.path != expected_path:
+        raise DirectSyncPushError(f"restore_url path must be {expected_path}")
+    if parsed.fragment:
+        raise DirectSyncPushError("restore_url must not include a fragment")
+    if parse_qsl(parsed.query, keep_blank_values=True) != [("byte_length", str(int(byte_length)))]:
+        raise DirectSyncPushError("restore_url query must contain only byte_length")
+
+
+def restore_metadata_from_upload_metadata(metadata: Mapping[str, Any]) -> Dict[str, Any]:
+    restore_metadata: Dict[str, Any] = {}
+    for field in RESTORE_REQUIRED_METADATA_FIELDS + RESTORE_OPTIONAL_METADATA_FIELDS:
+        value = metadata.get(field)
+        if field in RESTORE_OPTIONAL_METADATA_FIELDS and value in {None, ""}:
+            continue
+        restore_metadata[field] = value
+    for field in RESTORE_REQUIRED_METADATA_FIELDS:
+        if restore_metadata.get(field) in {None, ""}:
+            raise DirectSyncPushError(f"restore metadata missing required field: {field}")
+    if restore_metadata["contract_version"] != CONTRACT_VERSION:
+        raise DirectSyncPushError("restore metadata contract_version is unsupported")
+    restore_metadata["content_sha256"] = _validate_sha256_hex(restore_metadata["content_sha256"], label="content_sha256")
+    restore_metadata["manifest_hash"] = _validate_sha256_hex(restore_metadata["manifest_hash"], label="manifest_hash")
+    try:
+        restore_metadata["byte_length"] = int(restore_metadata["byte_length"])
+    except (TypeError, ValueError) as exc:
+        raise DirectSyncPushError("restore metadata byte_length must be an integer") from exc
+    if int(restore_metadata["byte_length"]) < 0:
+        raise DirectSyncPushError("restore metadata byte_length must be non-negative")
+    if "relative_path" in restore_metadata:
+        restore_metadata["relative_path"] = _safe_relative_path(str(restore_metadata["relative_path"]))
+    return restore_metadata
+
+
+def restore_signed_headers(
+    credentials: ProducerCredentials,
+    metadata: Mapping[str, Any],
+    restore_url: str,
+    *,
+    timestamp: str = "",
+    nonce: str = "",
+) -> Dict[str, str]:
+    restore_metadata = restore_metadata_from_upload_metadata(metadata)
+    validate_raw_artifact_restore_url(
+        restore_url,
+        content_sha256=str(restore_metadata["content_sha256"]),
+        byte_length=int(restore_metadata["byte_length"]),
+    )
+    validate_endpoint_url(credentials.endpoint_url)
+    credential_endpoint = urlparse(credentials.endpoint_url)
+    parsed = urlparse(restore_url)
+    if credential_endpoint.scheme.lower() != parsed.scheme.lower() or credential_endpoint.netloc.lower() != parsed.netloc.lower():
+        raise DirectSyncPushError("restore_url must use the credential endpoint origin")
+    timestamp = timestamp or utc_now_text()
+    nonce = nonce or uuid.uuid4().hex
+    canonical = canonical_request_string(
+        method="GET",
+        path=parsed.path,
+        query_string=parsed.query or "",
+        timestamp=timestamp,
+        nonce=nonce,
+        producer_id=credentials.producer_id,
+        key_id=credentials.key_id,
+        metadata=restore_metadata,
+        content_sha256=str(restore_metadata["content_sha256"]),
+        byte_length=int(restore_metadata["byte_length"]),
+        content_type="",
+    )
+    return {
+        "User-Agent": DEFAULT_PRODUCER_USER_AGENT,
+        "X-Producer-Id": credentials.producer_id,
+        "X-Producer-Key-Id": credentials.key_id,
+        "X-Producer-Timestamp": timestamp,
+        "X-Producer-Nonce": nonce,
+        "X-Producer-Signature": sign_canonical_request(credentials.secret, canonical),
+        "X-Producer-Restore-Metadata": canonical_json(restore_metadata),
+    }
+
+
+def _iter_response_content(response: Any) -> Iterable[bytes]:
+    if hasattr(response, "iter_content"):
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                yield bytes(chunk)
+        return
+    content = getattr(response, "content", b"")
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    if content:
+        yield bytes(content)
+
+
+def _restore_error_result(
+    *,
+    status_code: int,
+    retryable: bool,
+    destination_path: Path,
+    metadata: Mapping[str, Any],
+    error_code: str,
+    error_message: str,
+) -> RawArtifactRestoreResult:
+    return RawArtifactRestoreResult(
+        success=False,
+        status_code=status_code,
+        restored=False,
+        retryable=retryable,
+        destination_path=str(destination_path),
+        content_sha256=str(metadata.get("content_sha256") or ""),
+        byte_length=int(metadata.get("byte_length") or 0),
+        error_code=error_code,
+        error_message=error_message,
+    )
+
+
+def _publish_restored_temp_file(temp_path: Path, destination: Path, *, overwrite: bool) -> str:
+    if overwrite:
+        os.replace(temp_path, destination)
+        return ""
+    try:
+        os.link(temp_path, destination)
+    except FileExistsError:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        return "restore_destination_exists"
+    except OSError:
+        created_destination = False
+        try:
+            with temp_path.open("rb") as src, destination.open("xb") as dst:
+                created_destination = True
+                for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                    dst.write(chunk)
+                dst.flush()
+                os.fsync(dst.fileno())
+        except FileExistsError:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            return "restore_destination_exists"
+        except OSError:
+            if created_destination:
+                try:
+                    destination.unlink()
+                except OSError:
+                    pass
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            raise
+    try:
+        temp_path.unlink()
+    except OSError:
+        pass
+    return ""
+
+
+def restore_raw_artifact_to_file(
+    *,
+    credentials: ProducerCredentials,
+    metadata: Mapping[str, Any],
+    destination_path: str | os.PathLike[str],
+    session: Any = None,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    overwrite: bool = False,
+) -> RawArtifactRestoreResult:
+    restore_metadata = restore_metadata_from_upload_metadata(metadata)
+    expected_digest = str(restore_metadata["content_sha256"])
+    expected_byte_length = int(restore_metadata["byte_length"])
+    destination = Path(destination_path)
+    if destination.is_symlink():
+        raise DirectSyncPushError("destination_path must not be a symlink")
+    if destination.exists() and not overwrite:
+        raise DirectSyncPushError("destination_path already exists")
+    restore_url = build_raw_artifact_restore_url(
+        credentials.endpoint_url,
+        content_sha256=expected_digest,
+        byte_length=expected_byte_length,
+    )
+    headers = restore_signed_headers(credentials, restore_metadata, restore_url)
+    if session is None:
+        import requests
+
+        session = requests.Session()
+    temp_path = destination.with_name(f"{destination.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        response = session.get(restore_url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+    except Exception as exc:
+        return _restore_error_result(
+            status_code=0,
+            retryable=True,
+            destination_path=destination,
+            metadata=restore_metadata,
+            error_code="restore_transport_error",
+            error_message=f"raw artifact restore transport error: {type(exc).__name__}",
+        )
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if 300 <= status_code < 400:
+        return _restore_error_result(
+            status_code=status_code,
+            retryable=False,
+            destination_path=destination,
+            metadata=restore_metadata,
+            error_code="restore_redirect_not_allowed",
+            error_message="raw artifact restore redirected; redirects are not allowed",
+        )
+    if not 200 <= status_code < 300:
+        payload = _response_json(response)
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        return _restore_error_result(
+            status_code=status_code,
+            retryable=bool(payload.get("retryable")) or status_code in {408, 429, 500, 502, 503, 504},
+            destination_path=destination,
+            metadata=restore_metadata,
+            error_code=str(error.get("code") or "restore_http_error"),
+            error_message=_redact_remote_error_message(
+                error.get("message") or f"raw artifact restore returned HTTP {status_code}",
+                credentials=credentials,
+                headers=headers,
+            ),
+        )
+    if _response_header(response, "X-Content-SHA256").lower() != expected_digest or _response_header(response, "X-Byte-Length") != str(expected_byte_length):
+        return _restore_error_result(
+            status_code=status_code,
+            retryable=False,
+            destination_path=destination,
+            metadata=restore_metadata,
+            error_code="restore_response_identity_mismatch",
+            error_message="raw artifact restore response headers do not match requested artifact",
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    byte_count = 0
+    try:
+        with temp_path.open("wb") as handle:
+            for chunk in _iter_response_content(response):
+                digest.update(chunk)
+                byte_count += len(chunk)
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if digest.hexdigest() != expected_digest or byte_count != expected_byte_length:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            return _restore_error_result(
+                status_code=status_code,
+                retryable=False,
+                destination_path=destination,
+                metadata=restore_metadata,
+                error_code="restore_body_mismatch",
+                error_message="raw artifact restore body does not match requested artifact",
+            )
+        publish_error = _publish_restored_temp_file(temp_path, destination, overwrite=overwrite)
+        if publish_error:
+            return _restore_error_result(
+                status_code=status_code,
+                retryable=False,
+                destination_path=destination,
+                metadata=restore_metadata,
+                error_code=publish_error,
+                error_message="destination_path already exists",
+            )
+    except OSError as exc:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        return _restore_error_result(
+            status_code=status_code,
+            retryable=True,
+            destination_path=destination,
+            metadata=restore_metadata,
+            error_code="restore_write_failed",
+            error_message=f"raw artifact restore could not write destination: {type(exc).__name__}",
+        )
+    return RawArtifactRestoreResult(
+        success=True,
+        status_code=status_code,
+        restored=True,
+        retryable=False,
+        destination_path=str(destination),
+        content_sha256=expected_digest,
+        byte_length=expected_byte_length,
+    )
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -844,6 +1218,33 @@ def _upload_status_artifact_matches_relay(
     )
 
 
+def _normalized_candidate_roots(
+    roots: Iterable[str | os.PathLike[str]] | None,
+) -> tuple[Path, ...]:
+    normalized: list[Path] = []
+    for root in roots or ():
+        text = str(root or "").strip()
+        if text:
+            normalized.append(Path(text).expanduser().resolve())
+    return tuple(normalized)
+
+
+def _path_within_candidate_roots(path_value: str, roots: tuple[Path, ...]) -> bool:
+    if not roots:
+        return True
+    try:
+        path = Path(path_value).expanduser().resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _acked_relay_retention_report(conn: sqlite3.Connection) -> Dict[str, Any]:
     rows = conn.execute(
         """
@@ -911,10 +1312,14 @@ def acked_relay_retention_candidates(
     *,
     limit: int = 20,
     excluded_relay_ids: Iterable[str] | None = None,
+    spool_roots: Iterable[str | os.PathLike[str]] | None = None,
+    artifact_roots: Iterable[str | os.PathLike[str]] | None = None,
 ) -> tuple[AckedRelayRetentionCandidate, ...]:
     fetch_limit = max(0, int(limit or 0))
     if fetch_limit == 0:
         return tuple()
+    normalized_spool_roots = _normalized_candidate_roots(spool_roots)
+    normalized_artifact_roots = _normalized_candidate_roots(artifact_roots)
     excluded = tuple(str(relay_id) for relay_id in (excluded_relay_ids or ()) if str(relay_id))
     exclude_clause = ""
     params: list[Any] = [RELAY_STATUS_ACKED]
@@ -951,6 +1356,8 @@ def acked_relay_retention_candidates(
     for row in rows:
         try:
             relay_row = _relay_row(row)
+            if not _path_within_candidate_roots(relay_row.spooled_file_path, normalized_spool_roots):
+                continue
             plan = _source_file_plan_from_relay_row(relay_row)
             receipt = _json_object_from_text(str(row["receipt_json"] or "{}"))
             receipt_error_code, _receipt_error_message = _receipt_identity_error(plan, receipt)
@@ -967,6 +1374,8 @@ def acked_relay_retention_candidates(
             ):
                 continue
             upload_status_path = str(row["upload_status_path"] or "")
+            if not _path_within_candidate_roots(upload_status_path, normalized_artifact_roots):
+                continue
             if not _upload_status_artifact_matches_relay(
                 status_path=upload_status_path,
                 plan=plan,
