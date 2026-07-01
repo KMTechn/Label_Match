@@ -86,6 +86,24 @@ def test_default_sound_config_has_master_scan_sound():
     assert sound_files["scan_1"] == "one.wav"
 
 
+def test_worker_history_is_recent_first_and_deduplicated():
+    module = load_label_match_module()
+    app = module.Label_Match.__new__(module.Label_Match)
+    app.worker_name = ""
+    app.app_settings = {
+        "worker_history": [
+            {"name": "작업자A", "last_used_at": "2026-06-30T08:00:00+09:00"},
+            {"name": "작업자B", "last_used_at": "2026-06-30T10:00:00+09:00"},
+            {"name": "작업자A", "last_used_at": "2026-06-30T11:00:00+09:00"},
+        ]
+    }
+
+    assert app._recent_worker_names() == ["작업자A", "작업자B"]
+
+    app._remember_worker_name("작업자B")
+    assert app.app_settings["worker_history"][0]["name"] == "작업자B"
+
+
 def test_direct_sync_bootstrap_context_uses_per_pc_programdata_root(tmp_path, monkeypatch):
     module = load_label_match_module()
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))

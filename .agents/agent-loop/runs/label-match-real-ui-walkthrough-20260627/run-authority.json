@@ -1,0 +1,15 @@
+{
+  "schema": "run-authority-v1",
+  "run_name": "label-match-real-ui-walkthrough-20260627",
+  "created_at": "2026-06-27T00:00:00+09:00",
+  "work_type": "mixed",
+  "completion_subject_type": "composite_subject",
+  "continuation_mode": "nonstop",
+  "capability_mode": "delegated_agents_authorized_by_loop_tool_available",
+  "source_ref": "source.md",
+  "authority_revision": 1,
+  "authority_epoch": 1,
+  "commit_execution_authorized": false,
+  "outline_target_url": "https://wiki.kmtecherp.com/doc/label_match-uMZaThRmO1",
+  "outline_document_id": "4115be8b-488a-4934-80af-f0f9e4ee721b"
+}

@@ -1,10 +1,9 @@
-"""Drive the installed Label_Match UI on this worker PC and capture evidence.
+"""Drive the installed Label_Match UI on this worker PC and capture smoke evidence.
 
-This is intentionally a field-evidence driver, not a unit test. It starts the
-real Tkinter app, places it on a non-primary monitor when requested, performs
-operator-like scans through the app methods, captures screenshots, and writes a
-redacted JSON report that can be paired with the direct-sync relay/server
-receipt evidence.
+This is a state/log smoke driver. It starts the real Tkinter app but runs with
+run_tests=True and uses direct app calls, so its output must not be treated as
+operator workflow proof. Use label_match_operator_ui_walkthrough.py for
+run_tests=False full-monitor operator evidence.
 """
 
 from __future__ import annotations
@@ -306,8 +305,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     event_counts = _event_counts(rows)
     report = {
-        "report_version": "label-match-real-pc-ui-e2e-v1",
-        "status": "PASS",
+        "report_version": "label-match-real-pc-state-smoke-v2",
+        "status": "SMOKE_PASS",
         "generated_at": _now_utc(),
         "host": socket.gethostname(),
         "marker": marker,
@@ -325,6 +324,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "display_policy": {
             "requested_geometry": args.geometry,
             "main_monitor_not_used": x != 0 or y != 0,
+            "run_tests_true": True,
+            "operator_input_mode": "direct_entry_insert_plus_process_input",
+            "field_evidence_status": "SMOKE_ONLY_NOT_OPERATOR_WORKFLOW_EVIDENCE",
             "note": "Window was placed using the requested geometry; screenshots are captured by HWND where available.",
         },
     }
@@ -358,7 +360,7 @@ def main() -> int:
     parser.add_argument("--geometry", default="1280x900+900+-1390")
     args = parser.parse_args()
     report = run(args)
-    return 0 if report.get("status") == "PASS" else 2
+    return 0 if report.get("status") == "SMOKE_PASS" else 2
 
 
 if __name__ == "__main__":

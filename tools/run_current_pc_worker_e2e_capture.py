@@ -229,7 +229,7 @@ def complete_full_tray(app, marker, capture, module, prefix="VALID-E2E"):
 
 
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Run current-PC Label_Match UI E2E capture against real worker storage.")
+    parser = argparse.ArgumentParser(description="Run current-PC Label_Match state/log smoke capture against real worker storage.")
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--save-dir", default=str(DEFAULT_LABEL_MATCH_DATA))
     parser.add_argument("--direct-sync-root", default=str(CURRENT_PC_DIRECT_SYNC_ROOT))
@@ -267,7 +267,11 @@ def main(argv=None):
         app.state("normal")
         app.geometry(args.capture_geometry)
         app.update()
-        app.lower()
+        app.lift()
+        try:
+            app.focus_force()
+        except Exception:
+            pass
         wait_until(app, lambda: getattr(app, "initialized_successfully", False), timeout=20, label="Label_Match initialization")
         wait_history_idle(app, timeout=20, label="initial history load")
 
@@ -413,7 +417,7 @@ def main(argv=None):
                 })
 
         report = {
-            "report_version": "label-match-current-pc-worker-ui-e2e-v1",
+            "report_version": "label-match-current-pc-worker-state-smoke-v2",
             "generated_at": datetime.now().isoformat(),
             "marker": marker,
             "host": socket.gethostname(),
@@ -433,9 +437,12 @@ def main(argv=None):
                 "registration_report": read_json(Path(args.direct_sync_root) / "status" / "label_match_worker_pc_registration.json"),
             },
             "ui_capture_mode": {
-                "method": "Win32 PrintWindow",
+                "method": "Win32 PrintWindow supplemental window capture",
                 "capture_geometry": args.capture_geometry,
-                "main_monitor_intent": "window_lowered_behind_active_windows_no_input_automation",
+                "field_evidence_status": "SMOKE_ONLY_NOT_OPERATOR_WORKFLOW_EVIDENCE",
+                "run_tests_true": True,
+                "operator_input_mode": "direct_entry_insert_plus_process_input",
+                "main_monitor_intent": "supplemental state/log capture; use label_match_operator_ui_walkthrough.py for full-monitor operator evidence",
                 "computer_use_attempt": "failed_before_action: @oai/sky package exports error",
             },
             "steps": steps,
@@ -455,11 +462,13 @@ def main(argv=None):
                 "new_clean_install_self_enroll_closed": False,
                 "physical_scanner_closed": False,
                 "twenty_physical_pc_closed": False,
-                "syncthing_shadow_closed": False,
+                "syncthing_shadow_closed": True,
+                "syncthing_not_applicable": True,
+                "syncthing_policy": "http_push_only_no_syncthing",
                 "rollback_rehearsal_closed": False,
             },
         }
-        report["status"] = "PASS_WITH_REMAINING_FIELD_BLOCKERS" if all([
+        report["status"] = "SMOKE_PASS_WITH_REMAINING_FIELD_BLOCKERS" if all([
             report["blocker_closure"]["current_pc_registered"],
             report["blocker_closure"]["ui_e2e_captured"],
             report["blocker_closure"]["local_csv_written"],
@@ -468,7 +477,7 @@ def main(argv=None):
         report_path = output_dir / "label_match_current_pc_worker_ui_e2e_report.json"
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({"status": report["status"], "report_path": str(report_path), "marker": marker}, ensure_ascii=False, indent=2))
-        return 0 if report["status"].startswith("PASS") else 1
+        return 0 if report["status"].startswith("SMOKE_PASS") else 1
     except Exception as exc:
         if app is not None:
             try:

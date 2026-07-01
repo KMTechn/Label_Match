@@ -10,7 +10,16 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from direct_sync_push import RELAY_STATUS_FAILED_PERMANENT, RELAY_STATUS_PENDING, utc_now_text
+from direct_sync_push import (
+    DirectSyncPushError,
+    ProducerCredentials,
+    RELAY_STATUS_ACKED,
+    RELAY_STATUS_FAILED_PERMANENT,
+    RELAY_STATUS_PENDING,
+    build_raw_artifact_restore_url,
+    restore_raw_artifact_to_file,
+    utc_now_text,
+)
 
 
 PAUSE_SCHEMA_VERSION = "direct-sync-relay-operator-pause-v1"
@@ -80,6 +89,18 @@ def _read_file_digest(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             total += len(chunk)
     return digest.hexdigest(), total
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _sqlite_error_message(exc: sqlite3.Error) -> str:
+    return f"relay queue database error: {exc.__class__.__name__}"
 
 
 def _read_pause_marker(path: Path) -> tuple[dict[str, Any], bool]:
@@ -183,7 +204,7 @@ def read_relay_queue_status_read_only(db_path: str | os.PathLike[str]) -> dict[s
     try:
         conn = _connect_relay_db(path, read_only=True)
     except sqlite3.Error as exc:
-        return {"status": "blocked", "counts": {}, "oldest_active_created_at": "", "error_code": "relay_db_open_failed", "error_message": str(exc)}
+        return {"status": "blocked", "counts": {}, "oldest_active_created_at": "", "error_code": "relay_db_open_failed", "error_message": _sqlite_error_message(exc)}
     try:
         counts = {
             row["status"]: int(row["count"])
@@ -200,7 +221,7 @@ def read_relay_queue_status_read_only(db_path: str | os.PathLike[str]) -> dict[s
         ).fetchone()
         return {"status": "PASS", "counts": counts, "oldest_active_created_at": oldest["created_at"] if oldest else ""}
     except sqlite3.Error as exc:
-        return {"status": "blocked", "counts": {}, "oldest_active_created_at": "", "error_code": "relay_db_schema_unavailable", "error_message": str(exc)}
+        return {"status": "blocked", "counts": {}, "oldest_active_created_at": "", "error_code": "relay_db_schema_unavailable", "error_message": _sqlite_error_message(exc)}
     finally:
         conn.close()
 
@@ -213,6 +234,153 @@ def operator_status(*, db_path: str | os.PathLike[str], pause_path: str | os.Pat
         "queue": read_relay_queue_status_read_only(db_path),
         "pause": read_operator_pause(pause_path),
     }
+
+
+def restore_relay_spool_from_server(
+    *,
+    db_path: str | os.PathLike[str],
+    relay_id: str,
+    spool_root: str | os.PathLike[str],
+    credentials: ProducerCredentials,
+    operator_id: str,
+    reason: str,
+    audit_log_path: str | os.PathLike[str] = "",
+    session: Any = None,
+) -> dict[str, Any]:
+    relay = _require_text(relay_id, field_name="relay_id", max_length=128)
+    operator = _require_text(operator_id, field_name="operator_id", max_length=128)
+    reason_text = _require_text(reason, field_name="reason")
+    reason_fields = _reason_evidence(reason_text)
+
+    def blocked(error_code: str, **extra: Any) -> dict[str, Any]:
+        report = {
+            "status": "BLOCKED",
+            "operation": "restore-spool",
+            "relay_id": relay,
+            "operator_id": operator,
+            "tool_version": OPERATOR_TOOL_VERSION,
+            **reason_fields,
+            "error_code": error_code,
+        }
+        report.update(extra)
+        _append_operator_audit(audit_log_path, action="restore-spool-blocked", report=report)
+        return report
+
+    if not Path(db_path).is_file():
+        return blocked("relay_db_not_initialized")
+    spool_root_path = Path(spool_root).expanduser().resolve()
+    conn = _connect_relay_db(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT relay_id, status, spooled_file_path, content_sha256, byte_length,
+                   metadata_json, producer_id, key_id, endpoint_url
+            FROM direct_sync_relay_batches
+            WHERE relay_id = ?
+            """,
+            (relay,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return blocked("relay_not_found")
+    previous_status = str(row["status"] or "")
+    if previous_status != RELAY_STATUS_ACKED:
+        return blocked("relay_status_not_restoreable", previous_status=previous_status)
+    for field, expected in {
+        "producer_id": credentials.producer_id,
+        "key_id": credentials.key_id,
+        "endpoint_url": credentials.endpoint_url,
+    }.items():
+        actual = str(row[field] or "")
+        if not actual:
+            return blocked("relay_credential_binding_missing", missing_field=field)
+        if actual != str(expected):
+            return blocked("relay_credential_binding_mismatch", mismatch_field=field)
+    spool_path_candidate = Path(str(row["spooled_file_path"] or "")).expanduser()
+    if spool_path_candidate.is_symlink():
+        return blocked("spooled_file_symlink")
+    spool_path = spool_path_candidate.resolve()
+    if not _is_within(spool_path, spool_root_path):
+        return blocked("spooled_file_outside_spool_root", spool_root=str(spool_root_path))
+    expected_hash = str(row["content_sha256"] or "")
+    expected_bytes = int(row["byte_length"])
+    if spool_path.exists():
+        if not spool_path.is_file():
+            return blocked("spooled_file_not_regular")
+        actual_hash, actual_bytes = _read_file_digest(spool_path)
+        if actual_hash != expected_hash or actual_bytes != expected_bytes:
+            return blocked(
+                "spooled_file_already_exists_mismatch",
+                content_sha256=expected_hash,
+                byte_length=expected_bytes,
+                actual_content_sha256=actual_hash,
+                actual_byte_length=actual_bytes,
+            )
+        report = {
+            "status": "PASS",
+            "operation": "restore-spool",
+            "relay_id": relay,
+            "operator_id": operator,
+            "tool_version": OPERATOR_TOOL_VERSION,
+            **reason_fields,
+            "previous_status": previous_status,
+            "restored": False,
+            "local_file_already_present": True,
+            "content_sha256": expected_hash,
+            "byte_length": expected_bytes,
+            "spooled_file_path": str(spool_path),
+            "restore_url": build_raw_artifact_restore_url(
+                credentials.endpoint_url,
+                content_sha256=expected_hash,
+                byte_length=expected_bytes,
+            ),
+        }
+        _append_operator_audit(audit_log_path, action="restore-spool", report=report)
+        return report
+    try:
+        metadata = json.loads(str(row["metadata_json"] or "{}"))
+    except json.JSONDecodeError:
+        return blocked("relay_upload_metadata_invalid")
+    if not isinstance(metadata, dict):
+        return blocked("relay_upload_metadata_invalid")
+    try:
+        result = restore_raw_artifact_to_file(
+            credentials=credentials,
+            metadata=metadata,
+            destination_path=spool_path,
+            session=session,
+        )
+    except DirectSyncPushError:
+        return blocked("relay_restore_input_invalid")
+    if not result.success:
+        return blocked(
+            result.error_code or "relay_restore_failed",
+            restore_retryable=result.retryable,
+            restore_status_code=result.status_code,
+            error_message=result.error_message,
+        )
+    report = {
+        "status": "PASS",
+        "operation": "restore-spool",
+        "relay_id": relay,
+        "operator_id": operator,
+        "tool_version": OPERATOR_TOOL_VERSION,
+        **reason_fields,
+        "previous_status": previous_status,
+        "restored": True,
+        "local_file_already_present": False,
+        "content_sha256": expected_hash,
+        "byte_length": expected_bytes,
+        "spooled_file_path": str(spool_path),
+        "restore_url": build_raw_artifact_restore_url(
+            credentials.endpoint_url,
+            content_sha256=expected_hash,
+            byte_length=expected_bytes,
+        ),
+    }
+    _append_operator_audit(audit_log_path, action="restore-spool", report=report)
+    return report
 
 
 def retry_dead_relay_batch(

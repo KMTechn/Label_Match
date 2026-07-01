@@ -13,6 +13,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -75,6 +76,61 @@ def _send_ctrl_v() -> None:
     _send_key(ord("V"))
     time.sleep(0.02)
     win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
+def _send_ctrl_a() -> None:
+    win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+    time.sleep(0.02)
+    _send_key(ord("A"))
+    time.sleep(0.02)
+    win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
+def _root_hwnd(widget: Any) -> int:
+    hwnd = int(widget.winfo_id())
+    try:
+        hwnd = int(win32gui.GetAncestor(hwnd, win32con.GA_ROOT))
+    except Exception:
+        pass
+    return hwnd
+
+
+def _foreground_snapshot(target_hwnd: int) -> dict[str, Any]:
+    foreground = int(win32gui.GetForegroundWindow())
+    foreground_root = foreground
+    try:
+        foreground_root = int(win32gui.GetAncestor(foreground, win32con.GA_ROOT))
+    except Exception:
+        pass
+    _, target_pid = win32process.GetWindowThreadProcessId(target_hwnd)
+    _, foreground_pid = win32process.GetWindowThreadProcessId(foreground)
+    return {
+        "foreground_hwnd": foreground,
+        "foreground_root_hwnd": foreground_root,
+        "foreground_pid": int(foreground_pid),
+        "foreground_title": win32gui.GetWindowText(foreground) or "",
+        "target_hwnd": int(target_hwnd),
+        "target_pid": int(target_pid),
+        "target_title": win32gui.GetWindowText(target_hwnd) or "",
+        "target_is_foreground": foreground == target_hwnd or foreground_root == target_hwnd,
+    }
+
+
+def _bring_window_to_foreground(hwnd: int) -> dict[str, Any]:
+    result: dict[str, Any] = {"target_hwnd": int(hwnd), "attempted": True}
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    except Exception as exc:
+        result["show_window_error"] = repr(exc)
+    try:
+        win32gui.SetForegroundWindow(hwnd)
+        result["set_foreground_ok"] = True
+    except Exception as exc:
+        result["set_foreground_ok"] = False
+        result["set_foreground_error"] = repr(exc)
+    time.sleep(0.12)
+    result.update(_foreground_snapshot(hwnd))
+    return result
 
 
 def _click_dialog_button(hwnd: int, prefixes: tuple[str, ...] = ("예", "확인", "OK")) -> bool:
@@ -203,11 +259,17 @@ def _capture_bbox(hwnd: int, path: Path) -> dict[str, Any]:
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)
     if right <= left or bottom <= top:
         raise RuntimeError(f"invalid window rect: {(left, top, right, bottom)}")
+    monitor = win32api.MonitorFromWindow(hwnd, win32con.MONITOR_DEFAULTTONEAREST)
+    monitor_left, monitor_top, monitor_right, monitor_bottom = win32api.GetMonitorInfo(monitor)["Monitor"]
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        image = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True, include_layered_windows=True)
+        image = ImageGrab.grab(
+            bbox=(monitor_left, monitor_top, monitor_right, monitor_bottom),
+            all_screens=True,
+            include_layered_windows=True,
+        )
     except TypeError:
-        image = ImageGrab.grab(bbox=(left, top, right, bottom))
+        image = ImageGrab.grab(bbox=(monitor_left, monitor_top, monitor_right, monitor_bottom))
     image.save(path)
     stat = ImageStat.Stat(image)
     extrema = image.convert("L").getextrema()
@@ -216,7 +278,12 @@ def _capture_bbox(hwnd: int, path: Path) -> dict[str, Any]:
         "sha256": _sha256_file(path),
         "width": image.width,
         "height": image.height,
+        "capture_target": "full_monitor",
+        "monitor_rect": [monitor_left, monitor_top, monitor_right, monitor_bottom],
         "window_rect": [left, top, right, bottom],
+        "target_window_rect": [left, top, right, bottom],
+        "foreground": _foreground_snapshot(hwnd),
+        "target_is_foreground": _foreground_snapshot(hwnd)["target_is_foreground"],
         "grayscale_extrema": list(extrema),
         "mean": stat.mean,
         "blank_suspected": extrema[0] == extrema[1],
@@ -232,13 +299,15 @@ def _capture_window(app: Any, output_dir: Path, name: str, note: str = "") -> di
         hwnd = int(win32gui.GetAncestor(hwnd, win32con.GA_ROOT))
     except Exception:
         pass
+    foreground = _bring_window_to_foreground(hwnd)
     path = output_dir / f"{name}.png"
     info = _capture_bbox(hwnd, path)
     info.update(
         {
             "name": name,
             "note": note,
-            "capture_target": "app_window",
+            "capture_target": "full_monitor_with_app_window",
+            "foreground_before_capture": foreground,
             "title": app.title(),
             "big_display": getattr(getattr(app, "big_display_label", None), "cget", lambda _k: "")("text"),
             "status": getattr(getattr(app, "status_label", None), "cget", lambda _k: "")("text"),
@@ -247,9 +316,17 @@ def _capture_window(app: Any, output_dir: Path, name: str, note: str = "") -> di
     return info
 
 
+def _tk_offset(value: int) -> str:
+    return f"+{value}" if value >= 0 else str(value)
+
+
+def _tk_geometry(width: int, height: int, x: int, y: int) -> str:
+    return f"{width}x{height}{_tk_offset(x)}{_tk_offset(y)}"
+
+
 def _apply_requested_geometry(app: Any, width: int, height: int, x: int, y: int, *, fit_outer_to_geometry: bool = False) -> None:
     app.state("normal")
-    app.geometry(f"{width}x{height}+{x}+{y}")
+    app.geometry(_tk_geometry(width, height, x, y))
     app.update_idletasks()
     app.update()
     if not fit_outer_to_geometry:
@@ -290,13 +367,15 @@ def _find_process_window(title_contains: str | None = None, fallback_foreground:
 
 def _capture_active(output_dir: Path, name: str, note: str = "", title_contains: str | None = None) -> dict[str, Any]:
     hwnd = _find_process_window(title_contains=title_contains, fallback_foreground=title_contains is None)
+    foreground = _bring_window_to_foreground(hwnd)
     path = output_dir / f"{name}.png"
     info = _capture_bbox(hwnd, path)
     info.update(
         {
             "name": name,
             "note": note,
-            "capture_target": "foreground_window",
+            "capture_target": "full_monitor_with_foreground_window",
+            "foreground_before_capture": foreground,
             "window_text": win32gui.GetWindowText(hwnd),
         }
     )
@@ -520,15 +599,19 @@ def _wait_history_idle(app: Any, timeout: float = 15.0) -> None:
 
 
 def _operator_scan(app: Any, value: str, seconds: float = 0.45) -> None:
+    hwnd = _root_hwnd(app)
+    _bring_window_to_foreground(hwnd)
     app.entry.focus_set()
     try:
         app.entry.focus_force()
     except Exception:
         pass
     app.update()
-    app.entry.delete(0, "end")
-    app.entry.insert(0, value)
-    app.entry.event_generate("<Return>")
+    _send_ctrl_a()
+    _send_key(win32con.VK_DELETE)
+    _set_clipboard_text(value)
+    _send_ctrl_v()
+    _send_key(win32con.VK_RETURN)
     _pump(app, seconds)
     try:
         app.data_manager.flush(timeout=5)
@@ -707,10 +790,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     app = None
     screenshots: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
+    sound_events: list[dict[str, Any]] = []
+
+    def attach_sound_recorder(target_app: Any) -> None:
+        original_play_sound = target_app._play_sound
+        original_error_siren = target_app._play_error_siren_loop
+
+        def recording_play_sound(sound_key: str, block: bool = False) -> Any:
+            sound_events.append(
+                {
+                    "at": datetime.now().isoformat(),
+                    "sound_key": sound_key,
+                    "loaded": bool(target_app.sound_objects.get(sound_key)),
+                    "configured": sound_key in getattr(target_app, "sounds", {}),
+                    "run_tests": bool(getattr(target_app, "run_tests", False)),
+                }
+            )
+            return original_play_sound(sound_key, block=block)
+
+        def recording_error_siren_loop() -> Any:
+            sound_events.append(
+                {
+                    "at": datetime.now().isoformat(),
+                    "sound_key": "fail",
+                    "sound_path": "error_siren_loop",
+                    "loaded": bool(target_app.sound_objects.get("fail")),
+                    "configured": "fail" in getattr(target_app, "sounds", {}),
+                    "run_tests": bool(getattr(target_app, "run_tests", False)),
+                }
+            )
+            return original_error_siren()
+
+        target_app._play_sound = recording_play_sound
+        target_app._play_error_siren_loop = recording_error_siren_loop
 
     try:
         app = label_match_module.Label_Match(run_tests=False)
-        app._play_error_siren_loop = lambda: None
+        attach_sound_recorder(app)
         _apply_requested_geometry(app, width, height, x, y, fit_outer_to_geometry=args.fit_outer_to_geometry)
         _wait_until(app, lambda: getattr(app, "initialized_successfully", False), 25, "app initialized")
         _wait_history_idle(app)
@@ -722,10 +838,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         settings_window = next((w for w in app.winfo_children() if getattr(w, "title", lambda: "")() == "설정"), None)
         if settings_window is not None:
             app.worker_name_var.set(worker_name)
-            screenshots.append(_capture_active(screenshot_dir, "02_settings_worker_name_entered", "worker name typed but not saved during evidence run", title_contains="설정"))
-            settings_window.destroy()
+            screenshots.append(_capture_active(screenshot_dir, "02_settings_worker_name_entered", "worker name entered before save", title_contains="설정"))
+            save_helper = _schedule_dialog_action(
+                screenshots,
+                screenshot_dir,
+                "02c_settings_saved_info",
+                delay=0.5,
+                title_contains="저장 완료",
+            )
+            settings_window.event_generate("<Return>")
+            if save_helper is not None:
+                try:
+                    save_helper.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    save_helper.kill()
+                try:
+                    helper_args = save_helper.args
+                    if isinstance(helper_args, list) and "--screenshot" in helper_args:
+                        json_path = Path(helper_args[helper_args.index("--screenshot") + 1] + ".json")
+                        if json_path.exists():
+                            screenshots.append(json.loads(json_path.read_text(encoding="utf-8")))
+                except Exception:
+                    pass
             _pump(app, 0.6)
-            actions.append({"name": "settings_worker_name_dialog_checked", "worker_name_candidate": worker_name})
+            actions.append({"name": "settings_worker_name_saved", "worker_name": app.worker_name, "expected_worker_name": worker_name})
 
         app._show_about_window()
         _pump(app, 0.5)
@@ -851,7 +987,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         app = label_match_module.Label_Match(run_tests=False)
         restore_thread.join(timeout=5)
-        app._play_error_siren_loop = lambda: None
+        attach_sound_recorder(app)
         _apply_requested_geometry(app, width, height, x, y, fit_outer_to_geometry=args.fit_outer_to_geometry)
         _wait_until(app, lambda: getattr(app, "initialized_successfully", False), 25, "app reinitialized")
         _wait_history_idle(app)
@@ -927,9 +1063,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             issue_codes.append("SET_RESTORED_MISSING")
         if event_counts.get("ERROR_MISMATCH", 0) + event_counts.get("ERROR_INPUT", 0) < 1:
             issue_codes.append("ERROR_EVENT_MISSING")
+        required_success_sounds = {"scan_master", *(f"scan_{index}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)), "pass"}
+        observed_sounds = {str(item.get("sound_key")) for item in sound_events}
+        missing_success_sounds = sorted(required_success_sounds - observed_sounds)
+        if missing_success_sounds:
+            issue_codes.append("SUCCESS_SOUND_EVENTS_MISSING")
+        if "fail" not in observed_sounds:
+            issue_codes.append("FAIL_SOUND_EVENT_MISSING")
 
         report = {
-            "report_version": "label-match-operator-ui-walkthrough-v1",
+            "report_version": "label-match-operator-ui-walkthrough-v2",
             "status": "PASS" if not issue_codes else "REVIEW_REQUIRED",
             "generated_at": datetime.now().isoformat(),
             "host": socket.gethostname(),
@@ -949,7 +1092,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "geometry": args.geometry,
             "fit_outer_to_geometry": args.fit_outer_to_geometry,
             "uses_run_tests_false": True,
+            "operator_input_mode": "foreground_clipboard_paste_plus_enter",
+            "direct_entry_insert_used": False,
             "entry_return_binding_used": True,
+            "capture_policy": "full_monitor_for_app_and_dialog_windows",
+            "product_sample_count": PRODUCT_SAMPLE_COUNT,
+            "total_scan_count": TOTAL_SCAN_COUNT,
+            "sound_events": sound_events,
+            "missing_success_sound_events": missing_success_sounds,
             "config_restored": config_restore_ok,
             "config_restore_error": config_restore_error,
         }
@@ -967,10 +1117,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _parse_geometry(value: str) -> tuple[int, int, int, int]:
-    size, rest = value.lower().split("x", 1)
-    width = int(size)
-    height_text, x_text, y_text = rest.split("+", 2)
-    return width, int(height_text), int(x_text), int(y_text)
+    if str(value).strip().lower() in {"auto", "fullscreen", "primary"}:
+        width = int(win32api.GetSystemMetrics(0))
+        height = int(win32api.GetSystemMetrics(1))
+        return width, height, 0, 0
+    match = re.fullmatch(r"\s*(\d+)x(\d+)([+-]\d+)([+-]\d+)\s*", str(value).lower())
+    if not match:
+        raise ValueError(f"Invalid geometry: {value!r}. Expected WIDTHxHEIGHT+X+Y, e.g. 2560x1440+693-1440")
+    width_text, height_text, x_text, y_text = match.groups()
+    return int(width_text), int(height_text), int(x_text), int(y_text)
 
 
 def main() -> int:
@@ -978,7 +1133,7 @@ def main() -> int:
         return _dialog_helper_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description="Run operator-style Label_Match UI walkthrough")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--geometry", default="1280x900+900+-1390")
+    parser.add_argument("--geometry", default="auto")
     parser.add_argument("--fit-outer-to-geometry", action="store_true", help="Move the top-level window outer rect to the requested geometry after Tk layout.")
     args = parser.parse_args()
     report = run(args)

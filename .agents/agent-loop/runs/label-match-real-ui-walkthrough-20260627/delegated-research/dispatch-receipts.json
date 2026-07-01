@@ -1,0 +1,50 @@
+{
+  "schema": "dispatch-receipts-v1",
+  "research_cycle_id": "initial-20260627",
+  "source_digest": "49839e9d5e5009b0fa290ca865b4dc19b254432d7225fb9ea94bb69bbb633396",
+  "authority_revision_at_dispatch": 1,
+  "authority_epoch_at_dispatch": 1,
+  "capability_mode": "delegated_agents_authorized_by_loop_tool_available",
+  "receipts": [
+    {
+      "lane": "architecture_dependency",
+      "agent_id": "019f06b6-f940-7482-add6-64b263bc0c11",
+      "agent_role": "research_agent",
+      "model": "gpt-5.5",
+      "reasoning_effort": "xhigh",
+      "fork_context": false
+    },
+    {
+      "lane": "failure_verification",
+      "agent_id": "019f06b7-28ce-7680-95b7-9c3d3b7cd9e9",
+      "agent_role": "research_agent",
+      "model": "gpt-5.5",
+      "reasoning_effort": "xhigh",
+      "fork_context": false
+    },
+    {
+      "lane": "requirement_alignment",
+      "agent_id": "019f06b7-4c8d-7803-afb5-e4346fdbec84",
+      "agent_role": "research_agent",
+      "model": "gpt-5.5",
+      "reasoning_effort": "xhigh",
+      "fork_context": false
+    },
+    {
+      "lane": "goal_efficiency",
+      "agent_id": "019f06b7-7213-7092-948b-0ba793352b58",
+      "agent_role": "research_agent",
+      "model": "gpt-5.5",
+      "reasoning_effort": "high",
+      "fork_context": false
+    },
+    {
+      "lane": "implementation_quality",
+      "agent_id": "019f06b7-9de6-7b11-8f4c-b4107a3a142e",
+      "agent_role": "research_agent",
+      "model": "gpt-5.5",
+      "reasoning_effort": "high",
+      "fork_context": false
+    }
+  ]
+}

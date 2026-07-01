@@ -1,0 +1,126 @@
+{
+  "source_capture_dir": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots",
+  "source_report": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\label_match_operator_ui_walkthrough_report.json",
+  "source_capture_mode": "secondary_monitor_outer_fit_fullscreen",
+  "source_geometry": "2560x1440+693+-1440",
+  "fit_outer_to_geometry": true,
+  "target_asset_dir": "C:\\company\\program\\Label_Match\\docs\\assets\\label_match_user_manual_20260628",
+  "contact_sheet": "C:\\company\\program\\Label_Match\\docs\\assets\\label_match_user_manual_20260628\\00-contact-sheet.png",
+  "copied": [
+    {
+      "target": "01-start-screen.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\00_startup_idle.png",
+      "bytes": 166337
+    },
+    {
+      "target": "02-master-label-scanned.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\03_normal_scan_step_1.png",
+      "bytes": 170688
+    },
+    {
+      "target": "03-label-scan-step.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\03_normal_scan_step_7.png",
+      "bytes": 169436
+    },
+    {
+      "target": "04-auto-complete.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\03_normal_scan_step_8.png",
+      "bytes": 177568
+    },
+    {
+      "target": "05-manual-complete-ready.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\04_manual_complete_ready.png",
+      "bytes": 181693
+    },
+    {
+      "target": "06-manual-complete-done.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\06_manual_complete_done.png",
+      "bytes": 177302
+    },
+    {
+      "target": "07-error-wrong-barcode.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\13_mismatch_app_modal.png",
+      "bytes": 54877
+    },
+    {
+      "target": "08-error-recorded-reset.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\14_mismatch_after_confirm.png",
+      "bytes": 179413
+    },
+    {
+      "target": "09-current-set-before-cancel.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\07_current_set_cancel_before.png",
+      "bytes": 181636
+    },
+    {
+      "target": "10-current-set-after-cancel.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\08_current_set_cancel_after.png",
+      "bytes": 173543
+    },
+    {
+      "target": "11-cancel-tray-start.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\10_completed_tray_cancel_input.png",
+      "bytes": 5815
+    },
+    {
+      "target": "12-cancel-tray-progress.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\11_completed_tray_cancel_confirm.png",
+      "bytes": 9905
+    },
+    {
+      "target": "13-completed-tray-before-cancel.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\09_completed_tray_before_cancel.png",
+      "bytes": 185116
+    },
+    {
+      "target": "14-completed-tray-cancelled.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\12_completed_tray_cancel_after.png",
+      "bytes": 176205
+    },
+    {
+      "target": "15-special-text-safe.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\25_malicious_input_after_confirm.png",
+      "bytes": 186461
+    },
+    {
+      "target": "16-past-history-view.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\21_past_history_view.png",
+      "bytes": 181556
+    },
+    {
+      "target": "17-past-history-scan-blocked.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\22_past_history_scan_blocked.png",
+      "bytes": 181556
+    },
+    {
+      "target": "18-today-restored.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\23_today_restored.png",
+      "bytes": 179683
+    },
+    {
+      "target": "19-settings-worker-name.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\02_settings_worker_name_entered.png",
+      "bytes": 10103
+    },
+    {
+      "target": "20-about-shortcuts.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\02b_about_window.png",
+      "bytes": 19483
+    },
+    {
+      "target": "21-restore-prompt.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\17_restore_prompt.png",
+      "bytes": 17530
+    },
+    {
+      "target": "22-after-restore.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\18_after_restore.png",
+      "bytes": 181958
+    },
+    {
+      "target": "23-date-picker.png",
+      "source": "C:\\company\\program\\_e2e_artifacts\\label_match_secondary_fullscreen_outerfit_recapture_20260628_222340\\screenshots\\20_date_picker_dialog.png",
+      "bytes": 16326
+    }
+  ]
+}

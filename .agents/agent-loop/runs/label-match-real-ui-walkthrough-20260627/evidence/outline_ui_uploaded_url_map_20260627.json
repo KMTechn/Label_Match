@@ -1,0 +1,38 @@
+{
+  "uploadedAt": "2026-06-27T04:01:23.677Z",
+  "urlMap": {
+    "23-date-picker.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=f29175e9-82f6-4f45-8601-f44cc85ed446",
+    "01-start-screen.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=541640be-8b2a-4fac-9ea9-ecec953da8c6",
+    "00-contact-sheet.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=5cd589c4-e26f-4bc1-83ac-206a7ef975cc",
+    "19-settings-worker-name.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=e0620de9-e86c-40f6-95d3-03d0b5bcd362",
+    "02-master-label-scanned.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=ec1e5561-e653-4fad-8ebc-66e785b6d6bc",
+    "03-label-scan-step.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=9052dda7-9f79-4313-9350-66e255c30388",
+    "04-auto-complete.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=e8509e68-f3fe-419b-b6e5-9223a6899a84",
+    "05-manual-complete-ready.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=87086bbf-16ff-4608-a4e7-d6cff0595a1b",
+    "06-manual-complete-done.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=88db6b71-77d1-42b1-847a-a808abc17ae8",
+    "09-current-set-before-cancel.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=721a60a9-72dc-49df-b7ed-942d1cc3999a",
+    "10-current-set-after-cancel.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=eb97e26f-d59d-4291-a594-0f231cd5d51f",
+    "11-cancel-tray-start.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=4cc5a3f1-1209-4bde-b524-685de0d830ed",
+    "12-cancel-tray-progress.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=b3962246-19e4-48d1-a080-98f4b50a76b4",
+    "13-completed-tray-before-cancel.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=d398aeea-d62c-4ae3-9550-462bdbfca461",
+    "14-completed-tray-cancelled.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=377b7eb8-f71b-49e3-b1c4-c8db5da497d0",
+    "07-error-wrong-barcode.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=22d80886-e451-45a0-89ae-ced553b599c2",
+    "08-error-recorded-reset.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=4cc575b0-cc8e-4d54-972a-e95366506031",
+    "15-special-text-safe.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=951c68e1-f5f6-4862-a983-60cc01663fac",
+    "16-past-history-view.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=9c24bf34-9f50-435e-8604-cf0019b1eadd",
+    "17-past-history-scan-blocked.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=5e205fee-fca1-475f-a8b3-57d4d207f75e",
+    "18-today-restored.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=d553ed4a-5eb6-44ec-990b-3ac5f92c9a65",
+    "20-about-shortcuts.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=7df3f9a5-bc90-41f6-a2d1-aeea22013dcd",
+    "21-restore-prompt.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=b9811e22-5119-4702-bf9a-279345acc52b",
+    "22-after-restore.png": "https://wiki.kmtecherp.com/api/attachments.redirect?id=80fc2d19-3471-4ba8-acc1-8b1c818591a3"
+  },
+  "finalPasteReport": {
+    "chars": 14771,
+    "imageRefs": 26,
+    "attachmentRefs": 26,
+    "relativeRefs": 0,
+    "has20260627": true,
+    "hasRestore": true,
+    "hasDatePicker": true
+  }
+}

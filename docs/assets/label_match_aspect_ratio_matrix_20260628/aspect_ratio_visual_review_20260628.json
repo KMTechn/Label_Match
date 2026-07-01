@@ -1,0 +1,81 @@
+{
+  "matrix_root": "C:\\company\\program\\_e2e_artifacts\\label_match_aspect_ratio_outerfit_matrix_20260628_222500",
+  "asset_dir": "C:\\company\\program\\Label_Match\\docs\\assets\\label_match_aspect_ratio_matrix_20260628",
+  "contact_sheet": "C:\\company\\program\\Label_Match\\docs\\assets\\label_match_aspect_ratio_matrix_20260628\\00-aspect-ratio-contact-sheet.png",
+  "cases": [
+    {
+      "name": "16x9_1920x1080",
+      "geometry": "1920x1080+693+-1440",
+      "exit_code": 0,
+      "status": "PASS",
+      "issue_codes": "",
+      "screenshot_count": 34,
+      "blank_suspected_count": 0,
+      "first_window_size": "1920x1080",
+      "first_window_rect": "693,-1440,2613,-360",
+      "fit_outer_to_geometry": true,
+      "report_path": "C:\\company\\program\\_e2e_artifacts\\label_match_aspect_ratio_outerfit_matrix_20260628_222500\\16x9_1920x1080\\label_match_operator_ui_walkthrough_report.json"
+    },
+    {
+      "name": "16x10_1680x1050",
+      "geometry": "1680x1050+693+-1440",
+      "exit_code": 0,
+      "status": "PASS",
+      "issue_codes": "",
+      "screenshot_count": 34,
+      "blank_suspected_count": 0,
+      "first_window_size": "1680x1050",
+      "first_window_rect": "693,-1440,2373,-390",
+      "fit_outer_to_geometry": true,
+      "report_path": "C:\\company\\program\\_e2e_artifacts\\label_match_aspect_ratio_outerfit_matrix_20260628_222500\\16x10_1680x1050\\label_match_operator_ui_walkthrough_report.json"
+    },
+    {
+      "name": "5x4_1280x1024",
+      "geometry": "1280x1024+693+-1440",
+      "exit_code": 0,
+      "status": "PASS",
+      "issue_codes": "",
+      "screenshot_count": 34,
+      "blank_suspected_count": 0,
+      "first_window_size": "1280x1024",
+      "first_window_rect": "693,-1440,1973,-416",
+      "fit_outer_to_geometry": true,
+      "report_path": "C:\\company\\program\\_e2e_artifacts\\label_match_aspect_ratio_outerfit_matrix_20260628_222500\\5x4_1280x1024\\label_match_operator_ui_walkthrough_report.json"
+    },
+    {
+      "name": "4x3_1024x768",
+      "geometry": "1024x768+693+-1440",
+      "exit_code": 0,
+      "status": "PASS",
+      "issue_codes": "",
+      "screenshot_count": 34,
+      "blank_suspected_count": 0,
+      "first_window_size": "1024x768",
+      "first_window_rect": "693,-1440,1717,-672",
+      "fit_outer_to_geometry": true,
+      "report_path": "C:\\company\\program\\_e2e_artifacts\\label_match_aspect_ratio_outerfit_matrix_20260628_222500\\4x3_1024x768\\label_match_operator_ui_walkthrough_report.json"
+    },
+    {
+      "name": "21x9_2560x1080",
+      "geometry": "2560x1080+693+-1440",
+      "exit_code": 0,
+      "status": "PASS",
+      "issue_codes": "",
+      "screenshot_count": 34,
+      "blank_suspected_count": 0,
+      "first_window_size": "2560x1080",
+      "first_window_rect": "693,-1440,3253,-360",
+      "fit_outer_to_geometry": true,
+      "report_path": "C:\\company\\program\\_e2e_artifacts\\label_match_aspect_ratio_outerfit_matrix_20260628_222500\\21x9_2560x1080\\label_match_operator_ui_walkthrough_report.json"
+    }
+  ],
+  "key_screens": [
+    "start",
+    "8/8 label",
+    "complete",
+    "error",
+    "past view"
+  ],
+  "result": "PASS",
+  "note": "All outer-fit matrix walkthrough reports were PASS with zero blank screenshots and first app-window sizes matching requested geometry."
+}

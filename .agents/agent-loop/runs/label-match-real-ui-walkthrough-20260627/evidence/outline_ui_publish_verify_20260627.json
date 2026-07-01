@@ -1,0 +1,230 @@
+{
+  "verifiedAt": "2026-06-27T04:02:38.545Z",
+  "verify": {
+    "url": "https://wiki.kmtecherp.com/doc/label_match-uMZaThRmO1",
+    "title": "Label_Match(포장실 프로그램) - KMTECH",
+    "has20260627": true,
+    "has20260626": false,
+    "hasRestorePrompt": true,
+    "hasAfterRestore": true,
+    "hasDatePicker": true,
+    "hasLocalAssetRef": false,
+    "imageCount": 26,
+    "firstAlt": "주요 화면 모음",
+    "lastAlt": "복구 후 이어서 작업",
+    "uniqueAttachmentRefs": 24,
+    "expectedNewErrorUrlPresent": true,
+    "expectedRestoreUrlPresent": true,
+    "expectedDateUrlPresent": true
+  },
+  "reloadedImages": [
+    {
+      "alt": "주요 화면 모음",
+      "h": 2434,
+      "idx": 3,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=5cd589c4-e26f-4bc1-83ac-206a7ef975cc",
+      "text": "주요 화면 모음",
+      "w": 1152
+    },
+    {
+      "alt": "시작 화면",
+      "h": 939,
+      "idx": 5,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=541640be-8b2a-4fac-9ea9-ecec953da8c6",
+      "text": "시작 화면",
+      "w": 1296
+    },
+    {
+      "alt": "작업자 설정",
+      "h": 240,
+      "idx": 7,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=e0620de9-e86c-40f6-95d3-03d0b5bcd362",
+      "text": "작업자 설정",
+      "w": 520
+    },
+    {
+      "alt": "현품표 스캔 후",
+      "h": 939,
+      "idx": 9,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=ec1e5561-e653-4fad-8ebc-66e785b6d6bc",
+      "text": "현품표 스캔 후",
+      "w": 1296
+    },
+    {
+      "alt": "제품 1 스캔 단계",
+      "h": 939,
+      "idx": 11,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=ec1e5561-e653-4fad-8ebc-66e785b6d6bc",
+      "text": "제품 1 스캔 단계",
+      "w": 1296
+    },
+    {
+      "alt": "제품 스캔 후 라벨지 단계",
+      "h": 939,
+      "idx": 13,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=9052dda7-9f79-4313-9350-66e255c30388",
+      "text": "제품 스캔 후 라벨지 단계",
+      "w": 1296
+    },
+    {
+      "alt": "라벨지 스캔 단계",
+      "h": 939,
+      "idx": 15,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=9052dda7-9f79-4313-9350-66e255c30388",
+      "text": "라벨지 스캔 단계",
+      "w": 1296
+    },
+    {
+      "alt": "자동 완료",
+      "h": 939,
+      "idx": 17,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=e8509e68-f3fe-419b-b6e5-9223a6899a84",
+      "text": "자동 완료",
+      "w": 1296
+    },
+    {
+      "alt": "수동 완료 전",
+      "h": 939,
+      "idx": 19,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=87086bbf-16ff-4608-a4e7-d6cff0595a1b",
+      "text": "수동 완료 전",
+      "w": 1296
+    },
+    {
+      "alt": "수동 완료 후",
+      "h": 939,
+      "idx": 21,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=88db6b71-77d1-42b1-847a-a808abc17ae8",
+      "text": "수동 완료 후",
+      "w": 1296
+    },
+    {
+      "alt": "현재 세트 취소 전",
+      "h": 939,
+      "idx": 23,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=721a60a9-72dc-49df-b7ed-942d1cc3999a",
+      "text": "현재 세트 취소 전",
+      "w": 1296
+    },
+    {
+      "alt": "현재 세트 취소 후",
+      "h": 939,
+      "idx": 25,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=eb97e26f-d59d-4291-a594-0f231cd5d51f",
+      "text": "현재 세트 취소 후",
+      "w": 1296
+    },
+    {
+      "alt": "취소할 트레이 시작",
+      "h": 125,
+      "idx": 27,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=4cc5a3f1-1209-4bde-b524-685de0d830ed",
+      "text": "취소할 트레이 시작",
+      "w": 313
+    },
+    {
+      "alt": "취소할 트레이 진행",
+      "h": 218,
+      "idx": 29,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=b3962246-19e4-48d1-a080-98f4b50a76b4",
+      "text": "취소할 트레이 진행",
+      "w": 306
+    },
+    {
+      "alt": "완료된 트레이 취소 전",
+      "h": 939,
+      "idx": 31,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=d398aeea-d62c-4ae3-9550-462bdbfca461",
+      "text": "완료된 트레이 취소 전",
+      "w": 1296
+    },
+    {
+      "alt": "완료된 트레이 취소 후",
+      "h": 939,
+      "idx": 33,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=377b7eb8-f71b-49e3-b1c4-c8db5da497d0",
+      "text": "완료된 트레이 취소 후",
+      "w": 1296
+    },
+    {
+      "alt": "불일치 또는 오류",
+      "h": 900,
+      "idx": 35,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=22d80886-e451-45a0-89ae-ced553b599c2",
+      "text": "불일치 또는 오류",
+      "w": 1280
+    },
+    {
+      "alt": "오류 기록 후 초기화",
+      "h": 939,
+      "idx": 37,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=4cc575b0-cc8e-4d54-972a-e95366506031",
+      "text": "오류 기록 후 초기화",
+      "w": 1296
+    },
+    {
+      "alt": "특수문자 안전 표시",
+      "h": 939,
+      "idx": 39,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=951c68e1-f5f6-4862-a983-60cc01663fac",
+      "text": "특수문자 안전 표시",
+      "w": 1296
+    },
+    {
+      "alt": "과거 기록 조회",
+      "h": 939,
+      "idx": 41,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=9c24bf34-9f50-435e-8604-cf0019b1eadd",
+      "text": "과거 기록 조회",
+      "w": 1296
+    },
+    {
+      "alt": "날짜 선택 창",
+      "h": 400,
+      "idx": 43,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=f29175e9-82f6-4f45-8601-f44cc85ed446",
+      "text": "날짜 선택 창",
+      "w": 377
+    },
+    {
+      "alt": "과거 조회 중 스캔 차단",
+      "h": 939,
+      "idx": 45,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=5e205fee-fca1-475f-a8b3-57d4d207f75e",
+      "text": "과거 조회 중 스캔 차단",
+      "w": 1296
+    },
+    {
+      "alt": "오늘 기록 복귀",
+      "h": 939,
+      "idx": 47,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=d553ed4a-5eb6-44ec-990b-3ac5f92c9a65",
+      "text": "오늘 기록 복귀",
+      "w": 1296
+    },
+    {
+      "alt": "프로그램 정보",
+      "h": 105,
+      "idx": 49,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=7df3f9a5-bc90-41f6-a2d1-aeea22013dcd",
+      "text": "프로그램 정보",
+      "w": 520
+    },
+    {
+      "alt": "작업 복구 확인",
+      "h": 179,
+      "idx": 51,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=b9811e22-5119-4702-bf9a-279345acc52b",
+      "text": "작업 복구 확인",
+      "w": 328
+    },
+    {
+      "alt": "복구 후 이어서 작업",
+      "h": 939,
+      "idx": 53,
+      "src": "https://wiki.kmtecherp.com/api/attachments.redirect?id=80fc2d19-3471-4ba8-acc1-8b1c818591a3",
+      "text": "복구 후 이어서 작업",
+      "w": 1296
+    }
+  ]
+}

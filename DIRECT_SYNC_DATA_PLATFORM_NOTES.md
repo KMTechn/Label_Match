@@ -1,8 +1,14 @@
 # Direct Sync Data Platform Notes
 
-작성 기준: 2026-06-30
+작성 기준: 2026-07-01
 
 이 파일은 포장 프로그램이 서버 취합/direct-sync 장기 구조와 맞물릴 때 유지해야 할 사항이다.
+
+## 데이터망 기준
+
+- 운영 데이터망 기준에서 Syncthing은 제외한다.
+- 서버 취합 주경로는 `포장 scan set/direct-sync spool -> HTTPS relay/producer ingest -> WorkerAnalysisGUI-web`이다.
+- `C:\Sync`, Syncthing, legacy mirror/shadow 경로가 남아 있더라도 운영 수량, 용량, 장애 원인 판단의 기준으로 삼지 않는다.
 
 ## 이 프로그램의 역할
 

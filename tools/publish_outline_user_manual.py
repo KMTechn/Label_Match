@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Publish the Label_Match worker manual to Outline with guarded verification."""
 
@@ -18,7 +18,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANUAL = ROOT / "docs" / "OUTLINE_LABEL_MATCH_USER_MANUAL_20260626.md"
-DEFAULT_ASSET_DIR = ROOT / "docs" / "assets" / "label_match_user_manual_20260626"
+DEFAULT_ASSET_DIR = ROOT / "docs" / "assets" / "label_match_user_manual_20260628"
 DEFAULT_OUTLINE_URL = "https://wiki.kmtecherp.com"
 DEFAULT_DOCUMENT_ID = "4115be8b-488a-4934-80af-f0f9e4ee721b"
 DEFAULT_TITLE = "Label_Match(포장실 프로그램)"
@@ -75,7 +75,7 @@ def _load_outline_config(args: argparse.Namespace) -> tuple[str, str]:
 
 
 def _manual_image_paths(text: str) -> list[str]:
-    return re.findall(r"!\[[^\]]*\]\((assets/label_match_user_manual_20260626/[^)\s]+\.png)\)", text)
+    return re.findall(r"!\[[^\]]*\]\((assets/label_match_user_manual_20260628/[^)\s]+\.png)\)", text)
 
 
 def _count_today_button_typo(text: str) -> int:
@@ -116,7 +116,7 @@ def _build_outline_text(manual_path: Path, asset_dir: Path, attachment_urls: dic
         report.update(
             {
                 "outline_attachment_refs": text.count("/api/attachments.redirect"),
-                "relative_image_refs_after_replace": text.count("assets/label_match_user_manual_20260626/"),
+                "relative_image_refs_after_replace": text.count("assets/label_match_user_manual_20260628/"),
             }
         )
     return text, report
@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             "unique_images_uploaded": len(attachment_urls),
             "document_markdown_image_refs": doc_text.count("!["),
             "document_attachment_refs": doc_text.count("/api/attachments.redirect"),
-            "document_relative_image_refs": doc_text.count("assets/label_match_user_manual_20260626/"),
+            "document_relative_image_refs": doc_text.count("assets/label_match_user_manual_20260628/"),
             "document_file_upload_text_count": doc_text.count("파일 업로드"),
             "document_typo_count": _count_today_button_typo(doc_text),
             "document_today_phrase_count": doc_text.count("`오늘` 버튼으로") + doc_text.count("오늘 버튼으로"),

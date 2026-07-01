@@ -38,20 +38,20 @@
         "tree_font_size": 19,
         "sash_position": 1472,
         "summary_col_widths": {
-            "Date": 171,
-            "Code": 487,
-            "Phase": 98,
-            "Count": 191
+            "Code": 674,
+            "Phase": 115,
+            "Count": 173
         },
         "history_col_widths": {
-            "Set": 58,
-            "Input1": 195,
-            "Input2": 195,
-            "Input3": 196,
-            "Input4": 195,
-            "Input5": 195,
-            "Result": 113,
-            "Timestamp": 250
+            "Set": 61,
+            "Input1": 216,
+            "Input2": 170,
+            "Input3": 170,
+            "Input4": 170,
+            "Input5": 170,
+            "Input6": 170,
+            "Result": 123,
+            "Timestamp": 216
         }
     },
     "worker_name": "1.0.5"

@@ -1487,6 +1487,8 @@ class DataManager:
             except Exception as e: print(f"임시 상태 파일 삭제 실패: {e}")
 
 class Label_Match(tk.Tk):
+    WORKER_HISTORY_LIMIT = 20
+
     UI_PROFILES = {
         "small": {
             "outer_padding": 8,
@@ -1873,6 +1875,7 @@ class Label_Match(tk.Tk):
     def _save_app_settings(self):
         try:
             if not self.initialized_successfully: return
+            self._remember_worker_name(self.worker_name)
             self.app_settings['worker_name'] = self.worker_name
             if "ui_persistence" not in self.app_settings:
                 self.app_settings["ui_persistence"] = {}
@@ -1885,6 +1888,59 @@ class Label_Match(tk.Tk):
                 json.dump(self.app_settings, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"앱 설정 저장 오류: {e}")
+
+    @staticmethod
+    def _worker_history_timestamp(value):
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(text).timestamp()
+        except ValueError:
+            return 0.0
+
+    def _worker_history_entries(self):
+        raw_history = self.app_settings.get("worker_history", [])
+        if not isinstance(raw_history, list):
+            raw_history = []
+        by_name = {}
+        order = []
+        for item in raw_history:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                last_used_at = str(item.get("last_used_at") or item.get("updated_at") or item.get("created_at") or "").strip()
+            else:
+                name = str(item or "").strip()
+                last_used_at = ""
+            if not name:
+                continue
+            if name not in by_name:
+                by_name[name] = {"name": name, "last_used_at": last_used_at}
+                order.append(name)
+            elif self._worker_history_timestamp(last_used_at) > self._worker_history_timestamp(by_name[name].get("last_used_at")):
+                by_name[name] = {"name": name, "last_used_at": last_used_at}
+        current_worker = str(getattr(self, "worker_name", "") or "").strip()
+        if current_worker and current_worker not in by_name:
+            by_name[current_worker] = {"name": current_worker, "last_used_at": ""}
+            order.append(current_worker)
+        entries = [by_name[name] for name in order]
+        entries.sort(key=lambda entry: (-self._worker_history_timestamp(entry.get("last_used_at")), entry["name"]))
+        if current_worker:
+            entries.sort(key=lambda entry: 0 if entry["name"] == current_worker else 1)
+        return entries[:self.WORKER_HISTORY_LIMIT]
+
+    def _recent_worker_names(self):
+        return [entry["name"] for entry in self._worker_history_entries()]
+
+    def _remember_worker_name(self, worker_name):
+        name = str(worker_name or "").strip()
+        if not name:
+            return
+        entries = [entry for entry in self._worker_history_entries() if entry["name"] != name]
+        entries.insert(0, {"name": name, "last_used_at": datetime.now().astimezone().isoformat(timespec="seconds")})
+        self.app_settings["worker_history"] = entries[:self.WORKER_HISTORY_LIMIT]
 
     def _load_ui_persistence_settings(self):
         persistence_settings = self.app_settings.get("ui_persistence", {})
@@ -3798,7 +3854,13 @@ class Label_Match(tk.Tk):
         ttk.Label(main_frame, text="작업자 이름", font=(self.default_font_name, 12, "bold")).grid(row=0, column=0, sticky='w', pady=(8,5), padx=(0, 10))
         ttk.Label(main_frame, text="저장 후 다음 작업부터 로그 작업자명이 변경됩니다.", style="Status.TLabel").grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
         self.worker_name_var = tk.StringVar(value=self.worker_name)
-        worker_entry = ttk.Entry(main_frame, textvariable=self.worker_name_var, font=(self.default_font_name, 12))
+        worker_entry = ttk.Combobox(
+            main_frame,
+            textvariable=self.worker_name_var,
+            values=self._recent_worker_names(),
+            state="normal",
+            font=(self.default_font_name, 12),
+        )
         worker_entry.grid(row=2, column=0, columnspan=3, sticky='ew')
         button_frame = ttk.Frame(main_frame, padding=(0, 20, 0, 0), style="TFrame")
         button_frame.grid(row=3, column=0, columnspan=3, sticky='e', pady=(20,0))
@@ -3809,7 +3871,10 @@ class Label_Match(tk.Tk):
         settings_window.bind("<Escape>", lambda event: self._destroy_modal_and_refocus(settings_window))
         settings_window.bind("<Return>", lambda event: self._save_settings_and_close(settings_window, self.worker_name_var.get()))
         worker_entry.focus_set()
-        worker_entry.select_range(0, tk.END)
+        if hasattr(worker_entry, "select_range"):
+            worker_entry.select_range(0, tk.END)
+        elif hasattr(worker_entry, "selection_range"):
+            worker_entry.selection_range(0, tk.END)
 
     def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str):
         active_set = bool(getattr(self, 'current_set_info', {}).get('id'))

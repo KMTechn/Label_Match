@@ -1,0 +1,49 @@
+{
+  "schema": "commit-ledger-v1",
+  "run": "label-match-real-ui-walkthrough-20260627",
+  "commit_execution_authorized": false,
+  "entries": [
+    {
+      "batch_id": "OP-DRIVER-001",
+      "status": "ready_to_commit_after_user_authorization",
+      "files": [
+        "tools/label_match_operator_ui_walkthrough.py"
+      ],
+      "verification": [
+        "python -m py_compile tools\\label_match_operator_ui_walkthrough.py",
+        "operator-ui-20260627_121625 PASS",
+        "operator-ui-20260627_polish PASS with config_restored=true and 13_mismatch_app_modal"
+      ]
+    },
+    {
+      "batch_id": "APP-UI-FIX-001",
+      "status": "ready_to_commit_after_user_authorization",
+      "files": [
+        "Label_Match.py"
+      ],
+      "verification": [
+        "python -m py_compile Label_Match.py",
+        "operator-ui-20260627_121625 PASS",
+        "broad-current-pc-postfix current-pc-worker-e2e-20260627_121800 PASS_WITH_REMAINING_FIELD_BLOCKERS"
+      ]
+    },
+    {
+      "batch_id": "DOC-CURATION-001",
+      "status": "ready_to_commit_after_user_authorization",
+      "files": [
+        "docs/OUTLINE_LABEL_MATCH_USER_MANUAL_20260626.md",
+        "docs/OUTLINE_LABEL_MATCH_USER_MANUAL_PUBLISHING_NOTES_20260626.md",
+        "docs/assets/label_match_user_manual_20260626/*.png",
+        "docs/outline_user_manual_publish_dry_run_20260627.json",
+        "tools/publish_outline_user_manual.py"
+      ],
+      "verification": [
+        "local image link check PASS",
+        "python tools\\publish_outline_user_manual.py --dry-run --report-path docs\\outline_user_manual_publish_dry_run_20260627.json PASS",
+        "Chrome UI publish verify PASS: existing Outline doc has 2026-06-27 content, 26 rendered markdown image refs, 24 unique attachment refs, and no local asset refs",
+        "final five-lane challenge proof ALLOW"
+      ],
+      "external_publish": "completed via logged-in Chrome editor because OUTLINE_API_TOKEN was absent"
+    }
+  ]
+}
