@@ -73,17 +73,19 @@ def test_success_scan_sound_mapping_keeps_product_one_as_scan_one():
     assert sound_key(2) == "scan_1"
     assert sound_key(3) == "scan_2"
     assert sound_key(4) == "scan_3"
-    assert sound_key(5) == "scan_4"
     assert sound_key(module.LABEL_MATCH_FINAL_LABEL_SCAN_POSITION) is None
     assert sound_key("not-a-position") is None
 
 
-def test_default_sound_config_has_master_scan_sound():
+def test_default_sound_config_starts_counting_on_master_scan():
     settings = json.loads((Path(__file__).resolve().parents[1] / "config" / "app_settings.json").read_text(encoding="utf-8-sig"))
     sound_files = settings["sound_files"]
 
-    assert sound_files["scan_master"] == "success.wav"
-    assert sound_files["scan_1"] == "one.wav"
+    assert sound_files["scan_master"] == "one.wav"
+    assert sound_files["scan_1"] == "two.wav"
+    assert sound_files["scan_2"] == "three.wav"
+    assert sound_files["scan_3"] == "four.wav"
+    assert "scan_4" not in sound_files
 
 
 def test_worker_history_is_recent_first_and_deduplicated():
@@ -182,7 +184,6 @@ def test_enriched_tray_complete_preserves_label_match_contract():
                 "PRODUCT_AAA2270730100_1",
                 "PRODUCT_AAA2270730100_2",
                 "PRODUCT_AAA2270730100_3",
-                "PRODUCT_AAA2270730100_4",
                 "FINAL_LABEL_AAA2270730100\x1D6D20260228",
             ],
             "parsed_product_barcodes": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
@@ -204,7 +205,6 @@ def test_enriched_tray_complete_preserves_label_match_contract():
         "PRODUCT_AAA2270730100_1",
         "PRODUCT_AAA2270730100_2",
         "PRODUCT_AAA2270730100_3",
-        "PRODUCT_AAA2270730100_4",
     ]
 
 
@@ -224,7 +224,6 @@ def test_enriched_tray_complete_promotes_input_tag_trace_from_master_label():
                 "PRODUCT_AAA2270730100_1",
                 "PRODUCT_AAA2270730100_2",
                 "PRODUCT_AAA2270730100_3",
-                "PRODUCT_AAA2270730100_4",
                 "FINAL_LABEL_AAA2270730100\x1D6D20260228",
             ],
             "parsed_product_barcodes": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
@@ -245,7 +244,6 @@ def test_enriched_tray_complete_promotes_input_tag_trace_from_master_label():
         "PRODUCT_AAA2270730100_1",
         "PRODUCT_AAA2270730100_2",
         "PRODUCT_AAA2270730100_3",
-        "PRODUCT_AAA2270730100_4",
     ]
 
 
@@ -265,7 +263,6 @@ def test_enriched_tray_complete_accepts_label_trace_without_input_tag_id():
                 "PRODUCT_AAA2270730100_1",
                 "PRODUCT_AAA2270730100_2",
                 "PRODUCT_AAA2270730100_3",
-                "PRODUCT_AAA2270730100_4",
                 "FINAL_LABEL_AAA2270730100\x1D6D20260228",
             ],
             "parsed_product_barcodes": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
@@ -531,7 +528,6 @@ def test_finalize_set_preserves_input_tag_trace_from_first_master_label():
             "PRODUCT_AAA2270730100_1",
             "PRODUCT_AAA2270730100_2",
             "PRODUCT_AAA2270730100_3",
-            "PRODUCT_AAA2270730100_4",
             "FINAL_LABEL_AAA2270730100\x1D6D20260622",
         ],
         "parsed": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
@@ -587,7 +583,6 @@ def test_finalize_set_preserves_label_trace_without_input_tag_id():
             "PRODUCT_AAA2270730100_1",
             "PRODUCT_AAA2270730100_2",
             "PRODUCT_AAA2270730100_3",
-            "PRODUCT_AAA2270730100_4",
             "FINAL_LABEL_AAA2270730100\x1D6D20260622",
         ],
         "parsed": ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
@@ -647,7 +642,6 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
             "PRODUCT-1",
             "PRODUCT-2",
             "PRODUCT-3",
-            "PRODUCT-4",
             "FINAL\x1D6D20260622",
         ],
         "parsed": ["MASTER"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
@@ -2255,7 +2249,6 @@ def test_history_result_value_uses_dynamic_index_with_legacy_fallback():
         "PRODUCT-1",
         "PRODUCT-2",
         "PRODUCT-3",
-        "PRODUCT-4",
         "FINAL-LABEL",
         "통과",
         "08:00:00",
@@ -2317,7 +2310,7 @@ def test_completion_progress_keeps_all_packaging_steps_filled_after_pass():
     module.Label_Match._show_completion_progress(app, module.Label_Match.Results.PASS)
 
     assert app.progress_bar["value"] == module.LABEL_MATCH_TOTAL_SCAN_COUNT
-    assert app.status_label.kwargs["text"].startswith("6/6 통과 완료")
+    assert app.status_label.kwargs["text"].startswith(f"{module.LABEL_MATCH_TOTAL_SCAN_COUNT}/{module.LABEL_MATCH_TOTAL_SCAN_COUNT} 통과 완료")
     assert all(label.kwargs["background"] == app.colors["success_light"] for label in app.step_labels)
 
 
@@ -2347,7 +2340,7 @@ def test_idle_instruction_resets_completion_progress_when_no_active_set():
         "text_subtle": "#64748b",
     }
     app.step_labels = [_FakeLabel() for _ in range(module.Label_Match.TOTAL_SCAN_COUNT)]
-    app._idle_instruction_text = lambda: "1/6 현품표 스캔"
+    app._idle_instruction_text = lambda: f"1/{module.LABEL_MATCH_TOTAL_SCAN_COUNT} 현품표 스캔"
     app.update_big_display = lambda *args, **kwargs: None
     app._update_manual_complete_button_state = lambda: None
 

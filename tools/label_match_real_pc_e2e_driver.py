@@ -36,7 +36,7 @@ import Label_Match as label_match_module  # noqa: E402
 
 
 GS = "\x1D"
-PRODUCT_SAMPLE_COUNT = 4
+PRODUCT_SAMPLE_COUNT = 3
 
 
 def _now_utc() -> str:

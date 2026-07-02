@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Label_Match is a Korean barcode verification system application built with Python/Tkinter. Current code validates packaging sets through a 6-step scan process: one material/master label, four product samples, and one final packaging label. It maintains audit logs, includes auto-update functionality from GitHub releases, and provides a comprehensive UI for tracking scan history and results.
+Label_Match is a Korean barcode verification system application built with Python/Tkinter. Current code validates packaging sets through a 5-step scan process: one material/master label, three product samples, and one final packaging label. It maintains audit logs, includes auto-update functionality from GitHub releases, and provides a comprehensive UI for tracking scan history and results.
 
 ## Key Architecture
 
@@ -19,7 +19,7 @@ Label_Match is a Korean barcode verification system application built with Pytho
 - **README.txt**: Comprehensive documentation for barcode validation rules (Korean)
 
 ### Data Flow
-1. Barcode scanning through 6 sequential steps: material/master label, product samples 1-4, final packaging label
+1. Barcode scanning through 5 sequential steps: material/master label, product samples 1-3, final packaging label
 2. Validation against `assets/Item.csv` and barcode parsing rules
 3. Real-time audio feedback for each scan step
 4. Automatic logging to daily CSV event files with JSON `details`
@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 The application includes GitHub-based auto-update functionality:
 - **Repository**: KMTechn/Label_Match
-- **Current Version**: v2.0.7 (defined in APP_VERSION variable in `Label_Match.py`)
+- **Current Version**: v2.0.10 (defined in APP_VERSION variable in `Label_Match.py`)
 - **Update Process**: Downloads latest release ZIP, creates batch updater script, applies updates automatically
 
 ## Audio System
@@ -68,7 +68,7 @@ Audio feedback system using pygame with WAV files in assets/:
 
 ### Barcode Validation Rules
 Legacy documentation references `validation_rules.csv`, but the current code uses `assets/Item.csv` as the product catalog and applies barcode parsing/step validation in `Label_Match.py`.
-- Current validation uses the 6-step contract in `Label_Match.py`; old RuleName/5-position descriptions are legacy README context only
+- Current validation uses the 5-step contract in `Label_Match.py`; old RuleName descriptions are legacy README context only
 - Length validation (MinLength/MaxLength) for each scan position
 - String slicing (SliceStart/SliceEnd) for code extraction
 - First scan determines which rule set applies based on barcode length

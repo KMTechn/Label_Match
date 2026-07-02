@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROGRAM_ROOT = ROOT.parent
 DEFAULT_OUTPUT_ROOT = ROOT / "outputs"
 DEFAULT_LABEL_MATCH_DATA = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "KMTech" / "Label_Match" / "data"
-PRODUCT_SAMPLE_COUNT = 4
+PRODUCT_SAMPLE_COUNT = 3
 TOTAL_SCAN_COUNT = PRODUCT_SAMPLE_COUNT + 2
 CURRENT_PC_DIRECT_SYNC_ROOT = (
     Path(os.environ.get("ProgramData", r"C:\ProgramData"))

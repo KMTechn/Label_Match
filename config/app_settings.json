@@ -25,11 +25,10 @@
         "heading_background": "#FFFFFF"
     },
     "sound_files": {
-        "scan_master": "success.wav",
-        "scan_1": "one.wav",
-        "scan_2": "two.wav",
-        "scan_3": "three.wav",
-        "scan_4": "four.wav",
+        "scan_master": "one.wav",
+        "scan_1": "two.wav",
+        "scan_2": "three.wav",
+        "scan_3": "four.wav",
         "pass": "pass.wav",
         "fail": "fail.wav"
     },
@@ -49,7 +48,6 @@
             "Input3": 170,
             "Input4": 170,
             "Input5": 170,
-            "Input6": 170,
             "Result": 123,
             "Timestamp": 216
         }

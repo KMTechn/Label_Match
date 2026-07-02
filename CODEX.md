@@ -6,11 +6,11 @@
 
 ## 프로젝트 목적
 
-`Label_Match`는 포장실 바코드 세트 검증용 Windows Tkinter 앱이다. 현재 코드 기준 일반 작업은 현품표 1회, 제품 4회, 최종 라벨지 1회를 총 6단계로 스캔하고, 품목 불일치, 형식 오류, 중복 스캔을 감지해 작업 로그를 남긴다. 최신 기본 저장소는 `%ProgramData%\KMTech\Label_Match\data`이며, `LABEL_MATCH_SAVE_DIR`로 override할 수 있다.
+`Label_Match`는 포장실 바코드 세트 검증용 Windows Tkinter 앱이다. 현재 코드 기준 일반 작업은 현품표 1회, 제품 3회, 최종 라벨지 1회를 총 5단계로 스캔하고, 품목 불일치, 형식 오류, 중복 스캔을 감지해 작업 로그를 남긴다. 최신 기본 저장소는 `%ProgramData%\KMTech\Label_Match\data`이며, `LABEL_MATCH_SAVE_DIR`로 override할 수 있다.
 
 ## 주요 기능
 
-- 현품표, 제품 4개, 최종 라벨지를 순서대로 스캔해 하나의 세트를 완성한다.
+- 현품표, 제품 3개, 최종 라벨지를 순서대로 스캔해 하나의 세트를 완성한다.
 - `assets/Item.csv`를 기준으로 품목명/규격 정보를 조회한다.
 - 신규 `CLC|SPC|PHS` 형식과 생산일자 `6D` 필드 중심의 검증 로직을 포함한다.
 - 사운드 피드백, 히스토리/집계 UI, 완료 트레이 취소를 제공한다.
