@@ -4,7 +4,11 @@ param(
     [string]$ProgramDataRoot = "",
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
     [string]$EnrollmentTokenFile = "",
-    [string]$TaskName = ""
+    [string]$TaskName = "",
+    [string]$TaskRunUser = "",
+    [string]$TaskRunPasswordEnv = "",
+    [string]$TaskRunPasswordFile = "",
+    [switch]$AllowInteractiveTaskForLocalTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -133,6 +137,18 @@ if (Test-Path -LiteralPath $registrationExe) {
 }
 if (-not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)) {
     $arguments += @("--enrollment-token-file", $EnrollmentTokenFile)
+}
+if (-not [string]::IsNullOrWhiteSpace($TaskRunUser)) {
+    $arguments += @("--task-run-user", $TaskRunUser)
+}
+if (-not [string]::IsNullOrWhiteSpace($TaskRunPasswordEnv)) {
+    $arguments += @("--task-run-password-env", $TaskRunPasswordEnv)
+}
+if (-not [string]::IsNullOrWhiteSpace($TaskRunPasswordFile)) {
+    $arguments += @("--task-run-password-file", $TaskRunPasswordFile)
+}
+if ($AllowInteractiveTaskForLocalTest.IsPresent) {
+    $arguments += @("--allow-interactive-task-for-local-test")
 }
 if (-not $DryRun.IsPresent) {
     $arguments += @("--apply")

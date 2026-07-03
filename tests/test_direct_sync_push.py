@@ -388,6 +388,12 @@ def test_build_plan_uses_label_match_stream_and_csv_rows(tmp_path):
     assert plan.metadata["source_system"] == "label_match"
     assert plan.metadata["source_transport"] == "legacy_packaging_csv"
     assert plan.metadata["relative_path"] == f"legacy_csv/{csv_path.name}"
+    assert plan.metadata["client_batch_id"].startswith("source-file:")
+    assert plan.metadata["idempotency_key"].startswith("source-file:")
+    assert plan.metadata["client_batch_id"] == plan.metadata["idempotency_key"]
+    assert len(plan.metadata["idempotency_key"].encode("utf-8")) <= 128
+    assert plan.metadata["idempotency_key"].encode("ascii")
+    assert csv_path.name not in plan.metadata["idempotency_key"]
     assert plan.metadata["row_count"] == 1
     assert plan.metadata["first_row_number"] == 2
     assert plan.metadata["last_row_number"] == 2
@@ -1071,7 +1077,9 @@ def test_drain_uses_enqueued_metadata_snapshot_after_manifest_changes(tmp_path):
     assert session.calls[0]["client_batch_id"] == row.relay_id
     assert session.calls[0]["source_host_id"] == "label-host-1"
     assert session.calls[0]["manifest_hash"] == original_manifest_hash
-    assert session.calls[0]["idempotency_key"].startswith("source-file:label-host-1/")
+    assert session.calls[0]["idempotency_key"].startswith("source-file:")
+    assert len(session.calls[0]["idempotency_key"].encode("utf-8")) <= 128
+    assert session.calls[0]["idempotency_key"].encode("ascii")
 
 
 def test_drain_rejects_non_integer_relay_metadata_byte_length_without_upload(tmp_path):

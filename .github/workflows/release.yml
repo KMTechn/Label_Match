@@ -34,7 +34,7 @@ jobs:
 
       - name: Build with PyInstaller (One-Folder mode)
         # ❗ 이 부분에 --hidden-import tkcalendar 옵션을 추가했습니다.
-        run: pyinstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame --hidden-import Pillow --hidden-import tkcalendar Label_Match.py
+        run: pyinstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame --hidden-import PIL --hidden-import tkcalendar Label_Match.py
 
       - name: Build direct-sync CLI tools
         run: |

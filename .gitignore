@@ -3,3 +3,8 @@ __pycache__/
 .pytest_cache/
 artifacts/
 outputs/
+build/
+dist/
+*.spec
+Label_Match-v*.zip
+Label_Match-v*.zip.sha256

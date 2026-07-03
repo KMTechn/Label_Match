@@ -302,7 +302,13 @@ def test_runner_scan_twenty_pcs_same_filename_and_worker_keep_identity_isolated(
         rows = relay_rows(pc_root / "relay.sqlite3")
         assert len(rows) == 1
         metadata = json.loads(rows[0]["metadata_json"])
-        assert metadata["relative_path"].startswith(f"legacy_csv_deltas/{same_filename}/")
+        expected_delta_prefix = f"legacy_csv_deltas/source-{runner._source_delta_key(sync_dir / same_filename)}/"
+        assert metadata["relative_path"].startswith(expected_delta_prefix)
+        assert same_filename not in metadata["relative_path"]
+        assert metadata["relative_path"].encode("ascii")
+        assert metadata["idempotency_key"].startswith("source-file:")
+        assert len(metadata["idempotency_key"].encode("utf-8")) <= 128
+        assert metadata["idempotency_key"].encode("ascii")
         assert metadata["source_host_id"] == f"label-runner-host-{index:03d}"
         assert metadata["producer_install_id"] == f"install-label-runner-{index:03d}"
         assert rows[0]["producer_id"] == f"producer-label-runner-{index:03d}"
@@ -317,6 +323,21 @@ def test_runner_scan_twenty_pcs_same_filename_and_worker_keep_identity_isolated(
     assert len(install_ids) == 20
     assert len(producer_ids) == 20
     assert len(idempotency_keys) == 20
+
+
+def test_delta_relative_path_is_ascii_and_legacy_range_parser_still_works(tmp_path):
+    sync_dir = tmp_path / "sync"
+    source_file = write_label_csv(sync_dir, name="포장실작업이벤트로그_20260704.csv")
+    content_sha256 = "a" * 64
+
+    modern = runner._delta_relative_path(source_file, 10, 20, content_sha256)
+    legacy = f"legacy_csv_deltas/{source_file.name}/bytes-10-20-sha256-{content_sha256[:16]}.csv"
+
+    assert modern.startswith(f"legacy_csv_deltas/source-{runner._source_delta_key(source_file)}/")
+    assert source_file.name not in modern
+    assert modern.encode("ascii")
+    assert runner._parse_delta_range(modern, source_file) == (10, 20)
+    assert runner._parse_delta_range(legacy, source_file) == (10, 20)
 
 
 def test_runner_scan_source_invalid_utf8_csv_writes_enqueue_error(tmp_path, capsys, monkeypatch):
@@ -676,7 +697,7 @@ def test_runner_scan_source_limit_skips_no_new_files_to_reach_new_delta(tmp_path
     assert "direct_sync_scan_status=enqueued" in output
     rows = relay_rows(tmp_path / "relay.sqlite3")
     assert len(rows) == 2
-    assert any("002_20260622" in row["relative_path"] for row in rows)
+    assert any(f"source-{runner._source_delta_key(second)}" in row["relative_path"] for row in rows)
 
 
 def test_runner_scan_source_replace_or_truncate_resets_delta_state(tmp_path, capsys, monkeypatch):

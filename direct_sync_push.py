@@ -257,6 +257,11 @@ def _read_file_digest(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), byte_count
 
 
+def _stable_source_file_key(source_file_id: str, content_sha256: str) -> str:
+    digest = hashlib.sha256(f"{source_file_id}\n{content_sha256}".encode("utf-8")).hexdigest()
+    return f"source-file:{digest}"
+
+
 def count_csv_data_rows(path: str | os.PathLike[str]) -> int:
     with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
         return max(0, sum(1 for line in handle if line.strip()) - 1)
@@ -288,7 +293,7 @@ def build_source_file_plan(
         raise DirectSyncPushError("relative_path must not include stream_name")
     content_sha256, byte_length = _read_file_digest(file_path)
     source_file_id = f"{source_host_id}/{DEFAULT_PRODUCER_ROLE}/{DEFAULT_STREAM_NAME}/{safe_relative_path}"
-    stable_key = f"source-file:{source_file_id}"
+    stable_key = _stable_source_file_key(source_file_id, content_sha256)
     row_count = count_csv_data_rows(file_path)
     metadata = {
         "contract_version": CONTRACT_VERSION,

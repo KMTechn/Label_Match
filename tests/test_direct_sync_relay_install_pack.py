@@ -1,4 +1,5 @@
 import argparse
+import base64
 import importlib.util
 import json
 import os
@@ -13,6 +14,11 @@ def load_install_pack_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def decode_encoded_powershell_command(command):
+    assert command[:5] == ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand"]
+    return base64.b64decode(command[5]).decode("utf-16le")
 
 
 def make_manifest_and_credential(tmp_path):
@@ -332,6 +338,78 @@ def test_install_pack_self_enroll_dry_run_does_not_require_existing_manifest_or_
     assert "PRODUCER_SELF_ENROLL_TOKEN" not in report_path.read_text(encoding="utf-8-sig")
 
 
+def test_install_pack_apply_blocks_direct_enrollment_token_before_registration(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    registration_calls = []
+    monkeypatch.setattr(module, "_run_self_enrollment_registration", lambda args: registration_calls.append(args))
+
+    report_path = tmp_path / "direct-token-blocked.json"
+    result = module.main(
+        [
+            "--self-enroll",
+            "--apply",
+            "--enrollment-token",
+            "raw-enrollment-token",
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    assert result == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["blocked_reason"] == "direct --enrollment-token is disabled for apply; use env/file token delivery"
+    assert "raw-enrollment-token" not in report_path.read_text(encoding="utf-8-sig")
+    assert registration_calls == []
+
+
+def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: {
+            "returncode": 0,
+            "stdout": "registration stdout may contain token material",
+            "stderr": "registration stderr may contain token material",
+        },
+    )
+    args = argparse.Namespace(
+        app_root=str(tmp_path),
+        python_exe=sys.executable,
+        registration_exe="",
+        program_data_root=str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+        producer_manifest_path="",
+        credential_path="",
+        registration_report_path="",
+        server_base_url="https://worker.example.invalid",
+        endpoint_url="",
+        enrollment_url="",
+        enrollment_token="direct-token-for-redaction",
+        enrollment_token_file="",
+        enrollment_token_env="PRODUCER_SELF_ENROLL_TOKEN",
+        enrollment_timeout_seconds=30,
+        scan_source_dir=str(tmp_path / "scan-source"),
+        pc_id="",
+        source_host_id="",
+        producer_install_id="",
+        producer_id="",
+        key_id="",
+        secret_ref_target="",
+    )
+
+    result = module._run_self_enrollment_registration(args)
+
+    assert "stdout" not in result
+    assert "stderr" not in result
+    assert result["stdout_omitted"] is True
+    assert result["stderr_omitted"] is True
+    assert result["stdout_bytes"] > 0
+    assert result["stderr_bytes"] > 0
+    assert "direct-token-for-redaction" not in result["command_redacted"]
+    assert "[redacted]" in result["command_redacted"]
+
+
 def test_install_pack_apply_creates_runtime_and_source_directories_before_schtasks(tmp_path, monkeypatch):
     module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
@@ -360,6 +438,7 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
             str(report_path),
             "--apply",
             "--confirm-production-install",
+            "--allow-interactive-task-for-local-test",
         ]
     )
 
@@ -376,9 +455,261 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
     assert report["task_wrapper_write_result"]["status"] == "PASS"
     assert Path(report["task_wrapper"]["path"]).is_file()
     assert report["task_launcher_write_result"]["status"] == "PASS"
-    assert Path(report["task_launcher"]["path"]).is_file()
+    launcher_path = Path(report["task_launcher"]["path"])
+    assert launcher_path.is_file()
+    assert report["task_launcher"]["script_encoding"] == "ascii"
+    assert report["task_launcher_write_result"]["encoding"] == "ascii"
+    assert not launcher_path.read_bytes().startswith(b"\xef\xbb\xbf")
     assert commands and commands[0][0] == "schtasks.exe"
     assert "wscript.exe" == commands[0][commands[0].index("/TR") + 1].split()[0]
+
+
+def test_install_pack_apply_supports_stored_password_task_without_leaking_password(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-task-user.json"
+    program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    commands = []
+    monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(scan_source_dir))
+    monkeypatch.setenv("TASK_PASSWORD_FOR_TEST", "stored-task-password")
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+
+    result = module.main(
+        [
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--program-data-root",
+            str(program_data_root),
+            "--scan-source-dir",
+            str(scan_source_dir),
+            "--report-path",
+            str(report_path),
+            "--task-run-user",
+            "TEST1\\kmtech-remote-admin",
+            "--task-run-password-env",
+            "TASK_PASSWORD_FOR_TEST",
+            "--apply",
+            "--confirm-production-install",
+        ]
+    )
+
+    assert result == 0
+    assert commands and commands[0][0] == "powershell.exe"
+    assert "stored-task-password" not in " ".join(commands[0])
+    command_script = decode_encoded_powershell_command(commands[0])
+    assert "Register-ScheduledTask" in command_script
+    assert "TASK_PASSWORD_FOR_TEST" in command_script
+    assert "stored-task-password" not in command_script
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    report_text = report_path.read_text(encoding="utf-8-sig")
+    assert report["task_principal"]["mode"] == "stored_password"
+    assert report["task_principal"]["password_source"] == "env:TASK_PASSWORD_FOR_TEST"
+    assert report["task_principal"]["password_in_report"] is False
+    assert report["scheduled_task_create_command"][report["scheduled_task_create_command"].index("/RP") + 1] == "[redacted]"
+    assert "stored-task-password" not in report_text
+
+
+def test_install_pack_apply_supports_password_file_without_leaking_password(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-task-password-file.json"
+    password_file = tmp_path / "task-password.txt"
+    password_file.write_text("  file-task-password\t\n", encoding="utf-8")
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    scan_source_dir.mkdir(parents=True)
+    commands = []
+    monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(scan_source_dir))
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+
+    result = module.main(
+        [
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--program-data-root",
+            str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+            "--scan-source-dir",
+            str(scan_source_dir),
+            "--report-path",
+            str(report_path),
+            "--task-run-user",
+            r"TEST1\kmtech-remote-admin",
+            "--task-run-password-file",
+            str(password_file),
+            "--apply",
+            "--confirm-production-install",
+        ]
+    )
+
+    assert result == 0
+    assert commands and commands[0][0] == "powershell.exe"
+    assert "file-task-password" not in " ".join(commands[0])
+    command_script = decode_encoded_powershell_command(commands[0])
+    assert "Register-ScheduledTask" in command_script
+    assert str(password_file.resolve()) in command_script
+    assert "file-task-password" not in command_script
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    report_text = report_path.read_text(encoding="utf-8-sig")
+    assert report["status"] == "PASS"
+    assert report["task_principal"]["mode"] == "stored_password"
+    assert report["task_principal"]["password_source"] == "file"
+    assert report["scheduled_task_create_command"][report["scheduled_task_create_command"].index("/RP") + 1] == "[redacted]"
+    assert "file-task-password" not in report_text
+    password, source, error = module._read_task_password(argparse.Namespace(task_run_password_env="", task_run_password_file=str(password_file)))
+    assert (password, source, error) == ("  file-task-password\t", "file", "")
+
+
+def test_install_pack_blocks_task_user_without_password_source(tmp_path):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-task-user-blocked.json"
+
+    result = module.main(
+        [
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--program-data-root",
+            str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+            "--report-path",
+            str(report_path),
+            "--task-run-user",
+            "TEST1\\kmtech-remote-admin",
+        ]
+    )
+
+    assert result == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["task_principal"]["status"] == "FAIL"
+    assert "requires --task-run-password" in report["blocked_reason"]
+
+
+def test_install_pack_apply_blocks_interactive_task_without_explicit_local_test_flag(tmp_path):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    report_path = tmp_path / "install-pack-interactive-task-blocked.json"
+
+    result = module.main(
+        [
+            "--producer-manifest-path",
+            str(manifest_path),
+            "--credential-path",
+            str(credential_path),
+            "--program-data-root",
+            str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+            "--report-path",
+            str(report_path),
+            "--apply",
+            "--confirm-production-install",
+        ]
+    )
+
+    assert result == 2
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "BLOCKED"
+    assert report["task_principal"]["status"] == "FAIL"
+    assert "production apply requires --task-run-user" in report["blocked_reason"]
+    assert "--allow-interactive-task-for-local-test" in report["blocked_reason"]
+
+
+def test_install_pack_blocks_invalid_task_password_sources(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    scan_source_dir.mkdir(parents=True)
+    password_file = tmp_path / "task-password.txt"
+    password_file.write_text("file-task-password", encoding="utf-8")
+    empty_password_file = tmp_path / "empty-task-password.txt"
+    empty_password_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(scan_source_dir))
+    monkeypatch.delenv("MISSING_TASK_PASSWORD", raising=False)
+    cases = [
+        (["--task-run-password-env", "MISSING_TASK_PASSWORD"], "requires --task-run-user"),
+        (
+            ["--task-run-user", r"TEST1\kmtech-remote-admin", "--task-run-password-env", "MISSING_TASK_PASSWORD"],
+            "env var is empty",
+        ),
+        (
+            ["--task-run-user", r"TEST1\kmtech-remote-admin", "--task-run-password-file", str(empty_password_file)],
+            "file is empty",
+        ),
+        (
+            [
+                "--task-run-user",
+                r"TEST1\kmtech-remote-admin",
+                "--task-run-password-env",
+                "MISSING_TASK_PASSWORD",
+                "--task-run-password-file",
+                str(password_file),
+            ],
+            "use only one",
+        ),
+    ]
+    for index, (extra_args, expected_reason) in enumerate(cases):
+        report_path = tmp_path / f"invalid-task-password-{index}.json"
+        result = module.main(
+            [
+                "--producer-manifest-path",
+                str(manifest_path),
+                "--credential-path",
+                str(credential_path),
+                "--program-data-root",
+                str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+                "--scan-source-dir",
+                str(scan_source_dir),
+                "--report-path",
+                str(report_path),
+                *extra_args,
+            ]
+        )
+
+        assert result == 2
+        report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+        assert report["status"] == "BLOCKED"
+        assert expected_reason in report["blocked_reason"]
+
+
+def test_install_pack_uninstall_skips_task_password_validation(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    report_path = tmp_path / "install-pack-uninstall.json"
+    commands = []
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+
+    result = module.main(
+        [
+            "--report-path",
+            str(report_path),
+            "--task-run-user",
+            r"TEST1\kmtech-remote-admin",
+            "--apply",
+            "--uninstall",
+        ]
+    )
+
+    assert result == 0
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "PASS"
+    assert report["task_principal"]["status"] == "SKIPPED"
+    assert report["scheduled_task_create_command"] == []
+    assert commands == [["schtasks.exe", "/Delete", "/TN", "direct-sync-relay-label-match", "/F"]]
 
 
 def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_path, monkeypatch):
@@ -456,6 +787,7 @@ def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_pa
             str(report_path),
             "--apply",
             "--confirm-production-install",
+            "--allow-interactive-task-for-local-test",
         ]
     )
 
@@ -673,6 +1005,7 @@ def test_install_pack_apply_with_missing_manifest_does_not_run_schtasks(tmp_path
             str(report_path),
             "--apply",
             "--confirm-production-install",
+            "--allow-interactive-task-for-local-test",
         ]
     )
 
@@ -772,6 +1105,7 @@ def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypa
             "--report-path",
             str(report_path),
             "--apply",
+            "--allow-interactive-task-for-local-test",
         ]
     )
 

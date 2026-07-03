@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -93,6 +94,155 @@ def _task_wrapper_command(launcher_path: str | os.PathLike[str]) -> list[str]:
     ]
 
 
+def _read_task_password(args: argparse.Namespace) -> tuple[str, str, str]:
+    env_name = str(getattr(args, "task_run_password_env", "") or "").strip()
+    file_path = str(getattr(args, "task_run_password_file", "") or "").strip()
+    if env_name and file_path:
+        return "", "", "use only one of --task-run-password-env or --task-run-password-file"
+    if env_name:
+        value = str(os.getenv(env_name) or "")
+        if not value:
+            return "", f"env:{env_name}", "task run password env var is empty or unavailable"
+        return value, f"env:{env_name}", ""
+    if file_path:
+        try:
+            value = Path(file_path).read_text(encoding="utf-8-sig").rstrip("\r\n")
+        except Exception as exc:
+            return "", "file", f"task run password file could not be read: {exc.__class__.__name__}"
+        if not value:
+            return "", "file", "task run password file is empty"
+        return value, "file", ""
+    return "", "", "stored-password task mode requires --task-run-password-env or --task-run-password-file"
+
+
+def _task_principal_args(args: argparse.Namespace, *, redact_password: bool) -> tuple[list[str], dict]:
+    user = str(getattr(args, "task_run_user", "") or "").strip()
+    password_env = str(getattr(args, "task_run_password_env", "") or "").strip()
+    password_file = str(getattr(args, "task_run_password_file", "") or "").strip()
+    apply_requested = bool(getattr(args, "apply", False))
+    uninstall = bool(getattr(args, "uninstall", False))
+    allow_interactive = bool(getattr(args, "allow_interactive_task_for_local_test", False))
+    report = {
+        "status": "PASS",
+        "mode": "interactive_token_default",
+        "run_user": "",
+        "password_source": "",
+        "password_supplied": False,
+        "password_in_report": False,
+        "blocked_reason": "",
+    }
+    if not user:
+        if password_env or password_file:
+            report.update({
+                "status": "FAIL",
+                "blocked_reason": "task password source requires --task-run-user",
+            })
+        elif apply_requested and not uninstall and not allow_interactive:
+            report.update({
+                "status": "FAIL",
+                "blocked_reason": (
+                    "production apply requires --task-run-user with password source "
+                    "or --allow-interactive-task-for-local-test"
+                ),
+            })
+        return [], report
+    password, source, error = _read_task_password(args)
+    report.update({
+        "mode": "stored_password",
+        "run_user": user,
+        "password_source": source,
+        "password_supplied": bool(password),
+        "blocked_reason": error,
+        "status": "FAIL" if error else "PASS",
+    })
+    if error:
+        return [], report
+    return ["/RU", user, "/RP", "[redacted]" if redact_password else password], report
+
+
+def _scheduled_task_create_command(
+    *,
+    task_name: str,
+    minute_interval: int,
+    task_action: str,
+    task_principal_args: Sequence[str],
+) -> list[str]:
+    return [
+        "schtasks.exe",
+        "/Create",
+        "/TN",
+        task_name,
+        "/SC",
+        "MINUTE",
+        "/MO",
+        str(max(1, int(minute_interval))),
+        "/TR",
+        task_action,
+        *[str(part) for part in task_principal_args],
+        "/F",
+    ]
+
+
+def _encoded_powershell_command(script: str) -> list[str]:
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encoded,
+    ]
+
+
+def _stored_password_task_register_command(
+    *,
+    task_name: str,
+    minute_interval: int,
+    task_action_parts: Sequence[str],
+    args: argparse.Namespace,
+) -> list[str]:
+    user = str(getattr(args, "task_run_user", "") or "").strip()
+    env_name = str(getattr(args, "task_run_password_env", "") or "").strip()
+    file_path = str(getattr(args, "task_run_password_file", "") or "").strip()
+    if env_name:
+        password_script = "\n".join(
+            [
+                f"$password = [Environment]::GetEnvironmentVariable({_ps_single_quote(env_name)}, 'Process')",
+                "if ([string]::IsNullOrEmpty($password)) { throw 'task run password env var is empty or unavailable' }",
+            ]
+        )
+    else:
+        password_script = "\n".join(
+            [
+                f"$passwordPath = {_ps_single_quote(Path(file_path).expanduser().resolve())}",
+                "$password = [System.IO.File]::ReadAllText($passwordPath, [System.Text.Encoding]::UTF8)",
+                "if ($password.Length -gt 0 -and $password[0] -eq [char]0xfeff) { $password = $password.Substring(1) }",
+                "$password = $password -replace '(?:\\r\\n|\\r|\\n)+$', ''",
+                "if ($password.Length -eq 0) { throw 'task run password file is empty' }",
+            ]
+        )
+    task_args = _quote_cmd([str(part) for part in task_action_parts[1:]])
+    script = "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$taskName = {_ps_single_quote(task_name)}",
+            f"$execute = {_ps_single_quote(str(task_action_parts[0]))}",
+            f"$arguments = {_ps_single_quote(task_args)}",
+            f"$user = {_ps_single_quote(user)}",
+            password_script,
+            "$action = New-ScheduledTaskAction -Execute $execute -Argument $arguments",
+            "$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes "
+            + str(max(1, int(minute_interval)))
+            + ") -RepetitionDuration (New-TimeSpan -Days 3650)",
+            "$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
+            "Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User $user -Password $password -Force | Out-Null",
+            "",
+        ]
+    )
+    return _encoded_powershell_command(script)
+
+
 def _write_task_wrapper(wrapper_path: str | os.PathLike[str], runner_parts: Sequence[str]) -> dict:
     target = Path(wrapper_path)
     try:
@@ -107,8 +257,8 @@ def _write_task_launcher(launcher_path: str | os.PathLike[str], wrapper_path: st
     target = Path(launcher_path)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(_task_launcher_content(wrapper_path), encoding="utf-8-sig", newline="\r\n")
-        return {"status": "PASS", "path": str(target), "encoding": "utf-8-sig"}
+        target.write_text(_task_launcher_content(wrapper_path), encoding="ascii", newline="\r\n")
+        return {"status": "PASS", "path": str(target), "encoding": "ascii"}
     except Exception as exc:
         return {"status": "FAIL", "path": str(target), "error": str(exc)}
 
@@ -528,7 +678,8 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     source_scan = _source_scan_config(args)
     backpressure = _backpressure_config(args)
     self_enroll = bool(getattr(args, "self_enroll", False))
-    run_install_preflight = run_preflight and not (self_enroll and not bool(getattr(args, "apply", False)))
+    uninstall = bool(getattr(args, "uninstall", False))
+    run_install_preflight = run_preflight and not uninstall and not (self_enroll and not bool(getattr(args, "apply", False)))
     runner_parts = [
         str(runner_exe) if runner_exe is not None else python_exe,
     ]
@@ -565,19 +716,25 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     task_launcher = _task_launcher_path(args.program_data_root, args.task_name)
     task_action_parts = _task_wrapper_command(task_launcher)
     task_action = _quote_cmd(task_action_parts)
-    create_command = [
-        "schtasks.exe",
-        "/Create",
-        "/TN",
-        args.task_name,
-        "/SC",
-        "MINUTE",
-        "/MO",
-        str(max(1, int(args.minute_interval))),
-        "/TR",
-        task_action,
-        "/F",
-    ]
+    if uninstall:
+        task_principal = {
+            "status": "SKIPPED",
+            "mode": "uninstall",
+            "run_user": "",
+            "password_source": "",
+            "password_supplied": False,
+            "password_in_report": False,
+            "blocked_reason": "",
+        }
+        create_command: list[str] = []
+    else:
+        task_principal_args, task_principal = _task_principal_args(args, redact_password=True)
+        create_command = _scheduled_task_create_command(
+            task_name=args.task_name,
+            minute_interval=args.minute_interval,
+            task_action=task_action,
+            task_principal_args=task_principal_args,
+        )
     delete_command = ["schtasks.exe", "/Delete", "/TN", args.task_name, "/F"]
     return {
         "report_version": "label-match-direct-sync-install-pack-v1",
@@ -607,8 +764,9 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             "path": str(task_launcher),
             "target_wrapper_path": str(task_wrapper),
             "command": task_action_parts,
-            "script_encoding": "utf-8-sig",
+            "script_encoding": "ascii",
         },
+        "task_principal": task_principal,
         "scheduled_task_create_command": create_command,
         "scheduled_task_delete_command": delete_command,
         "install_preflight": (
@@ -739,6 +897,12 @@ def _redact_registration_command(command: Sequence[str]) -> list[str]:
 def _run_self_enrollment_registration(args: argparse.Namespace) -> dict:
     command = _self_enrollment_registration_command(args)
     result = _run_command(command)
+    stdout = str(result.pop("stdout", "") or "")
+    stderr = str(result.pop("stderr", "") or "")
+    result["stdout_omitted"] = bool(stdout)
+    result["stderr_omitted"] = bool(stderr)
+    result["stdout_bytes"] = len(stdout.encode("utf-8", errors="replace"))
+    result["stderr_bytes"] = len(stderr.encode("utf-8", errors="replace"))
     result["command_redacted"] = _redact_registration_command(command)
     report_path = Path(
         getattr(args, "registration_report_path", "")
@@ -802,6 +966,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--confirm-production-install", action="store_true")
+    parser.add_argument("--task-run-user", default="")
+    parser.add_argument("--task-run-password-env", default="")
+    parser.add_argument("--task-run-password-file", default="")
+    parser.add_argument("--allow-interactive-task-for-local-test", action="store_true")
     args = parser.parse_args(argv)
 
     if not args.self_enroll and (not args.producer_manifest_path or not args.credential_path) and not args.uninstall:
@@ -812,6 +980,25 @@ def main(argv: list[str] | None = None) -> int:
             "self_enrollment": {"enabled": False},
         }
         _write_json(Path(args.report_path), plan)
+        print(f"install_pack_report={Path(args.report_path).resolve()}")
+        return 2
+
+    if args.self_enroll and args.apply and str(getattr(args, "enrollment_token", "") or "").strip():
+        plan = {
+            "report_version": "label-match-direct-sync-install-pack-v1",
+            "status": "BLOCKED",
+            "blocked_reason": "direct --enrollment-token is disabled for apply; use env/file token delivery",
+            "self_enrollment": {"enabled": True},
+        }
+        _write_json(Path(args.report_path), plan)
+        print(f"install_pack_report={Path(args.report_path).resolve()}")
+        return 2
+
+    task_principal_plan = build_install_plan(args, run_preflight=False)
+    if task_principal_plan["task_principal"]["status"] not in {"PASS", "SKIPPED"}:
+        task_principal_plan["status"] = "BLOCKED"
+        task_principal_plan["blocked_reason"] = task_principal_plan["task_principal"]["blocked_reason"]
+        _write_json(Path(args.report_path), task_principal_plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2
 
@@ -841,9 +1028,39 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(Path(args.report_path), plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2
+    if plan["task_principal"]["status"] not in {"PASS", "SKIPPED"}:
+        plan["status"] = "BLOCKED"
+        plan["blocked_reason"] = plan["task_principal"]["blocked_reason"]
+        _write_json(Path(args.report_path), plan)
+        print(f"install_pack_report={Path(args.report_path).resolve()}")
+        return 2
 
     if args.apply:
-        command = plan["scheduled_task_delete_command"] if args.uninstall else plan["scheduled_task_create_command"]
+        if args.uninstall:
+            command = plan["scheduled_task_delete_command"]
+        else:
+            actual_principal_args, actual_principal = _task_principal_args(args, redact_password=True)
+            if actual_principal["status"] != "PASS":
+                plan["status"] = "BLOCKED"
+                plan["blocked_reason"] = actual_principal["blocked_reason"]
+                plan["task_principal"] = actual_principal
+                _write_json(Path(args.report_path), plan)
+                print(f"install_pack_report={Path(args.report_path).resolve()}")
+                return 2
+            if actual_principal["mode"] == "stored_password":
+                command = _stored_password_task_register_command(
+                    task_name=args.task_name,
+                    minute_interval=args.minute_interval,
+                    task_action_parts=plan["task_launcher"]["command"],
+                    args=args,
+                )
+            else:
+                command = _scheduled_task_create_command(
+                    task_name=args.task_name,
+                    minute_interval=args.minute_interval,
+                    task_action=plan["scheduled_task_create_command"][plan["scheduled_task_create_command"].index("/TR") + 1],
+                    task_principal_args=actual_principal_args,
+                )
         if not args.uninstall:
             plan["directory_create_result"] = _create_install_directories(plan["directories_to_create"])
             if plan["directory_create_result"]["status"] != "PASS":

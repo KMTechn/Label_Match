@@ -54,8 +54,12 @@ def _source_delta_key(path: Path) -> str:
     return hashlib.sha256(_source_state_key(path).encode("utf-8")).hexdigest()[:16]
 
 
+def _delta_relative_prefix(path: Path) -> str:
+    return f"legacy_csv_deltas/source-{_source_delta_key(path)}/"
+
+
 def _delta_relative_path(path: Path, start_byte: int, end_byte: int, content_sha256: str) -> str:
-    return f"legacy_csv_deltas/{path.name}/bytes-{start_byte}-{end_byte}-sha256-{content_sha256[:16]}.csv"
+    return f"{_delta_relative_prefix(path)}bytes-{start_byte}-{end_byte}-sha256-{content_sha256[:16]}.csv"
 
 
 def _file_prefix_sha256(path: Path, byte_count: int) -> str:
@@ -113,9 +117,13 @@ def _read_source_scan_state(db_path: str | Path, source_file: Path) -> tuple[int
 
 
 def _parse_delta_range(relative_path: str, source_file: Path) -> tuple[int, int] | None:
-    prefix = f"legacy_csv_deltas/{source_file.name}/bytes-"
     text = str(relative_path or "").replace("\\", "/")
-    if not text.startswith(prefix):
+    prefixes = (
+        f"{_delta_relative_prefix(source_file)}bytes-",
+        f"legacy_csv_deltas/{source_file.name}/bytes-",
+    )
+    prefix = next((candidate for candidate in prefixes if text.startswith(candidate)), "")
+    if not prefix:
         return None
     range_text = text[len(prefix):].split("-sha256-", 1)[0]
     try:
