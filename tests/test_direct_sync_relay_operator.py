@@ -4,10 +4,11 @@ from dataclasses import replace
 from pathlib import Path
 
 import direct_sync_operator as direct_sync_operator_module
-from direct_sync_operator import operator_status, retry_dead_relay_batch
+from direct_sync_operator import ack_reviewed_relay_batch, operator_status, retry_dead_relay_batch
 from direct_sync_push import (
     RELAY_STATUS_ACKED,
     RELAY_STATUS_FAILED_PERMANENT,
+    RELAY_STATUS_OPERATOR_REVIEW,
     RELAY_STATUS_PENDING,
     RELAY_STATUS_RETRY_WAIT,
     relay_queue_status,
@@ -75,6 +76,67 @@ def _set_relay_spool_path(db_path, relay_id, path):
         conn.execute(
             "UPDATE direct_sync_relay_batches SET spooled_file_path = ? WHERE relay_id = ?",
             (str(path), relay_id),
+        )
+        conn.commit()
+
+
+def _relay_review_fixture(db_path, relay_id):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT content_sha256, byte_length, metadata_json
+            FROM direct_sync_relay_batches
+            WHERE relay_id = ?
+            """,
+            (relay_id,),
+        ).fetchone()
+    metadata = json.loads(row["metadata_json"])
+    source_file_id = "/".join(
+        str(metadata[field]).strip("/")
+        for field in ("source_host_id", "source_system", "stream_name", "relative_path")
+    )
+    return row, metadata, source_file_id
+
+
+def _accepted_review_receipt(db_path, relay_id, *, request_id="request-reviewed", totals=None):
+    row, metadata, source_file_id = _relay_review_fixture(db_path, relay_id)
+    row_count = metadata["row_count"]
+    return {
+        "request_id": request_id,
+        "client_batch_id": relay_id,
+        "committed": True,
+        "status": "accepted",
+        "retryable": False,
+        "next_retry_after": None,
+        "server_source_file_id": source_file_id,
+        "source_file": {
+            "content_sha256": row["content_sha256"],
+            "byte_length": int(row["byte_length"]),
+            "declared_row_count": row_count,
+            "declared_first_row_number": metadata["first_row_number"],
+            "declared_last_row_number": metadata["last_row_number"],
+        },
+        "totals": totals or {"inserted": max(0, row_count - 1), "replayed": 0, "quarantined": 1, "errors": 0},
+    }
+
+
+def _put_operator_review_receipt(db_path, relay_id, receipt, *, error_code="operator_review_required"):
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE direct_sync_relay_batches
+            SET status = ?,
+                receipt_json = ?,
+                last_error_code = ?
+            WHERE relay_id = ?
+            """,
+            (
+                RELAY_STATUS_OPERATOR_REVIEW,
+                json.dumps(receipt, sort_keys=True),
+                error_code,
+                relay_id,
+            ),
         )
         conn.commit()
 
@@ -320,6 +382,199 @@ def test_operator_retry_dead_blocks_operator_review_rows(tmp_path):
     assert retry_report["status"] == "BLOCKED"
     assert retry_report["previous_status"] == "operator_review"
     assert relay_queue_status(config.db_path)["counts"].get("operator_review") == 1
+
+
+def test_operator_ack_reviewed_marks_committed_operator_review_as_acked(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+    relay_id = enqueued["last_result"]["relay_id"]
+    review_receipt = _accepted_review_receipt(config.db_path, relay_id, request_id="request-reviewed")
+    reviewed = run_relay_once(
+        config,
+        session=FakeSession(
+            FakeResponse(200, review_receipt)
+        ),
+    )
+    assert reviewed["status"] == RELAY_STATUS_OPERATOR_REVIEW
+    with sqlite3.connect(config.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT content_sha256, last_error_code
+            FROM direct_sync_relay_batches
+            WHERE relay_id = ?
+            """,
+            (relay_id,),
+        ).fetchone()
+
+    blocked = ack_reviewed_relay_batch(
+        db_path=config.db_path,
+        relay_id=relay_id,
+        operator_id="operator-a",
+        reason="wrong evidence should block",
+        review_evidence_ref="evidence://wrong",
+        expected_content_sha256="0" * 64,
+        expected_request_id="request-reviewed",
+        expected_error_code="operator_review_required",
+    )
+    assert blocked["status"] == "BLOCKED"
+    assert blocked["error_code"] == "relay_content_sha256_mismatch"
+    assert relay_queue_status(config.db_path)["counts"].get(RELAY_STATUS_OPERATOR_REVIEW) == 1
+
+    report_path = tmp_path / "reports" / "ack-reviewed.json"
+    audit_path = tmp_path / "logs" / "operator.jsonl"
+    exit_code = main(
+        [
+            "ack-reviewed",
+            "--db-path",
+            str(config.db_path),
+            "--relay-id",
+            relay_id,
+            "--operator-id",
+            "operator-a",
+            "--reason",
+            "server review confirmed only benign APP_START replay conflict",
+            "--review-evidence-ref",
+            "evidence://server-quarantine-row-620",
+            "--expected-content-sha256",
+            row["content_sha256"],
+            "--expected-request-id",
+            "request-reviewed",
+            "--expected-error-code",
+            "operator_review_required",
+            "--audit-log-path",
+            str(audit_path),
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert report["status"] == "PASS"
+    assert report["previous_status"] == RELAY_STATUS_OPERATOR_REVIEW
+    assert report["new_status"] == RELAY_STATUS_ACKED
+    assert report["receipt_totals"]["quarantined"] == 1
+    assert report["review_evidence_ref"] == "evidence://server-quarantine-row-620"
+    counts = relay_queue_status(config.db_path)["counts"]
+    assert counts[RELAY_STATUS_ACKED] == 1
+    assert counts.get(RELAY_STATUS_OPERATOR_REVIEW, 0) == 0
+    with sqlite3.connect(config.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        acked = conn.execute(
+            """
+            SELECT status, last_error_code, last_error_message, lease_owner, lease_expires_at, next_attempt_at
+            FROM direct_sync_relay_batches
+            WHERE relay_id = ?
+            """,
+            (relay_id,),
+        ).fetchone()
+    assert acked["status"] == RELAY_STATUS_ACKED
+    assert acked["last_error_code"] is None
+    assert acked["last_error_message"] is None
+    assert acked["lease_owner"] is None
+    assert acked["lease_expires_at"] is None
+    assert acked["next_attempt_at"] is None
+    audit_bytes = audit_path.read_bytes()
+    assert b"server review confirmed only benign" not in audit_bytes
+
+
+def test_operator_ack_reviewed_blocks_uncommitted_receipts(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+    relay_id = enqueued["last_result"]["relay_id"]
+    receipt = _accepted_review_receipt(config.db_path, relay_id, request_id="request-uncommitted")
+    receipt["committed"] = False
+    _put_operator_review_receipt(config.db_path, relay_id, receipt)
+
+    report = ack_reviewed_relay_batch(
+        db_path=config.db_path,
+        relay_id=relay_id,
+        operator_id="operator-a",
+        reason="must not ack uncommitted failures",
+        review_evidence_ref="evidence://server-review",
+        expected_content_sha256=_relay_review_fixture(config.db_path, relay_id)[0]["content_sha256"],
+        expected_request_id="request-uncommitted",
+        expected_error_code="operator_review_required",
+    )
+
+    assert report["status"] == "BLOCKED"
+    assert report["error_code"] == "relay_receipt_not_committed"
+    assert report["previous_status"] == RELAY_STATUS_OPERATOR_REVIEW
+
+
+def test_operator_ack_reviewed_blocks_invalid_operator_review_receipts(tmp_path):
+    cases = [
+        ("committed_false", {"committed": False}, "relay_receipt_not_committed"),
+        ("retryable_missing", {"retryable": None}, "relay_receipt_retryable"),
+        ("retryable_true", {"retryable": True}, "relay_receipt_retryable"),
+        ("wrong_client_batch", {"client_batch_id": "relay-other"}, "relay_receipt_client_batch_id_mismatch"),
+        ("wrong_status", {"status": "partial"}, "relay_receipt_status_not_accepted"),
+        ("bad_errors", {"totals": {"inserted": 1, "replayed": 0, "quarantined": 1, "errors": "not-int"}}, "relay_receipt_errors_invalid"),
+        ("has_errors", {"totals": {"inserted": 1, "replayed": 0, "quarantined": 1, "errors": 1}}, "relay_receipt_has_errors"),
+    ]
+    for case_name, override, expected_error in cases:
+        case_dir = tmp_path / case_name
+        case_dir.mkdir(parents=True)
+        config = make_config(case_dir)
+        source_file = write_csv(case_dir)
+        enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+        relay_id = enqueued["last_result"]["relay_id"]
+        row = _relay_review_fixture(config.db_path, relay_id)[0]
+        receipt = _accepted_review_receipt(config.db_path, relay_id, request_id=f"request-{case_name}")
+        receipt.update(override)
+        _put_operator_review_receipt(config.db_path, relay_id, receipt)
+
+        report = ack_reviewed_relay_batch(
+            db_path=config.db_path,
+            relay_id=relay_id,
+            operator_id="operator-a",
+            reason=f"guard case {case_name}",
+            review_evidence_ref="evidence://server-review",
+            expected_content_sha256=row["content_sha256"],
+            expected_request_id=f"request-{case_name}",
+            expected_error_code="operator_review_required",
+        )
+
+        assert report["status"] == "BLOCKED"
+        assert report["error_code"] == expected_error
+        assert relay_queue_status(config.db_path)["counts"].get(RELAY_STATUS_OPERATOR_REVIEW) == 1
+
+
+def test_operator_ack_reviewed_requires_review_binding_inputs(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+    relay_id = enqueued["last_result"]["relay_id"]
+    row = _relay_review_fixture(config.db_path, relay_id)[0]
+    receipt = _accepted_review_receipt(config.db_path, relay_id, request_id="request-required-fields")
+    _put_operator_review_receipt(config.db_path, relay_id, receipt)
+
+    base = {
+        "db_path": config.db_path,
+        "relay_id": relay_id,
+        "operator_id": "operator-a",
+        "reason": "reviewed on server",
+        "review_evidence_ref": "evidence://server-review",
+        "expected_content_sha256": row["content_sha256"],
+        "expected_request_id": "request-required-fields",
+        "expected_error_code": "operator_review_required",
+    }
+
+    for field, expected_error in [
+        ("review_evidence_ref", "review_evidence_ref_required"),
+        ("expected_content_sha256", "expected_content_sha256_required"),
+        ("expected_request_id", "expected_request_id_required"),
+        ("expected_error_code", "expected_error_code_required"),
+    ]:
+        args = dict(base)
+        args[field] = ""
+        report = ack_reviewed_relay_batch(**args)
+        assert report["status"] == "BLOCKED"
+        assert report["error_code"] == expected_error
+        assert relay_queue_status(config.db_path)["counts"].get(RELAY_STATUS_OPERATOR_REVIEW) == 1
 
 
 def test_operator_retry_dead_blocks_live_pending_retry_wait_and_missing_rows(tmp_path):

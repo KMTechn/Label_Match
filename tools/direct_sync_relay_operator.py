@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from direct_sync_operator import (  # noqa: E402
+    ack_reviewed_relay_batch,
     operator_status,
     pause_relay,
     resume_relay,
@@ -81,6 +82,18 @@ def main(argv: list[str] | None = None) -> int:
     retry_parser.add_argument("--audit-log-path", default="")
     retry_parser.add_argument("--report-path", default="")
 
+    ack_parser = subparsers.add_parser("ack-reviewed", help="Mark a committed operator_review relay batch as reviewed and ACKED")
+    ack_parser.add_argument("--db-path", required=True)
+    ack_parser.add_argument("--relay-id", required=True)
+    ack_parser.add_argument("--operator-id", required=True)
+    ack_parser.add_argument("--reason", required=True)
+    ack_parser.add_argument("--review-evidence-ref", default="")
+    ack_parser.add_argument("--expected-content-sha256", default="")
+    ack_parser.add_argument("--expected-request-id", default="")
+    ack_parser.add_argument("--expected-error-code", default="")
+    ack_parser.add_argument("--audit-log-path", default="")
+    ack_parser.add_argument("--report-path", default="")
+
     restore_parser = subparsers.add_parser("restore-spool", help="Restore an ACKED relay spool file from server raw artifact")
     restore_parser.add_argument("--db-path", required=True)
     restore_parser.add_argument("--relay-id", required=True)
@@ -101,6 +114,21 @@ def main(argv: list[str] | None = None) -> int:
             return _emit(resume_relay(pause_path=args.operator_pause_path, operator_id=args.operator_id, reason=args.reason, audit_log_path=args.audit_log_path), args.report_path)
         if args.command == "retry-dead":
             return _emit(retry_dead_relay_batch(db_path=args.db_path, relay_id=args.relay_id, operator_id=args.operator_id, reason=args.reason, audit_log_path=args.audit_log_path), args.report_path)
+        if args.command == "ack-reviewed":
+            return _emit(
+                ack_reviewed_relay_batch(
+                    db_path=args.db_path,
+                    relay_id=args.relay_id,
+                    operator_id=args.operator_id,
+                    reason=args.reason,
+                    review_evidence_ref=args.review_evidence_ref,
+                    expected_content_sha256=args.expected_content_sha256,
+                    expected_request_id=args.expected_request_id,
+                    expected_error_code=args.expected_error_code,
+                    audit_log_path=args.audit_log_path,
+                ),
+                args.report_path,
+            )
         if args.command == "restore-spool":
             return _emit(
                 restore_relay_spool_from_server(

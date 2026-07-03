@@ -15,6 +15,7 @@ from direct_sync_push import (
     ProducerCredentials,
     RELAY_STATUS_ACKED,
     RELAY_STATUS_FAILED_PERMANENT,
+    RELAY_STATUS_OPERATOR_REVIEW,
     RELAY_STATUS_PENDING,
     build_raw_artifact_restore_url,
     restore_raw_artifact_to_file,
@@ -491,4 +492,239 @@ def retry_dead_relay_batch(
         "queue": read_relay_queue_status_read_only(db_path),
     }
     _append_operator_audit(audit_log_path, action="retry-dead", report=report)
+    return report
+
+
+def ack_reviewed_relay_batch(
+    *,
+    db_path: str | os.PathLike[str],
+    relay_id: str,
+    operator_id: str,
+    reason: str,
+    review_evidence_ref: str = "",
+    expected_content_sha256: str = "",
+    expected_request_id: str = "",
+    expected_error_code: str = "",
+    audit_log_path: str | os.PathLike[str] = "",
+) -> dict[str, Any]:
+    relay = _require_text(relay_id, field_name="relay_id", max_length=128)
+    operator = _require_text(operator_id, field_name="operator_id", max_length=128)
+    reason_text = _require_text(reason, field_name="reason")
+    reason_fields = _reason_evidence(reason_text)
+    expected_hash = str(expected_content_sha256 or "").strip().lower()
+    expected_request = str(expected_request_id or "").strip()
+    expected_error = str(expected_error_code or "").strip()
+    evidence_ref = str(review_evidence_ref or "").strip()
+
+    def blocked(error_code: str, **extra: Any) -> dict[str, Any]:
+        report = {
+            "status": "BLOCKED",
+            "operation": "ack-reviewed",
+            "relay_id": relay,
+            "operator_id": operator,
+            "tool_version": OPERATOR_TOOL_VERSION,
+            **reason_fields,
+            "review_evidence_ref": evidence_ref,
+            "error_code": error_code,
+        }
+        report.update(extra)
+        _append_operator_audit(audit_log_path, action="ack-reviewed-blocked", report=report)
+        return report
+
+    if not Path(db_path).is_file():
+        return blocked("relay_db_not_initialized")
+    if not evidence_ref:
+        return blocked("review_evidence_ref_required")
+    if not expected_hash:
+        return blocked("expected_content_sha256_required")
+    if not expected_request:
+        return blocked("expected_request_id_required")
+    if not expected_error:
+        return blocked("expected_error_code_required")
+    now = utc_now_text()
+    conn = _connect_relay_db(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT relay_id, status, content_sha256, byte_length, receipt_json,
+                   relative_path, metadata_json,
+                   upload_status_path, last_error_code, last_error_message,
+                   lease_owner, lease_expires_at
+            FROM direct_sync_relay_batches
+            WHERE relay_id = ?
+            """,
+            (relay,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return blocked("relay_not_found")
+        previous_status = str(row["status"] or "")
+        if previous_status != RELAY_STATUS_OPERATOR_REVIEW:
+            conn.rollback()
+            return blocked("relay_status_not_ackable_by_operator", previous_status=previous_status)
+        if row["lease_owner"] is not None or row["lease_expires_at"] is not None:
+            conn.rollback()
+            return blocked("relay_is_leased", previous_status=previous_status)
+        content_sha256 = str(row["content_sha256"] or "").lower()
+        if expected_hash and content_sha256 != expected_hash:
+            conn.rollback()
+            return blocked(
+                "relay_content_sha256_mismatch",
+                previous_status=previous_status,
+                content_sha256=content_sha256,
+            )
+        previous_error_code = str(row["last_error_code"] or "")
+        if expected_error != "operator_review_required":
+            conn.rollback()
+            return blocked(
+                "relay_expected_error_code_not_ackable",
+                previous_status=previous_status,
+                expected_error_code=expected_error,
+            )
+        try:
+            receipt = json.loads(str(row["receipt_json"] or "{}"))
+        except json.JSONDecodeError:
+            conn.rollback()
+            return blocked("relay_receipt_invalid_json", previous_status=previous_status)
+        if not isinstance(receipt, dict):
+            conn.rollback()
+            return blocked("relay_receipt_not_object", previous_status=previous_status)
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except json.JSONDecodeError:
+            conn.rollback()
+            return blocked("relay_metadata_invalid_json", previous_status=previous_status)
+        if not isinstance(metadata, dict):
+            conn.rollback()
+            return blocked("relay_metadata_not_object", previous_status=previous_status)
+        if receipt.get("committed") is not True:
+            conn.rollback()
+            return blocked("relay_receipt_not_committed", previous_status=previous_status)
+        if receipt.get("retryable") is not False:
+            conn.rollback()
+            return blocked("relay_receipt_retryable", previous_status=previous_status)
+        if receipt.get("next_retry_after") is not None:
+            conn.rollback()
+            return blocked("relay_receipt_has_retry_after", previous_status=previous_status)
+        if receipt.get("error") is not None:
+            conn.rollback()
+            return blocked("relay_receipt_has_error", previous_status=previous_status)
+        if str(receipt.get("client_batch_id") or "") != relay:
+            conn.rollback()
+            return blocked(
+                "relay_receipt_client_batch_id_mismatch",
+                previous_status=previous_status,
+                receipt_client_batch_id=str(receipt.get("client_batch_id") or ""),
+            )
+        receipt_status = str(receipt.get("status") or "")
+        if receipt_status != "accepted":
+            conn.rollback()
+            return blocked("relay_receipt_status_not_accepted", previous_status=previous_status, receipt_status=receipt_status)
+        if expected_request and str(receipt.get("request_id") or "") != expected_request:
+            conn.rollback()
+            return blocked(
+                "relay_request_id_mismatch",
+                previous_status=previous_status,
+                receipt_request_id=str(receipt.get("request_id") or ""),
+            )
+        totals = receipt.get("totals") if isinstance(receipt.get("totals"), dict) else {}
+        try:
+            errors = int(totals.get("errors") or 0)
+        except (TypeError, ValueError):
+            conn.rollback()
+            return blocked("relay_receipt_errors_invalid", previous_status=previous_status)
+        if errors:
+            conn.rollback()
+            return blocked("relay_receipt_has_errors", previous_status=previous_status, receipt_errors=errors)
+        try:
+            inserted = int(totals.get("inserted") or 0)
+            replayed = int(totals.get("replayed") or 0)
+            quarantined = int(totals.get("quarantined") or 0)
+        except (TypeError, ValueError):
+            conn.rollback()
+            return blocked("relay_receipt_totals_invalid", previous_status=previous_status)
+        row_count = metadata.get("row_count")
+        if type(row_count) is not int:
+            conn.rollback()
+            return blocked("relay_metadata_row_count_invalid", previous_status=previous_status)
+        if inserted + replayed + quarantined + errors != row_count:
+            conn.rollback()
+            return blocked(
+                "relay_receipt_totals_do_not_match_row_count",
+                previous_status=previous_status,
+                receipt_total_rows=inserted + replayed + quarantined + errors,
+                metadata_row_count=row_count,
+            )
+        source_file = receipt.get("source_file") if isinstance(receipt.get("source_file"), dict) else {}
+        if str(source_file.get("content_sha256") or "").lower() != content_sha256:
+            conn.rollback()
+            return blocked("relay_receipt_source_hash_mismatch", previous_status=previous_status)
+        try:
+            receipt_byte_length = int(source_file.get("byte_length") or -1)
+            receipt_row_count = int(source_file.get("declared_row_count") or -1)
+        except (TypeError, ValueError):
+            conn.rollback()
+            return blocked("relay_receipt_source_shape_invalid", previous_status=previous_status)
+        if receipt_byte_length != int(row["byte_length"]):
+            conn.rollback()
+            return blocked("relay_receipt_source_byte_length_mismatch", previous_status=previous_status)
+        if receipt_row_count != row_count:
+            conn.rollback()
+            return blocked("relay_receipt_source_row_count_mismatch", previous_status=previous_status)
+        expected_source_file_id = "/".join(
+            str(metadata.get(field) or "").strip("/")
+            for field in ("source_host_id", "source_system", "stream_name", "relative_path")
+        )
+        if str(receipt.get("server_source_file_id") or "") != expected_source_file_id:
+            conn.rollback()
+            return blocked(
+                "relay_receipt_server_source_file_id_mismatch",
+                previous_status=previous_status,
+                receipt_server_source_file_id=str(receipt.get("server_source_file_id") or ""),
+                expected_server_source_file_id=expected_source_file_id,
+            )
+        cursor = conn.execute(
+            """
+            UPDATE direct_sync_relay_batches
+            SET status = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                next_attempt_at = NULL,
+                last_error_code = NULL,
+                last_error_message = NULL,
+                updated_at = ?
+            WHERE relay_id = ?
+              AND status = ?
+              AND lease_owner IS NULL
+              AND lease_expires_at IS NULL
+            """,
+            (RELAY_STATUS_ACKED, now, relay, RELAY_STATUS_OPERATOR_REVIEW),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return blocked("relay_status_changed", previous_status=previous_status)
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = {
+        "status": "PASS",
+        "operation": "ack-reviewed",
+        "relay_id": relay,
+        "operator_id": operator,
+        "tool_version": OPERATOR_TOOL_VERSION,
+        **reason_fields,
+        "review_evidence_ref": evidence_ref,
+        "previous_status": previous_status,
+        "new_status": RELAY_STATUS_ACKED,
+        "previous_error_code": previous_error_code,
+        "content_sha256": content_sha256,
+        "byte_length": int(row["byte_length"]),
+        "receipt_request_id": str(receipt.get("request_id") or ""),
+        "receipt_totals": totals,
+        "upload_status_path": str(row["upload_status_path"] or ""),
+        "queue": read_relay_queue_status_read_only(db_path),
+    }
+    _append_operator_audit(audit_log_path, action="ack-reviewed", report=report)
     return report
