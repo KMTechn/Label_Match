@@ -46,6 +46,7 @@ DEFAULT_MANIFEST_FILENAME = "producer_manifest.json"
 DEFAULT_RECEIPT_FILENAME = "producer_self_enrollment_receipt.json"
 DEFAULT_REPORT_FILENAME = "label_match_worker_pc_registration.json"
 ENROLLMENT_CONTRACT_VERSION = "producer-self-enrollment-v1"
+CRYPTPROTECT_LOCAL_MACHINE = 0x4
 LABEL_MATCH_APP = "LabelMatch"
 SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
 RAW_EVENT_NAMES = [
@@ -341,7 +342,7 @@ class _DataBlob(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.c_void_p)]
 
 
-def _dpapi_protect_current_user(secret: str) -> bytes:
+def _dpapi_protect_machine(secret: str) -> bytes:
     if sys.platform != "win32":
         raise DirectSyncPushError("dpapi secret bootstrap requires Windows")
     from ctypes import byref, wintypes
@@ -350,7 +351,15 @@ def _dpapi_protect_current_user(secret: str) -> bytes:
     input_buffer = ctypes.create_string_buffer(secret_bytes, len(secret_bytes))
     input_blob = _DataBlob(len(secret_bytes), ctypes.cast(input_buffer, ctypes.c_void_p))
     output_blob = _DataBlob()
-    if not ctypes.windll.crypt32.CryptProtectData(byref(input_blob), None, None, None, None, 0, byref(output_blob)):
+    if not ctypes.windll.crypt32.CryptProtectData(
+        byref(input_blob),
+        None,
+        None,
+        None,
+        None,
+        CRYPTPROTECT_LOCAL_MACHINE,
+        byref(output_blob),
+    ):
         raise DirectSyncPushError("dpapi secret bootstrap failed")
     try:
         return ctypes.string_at(output_blob.pbData, output_blob.cbData)
@@ -381,7 +390,7 @@ def _secret_path(data_dir: str | os.PathLike[str], secret_ref_target: str) -> Pa
 def _write_dpapi_secret(data_dir: str | os.PathLike[str], secret_ref_target: str, secret: str) -> Path:
     target = _secret_path(data_dir, secret_ref_target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(_dpapi_protect_current_user(secret))
+    target.write_bytes(_dpapi_protect_machine(secret))
     return target
 
 
