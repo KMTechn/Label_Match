@@ -102,12 +102,32 @@ function Resolve-ToolCommand([string]$ExePath, [string]$PythonScriptPath) {
     return @($python.Source, $PythonScriptPath)
 }
 
+function Resolve-PythonExe() {
+    $candidates = @(
+        $env:KMTECH_PYTHON_EXE,
+        "C:\Program Files\Python312\python.exe",
+        "C:\Program Files\Python314\python.exe"
+    )
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) {
+        $candidates += $python.Source
+    }
+    foreach ($candidate in $candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+    throw "Python is required for the Label_Match direct-sync relay runner, but python.exe was not found."
+}
+
 $appRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $toolsDir = Join-Path $appRoot "tools"
 $installPackCommand = Resolve-ToolCommand `
     -ExePath (Join-Path $toolsDir "direct_sync_relay_install_pack.exe") `
     -PythonScriptPath (Join-Path $toolsDir "direct_sync_relay_install_pack.py")
 $runnerExe = Join-Path $toolsDir "direct_sync_relay_runner.exe"
+$runnerScript = Join-Path $toolsDir "direct_sync_relay_runner.py"
+$pythonExe = Resolve-PythonExe
 $registrationExe = Join-Path $toolsDir "register_label_match_worker_pc.exe"
 $reportDir = Join-Path $ProgramDataRoot "status"
 $reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"
@@ -125,12 +145,13 @@ $arguments += @(
     "--app-root", $appRoot,
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
+    "--python-exe", $pythonExe,
     "--scan-source-dir", $ScanSourceDir,
     "--task-name", $TaskName,
     "--report-path", $reportPath
 )
-if (Test-Path -LiteralPath $runnerExe) {
-    $arguments += @("--runner-exe", $runnerExe)
+if (-not (Test-Path -LiteralPath $runnerScript)) {
+    throw "Python relay runner script is missing. Missing: $runnerScript"
 }
 if (Test-Path -LiteralPath $registrationExe) {
     $arguments += @("--registration-exe", $registrationExe)
@@ -184,6 +205,8 @@ $summary = [ordered]@{
     install_pack_report_path = [System.IO.Path]::GetFullPath($reportPath)
     enrollment_token_file_present = -not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)
     bundled_runner_exe_present = Test-Path -LiteralPath $runnerExe
+    python_runner_script_present = Test-Path -LiteralPath $runnerScript
+    python_exe = $pythonExe
     bundled_registration_exe_present = Test-Path -LiteralPath $registrationExe
     task_name = $TaskName
     source_host_id = if ($null -ne $registrationSummary) { $registrationSummary.source_host_id } else { $null }

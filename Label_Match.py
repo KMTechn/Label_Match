@@ -172,6 +172,27 @@ def _label_match_direct_sync_tool_command(context):
     return []
 
 
+def _label_match_python_exe_for_runner():
+    candidates = [
+        os.environ.get("KMTECH_PYTHON_EXE", ""),
+    ]
+    if not getattr(sys, "frozen", False):
+        candidates.append(sys.executable)
+    if os.name == "nt":
+        candidates.extend([
+            r"C:\Program Files\Python312\python.exe",
+            r"C:\Program Files\Python314\python.exe",
+        ])
+    candidates.extend([
+        shutil.which("python") or "",
+        shutil.which("py") or "",
+    ])
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+    return ""
+
+
 def _label_match_optional_tool_exe(context, filename):
     path = os.path.join(context["app_root"], "tools", filename)
     return path if os.path.isfile(path) else ""
@@ -324,6 +345,13 @@ def _label_match_auto_bootstrap_direct_sync(context):
             {**base_report, "status": "BLOCKED", "blocked_reason": "direct-sync install pack tool is missing"},
         )
         return
+    python_exe = _label_match_python_exe_for_runner()
+    if not python_exe:
+        _label_match_write_json(
+            context["bootstrap_status_path"],
+            {**base_report, "status": "BLOCKED", "blocked_reason": "python.exe is required for direct-sync relay runner"},
+        )
+        return
 
     args = command + [
         "--self-enroll",
@@ -333,6 +361,8 @@ def _label_match_auto_bootstrap_direct_sync(context):
         context["server_base_url"],
         "--program-data-root",
         context["program_data_root"],
+        "--python-exe",
+        python_exe,
         "--scan-source-dir",
         context["scan_source_dir"],
         "--task-name",
@@ -343,9 +373,6 @@ def _label_match_auto_bootstrap_direct_sync(context):
     ]
     if context["app_settings_path"]:
         args.extend(["--app-settings-path", context["app_settings_path"]])
-    runner_exe = _label_match_optional_tool_exe(context, "direct_sync_relay_runner.exe")
-    if runner_exe:
-        args.extend(["--runner-exe", runner_exe])
     registration_exe = _label_match_optional_tool_exe(context, "register_label_match_worker_pc.exe")
     if registration_exe:
         args.extend(["--registration-exe", registration_exe])
@@ -667,7 +694,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.14" # private update feed release
+APP_VERSION = "v2.0.16" # private update feed release
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
 UPDATE_MANIFEST_SIGNATURE_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_SIGNATURE_URL"

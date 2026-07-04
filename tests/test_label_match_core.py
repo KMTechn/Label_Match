@@ -163,9 +163,10 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(tmp_path, monk
     assert "--self-enroll" in command
     assert command[command.index("--server-base-url") + 1] == module.LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
     assert command[command.index("--program-data-root") + 1] == context["program_data_root"]
+    assert command[command.index("--python-exe") + 1]
     assert command[command.index("--scan-source-dir") + 1] == context["scan_source_dir"]
     assert command[command.index("--app-settings-path") + 1] == context["app_settings_path"]
-    assert command[command.index("--runner-exe") + 1].endswith("direct_sync_relay_runner.exe")
+    assert "--runner-exe" not in command
     assert command[command.index("--registration-exe") + 1].endswith("register_label_match_worker_pc.exe")
     report = json.loads(Path(context["bootstrap_status_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "PASS"

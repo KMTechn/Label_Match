@@ -156,6 +156,7 @@ def test_one_step_installer_uses_bundled_tools_ip_allowlist_and_programdata_path
 
     assert "direct_sync_relay_install_pack.exe" in script
     assert "direct_sync_relay_runner.exe" in script
+    assert "direct_sync_relay_runner.py" in script
     assert "register_label_match_worker_pc.exe" in script
     assert "EnrollmentTokenFile" in script
     assert "enrollment_token.txt" not in script
@@ -168,6 +169,7 @@ def test_one_step_installer_uses_bundled_tools_ip_allowlist_and_programdata_path
     assert "C:\\ProgramData\\KMTech\\Label_Match\\data" in script
     assert "custom_save_path" in script
     assert "--self-enroll" in script
-    assert "--runner-exe" in script
+    assert "--python-exe" in script
+    assert "--runner-exe" not in script
     assert "--registration-exe" in script
     assert "--confirm-production-install" not in script
