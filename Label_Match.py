@@ -1,20 +1,58 @@
+import os
+import sys
+import json
+import traceback
+from datetime import datetime, date, timezone
+
+
+def _label_match_startup_trace(stage, **details):
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pid": os.getpid(),
+        "stage": stage,
+        "version": globals().get("APP_VERSION", "unknown"),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "executable": sys.executable,
+        "cwd": os.getcwd(),
+    }
+    payload.update(details)
+    filename = f"Label_Match-startup-{os.getpid()}.log"
+    candidate_roots = [
+        os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "KMTech", "startup-trace"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "KMTech", "startup-trace"),
+        os.path.join(os.environ.get("TEMP", ""), "KMTech-startup-trace"),
+        os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "startup-trace"),
+    ]
+    for root in candidate_roots:
+        if not root:
+            continue
+        try:
+            os.makedirs(root, exist_ok=True)
+            path = os.path.join(root, filename)
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        except Exception:
+            continue
+
+
+_label_match_startup_trace("module_pre_imports", argv=sys.argv[:4])
+_label_match_startup_trace("before_tkinter_import")
 import tkinter as tk
 from tkinter import ttk, messagebox, TclError, simpledialog
+_label_match_startup_trace("after_tkinter_import")
 from collections import defaultdict
 import csv
-from datetime import datetime, date, timezone
 import threading
 import time
-import sys
-import os
-import json
 import hashlib
 import re
 import shutil
 import tkinter.font as tkFont
 import queue
 import socket
+_label_match_startup_trace("before_requests_import")
 import requests
+_label_match_startup_trace("after_requests_import")
 import zipfile
 import subprocess
 import uuid
@@ -22,7 +60,6 @@ from urllib.parse import parse_qsl, urlparse
 import base64
 import binascii
 import unittest
-import traceback
 
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
@@ -46,27 +83,6 @@ LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
 LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME = "label_match_direct_sync_install.json"
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
-
-
-def _label_match_startup_trace(stage, **details):
-    try:
-        root = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "KMTech", "startup-trace")
-        os.makedirs(root, exist_ok=True)
-        path = os.path.join(root, f"Label_Match-startup-{os.getpid()}.log")
-        payload = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "pid": os.getpid(),
-            "stage": stage,
-            "version": globals().get("APP_VERSION", "unknown"),
-            "frozen": bool(getattr(sys, "frozen", False)),
-            "executable": sys.executable,
-            "cwd": os.getcwd(),
-        }
-        payload.update(details)
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-    except Exception:
-        pass
 
 
 def _default_label_match_save_path():
@@ -720,7 +736,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.20" # private update feed release
+APP_VERSION = "v2.0.21" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"

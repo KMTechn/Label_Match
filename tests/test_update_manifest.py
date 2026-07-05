@@ -43,10 +43,10 @@ def valid_manifest():
         "app_id": "Label_Match",
         "package_id": "Label_Match",
         "channel": "stable",
-        "version": "v2.0.21",
+        "version": "v2.0.22",
         "artifact": {
-            "name": "Label_Match-v2.0.21.zip",
-            "url": "https://updates.example/label_match/Label_Match-v2.0.21.zip",
+            "name": "Label_Match-v2.0.22.zip",
+            "url": "https://updates.example/label_match/Label_Match-v2.0.22.zip",
             "size_bytes": 123,
             "sha256": "b" * 64,
         },
@@ -122,8 +122,8 @@ def test_private_manifest_provider_returns_update_candidate(monkeypatch):
     monkeypatch.setattr(module.requests, "get", fake_get)
 
     assert module.check_for_updates() == (
-        "https://updates.example/label_match/Label_Match-v2.0.21.zip",
-        "v2.0.21",
+        "https://updates.example/label_match/Label_Match-v2.0.22.zip",
+        "v2.0.22",
     )
     candidate = module._check_update_candidate()
     assert candidate["sha256"] == "b" * 64
@@ -144,7 +144,7 @@ def test_private_manifest_rollout_blocks_and_allowlists_current_pc(monkeypatch):
     manifest["rollout"]["allow_pc_ids"] = [" LINE-A-PC-01 "]
     candidate = module._update_candidate_from_manifest(manifest, "stable")
 
-    assert candidate["url"] == "https://updates.example/label_match/Label_Match-v2.0.21.zip"
+    assert candidate["url"] == "https://updates.example/label_match/Label_Match-v2.0.22.zip"
     assert candidate["sha256"] == "b" * 64
 
 
@@ -163,8 +163,8 @@ def test_private_manifest_rollout_blocks_and_allowlists_current_pc(monkeypatch):
         lambda manifest: manifest["artifact"].update({"url": "https://updates.example/update.zip#token=abc"}),
         lambda manifest: manifest["artifact"].update({"url": "http://updates.example/update.zip"}),
         lambda manifest: manifest["artifact"].update({"url": "https://updates.example/update.exe"}),
-        lambda manifest: manifest["artifact"].update({"url": "https://github.com/KMTechn/Label_Match/releases/download/v2.0.21/Label_Match-v2.0.21.zip"}),
-        lambda manifest: manifest["artifact"].update({"url": "https://raw.githubusercontent.com/KMTechn/update-feed/main/Label_Match-v2.0.21.zip"}),
+        lambda manifest: manifest["artifact"].update({"url": "https://github.com/KMTechn/Label_Match/releases/download/v2.0.22/Label_Match-v2.0.22.zip"}),
+        lambda manifest: manifest["artifact"].update({"url": "https://raw.githubusercontent.com/KMTechn/update-feed/main/Label_Match-v2.0.22.zip"}),
         lambda manifest: manifest.pop("archive"),
         lambda manifest: manifest.pop("install"),
         lambda manifest: manifest.pop("rollout"),
@@ -265,7 +265,7 @@ def test_update_url_rejects_signed_credential_query_keys(query):
     module = load_label_match_module()
 
     with pytest.raises(ValueError, match="raw token"):
-        module._assert_https_update_url(f"https://updates.example/Label_Match-v2.0.21.zip?{query}", require_zip=True)
+        module._assert_https_update_url(f"https://updates.example/Label_Match-v2.0.22.zip?{query}", require_zip=True)
 
 
 def test_private_manifest_provider_rejects_github_hosted_manifest_url(monkeypatch):
@@ -305,12 +305,12 @@ def test_github_provider_skips_release_asset_without_checksum_when_explicit(monk
     module = load_label_match_module()
     monkeypatch.setenv("LABEL_MATCH_UPDATE_PROVIDER", "github")
     release_payload = {
-        "tag_name": "v2.0.21",
+        "tag_name": "v2.0.22",
         "assets": [
             {"name": "notes.txt", "browser_download_url": "https://example.invalid/notes.txt"},
             {
-                "name": "Label_Match-v2.0.21.zip",
-                "browser_download_url": "https://github.com/KMTechn/Label_Match/releases/download/v2.0.21/Label_Match-v2.0.21.zip",
+                "name": "Label_Match-v2.0.22.zip",
+                "browser_download_url": "https://github.com/KMTechn/Label_Match/releases/download/v2.0.22/Label_Match-v2.0.22.zip",
             },
         ],
     }
@@ -322,18 +322,18 @@ def test_github_provider_skips_release_asset_without_checksum_when_explicit(monk
 def test_github_provider_uses_release_asset_with_checksum_when_explicit(monkeypatch):
     module = load_label_match_module()
     monkeypatch.setenv("LABEL_MATCH_UPDATE_PROVIDER", "github")
-    zip_url = "https://github.com/KMTechn/Label_Match/releases/download/v2.0.21/Label_Match-v2.0.21.zip"
+    zip_url = "https://github.com/KMTechn/Label_Match/releases/download/v2.0.22/Label_Match-v2.0.22.zip"
     checksum_url = f"{zip_url}.sha256"
     release_payload = {
-        "tag_name": "v2.0.21",
+        "tag_name": "v2.0.22",
         "assets": [
             {"name": "notes.txt", "browser_download_url": "https://example.invalid/notes.txt"},
             {
-                "name": "Label_Match-v2.0.21.zip",
+                "name": "Label_Match-v2.0.22.zip",
                 "browser_download_url": zip_url,
             },
             {
-                "name": "Label_Match-v2.0.21.zip.sha256",
+                "name": "Label_Match-v2.0.22.zip.sha256",
                 "browser_download_url": checksum_url,
             },
         ],
@@ -343,14 +343,14 @@ def test_github_provider_uses_release_asset_with_checksum_when_explicit(monkeypa
         if url == "https://api.github.com/repos/KMTechn/Label_Match/releases/latest":
             return FakeResponse(release_payload)
         if url == checksum_url:
-                return FakeResponse(content=f"{'e' * 64}  Label_Match-v2.0.21.zip\n".encode("utf-8"))
+                return FakeResponse(content=f"{'e' * 64}  Label_Match-v2.0.22.zip\n".encode("utf-8"))
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(module.requests, "get", fake_get)
 
     assert module.check_for_updates() == (
         zip_url,
-        "v2.0.21",
+        "v2.0.22",
     )
     candidate = module._check_update_candidate()
     assert candidate["sha256"] == "e" * 64
@@ -360,12 +360,12 @@ def test_github_provider_uses_release_asset_with_checksum_when_explicit(monkeypa
 def test_github_provider_uses_release_asset_digest_when_present(monkeypatch):
     module = load_label_match_module()
     monkeypatch.setenv("LABEL_MATCH_UPDATE_PROVIDER", "github")
-    zip_url = "https://github.com/KMTechn/Label_Match/releases/download/v2.0.21/Label_Match-v2.0.21.zip"
+    zip_url = "https://github.com/KMTechn/Label_Match/releases/download/v2.0.22/Label_Match-v2.0.22.zip"
     release_payload = {
-        "tag_name": "v2.0.21",
+        "tag_name": "v2.0.22",
         "assets": [
             {
-                    "name": "Label_Match-v2.0.21.zip",
+                    "name": "Label_Match-v2.0.22.zip",
                 "browser_download_url": zip_url,
                 "digest": f"sha256:{'f' * 64}",
             },
@@ -458,7 +458,7 @@ def test_download_and_apply_update_source_mode_aborts_before_network_or_batch(mo
 
     with pytest.raises(SystemExit) as exc_info:
         module.download_and_apply_update(
-            "https://updates.example/label_match/Label_Match-v2.0.21.zip",
+            "https://updates.example/label_match/Label_Match-v2.0.22.zip",
             expected_sha256="b" * 64,
             archive_policy={"top_level": "Label_Match", "required_files": ["Label_Match/Label_Match.exe"]},
         )
@@ -495,6 +495,7 @@ def test_verify_update_file_hash_requires_expected_sha256(tmp_path):
 
     with pytest.raises(ValueError, match="requires"):
         module._verify_update_file_hash(str(path), None)
+
 
 
 
