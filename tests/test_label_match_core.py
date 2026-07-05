@@ -176,6 +176,23 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(tmp_path, monk
     assert report["run_task_result"] == {"status": "PASS"}
 
 
+def test_session_direct_sync_runner_uses_zero_source_file_age(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-03")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    context = module._label_match_direct_sync_context(str(tmp_path / "scan-data"))
+
+    command = module._label_match_direct_sync_runner_command(context, min_source_file_age_seconds=0)
+
+    assert command
+    assert command[command.index("--scan-source-dir") + 1] == context["scan_source_dir"]
+    assert command[command.index("--producer-manifest-path") + 1] == context["manifest_path"]
+    assert command[command.index("--credential-path") + 1] == context["credential_path"]
+    assert command[command.index("--min-source-file-age-seconds") + 1] == "0"
+    assert "--source-glob" in command
+    assert command[command.index("--source-glob") + 1] == "*.csv"
+
+
 def test_enriched_tray_complete_preserves_label_match_contract():
     module = load_label_match_module()
 
@@ -680,6 +697,60 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     assert app.set_details_map == {}
     assert app.global_scanned_set == set()
     assert app.history_row_details_map == {}
+
+
+def test_finalize_set_triggers_session_direct_sync_after_flush(monkeypatch):
+    module = load_label_match_module()
+    sync_calls = []
+    context = {"source_host_id": "label-match-pack-04"}
+
+    monkeypatch.setattr(
+        module,
+        "_label_match_start_session_direct_sync",
+        lambda sync_context, reason: sync_calls.append((sync_context, reason)),
+    )
+
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.current_set_info = {
+        "id": "session-sync-set",
+        "raw": [
+            "MASTER",
+            "PRODUCT-1",
+            "PRODUCT-2",
+            "PRODUCT-3",
+            "FINAL\x1D6D20260622",
+        ],
+        "parsed": ["MASTER"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT,
+        "start_time": datetime(2026, 6, 22, 10, 0, 0),
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": "A",
+        "item_name_override": None,
+        "production_date": "2026-06-22",
+    }
+    app.items_data = {"MASTER": {"Item Name": "Product", "Spec": "Spec"}}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = set()
+    app.set_details_map = {}
+    app.history_row_details_map = {}
+    app.data_manager = _FakeLoggingDataManager()
+    app.history_tree = _FakeHistoryTree()
+    app.save_status_label = _FakeLabel()
+    app.is_running_simulation = False
+    app.initialized_successfully = True
+    app.run_tests = False
+    app.direct_sync_bootstrap_context = context
+    app._play_sound = lambda sound_key: None
+    app._update_summary_tree = lambda: None
+    app._reset_current_set = lambda **kwargs: None
+    app.after = lambda delay, callback: None
+
+    module.Label_Match._finalize_set(app, app.Results.PASS)
+
+    assert app.data_manager.flushed is True
+    assert sync_calls == [(context, module.Label_Match.Events.TRAY_COMPLETE)]
 
 
 def test_legacy_pass_normalizes_missing_phase_to_dash():
@@ -2587,9 +2658,14 @@ class _FakeDataManager:
 class _FakeLoggingDataManager:
     def __init__(self):
         self.events = []
+        self.flushed = False
 
     def log_event(self, event_type, details):
         self.events.append((event_type, details))
+
+    def flush(self, timeout=None):
+        self.flushed = True
+        return True
 
 
 class _FakeHistoryTree:

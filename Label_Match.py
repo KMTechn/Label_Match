@@ -78,6 +78,7 @@ LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV = "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOS
 LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
 LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_NAME"
 LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_SECONDS"
+LABEL_MATCH_SESSION_SYNC_TRIGGER_ENV = "LABEL_MATCH_SESSION_SYNC_TRIGGER"
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
@@ -129,6 +130,11 @@ def _label_match_direct_sync_source_host_id():
 
 def _label_match_direct_sync_bootstrap_enabled():
     value = os.environ.get(LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV, "on").strip().lower()
+    return value not in {"0", "false", "no", "off", "disabled"}
+
+
+def _label_match_session_sync_trigger_enabled():
+    value = os.environ.get(LABEL_MATCH_SESSION_SYNC_TRIGGER_ENV, "on").strip().lower()
     return value not in {"0", "false", "no", "off", "disabled"}
 
 
@@ -356,6 +362,114 @@ def _label_match_run_direct_sync_task(context):
         }
     except Exception as exc:
         return {"status": "FAIL", "error": str(exc)}
+
+
+def _label_match_direct_sync_runtime_paths(context):
+    root = os.path.abspath(context["program_data_root"])
+    return {
+        "db_path": os.path.join(root, "queue", "direct_sync_relay.sqlite3"),
+        "spool_dir": os.path.join(root, "spool"),
+        "upload_status_dir": os.path.join(root, "upload_status"),
+        "runtime_status_path": context["runtime_status_path"],
+        "log_path": os.path.join(root, "logs", "direct_sync_relay.jsonl"),
+        "operator_pause_path": os.path.join(root, "control", "pause.json"),
+    }
+
+
+def _label_match_direct_sync_runner_command(context, *, min_source_file_age_seconds=0):
+    tools_dir = os.path.join(context["app_root"], "tools")
+    runner_exe = os.path.join(tools_dir, "direct_sync_relay_runner.exe")
+    runner_script = os.path.join(tools_dir, "direct_sync_relay_runner.py")
+    if os.path.isfile(runner_exe):
+        command = [runner_exe]
+    elif os.path.isfile(runner_script):
+        python_exe = _label_match_python_exe_for_runner()
+        if not python_exe:
+            return []
+        command = [python_exe, runner_script]
+    else:
+        return []
+
+    paths = _label_match_direct_sync_runtime_paths(context)
+    command.extend([
+        "--db-path",
+        paths["db_path"],
+        "--spool-dir",
+        paths["spool_dir"],
+        "--producer-manifest-path",
+        context["manifest_path"],
+        "--credential-path",
+        context["credential_path"],
+        "--upload-status-dir",
+        paths["upload_status_dir"],
+        "--runtime-status-path",
+        paths["runtime_status_path"],
+        "--log-path",
+        paths["log_path"],
+        "--worker-id",
+        f"{context['source_host_id']}-session-sync",
+        "--operator-pause-path",
+        paths["operator_pause_path"],
+        "--scan-source-dir",
+        context["scan_source_dir"],
+        "--source-glob",
+        "*.csv",
+        "--max-enqueue-files",
+        "25",
+        "--min-source-file-age-seconds",
+        str(max(0, int(min_source_file_age_seconds or 0))),
+    ])
+    return command
+
+
+def _label_match_run_session_direct_sync_once(context, *, reason="TRAY_COMPLETE"):
+    if not _label_match_session_sync_trigger_enabled():
+        return {"status": "SKIPPED", "reason": "session sync trigger disabled"}
+    command = _label_match_direct_sync_runner_command(context, min_source_file_age_seconds=0)
+    if not command:
+        return {"status": "SKIPPED", "reason": "direct-sync relay runner is missing"}
+    env = os.environ.copy()
+    env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            env=env,
+            creationflags=_label_match_subprocess_creationflags(),
+        )
+        return {
+            "status": "PASS" if completed.returncode == 0 else "FAIL",
+            "reason": reason,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-1000:],
+            "stderr": completed.stderr[-1000:],
+        }
+    except Exception as exc:
+        return {"status": "FAIL", "reason": reason, "error": str(exc)}
+
+
+def _label_match_start_session_direct_sync(context, *, reason="TRAY_COMPLETE"):
+    def worker():
+        result = _label_match_run_session_direct_sync_once(context, reason=reason)
+        _label_match_write_json(
+            os.path.join(context["status_dir"], "label_match_session_direct_sync_trigger.json"),
+            {
+                "report_version": "label-match-session-direct-sync-trigger-v1",
+                "app_version": APP_VERSION,
+                "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                "reason": reason,
+                "source_host_id": context["source_host_id"],
+                "scan_source_dir": context["scan_source_dir"],
+                "result": result,
+            },
+        )
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return thread
 
 
 def _label_match_auto_bootstrap_direct_sync(context):
@@ -736,7 +850,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.22" # private update feed release
+APP_VERSION = "v2.0.23" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -3314,6 +3428,14 @@ class Label_Match(tk.Tk):
             details['inspection_trace'] = inspection_trace
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
         self._flush_data_manager_if_supported()
+        state = self.__dict__
+        if not state.get("run_tests", False) and not state.get("is_running_simulation", False):
+            context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
+                self.save_directory,
+                getattr(self, "app_settings_path", ""),
+            )
+            self.direct_sync_bootstrap_context = context
+            _label_match_start_session_direct_sync(context, reason=self.Events.TRAY_COMPLETE)
 
         self.__dict__.setdefault("history_row_details_map", {})[set_id_for_log] = details
         if result == self.Results.PASS:
