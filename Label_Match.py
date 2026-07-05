@@ -42,6 +42,7 @@ LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV = "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOS
 LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
 LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_NAME"
 LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_SECONDS"
+LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
 LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME = "label_match_direct_sync_install.json"
@@ -92,6 +93,11 @@ def _label_match_direct_sync_source_host_id():
 
 def _label_match_direct_sync_bootstrap_enabled():
     value = os.environ.get(LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV, "on").strip().lower()
+    return value not in {"0", "false", "no", "off", "disabled"}
+
+
+def _label_match_audio_enabled():
+    value = os.environ.get(LABEL_MATCH_AUDIO_ENABLED_ENV, "on").strip().lower()
     return value not in {"0", "false", "no", "off", "disabled"}
 
 
@@ -694,7 +700,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.17" # private update feed release
+APP_VERSION = "v2.0.18" # private update feed release
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
 UPDATE_MANIFEST_SIGNATURE_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_SIGNATURE_URL"
@@ -1717,17 +1723,15 @@ class Label_Match(tk.Tk):
         super().__init__()
         self.run_tests = run_tests
         self.initialized_successfully = False
+        self.audio_ready = False
+        self.audio_error = ""
+        self.audio_init_finished = False
+        self.audio_init_started = False
         
         self.is_running_simulation = False
         self.simulation_scenarios = []
         self.current_scenario_index = 0
         self.current_step_index = 0
-        
-        try:
-            pygame.mixer.init()
-        except pygame.error as e:
-            if not self.run_tests:
-                messagebox.showerror("오디오 초기화 오류", f"프로그램 효과음을 재생하는 데 필요한 오디오 장치를 시작할 수 없습니다.\n스피커 또는 사운드 드라이버에 문제가 없는지 확인해주세요.\n\n(효과음 없이 프로그램은 계속 실행됩니다.)\n\n[상세 오류]\n{e}")
         self._setup_paths()
         self.app_settings = self._load_app_settings()
         self.custom_save_path = self._resolve_configured_save_path()
@@ -1792,6 +1796,38 @@ class Label_Match(tk.Tk):
         self.bind_all("<Control-MouseWheel>", self.on_ctrl_wheel)
         self.bind("<Button-1>", self._on_root_click)
         self.bind("<Configure>", self._on_window_configure)
+        self.after(250, self._start_audio_initialization)
+
+    def _start_audio_initialization(self):
+        if self.run_tests or self.audio_init_started or not _label_match_audio_enabled():
+            self.audio_init_finished = True
+            return
+        self.audio_init_started = True
+
+        def initialize_audio():
+            error_message = ""
+            ready = False
+            try:
+                pygame.mixer.init()
+                ready = True
+            except Exception as exc:
+                error_message = str(exc)
+
+            def finish():
+                self.audio_ready = ready
+                self.audio_error = error_message
+                self.audio_init_finished = True
+                if ready and self.initialized_successfully:
+                    self.sound_objects = self._preload_sounds()
+                elif error_message:
+                    print(f"오디오 초기화 오류: {error_message}")
+
+            try:
+                self.after(0, finish)
+            except TclError:
+                pass
+
+        threading.Thread(target=initialize_audio, name="label-match-audio-init", daemon=True).start()
 
     def _on_root_click(self, event):
         if event.widget not in [self.history_tree, self.summary_tree]:
@@ -1866,6 +1902,8 @@ class Label_Match(tk.Tk):
 
     def _preload_sounds(self):
         if self.run_tests: return {}
+        if not self.audio_ready:
+            return {}
         sound_objects = {}
         for key, filename in self.sounds.items():
             sound_path = resource_path(os.path.join("assets", filename))
