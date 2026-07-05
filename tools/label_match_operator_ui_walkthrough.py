@@ -878,7 +878,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         values = [
             REAL_MASTER,
             *(f"PRODUCT_{REAL_MASTER}_{index}_{marker}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
-            f"FINAL_LABEL_{REAL_MASTER}_{marker}{GS}6D{today}",
+            f"FINAL_LABEL_{REAL_MASTER}_{marker}<GS>6D{today}",
         ]
         for index, value in enumerate(values, 1):
             _operator_scan(app, value)

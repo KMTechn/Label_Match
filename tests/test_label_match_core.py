@@ -58,6 +58,9 @@ def test_extract_production_date_accepts_real_dates_only():
     extract = module.Label_Match._extract_production_date
 
     assert extract(None, "FINAL_LABEL\x1D6D20260228") == "2026-02-28"
+    assert extract(None, "FINAL_LABEL<GS>6D20260228") == "2026-02-28"
+    assert extract(None, "FINAL_LABEL<gs>6D20260228") == "2026-02-28"
+    assert extract(None, "FINAL_LABEL<Gs>6D20260228") == "2026-02-28"
     assert extract(None, "FINAL_LABEL\x1D6D20240229") == "2024-02-29"
     assert extract(None, "FINAL_LABEL\x1D6D20260231") is None
     assert extract(None, "FINAL_LABEL\x1D6D20261301") is None
@@ -2350,6 +2353,74 @@ def test_idle_instruction_resets_completion_progress_when_no_active_set():
     assert app.progress_bar["value"] == 0
     assert app.step_labels[0].kwargs["background"] == app.colors["primary"]
     assert all(label.kwargs["background"] == app.colors["background"] for label in app.step_labels[1:])
+
+
+def test_process_input_accepts_literal_gs_final_label_and_writes_tray_complete():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.TOTAL_SCAN_COUNT = module.Label_Match.TOTAL_SCAN_COUNT
+    app.FINAL_LABEL_SCAN_POSITION = module.Label_Match.FINAL_LABEL_SCAN_POSITION
+    app.PRODUCT_SAMPLE_COUNT = module.Label_Match.PRODUCT_SAMPLE_COUNT
+    app.initialized_successfully = True
+    app.is_blinking = False
+    app.is_running_simulation = False
+    app.run_tests = True
+    app.history_view_updates_active_state = True
+    app.history_active_load_pending = False
+    app.current_set_info = {
+        "id": None,
+        "parsed": [],
+        "raw": [],
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": None,
+        "item_name_override": None,
+        "production_date": None,
+    }
+    app.items_data = {"AAA2270730100": {"Item Name": "E2E item", "Spec": "KMC_LHD"}}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = set()
+    app.set_details_map = {}
+    app.history_row_details_map = {}
+    app.data_manager = _FakeLoggingDataManager()
+    app.progress_bar = _FakeProgressBar()
+    app.status_label = _FakeLabel()
+    app.history_tree = _FakeHistoryTree()
+    app.save_status_label = _FakeLabel()
+    app.update_big_display = lambda *args, **kwargs: None
+    app._play_sound = lambda *args, **kwargs: None
+    app._update_status_label = lambda: None
+    app._update_history_tree_in_progress = lambda: None
+    app._save_current_set_state = lambda: None
+    app._update_summary_tree = lambda: None
+    app._reset_current_set = lambda *args, **kwargs: None
+    app.after = lambda *args, **kwargs: None
+
+    scans = [
+        "AAA2270730100",
+        "AAA2270730100E2E20260705200423G003",
+        "AAA2270730100E2E20260705200423G004",
+        "AAA2270730100E2E20260705200423G005",
+        "FINAL_LABEL_AAA2270730100_TEST1_FULL60_20260705_R1<Gs>6D20260705",
+    ]
+    for scan in scans:
+        app.entry = _FakeEntry(scan)
+        module.Label_Match.process_input(app)
+
+    event_names = [event for event, _details in app.data_manager.events]
+    assert event_names.count(module.Label_Match.Events.SCAN_OK) == module.LABEL_MATCH_TOTAL_SCAN_COUNT
+    assert module.Label_Match.Events.TRAY_COMPLETE in event_names
+    complete_details = [
+        details
+        for event, details in app.data_manager.events
+        if event == module.Label_Match.Events.TRAY_COMPLETE
+    ][-1]
+    assert complete_details["production_date"] == "2026-07-05"
+    assert complete_details["scanned_product_barcodes"] == scans
+    assert complete_details["parsed_product_barcodes"] == ["AAA2270730100"] * module.LABEL_MATCH_TOTAL_SCAN_COUNT
+    assert complete_details["final_result"] == module.Label_Match.Results.PASS
 
 
 def test_delete_shortcut_ignores_non_history_focus_without_mutation():

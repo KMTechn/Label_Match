@@ -736,7 +736,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.21" # private update feed release
+APP_VERSION = "v2.0.22" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -3200,7 +3200,8 @@ class Label_Match(tk.Tk):
 
     def _extract_production_date(self, raw_input):
         try:
-            fields = raw_input.split('\x1D')
+            normalized_input = re.sub(r"<gs>", "\x1D", str(raw_input or ""), flags=re.IGNORECASE)
+            fields = normalized_input.split('\x1D')
             for field in fields:
                 if field.startswith('6D'):
                     date_str = field[2:]

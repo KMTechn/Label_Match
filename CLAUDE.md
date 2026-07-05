@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 The application includes GitHub-based auto-update functionality:
 - **Repository**: KMTechn/Label_Match
-- **Current Version**: v2.0.14 (defined in APP_VERSION variable in `Label_Match.py`)
+- **Current Version**: v2.0.22 (defined in APP_VERSION variable in `Label_Match.py`)
 - **Update Process**: Downloads latest release ZIP, creates batch updater script, applies updates automatically
 
 ## Audio System
