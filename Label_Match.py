@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlparse
 import base64
 import binascii
 import unittest
+import traceback
 
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
@@ -45,6 +46,27 @@ LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
 LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME = "label_match_direct_sync_install.json"
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _label_match_startup_trace(stage, **details):
+    try:
+        root = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "KMTech", "startup-trace")
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, f"Label_Match-startup-{os.getpid()}.log")
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),
+            "stage": stage,
+            "version": globals().get("APP_VERSION", "unknown"),
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "executable": sys.executable,
+            "cwd": os.getcwd(),
+        }
+        payload.update(details)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception:
+        pass
 
 
 def _default_label_match_save_path():
@@ -698,7 +720,8 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.19" # private update feed release
+APP_VERSION = "v2.0.20" # private update feed release
+_label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
 UPDATE_MANIFEST_SIGNATURE_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_SIGNATURE_URL"
@@ -1720,7 +1743,9 @@ class Label_Match(tk.Tk):
         PACKAGING = "포장실"
 
     def __init__(self, run_tests=False):
+        _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
         super().__init__()
+        _label_match_startup_trace("app_init_after_tk", title=self.title())
         self.run_tests = run_tests
         self.initialized_successfully = False
         self.audio_ready = False
@@ -1733,10 +1758,18 @@ class Label_Match(tk.Tk):
         self.simulation_scenarios = []
         self.current_scenario_index = 0
         self.current_step_index = 0
+        _label_match_startup_trace("app_init_before_setup_paths")
         self._setup_paths()
+        _label_match_startup_trace(
+            "app_init_after_setup_paths",
+            app_settings_path=getattr(self, "app_settings_path", ""),
+            save_directory=getattr(self, "save_directory", ""),
+        )
         self.app_settings = self._load_app_settings()
+        _label_match_startup_trace("app_init_after_load_settings")
         self.custom_save_path = self._resolve_configured_save_path()
         self._update_save_directory()
+        _label_match_startup_trace("app_init_after_save_directory", save_directory=self.save_directory)
         self.ui_cfg = self.app_settings.get("ui_settings", {})
         self.base_font_size = self.ui_cfg.get("base_font_size", 14)
         default_colors = {
@@ -1753,6 +1786,7 @@ class Label_Match(tk.Tk):
         self.unique_id = socket.gethostname()
         self.worker_name = self.app_settings.get("worker_name", self.Worker.PACKAGING)
         self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
+        _label_match_startup_trace("app_init_after_data_manager", worker_name=self.worker_name, unique_id=self.unique_id)
         self.current_set_info = {} 
         self.is_blinking = False
         self.scan_count = defaultdict(lambda: defaultdict(int))
@@ -1765,7 +1799,9 @@ class Label_Match(tk.Tk):
         self.history_active_load_pending = False
         self.is_generating_test_logs = False
         self.title(f"바코드 세트 검증기 ({APP_VERSION}) - 로딩 중...")
+        _label_match_startup_trace("app_init_after_title", title=self.title())
         self.state('zoomed')
+        _label_match_startup_trace("app_init_after_zoomed", state=self.state())
         self.configure(bg=self.colors.get("background", "#ECEFF1"))
         self.ui_profile_name, self.ui_profile = self._select_ui_profile()
         self._responsive_after_id = None
@@ -1787,17 +1823,23 @@ class Label_Match(tk.Tk):
         self.default_font_name = self.ui_cfg.get("default_font", "Malgun Gothic")
         self.style = ttk.Style(self)
         self._configure_base_styles()
+        _label_match_startup_trace("app_init_before_create_widgets")
         self._create_widgets()
+        _label_match_startup_trace("app_init_after_create_widgets")
         self._configure_treeview_styles()
         self.show_loading_overlay()
+        _label_match_startup_trace("app_init_after_loading_overlay")
         self.initial_load_queue = queue.Queue()
         threading.Thread(target=self._async_initial_load, daemon=True).start()
+        _label_match_startup_trace("app_init_after_initial_load_thread")
         self.after(100, self._process_initial_load_queue)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.bind_all("<Control-MouseWheel>", self.on_ctrl_wheel)
         self.bind("<Button-1>", self._on_root_click)
         self.bind("<Configure>", self._on_window_configure)
         self.after(250, self._start_audio_initialization)
+        self.after(1000, lambda: _label_match_startup_trace("app_alive_after_1s", title=self.title(), state=self.state()))
+        _label_match_startup_trace("app_init_complete")
 
     def _start_audio_initialization(self):
         if self.run_tests or self.audio_init_started or not _label_match_audio_enabled():
@@ -1843,16 +1885,20 @@ class Label_Match(tk.Tk):
             self.entry.focus_set()
 
     def _async_initial_load(self):
+        _label_match_startup_trace("async_initial_load_start")
         try:
             items_data = self._load_items_data()
             loaded_data = {"items": items_data}
             self.initial_load_queue.put(loaded_data)
+            _label_match_startup_trace("async_initial_load_ok", item_count=len(items_data or {}))
         except Exception as e:
             self.initial_load_queue.put({"error": str(e)})
+            _label_match_startup_trace("async_initial_load_error", error=str(e))
 
     def _process_initial_load_queue(self):
         try:
             result = self.initial_load_queue.get_nowait()
+            _label_match_startup_trace("initial_load_queue_result", keys=sorted(result.keys()))
             if "error" in result:
                 self.hide_loading_overlay()
                 if not self.run_tests:
@@ -1874,6 +1920,7 @@ class Label_Match(tk.Tk):
             self._load_current_set_state()
             self.after(200, self._update_ui_scaling)
             self._update_clock()
+            _label_match_startup_trace("initial_load_ui_ready", title=self.title())
             if not self.run_tests:
                 self._start_direct_sync_auto_bootstrap()
                 threading.Thread(target=threaded_update_check, daemon=True).start()
@@ -5116,5 +5163,17 @@ class Label_Match(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = Label_Match()
-    app.mainloop()
+    _label_match_startup_trace("main_enter")
+    try:
+        app = Label_Match()
+        _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
+        _label_match_startup_trace("mainloop_enter")
+        app.mainloop()
+        _label_match_startup_trace("mainloop_exit")
+    except Exception as exc:
+        _label_match_startup_trace(
+            "main_exception",
+            error=repr(exc),
+            traceback=traceback.format_exc(),
+        )
+        raise
