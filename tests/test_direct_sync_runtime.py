@@ -1,4 +1,5 @@
 import concurrent.futures
+import hashlib
 import json
 import sqlite3
 import threading
@@ -19,6 +20,7 @@ from direct_sync_push import (
     ProducerCredentials,
     build_source_file_plan,
     claim_next_relay_batch,
+    manifest_hash,
     relay_queue_status,
     upload_source_file,
 )
@@ -445,6 +447,34 @@ def test_runtime_empty_queue_writes_idle_status_without_posting(tmp_path):
     assert session.calls == []
     assert Path(config.runtime_status_path).is_file()
     assert Path(config.log_path).is_file()
+
+
+def test_runtime_status_and_log_bind_manifest_source_identity(tmp_path):
+    config = make_config(tmp_path)
+    manifest = json.loads(Path(config.producer_manifest_path).read_text(encoding="utf-8"))
+    manifest_sha256 = hashlib.sha256(Path(config.producer_manifest_path).read_bytes()).hexdigest()
+    expected_manifest_hash = manifest_hash(manifest)
+    expected_source_scope = "label-runtime-host-1/label_match/label_match_events"
+    source_file = write_csv(tmp_path)
+
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    status = run_relay_once(config, session=EchoAcceptedSession())
+
+    persisted = json.loads(Path(config.runtime_status_path).read_text(encoding="utf-8"))
+    log_entry = json.loads(Path(config.log_path).read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert status["status"] == "acked"
+    assert status["producer_manifest_sha256"] == manifest_sha256
+    assert status["manifest_hash"] == expected_manifest_hash
+    assert status["source_identity"]["status"] == "PASS"
+    assert status["source_identity"]["source_scope_key"] == expected_source_scope
+    assert status["source_identity"]["source_scope_key_sha256"] == hashlib.sha256(
+        expected_source_scope.encode("utf-8")
+    ).hexdigest()
+    assert persisted["source_identity"]["source_scope_key"] == expected_source_scope
+    assert persisted["producer_manifest_sha256"] == manifest_sha256
+    assert log_entry["source_identity"]["source_scope_key"] == expected_source_scope
+    assert log_entry["producer_manifest_sha256"] == manifest_sha256
+    assert log_entry["manifest_hash"] == expected_manifest_hash
 
 
 def test_runtime_operator_pause_blocks_enqueue_and_drain_before_credentials(tmp_path):
