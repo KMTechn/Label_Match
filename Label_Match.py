@@ -13,14 +13,12 @@ import re
 import shutil
 import tkinter.font as tkFont
 import queue
-import pygame
 import socket
 import requests
 import zipfile
 import subprocess
 import uuid
 from urllib.parse import parse_qsl, urlparse
-from tkcalendar import Calendar
 import base64
 import binascii
 import unittest
@@ -700,7 +698,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.18" # private update feed release
+APP_VERSION = "v2.0.19" # private update feed release
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
 UPDATE_MANIFEST_SIGNATURE_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_SIGNATURE_URL"
@@ -1378,6 +1376,8 @@ def resource_path(relative_path: str) -> str:
 
 class CalendarWindow(tk.Toplevel):
     def __init__(self, parent):
+        from tkcalendar import Calendar
+
         super().__init__(parent)
         self.title("날짜 선택")
         self.transient(parent)
@@ -1727,6 +1727,7 @@ class Label_Match(tk.Tk):
         self.audio_error = ""
         self.audio_init_finished = False
         self.audio_init_started = False
+        self.pygame_module = None
         
         self.is_running_simulation = False
         self.simulation_scenarios = []
@@ -1808,7 +1809,10 @@ class Label_Match(tk.Tk):
             error_message = ""
             ready = False
             try:
+                import pygame
+
                 pygame.mixer.init()
+                self.pygame_module = pygame
                 ready = True
             except Exception as exc:
                 error_message = str(exc)
@@ -1905,12 +1909,19 @@ class Label_Match(tk.Tk):
         if not self.audio_ready:
             return {}
         sound_objects = {}
+        pygame_module = self.pygame_module
+        if pygame_module is None:
+            try:
+                import pygame as pygame_module
+            except Exception as e:
+                print(f"사운드 모듈 로드 오류: {e}")
+                return {}
         for key, filename in self.sounds.items():
             sound_path = resource_path(os.path.join("assets", filename))
             if os.path.exists(sound_path):
                 try:
-                    sound_objects[key] = pygame.mixer.Sound(sound_path)
-                except pygame.error as e:
+                    sound_objects[key] = pygame_module.mixer.Sound(sound_path)
+                except Exception as e:
                     print(f"사운드 로드 오류 ({filename}): {e}")
             else:
                 print(f"사운드 파일 없음: {sound_path}")
