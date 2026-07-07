@@ -34,6 +34,20 @@ def test_new_format_label_requires_non_empty_required_fields():
     assert parse(None, "CLC=AAA2270730100|SPC=Product") is None
 
 
+def test_inspection_master_label_first_scan_workflow_accepts_item_qty():
+    module = load_label_match_module()
+    fields = module.Label_Match._parse_new_format_label(
+        None,
+        "CLC=INSPECTION|WID=TEST1-HTTPS-20260708-R4-KMC-LHD|"
+        "ITEM=AAA2270730100|QTY=60|DATE=20260708"
+    )
+
+    assert fields["CLC"] == "AAA2270730100"
+    assert fields["SPC"] == "AAA2270730100"
+    assert fields["PHS"] == "INSPECTION"
+    assert fields["QT"] == "60"
+
+
 def test_data_manager_escapes_worker_name_formula_cells(tmp_path):
     module = load_label_match_module()
     manager = module.DataManager(

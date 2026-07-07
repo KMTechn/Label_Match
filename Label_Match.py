@@ -673,6 +673,17 @@ def _label_match_parse_new_format_fields(raw_value):
         }
     except Exception:
         return None
+    if str(fields.get("CLC") or "").strip().upper() == "INSPECTION":
+        item_code = str(fields.get("ITEM") or fields.get("ITEM_CODE") or "").strip()
+        if not item_code:
+            return None
+        normalized = dict(fields)
+        normalized["CLC"] = item_code
+        normalized.setdefault("SPC", str(fields.get("ITEM_NAME") or item_code).strip())
+        normalized.setdefault("PHS", str(fields.get("PHASE") or "INSPECTION").strip())
+        if not normalized.get("QT") and fields.get("QTY"):
+            normalized["QT"] = str(fields["QTY"]).strip()
+        fields = normalized
     if not all(fields.get(key) for key in ('CLC', 'SPC', 'PHS')):
         return None
     return fields
@@ -850,7 +861,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.23" # private update feed release
+APP_VERSION = "v2.0.24" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -2885,21 +2896,7 @@ class Label_Match(tk.Tk):
                 messagebox.showerror("UI 업데이트 오류", f"기록을 화면에 표시하는 과정에서 예상치 못한 오류가 발생했습니다.\n프로그램을 다시 시작해주세요.\n\n[상세 오류]\n{e}")
 
     def _parse_new_format_label(self, raw_input):
-        if '|' not in raw_input or '=' not in raw_input:
-            return None
-        try:
-            parsed_data = {
-                item.split('=', 1)[0].strip().upper(): item.split('=', 1)[1].strip()
-                for item in raw_input.split('|') if '=' in item
-            }
-            required_keys = ['CLC', 'SPC', 'PHS']
-            if all(parsed_data.get(key, "").strip() for key in required_keys):
-                return parsed_data
-            else:
-                return None
-        except Exception as e:
-            print(f"신규 라벨 형식 파싱 오류: {e}")
-            return None
+        return _label_match_parse_new_format_fields(raw_input)
 
     def _run_auto_test_simulation(self):
         """사용자 상호작용을 시뮬레이션하는 자동화된 테스트를 시작합니다."""
