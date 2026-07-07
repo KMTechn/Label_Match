@@ -126,6 +126,8 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     assert report["source_scan"]["enabled"] is True
     assert report["source_scan"]["max_enqueue_files"] == 100
     assert report["source_scan"]["min_source_file_age_seconds"] == 60
+    assert "--baseline-existing-source-files" in report["source_scan_baseline_command"]
+    assert report["source_scan_baseline_command"][-2:] == ["--min-source-file-age-seconds", "0"]
     assert report["runtime_path_boundary"]["status"] == "PASS"
     assert report["runtime_path_boundary"]["all_runtime_paths_under_program_data_root"] is True
     assert str(scan_source_dir.resolve()) in report["directories_to_create"]
@@ -467,8 +469,9 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
     assert report["task_launcher"]["script_encoding"] == "ascii"
     assert report["task_launcher_write_result"]["encoding"] == "ascii"
     assert not launcher_path.read_bytes().startswith(b"\xef\xbb\xbf")
-    assert commands and commands[0][0] == "schtasks.exe"
-    assert "wscript.exe" == commands[0][commands[0].index("/TR") + 1].split()[0]
+    assert any("--baseline-existing-source-files" in command for command in commands)
+    task_command = find_command(commands, "schtasks.exe")
+    assert "wscript.exe" == task_command[task_command.index("/TR") + 1].split()[0]
 
 
 def test_install_pack_apply_supports_stored_password_task_without_leaking_password(tmp_path, monkeypatch):
@@ -809,7 +812,8 @@ def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_pa
     assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert registration_commands
-    assert task_commands and task_commands[0][0] == "schtasks.exe"
+    assert any("--baseline-existing-source-files" in command for command in task_commands)
+    assert find_command(task_commands, "schtasks.exe")
     assert report["task_wrapper_write_result"]["status"] == "PASS"
     assert Path(report["task_wrapper"]["path"]).is_file()
     assert report["task_launcher_write_result"]["status"] == "PASS"
@@ -1127,7 +1131,8 @@ def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypa
     assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "PASS"
-    assert commands and commands[0][0] == "schtasks.exe"
+    assert any("--baseline-existing-source-files" in command for command in commands)
+    assert find_command(commands, "schtasks.exe")
     assert report["production_apply_guard"]["requires_confirm_production_install"] is False
 
 

@@ -788,6 +788,34 @@ def test_runner_scan_source_dir_handles_no_matching_files(tmp_path, capsys):
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}
 
 
+def test_runner_baselines_existing_source_file_without_enqueueing(tmp_path, capsys, monkeypatch):
+    disable_scan_drain(monkeypatch)
+    sync_dir = tmp_path / "sync"
+    csv_path = write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir) + ["--baseline-existing-source-files"]
+
+    assert main(args) == 0
+    output = capsys.readouterr().out
+
+    assert "direct_sync_relay_status=baseline_complete" in output
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}
+    state = source_scan_state(tmp_path / "relay.sqlite3", csv_path)
+    assert state is not None
+    assert state["sent_byte_count"] == csv_path.stat().st_size
+
+    with csv_path.open("a", encoding="utf-8") as file:
+        file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n")
+
+    assert main(runner_args(tmp_path, scan_dir=sync_dir)) == 0
+    output = capsys.readouterr().out
+    assert "direct_sync_scan_status=enqueued" in output
+    rows = relay_rows(tmp_path / "relay.sqlite3")
+    assert len(rows) == 1
+    payload = Path(rows[0]["spooled_file_path"]).read_text(encoding="utf-8")
+    assert "BC-2" in payload
+    assert "BC-1" not in payload
+
+
 def test_runner_scan_source_dir_defers_recent_matching_files(tmp_path, capsys):
     sync_dir = tmp_path / "sync"
     csv_path = write_label_csv(sync_dir)

@@ -234,6 +234,47 @@ def _record_source_sent_byte_count(db_path: str | Path, source_file: Path, sent_
         conn.close()
 
 
+def _complete_file_byte_count(path: Path) -> int:
+    data = path.read_bytes()
+    return len(_complete_line_prefix(data))
+
+
+def _baseline_existing_source_files(
+    db_path: str | Path,
+    scan_source_dir: str,
+    patterns: list[str],
+    max_files: int,
+    min_file_age_seconds: int = 0,
+) -> dict:
+    source_files, deferred_count = _scan_source_files(
+        scan_source_dir,
+        patterns,
+        max_files,
+        min_file_age_seconds,
+    )
+    baselined = []
+    skipped = []
+    limit = max(0, int(max_files or 0))
+    for source_file in source_files[:limit]:
+        try:
+            sent_byte_count = _complete_file_byte_count(source_file)
+            if sent_byte_count <= 0:
+                skipped.append({"path": str(source_file), "reason": "no_complete_rows"})
+                continue
+            _record_source_sent_byte_count(db_path, source_file, sent_byte_count)
+            baselined.append({"path": str(source_file), "sent_byte_count": sent_byte_count})
+        except OSError as exc:
+            skipped.append({"path": str(source_file), "reason": exc.__class__.__name__})
+    return {
+        "status": "baseline_complete",
+        "baseline_count": len(baselined),
+        "deferred_count": deferred_count,
+        "skipped_count": len(skipped),
+        "baselined_sources": baselined,
+        "skipped_sources": skipped,
+    }
+
+
 def _complete_line_prefix(data: bytes) -> bytes:
     if not data:
         return b""
@@ -445,12 +486,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-glob", action="append", default=[])
     parser.add_argument("--max-enqueue-files", type=int, default=100)
     parser.add_argument("--min-source-file-age-seconds", type=int, default=0)
+    parser.add_argument("--baseline-existing-source-files", action="store_true")
     args = parser.parse_args(argv)
     if args.enqueue_source_file and args.scan_source_dir:
         parser.error("--enqueue-source-file and --scan-source-dir are mutually exclusive")
+    if args.baseline_existing_source_files and not args.scan_source_dir:
+        parser.error("--baseline-existing-source-files requires --scan-source-dir")
 
     config = _build_config(args)
-    if args.enqueue_source_file:
+    if args.baseline_existing_source_files:
+        try:
+            status = _baseline_existing_source_files(
+                config.db_path,
+                args.scan_source_dir,
+                args.source_glob,
+                args.max_enqueue_files,
+                args.min_source_file_age_seconds,
+            )
+            _persist_scan_runtime_status(config, status)
+        except (OSError, sqlite3.DatabaseError, ValueError) as exc:
+            status = _write_scan_runtime_error(config, exc)
+    elif args.enqueue_source_file:
         status = enqueue_completed_source_file(
             config,
             source_file_path=args.enqueue_source_file,

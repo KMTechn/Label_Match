@@ -695,6 +695,17 @@ def _append_source_scan_args(runner_parts: list[str], source_scan: dict) -> None
     runner_parts.extend(["--min-source-file-age-seconds", str(source_scan["min_source_file_age_seconds"])])
 
 
+def _source_scan_baseline_command(runner_parts: Sequence[str], source_scan: dict) -> list[str]:
+    if not source_scan["enabled"]:
+        return []
+    return [
+        *[str(part) for part in runner_parts],
+        "--baseline-existing-source-files",
+        "--min-source-file-age-seconds",
+        "0",
+    ]
+
+
 def _directories_to_create(program_data_root: str | os.PathLike[str], paths: dict[str, str], source_scan: dict) -> list[str]:
     candidates = [Path(program_data_root).expanduser().resolve()]
     for name, path in paths.items():
@@ -824,6 +835,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "directories_to_create": _directories_to_create(args.program_data_root, paths, source_scan),
         "runtime_path_boundary": runtime_path_boundary,
         "source_scan": source_scan,
+        "source_scan_baseline_command": _source_scan_baseline_command(runner_parts, source_scan),
         "backpressure": backpressure,
         "runner_script": str(runner_script),
         "runner_exe": str(runner_exe) if runner_exe is not None else "",
@@ -1157,6 +1169,15 @@ def main(argv: list[str] | None = None) -> int:
                 _write_json(Path(args.report_path), plan)
                 print(f"install_pack_report={Path(args.report_path).resolve()}")
                 return 1
+            baseline_command = plan.get("source_scan_baseline_command") or []
+            if baseline_command:
+                plan["source_scan_baseline_result"] = _run_command(baseline_command)
+                if int(plan["source_scan_baseline_result"].get("returncode") or 0) != 0:
+                    plan["status"] = "FAIL"
+                    plan["blocked_reason"] = "source scan baseline failed"
+                    _write_json(Path(args.report_path), plan)
+                    print(f"install_pack_report={Path(args.report_path).resolve()}")
+                    return 1
             plan["task_wrapper_write_result"] = _write_task_wrapper(
                 plan["task_wrapper"]["path"],
                 plan["runner_command"],
