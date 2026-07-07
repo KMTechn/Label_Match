@@ -900,7 +900,9 @@ def _parse_update_version(version):
     return tuple(int(part) for part in match.group(1).split("."))
 
 
-def _is_update_version_newer(candidate_version, current_version=APP_VERSION):
+def _is_update_version_newer(candidate_version, current_version=None):
+    if current_version is None:
+        current_version = APP_VERSION
     left = _parse_update_version(candidate_version)
     right = _parse_update_version(current_version)
     width = max(len(left), len(right))
