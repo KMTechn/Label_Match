@@ -757,6 +757,14 @@ def _label_match_unique_master_index_keys(raw_value):
     return {key for key in keys if key}
 
 
+def _label_match_reusable_input_master_label(raw_value):
+    fields = _label_match_parse_new_format_fields(raw_value) or {}
+    return (
+        str(fields.get("SRC") or "").strip().upper() == "KMTECH_INPUT_TAG"
+        and str(fields.get("PHS") or "").strip() == "2"
+    )
+
+
 def _label_match_duplicate_index_barcodes(details):
     source = details or {}
     if not _label_match_tray_complete_passed(source):
@@ -766,7 +774,7 @@ def _label_match_duplicate_index_barcodes(details):
         return set()
     indexed = set(raw_scans[1:])
     first_scan = raw_scans[0]
-    if _label_match_first_scan_is_unique_master(source):
+    if _label_match_first_scan_is_unique_master(source) and not _label_match_reusable_input_master_label(first_scan):
         indexed.update(_label_match_unique_master_index_keys(first_scan))
     return indexed
 
@@ -897,7 +905,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.26" # private update feed release
+APP_VERSION = "v2.0.27" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -3248,9 +3256,13 @@ class Label_Match(tk.Tk):
         if scan_pos == 1:
             new_label_data = self._parse_new_format_label(processed_input)
             if new_label_data:
+                reusable_input_master = (
+                    _label_match_reusable_input_master_label(raw_input)
+                    or _label_match_reusable_input_master_label(processed_input)
+                )
                 duplicate_keys = _label_match_unique_master_index_keys(raw_input)
                 duplicate_keys.update(_label_match_unique_master_index_keys(processed_input))
-                if duplicate_keys & self.global_scanned_set:
+                if not reusable_input_master and duplicate_keys & self.global_scanned_set:
                     self._handle_input_error(
                         raw_input,
                         title="[현품표 중복 스캔]",

@@ -1361,6 +1361,67 @@ def test_new_format_unique_master_duplicate_blocks_base64_and_decoded_equivalent
     ]
 
 
+def test_phs2_input_tag_reuse_does_not_block_first_scan():
+    module = load_label_match_module()
+    reusable_master = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-20260708-104012-72AB3B|"
+        "CLC=AAA2270730100|LBL=LBL-20260708-104012-06043B|HSH=cba31bbfbe12849a"
+    )
+    completed_details = _completed_details(
+        set_id="phs2-old",
+        master_code="AAA2270730100",
+        end_time="2026-07-08T10:00:00",
+        raw_scans=[reusable_master, "PRODUCT-OLD-1", "PRODUCT-OLD-2", "FINAL-LABEL\x1D6D20260708"],
+        item_name_override="AAA2270730100",
+        phase="2",
+    )
+    assert module._label_match_duplicate_index_barcodes(completed_details) == {
+        "PRODUCT-OLD-1",
+        "PRODUCT-OLD-2",
+        "FINAL-LABEL\x1D6D20260708",
+    }
+
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": None,
+        "item_name_override": None,
+        "production_date": None,
+    }
+    app.entry = _FakeEntry(reusable_master)
+    app.status_label = _FakeLabel()
+    app.data_manager = _FakeLoggingDataManager()
+    app.global_scanned_set = module._label_match_unique_master_index_keys(reusable_master)
+    app.history_view_updates_active_state = True
+    app.history_active_load_pending = False
+    app.run_tests = True
+    app.is_blinking = False
+    app.is_running_simulation = False
+    app.initialized_successfully = True
+    app.items_data = {}
+    app.progress_bar = _FakeProgressBar()
+    app.history_tree = _FakeHistoryTree()
+    app.update_big_display = lambda *args, **kwargs: None
+    app._play_sound = lambda *args, **kwargs: None
+    app._update_status_label = lambda: None
+    app._update_history_tree_in_progress = lambda: None
+    app._save_current_set_state = lambda: None
+    app._update_manual_complete_button_state = lambda: None
+
+    module.Label_Match.process_input(app)
+
+    assert app.current_set_info["raw"] == [reusable_master]
+    assert app.current_set_info["phase"] == "2"
+    assert [event for event, _details in app.data_manager.events] == [
+        module.Label_Match.Events.SCAN_ATTEMPT,
+        module.Label_Match.Events.SCAN_OK,
+    ]
+
+
 def test_legacy_base64_new_format_without_metadata_is_indexed_as_unique_master():
     module = load_label_match_module()
     decoded_master = "CLC=ITEM1|SPC=Product|PHS=A"
