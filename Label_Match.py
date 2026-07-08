@@ -336,10 +336,37 @@ def _label_match_direct_sync_ready(context):
         return False
     if not _label_match_registration_verified(context):
         return False
+    if not _label_match_install_report_ready(context):
+        return False
     return bool(
         _label_match_existing_direct_sync_task_name(context)
         or _label_match_recent_runtime_status(context)
     )
+
+
+def _label_match_install_report_ready(context):
+    report = _label_match_json_file(context["install_report_path"])
+    if report.get("status") != "PASS":
+        return False
+    try:
+        report_root = os.path.abspath(str(report.get("program_data_root") or ""))
+        expected_root = os.path.abspath(context["program_data_root"])
+        if os.path.normcase(report_root) != os.path.normcase(expected_root):
+            return False
+        source_scan = report.get("source_scan") or {}
+        report_scan_dir = os.path.abspath(str(source_scan.get("scan_source_dir") or ""))
+        expected_scan_dir = os.path.abspath(context["scan_source_dir"])
+        if os.path.normcase(report_scan_dir) != os.path.normcase(expected_scan_dir):
+            return False
+        if source_scan.get("enabled") is not False:
+            baseline = report.get("source_scan_baseline_result") or {}
+            if not baseline:
+                return False
+            if int(baseline.get("returncode") or 0) != 0:
+                return False
+    except Exception:
+        return False
+    return True
 
 
 def _label_match_run_direct_sync_task(context):
@@ -673,6 +700,15 @@ def _label_match_parse_new_format_fields(raw_value):
         }
     except Exception:
         return None
+    if str(fields.get("SRC") or "").strip().upper() == "KMTECH_INPUT_TAG":
+        item_code = str(fields.get("CLC") or fields.get("ITEM") or fields.get("ITEM_CODE") or "").strip()
+        phase = str(fields.get("PHS") or "").strip()
+        if not item_code or not phase:
+            return None
+        normalized = dict(fields)
+        normalized["CLC"] = item_code
+        normalized.setdefault("SPC", str(fields.get("ITEM_NAME") or fields.get("ITEM") or item_code).strip())
+        fields = normalized
     if str(fields.get("CLC") or "").strip().upper() == "INSPECTION":
         item_code = str(fields.get("ITEM") or fields.get("ITEM_CODE") or "").strip()
         if not item_code:
@@ -702,7 +738,7 @@ def _label_match_inspection_trace_from_master_label(raw_value):
         "input_tag_id": str(fields.get("ITG") or "").strip(),
         "input_tag_label_id": str(fields.get("LBL") or "").strip(),
         "input_tag_core_hash": str(fields.get("HSH_CORE") or "").strip(),
-        "input_tag_label_hash": str(fields.get("HSH_LABEL") or "").strip(),
+        "input_tag_label_hash": str(fields.get("HSH_LABEL") or fields.get("HSH") or "").strip(),
         "master_label_phase": str(fields.get("PHS") or "").strip(),
     }
     if trace["input_tag_id"]:
@@ -861,7 +897,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.25" # private update feed release
+APP_VERSION = "v2.0.26" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"

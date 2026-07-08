@@ -48,6 +48,24 @@ def test_inspection_master_label_first_scan_workflow_accepts_item_qty():
     assert fields["QT"] == "60"
 
 
+def test_input_tag_master_label_accepts_missing_spc_and_preserves_trace():
+    module = load_label_match_module()
+    master_label = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-20260708-104012-72AB3B|"
+        "CLC=AAA2270730100|LBL=LBL-20260708-104012-06043B|HSH=cba31bbfbe12849a"
+    )
+
+    fields = module.Label_Match._parse_new_format_label(None, master_label)
+    trace = module._label_match_inspection_trace_from_master_label(master_label)
+
+    assert fields["CLC"] == "AAA2270730100"
+    assert fields["SPC"] == "AAA2270730100"
+    assert fields["PHS"] == "2"
+    assert trace["input_tag_id"] == "ITAG-20260708-104012-72AB3B"
+    assert trace["input_tag_label_id"] == "LBL-20260708-104012-06043B"
+    assert trace["input_tag_label_hash"] == "cba31bbfbe12849a"
+
+
 def test_data_manager_escapes_worker_name_formula_cells(tmp_path):
     module = load_label_match_module()
     manager = module.DataManager(
@@ -188,6 +206,52 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(tmp_path, monk
     report = json.loads(Path(context["bootstrap_status_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "PASS"
     assert report["run_task_result"] == {"status": "PASS"}
+
+
+def test_direct_sync_ready_requires_current_install_report_with_baseline(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-02")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    context = module._label_match_direct_sync_context(str(tmp_path / "scan-data"))
+    Path(context["manifest_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(context["registration_report_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(context["manifest_path"]).write_text("{}", encoding="utf-8")
+    Path(context["credential_path"]).write_text("{}", encoding="utf-8")
+    Path(context["registration_report_path"]).write_text(
+        json.dumps({"server_registration_verified": True}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "_label_match_existing_direct_sync_task_name", lambda _context: context["task_name"])
+    monkeypatch.setattr(module, "_label_match_recent_runtime_status", lambda _context: False)
+
+    assert module._label_match_direct_sync_ready(context) is False
+
+    Path(context["install_report_path"]).write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "program_data_root": context["program_data_root"],
+                "task_name": context["task_name"],
+                "source_scan": {
+                    "enabled": True,
+                    "scan_source_dir": context["scan_source_dir"],
+                },
+                "source_scan_baseline_result": {
+                    "returncode": 0,
+                    "status": "PASS",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert module._label_match_direct_sync_ready(context) is True
+
+    payload = json.loads(Path(context["install_report_path"]).read_text(encoding="utf-8"))
+    payload["source_scan"]["scan_source_dir"] = str(tmp_path / "old-user" / "data")
+    Path(context["install_report_path"]).write_text(json.dumps(payload), encoding="utf-8")
+
+    assert module._label_match_direct_sync_ready(context) is False
 
 
 def test_session_direct_sync_runner_uses_zero_source_file_age(tmp_path, monkeypatch):
