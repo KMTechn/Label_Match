@@ -319,6 +319,29 @@ def test_session_direct_sync_reports_runner_backpressure_exit_as_fail(tmp_path, 
     assert observed["check"] is False
 
 
+def test_session_direct_sync_writes_reason_specific_and_latest_reports(tmp_path):
+    module = load_label_match_module()
+    context = {
+        "status_dir": str(tmp_path),
+        "source_host_id": "label-match-pack-03",
+        "scan_source_dir": str(tmp_path / "scan-data"),
+    }
+    result = {"status": "PASS", "reason": "APP_CLOSE", "returncode": 0}
+
+    evidence = module._label_match_write_session_direct_sync_result(
+        context,
+        reason="APP_CLOSE",
+        result=result,
+    )
+
+    latest = json.loads(Path(evidence["latest_report_path"]).read_text(encoding="utf-8"))
+    reason_specific = json.loads(Path(evidence["reason_report_path"]).read_text(encoding="utf-8"))
+    assert latest == reason_specific
+    assert latest["reason"] == "APP_CLOSE"
+    assert latest["result"]["returncode"] == 0
+    assert evidence["reason_report_path"].endswith("label_match_session_direct_sync_trigger_app_close.json")
+
+
 def test_enriched_tray_complete_preserves_label_match_contract():
     module = load_label_match_module()
 
@@ -1168,6 +1191,53 @@ def test_on_closing_does_not_destroy_when_log_close_fails(monkeypatch):
     module.Label_Match.on_closing(app)
 
     assert errors
+
+
+def test_on_closing_runs_app_close_direct_sync_after_log_close_before_destroy(monkeypatch):
+    module = load_label_match_module()
+    sequence = []
+    context = {
+        "status_dir": "C:\\ProgramData\\KMTech\\DirectSync\\label-match-test\\status",
+        "source_host_id": "label-match-test",
+        "scan_source_dir": "C:\\ProgramData\\KMTech\\Label_Match\\data",
+    }
+
+    class ClosingDataManager:
+        def log_event(self, event_type, details):
+            sequence.append(("event", event_type))
+
+        def close(self, timeout=None):
+            sequence.append(("close", timeout))
+
+    app = object.__new__(module.Label_Match)
+    app.initialized_successfully = True
+    app.is_running_simulation = False
+    app.is_generating_test_logs = False
+    app.run_tests = False
+    app.is_blinking = True
+    app.data_manager = ClosingDataManager()
+    app.direct_sync_bootstrap_context = context
+    app._save_app_settings = lambda: sequence.append(("settings", None))
+    app.destroy = lambda: sequence.append(("destroy", None))
+    monkeypatch.setattr(module.messagebox, "askokcancel", lambda *args, **kwargs: True)
+
+    def run_and_record(sync_context, *, reason):
+        sequence.append(("sync", reason))
+        assert sync_context is context
+        return {"status": "PASS", "reason": reason, "returncode": 0}
+
+    monkeypatch.setattr(module, "_label_match_run_and_record_session_direct_sync", run_and_record)
+
+    module.Label_Match.on_closing(app)
+
+    assert sequence == [
+        ("event", module.Label_Match.Events.APP_CLOSE),
+        ("close", None),
+        ("sync", module.Label_Match.Events.APP_CLOSE),
+        ("settings", None),
+        ("destroy", None),
+    ]
+    assert app.app_close_direct_sync_result["status"] == "PASS"
 
 
 def test_settings_save_replaces_closed_data_manager_after_close_failure(monkeypatch):

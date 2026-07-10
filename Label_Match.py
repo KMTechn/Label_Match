@@ -84,6 +84,7 @@ LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV = (
 LABEL_MATCH_SESSION_SYNC_TRIGGER_ENV = "LABEL_MATCH_SESSION_SYNC_TRIGGER"
 LABEL_MATCH_SESSION_SYNC_REQUEST_TIMEOUT_SECONDS = 15
 LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS = 45
+_LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
@@ -464,6 +465,11 @@ def _label_match_run_session_direct_sync_once(context, *, reason="TRAY_COMPLETE"
         return {"status": "SKIPPED", "reason": "direct-sync relay runner is missing"}
     env = os.environ.copy()
     env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
+    acquired = _LABEL_MATCH_SESSION_SYNC_LOCK.acquire(
+        timeout=LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS + 5
+    )
+    if not acquired:
+        return {"status": "FAIL", "reason": reason, "error": "session sync lock timeout"}
     try:
         completed = subprocess.run(
             command,
@@ -483,23 +489,53 @@ def _label_match_run_session_direct_sync_once(context, *, reason="TRAY_COMPLETE"
         }
     except Exception as exc:
         return {"status": "FAIL", "reason": reason, "error": str(exc)}
+    finally:
+        _LABEL_MATCH_SESSION_SYNC_LOCK.release()
+
+
+def _label_match_write_session_direct_sync_result(context, *, reason, result):
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    payload = {
+        "report_version": "label-match-session-direct-sync-trigger-v1",
+        "app_version": APP_VERSION,
+        "generated_at": generated_at,
+        "reason": reason,
+        "source_host_id": context["source_host_id"],
+        "scan_source_dir": context["scan_source_dir"],
+        "result": result,
+    }
+    reason_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(reason)).strip("_").lower() or "unknown"
+    latest_path = os.path.join(context["status_dir"], "label_match_session_direct_sync_trigger.json")
+    reason_path = os.path.join(
+        context["status_dir"],
+        f"label_match_session_direct_sync_trigger_{reason_key}.json",
+    )
+    _label_match_write_json(reason_path, payload)
+    _label_match_write_json(latest_path, payload)
+    return {"latest_report_path": latest_path, "reason_report_path": reason_path}
+
+
+def _label_match_run_and_record_session_direct_sync(context, *, reason):
+    result = _label_match_run_session_direct_sync_once(context, reason=reason)
+    try:
+        evidence = _label_match_write_session_direct_sync_result(
+            context,
+            reason=reason,
+            result=result,
+        )
+        return {**result, "evidence": evidence}
+    except Exception as exc:
+        _label_match_startup_trace(
+            "session_direct_sync_evidence_failed",
+            reason=reason,
+            error=str(exc),
+        )
+        return {**result, "status": "FAIL", "evidence_error": str(exc)}
 
 
 def _label_match_start_session_direct_sync(context, *, reason="TRAY_COMPLETE"):
     def worker():
-        result = _label_match_run_session_direct_sync_once(context, reason=reason)
-        _label_match_write_json(
-            os.path.join(context["status_dir"], "label_match_session_direct_sync_trigger.json"),
-            {
-                "report_version": "label-match-session-direct-sync-trigger-v1",
-                "app_version": APP_VERSION,
-                "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-                "reason": reason,
-                "source_host_id": context["source_host_id"],
-                "scan_source_dir": context["scan_source_dir"],
-                "result": result,
-            },
-        )
+        _label_match_run_and_record_session_direct_sync(context, reason=reason)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -918,7 +954,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.30" # private update feed release
+APP_VERSION = "v2.0.31" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -2684,6 +2720,16 @@ class Label_Match(tk.Tk):
                     raise
                 messagebox.showerror("종료 보류", f"작업 로그 저장을 완료하지 못해 종료를 중단했습니다.\n\n[상세 오류]\n{e}")
                 return
+            if not self.run_tests:
+                context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
+                    self.save_directory,
+                    getattr(self, "app_settings_path", ""),
+                )
+                self.direct_sync_bootstrap_context = context
+                self.app_close_direct_sync_result = _label_match_run_and_record_session_direct_sync(
+                    context,
+                    reason=self.Events.APP_CLOSE,
+                )
             self._save_app_settings()
             self.destroy()
 
