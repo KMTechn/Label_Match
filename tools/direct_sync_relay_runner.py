@@ -579,7 +579,16 @@ def main(argv: list[str] | None = None) -> int:
             status["scan_deferred_count"] = deferred_count
             status["scan_no_new_count"] = no_new_count
             status["scan_status"] = status["status"]
-            if status["status"] not in {
+            recovery = (
+                status.get("queue_backpressure", {}).get("recovery", {})
+                if isinstance(status.get("queue_backpressure"), dict)
+                else {}
+            )
+            age_recovery_already_attempted = (
+                status["status"] == "blocked_queue_backpressure"
+                and bool(recovery.get("attempted"))
+            )
+            if not age_recovery_already_attempted and status["status"] not in {
                 "paused_by_operator",
                 "blocked_disk_pressure",
                 "enqueue_error",
@@ -618,7 +627,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"direct_sync_scan_no_new_count={status['scan_no_new_count']}")
     if status.get("scan_failed_source_file"):
         print(f"direct_sync_scan_failed_source_file={status['scan_failed_source_file']}")
-    if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure"}:
+    if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure"} or status.get("scan_status") in {
+        "blocked_disk_pressure",
+        "blocked_queue_backpressure",
+    }:
         return 2
     if status["status"] in {"enqueue_error", "runtime_error"}:
         return 1

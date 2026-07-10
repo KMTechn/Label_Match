@@ -82,6 +82,8 @@ LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV = (
     "LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST"
 )
 LABEL_MATCH_SESSION_SYNC_TRIGGER_ENV = "LABEL_MATCH_SESSION_SYNC_TRIGGER"
+LABEL_MATCH_SESSION_SYNC_REQUEST_TIMEOUT_SECONDS = 15
+LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS = 45
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
@@ -438,6 +440,8 @@ def _label_match_direct_sync_runner_command(context, *, min_source_file_age_seco
         paths["log_path"],
         "--worker-id",
         f"{context['source_host_id']}-session-sync",
+        "--timeout-seconds",
+        str(LABEL_MATCH_SESSION_SYNC_REQUEST_TIMEOUT_SECONDS),
         "--operator-pause-path",
         paths["operator_pause_path"],
         "--scan-source-dir",
@@ -466,7 +470,7 @@ def _label_match_run_session_direct_sync_once(context, *, reason="TRAY_COMPLETE"
             check=False,
             capture_output=True,
             text=True,
-            timeout=45,
+            timeout=LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS,
             env=env,
             creationflags=_label_match_subprocess_creationflags(),
         )
@@ -914,7 +918,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.29" # private update feed release
+APP_VERSION = "v2.0.30" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"

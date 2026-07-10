@@ -993,20 +993,52 @@ def test_runner_scan_source_runtime_error_is_not_masked_by_drain(tmp_path, capsy
     assert drain_calls == []
 
 
-def test_runner_scan_source_dir_drains_after_backpressure(tmp_path, capsys, monkeypatch):
+def test_runner_scan_source_dir_drains_count_backpressure_but_returns_blocked(tmp_path, capsys, monkeypatch):
     calls = disable_scan_drain(monkeypatch)
     sync_dir = tmp_path / "sync"
     write_label_csv(sync_dir)
     write_label_csv(sync_dir, name="포장실작업이벤트로그_runner2_20260622.csv")
     args = runner_args(tmp_path, scan_dir=sync_dir) + ["--max-active-queue-count", "1"]
 
-    assert main(args) == 0
+    assert main(args) == 2
     output = capsys.readouterr().out
     assert "direct_sync_relay_status=idle" in output
     assert "direct_sync_scan_status=blocked_queue_backpressure" in output
     assert "direct_sync_scan_enqueued_count=1" in output
     assert len(calls) == 1
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
+
+
+def test_runner_age_recovery_failure_is_not_redrained_or_masked(tmp_path, capsys, monkeypatch):
+    sync_dir = tmp_path / "sync"
+    write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+    drain_calls = []
+
+    def fake_enqueue(*args, **kwargs):
+        return {
+            "status": "blocked_queue_backpressure",
+            "error_code": "queue_backpressure",
+            "queue_backpressure": {
+                "status": "blocked",
+                "reasons": ["oldest_active_age_threshold"],
+                "recovery": {"attempted": True, "attempt_count": 1, "resolved": False},
+            },
+        }
+
+    def fake_run_relay_once(config):
+        drain_calls.append(config)
+        return {"status": "idle"}
+
+    monkeypatch.setattr(runner, "enqueue_completed_source_file", fake_enqueue)
+    monkeypatch.setattr(runner, "run_relay_once", fake_run_relay_once)
+
+    assert main(args) == 2
+    output = capsys.readouterr().out
+    assert "direct_sync_relay_status=blocked_queue_backpressure" in output
+    assert "direct_sync_scan_status=blocked_queue_backpressure" in output
+    assert "direct_sync_scan_enqueued_count=0" in output
+    assert drain_calls == []
 
 
 def test_runner_honors_operator_pause_before_scan_enqueue(tmp_path, capsys):

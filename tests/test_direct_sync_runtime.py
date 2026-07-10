@@ -667,6 +667,44 @@ def test_runtime_backpressure_keeps_current_enqueue_blocked_when_aged_recovery_i
     assert_runtime_artifacts_are_redacted(aged_config)
 
 
+def test_runtime_backpressure_recovery_is_bounded_to_one_old_batch_per_enqueue(tmp_path):
+    config = make_config(tmp_path)
+    first_stale = write_csv(tmp_path, name="stale_label_1.csv", barcode="BC-STALE-1")
+    second_stale = write_csv(tmp_path, name="stale_label_2.csv", barcode="BC-STALE-2")
+    current_source = write_csv(tmp_path, name="current_label.csv", barcode="BC-CURRENT")
+    enqueue_completed_source_file(config, source_file_path=first_stale)
+    enqueue_completed_source_file(config, source_file_path=second_stale)
+    with sqlite3.connect(config.db_path) as conn:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET created_at = ?",
+            ("2000-01-01T00:00:00Z",),
+        )
+    aged_config = DirectSyncRuntimeConfig(
+        **{
+            **config.__dict__,
+            "max_active_queue_age_seconds": 1,
+        }
+    )
+    session = EchoAcceptedSession()
+
+    blocked = enqueue_completed_source_file(
+        aged_config,
+        source_file_path=current_source,
+        backpressure_recovery_session=session,
+    )
+
+    assert blocked["status"] == "blocked_queue_backpressure"
+    recovery = blocked["queue_backpressure"]["recovery"]
+    assert recovery["max_attempts"] == 1
+    assert recovery["attempt_count"] == 1
+    assert recovery["resolved"] is False
+    assert len(session.calls) == 1
+    counts = relay_queue_status(config.db_path)["counts"]
+    assert counts[RELAY_STATUS_ACKED] == 1
+    assert counts[RELAY_STATUS_PENDING] == 1
+    assert_runtime_artifacts_are_redacted(aged_config)
+
+
 def test_runtime_repeated_source_scan_after_ack_does_not_requeue(tmp_path):
     config = make_config(tmp_path)
     source_file = write_csv(tmp_path)

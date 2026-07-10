@@ -684,7 +684,7 @@ def _recover_aged_queue_before_enqueue(
     backpressure: Mapping[str, Any],
     credentials: ProducerCredentials | None = None,
     session: Any = None,
-    max_attempts: int = 8,
+    max_attempts: int = 1,
 ) -> dict[str, Any]:
     current = dict(backpressure)
     reasons = set(current.get("reasons") or [])

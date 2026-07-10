@@ -282,9 +282,41 @@ def test_session_direct_sync_runner_uses_zero_source_file_age(tmp_path, monkeypa
     assert command[command.index("--scan-source-dir") + 1] == context["scan_source_dir"]
     assert command[command.index("--producer-manifest-path") + 1] == context["manifest_path"]
     assert command[command.index("--credential-path") + 1] == context["credential_path"]
+    assert command[command.index("--timeout-seconds") + 1] == str(
+        module.LABEL_MATCH_SESSION_SYNC_REQUEST_TIMEOUT_SECONDS
+    )
+    assert module.LABEL_MATCH_SESSION_SYNC_REQUEST_TIMEOUT_SECONDS * 2 < module.LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS
     assert command[command.index("--min-source-file-age-seconds") + 1] == "0"
     assert "--source-glob" in command
     assert command[command.index("--source-glob") + 1] == "*.csv"
+
+
+def test_session_direct_sync_reports_runner_backpressure_exit_as_fail(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    context = {"scan_source_dir": str(tmp_path)}
+    observed = {}
+
+    class Completed:
+        returncode = 2
+        stdout = "direct_sync_relay_status=blocked_queue_backpressure"
+        stderr = ""
+
+    monkeypatch.setattr(module, "_label_match_session_sync_trigger_enabled", lambda: True)
+    monkeypatch.setattr(module, "_label_match_direct_sync_runner_command", lambda *args, **kwargs: ["runner.exe"])
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return Completed()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module._label_match_run_session_direct_sync_once(context, reason="TRAY_COMPLETE")
+
+    assert result["status"] == "FAIL"
+    assert result["returncode"] == 2
+    assert observed["timeout"] == module.LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS
+    assert observed["check"] is False
 
 
 def test_enriched_tray_complete_preserves_label_match_contract():
