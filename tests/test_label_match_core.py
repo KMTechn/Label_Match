@@ -160,10 +160,25 @@ def test_direct_sync_bootstrap_context_uses_per_pc_programdata_root(tmp_path, mo
     assert context["bootstrap_status_path"].endswith("label_match_direct_sync_auto_bootstrap.json")
 
 
-def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(tmp_path, monkeypatch):
+@pytest.mark.parametrize("allow_interactive_task_for_local_test", [False, True])
+def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
+    tmp_path,
+    monkeypatch,
+    allow_interactive_task_for_local_test,
+):
     module = load_label_match_module()
     monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-02")
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    if allow_interactive_task_for_local_test:
+        monkeypatch.setenv(
+            module.LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
+            "1",
+        )
+    else:
+        monkeypatch.delenv(
+            module.LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
+            raising=False,
+        )
     context = module._label_match_direct_sync_context(
         str(tmp_path / "scan-data"),
         str(tmp_path / "active-config" / "app_settings.json"),
@@ -203,6 +218,7 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(tmp_path, monk
     assert command[command.index("--app-settings-path") + 1] == context["app_settings_path"]
     assert "--runner-exe" not in command
     assert command[command.index("--registration-exe") + 1].endswith("register_label_match_worker_pc.exe")
+    assert ("--allow-interactive-task-for-local-test" in command) is allow_interactive_task_for_local_test
     report = json.loads(Path(context["bootstrap_status_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "PASS"
     assert report["run_task_result"] == {"status": "PASS"}

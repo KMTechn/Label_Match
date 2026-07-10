@@ -78,6 +78,9 @@ LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV = "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOS
 LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
 LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_NAME"
 LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_SECONDS"
+LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV = (
+    "LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST"
+)
 LABEL_MATCH_SESSION_SYNC_TRIGGER_ENV = "LABEL_MATCH_SESSION_SYNC_TRIGGER"
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
@@ -559,6 +562,12 @@ def _label_match_auto_bootstrap_direct_sync(context):
     registration_exe = _label_match_optional_tool_exe(context, "register_label_match_worker_pc.exe")
     if registration_exe:
         args.extend(["--registration-exe", registration_exe])
+    allow_interactive_task_for_local_test = os.environ.get(
+        LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
+        "",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if allow_interactive_task_for_local_test:
+        args.append("--allow-interactive-task-for-local-test")
 
     env = os.environ.copy()
     env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
@@ -905,7 +914,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.27" # private update feed release
+APP_VERSION = "v2.0.28" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"

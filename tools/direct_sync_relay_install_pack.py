@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import urlparse
 
 
 DEFAULT_TASK_NAME = "direct-sync-relay-label-match"
@@ -25,6 +26,13 @@ DEFAULT_ENROLLMENT_PATH = "/api/producer-ingest/v1/enroll"
 DEFAULT_ENROLLMENT_TOKEN_ENV = ""
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
 SAFE_TASK_FILE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+LOCAL_TEST_TASK_ENV_NAMES = (
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+)
 
 
 def _quote_cmd(parts: Sequence[str]) -> str:
@@ -52,13 +60,41 @@ def _vbs_string(value: str | os.PathLike[str]) -> str:
     return '"' + str(value).replace('"', '""') + '"'
 
 
-def _task_wrapper_content(runner_parts: Sequence[str]) -> str:
+def _local_test_task_environment(args: argparse.Namespace) -> dict[str, str]:
+    if not bool(getattr(args, "allow_interactive_task_for_local_test", False)):
+        return {}
+    values: dict[str, str] = {}
+    for env_name in LOCAL_TEST_TASK_ENV_NAMES:
+        if env_name not in os.environ:
+            continue
+        value = str(os.environ.get(env_name) or "")
+        if any(character in value for character in ("\x00", "\r", "\n")):
+            raise ValueError(f"{env_name} contains characters unsafe for a local-test task wrapper")
+        if env_name in {"HTTPS_PROXY", "HTTP_PROXY"} and value:
+            parsed = urlparse(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError(f"{env_name} must be an HTTP(S) proxy URL")
+            if parsed.username or parsed.password:
+                raise ValueError(f"{env_name} must not contain proxy credentials")
+        values[env_name] = value
+    return values
+
+
+def _task_wrapper_content(
+    runner_parts: Sequence[str],
+    *,
+    environment: dict[str, str] | None = None,
+) -> str:
     python_exe = str(runner_parts[0])
     runner_args = [str(part) for part in runner_parts[1:]]
     lines = [
         "$ErrorActionPreference = 'Stop'",
-        "$arguments = @(",
     ]
+    lines.extend(
+        f"$env:{env_name} = {_ps_single_quote(value)}"
+        for env_name, value in (environment or {}).items()
+    )
+    lines.append("$arguments = @(")
     lines.extend(f"    {_ps_single_quote(part)}" for part in runner_args)
     lines.extend(
         [
@@ -243,11 +279,20 @@ def _stored_password_task_register_command(
     return _encoded_powershell_command(script)
 
 
-def _write_task_wrapper(wrapper_path: str | os.PathLike[str], runner_parts: Sequence[str]) -> dict:
+def _write_task_wrapper(
+    wrapper_path: str | os.PathLike[str],
+    runner_parts: Sequence[str],
+    *,
+    environment: dict[str, str] | None = None,
+) -> dict:
     target = Path(wrapper_path)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(_task_wrapper_content(runner_parts), encoding="utf-8-sig", newline="\r\n")
+        target.write_text(
+            _task_wrapper_content(runner_parts, environment=environment),
+            encoding="utf-8-sig",
+            newline="\r\n",
+        )
         return {"status": "PASS", "path": str(target), "encoding": "utf-8-sig"}
     except Exception as exc:
         return {"status": "FAIL", "path": str(target), "error": str(exc)}
@@ -762,6 +807,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     source_scan = _source_scan_config(args)
     backpressure = _backpressure_config(args)
     task_runtime_acl = _task_runtime_acl_plan(args)
+    local_test_task_environment = _local_test_task_environment(args)
     self_enroll = bool(getattr(args, "self_enroll", False))
     uninstall = bool(getattr(args, "uninstall", False))
     run_install_preflight = run_preflight and not uninstall and not (self_enroll and not bool(getattr(args, "apply", False)))
@@ -853,6 +899,8 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             "command": task_action_parts,
             "script_encoding": "ascii",
         },
+        "local_test_task_environment_names": list(local_test_task_environment),
+        "local_test_task_environment_persisted": bool(local_test_task_environment),
         "task_principal": task_principal,
         "scheduled_task_create_command": create_command,
         "scheduled_task_delete_command": delete_command,
@@ -1181,6 +1229,7 @@ def main(argv: list[str] | None = None) -> int:
             plan["task_wrapper_write_result"] = _write_task_wrapper(
                 plan["task_wrapper"]["path"],
                 plan["runner_command"],
+                environment=_local_test_task_environment(args),
             )
             if plan["task_wrapper_write_result"]["status"] != "PASS":
                 plan["status"] = "FAIL"

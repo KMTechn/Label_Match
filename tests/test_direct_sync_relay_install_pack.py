@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def load_install_pack_module():
     module_path = Path(__file__).resolve().parents[1] / "tools" / "direct_sync_relay_install_pack.py"
@@ -472,6 +474,45 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
     assert any("--baseline-existing-source-files" in command for command in commands)
     task_command = find_command(commands, "schtasks.exe")
     assert "wscript.exe" == task_command[task_command.index("/TR") + 1].split()[0]
+
+
+def test_local_test_task_wrapper_persists_only_allowlisted_transport_environment(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    proxy_url = "http://127.0.0.1:51947"
+    ca_path = str(tmp_path / "server-cert.pem")
+    monkeypatch.setenv("HTTPS_PROXY", proxy_url)
+    monkeypatch.setenv("HTTP_PROXY", proxy_url)
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", ca_path)
+    monkeypatch.setenv("PRODUCER_SELF_ENROLL_TOKEN", "must-not-be-captured")
+    args = argparse.Namespace(allow_interactive_task_for_local_test=True)
+
+    environment = module._local_test_task_environment(args)
+    wrapper = module._task_wrapper_content(
+        [sys.executable, "relay.py"],
+        environment=environment,
+    )
+
+    assert list(environment) == [
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "REQUESTS_CA_BUNDLE",
+    ]
+    assert f"$env:HTTPS_PROXY = '{proxy_url}'" in wrapper
+    assert f"$env:REQUESTS_CA_BUNDLE = '{ca_path}'" in wrapper
+    assert "$env:NO_PROXY = ''" in wrapper
+    assert "PRODUCER_SELF_ENROLL_TOKEN" not in wrapper
+    assert "must-not-be-captured" not in wrapper
+
+
+def test_local_test_task_environment_rejects_proxy_credentials(monkeypatch):
+    module = load_install_pack_module()
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:password@127.0.0.1:51947")
+    args = argparse.Namespace(allow_interactive_task_for_local_test=True)
+
+    with pytest.raises(ValueError, match="must not contain proxy credentials"):
+        module._local_test_task_environment(args)
 
 
 def test_install_pack_apply_supports_stored_password_task_without_leaking_password(tmp_path, monkeypatch):
