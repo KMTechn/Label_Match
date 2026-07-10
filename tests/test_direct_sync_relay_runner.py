@@ -160,9 +160,13 @@ def source_scan_state(db_path, source_file):
 def disable_scan_drain(monkeypatch, status="idle"):
     calls = []
 
-    def fake_run_relay_once(config):
-        calls.append(config)
-        return {"status": status}
+    def fake_run_relay_once(config, **kwargs):
+        calls.append((config, kwargs))
+        relay_id = str(kwargs.get("target_relay_id") or "")
+        return {
+            "status": status,
+            "last_result": {"relay_id": relay_id, "status": status},
+        }
 
     monkeypatch.setattr(runner, "run_relay_once", fake_run_relay_once)
     return calls
@@ -184,7 +188,7 @@ def test_runner_scan_source_dir_enqueues_matching_csv_idempotently(tmp_path, cap
     (sync_dir / "ignore.txt").write_text("not a csv", encoding="utf-8")
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_relay_status=idle" in output
     assert "direct_sync_scan_status=enqueued" in output
@@ -227,14 +231,14 @@ def test_runner_scan_real_data_manager_output_ack_then_second_scan_has_no_new_ro
     csv_path = csv_files[0]
     args = runner_args(tmp_path, scan_dir=scan_dir)
 
-    def fake_acked_relay_once(config):
+    def fake_acked_relay_once(config, **kwargs):
         pending = [
             row for row in relay_rows(config.db_path)
             if row["status"] == RELAY_STATUS_PENDING
         ]
         if not pending:
             return {"status": "idle"}
-        relay_id = pending[0]["relay_id"]
+        relay_id = str(kwargs.get("target_relay_id") or pending[0]["relay_id"])
         with sqlite3.connect(config.db_path) as conn:
             conn.execute(
                 "UPDATE direct_sync_relay_batches SET status = ? WHERE relay_id = ?",
@@ -296,7 +300,7 @@ def test_runner_scan_twenty_pcs_same_filename_and_worker_keep_identity_isolated(
             secret=f"runner-secret-{index:03d}",
         )
 
-        assert main(args) == 0
+        assert main(args) == 1
         output = capsys.readouterr().out
         assert "direct_sync_scan_status=enqueued" in output
         rows = relay_rows(pc_root / "relay.sqlite3")
@@ -371,7 +375,7 @@ def test_runner_scan_source_watermark_does_not_advance_before_ack(tmp_path, caps
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
 
     assert source_scan_state(tmp_path / "relay.sqlite3", csv_path) is None
     assert main(args) == 0
@@ -385,8 +389,8 @@ def test_runner_scan_source_records_watermark_after_durable_ack(tmp_path, capsys
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    def fake_acked_relay_once(config):
-        relay_id = relay_rows(config.db_path)[0]["relay_id"]
+    def fake_acked_relay_once(config, **kwargs):
+        relay_id = str(kwargs.get("target_relay_id") or relay_rows(config.db_path)[0]["relay_id"])
         with sqlite3.connect(config.db_path) as conn:
             conn.execute(
                 "UPDATE direct_sync_relay_batches SET status = ? WHERE relay_id = ?",
@@ -418,13 +422,66 @@ def test_runner_scan_source_records_watermark_after_durable_ack(tmp_path, capsys
     assert status["scan_enqueued_count"] == 1
 
 
+def test_runner_targets_current_delta_when_older_pending_row_exists(tmp_path, capsys, monkeypatch):
+    disable_scan_drain(monkeypatch)
+    sync_dir = tmp_path / "sync"
+    csv_path = write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+
+    assert main(args) == 1
+    capsys.readouterr()
+    old_relay_id = relay_rows(tmp_path / "relay.sqlite3")[0]["relay_id"]
+    with csv_path.open("a", encoding="utf-8") as file:
+        file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-CURRENT\"\" }\"\n")
+    targeted = []
+
+    def fake_targeted_ack(config, **kwargs):
+        relay_id = str(kwargs.get("target_relay_id") or "")
+        targeted.append(relay_id)
+        assert relay_id and relay_id != old_relay_id
+        with sqlite3.connect(config.db_path) as conn:
+            conn.execute(
+                "UPDATE direct_sync_relay_batches SET status = ? WHERE relay_id = ?",
+                (RELAY_STATUS_ACKED, relay_id),
+            )
+            conn.commit()
+        return {
+            "status": "acked",
+            "last_result": {
+                "relay_id": relay_id,
+                "status": "acked",
+                "committed": True,
+                "retryable": False,
+            },
+        }
+
+    monkeypatch.setattr(runner, "run_relay_once", fake_targeted_ack)
+
+    assert main(args) == 0
+    output = capsys.readouterr().out
+    rows = {row["relay_id"]: row["status"] for row in relay_rows(tmp_path / "relay.sqlite3")}
+    assert len(targeted) == 1
+    assert rows[old_relay_id] == RELAY_STATUS_PENDING
+    assert rows[targeted[0]] == RELAY_STATUS_ACKED
+    assert "direct_sync_targeted_ack_count=1" in output
+    runtime = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
+    assert runtime["targeted_drain_results"] == [
+        {
+            "target_relay_id": targeted[0],
+            "status": "acked",
+            "acked_relay_id": targeted[0],
+            "error_code": "",
+        }
+    ]
+
+
 def test_runner_scan_source_records_watermark_after_committed_operator_review(tmp_path, capsys, monkeypatch):
     sync_dir = tmp_path / "sync"
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    def fake_operator_review_relay_once(config):
-        relay_id = relay_rows(config.db_path)[0]["relay_id"]
+    def fake_operator_review_relay_once(config, **kwargs):
+        relay_id = str(kwargs.get("target_relay_id") or relay_rows(config.db_path)[0]["relay_id"])
         receipt = {
             "client_batch_id": relay_id,
             "status": "accepted",
@@ -454,7 +511,7 @@ def test_runner_scan_source_records_watermark_after_committed_operator_review(tm
 
     monkeypatch.setattr(runner, "run_relay_once", fake_operator_review_relay_once)
 
-    assert main(args) == 0
+    assert main(args) == 1
     capsys.readouterr()
 
     state = source_scan_state(tmp_path / "relay.sqlite3", csv_path)
@@ -482,7 +539,7 @@ def test_runner_scan_source_recovers_checkpoint_from_committed_operator_review_r
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
     capsys.readouterr()
     first_row = relay_rows(tmp_path / "relay.sqlite3")[0]
     receipt = {
@@ -510,7 +567,7 @@ def test_runner_scan_source_recovers_checkpoint_from_committed_operator_review_r
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n")
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
@@ -542,11 +599,11 @@ def test_runner_scan_source_content_change_enqueues_new_delta(tmp_path, capsys, 
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n")
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     assert "direct_sync_scan_enqueued_count=1" in output
@@ -567,7 +624,7 @@ def test_runner_scan_source_recovers_checkpoint_from_queued_delta_after_crash(tm
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
     conn = sqlite3.connect(str(tmp_path / "relay.sqlite3"))
     try:
         conn.execute("DELETE FROM direct_sync_source_scan_state")
@@ -577,7 +634,7 @@ def test_runner_scan_source_recovers_checkpoint_from_queued_delta_after_crash(tm
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n")
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 2
@@ -594,10 +651,10 @@ def test_runner_scan_source_queued_checkpoint_recovery_resets_on_replacement(tmp
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n")
-    assert main(args) == 0
+    assert main(args) == 1
     conn = sqlite3.connect(str(tmp_path / "relay.sqlite3"))
     try:
         conn.execute("DELETE FROM direct_sync_source_scan_state")
@@ -610,7 +667,7 @@ def test_runner_scan_source_queued_checkpoint_recovery_resets_on_replacement(tmp
         encoding="utf-8",
     )
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     rows = relay_rows(tmp_path / "relay.sqlite3")
@@ -629,13 +686,13 @@ def test_runner_scan_source_append_after_quiet_window_does_not_stall(tmp_path, c
     os.utime(csv_path, (old_time, old_time))
     args = runner_args(tmp_path, scan_dir=sync_dir) + ["--min-source-file-age-seconds", "60"]
 
-    assert main(args) == 0
+    assert main(args) == 1
 
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("2026-06-22T00:02:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-3\"\" }\"\n")
     os.utime(csv_path, (old_time + 1, old_time + 1))
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     assert "direct_sync_scan_enqueued_count=1" in output
@@ -668,7 +725,7 @@ def test_runner_scan_source_defers_trailing_partial_csv_row_until_newline(tmp_pa
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("IAL\"\" }\"\n")
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     assert "direct_sync_scan_enqueued_count=1" in output
@@ -689,10 +746,10 @@ def test_runner_scan_source_limit_skips_no_new_files_to_reach_new_delta(tmp_path
     os.utime(second, (now + 1, now + 1))
     args = runner_args(tmp_path, scan_dir=sync_dir) + ["--max-enqueue-files", "1"]
 
-    assert main(args) == 0
+    assert main(args) == 1
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     rows = relay_rows(tmp_path / "relay.sqlite3")
@@ -706,14 +763,14 @@ def test_runner_scan_source_replace_or_truncate_resets_delta_state(tmp_path, cap
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
     csv_path.write_text(
         "timestamp,worker_name,event,details\n"
         "2026-06-22T00:03:00,w,L,\"{ \"\"product_barcode\"\": \"\"NEW\"\" }\"\n",
         encoding="utf-8",
     )
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 2
@@ -730,7 +787,7 @@ def test_runner_scan_source_larger_replacement_does_not_skip_new_first_row(tmp_p
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 0
+    assert main(args) == 1
     csv_path.write_text(
         "timestamp,worker_name,event,details\n"
         "2026-06-22T00:03:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"NEW-FIRST\"\" }\"\n"
@@ -738,7 +795,7 @@ def test_runner_scan_source_larger_replacement_does_not_skip_new_first_row(tmp_p
         encoding="utf-8",
     )
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     rows = relay_rows(tmp_path / "relay.sqlite3")
@@ -756,7 +813,7 @@ def test_runner_scan_source_dir_filters_broad_csv_glob_to_label_logs(tmp_path, c
     write_label_csv(sync_dir, name="unrelated.csv")
     args = runner_args(tmp_path, scan_dir=sync_dir) + ["--source-glob", "*.csv"]
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
 
     assert "direct_sync_scan_enqueued_count=1" in output
@@ -806,7 +863,7 @@ def test_runner_baselines_existing_source_file_without_enqueueing(tmp_path, caps
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n")
 
-    assert main(runner_args(tmp_path, scan_dir=sync_dir)) == 0
+    assert main(runner_args(tmp_path, scan_dir=sync_dir)) == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=enqueued" in output
     rows = relay_rows(tmp_path / "relay.sqlite3")
@@ -841,7 +898,7 @@ def test_runner_scan_source_dir_enqueues_old_files_with_quiet_time(tmp_path, cap
     os.utime(csv_path, (old_time, old_time))
     args = runner_args(tmp_path, scan_dir=sync_dir) + ["--min-source-file-age-seconds", "60"]
 
-    assert main(args) == 0
+    assert main(args) == 1
     output = capsys.readouterr().out
 
     assert "direct_sync_scan_status=enqueued" in output
@@ -979,7 +1036,7 @@ def test_runner_scan_source_runtime_error_is_not_masked_by_drain(tmp_path, capsy
     def fake_enqueue(*args, **kwargs):
         return {"status": "runtime_error", "error_code": "relay_queue_db_error"}
 
-    def fake_run_relay_once(config):
+    def fake_run_relay_once(config, **kwargs):
         drain_calls.append(config)
         return {"status": "idle"}
 
@@ -1026,7 +1083,7 @@ def test_runner_age_recovery_failure_is_not_redrained_or_masked(tmp_path, capsys
             },
         }
 
-    def fake_run_relay_once(config):
+    def fake_run_relay_once(config, **kwargs):
         drain_calls.append(config)
         return {"status": "idle"}
 

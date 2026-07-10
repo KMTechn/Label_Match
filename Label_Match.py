@@ -84,6 +84,9 @@ LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV = (
 LABEL_MATCH_SESSION_SYNC_TRIGGER_ENV = "LABEL_MATCH_SESSION_SYNC_TRIGGER"
 LABEL_MATCH_SESSION_SYNC_REQUEST_TIMEOUT_SECONDS = 15
 LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS = 45
+LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS = 5
+LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS = 10
+LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
 _LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
@@ -186,6 +189,26 @@ def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
     }
 
 
+def _label_match_bind_current_log_source(context, data_manager):
+    bound = dict(context)
+    try:
+        source_file = os.path.abspath(data_manager._get_log_filepath())
+        scan_source_dir = os.path.abspath(context["scan_source_dir"])
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        bound["scan_source_binding_error"] = "current_log_path_unavailable"
+        return bound
+    if os.path.dirname(source_file) != scan_source_dir:
+        bound["scan_source_binding_error"] = "current_log_outside_scan_source"
+        return bound
+    source_name = os.path.basename(source_file)
+    if not source_name.startswith("포장실작업이벤트로그_") or not source_name.lower().endswith(".csv"):
+        bound["scan_source_binding_error"] = "current_log_filename_not_allowed"
+        return bound
+    bound["scan_source_file"] = source_file
+    bound.pop("scan_source_binding_error", None)
+    return bound
+
+
 def _label_match_json_file(path):
     try:
         with open(path, "r", encoding="utf-8-sig") as handle:
@@ -226,6 +249,113 @@ def _label_match_subprocess_creationflags():
     if os.name == "nt":
         return getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return 0
+
+
+def _label_match_terminate_process_tree(process, *, deadline_monotonic=None):
+    if deadline_monotonic is None:
+        deadline_monotonic = time.monotonic() + LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS
+
+    def remaining_seconds():
+        return max(0.0, deadline_monotonic - time.monotonic())
+
+    report = {"attempted": True, "tree_terminated": False, "method": ""}
+    if process.poll() is not None:
+        report.update({"tree_terminated": True, "method": "already_exited"})
+        return report
+    if os.name == "nt":
+        try:
+            remaining = remaining_seconds()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("taskkill.exe", 0)
+            completed = subprocess.run(
+                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=remaining,
+                creationflags=_label_match_subprocess_creationflags(),
+            )
+            report.update({
+                "method": "taskkill_tree",
+                "taskkill_returncode": completed.returncode,
+            })
+        except Exception as exc:
+            report.update({"method": "taskkill_tree_failed", "error_type": exc.__class__.__name__})
+    if process.poll() is None:
+        try:
+            process.kill()
+            if not report["method"]:
+                report["method"] = "process_kill"
+        except Exception as exc:
+            report.setdefault("error_type", exc.__class__.__name__)
+    remaining = remaining_seconds()
+    if remaining > 0:
+        try:
+            process.wait(timeout=remaining)
+        except Exception:
+            pass
+    report["tree_terminated"] = process.poll() is not None
+    return report
+
+
+def _label_match_run_bounded_subprocess(command, *, timeout_seconds, env):
+    def output_text(value):
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value or "")
+
+    started = time.monotonic()
+    creationflags = _label_match_subprocess_creationflags()
+    if os.name == "nt":
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        creationflags=creationflags,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=max(0.1, float(timeout_seconds)))
+        return {
+            "returncode": int(process.returncode or 0),
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "timed_out": False,
+            "process_tree_termination": {"attempted": False, "tree_terminated": True, "method": "not_required"},
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    except subprocess.TimeoutExpired as exc:
+        termination_deadline = time.monotonic() + LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS
+        termination = _label_match_terminate_process_tree(
+            process,
+            deadline_monotonic=termination_deadline,
+        )
+        stdout = output_text(exc.stdout)
+        stderr = output_text(exc.stderr)
+        remaining = max(0.0, termination_deadline - time.monotonic())
+        try:
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, 0)
+            final_stdout, final_stderr = process.communicate(timeout=remaining)
+            stdout = output_text(final_stdout) or stdout
+            stderr = output_text(final_stderr) or stderr
+        except Exception:
+            for stream in (process.stdout, process.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+        return {
+            "returncode": int(process.returncode if process.returncode is not None else -1),
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "timed_out": True,
+            "process_tree_termination": termination,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
 
 
 def _label_match_direct_sync_tool_command(context):
@@ -427,6 +557,8 @@ def _label_match_direct_sync_runtime_paths(context):
 
 
 def _label_match_direct_sync_runner_command(context, *, min_source_file_age_seconds=0):
+    if context.get("scan_source_binding_error"):
+        raise ValueError("bound direct-sync source is unavailable")
     tools_dir = os.path.join(context["app_root"], "tools")
     runner_exe = os.path.join(tools_dir, "direct_sync_relay_runner.exe")
     runner_script = os.path.join(tools_dir, "direct_sync_relay_runner.py")
@@ -439,6 +571,17 @@ def _label_match_direct_sync_runner_command(context, *, min_source_file_age_seco
         command = [python_exe, runner_script]
     else:
         return []
+
+    source_glob = "*.csv"
+    scan_source_file = str(context.get("scan_source_file") or "").strip()
+    if scan_source_file:
+        scan_source_file = os.path.abspath(scan_source_file)
+        scan_source_dir = os.path.abspath(context["scan_source_dir"])
+        if os.path.dirname(scan_source_file) != scan_source_dir:
+            raise ValueError("bound direct-sync source file is outside the scan source directory")
+        source_glob = os.path.basename(scan_source_file)
+        if not source_glob.startswith("포장실작업이벤트로그_") or not source_glob.lower().endswith(".csv"):
+            raise ValueError("bound direct-sync source filename is outside the allowlist")
 
     paths = _label_match_direct_sync_runtime_paths(context)
     command.extend([
@@ -465,39 +608,120 @@ def _label_match_direct_sync_runner_command(context, *, min_source_file_age_seco
         "--scan-source-dir",
         context["scan_source_dir"],
         "--source-glob",
-        "*.csv",
+        source_glob,
         "--max-enqueue-files",
-        "25",
+        "1",
         "--min-source-file-age-seconds",
         str(max(0, int(min_source_file_age_seconds or 0))),
     ])
     return command
 
 
-def _label_match_run_session_direct_sync_once(context, *, reason="TRAY_COMPLETE"):
+def _label_match_current_delta_ack_report(context, *, runtime_status_mtime_before_ns=0):
+    path = context.get("runtime_status_path", "")
+    try:
+        stat_result = os.stat(path)
+        if runtime_status_mtime_before_ns and stat_result.st_mtime_ns <= runtime_status_mtime_before_ns:
+            return {"status": "FAIL", "error_code": "runtime_status_not_fresh"}
+        payload = _label_match_json_file(path)
+    except Exception as exc:
+        return {"status": "FAIL", "error_code": "runtime_status_unavailable", "error_type": exc.__class__.__name__}
+    targeted = payload.get("targeted_drain_results")
+    if not isinstance(targeted, list) or not targeted:
+        return {
+            "status": "FAIL",
+            "error_code": "current_delta_targeted_ack_missing",
+            "scan_enqueued_count": int(payload.get("scan_enqueued_count") or 0),
+        }
+    scan_enqueued_count = int(payload.get("scan_enqueued_count") or 0)
+    summaries = []
+    verified = scan_enqueued_count > 0 and len(targeted) == scan_enqueued_count
+    for item in targeted:
+        target_relay_id = str(item.get("target_relay_id") or "")
+        acked_relay_id = str(item.get("acked_relay_id") or "")
+        item_status = str(item.get("status") or "")
+        current_verified = bool(target_relay_id and acked_relay_id == target_relay_id and item_status == "acked")
+        verified = verified and current_verified
+        summaries.append({
+            "target_relay_id": target_relay_id,
+            "acked_relay_id": acked_relay_id,
+            "status": item_status,
+            "current_target_verified": current_verified,
+        })
+    return {
+        "status": "PASS" if verified else "FAIL",
+        "error_code": "" if verified else "current_delta_targeted_ack_failed",
+        "scan_enqueued_count": scan_enqueued_count,
+        "targeted_drain_results": summaries,
+    }
+
+
+def _label_match_run_session_direct_sync_once(
+    context,
+    *,
+    reason="TRAY_COMPLETE",
+    deadline_monotonic=None,
+):
     if not _label_match_session_sync_trigger_enabled():
         return {"status": "SKIPPED", "reason": "session sync trigger disabled"}
-    command = _label_match_direct_sync_runner_command(context, min_source_file_age_seconds=0)
+    try:
+        command = _label_match_direct_sync_runner_command(context, min_source_file_age_seconds=0)
+    except (KeyError, OSError, ValueError) as exc:
+        return {
+            "status": "FAIL",
+            "reason": reason,
+            "error": "direct-sync source binding is invalid",
+            "error_code": "direct_sync_source_binding_invalid",
+            "error_type": exc.__class__.__name__,
+        }
     if not command:
         return {"status": "SKIPPED", "reason": "direct-sync relay runner is missing"}
     env = os.environ.copy()
     env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
+    runtime_status_path = context.get("runtime_status_path", "")
     try:
-        completed = subprocess.run(
+        runtime_status_mtime_before_ns = os.stat(runtime_status_path).st_mtime_ns
+    except OSError:
+        runtime_status_mtime_before_ns = 0
+    process_budget_seconds = float(LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS)
+    if deadline_monotonic is not None:
+        process_budget_seconds = min(
+            process_budget_seconds,
+            max(0.0, deadline_monotonic - time.monotonic()),
+        )
+    timeout_seconds = process_budget_seconds - LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS
+    if timeout_seconds <= 0:
+        return {
+            "status": "FAIL",
+            "reason": reason,
+            "error": "session sync shutdown deadline exhausted",
+            "error_code": "session_sync_deadline_exhausted",
+        }
+    try:
+        completed = _label_match_run_bounded_subprocess(
             command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS,
+            timeout_seconds=timeout_seconds,
             env=env,
-            creationflags=_label_match_subprocess_creationflags(),
+        )
+        ack_report = _label_match_current_delta_ack_report(
+            context,
+            runtime_status_mtime_before_ns=runtime_status_mtime_before_ns,
+        )
+        passed = (
+            not completed["timed_out"]
+            and completed["returncode"] == 0
+            and ack_report.get("status") == "PASS"
         )
         return {
-            "status": "PASS" if completed.returncode == 0 else "FAIL",
+            "status": "PASS" if passed else "FAIL",
             "reason": reason,
-            "returncode": completed.returncode,
-            "stdout": completed.stdout[-1000:],
-            "stderr": completed.stderr[-1000:],
+            "returncode": completed["returncode"],
+            "stdout": completed["stdout"][-1000:],
+            "stderr": completed["stderr"][-1000:],
+            "timed_out": completed["timed_out"],
+            "process_tree_termination": completed["process_tree_termination"],
+            "elapsed_seconds": completed["elapsed_seconds"],
+            "current_delta_ack": ack_report,
         }
     except Exception as exc:
         return {"status": "FAIL", "reason": reason, "error": str(exc)}
@@ -529,10 +753,16 @@ def _label_match_write_session_direct_sync_result(context, *, reason, result, wr
     }
 
 
-def _label_match_run_and_record_session_direct_sync(context, *, reason):
-    acquired = _LABEL_MATCH_SESSION_SYNC_LOCK.acquire(
-        timeout=LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS + 10
-    )
+def _label_match_run_and_record_session_direct_sync(
+    context,
+    *,
+    reason,
+    deadline_monotonic=None,
+):
+    lock_timeout = float(LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS + 10)
+    if deadline_monotonic is not None:
+        lock_timeout = min(lock_timeout, max(0.0, deadline_monotonic - time.monotonic()))
+    acquired = lock_timeout > 0 and _LABEL_MATCH_SESSION_SYNC_LOCK.acquire(timeout=lock_timeout)
     if not acquired:
         result = {"status": "FAIL", "reason": reason, "error": "session sync sequence lock timeout"}
         try:
@@ -551,7 +781,10 @@ def _label_match_run_and_record_session_direct_sync(context, *, reason):
             )
             return {**result, "evidence_error": str(exc)}
     try:
-        result = _label_match_run_session_direct_sync_once(context, reason=reason)
+        run_kwargs = {"reason": reason}
+        if deadline_monotonic is not None:
+            run_kwargs["deadline_monotonic"] = deadline_monotonic
+        result = _label_match_run_session_direct_sync_once(context, **run_kwargs)
         try:
             evidence = _label_match_write_session_direct_sync_result(
                 context,
@@ -1001,7 +1234,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.32" # private update feed release
+APP_VERSION = "v2.0.33" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -2743,23 +2976,95 @@ class Label_Match(tk.Tk):
                 messagebox.showerror("기준 정보 로드 오류", f"품목 정보를 불러오는 중 오류가 발생했습니다.\n\n[상세 오류]\n{e}")
             return {}
 
-    def _run_app_close_direct_sync_worker(self, context, result_queue):
-        pending_threads = list(self.__dict__.get("direct_sync_session_threads", []))
-        legacy_pending = self.__dict__.get("direct_sync_session_thread")
-        if legacy_pending is not None and legacy_pending not in pending_threads:
-            pending_threads.append(legacy_pending)
-        for pending in pending_threads:
-            if pending is not None and pending.is_alive():
-                pending.join()
-        result = _label_match_run_and_record_session_direct_sync(
-            context,
-            reason=self.Events.APP_CLOSE,
-        )
-        result_queue.put(result)
+    def _record_app_close_failure(self, context, result):
+        try:
+            evidence = _label_match_write_session_direct_sync_result(
+                context,
+                reason=self.Events.APP_CLOSE,
+                result=result,
+            )
+            return {**result, "evidence": evidence}
+        except Exception as exc:
+            return {**result, "evidence_error": str(exc)}
+
+    def _run_app_close_direct_sync_worker(self, context, result_queue, deadline_monotonic):
+        result = None
+        try:
+            pending_threads = list(self.__dict__.get("direct_sync_session_threads", []))
+            legacy_pending = self.__dict__.get("direct_sync_session_thread")
+            if legacy_pending is not None and legacy_pending not in pending_threads:
+                pending_threads.append(legacy_pending)
+            for pending in pending_threads:
+                if pending is None or not pending.is_alive():
+                    continue
+                remaining = max(0.0, deadline_monotonic - time.monotonic())
+                if remaining <= 0:
+                    result = self._record_app_close_failure(
+                        context,
+                        {
+                            "status": "FAIL",
+                            "reason": self.Events.APP_CLOSE,
+                            "error": "tracked TRAY sync exceeded the app-close deadline",
+                            "error_code": "TRAY_SYNC_JOIN_TIMEOUT",
+                        },
+                    )
+                    break
+                pending.join(timeout=remaining)
+                if pending.is_alive():
+                    result = self._record_app_close_failure(
+                        context,
+                        {
+                            "status": "FAIL",
+                            "reason": self.Events.APP_CLOSE,
+                            "error": "tracked TRAY sync exceeded the app-close deadline",
+                            "error_code": "TRAY_SYNC_JOIN_TIMEOUT",
+                        },
+                    )
+                    break
+            if result is None:
+                result = _label_match_run_and_record_session_direct_sync(
+                    context,
+                    reason=self.Events.APP_CLOSE,
+                    deadline_monotonic=deadline_monotonic,
+                )
+        except Exception as exc:
+            result = self._record_app_close_failure(
+                context,
+                {
+                    "status": "FAIL",
+                    "reason": self.Events.APP_CLOSE,
+                    "error": "APP_CLOSE worker failed",
+                    "error_code": "APP_CLOSE_WORKER_ERROR",
+                    "error_type": exc.__class__.__name__,
+                },
+            )
+        try:
+            result_queue.put_nowait(result)
+        except queue.Full:
+            pass
 
     def _poll_app_close_direct_sync(self):
         thread = self.__dict__.get("_app_close_sync_thread")
         if thread is not None and thread.is_alive():
+            deadline = self.__dict__.get("_app_close_deadline_monotonic")
+            if deadline is not None and time.monotonic() >= deadline:
+                context = self.__dict__.get("direct_sync_bootstrap_context") or _label_match_direct_sync_context(
+                    self.save_directory,
+                    getattr(self, "app_settings_path", ""),
+                )
+                result = self._record_app_close_failure(
+                    context,
+                    {
+                        "status": "FAIL",
+                        "reason": self.Events.APP_CLOSE,
+                        "error": "APP_CLOSE shutdown deadline exceeded",
+                        "error_code": "APP_CLOSE_SHUTDOWN_DEADLINE_EXCEEDED",
+                    },
+                )
+                self.app_close_direct_sync_result = result
+                self._save_app_settings()
+                self.destroy()
+                return
             self._app_close_poll_after_id = self.after(100, self._poll_app_close_direct_sync)
             return
         result_queue = self.__dict__.get("_app_close_sync_result_queue")
@@ -2778,15 +3083,17 @@ class Label_Match(tk.Tk):
         self.destroy()
 
     def _begin_app_close_direct_sync(self, context):
+        deadline_monotonic = time.monotonic() + LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS
         result_queue = queue.Queue(maxsize=1)
         thread = threading.Thread(
             target=self._run_app_close_direct_sync_worker,
-            args=(context, result_queue),
-            daemon=False,
+            args=(context, result_queue, deadline_monotonic),
+            daemon=True,
             name="label-match-app-close-direct-sync",
         )
         self._app_close_sync_result_queue = result_queue
         self._app_close_sync_thread = thread
+        self._app_close_deadline_monotonic = deadline_monotonic
         thread.start()
         self._app_close_poll_after_id = self.after(100, self._poll_app_close_direct_sync)
 
@@ -2817,7 +3124,7 @@ class Label_Match(tk.Tk):
                     pass
             try:
                 self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
-                self.data_manager.close(timeout=None)
+                self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
             except Exception as e:
                 self._app_close_in_progress = False
                 if entry is not None:
@@ -2836,6 +3143,7 @@ class Label_Match(tk.Tk):
                     self.save_directory,
                     getattr(self, "app_settings_path", ""),
                 )
+                context = _label_match_bind_current_log_source(context, self.data_manager)
                 self.direct_sync_bootstrap_context = context
                 self._begin_app_close_direct_sync(context)
                 return
@@ -3651,6 +3959,7 @@ class Label_Match(tk.Tk):
                 self.save_directory,
                 getattr(self, "app_settings_path", ""),
             )
+            context = _label_match_bind_current_log_source(context, self.data_manager)
             self.direct_sync_bootstrap_context = context
             active_sync_threads = [
                 thread

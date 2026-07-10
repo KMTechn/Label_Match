@@ -477,6 +477,36 @@ def test_runtime_status_and_log_bind_manifest_source_identity(tmp_path):
     assert log_entry["manifest_hash"] == expected_manifest_hash
 
 
+def test_runtime_targeted_drain_acks_current_row_without_consuming_older_pending(tmp_path):
+    config = make_config(tmp_path)
+    old_source = write_csv(tmp_path, name="label_runtime_old.csv", barcode="BC-OLD")
+    current_source = write_csv(tmp_path, name="label_runtime_current.csv", barcode="BC-CURRENT")
+    old_enqueue = enqueue_completed_source_file(config, source_file_path=old_source)
+    current_enqueue = enqueue_completed_source_file(config, source_file_path=current_source)
+    old_relay_id = old_enqueue["last_result"]["relay_id"]
+    current_relay_id = current_enqueue["last_result"]["relay_id"]
+
+    status = run_relay_once(
+        config,
+        session=EchoAcceptedSession(),
+        target_relay_id=current_relay_id,
+    )
+
+    assert status["status"] == "acked"
+    assert status["last_result"]["relay_id"] == current_relay_id
+    with sqlite3.connect(config.db_path) as conn:
+        rows = dict(
+            conn.execute(
+                "SELECT relay_id, status FROM direct_sync_relay_batches WHERE relay_id IN (?, ?)",
+                (old_relay_id, current_relay_id),
+            ).fetchall()
+        )
+    assert rows == {
+        old_relay_id: RELAY_STATUS_PENDING,
+        current_relay_id: RELAY_STATUS_ACKED,
+    }
+
+
 def test_runtime_operator_pause_blocks_enqueue_and_drain_before_credentials(tmp_path):
     base_config = make_config(tmp_path)
     config = DirectSyncRuntimeConfig(

@@ -293,15 +293,28 @@ def test_session_direct_sync_runner_uses_zero_source_file_age(tmp_path, monkeypa
     assert command[command.index("--source-glob") + 1] == "*.csv"
 
 
+def test_session_direct_sync_runner_binds_scan_to_current_log_file(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-03")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    scan_dir = tmp_path / "scan-data"
+    current_log = scan_dir / "포장실작업이벤트로그_PC01_20260711.csv"
+    context = module._label_match_direct_sync_context(str(scan_dir))
+    context["scan_source_file"] = str(current_log)
+
+    command = module._label_match_direct_sync_runner_command(context, min_source_file_age_seconds=0)
+
+    assert command[command.index("--source-glob") + 1] == current_log.name
+    outside = dict(context)
+    outside["scan_source_file"] = str(tmp_path / "other" / current_log.name)
+    with pytest.raises(ValueError, match="outside the scan source directory"):
+        module._label_match_direct_sync_runner_command(outside, min_source_file_age_seconds=0)
+
+
 def test_session_direct_sync_reports_runner_backpressure_exit_as_fail(tmp_path, monkeypatch):
     module = load_label_match_module()
     context = {"scan_source_dir": str(tmp_path)}
     observed = {}
-
-    class Completed:
-        returncode = 2
-        stdout = "direct_sync_relay_status=blocked_queue_backpressure"
-        stderr = ""
 
     monkeypatch.setattr(module, "_label_match_session_sync_trigger_enabled", lambda: True)
     monkeypatch.setattr(module, "_label_match_direct_sync_runner_command", lambda *args, **kwargs: ["runner.exe"])
@@ -309,16 +322,140 @@ def test_session_direct_sync_reports_runner_backpressure_exit_as_fail(tmp_path, 
     def fake_run(command, **kwargs):
         observed["command"] = command
         observed.update(kwargs)
-        return Completed()
+        return {
+            "returncode": 2,
+            "stdout": "direct_sync_relay_status=blocked_queue_backpressure",
+            "stderr": "",
+            "timed_out": False,
+            "process_tree_termination": {"attempted": False, "tree_terminated": True},
+            "elapsed_seconds": 0.01,
+        }
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "_label_match_run_bounded_subprocess", fake_run)
+    monkeypatch.setattr(
+        module,
+        "_label_match_current_delta_ack_report",
+        lambda *args, **kwargs: {"status": "FAIL", "error_code": "blocked"},
+    )
 
     result = module._label_match_run_session_direct_sync_once(context, reason="TRAY_COMPLETE")
 
     assert result["status"] == "FAIL"
     assert result["returncode"] == 2
-    assert observed["timeout"] == module.LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS
-    assert observed["check"] is False
+    assert observed["timeout_seconds"] == (
+        module.LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS
+        - module.LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS
+    )
+
+
+def test_current_delta_ack_report_rejects_missing_stale_and_wrong_target(tmp_path):
+    module = load_label_match_module()
+    status_path = tmp_path / "runtime-status.json"
+    context = {"runtime_status_path": str(status_path)}
+
+    status_path.write_text(json.dumps({"scan_enqueued_count": 1}), encoding="utf-8")
+    missing = module._label_match_current_delta_ack_report(context)
+    assert missing["status"] == "FAIL"
+    assert missing["error_code"] == "current_delta_targeted_ack_missing"
+
+    stale_mtime = status_path.stat().st_mtime_ns
+    stale = module._label_match_current_delta_ack_report(
+        context,
+        runtime_status_mtime_before_ns=stale_mtime,
+    )
+    assert stale["error_code"] == "runtime_status_not_fresh"
+
+    status_path.write_text(
+        json.dumps({
+            "scan_enqueued_count": 1,
+            "targeted_drain_results": [{
+                "target_relay_id": "relay-current",
+                "acked_relay_id": "relay-old",
+                "status": "acked",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    wrong = module._label_match_current_delta_ack_report(context)
+    assert wrong["status"] == "FAIL"
+    assert wrong["error_code"] == "current_delta_targeted_ack_failed"
+
+    status_path.write_text(
+        json.dumps({
+            "scan_enqueued_count": 0,
+            "targeted_drain_results": [{
+                "target_relay_id": "relay-current",
+                "acked_relay_id": "relay-current",
+                "status": "acked",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    no_current_enqueue = module._label_match_current_delta_ack_report(context)
+    assert no_current_enqueue["status"] == "FAIL"
+    assert no_current_enqueue["error_code"] == "current_delta_targeted_ack_failed"
+
+    status_path.write_text(
+        json.dumps({
+            "scan_enqueued_count": 1,
+            "targeted_drain_results": [{
+                "target_relay_id": "relay-current",
+                "acked_relay_id": "relay-current",
+                "status": "acked",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    accepted = module._label_match_current_delta_ack_report(context)
+    assert accepted["status"] == "PASS"
+    assert accepted["targeted_drain_results"][0]["current_target_verified"] is True
+
+
+def test_bounded_subprocess_timeout_terminates_tree_and_normalizes_byte_output(monkeypatch):
+    module = load_label_match_module()
+
+    class FakeProcess:
+        pid = 4321
+        returncode = None
+        stdout = None
+        stderr = None
+
+        def __init__(self):
+            self.communicate_count = 0
+
+        def communicate(self, timeout):
+            self.communicate_count += 1
+            if self.communicate_count == 1:
+                raise module.subprocess.TimeoutExpired(
+                    "runner.exe",
+                    timeout,
+                    output=b"partial-output",
+                    stderr=b"partial-error",
+                )
+            return b"final-output", b"final-error"
+
+    process = FakeProcess()
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: process)
+
+    def terminate_tree(current, **kwargs):
+        assert current is process
+        assert kwargs["deadline_monotonic"] >= module.time.monotonic()
+        current.returncode = -9
+        return {"attempted": True, "tree_terminated": True, "method": "test"}
+
+    monkeypatch.setattr(module, "_label_match_terminate_process_tree", terminate_tree)
+
+    result = module._label_match_run_bounded_subprocess(
+        ["runner.exe"],
+        timeout_seconds=0.1,
+        env={},
+    )
+
+    assert result["timed_out"] is True
+    assert result["returncode"] == -9
+    assert result["stdout"] == "final-output"
+    assert result["stderr"] == "final-error"
+    assert result["process_tree_termination"]["tree_terminated"] is True
 
 
 def test_session_direct_sync_writes_reason_specific_and_latest_reports(tmp_path):
@@ -377,8 +514,9 @@ def test_app_close_worker_waits_for_tray_sync_and_keeps_app_close_as_latest(tmp_
     release_tray = threading.Event()
     calls = []
 
-    def fake_run(sync_context, *, reason):
+    def fake_run(sync_context, *, reason, deadline_monotonic=None):
         assert sync_context is context
+        assert deadline_monotonic is None or deadline_monotonic > time.monotonic()
         calls.append((reason, "start"))
         if reason == "TRAY_COMPLETE":
             tray_started.set()
@@ -396,7 +534,7 @@ def test_app_close_worker_waits_for_tray_sync_and_keeps_app_close_as_latest(tmp_
     result_queue = queue.Queue(maxsize=1)
     close_thread = threading.Thread(
         target=module.Label_Match._run_app_close_direct_sync_worker,
-        args=(app, context, result_queue),
+        args=(app, context, result_queue, time.monotonic() + 10),
     )
     close_thread.start()
     time.sleep(0.05)
@@ -425,10 +563,11 @@ def test_app_close_worker_joins_every_tracked_tray_thread_before_app_close(monke
             self.name = name
 
         def is_alive(self):
-            return True
+            return not getattr(self, "joined", False)
 
-        def join(self):
+        def join(self, timeout=None):
             sequence.append(("join", self.name))
+            self.joined = True
 
     first = PendingThread("first")
     second = PendingThread("second")
@@ -438,19 +577,98 @@ def test_app_close_worker_joins_every_tracked_tray_thread_before_app_close(monke
     app.direct_sync_session_thread = second
     result_queue = queue.Queue(maxsize=1)
 
-    def run_and_record(context, *, reason):
+    def run_and_record(context, *, reason, deadline_monotonic=None):
         sequence.append(("sync", reason))
         return {"status": "PASS", "reason": reason}
 
     monkeypatch.setattr(module, "_label_match_run_and_record_session_direct_sync", run_and_record)
 
-    module.Label_Match._run_app_close_direct_sync_worker(app, {}, result_queue)
+    module.Label_Match._run_app_close_direct_sync_worker(
+        app,
+        {},
+        result_queue,
+        time.monotonic() + 10,
+    )
 
     assert sequence == [
         ("join", "first"),
         ("join", "second"),
         ("sync", module.Label_Match.Events.APP_CLOSE),
     ]
+    assert result_queue.get_nowait()["status"] == "PASS"
+
+
+def test_app_close_worker_reports_stuck_tray_thread_without_running_app_close_sync(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    context = {
+        "status_dir": str(tmp_path),
+        "source_host_id": "label-match-pack-03",
+        "scan_source_dir": str(tmp_path / "scan-data"),
+    }
+
+    class StuckThread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            assert timeout is not None and timeout >= 0
+
+    app = object.__new__(module.Label_Match)
+    app.Events = module.Label_Match.Events
+    app.direct_sync_session_threads = [StuckThread()]
+    result_queue = queue.Queue(maxsize=1)
+    monkeypatch.setattr(
+        module,
+        "_label_match_run_and_record_session_direct_sync",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("APP_CLOSE sync must not run")),
+    )
+
+    module.Label_Match._run_app_close_direct_sync_worker(
+        app,
+        context,
+        result_queue,
+        time.monotonic() + 0.05,
+    )
+
+    result = result_queue.get_nowait()
+    assert result["status"] == "FAIL"
+    assert result["error_code"] == "TRAY_SYNC_JOIN_TIMEOUT"
+    report = json.loads((tmp_path / "label_match_session_direct_sync_trigger_app_close.json").read_text(encoding="utf-8"))
+    assert report["result"]["error_code"] == "TRAY_SYNC_JOIN_TIMEOUT"
+
+
+def test_app_close_worker_shares_one_deadline_across_tracked_threads(monkeypatch):
+    module = load_label_match_module()
+    clock = [100.0]
+    observed_timeouts = []
+
+    class FinishingThread:
+        def __init__(self, elapsed):
+            self.elapsed = elapsed
+            self.finished = False
+
+        def is_alive(self):
+            return not self.finished
+
+        def join(self, timeout=None):
+            observed_timeouts.append(timeout)
+            clock[0] += self.elapsed
+            self.finished = True
+
+    app = object.__new__(module.Label_Match)
+    app.Events = module.Label_Match.Events
+    app.direct_sync_session_threads = [FinishingThread(2.0), FinishingThread(3.0)]
+    result_queue = queue.Queue(maxsize=1)
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        module,
+        "_label_match_run_and_record_session_direct_sync",
+        lambda *args, **kwargs: {"status": "PASS", "reason": module.Label_Match.Events.APP_CLOSE},
+    )
+
+    module.Label_Match._run_app_close_direct_sync_worker(app, {}, result_queue, 110.0)
+
+    assert observed_timeouts == [10.0, 8.0]
     assert result_queue.get_nowait()["status"] == "PASS"
 
 
@@ -963,7 +1181,10 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
 def test_finalize_set_triggers_session_direct_sync_after_flush(monkeypatch):
     module = load_label_match_module()
     sync_calls = []
-    context = {"source_host_id": "label-match-pack-04"}
+    context = {
+        "source_host_id": "label-match-pack-04",
+        "scan_source_dir": "C:\\ProgramData\\KMTech\\Label_Match\\data",
+    }
 
     monkeypatch.setattr(
         module,
@@ -997,6 +1218,9 @@ def test_finalize_set_triggers_session_direct_sync_after_flush(monkeypatch):
     app.set_details_map = {}
     app.history_row_details_map = {}
     app.data_manager = _FakeLoggingDataManager()
+    app.data_manager._get_log_filepath = lambda: str(
+        Path(context["scan_source_dir"]) / "포장실작업이벤트로그_PC01_20260711.csv"
+    )
     app.history_tree = _FakeHistoryTree()
     app.save_status_label = _FakeLabel()
     app.is_running_simulation = False
@@ -1011,7 +1235,9 @@ def test_finalize_set_triggers_session_direct_sync_after_flush(monkeypatch):
     module.Label_Match._finalize_set(app, app.Results.PASS)
 
     assert app.data_manager.flushed is True
-    assert sync_calls == [(context, module.Label_Match.Events.TRAY_COMPLETE)]
+    assert len(sync_calls) == 1
+    assert sync_calls[0][1] == module.Label_Match.Events.TRAY_COMPLETE
+    assert Path(sync_calls[0][0]["scan_source_file"]).name == "포장실작업이벤트로그_PC01_20260711.csv"
 
 
 def test_legacy_pass_normalizes_missing_phase_to_dash():
@@ -1321,6 +1547,9 @@ def test_on_closing_starts_async_app_close_sync_after_log_close(monkeypatch):
         def close(self, timeout=None):
             sequence.append(("close", timeout))
 
+        def _get_log_filepath(self):
+            return str(Path(context["scan_source_dir"]) / "포장실작업이벤트로그_PC01_20260711.csv")
+
     app = object.__new__(module.Label_Match)
     app.initialized_successfully = True
     app.is_running_simulation = False
@@ -1338,11 +1567,13 @@ def test_on_closing_starts_async_app_close_sync_after_log_close(monkeypatch):
     module.Label_Match.on_closing(app)
     module.Label_Match.on_closing(app)
 
-    assert sequence == [
+    assert sequence[:2] == [
         ("event", module.Label_Match.Events.APP_CLOSE),
-        ("close", None),
-        ("begin_sync", context),
+        ("close", module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS),
     ]
+    assert sequence[2][0] == "begin_sync"
+    assert sequence[2][1]["scan_source_dir"] == context["scan_source_dir"]
+    assert Path(sequence[2][1]["scan_source_file"]).name == "포장실작업이벤트로그_PC01_20260711.csv"
     assert app._app_close_in_progress is True
     assert app.entry.kwargs["state"] == "disabled"
 
@@ -1376,6 +1607,36 @@ def test_app_close_poll_saves_settings_and_destroys_after_worker_result():
     module.Label_Match._poll_app_close_direct_sync(app)
 
     assert app.app_close_direct_sync_result["status"] == "PASS"
+    assert sequence == ["settings", "destroy"]
+
+
+def test_app_close_poll_enforces_hard_deadline(monkeypatch):
+    module = load_label_match_module()
+    sequence = []
+
+    class RunningThread:
+        def is_alive(self):
+            return True
+
+    app = object.__new__(module.Label_Match)
+    app.Events = module.Label_Match.Events
+    app._app_close_sync_thread = RunningThread()
+    app._app_close_deadline_monotonic = 100.0
+    app.direct_sync_bootstrap_context = {
+        "status_dir": "ignored",
+        "source_host_id": "label-match-test",
+        "scan_source_dir": "ignored",
+    }
+    app._record_app_close_failure = lambda context, result: {**result, "recorded": True}
+    app._save_app_settings = lambda: sequence.append("settings")
+    app.destroy = lambda: sequence.append("destroy")
+    app.after = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("expired worker must not poll again"))
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
+
+    module.Label_Match._poll_app_close_direct_sync(app)
+
+    assert app.app_close_direct_sync_result["status"] == "FAIL"
+    assert app.app_close_direct_sync_result["error_code"] == "APP_CLOSE_SHUTDOWN_DEADLINE_EXCEEDED"
     assert sequence == ["settings", "destroy"]
 
 

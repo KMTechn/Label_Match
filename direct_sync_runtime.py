@@ -848,6 +848,7 @@ def run_relay_once(
     session: Any = None,
     credentials: ProducerCredentials | None = None,
     now: str = "",
+    target_relay_id: str = "",
 ) -> dict[str, Any]:
     """Run one bounded relay drain cycle and persist status/log evidence."""
     if _paused_by_operator(config).get("paused"):
@@ -879,6 +880,7 @@ def run_relay_once(
             status_dir=config.upload_status_dir,
             retry_base_seconds=config.retry_base_seconds,
             timeout=config.timeout_seconds,
+            target_relay_id=target_relay_id,
         )
     except (DirectSyncPushError, sqlite3.DatabaseError) as exc:
         queue = _safe_relay_queue_status(config.db_path)

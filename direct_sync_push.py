@@ -1655,6 +1655,7 @@ def claim_next_relay_batch(
     worker_id: str,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     now: str = "",
+    target_relay_id: str = "",
 ) -> RelayQueueRow | None:
     init_relay_queue_schema(db_path)
     now = now or utc_now_text()
@@ -1665,17 +1666,30 @@ def claim_next_relay_batch(
     conn = _connect_relay_db(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            """
-            SELECT *
-            FROM direct_sync_relay_batches
-            WHERE status IN (?, ?)
-              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-            ORDER BY created_at, relay_id
-            LIMIT 1
-            """,
-            (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now),
-        ).fetchone()
+        if target_relay_id:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM direct_sync_relay_batches
+                WHERE relay_id = ?
+                  AND status IN (?, ?)
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                LIMIT 1
+                """,
+                (target_relay_id, RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM direct_sync_relay_batches
+                WHERE status IN (?, ?)
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                ORDER BY created_at, relay_id
+                LIMIT 1
+                """,
+                (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now),
+            ).fetchone()
         if row is None:
             conn.rollback()
             return None
@@ -1864,8 +1878,13 @@ def drain_one_relay_batch(
     status_dir: str | os.PathLike[str] = "",
     retry_base_seconds: int = DEFAULT_RETRY_SECONDS,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    target_relay_id: str = "",
 ) -> UploadResult | None:
-    row = claim_next_relay_batch(db_path=db_path, worker_id=worker_id)
+    row = claim_next_relay_batch(
+        db_path=db_path,
+        worker_id=worker_id,
+        target_relay_id=target_relay_id,
+    )
     if row is None:
         return None
     try:

@@ -594,19 +594,36 @@ def main(argv: list[str] | None = None) -> int:
                 "enqueue_error",
                 "runtime_error",
             }:
-                relay_status = run_relay_once(config)
+                targeted_drain_results = []
+                relay_status = None
+                for relay_id in list(pending_delta_progress):
+                    current_status = run_relay_once(config, target_relay_id=relay_id)
+                    last_result = (
+                        current_status.get("last_result")
+                        if isinstance(current_status.get("last_result"), dict)
+                        else {}
+                    )
+                    acked_relay_id = str(last_result.get("relay_id") or "")
+                    targeted_result = {
+                        "target_relay_id": relay_id,
+                        "status": current_status.get("status", ""),
+                        "acked_relay_id": acked_relay_id,
+                        "error_code": last_result.get("error_code", ""),
+                    }
+                    if _last_result_advances_source_progress(last_result) and acked_relay_id in pending_delta_progress:
+                        source_file, sent_byte_count = pending_delta_progress[acked_relay_id]
+                        _record_source_sent_byte_count(config.db_path, source_file, sent_byte_count)
+                    targeted_drain_results.append(targeted_result)
+                    relay_status = current_status
+                if relay_status is None:
+                    relay_status = run_relay_once(config)
                 relay_status["scan_status"] = status["scan_status"]
                 relay_status["scan_enqueued_count"] = enqueued_count
                 relay_status["scan_attempted_count"] = attempted_count
                 relay_status["scan_deferred_count"] = deferred_count
                 relay_status["scan_no_new_count"] = no_new_count
-                last_result = (
-                    relay_status.get("last_result") if isinstance(relay_status.get("last_result"), dict) else {}
-                )
-                acked_relay_id = str(last_result.get("relay_id") or "")
-                if _last_result_advances_source_progress(last_result) and acked_relay_id in pending_delta_progress:
-                    source_file, sent_byte_count = pending_delta_progress[acked_relay_id]
-                    _record_source_sent_byte_count(config.db_path, source_file, sent_byte_count)
+                if targeted_drain_results:
+                    relay_status["targeted_drain_results"] = targeted_drain_results
                 status = relay_status
         except (OSError, sqlite3.DatabaseError, ValueError) as exc:
             status = _write_scan_runtime_error(config, exc)
@@ -627,12 +644,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"direct_sync_scan_no_new_count={status['scan_no_new_count']}")
     if status.get("scan_failed_source_file"):
         print(f"direct_sync_scan_failed_source_file={status['scan_failed_source_file']}")
+    targeted_drain_results = status.get("targeted_drain_results") or []
+    targeted_ack_incomplete = False
+    if targeted_drain_results:
+        targeted_ack_count = sum(
+            1
+            for item in targeted_drain_results
+            if item.get("status") == "acked" and item.get("acked_relay_id") == item.get("target_relay_id")
+        )
+        print(f"direct_sync_targeted_ack_count={targeted_ack_count}")
+        print(f"direct_sync_targeted_attempt_count={len(targeted_drain_results)}")
+        targeted_ack_incomplete = targeted_ack_count != len(targeted_drain_results)
     if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure"} or status.get("scan_status") in {
         "blocked_disk_pressure",
         "blocked_queue_backpressure",
     }:
         return 2
     if status["status"] in {"enqueue_error", "runtime_error"}:
+        return 1
+    if targeted_ack_incomplete:
         return 1
     return 0
 
