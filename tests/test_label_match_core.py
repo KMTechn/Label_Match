@@ -4,6 +4,8 @@ import csv
 import importlib.util
 import json
 import queue
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -340,6 +342,116 @@ def test_session_direct_sync_writes_reason_specific_and_latest_reports(tmp_path)
     assert latest["reason"] == "APP_CLOSE"
     assert latest["result"]["returncode"] == 0
     assert evidence["reason_report_path"].endswith("label_match_session_direct_sync_trigger_app_close.json")
+
+
+def test_session_direct_sync_evidence_write_failure_overrides_runner_pass(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    context = {
+        "status_dir": str(tmp_path),
+        "source_host_id": "label-match-pack-03",
+        "scan_source_dir": str(tmp_path / "scan-data"),
+    }
+    monkeypatch.setattr(
+        module,
+        "_label_match_run_session_direct_sync_once",
+        lambda *args, **kwargs: {"status": "PASS", "reason": "APP_CLOSE", "returncode": 0},
+    )
+    monkeypatch.setattr(module.os, "replace", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("replace failed")))
+
+    result = module._label_match_run_and_record_session_direct_sync(context, reason="APP_CLOSE")
+
+    assert result["status"] == "FAIL"
+    assert "replace failed" in result["evidence_error"]
+    assert list(tmp_path.glob("*.json")) == []
+    assert list(tmp_path.glob(".*.tmp-*")) == []
+
+
+def test_app_close_worker_waits_for_tray_sync_and_keeps_app_close_as_latest(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    context = {
+        "status_dir": str(tmp_path),
+        "source_host_id": "label-match-pack-03",
+        "scan_source_dir": str(tmp_path / "scan-data"),
+    }
+    tray_started = threading.Event()
+    release_tray = threading.Event()
+    calls = []
+
+    def fake_run(sync_context, *, reason):
+        assert sync_context is context
+        calls.append((reason, "start"))
+        if reason == "TRAY_COMPLETE":
+            tray_started.set()
+            assert release_tray.wait(timeout=5)
+        calls.append((reason, "finish"))
+        return {"status": "PASS", "reason": reason, "returncode": 0}
+
+    monkeypatch.setattr(module, "_label_match_run_session_direct_sync_once", fake_run)
+    tray_thread = module._label_match_start_session_direct_sync(context, reason="TRAY_COMPLETE")
+    assert tray_started.wait(timeout=5)
+
+    app = object.__new__(module.Label_Match)
+    app.Events = module.Label_Match.Events
+    app.direct_sync_session_thread = tray_thread
+    result_queue = queue.Queue(maxsize=1)
+    close_thread = threading.Thread(
+        target=module.Label_Match._run_app_close_direct_sync_worker,
+        args=(app, context, result_queue),
+    )
+    close_thread.start()
+    time.sleep(0.05)
+    assert result_queue.empty()
+    release_tray.set()
+    close_thread.join(timeout=10)
+
+    assert not close_thread.is_alive()
+    assert result_queue.get_nowait()["status"] == "PASS"
+    assert calls == [
+        ("TRAY_COMPLETE", "start"),
+        ("TRAY_COMPLETE", "finish"),
+        ("APP_CLOSE", "start"),
+        ("APP_CLOSE", "finish"),
+    ]
+    latest = json.loads((tmp_path / "label_match_session_direct_sync_trigger.json").read_text(encoding="utf-8"))
+    assert latest["reason"] == "APP_CLOSE"
+
+
+def test_app_close_worker_joins_every_tracked_tray_thread_before_app_close(monkeypatch):
+    module = load_label_match_module()
+    sequence = []
+
+    class PendingThread:
+        def __init__(self, name):
+            self.name = name
+
+        def is_alive(self):
+            return True
+
+        def join(self):
+            sequence.append(("join", self.name))
+
+    first = PendingThread("first")
+    second = PendingThread("second")
+    app = object.__new__(module.Label_Match)
+    app.Events = module.Label_Match.Events
+    app.direct_sync_session_threads = [first, second]
+    app.direct_sync_session_thread = second
+    result_queue = queue.Queue(maxsize=1)
+
+    def run_and_record(context, *, reason):
+        sequence.append(("sync", reason))
+        return {"status": "PASS", "reason": reason}
+
+    monkeypatch.setattr(module, "_label_match_run_and_record_session_direct_sync", run_and_record)
+
+    module.Label_Match._run_app_close_direct_sync_worker(app, {}, result_queue)
+
+    assert sequence == [
+        ("join", "first"),
+        ("join", "second"),
+        ("sync", module.Label_Match.Events.APP_CLOSE),
+    ]
+    assert result_queue.get_nowait()["status"] == "PASS"
 
 
 def test_enriched_tray_complete_preserves_label_match_contract():
@@ -1193,7 +1305,7 @@ def test_on_closing_does_not_destroy_when_log_close_fails(monkeypatch):
     assert errors
 
 
-def test_on_closing_runs_app_close_direct_sync_after_log_close_before_destroy(monkeypatch):
+def test_on_closing_starts_async_app_close_sync_after_log_close(monkeypatch):
     module = load_label_match_module()
     sequence = []
     context = {
@@ -1217,27 +1329,54 @@ def test_on_closing_runs_app_close_direct_sync_after_log_close_before_destroy(mo
     app.is_blinking = True
     app.data_manager = ClosingDataManager()
     app.direct_sync_bootstrap_context = context
+    app.entry = _FakeWidget()
     app._save_app_settings = lambda: sequence.append(("settings", None))
     app.destroy = lambda: sequence.append(("destroy", None))
     monkeypatch.setattr(module.messagebox, "askokcancel", lambda *args, **kwargs: True)
+    app._begin_app_close_direct_sync = lambda sync_context: sequence.append(("begin_sync", sync_context))
 
-    def run_and_record(sync_context, *, reason):
-        sequence.append(("sync", reason))
-        assert sync_context is context
-        return {"status": "PASS", "reason": reason, "returncode": 0}
-
-    monkeypatch.setattr(module, "_label_match_run_and_record_session_direct_sync", run_and_record)
-
+    module.Label_Match.on_closing(app)
     module.Label_Match.on_closing(app)
 
     assert sequence == [
         ("event", module.Label_Match.Events.APP_CLOSE),
         ("close", None),
-        ("sync", module.Label_Match.Events.APP_CLOSE),
-        ("settings", None),
-        ("destroy", None),
+        ("begin_sync", context),
     ]
+    assert app._app_close_in_progress is True
+    assert app.entry.kwargs["state"] == "disabled"
+
+
+def test_process_input_ignores_scanner_input_while_app_close_is_in_progress():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app._app_close_in_progress = True
+    app.entry = object()
+
+    assert module.Label_Match.process_input(app) is None
+
+
+def test_app_close_poll_saves_settings_and_destroys_after_worker_result():
+    module = load_label_match_module()
+    sequence = []
+
+    class FinishedThread:
+        def is_alive(self):
+            return False
+
+    app = object.__new__(module.Label_Match)
+    app.Events = module.Label_Match.Events
+    app._app_close_sync_thread = FinishedThread()
+    app._app_close_sync_result_queue = queue.Queue(maxsize=1)
+    app._app_close_sync_result_queue.put({"status": "PASS", "reason": "APP_CLOSE", "returncode": 0})
+    app._save_app_settings = lambda: sequence.append("settings")
+    app.destroy = lambda: sequence.append("destroy")
+    app.after = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("finished worker should not poll again"))
+
+    module.Label_Match._poll_app_close_direct_sync(app)
+
     assert app.app_close_direct_sync_result["status"] == "PASS"
+    assert sequence == ["settings", "destroy"]
 
 
 def test_settings_save_replaces_closed_data_manager_after_close_failure(monkeypatch):

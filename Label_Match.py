@@ -195,14 +195,31 @@ def _label_match_json_file(path):
         return {}
 
 
-def _label_match_write_json(path, payload):
+def _label_match_write_json(path, payload, *, raise_on_error=False):
+    temp_path = None
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        temp_path = os.path.join(
+            directory,
+            f".{os.path.basename(path)}.tmp-{os.getpid()}-{uuid.uuid4().hex}",
+        )
+        with open(temp_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
     except Exception as exc:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
         print(f"direct-sync bootstrap status write failed: {exc}")
+        if raise_on_error:
+            raise
 
 
 def _label_match_subprocess_creationflags():
@@ -465,11 +482,6 @@ def _label_match_run_session_direct_sync_once(context, *, reason="TRAY_COMPLETE"
         return {"status": "SKIPPED", "reason": "direct-sync relay runner is missing"}
     env = os.environ.copy()
     env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
-    acquired = _LABEL_MATCH_SESSION_SYNC_LOCK.acquire(
-        timeout=LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS + 5
-    )
-    if not acquired:
-        return {"status": "FAIL", "reason": reason, "error": "session sync lock timeout"}
     try:
         completed = subprocess.run(
             command,
@@ -489,11 +501,9 @@ def _label_match_run_session_direct_sync_once(context, *, reason="TRAY_COMPLETE"
         }
     except Exception as exc:
         return {"status": "FAIL", "reason": reason, "error": str(exc)}
-    finally:
-        _LABEL_MATCH_SESSION_SYNC_LOCK.release()
 
 
-def _label_match_write_session_direct_sync_result(context, *, reason, result):
+def _label_match_write_session_direct_sync_result(context, *, reason, result, write_latest=True):
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     payload = {
         "report_version": "label-match-session-direct-sync-trigger-v1",
@@ -510,27 +520,64 @@ def _label_match_write_session_direct_sync_result(context, *, reason, result):
         context["status_dir"],
         f"label_match_session_direct_sync_trigger_{reason_key}.json",
     )
-    _label_match_write_json(reason_path, payload)
-    _label_match_write_json(latest_path, payload)
-    return {"latest_report_path": latest_path, "reason_report_path": reason_path}
+    _label_match_write_json(reason_path, payload, raise_on_error=True)
+    if write_latest:
+        _label_match_write_json(latest_path, payload, raise_on_error=True)
+    return {
+        "latest_report_path": latest_path if write_latest else "",
+        "reason_report_path": reason_path,
+    }
 
 
 def _label_match_run_and_record_session_direct_sync(context, *, reason):
-    result = _label_match_run_session_direct_sync_once(context, reason=reason)
+    acquired = _LABEL_MATCH_SESSION_SYNC_LOCK.acquire(
+        timeout=LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS + 10
+    )
+    if not acquired:
+        result = {"status": "FAIL", "reason": reason, "error": "session sync sequence lock timeout"}
+        try:
+            evidence = _label_match_write_session_direct_sync_result(
+                context,
+                reason=reason,
+                result=result,
+                write_latest=False,
+            )
+            return {**result, "evidence": evidence}
+        except Exception as exc:
+            _label_match_startup_trace(
+                "session_direct_sync_evidence_failed",
+                reason=reason,
+                error=str(exc),
+            )
+            return {**result, "evidence_error": str(exc)}
     try:
-        evidence = _label_match_write_session_direct_sync_result(
-            context,
-            reason=reason,
-            result=result,
-        )
-        return {**result, "evidence": evidence}
-    except Exception as exc:
-        _label_match_startup_trace(
-            "session_direct_sync_evidence_failed",
-            reason=reason,
-            error=str(exc),
-        )
-        return {**result, "status": "FAIL", "evidence_error": str(exc)}
+        result = _label_match_run_session_direct_sync_once(context, reason=reason)
+        try:
+            evidence = _label_match_write_session_direct_sync_result(
+                context,
+                reason=reason,
+                result=result,
+            )
+            return {**result, "evidence": evidence}
+        except Exception as exc:
+            failed_result = {**result, "status": "FAIL", "evidence_error": str(exc)}
+            try:
+                _label_match_write_session_direct_sync_result(
+                    context,
+                    reason=reason,
+                    result=failed_result,
+                    write_latest=False,
+                )
+            except Exception:
+                pass
+            _label_match_startup_trace(
+                "session_direct_sync_evidence_failed",
+                reason=reason,
+                error=str(exc),
+            )
+            return failed_result
+    finally:
+        _LABEL_MATCH_SESSION_SYNC_LOCK.release()
 
 
 def _label_match_start_session_direct_sync(context, *, reason="TRAY_COMPLETE"):
@@ -954,7 +1001,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.31" # private update feed release
+APP_VERSION = "v2.0.32" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -2696,7 +2743,56 @@ class Label_Match(tk.Tk):
                 messagebox.showerror("기준 정보 로드 오류", f"품목 정보를 불러오는 중 오류가 발생했습니다.\n\n[상세 오류]\n{e}")
             return {}
 
+    def _run_app_close_direct_sync_worker(self, context, result_queue):
+        pending_threads = list(self.__dict__.get("direct_sync_session_threads", []))
+        legacy_pending = self.__dict__.get("direct_sync_session_thread")
+        if legacy_pending is not None and legacy_pending not in pending_threads:
+            pending_threads.append(legacy_pending)
+        for pending in pending_threads:
+            if pending is not None and pending.is_alive():
+                pending.join()
+        result = _label_match_run_and_record_session_direct_sync(
+            context,
+            reason=self.Events.APP_CLOSE,
+        )
+        result_queue.put(result)
+
+    def _poll_app_close_direct_sync(self):
+        thread = self.__dict__.get("_app_close_sync_thread")
+        if thread is not None and thread.is_alive():
+            self._app_close_poll_after_id = self.after(100, self._poll_app_close_direct_sync)
+            return
+        result_queue = self.__dict__.get("_app_close_sync_result_queue")
+        try:
+            result = result_queue.get_nowait() if result_queue is not None else None
+        except queue.Empty:
+            result = None
+        if not isinstance(result, dict):
+            result = {
+                "status": "FAIL",
+                "reason": self.Events.APP_CLOSE,
+                "error": "APP_CLOSE direct-sync worker ended without a result",
+            }
+        self.app_close_direct_sync_result = result
+        self._save_app_settings()
+        self.destroy()
+
+    def _begin_app_close_direct_sync(self, context):
+        result_queue = queue.Queue(maxsize=1)
+        thread = threading.Thread(
+            target=self._run_app_close_direct_sync_worker,
+            args=(context, result_queue),
+            daemon=False,
+            name="label-match-app-close-direct-sync",
+        )
+        self._app_close_sync_result_queue = result_queue
+        self._app_close_sync_thread = thread
+        thread.start()
+        self._app_close_poll_after_id = self.after(100, self._poll_app_close_direct_sync)
+
     def on_closing(self):
+        if self.__dict__.get("_app_close_in_progress", False):
+            return
         if not self.initialized_successfully:
             self._cancel_pending_ui_jobs()
             self.destroy()
@@ -2709,12 +2805,27 @@ class Label_Match(tk.Tk):
         do_close = self.run_tests or messagebox.askokcancel("종료 확인", "프로그램을 종료하시겠습니까?")
 
         if do_close:
+            self._app_close_in_progress = True
             self.is_blinking = False
             self._cancel_pending_ui_jobs()
+            entry = self.__dict__.get("entry")
+            if entry is not None:
+                try:
+                    configure_entry = getattr(entry, "configure", None) or getattr(entry, "config")
+                    configure_entry(state="disabled")
+                except Exception:
+                    pass
             try:
                 self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
                 self.data_manager.close(timeout=None)
             except Exception as e:
+                self._app_close_in_progress = False
+                if entry is not None:
+                    try:
+                        configure_entry = getattr(entry, "configure", None) or getattr(entry, "config")
+                        configure_entry(state="normal")
+                    except Exception:
+                        pass
                 self._replace_closed_data_manager_after_close_failure(self.data_manager)
                 if self.run_tests:
                     raise
@@ -2726,10 +2837,8 @@ class Label_Match(tk.Tk):
                     getattr(self, "app_settings_path", ""),
                 )
                 self.direct_sync_bootstrap_context = context
-                self.app_close_direct_sync_result = _label_match_run_and_record_session_direct_sync(
-                    context,
-                    reason=self.Events.APP_CLOSE,
-                )
+                self._begin_app_close_direct_sync(context)
+                return
             self._save_app_settings()
             self.destroy()
 
@@ -3270,6 +3379,8 @@ class Label_Match(tk.Tk):
         self.after(1500, self._demo_step, index + 1, barcodes)
         
     def process_input(self, event=None):
+        if self.__dict__.get("_app_close_in_progress", False):
+            return
         raw_input = self.entry.get().strip()
         self.entry.delete(0, tk.END)
 
@@ -3541,7 +3652,17 @@ class Label_Match(tk.Tk):
                 getattr(self, "app_settings_path", ""),
             )
             self.direct_sync_bootstrap_context = context
-            _label_match_start_session_direct_sync(context, reason=self.Events.TRAY_COMPLETE)
+            active_sync_threads = [
+                thread
+                for thread in self.__dict__.get("direct_sync_session_threads", [])
+                if thread.is_alive()
+            ]
+            self.direct_sync_session_thread = _label_match_start_session_direct_sync(
+                context,
+                reason=self.Events.TRAY_COMPLETE,
+            )
+            active_sync_threads.append(self.direct_sync_session_thread)
+            self.direct_sync_session_threads = active_sync_threads
 
         self.__dict__.setdefault("history_row_details_map", {})[set_id_for_log] = details
         if result == self.Results.PASS:
