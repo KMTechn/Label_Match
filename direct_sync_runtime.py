@@ -678,20 +678,79 @@ def _write_backpressure_status(
     return status
 
 
+def _recover_aged_queue_before_enqueue(
+    config: DirectSyncRuntimeConfig,
+    *,
+    backpressure: Mapping[str, Any],
+    credentials: ProducerCredentials | None = None,
+    session: Any = None,
+    max_attempts: int = 8,
+) -> dict[str, Any]:
+    current = dict(backpressure)
+    reasons = set(current.get("reasons") or [])
+    recovery = {
+        "attempted": False,
+        "attempt_count": 0,
+        "max_attempts": max(0, int(max_attempts)),
+        "initial_reasons": sorted(reasons),
+        "results": [],
+        "resolved": current.get("status") == "pass",
+    }
+    if current.get("status") == "pass" or reasons != {"oldest_active_age_threshold"}:
+        current["recovery"] = recovery
+        return current
+
+    active_count = max(0, int(current.get("active_queue_count", 0) or 0))
+    attempt_limit = min(active_count, recovery["max_attempts"])
+    recovery["attempted"] = attempt_limit > 0
+    for _ in range(attempt_limit):
+        drain_status = run_relay_once(config, session=session, credentials=credentials)
+        recovery["attempt_count"] += 1
+        recovery["results"].append(
+            {
+                "status": str(drain_status.get("status") or ""),
+                "error_code": str(drain_status.get("error_code") or ""),
+            }
+        )
+        current = _queue_backpressure_report(config)
+        current_reasons = set(current.get("reasons") or [])
+        if current.get("status") == "pass":
+            recovery["resolved"] = True
+            break
+        if current_reasons != {"oldest_active_age_threshold"}:
+            break
+        if drain_status.get("status") not in {"acked", "failed_permanent", "operator_review"}:
+            break
+
+    recovery["final_reasons"] = sorted(set(current.get("reasons") or []))
+    current = dict(current)
+    current["recovery"] = recovery
+    return current
+
+
 def enqueue_completed_source_file(
     config: DirectSyncRuntimeConfig,
     *,
     source_file_path: str | os.PathLike[str],
     relative_path: str = "",
     credentials: ProducerCredentials | None = None,
+    backpressure_recovery_session: Any = None,
 ) -> dict[str, Any]:
     """Spool one completed Label_Match CSV and persist local operator evidence."""
     if _paused_by_operator(config).get("paused"):
         return _write_paused_status(config, event="enqueue_paused_by_operator")
 
     disk = _disk_pressure_report(config)
+    backpressure: dict[str, Any] = {}
     try:
         backpressure = _queue_backpressure_report(config)
+        if backpressure["status"] != "pass":
+            backpressure = _recover_aged_queue_before_enqueue(
+                config,
+                backpressure=backpressure,
+                credentials=credentials,
+                session=backpressure_recovery_session,
+            )
         if backpressure["status"] != "pass":
             return _write_backpressure_status(
                 config,
@@ -706,6 +765,7 @@ def enqueue_completed_source_file(
                 status="blocked_disk_pressure",
                 queue=queue,
                 disk=disk,
+                queue_backpressure=backpressure,
                 error_code="disk_pressure",
                 error_message="free space is below configured direct-sync relay minimum",
             )
@@ -743,6 +803,7 @@ def enqueue_completed_source_file(
             status=status_name,
             queue=queue,
             disk=disk,
+            queue_backpressure=backpressure,
             error_code=error_code,
             error_message=error_message,
         )
@@ -754,6 +815,7 @@ def enqueue_completed_source_file(
         status="enqueued",
         queue=queue,
         disk=disk,
+        queue_backpressure=backpressure,
         last_result={
             "relay_id": row.relay_id,
             "relay_status": row.status,

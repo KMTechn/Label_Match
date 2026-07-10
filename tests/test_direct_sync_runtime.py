@@ -596,10 +596,11 @@ def test_runtime_backpressure_blocks_enqueue_before_credentials_and_allows_drain
     assert_runtime_artifacts_are_redacted(blocked_config)
 
 
-def test_runtime_backpressure_blocks_old_active_queue_age(tmp_path):
+def test_runtime_backpressure_recovers_old_active_queue_before_current_enqueue(tmp_path):
     config = make_config(tmp_path)
-    source_file = write_csv(tmp_path)
-    enqueue_completed_source_file(config, source_file_path=source_file)
+    stale_source = write_csv(tmp_path, name="stale_label.csv", barcode="BC-STALE")
+    current_source = write_csv(tmp_path, name="current_label.csv", barcode="BC-CURRENT")
+    enqueue_completed_source_file(config, source_file_path=stale_source)
     with sqlite3.connect(config.db_path) as conn:
         conn.execute(
             "UPDATE direct_sync_relay_batches SET created_at = ?",
@@ -608,17 +609,61 @@ def test_runtime_backpressure_blocks_old_active_queue_age(tmp_path):
     aged_config = DirectSyncRuntimeConfig(
         **{
             **config.__dict__,
-            "credential_path": tmp_path / "missing_credential.json",
             "max_active_queue_age_seconds": 1,
         }
     )
+    session = EchoAcceptedSession()
 
-    blocked = enqueue_completed_source_file(aged_config, source_file_path=source_file)
+    current = enqueue_completed_source_file(
+        aged_config,
+        source_file_path=current_source,
+        backpressure_recovery_session=session,
+    )
+
+    assert current["status"] == "enqueued"
+    assert current["queue_backpressure"]["status"] == "pass"
+    assert current["queue_backpressure"]["recovery"]["attempted"] is True
+    assert current["queue_backpressure"]["recovery"]["attempt_count"] == 1
+    assert current["queue_backpressure"]["recovery"]["resolved"] is True
+    assert len(session.calls) == 1
+    counts = relay_queue_status(config.db_path)["counts"]
+    assert counts[RELAY_STATUS_ACKED] == 1
+    assert counts[RELAY_STATUS_PENDING] == 1
+    assert_runtime_artifacts_are_redacted(aged_config)
+
+
+def test_runtime_backpressure_keeps_current_enqueue_blocked_when_aged_recovery_is_retryable(tmp_path):
+    config = make_config(tmp_path)
+    stale_source = write_csv(tmp_path, name="stale_label.csv", barcode="BC-STALE")
+    current_source = write_csv(tmp_path, name="current_label.csv", barcode="BC-CURRENT")
+    enqueue_completed_source_file(config, source_file_path=stale_source)
+    with sqlite3.connect(config.db_path) as conn:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET created_at = ?",
+            ("2000-01-01T00:00:00Z",),
+        )
+    aged_config = DirectSyncRuntimeConfig(
+        **{
+            **config.__dict__,
+            "max_active_queue_age_seconds": 1,
+        }
+    )
+    session = RaisingSession()
+
+    blocked = enqueue_completed_source_file(
+        aged_config,
+        source_file_path=current_source,
+        backpressure_recovery_session=session,
+    )
 
     assert blocked["status"] == "blocked_queue_backpressure"
-    assert "oldest_active_age_threshold" in blocked["queue_backpressure"]["reasons"]
-    assert blocked["queue_backpressure"]["oldest_active_age_seconds"] >= 1
-    assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_PENDING] == 1
+    assert blocked["queue_backpressure"]["recovery"]["attempted"] is True
+    assert blocked["queue_backpressure"]["recovery"]["attempt_count"] == 1
+    assert blocked["queue_backpressure"]["recovery"]["resolved"] is False
+    assert len(session.calls) == 1
+    counts = relay_queue_status(config.db_path)["counts"]
+    assert counts[RELAY_STATUS_RETRY_WAIT] == 1
+    assert counts.get(RELAY_STATUS_PENDING, 0) == 0
     assert_runtime_artifacts_are_redacted(aged_config)
 
 
