@@ -61,6 +61,15 @@ import base64
 import binascii
 import unittest
 
+from package_logistics import (
+    PackageCommandDraft,
+    PackageLogisticsError,
+    PackageOutbox,
+    PackageOutboxProcessor,
+    canonical_barcodes,
+    package_client_from_env,
+)
+
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
 LABEL_MATCH_SCAN_CONTRACT_VERSION = "label_match_current_v1"
@@ -89,6 +98,8 @@ LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS = 10
 LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
 _LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
+LABEL_MATCH_AUTOMATED_TEST_ENV = "LABEL_MATCH_AUTOMATED_TEST"
+LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV = "LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
 LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME = "label_match_direct_sync_install.json"
@@ -148,8 +159,19 @@ def _label_match_session_sync_trigger_enabled():
 
 
 def _label_match_audio_enabled():
+    if _label_match_automated_test_mode():
+        return False
     value = os.environ.get(LABEL_MATCH_AUDIO_ENABLED_ENV, "on").strip().lower()
     return value not in {"0", "false", "no", "off", "disabled"}
+
+
+def _label_match_automated_test_mode():
+    value = os.environ.get(LABEL_MATCH_AUTOMATED_TEST_ENV, "").strip().lower()
+    if value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) or any(
+        "pytest" in str(argument or "").lower() for argument in sys.argv
+    )
 
 
 def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
@@ -987,6 +1009,8 @@ def _label_match_tray_complete_passed(details):
 
 def _label_match_manual_complete_block_reason(current_set_info):
     current = current_set_info or {}
+    if current.get("exact_rescan_active"):
+        return "manual_complete_blocked_during_exact_rescan"
     scan_count = len(current.get("raw") or current.get("parsed") or [])
     if scan_count < 2:
         return "manual_complete_requires_product_scan"
@@ -1054,7 +1078,134 @@ def _label_match_parse_new_format_fields(raw_value):
     return fields
 
 
+def _label_match_parse_sealed_transfer_qr(raw_value):
+    """Parse the authoritative sealed-transfer QR without treating it as a product scan."""
+    decoded = _label_match_decode_possible_base64_label(raw_value)
+    if "|" not in decoded or "=" not in decoded:
+        return None
+    fields = {
+        key.strip().upper(): value.strip()
+        for key, value in (
+            part.split("=", 1) for part in decoded.split("|") if "=" in part
+        )
+    }
+    if fields.get("TRF") != "1":
+        return None
+    required = ("BND", "AUTH_SCOPE", "CLC", "QT", "HSH", "EPOCH", "PLANE", "PE")
+    if any(not fields.get(key) for key in required):
+        raise ValueError("sealed transfer QR is missing required fields")
+    try:
+        quantity = int(fields["QT"])
+        authority_epoch = int(fields["EPOCH"])
+        plane_epoch = int(fields["PE"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sealed transfer QR quantity/epoch fields must be integers") from exc
+    if quantity < 1 or authority_epoch < 0 or plane_epoch < 1:
+        raise ValueError("sealed transfer QR quantity/epoch values are invalid")
+    digest = fields["HSH"].lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("sealed transfer QR membership hash must be SHA-256")
+    plane = fields["PLANE"].upper()
+    if plane not in {"SHADOW_CANDIDATE", "AUTHORITATIVE"}:
+        raise ValueError("sealed transfer QR ledger plane is invalid")
+    return {
+        **fields,
+        "QT": quantity,
+        "HSH": digest,
+        "EPOCH": authority_epoch,
+        "PLANE": plane,
+        "PE": plane_epoch,
+    }
+
+
+def _label_match_package_draft(current_set_info, *, item_code):
+    current = current_set_info or {}
+    raw = list(current.get("raw") or [])
+    if len(raw) != LABEL_MATCH_TOTAL_SCAN_COUNT:
+        raise PackageLogisticsError("authoritative packaging requires the complete five-scan set")
+    transfer = _label_match_parse_sealed_transfer_qr(raw[0])
+    configured_mode = os.environ.get(
+        LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV, "INHERIT_ALL"
+    ).strip().upper()
+    exact_rescan = tuple(current.get("exact_rescan_barcodes") or ())
+    if current.get("exact_rescan_complete"):
+        configured_mode = "EXACT_RESCAN"
+    elif transfer:
+        configured_mode = "INHERIT_ALL"
+    if transfer:
+        if str(transfer["CLC"]) != str(item_code):
+            raise PackageLogisticsError("sealed transfer QR item differs from the packaging item")
+        source_bundle_id = str(transfer["BND"])
+        source_scope = str(transfer["AUTH_SCOPE"])
+        source_label = str(raw[0])
+        source_hint = ""
+        expected_count = int(transfer["QT"])
+        expected_hash = str(transfer["HSH"])
+        expected_authority_epoch = int(transfer["EPOCH"])
+        expected_plane = str(transfer["PLANE"])
+        expected_plane_epoch = int(transfer["PE"])
+    else:
+        if configured_mode != "EXACT_RESCAN":
+            raise PackageLogisticsError(
+                "legacy master labels require a separate FULL EXACT_RESCAN; three QA samples are insufficient"
+            )
+        target_count = int(current.get("exact_rescan_target_count") or 0)
+        if (
+            not current.get("exact_rescan_complete")
+            or target_count < 1
+            or len(exact_rescan) != target_count
+        ):
+            raise PackageLogisticsError("FULL EXACT_RESCAN is incomplete")
+        source_bundle_id = str(current.get("exact_rescan_source_bundle_id") or "").strip()
+        legacy_fields = _label_match_parse_new_format_fields(raw[0]) or {}
+        source_scope = ""
+        source_label = str(
+            legacy_fields.get("WID") or legacy_fields.get("PHS_EXTERNAL_ID") or ""
+        ).strip()
+        source_input_tag_id = str(legacy_fields.get("ITG") or "").strip()
+        source_hint = str(legacy_fields.get("BND") or "").strip()
+        expected_count = target_count
+        expected_hash = ""
+        expected_authority_epoch = 0
+        expected_plane = ""
+        expected_plane_epoch = 0
+    if transfer:
+        source_input_tag_id = ""
+    return PackageCommandDraft.build(
+        set_id=str(current.get("id") or ""),
+        item_code=str(item_code or ""),
+        source_bundle_id=source_bundle_id,
+        source_external_label=source_label,
+        source_input_tag_id=source_input_tag_id,
+        source_bundle_hint=source_hint,
+        source_authority_scope_id=source_scope,
+        expected_member_count=expected_count,
+        expected_membership_hash=expected_hash,
+        expected_authority_epoch=expected_authority_epoch,
+        expected_ledger_plane=expected_plane,
+        expected_plane_epoch=expected_plane_epoch,
+        external_label=str(raw[-1]),
+        membership_mode=configured_mode,
+        sample_barcodes=raw[1:1 + LABEL_MATCH_PRODUCT_SAMPLE_COUNT],
+        exact_rescan_barcodes=exact_rescan,
+    )
+
+
+def _normalize_barcode_for_exact_rescan(value):
+    values = canonical_barcodes((value,))
+    return values[0] if values else ""
+
+
 def _label_match_new_format_identity_key(raw_value):
+    try:
+        transfer = _label_match_parse_sealed_transfer_qr(raw_value)
+    except ValueError:
+        transfer = None
+    if transfer:
+        return (
+            f"TRF=1|BND={transfer['BND']}|AUTH_SCOPE={transfer['AUTH_SCOPE']}|"
+            f"EPOCH={transfer['EPOCH']}|PLANE={transfer['PLANE']}|PE={transfer['PE']}"
+        )
     fields = _label_match_parse_new_format_fields(raw_value)
     if not fields:
         return None
@@ -2193,6 +2344,7 @@ class Label_Match(tk.Tk):
     CURRENT_SET_CANCEL_BUTTON_TEXT = f"{CURRENT_SET_CANCEL_ACTION_TEXT} (F1)"
     COMPLETED_TRAY_CANCEL_BUTTON_TEXT = f"{COMPLETED_TRAY_CANCEL_ACTION_TEXT} (F2)"
     MANUAL_COMPLETE_BUTTON_TEXT = "현재 세트 완료 (F3)"
+    EXACT_RESCAN_BUTTON_TEXT = "전체 재스캔 시작 (F4)"
     CURRENT_SET_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
     COMPLETED_TRAY_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
     MANUAL_COMPLETE_BUTTON_STYLE = "Action.TButton"
@@ -2231,6 +2383,7 @@ class Label_Match(tk.Tk):
         "manual_complete_requires_product_scan": "제품 1개 이상 스캔 후 가능",
         "manual_complete_only_for_partial_sets": f"이미 {LABEL_MATCH_TOTAL_SCAN_COUNT}개 완료됨",
         "manual_complete_blocked_after_error": "오류 세트는 불가",
+        "manual_complete_blocked_during_exact_rescan": "전체 재스캔 중에는 불가",
     }
     class FILES:
         CURRENT_STATE = "_current_set_state_packaging.json"
@@ -2250,6 +2403,9 @@ class Label_Match(tk.Tk):
         SCAN_ATTEMPT = "SCAN_ATTEMPT"
         TRAY_COMPLETION_CANCELLED = "TRAY_COMPLETION_CANCELLED"
         BASE64_DECODED = "BASE64_DECODED"
+        EXACT_RESCAN_STARTED = "EXACT_RESCAN_STARTED"
+        EXACT_RESCAN_OK = "EXACT_RESCAN_OK"
+        EXACT_RESCAN_COMPLETED = "EXACT_RESCAN_COMPLETED"
     class Results:
         PASS = LABEL_MATCH_RESULT_PASS
         FAIL_MISMATCH = LABEL_MATCH_RESULT_FAIL_MISMATCH
@@ -2302,6 +2458,15 @@ class Label_Match(tk.Tk):
         self.unique_id = socket.gethostname()
         self.worker_name = self.app_settings.get("worker_name", self.Worker.PACKAGING)
         self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
+        self.package_outbox = PackageOutbox(os.path.join(self.save_directory, "package_logistics_outbox.sqlite3"))
+        self.package_logistics_client = package_client_from_env()
+        self.package_outbox_processor = (
+            PackageOutboxProcessor(self.package_outbox, self.package_logistics_client)
+            if self.package_logistics_client is not None
+            else None
+        )
+        self.package_outbox_thread = None
+        self.package_outbox_after_id = None
         _label_match_startup_trace("app_init_after_data_manager", worker_name=self.worker_name, unique_id=self.unique_id)
         self.current_set_info = {} 
         self.is_blinking = False
@@ -2354,11 +2519,43 @@ class Label_Match(tk.Tk):
         self.bind("<Button-1>", self._on_root_click)
         self.bind("<Configure>", self._on_window_configure)
         self.after(250, self._start_audio_initialization)
+        self.after(300, self._start_package_outbox_drain)
         self.after(1000, lambda: _label_match_startup_trace("app_alive_after_1s", title=self.title(), state=self.state()))
         _label_match_startup_trace("app_init_complete")
 
+    def _start_package_outbox_drain(self):
+        processor = self.__dict__.get("package_outbox_processor")
+        if processor is None or self.__dict__.get("run_tests", False):
+            return None
+        current = self.__dict__.get("package_outbox_thread")
+        if current is not None and current.is_alive():
+            return current
+
+        def worker():
+            try:
+                processor.drain(limit=20)
+            except Exception as exc:
+                print(f"포장 물류 outbox 처리 오류: {exc}")
+            finally:
+                try:
+                    if self.__dict__.get("package_outbox_after_id") is None:
+                        self.package_outbox_after_id = self.after(
+                            30000, self._run_scheduled_package_outbox_drain
+                        )
+                except TclError:
+                    pass
+
+        thread = threading.Thread(target=worker, name="label-match-package-outbox", daemon=True)
+        self.package_outbox_thread = thread
+        thread.start()
+        return thread
+
+    def _run_scheduled_package_outbox_drain(self):
+        self.package_outbox_after_id = None
+        return self._start_package_outbox_drain()
+
     def _start_audio_initialization(self):
-        if self.run_tests or self.audio_init_started or not _label_match_audio_enabled():
+        if self.run_tests or _label_match_automated_test_mode() or self.audio_init_started or not _label_match_audio_enabled():
             self.audio_init_finished = True
             return
         self.audio_init_started = True
@@ -3227,7 +3424,12 @@ class Label_Match(tk.Tk):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
             self.data_manager.log_event(self.Events.SET_RESTORED, {"restored_set": self.current_set_info, "continued_by": self.worker_name})
             self.progress_bar['value'] = len(self.current_set_info['raw'])
-            self.update_big_display(self._next_action_text(len(self.current_set_info.get('parsed', []))), "green")
+            if self.current_set_info.get("exact_rescan_active"):
+                completed = len(self.current_set_info.get("exact_rescan_barcodes") or [])
+                target = int(self.current_set_info.get("exact_rescan_target_count") or 0)
+                self.update_big_display(f"전체 제품 재스캔 {completed}/{target}", "primary")
+            else:
+                self.update_big_display(self._next_action_text(len(self.current_set_info.get('parsed', []))), "green")
             self._update_status_label()
             self._update_history_tree_in_progress()
         else:
@@ -3714,6 +3916,10 @@ class Label_Match(tk.Tk):
         if self._block_active_history_load_action("스캔"):
             return
 
+        if self.current_set_info.get("exact_rescan_active"):
+            self._process_exact_rescan_product(raw_input)
+            return
+
         self.data_manager.log_event(self.Events.SCAN_ATTEMPT, {"raw_input": raw_input, "scan_pos": len(self.current_set_info['raw']) + 1})
         scan_pos = len(self.current_set_info['raw']) + 1
         
@@ -3732,8 +3938,31 @@ class Label_Match(tk.Tk):
                 pass
 
         if scan_pos == 1:
+            try:
+                transfer_label_data = _label_match_parse_sealed_transfer_qr(processed_input)
+            except ValueError as exc:
+                self._handle_input_error(
+                    raw_input,
+                    title="[이적 컨테이너 QR 오류]",
+                    reason=str(exc),
+                )
+                return
             new_label_data = self._parse_new_format_label(processed_input)
-            if new_label_data:
+            if transfer_label_data:
+                duplicate_keys = _label_match_unique_master_index_keys(raw_input)
+                duplicate_keys.update(_label_match_unique_master_index_keys(processed_input))
+                if duplicate_keys & self.global_scanned_set:
+                    self._handle_input_error(
+                        raw_input,
+                        title="[이적 컨테이너 중복 스캔]",
+                        reason="이미 포장 처리된 sealed transfer bundle입니다.",
+                    )
+                    return
+                client_code = str(transfer_label_data["CLC"])
+                self.current_set_info["phase"] = "TRANSFER"
+                self.current_set_info["sealed_transfer"] = transfer_label_data
+                self._update_on_success_scan(raw_input, client_code)
+            elif new_label_data:
                 reusable_input_master = (
                     _label_match_reusable_input_master_label(raw_input)
                     or _label_match_reusable_input_master_label(processed_input)
@@ -3837,6 +4066,132 @@ class Label_Match(tk.Tk):
                 self.current_set_info['production_date'] = production_date
             self._update_on_success_scan(raw_input, master_code)
 
+    def _prompt_exact_rescan(self):
+        raw = list(self.current_set_info.get("raw") or [])
+        if not raw:
+            if not self.run_tests:
+                messagebox.showwarning("전체 재스캔", "먼저 현품표를 스캔하세요.", parent=self)
+            return False
+        try:
+            if _label_match_parse_sealed_transfer_qr(raw[0]):
+                if not self.run_tests:
+                    messagebox.showinfo(
+                        "전체 재스캔 불필요",
+                        "sealed transfer QR은 서버 exact membership을 전체 상속합니다.",
+                        parent=self,
+                    )
+                return False
+        except ValueError as exc:
+            if not self.run_tests:
+                messagebox.showerror("전체 재스캔", str(exc), parent=self)
+            return False
+        if len(raw) != 1:
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "전체 재스캔",
+                    "제품 샘플 스캔 전에 전체 재스캔을 시작하세요.",
+                    parent=self,
+                )
+            return False
+        source_bundle_id = str(
+            self.current_set_info.get("exact_rescan_source_bundle_id") or ""
+        ).strip()
+        if not self.run_tests:
+            source_bundle_id = str(
+                simpledialog.askstring(
+                    "이적 컨테이너 ID",
+                    "QR을 사용할 수 없으면 이적 화면의 TRANSFER bundle ID를 스캔하세요.",
+                    parent=self,
+                    initialvalue=source_bundle_id,
+                )
+                or ""
+            ).strip()
+        target = self.current_set_info.get("exact_rescan_target_count")
+        if not self.run_tests:
+            target = simpledialog.askinteger(
+                "전체 재스캔 수량",
+                "sealed evidence가 없는 제품 전체 수량을 입력하세요.",
+                parent=self,
+                minvalue=1,
+                maxvalue=100000,
+                initialvalue=int(target or 1),
+            )
+        if not target:
+            return False
+        self.current_set_info["exact_rescan_active"] = True
+        self.current_set_info["exact_rescan_complete"] = False
+        self.current_set_info["exact_rescan_target_count"] = int(target)
+        self.current_set_info["exact_rescan_source_bundle_id"] = source_bundle_id
+        self.current_set_info["exact_rescan_barcodes"] = []
+        self.data_manager.log_event(
+            self.Events.EXACT_RESCAN_STARTED,
+            {
+                "set_id": self.current_set_info.get("id"),
+                "target_count": int(target),
+                "sample_barcodes_are_membership": False,
+            },
+        )
+        self._save_current_set_state()
+        self.update_big_display(f"전체 제품 재스캔 0/{int(target)}", "primary")
+        self._update_status_label()
+        return True
+
+    def _process_exact_rescan_product(self, raw_input):
+        barcode = _normalize_barcode_for_exact_rescan(raw_input)
+        target = int(self.current_set_info.get("exact_rescan_target_count") or 0)
+        members = list(self.current_set_info.get("exact_rescan_barcodes") or [])
+        item_code = str((self.current_set_info.get("parsed") or [""])[0] or "")
+        if target < 1:
+            self.current_set_info["exact_rescan_active"] = False
+            raise PackageLogisticsError("exact rescan target count is invalid")
+        if not barcode or item_code not in barcode:
+            self._handle_input_error(
+                raw_input,
+                title="[전체 재스캔 품목 불일치]",
+                reason="전체 재스캔 제품이 현재 현품표 품목과 다릅니다.",
+            )
+            return False
+        if barcode in set(members):
+            self._handle_input_error(
+                raw_input,
+                title="[전체 재스캔 중복]",
+                reason="이미 전체 재스캔한 제품입니다.",
+            )
+            return False
+        if len(members) >= target:
+            self.current_set_info["exact_rescan_active"] = False
+            return False
+        members.append(barcode)
+        self.current_set_info["exact_rescan_barcodes"] = members
+        self.data_manager.log_event(
+            self.Events.EXACT_RESCAN_OK,
+            {
+                "set_id": self.current_set_info.get("id"),
+                "product_barcode": barcode,
+                "rescan_position": len(members),
+                "target_count": target,
+                "barcode_role": "exact_membership_rescan",
+            },
+        )
+        if len(members) == target:
+            self.current_set_info["exact_rescan_active"] = False
+            self.current_set_info["exact_rescan_complete"] = True
+            self.data_manager.log_event(
+                self.Events.EXACT_RESCAN_COMPLETED,
+                {
+                    "set_id": self.current_set_info.get("id"),
+                    "member_count": target,
+                    "membership_source": "FULL_EXACT_RESCAN",
+                    "sample_barcodes_are_membership": False,
+                },
+            )
+            self.update_big_display("전체 재스캔 완료 - 제품 샘플1 스캔", "green")
+        else:
+            self.update_big_display(f"전체 제품 재스캔 {len(members)}/{target}", "primary")
+        self._save_current_set_state()
+        self._update_status_label()
+        return True
+
     def _extract_production_date(self, raw_input):
         try:
             normalized_input = re.sub(r"<gs>", "\x1D", str(raw_input or ""), flags=re.IGNORECASE)
@@ -3896,10 +4251,49 @@ class Label_Match(tk.Tk):
             return f"scan_{position - LABEL_MATCH_MASTER_SCAN_POSITION}"
         return None
 
-    def _finalize_set(self, result, error_details="", is_manual_complete=False):
-        if result == self.Results.PASS and not self.is_running_simulation:
-            self._play_sound("pass")
+    def _queue_authoritative_package(self, *, item_code, is_manual_complete):
+        if (
+            is_manual_complete
+            or self.__dict__.get("run_tests", False)
+            or self.__dict__.get("is_running_simulation", False)
+        ):
+            return None
+        current = self.current_set_info or {}
+        raw = list(current.get("raw") or [])
+        if len(raw) != self.TOTAL_SCAN_COUNT:
+            return None
+        try:
+            sealed_transfer = _label_match_parse_sealed_transfer_qr(raw[0])
+        except ValueError as exc:
+            raise PackageLogisticsError(str(exc)) from exc
+        exact_mode = bool(self.current_set_info.get("exact_rescan_complete"))
+        central_enabled = self.__dict__.get("package_logistics_client") is not None
+        if not sealed_transfer and not exact_mode:
+            if central_enabled:
+                raise PackageLogisticsError(
+                    "central packaging requires a sealed transfer QR; three product samples are not membership"
+                )
+            return {"status": "LEGACY_DIRECT_SYNC_ONLY", "sample_barcodes_are_membership": False}
+        outbox = self.__dict__.get("package_outbox")
+        if outbox is None:
+            raise PackageLogisticsError("durable package outbox is unavailable")
+        draft = _label_match_package_draft(current, item_code=item_code)
+        row = outbox.enqueue(draft)
+        return {
+            "status": str(row.get("status") or "PENDING"),
+            "idempotency_key": row["idempotency_key"],
+            "source_bundle_id": draft.source_bundle_id,
+            "source_external_label": draft.source_external_label,
+            "package_bundle_id": draft.package_bundle_id,
+            "membership_mode": draft.membership_mode,
+            "sample_barcodes": list(draft.sample_barcodes),
+            "sample_barcodes_are_membership": False,
+            "exact_rescan_count": len(draft.exact_rescan_barcodes),
+            "expected_member_count": draft.expected_member_count,
+            "expected_membership_hash": draft.expected_membership_hash,
+        }
 
+    def _finalize_set(self, result, error_details="", is_manual_complete=False):
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
         item_code = parsed_scans_to_log[0] if parsed_scans_to_log else "N/A"
@@ -3951,8 +4345,33 @@ class Label_Match(tk.Tk):
             if inspection_trace.get('input_tag_id'):
                 details.setdefault('source_session_id', inspection_trace['input_tag_id'])
             details['inspection_trace'] = inspection_trace
+        try:
+            package_logistics = (
+                self._queue_authoritative_package(
+                    item_code=item_code,
+                    is_manual_complete=is_manual_complete,
+                )
+                if result == self.Results.PASS
+                else None
+            )
+        except PackageLogisticsError as exc:
+            status_label = self.__dict__.get("status_label")
+            if status_label is not None:
+                status_label.config(text=f"❌ 중앙 포장 차단: {exc}", style="Error.TLabel")
+            self._play_sound("fail")
+            if not self.__dict__.get("run_tests", False):
+                messagebox.showerror("중앙 포장 차단", str(exc), parent=self)
+            return False
+        if package_logistics:
+            details["package_logistics"] = package_logistics
+            details["package_membership_mode"] = package_logistics.get("membership_mode")
+            details["sample_barcodes_are_membership"] = False
+        if result == self.Results.PASS and not self.is_running_simulation:
+            self._play_sound("pass")
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
         self._flush_data_manager_if_supported()
+        if package_logistics and package_logistics.get("idempotency_key"):
+            self._start_package_outbox_drain()
         state = self.__dict__
         if not state.get("run_tests", False) and not state.get("is_running_simulation", False):
             context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
@@ -4265,7 +4684,13 @@ class Label_Match(tk.Tk):
         self.current_set_info = {
             'id': None, 'parsed': [], 'raw': [],
             'start_time': None, 'error_count': 0, 'has_error_or_reset': False,
-            'phase': None, 'item_name_override': None, 'production_date': None
+            'phase': None, 'item_name_override': None, 'production_date': None,
+            'sealed_transfer': None,
+            'exact_rescan_active': False,
+            'exact_rescan_complete': False,
+            'exact_rescan_target_count': 0,
+            'exact_rescan_source_bundle_id': "",
+            'exact_rescan_barcodes': [],
         }
         self.progress_bar['value'] = 0
         if self.initialized_successfully:
@@ -4300,6 +4725,8 @@ class Label_Match(tk.Tk):
         self.after(10, lambda: self._finalize_set(result, error_details))
 
     def _play_error_siren_loop(self):
+        if self.__dict__.get("run_tests", False) or _label_match_automated_test_mode():
+            return
         sound = self.sound_objects.get("fail")
         if not sound:
             self.after_idle(lambda: messagebox.showwarning("사운드 설정 오류", "경고음 파일을 찾을 수 없습니다.\n(assets 폴더의 fail.wav 파일 확인 필요)\n\n오류 발생 시 경고음이 울리지 않습니다."))
@@ -4315,7 +4742,7 @@ class Label_Match(tk.Tk):
     def _trigger_modal_error(self, title, message, result, error_details):
         if self.is_blinking: return
         self.is_blinking = True
-        if not self.run_tests:
+        if not self.run_tests and not _label_match_automated_test_mode():
             threading.Thread(target=self._play_error_siren_loop, daemon=True).start()
         self.after(0, self._blink_background_loop)
         try:
@@ -5371,7 +5798,7 @@ class Label_Match(tk.Tk):
         bottom_frame = ttk.Frame(main_frame)
         self.bottom_frame = bottom_frame
         bottom_frame.grid(row=2, column=0, sticky="ew", pady=(profile["bottom_gap"], 0))
-        bottom_frame.grid_columnconfigure(3, weight=1)
+        bottom_frame.grid_columnconfigure(4, weight=1)
 
         reset_button = ttk.Button(bottom_frame, text=self.CURRENT_SET_CANCEL_BUTTON_TEXT, command=lambda: self._reset_current_set(full_reset=True), style=self.CURRENT_SET_CANCEL_BUTTON_STYLE)
         self.reset_button = reset_button
@@ -5387,12 +5814,22 @@ class Label_Match(tk.Tk):
         self.manual_complete_button.grid(row=0, column=2, sticky="w", padx=(20, 0))
         self.bind("<F3>", lambda e: self._prompt_manual_complete())
 
+        self.exact_rescan_button = ttk.Button(
+            bottom_frame,
+            text=self.EXACT_RESCAN_BUTTON_TEXT,
+            command=self._prompt_exact_rescan,
+            style=self.MANUAL_COMPLETE_BUTTON_STYLE,
+            state="disabled",
+        )
+        self.exact_rescan_button.grid(row=0, column=3, sticky="w", padx=(20, 0))
+        self.bind("<F4>", lambda e: self._prompt_exact_rescan())
+
         self.bind("<Delete>", self._delete_selected_row_from_shortcut)
 
         self.save_status_label = ttk.Label(bottom_frame, text="", style="Save.Success.TLabel", background=self.colors["background"])
-        self.save_status_label.grid(row=0, column=3, sticky="w", padx=30)
+        self.save_status_label.grid(row=0, column=4, sticky="w", padx=30)
         self.clock_label = ttk.Label(bottom_frame, text="", style="TLabel", background=self.colors["background"])
-        self.clock_label.grid(row=0, column=4, sticky="e", padx=30)
+        self.clock_label.grid(row=0, column=5, sticky="e", padx=30)
         self.loading_overlay = ttk.Frame(main_frame, style="Overlay.TFrame")
         loading_content_frame = ttk.Frame(self.loading_overlay, style="Overlay.TFrame")
         loading_content_frame.pack(expand=True)
@@ -5650,7 +6087,7 @@ class Label_Match(tk.Tk):
         elif color == "primary": fg_color = self.colors.get("primary", "#3B82F6")
         self.big_display_label.config(text=text or "", foreground=fg_color)
     def _play_sound(self, sound_key, block=False):
-        if not self.initialized_successfully or self.run_tests: return
+        if not self.initialized_successfully or self.run_tests or _label_match_automated_test_mode(): return
         sound = self.sound_objects.get(sound_key)
         if sound:
             try:
@@ -5768,10 +6205,18 @@ class Label_Match(tk.Tk):
             status_text += f" | 최근 스캔: {last_scan}"
         if self.current_set_info.get('has_error_or_reset'):
             status_text += " (오류 발생)"
+        if self.current_set_info.get("exact_rescan_active"):
+            status_text += (
+                f" | 전체 재스캔 {len(self.current_set_info.get('exact_rescan_barcodes') or [])}/"
+                f"{int(self.current_set_info.get('exact_rescan_target_count') or 0)}"
+            )
+        elif self.current_set_info.get("exact_rescan_complete"):
+            status_text += " | 전체 재스캔 완료"
         status_text += f" | F3: {self._manual_complete_hint()}"
         self.status_label.config(text=status_text, style="Status.TLabel")
         self._update_step_rail(num_scans, error=self.current_set_info.get('has_error_or_reset', False))
         self._update_manual_complete_button_state()
+        self._update_exact_rescan_button_state()
 
     def _update_manual_complete_button_state(self):
         if not self.initialized_successfully: return
@@ -5780,6 +6225,25 @@ class Label_Match(tk.Tk):
         else:
             state = "normal" if _label_match_manual_complete_allowed(self.current_set_info) else "disabled"
         self.manual_complete_button.config(state=state)
+
+    def _update_exact_rescan_button_state(self):
+        if not self.initialized_successfully or "exact_rescan_button" not in self.__dict__:
+            return
+        raw = list(self.current_set_info.get("raw") or [])
+        sealed = False
+        if raw:
+            try:
+                sealed = bool(_label_match_parse_sealed_transfer_qr(raw[0]))
+            except ValueError:
+                sealed = True
+        enabled = (
+            getattr(self, "history_view_updates_active_state", True)
+            and len(raw) == 1
+            and not sealed
+            and not self.current_set_info.get("exact_rescan_active")
+            and not self.current_set_info.get("exact_rescan_complete")
+        )
+        self.exact_rescan_button.config(state="normal" if enabled else "disabled")
 
     def _update_history_tree_in_progress(self):
         if not self.initialized_successfully: return
