@@ -29,7 +29,7 @@ jobs:
 
       - name: Run tests
         run: |
-          python -B -m py_compile Label_Match.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py
+          python -B -m py_compile Label_Match.py package_logistics.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py
           python -m pytest -q
 
       - name: Build with PyInstaller (One-Folder mode)

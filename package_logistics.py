@@ -26,6 +26,8 @@ from urllib.request import Request, urlopen
 OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v1"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
+PACKAGE_HTTP_USER_AGENT = "KMTech-Worker-ClaimClient/1.0 LabelMatch"
+PACKAGE_HTTP_CLIENT_HEADER = "Label_Match"
 
 
 class PackageLogisticsError(RuntimeError):
@@ -626,6 +628,8 @@ class PackageLogisticsClient:
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
             "Authorization": f"Bearer {self.config.token}",
+            "User-Agent": PACKAGE_HTTP_USER_AGENT,
+            "X-KMTech-Client": PACKAGE_HTTP_CLIENT_HEADER,
             "X-Logistics-Source-Host-Id": self.config.source_host_id,
             "X-Logistics-Device-Id": self.config.device_id,
             "X-Logistics-Program": "Label_Match",

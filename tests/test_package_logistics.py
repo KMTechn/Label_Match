@@ -287,7 +287,7 @@ def test_dynamic_qr_scope_builds_inherit_command_without_sample_membership():
     calls = []
 
     def transport(method, url, headers, body, timeout):
-        calls.append((method, url, body))
+        calls.append((method, url, dict(headers), body))
         return {"ok": True, "data": _projection()}
 
     client = PackageLogisticsClient(
@@ -297,6 +297,9 @@ def test_dynamic_qr_scope_builds_inherit_command_without_sample_membership():
     source_id, command = client.build_create_package_command(_draft(), idempotency_key="package-key")
     assert source_id == TRANSFER
     assert f"/bundles/{SCOPE}/{TRANSFER}" in calls[0][1]
+    assert calls[0][2]["User-Agent"] == package_module.PACKAGE_HTTP_USER_AGENT
+    assert calls[0][2]["X-KMTech-Client"] == package_module.PACKAGE_HTTP_CLIENT_HEADER
+    assert "python-urllib" not in calls[0][2]["User-Agent"].lower()
     assert command["authority_scope_id"] == SCOPE
     assert command["expected_versions"] == {f"bundle:{TRANSFER}": 7}
     assert command["payload"]["sample_barcodes"] == list(BARCODES[:3])
@@ -312,7 +315,7 @@ def test_client_lost_ack_recovers_receipt_in_command_scope():
     receipt = _receipt(draft)
 
     def transport(method, url, headers, body, timeout):
-        calls.append((method, url, body))
+        calls.append((method, url, dict(headers), body))
         if method == "POST":
             raise PackageTransportError("lost ACK")
         return {"ok": True, "data": receipt}
@@ -330,13 +333,19 @@ def test_client_lost_ack_recovers_receipt_in_command_scope():
     assert calls[0][0] == "POST"
     assert calls[1][0] == "GET"
     assert calls[1][1].endswith(f"/receipts/{SCOPE}/lost-ack-package")
+    for _method, _url, headers, _body in calls:
+        assert headers["User-Agent"] == package_module.PACKAGE_HTTP_USER_AGENT
+        assert headers["X-KMTech-Client"] == package_module.PACKAGE_HTTP_CLIENT_HEADER
+        assert "python-urllib" not in headers["User-Agent"].lower()
+    assert calls[0][2]["Idempotency-Key"] == "lost-ack-package"
+    assert "Idempotency-Key" not in calls[1][2]
 
 
 def test_legacy_exact_rescan_resolver_uses_package_source_lineage_role():
     calls = []
 
     def transport(method, url, headers, body, timeout):
-        calls.append(url)
+        calls.append((url, dict(headers)))
         if "/bundles/resolve?" in url:
             query = parse_qs(urlsplit(url).query, keep_blank_values=True)
             assert query == {
@@ -368,9 +377,43 @@ def test_legacy_exact_rescan_resolver_uses_package_source_lineage_role():
     )
     source_id, command = client.build_create_package_command(draft, idempotency_key="legacy-resolve")
     assert source_id == TRANSFER
+    assert len(calls) == 2
+    for _url, headers in calls:
+        assert headers["User-Agent"] == package_module.PACKAGE_HTTP_USER_AGENT
+        assert headers["X-KMTech-Client"] == package_module.PACKAGE_HTTP_CLIENT_HEADER
     assert command["payload"]["member_ids"] == list(UNITS)
     assert command["payload"]["exact_rescan_barcodes"] == list(BARCODES)
     assert command["payload"]["barcode_membership_hash"] == barcode_membership_hash(BARCODES)
+
+
+def test_default_transport_preserves_explicit_client_identity(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True, "data": _projection()}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(package_module, "urlopen", fake_urlopen)
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device")
+    )
+
+    assert client.get_bundle(TRANSFER)["bundle_id"] == TRANSFER
+    assert captured["headers"]["user-agent"] == package_module.PACKAGE_HTTP_USER_AGENT
+    assert captured["headers"]["x-kmtech-client"] == package_module.PACKAGE_HTTP_CLIENT_HEADER
+    assert "python-urllib" not in captured["headers"]["user-agent"].lower()
+    assert captured["timeout"] == 8.0
 
 
 def test_minimal_itg_only_identity_resolves_without_raw_external_label():
