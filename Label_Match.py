@@ -5970,6 +5970,12 @@ class Label_Match(tk.Tk):
             else:
                 notice_font_size = tokens.fonts.body
                 notice_title_font_size = notice_font_size
+            notice_message_font = (self.default_font_name, notice_font_size)
+            notice_title_font = (
+                self.default_font_name,
+                notice_title_font_size,
+                "bold",
+            )
             scan_input_font_size = min(
                 tokens.fonts.scan_input,
                 18 if compact_large_text else tokens.fonts.scan_input,
@@ -6013,10 +6019,38 @@ class Label_Match(tk.Tk):
             self.progress_frame.grid_configure(pady=(0, vertical_gap))
             self.workflow_notice_frame.grid_configure(pady=(0, vertical_gap))
             self.operator_input_frame.grid_configure(pady=(0, vertical_gap))
-            notice_height = (
-                132
-                if constrained_large_text
-                else max(132, int(tokens.fonts.body * 6 + 24))
+            try:
+                notice_message_linespace = int(
+                    tkFont.Font(root=self, font=notice_message_font).metrics(
+                        "linespace"
+                    )
+                )
+                notice_title_linespace = int(
+                    tkFont.Font(root=self, font=notice_title_font).metrics(
+                        "linespace"
+                    )
+                )
+            except (TclError, AttributeError, TypeError, ValueError):
+                notice_message_linespace = max(20, notice_font_size * 3)
+                notice_title_linespace = max(20, notice_title_font_size * 3)
+            if compact_large_text:
+                title_pad_top, message_pad_top, message_pad_bottom = 4, 0, 4
+            else:
+                title_pad_top, message_pad_top, message_pad_bottom = 7, 1, 7
+            # Tk point sizes are not pixel heights (15 pt is a 41 px line on
+            # the locked DISPLAY2 DPI).  Reserve one title plus the compact
+            # notice contract's three message lines using real font metrics.
+            label_vertical_chrome = 6
+            notice_height = max(
+                132,
+                title_pad_top
+                + notice_title_linespace
+                + label_vertical_chrome
+                + message_pad_top
+                + notice_message_linespace * 3
+                + label_vertical_chrome
+                + message_pad_bottom
+                + 2,
             )
             self._operator_notice_base_height = notice_height
             self.workflow_notice_frame.configure(height=notice_height)
@@ -6041,12 +6075,12 @@ class Label_Match(tk.Tk):
                     pady=(1, 7),
                 )
             self.workflow_notice_label.configure(
-                font=(self.default_font_name, notice_font_size),
+                font=notice_message_font,
                 wraplength=max(260, panes.center_width - 180),
                 anchor="nw",
             )
             self.workflow_notice_title_label.configure(
-                font=(self.default_font_name, notice_title_font_size, "bold")
+                font=notice_title_font
             )
             self.style.configure(
                 "Operator.NoticeAction.TButton",
@@ -6646,7 +6680,9 @@ class Label_Match(tk.Tk):
                 frame_width - message_pad_x * 2 - action_width - 4,
             )
             message_label.configure(wraplength=available_message_width)
-            self.update_idletasks()
+            # The configured wrap length updates the widget's requested size
+            # without entering a nested Tk idle loop.  Draining idle events
+            # here can recursively dispatch <Configure> layout callbacks.
 
             text_height = (
                 title_pad_top

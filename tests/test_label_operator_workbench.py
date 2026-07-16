@@ -391,9 +391,12 @@ def test_workbench_renderer_uses_snapshot_adapter_then_pure_presenter():
 
 def test_responsive_layout_does_not_drain_tk_events_from_configure_callback():
     source = inspect.getsource(Label_Match._apply_operator_responsive_layout)
+    notice_source = inspect.getsource(Label_Match._fit_operator_notice_geometry)
 
     assert "update_idletasks" not in source
     assert ".update()" not in source
+    assert "update_idletasks" not in notice_source
+    assert ".update()" not in notice_source
 
 
 def test_renderer_populates_actual_accepted_qa_rows_and_keeps_f4_rows_separate(operator_workbench):
@@ -638,8 +641,11 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         _configure_size,
         _make_capture_app,
         _wait_until_ready,
+        apply_state_fixture,
         build_isolated_app_settings,
+        build_state_fixtures,
         pump_tk,
+        settle_responsive_layout,
     )
 
     data_root = tmp_path / "label_match_live_submission"
@@ -803,6 +809,11 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
             f"requested={app.workflow_notice_label.winfo_reqheight()}, "
             f"text={mismatch_text!r}"
         )
+        assert (
+            app.workflow_notice_label.winfo_y()
+            + app.workflow_notice_label.winfo_height()
+            <= app.workflow_notice_frame.winfo_height()
+        )
         assert app.workflow_notice_frame.winfo_height() == retry_notice_height
         mismatch_tree_box = (
             app.qa_scan_tree.winfo_x(),
@@ -819,6 +830,36 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         app._acknowledge_workflow_notice()
         pump_tk(app, 260)
         assert app.focus_get() == app.entry
+
+        _apply_scale(app, 1.0)
+        _configure_size(app, (2560, 1392))
+        error_fixture = next(
+            fixture
+            for fixture in build_state_fixtures()
+            if fixture.state_id == "error"
+        )
+        apply_state_fixture(app, error_fixture)
+        settle_responsive_layout(app)
+        pump_tk(app, 260)
+
+        assert (
+            app.workflow_notice_label.winfo_height()
+            >= app.workflow_notice_label.winfo_reqheight()
+        )
+        assert (
+            app.workflow_notice_label.winfo_y()
+            + app.workflow_notice_label.winfo_height()
+            <= app.workflow_notice_frame.winfo_height()
+        )
+        wide_rows = tuple(app.qa_scan_tree.get_children())
+        assert len(wide_rows) == 5
+        wide_last_row_box = app.qa_scan_tree.bbox(wide_rows[-1])
+        assert wide_last_row_box
+        assert (
+            wide_last_row_box[1] + wide_last_row_box[3]
+            <= app.qa_scan_tree.winfo_height()
+        )
+
     finally:
         if app is not None:
             app.destroy()
