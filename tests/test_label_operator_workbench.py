@@ -640,6 +640,7 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         _apply_scale,
         _configure_size,
         _make_capture_app,
+        _pending_after_ids,
         _wait_until_ready,
         apply_state_fixture,
         build_isolated_app_settings,
@@ -857,6 +858,156 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         assert wide_last_row_box
         assert (
             wide_last_row_box[1] + wide_last_row_box[3]
+            <= app.qa_scan_tree.winfo_height()
+        )
+
+        import _tkinter
+
+        history_fixture = next(
+            fixture
+            for fixture in build_state_fixtures()
+            if fixture.state_id == "history_readonly"
+        )
+        session_fixture = next(
+            fixture
+            for fixture in build_state_fixtures()
+            if fixture.state_id == "recovery"
+        )
+
+        def drain_tk_events(limit=256):
+            for after_id in _pending_after_ids(app):
+                app.after_cancel(after_id)
+            app._operator_layout_settle_after_id = None
+            app._responsive_after_id = None
+            for event_count in range(1, limit + 1):
+                if not app.tk.dooneevent(
+                    _tkinter.ALL_EVENTS | _tkinter.DONT_WAIT
+                ):
+                    assert _pending_after_ids(app) == ()
+                    return event_count
+            pytest.fail("history tab layout keeps generating Tk idle events")
+
+        def widget_box(widget):
+            return (
+                widget.winfo_x(),
+                widget.winfo_y(),
+                widget.winfo_width(),
+                widget.winfo_height(),
+            )
+
+        def root_box(widget):
+            return (
+                widget.winfo_rootx(),
+                widget.winfo_rooty(),
+                widget.winfo_rootx() + widget.winfo_width(),
+                widget.winfo_rooty() + widget.winfo_height(),
+            )
+
+        def history_layout_signature():
+            grid_keys = ("row", "column", "columnspan", "sticky", "pady")
+            label_grid = app.hist_header_label.grid_info()
+            controls_grid = app.hist_control_frame.grid_info()
+            return (
+                app._history_controls_compact,
+                app._history_controls_stacked,
+                tuple(str(label_grid.get(key, "")) for key in grid_keys),
+                tuple(str(controls_grid.get(key, "")) for key in grid_keys),
+                widget_box(app.hist_header_frame),
+                widget_box(app.hist_header_label),
+                widget_box(app.hist_control_frame),
+                tuple(
+                    (
+                        button.cget("text"),
+                        button.cget("style"),
+                        str(button.pack_info().get("padx", "")),
+                    )
+                    for button in (
+                        app.today_button,
+                        app.date_search_button,
+                        app.decrease_font_button,
+                        app.increase_font_button,
+                    )
+                ),
+                tuple(
+                    app.history_tree.heading(column, "text")
+                    for column in app.HISTORY_HEADING_LABELS
+                ),
+                str(app.style.lookup("Treeview.Heading", "font")),
+            )
+
+        center_widgets = (
+            app.workflow_notice_frame,
+            app.live_scan_notebook,
+            app.qa_scan_tree,
+            app.qa_scan_detail_frame,
+        )
+        center_before_history = tuple(map(widget_box, center_widgets))
+
+        apply_state_fixture(app, history_fixture)
+        assert drain_tk_events() < 256
+        first_history_signature = history_layout_signature()
+        assert app.operator_notebook.select() == str(app.history_card)
+        assert bool(app.history_tree.winfo_ismapped()) is True
+        assert bool(app.session_tree.winfo_ismapped()) is False
+        assert all(
+            abs(before - after) <= 2
+            for before_box, after_box in zip(
+                center_before_history,
+                map(widget_box, center_widgets),
+            )
+            for before, after in zip(before_box, after_box)
+        )
+
+        label_rect = root_box(app.hist_header_label)
+        controls_rect = root_box(app.hist_control_frame)
+        assert (
+            app.hist_control_frame.winfo_x()
+            + app.hist_control_frame.winfo_width()
+            <= app.hist_header_frame.winfo_width()
+        )
+        assert (
+            app.hist_control_frame.winfo_y()
+            + app.hist_control_frame.winfo_height()
+            <= app.hist_header_frame.winfo_height()
+        )
+        assert (
+            label_rect[2] <= controls_rect[0]
+            or controls_rect[2] <= label_rect[0]
+            or label_rect[3] <= controls_rect[1]
+            or controls_rect[3] <= label_rect[1]
+        )
+        for button in (
+            app.today_button,
+            app.date_search_button,
+            app.decrease_font_button,
+            app.increase_font_button,
+        ):
+            assert button.winfo_x() >= 0 and button.winfo_y() >= 0
+            assert button.winfo_width() >= button.winfo_reqwidth()
+            assert button.winfo_height() >= button.winfo_reqheight()
+
+        apply_state_fixture(app, history_fixture)
+        assert drain_tk_events() < 256
+        assert history_layout_signature() == first_history_signature
+
+        apply_state_fixture(app, session_fixture)
+        assert drain_tk_events() < 256
+        assert app.operator_notebook.select() == str(app.session_tab)
+        assert bool(app.session_tree.winfo_ismapped()) is True
+        assert bool(app.history_tree.winfo_ismapped()) is False
+
+        apply_state_fixture(app, history_fixture)
+        assert drain_tk_events() < 256
+        assert history_layout_signature() == first_history_signature
+        assert bool(app.history_tree.winfo_ismapped()) is True
+        assert bool(app.session_tree.winfo_ismapped()) is False
+
+        history_rows = tuple(app.qa_scan_tree.get_children())
+        assert len(history_rows) == 5
+        history_last_row_box = app.qa_scan_tree.bbox(history_rows[-1])
+        assert history_last_row_box
+        assert (
+            history_last_row_box[1] + history_last_row_box[3]
             <= app.qa_scan_tree.winfo_height()
         )
 

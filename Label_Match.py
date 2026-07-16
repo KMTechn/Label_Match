@@ -3094,6 +3094,12 @@ class Label_Match(tk.Tk):
         label.configure(text=text, font=(self.default_font_name, size, "bold"), wraplength=max(40, int(available_width or 40)))
 
     def _configure_history_control_buttons(self, compact=False):
+        signature = (
+            bool(compact),
+            int(self.__dict__.get("_current_font_size", 14)),
+        )
+        if self.__dict__.get("_history_control_style_signature") == signature:
+            return
         style_name = "Compact.Control.TButton" if compact else "Control.TButton"
         if compact:
             font_size = max(10, min(18, int(self.__dict__.get("_current_font_size", 14) * 0.72)))
@@ -3123,6 +3129,7 @@ class Label_Match(tk.Tk):
             today_button.pack_configure(padx=(0, 4 if compact else 5))
         if date_button is not None:
             date_button.pack_configure(padx=(0, 8 if compact else 15))
+        self._history_control_style_signature = signature
 
     def _apply_adaptive_header_fitting(self):
         required_widgets = ("hist_header_label", "hist_header_frame", "summary_header_label", "summary_header_frame", "summary_date_label", "summary_card", "history_tree", "summary_tree")
@@ -3145,25 +3152,66 @@ class Label_Match(tk.Tk):
             control_frame = self.__dict__.get("hist_control_frame")
             control_width = 0
             if control_frame:
-                self._configure_history_control_buttons(compact=False)
                 date_button = self.__dict__.get("date_search_button")
-                if date_button is not None:
-                    date_button.configure(text="조회" if hist_header_width < 620 else "날짜 조회")
+                previous_compact = self.__dict__.get("_history_controls_compact")
+                compact_decision_width = int(
+                    self.__dict__.get(
+                        "_history_control_compact_decision_width",
+                        hist_header_width,
+                    )
+                )
+                if previous_compact is True:
+                    # A normal-style probe that overflowed must not run again
+                    # for every Configure event at the same width.  Reconsider
+                    # it only after the right pane actually grows by 64 px.
+                    compact_controls = (
+                        hist_header_width < compact_decision_width + 64
+                    )
+                elif previous_compact is False:
+                    compact_controls = hist_header_width < 720
+                else:
+                    compact_controls = hist_header_width < 780
+                date_text = (
+                    "조회"
+                    if compact_controls or hist_header_width < 620
+                    else "날짜 조회"
+                )
+                if date_button is not None and date_button.cget("text") != date_text:
+                    date_button.configure(text=date_text)
+                self._configure_history_control_buttons(compact=compact_controls)
                 control_width = max(0, control_frame.winfo_reqwidth())
-                if control_width > hist_header_width - 12:
-                    if date_button is not None:
+                normal_style_overflowed = False
+                if not compact_controls and control_width > hist_header_width - 12:
+                    normal_style_overflowed = True
+                    compact_controls = True
+                    if date_button is not None and date_button.cget("text") != "조회":
                         date_button.configure(text="조회")
                     self._configure_history_control_buttons(compact=True)
                     control_width = max(0, control_frame.winfo_reqwidth())
+                self._history_controls_compact = compact_controls
+                if compact_controls and (
+                    previous_compact is not True or normal_style_overflowed
+                ):
+                    self._history_control_compact_decision_width = hist_header_width
+                elif not compact_controls:
+                    self.__dict__.pop(
+                        "_history_control_compact_decision_width",
+                        None,
+                    )
                 should_stack_controls = control_width + max(110, int(hist_header_width * 0.28)) + 18 > hist_header_width
-                if should_stack_controls:
-                    self.hist_header_label.grid_configure(row=0, column=0, columnspan=3, sticky="w")
-                    control_frame.grid_configure(row=1, column=0, columnspan=3, sticky="e", pady=(6, 0))
-                    hist_label_width = hist_header_width - 12
-                else:
-                    self.hist_header_label.grid_configure(row=0, column=0, columnspan=1, sticky="w")
-                    control_frame.grid_configure(row=0, column=2, columnspan=1, sticky="e", pady=0)
-                    hist_label_width = hist_header_width - control_width - 20
+                if self.__dict__.get("_history_controls_stacked") != should_stack_controls:
+                    if should_stack_controls:
+                        self.hist_header_label.grid_configure(row=0, column=0, columnspan=3, sticky="w")
+                        control_frame.grid_configure(row=1, column=0, columnspan=3, sticky="e", pady=(6, 0))
+                    else:
+                        self.hist_header_label.grid_configure(row=0, column=0, columnspan=1, sticky="w")
+                        control_frame.grid_configure(row=0, column=2, columnspan=1, sticky="e", pady=0)
+                    self._history_controls_stacked = should_stack_controls
+                hist_label_width = (
+                    hist_header_width - 12
+                    if should_stack_controls
+                    else hist_header_width - control_width - 20
+                )
             else:
                 hist_label_width = hist_header_width - 12
             self._fit_section_header_label(
