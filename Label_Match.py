@@ -3119,10 +3119,18 @@ class Label_Match(tk.Tk):
                 background=[('active', self.colors["background"]), ('focus', self.colors["background"])],
                 relief=[('focus', 'solid')],
             )
-        for button_name in ("today_button", "date_search_button", "decrease_font_button", "increase_font_button"):
+        for button_name, compact_width, normal_width in (
+            ("today_button", 5, 8),
+            ("date_search_button", 5, 8),
+            ("decrease_font_button", 3, 4),
+            ("increase_font_button", 3, 4),
+        ):
             button = self.__dict__.get(button_name)
             if button is not None:
-                button.configure(style=style_name)
+                button.configure(
+                    style=style_name,
+                    width=compact_width if compact else normal_width,
+                )
         today_button = self.__dict__.get("today_button")
         date_button = self.__dict__.get("date_search_button")
         if today_button is not None:
@@ -5597,7 +5605,28 @@ class Label_Match(tk.Tk):
         if not text:
             return text
         try:
-            column_width = max(1, int(tree.column(column, "width")) - int(padding))
+            configured_width = max(1, int(tree.column(column, "width")))
+            try:
+                stretch = bool(tree.column(column, "stretch"))
+            except (TclError, TypeError, ValueError):
+                stretch = False
+            if stretch:
+                # Tk stretches the value column to consume the live widget
+                # width after the responsive pass.  Fit against that final
+                # width immediately so a settle pass does not leave every
+                # barcode one glyph shorter than the visible column.
+                columns = tuple(str(value) for value in tree.cget("columns"))
+                occupied = sum(
+                    max(0, int(tree.column(name, "width")))
+                    for name in columns
+                    if name != str(column)
+                )
+                stretched_width = max(
+                    1,
+                    int(tree.winfo_width()) - occupied,
+                )
+                configured_width = max(configured_width, stretched_width)
+            column_width = max(1, configured_width - int(padding))
             style_name = str(tree.cget("style") or "Operator.Treeview")
             style = self.__dict__.get("style")
             if style is None:
@@ -5956,9 +5985,11 @@ class Label_Match(tk.Tk):
         compact_large_text = scale >= 1.25 and (
             constrained_large_text or panes.center_width < 650
         )
+        short_auxiliary_height = height < 660
         self._operator_hide_left_badges = constrained_large_text
         self._operator_constrained_large_text = constrained_large_text
         self._operator_compact_large_text = compact_large_text
+        self._operator_short_auxiliary_height = short_auxiliary_height
         card_padding = min(
             int(profile["card_padding"]),
             8 if constrained_large_text else int(profile["card_padding"]),
@@ -6006,6 +6037,7 @@ class Label_Match(tk.Tk):
                 (
                     26
                     if constrained_large_text
+                    else 26 if short_auxiliary_height
                     else 28 if compact_large_text else tokens.fonts.headline
                 ),
             )
@@ -6062,7 +6094,11 @@ class Label_Match(tk.Tk):
                 font=(self.default_font_name, headline_font_size, "bold"),
                 wraplength=max(320, panes.center_width - tokens.spacing.xl * 2),
             )
-            vertical_gap = 2 if constrained_large_text else 8
+            vertical_gap = (
+                2
+                if constrained_large_text
+                else 4 if short_auxiliary_height else 8
+            )
             self.big_display_label.grid_configure(pady=(0, vertical_gap))
             self.progress_frame.grid_configure(pady=(0, vertical_gap))
             self.workflow_notice_frame.grid_configure(pady=(0, vertical_gap))
@@ -6089,8 +6125,13 @@ class Label_Match(tk.Tk):
             # the locked DISPLAY2 DPI).  Reserve one title plus the compact
             # notice contract's three message lines using real font metrics.
             label_vertical_chrome = 6
+            minimum_notice_height = (
+                120
+                if short_auxiliary_height and not constrained_large_text
+                else 132
+            )
             notice_height = max(
-                132,
+                minimum_notice_height,
                 title_pad_top
                 + notice_title_linespace
                 + label_vertical_chrome
@@ -6153,7 +6194,13 @@ class Label_Match(tk.Tk):
                     "bold",
                 ),
             )
-            self.entry.grid_configure(ipady=5 if constrained_large_text else 8)
+            self.entry.grid_configure(
+                ipady=(
+                    5
+                    if constrained_large_text
+                    else 6 if short_auxiliary_height else 8
+                )
+            )
             # The five-step rail already expresses progress.  Keeping a second
             # percentage-like bar consumes the exact vertical space needed by
             # the operator's actual five scan rows on a short auxiliary screen.
@@ -6249,14 +6296,23 @@ class Label_Match(tk.Tk):
                 )
             except (TclError, TypeError, ValueError):
                 action_line_height = max(16, int(action_font_size * 1.5))
-            action_height = max(
+            action_button_height = max(
                 86,
                 metrics.center.actions.button_height,
                 action_line_height * 2 + 24,
             )
-            action_height = min(104, action_height)
-            self.operator_action_frame.grid_rowconfigure(0, minsize=action_height)
-            self.operator_action_frame.grid_rowconfigure(1, minsize=action_height)
+            action_button_height = min(104, action_button_height)
+            # Each row has four pixels of external vertical grid padding.  Size
+            # the row extent, not just its slot, so the visible/clickable button
+            # remains at the intended 86-104 px target without growing the
+            # overall two-row action area.
+            action_row_extent = action_button_height + 4
+            self.operator_action_frame.grid_rowconfigure(
+                0, minsize=action_row_extent
+            )
+            self.operator_action_frame.grid_rowconfigure(
+                1, minsize=action_row_extent
+            )
             self.style.configure(
                 "Operator.Action.TButton",
                 font=action_font,
@@ -6278,7 +6334,7 @@ class Label_Match(tk.Tk):
                     button.configure(text=compact_text, style=compact_style, width=1)
             right_inner_width = max(220, panes.right_width - card_padding * 2)
             right_inner_height = max(220, height - card_padding * 2)
-            action_total_height = action_height * 2 + 8
+            action_total_height = action_row_extent * 2
             self.operator_action_frame.configure(
                 width=right_inner_width,
                 height=action_total_height,
@@ -6288,10 +6344,17 @@ class Label_Match(tk.Tk):
                 width=right_inner_width,
                 height=max(140, right_inner_height - action_total_height - 10),
             )
+            tree_row_height = max(
+                30,
+                int(
+                    live_list_font_size
+                    * (2.05 if constrained_large_text else 2.35)
+                ),
+            )
             self.style.configure(
                 "Operator.Treeview",
                 font=(self.default_font_name, live_list_font_size),
-                rowheight=max(30, int(live_list_font_size * 2.35)),
+                rowheight=tree_row_height,
             )
             center_inner_width = max(320, panes.center_width - card_padding * 2)
             if compact_large_text:
@@ -6353,7 +6416,7 @@ class Label_Match(tk.Tk):
             )
             tree_content_height = max(
                 188,
-                5 * max(30, int(live_list_font_size * 2.35)) + 38,
+                5 * tree_row_height + 38,
             )
             live_list_height = tree_content_height + detail_height + (
                 39 if scale >= 1.25 else 37
@@ -6969,9 +7032,19 @@ class Label_Match(tk.Tk):
                 pass
         self._render_exact_rescan_detail(selected_exact_iid)
         show_exact = view.exact_rescan.status in {"active", "complete"}
+        select_exact = bool(
+            view.exact_rescan.status == "active"
+            or (
+                view.exact_rescan.status == "complete"
+                and view.qa_completed <= 1
+            )
+        )
         self._set_exact_rescan_tab_visible(
             show_exact,
-            select=view.exact_rescan.status == "active",
+            # Completion must keep the just-scanned F4 list and selected raw
+            # value visible.  Once the next QA scan is accepted, the active QA
+            # list becomes the source of truth and must regain the same center.
+            select=select_exact,
         )
         if notebook is not None and show_exact:
             try:
@@ -6982,16 +7055,10 @@ class Label_Match(tk.Tk):
             except (TclError, AttributeError):
                 pass
 
-        notice_next_action = view.next_action
-        if (
-            view.notice is None
-            and view.exact_rescan.status == "complete"
-            and view.last_normal_scan
-        ):
-            notice_next_action = (
-                f"{view.next_action} · F4 마지막 정상: {view.last_normal_scan}"
-            )
-        self._set_workflow_notice_ui(view.notice, notice_next_action)
+        # The central list and its selected-row detail retain the complete last
+        # normal scan.  Repeating that raw value in the fixed notice row both
+        # duplicates information and can force a short-screen height overflow.
+        self._set_workflow_notice_ui(view.notice, view.next_action)
         last_scan_label = self.__dict__.get("operator_last_scan_label")
         if last_scan_label is None:
             last_scan_label = self.__dict__.get("status_label")

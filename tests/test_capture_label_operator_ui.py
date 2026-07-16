@@ -159,6 +159,11 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     assert fixtures["exact_complete"].exact_complete is True
     assert len(fixtures["exact_complete"].exact_barcodes) == fixtures["exact_complete"].exact_target
     assert fixtures["exact_complete"].exact_target == 3
+    assert fixtures["qa_progress"].exact_complete is True
+    assert (
+        fixtures["qa_progress"].exact_barcodes
+        == fixtures["exact_complete"].exact_barcodes
+    )
     assert fixtures["sealed"].sealed_transfer is True
     assert fixtures["full_complete"].completion_kind == "full"
     assert fixtures["partial_complete"].completion_kind == "partial"
@@ -188,8 +193,8 @@ def test_only_the_state_selected_live_scan_tree_is_mapping_critical():
         "exact_rescan_tree": True,
     }
     assert expected_scan_tree_mapping(fixtures["exact_complete"], app) == {
-        "current_set_tree": True,
-        "exact_rescan_tree": False,
+        "current_set_tree": False,
+        "exact_rescan_tree": True,
     }
 
 
@@ -362,6 +367,77 @@ def test_image_analysis_rejects_edge_stripes_and_local_black_tiles():
     assert tile_metrics["black_tile_suspected"] is True
 
 
+def test_image_analysis_accepts_only_the_os_frame_black_outside_client_roi():
+    outer = _ui_like_image()
+    client_bbox = (8, 0, outer.width - 8, outer.height - 8)
+
+    # PrintWindow includes the invisible Win32 resize border in GetWindowRect.
+    # It is black on the locked DISPLAY2 even though the complete app client is
+    # rendered.  Keep the full outer image as evidence, but judge app pixels in
+    # the independently attested client rectangle.
+    for x in range(outer.width):
+        for y in range(outer.height - 8, outer.height):
+            outer.putpixel((x, y), (0, 0, 0))
+    for x in range(8):
+        for y in range(outer.height):
+            outer.putpixel((x, y), (0, 0, 0))
+    for x in range(outer.width - 8, outer.width):
+        for y in range(outer.height):
+            outer.putpixel((x, y), (0, 0, 0))
+
+    full_outer = analyze_image(outer, outer.size)
+    client = analyze_image(outer, outer.size, content_bbox=client_bbox)
+
+    assert full_outer["capture_pixels_valid"] is False
+    assert full_outer["edge_black_stripe_suspected"] is True
+    assert client["capture_pixels_valid"] is True
+    assert client["edge_black_stripe_suspected"] is False
+    assert client["analysis_region"] == "window_client"
+    assert client["analysis_bbox"] == list(client_bbox)
+    assert client["analysis_pixel_size"] == [
+        client_bbox[2] - client_bbox[0],
+        client_bbox[3] - client_bbox[1],
+    ]
+    # Pixel-size attestation remains tied to the uncropped outer evidence.
+    assert client["pixel_size"] == list(outer.size)
+    assert client["pixel_size_matches"] is True
+
+
+def test_image_analysis_still_rejects_black_stripe_inside_client_roi():
+    outer = _ui_like_image()
+    client_bbox = (8, 0, outer.width - 8, outer.height - 8)
+    client_width = client_bbox[2] - client_bbox[0]
+    stripe_right = client_bbox[0] + int(client_width * 0.18)
+    for x in range(client_bbox[0], stripe_right):
+        for y in range(client_bbox[1], client_bbox[3]):
+            outer.putpixel((x, y), (0, 0, 0))
+
+    metrics = analyze_image(outer, outer.size, content_bbox=client_bbox)
+
+    assert metrics["capture_pixels_valid"] is False
+    assert metrics["edge_black_stripe_suspected"] is True
+    assert metrics["analysis_region"] == "window_client"
+
+
+@pytest.mark.parametrize(
+    "content_bbox",
+    (
+        (0, 0, 10),
+        (-1, 0, 10, 10),
+        (0, -1, 10, 10),
+        (5, 0, 5, 10),
+        (0, 6, 10, 6),
+        (0, 0, 33, 24),
+        (0, 0, 32, 25),
+    ),
+)
+def test_image_analysis_rejects_invalid_client_bbox(content_bbox):
+    image = _ui_like_image(width=32, height=24)
+
+    with pytest.raises(ValueError, match="content_bbox"):
+        analyze_image(image, image.size, content_bbox=content_bbox)
+
+
 def _geometry_record(
     name: str,
     bbox: list[int],
@@ -387,6 +463,7 @@ def _geometry_record(
         ],
         "check_requested_width": check_requested_width,
         "check_requested_height": check_requested_height,
+        "text_measurement_source": "tk",
     }
 
 
@@ -396,14 +473,19 @@ def test_clipping_proxy_detects_bounds_visibility_compression_overlap_and_contai
         _geometry_record("entry", [10, 10, 90, 40]),
         _geometry_record("list", [10, 30, 90, 80]),
         _geometry_record("outside", [80, 80, 110, 110]),
-        _geometry_record(
-            "compressed",
-            [10, 82, 70, 98],
-            requested_width=80,
-            requested_height=24,
-            check_requested_width=True,
-            check_requested_height=True,
-        ),
+        {
+            **_geometry_record(
+                "compressed",
+                [10, 82, 70, 98],
+                requested_width=80,
+                requested_height=24,
+                check_requested_width=True,
+                check_requested_height=True,
+            ),
+            "text": "overflowing label",
+            "wraplength": 0,
+            "text_pixel_width": 80,
+        },
         _geometry_record("hidden", [0, 0, 1, 1], mapped=False),
         _geometry_record("inactive_tab", [0, 0, 1, 1], mapped=False, critical=False),
     ]
@@ -461,6 +543,171 @@ def test_text_clipping_proxy_checks_wrap_width_and_requested_geometry():
     assert result["wraplength_exceeds_widget"] == ["wrapped"]
 
 
+def test_font_metrics_prefers_direct_widget_font_and_measures_multiline_by_line():
+    class FakeTk:
+        def __init__(self):
+            self.calls = []
+
+        def call(self, *args):
+            self.calls.append(args)
+            if args[:2] == ("font", "measure"):
+                assert args[2] == "ResponsiveDirectFont"
+                return {"long first line": 137, "short": 41}[args[3]]
+            if args[:2] == ("font", "metrics"):
+                assert args[2] == "ResponsiveDirectFont"
+                assert args[3] == "-linespace"
+                return 29
+            if args[:2] == ("ttk::style", "lookup"):
+                raise AssertionError("direct widget font must win over ttk style")
+            raise AssertionError(f"unexpected Tk call: {args!r}")
+
+    class Widget:
+        def __init__(self):
+            self.tk = FakeTk()
+
+        @staticmethod
+        def cget(option):
+            return {
+                "font": "ResponsiveDirectFont",
+                "style": "Wrong.Header.TLabel",
+            }[option]
+
+        @staticmethod
+        def winfo_class():
+            return "TLabel"
+
+    widget = Widget()
+
+    width, linespace, source = capture._tk_font_metrics_with_source(
+        widget,
+        "long first line\nshort",
+    )
+
+    assert (width, linespace, source) == (137, 29, "tk")
+    assert ("font", "measure", "ResponsiveDirectFont", "long first line") in widget.tk.calls
+    assert ("font", "measure", "ResponsiveDirectFont", "short") in widget.tk.calls
+    assert not any(call[:2] == ("ttk::style", "lookup") for call in widget.tk.calls)
+
+
+def test_font_metrics_marks_unresolved_default_font_non_authoritative():
+    class FakeTk:
+        @staticmethod
+        def call(*args):
+            if args[:2] == ("font", "measure"):
+                assert args[2] == "TkDefaultFont"
+                return 40
+            if args[:2] == ("font", "metrics"):
+                return 16
+            raise AssertionError(args)
+
+    class Widget:
+        tk = FakeTk()
+
+        @staticmethod
+        def cget(_option):
+            raise RuntimeError("no direct font or ttk style")
+
+        @staticmethod
+        def winfo_class():
+            return "Unknown"
+
+    assert capture._tk_font_metrics_with_source(Widget(), "text") == (
+        40,
+        16,
+        "tk-unresolved-default",
+    )
+
+
+def test_compact_button_request_can_shrink_only_while_actual_text_still_fits():
+    safe = {
+        **_geometry_record(
+            "compact_plus",
+            [0, 0, 30, 31],
+            requested_width=106,
+            requested_height=31,
+            check_requested_width=True,
+        ),
+        "text": "+",
+        "widget_class": "TButton",
+        "wraplength": 0,
+        "text_pixel_width": 9,
+        "text_line_height": 17,
+        "text_explicit_line_count": 1,
+    }
+
+    geometry = evaluate_clipping_proxy([safe], (200, 100))
+    text = evaluate_text_clipping_proxy([safe])
+
+    assert geometry["suspected"] is False
+    assert geometry["width_compressed_widgets"] == []
+    assert text["suspected"] is False
+
+    overflow = {
+        **safe,
+        "name": "overflowing_button",
+        "text": "실제 넘침",
+        "text_pixel_width": 33,
+    }
+    geometry = evaluate_clipping_proxy([overflow], (200, 100))
+    text = evaluate_text_clipping_proxy([overflow])
+
+    assert geometry["width_compressed_widgets"] == ["overflowing_button"]
+    assert geometry["suspected"] is True
+    assert text["width_compressed_text_widgets"] == ["overflowing_button"]
+    assert text["suspected"] is True
+
+    padding_edge = {
+        **safe,
+        "name": "padding_edge_button",
+        "text": "경계",
+        # 24 px fits the 30 px outer box but not the conservative 22 px
+        # button content area after border/padding.
+        "text_pixel_width": 24,
+    }
+    geometry = evaluate_clipping_proxy([padding_edge], (200, 100))
+    text = evaluate_text_clipping_proxy([padding_edge])
+
+    assert geometry["width_compressed_widgets"] == ["padding_edge_button"]
+    assert text["width_compressed_text_widgets"] == ["padding_edge_button"]
+
+
+def test_requested_width_compression_remains_fail_closed_for_empty_entry():
+    entry = {
+        **_geometry_record(
+            "scan_entry",
+            [0, 0, 80, 32],
+            requested_width=120,
+            check_requested_width=True,
+        ),
+        "widget_class": "TEntry",
+        "text": "",
+        "wraplength": 0,
+        "text_pixel_width": 0,
+    }
+
+    result = evaluate_clipping_proxy([entry], (200, 100))
+
+    assert result["width_compressed_widgets"] == ["scan_entry"]
+    assert result["suspected"] is True
+
+
+def test_text_clipping_proxy_rejects_non_authoritative_font_measurement():
+    record = {
+        **_geometry_record("notice", [0, 0, 200, 40]),
+        "text": "측정 엔진이 필요한 안내",
+        "wraplength": 180,
+        "text_pixel_width": 120,
+        "text_line_pixel_widths": [120],
+        "text_line_height": 18,
+        "text_measurement_source": "headless-approximation",
+    }
+
+    result = evaluate_text_clipping_proxy([record])
+
+    assert result["non_authoritative_text_measurements"] == ["notice"]
+    assert result["suspected"] is True
+
+
 def test_active_tree_detail_partition_rejects_exact_overlap():
     frame = _geometry_record("exact_frame", [0, 0, 600, 400])
     tree = _geometry_record("exact_tree", [10, 10, 590, 300])
@@ -509,6 +756,29 @@ def test_tree_text_fit_proxy_allows_value_overflow_but_not_fixed_columns():
     assert result["overflowing_fixed_text"] == ["row:stage"]
     assert result["invisible_cells"] == ["row:hidden"]
     assert "row:value" not in result["overflowing_fixed_text"]
+
+
+def test_tree_text_fit_proxy_rejects_non_authoritative_nonblank_measurement():
+    result = evaluate_tree_text_fit_proxy(
+        [
+            {
+                "name": "tree:heading:Stage",
+                "visible": True,
+                "width": 120,
+                "height": 30,
+                "text_width": 40,
+                "line_height": 18,
+                "text_nonblank": True,
+                "measurement_source": "headless-approximation",
+                "allow_overflow": False,
+            }
+        ]
+    )
+
+    assert result["non_authoritative_text_measurements"] == [
+        "tree:heading:Stage"
+    ]
+    assert result["suspected"] is True
 
 
 def test_middle_ellipsis_requires_start_end_and_pixel_fit():
@@ -590,6 +860,33 @@ def test_scan_display_contract_requires_authoritative_tk_font_measurement():
     )
     assert authoritative["passed"] is True
     assert authoritative["rows"][0]["measurement_source"] == "tk"
+
+
+def test_capture_contract_uses_same_effective_stretched_tree_width_as_app():
+    class Tree:
+        widths = {"Stage": 120, "Value": 100, "State": 80}
+
+        @staticmethod
+        def cget(option):
+            assert option == "columns"
+            return ("Stage", "Value", "State")
+
+        @classmethod
+        def column(cls, column, option):
+            if option == "width":
+                return cls.widths[column]
+            if option == "stretch":
+                return column == "Value"
+            raise AssertionError(option)
+
+        @staticmethod
+        def winfo_width():
+            return 900
+
+    tree = Tree()
+
+    assert capture.effective_tree_column_width(tree, "Value") == 700
+    assert capture.effective_tree_column_width(tree, "Stage") == 120
 
 
 def test_qa_detail_contract_requires_mapping_and_selected_text_raw_parity():
@@ -1135,6 +1432,10 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         fixture for fixture in build_state_fixtures() if fixture.state_id == state_id
     )
     view = build_presenter_view(fixture)
+    exact_mode = bool(
+        fixture.exact_active
+        or (fixture.exact_complete and len(fixture.qa_scans) <= 1)
+    )
     rendered_rows = _presenter_rendered_rows(view)
     exact_rows = [
         {"text": str(index), "values": [barcode], "tags": ["complete"]}
@@ -1145,13 +1446,27 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         "state": state_id,
         "requested_size": [1366, 768],
         "capture_source": AUTHORITATIVE_CAPTURE_SOURCE,
-        "window_capture_contract": {"status": "PASS"},
+        "window_capture_contract": {
+            "status": "PASS",
+            "before": {
+                "client_size": [1350, 729],
+                "client_offset_in_window": [8, 0],
+            },
+            "after": {
+                "client_size": [1350, 729],
+                "client_offset_in_window": [8, 0],
+            },
+        },
+        "client_outer_bbox": [8, 0, 1358, 729],
         "sha256": f"raw-{state_id}",
         "workbench_sha256": f"workbench-{state_id}",
         "requested_scale": 1.0,
         "applied_scale_factor": 1.0,
         "fixture": asdict(fixture),
         "image_analysis": {
+            "analysis_region": "window_client",
+            "analysis_bbox": [8, 0, 1358, 729],
+            "analysis_pixel_size": [1350, 729],
             "pixel_size_matches": True,
             "capture_pixels_valid": True,
             "blank_suspected": False,
@@ -1184,12 +1499,12 @@ def _valid_capture_record(state_id: str = "qa_progress"):
                 "center_list_signature": {
                     "path": ".center.current",
                     "master_path": ".center",
-                    "mapped": not fixture.exact_active,
+                    "mapped": not exact_mode,
                     "bbox": [300, 300, 900, 580],
                     "grid": {"row": 5, "column": 0},
                 },
                 "active_scan_tree_signature": {
-                    "mode": "f4" if fixture.exact_active else "qa",
+                    "mode": "f4" if exact_mode else "qa",
                     "tree_path": ".center.active",
                     "tree_bbox": [300, 300, 900, 580],
                     "detail_bbox": [300, 582, 900, 600],
@@ -1248,8 +1563,8 @@ def _valid_capture_record(state_id: str = "qa_progress"):
             else "normal",
             "history_tree_mapped": state_id == "history_readonly",
             "session_tree_mapped": state_id != "history_readonly",
-            "current_tree_mapped": not fixture.exact_active,
-            "exact_tree_mapped": fixture.exact_active,
+            "current_tree_mapped": not exact_mode,
+            "exact_tree_mapped": exact_mode,
             "qa_detail_contract": {"passed": True, "issues": []},
             "qa_display_contract": {"passed": True, "issues": []},
             "exact_display_contract": {"passed": True, "issues": []},
@@ -1271,11 +1586,54 @@ def test_capture_evaluation_accepts_complete_synthetic_contract(state_id):
     assert evaluate_capture(record) == []
 
 
-def test_exact_complete_returns_to_qa_tree_but_preserves_hidden_exact_rows():
+def _shift_both_recorded_client_boxes(record):
+    shifted = [0, 0, 1350, 729]
+    record["client_outer_bbox"] = shifted
+    record["image_analysis"]["analysis_bbox"] = shifted
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_issue"),
+    (
+        (
+            lambda record: record["image_analysis"].update(
+                analysis_region="full_outer_window"
+            ),
+            "image_analysis_region_not_window_client",
+        ),
+        (
+            lambda record: record["image_analysis"].update(
+                analysis_bbox=[0, 0, 1366, 768]
+            ),
+            "image_analysis_bbox_not_attested_client",
+        ),
+        (
+            lambda record: record["image_analysis"].update(
+                analysis_pixel_size=[1366, 768]
+            ),
+            "image_analysis_size_not_attested_client",
+        ),
+        (
+            _shift_both_recorded_client_boxes,
+            "client_outer_bbox_not_attested_client",
+        ),
+    ),
+)
+def test_capture_evaluation_binds_image_analysis_to_attested_client_roi(
+    mutation,
+    expected_issue,
+):
+    record = _valid_capture_record("waiting")
+    mutation(record)
+
+    assert expected_issue in evaluate_capture(record)
+
+
+def test_exact_complete_keeps_completed_f4_tree_and_last_raw_visible():
     record = _valid_capture_record("exact_complete")
 
-    assert record["rendered_state"]["current_tree_mapped"] is True
-    assert record["rendered_state"]["exact_tree_mapped"] is False
+    assert record["rendered_state"]["current_tree_mapped"] is False
+    assert record["rendered_state"]["exact_tree_mapped"] is True
     assert len(record["rendered_state"]["exact_rescan_rows"]) == len(
         record["fixture"]["exact_barcodes"]
     )

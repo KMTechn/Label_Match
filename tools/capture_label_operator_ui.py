@@ -369,6 +369,9 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
             "qa_progress",
             "제품 1 완료",
             qa_scans=qa_two,
+            exact_barcodes=exact_full,
+            exact_target=3,
+            exact_complete=True,
             last_normal_scan=product_1,
         ),
         StateFixture(
@@ -1373,14 +1376,40 @@ def _near_black_ratio(image: Image.Image) -> float:
     return sum(gray.histogram()[: NEAR_BLACK_LUMA + 1]) / pixels
 
 
-def analyze_image(image: Image.Image, expected_size: tuple[int, int]) -> dict[str, Any]:
+def analyze_image(
+    image: Image.Image,
+    expected_size: tuple[int, int],
+    *,
+    content_bbox: Sequence[int] | None = None,
+) -> dict[str, Any]:
     rgb = image.convert("RGB")
-    gray = rgb.convert("L")
+    if content_bbox is None:
+        analysis_bbox = (0, 0, rgb.width, rgb.height)
+        analysis_region = "full_outer_window"
+    else:
+        if len(content_bbox) != 4:
+            raise ValueError("content_bbox must contain left, top, right, bottom")
+        analysis_bbox = tuple(map(int, content_bbox))
+        left, top, right, bottom = analysis_bbox
+        if (
+            left < 0
+            or top < 0
+            or right <= left
+            or bottom <= top
+            or right > rgb.width
+            or bottom > rgb.height
+        ):
+            raise ValueError(
+                "content_bbox must be a non-empty rectangle inside the outer image"
+            )
+        analysis_region = "window_client"
+    analysis_rgb = rgb.crop(analysis_bbox)
+    gray = analysis_rgb.convert("L")
     histogram = gray.histogram()
-    pixels = max(1, rgb.width * rgb.height)
+    pixels = max(1, analysis_rgb.width * analysis_rgb.height)
     extrema = gray.getextrema() or (0, 0)
     stat = ImageStat.Stat(gray)
-    sample = rgb.copy()
+    sample = analysis_rgb.copy()
     sample.thumbnail((256, 256))
     colors = sample.getcolors(maxcolors=max(1, sample.width * sample.height)) or []
     dominant_ratio = max((count for count, _ in colors), default=0) / max(
@@ -1461,6 +1490,9 @@ def analyze_image(image: Image.Image, expected_size: tuple[int, int]) -> dict[st
         "expected_pixel_size": list(expected_size),
         "pixel_size": [rgb.width, rgb.height],
         "pixel_size_matches": pixel_size_matches,
+        "analysis_region": analysis_region,
+        "analysis_bbox": list(analysis_bbox),
+        "analysis_pixel_size": [analysis_rgb.width, analysis_rgb.height],
         "capture_pixels_valid": capture_pixels_valid,
         "exact_black_ratio": round(exact_black_ratio, 6),
         "near_black_ratio": round(near_black_ratio, 6),
@@ -1735,9 +1767,22 @@ def _widget_record(
     except Exception:
         wraplength = 0
     try:
-        text_pixel_width, text_line_height = _tk_font_metrics(widget, text)
+        (
+            text_line_pixel_widths,
+            text_line_height,
+            text_measurement_source,
+        ) = _tk_font_line_metrics_with_source(widget, text)
+        text_pixel_width = max(text_line_pixel_widths, default=0)
     except Exception:
+        text_line_pixel_widths = (requested[0],)
         text_pixel_width, text_line_height = requested[0], requested[1]
+        text_measurement_source = "headless-approximation"
+    text_horizontal_inset = (
+        8
+        if widget_class in {"Button", "Label", "TButton", "TLabel"}
+        else 0
+    )
+    text_available_width = max(1, width - text_horizontal_inset)
     return {
         "name": name,
         "path": str(widget),
@@ -1749,9 +1794,16 @@ def _widget_record(
         "requested_size": requested,
         "widget_class": widget_class,
         "text": text,
+        "text_explicit_line_count": max(1, len(text.splitlines())),
         "wraplength": wraplength,
         "text_pixel_width": int(text_pixel_width),
+        "text_line_pixel_widths": [
+            int(value) for value in text_line_pixel_widths
+        ],
         "text_line_height": int(text_line_height),
+        "text_measurement_source": str(text_measurement_source),
+        "text_horizontal_inset": text_horizontal_inset,
+        "text_available_width": text_available_width,
         "check_requested_width": check_requested_width,
         "check_requested_height": check_requested_height,
         "grid": grid,
@@ -1836,8 +1888,46 @@ def evaluate_clipping_proxy(
             clipped.append(name)
         actual = record.get("size", (0, 0))
         requested = record.get("requested_size", actual)
-        if record.get("check_requested_width") and int(requested[0]) > int(actual[0]) + 2:
-            compressed_width.append(name)
+        if (
+            record.get("check_requested_width")
+            and int(requested[0]) > int(actual[0]) + 2
+        ):
+            widget_class = str(record.get("widget_class") or "")
+            text = str(record.get("text") or "").strip()
+            wraplength = int(record.get("wraplength") or 0)
+            text_width = int(record.get("text_pixel_width") or 0)
+            text_available_width = int(
+                record.get("text_available_width")
+                or max(
+                    1,
+                    int(actual[0])
+                    - (
+                        8
+                        if widget_class
+                        in {"Button", "Label", "TButton", "TLabel"}
+                        else 0
+                    ),
+                )
+            )
+            safe_text_control = widget_class in {
+                "Button",
+                "Label",
+                "TButton",
+                "TLabel",
+            }
+            safe_unwrapped_fit = (
+                wraplength <= 0 and text_width <= text_available_width
+            )
+            safe_wrapped_fit = 0 < wraplength <= text_available_width
+            if not (
+                safe_text_control
+                and text
+                and (safe_unwrapped_fit or safe_wrapped_fit)
+            ):
+                # Only labels/buttons may intentionally use a smaller compact
+                # slot when their measured text still fits.  Structural and
+                # input controls remain fail-closed on requested compression.
+                compressed_width.append(name)
         if record.get("check_requested_height") and int(requested[1]) > int(actual[1]) + 2:
             compressed_height.append(name)
     overlaps = []
@@ -1882,6 +1972,7 @@ def evaluate_text_clipping_proxy(
     width_compressed: list[str] = []
     height_compressed: list[str] = []
     wrap_exceeds_widget: list[str] = []
+    non_authoritative: list[str] = []
     for record in records:
         if not record.get("mapped") or not str(record.get("text") or "").strip():
             continue
@@ -1894,21 +1985,40 @@ def evaluate_text_clipping_proxy(
             continue
         wraplength = int(record.get("wraplength") or 0)
         text_pixel_width = int(record.get("text_pixel_width", requested[0]) or 0)
-        text_line_height = max(
-            1,
-            int(record.get("text_line_height", requested[1]) or 1),
-        )
-        if (
-            wraplength > int(actual[0]) + tolerance
-            and text_pixel_width > int(actual[0]) + tolerance
-        ):
-            estimated_lines = max(
+        widget_class = str(record.get("widget_class") or "")
+        text_available_width = int(
+            record.get("text_available_width")
+            or max(
                 1,
-                math.ceil(text_pixel_width / max(1, int(actual[0]) - tolerance)),
+                int(actual[0])
+                - (
+                    8
+                    if widget_class in {"Button", "Label", "TButton", "TLabel"}
+                    else 0
+                ),
             )
-            if estimated_lines * text_line_height > int(actual[1]) + tolerance:
-                wrap_exceeds_widget.append(name)
-        if wraplength <= 0 and text_pixel_width > int(actual[0]) + tolerance:
+        )
+        line_pixel_widths = tuple(
+            int(value)
+            for value in (
+                record.get("text_line_pixel_widths") or (text_pixel_width,)
+            )
+        )
+        if str(record.get("text_measurement_source") or "") != "tk":
+            non_authoritative.append(name)
+        if (
+            wraplength > text_available_width
+            and any(
+                width > text_available_width
+                for width in line_pixel_widths
+            )
+        ):
+            # Tk wraps at ``wraplength``, not at the final grid-compressed
+            # widget width.  If the configured wrap boundary is wider than
+            # the widget and even one explicit line is wider than the widget,
+            # horizontal clipping is possible regardless of requested height.
+            wrap_exceeds_widget.append(name)
+        if wraplength <= 0 and text_pixel_width > text_available_width:
             width_compressed.append(name)
         if int(requested[1]) > int(actual[1]) + tolerance:
             height_compressed.append(name)
@@ -1916,11 +2026,13 @@ def evaluate_text_clipping_proxy(
         len(width_compressed)
         + len(height_compressed)
         + len(wrap_exceeds_widget)
+        + len(non_authoritative)
     )
     return {
         "width_compressed_text_widgets": width_compressed,
         "height_compressed_text_widgets": height_compressed,
         "wraplength_exceeds_widget": wrap_exceeds_widget,
+        "non_authoritative_text_measurements": non_authoritative,
         "issue_count": issue_count,
         "suspected": bool(issue_count),
     }
@@ -1948,6 +2060,7 @@ def evaluate_tree_text_fit_proxy(
     invisible_cells: list[str] = []
     overflowing_fixed_text: list[str] = []
     short_rows: list[str] = []
+    non_authoritative: list[str] = []
     for record in records:
         name = str(record.get("name") or "")
         if record.get("visible") is not True:
@@ -1957,17 +2070,26 @@ def evaluate_tree_text_fit_proxy(
         height = int(record.get("height") or 0)
         text_width = int(record.get("text_width") or 0)
         line_height = int(record.get("line_height") or 0)
+        if (
+            record.get("text_nonblank")
+            and str(record.get("measurement_source") or "") != "tk"
+        ):
+            non_authoritative.append(name)
         if not record.get("allow_overflow") and text_width > width - 8 + tolerance:
             overflowing_fixed_text.append(name)
         if line_height and line_height > height - 2 + tolerance:
             short_rows.append(name)
     issue_count = (
-        len(invisible_cells) + len(overflowing_fixed_text) + len(short_rows)
+        len(invisible_cells)
+        + len(overflowing_fixed_text)
+        + len(short_rows)
+        + len(non_authoritative)
     )
     return {
         "invisible_cells": invisible_cells,
         "overflowing_fixed_text": overflowing_fixed_text,
         "short_rows": short_rows,
+        "non_authoritative_text_measurements": non_authoritative,
         "issue_count": issue_count,
         "suspected": bool(issue_count),
     }
@@ -2208,7 +2330,10 @@ def collect_scan_display_contract(
     try:
         columns = tuple(str(value) for value in tree.cget("columns"))
         value_index = columns.index(str(value_column))
-        available = max(1, int(tree.column(value_column, "width")) - int(padding))
+        available = max(
+            1,
+            effective_tree_column_width(tree, value_column) - int(padding),
+        )
     except Exception:
         value_index = 0
         available = 0
@@ -2278,6 +2403,29 @@ def collect_scan_display_contract(
         "issues": list(dict.fromkeys(aggregate_issues)),
         "passed": not aggregate_issues,
     }
+
+
+def effective_tree_column_width(tree: Any, column: str) -> int:
+    """Mirror the app's live stretch-width calculation for pixel contracts."""
+
+    configured_width = max(1, int(tree.column(column, "width")))
+    try:
+        stretch = bool(tree.column(column, "stretch"))
+    except Exception:
+        stretch = False
+    if not stretch:
+        return configured_width
+    try:
+        columns = tuple(str(value) for value in tree.cget("columns"))
+        occupied = sum(
+            max(0, int(tree.column(name, "width")))
+            for name in columns
+            if name != str(column)
+        )
+        stretched_width = max(1, int(tree.winfo_width()) - occupied)
+    except Exception:
+        return configured_width
+    return max(configured_width, stretched_width)
 
 
 def build_last_normal_scan_contract(
@@ -2377,27 +2525,90 @@ def expected_scan_display_values(
     return tuple(result)
 
 
+def _tk_font_line_metrics_with_source(
+    widget: Any, text: str, *, heading: bool = False
+) -> tuple[tuple[int, ...], int, str]:
+    font_name: Any = ""
+    font_resolution = ""
+    if not heading:
+        try:
+            # Direct widget fonts override ttk style fonts.  The workbench
+            # applies responsive fonts this way, so ignoring this option makes
+            # otherwise perfectly fitted labels look clipped in the manifest.
+            font_name = widget.cget("font")
+            if font_name:
+                font_resolution = "direct-widget-font"
+        except Exception:
+            font_name = ""
+    try:
+        style_name = str(widget.cget("style") or "")
+    except Exception:
+        style_name = ""
+    try:
+        widget_class = str(widget.winfo_class() or "")
+    except Exception:
+        widget_class = ""
+    base_style_name = {
+        "TLabel": "TLabel",
+        "TButton": "TButton",
+        "TEntry": "TEntry",
+        "Treeview": "Treeview",
+    }.get(widget_class, "")
+    style_candidates: list[str] = []
+    for candidate in (style_name, base_style_name):
+        if not candidate:
+            continue
+        if heading:
+            candidate = (
+                "Treeview.Heading"
+                if candidate == "Treeview"
+                else f"{candidate}.Heading"
+            )
+        if candidate not in style_candidates:
+            style_candidates.append(candidate)
+    if heading and "Treeview.Heading" not in style_candidates:
+        style_candidates.append("Treeview.Heading")
+    if not font_name:
+        for candidate in style_candidates:
+            try:
+                resolved = widget.tk.call(
+                    "ttk::style", "lookup", candidate, "-font"
+                )
+            except Exception:
+                resolved = ""
+            if resolved:
+                font_name = resolved
+                font_resolution = f"ttk-style:{candidate}"
+                break
+    if not font_name:
+        font_name = "TkDefaultFont"
+        font_resolution = "unresolved-default-fallback"
+    lines = str(text).splitlines() or [""]
+    try:
+        widths = tuple(
+            int(widget.tk.call("font", "measure", font_name, line))
+            for line in lines
+        )
+        linespace = int(widget.tk.call("font", "metrics", font_name, "-linespace"))
+        source = (
+            "tk"
+            if font_resolution != "unresolved-default-fallback"
+            else "tk-unresolved-default"
+        )
+    except Exception:
+        widths = tuple(len(line) * 8 for line in lines)
+        linespace = 16
+        source = "headless-approximation"
+    return widths, linespace, source
+
+
 def _tk_font_metrics_with_source(
     widget: Any, text: str, *, heading: bool = False
 ) -> tuple[int, int, str]:
-    style_name = str(widget.cget("style") or "Treeview")
-    if heading:
-        style_name = f"{style_name}.Heading" if style_name != "Treeview" else "Treeview.Heading"
-    try:
-        font_name = widget.tk.call("ttk::style", "lookup", style_name, "-font")
-    except Exception:
-        font_name = "TkDefaultFont"
-    if not font_name:
-        font_name = "TkDefaultFont"
-    try:
-        width = int(widget.tk.call("font", "measure", font_name, str(text)))
-        linespace = int(widget.tk.call("font", "metrics", font_name, "-linespace"))
-        source = "tk"
-    except Exception:
-        width = len(str(text)) * 8
-        linespace = 16
-        source = "headless-approximation"
-    return width, linespace, source
+    widths, linespace, source = _tk_font_line_metrics_with_source(
+        widget, text, heading=heading
+    )
+    return max(widths, default=0), linespace, source
 
 
 def _tk_font_metrics(widget: Any, text: str, *, heading: bool = False) -> tuple[int, int]:
@@ -2424,8 +2635,12 @@ def collect_tree_text_fit(
     tree_height = max(1, int(tree.winfo_height()))
     for column in columns:
         heading_text = str(tree.heading(column, "text") or "")
-        column_width = int(tree.column(column, "width") or 0)
-        text_width, line_height = _tk_font_metrics(tree, heading_text, heading=True)
+        column_width = effective_tree_column_width(tree, column)
+        (
+            text_width,
+            line_height,
+            measurement_source,
+        ) = _tk_font_metrics_with_source(tree, heading_text, heading=True)
         records.append(
             {
                 "name": f"{name}:heading:{column}",
@@ -2434,6 +2649,8 @@ def collect_tree_text_fit(
                 "height": line_height + 6,
                 "text_width": text_width,
                 "line_height": line_height,
+                "text_nonblank": bool(heading_text.strip()),
+                "measurement_source": measurement_source,
                 "allow_overflow": False,
             }
         )
@@ -2451,7 +2668,11 @@ def collect_tree_text_fit(
                 and bbox[1] + bbox[3] <= tree_height + 1
             )
             text = str(values[index] if index < len(values) else "")
-            text_width, line_height = _tk_font_metrics(tree, text)
+            (
+                text_width,
+                line_height,
+                measurement_source,
+            ) = _tk_font_metrics_with_source(tree, text)
             records.append(
                 {
                     "name": f"{name}:row:{iid}:{column}",
@@ -2460,6 +2681,8 @@ def collect_tree_text_fit(
                     "height": bbox[3] if len(bbox) == 4 else 0,
                     "text_width": text_width,
                     "line_height": line_height,
+                    "text_nonblank": bool(text.strip()),
+                    "measurement_source": measurement_source,
                     "allow_overflow": column in set(overflow_columns),
                 }
             )
@@ -2647,10 +2870,23 @@ def expected_scan_tree_mapping(fixture: StateFixture | None, app: Any) -> dict[s
     """Return which central live-list widgets must be mapped for this state."""
 
     if fixture is not None:
-        exact_mode = bool(fixture.exact_active)
+        exact_mode = bool(
+            fixture.exact_active
+            or (fixture.exact_complete and len(fixture.qa_scans) <= 1)
+        )
     else:
         current = dict(getattr(app, "current_set_info", {}) or {})
-        exact_mode = bool(current.get("exact_rescan_active"))
+        qa_count = max(
+            len(tuple(current.get("raw") or ())),
+            len(tuple(current.get("parsed") or ())),
+        )
+        exact_mode = bool(
+            current.get("exact_rescan_active")
+            or (
+                current.get("exact_rescan_complete")
+                and qa_count <= 1
+            )
+        )
     return {
         "current_set_tree": not exact_mode,
         "exact_rescan_tree": exact_mode,
@@ -3191,10 +3427,20 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         expected_qa_display_values,
         expected_exact_display_values,
     )
-    actual_list_last_normal_occurrences = int(
+    last_normal_source = str(last_normal_contract.get("source") or "")
+    last_normal_source_mapped = bool(
+        (last_normal_source == "qa" and current_tree_mapped)
+        or (last_normal_source == "f4" and exact_tree_mapped)
+    )
+    preserved_last_normal_occurrences = int(
         last_normal_contract.get("fitted_cell_exact_count", 0)
     )
-    last_normal_occurrences_on_screen = int(last_normal_contract.get("passed", False))
+    actual_list_last_normal_occurrences = int(
+        preserved_last_normal_occurrences if last_normal_source_mapped else 0
+    )
+    last_normal_occurrences_on_screen = int(
+        last_normal_source_mapped and last_normal_contract.get("passed", False)
+    )
     return {
         "current_set_rows": current_rows,
         "exact_rescan_rows": exact_rows,
@@ -3234,6 +3480,8 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         "last_normal_occurrences_on_screen": last_normal_occurrences_on_screen,
         "last_normal_occurrences_in_center": actual_list_last_normal_occurrences,
         "last_normal_occurrences_in_actual_list": actual_list_last_normal_occurrences,
+        "last_normal_preserved_in_source_list": preserved_last_normal_occurrences,
+        "last_normal_source_list_mapped": last_normal_source_mapped,
         "last_normal_occurrences_in_right": 0,
         "current_tree_mapped": current_tree_mapped,
         "exact_tree_mapped": exact_tree_mapped,
@@ -3256,8 +3504,37 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
     fixture = record["fixture"]
     if record.get("capture_source") != AUTHORITATIVE_CAPTURE_SOURCE:
         issues.append("non_authoritative_capture_source")
-    if record.get("window_capture_contract", {}).get("status") != "PASS":
+    window_contract = record.get("window_capture_contract", {})
+    if window_contract.get("status") != "PASS":
         issues.append("window_capture_contract_failed")
+    client_bbox = list(record.get("client_outer_bbox") or ())
+    before_window = window_contract.get("before", {})
+    attested_client_size = list(before_window.get("client_size") or ())
+    attested_client_offset = list(
+        before_window.get("client_offset_in_window") or ()
+    )
+    expected_client_bbox: list[int] = []
+    if len(attested_client_offset) == 2 and len(attested_client_size) == 2:
+        expected_client_bbox = [
+            int(attested_client_offset[0]),
+            int(attested_client_offset[1]),
+            int(attested_client_offset[0]) + int(attested_client_size[0]),
+            int(attested_client_offset[1]) + int(attested_client_size[1]),
+        ]
+    if image.get("analysis_region") != "window_client":
+        issues.append("image_analysis_region_not_window_client")
+    if client_bbox != expected_client_bbox or len(expected_client_bbox) != 4:
+        issues.append("client_outer_bbox_not_attested_client")
+    if (
+        list(image.get("analysis_bbox") or ()) != expected_client_bbox
+        or len(expected_client_bbox) != 4
+    ):
+        issues.append("image_analysis_bbox_not_attested_client")
+    if (
+        list(image.get("analysis_pixel_size") or ()) != attested_client_size
+        or len(attested_client_size) != 2
+    ):
+        issues.append("image_analysis_size_not_attested_client")
     if not image.get("pixel_size_matches"):
         issues.append("capture_size_mismatch")
     if image.get("blank_suspected"):
@@ -3378,6 +3655,8 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
                     "issues", ()
                 )
             )
+        if rendered.get("last_normal_occurrences_on_screen") != 1:
+            issues.append("last_normal_scan_not_visible_in_active_center_list")
     notice = rendered.get("presenter_notice")
     if notice:
         notice_contract = rendered.get("notice_display_contract", {})
@@ -3410,7 +3689,13 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
         issues.append("active_state_scan_entry_disabled")
     if record["state"] == "history_readonly" and not rendered.get("history_tree_mapped"):
         issues.append("history_readonly_tree_not_visible")
-    expected_exact_mapping = bool(fixture.get("exact_active"))
+    expected_exact_mapping = bool(
+        fixture.get("exact_active")
+        or (
+            fixture.get("exact_complete")
+            and len(tuple(fixture.get("qa_scans") or ())) <= 1
+        )
+    )
     if bool(rendered.get("exact_tree_mapped")) != expected_exact_mapping:
         issues.append("exact_rescan_tree_mapping_mismatch")
     if bool(rendered.get("current_tree_mapped")) == expected_exact_mapping:
@@ -4359,17 +4644,54 @@ def _round_trip_check(
     pump_tk(app, 500)
     settle_responsive_layout(app)
     before = collect_ui_geometry(app, fixture)["structure"]["layout_signature"]
+    before_rendered = collect_rendered_state(app, fixture, view)
     _configure_size(app, wide, monitor_target)
-    apply_state_fixture(app, fixture)
+    wide_view, _ = apply_state_fixture(app, fixture)
     pump_tk(app, 500)
     settle_responsive_layout(app)
     wide_signature = collect_ui_geometry(app, fixture)["structure"]["layout_signature"]
+    wide_rendered = collect_rendered_state(app, fixture, wide_view)
     _configure_size(app, compact, monitor_target)
-    apply_state_fixture(app, fixture)
+    after_view, _ = apply_state_fixture(app, fixture)
     pump_tk(app, 500)
     settle_responsive_layout(app)
     after = collect_ui_geometry(app, fixture)["structure"]["layout_signature"]
+    after_rendered = collect_rendered_state(app, fixture, after_view)
     issues = compare_layout_signatures(before, after)
+
+    def scan_fit_signature(rendered: Mapping[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for name in ("qa_display_contract", "exact_display_contract"):
+            contract = dict(rendered.get(name, {}) or {})
+            result[name] = {
+                "passed": bool(contract.get("passed")),
+                "rows": [
+                    {
+                        "displayed": str(row.get("displayed") or ""),
+                        "expected_displayed": str(
+                            row.get("expected_displayed") or ""
+                        ),
+                        "available_width": int(row.get("available_width") or 0),
+                        "measurement_source": str(
+                            row.get("measurement_source") or ""
+                        ),
+                    }
+                    for row in contract.get("rows", ())
+                ],
+            }
+        return result
+
+    scan_fits = {
+        "before_compact": scan_fit_signature(before_rendered),
+        "wide": scan_fit_signature(wide_rendered),
+        "after_compact": scan_fit_signature(after_rendered),
+    }
+    for phase, phase_contracts in scan_fits.items():
+        for contract_name, contract in phase_contracts.items():
+            if not contract["passed"]:
+                issues.append(f"{phase}:{contract_name}:failed")
+    if scan_fits["before_compact"] != scan_fits["after_compact"]:
+        issues.append("compact_scan_fit_signature_changed_after_round_trip")
     return {
         "fixture": fixture.state_id,
         "compact_size": list(compact),
@@ -4378,6 +4700,7 @@ def _round_trip_check(
         "before": before,
         "wide": wide_signature,
         "after": after,
+        "scan_fit_contracts": scan_fits,
         "issues": issues,
         "passed": not issues,
     }
@@ -4561,6 +4884,13 @@ def run_capture_matrix(
                     if record["name"] == "workbench"
                 )
                 client_offset = before_window["client_offset_in_window"]
+                client_size = before_window["client_size"]
+                client_bbox = [
+                    int(client_offset[0]),
+                    int(client_offset[1]),
+                    int(client_offset[0]) + int(client_size[0]),
+                    int(client_offset[1]) + int(client_size[1]),
+                ]
                 workbench_bbox = [
                     int(workbench_record["bbox"][0]) + int(client_offset[0]),
                     int(workbench_record["bbox"][1]) + int(client_offset[1]),
@@ -4586,6 +4916,7 @@ def run_capture_matrix(
                     "workbench_sha256": image_region_sha256(
                         image, workbench_bbox
                     ),
+                    "client_outer_bbox": client_bbox,
                     "workbench_outer_bbox": workbench_bbox,
                     "file_size_bytes": path.stat().st_size,
                     "display_placement": size_placement,
@@ -4594,7 +4925,9 @@ def run_capture_matrix(
                     "presenter_refresh_method": refresh_method,
                     "fixture": asdict(fixture),
                     "image_analysis": analyze_image(
-                        image, tuple(size)
+                        image,
+                        tuple(size),
+                        content_bbox=client_bbox,
                     ),
                     "ui_geometry": geometry,
                     "rendered_state": rendered,

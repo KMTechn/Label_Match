@@ -301,7 +301,7 @@ def test_notice_action_button_binds_both_enter_keys_to_acknowledgement(sequence)
     assert callback_pattern.search(source), f"missing {sequence} acknowledgement binding"
 
 
-def test_f4_complete_keeps_exact_tab_available_but_returns_to_central_qa_list():
+def test_f4_complete_keeps_completed_exact_list_visible_in_center():
     app = _render_app(
         ("RAW-MASTER",),
         ("ITEM-001",),
@@ -315,7 +315,26 @@ def test_f4_complete_keeps_exact_tab_available_but_returns_to_central_qa_list():
 
     assert view.exact_rescan.status == "complete"
     assert "exact" in app.live_scan_notebook.tabs()
+    assert app.live_scan_notebook.selected == "exact"
+    assert app.current_set_info == before
+
+
+def test_f4_complete_returns_to_qa_list_after_next_qa_scan_is_accepted():
+    app = _render_app(
+        ("RAW-MASTER", "RAW-PRODUCT-1"),
+        ("ITEM-001", "ITEM-001"),
+        exact_rescan_complete=True,
+        exact_rescan_target_count=2,
+        exact_rescan_barcodes=["EXACT-1", "EXACT-2"],
+    )
+    before = deepcopy(app.current_set_info)
+
+    view = app._render_operator_workbench()
+
+    assert view.exact_rescan.status == "complete"
+    assert "exact" in app.live_scan_notebook.tabs()
     assert app.live_scan_notebook.selected == "qa"
+    assert view.last_normal_scan == "RAW-PRODUCT-1"
     assert app.current_set_info == before
 
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 import copy
 import inspect
 import os
+import subprocess
+import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -545,6 +548,75 @@ def test_f4_list_exposes_selected_full_raw_without_stealing_scan_focus(
     assert app.current_set_info == business_state_before
 
 
+def test_exact_complete_keeps_full_f4_raw_in_detail_not_notice(
+    operator_workbench,
+):
+    app = operator_workbench
+    master = "PHS|MASTER|" + "M" * 160
+    exact_values = tuple(
+        f"PHS|F4|EXACT-{index}|" + chr(64 + index) * 180
+        for index in range(1, 4)
+    )
+    app.current_set_info.update(
+        {
+            "raw": [master],
+            "parsed": [master],
+            "exact_rescan_active": False,
+            "exact_rescan_complete": True,
+            "exact_rescan_target_count": len(exact_values),
+            "exact_rescan_barcodes": list(exact_values),
+        }
+    )
+    app._workflow_last_normal_override = exact_values[-1]
+
+    app._render_operator_workbench()
+
+    notice_text = str(app.workflow_notice_label.cget("text"))
+    assert exact_values[-1] not in notice_text
+    assert notice_text == "2/5 제품 1 스캔"
+    assert app.exact_rescan_tree.selection() == ("exact-slot-3",)
+    assert app.exact_rescan_detail_text.options["inserted"] == exact_values[-1]
+    assert app._exact_rescan_detail_rows["exact-slot-3"]["raw"] == exact_values[-1]
+
+
+def test_tree_cell_fit_uses_effective_stretched_column_width(monkeypatch):
+    class FixedFont:
+        @staticmethod
+        def measure(value):
+            return len(str(value)) * 8
+
+    class FixedStyle:
+        @staticmethod
+        def lookup(_style_name, option):
+            assert option == "font"
+            return ("Consolas", 12)
+
+    monkeypatch.setattr(
+        label_match_module.tkFont,
+        "Font",
+        lambda *args, **kwargs: FixedFont(),
+    )
+    app = Label_Match.__new__(Label_Match)
+    app.style = FixedStyle()
+    tree = FakeWidget(
+        kind="ttk.Treeview",
+        columns=("Stage", "Value", "State"),
+        style="Operator.Treeview",
+    )
+    tree.column("Stage", width=120, stretch=False)
+    tree.column("Value", width=100, stretch=True)
+    tree.column("State", width=80, stretch=False)
+    tree.winfo_width = lambda: 900
+    value = "V" * 80
+
+    assert app._fit_operator_tree_cell_text(tree, "Value", value) == value
+
+    tree.column("Value", stretch=False)
+    fixed_result = app._fit_operator_tree_cell_text(tree, "Value", value)
+    assert fixed_result != value
+    assert "..." in fixed_result
+
+
 def test_operator_notice_compacts_to_reason_key_value_and_next_action(
     operator_workbench,
 ):
@@ -1011,6 +1083,259 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
             <= app.qa_scan_tree.winfo_height()
         )
 
+    finally:
+        if app is not None:
+            app.destroy()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Label Match is a Windows Tk application")
+def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
+    tmp_path,
+    monkeypatch,
+):
+    """Fail closed unless the real 1366x768 window is proven on DISPLAY2."""
+
+    child_guard = "LABEL_MATCH_DISPLAY2_LAYOUT_CHILD"
+    if os.environ.get(child_guard) != "1":
+        # A long full-suite process has already created and destroyed another
+        # Tk interpreter.  Python 3.12/Tk 8.6 on Windows can then intermittently
+        # lose its Tcl library commands while constructing a second root.  Run
+        # this independent live geometry proof in a fresh interpreter; the
+        # child still uses the same fail-closed DISPLAY2 placement contract.
+        child_env = os.environ.copy()
+        child_env[child_guard] = "1"
+        node_id = (
+            "tests/test_label_operator_workbench.py::"
+            "test_display2_1366_scale100_keeps_operator_content_inside_its_regions"
+        )
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "pytest", "-q", node_id],
+            cwd=os.fspath(Path(__file__).resolve().parents[1]),
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return
+
+    from tools.capture_label_operator_ui import (
+        TARGET_DISPLAY_DEVICE,
+        TARGET_DISPLAY_WORK_AREA,
+        _apply_scale,
+        _configure_size,
+        _make_capture_app,
+        _wait_until_ready,
+        apply_state_fixture,
+        build_isolated_app_settings,
+        build_state_fixtures,
+        pump_tk,
+        resolve_capture_monitor,
+        settle_responsive_layout,
+    )
+
+    data_root = tmp_path / "label_match_display2_1366_scale100"
+    temp_root = data_root / "temp"
+    temp_root.mkdir(parents=True)
+    guards = {
+        "LABEL_MATCH_SAVE_DIR": str(data_root),
+        "LABEL_MATCH_AUTOMATED_TEST": "1",
+        "LABEL_MATCH_AUDIO_ENABLED": "off",
+        "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP": "off",
+        "LABEL_MATCH_SESSION_SYNC_TRIGGER": "off",
+        "LABEL_MATCH_UPDATE_PROVIDER": "off",
+        "KMTECH_TEST_SILENT_AUDIO": "1",
+        "SDL_AUDIODRIVER": "dummy",
+        "PYGAME_HIDE_SUPPORT_PROMPT": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "TEMP": str(temp_root),
+        "TMP": str(temp_root),
+    }
+    for key, value in guards.items():
+        monkeypatch.setenv(key, value)
+    for key in tuple(os.environ):
+        if key.startswith("LABEL_MATCH_LOGISTICS_") or key.startswith(
+            "WORKER_ANALYSIS_LOGISTICS_"
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+    monitor_target = resolve_capture_monitor(
+        TARGET_DISPLAY_DEVICE,
+        TARGET_DISPLAY_WORK_AREA,
+    )
+    assert monitor_target["device"].casefold() == TARGET_DISPLAY_DEVICE.casefold()
+    assert monitor_target["is_primary"] is False
+    assert tuple(monitor_target["work_rect"][:2]) != (0, 0)
+
+    def root_box(widget):
+        left = int(widget.winfo_rootx())
+        top = int(widget.winfo_rooty())
+        return (
+            left,
+            top,
+            left + int(widget.winfo_width()),
+            top + int(widget.winfo_height()),
+        )
+
+    def contains(parent, child, tolerance=2):
+        parent_box = root_box(parent)
+        child_box = root_box(child)
+        return (
+            child_box[0] >= parent_box[0] - tolerance
+            and child_box[1] >= parent_box[1] - tolerance
+            and child_box[2] <= parent_box[2] + tolerance
+            and child_box[3] <= parent_box[3] + tolerance
+        )
+
+    def boxes_overlap(first, second):
+        a = root_box(first)
+        b = root_box(second)
+        return not (
+            a[2] <= b[0]
+            or b[2] <= a[0]
+            or a[3] <= b[1]
+            or b[3] <= a[1]
+        )
+
+    settings = build_isolated_app_settings(data_root, 1.0)
+    app = None
+    try:
+        app = _make_capture_app(label_match_module, settings)
+        _wait_until_ready(app)
+        _apply_scale(app, 1.0)
+        placement = _configure_size(
+            app,
+            (1366, 768),
+            monitor_target,
+        )
+        assert placement["status"] == "PASS"
+        assert placement["monitor"]["device"].casefold() == TARGET_DISPLAY_DEVICE.casefold()
+        assert placement["monitor"]["is_primary"] is False
+
+        fixtures = {
+            fixture.state_id: fixture for fixture in build_state_fixtures()
+        }
+        for state_id in ("waiting", "error", "qa_progress", "exact_complete"):
+            fixture = fixtures[state_id]
+            apply_state_fixture(app, fixture)
+            settle_responsive_layout(app)
+            pump_tk(app, 220)
+
+            assert contains(app.operator_center_pane, app.live_scan_notebook), state_id
+            if state_id == "exact_complete":
+                active_frame = app.exact_rescan_frame
+                active_tree = app.exact_rescan_tree
+                active_detail_frame = app.exact_rescan_detail_frame
+                active_detail_text = app.exact_rescan_detail_text
+                expected_row_count = fixture.exact_target
+            else:
+                active_frame = app.qa_scan_frame
+                active_tree = app.qa_scan_tree
+                active_detail_frame = app.qa_scan_detail_frame
+                active_detail_text = app.qa_scan_detail_text
+                expected_row_count = 5
+            assert contains(active_frame, active_detail_frame), state_id
+            assert contains(active_detail_frame, active_detail_text), state_id
+            assert (
+                active_detail_text.winfo_height()
+                >= active_detail_text.winfo_reqheight()
+            ), state_id
+
+            rows = tuple(active_tree.get_children())
+            assert len(rows) == expected_row_count, state_id
+            final_row_box = active_tree.bbox(rows[-1])
+            assert final_row_box, state_id
+            assert (
+                final_row_box[1] + final_row_box[3]
+                <= active_tree.winfo_height()
+            ), state_id
+
+            assert (
+                app.workflow_notice_label.winfo_height()
+                >= app.workflow_notice_label.winfo_reqheight()
+            ), state_id
+            assert contains(
+                app.workflow_notice_frame,
+                app.workflow_notice_label,
+            ), state_id
+            assert (
+                app.workflow_notice_frame.winfo_height()
+                >= app._operator_notice_required_height
+            ), state_id
+
+            assert contains(app.main_frame, app.operator_status_frame), state_id
+            assert contains(
+                app.operator_status_frame,
+                app.operator_footer_label,
+            ), state_id
+            assert (
+                root_box(app.live_scan_notebook)[3]
+                <= root_box(app.operator_center_pane)[3] + 2
+            ), state_id
+            assert (
+                root_box(app.operator_center_pane)[3]
+                <= root_box(app.operator_status_frame)[1]
+            ), state_id
+
+            for button in (
+                app.manual_complete_button,
+                app.exact_rescan_button,
+                app.reset_button,
+                app.cancel_tray_button,
+            ):
+                assert 86 <= button.winfo_height() <= 104, (
+                    state_id,
+                    button.cget("text"),
+                    button.winfo_height(),
+                )
+                assert contains(app.operator_action_frame, button), state_id
+
+        exact_fixture = fixtures["exact_complete"]
+        pump_tk(app, 160)
+        assert app.live_scan_notebook.select() == str(app.exact_rescan_frame)
+        assert contains(app.live_scan_notebook, app.exact_rescan_frame)
+        assert contains(app.exact_rescan_frame, app.exact_rescan_detail_frame)
+        assert contains(
+            app.exact_rescan_detail_frame,
+            app.exact_rescan_detail_text,
+        )
+        assert (
+            app.exact_rescan_detail_text.winfo_height()
+            >= app.exact_rescan_detail_text.winfo_reqheight()
+        )
+        assert (
+            app.exact_rescan_detail_text.get("1.0", "end-1c")
+            == exact_fixture.exact_barcodes[-1]
+        )
+        assert exact_fixture.exact_barcodes[-1] not in str(
+            app.workflow_notice_label.cget("text")
+        )
+
+        app.operator_notebook.select(app.history_card)
+        settle_responsive_layout(app)
+        pump_tk(app, 220)
+        assert contains(app.hist_header_frame, app.hist_control_frame)
+        history_buttons = (
+            app.today_button,
+            app.date_search_button,
+            app.decrease_font_button,
+            app.increase_font_button,
+        )
+        assert all(
+            contains(app.hist_control_frame, button)
+            for button in history_buttons
+        )
+        assert all(
+            not boxes_overlap(first, second)
+            for index, first in enumerate(history_buttons)
+            for second in history_buttons[index + 1 :]
+        )
+        widths = tuple(button.winfo_width() for button in history_buttons)
+        heights = tuple(button.winfo_height() for button in history_buttons)
+        assert abs(widths[0] - widths[1]) <= 2
+        assert abs(widths[2] - widths[3]) <= 2
+        assert max(heights) - min(heights) <= 2
     finally:
         if app is not None:
             app.destroy()
