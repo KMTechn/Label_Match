@@ -6067,7 +6067,12 @@ class Label_Match(tk.Tk):
             self.ui_profile_name = profile_name
             self.ui_profile = profile
             outer_padding = int(profile["outer_padding"])
-            header_height = 64 if root_height <= 800 else 72
+            # On short auxiliary displays the former 64 px header pushed the
+            # center notebook through the card's bottom padding.  The title,
+            # context, clock, and two utility buttons all fit their measured
+            # requests within 56 px, returning eight pixels to the operator
+            # workbench without shrinking the five-row scan list or raw detail.
+            header_height = 56 if root_height <= 800 else 72
             status_height = 32
             section_gap = int(profile["section_gap"])
             bottom_gap = int(profile["bottom_gap"])
@@ -6232,7 +6237,7 @@ class Label_Match(tk.Tk):
             vertical_gap = (
                 2
                 if constrained_large_text
-                else 4 if short_auxiliary_height else 8
+                else 3 if short_auxiliary_height else 8
             )
             self.big_display_label.grid_configure(pady=(0, vertical_gap))
             self.progress_frame.grid_configure(pady=(0, vertical_gap))

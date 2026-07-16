@@ -1450,6 +1450,30 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             pump_tk(app, 220)
 
             assert contains(app.operator_center_pane, app.live_scan_notebook), state_id
+            assert contains(app.operator_header_frame, app.operator_title_label), state_id
+            assert contains(
+                app.operator_header_frame,
+                app.operator_header_context_label,
+            ), state_id
+            assert contains(app.operator_header_frame, app.top_right_frame), state_id
+            for header_control in (
+                app.clock_label,
+                app.settings_button,
+                app.about_button,
+            ):
+                assert contains(app.top_right_frame, header_control), state_id
+                assert (
+                    header_control.winfo_height()
+                    >= header_control.winfo_reqheight()
+                ), state_id
+            assert not boxes_overlap(
+                app.operator_title_label,
+                app.top_right_frame,
+            ), state_id
+            assert not boxes_overlap(
+                app.operator_header_context_label,
+                app.top_right_frame,
+            ), state_id
             if state_id in {"exact_first", "exact_complete"}:
                 active_frame = app.exact_rescan_frame
                 active_tree = app.exact_rescan_tree

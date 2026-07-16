@@ -96,6 +96,10 @@ REQUIRED_WIDGET_ATTRS = (
     "operator_header_frame",
     "operator_title_label",
     "operator_header_context_label",
+    "top_right_frame",
+    "clock_label",
+    "settings_button",
+    "about_button",
     "workbench_frame",
     "left_context_card",
     "top_card",
@@ -2357,6 +2361,7 @@ def collect_scan_display_contract(
     padding: int = 20,
     empty_display: str = "",
     allow_headless_approximation: bool = False,
+    viewport_width: int | None = None,
 ) -> dict[str, Any]:
     try:
         children = tuple(str(iid) for iid in tree.get_children(""))
@@ -2367,7 +2372,12 @@ def collect_scan_display_contract(
         value_index = columns.index(str(value_column))
         available = max(
             1,
-            effective_tree_column_width(tree, value_column) - int(padding),
+            effective_tree_column_width(
+                tree,
+                value_column,
+                viewport_width=viewport_width,
+            )
+            - int(padding),
         )
     except Exception:
         value_index = 0
@@ -2440,7 +2450,12 @@ def collect_scan_display_contract(
     }
 
 
-def effective_tree_column_width(tree: Any, column: str) -> int:
+def effective_tree_column_width(
+    tree: Any,
+    column: str,
+    *,
+    viewport_width: int | None = None,
+) -> int:
     """Mirror the app's live stretch-width calculation for pixel contracts."""
 
     configured_width = max(1, int(tree.column(column, "width")))
@@ -2457,7 +2472,16 @@ def effective_tree_column_width(tree: Any, column: str) -> int:
             for name in columns
             if name != str(column)
         )
-        stretched_width = max(1, int(tree.winfo_width()) - occupied)
+        shared_viewport_width = int(viewport_width or 0)
+        # A mapped sibling is authoritative for a hidden notebook page.  Its
+        # own realized width can be a stale value from the previous wide
+        # profile, so taking max() here would silently weaken compact checks.
+        realized_width = (
+            shared_viewport_width
+            if shared_viewport_width > 1
+            else int(tree.winfo_width())
+        )
+        stretched_width = max(1, realized_width - occupied)
     except Exception:
         return configured_width
     return max(configured_width, stretched_width)
@@ -2954,6 +2978,10 @@ def collect_ui_geometry(
             False,
             True,
         ),
+        ("header_top_right", widgets["top_right_frame"], True, False),
+        ("header_clock", widgets["clock_label"], True, True),
+        ("header_settings", widgets["settings_button"], True, True),
+        ("header_about", widgets["about_button"], True, True),
         ("workbench", widgets["workbench_frame"], True, False),
         ("left_card", widgets["left_context_card"], True, False),
         ("center_card", widgets["top_card"], True, False),
@@ -3156,6 +3184,10 @@ def collect_ui_geometry(
         ("status_frame", "main"),
         ("header_title", "header"),
         ("header_context", "header"),
+        ("header_top_right", "header"),
+        ("header_clock", "header_top_right"),
+        ("header_settings", "header_top_right"),
+        ("header_about", "header_top_right"),
         ("left_card", "workbench"),
         ("center_card", "workbench"),
         ("right_card", "workbench"),
@@ -3209,6 +3241,9 @@ def collect_ui_geometry(
         ("header", "workbench"),
         ("header", "status_frame"),
         ("workbench", "status_frame"),
+        ("header_title", "header_context"),
+        ("header_title", "header_top_right"),
+        ("header_context", "header_top_right"),
         ("left_card", "center_card"),
         ("left_card", "right_card"),
         ("center_card", "right_card"),
@@ -3479,6 +3514,17 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
     notice_display_contract = collect_notice_display_contract(app, view, widgets)
     current_tree_mapped = _is_mapped(widgets["current_set_tree"])
     exact_tree_mapped = _is_mapped(widgets["exact_rescan_tree"])
+    mapped_scan_tree = (
+        widgets["exact_rescan_tree"]
+        if exact_tree_mapped
+        else widgets["current_set_tree"]
+        if current_tree_mapped
+        else None
+    )
+    try:
+        live_scan_viewport_width = int(mapped_scan_tree.winfo_width())
+    except (AttributeError, TypeError, ValueError):
+        live_scan_viewport_width = 0
     qa_detail_contract = collect_qa_detail_contract(app, fixture, view)
     presenter_rows = expected_presenter_rows(view)
     qa_raw_values = tuple(str(row.get("value") or "") for row in presenter_rows)
@@ -3496,6 +3542,7 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         expected_display_values=expected_qa_display_values,
         iid_prefix="qa-slot-",
         empty_display="-",
+        viewport_width=live_scan_viewport_width,
     )
     expected_exact_display_values = expected_scan_display_values(
         app,
@@ -3508,6 +3555,7 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         fixture.exact_barcodes,
         value_column="Value",
         expected_display_values=expected_exact_display_values,
+        viewport_width=live_scan_viewport_width,
     )
     exact_detail_contract = collect_exact_detail_contract(app, fixture)
     last_normal_contract = build_last_normal_scan_contract(

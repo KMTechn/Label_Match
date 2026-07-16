@@ -509,6 +509,33 @@ def test_clipping_proxy_detects_bounds_visibility_compression_overlap_and_contai
     assert result["issue_count"] == 6
 
 
+def test_containment_gate_rejects_three_pixel_overflow_and_ignores_hidden_page():
+    records = [
+        _geometry_record("card", [0, 0, 100, 100]),
+        _geometry_record("active_page", [0, 0, 100, 103]),
+        _geometry_record(
+            "hidden_page",
+            [0, 0, 1, 1],
+            mapped=False,
+            critical=False,
+        ),
+    ]
+
+    result = evaluate_clipping_proxy(
+        records,
+        (100, 103),
+        containment_pairs=(
+            ("active_page", "card"),
+            ("hidden_page", "card"),
+        ),
+    )
+
+    assert result["outside_containers"] == [
+        {"widget": "active_page", "container": "card"}
+    ]
+    assert result["suspected"] is True
+
+
 def test_history_control_pairwise_gate_rejects_overlap_but_ignores_hidden_inactive_tab():
     names = (
         "history_today_button",
@@ -1002,6 +1029,87 @@ def test_capture_contract_uses_same_effective_stretched_tree_width_as_app():
 
     assert capture.effective_tree_column_width(tree, "Value") == 700
     assert capture.effective_tree_column_width(tree, "Stage") == 120
+    tree.winfo_width = lambda: 1
+    assert capture.effective_tree_column_width(
+        tree,
+        "Value",
+        viewport_width=900,
+    ) == 700
+    tree.winfo_width = lambda: 1484
+    assert capture.effective_tree_column_width(
+        tree,
+        "Value",
+        viewport_width=1277,
+    ) == 1077
+
+
+def test_hidden_tree_display_contract_uses_shared_viewport_and_rejects_one_pixel_overflow():
+    class RealTk:
+        def __init__(self, measured_width):
+            self.measured_width = measured_width
+
+        def call(self, *args):
+            if args[:3] == ("ttk::style", "lookup", "Operator.Treeview"):
+                return "OperatorFont"
+            if args[:2] == ("font", "measure"):
+                return self.measured_width
+            if args[:2] == ("font", "metrics"):
+                return 16
+            raise AssertionError(args)
+
+    class HiddenTree:
+        widths = {"Stage": 120, "Value": 100, "State": 80}
+
+        def __init__(self, measured_width):
+            self.tk = RealTk(measured_width)
+
+        @staticmethod
+        def get_children(_root):
+            return ("row-1",)
+
+        @staticmethod
+        def cget(option):
+            if option == "columns":
+                return ("Stage", "Value", "State")
+            if option == "style":
+                return "Operator.Treeview"
+            raise AssertionError(option)
+
+        @classmethod
+        def column(cls, column, option):
+            if option == "width":
+                return cls.widths[column]
+            if option == "stretch":
+                return column == "Value"
+            raise AssertionError(option)
+
+        @staticmethod
+        def item(_iid, _option):
+            return ("1", "ABC", "OK")
+
+        @staticmethod
+        def winfo_width():
+            return 1
+
+    passing = capture.collect_scan_display_contract(
+        HiddenTree(680),
+        ("ABC",),
+        value_column="Value",
+        expected_display_values=("ABC",),
+        viewport_width=900,
+    )
+    overflowing = capture.collect_scan_display_contract(
+        HiddenTree(681),
+        ("ABC",),
+        value_column="Value",
+        expected_display_values=("ABC",),
+        viewport_width=900,
+    )
+
+    assert passing["passed"] is True
+    assert passing["rows"][0]["available_width"] == 680
+    assert overflowing["passed"] is False
+    assert "row_1:display_text_exceeds_value_column" in overflowing["issues"]
 
 
 def test_qa_detail_contract_requires_mapping_and_selected_text_raw_parity():
