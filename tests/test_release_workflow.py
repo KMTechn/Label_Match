@@ -1,9 +1,16 @@
+import base64
+import importlib.util
+import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import zipfile
 from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
@@ -161,6 +168,214 @@ def test_release_workflow_generates_private_update_manifest():
     assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.archive-verification.json" in upload_block
     assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json" not in upload_block
     assert "tag_name: ${{ env.LABEL_MATCH_RELEASE_TAG }}" in upload_block
+
+
+def test_release_workflow_self_verifies_private_manifest_signature_before_publish(tmp_path):
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    sign_step = workflow.index("- name: Sign private update manifest")
+    publish_step = workflow.index("- name: Publish private update feed")
+    sign_block = workflow[sign_step:publish_step]
+    next_step = workflow.index("\n      - name:", sign_step + 1)
+    sign_step_block = workflow[sign_step:next_step]
+
+    assert sign_step < publish_step
+    assert (
+        "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: "
+        "${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}"
+    ) in sign_block
+    verify_expression = (
+        "Ed25519PublicKey.from_public_bytes(public_key).verify(signature, canonical)"
+    )
+    write_expression = (
+        'manifest_path.with_name(manifest_path.name + ".sig").write_bytes(signature)'
+    )
+    assert verify_expression in sign_block
+    assert write_expression in sign_block
+    assert sign_block.index(verify_expression) < sign_block.index(write_expression)
+    assert "signature does not match" in sign_block
+    assert "if ($LASTEXITCODE -ne 0)" in sign_block
+    assert 'throw "Private update manifest signature self-test failed."' in sign_block
+    assert "[string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)" in sign_block
+    assert 'throw "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY variable is required."' in sign_block
+    assert "if ($sig.Length -ne 64)" in sign_block
+    assert 'throw "Private update manifest signature must be 64 bytes."' in sign_block
+    embedded_script = textwrap.dedent(
+        sign_block.split("$script = @'", 1)[1].split("'@", 1)[0]
+    ).strip()
+    powershell_script = textwrap.dedent(
+        sign_step_block.split("        run: |\n", 1)[1]
+    ).strip()
+
+    manifest = {
+        "schema_version": "kmtech-private-update-manifest-v1",
+        "version": "v-test-한글",
+        "artifact": {
+            "name": "라벨-✓.zip",
+            "sha256": "a" * 64,
+            "metadata": {"labels": ["정상", "검증"], "enabled": True},
+        },
+    }
+    manifest_path = tmp_path / "Label_Match-v-test.manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    signing_key = Ed25519PrivateKey.generate()
+    private_key_hex = signing_key.private_bytes_raw().hex()
+    public_key_hex = signing_key.public_key().public_bytes_raw().hex()
+
+    env = os.environ.copy()
+    env["PRIVATE_UPDATE_MANIFEST_PATH"] = str(manifest_path)
+    env["PRIVATE_UPDATE_MANIFEST_SIGNING_KEY"] = private_key_hex
+    env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = public_key_hex
+    matching = subprocess.run(
+        [sys.executable, "-c", embedded_script],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+    matching_output = matching.stdout + matching.stderr
+    assert matching.returncode == 0, matching_output
+    assert private_key_hex not in matching_output
+    assert public_key_hex not in matching_output
+    generated_signature = manifest_path.with_name(manifest_path.name + ".sig").read_bytes()
+    assert len(generated_signature) == 64
+    parsed_manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+
+    module_path = Path(__file__).resolve().parents[1] / "Label_Match.py"
+    spec = importlib.util.spec_from_file_location("label_match_release_workflow_test", module_path)
+    assert spec is not None and spec.loader is not None
+    label_match_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(label_match_module)
+    label_match_module._verify_update_manifest_signature(
+        parsed_manifest,
+        generated_signature,
+        public_key_hex,
+    )
+    known_good_signature = generated_signature
+    mutated_manifest = dict(manifest)
+    mutated_manifest["version"] = "v-test-변경"
+    manifest_path.write_text(
+        json.dumps(mutated_manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    cases = (
+        (
+            Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex(),
+            "signature does not match",
+        ),
+        ("not-hex", "must be hex"),
+        ("00" * 31, "must decode to 32 bytes"),
+    )
+    for configured_public_key, expected_error in cases:
+        env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = configured_public_key
+        rejected = subprocess.run(
+            [sys.executable, "-c", embedded_script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        rejected_output = rejected.stdout + rejected.stderr
+        assert rejected.returncode != 0
+        assert expected_error in rejected_output
+        assert private_key_hex not in rejected_output
+        assert configured_public_key not in rejected_output
+        assert manifest_path.with_name(manifest_path.name + ".sig").read_bytes() == known_good_signature
+
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    powershell = next(
+        (
+            executable
+            for name in ("pwsh", "powershell", "powershell.exe")
+            if (executable := shutil.which(name))
+        ),
+        None,
+    )
+    if powershell:
+        encoded_command = base64.b64encode(
+            powershell_script.encode("utf-16le")
+        ).decode("ascii")
+        command = [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            encoded_command,
+        ]
+        env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = public_key_hex
+        wrapper_matching = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        wrapper_matching_output = wrapper_matching.stdout + wrapper_matching.stderr
+        assert wrapper_matching.returncode == 0, wrapper_matching_output
+        assert private_key_hex not in wrapper_matching_output
+        assert public_key_hex not in wrapper_matching_output
+        wrapper_signature = manifest_path.with_name(manifest_path.name + ".sig").read_bytes()
+        label_match_module._verify_update_manifest_signature(
+            parsed_manifest,
+            wrapper_signature,
+            public_key_hex,
+        )
+        wrapper_good_signature = wrapper_signature
+        manifest_path.write_text(
+            json.dumps(mutated_manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        for configured_public_key, expected_error in cases:
+            env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = configured_public_key
+            wrapper_rejected = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+                check=False,
+            )
+            wrapper_output = wrapper_rejected.stdout + wrapper_rejected.stderr
+            assert wrapper_rejected.returncode != 0
+            assert expected_error in wrapper_output
+            assert "self-test failed" in wrapper_output
+            assert private_key_hex not in wrapper_output
+            assert configured_public_key not in wrapper_output
+            assert (
+                manifest_path.with_name(manifest_path.name + ".sig").read_bytes()
+                == wrapper_good_signature
+            )
+
+        for missing_value in (None, ""):
+            missing_env = env.copy()
+            if missing_value is None:
+                missing_env.pop("PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY", None)
+            else:
+                missing_env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = missing_value
+            wrapper_missing = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=missing_env,
+                timeout=30,
+                check=False,
+            )
+            missing_output = wrapper_missing.stdout + wrapper_missing.stderr
+            assert wrapper_missing.returncode != 0
+            assert "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY variable is required" in missing_output
+            assert private_key_hex not in missing_output
 
 
 def test_staged_release_relay_files_are_importable_and_archived(tmp_path):

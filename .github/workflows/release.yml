@@ -258,10 +258,14 @@ jobs:
         shell: pwsh
         env:
           PRIVATE_UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.PRIVATE_UPDATE_MANIFEST_SIGNING_KEY }}
+          PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: ${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}
           PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json
         run: |
           if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_SIGNING_KEY)) {
             throw "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY secret is required."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)) {
+            throw "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY variable is required."
           }
           if (-not (Test-Path -LiteralPath $env:PRIVATE_UPDATE_MANIFEST_PATH)) {
             throw "Private update manifest not found: $env:PRIVATE_UPDATE_MANIFEST_PATH"
@@ -271,7 +275,12 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          from cryptography.exceptions import InvalidSignature
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+              Ed25519PrivateKey,
+              Ed25519PublicKey,
+          )
 
           key_text = os.environ["PRIVATE_UPDATE_MANIFEST_SIGNING_KEY"].strip()
           try:
@@ -280,14 +289,31 @@ jobs:
               key_bytes = base64.b64decode(key_text, validate=True)
           if len(key_bytes) != 32:
               raise SystemExit("PRIVATE_UPDATE_MANIFEST_SIGNING_KEY must decode to 32 bytes")
+          try:
+              public_key = bytes.fromhex(os.environ["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"].strip())
+          except ValueError:
+              raise SystemExit("PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be hex") from None
+          if len(public_key) != 32:
+              raise SystemExit("PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must decode to 32 bytes")
 
           manifest_path = Path(os.environ["PRIVATE_UPDATE_MANIFEST_PATH"])
           manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
           canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
           signature = Ed25519PrivateKey.from_private_bytes(key_bytes).sign(canonical)
+          try:
+              Ed25519PublicKey.from_public_bytes(public_key).verify(signature, canonical)
+          except InvalidSignature:
+              raise SystemExit(
+                  "Private update manifest signature does not match "
+                  "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"
+              ) from None
           manifest_path.with_name(manifest_path.name + ".sig").write_bytes(signature)
+          print("OK: private update manifest signature verifies against configured public key")
           '@
           $script | python -
+          if ($LASTEXITCODE -ne 0) {
+            throw "Private update manifest signature self-test failed."
+          }
           $sigPath = "$env:PRIVATE_UPDATE_MANIFEST_PATH.sig"
           $sig = [System.IO.File]::ReadAllBytes($sigPath)
           if ($sig.Length -ne 64) {
