@@ -69,6 +69,10 @@ from package_logistics import (
     canonical_barcodes,
     package_client_from_env,
 )
+from ui.operator_layout import build_operator_layout
+from ui.style_tokens import build_style_tokens
+from ui.workflow_snapshot_adapter import adapt_workflow_snapshot
+from ui.workflow_view_state import WorkflowNotice, present_workflow
 
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
@@ -2479,6 +2483,19 @@ class Label_Match(tk.Tk):
         self.history_load_pending = False
         self.history_active_load_pending = False
         self.is_generating_test_logs = False
+        # View-only workflow state. These values never participate in ledger,
+        # recovery, package logistics, or duplicate decisions.
+        self._workflow_widgets_ready = False
+        self._workflow_completion_kind = None
+        self._workflow_display_scans = ()
+        self._workflow_display_parsed_scans = ()
+        self._workflow_last_normal_override = None
+        self._workflow_blocking_notice = None
+        self._workflow_notice_action = None
+        self._workflow_notice_action_text = "확인"
+        self._workflow_pending_error = None
+        self._workflow_recovered = False
+        self._workflow_item_snapshot = None
         self.title(f"바코드 세트 검증기 ({APP_VERSION}) - 로딩 중...")
         _label_match_startup_trace("app_init_after_title", title=self.title())
         self.state('zoomed')
@@ -2594,8 +2611,30 @@ class Label_Match(tk.Tk):
             self.summary_tree.selection_remove(self.summary_tree.selection())
         widget_class = event.widget.winfo_class()
         interactive_classes = {"Button", "TButton", "Entry", "TEntry", "Treeview", "Scrollbar", "TScrollbar"}
-        if widget_class not in interactive_classes and "entry" in self.__dict__:
-            self.entry.focus_set()
+        if "entry" not in self.__dict__:
+            return
+        if widget_class == "Treeview":
+            self.after(80, self._focus_scan_entry_if_available)
+        elif widget_class not in interactive_classes:
+            self._focus_scan_entry_if_available()
+
+    def _focus_scan_entry_if_available(self):
+        entry = self.__dict__.get("entry")
+        if self.__dict__.get("operator_workbench_ready"):
+            view = self._render_operator_workbench()
+        else:
+            view = self.__dict__.get("_last_workflow_view")
+        if entry is None or not self.__dict__.get("initialized_successfully", False):
+            return False
+        if view is not None and not view.scan_input_enabled:
+            return False
+        try:
+            if str(entry.cget("state")) != "normal":
+                return False
+            entry.focus_set()
+            return True
+        except (TclError, AttributeError):
+            return False
 
     def _async_initial_load(self):
         _label_match_startup_trace("async_initial_load_start")
@@ -2627,6 +2666,7 @@ class Label_Match(tk.Tk):
             self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
             self.data_manager.log_event(self.Events.APP_START, {"message": "Application initialized."})
             self.initialized_successfully = True
+            self._render_operator_workbench()
             self.history_queue = queue.Queue()
             self._load_history_and_rebuild_summary()
             self._process_history_queue()
@@ -2717,7 +2757,10 @@ class Label_Match(tk.Tk):
                 self.app_settings["ui_persistence"] = {}
             self.app_settings["ui_persistence"]["scale_factor"] = self.scale_factor
             self.app_settings["ui_persistence"]["tree_font_size"] = self.tree_font_size
-            self.app_settings["ui_persistence"]["sash_position"] = self.content_pane.sashpos(0)
+            content_pane = self.__dict__.get("content_pane")
+            sashpos = getattr(content_pane, "sashpos", None)
+            if callable(sashpos):
+                self.app_settings["ui_persistence"]["sash_position"] = sashpos(0)
             self.app_settings["ui_persistence"]["summary_col_widths"] = {col: self.summary_tree.column(col, 'width') for col in self.summary_tree['columns']}
             self.app_settings["ui_persistence"]["history_col_widths"] = {col: self.history_tree.column(col, 'width') for col in self.history_tree['columns']}
             with open(self.app_settings_path, 'w', encoding='utf-8') as f:
@@ -2841,6 +2884,9 @@ class Label_Match(tk.Tk):
     def _apply_responsive_layout(self):
         if "main_frame" not in self.__dict__:
             return
+        if self.__dict__.get("operator_workbench_ready"):
+            self._apply_operator_responsive_layout()
+            return
         profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
         self._applying_responsive_layout = True
         try:
@@ -2874,6 +2920,8 @@ class Label_Match(tk.Tk):
             self._applying_responsive_layout = False
 
     def _apply_content_sash_position(self):
+        if self.__dict__.get("operator_workbench_ready"):
+            return
         if "content_pane" not in self.__dict__:
             return
         profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
@@ -3432,6 +3480,8 @@ class Label_Match(tk.Tk):
                 self.update_big_display(self._next_action_text(len(self.current_set_info.get('parsed', []))), "green")
             self._update_status_label()
             self._update_history_tree_in_progress()
+            self._workflow_recovered = True
+            self._render_operator_workbench()
         else:
             self.data_manager.delete_current_state()
 
@@ -3463,6 +3513,10 @@ class Label_Match(tk.Tk):
         self.history_view_updates_active_state = updates_active_state
         self.history_load_pending = True
         self.history_active_load_pending = updates_active_state
+        if self.__dict__.get("operator_workbench_ready"):
+            # Apply the loading/read-only gate before the worker starts so a
+            # cached enabled view cannot accept a scan or function key.
+            self._render_operator_workbench()
         if updates_active_state:
             self.scan_count.clear()
             self.global_scanned_set.clear()
@@ -3609,6 +3663,8 @@ class Label_Match(tk.Tk):
             self._render_summary_tree(result['scan_count'] if not updates_active_state else self.scan_count)
             self._apply_history_view_mode()
             self._render_history_detail()
+            self._refresh_session_tree()
+            self._render_operator_workbench()
             print("비동기 기록 로드 및 UI 적용 완료.")
         except queue.Empty:
             if self.__dict__.get('history_load_pending', self.__dict__.get('history_active_load_pending', False)):
@@ -4134,6 +4190,7 @@ class Label_Match(tk.Tk):
         self._save_current_set_state()
         self.update_big_display(f"전체 제품 재스캔 0/{int(target)}", "primary")
         self._update_status_label()
+        self._render_operator_workbench()
         return True
 
     def _process_exact_rescan_product(self, raw_input):
@@ -4190,6 +4247,7 @@ class Label_Match(tk.Tk):
             self.update_big_display(f"전체 제품 재스캔 {len(members)}/{target}", "primary")
         self._save_current_set_state()
         self._update_status_label()
+        self._render_operator_workbench()
         return True
 
     def _extract_production_date(self, raw_input):
@@ -4209,6 +4267,8 @@ class Label_Match(tk.Tk):
 
     def _update_on_success_scan(self, raw, parsed):
         if len(self.current_set_info['raw']) == 0:
+            self._clear_workflow_completion()
+            self._workflow_recovered = False
             self.current_set_info['id'] = str(time.time_ns())
             self.current_set_info['start_time'] = datetime.now()
 
@@ -4236,6 +4296,7 @@ class Label_Match(tk.Tk):
             },
         )
         self._save_current_set_state()
+        self._render_operator_workbench()
         if num_scans == self.TOTAL_SCAN_COUNT:
             self._finalize_set(self.Results.PASS)
 
@@ -4355,6 +4416,9 @@ class Label_Match(tk.Tk):
                 else None
             )
         except PackageLogisticsError as exc:
+            if self.__dict__.get("operator_workbench_ready"):
+                self._play_sound("fail")
+                return self._publish_submission_block(exc)
             status_label = self.__dict__.get("status_label")
             if status_label is not None:
                 status_label.config(text=f"❌ 중앙 포장 차단: {exc}", style="Error.TLabel")
@@ -4421,6 +4485,11 @@ class Label_Match(tk.Tk):
         self.save_status_label.config(text=f"✓ 기록됨 ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
+        if self.__dict__.get("operator_workbench_ready"):
+            self._publish_finalize_completion(
+                is_manual_complete=is_manual_complete,
+                result=result,
+            )
         self._reset_current_set(from_finalize=True)
         if "big_display_label" in self.__dict__:
             if result == self.Results.PASS:
@@ -4428,7 +4497,11 @@ class Label_Match(tk.Tk):
                 self.update_big_display("통과 완료 - 다음 현품표 스캔", "green")
             else:
                 self.update_big_display("오류 처리 완료 - 새 현품표부터 시작", "red")
-            self.after(1800, self._show_idle_instruction_if_idle)
+            if self.__dict__.get("operator_workbench_ready"):
+                self._refresh_session_tree()
+                self._render_operator_workbench()
+            else:
+                self.after(1800, self._show_idle_instruction_if_idle)
 
     def _handle_input_error(self, raw, title="[입력 오류]", reason="알 수 없는 입력 오류가 발생했습니다."):
         set_id = self._ensure_current_set_id()
@@ -4452,7 +4525,15 @@ class Label_Match(tk.Tk):
                 self.current_set_info['id'] = str(time.time_ns())
             self._finalize_set(self.Results.FAIL_INPUT_ERROR, raw)
         elif not self.run_tests and "DEMO" not in raw:
-            self._trigger_modal_error(title, reason, self.Results.FAIL_INPUT_ERROR, raw)
+            if self.__dict__.get("operator_workbench_ready"):
+                self._present_inline_workflow_error(
+                    title,
+                    reason,
+                    self.Results.FAIL_INPUT_ERROR,
+                    raw,
+                )
+            else:
+                self._trigger_modal_error(title, reason, self.Results.FAIL_INPUT_ERROR, raw)
 
     def _handle_mismatch(self, raw, master):
         set_id = self._ensure_current_set_id()
@@ -4485,7 +4566,15 @@ class Label_Match(tk.Tk):
                 self.current_set_info['id'] = str(time.time_ns())
             self._finalize_set(self.Results.FAIL_MISMATCH, raw)
         elif not self.run_tests and "DEMO" not in raw:
-            self._trigger_modal_error(title, error_message, self.Results.FAIL_MISMATCH, raw)
+            if self.__dict__.get("operator_workbench_ready"):
+                self._present_inline_workflow_error(
+                    title,
+                    error_message,
+                    self.Results.FAIL_MISMATCH,
+                    raw,
+                )
+            else:
+                self._trigger_modal_error(title, error_message, self.Results.FAIL_MISMATCH, raw)
 
     def _ensure_current_set_id(self):
         if not self.current_set_info.get('id'):
@@ -4680,6 +4769,12 @@ class Label_Match(tk.Tk):
             self.current_set_info['has_error_or_reset'] = True
         if from_finalize or full_reset:
             self._delete_current_set_state()
+        if full_reset and not from_finalize:
+            self._clear_workflow_completion()
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            self._workflow_notice_action = None
+            self._workflow_recovered = False
 
         self.current_set_info = {
             'id': None, 'parsed': [], 'raw': [],
@@ -4697,6 +4792,7 @@ class Label_Match(tk.Tk):
             self._update_status_label()
             self.update_big_display(self._idle_instruction_text(), "")
             self.entry.focus_set()
+            self._render_operator_workbench()
         return True
 
     def _show_completion_progress(self, result):
@@ -4740,6 +4836,13 @@ class Label_Match(tk.Tk):
             self.after_idle(lambda: messagebox.showerror("사운드 재생 오류", f"경고음을 재생하는 중 오류가 발생했습니다.\n스피커 또는 사운드 드라이버를 확인해주세요.\n\n[상세 오류]\n{e}"))
 
     def _trigger_modal_error(self, title, message, result, error_details):
+        if self.__dict__.get("operator_workbench_ready"):
+            return self._present_inline_workflow_error(
+                title,
+                message,
+                result,
+                error_details,
+            )
         if self.is_blinking: return
         self.is_blinking = True
         if not self.run_tests and not _label_match_automated_test_mode():
@@ -5616,7 +5719,1867 @@ class Label_Match(tk.Tk):
             lines.append(f"세트 ID: {details.get('set_id') or '-'}")
         return "\n".join(lines)
 
+    def _apply_operator_responsive_layout(self, *, settle=False):
+        workbench = self.__dict__.get("operator_workbench_frame")
+        if workbench is None:
+            return
+        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+        outer_padding = int(profile["outer_padding"])
+        try:
+            self.main_frame.configure(padding=outer_padding)
+            self.update_idletasks()
+            root_width = int(self.winfo_width())
+            width = max(1, root_width - outer_padding * 2)
+            grid_box = self.main_frame.grid_bbox(0, 1)
+            height = int(grid_box[3]) if len(grid_box) == 4 else 0
+            if height <= 100:
+                height = int(workbench.winfo_height())
+        except (TclError, AttributeError, TypeError, ValueError):
+            width, height = 0, 0
+        if width <= 100:
+            try:
+                width = max(980, min(1920, int(self.winfo_screenwidth())) - outer_padding * 2)
+            except (TclError, AttributeError, TypeError, ValueError):
+                width = 1440
+        if height <= 100:
+            try:
+                height = max(620, int(self.winfo_height()) - 100)
+            except (TclError, AttributeError, TypeError, ValueError):
+                height = 800
+        scale = float(getattr(self, "scale_factor", 1.0) or 1.0)
+        metrics = build_operator_layout(width, height, scale)
+        tokens = build_style_tokens(metrics.profile.name, scale)
+        self.operator_layout_metrics = metrics
+        self.operator_style_tokens = tokens
+        panes = metrics.panes
+        constrained_large_text = scale >= 1.25 and height < 760
+        compact_large_text = scale >= 1.25 and (
+            constrained_large_text or panes.center_width < 650
+        )
+        self._operator_hide_left_badges = constrained_large_text
+        self._operator_constrained_large_text = constrained_large_text
+        self._operator_compact_large_text = compact_large_text
+        card_padding = min(
+            int(profile["card_padding"]),
+            8 if constrained_large_text else int(profile["card_padding"]),
+        )
+        pane_widths = {
+            "operator_left_pane": panes.left_width,
+            "operator_center_pane": panes.center_width,
+            "operator_right_pane": panes.right_width,
+        }
+        self._applying_responsive_layout = True
+        try:
+            self.main_frame.configure(padding=outer_padding)
+            workbench.configure(width=width, height=height)
+            workbench.grid_propagate(False)
+            workbench.grid_columnconfigure(0, minsize=panes.left_width, weight=0)
+            workbench.grid_columnconfigure(
+                1,
+                minsize=panes.center_width + panes.gap * 2,
+                weight=0,
+            )
+            workbench.grid_columnconfigure(2, minsize=panes.right_width, weight=0)
+            workbench.grid_rowconfigure(0, minsize=height, weight=1)
+            self.operator_center_pane.grid_configure(padx=(panes.gap, panes.gap))
+            for pane_name, pane_width in pane_widths.items():
+                pane = self.__dict__.get(pane_name)
+                if pane is not None:
+                    pane.configure(
+                        padding=card_padding,
+                        width=pane_width,
+                        height=height,
+                    )
+                    pane.grid_propagate(False)
+            headline_font_size = min(
+                tokens.fonts.headline,
+                (
+                    26
+                    if constrained_large_text
+                    else 28 if compact_large_text else tokens.fonts.headline
+                ),
+            )
+            if constrained_large_text:
+                notice_font_size = min(tokens.fonts.body, 13)
+                notice_title_font_size = notice_font_size
+            elif compact_large_text:
+                notice_font_size = min(tokens.fonts.body, 14)
+                notice_title_font_size = min(tokens.fonts.body, 15)
+            else:
+                notice_font_size = tokens.fonts.body
+                notice_title_font_size = notice_font_size
+            scan_input_font_size = min(
+                tokens.fonts.scan_input,
+                18 if compact_large_text else tokens.fonts.scan_input,
+            )
+            live_list_font_size = min(
+                tokens.fonts.live_list,
+                15 if compact_large_text else tokens.fonts.live_list,
+            )
+            if constrained_large_text:
+                worker = str(self.__dict__.get("worker_name") or "작업자")
+                self.operator_title_label.configure(
+                    text=f"Label Match · {self._middle_ellipsis(worker, 10)}",
+                    font=(self.default_font_name, 18, "bold"),
+                )
+                self.operator_header_context_label.grid_remove()
+            else:
+                self.operator_title_label.configure(
+                    text="Label Match · 포장 라벨 검증",
+                    font=(self.default_font_name, tokens.fonts.section_title, "bold"),
+                )
+                self.operator_header_context_label.grid()
+            self.big_display_label.configure(
+                font=(self.default_font_name, headline_font_size, "bold"),
+                wraplength=max(320, panes.center_width - tokens.spacing.xl * 2),
+            )
+            vertical_gap = 2 if constrained_large_text else 8
+            self.big_display_label.grid_configure(pady=(0, vertical_gap))
+            self.progress_frame.grid_configure(pady=(0, vertical_gap))
+            self.workflow_notice_frame.grid_configure(pady=(0, vertical_gap))
+            self.operator_input_frame.grid_configure(pady=(0, vertical_gap))
+            notice_height = (
+                132
+                if constrained_large_text
+                else max(132, int(tokens.fonts.body * 6 + 24))
+            )
+            self._operator_notice_base_height = notice_height
+            self.workflow_notice_frame.configure(height=notice_height)
+            self.workflow_notice_frame.grid_propagate(False)
+            self.workflow_notice_frame.grid_rowconfigure(1, weight=1)
+            if constrained_large_text:
+                self.workflow_notice_title_label.grid_configure(
+                    padx=10,
+                    pady=(4, 0),
+                )
+                self.workflow_notice_label.grid_configure(
+                    padx=10,
+                    pady=(0, 4),
+                )
+            else:
+                self.workflow_notice_title_label.grid_configure(
+                    padx=12,
+                    pady=(7, 0),
+                )
+                self.workflow_notice_label.grid_configure(
+                    padx=12,
+                    pady=(1, 7),
+                )
+            self.workflow_notice_label.configure(
+                font=(self.default_font_name, notice_font_size),
+                wraplength=max(260, panes.center_width - 180),
+                anchor="nw",
+            )
+            self.workflow_notice_title_label.configure(
+                font=(self.default_font_name, notice_title_font_size, "bold")
+            )
+            self.style.configure(
+                "Operator.NoticeAction.TButton",
+                font=(
+                    self.default_font_name,
+                    13 if compact_large_text else max(11, notice_font_size - 1),
+                    "bold",
+                ),
+                padding=(4, 4),
+            )
+            self.workflow_notice_action_button.configure(
+                style="Operator.NoticeAction.TButton"
+            )
+            self.entry.configure(
+                font=(self.default_font_name, scan_input_font_size),
+                width=1,
+            )
+            self.entry.grid_configure(ipady=5 if constrained_large_text else 8)
+            # The five-step rail already expresses progress.  Keeping a second
+            # percentage-like bar consumes the exact vertical space needed by
+            # the operator's actual five scan rows on a short auxiliary screen.
+            self.progress_bar.grid_remove()
+            for step_label in self.step_labels:
+                step_label.configure(
+                    padx=4 if panes.center_width < 650 else 6,
+                    pady=3 if constrained_large_text else 5,
+                )
+            self.operator_last_scan_label.configure(
+                font=(self.default_font_name, tokens.fonts.detail),
+                wraplength=max(300, panes.center_width - 30),
+            )
+            self.operator_last_scan_label.grid_remove()
+            left_wrap = max(120, panes.left_width - card_padding * 2)
+            for name in (
+                "operator_item_stage_label",
+                "operator_item_code_label",
+                "operator_item_name_label",
+                "operator_item_spec_label",
+                "operator_set_id_label",
+                "operator_membership_label",
+                "operator_badges_label",
+                "operator_left_hint_label",
+            ):
+                widget = self.__dict__.get(name)
+                if widget is not None:
+                    widget.configure(wraplength=left_wrap)
+            left_body_size = min(
+                tokens.fonts.sidebar_body,
+                17 if constrained_large_text else tokens.fonts.sidebar_body,
+            )
+            left_title_size = min(
+                tokens.fonts.section_title,
+                18 if constrained_large_text else tokens.fonts.section_title,
+            )
+            self.operator_item_stage_label.configure(
+                font=(self.default_font_name, left_title_size, "bold")
+            )
+            self.operator_item_code_label.configure(
+                font=(self.default_font_name, min(left_title_size, 16), "bold")
+            )
+            for name in (
+                "operator_item_name_label",
+                "operator_item_spec_label",
+                "operator_item_phase_label",
+                "operator_set_id_label",
+                "operator_badges_label",
+            ):
+                widget = self.__dict__.get(name)
+                if widget is not None:
+                    widget.configure(font=(self.default_font_name, left_body_size))
+            self.operator_membership_label.configure(
+                font=(
+                    self.default_font_name,
+                    min(left_body_size, 15 if constrained_large_text else left_body_size),
+                    "bold",
+                )
+            )
+            if constrained_large_text:
+                self.operator_left_divider.grid_remove()
+                self.operator_membership_heading_label.grid_remove()
+                self.operator_left_hint_label.grid_remove()
+            else:
+                self.operator_left_divider.grid()
+                self.operator_membership_heading_label.grid()
+                self.operator_left_hint_label.grid()
+            action_font_size = min(
+                tokens.fonts.button,
+                15 if panes.right_width < 480 else tokens.fonts.button,
+            )
+            action_height = max(
+                86,
+                metrics.center.actions.button_height,
+                action_font_size * 8 - 10,
+            )
+            self.operator_action_frame.grid_rowconfigure(0, minsize=action_height)
+            self.operator_action_frame.grid_rowconfigure(1, minsize=action_height)
+            action_font = (
+                self.default_font_name,
+                max(11, action_font_size),
+                "bold",
+            )
+            self.style.configure(
+                "Operator.Action.TButton",
+                font=action_font,
+                padding=(4, 6),
+            )
+            self.style.configure(
+                "Operator.Danger.Action.TButton",
+                font=action_font,
+                padding=(4, 6),
+            )
+            for button_name, compact_text, compact_style in (
+                ("manual_complete_button", "소량\n완료 (F3)", "Operator.Action.TButton"),
+                ("exact_rescan_button", "전체\n재스캔 (F4)", "Operator.Action.TButton"),
+                ("reset_button", "현재 세트\n취소 (F1)", "Operator.Danger.Action.TButton"),
+                ("cancel_tray_button", "완료 트레이\n취소 (F2)", "Operator.Danger.Action.TButton"),
+            ):
+                button = self.__dict__.get(button_name)
+                if button is not None:
+                    button.configure(text=compact_text, style=compact_style, width=1)
+            right_inner_width = max(220, panes.right_width - card_padding * 2)
+            right_inner_height = max(220, height - card_padding * 2)
+            action_total_height = action_height * 2 + 8
+            self.operator_action_frame.configure(
+                width=right_inner_width,
+                height=action_total_height,
+            )
+            self.operator_action_frame.grid_propagate(False)
+            self.operator_notebook.configure(
+                width=right_inner_width,
+                height=max(140, right_inner_height - action_total_height - 10),
+            )
+            self.style.configure(
+                "Operator.Treeview",
+                font=(self.default_font_name, live_list_font_size),
+                rowheight=max(30, int(live_list_font_size * 2.35)),
+            )
+            center_inner_width = max(320, panes.center_width - card_padding * 2)
+            if compact_large_text:
+                stage_width = 180
+            elif scale >= 1.25:
+                stage_width = min(180, max(165, int(center_inner_width * 0.28)))
+            else:
+                stage_width = min(146, max(132, int(center_inner_width * 0.21)))
+            state_width = min(92, max(72, int(center_inner_width * 0.14)))
+            value_width = max(150, center_inner_width - stage_width - state_width - 12)
+            self.qa_scan_tree.configure(style="Operator.Treeview", height=5)
+            self.qa_scan_tree.column("Stage", width=stage_width, minwidth=80, stretch=False)
+            self.qa_scan_tree.column("Value", width=value_width, minwidth=140, stretch=True)
+            self.qa_scan_tree.column("State", width=state_width, minwidth=68, stretch=False)
+            detail_font_size = max(9, min(12, live_list_font_size - 2))
+            self.qa_scan_detail_metadata_label.configure(
+                font=(self.default_font_name, detail_font_size),
+            )
+            self.qa_scan_detail_text.configure(
+                font=("Consolas", detail_font_size),
+                height=2,
+            )
+            detail_height = 76 if constrained_large_text else 82
+            self.qa_scan_detail_frame.configure(height=detail_height)
+            self.qa_scan_detail_frame.grid_propagate(False)
+            self.exact_rescan_tree.configure(style="Operator.Treeview", height=5)
+            self.exact_rescan_tree.column("Order", width=76, minwidth=58, stretch=False)
+            self.exact_rescan_tree.column(
+                "Value",
+                width=max(190, center_inner_width - 88),
+                minwidth=170,
+                stretch=True,
+            )
+            tree_content_height = max(
+                188,
+                5 * max(30, int(live_list_font_size * 2.35)) + 38,
+            )
+            live_list_height = tree_content_height + detail_height + (
+                39 if scale >= 1.25 else 37
+            )
+            self.live_scan_notebook.configure(
+                width=center_inner_width,
+                height=live_list_height,
+            )
+            self.operator_center_pane.grid_rowconfigure(
+                4,
+                minsize=live_list_height,
+                weight=1,
+            )
+            self.session_tree.column("Time", width=64, minwidth=54, stretch=False)
+            self.session_tree.column("Result", width=68, minwidth=58, stretch=False)
+            self.session_tree.column(
+                "Item",
+                width=max(100, right_inner_width - 148),
+                minwidth=90,
+                stretch=True,
+            )
+        except (TclError, AttributeError, KeyError, TypeError):
+            return
+        finally:
+            self._applying_responsive_layout = False
+        if not settle:
+            pending = self.__dict__.get("_operator_layout_settle_after_id")
+            if pending:
+                try:
+                    self.after_cancel(pending)
+                except TclError:
+                    pass
+            try:
+                self._operator_layout_settle_after_id = self.after(
+                    40,
+                    self._settle_operator_responsive_layout,
+                )
+            except (TclError, AttributeError):
+                self._operator_layout_settle_after_id = None
+
+    def _settle_operator_responsive_layout(self):
+        """Reapply height metrics after header visibility changes have settled."""
+
+        self._operator_layout_settle_after_id = None
+        try:
+            self._apply_operator_responsive_layout(settle=True)
+        except TclError:
+            return
+
+    def _workflow_view_source(self):
+        source = dict(self.__dict__.get("current_set_info", {}) or {})
+        display_scans = tuple(self.__dict__.get("_workflow_display_scans", ()) or ())
+        if self.__dict__.get("_workflow_completion_kind") and display_scans:
+            source["raw"] = list(display_scans)
+            display_parsed = tuple(
+                self.__dict__.get("_workflow_display_parsed_scans", ()) or ()
+            )
+            source["parsed"] = list(display_parsed or display_scans)
+        source.setdefault("raw", [])
+        source.setdefault("parsed", [])
+        source.setdefault("exact_rescan_barcodes", [])
+        return source
+
+    @staticmethod
+    def _workflow_state_text(state):
+        return {
+            "complete": "완료",
+            "current": "현재",
+            "pending": "대기",
+            "error": "오류",
+            "readonly": "조회",
+        }.get(str(state), str(state or "-"))
+
+    def _selected_qa_scan_iid(self):
+        """Return the selected live QA row without changing keyboard focus."""
+
+        tree = self.__dict__.get("qa_scan_tree")
+        if tree is None:
+            return None
+        try:
+            selected = tuple(tree.selection())
+        except (TclError, AttributeError, TypeError):
+            return None
+        return str(selected[0]) if selected else None
+
+    def _set_qa_scan_detail_text(self, value):
+        detail_text = self.__dict__.get("qa_scan_detail_text")
+        if detail_text is None:
+            return
+        try:
+            detail_text.configure(state="normal")
+            detail_text.delete("1.0", tk.END)
+            detail_text.insert("1.0", str(value))
+            detail_text.configure(state="disabled")
+            detail_text.yview_moveto(0.0)
+        except (TclError, AttributeError, TypeError):
+            try:
+                detail_text.configure(state="disabled")
+            except (TclError, AttributeError):
+                pass
+
+    def _render_qa_scan_detail(self, selected_iid=None):
+        """Show the selected stage, state, and complete accepted raw value."""
+
+        if selected_iid is None:
+            selected_iid = self._selected_qa_scan_iid()
+        rows = self.__dict__.get("_qa_scan_detail_rows", {}) or {}
+        detail = rows.get(str(selected_iid)) if selected_iid else None
+        if detail is None:
+            metadata = "단계: -  |  상태: -"
+            raw_text = "현재 세트 행을 선택하면 수락된 스캔 원문을 확인할 수 있습니다."
+        else:
+            metadata = (
+                f"단계: {detail['stage']}  |  상태: {detail['state']}"
+            )
+            raw_value = str(detail.get("raw") or "")
+            raw_text = raw_value or "수락된 스캔 값 없음"
+
+        metadata_label = self.__dict__.get("qa_scan_detail_metadata_label")
+        if metadata_label is not None:
+            try:
+                metadata_label.configure(text=metadata)
+            except (TclError, AttributeError):
+                pass
+        self._set_qa_scan_detail_text(raw_text)
+        return detail
+
+    def _on_qa_scan_selection_changed(self, _event=None):
+        """Refresh details only; the existing scanner-focus policy stays intact."""
+
+        self._render_qa_scan_detail()
+
+    @staticmethod
+    def _workflow_headline_text(view):
+        """Keep a notice title unique while the layout itself stays fixed."""
+        if view.notice is None:
+            return view.current_stage_label
+        return {
+            "initializing": "작업 준비 중",
+            "loading": "작업 준비 중",
+            "history_readonly": "기록 조회 중",
+            "history_loading": "기록 준비 중",
+            "submission_blocked": "제출 대기",
+            "blocked": "작업 확인 필요",
+            "error": "스캔 확인 필요",
+            "completion_full": "다음 세트 준비",
+            "completion_partial": "다음 세트 준비",
+            "completion_failed": "새 세트 준비",
+        }.get(view.current_stage, "상태 확인")
+
+    @staticmethod
+    def _workflow_left_stage_text(view):
+        if view.notice is None:
+            return view.current_stage_label
+        return {
+            "initializing": "준비 중",
+            "loading": "준비 중",
+            "history_readonly": "조회 전용",
+            "history_loading": "기록 로딩",
+            "submission_blocked": "제출 보류",
+            "blocked": "작업 보류",
+            "error": "확인 필요",
+            "completion_full": "정상 기록됨",
+            "completion_partial": "부분 기록됨",
+            "completion_failed": "실패 기록됨",
+        }.get(view.current_stage, "상태 확인")
+
+    def _set_exact_rescan_tab_visible(self, visible, *, select=False):
+        notebook = self.__dict__.get("live_scan_notebook")
+        frame = self.__dict__.get("exact_rescan_frame")
+        if notebook is None or frame is None:
+            return
+        tabs = getattr(notebook, "tabs", None)
+        if callable(tabs):
+            try:
+                tab_ids = tuple(str(tab_id) for tab_id in tabs())
+                if visible and str(frame) not in tab_ids:
+                    notebook.add(frame, text="F4 전체 재스캔")
+                elif visible:
+                    notebook.tab(frame, state="normal")
+                elif not visible and str(frame) in tab_ids:
+                    notebook.hide(frame)
+                if visible and select:
+                    notebook.select(frame)
+                else:
+                    notebook.select(self.qa_scan_frame)
+                return
+            except (TclError, AttributeError):
+                pass
+        # Headless contract fakes do not implement Notebook.tabs/hide.
+        try:
+            if visible:
+                frame.grid()
+            else:
+                frame.grid_remove()
+        except (TclError, AttributeError):
+            pass
+
+    def _set_workflow_notice_ui(self, notice, next_action):
+        title_label = self.__dict__.get("workflow_notice_title_label")
+        message_label = self.__dict__.get("workflow_notice_label")
+        frame = self.__dict__.get("workflow_notice_frame")
+        if title_label is None or message_label is None or frame is None:
+            return
+        if notice is None:
+            title = "다음 행동"
+            message = str(next_action or "현품표를 스캔하세요.")
+            foreground = self.colors.get("primary", "#2563EB")
+            background = "#EFF6FF"
+            border = self.colors.get("primary", "#2563EB")
+        else:
+            title = str(notice.title)
+            message = str(notice.message)
+            next_action_text = str(next_action or "").strip()
+            if next_action_text and next_action_text not in message:
+                message = f"{message}\n다음: {next_action_text}"
+            tone = str(notice.tone or "danger")
+            palette = {
+                "success": (self.colors.get("success", "#047857"), "#ECFDF5", "#10B981"),
+                "warning": ("#92400E", "#FFFBEB", "#F59E0B"),
+                "info": (self.colors.get("primary", "#2563EB"), "#EFF6FF", "#3B82F6"),
+                "muted": (self.colors.get("text_subtle", "#6B7280"), "#F3F4F6", "#9CA3AF"),
+                "danger": (self.colors.get("danger", "#B91C1C"), "#FEF2F2", "#DC2626"),
+            }
+            foreground, background, border = palette.get(tone, palette["danger"])
+        try:
+            frame.configure(bg=background, highlightbackground=border)
+            title_label.configure(text=title, bg=background, fg=foreground)
+            message_label.configure(text=message, bg=background, fg=self.colors.get("text", "#111827"))
+        except (TclError, AttributeError):
+            return
+
+        action_button = self.__dict__.get("workflow_notice_action_button")
+        if action_button is None:
+            return
+        show_action = bool(
+            self.__dict__.get("_pending_workflow_error")
+            or self.__dict__.get("_workflow_pending_error")
+            or callable(self.__dict__.get("_workflow_notice_action"))
+        )
+        try:
+            if show_action:
+                action_text = str(
+                    self.__dict__.get("_workflow_notice_action_text") or "확인"
+                )
+                action_button.configure(
+                    text=action_text,
+                    width=9 if action_text == "제출 재시도" else 4,
+                )
+                compact = bool(
+                    self.__dict__.get("_operator_compact_large_text", False)
+                )
+                action_button.grid_configure(
+                    padx=8 if compact else 10,
+                    pady=4 if compact else 7,
+                )
+                action_button.grid()
+                action_button.focus_set()
+            else:
+                action_button.grid_remove()
+        except (TclError, AttributeError):
+            pass
+        self._fit_operator_notice_geometry(show_action)
+
+    def _fit_operator_notice_geometry(self, show_action):
+        """Size the single notice region from its real message/action content."""
+
+        frame = self.__dict__.get("workflow_notice_frame")
+        title_label = self.__dict__.get("workflow_notice_title_label")
+        message_label = self.__dict__.get("workflow_notice_label")
+        action_button = self.__dict__.get("workflow_notice_action_button")
+        if frame is None or title_label is None or message_label is None:
+            return
+        if "tk" not in self.__dict__:
+            # Structural unit-test doubles deliberately skip ``tk.Tk.__init__``.
+            return
+
+        compact = bool(self.__dict__.get("_operator_compact_large_text", False))
+        constrained = bool(
+            self.__dict__.get("_operator_constrained_large_text", False)
+        )
+        message_pad_x = 10 if compact else 12
+        action_pad_x = 8 if compact else 10
+        title_pad_top = 4 if compact else 7
+        message_pad_top = 0 if compact else 1
+        message_pad_bottom = 4 if compact else 7
+        action_pad_y = 4 if compact else 7
+
+        try:
+            frame_width = int(frame.winfo_width())
+            if frame_width <= 100:
+                metrics = self.__dict__.get("operator_layout_metrics")
+                card_padding = int(
+                    min(
+                        getattr(self, "ui_profile", self.UI_PROFILES["standard"])[
+                            "card_padding"
+                        ],
+                        8 if compact else 10_000,
+                    )
+                )
+                frame_width = max(
+                    320,
+                    int(metrics.panes.center_width) - card_padding * 2,
+                )
+
+            action_width = 0
+            if show_action and action_button is not None:
+                action_width = int(action_button.winfo_reqwidth()) + action_pad_x * 2
+            available_message_width = max(
+                220,
+                frame_width - message_pad_x * 2 - action_width - 4,
+            )
+            message_label.configure(wraplength=available_message_width)
+            self.update_idletasks()
+
+            text_height = (
+                title_pad_top
+                + int(title_label.winfo_reqheight())
+                + message_pad_top
+                + int(message_label.winfo_reqheight())
+                + message_pad_bottom
+            )
+            action_height = 0
+            if show_action and action_button is not None:
+                action_height = int(action_button.winfo_reqheight()) + action_pad_y * 2
+            base_height = int(self.__dict__.get("_operator_notice_base_height", 132))
+            content_height = max(text_height, action_height)
+            if show_action:
+                # A mapped action changes the grid column width on the next idle
+                # layout pass.  Reserve the measured one-line reflow delta while
+                # keeping the five-row list intact on the short 1366 profile.
+                content_height += 2 if constrained else 12
+            elif compact and not constrained:
+                content_height += 12
+            frame.configure(height=max(base_height, content_height))
+        except (TclError, AttributeError, KeyError, TypeError, ValueError):
+            return
+
+    def _update_operator_item_panel(self, view, source):
+        scans = list(source.get("parsed") or [])
+        item_code = str(scans[0] if scans else "")
+        snapshot = self.__dict__.get("_workflow_item_snapshot") or {}
+        if not item_code and snapshot:
+            item_code = str(snapshot.get("item_code") or "")
+        item_name_override = source.get("item_name_override") or snapshot.get("item_name_override")
+        item_info = self.__dict__.get("items_data", {}).get(item_code, {}) if item_code else {}
+        item_name = str(item_name_override or item_info.get("Item Name") or "-")
+        spec = str(item_info.get("Spec") or snapshot.get("spec") or "-")
+        phase = str(source.get("phase") or snapshot.get("phase") or "-")
+        set_id = str(source.get("id") or snapshot.get("set_id") or "-")
+        display_item_code = self._middle_ellipsis(item_code, 14)
+        display_set_id = self._middle_ellipsis(set_id, 10)
+        stage_text = self._workflow_left_stage_text(view)
+        if self.__dict__.get("_operator_hide_left_badges") and "복구됨" in view.badges:
+            stage_text = f"{stage_text} · 복구됨"
+        updates = {
+            "operator_item_stage_label": stage_text,
+            "operator_item_code_label": f"현품표 {display_item_code or '-'}",
+            "operator_item_name_label": f"품목 {item_name}",
+            "operator_item_spec_label": f"규격 {spec}",
+            "operator_item_phase_label": f"차수 {phase}",
+            "operator_set_id_label": f"세트 {display_set_id}",
+        }
+        for name, text in updates.items():
+            widget = self.__dict__.get(name)
+            if widget is not None:
+                try:
+                    widget.configure(text=text)
+                except (TclError, AttributeError):
+                    pass
+
+        membership = "일반 QA 5단계"
+        if view.exact_rescan.status == "sealed":
+            membership = "sealed 멤버십 서버 상속"
+        elif view.exact_rescan.status == "active":
+            membership = f"F4 전체 재스캔 {view.exact_rescan.progress_text}"
+        elif view.exact_rescan.status == "complete":
+            membership = f"F4 완료 {view.exact_rescan.progress_text}"
+        membership_label = self.__dict__.get("operator_membership_label")
+        if membership_label is not None:
+            try:
+                membership_label.configure(text=membership)
+            except (TclError, AttributeError):
+                pass
+        badges_label = self.__dict__.get("operator_badges_label")
+        if badges_label is not None:
+            try:
+                if view.badges and not self.__dict__.get("_operator_hide_left_badges"):
+                    badges_label.configure(text=" · ".join(view.badges))
+                    badges_label.grid()
+                else:
+                    badges_label.grid_remove()
+            except (TclError, AttributeError):
+                pass
+
+    def _render_operator_workbench(self):
+        """Render the current runtime through adapter -> pure presenter."""
+        if not bool(
+            self.__dict__.get("operator_workbench_ready")
+            or self.__dict__.get("_workflow_widgets_ready")
+        ):
+            return None
+        source = self._workflow_view_source()
+        blocking_notice = (
+            self.__dict__.get("_workflow_blocking_notice")
+            or self.__dict__.get("_workflow_notice")
+        )
+        snapshot = adapt_workflow_snapshot(
+            source,
+            initialized=bool(self.__dict__.get("initialized_successfully", False)),
+            loading=False,
+            history_readonly=not bool(
+                self.__dict__.get("history_view_updates_active_state", True)
+            ),
+            history_loading=bool(
+                self.__dict__.get("history_active_load_pending", False)
+            ),
+            recovered=bool(self.__dict__.get("_workflow_recovered", False)),
+            completion_kind=self.__dict__.get("_workflow_completion_kind"),
+            blocking_notice=blocking_notice,
+            last_normal_scan_override=self.__dict__.get(
+                "_workflow_last_normal_override"
+            ),
+            has_error=bool(self.__dict__.get("_pending_workflow_error")),
+            error_message=str(self.__dict__.get("_workflow_error_message") or ""),
+        )
+        view = present_workflow(snapshot)
+        self._last_workflow_view = view
+
+        view_mode_label = self.__dict__.get("view_mode_label")
+        if view_mode_label is not None:
+            try:
+                view_mode_label.grid_remove()
+            except (TclError, AttributeError):
+                pass
+
+        headline = self.__dict__.get("big_display_label")
+        if headline is not None:
+            try:
+                headline.configure(text=self._workflow_headline_text(view))
+            except (TclError, AttributeError):
+                pass
+        progress = self.__dict__.get("progress_bar")
+        if progress is not None:
+            try:
+                progress["value"] = view.qa_completed
+            except (TclError, AttributeError, TypeError):
+                try:
+                    progress.configure(value=view.qa_completed)
+                except (TclError, AttributeError):
+                    pass
+        if "step_labels" in self.__dict__:
+            try:
+                self._update_step_rail(view.qa_completed, error=view.current_stage == "error")
+            except (TclError, AttributeError, KeyError):
+                pass
+
+        qa_tree = self.__dict__.get("qa_scan_tree")
+        selected_qa_iid = self._selected_qa_scan_iid()
+        qa_detail_rows = {}
+        if qa_tree is not None:
+            try:
+                existing = tuple(qa_tree.get_children())
+                if existing:
+                    qa_tree.delete(*existing)
+                for slot in view.slots:
+                    iid = f"qa-slot-{slot.index}"
+                    state_text = self._workflow_state_text(slot.state)
+                    qa_tree.insert(
+                        "",
+                        "end",
+                        iid=iid,
+                        values=(
+                            f"{slot.index}. {slot.label}",
+                            slot.value or "-",
+                            state_text,
+                        ),
+                        tags=(slot.state,),
+                    )
+                    qa_detail_rows[iid] = {
+                        "stage": f"{slot.index}. {slot.label}",
+                        "state": state_text,
+                        "raw": str(slot.value or ""),
+                    }
+            except (TclError, AttributeError, TypeError):
+                pass
+        self._qa_scan_detail_rows = qa_detail_rows
+        if selected_qa_iid not in qa_detail_rows:
+            selected_qa_iid = (
+                f"qa-slot-{view.qa_completed}" if view.qa_completed else None
+            )
+        if qa_tree is not None and selected_qa_iid:
+            try:
+                qa_tree.selection_set(selected_qa_iid)
+                qa_tree.focus(selected_qa_iid)
+                qa_tree.see(selected_qa_iid)
+            except (TclError, AttributeError):
+                pass
+        self._render_qa_scan_detail(selected_qa_iid)
+        notebook = self.__dict__.get("live_scan_notebook")
+        if notebook is not None:
+            try:
+                notebook.tab(self.qa_scan_frame, text=f"현재 세트 {view.qa_progress_text}")
+            except (TclError, AttributeError):
+                pass
+
+        exact_tree = self.__dict__.get("exact_rescan_tree")
+        exact_values = tuple(source.get("exact_rescan_barcodes") or ())
+        if exact_tree is not None:
+            try:
+                existing = tuple(exact_tree.get_children())
+                if existing:
+                    exact_tree.delete(*existing)
+                for index, value in enumerate(exact_values, 1):
+                    exact_tree.insert(
+                        "",
+                        "end",
+                        iid=f"exact-slot-{index}",
+                        values=(index, str(value)),
+                    )
+            except (TclError, AttributeError, TypeError):
+                pass
+        show_exact = view.exact_rescan.status in {"active", "complete"}
+        self._set_exact_rescan_tab_visible(
+            show_exact,
+            select=view.exact_rescan.status == "active",
+        )
+        if notebook is not None and show_exact:
+            try:
+                notebook.tab(
+                    self.exact_rescan_frame,
+                    text=f"F4 전체 재스캔 {view.exact_rescan.progress_text}",
+                )
+            except (TclError, AttributeError):
+                pass
+
+        notice_next_action = view.next_action
+        if (
+            view.notice is None
+            and view.exact_rescan.status == "complete"
+            and view.last_normal_scan
+        ):
+            notice_next_action = (
+                f"{view.next_action} · F4 마지막 정상: {view.last_normal_scan}"
+            )
+        self._set_workflow_notice_ui(view.notice, notice_next_action)
+        last_scan_label = self.__dict__.get("operator_last_scan_label")
+        if last_scan_label is None:
+            last_scan_label = self.__dict__.get("status_label")
+        if last_scan_label is not None:
+            last_scan = view.last_normal_scan or "-"
+            try:
+                # The actual value already remains visible as the final filled
+                # row in the central list.  Keep this compatibility label
+                # updated for legacy callers, but do not duplicate it on the
+                # operator surface.
+                last_scan_label.configure(text=f"마지막 정상 스캔: {last_scan}")
+                last_scan_label.grid_remove()
+            except (TclError, AttributeError):
+                pass
+
+        operator_notebook = self.__dict__.get("operator_notebook")
+        history_card = self.__dict__.get("history_card")
+        if view.readonly and operator_notebook is not None and history_card is not None:
+            try:
+                operator_notebook.select(history_card)
+            except (TclError, AttributeError):
+                pass
+
+        entry = self.__dict__.get("entry")
+        if entry is not None:
+            entry_enabled = bool(
+                view.scan_input_enabled
+                and self.__dict__.get("initialized_successfully", False)
+            )
+            try:
+                entry.configure(state="normal" if entry_enabled else "disabled")
+            except (TclError, AttributeError):
+                pass
+        for name, enabled in (
+            ("manual_complete_button", view.f3_enabled),
+            ("exact_rescan_button", view.f4_enabled),
+            ("reset_button", view.cancel_current_enabled),
+            ("cancel_tray_button", view.cancel_completed_enabled),
+        ):
+            button = self.__dict__.get(name)
+            if button is not None:
+                try:
+                    button.configure(state="normal" if enabled else "disabled")
+                except (TclError, AttributeError):
+                    pass
+        self._update_operator_item_panel(view, source)
+        return view
+
+    def _refresh_operator_workbench(self):
+        return self._render_operator_workbench()
+
+    def _refresh_workflow_view(self):
+        return self._render_operator_workbench()
+
+    def _handle_scan_enter(self, event=None):
+        if self.__dict__.get("_pending_workflow_error") or self.__dict__.get(
+            "_workflow_pending_error"
+        ):
+            return self._acknowledge_workflow_notice(event)
+        if self.__dict__.get("operator_workbench_ready"):
+            view = self._render_operator_workbench()
+            if view is None or not view.scan_input_enabled:
+                return "break"
+        return self.process_input(event)
+
+    def _handle_workflow_shortcut(self, action, event=None):
+        """Apply the same presenter gate to keyboard and button actions."""
+        action = str(action).lower()
+        if self.__dict__.get("operator_workbench_ready"):
+            view = self._render_operator_workbench()
+        else:
+            view = self.__dict__.get("_last_workflow_view")
+        allowed = {
+            "f1": bool(view and view.cancel_current_enabled),
+            "f2": bool(view and view.cancel_completed_enabled),
+            "f3": bool(view and view.f3_enabled),
+            "f4": bool(view and view.f4_enabled),
+        }
+        if not allowed.get(str(action).lower(), False):
+            return "break"
+        if action == "f1":
+            self._reset_current_set(full_reset=True)
+        elif action == "f2":
+            self._prompt_and_cancel_completed_tray()
+        elif action == "f3":
+            self._prompt_manual_complete()
+        elif action == "f4":
+            self._prompt_exact_rescan()
+        return "break"
+
+    def _handle_workflow_escape(self, event=None):
+        if (
+            self.__dict__.get("_pending_workflow_error")
+            or self.__dict__.get("_workflow_pending_error")
+            or callable(self.__dict__.get("_workflow_notice_action"))
+        ):
+            return self._acknowledge_workflow_notice(event)
+        return None
+
+    def _acknowledge_workflow_notice(self, event=None):
+        pending = self.__dict__.get("_pending_workflow_error") or self.__dict__.get(
+            "_workflow_pending_error"
+        )
+        if pending:
+            self.is_blinking = False
+            fail_sound = self.__dict__.get("sound_objects", {}).get("fail")
+            if fail_sound is not None:
+                try:
+                    fail_sound.stop()
+                except Exception:
+                    pass
+            self._pending_workflow_error = None
+            self._workflow_pending_error = None
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            result = pending.get("result")
+            error_details = pending.get("error_details", "")
+            if not self.current_set_info.get("id"):
+                self.current_set_info["id"] = str(time.time_ns())
+            self._finalize_set(result, error_details)
+            return "break"
+        action = self.__dict__.get("_workflow_notice_action")
+        if callable(action):
+            action()
+            return "break"
+        self._workflow_blocking_notice = None
+        self._workflow_notice = None
+        self._render_operator_workbench()
+        return "break"
+
+    def _present_inline_workflow_error(self, title, message, result, error_details):
+        normalized_title = str(title or "입력 오류").strip("[] ") or "입력 오류"
+        normalized_message = str(message or "입력을 확인해 주세요.").strip()
+        self.is_blinking = True
+        pending = {"result": result, "error_details": error_details}
+        self._pending_workflow_error = pending
+        self._workflow_pending_error = pending
+        notice = WorkflowNotice(
+            title=normalized_title,
+            message=normalized_message,
+            kind="error",
+            tone="danger",
+        )
+        self._workflow_blocking_notice = notice
+        self._workflow_notice = notice
+        self._workflow_error_message = normalized_message
+        self._workflow_notice_action = None
+        self._workflow_notice_action_text = "확인"
+        notice_label = self.__dict__.get("workflow_notice_label")
+        if notice_label is not None:
+            try:
+                notice_label.configure(text=f"{normalized_title}: {normalized_message}")
+            except (TclError, AttributeError):
+                pass
+        if (
+            not self.__dict__.get("run_tests", False)
+            and not _label_match_automated_test_mode()
+            and self.__dict__.get("sound_objects", {}).get("fail") is not None
+        ):
+            threading.Thread(target=self._play_error_siren_loop, daemon=True).start()
+        self._render_operator_workbench()
+        button = self.__dict__.get("workflow_notice_action_button")
+        if button is not None:
+            try:
+                button.focus_set()
+            except (TclError, AttributeError):
+                pass
+        return True
+
+    def _publish_workflow_completion(self, kind):
+        normalized = str(kind or "").strip().lower()
+        if normalized not in {"full", "partial", "failed"}:
+            raise ValueError(f"unsupported workflow completion kind: {kind}")
+        raw_scans = tuple((self.current_set_info.get("raw") or ()))
+        parsed_scans = tuple((self.current_set_info.get("parsed") or ()))
+        self._workflow_completion_kind = normalized
+        self._workflow_display_scans = raw_scans
+        self._workflow_display_parsed_scans = parsed_scans
+        self._workflow_last_normal_override = raw_scans[-1] if raw_scans else ""
+        self._workflow_blocking_notice = None
+        self._workflow_notice = None
+        self._workflow_notice_action = None
+        self._workflow_recovered = False
+        item_code = str(parsed_scans[0] if parsed_scans else "")
+        item_info = self.__dict__.get("items_data", {}).get(item_code, {}) if item_code else {}
+        self._workflow_item_snapshot = {
+            "item_code": item_code,
+            "item_name_override": self.current_set_info.get("item_name_override"),
+            "spec": item_info.get("Spec", ""),
+            "phase": self.current_set_info.get("phase"),
+            "set_id": self.current_set_info.get("id"),
+        }
+        self._render_operator_workbench()
+        return normalized
+
+    def _publish_finalize_completion(self, *, is_manual_complete=False, result=None):
+        if result is not None and result != self.Results.PASS:
+            kind = "failed"
+        else:
+            kind = "partial" if is_manual_complete else "full"
+        return self._publish_workflow_completion(kind)
+
+    def _clear_workflow_completion(self):
+        self._workflow_completion_kind = None
+        self._workflow_display_scans = ()
+        self._workflow_display_parsed_scans = ()
+        self._workflow_last_normal_override = None
+        self._workflow_item_snapshot = None
+
+    def _publish_submission_block(self, error):
+        message = f"오류: {error}"
+        notice = WorkflowNotice(
+            title="중앙 제출 차단 · 5/5 유지",
+            message=message,
+            kind="submission_blocked",
+            tone="danger",
+        )
+        self._workflow_blocking_notice = notice
+        self._workflow_notice = notice
+        self._workflow_notice_action = self._retry_blocked_submission
+        self._workflow_notice_action_text = "제출 재시도"
+        scans = tuple(self.current_set_info.get("raw") or ())
+        self._workflow_last_normal_override = scans[-1] if scans else ""
+        notice_label = self.__dict__.get("workflow_notice_label")
+        if notice_label is not None:
+            try:
+                notice_label.configure(text=message)
+            except (TclError, AttributeError):
+                pass
+        self._render_operator_workbench()
+        return False
+
+    def _retry_blocked_submission(self):
+        self._workflow_blocking_notice = None
+        self._workflow_notice = None
+        self._workflow_notice_action = None
+        self._workflow_notice_action_text = "확인"
+        self._finalize_set(self.Results.PASS, "")
+        return True
+
+    def _refresh_session_tree(self):
+        session_tree = self.__dict__.get("session_tree")
+        history_tree = self.__dict__.get("history_tree")
+        if session_tree is None or history_tree is None:
+            return
+        try:
+            existing = tuple(session_tree.get_children())
+            if existing:
+                session_tree.delete(*existing)
+            children = tuple(history_tree.get_children())
+            for iid in children[-30:]:
+                if str(iid) == "loading":
+                    continue
+                values = list(history_tree.item(iid, "values") or ())
+                if len(values) < self.TOTAL_SCAN_COUNT + 3:
+                    continue
+                item = values[1]
+                result = values[1 + self.TOTAL_SCAN_COUNT]
+                timestamp = values[2 + self.TOTAL_SCAN_COUNT]
+                session_tree.insert(
+                    "",
+                    "end",
+                    iid=f"session-{iid}",
+                    values=(timestamp, item, result),
+                )
+        except (TclError, AttributeError, TypeError):
+            pass
+
     def _create_widgets(self):
+        """Create the work-focused three-column operator surface.
+
+        The legacy history widgets and their data contracts remain intact,
+        but they now live in right-side tabs so the active five-scan set stays
+        visible throughout normal, error, completion, and recovery states.
+        """
+        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+        outer_padding = int(profile["outer_padding"])
+        try:
+            # ``winfo_screenwidth`` can be the combined virtual desktop on a
+            # multi-monitor station.  Capping the bootstrap size prevents that
+            # value from becoming a permanent multi-thousand-pixel Treeview
+            # requisition before the first real <Configure> event.
+            current_width = int(self.winfo_width())
+            bootstrap_width = current_width if current_width > 100 else min(
+                1920, int(self.winfo_screenwidth())
+            )
+            initial_width = max(980, bootstrap_width - outer_padding * 2)
+            initial_height = max(640, int(self.winfo_height()) - outer_padding * 2 - 70)
+        except (TclError, AttributeError, RecursionError, TypeError, ValueError):
+            initial_width, initial_height = 1440, 830
+        operator_scale = float(self.__dict__.get("scale_factor", 1.0) or 1.0)
+        self.operator_layout_metrics = build_operator_layout(
+            initial_width,
+            initial_height,
+            operator_scale,
+        )
+        self.operator_style_tokens = build_style_tokens(
+            self.operator_layout_metrics.profile.name,
+            operator_scale,
+        )
+
+        self.main_frame = ttk.Frame(self, padding=outer_padding)
+        main_frame = self.main_frame
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.grid_rowconfigure(1, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
+
+        # Header: context and low-frequency controls stay out of the scan path.
+        self.operator_header_frame = ttk.Frame(main_frame, style="Card.TFrame", padding=(14, 8))
+        self.operator_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, profile["section_gap"]))
+        self.operator_header_frame.grid_columnconfigure(1, weight=1)
+        self.operator_title_label = ttk.Label(
+            self.operator_header_frame,
+            text="Label Match · 포장 라벨 검증",
+            style="Header.TLabel",
+        )
+        self.operator_title_label.grid(row=0, column=0, sticky="w")
+        self.operator_header_context_label = ttk.Label(
+            self.operator_header_frame,
+            text=(
+                f"작업자 {self.__dict__.get('worker_name', '-')}  ·  "
+                f"{self.__dict__.get('unique_id', '-')}"
+            ),
+            style="Status.TLabel",
+        )
+        self.operator_header_context_label.grid(row=0, column=1, sticky="e", padx=(12, 16))
+        self.top_right_frame = ttk.Frame(self.operator_header_frame, style="Borderless.TFrame")
+        self.top_right_frame.grid(row=0, column=2, sticky="e")
+        self.clock_label = ttk.Label(self.top_right_frame, text="", style="Status.TLabel")
+        self.clock_label.pack(side=tk.LEFT, padx=(0, 12))
+        self.settings_button = ttk.Button(
+            self.top_right_frame,
+            text="설정",
+            command=self.open_settings_window,
+            style="Control.TButton",
+        )
+        self.settings_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.about_button = ttk.Button(
+            self.top_right_frame,
+            text="정보",
+            command=self._show_about_window,
+            style="Control.TButton",
+        )
+        self.about_button.pack(side=tk.LEFT)
+
+        # Persistent three-column desk.
+        self.operator_workbench_frame = ttk.Frame(main_frame)
+        self.operator_workbench_frame.grid(row=1, column=0, sticky="nsew")
+        self.operator_workbench_frame.grid_rowconfigure(0, weight=1)
+        self.workbench_frame = self.operator_workbench_frame
+
+        panes = self.operator_layout_metrics.panes
+        self.operator_workbench_frame.grid_columnconfigure(0, minsize=panes.left_width)
+        self.operator_workbench_frame.grid_columnconfigure(1, weight=1, minsize=panes.center_width)
+        self.operator_workbench_frame.grid_columnconfigure(2, minsize=panes.right_width)
+
+        self.operator_left_pane = ttk.Frame(
+            self.operator_workbench_frame,
+            style="Card.TFrame",
+            padding=profile["card_padding"],
+        )
+        self.operator_left_pane.grid(row=0, column=0, sticky="nsew")
+        self.left_context_card = self.operator_left_pane
+        self.operator_left_pane.grid_columnconfigure(0, weight=1)
+        ttk.Label(self.operator_left_pane, text="현재 작업", style="Header.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 12)
+        )
+        self.operator_item_stage_label = ttk.Label(
+            self.operator_left_pane,
+            text="현품표 대기",
+            style="Success.TLabel",
+            wraplength=max(150, panes.left_width - 40),
+        )
+        self.operator_item_stage_label.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+
+        self.operator_item_card = ttk.Frame(self.operator_left_pane, style="Borderless.TFrame")
+        self.operator_item_card.grid(row=2, column=0, sticky="ew")
+        self.operator_item_card.grid_columnconfigure(0, weight=1)
+        self.operator_item_code_label = ttk.Label(
+            self.operator_item_card,
+            text="현품표 -",
+            style="Header.TLabel",
+            wraplength=max(150, panes.left_width - 44),
+        )
+        self.operator_item_code_label.grid(row=0, column=0, sticky="w")
+        self.operator_item_name_label = ttk.Label(
+            self.operator_item_card,
+            text="품목 -",
+            style="Status.TLabel",
+            wraplength=max(150, panes.left_width - 44),
+        )
+        self.operator_item_name_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.operator_item_spec_label = ttk.Label(
+            self.operator_item_card,
+            text="규격 -",
+            style="Status.TLabel",
+            wraplength=max(150, panes.left_width - 44),
+        )
+        self.operator_item_spec_label.grid(row=2, column=0, sticky="w", pady=(5, 0))
+        self.operator_item_phase_label = ttk.Label(
+            self.operator_item_card,
+            text="차수 -",
+            style="Status.TLabel",
+        )
+        self.operator_item_phase_label.grid(row=3, column=0, sticky="w", pady=(5, 0))
+        self.operator_set_id_label = ttk.Label(
+            self.operator_item_card,
+            text="세트 -",
+            style="Status.TLabel",
+            wraplength=max(150, panes.left_width - 44),
+        )
+        self.operator_set_id_label.grid(row=4, column=0, sticky="w", pady=(5, 0))
+
+        self.operator_left_divider = ttk.Frame(
+            self.operator_left_pane,
+            style="TFrame",
+            height=1,
+        )
+        self.operator_left_divider.grid(row=3, column=0, sticky="ew", pady=16)
+        self.operator_membership_heading_label = ttk.Label(
+            self.operator_left_pane,
+            text="멤버십 / 예외 상태",
+            style="Status.TLabel",
+        )
+        self.operator_membership_heading_label.grid(row=4, column=0, sticky="w")
+        self.operator_membership_label = ttk.Label(
+            self.operator_left_pane,
+            text="일반 QA 5단계",
+            style="Header.TLabel",
+            wraplength=max(150, panes.left_width - 40),
+        )
+        self.operator_membership_label.grid(row=5, column=0, sticky="ew", pady=(6, 0))
+        self.operator_badges_label = ttk.Label(
+            self.operator_left_pane,
+            text="",
+            style="ViewMode.TLabel",
+            wraplength=max(150, panes.left_width - 40),
+        )
+        self.operator_badges_label.grid(row=6, column=0, sticky="ew", pady=(12, 0))
+        self.operator_badges_label.grid_remove()
+        self.operator_left_hint_label = ttk.Label(
+            self.operator_left_pane,
+            text="F3은 소량 예외, F4는 QA 5단계와 별도의 전체 재스캔입니다.",
+            style="Status.TLabel",
+            wraplength=max(150, panes.left_width - 40),
+            justify=tk.LEFT,
+        )
+        self.operator_left_hint_label.grid(row=7, column=0, sticky="sew", pady=(18, 0))
+        self.operator_left_pane.grid_rowconfigure(7, weight=1)
+
+        self.operator_center_pane = ttk.Frame(
+            self.operator_workbench_frame,
+            style="Card.TFrame",
+            padding=profile["card_padding"],
+        )
+        self.operator_center_pane.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=(panes.gap, panes.gap),
+        )
+        self.top_card = self.operator_center_pane
+        self.operator_center_pane.grid_columnconfigure(0, weight=1)
+        self.operator_center_pane.grid_rowconfigure(4, weight=1)
+
+        self.big_display_label = ttk.Label(
+            self.operator_center_pane,
+            text=self._idle_instruction_text(),
+            anchor="center",
+            justify=tk.CENTER,
+            wraplength=max(420, panes.center_width - 40),
+            font=(self.default_font_name, 34, "bold"),
+        )
+        self.big_display_label.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
+        self.progress_frame = ttk.Frame(self.operator_center_pane, style="Borderless.TFrame")
+        self.progress_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self.progress_frame.grid_columnconfigure(0, weight=1)
+        self.step_rail_frame = ttk.Frame(self.progress_frame, style="Borderless.TFrame")
+        self.step_rail_frame.grid(row=0, column=0, sticky="ew")
+        self.step_labels = []
+        for index, step_name in enumerate(self.STEP_NAMES):
+            self.step_rail_frame.grid_columnconfigure(index, weight=1, uniform="scan_steps")
+            step_label = tk.Label(
+                self.step_rail_frame,
+                text=f"{index + 1}. {step_name}",
+                font=(self.default_font_name, 11, "bold"),
+                padx=6,
+                pady=5,
+                bd=1,
+                relief="solid",
+                anchor="center",
+            )
+            step_label.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
+            self.step_labels.append(step_label)
+        self.progress_bar = ttk.Progressbar(
+            self.progress_frame,
+            orient="horizontal",
+            mode="determinate",
+            maximum=self.TOTAL_SCAN_COUNT,
+            style="green.Horizontal.TProgressbar",
+        )
+        self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+
+        # Exactly one notice location; neutral guidance uses the same region.
+        self.workflow_notice_frame = tk.Frame(
+            self.operator_center_pane,
+            bg="#EFF6FF",
+            highlightbackground=self.colors["primary"],
+            highlightthickness=1,
+            bd=0,
+        )
+        self.workflow_notice_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.workflow_notice_frame.grid_columnconfigure(0, weight=1)
+        self.workflow_notice_title_label = tk.Label(
+            self.workflow_notice_frame,
+            text="스캐너 준비",
+            bg="#EFF6FF",
+            fg=self.colors["primary"],
+            font=(self.default_font_name, 12, "bold"),
+            anchor="w",
+        )
+        self.workflow_notice_title_label.grid(row=0, column=0, sticky="ew", padx=12, pady=(7, 0))
+        self.workflow_notice_label = tk.Label(
+            self.workflow_notice_frame,
+            text="현품표를 스캔하세요.",
+            bg="#EFF6FF",
+            fg=self.colors["text"],
+            font=(self.default_font_name, 11),
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=max(360, panes.center_width - 170),
+        )
+        self.workflow_notice_label.grid(row=1, column=0, sticky="ew", padx=12, pady=(1, 7))
+        self.workflow_notice_action_button = ttk.Button(
+            self.workflow_notice_frame,
+            text="확인",
+            command=self._acknowledge_workflow_notice,
+            style="Action.TButton",
+        )
+        self.workflow_notice_action_button.grid(row=0, column=1, rowspan=2, sticky="e", padx=10, pady=7)
+        self.workflow_notice_action_button.grid_remove()
+        self.workflow_notice_action_button.bind(
+            "<Return>", self._acknowledge_workflow_notice
+        )
+        self.workflow_notice_action_button.bind(
+            "<KP_Enter>", self._acknowledge_workflow_notice
+        )
+        self.view_mode_label = ttk.Label(
+            self.operator_center_pane,
+            text="",
+            style="ViewMode.TLabel",
+            anchor="center",
+        )
+        self.view_mode_label.grid(row=2, column=0, sticky="ew")
+        self.view_mode_label.grid_remove()
+
+        input_frame = ttk.Frame(self.operator_center_pane, style="Borderless.TFrame")
+        self.operator_input_frame = input_frame
+        input_frame.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        input_frame.grid_columnconfigure(1, weight=1)
+        ttk.Label(input_frame, text="스캔 입력", style="Header.TLabel").grid(
+            row=0, column=0, padx=(0, 12), sticky="w"
+        )
+        self.entry = ttk.Entry(
+            input_frame,
+            style="TEntry",
+            state="disabled",
+            font=(self.default_font_name, 18),
+        )
+        self.entry.grid(row=0, column=1, sticky="ew", ipady=8)
+        self.entry.bind("<Return>", self._handle_scan_enter)
+
+        self.live_scan_notebook = ttk.Notebook(self.operator_center_pane)
+        self.live_scan_notebook.grid(row=4, column=0, sticky="nsew")
+        self.qa_scan_frame = ttk.Frame(self.live_scan_notebook, style="Card.TFrame")
+        self.qa_scan_frame.grid_rowconfigure(0, weight=1)
+        self.qa_scan_frame.grid_columnconfigure(0, weight=1)
+        self.live_scan_notebook.add(self.qa_scan_frame, text="현재 세트 0/5")
+        self.qa_scan_tree = ttk.Treeview(
+            self.qa_scan_frame,
+            columns=("Stage", "Value", "State"),
+            show="headings",
+            selectmode="browse",
+            height=5,
+            takefocus=True,
+        )
+        self.qa_scan_tree.heading("Stage", text="단계", anchor="center")
+        self.qa_scan_tree.heading("Value", text="실제 스캔 값", anchor="w")
+        self.qa_scan_tree.heading("State", text="상태", anchor="center")
+        self.qa_scan_tree.column("Stage", width=115, minwidth=90, stretch=False, anchor="center")
+        self.qa_scan_tree.column("Value", width=max(280, panes.center_width - 260), minwidth=180, stretch=True, anchor="w")
+        self.qa_scan_tree.column("State", width=90, minwidth=72, stretch=False, anchor="center")
+        self.qa_scan_tree.grid(row=0, column=0, sticky="nsew")
+        self.qa_scan_tree.bind(
+            "<<TreeviewSelect>>",
+            self._on_qa_scan_selection_changed,
+        )
+        self.current_set_tree = self.qa_scan_tree
+
+        self.qa_scan_detail_frame = ttk.Frame(
+            self.qa_scan_frame,
+            style="Borderless.TFrame",
+            padding=(6, 5, 6, 4),
+        )
+        self.qa_scan_detail_frame.grid(
+            row=1,
+            column=0,
+            sticky="nsew",
+            pady=(4, 0),
+        )
+        self.qa_scan_detail_frame.grid_columnconfigure(1, weight=1)
+        self.qa_scan_detail_frame.grid_rowconfigure(1, weight=1)
+        self.qa_scan_detail_title_label = ttk.Label(
+            self.qa_scan_detail_frame,
+            text="선택 행 원문",
+            style="Header.TLabel",
+        )
+        self.qa_scan_detail_title_label.grid(row=0, column=0, sticky="w")
+        self.qa_scan_detail_metadata_label = ttk.Label(
+            self.qa_scan_detail_frame,
+            text="단계: -  |  상태: -",
+            style="Status.TLabel",
+            anchor="w",
+        )
+        self.qa_scan_detail_metadata_label.grid(
+            row=0,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            padx=(12, 0),
+        )
+        self.qa_scan_detail_text = tk.Text(
+            self.qa_scan_detail_frame,
+            height=2,
+            wrap="char",
+            font=("Consolas", 10),
+            bg=self.colors["card_background"],
+            fg=self.colors["text"],
+            relief="solid",
+            bd=1,
+            padx=6,
+            pady=3,
+            takefocus=0,
+        )
+        self.qa_scan_detail_scrollbar = ttk.Scrollbar(
+            self.qa_scan_detail_frame,
+            orient=tk.VERTICAL,
+            command=self.qa_scan_detail_text.yview,
+        )
+        self.qa_scan_detail_text.configure(
+            yscrollcommand=self.qa_scan_detail_scrollbar.set,
+        )
+        self.qa_scan_detail_text.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="nsew",
+            pady=(3, 0),
+        )
+        self.qa_scan_detail_scrollbar.grid(
+            row=1,
+            column=2,
+            sticky="ns",
+            pady=(3, 0),
+        )
+        self.qa_scan_detail_text.insert(
+            "1.0",
+            "현재 세트 행을 선택하면 수락된 스캔 원문을 확인할 수 있습니다.",
+        )
+        self.qa_scan_detail_text.configure(state="disabled")
+
+        self.exact_rescan_frame = ttk.Frame(self.live_scan_notebook, style="Card.TFrame")
+        self.exact_rescan_frame.grid_rowconfigure(0, weight=1)
+        self.exact_rescan_frame.grid_columnconfigure(0, weight=1)
+        self.live_scan_notebook.add(self.exact_rescan_frame, text="F4 전체 재스캔")
+        self.exact_rescan_tree = ttk.Treeview(
+            self.exact_rescan_frame,
+            columns=("Order", "Value"),
+            show="headings",
+            selectmode="browse",
+        )
+        self.exact_rescan_tree.heading("Order", text="순서", anchor="center")
+        self.exact_rescan_tree.heading("Value", text="실제 F4 재스캔 값", anchor="w")
+        self.exact_rescan_tree.column("Order", width=80, minwidth=60, stretch=False, anchor="center")
+        self.exact_rescan_tree.column("Value", width=max(320, panes.center_width - 150), minwidth=220, stretch=True, anchor="w")
+        self.exact_rescan_tree.grid(row=0, column=0, sticky="nsew")
+        hide_exact_tab = getattr(self.live_scan_notebook, "hide", None)
+        if callable(hide_exact_tab):
+            hide_exact_tab(self.exact_rescan_frame)
+        self.operator_last_scan_label = ttk.Label(
+            self.operator_center_pane,
+            text="마지막 정상 스캔: -",
+            style="Status.TLabel",
+            anchor="w",
+            wraplength=max(380, panes.center_width - 30),
+        )
+        self.operator_last_scan_label.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.status_label = self.operator_last_scan_label
+
+        self.operator_right_pane = ttk.Frame(
+            self.operator_workbench_frame,
+            style="Card.TFrame",
+            padding=profile["card_padding"],
+        )
+        self.operator_right_pane.grid(row=0, column=2, sticky="nsew")
+        self.right_activity_card = self.operator_right_pane
+        self.operator_right_pane.grid_rowconfigure(0, weight=1)
+        self.operator_right_pane.grid_columnconfigure(0, weight=1)
+        self.operator_notebook = ttk.Notebook(self.operator_right_pane)
+        self.operator_notebook.grid(row=0, column=0, sticky="nsew")
+        self.operator_history_notebook = self.operator_notebook
+
+        self.session_tab = ttk.Frame(self.operator_notebook, style="Card.TFrame", padding=8)
+        self.operator_session_tab = self.session_tab
+        self.session_tab.grid_rowconfigure(1, weight=1)
+        self.session_tab.grid_columnconfigure(0, weight=1)
+        self.operator_notebook.add(self.session_tab, text="이번 세션")
+        ttk.Label(self.session_tab, text="최근 완료", style="Header.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 6)
+        )
+        self.session_tree = ttk.Treeview(
+            self.session_tab,
+            columns=("Time", "Item", "Result"),
+            show="headings",
+            selectmode="browse",
+        )
+        for column, text, width in (
+            ("Time", "시각", 68),
+            ("Item", "현품표", 185),
+            ("Result", "결과", 72),
+        ):
+            self.session_tree.heading(column, text=text, anchor="center")
+            self.session_tree.column(column, width=width, minwidth=55, stretch=(column == "Item"), anchor="center")
+        self.session_tree.grid(row=1, column=0, sticky="nsew")
+
+        self.history_card = ttk.Frame(self.operator_notebook, style="Card.TFrame", padding=8)
+        history_card = self.history_card
+        self.history_tab = history_card
+        self.operator_history_tab = history_card
+        self.operator_notebook.add(history_card, text="스캔 기록")
+        history_card.grid_rowconfigure(1, weight=1)
+        history_card.grid_columnconfigure(0, weight=1)
+        self.hist_header_frame = ttk.Frame(history_card, style="Borderless.TFrame")
+        self.hist_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.hist_header_frame.grid_columnconfigure(1, weight=1)
+        self._history_header_full_text = "스캔 기록"
+        self.hist_header_label = ttk.Label(
+            self.hist_header_frame,
+            text=self._history_header_full_text,
+            style="Header.TLabel",
+        )
+        self.hist_header_label.grid(row=0, column=0, sticky="w")
+        self.hist_control_frame = ttk.Frame(self.hist_header_frame, style="Borderless.TFrame")
+        self.hist_control_frame.grid(row=0, column=2, sticky="e")
+        self.today_button = ttk.Button(
+            self.hist_control_frame,
+            text="오늘",
+            style="Control.TButton",
+            command=self._reload_today_history,
+        )
+        self.today_button.pack(side=tk.LEFT, padx=(0, 4))
+        self.date_search_button = ttk.Button(
+            self.hist_control_frame,
+            text="조회",
+            style="Control.TButton",
+            command=self._prompt_for_date_and_reload,
+        )
+        self.date_search_button.pack(side=tk.LEFT, padx=(0, 4))
+        self.decrease_font_button = ttk.Button(
+            self.hist_control_frame,
+            text="-",
+            style="Control.TButton",
+            command=self._decrease_tree_font,
+        )
+        self.decrease_font_button.pack(side=tk.LEFT)
+        self.increase_font_button = ttk.Button(
+            self.hist_control_frame,
+            text="+",
+            style="Control.TButton",
+            command=self._increase_tree_font,
+        )
+        self.increase_font_button.pack(side=tk.LEFT)
+        tree_frame_hist = ttk.Frame(history_card, style="Card.TFrame")
+        tree_frame_hist.grid(row=1, column=0, sticky="nsew")
+        tree_frame_hist.grid_rowconfigure(0, weight=1)
+        tree_frame_hist.grid_columnconfigure(0, weight=1)
+        hist_cols = list(self.hist_proportions.keys())
+        v_scroll_hist = ttk.Scrollbar(tree_frame_hist, orient=tk.VERTICAL)
+        h_scroll_hist = ttk.Scrollbar(tree_frame_hist, orient=tk.HORIZONTAL)
+        self.history_tree = ttk.Treeview(
+            tree_frame_hist,
+            columns=hist_cols,
+            displaycolumns=("Set", "Input1", "Result", "Timestamp"),
+            show="headings",
+            yscrollcommand=v_scroll_hist.set,
+            xscrollcommand=h_scroll_hist.set,
+            selectmode="extended",
+        )
+        v_scroll_hist.config(command=self.history_tree.yview)
+        h_scroll_hist.config(command=self.history_tree.xview)
+        for col, labels in self.HISTORY_HEADING_LABELS.items():
+            self.history_tree.heading(
+                col,
+                text=labels[0],
+                anchor="center",
+                command=lambda c=col: self._treeview_sort_column(self.history_tree, c, False),
+            )
+            self.history_tree.column(col, anchor="center", minwidth=60, stretch=False)
+        v_scroll_hist.grid(row=0, column=1, sticky="ns")
+        h_scroll_hist.grid(row=1, column=0, sticky="ew")
+        self.history_tree.grid(row=0, column=0, sticky="nsew")
+        self.history_tree.bind("<Configure>", self._resize_all_columns)
+        self.history_tree.bind("<ButtonRelease-1>", self._on_history_tree_resize_release)
+        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_selection_changed)
+        self.history_tree.bind("<Double-1>", self._show_selected_history_detail_window)
+
+        self.history_detail_frame = ttk.Frame(history_card, style="Borderless.TFrame")
+        self.history_detail_frame.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self.history_detail_frame.grid_columnconfigure(0, weight=1)
+        detail_header_frame = ttk.Frame(self.history_detail_frame, style="Borderless.TFrame")
+        detail_header_frame.grid(row=0, column=0, sticky="ew")
+        detail_header_frame.grid_columnconfigure(0, weight=1)
+        self.history_detail_modal_button = ttk.Button(
+            detail_header_frame,
+            text="원문",
+            style="Control.TButton",
+            command=self._show_selected_history_detail_window,
+            state="disabled",
+        )
+        self.history_detail_modal_button.grid(row=0, column=1, sticky="e")
+        self.history_detail_copy_button = ttk.Button(
+            detail_header_frame,
+            text="복사",
+            style="Control.TButton",
+            command=self._copy_selected_history_barcodes,
+            state="disabled",
+        )
+        self.history_detail_copy_button.grid(row=0, column=2, sticky="e", padx=(4, 0))
+        self.history_detail_text = tk.Text(
+            self.history_detail_frame,
+            height=3,
+            wrap="word",
+            font=("Consolas", 9),
+            bg=self.colors["card_background"],
+            fg=self.colors["text"],
+            relief="solid",
+            bd=1,
+            padx=6,
+            pady=4,
+        )
+        self.history_detail_text.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.history_detail_text.insert("1.0", "기록을 선택하면 스캔 원문을 확인할 수 있습니다.")
+        self.history_detail_text.configure(state="disabled")
+
+        self.history_context_menu = tk.Menu(self, tearoff=0, font=(self.default_font_name, 14))
+        self.history_context_menu.add_command(label="바코드 원문 보기", command=self._show_selected_history_detail_window)
+        self.history_context_menu.add_command(label="바코드 원문 복사", command=self._copy_selected_history_barcodes)
+        self.history_context_menu.add_separator()
+        self.history_context_menu.add_command(label=self.HISTORY_DELETE_ACTION_TEXT, command=self._delete_selected_row)
+        self.history_tree.bind("<Button-3>", self._show_history_context_menu)
+
+        self.summary_card = ttk.Frame(self.operator_notebook, style="Card.TFrame", padding=8)
+        summary_card = self.summary_card
+        self.summary_tab = summary_card
+        self.operator_summary_tab = summary_card
+        self.operator_notebook.add(summary_card, text="통과 요약")
+        summary_card.grid_rowconfigure(1, weight=1)
+        summary_card.grid_columnconfigure(0, weight=1)
+        self.summary_header_frame = ttk.Frame(summary_card, style="Borderless.TFrame")
+        self.summary_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.summary_header_frame.grid_columnconfigure(0, weight=1)
+        self.summary_header_label = ttk.Label(
+            self.summary_header_frame,
+            text="누적 통과 코드",
+            style="Header.TLabel",
+        )
+        self.summary_header_label.grid(row=0, column=0, sticky="w")
+        self.summary_date_label = ttk.Label(
+            self.summary_header_frame,
+            text="날짜 -",
+            style="SummaryDate.TLabel",
+            anchor="center",
+        )
+        self.summary_date_label.grid(row=0, column=1, sticky="e")
+        tree_frame_sum = ttk.Frame(summary_card, style="Card.TFrame")
+        tree_frame_sum.grid(row=1, column=0, sticky="nsew")
+        tree_frame_sum.grid_rowconfigure(0, weight=1)
+        tree_frame_sum.grid_columnconfigure(0, weight=1)
+        summary_cols = list(self.summary_proportions.keys())
+        v_scroll_sum = ttk.Scrollbar(tree_frame_sum, orient=tk.VERTICAL)
+        self.summary_tree = ttk.Treeview(
+            tree_frame_sum,
+            columns=summary_cols,
+            show="headings",
+            yscrollcommand=v_scroll_sum.set,
+        )
+        v_scroll_sum.config(command=self.summary_tree.yview)
+        for column in summary_cols:
+            self.summary_tree.heading(
+                column,
+                text=self.SUMMARY_HEADING_LABELS[column][0],
+                anchor="center",
+                command=lambda c=column: self._treeview_sort_column(self.summary_tree, c, False),
+            )
+        self.summary_tree.column("Code", anchor="w", minwidth=150, stretch=True)
+        self.summary_tree.column("Phase", anchor="center", minwidth=55, stretch=False)
+        self.summary_tree.column("Count", anchor="center", minwidth=60, stretch=False)
+        self.summary_tree.grid(row=0, column=0, sticky="nsew")
+        v_scroll_sum.grid(row=0, column=1, sticky="ns")
+        self.summary_tree.bind("<Configure>", self._resize_all_columns)
+        self.summary_tree.bind("<ButtonRelease-1>", self._on_summary_tree_resize_release)
+
+        self.operator_action_frame = ttk.Frame(self.operator_right_pane)
+        self.operator_action_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        self.operator_action_frame.grid_columnconfigure((0, 1), weight=1, uniform="operator_actions")
+        self.bottom_frame = self.operator_action_frame
+        self.manual_complete_button = ttk.Button(
+            self.operator_action_frame,
+            text=self.MANUAL_COMPLETE_BUTTON_TEXT,
+            command=self._prompt_manual_complete,
+            style=self.MANUAL_COMPLETE_BUTTON_STYLE,
+            state="disabled",
+        )
+        self.manual_complete_button.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
+        self.exact_rescan_button = ttk.Button(
+            self.operator_action_frame,
+            text=self.EXACT_RESCAN_BUTTON_TEXT,
+            command=self._prompt_exact_rescan,
+            style=self.MANUAL_COMPLETE_BUTTON_STYLE,
+            state="disabled",
+        )
+        self.exact_rescan_button.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
+        self.reset_button = ttk.Button(
+            self.operator_action_frame,
+            text=self.CURRENT_SET_CANCEL_BUTTON_TEXT,
+            command=lambda: self._reset_current_set(full_reset=True),
+            style=self.CURRENT_SET_CANCEL_BUTTON_STYLE,
+        )
+        self.reset_button.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(4, 0))
+        self.cancel_tray_button = ttk.Button(
+            self.operator_action_frame,
+            text=self.COMPLETED_TRAY_CANCEL_BUTTON_TEXT,
+            command=self._prompt_and_cancel_completed_tray,
+            style=self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE,
+        )
+        self.cancel_tray_button.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
+
+        self.bind("<F1>", lambda event: self._handle_workflow_shortcut("f1", event))
+        self.bind("<F2>", lambda event: self._handle_workflow_shortcut("f2", event))
+        self.bind("<F3>", lambda event: self._handle_workflow_shortcut("f3", event))
+        self.bind("<F4>", lambda event: self._handle_workflow_shortcut("f4", event))
+        self.bind("<Escape>", self._handle_workflow_escape)
+        self.bind("<Delete>", self._delete_selected_row_from_shortcut)
+
+        self.operator_status_frame = ttk.Frame(main_frame)
+        self.operator_status_frame.grid(row=2, column=0, sticky="ew", pady=(profile["bottom_gap"], 0))
+        self.operator_status_frame.grid_columnconfigure(0, weight=1)
+        self.save_status_label = ttk.Label(
+            self.operator_status_frame,
+            text="",
+            style="Save.Success.TLabel",
+            background=self.colors["background"],
+        )
+        self.save_status_label.grid(row=0, column=0, sticky="w")
+        self.operator_footer_label = ttk.Label(
+            self.operator_status_frame,
+            text="상태는 문구와 색상으로 함께 표시됩니다.",
+            style="Status.TLabel",
+        )
+        self.operator_footer_label.grid(row=0, column=1, sticky="e")
+
+        self.loading_overlay = ttk.Frame(main_frame, style="Overlay.TFrame")
+        loading_content_frame = ttk.Frame(self.loading_overlay, style="Overlay.TFrame")
+        loading_content_frame.pack(expand=True)
+        ttk.Label(
+            loading_content_frame,
+            text="데이터를 불러오는 중입니다...",
+            style="Loading.TLabel",
+        ).pack(pady=(0, 15))
+        self.loading_progressbar = ttk.Progressbar(loading_content_frame, mode="indeterminate", length=400)
+        self.loading_progressbar.pack(pady=15)
+
+        self._workflow_widgets_ready = True
+        self.operator_workbench_ready = True
+        self._update_step_rail(0)
+        self._render_operator_workbench()
+        self._apply_responsive_layout()
+
+    def _create_legacy_widgets(self):
         profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
         self.main_frame = ttk.Frame(self, padding=profile["outer_padding"])
         main_frame = self.main_frame
@@ -6167,25 +8130,35 @@ class Label_Match(tk.Tk):
         if self.history_view_updates_active_state:
             if self.initialized_successfully:
                 self.entry.config(state='normal')
+                try:
+                    self.entry.focus_set()
+                except TclError:
+                    pass
             self.view_mode_label.grid_remove()
             current = getattr(self, "current_set_info", {}) or {}
             if not current.get("id") and not current.get("parsed"):
                 self.update_big_display(self._next_action_text(0), "")
             self._update_status_label()
+            self._render_operator_workbench()
             return
         self.entry.config(state='disabled')
         message = "과거 기록 조회 중 - 스캔 입력 비활성. 오늘 버튼으로 복귀하세요."
-        self.view_mode_label.config(text=message)
-        self.view_mode_label.grid()
-        self.update_big_display("과거 기록 조회 중", "primary")
-        self.status_label.config(text=message, style="Error.TLabel")
-        self._update_step_rail(0)
+        if not self.__dict__.get("operator_workbench_ready"):
+            self.view_mode_label.config(text=message)
+            self.view_mode_label.grid()
+            self.update_big_display("과거 기록 조회 중", "primary")
+            self.status_label.config(text=message, style="Error.TLabel")
+            self._update_step_rail(0)
+        self._render_operator_workbench()
 
     def _show_idle_instruction_if_idle(self):
         current = getattr(self, "current_set_info", {}) or {}
         if current.get("id") or current.get("parsed"):
             return
         if not getattr(self, "history_view_updates_active_state", True):
+            return
+        if self.__dict__.get("operator_workbench_ready"):
+            self._render_operator_workbench()
             return
         if "big_display_label" in self.__dict__:
             if "progress_bar" in self.__dict__:
@@ -6217,6 +8190,7 @@ class Label_Match(tk.Tk):
         self._update_step_rail(num_scans, error=self.current_set_info.get('has_error_or_reset', False))
         self._update_manual_complete_button_state()
         self._update_exact_rescan_button_state()
+        self._render_operator_workbench()
 
     def _update_manual_complete_button_state(self):
         if not self.initialized_successfully: return
