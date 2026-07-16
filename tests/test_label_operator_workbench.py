@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 import os
 import textwrap
@@ -225,6 +226,20 @@ def _required_widget(app, name):
     return app.__dict__[name]
 
 
+def test_profile_bootstrap_ignores_unrealized_one_pixel_root():
+    app = Label_Match.__new__(Label_Match)
+    app.winfo_width = lambda: 1
+    app.winfo_height = lambda: 1
+    app.winfo_screenwidth = lambda: 2560
+    app.winfo_screenheight = lambda: 1392
+    app._screen_diagonal_inches = lambda: None
+
+    name, profile = app._select_ui_profile()
+
+    assert name == "standard"
+    assert profile is Label_Match.UI_PROFILES["standard"]
+
+
 @pytest.fixture
 def operator_workbench(monkeypatch):
     for name in ("Frame", "Label", "Text", "Menu", "Listbox"):
@@ -295,6 +310,7 @@ def test_workbench_keeps_three_panes_persistent_and_scan_input_in_center(operato
     qa_tree = _required_widget(app, "qa_scan_tree")
     exact_frame = _required_widget(app, "exact_rescan_frame")
     exact_tree = _required_widget(app, "exact_rescan_tree")
+    exact_detail = _required_widget(app, "exact_rescan_detail_frame")
     panes = (left, center, right)
 
     assert workbench.master is app.main_frame
@@ -305,6 +321,7 @@ def test_workbench_keeps_three_panes_persistent_and_scan_input_in_center(operato
     assert _is_descendant(qa_tree, center)
     assert _is_descendant(exact_frame, center)
     assert _is_descendant(exact_tree, exact_frame)
+    assert _is_descendant(exact_detail, exact_frame)
 
 
 def test_center_has_one_five_step_rail_and_separate_conditional_f4_list(operator_workbench):
@@ -433,6 +450,9 @@ def test_selected_qa_detail_keeps_full_raw_value_and_selection_across_rerender(
     app._render_operator_workbench()
 
     assert app.qa_scan_tree.selection() == ("qa-slot-2",)
+    displayed_product = app.qa_scan_tree.item("qa-slot-2", "values")[1]
+    assert displayed_product != long_product
+    assert "..." in displayed_product
     assert "단계: 2. 제품1" in app.qa_scan_detail_metadata_label.cget("text")
     assert "상태: 완료" in app.qa_scan_detail_metadata_label.cget("text")
     assert app.qa_scan_detail_text.options["inserted"] == long_product
@@ -455,6 +475,85 @@ def test_selected_qa_detail_keeps_full_raw_value_and_selection_across_rerender(
     app.qa_scan_tree.selection_set("qa-slot-3")
     app._on_qa_scan_selection_changed()
     assert app.qa_scan_detail_text.options["inserted"] == product_2
+
+
+def test_f4_list_exposes_selected_full_raw_without_stealing_scan_focus(
+    operator_workbench,
+):
+    app = operator_workbench
+    detail_frame = _required_widget(app, "exact_rescan_detail_frame")
+    detail_text = _required_widget(app, "exact_rescan_detail_text")
+    detail_scrollbar = _required_widget(app, "exact_rescan_detail_scrollbar")
+    first = "PHS|F4|FIRST|" + "A" * 240
+    second = "PHS|F4|SECOND|" + "B" * 240
+    app.entry.focused = True
+    focus_before = app.entry.focused
+
+    assert _is_descendant(detail_frame, app.exact_rescan_frame)
+    assert _is_descendant(detail_text, detail_frame)
+    assert _is_descendant(detail_scrollbar, detail_frame)
+    assert detail_text.cget("wrap") == "char"
+    assert detail_text.cget("takefocus") == 0
+    assert detail_text.cget("state") == "disabled"
+    assert any(
+        sequence == "<<TreeviewSelect>>"
+        for sequence, _callback, _add in app.exact_rescan_tree.bindings
+    )
+
+    app.current_set_info.update(
+        {
+            "exact_rescan_active": True,
+            "exact_rescan_complete": False,
+            "exact_rescan_target_count": 2,
+            "exact_rescan_barcodes": [first, second],
+        }
+    )
+    business_state_before = copy.deepcopy(app.current_set_info)
+    app._render_operator_workbench()
+
+    first_display = app.exact_rescan_tree.rows["exact-slot-1"]["values"][1]
+    second_display = app.exact_rescan_tree.rows["exact-slot-2"]["values"][1]
+    assert "..." in first_display and first_display != first
+    assert "..." in second_display and second_display != second
+    assert app.exact_rescan_tree.selection() == ("exact-slot-2",)
+    assert app.exact_rescan_detail_metadata_label.cget("text") == "순서: 2"
+    assert detail_text.options["inserted"] == second
+    assert app.entry.focused == focus_before
+    assert app.current_set_info == business_state_before
+
+    app.exact_rescan_tree.selection_set("exact-slot-1")
+    app._on_exact_rescan_selection_changed()
+    assert app.exact_rescan_detail_metadata_label.cget("text") == "순서: 1"
+    assert detail_text.options["inserted"] == first
+    assert app.entry.focused == focus_before
+    assert app.current_set_info == business_state_before
+
+    app._render_operator_workbench()
+    assert app.exact_rescan_tree.selection() == ("exact-slot-1",)
+    assert detail_text.options["inserted"] == first
+    assert app.entry.focused == focus_before
+    assert app.current_set_info == business_state_before
+
+
+def test_operator_notice_compacts_to_reason_key_value_and_next_action(
+    operator_workbench,
+):
+    app = operator_workbench
+    message = (
+        "현품표와 제품이 불일치합니다.\n\n"
+        "- 현품표: MASTER-001\n"
+        "- 스캔 제품: PRODUCT-999\n\n"
+        "→ 제품을 제거하고 새 현품표부터 다시 스캔하세요."
+    )
+
+    compact = app._compact_operator_notice_message(message)
+
+    assert compact.splitlines() == [
+        "현품표와 제품이 불일치합니다.",
+        "- 스캔 제품: PRODUCT-999",
+        "→ 제품 제거 후 확인 → 새 현품표 스캔",
+    ]
+    assert "MASTER-001" not in compact
 
 
 def test_qa_detail_handles_empty_completion_and_recovery_views(operator_workbench):
@@ -568,6 +667,9 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         _wait_until_ready(app)
         _apply_scale(app, 1.4)
         _configure_size(app, (1366, 768))
+        app.entry.focus_set()
+        pump_tk(app, 120)
+        assert app.focus_get() == app.entry
 
         scans = (
             "AAA2270730100 · 현품표",
@@ -606,6 +708,41 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         assert final_row_box
         assert final_row_box[1] + final_row_box[3] <= app.qa_scan_tree.winfo_height()
 
+        retry_tree_box = (
+            app.qa_scan_tree.winfo_x(),
+            app.qa_scan_tree.winfo_y(),
+            app.qa_scan_tree.winfo_width(),
+            app.qa_scan_tree.winfo_height(),
+        )
+        retry_notice_height = app.workflow_notice_frame.winfo_height()
+
+        detail_actual = (
+            app.qa_scan_detail_text.winfo_width(),
+            app.qa_scan_detail_text.winfo_height(),
+        )
+        detail_requested_height = app.qa_scan_detail_text.winfo_reqheight()
+        assert detail_actual[0] > 300
+        assert detail_actual[1] >= detail_requested_height
+        assert (
+            app.qa_scan_detail_text.winfo_y()
+            + app.qa_scan_detail_text.winfo_height()
+            <= app.qa_scan_detail_frame.winfo_height()
+        )
+
+        for button in (
+            app.manual_complete_button,
+            app.exact_rescan_button,
+            app.reset_button,
+            app.cancel_tray_button,
+        ):
+            assert button.winfo_height() >= button.winfo_reqheight()
+        action_row_heights = (
+            app.operator_action_frame.grid_bbox(0, 0)[3],
+            app.operator_action_frame.grid_bbox(0, 1)[3],
+        )
+        assert all(86 <= height <= 104 for height in action_row_heights)
+        assert app.operator_status_frame.winfo_height() <= 32
+
         notice_text = str(app.workflow_notice_label.cget("text"))
         assert server_error in notice_text
         actual = (
@@ -620,6 +757,61 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
             "retry notice clips the server error: "
             f"actual={actual}, requested={requested}, text={notice_text!r}"
         )
+
+        long_master = "CLC|MASTER|" + "M" * 72
+        long_product = "PHS|PRODUCT|" + "P" * 72
+        displayed_master = app._middle_ellipsis(long_master, 48)
+        displayed_product = app._middle_ellipsis(long_product, 48)
+        mismatch_message = (
+            "현품표와 제품이 불일치합니다.\n\n"
+            f"- 현품표: {displayed_master}\n"
+            f"- 스캔 제품: {displayed_product}\n\n"
+            "→ 이 세트는 오류 처리됩니다. 제품을 제거하고 확인 후 새 현품표부터 다시 스캔하세요."
+        )
+        app._present_inline_workflow_error(
+            "[제품 불일치]",
+            mismatch_message,
+            app.Results.FAIL_MISMATCH,
+            long_product,
+        )
+        pump_tk(app, 260)
+
+        mismatch_text = str(app.workflow_notice_label.cget("text"))
+        mismatch_lines = tuple(
+            line for line in mismatch_text.splitlines() if line.strip()
+        )
+        assert len(mismatch_lines) <= 3
+        assert "스캔 제품" in mismatch_text
+        assert "새 현품표" in mismatch_text
+        assert (
+            app.workflow_notice_label.winfo_width()
+            >= app.workflow_notice_label.winfo_reqwidth()
+        )
+        assert (
+            app.workflow_notice_label.winfo_height()
+            >= app.workflow_notice_label.winfo_reqheight()
+        ), (
+            "real mismatch notice clips at 1366x768 / 1.4x: "
+            f"actual={app.workflow_notice_label.winfo_height()}, "
+            f"requested={app.workflow_notice_label.winfo_reqheight()}, "
+            f"text={mismatch_text!r}"
+        )
+        assert app.workflow_notice_frame.winfo_height() == retry_notice_height
+        mismatch_tree_box = (
+            app.qa_scan_tree.winfo_x(),
+            app.qa_scan_tree.winfo_y(),
+            app.qa_scan_tree.winfo_width(),
+            app.qa_scan_tree.winfo_height(),
+        )
+        assert all(
+            abs(before - after) <= 2
+            for before, after in zip(retry_tree_box, mismatch_tree_box)
+        )
+        assert app.focus_get() == app.workflow_notice_action_button
+
+        app._acknowledge_workflow_notice()
+        pump_tk(app, 260)
+        assert app.focus_get() == app.entry
     finally:
         if app is not None:
             app.destroy()

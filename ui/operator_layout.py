@@ -220,7 +220,7 @@ def select_layout_profile(
         name: LayoutProfileName = "small"
     elif effective_width < 1420 or effective_height < 800:
         name = "compact"
-    elif effective_width < 1840 or effective_height < 960:
+    elif effective_width < 1840 or effective_height < 1040:
         name = "standard"
     else:
         name = "wide"

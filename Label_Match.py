@@ -2892,9 +2892,15 @@ class Label_Match(tk.Tk):
 
     def _select_ui_profile(self, width=None, height=None):
         try:
-            screen_width = int(width or self.winfo_width() or self.winfo_screenwidth())
-            screen_height = int(height or self.winfo_height() or self.winfo_screenheight())
-        except TclError:
+            current_width = int(width) if width is not None else int(self.winfo_width())
+            current_height = int(height) if height is not None else int(self.winfo_height())
+            screen_width = (
+                current_width if current_width > 100 else int(self.winfo_screenwidth())
+            )
+            screen_height = (
+                current_height if current_height > 100 else int(self.winfo_screenheight())
+            )
+        except (TclError, TypeError, ValueError):
             screen_width, screen_height = 1920, 1080
         screen_diagonal = self._screen_diagonal_inches()
 
@@ -5531,6 +5537,69 @@ class Label_Match(tk.Tk):
         head_len = max_len - tail_len - 3
         return f"{text[:head_len]}...{text[-tail_len:]}"
 
+    def _fit_operator_tree_cell_text(self, tree, column, value, *, padding=20):
+        """Fit a scan value to its visible column while retaining both ends.
+
+        The complete accepted value remains in ``_qa_scan_detail_rows`` and the
+        lower read-only detail field.  This helper only prevents Treeview from
+        hard-cropping a character with no visual indication.
+        """
+
+        text = str(value or "")
+        if not text:
+            return text
+        try:
+            column_width = max(1, int(tree.column(column, "width")) - int(padding))
+            style_name = str(tree.cget("style") or "Operator.Treeview")
+            style = self.__dict__.get("style")
+            if style is None:
+                raise AttributeError("Tk style is unavailable")
+            font_spec = style.lookup(style_name, "font")
+            font = tkFont.Font(root=self, font=font_spec)
+            if int(font.measure(text)) <= column_width:
+                return text
+
+            low, high = 10, len(text)
+            best = self._middle_ellipsis(text, low)
+            while low <= high:
+                middle = (low + high) // 2
+                candidate = self._middle_ellipsis(text, middle)
+                if int(font.measure(candidate)) <= column_width:
+                    best = candidate
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            return best
+        except (TclError, AttributeError, RecursionError, TypeError, ValueError):
+            return self._middle_ellipsis(text, 72)
+
+    def _compact_operator_notice_message(self, message):
+        """Keep one fixed notice region to reason, key value, and next action."""
+
+        lines = [line.strip() for line in str(message or "").splitlines() if line.strip()]
+        if len(lines) <= 3:
+            return "\n".join(lines)
+        detail = next(
+            (
+                line
+                for line in lines[1:-1]
+                if any(
+                    marker in line
+                    for marker in ("스캔 제품", "중복 제품", "중복 스캔", "입력")
+                )
+            ),
+            lines[-2],
+        )
+        if ":" in detail:
+            label, value = detail.split(":", 1)
+            detail = f"{label}: {self._middle_ellipsis(value.strip(), 32)}"
+        next_action = lines[-1]
+        if "오류 처리" in next_action and "새 현품표" in next_action:
+            next_action = "→ 제품 제거 후 확인 → 새 현품표 스캔"
+        elif "제품을 제거" in next_action and "새 현품표" in next_action:
+            next_action = "→ 제품 제거 후 확인 → 새 현품표 스캔"
+        return "\n".join((lines[0], detail, next_action))
+
     def _barcode_cell_display_limit(self, column=None):
         profile_name = self.__dict__.get("ui_profile_name", "standard")
         profile_limit = self.BARCODE_DISPLAY_LIMITS.get(profile_name, self.BARCODE_DISPLAY_LIMITS["standard"])
@@ -5772,18 +5841,41 @@ class Label_Match(tk.Tk):
         workbench = self.__dict__.get("operator_workbench_frame")
         if workbench is None:
             return
-        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
-        outer_padding = int(profile["outer_padding"])
         try:
-            self.main_frame.configure(padding=outer_padding)
             self.update_idletasks()
             root_width = int(self.winfo_width())
+            root_height = int(self.winfo_height())
+            if root_width <= 100:
+                root_width = int(self.winfo_screenwidth())
+            if root_height <= 100:
+                root_height = int(self.winfo_screenheight())
+            profile_name, profile = self._select_ui_profile(root_width, root_height)
+            self.ui_profile_name = profile_name
+            self.ui_profile = profile
+            outer_padding = int(profile["outer_padding"])
+            header_height = 64 if root_height <= 800 else 72
+            status_height = 32
+            section_gap = int(profile["section_gap"])
+            bottom_gap = int(profile["bottom_gap"])
+            self.main_frame.configure(padding=outer_padding)
             width = max(1, root_width - outer_padding * 2)
-            grid_box = self.main_frame.grid_bbox(0, 1)
-            height = int(grid_box[3]) if len(grid_box) == 4 else 0
-            if height <= 100:
-                height = int(workbench.winfo_height())
+            height = max(
+                320,
+                root_height
+                - outer_padding * 2
+                - header_height
+                - section_gap
+                - status_height
+                - bottom_gap,
+            )
         except (TclError, AttributeError, TypeError, ValueError):
+            profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
+            outer_padding = int(profile["outer_padding"])
+            header_height = 72
+            status_height = 32
+            section_gap = int(profile["section_gap"])
+            bottom_gap = int(profile["bottom_gap"])
+            root_width, root_height = 0, 0
             width, height = 0, 0
         if width <= 100:
             try:
@@ -5800,6 +5892,15 @@ class Label_Match(tk.Tk):
         tokens = build_style_tokens(metrics.profile.name, scale)
         self.operator_layout_metrics = metrics
         self.operator_style_tokens = tokens
+        self.operator_height_budget = {
+            "root_height": root_height,
+            "outer_padding": outer_padding,
+            "header_height": header_height,
+            "section_gap": section_gap,
+            "workbench_height": height,
+            "bottom_gap": bottom_gap,
+            "status_height": status_height,
+        }
         panes = metrics.panes
         constrained_large_text = scale >= 1.25 and height < 760
         compact_large_text = scale >= 1.25 and (
@@ -5820,6 +5921,16 @@ class Label_Match(tk.Tk):
         self._applying_responsive_layout = True
         try:
             self.main_frame.configure(padding=outer_padding)
+            self.operator_header_frame.grid_configure(
+                pady=(0, section_gap),
+            )
+            self.operator_header_frame.configure(height=header_height)
+            self.operator_header_frame.grid_propagate(False)
+            self.operator_status_frame.grid_configure(
+                pady=(bottom_gap, 0),
+            )
+            self.operator_status_frame.configure(height=status_height)
+            self.operator_status_frame.grid_propagate(False)
             workbench.configure(width=width, height=height)
             workbench.grid_propagate(False)
             workbench.grid_columnconfigure(0, minsize=panes.left_width, weight=0)
@@ -5878,6 +5989,19 @@ class Label_Match(tk.Tk):
                     font=(self.default_font_name, tokens.fonts.section_title, "bold"),
                 )
                 self.operator_header_context_label.grid()
+            operator_caption_size = max(11, min(14, tokens.fonts.caption))
+            self.operator_header_context_label.configure(
+                font=(self.default_font_name, operator_caption_size),
+            )
+            self.clock_label.configure(
+                font=("Consolas", operator_caption_size),
+            )
+            self.operator_footer_label.configure(
+                font=(self.default_font_name, min(13, operator_caption_size)),
+            )
+            self.save_status_label.configure(
+                font=(self.default_font_name, min(14, tokens.fonts.body), "bold"),
+            )
             self.big_display_label.configure(
                 font=(self.default_font_name, headline_font_size, "bold"),
                 wraplength=max(320, panes.center_width - tokens.spacing.xl * 2),
@@ -5938,6 +6062,13 @@ class Label_Match(tk.Tk):
                 font=(self.default_font_name, scan_input_font_size),
                 width=1,
             )
+            self.operator_scan_input_label.configure(
+                font=(
+                    self.default_font_name,
+                    min(18, tokens.fonts.section_title),
+                    "bold",
+                ),
+            )
             self.entry.grid_configure(ipady=5 if constrained_large_text else 8)
             # The five-step rail already expresses progress.  Keeping a second
             # percentage-like bar consumes the exact vertical space needed by
@@ -5978,6 +6109,9 @@ class Label_Match(tk.Tk):
             self.operator_item_stage_label.configure(
                 font=(self.default_font_name, left_title_size, "bold")
             )
+            self.operator_left_heading_label.configure(
+                font=(self.default_font_name, left_title_size, "bold")
+            )
             self.operator_item_code_label.configure(
                 font=(self.default_font_name, min(left_title_size, 16), "bold")
             )
@@ -5998,6 +6132,16 @@ class Label_Match(tk.Tk):
                     "bold",
                 )
             )
+            right_title_size = min(20, tokens.fonts.section_title)
+            self.operator_session_heading_label.configure(
+                font=(self.default_font_name, right_title_size, "bold")
+            )
+            self.hist_header_label.configure(
+                font=(self.default_font_name, right_title_size, "bold")
+            )
+            self.summary_header_label.configure(
+                font=(self.default_font_name, right_title_size, "bold")
+            )
             if constrained_large_text:
                 self.operator_left_divider.grid_remove()
                 self.operator_membership_heading_label.grid_remove()
@@ -6010,18 +6154,25 @@ class Label_Match(tk.Tk):
                 tokens.fonts.button,
                 15 if panes.right_width < 480 else tokens.fonts.button,
             )
-            action_height = max(
-                86,
-                metrics.center.actions.button_height,
-                action_font_size * 8 - 10,
-            )
-            self.operator_action_frame.grid_rowconfigure(0, minsize=action_height)
-            self.operator_action_frame.grid_rowconfigure(1, minsize=action_height)
             action_font = (
                 self.default_font_name,
                 max(11, action_font_size),
                 "bold",
             )
+            try:
+                action_line_height = int(
+                    tkFont.Font(root=self, font=action_font).metrics("linespace")
+                )
+            except (TclError, TypeError, ValueError):
+                action_line_height = max(16, int(action_font_size * 1.5))
+            action_height = max(
+                86,
+                metrics.center.actions.button_height,
+                action_line_height * 2 + 24,
+            )
+            action_height = min(104, action_height)
+            self.operator_action_frame.grid_rowconfigure(0, minsize=action_height)
+            self.operator_action_frame.grid_rowconfigure(1, minsize=action_height)
             self.style.configure(
                 "Operator.Action.TButton",
                 font=action_font,
@@ -6072,16 +6223,41 @@ class Label_Match(tk.Tk):
             self.qa_scan_tree.column("Value", width=value_width, minwidth=140, stretch=True)
             self.qa_scan_tree.column("State", width=state_width, minwidth=68, stretch=False)
             detail_font_size = max(9, min(12, live_list_font_size - 2))
-            self.qa_scan_detail_metadata_label.configure(
-                font=(self.default_font_name, detail_font_size),
+            detail_title_font_size = max(
+                11,
+                min(16, live_list_font_size - 1),
             )
-            self.qa_scan_detail_text.configure(
-                font=("Consolas", detail_font_size),
-                height=2,
-            )
-            detail_height = 76 if constrained_large_text else 82
-            self.qa_scan_detail_frame.configure(height=detail_height)
-            self.qa_scan_detail_frame.grid_propagate(False)
+            for prefix in ("qa_scan", "exact_rescan"):
+                self.__dict__[f"{prefix}_detail_title_label"].configure(
+                    font=(self.default_font_name, detail_title_font_size, "bold"),
+                )
+                self.__dict__[f"{prefix}_detail_metadata_label"].configure(
+                    font=(self.default_font_name, min(14, detail_font_size + 1)),
+                )
+                self.__dict__[f"{prefix}_detail_text"].configure(
+                    font=("Consolas", detail_font_size),
+                    height=2,
+                )
+            self.update_idletasks()
+            try:
+                detail_header_height = max(
+                    int(self.qa_scan_detail_title_label.winfo_reqheight()),
+                    int(self.qa_scan_detail_metadata_label.winfo_reqheight()),
+                    int(self.exact_rescan_detail_title_label.winfo_reqheight()),
+                    int(self.exact_rescan_detail_metadata_label.winfo_reqheight()),
+                )
+                detail_text_height = max(
+                    int(self.qa_scan_detail_text.winfo_reqheight()),
+                    int(self.exact_rescan_detail_text.winfo_reqheight()),
+                )
+                detail_height = detail_header_height + detail_text_height + 16
+            except (TclError, AttributeError, TypeError, ValueError):
+                detail_height = 90
+            detail_height = max(90, min(112, detail_height))
+            for prefix in ("qa_scan", "exact_rescan"):
+                detail_frame = self.__dict__[f"{prefix}_detail_frame"]
+                detail_frame.configure(height=detail_height)
+                detail_frame.grid_propagate(False)
             self.exact_rescan_tree.configure(style="Operator.Treeview", height=5)
             self.exact_rescan_tree.column("Order", width=76, minwidth=58, stretch=False)
             self.exact_rescan_tree.column(
@@ -6114,6 +6290,10 @@ class Label_Match(tk.Tk):
                 minwidth=90,
                 stretch=True,
             )
+            if settle:
+                # Column widths are final on the settle pass; rerender only the
+                # presentation model so visible ellipses match those widths.
+                self._render_operator_workbench()
         except (TclError, AttributeError, KeyError, TypeError):
             return
         finally:
@@ -6225,6 +6405,62 @@ class Label_Match(tk.Tk):
 
         self._render_qa_scan_detail()
 
+    def _selected_exact_rescan_iid(self):
+        """Return the selected F4 row without changing scanner keyboard focus."""
+
+        tree = self.__dict__.get("exact_rescan_tree")
+        if tree is None:
+            return None
+        try:
+            selected = tuple(tree.selection())
+        except (TclError, AttributeError, TypeError):
+            return None
+        return str(selected[0]) if selected else None
+
+    def _set_exact_rescan_detail_text(self, value):
+        detail_text = self.__dict__.get("exact_rescan_detail_text")
+        if detail_text is None:
+            return
+        try:
+            detail_text.configure(state="normal")
+            detail_text.delete("1.0", tk.END)
+            detail_text.insert("1.0", str(value))
+            detail_text.configure(state="disabled")
+            detail_text.yview_moveto(0.0)
+        except (TclError, AttributeError, TypeError):
+            try:
+                detail_text.configure(state="disabled")
+            except (TclError, AttributeError):
+                pass
+
+    def _render_exact_rescan_detail(self, selected_iid=None):
+        """Show the complete raw value for the selected F4 membership row."""
+
+        if selected_iid is None:
+            selected_iid = self._selected_exact_rescan_iid()
+        rows = self.__dict__.get("_exact_rescan_detail_rows", {}) or {}
+        detail = rows.get(str(selected_iid)) if selected_iid else None
+        if detail is None:
+            metadata = "순서: -"
+            raw_text = "F4 재스캔 행을 선택하면 전체 원문을 확인할 수 있습니다."
+        else:
+            metadata = f"순서: {detail['order']}"
+            raw_text = str(detail.get("raw") or "") or "재스캔 값 없음"
+
+        metadata_label = self.__dict__.get("exact_rescan_detail_metadata_label")
+        if metadata_label is not None:
+            try:
+                metadata_label.configure(text=metadata)
+            except (TclError, AttributeError):
+                pass
+        self._set_exact_rescan_detail_text(raw_text)
+        return detail
+
+    def _on_exact_rescan_selection_changed(self, _event=None):
+        """Refresh F4 raw detail without moving focus away from scan input."""
+
+        self._render_exact_rescan_detail()
+
     @staticmethod
     def _workflow_headline_text(view):
         """Keep a notice title unique while the layout itself stays fixed."""
@@ -6305,10 +6541,11 @@ class Label_Match(tk.Tk):
             border = self.colors.get("primary", "#2563EB")
         else:
             title = str(notice.title)
-            message = str(notice.message)
+            message = self._compact_operator_notice_message(notice.message)
             next_action_text = str(next_action or "").strip()
             if next_action_text and next_action_text not in message:
                 message = f"{message}\n다음: {next_action_text}"
+            message = self._compact_operator_notice_message(message)
             tone = str(notice.tone or "danger")
             palette = {
                 "success": (self.colors.get("success", "#047857"), "#ECFDF5", "#10B981"),
@@ -6420,14 +6657,11 @@ class Label_Match(tk.Tk):
                 action_height = int(action_button.winfo_reqheight()) + action_pad_y * 2
             base_height = int(self.__dict__.get("_operator_notice_base_height", 132))
             content_height = max(text_height, action_height)
-            if show_action:
-                # A mapped action changes the grid column width on the next idle
-                # layout pass.  Reserve the measured one-line reflow delta while
-                # keeping the five-row list intact on the short 1366 profile.
-                content_height += 2 if constrained else 12
-            elif compact and not constrained:
-                content_height += 12
-            frame.configure(height=max(base_height, content_height))
+            self._operator_notice_required_height = content_height
+            # Every semantic state shares the same physical notice row.  The
+            # display copy is compacted to reason/key value/next action above;
+            # expanding this frame would push the scan input and live list.
+            frame.configure(height=base_height)
         except (TclError, AttributeError, KeyError, TypeError, ValueError):
             return
 
@@ -6561,13 +6795,19 @@ class Label_Match(tk.Tk):
                 for slot in view.slots:
                     iid = f"qa-slot-{slot.index}"
                     state_text = self._workflow_state_text(slot.state)
+                    raw_value = str(slot.value or "")
+                    display_value = self._fit_operator_tree_cell_text(
+                        qa_tree,
+                        "Value",
+                        raw_value or "-",
+                    )
                     qa_tree.insert(
                         "",
                         "end",
                         iid=iid,
                         values=(
                             f"{slot.index}. {slot.label}",
-                            slot.value or "-",
+                            display_value,
                             state_text,
                         ),
                         tags=(slot.state,),
@@ -6575,7 +6815,7 @@ class Label_Match(tk.Tk):
                     qa_detail_rows[iid] = {
                         "stage": f"{slot.index}. {slot.label}",
                         "state": state_text,
-                        "raw": str(slot.value or ""),
+                        "raw": raw_value,
                     }
             except (TclError, AttributeError, TypeError):
                 pass
@@ -6601,20 +6841,46 @@ class Label_Match(tk.Tk):
 
         exact_tree = self.__dict__.get("exact_rescan_tree")
         exact_values = tuple(source.get("exact_rescan_barcodes") or ())
+        selected_exact_iid = self._selected_exact_rescan_iid()
+        exact_detail_rows = {}
         if exact_tree is not None:
             try:
                 existing = tuple(exact_tree.get_children())
                 if existing:
                     exact_tree.delete(*existing)
                 for index, value in enumerate(exact_values, 1):
+                    raw_value = str(value or "")
+                    iid = f"exact-slot-{index}"
+                    display_value = self._fit_operator_tree_cell_text(
+                        exact_tree,
+                        "Value",
+                        raw_value,
+                    )
                     exact_tree.insert(
                         "",
                         "end",
-                        iid=f"exact-slot-{index}",
-                        values=(index, str(value)),
+                        iid=iid,
+                        values=(index, display_value),
                     )
+                    exact_detail_rows[iid] = {
+                        "order": index,
+                        "raw": raw_value,
+                    }
             except (TclError, AttributeError, TypeError):
                 pass
+        self._exact_rescan_detail_rows = exact_detail_rows
+        if selected_exact_iid not in exact_detail_rows:
+            selected_exact_iid = (
+                f"exact-slot-{len(exact_detail_rows)}" if exact_detail_rows else None
+            )
+        if exact_tree is not None and selected_exact_iid:
+            try:
+                exact_tree.selection_set(selected_exact_iid)
+                exact_tree.focus(selected_exact_iid)
+                exact_tree.see(selected_exact_iid)
+            except (TclError, AttributeError):
+                pass
+        self._render_exact_rescan_detail(selected_exact_iid)
         show_exact = view.exact_rescan.status in {"active", "complete"}
         self._set_exact_rescan_tab_visible(
             show_exact,
@@ -7003,7 +7269,12 @@ class Label_Match(tk.Tk):
         self.operator_left_pane.grid(row=0, column=0, sticky="nsew")
         self.left_context_card = self.operator_left_pane
         self.operator_left_pane.grid_columnconfigure(0, weight=1)
-        ttk.Label(self.operator_left_pane, text="현재 작업", style="Header.TLabel").grid(
+        self.operator_left_heading_label = ttk.Label(
+            self.operator_left_pane,
+            text="현재 작업",
+            style="Header.TLabel",
+        )
+        self.operator_left_heading_label.grid(
             row=0, column=0, sticky="w", pady=(0, 12)
         )
         self.operator_item_stage_label = ttk.Label(
@@ -7200,7 +7471,12 @@ class Label_Match(tk.Tk):
         self.operator_input_frame = input_frame
         input_frame.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         input_frame.grid_columnconfigure(1, weight=1)
-        ttk.Label(input_frame, text="스캔 입력", style="Header.TLabel").grid(
+        self.operator_scan_input_label = ttk.Label(
+            input_frame,
+            text="스캔 입력",
+            style="Header.TLabel",
+        )
+        self.operator_scan_input_label.grid(
             row=0, column=0, padx=(0, 12), sticky="w"
         )
         self.entry = ttk.Entry(
@@ -7326,6 +7602,81 @@ class Label_Match(tk.Tk):
         self.exact_rescan_tree.column("Order", width=80, minwidth=60, stretch=False, anchor="center")
         self.exact_rescan_tree.column("Value", width=max(320, panes.center_width - 150), minwidth=220, stretch=True, anchor="w")
         self.exact_rescan_tree.grid(row=0, column=0, sticky="nsew")
+        self.exact_rescan_tree.bind(
+            "<<TreeviewSelect>>",
+            self._on_exact_rescan_selection_changed,
+        )
+        self.exact_rescan_detail_frame = ttk.Frame(
+            self.exact_rescan_frame,
+            style="Borderless.TFrame",
+            padding=(6, 5, 6, 4),
+        )
+        self.exact_rescan_detail_frame.grid(
+            row=1,
+            column=0,
+            sticky="nsew",
+            pady=(4, 0),
+        )
+        self.exact_rescan_detail_frame.grid_columnconfigure(1, weight=1)
+        self.exact_rescan_detail_frame.grid_rowconfigure(1, weight=1)
+        self.exact_rescan_detail_title_label = ttk.Label(
+            self.exact_rescan_detail_frame,
+            text="선택 F4 원문",
+            style="Header.TLabel",
+        )
+        self.exact_rescan_detail_title_label.grid(row=0, column=0, sticky="w")
+        self.exact_rescan_detail_metadata_label = ttk.Label(
+            self.exact_rescan_detail_frame,
+            text="순서: -",
+            style="Status.TLabel",
+            anchor="w",
+        )
+        self.exact_rescan_detail_metadata_label.grid(
+            row=0,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            padx=(12, 0),
+        )
+        self.exact_rescan_detail_text = tk.Text(
+            self.exact_rescan_detail_frame,
+            height=2,
+            wrap="char",
+            font=("Consolas", 10),
+            bg=self.colors["card_background"],
+            fg=self.colors["text"],
+            relief="solid",
+            bd=1,
+            padx=6,
+            pady=3,
+            takefocus=0,
+        )
+        self.exact_rescan_detail_scrollbar = ttk.Scrollbar(
+            self.exact_rescan_detail_frame,
+            orient=tk.VERTICAL,
+            command=self.exact_rescan_detail_text.yview,
+        )
+        self.exact_rescan_detail_text.configure(
+            yscrollcommand=self.exact_rescan_detail_scrollbar.set,
+        )
+        self.exact_rescan_detail_text.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="nsew",
+            pady=(3, 0),
+        )
+        self.exact_rescan_detail_scrollbar.grid(
+            row=1,
+            column=2,
+            sticky="ns",
+            pady=(3, 0),
+        )
+        self.exact_rescan_detail_text.insert(
+            "1.0",
+            "F4 재스캔 행을 선택하면 전체 원문을 확인할 수 있습니다.",
+        )
+        self.exact_rescan_detail_text.configure(state="disabled")
         hide_exact_tab = getattr(self.live_scan_notebook, "hide", None)
         if callable(hide_exact_tab):
             hide_exact_tab(self.exact_rescan_frame)
@@ -7357,7 +7708,12 @@ class Label_Match(tk.Tk):
         self.session_tab.grid_rowconfigure(1, weight=1)
         self.session_tab.grid_columnconfigure(0, weight=1)
         self.operator_notebook.add(self.session_tab, text="이번 세션")
-        ttk.Label(self.session_tab, text="최근 완료", style="Header.TLabel").grid(
+        self.operator_session_heading_label = ttk.Label(
+            self.session_tab,
+            text="최근 완료",
+            style="Header.TLabel",
+        )
+        self.operator_session_heading_label.grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
         self.session_tree = ttk.Treeview(

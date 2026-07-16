@@ -128,6 +128,25 @@ def test_profile_uses_effective_content_size(width, height, scale, expected):
     assert select_layout_profile(width, height, scale).name == expected
 
 
+@pytest.mark.parametrize("height", [1120, 1170, 1220])
+def test_scaled_ultrawide_short_work_area_stays_standard(height):
+    profile = select_layout_profile(2520, height, 1.2)
+
+    assert profile.name == "standard"
+    assert profile.effective_width == pytest.approx(2100)
+    assert profile.effective_height < 1040
+
+
+def test_wide_effective_height_boundary_is_stable():
+    assert select_layout_profile(1920, 1039, 1.0).name == "standard"
+    assert select_layout_profile(1920, 1040, 1.0).name == "wide"
+
+
+@pytest.mark.parametrize("width", [1920, 2560])
+def test_1080_high_work_area_remains_wide_at_default_scale(width):
+    assert select_layout_profile(width, 1080, 1.0).name == "wide"
+
+
 def test_invalid_dimensions_and_scale_fail_fast():
     with pytest.raises(TypeError, match="content_width"):
         build_operator_layout("1366", 768)
