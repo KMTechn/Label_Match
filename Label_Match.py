@@ -5693,6 +5693,14 @@ class Label_Match(tk.Tk):
             except (TclError, AttributeError, TypeError, ValueError):
                 return 0
 
+        def widget_is_mapped(widget):
+            if widget is None:
+                return False
+            try:
+                return bool(widget.winfo_ismapped())
+            except (TclError, AttributeError, TypeError, ValueError):
+                return False
+
         notebook_width = widget_width(
             self.__dict__.get("live_scan_notebook")
         )
@@ -5712,12 +5720,14 @@ class Label_Match(tk.Tk):
             seen.add(id(candidate))
             width = widget_width(candidate)
             if width > 1 and abs(notebook_width - width) <= 32:
-                candidates.append(width)
+                candidates.append((widget_is_mapped(candidate), width))
         if not candidates:
             # The configured column width remains the fail-safe when neither
             # page has been realized for the current notebook geometry.
             return 0
-        return min(candidates, key=lambda width: abs(notebook_width - width))
+        mapped = [width for is_mapped, width in candidates if is_mapped]
+        available = mapped or [width for _is_mapped, width in candidates]
+        return min(available, key=lambda width: abs(notebook_width - width))
 
     def _fit_operator_tree_cell_text(self, tree, column, value, *, padding=20):
         """Fit a scan value to its visible column while retaining both ends.
@@ -6246,9 +6256,9 @@ class Label_Match(tk.Tk):
                 title_pad_top, message_pad_top, message_pad_bottom = 4, 0, 4
             else:
                 title_pad_top, message_pad_top, message_pad_bottom = 7, 1, 7
-            # Tk point sizes are not pixel heights (15 pt is a 41 px line on
-            # the locked DISPLAY2 DPI).  Reserve one title plus the compact
-            # notice contract's three message lines using real font metrics.
+            # Tk point sizes are not pixel heights.  Reserve one title plus the
+            # compact notice contract's three message lines using the actual
+            # font metrics for the window's current monitor DPI.
             label_vertical_chrome = 6
             minimum_notice_height = (
                 120

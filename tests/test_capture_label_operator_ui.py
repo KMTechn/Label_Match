@@ -509,6 +509,39 @@ def test_clipping_proxy_detects_bounds_visibility_compression_overlap_and_contai
     assert result["issue_count"] == 6
 
 
+def test_history_control_pairwise_gate_rejects_overlap_but_ignores_hidden_inactive_tab():
+    names = (
+        "history_today_button",
+        "history_date_search_button",
+        "history_decrease_font_button",
+        "history_increase_font_button",
+    )
+    pairs = capture._pairwise_widget_names(names)
+    records = [
+        _geometry_record(names[0], [0, 0, 50, 30]),
+        _geometry_record(names[1], [40, 0, 100, 30]),
+        _geometry_record(names[2], [110, 0, 140, 30]),
+        _geometry_record(names[3], [150, 0, 180, 30]),
+        _geometry_record(
+            "inactive_history_control",
+            [0, 0, 1, 1],
+            mapped=False,
+            critical=False,
+        ),
+    ]
+
+    result = evaluate_clipping_proxy(
+        records,
+        (200, 50),
+        overlap_pairs=pairs,
+    )
+
+    assert len(pairs) == 6
+    assert result["overlaps"] == [[names[0], names[1]]]
+    assert result["unmapped_critical_widgets"] == []
+    assert result["suspected"] is True
+
+
 def test_text_clipping_proxy_checks_wrap_width_and_requested_geometry():
     records = [
         {
@@ -2455,6 +2488,116 @@ def test_dpi_awareness_is_independently_observed_as_two():
     result = capture.enable_per_monitor_dpi_awareness(shcore=FakeShcore())
     assert result["observed"] == 2
     assert result["status"] == "PASS"
+
+
+def test_target_tk_scaling_is_configured_and_independently_attested():
+    class FakeTkInterpreter:
+        def __init__(self):
+            self.scaling = 2.0
+
+        def call(self, *args):
+            assert args[:2] == ("tk", "scaling")
+            if len(args) == 2:
+                return self.scaling
+            self.scaling = float(args[2])
+            return ""
+
+    class FakeApp:
+        def __init__(self):
+            self.tk = FakeTkInterpreter()
+
+        def winfo_fpixels(self, value):
+            assert value == "1i"
+            return self.tk.scaling * 72.0
+
+    class FakeUser32:
+        @staticmethod
+        def GetDpiForWindow(hwnd):
+            assert hwnd == 101
+            return 96
+
+    app = FakeApp()
+    configured = capture.configure_target_tk_scaling(app, 96)
+    observed = capture.observe_target_tk_scaling(
+        app,
+        96,
+        hwnd=101,
+        user32=FakeUser32(),
+    )
+
+    assert configured["before_tk_scaling"] == 2.0
+    assert configured["configured_before_widget_creation"] is True
+    assert configured["observed_tk_scaling"] == pytest.approx(96 / 72)
+    assert observed["pixels_per_inch"] == pytest.approx(96.0)
+    assert observed["window_dpi"] == 96
+
+
+def test_capture_app_pins_target_tk_scaling_before_subclass_widgets(
+    monkeypatch,
+):
+    events = []
+
+    class FakeTkInterpreter:
+        def __init__(self):
+            self.scaling = 2.0
+
+        def call(self, *args):
+            assert args[:2] == ("tk", "scaling")
+            if len(args) == 2:
+                return self.scaling
+            self.scaling = float(args[2])
+            events.append(("scaling", self.scaling))
+            return ""
+
+    class FakeTk:
+        def __init__(self, *_args, **_kwargs):
+            self.tk = FakeTkInterpreter()
+            self.visible = False
+
+        def winfo_fpixels(self, value):
+            assert value == "1i"
+            return self.tk.scaling * 72.0
+
+        def withdraw(self):
+            self.visible = False
+
+        def deiconify(self):
+            self.visible = True
+
+        def state(self, new_state=None):
+            if new_state in {"normal", "zoomed"}:
+                self.visible = True
+            return "normal" if self.visible else "withdrawn"
+
+        def destroy(self):
+            pass
+
+    class FakeToplevel(FakeTk):
+        pass
+
+    module = SimpleNamespace()
+    module.tk = SimpleNamespace(Tk=FakeTk, Toplevel=FakeToplevel)
+
+    class FakeLabel(FakeTk):
+        def __init__(self, run_tests=False):
+            super().__init__()
+            assert run_tests is True
+            events.append(("create-widgets", self.tk.scaling))
+
+    module.Label_Match = FakeLabel
+    monkeypatch.setattr(capture, "_window_root_hwnd", lambda *_args, **_kwargs: 987654)
+
+    app = capture._make_capture_app(module, {}, target_dpi=96)
+    try:
+        assert events == [
+            ("scaling", pytest.approx(96 / 72)),
+            ("create-widgets", pytest.approx(96 / 72)),
+        ]
+        assert app._capture_constructor_tk_scaling[
+            "configured_before_widget_creation"
+        ] is True
+    finally:
+        capture.release_previsible_toplevel_guard(app, reject_created=False)
 
 
 def test_environment_isolation_restores_and_redacts_real_host_values(

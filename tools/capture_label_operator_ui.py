@@ -2928,12 +2928,22 @@ def expected_scan_tree_mapping(fixture: StateFixture | None, app: Any) -> dict[s
     }
 
 
+def _pairwise_widget_names(names: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    ordered = tuple(str(name) for name in names)
+    return tuple(
+        (ordered[first], ordered[second])
+        for first in range(len(ordered))
+        for second in range(first + 1, len(ordered))
+    )
+
+
 def collect_ui_geometry(
     app: Any, fixture: StateFixture | None = None
 ) -> dict[str, Any]:
     widgets = _resolve_widgets(app)
     root_size = (int(app.winfo_width()), int(app.winfo_height()))
     tree_mapping = expected_scan_tree_mapping(fixture, app)
+    history_required = bool(fixture is not None and fixture.history_readonly)
     specs: list[tuple[str, Any, bool, bool]] = [
         ("main", widgets["main_frame"], True, False),
         ("header", widgets["operator_header_frame"], True, False),
@@ -2991,9 +3001,24 @@ def collect_ui_geometry(
             False,
         ),
         ("history_notebook", widgets["operator_history_notebook"], True, False),
-        ("history_header_frame", widgets["hist_header_frame"], False, False),
-        ("history_header_label", widgets["hist_header_label"], False, True),
-        ("history_controls", widgets["hist_control_frame"], False, False),
+        (
+            "history_header_frame",
+            widgets["hist_header_frame"],
+            history_required,
+            False,
+        ),
+        (
+            "history_header_label",
+            widgets["hist_header_label"],
+            history_required,
+            True,
+        ),
+        (
+            "history_controls",
+            widgets["hist_control_frame"],
+            history_required,
+            False,
+        ),
         ("session_tree", widgets["session_tree"], False, False),
         ("history_tree", widgets["history_tree"], False, False),
         ("summary_tree", widgets["summary_tree"], False, False),
@@ -3006,6 +3031,23 @@ def collect_ui_geometry(
         ("status_frame", widgets["operator_status_frame"], True, False),
         ("footer", widgets["operator_footer_label"], True, True),
     ]
+    history_button_names = (
+        ("history_today_button", "today_button"),
+        ("history_date_search_button", "date_search_button"),
+        ("history_decrease_font_button", "decrease_font_button"),
+        ("history_increase_font_button", "increase_font_button"),
+    )
+    present_history_buttons = []
+    for record_name, attribute_name in history_button_names:
+        button = getattr(app, attribute_name, None)
+        if button is None:
+            if history_required:
+                raise RuntimeError(
+                    f"history read-only capture is missing {attribute_name}"
+                )
+            continue
+        specs.append((record_name, button, history_required, True))
+        present_history_buttons.append(record_name)
     for index, label in enumerate(app.step_labels, 1):
         specs.append((f"step_{index}", label, True, True))
     records = [
@@ -3147,6 +3189,10 @@ def collect_ui_geometry(
         ("footer", "status_frame"),
         *((f"step_{index}", "center_card") for index in range(1, 6)),
     ]
+    containment.extend(
+        (record_name, "history_controls")
+        for record_name in present_history_buttons
+    )
     if widgets.get("exact_rescan_detail_frame") is not None:
         containment.append(("exact_rescan_detail_frame", "exact_rescan_frame"))
     if widgets.get("exact_rescan_detail_text") is not None:
@@ -3182,11 +3228,8 @@ def collect_ui_geometry(
         "manual_complete_button",
         "exact_rescan_button",
     )
-    overlaps.extend(
-        (button_names[first], button_names[second])
-        for first in range(len(button_names))
-        for second in range(first + 1, len(button_names))
-    )
+    overlaps.extend(_pairwise_widget_names(button_names))
+    overlaps.extend(_pairwise_widget_names(present_history_buttons))
     by_name = {record["name"]: record for record in records}
     by_name["qa_scan_detail_text"]["check_requested_height"] = True
     active_tree_name = (
@@ -4143,6 +4186,11 @@ def collect_window_capture_contract(
             f"Tk/Win32 client size mismatch at 96 DPI: "
             f"tk={logical_client_size} win32={client_size}"
         )
+    tk_scaling = observe_target_tk_scaling(
+        app,
+        int(monitor_target["dpi"][0]),
+        hwnd=hwnd,
+    )
     return {
         "status": "PASS",
         "current_pid": int(current_pid),
@@ -4154,6 +4202,7 @@ def collect_window_capture_contract(
         ],
         "client_rect": client_rect,
         "client_size": client_size,
+        "tk_scaling": tk_scaling,
         "client_offset_in_window": [
             client_rect[0] - window_rect[0],
             client_rect[1] - window_rect[1],
@@ -4353,6 +4402,75 @@ def settle_responsive_layout(
     }
 
 
+def observe_target_tk_scaling(
+    app: Any,
+    target_dpi: int,
+    *,
+    hwnd: int | None = None,
+    user32: Any | None = None,
+) -> dict[str, Any]:
+    """Fail closed unless Tk pixels-per-point matches the capture monitor.
+
+    Tk initializes its global point-to-pixel conversion from the monitor that
+    owns the root at interpreter creation.  Moving a withdrawn root from a
+    144-DPI primary display to DISPLAY2 does not update that conversion, even
+    though ``GetDpiForWindow`` changes to 96.  The capture contract therefore
+    observes both values independently.
+    """
+
+    dpi = int(target_dpi)
+    if dpi <= 0:
+        raise RuntimeError(f"invalid target DPI for Tk scaling: {target_dpi}")
+    expected_scaling = dpi / 72.0
+    observed_scaling = float(app.tk.call("tk", "scaling"))
+    pixels_per_inch = float(app.winfo_fpixels("1i"))
+    if abs(observed_scaling - expected_scaling) > 0.01:
+        raise RuntimeError(
+            "Tk scaling does not match DISPLAY2 DPI: "
+            f"expected={expected_scaling:.6f} actual={observed_scaling:.6f}"
+        )
+    if abs(pixels_per_inch - dpi) > 0.75:
+        raise RuntimeError(
+            "Tk physical-inch conversion does not match DISPLAY2 DPI: "
+            f"expected={dpi} actual={pixels_per_inch:.6f}"
+        )
+    window_dpi = None
+    if hwnd is not None:
+        if user32 is None:
+            if os.name != "nt":
+                raise RuntimeError("GetDpiForWindow attestation requires Windows")
+            user32 = ctypes.windll.user32
+        window_dpi = int(user32.GetDpiForWindow(int(hwnd)))
+        if window_dpi != dpi:
+            raise RuntimeError(
+                "Tk window DPI does not match DISPLAY2 DPI: "
+                f"expected={dpi} actual={window_dpi} hwnd={hwnd}"
+            )
+    return {
+        "status": "PASS",
+        "target_dpi": dpi,
+        "expected_tk_scaling": expected_scaling,
+        "observed_tk_scaling": observed_scaling,
+        "pixels_per_inch": pixels_per_inch,
+        "window_dpi": window_dpi,
+    }
+
+
+def configure_target_tk_scaling(app: Any, target_dpi: int) -> dict[str, Any]:
+    """Pin Tk scaling before the application creates any cached fonts."""
+
+    before_scaling = float(app.tk.call("tk", "scaling"))
+    before_pixels_per_inch = float(app.winfo_fpixels("1i"))
+    app.tk.call("tk", "scaling", int(target_dpi) / 72.0)
+    observed = observe_target_tk_scaling(app, int(target_dpi))
+    return {
+        **observed,
+        "before_tk_scaling": before_scaling,
+        "before_pixels_per_inch": before_pixels_per_inch,
+        "configured_before_widget_creation": True,
+    }
+
+
 def place_hidden_on_work_area(
     app: Any,
     monitor_target: Mapping[str, Any],
@@ -4393,6 +4511,11 @@ def place_hidden_on_work_area(
             f"hidden DISPLAY2 placement failed: visible={visible_after_hidden_move} "
             f"rect={hidden_rect} expected={work}"
         )
+    hidden_tk_scaling = observe_target_tk_scaling(
+        app,
+        int(monitor_target["dpi"][0]),
+        hwnd=hwnd,
+    )
     toplevel_guard = release_previsible_toplevel_guard(
         app, reject_created=True
     )
@@ -4425,6 +4548,11 @@ def place_hidden_on_work_area(
             f"first visible DISPLAY2 placement failed: visible={visible_after_show} "
             f"rect={visible_rect} expected={work} monitor={monitor}"
         )
+    visible_tk_scaling = observe_target_tk_scaling(
+        app,
+        int(monitor_target["dpi"][0]),
+        hwnd=hwnd,
+    )
     return {
         "status": "PASS",
         "hwnd": hwnd,
@@ -4438,6 +4566,8 @@ def place_hidden_on_work_area(
         "visible_rect": visible_rect,
         "device": monitor["device"],
         "is_primary": monitor["is_primary"],
+        "hidden_tk_scaling": hidden_tk_scaling,
+        "visible_tk_scaling": visible_tk_scaling,
     }
 
 
@@ -4533,7 +4663,12 @@ def _wait_until_ready(app: Any, timeout: float = 10.0) -> None:
     raise TimeoutError("Label Match did not initialize within capture timeout")
 
 
-def _make_capture_app(module: Any, settings: dict[str, Any]) -> Any:
+def _make_capture_app(
+    module: Any,
+    settings: dict[str, Any],
+    *,
+    target_dpi: int | None = None,
+) -> Any:
     class CaptureLabelMatch(module.Label_Match):
         def _load_app_settings(self) -> dict[str, Any]:
             # JSON round-trip detaches nested dictionaries from this harness.
@@ -4552,6 +4687,13 @@ def _make_capture_app(module: Any, settings: dict[str, Any]) -> Any:
     def hidden_init(instance: Any, *args: Any, **kwargs: Any) -> None:
         original_init(instance, *args, **kwargs)
         instance.withdraw()
+        if target_dpi is not None:
+            # This must run before Label_Match.__init__ creates any tuple-font
+            # or ttk style.  Tcl caches those point-font pixel metrics and a
+            # later DISPLAY2 move cannot repair an already cached 144-DPI font.
+            instance._capture_constructor_tk_scaling = (
+                configure_target_tk_scaling(instance, int(target_dpi))
+            )
 
     def guarded_state(instance: Any, new_state: str | None = None) -> Any:
         if new_state in {"normal", "zoomed"}:
@@ -4876,12 +5018,24 @@ def run_capture_matrix(
             "host_name": "CAPTURE-DISPLAY2",
             "real_host_name_recorded": False,
         }
-        app = _make_capture_app(module, settings)
+        app = _make_capture_app(
+            module,
+            settings,
+            target_dpi=int(monitor_target["dpi"][0]),
+        )
+        manifest["constructor_tk_scaling"] = dict(
+            app.__dict__.get("_capture_constructor_tk_scaling") or {}
+        )
         manifest["previsible_placement"] = place_hidden_on_work_area(
             app, monitor_target
         )
         _wait_until_ready(app)
         _apply_scale(app, requested_scale)
+        manifest["tk_scaling_after_app_scale"] = observe_target_tk_scaling(
+            app,
+            int(monitor_target["dpi"][0]),
+            hwnd=_window_root_hwnd(app),
+        )
         contract_issues = validate_live_contract(app)
         manifest["live_contract_ready"] = not contract_issues
         manifest["live_contract_issues"] = contract_issues

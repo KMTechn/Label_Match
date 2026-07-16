@@ -711,6 +711,7 @@ def test_tree_cell_fit_uses_realized_sibling_instead_of_hidden_page_width(
     notebook.winfo_width = lambda: notebook_width
     qa_tree = FakeWidget()
     qa_tree.winfo_width = lambda: realized_width
+    qa_tree._mapped = True
     exact_tree = FakeWidget(
         kind="ttk.Treeview",
         columns=("Order", "Value"),
@@ -719,6 +720,7 @@ def test_tree_cell_fit_uses_realized_sibling_instead_of_hidden_page_width(
     exact_tree.column("Order", width=80, stretch=False)
     exact_tree.column("Value", width=100, stretch=True)
     exact_tree.winfo_width = lambda: stale_width
+    exact_tree._mapped = False
     app.live_scan_notebook = notebook
     app.qa_scan_tree = qa_tree
     app.exact_rescan_tree = exact_tree
@@ -735,6 +737,56 @@ def test_tree_cell_fit_uses_realized_sibling_instead_of_hidden_page_width(
 
     assert fitted == expected
     assert fitted != stale
+
+
+def test_tree_cell_fit_prefers_mapped_sibling_when_hidden_width_is_closer(
+    monkeypatch,
+):
+    class FixedFont:
+        @staticmethod
+        def measure(value):
+            return len(str(value)) * 8
+
+    class FixedStyle:
+        @staticmethod
+        def lookup(_style_name, option):
+            assert option == "font"
+            return ("Consolas", 12)
+
+    monkeypatch.setattr(
+        label_match_module.tkFont,
+        "Font",
+        lambda *args, **kwargs: FixedFont(),
+    )
+    app = Label_Match.__new__(Label_Match)
+    app.style = FixedStyle()
+    notebook = FakeWidget()
+    notebook.winfo_width = lambda: 887
+    qa_tree = FakeWidget()
+    qa_tree.winfo_width = lambda: 883
+    qa_tree._mapped = True
+    exact_tree = FakeWidget(
+        kind="ttk.Treeview",
+        columns=("Order", "Value"),
+        style="Operator.Treeview",
+    )
+    exact_tree.column("Order", width=80, stretch=False)
+    exact_tree.column("Value", width=100, stretch=True)
+    exact_tree.winfo_width = lambda: 886
+    exact_tree._mapped = False
+    app.live_scan_notebook = notebook
+    app.qa_scan_tree = qa_tree
+    app.exact_rescan_tree = exact_tree
+    value = "F4-EXACT-" + "V" * 220 + "-VALUE-END"
+
+    fitted = app._fit_operator_tree_cell_text(exact_tree, "Value", value)
+
+    app.live_scan_notebook = None
+    app.qa_scan_tree = None
+    exact_tree.winfo_width = lambda: 883
+    expected = app._fit_operator_tree_cell_text(exact_tree, "Value", value)
+
+    assert fitted == expected
 
 
 def test_operator_notice_compacts_to_reason_key_value_and_next_action(
@@ -829,6 +881,7 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
     """Guard the real retry notice geometry, not the action-free capture fixture."""
 
     from tools.capture_label_operator_ui import (
+        TARGET_DISPLAY_DPI,
         _apply_scale,
         _configure_size,
         _make_capture_app,
@@ -869,7 +922,11 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
     settings = build_isolated_app_settings(data_root, 1.4)
     app = None
     try:
-        app = _make_capture_app(label_match_module, settings)
+        app = _make_capture_app(
+            label_match_module,
+            settings,
+            target_dpi=TARGET_DISPLAY_DPI[0],
+        )
         _wait_until_ready(app)
         _apply_scale(app, 1.4)
         _configure_size(app, (1366, 768))
@@ -1141,6 +1198,18 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         assert app.operator_notebook.select() == str(app.history_card)
         assert bool(app.history_tree.winfo_ismapped()) is True
         assert bool(app.session_tree.winfo_ismapped()) is False
+        assert bool(app.hist_header_frame.winfo_ismapped()) is True
+        assert bool(app.hist_header_label.winfo_ismapped()) is True
+        assert bool(app.hist_control_frame.winfo_ismapped()) is True
+        assert all(
+            bool(button.winfo_ismapped()) is True
+            for button in (
+                app.today_button,
+                app.date_search_button,
+                app.decrease_font_button,
+                app.increase_font_button,
+            )
+        )
         assert all(
             abs(before - after) <= 2
             for before_box, after_box in zip(
@@ -1349,7 +1418,11 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
     settings = build_isolated_app_settings(data_root, 1.0)
     app = None
     try:
-        app = _make_capture_app(label_match_module, settings)
+        app = _make_capture_app(
+            label_match_module,
+            settings,
+            target_dpi=int(monitor_target["dpi"][0]),
+        )
         _wait_until_ready(app)
         _apply_scale(app, 1.0)
         placement = _configure_size(
