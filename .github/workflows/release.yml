@@ -1,54 +1,77 @@
 name: Create GitHub Release for Label_Match
 
 on:
-  push:
-    tags:
-      - 'v*'
+  repository_dispatch:
+    types: [label-match-release]
 
 permissions:
   contents: write
 
 jobs:
   build-and-release:
-    runs-on: windows-latest
+    environment: label-match-production-signing
+    runs-on: [self-hosted, Windows, X64, label-match-signing]
+    env:
+      LABEL_MATCH_RELEASE_TAG: ${{ github.event.client_payload.tag }}
+      PYTHONNOUSERSITE: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '3.12'
+          python-version: '3.12.10'
+
+      - name: Validate release identity
+        env:
+          LABEL_MATCH_RELEASE_TAG_SIGNER_FINGERPRINT: ${{ vars.LABEL_MATCH_RELEASE_TAG_SIGNER_FINGERPRINT }}
+        run: |
+          python -I -S tools/verify_release_identity.py --expected-tag "$env:LABEL_MATCH_RELEASE_TAG" --expected-sha "$env:GITHUB_SHA" --reviewed-ref "refs/remotes/origin/main" --report "$env:RUNNER_TEMP\label-match-release-identity.json"
 
       - name: Install dependencies
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pyinstaller
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $venvRoot = Join-Path $env:RUNNER_TEMP "label-match-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $venvRoot) {
+            throw "Fresh release venv path already exists: $venvRoot"
+          }
+          python -I -m venv $venvRoot
+          "LABEL_MATCH_RELEASE_VENV=$venvRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $venvPython = Join-Path $venvRoot "Scripts\python.exe"
+          & $venvPython -I -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes --no-deps -r requirements-release.txt
+          & $venvPython -I -m pip check
+          (Join-Path $venvRoot "Scripts") | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Run tests
         run: |
-          python -B -m py_compile Label_Match.py package_logistics.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -B -m py_compile Label_Match.py package_logistics.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py tools/build_release_cli_tools.py tools/build_release_archive.py tools/verify_release_identity.py tools/verify_staged_release_installer.py
           python -m pytest -q
 
       - name: Build with PyInstaller (One-Folder mode)
         # ❗ 이 부분에 --hidden-import tkcalendar 옵션을 추가했습니다.
-        run: pyinstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame --hidden-import PIL --hidden-import tkcalendar Label_Match.py
+        run: python -m PyInstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame --hidden-import PIL --hidden-import tkcalendar --clean --noupx --noconfirm Label_Match.py
 
       - name: Build direct-sync CLI tools
         run: |
-          pyinstaller --name "direct_sync_relay_runner" --onefile --console --paths "." tools/direct_sync_relay_runner.py
-          pyinstaller --name "direct_sync_relay_install_pack" --onefile --console --paths "." tools/direct_sync_relay_install_pack.py
-          pyinstaller --name "register_label_match_worker_pc" --onefile --console --paths "." tools/register_label_match_worker_pc.py
+          python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --help-timeout-seconds 15 --probe-count 3
 
       - name: Include direct-sync relay tools
         run: |
           New-Item -ItemType Directory -Force -Path dist/Label_Match/tools
           Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match
+          Copy-Item "$env:RUNNER_TEMP\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json
           Copy-Item direct_sync_push.py,direct_sync_runtime.py,direct_sync_operator.py -Destination dist/Label_Match
           Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,tools/register_label_match_worker_pc.py -Destination dist/Label_Match/tools
-          Copy-Item dist/direct_sync_relay_runner.exe,dist/direct_sync_relay_install_pack.exe,dist/register_label_match_worker_pc.exe -Destination dist/Label_Match/tools
 
       - name: Record tokenless self-enrollment note
         run: |
@@ -97,15 +120,53 @@ jobs:
             $settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8NoBOM -LiteralPath $targetPath
           }
 
-      - name: Zip the build folder
-        # 빌드된 폴더 전체(dist/Label_Match)를 압축합니다.
+      - name: Sign and verify release executables
+        shell: pwsh
+        env:
+          WINDOWS_CODE_SIGNING_CERT_THUMBPRINT: ${{ vars.WINDOWS_CODE_SIGNING_CERT_THUMBPRINT }}
+          WINDOWS_CODE_SIGNING_TIMESTAMP_URL: ${{ vars.WINDOWS_CODE_SIGNING_TIMESTAMP_URL }}
         run: |
-          Compress-Archive -Path dist/Label_Match -DestinationPath "Label_Match-${{ github.ref_name }}.zip"
+          foreach ($name in @("WINDOWS_CODE_SIGNING_CERT_THUMBPRINT", "WINDOWS_CODE_SIGNING_TIMESTAMP_URL")) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "$name is required for production release signing."
+            }
+          }
+          ./tools/sign_release_executables.ps1 `
+            -PackageRoot "dist/Label_Match" `
+            -ExpectedThumbprint $env:WINDOWS_CODE_SIGNING_CERT_THUMBPRINT `
+            -TimestampUrl $env:WINDOWS_CODE_SIGNING_TIMESTAMP_URL
+
+      - name: Reverify signed CLI tools
+        env:
+          WINDOWS_CODE_SIGNING_CERT_THUMBPRINT: ${{ vars.WINDOWS_CODE_SIGNING_CERT_THUMBPRINT }}
+        run: |
+          python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --verify-existing --help-timeout-seconds 15 --probe-count 3
+
+      - name: Verify staged installer without system Python
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python tools/verify_staged_release_installer.py --package-root "dist/Label_Match" --report "dist/Label_Match/staged-installer-verification.json"
+          $env:LABEL_MATCH_STAGED_PACKAGE_ROOT = (Resolve-Path "dist/Label_Match").Path
+          $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
+          python -m pytest -q -p no:cacheprovider tests/test_staged_release_installer.py
+
+      - name: Build and verify deterministic release archive
+        shell: pwsh
+        env:
+          WINDOWS_CODE_SIGNING_CERT_THUMBPRINT: ${{ vars.WINDOWS_CODE_SIGNING_CERT_THUMBPRINT }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sourceEpoch = [int64](git show -s --format=%ct HEAD)
+          $zipPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
+          $archiveReport = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).archive-verification.json"
+          python tools/build_release_archive.py --package-root "dist/Label_Match" --archive $zipPath --source-epoch $sourceEpoch --report $archiveReport
 
       - name: Generate release SHA256 checksum
         shell: pwsh
         run: |
-          $zipPath = "Label_Match-${{ github.ref_name }}.zip"
+          $zipPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
           "$hash  $zipPath" | Set-Content -Encoding utf8NoBOM "$zipPath.sha256"
 
@@ -116,7 +177,7 @@ jobs:
           PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
           PRIVATE_UPDATE_ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}
         run: |
-          $zipPath = "Label_Match-${{ github.ref_name }}.zip"
+          $zipPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
           $size = (Get-Item -LiteralPath $zipPath).Length
           $baseUrl = $env:PRIVATE_UPDATE_ARTIFACT_BASE_URL.Trim().TrimEnd("/")
@@ -152,7 +213,7 @@ jobs:
             app_id = "Label_Match"
             package_id = "Label_Match"
             channel = "stable"
-            version = "${{ github.ref_name }}"
+            version = $env:LABEL_MATCH_RELEASE_TAG
             artifact = [ordered]@{
               name = $zipPath
               url = $artifactUrl
@@ -164,7 +225,18 @@ jobs:
               pyinstaller_layout = "onedir"
               top_level = "Label_Match"
               entrypoint = "Label_Match.exe"
-              required_files = @("Label_Match/Label_Match.exe")
+              required_files = @(
+                "Label_Match/Label_Match.exe",
+                "Label_Match/release-identity.json",
+                "Label_Match/install_label_match_direct_sync.ps1",
+                "Label_Match/authenticode-manifest.json",
+                "Label_Match/staged-installer-verification.json",
+                "Label_Match/tools/release_cli_tools_manifest.json",
+                "Label_Match/tools/release_cli_tools_post_sign_manifest.json",
+                "Label_Match/tools/direct_sync_relay_runner.exe",
+                "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+                "Label_Match/tools/register_label_match_worker_pc.exe"
+              )
               deny_runtime_state = $true
             }
             install = [ordered]@{
@@ -178,14 +250,15 @@ jobs:
               deny_pc_ids = @()
             }
           }
-          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM "Label_Match-${{ github.ref_name }}.manifest.json"
+          $manifestPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).manifest.json"
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM $manifestPath
 
       - name: Sign private update manifest
         if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
         shell: pwsh
         env:
           PRIVATE_UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.PRIVATE_UPDATE_MANIFEST_SIGNING_KEY }}
-          PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ github.ref_name }}.manifest.json
+          PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json
         run: |
           if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_SIGNING_KEY)) {
             throw "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY secret is required."
@@ -230,8 +303,8 @@ jobs:
           COMPANY_UPDATE_UPLOAD_ORIGIN_IP: ${{ vars.COMPANY_UPDATE_UPLOAD_ORIGIN_IP }}
           PRIVATE_UPDATE_APP_SLUG: label_match
           PRIVATE_UPDATE_CHANNEL: stable
-          PRIVATE_UPDATE_ZIP_PATH: Label_Match-${{ github.ref_name }}.zip
-          PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ github.ref_name }}.manifest.json
+          PRIVATE_UPDATE_ZIP_PATH: Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip
+          PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json
         run: |
           $ErrorActionPreference = "Stop"
           foreach ($name in @("COMPANY_UPDATE_UPLOAD_URL", "COMPANY_UPDATE_UPLOAD_TOKEN")) {
@@ -260,6 +333,10 @@ jobs:
           $zipPath = $env:PRIVATE_UPDATE_ZIP_PATH
           $manifestPath = $env:PRIVATE_UPDATE_MANIFEST_PATH
           $manifestSigPath = "$manifestPath.sig"
+          $uploadToken = $env:COMPANY_UPDATE_UPLOAD_TOKEN
+          if ($uploadToken.Contains("`r") -or $uploadToken.Contains("`n")) {
+            throw "COMPANY_UPDATE_UPLOAD_TOKEN must not contain line breaks."
+          }
           foreach ($path in @($zipPath, "$zipPath.sha256", $manifestPath, $manifestSigPath)) {
             if (-not (Test-Path -LiteralPath $path)) {
               throw "Required private update publish file is missing: $path"
@@ -269,7 +346,6 @@ jobs:
             "--fail", "--show-error", "--silent",
             "--retry", "3", "--retry-all-errors", "--connect-timeout", "30", "--max-time", "900",
             "-X", "POST",
-            "-H", "Authorization: Bearer $($env:COMPANY_UPDATE_UPLOAD_TOKEN)",
             "-F", "app_slug=$appSlug",
             "-F", "channel=$channel",
             "-F", "artifact=@$zipPath",
@@ -282,7 +358,9 @@ jobs:
             $resolvePort = if ($uploadUri.IsDefaultPort) { 443 } else { $uploadUri.Port }
             $curlArgs = @("--resolve", "$($uploadUri.Host):$($resolvePort):$uploadOriginIp") + $curlArgs
           }
-          & curl.exe @curlArgs
+          $curlConfigToken = $uploadToken.Replace("\", "\\").Replace('"', '\"')
+          $curlConfig = "header = `"Authorization: Bearer $curlConfigToken`""
+          $curlConfig | & curl.exe --config - @curlArgs
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to publish private update feed over HTTPS."
           }
@@ -291,9 +369,29 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: |
-            Label_Match-${{ github.ref_name }}.zip
-            Label_Match-${{ github.ref_name }}.zip.sha256
-          name: "Release ${{ github.ref_name }}"
-          body: "New release version ${{ github.ref_name }}"
+            Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip
+            Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip.sha256
+            Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.archive-verification.json
+          tag_name: ${{ env.LABEL_MATCH_RELEASE_TAG }}
+          name: "Release ${{ env.LABEL_MATCH_RELEASE_TAG }}"
+          body: "New release version ${{ env.LABEL_MATCH_RELEASE_TAG }}"
           draft: false
           prerelease: false
+
+      - name: Clean release virtual environment
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $venvCandidate = if ([string]::IsNullOrWhiteSpace($env:LABEL_MATCH_RELEASE_VENV)) {
+            Join-Path $env:RUNNER_TEMP "label-match-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          } else {
+            $env:LABEL_MATCH_RELEASE_VENV
+          }
+          if (Test-Path -LiteralPath $venvCandidate) {
+            $venv = [System.IO.Path]::GetFullPath($venvCandidate)
+            $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+            if (-not $venv.StartsWith($runnerTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Refusing to clean venv outside RUNNER_TEMP: $venv"
+            }
+            Remove-Item -LiteralPath $venv -Recurse -Force
+          }

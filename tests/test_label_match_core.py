@@ -181,6 +181,9 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
             module.LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
             raising=False,
         )
+        monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_TASK_RUN_USER_ENV, r"TEST1\kmtech-remote-admin")
+        monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_ENV_ENV, "TASK_PASSWORD_FOR_TEST")
+        monkeypatch.setenv("TASK_PASSWORD_FOR_TEST", "not-forwarded-on-command-line")
     context = module._label_match_direct_sync_context(
         str(tmp_path / "scan-data"),
         str(tmp_path / "active-config" / "app_settings.json"),
@@ -215,11 +218,17 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
     assert "--self-enroll" in command
     assert command[command.index("--server-base-url") + 1] == module.LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
     assert command[command.index("--program-data-root") + 1] == context["program_data_root"]
-    assert command[command.index("--python-exe") + 1]
+    assert "--python-exe" not in command
     assert command[command.index("--scan-source-dir") + 1] == context["scan_source_dir"]
     assert command[command.index("--app-settings-path") + 1] == context["app_settings_path"]
-    assert "--runner-exe" not in command
+    assert command[command.index("--runner-exe") + 1].endswith("direct_sync_relay_runner.exe")
     assert command[command.index("--registration-exe") + 1].endswith("register_label_match_worker_pc.exe")
+    if allow_interactive_task_for_local_test:
+        assert "--task-run-user" not in command
+    else:
+        assert command[command.index("--task-run-user") + 1] == r"TEST1\kmtech-remote-admin"
+        assert command[command.index("--task-run-password-env") + 1] == "TASK_PASSWORD_FOR_TEST"
+        assert "not-forwarded-on-command-line" not in command
     assert ("--allow-interactive-task-for-local-test" in command) is allow_interactive_task_for_local_test
     report = json.loads(Path(context["bootstrap_status_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "PASS"

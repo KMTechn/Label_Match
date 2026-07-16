@@ -69,13 +69,20 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
 }
 
 function Set-LabelMatchSavePath([string]$AppRoot, [string]$TargetSaveDir) {
-    $configDir = Join-Path $AppRoot "config"
-    $settingsPath = Join-Path $configDir "app_settings.json"
-    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+    $rootSettingsPath = Join-Path $AppRoot "config\app_settings.json"
+    $internalRoot = Join-Path $AppRoot "_internal"
+    $settingsPaths = if (Test-Path -LiteralPath $internalRoot -PathType Container) {
+        @((Join-Path $internalRoot "config\app_settings.json"), $rootSettingsPath)
+    }
+    else {
+        @($rootSettingsPath)
+    }
+    $settingsPath = $settingsPaths[0]
     $payload = [ordered]@{}
-    if (Test-Path -LiteralPath $settingsPath) {
+    $existingSettingsPath = $settingsPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not [string]::IsNullOrWhiteSpace($existingSettingsPath)) {
         try {
-            $existing = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $existing = Get-Content -LiteralPath $existingSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
             foreach ($property in $existing.PSObject.Properties) {
                 $payload[$property.Name] = $property.Value
             }
@@ -87,7 +94,9 @@ function Set-LabelMatchSavePath([string]$AppRoot, [string]$TargetSaveDir) {
     $targetFull = [System.IO.Path]::GetFullPath($TargetSaveDir)
     $defaultFull = [System.IO.Path]::GetFullPath("C:\ProgramData\KMTech\Label_Match\data")
     $payload["custom_save_path"] = if ($targetFull.Equals($defaultFull, [System.StringComparison]::OrdinalIgnoreCase)) { "" } else { $targetFull }
-    Write-Utf8JsonFile $settingsPath $payload
+    foreach ($targetPath in $settingsPaths) {
+        Write-Utf8JsonFile $targetPath $payload
+    }
     return $settingsPath
 }
 
@@ -122,13 +131,20 @@ function Resolve-PythonExe() {
 
 $appRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $toolsDir = Join-Path $appRoot "tools"
-$installPackCommand = Resolve-ToolCommand `
-    -ExePath (Join-Path $toolsDir "direct_sync_relay_install_pack.exe") `
-    -PythonScriptPath (Join-Path $toolsDir "direct_sync_relay_install_pack.py")
+$installPackCommand = @(
+    Resolve-ToolCommand `
+        -ExePath (Join-Path $toolsDir "direct_sync_relay_install_pack\direct_sync_relay_install_pack.exe") `
+        -PythonScriptPath (Join-Path $toolsDir "direct_sync_relay_install_pack.py")
+)
 $runnerExe = Join-Path $toolsDir "direct_sync_relay_runner.exe"
 $runnerScript = Join-Path $toolsDir "direct_sync_relay_runner.py"
-$pythonExe = Resolve-PythonExe
 $registrationExe = Join-Path $toolsDir "register_label_match_worker_pc.exe"
+$runnerExeAvailable = Test-Path -LiteralPath $runnerExe -PathType Leaf
+$registrationExeAvailable = Test-Path -LiteralPath $registrationExe -PathType Leaf
+$pythonExe = ""
+if (-not $runnerExeAvailable -or -not $registrationExeAvailable) {
+    $pythonExe = Resolve-PythonExe
+}
 $reportDir = Join-Path $ProgramDataRoot "status"
 $reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"
 
@@ -145,15 +161,21 @@ $arguments += @(
     "--app-root", $appRoot,
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
-    "--python-exe", $pythonExe,
     "--scan-source-dir", $ScanSourceDir,
     "--task-name", $TaskName,
-    "--report-path", $reportPath
+    "--report-path", $reportPath,
+    "--app-settings-path", $settingsPath
 )
-if (-not (Test-Path -LiteralPath $runnerScript)) {
+if (-not [string]::IsNullOrWhiteSpace($pythonExe)) {
+    $arguments += @("--python-exe", $pythonExe)
+}
+if ($runnerExeAvailable) {
+    $arguments += @("--runner-exe", $runnerExe)
+}
+elseif (-not (Test-Path -LiteralPath $runnerScript -PathType Leaf)) {
     throw "Python relay runner script is missing. Missing: $runnerScript"
 }
-if (Test-Path -LiteralPath $registrationExe) {
+if ($registrationExeAvailable) {
     $arguments += @("--registration-exe", $registrationExe)
 }
 if (-not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)) {

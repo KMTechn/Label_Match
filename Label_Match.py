@@ -90,6 +90,9 @@ LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV = "LABEL_MATCH_DIRECT_SYNC_SERVER_BA
 LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV = "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID"
 LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
 LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_NAME"
+LABEL_MATCH_DIRECT_SYNC_TASK_RUN_USER_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_RUN_USER"
+LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_ENV_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_ENV"
+LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_FILE_ENV = "LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_FILE"
 LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_SECONDS"
 LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV = (
     "LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST"
@@ -386,10 +389,18 @@ def _label_match_run_bounded_subprocess(command, *, timeout_seconds, env):
 
 def _label_match_direct_sync_tool_command(context):
     tools_dir = os.path.join(context["app_root"], "tools")
-    install_pack_exe = os.path.join(tools_dir, "direct_sync_relay_install_pack.exe")
+    install_pack_exe_candidates = [
+        os.path.join(
+            tools_dir,
+            "direct_sync_relay_install_pack",
+            "direct_sync_relay_install_pack.exe",
+        ),
+        os.path.join(tools_dir, "direct_sync_relay_install_pack.exe"),
+    ]
     install_pack_script = os.path.join(tools_dir, "direct_sync_relay_install_pack.py")
-    if os.path.isfile(install_pack_exe):
-        return [install_pack_exe]
+    for install_pack_exe in install_pack_exe_candidates:
+        if os.path.isfile(install_pack_exe):
+            return [install_pack_exe]
     if os.path.isfile(install_pack_script):
         python_exe = "" if getattr(sys, "frozen", False) else sys.executable
         if not python_exe:
@@ -877,11 +888,46 @@ def _label_match_auto_bootstrap_direct_sync(context):
             {**base_report, "status": "BLOCKED", "blocked_reason": "direct-sync install pack tool is missing"},
         )
         return
-    python_exe = _label_match_python_exe_for_runner()
-    if not python_exe:
+    runner_exe = _label_match_optional_tool_exe(context, "direct_sync_relay_runner.exe")
+    registration_exe = _label_match_optional_tool_exe(context, "register_label_match_worker_pc.exe")
+    python_exe = ""
+    if not runner_exe or not registration_exe:
+        python_exe = _label_match_python_exe_for_runner()
+    if (not runner_exe or not registration_exe) and not python_exe:
         _label_match_write_json(
             context["bootstrap_status_path"],
-            {**base_report, "status": "BLOCKED", "blocked_reason": "python.exe is required for direct-sync relay runner"},
+            {
+                **base_report,
+                "status": "BLOCKED",
+                "blocked_reason": "bundled direct-sync executables are incomplete and python.exe fallback is unavailable",
+            },
+        )
+        return
+    allow_interactive_task_for_local_test = os.environ.get(
+        LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
+        "",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    task_run_user = os.environ.get(LABEL_MATCH_DIRECT_SYNC_TASK_RUN_USER_ENV, "").strip()
+    task_run_password_env = os.environ.get(
+        LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_ENV_ENV,
+        "",
+    ).strip()
+    task_run_password_file = os.environ.get(
+        LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_FILE_ENV,
+        "",
+    ).strip()
+    password_source_count = int(bool(task_run_password_env)) + int(bool(task_run_password_file))
+    if not allow_interactive_task_for_local_test and (not task_run_user or password_source_count != 1):
+        _label_match_write_json(
+            context["bootstrap_status_path"],
+            {
+                **base_report,
+                "status": "BLOCKED",
+                "blocked_reason": (
+                    "production direct-sync bootstrap requires a task run user and exactly one "
+                    "password env-name or password-file setting"
+                ),
+            },
         )
         return
 
@@ -893,8 +939,6 @@ def _label_match_auto_bootstrap_direct_sync(context):
         context["server_base_url"],
         "--program-data-root",
         context["program_data_root"],
-        "--python-exe",
-        python_exe,
         "--scan-source-dir",
         context["scan_source_dir"],
         "--task-name",
@@ -903,15 +947,20 @@ def _label_match_auto_bootstrap_direct_sync(context):
         context["install_report_path"],
         "--apply",
     ]
+    if python_exe:
+        args.extend(["--python-exe", python_exe])
+    if runner_exe:
+        args.extend(["--runner-exe", runner_exe])
     if context["app_settings_path"]:
         args.extend(["--app-settings-path", context["app_settings_path"]])
-    registration_exe = _label_match_optional_tool_exe(context, "register_label_match_worker_pc.exe")
     if registration_exe:
         args.extend(["--registration-exe", registration_exe])
-    allow_interactive_task_for_local_test = os.environ.get(
-        LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
-        "",
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    if task_run_user:
+        args.extend(["--task-run-user", task_run_user])
+    if task_run_password_env:
+        args.extend(["--task-run-password-env", task_run_password_env])
+    if task_run_password_file:
+        args.extend(["--task-run-password-file", task_run_password_file])
     if allow_interactive_task_for_local_test:
         args.append("--allow-interactive-task-for-local-test")
 

@@ -874,6 +874,11 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "uninstall": bool(args.uninstall),
         "task_name": args.task_name,
         "program_data_root": str(Path(args.program_data_root).expanduser().resolve()),
+        "app_settings_path": str(
+            Path(app_settings_path).expanduser().resolve()
+            if app_settings_path
+            else app_root / "config" / "app_settings.json"
+        ),
         "producer_manifest_path": str(producer_manifest_path),
         "credential_path": str(credential_path),
         "runtime_paths": paths,
@@ -926,6 +931,16 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             "enrollment_url": _enrollment_url(args),
             "enrollment_token_source": _enrollment_token_source(args),
             "registration_script": str(app_root / "tools" / "register_label_match_worker_pc.py"),
+            "registration_executable": (
+                str(Path(str(getattr(args, "registration_exe", "") or "")).resolve())
+                if str(getattr(args, "registration_exe", "") or "").strip()
+                else ""
+            ),
+            "registration_command_mode": (
+                "bundled_executable"
+                if str(getattr(args, "registration_exe", "") or "").strip()
+                else "python_script"
+            ),
             "registration_report_path": str(
                 Path(
                     getattr(args, "registration_report_path", "")

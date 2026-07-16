@@ -6,20 +6,70 @@ import zipfile
 from pathlib import Path
 
 
+def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
+    lines = [
+        line.strip()
+        for line in Path("requirements-release.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert len(lines) == 24
+    assert all("==" in line for line in lines)
+    assert all(" --hash=sha256:" in line for line in lines)
+    assert all(line.count("--hash=sha256:") == 1 for line in lines)
+    assert any(line.startswith("pyinstaller==6.20.0 ") for line in lines)
+    assert any(line.startswith("pytest==9.1.1 ") for line in lines)
+
+
 def test_release_workflow_packages_direct_sync_relay_tools():
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
-    assert 'pyinstaller --name "direct_sync_relay_runner" --onefile --console --paths "." tools/direct_sync_relay_runner.py' in workflow
-    assert 'pyinstaller --name "direct_sync_relay_install_pack" --onefile --console --paths "." tools/direct_sync_relay_install_pack.py' in workflow
-    assert 'pyinstaller --name "register_label_match_worker_pc" --onefile --console --paths "." tools/register_label_match_worker_pc.py' in workflow
+    assert 'python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --help-timeout-seconds 15 --probe-count 3' in workflow
+    assert 'python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --verify-existing --help-timeout-seconds 15 --probe-count 3' in workflow
+    assert 'pyinstaller --name "direct_sync_relay_runner"' not in workflow.lower()
+    assert 'pyinstaller --name "direct_sync_relay_install_pack"' not in workflow.lower()
+    assert 'pyinstaller --name "register_label_match_worker_pc"' not in workflow.lower()
+    release_requirements = Path("requirements-release.txt").read_text(encoding="utf-8")
+    assert "pyinstaller==6.20.0" in release_requirements
+    assert "pytest==" in release_requirements
+    assert "tools/verify_release_identity.py" in workflow
+    identity_block = workflow[
+        workflow.index("- name: Validate release identity") : workflow.index("- name: Install dependencies")
+    ]
+    assert "github.ref_name" not in identity_block
+    assert "github.sha" not in identity_block
+    assert "GITHUB_REF_NAME" not in identity_block
+    assert '--expected-tag "$env:LABEL_MATCH_RELEASE_TAG"' in identity_block
+    assert '--expected-sha "$env:GITHUB_SHA"' in identity_block
+    assert "repository_dispatch:" in workflow
+    assert "types: [label-match-release]" in workflow
+    assert "push:" not in workflow
+    assert "github.ref_name" not in workflow
+    assert "requirements-release.txt" in workflow
+    assert "--require-hashes --no-deps" in workflow
+    assert "python-version: '3.12.10'" in workflow
+    assert "runs-on: [self-hosted, Windows, X64, label-match-signing]" in workflow
+    assert "environment: label-match-production-signing" in workflow
+    assert "python -I -S tools/verify_release_identity.py" in workflow
+    assert "LABEL_MATCH_RELEASE_TAG_SIGNER_FINGERPRINT" in identity_block
+    assert "python -I -m venv" in workflow
+    assert "PYTHONNOUSERSITE" in workflow
+    assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" in workflow
+    assert "Clean release virtual environment" in workflow
+    assert workflow.count('$PSNativeCommandUseErrorActionPreference = $true') >= 4
+    assert "fetch-depth: 0" in workflow
+    assert "persist-credentials: false" in workflow
     assert "LABEL_MATCH_ENROLLMENT_TOKEN" not in workflow
     assert "Normal installs use PRODUCER_SELF_ENROLL_ALLOWED_IPS" in workflow
 
     include_step = workflow.index("- name: Include direct-sync relay tools")
-    zip_step = workflow.index("- name: Zip the build folder")
+    identity_step = workflow.index("- name: Validate release identity")
+    test_step = workflow.index("- name: Run tests")
+    helper_build_step = workflow.index("- name: Build direct-sync CLI tools")
+    zip_step = workflow.index("- name: Build and verify deterministic release archive")
     packaging_block = workflow[include_step:zip_step]
 
-    assert include_step < zip_step
+    assert identity_step < test_step < helper_build_step < include_step < zip_step
     assert "New-Item -ItemType Directory -Force -Path dist/Label_Match/tools" in packaging_block
     assert "Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match" in packaging_block
     assert "Copy-Item direct_sync_push.py,direct_sync_runtime.py,direct_sync_operator.py -Destination dist/Label_Match" in packaging_block
@@ -29,11 +79,12 @@ def test_release_workflow_packages_direct_sync_relay_tools():
         "tools/register_label_match_worker_pc.py "
         "-Destination dist/Label_Match/tools"
     ) in packaging_block
-    assert (
-        "Copy-Item dist/direct_sync_relay_runner.exe,dist/direct_sync_relay_install_pack.exe,"
-        "dist/register_label_match_worker_pc.exe -Destination dist/Label_Match/tools"
-    ) in packaging_block
+    assert "Copy-Item dist/direct_sync_relay_runner.exe" not in packaging_block
+    assert 'Copy-Item "$env:RUNNER_TEMP\\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json' in packaging_block
     assert "tools/register_label_match_worker_pc.py" in packaging_block
+    assert "direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe" in workflow
+    assert "Label_Match/tools/release_cli_tools_manifest.json" in workflow
+    assert "Label_Match/tools/release_cli_tools_post_sign_manifest.json" in workflow
 
 
 def test_release_workflow_generates_private_update_manifest():
@@ -61,8 +112,8 @@ def test_release_workflow_generates_private_update_manifest():
     assert "\"$hash  $zipPath\" | Set-Content -Encoding utf8NoBOM \"$zipPath.sha256\"" in workflow
     assert "releases/download" not in workflow
     assert "percentage = $rolloutPercentage" in workflow
-    assert "Label_Match-${{ github.ref_name }}.manifest.json" in workflow
-    assert "Label_Match-${{ github.ref_name }}.zip" in workflow
+    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json" in workflow
+    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip" in workflow
     assert "- name: Sign private update manifest" in workflow
     assert "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY" in workflow
     assert "- name: Publish private update feed" in workflow
@@ -71,6 +122,8 @@ def test_release_workflow_generates_private_update_manifest():
     assert "--resolve" in workflow
     assert "PRIVATE_UPDATE_APP_SLUG: label_match" in workflow
     assert "curl.exe" in workflow
+    assert "curl.exe --config -" in workflow
+    assert '"-H", "Authorization: Bearer' not in workflow
     assert "- name: Attach install update settings" in workflow
     assert "dist/Label_Match/config/app_settings.json" in workflow
     assert "PRIVATE_UPDATE_MANIFEST_URL" in workflow
@@ -78,19 +131,36 @@ def test_release_workflow_generates_private_update_manifest():
     assert 'provider = "private_manifest"' in workflow
     assert 'provider = "github"' in workflow
     assert "PRIVATE_UPDATE_MANIFEST_URL and PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be set together." in workflow
+    assert "WINDOWS_CODE_SIGNING_PFX_BASE64" not in workflow
+    assert "WINDOWS_CODE_SIGNING_PFX_PASSWORD" not in workflow
+    assert "WINDOWS_CODE_SIGNING_CERT_THUMBPRINT" in workflow
+    assert "WINDOWS_CODE_SIGNING_TIMESTAMP_URL" in workflow
+    assert "tools/sign_release_executables.ps1" in workflow
+    assert "Label_Match/authenticode-manifest.json" in workflow
+    assert "tools/verify_staged_release_installer.py" in workflow
+    assert "tests/test_staged_release_installer.py" in workflow
+    assert "tools/build_release_archive.py" in workflow
+    assert "archive-verification.json" in workflow
+    assert "Compress-Archive" not in workflow
 
     manifest_step = workflow.index("- name: Generate private update manifest")
     release_step = workflow.index("- name: Create Release and Upload Asset")
     attach_step = workflow.index("- name: Attach install update settings")
-    zip_step = workflow.index("- name: Zip the build folder")
+    sign_step = workflow.index("- name: Sign and verify release executables")
+    signed_cli_step = workflow.index("- name: Reverify signed CLI tools")
+    installer_step = workflow.index("- name: Verify staged installer without system Python")
+    zip_step = workflow.index("- name: Build and verify deterministic release archive")
     upload_block = workflow[release_step:]
 
     assert attach_step < zip_step
+    assert attach_step < sign_step < signed_cli_step < installer_step < zip_step
     assert manifest_step < release_step
     assert "files: |" in upload_block
-    assert "Label_Match-${{ github.ref_name }}.zip" in upload_block
-    assert "Label_Match-${{ github.ref_name }}.zip.sha256" in upload_block
-    assert "Label_Match-${{ github.ref_name }}.manifest.json" not in upload_block
+    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip" in upload_block
+    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip.sha256" in upload_block
+    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.archive-verification.json" in upload_block
+    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json" not in upload_block
+    assert "tag_name: ${{ env.LABEL_MATCH_RELEASE_TAG }}" in upload_block
 
 
 def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
@@ -110,12 +180,12 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
         "register_label_match_worker_pc.py",
     ]:
         shutil.copy2(source_root / "tools" / filename, staged_tools / filename)
-    for filename in [
-        "direct_sync_relay_runner.exe",
-        "direct_sync_relay_install_pack.exe",
-        "register_label_match_worker_pc.exe",
-    ]:
+    for filename in ["direct_sync_relay_runner.exe", "register_label_match_worker_pc.exe"]:
         (staged_tools / filename).write_bytes(b"fixture exe")
+    install_payload = staged_tools / "direct_sync_relay_install_pack"
+    install_payload.mkdir()
+    (install_payload / "direct_sync_relay_install_pack.exe").write_bytes(b"fixture exe")
+    (staged_tools / "release_cli_tools_manifest.json").write_text("{}\n", encoding="utf-8")
 
     completed = subprocess.run(
         [sys.executable, str(staged_tools / "direct_sync_relay_runner.py"), "--help"],
@@ -146,15 +216,16 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
         "Label_Match/tools/direct_sync_phase_g_label_match_runtime_report.py",
         "Label_Match/tools/register_label_match_worker_pc.py",
         "Label_Match/tools/direct_sync_relay_runner.exe",
-        "Label_Match/tools/direct_sync_relay_install_pack.exe",
+        "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "Label_Match/tools/register_label_match_worker_pc.exe",
+        "Label_Match/tools/release_cli_tools_manifest.json",
     }.issubset(names)
 
 
 def test_one_step_installer_uses_bundled_tools_ip_allowlist_and_programdata_paths():
     script = Path("install_label_match_direct_sync.ps1").read_text(encoding="utf-8")
 
-    assert "direct_sync_relay_install_pack.exe" in script
+    assert '"direct_sync_relay_install_pack\\direct_sync_relay_install_pack.exe"' in script
     assert "direct_sync_relay_runner.exe" in script
     assert "direct_sync_relay_runner.py" in script
     assert "register_label_match_worker_pc.exe" in script
@@ -170,6 +241,8 @@ def test_one_step_installer_uses_bundled_tools_ip_allowlist_and_programdata_path
     assert "custom_save_path" in script
     assert "--self-enroll" in script
     assert "--python-exe" in script
-    assert "--runner-exe" not in script
+    assert '--runner-exe", $runnerExe' in script
     assert "--registration-exe" in script
+    assert "--app-settings-path" in script
+    assert '"_internal"' in script
     assert "--confirm-production-install" not in script
