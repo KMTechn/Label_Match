@@ -657,10 +657,13 @@ def test_display2_monitor_contract_rejects_primary_wrong_work_area_and_plus_zero
 def test_direct_responsive_settle_cancels_timer_and_flushes_windows_paint():
     calls = []
 
-    class EmptyTk:
+    class QueueTk:
+        def __init__(self):
+            self.pending = ["after-1", "after-2"]
+
         def call(self, *args):
             assert args == ("after", "info")
-            return ()
+            return tuple(self.pending)
 
         def splitlist(self, value):
             return tuple(value)
@@ -668,18 +671,24 @@ def test_direct_responsive_settle_cancels_timer_and_flushes_windows_paint():
     class FakeApp:
         def __init__(self):
             self.__dict__["_operator_layout_settle_after_id"] = "after-1"
-            self.tk = EmptyTk()
+            self.__dict__["_responsive_after_id"] = "after-2"
+            self.tk = QueueTk()
 
         def after_cancel(self, value):
             calls.append(("cancel", value))
+            self.tk.pending.remove(value)
 
         def _apply_operator_responsive_layout(self, *, settle):
+            assert self._operator_layout_settle_after_id is None
+            assert self._responsive_after_id is None
             calls.append(("layout", settle))
+            self.tk.pending.append("after-layout")
 
         def update_idletasks(self):
             calls.append(("idle",))
 
         def update(self):
+            assert self.tk.pending == []
             calls.append(("full-update",))
 
     result = settle_responsive_layout(
@@ -696,7 +705,9 @@ def test_direct_responsive_settle_cancels_timer_and_flushes_windows_paint():
     assert result["status"] == "PASS"
     assert calls == [
         ("cancel", "after-1"),
+        ("cancel", "after-2"),
         ("layout", True),
+        ("cancel", "after-layout"),
         ("idle",),
         ("full-update",),
         ("idle",),
@@ -706,9 +717,89 @@ def test_direct_responsive_settle_cancels_timer_and_flushes_windows_paint():
         ("idle",),
     ]
     assert result["full_app_update_called"] is True
+    assert result["pending_after_full_update"] == 0
+    assert result["responsive_callback_cancellation"] == {
+        "status": "PASS",
+        "attributes_cleared": [
+            "_operator_layout_settle_after_id",
+            "_responsive_after_id",
+        ],
+        "cancelled_ids": ["after-1", "after-2"],
+    }
     assert result["scheduled_job_quiescence"]["remaining_after"] == 0
+    assert result["scheduled_job_quiescence"]["cancelled"] == 1
     assert result["invalidate_rect_result"] == 1
     assert result["update_window_result"] == 1
+
+
+def test_responsive_settle_clears_both_ids_before_aborting_failed_cancel():
+    calls = []
+
+    class FakeApp:
+        def __init__(self):
+            self._operator_layout_settle_after_id = "after-1"
+            self._responsive_after_id = "after-2"
+
+        def after_cancel(self, after_id):
+            calls.append(("cancel", after_id))
+            if after_id == "after-1":
+                raise RuntimeError("stuck")
+
+        def _apply_operator_responsive_layout(self, *, settle):
+            calls.append(("layout", settle))
+
+    app = FakeApp()
+    with pytest.raises(RuntimeError, match="cancellation failed"):
+        settle_responsive_layout(app)
+
+    assert calls == [("cancel", "after-1"), ("cancel", "after-2")]
+    assert app._operator_layout_settle_after_id is None
+    assert app._responsive_after_id is None
+
+
+def test_prepare_state_for_capture_settles_before_reading_rendered_state(
+    monkeypatch,
+):
+    calls = []
+    app = object()
+    fixture = SimpleNamespace(state_id="qa_progress")
+    view = object()
+    settle_evidence = {"status": "PASS"}
+    rendered_state = {"state": "qa_progress"}
+
+    def apply_fixture(actual_app, actual_fixture):
+        assert actual_app is app
+        assert actual_fixture is fixture
+        calls.append("apply")
+        return view, "refresh"
+
+    def settle_layout(actual_app):
+        assert actual_app is app
+        calls.append("settle")
+        return settle_evidence
+
+    def collect_state(actual_app, actual_fixture, actual_view):
+        assert actual_app is app
+        assert actual_fixture is fixture
+        assert actual_view is view
+        calls.append("rendered")
+        return rendered_state
+
+    monkeypatch.setattr(capture, "apply_state_fixture", apply_fixture)
+    monkeypatch.setattr(capture, "settle_responsive_layout", settle_layout)
+    monkeypatch.setattr(capture, "collect_rendered_state", collect_state)
+    monkeypatch.setattr(
+        capture,
+        "pump_tk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("per-state pump must not run")
+        ),
+    )
+
+    result = capture.prepare_state_for_capture(app, fixture)
+
+    assert calls == ["apply", "settle", "rendered"]
+    assert result == (view, "refresh", settle_evidence, rendered_state)
 
 
 def test_responsive_settle_fails_closed_when_update_window_does_not_paint():

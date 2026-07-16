@@ -389,6 +389,13 @@ def test_workbench_renderer_uses_snapshot_adapter_then_pure_presenter():
     assert source.index("adapt_workflow_snapshot(") < source.index("present_workflow(")
 
 
+def test_responsive_layout_does_not_drain_tk_events_from_configure_callback():
+    source = inspect.getsource(Label_Match._apply_operator_responsive_layout)
+
+    assert "update_idletasks" not in source
+    assert ".update()" not in source
+
+
 def test_renderer_populates_actual_accepted_qa_rows_and_keeps_f4_rows_separate(operator_workbench):
     app = operator_workbench
     assert hasattr(Label_Match, "_render_operator_workbench")

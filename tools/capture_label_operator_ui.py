@@ -3911,6 +3911,39 @@ def quiesce_scheduled_jobs(app: Any) -> dict[str, Any]:
     }
 
 
+def cancel_pending_responsive_callbacks(app: Any) -> dict[str, Any]:
+    """Clear both responsive timers before any direct layout or event update."""
+
+    attributes = (
+        "_operator_layout_settle_after_id",
+        "_responsive_after_id",
+    )
+    cancelled: list[str] = []
+    failures: list[str] = []
+    seen: set[str] = set()
+    for attribute in attributes:
+        pending = app.__dict__.get(attribute)
+        try:
+            if pending and str(pending) not in seen:
+                app.after_cancel(pending)
+                cancelled.append(str(pending))
+                seen.add(str(pending))
+        except Exception as exc:
+            failures.append(f"{attribute}:{type(exc).__name__}:{exc}")
+        finally:
+            app.__dict__[attribute] = None
+    if failures:
+        raise RuntimeError(
+            "responsive callback cancellation failed before direct settle: "
+            + ",".join(failures)
+        )
+    return {
+        "status": "PASS",
+        "attributes_cleared": list(attributes),
+        "cancelled_ids": cancelled,
+    }
+
+
 def settle_responsive_layout(
     app: Any,
     *,
@@ -3919,13 +3952,7 @@ def settle_responsive_layout(
     invalidate_rect: Any | None = None,
     hwnd: int | None = None,
 ) -> dict[str, Any]:
-    pending = app.__dict__.get("_operator_layout_settle_after_id")
-    if pending:
-        try:
-            app.after_cancel(pending)
-        except Exception:
-            pass
-        app._operator_layout_settle_after_id = None
+    responsive_callback_cancellation = cancel_pending_responsive_callbacks(app)
     method_name = ""
     method = getattr(app, "_apply_operator_responsive_layout", None)
     if callable(method):
@@ -3937,9 +3964,15 @@ def settle_responsive_layout(
             raise RuntimeError("direct responsive settle method is unavailable")
         method()
         method_name = "_settle_operator_responsive_layout"
-    app.update_idletasks()
-    app.update()
     scheduled_job_quiescence = quiesce_scheduled_jobs(app)
+    app.update()
+    app.update_idletasks()
+    remaining_after_full_update = _pending_after_ids(app)
+    if remaining_after_full_update:
+        raise RuntimeError(
+            "scheduled jobs appeared after post-quiescence full update: "
+            f"{remaining_after_full_update}"
+        )
     if hwnd is None and os.name == "nt":
         hwnd = _window_root_hwnd(app)
     if update_window is None and os.name == "nt":
@@ -3974,8 +4007,10 @@ def settle_responsive_layout(
         )
     return {
         "method": method_name,
+        "responsive_callback_cancellation": responsive_callback_cancellation,
         "scheduled_job_quiescence": scheduled_job_quiescence,
         "full_app_update_called": True,
+        "pending_after_full_update": 0,
         "invalidate_rect_result": invalidate_result,
         "update_window_result": update_result,
         "dwm_flush_hresult": flush_result,
@@ -4348,6 +4383,18 @@ def _round_trip_check(
     }
 
 
+def prepare_state_for_capture(
+    app: Any,
+    fixture: StateFixture,
+) -> tuple[Any, str, dict[str, Any], dict[str, Any]]:
+    """Apply one fixture, settle its final layout, then read rendered state."""
+
+    view, refresh_method = apply_state_fixture(app, fixture)
+    settle = settle_responsive_layout(app)
+    rendered = collect_rendered_state(app, fixture, view)
+    return view, refresh_method, settle, rendered
+
+
 def run_capture_matrix(
     *,
     output_root: Path,
@@ -4488,10 +4535,10 @@ def run_capture_matrix(
             size_dir.mkdir(parents=True, exist_ok=True)
             for state_id in state_ids:
                 fixture = fixture_map[state_id]
-                view, refresh_method = apply_state_fixture(app, fixture)
-                pump_tk(app, 260)
-                rendered = collect_rendered_state(app, fixture, view)
-                settle = settle_responsive_layout(app)
+                view, refresh_method, settle, rendered = prepare_state_for_capture(
+                    app,
+                    fixture,
+                )
                 geometry = collect_ui_geometry(app, fixture)
                 before_window = collect_window_capture_contract(
                     app, monitor_target

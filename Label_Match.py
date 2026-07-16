@@ -5842,7 +5842,9 @@ class Label_Match(tk.Tk):
         if workbench is None:
             return
         try:
-            self.update_idletasks()
+            # Never enter a nested Tk event loop from a <Configure>-driven
+            # layout pass.  It can dispatch another configure callback before
+            # this pass raises its re-entry guard and create an event storm.
             root_width = int(self.winfo_width())
             root_height = int(self.winfo_height())
             if root_width <= 100:
@@ -6238,7 +6240,8 @@ class Label_Match(tk.Tk):
                     font=("Consolas", detail_font_size),
                     height=2,
                 )
-            self.update_idletasks()
+            # ``winfo_reqheight`` reflects each widget's configured font and
+            # text request without draining Tk's global idle queue here.
             try:
                 detail_header_height = max(
                     int(self.qa_scan_detail_title_label.winfo_reqheight()),
