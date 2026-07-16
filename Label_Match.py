@@ -3139,6 +3139,85 @@ class Label_Match(tk.Tk):
             date_button.pack_configure(padx=(0, 8 if compact else 15))
         self._history_control_style_signature = signature
 
+    def _normal_history_control_requested_width(
+        self,
+        _control_frame,
+        date_button,
+        base_header_size,
+    ):
+        """Measure normal history controls once per font signature.
+
+        A width that ultimately needs compact controls must not probe normal
+        styling again on every Configure event.  Reusing this request keeps
+        the adaptive decision deterministic without an idle callback.
+        """
+
+        key = (
+            str(self.default_font_name),
+            int(self.__dict__.get("_current_font_size", 14)),
+            int(base_header_size),
+        )
+        cache = self.__dict__.setdefault(
+            "_history_normal_control_reqwidth_cache",
+            {},
+        )
+        cached = cache.get(key)
+        if cached is not None:
+            return int(cached)
+        if date_button is not None and date_button.cget("text") != "날짜 조회":
+            date_button.configure(text="날짜 조회")
+        self._configure_history_control_buttons(compact=False)
+        requested = self._history_control_buttons_requested_width()
+        cache[key] = requested
+        return requested
+
+    def _history_control_buttons_requested_width(self):
+        """Sum immediate button requests and pack padding.
+
+        Tk updates each child's request synchronously after a style change,
+        while the parent frame can retain the previous request until idle.
+        Reading the children avoids caching that one-frame-old parent width.
+        """
+
+        def horizontal_padding(widget):
+            try:
+                raw = widget.pack_info().get("padx", 0)
+            except (TclError, AttributeError, TypeError):
+                return 0
+            if isinstance(raw, (tuple, list)):
+                values = tuple(raw)
+            else:
+                try:
+                    values = tuple(self.tk.splitlist(raw))
+                except (TclError, AttributeError, TypeError):
+                    values = tuple(str(raw).replace("{", "").replace("}", "").split())
+            if not values:
+                return 0
+            try:
+                pixels = [max(0, int(float(str(value)))) for value in values]
+            except (TypeError, ValueError):
+                return 0
+            if len(pixels) == 1:
+                return pixels[0] * 2
+            return pixels[0] + pixels[-1]
+
+        total = 0
+        for name in (
+            "today_button",
+            "date_search_button",
+            "decrease_font_button",
+            "increase_font_button",
+        ):
+            button = self.__dict__.get(name)
+            if button is None:
+                continue
+            try:
+                total += max(0, int(button.winfo_reqwidth()))
+            except (TclError, AttributeError, TypeError, ValueError):
+                continue
+            total += horizontal_padding(button)
+        return total
+
     def _apply_adaptive_header_fitting(self):
         required_widgets = ("hist_header_label", "hist_header_frame", "summary_header_label", "summary_header_frame", "summary_date_label", "summary_card", "history_tree", "summary_tree")
         if any(widget_name not in self.__dict__ for widget_name in required_widgets):
@@ -3153,7 +3232,22 @@ class Label_Match(tk.Tk):
             min_header_size = 12 if profile_name in {"small", "compact"} else 13
 
             hist_header_width = self.hist_header_frame.winfo_width()
-            if hist_header_width <= 1:
+            history_notebook = self.__dict__.get("operator_history_notebook")
+            if history_notebook is None:
+                history_notebook = self.__dict__.get("operator_notebook")
+            try:
+                history_notebook_width = int(history_notebook.winfo_width())
+            except (TclError, AttributeError, TypeError, ValueError):
+                history_notebook_width = 0
+            if (
+                self.__dict__.get("operator_workbench_ready")
+                and history_notebook_width > 20
+            ):
+                # The selected page has 8 px padding plus the notebook border
+                # on each side.  Unlike a hidden page's remembered width, the
+                # notebook itself is always realized and therefore stable.
+                hist_header_width = history_notebook_width - 20
+            elif hist_header_width <= 1:
                 hist_header_width = self.history_card.winfo_width() - (profile.get("card_padding", 16) * 2)
             hist_header_width = max(120, int(hist_header_width or 120))
 
@@ -3161,52 +3255,40 @@ class Label_Match(tk.Tk):
             control_width = 0
             if control_frame:
                 date_button = self.__dict__.get("date_search_button")
-                previous_compact = self.__dict__.get("_history_controls_compact")
-                compact_decision_width = int(
-                    self.__dict__.get(
-                        "_history_control_compact_decision_width",
-                        hist_header_width,
+                full_header_width = self._text_pixel_width(
+                    self._history_header_text_options()[0],
+                    (self.default_font_name, base_header_size, "bold"),
+                ) + 16
+                # Base the choice only on the realized notebook viewport.  A
+                # previous hidden-page width must not make 1920 px overflow
+                # while the same controls fit at a smaller or larger size.
+                compact_controls = hist_header_width < 620
+                if not compact_controls:
+                    normal_control_width = (
+                        self._normal_history_control_requested_width(
+                            control_frame,
+                            date_button,
+                            base_header_size,
+                        )
                     )
-                )
-                if previous_compact is True:
-                    # A normal-style probe that overflowed must not run again
-                    # for every Configure event at the same width.  Reconsider
-                    # it only after the right pane actually grows by 64 px.
                     compact_controls = (
-                        hist_header_width < compact_decision_width + 64
+                        full_header_width + normal_control_width + 18
+                        > hist_header_width
                     )
-                elif previous_compact is False:
-                    compact_controls = hist_header_width < 720
-                else:
-                    compact_controls = hist_header_width < 780
-                date_text = (
-                    "조회"
-                    if compact_controls or hist_header_width < 620
-                    else "날짜 조회"
-                )
+                date_text = "조회" if compact_controls else "날짜 조회"
                 if date_button is not None and date_button.cget("text") != date_text:
                     date_button.configure(text=date_text)
                 self._configure_history_control_buttons(compact=compact_controls)
-                control_width = max(0, control_frame.winfo_reqwidth())
-                normal_style_overflowed = False
-                if not compact_controls and control_width > hist_header_width - 12:
-                    normal_style_overflowed = True
-                    compact_controls = True
-                    if date_button is not None and date_button.cget("text") != "조회":
-                        date_button.configure(text="조회")
-                    self._configure_history_control_buttons(compact=True)
-                    control_width = max(0, control_frame.winfo_reqwidth())
+                control_width = self._history_control_buttons_requested_width()
                 self._history_controls_compact = compact_controls
-                if compact_controls and (
-                    previous_compact is not True or normal_style_overflowed
-                ):
-                    self._history_control_compact_decision_width = hist_header_width
-                elif not compact_controls:
-                    self.__dict__.pop(
-                        "_history_control_compact_decision_width",
-                        None,
-                    )
-                should_stack_controls = control_width + max(110, int(hist_header_width * 0.28)) + 18 > hist_header_width
+                self.__dict__.pop(
+                    "_history_control_compact_decision_width",
+                    None,
+                )
+                should_stack_controls = (
+                    control_width + full_header_width + 18
+                    > hist_header_width
+                )
                 if self.__dict__.get("_history_controls_stacked") != should_stack_controls:
                     if should_stack_controls:
                         self.hist_header_label.grid_configure(row=0, column=0, columnspan=3, sticky="w")
@@ -5593,6 +5675,50 @@ class Label_Match(tk.Tk):
         head_len = max_len - tail_len - 3
         return f"{text[:head_len]}...{text[-tail_len:]}"
 
+    def _operator_scan_tree_viewport_width(self, tree):
+        """Return a realized scan-tree width that matches the live notebook.
+
+        A hidden ttk.Notebook page retains its previous geometry.  During the
+        first F4 render after a resize, using that stale width can either
+        over-truncate the barcode or let it run beyond the newly visible
+        column.  Both scan pages share one notebook viewport, so prefer the
+        realized tree whose width is closest to that viewport.
+        """
+
+        def widget_width(widget):
+            if widget is None:
+                return 0
+            try:
+                return max(0, int(widget.winfo_width()))
+            except (TclError, AttributeError, TypeError, ValueError):
+                return 0
+
+        notebook_width = widget_width(
+            self.__dict__.get("live_scan_notebook")
+        )
+        own_width = widget_width(tree)
+        if notebook_width <= 1:
+            return own_width
+
+        candidates = []
+        seen = set()
+        for candidate in (
+            tree,
+            self.__dict__.get("qa_scan_tree"),
+            self.__dict__.get("exact_rescan_tree"),
+        ):
+            if candidate is None or id(candidate) in seen:
+                continue
+            seen.add(id(candidate))
+            width = widget_width(candidate)
+            if width > 1 and abs(notebook_width - width) <= 32:
+                candidates.append(width)
+        if not candidates:
+            # The configured column width remains the fail-safe when neither
+            # page has been realized for the current notebook geometry.
+            return 0
+        return min(candidates, key=lambda width: abs(notebook_width - width))
+
     def _fit_operator_tree_cell_text(self, tree, column, value, *, padding=20):
         """Fit a scan value to its visible column while retaining both ends.
 
@@ -5621,11 +5747,10 @@ class Label_Match(tk.Tk):
                     for name in columns
                     if name != str(column)
                 )
-                stretched_width = max(
-                    1,
-                    int(tree.winfo_width()) - occupied,
-                )
-                configured_width = max(configured_width, stretched_width)
+                viewport_width = self._operator_scan_tree_viewport_width(tree)
+                if viewport_width > 1:
+                    stretched_width = max(1, viewport_width - occupied)
+                    configured_width = max(configured_width, stretched_width)
             column_width = max(1, configured_width - int(padding))
             style_name = str(tree.cget("style") or "Operator.Treeview")
             style = self.__dict__.get("style")
@@ -6659,10 +6784,14 @@ class Label_Match(tk.Tk):
                     notebook.tab(frame, state="normal")
                 elif not visible and str(frame) in tab_ids:
                     notebook.hide(frame)
-                if visible and select:
-                    notebook.select(frame)
-                else:
-                    notebook.select(self.qa_scan_frame)
+                target = frame if visible and select else self.qa_scan_frame
+                try:
+                    selected = str(notebook.select())
+                except (TclError, TypeError, AttributeError):
+                    # Headless protocol fakes expose only select(target).
+                    selected = ""
+                if selected != str(target):
+                    notebook.select(target)
                 return
             except (TclError, AttributeError):
                 pass

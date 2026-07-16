@@ -55,6 +55,9 @@ class FakeWidget:
         self.pack_options.update(kwargs)
         self._mapped = True
 
+    def pack_info(self):
+        return dict(self.pack_options)
+
     def place(self, **kwargs):
         self.place_options.update(kwargs)
         self._mapped = True
@@ -617,6 +620,123 @@ def test_tree_cell_fit_uses_effective_stretched_column_width(monkeypatch):
     assert "..." in fixed_result
 
 
+def test_history_normal_control_width_probe_is_cached_by_font_signature():
+    app = Label_Match.__new__(Label_Match)
+    app.default_font_name = "Malgun Gothic"
+    app._current_font_size = 18
+    calls = []
+    style_state = {"compact": True}
+
+    def configure_controls(compact=False):
+        calls.append(bool(compact))
+        style_state["compact"] = bool(compact)
+
+    app._configure_history_control_buttons = configure_controls
+    control_frame = FakeWidget()
+    # Reproduce Tk's delayed parent request: it still reports compact width
+    # immediately after the children switch to normal styling.
+    control_frame.winfo_reqwidth = lambda: 228
+    app.tk = type("FakeTk", (), {"splitlist": staticmethod(lambda value: str(value).split())})()
+    button_specs = (
+        ("today_button", 144, (0, 5), "오늘"),
+        ("date_search_button", 144, (0, 15), "조회"),
+        ("decrease_font_button", 88, 0, "-"),
+        ("increase_font_button", 88, 0, "+"),
+    )
+    for name, normal_width, padx, text in button_specs:
+        button = FakeWidget(text=text)
+        button.pack(padx=padx)
+        button.winfo_reqwidth = (
+            lambda width=normal_width: 52
+            if style_state["compact"]
+            else width
+        )
+        setattr(app, name, button)
+    date_button = app.date_search_button
+
+    first = app._normal_history_control_requested_width(
+        control_frame,
+        date_button,
+        24,
+    )
+    second = app._normal_history_control_requested_width(
+        control_frame,
+        date_button,
+        24,
+    )
+
+    assert control_frame.winfo_reqwidth() == 228
+    assert first == second == 484
+    assert calls == [False]
+    assert date_button.cget("text") == "날짜 조회"
+
+    app._current_font_size = 20
+    assert app._normal_history_control_requested_width(
+        control_frame,
+        date_button,
+        24,
+    ) == 484
+    assert calls == [False, False]
+
+
+@pytest.mark.parametrize(
+    ("notebook_width", "realized_width", "stale_width"),
+    ((887, 883, 653), (1281, 1277, 1484)),
+)
+def test_tree_cell_fit_uses_realized_sibling_instead_of_hidden_page_width(
+    monkeypatch,
+    notebook_width,
+    realized_width,
+    stale_width,
+):
+    class FixedFont:
+        @staticmethod
+        def measure(value):
+            return len(str(value)) * 8
+
+    class FixedStyle:
+        @staticmethod
+        def lookup(_style_name, option):
+            assert option == "font"
+            return ("Consolas", 12)
+
+    monkeypatch.setattr(
+        label_match_module.tkFont,
+        "Font",
+        lambda *args, **kwargs: FixedFont(),
+    )
+    app = Label_Match.__new__(Label_Match)
+    app.style = FixedStyle()
+    notebook = FakeWidget()
+    notebook.winfo_width = lambda: notebook_width
+    qa_tree = FakeWidget()
+    qa_tree.winfo_width = lambda: realized_width
+    exact_tree = FakeWidget(
+        kind="ttk.Treeview",
+        columns=("Order", "Value"),
+        style="Operator.Treeview",
+    )
+    exact_tree.column("Order", width=80, stretch=False)
+    exact_tree.column("Value", width=100, stretch=True)
+    exact_tree.winfo_width = lambda: stale_width
+    app.live_scan_notebook = notebook
+    app.qa_scan_tree = qa_tree
+    app.exact_rescan_tree = exact_tree
+    value = "F4-EXACT-" + "V" * 220 + "-VALUE-END"
+
+    fitted = app._fit_operator_tree_cell_text(exact_tree, "Value", value)
+
+    app.live_scan_notebook = None
+    app.qa_scan_tree = None
+    exact_tree.winfo_width = lambda: realized_width
+    expected = app._fit_operator_tree_cell_text(exact_tree, "Value", value)
+    exact_tree.winfo_width = lambda: stale_width
+    stale = app._fit_operator_tree_cell_text(exact_tree, "Value", value)
+
+    assert fitted == expected
+    assert fitted != stale
+
+
 def test_operator_notice_compacts_to_reason_key_value_and_next_action(
     operator_workbench,
 ):
@@ -1083,6 +1203,33 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
             <= app.qa_scan_tree.winfo_height()
         )
 
+        def history_signature_at(size):
+            _configure_size(app, size)
+            apply_state_fixture(app, history_fixture)
+            settle_responsive_layout(app)
+            pump_tk(app, 180)
+            assert drain_tk_events() < 256
+            assert (
+                app.hist_header_frame.winfo_x()
+                + app.hist_header_frame.winfo_width()
+                <= app.history_card.winfo_width()
+            )
+            assert (
+                app.hist_control_frame.winfo_x()
+                + app.hist_control_frame.winfo_width()
+                <= app.hist_header_frame.winfo_width()
+            )
+            assert (
+                app._history_control_buttons_requested_width()
+                == app.hist_control_frame.winfo_reqwidth()
+            )
+            return history_layout_signature()
+
+        compact_history_before = history_signature_at((1366, 768))
+        history_signature_at((2560, 1392))
+        compact_history_after = history_signature_at((1366, 768))
+        assert compact_history_after == compact_history_before
+
     finally:
         if app is not None:
             app.destroy()
@@ -1126,6 +1273,7 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
         _apply_scale,
         _configure_size,
         _make_capture_app,
+        _pending_after_ids,
         _wait_until_ready,
         apply_state_fixture,
         build_isolated_app_settings,
@@ -1216,19 +1364,25 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
         fixtures = {
             fixture.state_id: fixture for fixture in build_state_fixtures()
         }
-        for state_id in ("waiting", "error", "qa_progress", "exact_complete"):
+        for state_id in (
+            "waiting",
+            "error",
+            "qa_progress",
+            "exact_first",
+            "exact_complete",
+        ):
             fixture = fixtures[state_id]
             apply_state_fixture(app, fixture)
             settle_responsive_layout(app)
             pump_tk(app, 220)
 
             assert contains(app.operator_center_pane, app.live_scan_notebook), state_id
-            if state_id == "exact_complete":
+            if state_id in {"exact_first", "exact_complete"}:
                 active_frame = app.exact_rescan_frame
                 active_tree = app.exact_rescan_tree
                 active_detail_frame = app.exact_rescan_detail_frame
                 active_detail_text = app.exact_rescan_detail_text
-                expected_row_count = fixture.exact_target
+                expected_row_count = len(fixture.exact_barcodes)
             else:
                 active_frame = app.qa_scan_frame
                 active_tree = app.qa_scan_tree
@@ -1244,6 +1398,18 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
 
             rows = tuple(active_tree.get_children())
             assert len(rows) == expected_row_count, state_id
+            assert bool(active_tree.winfo_ismapped()) is True, state_id
+            assert (
+                root_box(active_tree)[1]
+                >= root_box(app.operator_input_frame)[3] - 1
+            ), state_id
+            if state_id == "exact_first":
+                displayed = str(active_tree.item(rows[0], "values")[1])
+                assert displayed == app._fit_operator_tree_cell_text(
+                    active_tree,
+                    "Value",
+                    fixture.exact_barcodes[0],
+                )
             final_row_box = active_tree.bbox(rows[-1])
             assert final_row_box, state_id
             assert (
@@ -1304,6 +1470,9 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             app.exact_rescan_detail_text.winfo_height()
             >= app.exact_rescan_detail_text.winfo_reqheight()
         )
+        latest_exact_iid = f"exact-slot-{len(exact_fixture.exact_barcodes)}"
+        app.exact_rescan_tree.selection_set(latest_exact_iid)
+        app._render_exact_rescan_detail(latest_exact_iid)
         assert (
             app.exact_rescan_detail_text.get("1.0", "end-1c")
             == exact_fixture.exact_barcodes[-1]
@@ -1312,10 +1481,93 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             app.workflow_notice_label.cget("text")
         )
 
+        def relative_box(widget):
+            root_left = int(app.winfo_rootx())
+            root_top = int(app.winfo_rooty())
+            box = root_box(widget)
+            return (
+                box[0] - root_left,
+                box[1] - root_top,
+                box[2] - root_left,
+                box[3] - root_top,
+            )
+
+        def prove_exact_first_transition(size):
+            resized = _configure_size(app, size, monitor_target)
+            assert resized["status"] == "PASS"
+            assert resized["monitor"]["is_primary"] is False
+            apply_state_fixture(app, fixtures["qa_master"])
+            settle_responsive_layout(app)
+            pump_tk(app, 180)
+            assert bool(app.qa_scan_tree.winfo_ismapped()) is True
+
+            exact_first = fixtures["exact_first"]
+            apply_state_fixture(app, exact_first)
+            settle_responsive_layout(app)
+            pump_tk(app, 180)
+            assert app.live_scan_notebook.select() == str(app.exact_rescan_frame)
+            assert bool(app.exact_rescan_tree.winfo_ismapped()) is True
+            rows = tuple(app.exact_rescan_tree.get_children())
+            assert rows == ("exact-slot-1",)
+            displayed = str(app.exact_rescan_tree.item(rows[0], "values")[1])
+            assert displayed == app._fit_operator_tree_cell_text(
+                app.exact_rescan_tree,
+                "Value",
+                exact_first.exact_barcodes[0],
+            )
+            assert (
+                app.exact_rescan_detail_text.get("1.0", "end-1c")
+                == exact_first.exact_barcodes[0]
+            )
+            last_box = app.exact_rescan_tree.bbox(rows[-1])
+            assert last_box
+            assert (
+                last_box[1] + last_box[3]
+                <= app.exact_rescan_tree.winfo_height()
+            )
+            assert (
+                root_box(app.exact_rescan_tree)[1]
+                >= root_box(app.operator_input_frame)[3] - 1
+            )
+            assert _pending_after_ids(app) == ()
+            return tuple(
+                relative_box(widget)
+                for widget in (
+                    app.live_scan_notebook,
+                    app.exact_rescan_tree,
+                    app.exact_rescan_detail_frame,
+                    app.exact_rescan_detail_text,
+                )
+            )
+
+        compact_before = prove_exact_first_transition((1366, 768))
+        prove_exact_first_transition((2560, 1392))
+        compact_after = prove_exact_first_transition((1366, 768))
+        assert all(
+            abs(before - after) <= 2
+            for before_box, after_box in zip(compact_before, compact_after)
+            for before, after in zip(before_box, after_box)
+        )
+
+        history_placement = _configure_size(
+            app,
+            (1920, 1080),
+            monitor_target,
+        )
+        assert history_placement["status"] == "PASS"
+        assert history_placement["monitor"]["is_primary"] is False
         app.operator_notebook.select(app.history_card)
         settle_responsive_layout(app)
         pump_tk(app, 220)
+        assert contains(app.right_activity_card, app.hist_header_frame)
+        assert contains(app.operator_history_notebook, app.hist_header_frame)
+        assert contains(app.hist_header_frame, app.hist_header_label)
         assert contains(app.hist_header_frame, app.hist_control_frame)
+        assert (
+            app._history_control_buttons_requested_width()
+            == app.hist_control_frame.winfo_reqwidth()
+        )
+        assert not boxes_overlap(app.hist_header_label, app.hist_control_frame)
         history_buttons = (
             app.today_button,
             app.date_search_button,
@@ -1324,6 +1576,11 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
         )
         assert all(
             contains(app.hist_control_frame, button)
+            for button in history_buttons
+        )
+        assert all(
+            button.winfo_width() >= button.winfo_reqwidth()
+            and button.winfo_height() >= button.winfo_reqheight()
             for button in history_buttons
         )
         assert all(

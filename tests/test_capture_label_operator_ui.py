@@ -543,6 +543,88 @@ def test_text_clipping_proxy_checks_wrap_width_and_requested_geometry():
     assert result["wraplength_exceeds_widget"] == ["wrapped"]
 
 
+def test_text_clipping_proxy_trusts_fully_realized_natural_label_geometry():
+    records = [
+        {
+            **_geometry_record(
+                "natural_tlabel",
+                [0, 0, 100, 24],
+                requested_width=100,
+                requested_height=24,
+            ),
+            "text": "정상 라벨",
+            "widget_class": "TLabel",
+            "wraplength": 0,
+            "text_pixel_width": 96,
+            "text_available_width": 96,
+        },
+        {
+            **_geometry_record(
+                "natural_wrapped_label",
+                [0, 25, 90, 67],
+                requested_width=90,
+                requested_height=42,
+            ),
+            "text": "두 줄로 정상 배치되는 안내 문구",
+            "widget_class": "TLabel",
+            "wraplength": 120,
+            "text_pixel_width": 150,
+            "text_line_pixel_widths": [150],
+            "text_line_height": 20,
+            "text_available_width": 86,
+            "text_natural_geometry_authoritative": True,
+        },
+    ]
+
+    result = evaluate_text_clipping_proxy(records)
+
+    assert result["suspected"] is False
+    assert result["width_compressed_text_widgets"] == []
+    assert result["height_compressed_text_widgets"] == []
+    assert result["wraplength_exceeds_widget"] == []
+
+
+def test_text_clipping_proxy_rejects_explicit_width_even_when_request_fits():
+    records = [
+        {
+            **_geometry_record(
+                "fixed_single_line",
+                [0, 0, 90, 24],
+                requested_width=60,
+                requested_height=24,
+            ),
+            "text": "명시 폭보다 긴 단일 행 안내",
+            "widget_class": "TLabel",
+            "wraplength": 0,
+            "text_pixel_width": 290,
+            "text_available_width": 86,
+            "text_natural_geometry_authoritative": False,
+        },
+        {
+            **_geometry_record(
+                "fixed_wrapped",
+                [0, 25, 90, 67],
+                requested_width=60,
+                requested_height=42,
+            ),
+            "text": "명시 폭에서 잘릴 수 있는 줄바꿈 안내",
+            "widget_class": "TLabel",
+            "wraplength": 120,
+            "text_pixel_width": 150,
+            "text_line_pixel_widths": [150],
+            "text_line_height": 20,
+            "text_available_width": 86,
+            "text_natural_geometry_authoritative": False,
+        },
+    ]
+
+    result = evaluate_text_clipping_proxy(records)
+
+    assert result["width_compressed_text_widgets"] == ["fixed_single_line"]
+    assert result["wraplength_exceeds_widget"] == ["fixed_wrapped"]
+    assert result["suspected"] is True
+
+
 def test_font_metrics_prefers_direct_widget_font_and_measures_multiline_by_line():
     class FakeTk:
         def __init__(self):
@@ -1720,6 +1802,7 @@ def test_capture_evaluation_fails_new_detail_action_footer_and_text_gates():
     structure["detail_text_requested_height_fits"] = False
     structure["right_action_height_contract_86_to_104"] = False
     structure["status_footer_height_contract_max_32"] = False
+    structure["center_current_list_below_scan_input"] = False
 
     issues = evaluate_capture(record)
 
@@ -1729,6 +1812,7 @@ def test_capture_evaluation_fails_new_detail_action_footer_and_text_gates():
     assert "detail_text_height_compressed" in issues
     assert "right_action_height_outside_86_to_104" in issues
     assert "status_or_footer_height_exceeds_32" in issues
+    assert "current_scan_list_not_below_input" in issues
 
 
 def test_cross_capture_contract_preserves_center_geometry_and_scan_values():

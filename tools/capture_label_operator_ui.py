@@ -120,6 +120,9 @@ REQUIRED_WIDGET_ATTRS = (
     "exact_rescan_detail_metadata_label",
     "exact_rescan_detail_scrollbar",
     "operator_history_notebook",
+    "hist_header_frame",
+    "hist_header_label",
+    "hist_control_frame",
     "session_tree",
     "history_tree",
     "summary_tree",
@@ -1766,6 +1769,14 @@ def _widget_record(
         wraplength = int(float(widget.cget("wraplength") or 0))
     except Exception:
         wraplength = 0
+    explicit_text_dimensions = []
+    for option in ("width", "height"):
+        try:
+            configured = widget.cget(option)
+            if str(configured).strip() and float(configured) != 0:
+                explicit_text_dimensions.append(option)
+        except Exception:
+            continue
     try:
         (
             text_line_pixel_widths,
@@ -1777,11 +1788,15 @@ def _widget_record(
         text_line_pixel_widths = (requested[0],)
         text_pixel_width, text_line_height = requested[0], requested[1]
         text_measurement_source = "headless-approximation"
-    text_horizontal_inset = (
-        8
-        if widget_class in {"Button", "Label", "TButton", "TLabel"}
-        else 0
-    )
+    text_horizontal_inset = {
+        "Button": 8,
+        "TButton": 8,
+        # ttk labels request four pixels more than the measured text on the
+        # Windows theme.  Treating that natural border as eight pixels made
+        # every correctly sized label look four pixels clipped.
+        "Label": 8,
+        "TLabel": 4,
+    }.get(widget_class, 0)
     text_available_width = max(1, width - text_horizontal_inset)
     return {
         "name": name,
@@ -1802,6 +1817,11 @@ def _widget_record(
         ],
         "text_line_height": int(text_line_height),
         "text_measurement_source": str(text_measurement_source),
+        "text_explicit_dimensions": explicit_text_dimensions,
+        "text_natural_geometry_authoritative": bool(
+            widget_class in {"Label", "TLabel"}
+            and not explicit_text_dimensions
+        ),
         "text_horizontal_inset": text_horizontal_inset,
         "text_available_width": text_available_width,
         "check_requested_width": check_requested_width,
@@ -1993,7 +2013,9 @@ def evaluate_text_clipping_proxy(
                 int(actual[0])
                 - (
                     8
-                    if widget_class in {"Button", "Label", "TButton", "TLabel"}
+                    if widget_class in {"Button", "Label", "TButton"}
+                    else 4
+                    if widget_class == "TLabel"
                     else 0
                 ),
             )
@@ -2006,8 +2028,18 @@ def evaluate_text_clipping_proxy(
         )
         if str(record.get("text_measurement_source") or "") != "tk":
             non_authoritative.append(name)
+        natural_width_fits = int(requested[0]) <= int(actual[0]) + tolerance
+        natural_height_fits = int(requested[1]) <= int(actual[1]) + tolerance
+        natural_geometry_is_authoritative = bool(
+            record.get("text_natural_geometry_authoritative")
+        )
         if (
-            wraplength > text_available_width
+            not (
+                natural_geometry_is_authoritative
+                and natural_width_fits
+                and natural_height_fits
+            )
+            and wraplength > text_available_width
             and any(
                 width > text_available_width
                 for width in line_pixel_widths
@@ -2018,7 +2050,10 @@ def evaluate_text_clipping_proxy(
             # the widget and even one explicit line is wider than the widget,
             # horizontal clipping is possible regardless of requested height.
             wrap_exceeds_widget.append(name)
-        if wraplength <= 0 and text_pixel_width > text_available_width:
+        if (
+            wraplength <= 0
+            and text_pixel_width > text_available_width
+        ):
             width_compressed.append(name)
         if int(requested[1]) > int(actual[1]) + tolerance:
             height_compressed.append(name)
@@ -2956,6 +2991,9 @@ def collect_ui_geometry(
             False,
         ),
         ("history_notebook", widgets["operator_history_notebook"], True, False),
+        ("history_header_frame", widgets["hist_header_frame"], False, False),
+        ("history_header_label", widgets["hist_header_label"], False, True),
+        ("history_controls", widgets["hist_control_frame"], False, False),
         ("session_tree", widgets["session_tree"], False, False),
         ("history_tree", widgets["history_tree"], False, False),
         ("summary_tree", widgets["summary_tree"], False, False),
@@ -2994,7 +3032,14 @@ def collect_ui_geometry(
                     widget,
                     name,
                     critical=tree_mapping["exact_rescan_tree"],
-                    check_requested_width=name != "exact_rescan_detail_frame",
+                    # Read-only Text widgets intentionally wrap/scroll inside
+                    # their container; character-based requested width is not
+                    # a clipping contract.  Height and containment remain
+                    # fail-closed below.
+                    check_requested_width=name not in {
+                        "exact_rescan_detail_frame",
+                        "exact_rescan_detail_text",
+                    },
                     check_requested_height=name == "exact_rescan_detail_text",
                 )
             )
@@ -3088,6 +3133,9 @@ def collect_ui_geometry(
         ("qa_scan_detail_frame", "qa_scan_frame"),
         ("qa_scan_detail_text", "qa_scan_detail_frame"),
         ("history_notebook", "right_card"),
+        ("history_header_frame", "history_notebook"),
+        ("history_header_label", "history_header_frame"),
+        ("history_controls", "history_header_frame"),
         ("action_frame", "right_card"),
         ("session_tree", "history_notebook"),
         ("history_tree", "history_notebook"),
@@ -3125,6 +3173,7 @@ def collect_ui_geometry(
         ("input_frame", "live_scan_notebook"),
         ("current_set_tree", "qa_scan_detail_frame"),
         ("exact_rescan_tree", "exact_rescan_detail_frame"),
+        ("history_header_label", "history_controls"),
         ("history_notebook", "action_frame"),
     ]
     button_names = (
