@@ -953,6 +953,60 @@ def test_middle_ellipsis_requires_start_end_and_pixel_fit():
     )
 
 
+def test_operator_scan_summary_contract_rejects_full_raw_and_requires_short_id():
+    item_code = "AAA2270730200"
+    master = f"CLC={item_code}|PHS=2|ITG=MASTER-1"
+    product = f"CLC={item_code}|PHS=2|SERIAL=260717000002"
+    valid = (item_code, f"{item_code} · S/N 260717000002")
+
+    assert capture.validate_operator_scan_summaries(
+        (master, product),
+        (item_code, item_code),
+        (1, 2),
+        valid,
+    ) == []
+
+    issues = capture.validate_operator_scan_summaries(
+        (master, product),
+        (item_code, item_code),
+        (1, 2),
+        (master, item_code),
+    )
+    assert "summary_1:raw_delimiter_exposed" in issues
+    assert "summary_1:full_raw_exposed" in issues
+    assert "summary_1:master_must_equal_item_code" in issues
+    assert "summary_2:short_identifier_missing" in issues
+
+    for empty_identifier in (
+        f"{item_code} · ",
+        f"{item_code} · ID ",
+    ):
+        assert "summary_1:short_identifier_missing" in (
+            capture.validate_operator_scan_summaries(
+                (product,),
+                (item_code,),
+                (2,),
+                (empty_identifier,),
+            )
+        )
+
+    same_raw_issues = capture.validate_operator_scan_summaries(
+        (item_code,),
+        (item_code,),
+        (2,),
+        (item_code,),
+    )
+    assert "summary_1:short_identifier_missing" in same_raw_issues
+
+    prefix_bypass_issues = capture.validate_operator_scan_summaries(
+        (product,),
+        (item_code,),
+        (2,),
+        (f"{item_code}X · ID TOKEN",),
+    )
+    assert "summary_1:item_code_missing" in prefix_bypass_issues
+
+
 def test_scan_display_contract_requires_authoritative_tk_font_measurement():
     class Tree:
         def __init__(self, tk):
@@ -1105,11 +1159,25 @@ def test_hidden_tree_display_contract_uses_shared_viewport_and_rejects_one_pixel
         expected_display_values=("ABC",),
         viewport_width=900,
     )
+    missing_item_prefix = capture.collect_scan_display_contract(
+        HiddenTree(24),
+        ("RAW-ABC",),
+        value_column="Value",
+        expected_display_values=("ABC",),
+        viewport_width=900,
+        display_source_values=("ABC",),
+        required_prefix_values=("ITEM-001",),
+    )
 
     assert passing["passed"] is True
     assert passing["rows"][0]["available_width"] == 680
     assert overflowing["passed"] is False
     assert "row_1:display_text_exceeds_value_column" in overflowing["issues"]
+    assert missing_item_prefix["passed"] is False
+    assert (
+        "row_1:item_code_not_preserved_in_display"
+        in missing_item_prefix["issues"]
+    )
 
 
 def test_qa_detail_contract_requires_mapping_and_selected_text_raw_parity():
@@ -1789,6 +1857,8 @@ def _valid_capture_record(state_id: str = "qa_progress"):
             "current_tree_mapped": not exact_mode,
             "exact_tree_mapped": exact_mode,
             "qa_detail_contract": {"passed": True, "issues": []},
+            "qa_summary_contract": {"passed": True, "issues": []},
+            "exact_summary_contract": {"passed": True, "issues": []},
             "qa_display_contract": {"passed": True, "issues": []},
             "exact_display_contract": {"passed": True, "issues": []},
             "exact_detail_contract": {"passed": True, "issues": []},
@@ -1872,6 +1942,22 @@ def test_capture_evaluation_rejects_stale_notice_action_on_active_state():
     record["rendered_state"]["notice_action_text"] = "제출 재시도"
 
     assert "notice_action_mapping_mismatch" in evaluate_capture(record)
+
+
+def test_capture_evaluation_fails_closed_when_scan_summary_contract_is_missing_or_failed():
+    missing = _valid_capture_record("qa_progress")
+    missing["rendered_state"].pop("qa_summary_contract")
+    assert "qa_summary_contract_missing_or_failed" in evaluate_capture(missing)
+
+    failed = _valid_capture_record("exact_first")
+    failed["rendered_state"]["exact_summary_contract"] = {
+        "passed": False,
+        "issues": ["summary_1:short_identifier_missing"],
+    }
+    assert (
+        "exact_summary_contract:summary_1:short_identifier_missing"
+        in evaluate_capture(failed)
+    )
 
 
 def test_compact_mismatch_notice_semantics_pass_and_duplicate_widget_fails():

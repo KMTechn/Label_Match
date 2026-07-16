@@ -36,6 +36,90 @@ def test_new_format_label_requires_non_empty_required_fields():
     assert parse(None, "CLC=AAA2270730100|SPC=Product") is None
 
 
+def test_operator_scan_summary_keeps_full_raw_out_of_the_live_list():
+    module = load_label_match_module()
+    summarize = module._label_match_operator_scan_summary
+    item_code = "AAA2270730200"
+    master = (
+        f"PHS=2|CLC={item_code}|SPC=Product|"
+        "ITG=ITAG-20260717-0001|SERIAL=260717000001"
+    )
+    product = (
+        f"PHS=2|CLC={item_code}|SPC=Product|"
+        "LOT=KM260717-A01|SERIAL=260717000002|TRACE=LINE-04"
+    )
+    final_label = (
+        f"PHS=2|CLC={item_code}|SPC=Product|"
+        "LBL=LBL-20260717-06043B|6D=20260717"
+    )
+
+    assert summarize(master, item_code, 1) == item_code
+    assert summarize(product, item_code, 2) == (
+        f"{item_code} · S/N 260717000002"
+    )
+    assert summarize(final_label, item_code, 5) == (
+        f"{item_code} · 라벨 LBL-20260717-06043B"
+    )
+    for position, raw in ((1, master), (2, product), (5, final_label)):
+        displayed = summarize(raw, item_code, position)
+        assert displayed != raw
+        assert "|" not in displayed
+        assert "=" not in displayed
+
+
+def test_operator_scan_summary_uses_a_short_opaque_identifier_fallback():
+    module = load_label_match_module()
+    raw = "PRODUCT_AAA2270730200_TRACE_IDENTIFIER_THAT_IS_MUCH_TOO_LONG_0007"
+
+    displayed = module._label_match_operator_scan_summary(
+        raw,
+        "AAA2270730200",
+        2,
+    )
+
+    assert displayed.startswith("AAA2270730200 · ID #")
+    assert displayed != raw
+    assert len(displayed) < len(raw)
+
+
+def test_operator_scan_summary_prefers_the_accepted_item_code_over_raw_clc():
+    module = load_label_match_module()
+    raw = (
+        "CLC=BBB3370830123|SPC=Other|PHS=2|SERIAL=S-9|"
+        "TRACE=AAA2270730200"
+    )
+
+    displayed = module._label_match_operator_scan_summary(
+        raw,
+        "AAA2270730200",
+        2,
+    )
+
+    assert displayed == "AAA2270730200 · S/N S-9"
+    assert "BBB3370830123" not in displayed
+
+
+def test_operator_scan_summary_uses_label_id_for_final_and_literal_gs_date():
+    module = load_label_match_module()
+    item_code = "AAA2270730200"
+    with_label_id = (
+        f"CLC={item_code}|SPC=Product|PHS=2|"
+        "SERIAL=260717000005|LBL=LBL-20260717-0005"
+    )
+    literal_gs = f"FINAL_LABEL_{item_code}<GS>6D20260717<GS>QTY60"
+
+    assert module._label_match_operator_scan_summary(
+        with_label_id,
+        item_code,
+        5,
+    ) == f"{item_code} · 라벨 LBL-20260717-0005"
+    assert module._label_match_operator_scan_summary(
+        literal_gs,
+        item_code,
+        5,
+    ) == f"{item_code} · 6D 20260717"
+
+
 def test_inspection_master_label_first_scan_workflow_accepts_item_qty():
     module = load_label_match_module()
     fields = module.Label_Match._parse_new_format_label(

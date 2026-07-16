@@ -157,7 +157,7 @@ def _rendered_tree_values(app):
     return tuple(app.qa_scan_tree.rows[iid]["values"][1] for iid in app.qa_scan_tree.order)
 
 
-def test_live_center_slots_use_raw_values_without_mutating_business_state():
+def test_live_center_slots_keep_raw_snapshot_but_render_compact_values_without_mutation():
     raw = (
         "RAW-MASTER|CLC=ITEM-001|PHS=A",
         "RAW-PRODUCT-0001-ITEM-001",
@@ -170,7 +170,14 @@ def test_live_center_slots_use_raw_values_without_mutating_business_state():
     view = app._render_operator_workbench()
 
     assert _slot_values(view) == raw
-    assert _rendered_tree_values(app)[: len(raw)] == raw
+    rendered = _rendered_tree_values(app)[: len(raw)]
+    assert rendered[0] == "ITEM-001"
+    assert all(value.startswith("ITEM-001 · ID #") for value in rendered[1:])
+    assert all(value not in raw for value in rendered)
+    assert tuple(
+        app._qa_scan_detail_rows[f"qa-slot-{index}"]["raw"]
+        for index in range(1, len(raw) + 1)
+    ) == raw
     assert not any(value in parsed for value in _slot_values(view))
     assert app.current_set_info == before
 
@@ -195,14 +202,21 @@ def test_completion_snapshot_keeps_raw_display_and_parsed_business_identity_sepa
     assert app._workflow_item_snapshot["item_code"] == "ITEM-001"
 
     # Business finalization resets current_set_info after publishing.  The
-    # detached view-only snapshot must still render the actual accepted raw
-    # values without writing them back into the new business set.
+    # detached view-only snapshot must keep accepted raw detail while the list
+    # renders compact values, without writing either back into the new set.
     app.current_set_info = _current_state()
     reset_before = deepcopy(app.current_set_info)
     view = app._render_operator_workbench()
 
     assert _slot_values(view) == raw
-    assert _rendered_tree_values(app) == raw
+    rendered = _rendered_tree_values(app)
+    assert rendered[0] == "ITEM-001"
+    assert all(value.startswith("ITEM-001 · ID #") for value in rendered[1:])
+    assert all(value not in raw for value in rendered)
+    assert tuple(
+        app._qa_scan_detail_rows[f"qa-slot-{index}"]["raw"]
+        for index in range(1, len(raw) + 1)
+    ) == raw
     assert app.current_set_info == reset_before
 
 

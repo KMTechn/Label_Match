@@ -408,12 +408,20 @@ def test_responsive_layout_does_not_drain_tk_events_from_configure_callback():
 def test_renderer_populates_actual_accepted_qa_rows_and_keeps_f4_rows_separate(operator_workbench):
     app = operator_workbench
     assert hasattr(Label_Match, "_render_operator_workbench")
-    qa_scans = ["MASTER-001", "PRODUCT-001", "PRODUCT-002"]
-    exact_scans = ["EXACT-001", "EXACT-002"]
+    item_code = "AAA2270730200"
+    qa_scans = [
+        f"CLC={item_code}|SPC=Product|PHS=2|ITG=MASTER-001",
+        f"CLC={item_code}|SPC=Product|PHS=2|SERIAL=PRODUCT-001",
+        f"CLC={item_code}|SPC=Product|PHS=2|SERIAL=PRODUCT-002",
+    ]
+    exact_scans = [
+        f"CLC={item_code}|SPC=Product|PHS=2|SERIAL=EXACT-001",
+        f"CLC={item_code}|SPC=Product|PHS=2|SERIAL=EXACT-002",
+    ]
     app.current_set_info.update(
         {
             "raw": list(qa_scans),
-            "parsed": list(qa_scans),
+            "parsed": [item_code] * len(qa_scans),
             "exact_rescan_active": False,
             "exact_rescan_complete": True,
             "exact_rescan_target_count": 2,
@@ -425,9 +433,12 @@ def test_renderer_populates_actual_accepted_qa_rows_and_keeps_f4_rows_separate(o
 
     qa_text = repr(app.qa_scan_tree.rows)
     exact_text = repr(app.exact_rescan_tree.rows)
-    assert all(scan in qa_text for scan in qa_scans)
+    assert item_code in qa_text
+    assert "S/N PRODUCT-001" in qa_text
+    assert all(scan not in qa_text for scan in qa_scans)
     assert all(scan not in qa_text for scan in exact_scans)
-    assert all(scan in exact_text for scan in exact_scans)
+    assert "S/N EXACT-001" in exact_text
+    assert all(scan not in exact_text for scan in exact_scans)
     assert app.qa_scan_tree.winfo_ismapped() is True
     assert app.exact_rescan_frame.winfo_ismapped() is True
 
@@ -468,7 +479,8 @@ def test_selected_qa_detail_keeps_full_raw_value_and_selection_across_rerender(
     assert app.qa_scan_tree.selection() == ("qa-slot-2",)
     displayed_product = app.qa_scan_tree.item("qa-slot-2", "values")[1]
     assert displayed_product != long_product
-    assert "..." in displayed_product
+    assert displayed_product.startswith("ITEM-001 · ")
+    assert "|" not in displayed_product
     assert "단계: 2. 제품1" in app.qa_scan_detail_metadata_label.cget("text")
     assert "상태: 완료" in app.qa_scan_detail_metadata_label.cget("text")
     assert app.qa_scan_detail_text.options["inserted"] == long_product
@@ -518,6 +530,8 @@ def test_f4_list_exposes_selected_full_raw_without_stealing_scan_focus(
 
     app.current_set_info.update(
         {
+            "raw": ["ITEM-001"],
+            "parsed": ["ITEM-001"],
             "exact_rescan_active": True,
             "exact_rescan_complete": False,
             "exact_rescan_target_count": 2,
@@ -529,8 +543,9 @@ def test_f4_list_exposes_selected_full_raw_without_stealing_scan_focus(
 
     first_display = app.exact_rescan_tree.rows["exact-slot-1"]["values"][1]
     second_display = app.exact_rescan_tree.rows["exact-slot-2"]["values"][1]
-    assert "..." in first_display and first_display != first
-    assert "..." in second_display and second_display != second
+    assert first_display.startswith("ITEM-001 · ID ") and first_display != first
+    assert second_display.startswith("ITEM-001 · ID ") and second_display != second
+    assert "|" not in first_display and "|" not in second_display
     assert app.exact_rescan_tree.selection() == ("exact-slot-2",)
     assert app.exact_rescan_detail_metadata_label.cget("text") == "순서: 2"
     assert detail_text.options["inserted"] == second
@@ -945,7 +960,7 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
             {
                 "id": "live-submission-set",
                 "raw": list(scans),
-                "parsed": list(scans),
+                "parsed": ["AAA2270730100"] * len(scans),
                 "has_error_or_reset": False,
                 "exact_rescan_active": False,
                 "exact_rescan_complete": False,
@@ -966,7 +981,17 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
 
         rows = tuple(app.qa_scan_tree.get_children())
         assert len(rows) == 5
-        assert all(scan in repr(app.qa_scan_tree.item(row, "values")) for row, scan in zip(rows, scans))
+        displayed_values = tuple(
+            str(app.qa_scan_tree.item(row, "values")[1]) for row in rows
+        )
+        assert displayed_values[0] == "AAA2270730100"
+        assert all(
+            value.startswith("AAA2270730100 · ID ")
+            for value in displayed_values[1:]
+        )
+        assert all(raw not in displayed_values for raw in scans)
+        assert all("|" not in value and "=" not in value for value in displayed_values)
+        assert app.qa_scan_detail_text.get("1.0", "end-1c") == scans[-1]
         final_row_box = app.qa_scan_tree.bbox(rows[-1])
         assert final_row_box
         assert final_row_box[1] + final_row_box[3] <= app.qa_scan_tree.winfo_height()
@@ -1502,10 +1527,16 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             ), state_id
             if state_id == "exact_first":
                 displayed = str(active_tree.item(rows[0], "values")[1])
+                parsed_item = str(app.current_set_info["parsed"][0])
+                summary = app._operator_scan_summary(
+                    fixture.exact_barcodes[0],
+                    parsed_item,
+                    2,
+                )
                 assert displayed == app._fit_operator_tree_cell_text(
                     active_tree,
                     "Value",
-                    fixture.exact_barcodes[0],
+                    summary,
                 )
             final_row_box = active_tree.bbox(rows[-1])
             assert final_row_box, state_id
@@ -1607,10 +1638,16 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             rows = tuple(app.exact_rescan_tree.get_children())
             assert rows == ("exact-slot-1",)
             displayed = str(app.exact_rescan_tree.item(rows[0], "values")[1])
+            parsed_item = str(app.current_set_info["parsed"][0])
+            summary = app._operator_scan_summary(
+                exact_first.exact_barcodes[0],
+                parsed_item,
+                2,
+            )
             assert displayed == app._fit_operator_tree_cell_text(
                 app.exact_rescan_tree,
                 "Value",
-                exact_first.exact_barcodes[0],
+                summary,
             )
             assert (
                 app.exact_rescan_detail_text.get("1.0", "end-1c")

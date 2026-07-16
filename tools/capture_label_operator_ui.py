@@ -78,6 +78,7 @@ HARNESS_ATTESTED_PATHS = (
     "tests/test_capture_label_operator_ui.py",
 )
 DEFAULT_SCALE = 1.0
+CAPTURE_ITEM_CODE = "AAA2270730100"
 MIN_SCALE = 0.7
 MAX_SCALE = 2.5
 NEAR_BLACK_LUMA = 16
@@ -172,6 +173,12 @@ class StateFixture:
     notice_kind: str = "submission_blocked"
     notice_tone: str = "danger"
     last_normal_scan: str = ""
+
+
+def fixture_parsed_scans(fixture: StateFixture) -> tuple[str, ...]:
+    """Mirror the runtime's accepted comparison values for each raw QA scan."""
+
+    return tuple(CAPTURE_ITEM_CODE for _ in fixture.qa_scans)
 
 
 @dataclass(slots=True)
@@ -310,7 +317,7 @@ def _realistic_phs_scan(stage: str, serial: int) -> str:
     """Return a long, printable production-like PHS barcode fixture."""
 
     return (
-        "PHS|CLC=AAA2270730100|SPC=HOUSING ASSY-REAR LH EXPORT "
+        f"PHS|CLC={CAPTURE_ITEM_CODE}|SPC=HOUSING ASSY-REAR LH EXPORT "
         "BLACK HIGH-GLOSS|PHS=2|6D=20260716|LOT=KM260716-B02|"
         f"STAGE={stage}|SERIAL=260716{serial:06d}|"
         "TRACE=LINE-04-STATION-PACKAGING-CUSTOMER-VALIDATION-"
@@ -396,9 +403,9 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
         StateFixture(
             "sealed",
             "sealed 상속",
-            qa_scans=("SEALED TRANSFER · AAA2270730100",),
+            qa_scans=(f"SEALED TRANSFER · {CAPTURE_ITEM_CODE}",),
             sealed_transfer=True,
-            last_normal_scan="SEALED TRANSFER · AAA2270730100",
+            last_normal_scan=f"SEALED TRANSFER · {CAPTURE_ITEM_CODE}",
         ),
         StateFixture(
             "error",
@@ -1585,7 +1592,7 @@ def build_presenter_view(fixture: StateFixture) -> Any:
     current = {
         "id": f"capture-{fixture.state_id}",
         "raw": list(fixture.qa_scans),
-        "parsed": list(fixture.qa_scans),
+        "parsed": list(fixture_parsed_scans(fixture)),
         "has_error_or_reset": fixture.has_error,
         "exact_rescan_active": fixture.exact_active,
         "exact_rescan_complete": fixture.exact_complete,
@@ -1671,7 +1678,7 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
         {
             "id": f"capture-{fixture.state_id}",
             "raw": list(fixture.qa_scans),
-            "parsed": list(fixture.qa_scans),
+            "parsed": list(fixture_parsed_scans(fixture)),
             "has_error_or_reset": fixture.has_error,
             "error_count": 1 if fixture.has_error else 0,
             "exact_rescan_active": fixture.exact_active,
@@ -1687,6 +1694,7 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     app.history_active_load_pending = False
     app._workflow_completion_kind = fixture.completion_kind
     app._workflow_display_scans = tuple(fixture.qa_scans)
+    app._workflow_display_parsed_scans = fixture_parsed_scans(fixture)
     app._workflow_last_normal_override = fixture.last_normal_scan or None
     app._workflow_recovered = fixture.recovered
     pending_error = fixture.error_message or None
@@ -2362,6 +2370,8 @@ def collect_scan_display_contract(
     empty_display: str = "",
     allow_headless_approximation: bool = False,
     viewport_width: int | None = None,
+    display_source_values: Sequence[str] | None = None,
+    required_prefix_values: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     try:
         children = tuple(str(iid) for iid in tree.get_children(""))
@@ -2389,6 +2399,24 @@ def collect_scan_display_contract(
             "expected_display_value_count_mismatch:"
             f"{len(expected_display_values)}!={len(raw_values)}"
         )
+    display_sources = tuple(
+        str(value) for value in (
+            raw_values if display_source_values is None else display_source_values
+        )
+    )
+    if len(display_sources) != len(raw_values):
+        aggregate_issues.append(
+            "display_source_value_count_mismatch:"
+            f"{len(display_sources)}!={len(raw_values)}"
+        )
+    required_prefixes = tuple(
+        str(value) for value in (required_prefix_values or ())
+    )
+    if required_prefixes and len(required_prefixes) != len(raw_values):
+        aggregate_issues.append(
+            "required_prefix_count_mismatch:"
+            f"{len(required_prefixes)}!={len(raw_values)}"
+        )
     for index, raw in enumerate(raw_values, 1):
         iid = f"{iid_prefix}{index}" if iid_prefix is not None else (
             children[index - 1] if index <= len(children) else ""
@@ -2406,8 +2434,13 @@ def collect_scan_display_contract(
             if index <= len(expected_display_values)
             else ""
         )
+        display_source = str(
+            display_sources[index - 1]
+            if index <= len(display_sources)
+            else ""
+        )
         row_issues = evaluate_middle_ellipsis_fit(
-            str(raw),
+            display_source,
             displayed,
             measured_width=measured,
             available_width=available,
@@ -2420,6 +2453,13 @@ def collect_scan_display_contract(
             ]
         if displayed != expected_display:
             row_issues.append("pixel_fitted_display_value_mismatch")
+        required_prefix = str(
+            required_prefixes[index - 1]
+            if index <= len(required_prefixes)
+            else ""
+        )
+        if required_prefix and not displayed.startswith(required_prefix):
+            row_issues.append("item_code_not_preserved_in_display")
         if measurement_source != "tk" and not allow_headless_approximation:
             row_issues.append("non_authoritative_text_measurement")
         if len(str(raw)) >= 160 and displayed == str(raw):
@@ -2429,6 +2469,8 @@ def collect_scan_display_contract(
                 "index": index,
                 "iid": iid,
                 "raw": str(raw),
+                "display_source": display_source,
+                "required_prefix": required_prefix,
                 "displayed": displayed,
                 "expected_displayed": expected_display,
                 "measured_width": measured,
@@ -2582,6 +2624,82 @@ def expected_scan_display_values(
         source = str(raw) if str(raw) else str(empty_display)
         result.append(str(fitter(tree, value_column, source)))
     return tuple(result)
+
+
+def expected_operator_scan_summaries(
+    app: Any,
+    raw_values: Sequence[str],
+    parsed_values: Sequence[str],
+    scan_positions: Sequence[int],
+) -> tuple[str, ...]:
+    summarizer = getattr(app, "_operator_scan_summary", None)
+    if not callable(summarizer):
+        raise RuntimeError("operator scan summary method is unavailable")
+    if not (
+        len(raw_values) == len(parsed_values) == len(scan_positions)
+    ):
+        raise RuntimeError("operator scan summary inputs must have equal lengths")
+    return tuple(
+        str(summarizer(raw, parsed, position))
+        for raw, parsed, position in zip(
+            raw_values,
+            parsed_values,
+            scan_positions,
+        )
+    )
+
+
+def validate_operator_scan_summaries(
+    raw_values: Sequence[str],
+    parsed_values: Sequence[str],
+    scan_positions: Sequence[int],
+    summaries: Sequence[str],
+) -> list[str]:
+    """Independently reject full raw values on the compact operator list."""
+
+    issues: list[str] = []
+    lengths = {
+        len(raw_values),
+        len(parsed_values),
+        len(scan_positions),
+        len(summaries),
+    }
+    if len(lengths) != 1:
+        return ["operator_scan_summary_count_mismatch"]
+    for index, (raw, parsed, position, summary) in enumerate(
+        zip(raw_values, parsed_values, scan_positions, summaries),
+        1,
+    ):
+        raw_text = str(raw or "")
+        item_code = str(parsed or "").strip()
+        display_text = str(summary or "")
+        prefix = f"summary_{index}:"
+        if len(display_text) > 64:
+            issues.append(prefix + "too_long")
+        if any(marker in display_text for marker in ("|", "=", "\r", "\n")):
+            issues.append(prefix + "raw_delimiter_exposed")
+        if raw_text and raw_text != item_code and display_text == raw_text:
+            issues.append(prefix + "full_raw_exposed")
+        if int(position) == 1:
+            if display_text != (item_code or "-"):
+                issues.append(prefix + "master_must_equal_item_code")
+            continue
+        expected_product_prefix = f"{item_code} · " if item_code else ""
+        if item_code and not display_text.startswith(expected_product_prefix):
+            issues.append(prefix + "item_code_missing")
+        if raw_text:
+            if " · " not in display_text:
+                issues.append(prefix + "short_identifier_missing")
+            else:
+                identifier = display_text.split(" · ", 1)[1].strip()
+                identifier_parts = identifier.split(maxsplit=1)
+                if (
+                    len(identifier_parts) != 2
+                    or not identifier_parts[0].strip()
+                    or not identifier_parts[1].strip()
+                ):
+                    issues.append(prefix + "short_identifier_missing")
+    return issues
 
 
 def _tk_font_line_metrics_with_source(
@@ -3528,10 +3646,30 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
     qa_detail_contract = collect_qa_detail_contract(app, fixture, view)
     presenter_rows = expected_presenter_rows(view)
     qa_raw_values = tuple(str(row.get("value") or "") for row in presenter_rows)
+    accepted_parsed_values = fixture_parsed_scans(fixture)
+    qa_parsed_values = tuple(
+        accepted_parsed_values[index]
+        if index < len(accepted_parsed_values)
+        else ""
+        for index in range(len(qa_raw_values))
+    )
+    qa_scan_positions = tuple(range(1, len(qa_raw_values) + 1))
+    qa_summary_values = expected_operator_scan_summaries(
+        app,
+        qa_raw_values,
+        qa_parsed_values,
+        qa_scan_positions,
+    )
+    qa_summary_issues = validate_operator_scan_summaries(
+        qa_raw_values,
+        qa_parsed_values,
+        qa_scan_positions,
+        qa_summary_values,
+    )
     expected_qa_display_values = expected_scan_display_values(
         app,
         widgets["current_set_tree"],
-        qa_raw_values,
+        qa_summary_values,
         value_column="Value",
         empty_display="-",
     )
@@ -3543,11 +3681,31 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         iid_prefix="qa-slot-",
         empty_display="-",
         viewport_width=live_scan_viewport_width,
+        display_source_values=qa_summary_values,
+        required_prefix_values=qa_parsed_values,
+    )
+    exact_parsed_values = tuple(
+        CAPTURE_ITEM_CODE for _ in fixture.exact_barcodes
+    )
+    exact_scan_positions = tuple(
+        2 for _ in fixture.exact_barcodes
+    )
+    exact_summary_values = expected_operator_scan_summaries(
+        app,
+        fixture.exact_barcodes,
+        exact_parsed_values,
+        exact_scan_positions,
+    )
+    exact_summary_issues = validate_operator_scan_summaries(
+        fixture.exact_barcodes,
+        exact_parsed_values,
+        exact_scan_positions,
+        exact_summary_values,
     )
     expected_exact_display_values = expected_scan_display_values(
         app,
         widgets["exact_rescan_tree"],
-        fixture.exact_barcodes,
+        exact_summary_values,
         value_column="Value",
     )
     exact_display_contract = collect_scan_display_contract(
@@ -3556,6 +3714,8 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         value_column="Value",
         expected_display_values=expected_exact_display_values,
         viewport_width=live_scan_viewport_width,
+        display_source_values=exact_summary_values,
+        required_prefix_values=exact_parsed_values,
     )
     exact_detail_contract = collect_exact_detail_contract(app, fixture)
     last_normal_contract = build_last_normal_scan_contract(
@@ -3590,6 +3750,16 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         "presenter_rows": presenter_rows,
         "expected_qa_display_values": list(expected_qa_display_values),
         "expected_exact_display_values": list(expected_exact_display_values),
+        "qa_summary_values": list(qa_summary_values),
+        "exact_summary_values": list(exact_summary_values),
+        "qa_summary_contract": {
+            "issues": qa_summary_issues,
+            "passed": not qa_summary_issues,
+        },
+        "exact_summary_contract": {
+            "issues": exact_summary_issues,
+            "passed": not exact_summary_issues,
+        },
         "presenter_stage": str(view.current_stage),
         "presenter_stage_label": str(view.current_stage_label),
         "presenter_next_action": str(view.next_action),
@@ -3753,6 +3923,24 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
             f"qa_detail_contract:{issue}"
             for issue in rendered.get("qa_detail_contract", {}).get("issues", ())
         )
+    qa_summary_contract = rendered.get("qa_summary_contract", {})
+    if qa_summary_contract.get("passed") is not True:
+        summary_issues = tuple(qa_summary_contract.get("issues", ()))
+        if summary_issues:
+            issues.extend(
+                f"qa_summary_contract:{issue}" for issue in summary_issues
+            )
+        else:
+            issues.append("qa_summary_contract_missing_or_failed")
+    exact_summary_contract = rendered.get("exact_summary_contract", {})
+    if exact_summary_contract.get("passed") is not True:
+        summary_issues = tuple(exact_summary_contract.get("issues", ()))
+        if summary_issues:
+            issues.extend(
+                f"exact_summary_contract:{issue}" for issue in summary_issues
+            )
+        else:
+            issues.append("exact_summary_contract_missing_or_failed")
     if not rendered.get("qa_display_contract", {}).get("passed"):
         issues.extend(
             f"qa_display_contract:{issue}"

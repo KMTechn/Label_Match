@@ -1131,6 +1131,147 @@ def _label_match_parse_new_format_fields(raw_value):
     return fields
 
 
+def _label_match_display_fields(raw_value):
+    """Return lenient key/value fields for presentation only."""
+
+    raw_text = str(raw_value or "").strip()
+    decoded = (
+        _label_match_decode_possible_base64_label(raw_text)
+        if raw_text.isascii()
+        else raw_text
+    )
+    if "=" not in decoded:
+        return {}
+    fields = {}
+    for part in decoded.split("|"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip().upper()
+        value = value.strip()
+        if key and value:
+            fields[key] = value
+    return fields
+
+
+def _label_match_compact_display_token(value, max_chars=22):
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    limit = max(8, int(max_chars))
+    if len(text) <= limit:
+        return text
+    tail = max(5, limit // 2 - 1)
+    head = max(2, limit - tail - 1)
+    return f"{text[:head]}…{text[-tail:]}"
+
+
+def _label_match_operator_item_code(raw_value, parsed_value):
+    # ``parsed`` is the already accepted comparison value.  A raw product
+    # barcode can contain other CLC-like text, so it must never override the
+    # authoritative item code used by the workflow.
+    parsed_text = str(parsed_value or "").strip()
+    parsed_fields = _label_match_display_fields(parsed_text)
+    parsed_item_code = str(
+        parsed_fields.get("CLC")
+        or parsed_fields.get("ITEM_CODE")
+        or parsed_fields.get("ITEM")
+        or ""
+    ).strip()
+    if parsed_item_code:
+        return parsed_item_code
+    if parsed_text and "|" not in parsed_text and "=" not in parsed_text:
+        return parsed_text
+
+    raw_fields = _label_match_display_fields(raw_value)
+    raw_item_code = str(
+        raw_fields.get("CLC")
+        or raw_fields.get("ITEM_CODE")
+        or raw_fields.get("ITEM")
+        or ""
+    ).strip()
+    if raw_item_code:
+        return raw_item_code
+
+    match = re.search(r"(?<![A-Z0-9])[A-Z]{3}\d{10}(?![A-Z0-9])", str(raw_value or "").upper())
+    return match.group(0) if match else ""
+
+
+def _label_match_operator_scan_identifier(raw_value, item_code, scan_position):
+    raw_text = str(raw_value or "").strip()
+    decoded = (
+        _label_match_decode_possible_base64_label(raw_text)
+        if raw_text.isascii()
+        else raw_text
+    )
+    fields = _label_match_display_fields(decoded)
+    product_priorities = (
+        ("SERIAL", "S/N"),
+        ("SN", "S/N"),
+        ("SNO", "S/N"),
+        ("ITG", "ID"),
+        ("LBL", "라벨"),
+        ("WID", "ID"),
+        ("LOT", "LOT"),
+        ("TRACE", "ID"),
+        ("6D", "6D"),
+        ("BND", "BND"),
+    )
+    final_priorities = (
+        ("LBL", "라벨"),
+        ("SERIAL", "S/N"),
+        ("SN", "S/N"),
+        ("SNO", "S/N"),
+        ("6D", "6D"),
+        ("LOT", "LOT"),
+        ("ITG", "ID"),
+        ("WID", "ID"),
+        ("BND", "BND"),
+        ("TRACE", "ID"),
+    )
+    priorities = (
+        final_priorities
+        if int(scan_position or 0) == LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
+        else product_priorities
+    )
+    for key, label in priorities:
+        value = str(fields.get(key) or "").strip()
+        if value:
+            return label, _label_match_compact_display_token(value)
+
+    date_match = re.search(
+        r"(?:^|[|\x1d]|<GS>)6D=?([0-9]{6,8})(?=$|[|\x1d]|<GS>)",
+        decoded,
+        flags=re.IGNORECASE,
+    )
+    if date_match:
+        return "6D", date_match.group(1)
+
+    raw_identifier_source = str(decoded or "").strip()
+    if not raw_identifier_source:
+        return "", ""
+    fingerprint = hashlib.sha256(
+        raw_identifier_source.encode("utf-8", errors="replace")
+    ).hexdigest()[:12].upper()
+    return "ID", f"#{fingerprint}"
+
+
+def _label_match_operator_scan_summary(raw_value, parsed_value, scan_position):
+    """Build a concise list value while keeping the accepted raw value elsewhere."""
+
+    item_code = _label_match_operator_item_code(raw_value, parsed_value)
+    if int(scan_position or 0) == LABEL_MATCH_MASTER_SCAN_POSITION:
+        return item_code or "-"
+
+    label, identifier = _label_match_operator_scan_identifier(
+        raw_value,
+        item_code,
+        scan_position,
+    )
+    base = item_code or "-"
+    if not identifier:
+        return base
+    return f"{base} · {label} {identifier}"
+
+
 def _label_match_parse_sealed_transfer_qr(raw_value):
     """Parse the authoritative sealed-transfer QR without treating it as a product scan."""
     decoded = _label_match_decode_possible_base64_label(raw_value)
@@ -5729,6 +5870,14 @@ class Label_Match(tk.Tk):
         available = mapped or [width for _is_mapped, width in candidates]
         return min(available, key=lambda width: abs(notebook_width - width))
 
+    @staticmethod
+    def _operator_scan_summary(raw_value, parsed_value, scan_position):
+        return _label_match_operator_scan_summary(
+            raw_value,
+            parsed_value,
+            scan_position,
+        )
+
     def _fit_operator_tree_cell_text(self, tree, column, value, *, padding=20):
         """Fit a scan value to its visible column while retaining both ends.
 
@@ -6318,7 +6467,7 @@ class Label_Match(tk.Tk):
                     13 if compact_large_text else max(11, notice_font_size - 1),
                     "bold",
                 ),
-                padding=(4, 4),
+                padding=(6, 4),
             )
             self.workflow_notice_action_button.configure(
                 style="Operator.NoticeAction.TButton"
@@ -6401,7 +6550,8 @@ class Label_Match(tk.Tk):
                     self.default_font_name,
                     min(left_body_size, 15 if constrained_large_text else left_body_size),
                     "bold",
-                )
+                ),
+                wraplength=max(120, left_wrap - 8),
             )
             right_title_size = min(20, tokens.fonts.section_title)
             self.operator_session_heading_label.configure(
@@ -6869,7 +7019,7 @@ class Label_Match(tk.Tk):
                 )
                 action_button.configure(
                     text=action_text,
-                    width=9 if action_text == "제출 재시도" else 4,
+                    width=10 if action_text == "제출 재시도" else 4,
                 )
                 compact = bool(
                     self.__dict__.get("_operator_compact_large_text", False)
@@ -6994,9 +7144,9 @@ class Label_Match(tk.Tk):
 
         membership = "일반 QA 5단계"
         if view.exact_rescan.status == "sealed":
-            membership = "sealed 멤버십 서버 상속"
+            membership = "서버 멤버십 상속"
         elif view.exact_rescan.status == "active":
-            membership = f"F4 전체 재스캔 {view.exact_rescan.progress_text}"
+            membership = f"F4 재스캔 {view.exact_rescan.progress_text}"
         elif view.exact_rescan.status == "complete":
             membership = f"F4 완료 {view.exact_rescan.progress_text}"
         membership_label = self.__dict__.get("operator_membership_label")
@@ -7081,6 +7231,7 @@ class Label_Match(tk.Tk):
         qa_tree = self.__dict__.get("qa_scan_tree")
         selected_qa_iid = self._selected_qa_scan_iid()
         qa_detail_rows = {}
+        parsed_scans = tuple(source.get("parsed") or ())
         if qa_tree is not None:
             try:
                 existing = tuple(qa_tree.get_children())
@@ -7090,10 +7241,20 @@ class Label_Match(tk.Tk):
                     iid = f"qa-slot-{slot.index}"
                     state_text = self._workflow_state_text(slot.state)
                     raw_value = str(slot.value or "")
+                    parsed_value = str(
+                        parsed_scans[slot.index - 1]
+                        if slot.index <= len(parsed_scans)
+                        else ""
+                    )
+                    summary_value = self._operator_scan_summary(
+                        raw_value,
+                        parsed_value,
+                        slot.index,
+                    )
                     display_value = self._fit_operator_tree_cell_text(
                         qa_tree,
                         "Value",
-                        raw_value or "-",
+                        summary_value or "-",
                     )
                     qa_tree.insert(
                         "",
@@ -7110,6 +7271,7 @@ class Label_Match(tk.Tk):
                         "stage": f"{slot.index}. {slot.label}",
                         "state": state_text,
                         "raw": raw_value,
+                        "summary": summary_value,
                     }
             except (TclError, AttributeError, TypeError):
                 pass
@@ -7145,10 +7307,16 @@ class Label_Match(tk.Tk):
                 for index, value in enumerate(exact_values, 1):
                     raw_value = str(value or "")
                     iid = f"exact-slot-{index}"
+                    parsed_value = str(parsed_scans[0] if parsed_scans else "")
+                    summary_value = self._operator_scan_summary(
+                        raw_value,
+                        parsed_value,
+                        LABEL_MATCH_MASTER_SCAN_POSITION + 1,
+                    )
                     display_value = self._fit_operator_tree_cell_text(
                         exact_tree,
                         "Value",
-                        raw_value,
+                        summary_value,
                     )
                     exact_tree.insert(
                         "",
@@ -7159,6 +7327,7 @@ class Label_Match(tk.Tk):
                     exact_detail_rows[iid] = {
                         "order": index,
                         "raw": raw_value,
+                        "summary": summary_value,
                     }
             except (TclError, AttributeError, TypeError):
                 pass
@@ -7629,7 +7798,7 @@ class Label_Match(tk.Tk):
         self.operator_left_divider.grid(row=3, column=0, sticky="ew", pady=16)
         self.operator_membership_heading_label = ttk.Label(
             self.operator_left_pane,
-            text="멤버십 / 예외 상태",
+            text="작업 상태",
             style="Status.TLabel",
         )
         self.operator_membership_heading_label.grid(row=4, column=0, sticky="w")
