@@ -109,6 +109,8 @@ LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
 _LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_AUTOMATED_TEST_ENV = "LABEL_MATCH_AUTOMATED_TEST"
+LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV = "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY"
+LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV = "LABEL_MATCH_CAPTURE_STARTUP_DPI"
 LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV = "LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
@@ -182,6 +184,323 @@ def _label_match_automated_test_mode():
     return bool(os.environ.get("PYTEST_CURRENT_TEST")) or any(
         "pytest" in str(argument or "").lower() for argument in sys.argv
     )
+
+
+def _label_match_explicit_automated_test_mode():
+    value = os.environ.get(LABEL_MATCH_AUTOMATED_TEST_ENV, "").strip().lower()
+    return value in {"1", "true", "yes", "on", "enabled"}
+
+
+def _label_match_capture_startup_request():
+    """Return a strict capture-only geometry/DPI request for automated evidence."""
+
+    geometry_value = os.environ.get(
+        LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV, ""
+    ).strip()
+    dpi_value = os.environ.get(LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV, "").strip()
+    if not geometry_value and not dpi_value:
+        return None
+    if not _label_match_explicit_automated_test_mode():
+        return None
+    if not geometry_value or not dpi_value:
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} and "
+            f"{LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV} must be set together"
+        )
+    match = re.fullmatch(
+        r"([0-9]{3,5})x([0-9]{3,5})([+-][0-9]{1,6})([+-][0-9]{1,6})",
+        geometry_value,
+    )
+    if match is None:
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} must be WIDTHxHEIGHT+X+Y"
+        )
+    width, height, x, y = (int(part) for part in match.groups())
+    if not (640 <= width <= 7680 and 480 <= height <= 4320):
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} has unsupported dimensions"
+        )
+    if not (-32768 <= x <= 32768 and -32768 <= y <= 32768):
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} has unsupported coordinates"
+        )
+    if not re.fullmatch(r"[0-9]{2,4}", dpi_value):
+        raise RuntimeError(f"{LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV} must be an integer")
+    target_dpi = int(dpi_value)
+    if not (72 <= target_dpi <= 384):
+        raise RuntimeError(f"{LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV} is unsupported")
+    return {
+        "geometry": f"{width}x{height}{x:+d}{y:+d}",
+        "target_dpi": target_dpi,
+    }
+
+
+def _label_match_enable_capture_per_monitor_dpi():
+    """Set and verify per-monitor DPI awareness before Tk creates the root."""
+
+    if os.name != "nt":
+        raise RuntimeError("capture startup DPI awareness requires Windows")
+    import ctypes
+
+    shcore = ctypes.windll.shcore
+    requested = 2
+    set_hresult = int(shcore.SetProcessDpiAwareness(requested))
+    observed = ctypes.c_int(-1)
+    query_hresult = int(shcore.GetProcessDpiAwareness(0, ctypes.byref(observed)))
+    if query_hresult != 0 or observed.value != requested:
+        raise RuntimeError(
+            "capture process is not per-monitor DPI aware: "
+            f"set_hresult={set_hresult} query_hresult={query_hresult} "
+            f"observed={observed.value}"
+        )
+    return {
+        "requested": requested,
+        "set_hresult": set_hresult,
+        "query_hresult": query_hresult,
+        "observed": int(observed.value),
+    }
+
+
+def _label_match_capture_window_dpi(root_or_hwnd):
+    """Return native DPI with a pointer-width-safe HWND signature."""
+
+    if os.name != "nt":
+        raise RuntimeError("capture window DPI attestation requires Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
+    user32.GetDpiForWindow.restype = wintypes.UINT
+    raw_hwnd = (
+        int(root_or_hwnd.winfo_id())
+        if hasattr(root_or_hwnd, "winfo_id")
+        else int(root_or_hwnd)
+    )
+    wrapper_hwnd = int(user32.GetAncestor(wintypes.HWND(raw_hwnd), 2) or raw_hwnd)
+    window_dpi = int(user32.GetDpiForWindow(wintypes.HWND(wrapper_hwnd)))
+    if window_dpi <= 0:
+        raise RuntimeError("capture window DPI attestation returned zero")
+    return window_dpi
+
+
+def _label_match_scaled_tk_geometry(geometry, source_dpi, target_dpi):
+    """Compensate Tk's source-monitor logical coordinates before first mapping."""
+
+    match = re.fullmatch(
+        r"([0-9]{3,5})x([0-9]{3,5})([+-][0-9]{1,6})([+-][0-9]{1,6})",
+        str(geometry or ""),
+    )
+    if match is None:
+        raise RuntimeError("capture Tk placement received invalid geometry")
+    if int(source_dpi) <= 0 or int(target_dpi) <= 0:
+        raise RuntimeError("capture Tk placement received invalid DPI")
+    width, height, x, y = (int(part) for part in match.groups())
+    scale = int(source_dpi) / int(target_dpi)
+    scaled_width = round(width * scale)
+    scaled_height = round(height * scale)
+    scaled_x = round(x * scale)
+    scaled_y = round(y * scale)
+    if not (
+        1 <= scaled_width <= 32767
+        and 1 <= scaled_height <= 32767
+        and -32768 <= scaled_x <= 32767
+        and -32768 <= scaled_y <= 32767
+    ):
+        raise RuntimeError("capture Tk placement exceeds native geometry limits")
+    return f"{scaled_width}x{scaled_height}{scaled_x:+d}{scaled_y:+d}"
+
+
+def _label_match_place_hidden_native_window(root, geometry, target_dpi):
+    """Place the withdrawn Tk wrapper at an absolute virtual-desktop rectangle."""
+
+    if os.name != "nt":
+        raise RuntimeError("capture native placement requires Windows")
+    match = re.fullmatch(
+        r"([0-9]{3,5})x([0-9]{3,5})([+-][0-9]{1,6})([+-][0-9]{1,6})",
+        str(geometry or ""),
+    )
+    if match is None:
+        raise RuntimeError("capture native placement received invalid geometry")
+    width, height, x, y = (int(part) for part in match.groups())
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.SetWindowPos.argtypes = (
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    )
+    user32.SetWindowPos.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
+    user32.GetDpiForWindow.restype = wintypes.UINT
+
+    GA_ROOT = 2
+    SWP_NOZORDER = 0x0004
+    SWP_NOACTIVATE = 0x0010
+    SWP_NOOWNERZORDER = 0x0200
+    child_hwnd = int(root.winfo_id())
+    wrapper_hwnd = int(user32.GetAncestor(wintypes.HWND(child_hwnd), GA_ROOT) or child_hwnd)
+    hwnd = wintypes.HWND(wrapper_hwnd)
+    if bool(user32.IsWindowVisible(hwnd)):
+        raise RuntimeError("capture native placement requires a withdrawn window")
+    if not bool(
+        user32.SetWindowPos(
+            hwnd,
+            wintypes.HWND(0),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    rect = wintypes.RECT()
+    if not bool(user32.GetWindowRect(hwnd, ctypes.byref(rect))):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if bool(user32.IsWindowVisible(hwnd)):
+        raise RuntimeError("capture native placement unexpectedly revealed the window")
+    window_dpi = int(user32.GetDpiForWindow(hwnd))
+    if window_dpi != int(target_dpi):
+        raise RuntimeError(
+            "capture hidden window DPI does not match target DPI: "
+            f"expected={target_dpi} actual={window_dpi}"
+        )
+    native_rect = [int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)]
+    if abs(native_rect[0] - x) > 2 or abs(native_rect[1] - y) > 2:
+        raise RuntimeError(
+            "capture hidden window did not reach the requested origin: "
+            f"expected=({x},{y}) actual=({native_rect[0]},{native_rect[1]})"
+        )
+    return {
+        "wrapper_hwnd": wrapper_hwnd,
+        "native_rect": native_rect,
+        "window_dpi": window_dpi,
+        "visible": False,
+    }
+
+
+def _label_match_prepare_capture_startup(
+    root,
+    geometry,
+    target_dpi,
+    *,
+    native_window_placer=None,
+    initial_window_dpi_getter=None,
+):
+    """Place a root while hidden so its first visible map can occur on the target."""
+
+    if not geometry:
+        return None
+    if target_dpi is None:
+        raise RuntimeError("capture startup target DPI is missing")
+    root.withdraw()
+    root._label_match_capture_revealed = False
+    if initial_window_dpi_getter is None:
+        initial_window_dpi_getter = _label_match_capture_window_dpi
+    initial_window_dpi = int(initial_window_dpi_getter(root))
+    tk_geometry = _label_match_scaled_tk_geometry(
+        geometry,
+        initial_window_dpi,
+        target_dpi,
+    )
+    root.geometry(tk_geometry)
+    root.update_idletasks()
+    root.geometry(tk_geometry)
+    expected_scaling = int(target_dpi) / 72.0
+    root.tk.call("tk", "scaling", expected_scaling)
+    observed_scaling = float(root.tk.call("tk", "scaling"))
+    pixels_per_inch = float(root.winfo_fpixels("1i"))
+    if abs(observed_scaling - expected_scaling) > 0.01:
+        raise RuntimeError(
+            "capture Tk scaling does not match target DPI: "
+            f"expected={expected_scaling:.6f} actual={observed_scaling:.6f}"
+        )
+    if abs(pixels_per_inch - int(target_dpi)) > 0.75:
+        raise RuntimeError(
+            "capture Tk physical-inch conversion does not match target DPI: "
+            f"expected={target_dpi} actual={pixels_per_inch:.6f}"
+        )
+    if native_window_placer is None:
+        native_window_placer = _label_match_place_hidden_native_window
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    root.update_idletasks()
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    if bool(native_placement.get("visible")):
+        raise RuntimeError("capture native placement reported a visible window")
+    if int(native_placement.get("window_dpi", 0)) != int(target_dpi):
+        raise RuntimeError("capture native placement reported an unexpected DPI")
+    return {
+        "geometry": geometry,
+        "tk_geometry": tk_geometry,
+        "initial_window_dpi": initial_window_dpi,
+        "target_dpi": int(target_dpi),
+        "expected_tk_scaling": expected_scaling,
+        "observed_tk_scaling": observed_scaling,
+        "pixels_per_inch": pixels_per_inch,
+        "native_placement": native_placement,
+    }
+
+
+def _label_match_reveal_capture_startup(
+    root,
+    geometry,
+    target_dpi=None,
+    *,
+    window_dpi_getter=None,
+    native_window_placer=None,
+):
+    """Reveal once, then attest the native window DPI on its mapped monitor."""
+
+    if not geometry:
+        return False
+    if bool(getattr(root, "_label_match_capture_revealed", False)):
+        raise RuntimeError("capture startup root was already revealed")
+    if target_dpi is None:
+        raise RuntimeError("capture startup target DPI is missing at reveal")
+    root.update_idletasks()
+    if native_window_placer is None:
+        native_window_placer = _label_match_place_hidden_native_window
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    root.update_idletasks()
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    if bool(native_placement.get("visible")):
+        raise RuntimeError("capture root became visible before the reveal boundary")
+    if int(native_placement.get("window_dpi", 0)) != int(target_dpi):
+        raise RuntimeError("capture root DPI changed before the reveal boundary")
+    wrapper_hwnd = int(native_placement.get("wrapper_hwnd", 0))
+    if wrapper_hwnd <= 0:
+        raise RuntimeError("capture native placement did not return a wrapper HWND")
+    root._label_match_capture_revealed = True
+    root.deiconify()
+    root.update_idletasks()
+    if window_dpi_getter is None:
+        window_dpi_getter = _label_match_capture_window_dpi
+    window_dpi = int(window_dpi_getter(wrapper_hwnd))
+    if window_dpi != int(target_dpi):
+        raise RuntimeError(
+            "capture window DPI does not match target DPI after reveal: "
+            f"expected={target_dpi} actual={window_dpi}"
+        )
+    return {
+        "window_dpi": window_dpi,
+        "native_placement_before_reveal": native_placement,
+    }
 
 
 def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
@@ -2613,8 +2932,33 @@ class Label_Match(tk.Tk):
 
     def __init__(self, run_tests=False):
         _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
+        capture_startup_request = _label_match_capture_startup_request()
+        capture_startup_geometry = (
+            capture_startup_request["geometry"] if capture_startup_request else None
+        )
+        capture_startup_dpi = (
+            capture_startup_request["target_dpi"] if capture_startup_request else None
+        )
+        capture_dpi_awareness = (
+            _label_match_enable_capture_per_monitor_dpi()
+            if capture_startup_request
+            else None
+        )
         super().__init__()
-        _label_match_startup_trace("app_init_after_tk", title=self.title())
+        self._capture_startup_geometry = capture_startup_geometry
+        self._capture_startup_dpi = capture_startup_dpi
+        self._capture_dpi_awareness = capture_dpi_awareness
+        self._capture_startup_placement = _label_match_prepare_capture_startup(
+            self,
+            capture_startup_geometry,
+            capture_startup_dpi,
+        )
+        _label_match_startup_trace(
+            "app_init_after_tk",
+            title=self.title(),
+            capture_startup_geometry=capture_startup_geometry or "",
+            capture_startup_dpi=capture_startup_dpi or 0,
+        )
         self.run_tests = run_tests
         self.initialized_successfully = False
         self.audio_ready = False
@@ -2703,8 +3047,16 @@ class Label_Match(tk.Tk):
         self._workflow_item_snapshot = None
         self.title(f"바코드 세트 검증기 ({APP_VERSION}) - 로딩 중...")
         _label_match_startup_trace("app_init_after_title", title=self.title())
-        self.state('zoomed')
-        _label_match_startup_trace("app_init_after_zoomed", state=self.state())
+        if capture_startup_geometry:
+            _label_match_startup_trace(
+                "app_init_capture_hidden",
+                geometry=capture_startup_geometry,
+                tk_geometry=self._capture_startup_placement["tk_geometry"],
+                state=self.state(),
+            )
+        else:
+            self.state('zoomed')
+            _label_match_startup_trace("app_init_after_zoomed", state=self.state())
         self.configure(bg=self.colors.get("background", "#ECEFF1"))
         self.ui_profile_name, self.ui_profile = self._select_ui_profile()
         self._responsive_after_id = None
@@ -2743,6 +3095,19 @@ class Label_Match(tk.Tk):
         self.after(250, self._start_audio_initialization)
         self.after(300, self._start_package_outbox_drain)
         self.after(1000, lambda: _label_match_startup_trace("app_alive_after_1s", title=self.title(), state=self.state()))
+        capture_reveal_receipt = _label_match_reveal_capture_startup(
+            self,
+            capture_startup_geometry,
+            capture_startup_dpi,
+        )
+        if capture_reveal_receipt:
+            self._capture_startup_placement.update(capture_reveal_receipt)
+            _label_match_startup_trace(
+                "app_init_capture_revealed",
+                geometry=capture_startup_geometry,
+                state=self.state(),
+                window_dpi=capture_reveal_receipt["window_dpi"],
+            )
         _label_match_startup_trace("app_init_complete")
 
     def _start_package_outbox_drain(self):
@@ -9591,4 +9956,6 @@ if __name__ == "__main__":
             error=repr(exc),
             traceback=traceback.format_exc(),
         )
+        if _label_match_explicit_automated_test_mode():
+            raise SystemExit(1) from None
         raise
