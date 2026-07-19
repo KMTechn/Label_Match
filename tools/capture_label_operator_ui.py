@@ -64,6 +64,7 @@ DEFAULT_STATE_IDS = (
     "qa_progress",
     "qa_product_2",
     "qa_product_3",
+    "cancellation_conflict",
     "sealed",
     "error",
     "full_complete",
@@ -72,6 +73,29 @@ DEFAULT_STATE_IDS = (
     "history_readonly",
     "submission_blocked",
 )
+CAPTURE_MANIFEST_SCHEMA_VERSION = 4
+CANCELLATION_CONFLICT_COUNT = 3
+CANCELLATION_CONFLICT_CODE = "IMMUTABLE_CAS"
+CANCELLATION_CONFLICT_BUNDLE_ID = "PACKAGE-CANCEL-CAPTURE-001"
+CANCELLATION_CONFLICT_TITLE = "중앙 취소 확인 필요"
+CANCELLATION_CONFLICT_MESSAGE = (
+    "미확인 3건 · IMMUTABLE_CAS · PACKAGE-CANCEL-CAPTURE-001. "
+    "해당 트레이는 반출하지 말고 관리자에게 중앙 취소 상태 확인을 요청하세요."
+)
+CANCELLATION_SURFACE_CAPTURE_CONTRACT = {
+    "persistent_capture_states": ["cancellation_conflict"],
+    "modal_only_exclusions": {
+        "cancellation_pending": {
+            "runtime_surface": "owned messagebox.showwarning (nonpersistent)",
+            "reason": "excluded: root-only PrintWindow rejects extra PID toplevels",
+        },
+        "cancellation_acked": {
+            "runtime_surface": "owned messagebox.showinfo (nonpersistent)",
+            "reason": "excluded: root-only PrintWindow rejects extra PID toplevels",
+        },
+    },
+    "extra_visible_toplevels_allowed": False,
+}
 AUTHORITATIVE_CAPTURE_SOURCE = "PrintWindow(PW_RENDERFULLCONTENT)-outer-window"
 HARNESS_ATTESTED_PATHS = (
     "tools/capture_label_operator_ui.py",
@@ -173,6 +197,7 @@ class StateFixture:
     notice_kind: str = "submission_blocked"
     notice_tone: str = "danger"
     last_normal_scan: str = ""
+    selected_qa_index: int = 0
 
 
 def fixture_parsed_scans(fixture: StateFixture) -> tuple[str, ...]:
@@ -399,6 +424,14 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
             "제품 3 완료",
             qa_scans=qa_four,
             last_normal_scan=product_3,
+            selected_qa_index=4,
+        ),
+        StateFixture(
+            "cancellation_conflict",
+            "중앙 취소 작업자 확인",
+            qa_scans=qa_four,
+            last_normal_scan=product_3,
+            selected_qa_index=4,
         ),
         StateFixture(
             "sealed",
@@ -546,7 +579,7 @@ def parse_work_area(value: object) -> tuple[int, int, int, int]:
 def validate_capture_matrix_request(
     sizes: Sequence[Sequence[int]], state_ids: Sequence[str]
 ) -> tuple[tuple[tuple[int, int], ...], tuple[str, ...]]:
-    """Require the complete, non-duplicated 5 x 15 evidence matrix."""
+    """Require the complete, non-duplicated 5 x 16 evidence matrix."""
 
     normalized_sizes = tuple(tuple(map(int, size)) for size in sizes)
     normalized_states = tuple(str(state).strip() for state in state_ids)
@@ -567,6 +600,32 @@ def validate_capture_matrix_request(
             "capture states must contain every DEFAULT_STATE_IDS entry exactly once"
         )
     return normalized_sizes, normalized_states
+
+
+def validate_cancellation_surface_capture_contract(
+    state_ids: Sequence[str],
+    contract: Mapping[str, Any] = CANCELLATION_SURFACE_CAPTURE_CONTRACT,
+) -> dict[str, Any]:
+    """Fail closed if modal-only cancellation outcomes become fake root states."""
+
+    normalized_states = set(str(value or "").strip() for value in state_ids)
+    if contract != CANCELLATION_SURFACE_CAPTURE_CONTRACT:
+        raise RuntimeError("cancellation surface manifest contract changed")
+    exclusions = set(contract["modal_only_exclusions"])
+    if "cancellation_conflict" not in normalized_states:
+        raise RuntimeError("persistent cancellation conflict state is missing")
+    leaked = sorted(set(exclusions).intersection(normalized_states))
+    if leaked:
+        raise RuntimeError(
+            "modal-only cancellation states cannot be persistent captures: "
+            + ",".join(leaked)
+        )
+    return {
+        "status": "PASS",
+        "persistent_capture_states": ["cancellation_conflict"],
+        "modal_only_excluded_states": sorted(exclusions),
+        "extra_visible_toplevels_allowed": False,
+    }
 
 
 def _rect_contains(outer: Sequence[int], inner: Sequence[int], tolerance: int = 1) -> bool:
@@ -1233,7 +1292,7 @@ def minimal_privacy_failure_manifest(error: BaseException) -> dict[str, Any]:
     """Discard all prior evidence when privacy sanitization itself fails."""
 
     return {
-        "schema_version": 3,
+        "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "tool": "capture_label_operator_ui",
         "summary": {
             "capture_count": 0,
@@ -1668,6 +1727,61 @@ def _select_activity_tab_for_fixture(app: Any, fixture: StateFixture) -> None:
         return
 
 
+class _CaptureCancellationConflictOutbox:
+    """Read-only conflict source used only by the isolated capture process."""
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]]):
+        self._rows = tuple(dict(row) for row in rows)
+
+    def list_conflicts(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        return [dict(row) for row in self._rows[: max(0, int(limit))]]
+
+
+def _fixture_cancellation_conflict_rows(
+    fixture: StateFixture,
+) -> tuple[dict[str, Any], ...]:
+    if fixture.state_id != "cancellation_conflict":
+        return ()
+    return tuple(
+        {
+            "last_error_code": CANCELLATION_CONFLICT_CODE,
+            "package_bundle_id": (
+                CANCELLATION_CONFLICT_BUNDLE_ID
+                if index == 0
+                else f"{CANCELLATION_CONFLICT_BUNDLE_ID}-{index + 1:03d}"
+            ),
+        }
+        for index in range(CANCELLATION_CONFLICT_COUNT)
+    )
+
+
+def _select_qa_detail_for_fixture(app: Any, fixture: StateFixture) -> None:
+    index = int(fixture.selected_qa_index or 0)
+    if index <= 0:
+        return
+    iid = f"qa-slot-{index}"
+    tree = getattr(app, "__dict__", {}).get("current_set_tree")
+    if tree is None:
+        # Protocol-only unit fakes do not carry the live widget contract. The
+        # real capture path validates that contract before applying fixtures.
+        return
+    try:
+        if hasattr(tree, "exists") and not tree.exists(iid):
+            raise RuntimeError(f"selected QA fixture row is missing: {iid}")
+        tree.selection_set(iid)
+        tree.focus(iid)
+        tree.see(iid)
+        renderer = getattr(app, "_render_qa_scan_detail", None)
+        if callable(renderer):
+            renderer(iid)
+        else:
+            getattr(app, "_on_qa_scan_selection_changed")()
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"selected QA fixture could not select {iid}") from exc
+
+
 def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     """Apply display-only state and ask the application to render its presenter."""
 
@@ -1720,12 +1834,37 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
         if fixture.notice_title
         else None
     )
+    conflict_rows = _fixture_cancellation_conflict_rows(fixture)
+    app.package_cancellation_outbox = _CaptureCancellationConflictOutbox(
+        conflict_rows
+    )
+    review_refresh = getattr(
+        app, "_refresh_package_cancellation_review_notice", None
+    )
+    if callable(review_refresh):
+        observed_count = int(review_refresh())
+        if observed_count != len(conflict_rows):
+            raise RuntimeError(
+                "cancellation conflict fixture count did not reach the renderer"
+            )
+    elif conflict_rows:
+        app._package_cancellation_review_notice = WorkflowNotice(
+            CANCELLATION_CONFLICT_TITLE,
+            CANCELLATION_CONFLICT_MESSAGE,
+            kind="package_cancellation_review",
+            tone="danger",
+        )
+        app._package_cancellation_review_rows = conflict_rows
+    else:
+        app._package_cancellation_review_notice = None
+        app._package_cancellation_review_rows = ()
     view = build_presenter_view(fixture)
     # Capture-only mirrors let a renderer with an explicit view parameter and
     # a renderer that rebuilds from runtime state share the same harness.
     app._workflow_view_state = view
     app._last_workflow_view_state = view
     method_name = _invoke_presenter_refresh(app, view)
+    _select_qa_detail_for_fixture(app, fixture)
     _select_activity_tab_for_fixture(app, fixture)
     return view, method_name
 
@@ -2232,6 +2371,7 @@ def collect_qa_detail_contract(
             selected_texts[iid] = _text_widget_value(detail_widget)
         except Exception as exc:
             selected_texts[iid] = f"<capture-error:{type(exc).__name__}>"
+    selected_iid = None
     try:
         if previous_selection:
             tree.selection_set(previous_selection)
@@ -2261,6 +2401,10 @@ def collect_qa_detail_contract(
             issues.append(f"qa_detail_{index}_slot_mapping_missing")
         elif str(detail.get("raw") or "") != expected:
             issues.append(f"qa_detail_{index}_slot_raw_parity_mismatch")
+    selected_raw = str(
+        (detail_rows.get(str(selected_iid)) or {}).get("raw") or ""
+    )
+    selected_text = _text_widget_value(detail_widget)
     return {
         "expected_raws": list(expected_raws),
         "detail_rows": {
@@ -2272,6 +2416,9 @@ def collect_qa_detail_contract(
             for key, value in detail_rows.items()
         },
         "selected_texts": selected_texts,
+        "selected_iid": selected_iid,
+        "selected_raw": selected_raw,
+        "selected_detail_text": selected_text,
         "issues": list(dict.fromkeys(issues)),
         "passed": not issues,
     }
@@ -2967,10 +3114,16 @@ def _count_text(texts: Sequence[str], needle: str) -> int:
     return sum(1 for text in texts if needle in text)
 
 
+def _effective_workflow_notice(app: Any, view: Any) -> Any | None:
+    """Mirror the exact runtime priority used by _render_operator_workbench."""
+
+    return view.notice or getattr(app, "_package_cancellation_review_notice", None)
+
+
 def collect_notice_display_contract(
     app: Any, view: Any, widgets: Mapping[str, Any]
 ) -> dict[str, Any]:
-    notice = view.notice
+    notice = _effective_workflow_notice(app, view)
     if notice is None:
         return {"required": False, "passed": True}
     compactor = getattr(app, "_compact_operator_notice_message", None)
@@ -3628,7 +3781,8 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         )
     except Exception:
         notice_action_text = ""
-    notice = view.notice
+    presenter_notice = view.notice
+    notice = _effective_workflow_notice(app, view)
     notice_display_contract = collect_notice_display_contract(app, view, widgets)
     current_tree_mapped = _is_mapped(widgets["current_set_tree"])
     exact_tree_mapped = _is_mapped(widgets["exact_rescan_tree"])
@@ -3766,6 +3920,16 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         "presenter_last_normal_scan": str(view.last_normal_scan or ""),
         "presenter_notice": (
             {
+                "title": str(presenter_notice.title),
+                "message": str(presenter_notice.message),
+                "kind": str(presenter_notice.kind),
+                "tone": str(presenter_notice.tone),
+            }
+            if presenter_notice is not None
+            else None
+        ),
+        "display_notice": (
+            {
                 "title": str(notice.title),
                 "message": str(notice.message),
                 "kind": str(notice.kind),
@@ -3774,6 +3938,13 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
             if notice is not None
             else None
         ),
+        "presenter_action_gates": {
+            "scan_input_enabled": bool(view.scan_input_enabled),
+            "f1_cancel_current_enabled": bool(view.cancel_current_enabled),
+            "f2_cancel_completed_enabled": bool(view.cancel_completed_enabled),
+            "f3_enabled": bool(view.f3_enabled),
+            "f4_enabled": bool(view.f4_enabled),
+        },
         "entry_state": entry_state,
         "notice_action_mapped": notice_action_mapped,
         "notice_action_text": notice_action_text,
@@ -3985,7 +4156,7 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
             )
         if rendered.get("last_normal_occurrences_on_screen") != 1:
             issues.append("last_normal_scan_not_visible_in_active_center_list")
-    notice = rendered.get("presenter_notice")
+    notice = rendered.get("display_notice") or rendered.get("presenter_notice")
     if notice:
         notice_contract = rendered.get("notice_display_contract", {})
         if not notice_contract.get("passed"):
@@ -4004,6 +4175,41 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
         rendered.get("notice_action_text") or ""
     ):
         issues.append("submission_notice_action_text_mismatch")
+    if record["state"] == "cancellation_conflict":
+        expected_notice = {
+            "title": CANCELLATION_CONFLICT_TITLE,
+            "message": CANCELLATION_CONFLICT_MESSAGE,
+            "kind": "package_cancellation_review",
+            "tone": "danger",
+        }
+        if rendered.get("display_notice") != expected_notice:
+            issues.append("cancellation_conflict_notice_mismatch")
+        if rendered.get("presenter_notice") is not None:
+            issues.append("cancellation_conflict_became_presenter_blocking")
+        if len(rendered.get("current_set_rows") or ()) != 5:
+            issues.append("cancellation_conflict_five_row_scan_list_missing")
+        expected_gates = {
+            "scan_input_enabled": True,
+            "f1_cancel_current_enabled": True,
+            "f2_cancel_completed_enabled": True,
+            "f3_enabled": True,
+            "f4_enabled": False,
+        }
+        if rendered.get("presenter_action_gates") != expected_gates:
+            issues.append("cancellation_conflict_action_gates_changed")
+        expected_selected_iid = "qa-slot-4"
+        expected_selected_raw = str(
+            tuple(fixture.get("qa_scans") or ())[3]
+            if len(tuple(fixture.get("qa_scans") or ())) >= 4
+            else ""
+        )
+        qa_detail = rendered.get("qa_detail_contract", {})
+        if (
+            qa_detail.get("selected_iid") != expected_selected_iid
+            or qa_detail.get("selected_raw") != expected_selected_raw
+            or qa_detail.get("selected_detail_text") != expected_selected_raw
+        ):
+            issues.append("cancellation_conflict_selected_raw_detail_changed")
     center_text = "\n".join(rendered.get("center_visible_texts", ()))
     if rendered.get("presenter_stage_label") not in center_text:
         issues.append("presenter_stage_label_not_visible_in_center")
@@ -4154,6 +4360,7 @@ def apply_cross_capture_contracts(captures: list[dict[str, Any]]) -> None:
                     capture["issues"].append("center_scan_list_geometry_changed_across_states")
         for normal_id, blocked_id in (
             ("qa_product_3", "error"),
+            ("qa_product_3", "cancellation_conflict"),
             ("full_complete", "submission_blocked"),
         ):
             normal, blocked = group.get(normal_id), group.get(blocked_id)
@@ -4163,6 +4370,32 @@ def apply_cross_capture_contracts(captures: list[dict[str, Any]]) -> None:
             blocked_rows = _stable_scan_values(blocked["rendered_state"]["current_set_rows"])
             if normal_rows != blocked_rows:
                 blocked["issues"].append("last_normal_qa_rows_not_preserved")
+            if blocked_id == "cancellation_conflict":
+                normal_rendered = normal["rendered_state"]
+                conflict_rendered = blocked["rendered_state"]
+                normal_detail = normal_rendered.get("qa_detail_contract", {})
+                conflict_detail = conflict_rendered.get("qa_detail_contract", {})
+                for key in (
+                    "selected_iid",
+                    "selected_raw",
+                    "selected_detail_text",
+                ):
+                    if normal_detail.get(key) != conflict_detail.get(key):
+                        blocked["issues"].append(
+                            f"cancellation_conflict_{key}_changed"
+                        )
+                if normal_rendered.get("presenter_action_gates") != conflict_rendered.get(
+                    "presenter_action_gates"
+                ):
+                    blocked["issues"].append(
+                        "cancellation_conflict_presenter_gates_changed"
+                    )
+                if normal_rendered.get("button_states") != conflict_rendered.get(
+                    "button_states"
+                ):
+                    blocked["issues"].append(
+                        "cancellation_conflict_fkey_button_states_changed"
+                    )
         for hash_field, issue_prefix in (
             ("sha256", "raw_sha256"),
             ("workbench_sha256", "workbench_sha256"),
@@ -5164,6 +5397,9 @@ def run_capture_matrix(
             f"work area must equal locked DISPLAY2 constant: {TARGET_DISPLAY_WORK_AREA}"
         )
     sizes, state_ids = validate_capture_matrix_request(sizes, state_ids)
+    cancellation_contract_validation = (
+        validate_cancellation_surface_capture_contract(state_ids)
+    )
     resolved_output = assert_external_capture_descendant(
         output_root,
         CAPTURE_OUTPUT_BASE,
@@ -5185,7 +5421,7 @@ def run_capture_matrix(
     settings = build_isolated_app_settings(data_root, requested_scale)
     fixture_map = {fixture.state_id: fixture for fixture in build_state_fixtures()}
     manifest: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "tool": "tools/capture_label_operator_ui.py",
         "generated_at": dt.datetime.now(dt.timezone.utc).astimezone().isoformat(),
         "tool_repository_root": str(ROOT),
@@ -5206,6 +5442,16 @@ def run_capture_matrix(
         "requested_work_area": list(requested_work_area),
         "requested_sizes": [list(size) for size in sizes],
         "requested_states": list(state_ids),
+        "cancellation_surface_capture_contract": json.loads(
+            json.dumps(
+                CANCELLATION_SURFACE_CAPTURE_CONTRACT,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        ),
+        "cancellation_surface_contract_validation": (
+            cancellation_contract_validation
+        ),
         "requested_scale": requested_scale,
         "near_black_failure_ratio": NEAR_BLACK_FAILURE_RATIO,
         "captures": [],

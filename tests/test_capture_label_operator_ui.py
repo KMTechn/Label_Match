@@ -21,6 +21,11 @@ from tools import capture_label_operator_ui as capture
 from tools.capture_label_operator_ui import (
     AUTHORITATIVE_CAPTURE_SOURCE,
     CANCEL_BUTTON_ALIASES,
+    CANCELLATION_CONFLICT_COUNT,
+    CANCELLATION_CONFLICT_MESSAGE,
+    CANCELLATION_CONFLICT_TITLE,
+    CANCELLATION_SURFACE_CAPTURE_CONTRACT,
+    CAPTURE_MANIFEST_SCHEMA_VERSION,
     DEFAULT_SCALE,
     DEFAULT_SIZES,
     DEFAULT_STATE_IDS,
@@ -57,6 +62,7 @@ from tools.capture_label_operator_ui import (
     validate_live_contract,
     validate_presenter_rows,
     validate_capture_matrix_request,
+    validate_cancellation_surface_capture_contract,
     validate_qa_detail_contract,
     validate_window_capture_pair,
     validate_root_only_toplevels,
@@ -80,6 +86,7 @@ def test_default_capture_matrix_covers_required_sizes_states_and_scale():
         "qa_progress",
         "qa_product_2",
         "qa_product_3",
+        "cancellation_conflict",
         "sealed",
         "error",
         "full_complete",
@@ -120,7 +127,7 @@ def test_cli_parsers_validate_deduplicate_and_keep_korean_multiplication_mark():
             parse_work_area(value)
 
 
-def test_programmatic_matrix_requires_all_five_sizes_all_fifteen_states_once():
+def test_programmatic_matrix_requires_all_five_sizes_all_sixteen_states_once():
     sizes, states = validate_capture_matrix_request(
         tuple(reversed(DEFAULT_SIZES)), tuple(reversed(DEFAULT_STATE_IDS))
     )
@@ -141,6 +148,32 @@ def test_programmatic_matrix_requires_all_five_sizes_all_fifteen_states_once():
         validate_capture_matrix_request(DEFAULT_SIZES, DEFAULT_STATE_IDS[:-1])
 
 
+def test_manifest_contract_captures_only_persistent_cancellation_conflict():
+    cancellation = validate_cancellation_surface_capture_contract(
+        DEFAULT_STATE_IDS
+    )
+    assert cancellation == {
+        "status": "PASS",
+        "persistent_capture_states": ["cancellation_conflict"],
+        "modal_only_excluded_states": [
+            "cancellation_acked",
+            "cancellation_pending",
+        ],
+        "extra_visible_toplevels_allowed": False,
+    }
+    for metadata in CANCELLATION_SURFACE_CAPTURE_CONTRACT[
+        "modal_only_exclusions"
+    ].values():
+        assert "nonpersistent" in metadata["runtime_surface"]
+        assert "messagebox" in metadata["runtime_surface"]
+        assert "root-only PrintWindow" in metadata["reason"]
+    assert CAPTURE_MANIFEST_SCHEMA_VERSION == 4
+    with pytest.raises(RuntimeError, match="cannot be persistent captures"):
+        validate_cancellation_surface_capture_contract(
+            (*DEFAULT_STATE_IDS, "cancellation_pending")
+        )
+
+
 def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
 
@@ -150,6 +183,15 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     assert len(fixtures["qa_progress"].qa_scans) == 2
     assert len(fixtures["qa_product_2"].qa_scans) == 3
     assert len(fixtures["qa_product_3"].qa_scans) == 4
+    assert (
+        fixtures["cancellation_conflict"].qa_scans
+        == fixtures["qa_product_3"].qa_scans
+    )
+    assert fixtures["cancellation_conflict"].selected_qa_index == 4
+    assert (
+        fixtures["cancellation_conflict"].last_normal_scan
+        == fixtures["qa_product_3"].last_normal_scan
+    )
     assert fixtures["error"].qa_scans == fixtures["qa_product_3"].qa_scans
     assert fixtures["error"].last_normal_scan == fixtures["qa_product_3"].last_normal_scan
     assert fixtures["error"].has_error is True
@@ -216,6 +258,41 @@ def test_apply_error_fixture_sets_and_clears_all_renderer_error_aliases():
     assert app._workflow_error_message == ""
 
 
+def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
+    from Label_Match import Label_Match
+
+    app = SimpleNamespace(
+        current_set_info={},
+        operator_workbench_ready=False,
+        _workflow_widgets_ready=False,
+        _refresh_operator_workbench=lambda: None,
+    )
+    app._refresh_package_cancellation_review_notice = lambda: (
+        Label_Match._refresh_package_cancellation_review_notice(app)
+    )
+    fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+
+    view, _method = apply_state_fixture(app, fixtures["cancellation_conflict"])
+
+    assert view.notice is None
+    assert view.scan_input_enabled is True
+    assert view.cancel_current_enabled is True
+    assert view.cancel_completed_enabled is True
+    assert view.f3_enabled is True
+    assert view.f4_enabled is False
+    assert app._workflow_blocking_notice is None
+    assert len(app._package_cancellation_review_rows) == CANCELLATION_CONFLICT_COUNT
+    notice = app._package_cancellation_review_notice
+    assert notice.title == CANCELLATION_CONFLICT_TITLE
+    assert notice.message == CANCELLATION_CONFLICT_MESSAGE
+    assert notice.kind == "package_cancellation_review"
+    assert notice.tone == "danger"
+
+    apply_state_fixture(app, fixtures["waiting"])
+    assert app._package_cancellation_review_notice is None
+    assert app._package_cancellation_review_rows == ()
+
+
 def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
     class FakeNotebook:
         def __init__(self):
@@ -264,6 +341,12 @@ def test_fixtures_are_accepted_by_the_real_workflow_presenter(state_id):
         assert view.scan_input_enabled is False
     if state_id in {"error", "submission_blocked"}:
         assert view.scan_input_enabled is False
+    if state_id == "cancellation_conflict":
+        assert view.notice is None
+        assert view.scan_input_enabled is True
+        assert view.cancel_current_enabled is True
+        assert view.cancel_completed_enabled is True
+        assert view.f3_enabled is True
 
 
 def test_live_contract_reports_missing_widgets_and_never_false_passes_legacy_ui():
@@ -1733,6 +1816,26 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         for index, barcode in enumerate(fixture.exact_barcodes, 1)
     ]
     notice = view.notice
+    display_notice = (
+        SimpleNamespace(
+            title=CANCELLATION_CONFLICT_TITLE,
+            message=CANCELLATION_CONFLICT_MESSAGE,
+            kind="package_cancellation_review",
+            tone="danger",
+        )
+        if state_id == "cancellation_conflict"
+        else notice
+    )
+    selected_iid = (
+        f"qa-slot-{fixture.selected_qa_index}"
+        if fixture.selected_qa_index
+        else None
+    )
+    selected_raw = (
+        fixture.qa_scans[fixture.selected_qa_index - 1]
+        if fixture.selected_qa_index
+        else ""
+    )
     return {
         "state": state_id,
         "requested_size": [1366, 768],
@@ -1830,13 +1933,36 @@ def _valid_capture_record(state_id: str = "qa_progress"):
                 if notice
                 else None
             ),
-            "notice_title_occurrences": 1 if notice else 0,
-            "notice_message_occurrences": 1 if notice else 0,
+            "display_notice": (
+                {
+                    "title": display_notice.title,
+                    "message": display_notice.message,
+                    "kind": display_notice.kind,
+                    "tone": display_notice.tone,
+                }
+                if display_notice
+                else None
+            ),
+            "presenter_action_gates": {
+                "scan_input_enabled": bool(view.scan_input_enabled),
+                "f1_cancel_current_enabled": bool(view.cancel_current_enabled),
+                "f2_cancel_completed_enabled": bool(view.cancel_completed_enabled),
+                "f3_enabled": bool(view.f3_enabled),
+                "f4_enabled": bool(view.f4_enabled),
+            },
+            "button_states": {
+                "reset_button": "normal" if view.cancel_current_enabled else "disabled",
+                "cancel_button": "normal" if view.cancel_completed_enabled else "disabled",
+                "manual_complete_button": "normal" if view.f3_enabled else "disabled",
+                "exact_rescan_button": "normal" if view.f4_enabled else "disabled",
+            },
+            "notice_title_occurrences": 1 if display_notice else 0,
+            "notice_message_occurrences": 1 if display_notice else 0,
             "notice_display_contract": {
                 "passed": True,
                 "issues": [],
-                "title_occurrences": 1 if notice else 0,
-                "message_occurrences": 1 if notice else 0,
+                "title_occurrences": 1 if display_notice else 0,
+                "message_occurrences": 1 if display_notice else 0,
             },
             "last_normal_occurrences_on_screen": 1 if fixture.last_normal_scan else 0,
             "last_normal_occurrences_in_center": 1 if fixture.last_normal_scan else 0,
@@ -1856,7 +1982,13 @@ def _valid_capture_record(state_id: str = "qa_progress"):
             "session_tree_mapped": state_id != "history_readonly",
             "current_tree_mapped": not exact_mode,
             "exact_tree_mapped": exact_mode,
-            "qa_detail_contract": {"passed": True, "issues": []},
+            "qa_detail_contract": {
+                "passed": True,
+                "issues": [],
+                "selected_iid": selected_iid,
+                "selected_raw": selected_raw,
+                "selected_detail_text": selected_raw,
+            },
             "qa_summary_contract": {"passed": True, "issues": []},
             "exact_summary_contract": {"passed": True, "issues": []},
             "qa_display_contract": {"passed": True, "issues": []},
@@ -1942,6 +2074,24 @@ def test_capture_evaluation_rejects_stale_notice_action_on_active_state():
     record["rendered_state"]["notice_action_text"] = "제출 재시도"
 
     assert "notice_action_mapping_mismatch" in evaluate_capture(record)
+
+
+def test_cancellation_conflict_evaluation_is_exact_and_nonblocking():
+    record = _valid_capture_record("cancellation_conflict")
+    assert evaluate_capture(record) == []
+
+    record["rendered_state"]["display_notice"]["message"] = "미확인 3건"
+    record["rendered_state"]["presenter_action_gates"]["f3_enabled"] = False
+    record["rendered_state"]["qa_detail_contract"]["selected_detail_text"] = (
+        "abbreviated"
+    )
+    record["rendered_state"]["current_set_rows"].pop()
+
+    issues = evaluate_capture(record)
+    assert "cancellation_conflict_notice_mismatch" in issues
+    assert "cancellation_conflict_action_gates_changed" in issues
+    assert "cancellation_conflict_selected_raw_detail_changed" in issues
+    assert "cancellation_conflict_five_row_scan_list_missing" in issues
 
 
 def test_capture_evaluation_fails_closed_when_scan_summary_contract_is_missing_or_failed():
@@ -2044,10 +2194,11 @@ def test_capture_evaluation_fails_new_detail_action_footer_and_text_gates():
 
 def test_cross_capture_contract_preserves_center_geometry_and_scan_values():
     qa = _valid_capture_record("qa_product_3")
+    conflict = _valid_capture_record("cancellation_conflict")
     error = _valid_capture_record("error")
     completed = _valid_capture_record("full_complete")
     blocked = _valid_capture_record("submission_blocked")
-    captures = [qa, error, completed, blocked]
+    captures = [qa, conflict, error, completed, blocked]
 
     apply_cross_capture_contracts(captures)
     assert all(capture["passed"] for capture in captures)
@@ -2066,6 +2217,24 @@ def test_cross_capture_contract_preserves_center_geometry_and_scan_values():
     assert "center_scan_list_geometry_changed_across_states" in blocked["issues"]
     assert error["passed"] is False
     assert blocked["passed"] is False
+
+
+def test_cross_capture_conflict_preserves_selected_raw_and_fkey_gates():
+    qa = _valid_capture_record("qa_product_3")
+    conflict = _valid_capture_record("cancellation_conflict")
+    apply_cross_capture_contracts([qa, conflict])
+    assert conflict["passed"] is True
+
+    conflict["rendered_state"]["qa_detail_contract"]["selected_raw"] = "changed"
+    conflict["rendered_state"]["button_states"]["manual_complete_button"] = (
+        "disabled"
+    )
+    apply_cross_capture_contracts([qa, conflict])
+
+    assert "cancellation_conflict_selected_raw_changed" in conflict["issues"]
+    assert (
+        "cancellation_conflict_fkey_button_states_changed" in conflict["issues"]
+    )
 
 
 def test_cross_capture_qa_preservation_ignores_status_values_and_tags():
