@@ -13,6 +13,7 @@ tkcalendar==1.6.1 --hash=sha256:9d3a80816a7b32d64fab696fa3d2a007fb23c87953267d5e
 # Release and test entry points.
 pyinstaller==6.20.0 --hash=sha256:d588844e890ee80c4365867f98146636e1849bbca8e4284bbf0c809aff0f161a
 pytest==9.1.1 --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
+pywin32==311 --hash=sha256:b8c095edad5c211ff31c05223658e71bf7116daa0ecf3ad85f3201ea3190d067
 
 # Exact transitive dependencies selected by pip for the target above.
 altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
