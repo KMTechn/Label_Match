@@ -1590,6 +1590,8 @@ def test_on_closing_replaces_closed_data_manager_after_close_failure(monkeypatch
     app.run_tests = False
     app.is_blinking = True
     app.data_manager = failed_manager
+    outbox_restarts = []
+    app._start_package_outbox_drain = lambda: outbox_restarts.append(True)
     app._save_app_settings = lambda: (_ for _ in ()).throw(AssertionError("settings should not save"))
     app.destroy = lambda: (_ for _ in ()).throw(AssertionError("window should not close"))
     monkeypatch.setattr(module, "DataManager", lambda *args, **kwargs: replacement_manager)
@@ -1600,6 +1602,7 @@ def test_on_closing_replaces_closed_data_manager_after_close_failure(monkeypatch
 
     assert failed_manager.closed is True
     assert app.data_manager is replacement_manager
+    assert outbox_restarts == [True]
     app.data_manager.log_event("AFTER_FAILED_CLOSE", {})
     assert app.data_manager.events[-1][0] == "AFTER_FAILED_CLOSE"
 
@@ -2973,6 +2976,304 @@ def test_cancel_completed_tray_finds_legacy_base64_unique_master_without_metadat
     assert app.global_scanned_set == set()
 
 
+def test_central_tray_cancel_fails_closed_before_local_event_when_outbox_write_fails():
+    module = load_label_match_module()
+
+    class PackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            return {"set_id": set_id, "status": "PENDING"}
+
+    class BrokenCancellationOutbox:
+        @staticmethod
+        def enqueue(intent):
+            raise OSError("simulated cancellation intent failure")
+
+    details = _completed_details(
+        set_id="central-tray",
+        master_code="CENTRAL-TRAY",
+        end_time="2026-07-15T09:00:00",
+        raw_scans=["CENTRAL-TRAY", "PRODUCT-1"],
+    )
+    app = object.__new__(module.Label_Match)
+    app.set_details_map = {"central-tray": details}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = module._label_match_duplicate_index_barcodes(details)
+    app.history_tree = _RecordingTree()
+    app.history_tree.insert("", "end", iid="central-tray", values=())
+    app.data_manager = _FakeLoggingDataManager()
+    app.package_outbox = PackageOutbox()
+    app.package_cancellation_outbox = BrokenCancellationOutbox()
+    app.run_tests = True
+    app._update_summary_tree = lambda: None
+
+    module.Label_Match._cancel_completed_tray_by_label(app, "CENTRAL-TRAY")
+
+    assert "central-tray" in app.set_details_map
+    assert app.history_tree.exists("central-tray")
+    assert all(
+        event != module.Label_Match.Events.TRAY_COMPLETION_CANCELLED
+        for event, _details in app.data_manager.events
+    )
+    assert app.data_manager.events[-1][0] == module.Label_Match.Events.UI_ERROR
+
+
+def test_central_metadata_without_create_outbox_row_blocks_local_cancellation():
+    module = load_label_match_module()
+
+    class MissingPackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            return None
+
+    app = object.__new__(module.Label_Match)
+    app.package_outbox = MissingPackageOutbox()
+    app.package_cancellation_outbox = object()
+    local_event_details = {
+        "original_details": {
+            "package_logistics": {
+                "status": "ACKED",
+                "idempotency_key": "package-create-1",
+                "package_bundle_id": "package-bundle-1",
+            }
+        }
+    }
+
+    with pytest.raises(
+        module.PackageLogisticsError,
+        match="durable CREATE outbox row is missing",
+    ):
+        module.Label_Match._queue_authoritative_package_cancellation(
+            app,
+            set_id="central-set",
+            event_type=module.Label_Match.Events.SET_DELETED,
+            reason="LOCAL_COMPLETED_SET_DELETED",
+            local_event_details=local_event_details,
+        )
+
+
+def test_legacy_local_event_without_central_metadata_keeps_legacy_cancel_path():
+    module = load_label_match_module()
+
+    class MissingPackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            return None
+
+    app = object.__new__(module.Label_Match)
+    app.package_outbox = MissingPackageOutbox()
+
+    cancellation = module.Label_Match._queue_authoritative_package_cancellation(
+        app,
+        set_id="legacy-set",
+        event_type=module.Label_Match.Events.SET_DELETED,
+        reason="LOCAL_COMPLETED_SET_DELETED",
+        local_event_details={
+            "original_details": {
+                "item_code": "ITEM1",
+                "package_logistics": {
+                    "status": "LEGACY_DIRECT_SYNC_ONLY",
+                    "sample_barcodes_are_membership": False,
+                },
+            }
+        },
+    )
+
+    assert cancellation is None
+
+
+def test_pending_central_cancellation_feedback_never_claims_full_success():
+    module = load_label_match_module()
+
+    pending_message = module.Label_Match._package_cancellation_completion_message(
+        {"central_cancellation_acked": False}
+    )
+    acked_message = module.Label_Match._package_cancellation_completion_message(
+        {"status": "ACKED", "central_cancellation_acked": True}
+    )
+    conflict_message = module.Label_Match._package_cancellation_completion_message(
+        {"status": "CONFLICT", "central_cancellation_acked": False}
+    )
+
+    assert "전송·확인 중" in pending_message
+    assert "반출하지 마세요" in pending_message
+    assert "정상적으로 취소" not in pending_message
+    assert "중앙 포장이 모두 취소" in acked_message
+    assert "중앙 취소 확인이 필요" in conflict_message
+    assert "관리자" in conflict_message
+    assert "전송·확인 중" not in conflict_message
+
+
+def test_terminal_cancellation_conflict_stays_in_separate_operator_review_notice():
+    module = load_label_match_module()
+
+    class ConflictOutbox:
+        rows = [
+            {
+                "set_id": "set-1",
+                "package_bundle_id": "bundle-1",
+                "last_error_code": "PACKAGE_ALREADY_SHIPPED",
+                "last_error": "already shipped",
+                "status": "CONFLICT",
+            }
+        ]
+
+        def list_conflicts(self, *, limit):
+            assert limit == 21
+            return list(self.rows)
+
+    app = object.__new__(module.Label_Match)
+    app.package_cancellation_outbox = ConflictOutbox()
+    app.operator_workbench_ready = True
+    app._workflow_widgets_ready = False
+    render_calls = []
+    app._render_operator_workbench = lambda: render_calls.append(True)
+
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 1
+    notice = app._package_cancellation_review_notice
+    assert notice.title == "중앙 취소 확인 필요"
+    assert "PACKAGE_ALREADY_SHIPPED" in notice.message
+    assert "반출하지 말고" in notice.message
+    assert app._package_cancellation_review_rows[0]["set_id"] == "set-1"
+
+    app.package_cancellation_outbox.rows = [
+        {
+            "set_id": f"set-{index}",
+            "package_bundle_id": f"bundle-{index}",
+            "last_error_code": "PACKAGE_ALREADY_SHIPPED",
+            "status": "CONFLICT",
+        }
+        for index in range(21)
+    ]
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 21
+    assert "20건 이상" in app._package_cancellation_review_notice.message
+    assert len(app._package_cancellation_review_rows) == 20
+
+    app.package_cancellation_outbox.rows = []
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 0
+    assert app._package_cancellation_review_notice is None
+    assert len(render_calls) == 3
+
+
+def test_existing_cancellation_conflicts_refresh_without_configured_client():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.package_outbox_processor = None
+    app.package_cancellation_outbox_processor = None
+    app.package_outbox_thread = None
+    app.run_tests = False
+    refresh_calls = []
+    app._refresh_package_cancellation_review_notice = lambda: refresh_calls.append(True)
+
+    assert module.Label_Match._start_package_outbox_drain(app) is None
+    assert refresh_calls == [True]
+
+
+def test_package_worker_never_calls_tk_after_from_background_thread():
+    module = load_label_match_module()
+    main_thread_id = threading.get_ident()
+    worker_thread_ids = []
+
+    class Processor:
+        @staticmethod
+        def drain(*, limit):
+            assert limit == 20
+            worker_thread_ids.append(threading.get_ident())
+
+    app = object.__new__(module.Label_Match)
+    app.package_outbox_processor = Processor()
+    app.package_cancellation_outbox_processor = None
+    app.package_outbox_thread = None
+    app.package_outbox_after_id = None
+    app.package_outbox_poll_after_id = None
+    app.run_tests = False
+    refresh_calls = []
+    app._refresh_package_cancellation_review_notice = lambda: refresh_calls.append(True)
+    after_calls = []
+
+    def after(delay, callback):
+        after_calls.append((threading.get_ident(), delay, callback))
+        return f"after-{len(after_calls)}"
+
+    app.after = after
+    thread = module.Label_Match._start_package_outbox_drain(app)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert worker_thread_ids and worker_thread_ids[0] != main_thread_id
+    assert [(thread_id, delay) for thread_id, delay, _callback in after_calls] == [
+        (main_thread_id, 100)
+    ]
+
+    after_calls[0][2]()
+    assert refresh_calls == [True]
+    assert [(thread_id, delay) for thread_id, delay, _callback in after_calls] == [
+        (main_thread_id, 100),
+        (main_thread_id, 30000),
+    ]
+
+
+def test_cancellation_review_notice_is_visible_but_does_not_block_scanning():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    advisory = module.WorkflowNotice(
+        title="중앙 취소 확인 필요",
+        message="해당 트레이는 반출하지 말고 관리자에게 확인하세요.",
+        kind="package_cancellation_review",
+        tone="danger",
+    )
+    source = {
+        "raw": ["MASTER-1"],
+        "parsed": ["ITEM1"],
+        "exact_rescan_barcodes": [],
+        "exact_rescan_target_count": 0,
+        "sealed_transfer": None,
+        "phase": "-",
+        "id": "set-1",
+    }
+    app.operator_workbench_ready = True
+    app._workflow_widgets_ready = False
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.history_active_load_pending = False
+    app._workflow_recovered = False
+    app._workflow_completion_kind = None
+    app._workflow_last_normal_override = None
+    app._workflow_blocking_notice = None
+    app._workflow_notice = None
+    app._pending_workflow_error = None
+    app._workflow_error_message = ""
+    app._package_cancellation_review_notice = advisory
+    app._workflow_view_source = lambda: source
+    app._selected_qa_scan_iid = lambda: None
+    app._selected_exact_rescan_iid = lambda: None
+    app._render_qa_scan_detail = lambda *_args, **_kwargs: None
+    app._render_exact_rescan_detail = lambda *_args, **_kwargs: None
+    app._set_exact_rescan_tab_visible = lambda *_args, **_kwargs: None
+    app._update_operator_item_panel = lambda *_args, **_kwargs: None
+    displayed = []
+    app._set_workflow_notice_ui = lambda notice, next_action: displayed.append(
+        (notice, next_action)
+    )
+
+    view = module.Label_Match._render_operator_workbench(app)
+
+    assert view.scan_input_enabled is True
+    assert view.cancel_completed_enabled is True
+    assert view.f4_enabled is True
+    assert displayed[-1][0] is advisory
+
+    blocking = module.WorkflowNotice(
+        title="입력 오류",
+        message="현재 오류를 먼저 확인하세요.",
+    )
+    app._workflow_blocking_notice = blocking
+    blocked_view = module.Label_Match._render_operator_workbench(app)
+
+    assert blocked_view.scan_input_enabled is False
+    assert displayed[-1][0] == blocking
+
+
 def test_delete_selected_row_handles_string_iid_against_numeric_detail_key():
     module = load_label_match_module()
 
@@ -3024,6 +3325,263 @@ def test_delete_selected_row_handles_string_iid_against_numeric_detail_key():
     assert app.global_scanned_set == set()
     assert app.data_manager.events[0][0] == module.Label_Match.Events.SET_DELETED
     assert app.data_manager.events[0][1]["set_id"] == "123"
+
+
+def test_central_package_delete_fails_closed_before_local_event_when_outbox_write_fails():
+    module = load_label_match_module()
+
+    class SelectableTree(_RecordingTree):
+        def selection(self):
+            return ("central-set",)
+
+        def item(self, iid, option=None):
+            if option == "values":
+                return self.rows[iid]["values"]
+            return self.rows[iid]
+
+    class PackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            return {"set_id": set_id, "status": "ACKED"}
+
+    class BrokenCancellationOutbox:
+        @staticmethod
+        def enqueue(intent):
+            raise OSError("simulated durable outbox failure")
+
+    details = _completed_details(
+        set_id="central-set",
+        master_code="CENTRAL-MASTER",
+        end_time="2026-07-15T08:00:00",
+        raw_scans=["MASTER", "PRODUCT-1"],
+    )
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.run_tests = True
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.history_load_pending = False
+    app.history_active_load_pending = False
+    app.history_tree = SelectableTree()
+    app.history_tree.insert(
+        "",
+        "end",
+        iid="central-set",
+        values=("central-set", "MASTER", "PRODUCT-1", "", "", "", "통과", "08:00:00"),
+    )
+    app.set_details_map = {"central-set": details}
+    app.history_row_details_map = {"central-set": details}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = {"PRODUCT-1"}
+    app.data_manager = _FakeLoggingDataManager()
+    app.package_outbox = PackageOutbox()
+    app.package_cancellation_outbox = BrokenCancellationOutbox()
+    app._update_summary_tree = lambda: None
+    app._render_history_detail = lambda *args, **kwargs: None
+
+    with pytest.raises(OSError, match="durable outbox failure"):
+        module.Label_Match._delete_selected_row(app)
+
+    assert "central-set" in app.history_tree.rows
+    assert "central-set" in app.set_details_map
+    assert app.data_manager.events == []
+
+
+def test_multi_delete_rebuilds_derived_state_after_later_cancellation_failure():
+    module = load_label_match_module()
+
+    class SelectableTree(_RecordingTree):
+        def selection(self):
+            return ("legacy-set", "central-set")
+
+        def item(self, iid, option=None):
+            if option == "values":
+                return self.rows[iid]["values"]
+            return self.rows[iid]
+
+    class MixedPackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            if str(set_id) == "central-set":
+                return {"set_id": set_id, "status": "ACKED"}
+            return None
+
+    class BrokenCancellationOutbox:
+        @staticmethod
+        def enqueue(intent):
+            raise OSError("simulated second-row outbox failure")
+
+    legacy_details = _completed_details(
+        set_id="legacy-set",
+        master_code="ITEM1",
+        end_time="2026-06-23T08:00:00",
+        raw_scans=["MASTER-1", "PRODUCT-1"],
+    )
+    central_details = _completed_details(
+        set_id="central-set",
+        master_code="ITEM1",
+        end_time="2026-06-23T09:00:00",
+        raw_scans=["MASTER-2", "PRODUCT-2"],
+    )
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.run_tests = True
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.history_load_pending = False
+    app.history_active_load_pending = False
+    app.history_tree = SelectableTree()
+    for set_id, product in (
+        ("legacy-set", "PRODUCT-1"),
+        ("central-set", "PRODUCT-2"),
+    ):
+        app.history_tree.insert(
+            "",
+            "end",
+            iid=set_id,
+            values=(set_id, "MASTER", product, "", "", "", "통과", "08:00:00"),
+        )
+    app.set_details_map = {
+        "legacy-set": legacy_details,
+        "central-set": central_details,
+    }
+    app.history_row_details_map = dict(app.set_details_map)
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.scan_count["2026-06-23"][("ITEM1", "-")] = 2
+    app.global_scanned_set = {"PRODUCT-1", "PRODUCT-2"}
+    app.data_manager = _FakeLoggingDataManager()
+    app.package_outbox = MixedPackageOutbox()
+    app.package_cancellation_outbox = BrokenCancellationOutbox()
+    summary_calls = []
+    detail_calls = []
+    rebuild_calls = []
+    app._update_summary_tree = lambda: summary_calls.append(True)
+    app._render_history_detail = lambda *args, **kwargs: detail_calls.append(True)
+
+    def rebuild():
+        rebuild_calls.append(True)
+        module.Label_Match._rebuild_global_scanned_set_from_details(app)
+
+    app._rebuild_global_scanned_set_from_details = rebuild
+
+    with pytest.raises(OSError, match="second-row outbox failure"):
+        module.Label_Match._delete_selected_row(app)
+
+    assert not app.history_tree.exists("legacy-set")
+    assert app.history_tree.exists("central-set")
+    assert set(app.set_details_map) == {"central-set"}
+    assert app.scan_count["2026-06-23"][("ITEM1", "-")] == 1
+    assert app.global_scanned_set == module._label_match_duplicate_index_barcodes(
+        central_details
+    )
+    assert len(rebuild_calls) == 1
+    assert len(summary_calls) == 1
+    assert len(detail_calls) == 1
+    assert [event for event, _details in app.data_manager.events] == [
+        module.Label_Match.Events.SET_DELETED
+    ]
+
+
+def test_history_delete_conflict_feedback_requires_operator_review(monkeypatch):
+    module = load_label_match_module()
+
+    class SelectableTree(_RecordingTree):
+        def selection(self):
+            return ("central-set",)
+
+        def item(self, iid, option=None):
+            if option == "values":
+                return self.rows[iid]["values"]
+            return self.rows[iid]
+
+    class PackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            return {"set_id": set_id, "status": "ACKED"}
+
+    class ConflictCancellationOutbox:
+        @staticmethod
+        def enqueue(intent):
+            return {
+                "status": "CONFLICT",
+                "idempotency_key": "cancel-conflict-1",
+                "package_bundle_id": "bundle-1",
+            }
+
+        @staticmethod
+        def mark_local_event_committed(cancellation_event_id):
+            assert cancellation_event_id
+
+        @staticmethod
+        def list_conflicts(*, limit):
+            assert limit == 21
+            return [
+                {
+                    "set_id": "central-set",
+                    "package_bundle_id": "bundle-1",
+                    "last_error_code": "PACKAGE_ALREADY_SHIPPED",
+                    "status": "CONFLICT",
+                }
+            ]
+
+    details = _completed_details(
+        set_id="central-set",
+        master_code="ITEM1",
+        end_time="2026-06-23T09:00:00",
+        raw_scans=["MASTER-1", "PRODUCT-1"],
+    )
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.run_tests = False
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.history_load_pending = False
+    app.history_active_load_pending = False
+    app.history_tree = SelectableTree()
+    app.history_tree.insert(
+        "",
+        "end",
+        iid="central-set",
+        values=("central-set", "MASTER", "PRODUCT-1", "", "", "", "통과", "09:00:00"),
+    )
+    app.set_details_map = {"central-set": details}
+    app.history_row_details_map = {"central-set": details}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.scan_count["2026-06-23"][("ITEM1", "-")] = 1
+    app.global_scanned_set = {"PRODUCT-1"}
+    app.data_manager = _FakeLoggingDataManager()
+    app.package_outbox = PackageOutbox()
+    app.package_cancellation_outbox = ConflictCancellationOutbox()
+    app.package_outbox_processor = None
+    app.package_cancellation_outbox_processor = None
+    app.package_outbox_thread = None
+    app.operator_workbench_ready = False
+    app._workflow_widgets_ready = False
+    app._update_summary_tree = lambda: None
+    app._render_history_detail = lambda *args, **kwargs: None
+    warnings = []
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        module.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: pytest.fail("conflict must not be shown as success"),
+    )
+
+    module.Label_Match._delete_selected_row(app)
+
+    assert warnings
+    assert warnings[-1][0][0] == "중앙 취소 확인 필요"
+    assert "확인 필요 1건" in warnings[-1][0][1]
+    assert "관리자" in warnings[-1][0][1]
+    assert "전송·확인 중" not in warnings[-1][0][1]
 
 
 def test_danger_action_button_contract_keeps_cancel_actions_separate():

@@ -62,6 +62,9 @@ import binascii
 import unittest
 
 from package_logistics import (
+    PackageCancellationIntent,
+    PackageCancellationOutbox,
+    PackageCancellationOutboxProcessor,
     PackageCommandDraft,
     PackageLogisticsError,
     PackageOutbox,
@@ -2652,15 +2655,25 @@ class Label_Match(tk.Tk):
         self.unique_id = socket.gethostname()
         self.worker_name = self.app_settings.get("worker_name", self.Worker.PACKAGING)
         self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
-        self.package_outbox = PackageOutbox(os.path.join(self.save_directory, "package_logistics_outbox.sqlite3"))
+        package_outbox_path = os.path.join(self.save_directory, "package_logistics_outbox.sqlite3")
+        self.package_outbox = PackageOutbox(package_outbox_path)
+        self.package_cancellation_outbox = PackageCancellationOutbox(package_outbox_path)
         self.package_logistics_client = package_client_from_env()
         self.package_outbox_processor = (
             PackageOutboxProcessor(self.package_outbox, self.package_logistics_client)
             if self.package_logistics_client is not None
             else None
         )
+        self.package_cancellation_outbox_processor = (
+            PackageCancellationOutboxProcessor(
+                self.package_cancellation_outbox, self.package_logistics_client
+            )
+            if self.package_logistics_client is not None
+            else None
+        )
         self.package_outbox_thread = None
         self.package_outbox_after_id = None
+        self.package_outbox_poll_after_id = None
         _label_match_startup_trace("app_init_after_data_manager", worker_name=self.worker_name, unique_id=self.unique_id)
         self.current_set_info = {} 
         self.is_blinking = False
@@ -2681,6 +2694,8 @@ class Label_Match(tk.Tk):
         self._workflow_display_parsed_scans = ()
         self._workflow_last_normal_override = None
         self._workflow_blocking_notice = None
+        self._package_cancellation_review_notice = None
+        self._package_cancellation_review_rows = ()
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
         self._workflow_pending_error = None
@@ -2731,35 +2746,110 @@ class Label_Match(tk.Tk):
         _label_match_startup_trace("app_init_complete")
 
     def _start_package_outbox_drain(self):
-        processor = self.__dict__.get("package_outbox_processor")
-        if processor is None or self.__dict__.get("run_tests", False):
+        package_processor = self.__dict__.get("package_outbox_processor")
+        cancellation_processor = self.__dict__.get("package_cancellation_outbox_processor")
+        if (
+            (package_processor is None and cancellation_processor is None)
+            or self.__dict__.get("run_tests", False)
+        ):
+            self._refresh_package_cancellation_review_notice()
             return None
         current = self.__dict__.get("package_outbox_thread")
         if current is not None and current.is_alive():
+            self._schedule_package_outbox_poll()
             return current
 
         def worker():
             try:
-                processor.drain(limit=20)
+                # CREATE_PACKAGE always drains first so a cancellation recorded
+                # before its ACK can be promoted and sent in the same cycle.
+                if package_processor is not None:
+                    package_processor.drain(limit=20)
+                if cancellation_processor is not None:
+                    cancellation_processor.drain(limit=20)
             except Exception as exc:
                 print(f"포장 물류 outbox 처리 오류: {exc}")
-            finally:
-                try:
-                    if self.__dict__.get("package_outbox_after_id") is None:
-                        self.package_outbox_after_id = self.after(
-                            30000, self._run_scheduled_package_outbox_drain
-                        )
-                except TclError:
-                    pass
 
         thread = threading.Thread(target=worker, name="label-match-package-outbox", daemon=True)
         self.package_outbox_thread = thread
         thread.start()
+        self._schedule_package_outbox_poll()
         return thread
+
+    def _schedule_package_outbox_poll(self):
+        if self.__dict__.get("package_outbox_poll_after_id") is not None:
+            return self.package_outbox_poll_after_id
+        try:
+            self.package_outbox_poll_after_id = self.after(
+                100, self._poll_package_outbox_drain
+            )
+        except (TclError, RuntimeError):
+            self.package_outbox_poll_after_id = None
+        return self.package_outbox_poll_after_id
+
+    def _poll_package_outbox_drain(self):
+        """Observe the worker from Tk's thread and schedule every Tk callback there."""
+
+        self.package_outbox_poll_after_id = None
+        current = self.__dict__.get("package_outbox_thread")
+        if current is not None and current.is_alive():
+            self._schedule_package_outbox_poll()
+            return current
+        self._refresh_package_cancellation_review_notice()
+        if self.__dict__.get("package_outbox_after_id") is None:
+            try:
+                self.package_outbox_after_id = self.after(
+                    30000, self._run_scheduled_package_outbox_drain
+                )
+            except (TclError, RuntimeError):
+                self.package_outbox_after_id = None
+        return None
 
     def _run_scheduled_package_outbox_drain(self):
         self.package_outbox_after_id = None
         return self._start_package_outbox_drain()
+
+    def _refresh_package_cancellation_review_notice(self):
+        """Keep terminal central-cancellation conflicts visible to the operator."""
+
+        outbox = self.__dict__.get("package_cancellation_outbox")
+        if outbox is None or not hasattr(outbox, "list_conflicts"):
+            conflicts = ()
+        else:
+            try:
+                conflicts = tuple(outbox.list_conflicts(limit=21))
+            except Exception as exc:
+                print(f"중앙 취소 확인 상태 조회 오류: {exc}")
+                return 0
+
+        has_more_conflicts = len(conflicts) > 20
+        visible_conflicts = conflicts[:20]
+        self._package_cancellation_review_rows = visible_conflicts
+        if conflicts:
+            first = conflicts[0]
+            code = str(first.get("last_error_code") or "CENTRAL_CONFLICT").strip()
+            package_bundle_id = str(first.get("package_bundle_id") or "").strip()
+            identifier = package_bundle_id or str(first.get("set_id") or "").strip()
+            identity_text = f" · {identifier}" if identifier else ""
+            count_text = "20건 이상" if has_more_conflicts else f"{len(conflicts)}건"
+            self._package_cancellation_review_notice = WorkflowNotice(
+                title="중앙 취소 확인 필요",
+                message=(
+                    f"미확인 {count_text} · {code}{identity_text}. "
+                    "해당 트레이는 반출하지 말고 관리자에게 중앙 취소 상태 확인을 요청하세요."
+                ),
+                kind="package_cancellation_review",
+                tone="danger",
+            )
+        else:
+            self._package_cancellation_review_notice = None
+
+        if bool(
+            self.__dict__.get("operator_workbench_ready")
+            or self.__dict__.get("_workflow_widgets_ready")
+        ):
+            self._render_operator_workbench()
+        return len(conflicts)
 
     def _start_audio_initialization(self):
         if self.run_tests or _label_match_automated_test_mode() or self.audio_init_started or not _label_match_audio_enabled():
@@ -2829,6 +2919,7 @@ class Label_Match(tk.Tk):
     def _async_initial_load(self):
         _label_match_startup_trace("async_initial_load_start")
         try:
+            self._reconcile_package_cancellation_local_events()
             items_data = self._load_items_data()
             loaded_data = {"items": items_data}
             self.initial_load_queue.put(loaded_data)
@@ -3713,6 +3804,12 @@ class Label_Match(tk.Tk):
                     except Exception:
                         pass
                 self._replace_closed_data_manager_after_close_failure(self.data_manager)
+                try:
+                    # Closing is being abandoned, so restore the cancellation
+                    # advisory/retry cycle that _cancel_pending_ui_jobs stopped.
+                    self._start_package_outbox_drain()
+                except Exception as outbox_error:
+                    print(f"종료 보류 후 포장 물류 재시작 오류: {outbox_error}")
                 if self.run_tests:
                     raise
                 messagebox.showerror("종료 보류", f"작업 로그 저장을 완료하지 못해 종료를 중단했습니다.\n\n[상세 오류]\n{e}")
@@ -3730,7 +3827,14 @@ class Label_Match(tk.Tk):
             self.destroy()
 
     def _cancel_pending_ui_jobs(self):
-        for attr_name in ("_responsive_after_id", "_zoom_after_id", "_ui_redraw_after_id", "_clock_after_id"):
+        for attr_name in (
+            "_responsive_after_id",
+            "_zoom_after_id",
+            "_ui_redraw_after_id",
+            "_clock_after_id",
+            "package_outbox_after_id",
+            "package_outbox_poll_after_id",
+        ):
             after_id = self.__dict__.get(attr_name)
             if not after_id:
                 continue
@@ -4688,6 +4792,226 @@ class Label_Match(tk.Tk):
             "expected_membership_hash": draft.expected_membership_hash,
         }
 
+    @staticmethod
+    def _local_event_has_authoritative_package(local_event_details):
+        """Detect central package metadata even when the local outbox row is lost."""
+
+        pending = [local_event_details]
+        visited = set()
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                identity = id(value)
+                if identity in visited:
+                    continue
+                visited.add(identity)
+                package_metadata = value.get("package_logistics")
+                if isinstance(package_metadata, dict):
+                    status = str(package_metadata.get("status") or "").strip().upper()
+                    has_central_identity = any(
+                        str(package_metadata.get(key) or "").strip()
+                        for key in (
+                            "idempotency_key",
+                            "package_bundle_id",
+                            "source_bundle_id",
+                        )
+                    )
+                    if has_central_identity or (
+                        status
+                        and status
+                        not in {"LEGACY_DIRECT_SYNC_ONLY", "LOCAL_ONLY"}
+                    ):
+                        return True
+                pending.extend(value.values())
+            elif isinstance(value, (list, tuple)):
+                identity = id(value)
+                if identity in visited:
+                    continue
+                visited.add(identity)
+                pending.extend(value)
+        return False
+
+    @staticmethod
+    def _package_cancellation_completion_message(cancellation):
+        if not cancellation:
+            return "해당 작업이 정상적으로 취소되었습니다."
+        status = str(cancellation.get("status") or "").strip().upper()
+        if bool(cancellation.get("central_cancellation_acked")) or status == "ACKED":
+            return "로컬 기록과 중앙 포장이 모두 취소되었습니다."
+        if status == "CONFLICT":
+            return (
+                "로컬 취소 기록은 저장되었지만 중앙 취소 확인이 필요합니다. "
+                "해당 트레이를 반출하지 말고 관리자에게 확인을 요청하세요."
+            )
+        return (
+            "로컬 취소 기록이 저장되었습니다. 중앙 취소 전송·확인 중입니다. "
+            "중앙 확인 전 해당 트레이를 반출하지 마세요."
+        )
+
+    def _queue_authoritative_package_cancellation(
+        self,
+        *,
+        set_id,
+        event_type,
+        reason,
+        evidence=None,
+        local_event_details=None,
+    ):
+        """Persist central cancellation intent before committing the local event."""
+
+        package_outbox = self.__dict__.get("package_outbox")
+        package_row = (
+            package_outbox.get_by_set_id(str(set_id or ""))
+            if package_outbox is not None
+            else None
+        )
+        if package_row is None:
+            if self._local_event_has_authoritative_package(local_event_details):
+                raise PackageLogisticsError(
+                    "central package metadata exists but its durable CREATE outbox row "
+                    "is missing; local cancellation is blocked for operator review"
+                )
+            return None
+        outbox = self.__dict__.get("package_cancellation_outbox")
+        if outbox is None:
+            raise PackageLogisticsError(
+                "centrally queued package requires a durable cancellation outbox"
+            )
+        intent = PackageCancellationIntent.build(
+            set_id=str(set_id or ""),
+            event_type=str(event_type or ""),
+            reason=str(reason or ""),
+            evidence=evidence or {},
+            local_event_details=local_event_details or {},
+        )
+        row = outbox.enqueue(intent)
+        if row is None:
+            raise PackageLogisticsError(
+                "central package disappeared before cancellation intent was recorded"
+            )
+        return {
+            "status": str(row.get("status") or "DEFERRED"),
+            "idempotency_key": str(row.get("idempotency_key") or ""),
+            "cancellation_event_id": intent.cancellation_event_id,
+            "package_bundle_id": str(row.get("package_bundle_id") or ""),
+            "central_cancellation_acked": str(row.get("status") or "") == "ACKED",
+        }
+
+    @staticmethod
+    def _package_cancellation_event_details(local_details, cancellation):
+        details = dict(local_details or {})
+        if not cancellation:
+            return details
+        details["cancellation_event_id"] = cancellation["cancellation_event_id"]
+        details["package_cancellation"] = {
+            "status": cancellation["status"],
+            "idempotency_key": cancellation["idempotency_key"],
+            "package_bundle_id": cancellation["package_bundle_id"],
+            "central_cancellation_acked": bool(
+                cancellation.get("central_cancellation_acked", False)
+            ),
+        }
+        return details
+
+    def _commit_package_cancellation_local_event(
+        self,
+        *,
+        event_type,
+        local_event_details,
+        cancellation,
+    ):
+        details = self._package_cancellation_event_details(
+            local_event_details, cancellation
+        )
+        already_logged = bool(
+            cancellation
+            and self._package_cancellation_event_was_logged(
+                cancellation["cancellation_event_id"]
+            )
+        )
+        if not already_logged:
+            self.data_manager.log_event(event_type, details)
+            self._flush_data_manager_if_supported()
+        if cancellation:
+            outbox = self.__dict__.get("package_cancellation_outbox")
+            if outbox is None:
+                raise PackageLogisticsError(
+                    "durable package cancellation outbox became unavailable"
+                )
+            outbox.mark_local_event_committed(cancellation["cancellation_event_id"])
+        return details
+
+    def _package_cancellation_event_was_logged(self, cancellation_event_id):
+        event_id = str(cancellation_event_id or "").strip()
+        if not event_id:
+            return False
+        save_directory = str(self.__dict__.get("save_directory") or "")
+        if not save_directory or not os.path.isdir(save_directory):
+            return False
+        prefix = f"{self.Worker.PACKAGING}작업이벤트로그_"
+        for filename in sorted(os.listdir(save_directory)):
+            if not filename.startswith(prefix) or not filename.endswith(".csv"):
+                continue
+            path = os.path.join(save_directory, filename)
+            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                for record in csv.DictReader(handle):
+                    if record.get("event") not in {
+                        self.Events.SET_DELETED,
+                        self.Events.TRAY_COMPLETION_CANCELLED,
+                    }:
+                        continue
+                    try:
+                        details = json.loads(record.get("details") or "{}")
+                    except json.JSONDecodeError:
+                        continue
+                    if str(details.get("cancellation_event_id") or "") == event_id:
+                        return True
+        return False
+
+    def _reconcile_package_cancellation_local_events(self):
+        outbox = self.__dict__.get("package_cancellation_outbox")
+        if outbox is None:
+            return 0
+        reconciled = 0
+        for row in outbox.uncommitted_local_events():
+            try:
+                intent = json.loads(row["intent_json"])
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
+                raise PackageLogisticsError(
+                    "saved package cancellation local event is invalid"
+                ) from exc
+            event_type = str(intent.get("event_type") or "")
+            local_details = intent.get("local_event_details")
+            if (
+                event_type not in {
+                    self.Events.SET_DELETED,
+                    self.Events.TRAY_COMPLETION_CANCELLED,
+                }
+                or not isinstance(local_details, dict)
+            ):
+                raise PackageLogisticsError(
+                    "saved package cancellation local event contract is invalid"
+                )
+            cancellation = {
+                "status": str(row.get("status") or "DEFERRED"),
+                "idempotency_key": str(row.get("idempotency_key") or ""),
+                "cancellation_event_id": str(row.get("cancellation_event_id") or ""),
+                "package_bundle_id": str(row.get("package_bundle_id") or ""),
+                "central_cancellation_acked": str(row.get("status") or "") == "ACKED",
+            }
+            if not self._package_cancellation_event_was_logged(
+                cancellation["cancellation_event_id"]
+            ):
+                details = self._package_cancellation_event_details(
+                    local_details, cancellation
+                )
+                details["reconciled_after_restart"] = True
+                self.data_manager.log_event(event_type, details)
+                self._flush_data_manager_if_supported()
+            outbox.mark_local_event_committed(cancellation["cancellation_event_id"])
+            reconciled += 1
+        return reconciled
+
     def _finalize_set(self, result, error_details="", is_manual_complete=False):
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
@@ -4980,6 +5304,10 @@ class Label_Match(tk.Tk):
             return
 
         deleted_count = 0
+        central_pending_count = 0
+        central_acked_count = 0
+        central_conflict_count = 0
+        failure = None
         try:
             for iid in selected_iids:
                 if iid == 'loading':
@@ -4990,8 +5318,32 @@ class Label_Match(tk.Tk):
                 deleted_details = self._history_details_for_iid(iid)
                 values = tuple(self.history_tree.item(iid, 'values') or ())
                 log_details = {'set_id': str(iid), 'deleted_values': values, 'original_details': deleted_details}
-                self.data_manager.log_event(self.Events.SET_DELETED, log_details)
-                self._flush_data_manager_if_supported()
+                cancellation = self._queue_authoritative_package_cancellation(
+                    set_id=str(iid),
+                    event_type=self.Events.SET_DELETED,
+                    reason="LOCAL_COMPLETED_SET_DELETED",
+                    evidence={"history_record_deleted": True},
+                    local_event_details=log_details,
+                )
+                self._commit_package_cancellation_local_event(
+                    event_type=self.Events.SET_DELETED,
+                    local_event_details=log_details,
+                    cancellation=cancellation,
+                )
+                if cancellation and cancellation.get("idempotency_key"):
+                    self._start_package_outbox_drain()
+                    cancellation_status = str(
+                        cancellation.get("status") or ""
+                    ).strip().upper()
+                    if (
+                        cancellation.get("central_cancellation_acked")
+                        or cancellation_status == "ACKED"
+                    ):
+                        central_acked_count += 1
+                    elif cancellation_status == "CONFLICT":
+                        central_conflict_count += 1
+                    else:
+                        central_pending_count += 1
 
                 if deleted_details:
                     result = _label_match_tray_complete_result(deleted_details)
@@ -5016,9 +5368,21 @@ class Label_Match(tk.Tk):
                 self._remove_history_details_for_iid(iid)
                 deleted_count += 1
         except Exception as e:
-            self._show_delete_failure(e)
+            failure = e
+        finally:
+            if deleted_count:
+                try:
+                    self._rebuild_global_scanned_set_from_details()
+                    self._update_summary_tree()
+                    self._render_history_detail()
+                except Exception as rebuild_error:
+                    if failure is None:
+                        failure = rebuild_error
+
+        if failure is not None:
+            self._show_delete_failure(failure)
             if self.__dict__.get("run_tests", False):
-                raise
+                raise failure
             return
 
         if deleted_count == 0:
@@ -5026,11 +5390,45 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning("선택 필요", "삭제할 수 있는 기록이 없습니다.")
             return
 
-        self._rebuild_global_scanned_set_from_details()
-        self._update_summary_tree()
-        self._render_history_detail()
         if not self.run_tests:
-            messagebox.showinfo("삭제 완료", f"{deleted_count}개의 기록이 삭제 처리되었습니다.")
+            if central_conflict_count:
+                pending_suffix = (
+                    f" 추가로 {central_pending_count}건은 전송·확인 중입니다."
+                    if central_pending_count
+                    else ""
+                )
+                messagebox.showwarning(
+                    "중앙 취소 확인 필요",
+                    (
+                        f"{deleted_count}개의 로컬 기록을 삭제했습니다.\n"
+                        f"중앙 취소 확인 필요 {central_conflict_count}건입니다."
+                        f"{pending_suffix}\n"
+                        "해당 트레이를 반출하지 말고 관리자에게 확인을 요청하세요."
+                    ),
+                    parent=self,
+                )
+            elif central_pending_count:
+                messagebox.showwarning(
+                    "중앙 취소 확인 중",
+                    (
+                        f"{deleted_count}개의 로컬 기록을 삭제했습니다.\n"
+                        f"중앙 취소 {central_pending_count}건은 전송·확인 중입니다.\n"
+                        "중앙 확인 전 해당 트레이를 반출하지 마세요."
+                    ),
+                    parent=self,
+                )
+            elif central_acked_count:
+                messagebox.showinfo(
+                    "삭제 완료",
+                    f"{deleted_count}개의 로컬 기록과 중앙 포장을 취소했습니다.",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo(
+                    "삭제 완료",
+                    f"{deleted_count}개의 기록이 삭제 처리되었습니다.",
+                    parent=self,
+                )
 
     def _rebuild_global_scanned_set_from_details(self):
         rebuilt = set()
@@ -5358,12 +5756,25 @@ class Label_Match(tk.Tk):
             return
 
         try:
-            self.data_manager.log_event(self.Events.TRAY_COMPLETION_CANCELLED, {
+            log_details = {
                 'cancelled_set_id': target_set_id,
                 'cancelled_by_label': label_to_cancel,
                 'details': target_details
-            })
-            self._flush_data_manager_if_supported()
+            }
+            cancellation = self._queue_authoritative_package_cancellation(
+                set_id=target_set_id,
+                event_type=self.Events.TRAY_COMPLETION_CANCELLED,
+                reason="LOCAL_TRAY_COMPLETION_CANCELLED",
+                evidence={"cancelled_by_label": str(label_to_cancel or "")},
+                local_event_details=log_details,
+            )
+            self._commit_package_cancellation_local_event(
+                event_type=self.Events.TRAY_COMPLETION_CANCELLED,
+                local_event_details=log_details,
+                cancellation=cancellation,
+            )
+            if cancellation and cancellation.get("idempotency_key"):
+                self._start_package_outbox_drain()
 
             production_date = target_details.get('production_date')
             item_code = target_details.get('item_code')
@@ -5384,7 +5795,23 @@ class Label_Match(tk.Tk):
             self._update_summary_tree()
             
             if not self.run_tests:
-                messagebox.showinfo("처리 완료", f"해당 작업이 정상적으로 취소되었습니다.", parent=self)
+                completion_message = self._package_cancellation_completion_message(
+                    cancellation
+                )
+                if cancellation and not cancellation.get("central_cancellation_acked"):
+                    warning_title = (
+                        "중앙 취소 확인 필요"
+                        if str(cancellation.get("status") or "").strip().upper()
+                        == "CONFLICT"
+                        else "중앙 취소 확인 중"
+                    )
+                    messagebox.showwarning(
+                        warning_title, completion_message, parent=self
+                    )
+                else:
+                    messagebox.showinfo(
+                        "처리 완료", completion_message, parent=self
+                    )
 
         except Exception as e:
             if not self.run_tests:
@@ -7371,7 +7798,10 @@ class Label_Match(tk.Tk):
         # The central list and its selected-row detail retain the complete last
         # normal scan.  Repeating that raw value in the fixed notice row both
         # duplicates information and can force a short-screen height overflow.
-        self._set_workflow_notice_ui(view.notice, view.next_action)
+        display_notice = view.notice or self.__dict__.get(
+            "_package_cancellation_review_notice"
+        )
+        self._set_workflow_notice_ui(display_notice, view.next_action)
         last_scan_label = self.__dict__.get("operator_last_scan_label")
         if last_scan_label is None:
             last_scan_label = self.__dict__.get("status_label")
