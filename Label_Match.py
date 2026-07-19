@@ -3670,6 +3670,87 @@ class Label_Match(tk.Tk):
             overflow -= 1
         return widths
 
+    def _fit_history_display_widths(self, total_width, preferred_widths):
+        """Fit the three operator-facing history columns without clipping.
+
+        The internal set id and every barcode column remain in the Treeview's
+        value contract.  The compact operator tab only displays the master
+        item, result, and time; the selected-row detail keeps the complete
+        record available without making an operator horizontally scroll past
+        an otherwise redundant set number.
+        """
+
+        columns = ("Input1", "Result", "Timestamp")
+        total_width = max(len(columns) * 24, int(total_width or 0))
+        heading_size = max(
+            8,
+            int(
+                self.__dict__.get(
+                    "_current_tree_heading_font_size",
+                    self.__dict__.get("_current_effective_tree_heading_font_size", 14),
+                )
+            ),
+        )
+        body_size = max(
+            8,
+            int(
+                self.__dict__.get(
+                    "_current_tree_body_font_size",
+                    self.__dict__.get("tree_font_size", 13),
+                )
+            ),
+        )
+        heading_font = (self.default_font_name, heading_size, "bold")
+        body_font = (self.default_font_name, body_size)
+        heading_samples = {
+            "Input1": "현품표",
+            "Result": "결과",
+            "Timestamp": "시간",
+        }
+        body_samples = {
+            # Packaging item codes use the fixed operator-facing form shown
+            # by the active scan list, never the complete barcode telegram.
+            "Input1": "AAA0000000000",
+            "Result": self.Results.IN_PROGRESS,
+            "Timestamp": "23:59:59",
+        }
+        minimum_widths = {
+            column: max(
+                42,
+                self._text_pixel_width(heading_samples[column], heading_font) + 19,
+                self._text_pixel_width(body_samples[column], body_font) + 16,
+            )
+            for column in columns
+        }
+        if sum(minimum_widths.values()) > total_width:
+            # Preserve readable cells and let the existing horizontal
+            # scrollbar expose the overflow.  Compressing below these measured
+            # minima would recreate the glyph clipping this helper prevents.
+            return minimum_widths
+
+        widths = dict(minimum_widths)
+        remaining = total_width - sum(widths.values())
+        for column in columns:
+            desired = max(widths[column], int(preferred_widths.get(column, 0)))
+            addition = min(remaining, desired - widths[column])
+            widths[column] += addition
+            remaining -= addition
+        # The master item is the primary value in this secondary tab.  Give it
+        # any final spare pixels so the full item code remains visible.
+        widths["Input1"] += remaining
+        return widths
+
+    def _operator_tree_font_linespace(self, font_spec, font_size):
+        """Measure live-list text height with a conservative DPI-safe fallback."""
+
+        try:
+            return int(tkFont.Font(root=self, font=font_spec).metrics("linespace"))
+        except (TclError, AttributeError, TypeError, ValueError):
+            # Tuple-font point sizes can approach two device pixels per point
+            # on field displays.  If Tk cannot report its authoritative metric,
+            # reserve that larger bound instead of recreating a 30px short row.
+            return max(1, int(font_size) * 2)
+
     def _history_header_text_options(self):
         full_text = self.__dict__.get("_history_header_full_text")
         if not full_text and "hist_header_label" in self.__dict__:
@@ -7426,8 +7507,14 @@ class Label_Match(tk.Tk):
                 width=right_inner_width,
                 height=max(140, right_inner_height - action_total_height - 10),
             )
+            operator_tree_font = (self.default_font_name, live_list_font_size)
+            operator_tree_linespace = self._operator_tree_font_linespace(
+                operator_tree_font,
+                live_list_font_size,
+            )
             tree_row_height = max(
                 30,
+                operator_tree_linespace + 4,
                 int(
                     live_list_font_size
                     * (2.05 if constrained_large_text else 2.35)
@@ -7435,7 +7522,7 @@ class Label_Match(tk.Tk):
             )
             self.style.configure(
                 "Operator.Treeview",
-                font=(self.default_font_name, live_list_font_size),
+                font=operator_tree_font,
                 rowheight=tree_row_height,
             )
             center_inner_width = max(320, panes.center_width - card_padding * 2)
@@ -7512,11 +7599,11 @@ class Label_Match(tk.Tk):
                 minsize=live_list_height,
                 weight=1,
             )
-            self.session_tree.column("Time", width=64, minwidth=54, stretch=False)
-            self.session_tree.column("Result", width=68, minwidth=58, stretch=False)
+            self.session_tree.column("Time", width=80, minwidth=68, stretch=False)
+            self.session_tree.column("Result", width=80, minwidth=68, stretch=False)
             self.session_tree.column(
                 "Item",
-                width=max(100, right_inner_width - 148),
+                width=max(100, right_inner_width - 176),
                 minwidth=90,
                 stretch=True,
             )
@@ -9050,7 +9137,7 @@ class Label_Match(tk.Tk):
         self.history_tree = ttk.Treeview(
             tree_frame_hist,
             columns=hist_cols,
-            displaycolumns=("Set", "Input1", "Result", "Timestamp"),
+            displaycolumns=("Input1", "Result", "Timestamp"),
             show="headings",
             yscrollcommand=v_scroll_hist.set,
             xscrollcommand=h_scroll_hist.set,
@@ -9658,10 +9745,22 @@ class Label_Match(tk.Tk):
         try:
             hist_width = self.history_tree.winfo_width() - padding
             if hist_width > 1:
-                total_prop = sum(self.hist_proportions.values())
-                for col, prop in self.hist_proportions.items():
-                    width = max(hist_min_widths.get(col, 80), int(hist_width * (prop / total_prop)))
-                    self.history_tree.column(col, width=width, minwidth=hist_min_widths.get(col, 80), stretch=False)
+                display_widths = self._fit_history_display_widths(
+                    hist_width,
+                    hist_min_widths,
+                )
+                for col in self.hist_proportions:
+                    width = display_widths.get(col, hist_min_widths.get(col, 80))
+                    self.history_tree.column(
+                        col,
+                        width=width,
+                        minwidth=(
+                            width
+                            if col in display_widths
+                            else hist_min_widths.get(col, 80)
+                        ),
+                        stretch=False,
+                    )
 
             summary_width = self.summary_tree.winfo_width() - padding
             if summary_width > 1:

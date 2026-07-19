@@ -364,6 +364,72 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
     assert tab_text == ["이번 세션", "스캔 기록", "통과 요약"]
     assert _is_descendant(app.history_tree, history_tab)
     assert _is_descendant(app.summary_tree, summary_tab)
+    assert tuple(app.history_tree["displaycolumns"]) == (
+        "Input1",
+        "Result",
+        "Timestamp",
+    )
+
+
+def test_history_display_widths_prioritize_full_item_result_and_time():
+    app = Label_Match.__new__(Label_Match)
+    app.default_font_name = "Malgun Gothic"
+    app.tree_font_size = 13
+    app._current_tree_body_font_size = 13
+    app._current_tree_heading_font_size = 20
+    measured = {
+        "현품표": 81,
+        "결과": 54,
+        "시간": 54,
+        "AAA0000000000": 123,
+        app.Results.IN_PROGRESS: 63,
+        "23:59:59": 62,
+    }
+    app._text_pixel_width = lambda text, _font: measured[str(text)]
+
+    widths = app._fit_history_display_widths(
+        311,
+        {"Input1": 190, "Result": 86, "Timestamp": 100},
+    )
+
+    assert tuple(widths) == ("Input1", "Result", "Timestamp")
+    assert sum(widths.values()) == 311
+    assert widths["Input1"] >= 139
+    assert widths["Result"] >= 79
+    assert widths["Timestamp"] >= 78
+
+    overflow_widths = app._fit_history_display_widths(
+        240,
+        {"Input1": 190, "Result": 86, "Timestamp": 100},
+    )
+    assert overflow_widths == {
+        "Input1": 139,
+        "Result": 79,
+        "Timestamp": 78,
+    }
+    assert sum(overflow_widths.values()) > 240
+
+
+def test_operator_tree_linespace_fallback_is_conservative(monkeypatch):
+    class FixedFont:
+        @staticmethod
+        def metrics(_name):
+            return 28
+
+    app = Label_Match.__new__(Label_Match)
+    monkeypatch.setattr(
+        label_match_module.tkFont,
+        "Font",
+        lambda *args, **kwargs: FixedFont(),
+    )
+    assert app._operator_tree_font_linespace(("Malgun Gothic", 15), 15) == 28
+
+    def fail_font(*_args, **_kwargs):
+        raise label_match_module.TclError("font metrics unavailable")
+
+    monkeypatch.setattr(label_match_module.tkFont, "Font", fail_font)
+    assert app._operator_tree_font_linespace(("Malgun Gothic", 15), 15) == 30
+    assert app._operator_tree_font_linespace(("Malgun Gothic", 15), 15) + 4 == 34
 
 
 def test_four_existing_actions_form_a_two_by_two_grid_in_right_pane(operator_workbench):

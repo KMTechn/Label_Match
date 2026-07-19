@@ -30,7 +30,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-from PIL import Image, ImageStat
+from PIL import Image, ImageGrab, ImageStat
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +73,8 @@ DEFAULT_STATE_IDS = (
     "history_readonly",
     "submission_blocked",
 )
-CAPTURE_MANIFEST_SCHEMA_VERSION = 4
+CAPTURE_MANIFEST_SCHEMA_VERSION = 6
+APPLICATION_STARTUP_PATH = "disabled_for_inprocess_matrix"
 CANCELLATION_CONFLICT_COUNT = 3
 CANCELLATION_CONFLICT_CODE = "IMMUTABLE_CAS"
 CANCELLATION_CONFLICT_BUNDLE_ID = "PACKAGE-CANCEL-CAPTURE-001"
@@ -87,22 +88,26 @@ CANCELLATION_SURFACE_CAPTURE_CONTRACT = {
     "modal_only_exclusions": {
         "cancellation_pending": {
             "runtime_surface": "owned messagebox.showwarning (nonpersistent)",
-            "reason": "excluded: root-only PrintWindow rejects extra PID toplevels",
+            "reason": "excluded: root-only visible capture rejects extra PID toplevels",
         },
         "cancellation_acked": {
             "runtime_surface": "owned messagebox.showinfo (nonpersistent)",
-            "reason": "excluded: root-only PrintWindow rejects extra PID toplevels",
+            "reason": "excluded: root-only visible capture rejects extra PID toplevels",
         },
     },
     "extra_visible_toplevels_allowed": False,
 }
-AUTHORITATIVE_CAPTURE_SOURCE = "PrintWindow(PW_RENDERFULLCONTENT)-outer-window"
+AUTHORITATIVE_CAPTURE_SOURCE = "ImageGrab(visible-client-bbox)"
+DIAGNOSTIC_PRINTWINDOW_CAPTURE_SOURCE = (
+    "PrintWindow(PW_RENDERFULLCONTENT)+client-crop"
+)
 HARNESS_ATTESTED_PATHS = (
     "tools/capture_label_operator_ui.py",
     "tests/test_capture_label_operator_ui.py",
 )
 DEFAULT_SCALE = 1.0
 CAPTURE_ITEM_CODE = "AAA2270730100"
+CAPTURE_SECONDARY_ITEM_CODE = "AAA2270730200"
 MIN_SCALE = 0.7
 MAX_SCALE = 2.5
 NEAR_BLACK_LUMA = 16
@@ -115,6 +120,10 @@ LOW_VARIANCE_STDDEV_MAX = 2.0
 DOMINANT_COLOR_RATIO_MAX = 0.997
 TILE_COLUMNS = 12
 TILE_ROWS = 8
+TREE_HEADING_SCAN_HEIGHT = 128
+TREE_HEADING_IMAGE_GAP_PX = 2
+TREE_DATA_CELL_GUTTER_PX = 8
+TREE_DATA_VERTICAL_PADDING_PX = 4
 
 REQUIRED_WIDGET_ATTRS = (
     "main_frame",
@@ -1182,7 +1191,13 @@ def prepare_isolated_environment(
         if key.startswith("LABEL_MATCH_LOGISTICS_")
         or key.startswith("WORKER_ANALYSIS_LOGISTICS_")
     )
-    mutated_keys = tuple(dict.fromkeys((*guards, *logistics_keys)))
+    startup_override_keys = (
+        "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY",
+        "LABEL_MATCH_CAPTURE_STARTUP_DPI",
+    )
+    mutated_keys = tuple(
+        dict.fromkeys((*guards, *logistics_keys, *startup_override_keys))
+    )
     previous = {key: os.environ.get(key) for key in mutated_keys}
     sensitive_values = {
         key: value
@@ -1199,13 +1214,13 @@ def prepare_isolated_environment(
         and value != guards.get(key)
     }
     os.environ.update(guards)
-    for key in logistics_keys:
+    for key in (*logistics_keys, *startup_override_keys):
         os.environ.pop(key, None)
     return EnvironmentIsolation(
         guards=guards,
         previous=previous,
         sensitive_values=sensitive_values,
-        removed_keys=logistics_keys,
+        removed_keys=tuple((*logistics_keys, *startup_override_keys)),
     )
 
 
@@ -1309,6 +1324,31 @@ def minimal_privacy_failure_manifest(error: BaseException) -> dict[str, Any]:
     }
 
 
+def record_cleanup_contract(
+    manifest: dict[str, Any], cleanup_failures: Sequence[str]
+) -> dict[str, Any]:
+    """Bind approval eligibility to successful host-state restoration."""
+
+    failures = [str(value) for value in cleanup_failures]
+    summary = manifest.setdefault("summary", {})
+    if failures:
+        summary["passed"] = False
+        summary["fatal_error"] = "cleanup_contract_failed"
+        cleanup_contract = {
+            "status": "FAIL",
+            "failures": failures,
+        }
+    else:
+        cleanup_contract = {"status": "PASS"}
+    manifest["cleanup_contract"] = cleanup_contract
+    manifest["approval_eligible"] = bool(
+        not failures
+        and manifest.get("matrix_complete") is True
+        and summary.get("passed") is True
+    )
+    return cleanup_contract
+
+
 def enable_per_monitor_dpi_awareness(*, shcore: Any | None = None) -> dict[str, Any]:
     """Set and independently observe PROCESS_PER_MONITOR_DPI_AWARE (2)."""
 
@@ -1346,7 +1386,17 @@ def pump_tk(root: Any, milliseconds: int = 220) -> None:
     root.update()
 
 
-def _capture_outer_with_print_window(root: Any) -> tuple[Image.Image, str]:
+def _capture_client_with_print_window(
+    root: Any,
+) -> tuple[Image.Image, str, list[int]]:
+    """Return a diagnostic client crop when visible-screen capture fails.
+
+    PrintWindow is intentionally non-authoritative because it can render stale
+    or occluded content that was not actually visible on the operator monitor.
+    The caller records the result for diagnosis, while the schema-5 capture
+    geometry gate prevents it from passing.
+    """
+
     import win32con
     import win32gui
     import win32ui
@@ -1359,6 +1409,10 @@ def _capture_outer_with_print_window(root: Any) -> tuple[Image.Image, str]:
             hwnd = int(win32gui.GetParent(hwnd))
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)
     window_size = (max(1, right - left), max(1, bottom - top))
+    client_left, client_top = win32gui.ClientToScreen(hwnd, (0, 0))
+    client_rect = win32gui.GetClientRect(hwnd)
+    client_width = max(1, int(client_rect[2] - client_rect[0]))
+    client_height = max(1, int(client_rect[3] - client_rect[1]))
     hwnd_dc = win32gui.GetWindowDC(hwnd)
     mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
     save_dc = mfc_dc.CreateCompatibleDC()
@@ -1371,8 +1425,7 @@ def _capture_outer_with_print_window(root: Any) -> tuple[Image.Image, str]:
         )
         if rendered != 1:
             raise RuntimeError(
-                "PrintWindow(PW_RENDERFULLCONTENT) failed; BitBlt/ImageGrab "
-                "fallback is forbidden for accepted evidence"
+                "PrintWindow(PW_RENDERFULLCONTENT) diagnostic fallback failed"
             )
         info = bitmap.GetInfo()
         bits = bitmap.GetBitmapBits(True)
@@ -1394,27 +1447,76 @@ def _capture_outer_with_print_window(root: Any) -> tuple[Image.Image, str]:
         raise RuntimeError(
             f"PrintWindow bitmap size mismatch: expected={window_size} actual={full.size}"
         )
-    return full, AUTHORITATIVE_CAPTURE_SOURCE
-
-
-def capture_tk_client(root: Any) -> tuple[Image.Image, str]:
-    """Capture the authoritative full outer window.
-
-    The historical function name is retained for callers, but a client-cropped
-    PNG is intentionally no longer accepted: requested sizes are outer-window
-    pixel sizes and the saved evidence must match them exactly.
-    """
-
-    root.update_idletasks()
-    root.update()
-    pending = _pending_after_ids(root)
-    if pending:
+    crop_left = max(0, int(client_left - left))
+    crop_top = max(0, int(client_top - top))
+    crop_right = min(full.width, crop_left + client_width)
+    crop_bottom = min(full.height, crop_top + client_height)
+    image = full.crop((crop_left, crop_top, crop_right, crop_bottom))
+    if image.size != (client_width, client_height):
         raise RuntimeError(
-            "scheduled jobs appeared after pre-capture full update: " f"{pending}"
+            "PrintWindow client crop size mismatch: "
+            f"expected={(client_width, client_height)} actual={image.size}"
         )
-    if os.name != "nt":
-        raise RuntimeError("authoritative PrintWindow capture requires Windows")
-    return _capture_outer_with_print_window(root)
+    return (
+        image,
+        DIAGNOSTIC_PRINTWINDOW_CAPTURE_SOURCE,
+        [
+            int(client_left),
+            int(client_top),
+            int(client_left + client_width),
+            int(client_top + client_height),
+        ],
+    )
+
+
+def _capture_outer_with_print_window(root: Any) -> tuple[Image.Image, str]:
+    """Compatibility wrapper for older tests and capture-tool callers."""
+
+    image, source, _screen_bbox = _capture_client_with_print_window(root)
+    return image, source
+
+
+def capture_tk_client(
+    root: Any,
+    *,
+    pump_events: bool = True,
+) -> tuple[Image.Image, str, list[int]]:
+    """Capture the real, visible Tk client area on the target monitor."""
+
+    if pump_events:
+        root.update_idletasks()
+        root.update()
+        pending = _pending_after_ids(root)
+        if pending:
+            raise RuntimeError(
+                "scheduled jobs appeared after pre-capture full update: "
+                f"{pending}"
+            )
+    left = int(root.winfo_rootx())
+    top = int(root.winfo_rooty())
+    width = max(1, int(root.winfo_width()))
+    height = max(1, int(root.winfo_height()))
+    screen_bbox = [left, top, left + width, top + height]
+    try:
+        image = ImageGrab.grab(
+            bbox=tuple(screen_bbox),
+            all_screens=True,
+        )
+        return image, AUTHORITATIVE_CAPTURE_SOURCE, screen_bbox
+    except Exception as exc:
+        visible_capture_failure = (
+            f"ImageGrab failed: {type(exc).__name__}: {exc}"
+        )
+    if os.name == "nt":
+        image, diagnostic_source, diagnostic_bbox = (
+            _capture_client_with_print_window(root)
+        )
+        return (
+            image,
+            f"{diagnostic_source}; {visible_capture_failure}",
+            diagnostic_bbox,
+        )
+    raise RuntimeError(visible_capture_failure)
 
 
 def _longest_true_run(values: Iterable[bool]) -> int:
@@ -1755,6 +1857,98 @@ def _fixture_cancellation_conflict_rows(
     )
 
 
+def _fixture_activity_history_rows(app: Any) -> tuple[dict[str, Any], ...]:
+    """Return two display-only completed records for right-pane evidence."""
+
+    return (
+        {
+            "iid": "capture-activity-001",
+            "values": (
+                "1",
+                CAPTURE_ITEM_CODE,
+                f"{CAPTURE_ITEM_CODE} · S/N 260716000002",
+                f"{CAPTURE_ITEM_CODE} · S/N 260716000003",
+                f"{CAPTURE_ITEM_CODE} · S/N 260716000004",
+                f"{CAPTURE_ITEM_CODE} · S/N 260716000005",
+                app.Results.PASS,
+                "19:41:03",
+            ),
+            "tags": ("success",),
+        },
+        {
+            "iid": "capture-activity-002",
+            "values": (
+                "2",
+                CAPTURE_SECONDARY_ITEM_CODE,
+                f"{CAPTURE_SECONDARY_ITEM_CODE} · S/N 260716000102",
+                f"{CAPTURE_SECONDARY_ITEM_CODE} · S/N 260716000103",
+                f"{CAPTURE_SECONDARY_ITEM_CODE} · S/N 260716000104",
+                f"{CAPTURE_SECONDARY_ITEM_CODE} · S/N 260716000105",
+                app.Results.FAIL_MISMATCH,
+                "19:42:17",
+            ),
+            "tags": ("error",),
+        },
+    )
+
+
+def _apply_activity_fixture_rows(app: Any) -> None:
+    """Seed only live widgets, then exercise the real session-row renderer."""
+
+    history_tree = getattr(app, "history_tree", None)
+    session_tree = getattr(app, "session_tree", None)
+    if history_tree is None and session_tree is None:
+        # Presenter-only protocol tests intentionally have no live widgets.
+        return
+    if history_tree is None or session_tree is None:
+        raise RuntimeError("activity fixture requires both history and session trees")
+    formatter = getattr(app, "_history_values_for_display", None)
+    refresh_session = getattr(app, "_refresh_session_tree", None)
+    if not callable(formatter) or not callable(refresh_session):
+        raise RuntimeError("activity fixture requires real history/session renderers")
+
+    history_children = tuple(history_tree.get_children(""))
+    if history_children:
+        history_tree.delete(*history_children)
+    session_children = tuple(session_tree.get_children(""))
+    if session_children:
+        session_tree.delete(*session_children)
+
+    rows = _fixture_activity_history_rows(app)
+    expected_session_values: list[tuple[str, str, str]] = []
+    for row in rows:
+        displayed_values = tuple(formatter(row["values"]))
+        if len(displayed_values) != 8:
+            raise RuntimeError("activity history formatter changed its eight-value contract")
+        history_tree.insert(
+            "",
+            "end",
+            iid=row["iid"],
+            values=displayed_values,
+            tags=row["tags"],
+        )
+        expected_session_values.append(
+            (displayed_values[7], displayed_values[1], displayed_values[6])
+        )
+
+    refresh_session()
+    actual_history = tuple(history_tree.get_children(""))
+    actual_session = tuple(session_tree.get_children(""))
+    expected_history = tuple(row["iid"] for row in rows)
+    expected_session = tuple(f"session-{iid}" for iid in expected_history)
+    if actual_history != expected_history or actual_session != expected_session:
+        raise RuntimeError(
+            "activity fixture renderer changed row identity/order: "
+            f"history={actual_history} session={actual_session}"
+        )
+    for iid, expected_values in zip(actual_session, expected_session_values):
+        values = tuple(session_tree.item(iid, "values") or ())
+        if values != expected_values:
+            raise RuntimeError(
+                f"activity session renderer changed values: {iid}={values}"
+            )
+
+
 def _select_qa_detail_for_fixture(app: Any, fixture: StateFixture) -> None:
     index = int(fixture.selected_qa_index or 0)
     if index <= 0:
@@ -1864,6 +2058,7 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     app._workflow_view_state = view
     app._last_workflow_view_state = view
     method_name = _invoke_presenter_refresh(app, view)
+    _apply_activity_fixture_rows(app)
     _select_qa_detail_for_fixture(app, fixture)
     _select_activity_tab_for_fixture(app, fixture)
     return view, method_name
@@ -2249,6 +2444,8 @@ def evaluate_tree_text_fit_proxy(
     non_authoritative: list[str] = []
     for record in records:
         name = str(record.get("name") or "")
+        if record.get("measurement_applicable") is False:
+            continue
         if record.get("visible") is not True:
             invisible_cells.append(name)
             continue
@@ -2261,7 +2458,12 @@ def evaluate_tree_text_fit_proxy(
             and str(record.get("measurement_source") or "") != "tk"
         ):
             non_authoritative.append(name)
-        if not record.get("allow_overflow") and text_width > width - 8 + tolerance:
+        available_width = int(
+            record.get("available_text_width")
+            if record.get("available_text_width") is not None
+            else width - TREE_DATA_CELL_GUTTER_PX
+        )
+        if not record.get("allow_overflow") and text_width > available_width + tolerance:
             overflowing_fixed_text.append(name)
         if line_height and line_height > height - 2 + tolerance:
             short_rows.append(name)
@@ -2942,79 +3144,385 @@ def _tk_font_metrics(widget: Any, text: str, *, heading: bool = False) -> tuple[
     return width, linespace
 
 
+def _widget_tcl_list(widget: Any, value: Any) -> list[Any]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (tuple, list)):
+        return list(value)
+    try:
+        return list(widget.tk.splitlist(value))
+    except Exception:
+        return [value]
+
+
+def _widget_pixel_value(widget: Any, value: Any) -> int:
+    try:
+        return int(round(float(widget.winfo_pixels(value))))
+    except Exception:
+        return int(round(float(value)))
+
+
+def _horizontal_style_padding(widget: Any, value: Any) -> tuple[int, int]:
+    parts = _widget_tcl_list(widget, value)
+    if not parts:
+        return 0, 0
+    pixels = [_widget_pixel_value(widget, part) for part in parts]
+    if len(pixels) == 1:
+        return pixels[0], pixels[0]
+    if len(pixels) == 2:
+        return pixels[0], pixels[0]
+    return pixels[0], pixels[2]
+
+
+def _displayed_tree_columns(tree: Any) -> list[str]:
+    columns = [
+        str(value) for value in _widget_tcl_list(tree, tree.cget("columns"))
+    ]
+    display_columns = [
+        str(value)
+        for value in _widget_tcl_list(tree, tree.cget("displaycolumns"))
+    ]
+    if not display_columns or display_columns == ["#all"]:
+        return columns
+    return display_columns
+
+
+def _heading_image_width(tree: Any, image_value: Any) -> int:
+    image_names = _widget_tcl_list(tree, image_value)
+    if not image_names:
+        return 0
+    image_name = str(image_names[0]).strip()
+    if not image_name:
+        return 0
+    return max(0, int(tree.tk.call("image", "width", image_name)))
+
+
+def _tree_heading_pixels(tree: Any) -> dict[str, Any]:
+    """Measure each actually visible Treeview heading cell in screen pixels."""
+
+    width = max(0, int(tree.winfo_width()))
+    height = max(0, int(tree.winfo_height()))
+    if width <= 1 or height <= 1:
+        raise RuntimeError("tree has no measurable viewport")
+    probe_xs = sorted(
+        {
+            value
+            for value in (
+                0,
+                1,
+                2,
+                3,
+                width // 4,
+                width // 2,
+                (width * 3) // 4,
+                width - 2,
+            )
+            if 0 <= value < width
+        }
+    )
+    header_y: int | None = None
+    for y in range(min(height, TREE_HEADING_SCAN_HEIGHT)):
+        if any(str(tree.identify_region(x, y)) == "heading" for x in probe_xs):
+            header_y = y
+            break
+    if header_y is None:
+        raise RuntimeError("tree heading row is not visible")
+    visible_heading_widths: dict[str, int] = {}
+    first_heading_or_separator_x: int | None = None
+    for x in range(width):
+        region = str(tree.identify_region(x, header_y))
+        if region in {"heading", "separator"} and first_heading_or_separator_x is None:
+            first_heading_or_separator_x = x
+        if region != "heading":
+            continue
+        display_position = str(tree.identify_column(x))
+        visible_heading_widths[display_position] = (
+            visible_heading_widths.get(display_position, 0) + 1
+        )
+    if first_heading_or_separator_x is None:
+        raise RuntimeError("tree heading viewport is not measurable")
+    outer_inset = max(0, int(first_heading_or_separator_x))
+    return {
+        "header_y": header_y,
+        "tree_widget_width_px": width,
+        "outer_inset_px": outer_inset,
+        "viewport_width_px": max(0, width - (outer_inset * 2)),
+        "visible_heading_widths_px": visible_heading_widths,
+    }
+
+
+def _ttk_style_lookup(widget: Any, style_name: str, option: str) -> Any:
+    try:
+        return widget.tk.call("ttk::style", "lookup", style_name, f"-{option}")
+    except Exception:
+        return ""
+
+
 def collect_tree_text_fit(
     tree: Any,
     name: str,
-    *,
-    overflow_columns: Sequence[str] = ("Value", "Item"),
 ) -> dict[str, Any]:
     if not _is_mapped(tree):
-        return {"tree": name, "mapped": False, "records": [], "proxy": {"suspected": False, "issue_count": 0}}
+        return {
+            "tree": name,
+            "mapped": False,
+            "measurement_applicable": False,
+            "records": [],
+            "checks": {},
+            "proxy": {"suspected": False, "issue_count": 0},
+            "passed": True,
+        }
     try:
-        columns = tuple(str(value) for value in tree.cget("columns"))
-    except Exception:
-        columns = ()
+        columns = tuple(_displayed_tree_columns(tree))
+        raw_columns = tuple(
+            str(value)
+            for value in _widget_tcl_list(tree, tree.cget("columns"))
+        )
+        tree_style = str(tree.cget("style") or "Treeview")
+    except Exception as exc:
+        return {
+            "tree": name,
+            "mapped": True,
+            "measurement_applicable": True,
+            "records": [],
+            "checks": {"measurement_completed": False},
+            "proxy": {"suspected": True, "issue_count": 1},
+            "passed": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     records: list[dict[str, Any]] = []
     tree_width = max(1, int(tree.winfo_width()))
     tree_height = max(1, int(tree.winfo_height()))
-    for column in columns:
+    heading_pixels = _tree_heading_pixels(tree)
+    heading_style = f"{tree_style}.Heading"
+    heading_padding = _ttk_style_lookup(tree, heading_style, "padding")
+    heading_padding_left, heading_padding_right = _horizontal_style_padding(
+        tree, heading_padding
+    )
+    configured_row_height_value = _ttk_style_lookup(
+        tree, tree_style, "rowheight"
+    )
+    try:
+        configured_row_height = max(
+            0, int(round(float(configured_row_height_value or 0)))
+        )
+    except (TypeError, ValueError):
+        configured_row_height = 0
+    _empty_width, body_line_height, body_measurement_source = (
+        _tk_font_metrics_with_source(tree, "")
+    )
+    minimum_data_row_height = (
+        max(1, int(body_line_height)) + TREE_DATA_VERTICAL_PADDING_PX
+    )
+    all_headings_measured = bool(columns)
+    all_heading_text_fits = bool(columns)
+    heading_records: list[dict[str, Any]] = []
+    for position, column in enumerate(columns, 1):
         heading_text = str(tree.heading(column, "text") or "")
-        column_width = effective_tree_column_width(tree, column)
         (
             text_width,
             line_height,
             measurement_source,
         ) = _tk_font_metrics_with_source(tree, heading_text, heading=True)
-        records.append(
-            {
-                "name": f"{name}:heading:{column}",
-                "visible": column_width > 0,
-                "width": column_width,
-                "height": line_height + 6,
-                "text_width": text_width,
-                "line_height": line_height,
-                "text_nonblank": bool(heading_text.strip()),
-                "measurement_source": measurement_source,
-                "allow_overflow": False,
-            }
+        try:
+            heading_image = tree.heading(column, "image")
+        except Exception:
+            heading_image = ""
+        image_width = _heading_image_width(tree, heading_image)
+        image_gap = TREE_HEADING_IMAGE_GAP_PX if image_width else 0
+        visible_width = int(
+            heading_pixels["visible_heading_widths_px"].get(f"#{position}", 0)
         )
-    for iid in tree.get_children(""):
+        available_width = max(
+            0,
+            visible_width
+            - heading_padding_left
+            - heading_padding_right
+            - image_width
+            - image_gap,
+        )
+        heading_fits = bool(
+            visible_width > 0
+            and measurement_source == "tk"
+            and text_width <= available_width
+        )
+        all_headings_measured = all_headings_measured and visible_width > 0
+        all_heading_text_fits = all_heading_text_fits and heading_fits
+        heading_record = {
+            "name": f"{name}:heading:{column}",
+            "column": column,
+            "visible": visible_width > 0,
+            "measurement_applicable": True,
+            "width": visible_width,
+            "height": line_height + 6,
+            "text": heading_text,
+            "text_width": text_width,
+            "available_text_width": available_width,
+            "fit_slack_px": available_width - text_width,
+            "line_height": line_height,
+            "text_nonblank": bool(heading_text.strip()),
+            "measurement_source": measurement_source,
+            "padding_left_px": heading_padding_left,
+            "padding_right_px": heading_padding_right,
+            "heading_image_width_px": image_width,
+            "heading_image_gap_px": image_gap,
+            "allow_overflow": False,
+            "passed": heading_fits,
+        }
+        records.append(heading_record)
+        heading_records.append(heading_record)
+
+    tree_children = tuple(tree.get_children(""))
+    visible_row_count = 0
+    expected_visible_cell_count = 0
+    measured_visible_cell_count = 0
+    all_data_text_fits = True
+    all_actual_row_heights_fit = True
+    data_cell_records: list[dict[str, Any]] = []
+    visible_row_heights: list[int] = []
+    for iid in tree_children:
+        try:
+            row_bbox = tuple(int(value) for value in (tree.bbox(iid) or ()))
+        except Exception:
+            row_bbox = ()
+        row_visible = bool(
+            len(row_bbox) == 4
+            and row_bbox[2] > 0
+            and row_bbox[3] > 0
+            and min(row_bbox[1] + row_bbox[3], tree_height) - max(row_bbox[1], 0) > 0
+        )
+        if row_visible:
+            visible_row_count += 1
+            expected_visible_cell_count += len(columns)
+            visible_row_heights.append(int(row_bbox[3]))
+            all_actual_row_heights_fit = bool(
+                all_actual_row_heights_fit
+                and int(row_bbox[3]) >= minimum_data_row_height
+            )
         values = list(tree.item(iid, "values") or ())
-        for index, column in enumerate(columns):
-            bbox = tuple(int(value) for value in (tree.bbox(iid, column) or ()))
-            visible = bool(
-                len(bbox) == 4
+        for column in columns:
+            try:
+                value_index = raw_columns.index(column)
+            except ValueError:
+                value_index = -1
+            try:
+                bbox = tuple(
+                    int(value) for value in (tree.bbox(iid, column) or ())
+                )
+            except Exception:
+                bbox = ()
+            cell_measured = bool(
+                row_visible
+                and value_index >= 0
+                and len(bbox) == 4
                 and bbox[2] > 0
                 and bbox[3] > 0
-                and bbox[0] >= -1
-                and bbox[1] >= -1
-                and bbox[0] + bbox[2] <= tree_width + 1
-                and bbox[1] + bbox[3] <= tree_height + 1
             )
-            text = str(values[index] if index < len(values) else "")
+            visible_width = (
+                max(0, min(bbox[0] + bbox[2], tree_width) - max(bbox[0], 0))
+                if cell_measured
+                else 0
+            )
+            visible_height = (
+                max(0, min(bbox[1] + bbox[3], tree_height) - max(bbox[1], 0))
+                if cell_measured
+                else 0
+            )
+            cell_measured = bool(
+                cell_measured and visible_width > 0 and visible_height > 0
+            )
+            if cell_measured:
+                measured_visible_cell_count += 1
+            text = str(
+                values[value_index]
+                if value_index >= 0 and value_index < len(values)
+                else ""
+            )
             (
                 text_width,
                 line_height,
                 measurement_source,
             ) = _tk_font_metrics_with_source(tree, text)
-            records.append(
-                {
-                    "name": f"{name}:row:{iid}:{column}",
-                    "visible": visible,
-                    "width": bbox[2] if len(bbox) == 4 else 0,
-                    "height": bbox[3] if len(bbox) == 4 else 0,
-                    "text_width": text_width,
-                    "line_height": line_height,
-                    "text_nonblank": bool(text.strip()),
-                    "measurement_source": measurement_source,
-                    "allow_overflow": column in set(overflow_columns),
-                }
+            available_width = max(0, visible_width - TREE_DATA_CELL_GUTTER_PX)
+            data_fits = bool(
+                not row_visible
+                or (
+                    cell_measured
+                    and measurement_source == "tk"
+                    and text_width <= available_width
+                    and int(bbox[3]) >= minimum_data_row_height
+                )
             )
+            if row_visible:
+                all_data_text_fits = all_data_text_fits and data_fits
+            cell_record = {
+                "name": f"{name}:row:{iid}:{column}",
+                "item_id": str(iid),
+                "column": column,
+                "cell_bbox": list(bbox),
+                "visible": cell_measured,
+                "measurement_applicable": row_visible,
+                "width": visible_width,
+                "height": int(bbox[3]) if len(bbox) == 4 else 0,
+                "visible_cell_width_px": visible_width,
+                "visible_cell_height_px": visible_height,
+                "text": text,
+                "text_width": text_width,
+                "available_text_width": available_width,
+                "fit_slack_px": available_width - text_width,
+                "line_height": line_height,
+                "text_nonblank": bool(text.strip()),
+                "measurement_source": measurement_source,
+                "allow_overflow": False,
+                "passed": data_fits,
+            }
+            records.append(cell_record)
+            data_cell_records.append(cell_record)
+    visible_data_rows_measured = bool(
+        not tree_children or visible_row_count > 0
+    )
+    all_data_cells_measured = bool(
+        visible_data_rows_measured
+        and expected_visible_cell_count == measured_visible_cell_count
+    )
+    all_actual_row_heights_fit = bool(
+        visible_data_rows_measured and all_actual_row_heights_fit
+    )
+    checks = {
+        "display_columns_present": bool(columns),
+        "all_headings_measured": all_headings_measured,
+        "all_heading_text_fits": all_heading_text_fits,
+        "visible_data_rows_measured": visible_data_rows_measured,
+        "all_data_cells_measured": all_data_cells_measured,
+        "all_data_text_fits": all_data_text_fits,
+        "configured_row_height_fits_body_font": (
+            configured_row_height >= minimum_data_row_height
+        ),
+        "actual_row_heights_fit_body_font": all_actual_row_heights_fit,
+    }
+    proxy = evaluate_tree_text_fit_proxy(records)
     return {
         "tree": name,
         "mapped": True,
+        "measurement_applicable": True,
+        "style": tree_style,
+        "heading_style": heading_style,
+        "tree_widget_size_px": [tree_width, tree_height],
+        "heading_viewport": heading_pixels,
+        "heading_padding": str(heading_padding),
+        "configured_row_height_px": configured_row_height,
+        "body_font_linespace_px": body_line_height,
+        "body_font_measurement_source": body_measurement_source,
+        "minimum_data_row_height_px": minimum_data_row_height,
+        "data_row_count": len(tree_children),
+        "visible_data_row_count": visible_row_count,
+        "visible_row_heights_px": visible_row_heights,
+        "heading_records": heading_records,
+        "data_cell_records": data_cell_records,
         "records": records,
-        "proxy": evaluate_tree_text_fit_proxy(records),
+        "checks": checks,
+        "proxy": proxy,
+        "passed": bool(all(checks.values()) and not proxy.get("suspected")),
     }
 
 
@@ -3669,7 +4177,9 @@ def collect_ui_geometry(
         "text_clipping_proxy": evaluate_text_clipping_proxy(records),
         "tree_text_fit": tree_text_fit,
         "tree_text_clipping_suspected": any(
-            item.get("proxy", {}).get("suspected") for item in tree_text_fit
+            item.get("measurement_applicable") is True
+            and item.get("passed") is not True
+            for item in tree_text_fit
         ),
         "structure": {
             "three_distinct_cards": len(
@@ -3757,6 +4267,8 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
     widgets = _resolve_widgets(app)
     current_rows = _tree_rows(widgets["current_set_tree"])
     exact_rows = _tree_rows(widgets["exact_rescan_tree"])
+    session_rows = _tree_rows(widgets["session_tree"])
+    history_rows = _tree_rows(widgets["history_tree"])
     center_texts = _visible_texts(widgets["top_card"])
     right_texts = _visible_texts(widgets["right_activity_card"])
     button_states = {}
@@ -3898,8 +4410,10 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
     return {
         "current_set_rows": current_rows,
         "exact_rescan_rows": exact_rows,
-        "session_row_count": len(_tree_rows(widgets["session_tree"])),
-        "history_row_count": len(_tree_rows(widgets["history_tree"])),
+        "session_rows": session_rows,
+        "history_rows": history_rows,
+        "session_row_count": len(session_rows),
+        "history_row_count": len(history_rows),
         "summary_row_count": len(_tree_rows(widgets["summary_tree"])),
         "presenter_rows": presenter_rows,
         "expected_qa_display_values": list(expected_qa_display_values),
@@ -3985,27 +4499,43 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
     fixture = record["fixture"]
     if record.get("capture_source") != AUTHORITATIVE_CAPTURE_SOURCE:
         issues.append("non_authoritative_capture_source")
+    capture_geometry_gate = record.get("capture_geometry_gate")
+    if not isinstance(capture_geometry_gate, Mapping):
+        issues.append("capture_geometry_gate_missing")
+        capture_geometry_gate = {}
+    elif capture_geometry_gate.get("passed") is not True:
+        failed_gate_checks = [
+            str(name)
+            for name, passed in (capture_geometry_gate.get("checks") or {}).items()
+            if passed is not True
+        ]
+        if failed_gate_checks:
+            issues.extend(
+                f"capture_geometry_gate_{name}" for name in failed_gate_checks
+            )
+        else:
+            issues.append("capture_geometry_gate_failed")
     window_contract = record.get("window_capture_contract", {})
     if window_contract.get("status") != "PASS":
         issues.append("window_capture_contract_failed")
     client_bbox = list(record.get("client_outer_bbox") or ())
+    client_capture_bbox = list(record.get("client_capture_bbox") or client_bbox)
     before_window = window_contract.get("before", {})
     attested_client_size = list(before_window.get("client_size") or ())
-    attested_client_offset = list(
-        before_window.get("client_offset_in_window") or ()
-    )
     expected_client_bbox: list[int] = []
-    if len(attested_client_offset) == 2 and len(attested_client_size) == 2:
+    if len(attested_client_size) == 2:
         expected_client_bbox = [
-            int(attested_client_offset[0]),
-            int(attested_client_offset[1]),
-            int(attested_client_offset[0]) + int(attested_client_size[0]),
-            int(attested_client_offset[1]) + int(attested_client_size[1]),
+            0,
+            0,
+            int(attested_client_size[0]),
+            int(attested_client_size[1]),
         ]
     if image.get("analysis_region") != "window_client":
         issues.append("image_analysis_region_not_window_client")
     if client_bbox != expected_client_bbox or len(expected_client_bbox) != 4:
         issues.append("client_outer_bbox_not_attested_client")
+    if client_capture_bbox != expected_client_bbox or len(expected_client_bbox) != 4:
+        issues.append("client_capture_bbox_not_attested_client")
     if (
         list(image.get("analysis_bbox") or ()) != expected_client_bbox
         or len(expected_client_bbox) != 4
@@ -4223,6 +4753,81 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
         issues.append("active_state_scan_entry_disabled")
     if record["state"] == "history_readonly" and not rendered.get("history_tree_mapped"):
         issues.append("history_readonly_tree_not_visible")
+    session_rows = tuple(rendered.get("session_rows") or ())
+    history_rows = tuple(rendered.get("history_rows") or ())
+    if int(rendered.get("session_row_count", -1)) != len(session_rows):
+        issues.append("session_activity_row_count_mismatch")
+    if int(rendered.get("history_row_count", -1)) != len(history_rows):
+        issues.append("history_activity_row_count_mismatch")
+    history_mode = record["state"] == "history_readonly"
+    if bool(rendered.get("history_tree_mapped")) != history_mode:
+        issues.append("history_activity_tree_mapping_mismatch")
+    if bool(rendered.get("session_tree_mapped")) == history_mode:
+        issues.append("session_activity_tree_mapping_mismatch")
+
+    expected_history_identity = (
+        ("capture-activity-001", CAPTURE_ITEM_CODE, "통과", "19:41:03"),
+        (
+            "capture-activity-002",
+            CAPTURE_SECONDARY_ITEM_CODE,
+            "불일치",
+            "19:42:17",
+        ),
+    )
+    actual_history_identity = tuple(
+        (
+            str(row.get("iid") or ""),
+            str((row.get("values") or [""] * 8)[1]),
+            str((row.get("values") or [""] * 8)[6]),
+            str((row.get("values") or [""] * 8)[7]),
+        )
+        for row in history_rows
+        if len(row.get("values") or ()) == 8
+    )
+    expected_session_identity = tuple(
+        (f"session-{iid}", timestamp, item, result)
+        for iid, item, result, timestamp in expected_history_identity
+    )
+    actual_session_identity = tuple(
+        (
+            str(row.get("iid") or ""),
+            *tuple(str(value) for value in (row.get("values") or ())),
+        )
+        for row in session_rows
+        if len(row.get("values") or ()) == 3
+    )
+    if actual_history_identity != expected_history_identity:
+        issues.append("history_activity_fixture_identity_mismatch")
+    if actual_session_identity != expected_session_identity:
+        issues.append("session_activity_fixture_identity_mismatch")
+    if history_mode:
+        if len(history_rows) != 2:
+            issues.append("history_activity_rows_missing")
+        for row in history_rows:
+            values = tuple(str(value) for value in row.get("values", ()))
+            if (
+                not str(row.get("iid") or "").startswith("capture-activity-")
+                or len(values) != 8
+                or not values[1]
+                or not values[6]
+                or not values[7]
+            ):
+                issues.append("history_activity_row_shape_invalid")
+                break
+    else:
+        if len(session_rows) != 2:
+            issues.append("session_activity_rows_missing")
+        for row in session_rows:
+            values = tuple(str(value) for value in row.get("values", ()))
+            if (
+                not str(row.get("iid") or "").startswith(
+                    "session-capture-activity-"
+                )
+                or len(values) != 3
+                or not all(values)
+            ):
+                issues.append("session_activity_row_shape_invalid")
+                break
     expected_exact_mapping = bool(
         fixture.get("exact_active")
         or (
@@ -4448,6 +5053,355 @@ def compare_layout_signatures(
     return issues
 
 
+def _root_hwnd_with_user32(user32: Any, hwnd: int) -> int:
+    return int(user32.GetAncestor(int(hwnd), 2) or int(hwnd))
+
+
+def _window_thread_pid_with_user32(user32: Any, hwnd: int) -> tuple[int, int]:
+    if not hwnd:
+        return 0, 0
+    pid = ctypes.c_ulong(0)
+    thread_id = user32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
+    return int(thread_id or 0), int(pid.value)
+
+
+def _foreground_observation(
+    user32: Any,
+    *,
+    target_hwnd: int,
+    target_pid: int,
+) -> dict[str, Any]:
+    foreground_hwnd = int(user32.GetForegroundWindow() or 0)
+    foreground_root_hwnd = (
+        _root_hwnd_with_user32(user32, foreground_hwnd)
+        if foreground_hwnd
+        else 0
+    )
+    _thread_id, foreground_pid = _window_thread_pid_with_user32(
+        user32, foreground_root_hwnd
+    )
+    return {
+        "foreground_hwnd": foreground_hwnd,
+        "foreground_root_hwnd": foreground_root_hwnd,
+        "foreground_pid": foreground_pid,
+        "hwnd_matches": foreground_root_hwnd == int(target_hwnd),
+        "pid_matches": foreground_pid == int(target_pid),
+    }
+
+
+def _attempt_foreground_acquisition(
+    user32: Any,
+    *,
+    target_hwnd: int,
+    target_pid: int,
+    phase: str,
+    ordinal: int,
+) -> dict[str, Any]:
+    api_results: dict[str, Any] = {}
+    api_errors: dict[str, str] = {}
+    for name, args in (
+        ("ShowWindow", (int(target_hwnd), 9)),
+        ("BringWindowToTop", (int(target_hwnd),)),
+        ("SetForegroundWindow", (int(target_hwnd),)),
+        ("SetFocus", (int(target_hwnd),)),
+    ):
+        try:
+            # Win32 return values have API-specific meanings. They are retained
+            # only as telemetry; acceptance uses the observation below.
+            api_results[name] = int(getattr(user32, name)(*args) or 0)
+        except Exception as exc:
+            api_results[name] = 0
+            api_errors[name] = f"{type(exc).__name__}: {exc}"
+    observation = _foreground_observation(
+        user32,
+        target_hwnd=target_hwnd,
+        target_pid=target_pid,
+    )
+    return {
+        "ordinal": int(ordinal),
+        "phase": str(phase),
+        "api_results": api_results,
+        "api_errors": api_errors,
+        **observation,
+        "passed": bool(observation["hwnd_matches"] and observation["pid_matches"]),
+    }
+
+
+def acquire_win32_foreground(
+    target_hwnd: int,
+    target_pid: int,
+    *,
+    user32: Any | None = None,
+) -> dict[str, Any]:
+    """Acquire foreground with a bounded, key-free Win32 strategy.
+
+    One direct attempt is followed, only when necessary, by one attempt while
+    the Tk and current foreground input queues are attached. Detachment always
+    runs in ``finally`` and is part of the acceptance result.
+    """
+
+    if user32 is None:
+        if os.name != "nt":
+            return {
+                "gate_applicable": False,
+                "target_hwnd": int(target_hwnd),
+                "target_pid": int(target_pid),
+                "strategy": "direct_then_bounded_attach_thread_input",
+                "attempt_limit": 2,
+                "attempt_count": 0,
+                "attempts": [],
+                "thread_input": {
+                    "attach_attempted": False,
+                    "attach_succeeded": False,
+                    "detach_attempted": False,
+                    "detach_succeeded": False,
+                },
+                "ownership_acquired": False,
+                "thread_input_cleanup_passed": True,
+                "passed": False,
+                "failure_reason": "foreground acquisition requires Windows",
+            }
+        user32 = ctypes.windll.user32
+    started = time.perf_counter()
+    attempts = [
+        _attempt_foreground_acquisition(
+            user32,
+            target_hwnd=target_hwnd,
+            target_pid=target_pid,
+            phase="direct",
+            ordinal=1,
+        )
+    ]
+    thread_input: dict[str, Any] = {
+        "attach_attempted": False,
+        "attach_succeeded": False,
+        "detach_attempted": False,
+        "detach_succeeded": False,
+        "target_thread_id": 0,
+        "foreground_thread_id": 0,
+        "attach_error": "",
+        "detach_error": "",
+    }
+    cleanup_passed = True
+    if attempts[-1]["passed"] is not True:
+        foreground_hwnd = int(user32.GetForegroundWindow() or 0)
+        target_thread_id, _target_window_pid = _window_thread_pid_with_user32(
+            user32, target_hwnd
+        )
+        foreground_thread_id, _foreground_window_pid = (
+            _window_thread_pid_with_user32(user32, foreground_hwnd)
+        )
+        thread_input["target_thread_id"] = target_thread_id
+        thread_input["foreground_thread_id"] = foreground_thread_id
+        attached = False
+        same_thread = bool(
+            target_thread_id
+            and foreground_thread_id
+            and target_thread_id == foreground_thread_id
+        )
+        try:
+            if not target_thread_id or not foreground_thread_id:
+                raise RuntimeError("cannot resolve input queue thread ids")
+            if same_thread:
+                thread_input["attach_succeeded"] = True
+            else:
+                thread_input["attach_attempted"] = True
+                attached = bool(
+                    user32.AttachThreadInput(
+                        int(target_thread_id), int(foreground_thread_id), True
+                    )
+                )
+                thread_input["attach_succeeded"] = attached
+                if not attached:
+                    raise RuntimeError("AttachThreadInput returned false")
+            attempts.append(
+                _attempt_foreground_acquisition(
+                    user32,
+                    target_hwnd=target_hwnd,
+                    target_pid=target_pid,
+                    phase="attached_input_queues" if not same_thread else "same_input_queue",
+                    ordinal=2,
+                )
+            )
+        except Exception as exc:
+            thread_input["attach_error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            if attached:
+                thread_input["detach_attempted"] = True
+                try:
+                    detached = bool(
+                        user32.AttachThreadInput(
+                            int(target_thread_id),
+                            int(foreground_thread_id),
+                            False,
+                        )
+                    )
+                    thread_input["detach_succeeded"] = detached
+                    cleanup_passed = detached
+                    if not detached:
+                        thread_input["detach_error"] = (
+                            "AttachThreadInput detach returned false"
+                        )
+                except Exception as exc:
+                    cleanup_passed = False
+                    thread_input["detach_error"] = f"{type(exc).__name__}: {exc}"
+            elif same_thread:
+                thread_input["detach_succeeded"] = True
+            else:
+                cleanup_passed = not thread_input["attach_succeeded"]
+    final_observation = _foreground_observation(
+        user32,
+        target_hwnd=target_hwnd,
+        target_pid=target_pid,
+    )
+    ownership_acquired = bool(
+        final_observation["hwnd_matches"] and final_observation["pid_matches"]
+    )
+    passed = bool(ownership_acquired and cleanup_passed)
+    failure_reason = ""
+    if not ownership_acquired:
+        failure_reason = (
+            "foreground ownership not acquired: "
+            f"observed_hwnd={final_observation['foreground_root_hwnd']} "
+            f"observed_pid={final_observation['foreground_pid']}"
+        )
+    elif not cleanup_passed:
+        failure_reason = "AttachThreadInput cleanup failed"
+    return {
+        "gate_applicable": True,
+        "target_hwnd": int(target_hwnd),
+        "target_pid": int(target_pid),
+        "strategy": "direct_then_bounded_attach_thread_input",
+        "attempt_limit": 2,
+        "attempt_count": len(attempts),
+        "duration_ms": int(round((time.perf_counter() - started) * 1000)),
+        "attempts": attempts,
+        "thread_input": thread_input,
+        "final_observation": final_observation,
+        "ownership_acquired": ownership_acquired,
+        "thread_input_cleanup_passed": cleanup_passed,
+        "passed": passed,
+        "failure_reason": failure_reason,
+    }
+
+
+def _widget_is_owned_by_root(widget: Any, root: Any) -> bool:
+    current = widget
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if current is root:
+            return True
+        seen.add(id(current))
+        current = getattr(current, "master", None)
+    return False
+
+
+def resolve_capture_focus_target(
+    app: Any,
+    state_id: str | None = None,
+) -> dict[str, Any]:
+    """Resolve the exact state-authoritative Tk focus target."""
+
+    entry = getattr(app, "entry", None)
+    try:
+        entry_enabled = entry is not None and str(entry.cget("state")) not in {
+            "disabled",
+            "readonly",
+        }
+    except Exception:
+        entry_enabled = False
+    if entry_enabled:
+        return {
+            "kind": "scan_entry",
+            "widget": entry,
+            "path": str(entry),
+            "state": str(state_id or ""),
+        }
+    history_tree = getattr(app, "history_tree", None)
+    if (
+        str(state_id or "") == "history_readonly"
+        and history_tree is not None
+        and _is_mapped(history_tree)
+    ):
+        return {
+            "kind": "history_tree",
+            "widget": history_tree,
+            "path": str(history_tree),
+            "state": str(state_id or ""),
+        }
+    notice_action = getattr(app, "workflow_notice_action_button", None)
+    if notice_action is not None and _is_mapped(notice_action):
+        return {
+            "kind": "notice_action",
+            "widget": notice_action,
+            "path": str(notice_action),
+            "state": str(state_id or ""),
+        }
+    if history_tree is not None and _is_mapped(history_tree):
+        return {
+            "kind": "history_tree",
+            "widget": history_tree,
+            "path": str(history_tree),
+            "state": str(state_id or ""),
+        }
+    return {
+        "kind": "capture_root",
+        "widget": app,
+        "path": str(app),
+        "state": str(state_id or ""),
+    }
+
+
+def settle_capture_foreground(
+    app: Any,
+    state_id: str | None = None,
+) -> dict[str, Any]:
+    """Acquire Win32 foreground without injecting input and retain Tk focus."""
+
+    app.deiconify()
+    app.lift()
+    focus_target = resolve_capture_focus_target(app, state_id)
+    focus_widget = focus_target["widget"]
+    try:
+        focus_widget.focus_force()
+    except Exception as exc:
+        raise RuntimeError(f"Tk focus setup failed before capture: {exc}") from exc
+    pump_tk(app, 80)
+    hwnd = _window_root_hwnd(app)
+    acquisition = acquire_win32_foreground(hwnd, os.getpid())
+    # SetFocus on the native root may move Tk focus away from the scanner
+    # entry. Restore the state-authoritative Tk target without typing a key.
+    focus_widget.focus_force()
+    pump_tk(app, 80)
+    if acquisition.get("passed") is not True:
+        raise RuntimeError(
+            "foreground acquisition failed: "
+            + json.dumps(acquisition, ensure_ascii=False, sort_keys=True)
+        )
+    acquisition["post_foreground_callback_quiescence"] = (
+        quiesce_post_foreground_responsive_callbacks(app)
+    )
+    observed_focus = app.focus_get()
+    if not _widget_is_owned_by_root(observed_focus, app):
+        raise RuntimeError(
+            f"Tk focus escaped capture root: focus={observed_focus!s}"
+        )
+    if observed_focus is not focus_widget:
+        raise RuntimeError(
+            "state-authoritative widget did not regain Tk focus before capture: "
+            f"kind={focus_target['kind']} expected={focus_widget!s} "
+            f"actual={observed_focus!s}"
+        )
+    acquisition["tk_focus"] = {
+        "expected_focus_kind": focus_target["kind"],
+        "expected_path": str(focus_widget),
+        "observed_path": str(observed_focus),
+        "owned_by_capture_root": True,
+        "matches_expected_target": observed_focus is focus_widget,
+    }
+    return acquisition
+
+
 def _window_root_hwnd(app: Any, *, win32gui_module: Any | None = None) -> int:
     import win32con
 
@@ -4536,12 +5490,15 @@ def collect_window_capture_contract(
     app: Any,
     monitor_target: Mapping[str, Any],
     *,
+    state_id: str | None = None,
     win32gui_module: Any | None = None,
     win32process_module: Any | None = None,
     current_pid: int | None = None,
     monitor_resolver: Any | None = None,
 ) -> dict[str, Any]:
-    """Prove the current root/client and every visible PID toplevel on DISPLAY2."""
+    """Prove root, foreground, client, and visible toplevels on DISPLAY2."""
+
+    import win32con
 
     if win32gui_module is None:
         import win32gui as win32gui_module
@@ -4559,6 +5516,56 @@ def collect_window_capture_contract(
         raise RuntimeError(
             f"Tk root HWND belongs to wrong PID: hwnd={hwnd} "
             f"expected={current_pid} actual={root_pid}"
+        )
+    foreground_hwnd = int(win32gui_module.GetForegroundWindow() or 0)
+    foreground_root_hwnd = int(
+        win32gui_module.GetAncestor(foreground_hwnd, win32con.GA_ROOT)
+        if foreground_hwnd
+        else 0
+    )
+    if not foreground_root_hwnd:
+        raise RuntimeError("cannot resolve the current foreground root HWND")
+    _foreground_thread, foreground_pid = (
+        win32process_module.GetWindowThreadProcessId(foreground_root_hwnd)
+    )
+    if (
+        int(foreground_root_hwnd) != int(hwnd)
+        or int(foreground_pid) != int(current_pid)
+    ):
+        raise RuntimeError(
+            "capture root does not own the foreground: "
+            f"root={hwnd} foreground_root={foreground_root_hwnd} "
+            f"expected_pid={current_pid} foreground_pid={foreground_pid}"
+        )
+    focus_widget = app.focus_get()
+    tk_focus_owned_by_root = _widget_is_owned_by_root(focus_widget, app)
+    if not tk_focus_owned_by_root:
+        raise RuntimeError(
+            f"Tk focus is not owned by the capture root: focus={focus_widget!s}"
+        )
+    focus_target = resolve_capture_focus_target(app, state_id)
+    focus_target_contract_passed = focus_widget is focus_target["widget"]
+    if not focus_target_contract_passed:
+        raise RuntimeError(
+            "Tk focus does not match the state-authoritative target: "
+            f"state={state_id!r} kind={focus_target['kind']} "
+            f"expected={focus_target['path']} actual={focus_widget!s}"
+        )
+    entry = getattr(app, "entry", None)
+    try:
+        scan_entry_enabled = entry is not None and str(entry.cget("state")) not in {
+            "disabled",
+            "readonly",
+        }
+    except Exception:
+        scan_entry_enabled = False
+    tk_focus_matches_scan_entry = bool(
+        not scan_entry_enabled or focus_widget is entry
+    )
+    if not tk_focus_matches_scan_entry:
+        raise RuntimeError(
+            "enabled scan entry does not own Tk focus: "
+            f"entry={entry!s} focus={focus_widget!s}"
         )
     window_rect = list(map(int, win32gui_module.GetWindowRect(hwnd)))
     client_local = list(map(int, win32gui_module.GetClientRect(hwnd)))
@@ -4584,11 +5591,11 @@ def collect_window_capture_contract(
         or list(monitor.get("dpi") or ()) != list(TARGET_DISPLAY_DPI)
     ):
         raise RuntimeError(f"current Tk root is not on locked DISPLAY2: {monitor}")
-    if not _rect_contains(work, window_rect) or not _rect_contains(
+    if not _rect_contains(work, client_rect) or not _rect_contains(
         window_rect, client_rect
     ):
         raise RuntimeError(
-            f"root/client escaped DISPLAY2: window={window_rect} "
+            f"client escaped DISPLAY2 or its root window: window={window_rect} "
             f"client={client_rect} work={work}"
         )
 
@@ -4604,9 +5611,31 @@ def collect_window_capture_contract(
             if int(win32gui_module.GetAncestor(candidate, 2)) != int(candidate):
                 return True
             rect = list(map(int, win32gui_module.GetWindowRect(candidate)))
+            candidate_client_local = list(
+                map(int, win32gui_module.GetClientRect(candidate))
+            )
+            candidate_client_left, candidate_client_top = (
+                win32gui_module.ClientToScreen(
+                    candidate,
+                    (candidate_client_local[0], candidate_client_local[1]),
+                )
+            )
+            candidate_client_right, candidate_client_bottom = (
+                win32gui_module.ClientToScreen(
+                    candidate,
+                    (candidate_client_local[2], candidate_client_local[3]),
+                )
+            )
+            candidate_client_rect = [
+                int(candidate_client_left),
+                int(candidate_client_top),
+                int(candidate_client_right),
+                int(candidate_client_bottom),
+            ]
             candidate_monitor = monitor_resolver(int(candidate))
             contained = bool(
-                _rect_contains(work, rect)
+                _rect_contains(work, candidate_client_rect)
+                and _rect_contains(rect, candidate_client_rect)
                 and str(candidate_monitor.get("device") or "").casefold()
                 == str(monitor_target.get("device") or "").casefold()
                 and candidate_monitor.get("is_primary") is False
@@ -4618,6 +5647,7 @@ def collect_window_capture_contract(
                 {
                     "hwnd": int(candidate),
                     "rect": rect,
+                    "client_rect": candidate_client_rect,
                     "contained_on_display2": contained,
                 }
             )
@@ -4664,6 +5694,20 @@ def collect_window_capture_contract(
         "status": "PASS",
         "current_pid": int(current_pid),
         "root_hwnd": hwnd,
+        "root_pid": int(root_pid),
+        "foreground_hwnd": foreground_hwnd,
+        "foreground_root_hwnd": foreground_root_hwnd,
+        "foreground_pid": int(foreground_pid),
+        "foreground_root_matches_capture_root": True,
+        "foreground_pid_matches_process": True,
+        "tk_focus_path": str(focus_widget or ""),
+        "tk_focus_owned_by_root": True,
+        "expected_focus_kind": str(focus_target["kind"]),
+        "expected_focus_path": str(focus_target["path"]),
+        "focus_target_contract_passed": True,
+        "scan_entry_path": str(entry or ""),
+        "scan_entry_enabled": scan_entry_enabled,
+        "tk_focus_matches_scan_entry_when_enabled": tk_focus_matches_scan_entry,
         "window_rect": window_rect,
         "window_size": [
             window_rect[2] - window_rect[0],
@@ -4687,41 +5731,138 @@ def validate_window_capture_pair(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
     *,
-    requested_outer_size: Sequence[int],
     captured_pixel_size: Sequence[int],
+    captured_screen_bbox: Sequence[int],
+    requested_client_size: Sequence[int] | None = None,
+    requested_outer_size: Sequence[int] | None = None,
+    capture_source: str = AUTHORITATIVE_CAPTURE_SOURCE,
 ) -> dict[str, Any]:
-    issues: list[str] = []
-    if list(before.get("window_size") or ()) != list(requested_outer_size):
-        issues.append("before_outer_window_size_mismatch")
-    if list(after.get("window_size") or ()) != list(requested_outer_size):
-        issues.append("after_outer_window_size_mismatch")
-    if list(captured_pixel_size) != list(requested_outer_size):
-        issues.append("authoritative_png_outer_size_mismatch")
-    for key in (
+    # ``requested_outer_size`` remains a keyword-only compatibility alias for
+    # older unit tests. Schema 5 always interprets requested matrix dimensions
+    # as client pixels.
+    requested_size = (
+        requested_client_size
+        if requested_client_size is not None
+        else requested_outer_size
+    )
+    if requested_size is None:
+        raise ValueError("requested_client_size is required")
+    stable_keys = (
         "current_pid",
+        "root_hwnd",
+        "root_pid",
+        "foreground_root_hwnd",
+        "foreground_pid",
+        "tk_focus_path",
+        "tk_focus_owned_by_root",
+        "expected_focus_kind",
+        "expected_focus_path",
+        "focus_target_contract_passed",
+        "scan_entry_path",
+        "scan_entry_enabled",
+        "tk_focus_matches_scan_entry_when_enabled",
+        "window_rect",
+        "window_size",
+        "client_rect",
+        "client_size",
+        "client_offset_in_window",
+        "visible_pid_toplevels",
+    )
+    client_geometry_keys = (
         "root_hwnd",
         "window_rect",
         "client_rect",
         "client_size",
         "client_offset_in_window",
-        "visible_pid_toplevels",
-    ):
-        if before.get(key) != after.get(key):
-            issues.append(f"window_contract_changed_during_capture:{key}")
-    if before.get("all_visible_pid_toplevels_contained") is not True:
-        issues.append("before_pid_toplevel_containment_failed")
-    if after.get("all_visible_pid_toplevels_contained") is not True:
-        issues.append("after_pid_toplevel_containment_failed")
-    if issues:
-        raise RuntimeError("window capture pair failed: " + ",".join(issues))
+    )
+    checks = {
+        "before_client_size_matches_request": (
+            list(before.get("client_size") or ()) == list(requested_size)
+        ),
+        "after_client_size_matches_request": (
+            list(after.get("client_size") or ()) == list(requested_size)
+        ),
+        "client_geometry_stable_during_capture": all(
+            before.get(key) == after.get(key) for key in client_geometry_keys
+        ),
+        "captured_pixels_match_client_size": (
+            list(captured_pixel_size) == list(before.get("client_size") or ())
+        ),
+        "capture_screen_bbox_matches_before_client_rect": (
+            list(captured_screen_bbox) == list(before.get("client_rect") or ())
+        ),
+        "capture_screen_bbox_matches_after_client_rect": (
+            list(captured_screen_bbox) == list(after.get("client_rect") or ())
+        ),
+        "visible_screen_capture_used": (
+            str(capture_source) == AUTHORITATIVE_CAPTURE_SOURCE
+        ),
+        "root_hwnd_stable": before.get("root_hwnd") == after.get("root_hwnd"),
+        "foreground_root_hwnd_stable": (
+            before.get("foreground_root_hwnd")
+            == after.get("foreground_root_hwnd")
+        ),
+        "foreground_root_hwnd_matches_capture_root": bool(
+            before.get("foreground_root_matches_capture_root") is True
+            and after.get("foreground_root_matches_capture_root") is True
+            and before.get("foreground_root_hwnd") == before.get("root_hwnd")
+            and after.get("foreground_root_hwnd") == after.get("root_hwnd")
+        ),
+        "foreground_pid_stable": (
+            before.get("foreground_pid") == after.get("foreground_pid")
+        ),
+        "foreground_pid_matches_process": bool(
+            before.get("foreground_pid") == before.get("current_pid")
+            and after.get("foreground_pid") == after.get("current_pid")
+        ),
+        "foreground_pid_stable_and_matches_process": bool(
+            before.get("foreground_pid") == after.get("foreground_pid")
+            and before.get("foreground_pid") == before.get("current_pid")
+            and after.get("foreground_pid") == after.get("current_pid")
+        ),
+        "tk_focus_owned_by_capture_root": bool(
+            before.get("tk_focus_owned_by_root") is True
+            and after.get("tk_focus_owned_by_root") is True
+        ),
+        "tk_focus_path_stable": (
+            before.get("tk_focus_path") == after.get("tk_focus_path")
+        ),
+        "expected_focus_target_stable": bool(
+            before.get("expected_focus_kind") == after.get("expected_focus_kind")
+            and before.get("expected_focus_path") == after.get("expected_focus_path")
+        ),
+        "focus_target_contract_passed": bool(
+            before.get("focus_target_contract_passed") is True
+            and after.get("focus_target_contract_passed") is True
+            and before.get("tk_focus_path") == before.get("expected_focus_path")
+            and after.get("tk_focus_path") == after.get("expected_focus_path")
+        ),
+        "scan_entry_focus_contract_passed": bool(
+            before.get("tk_focus_matches_scan_entry_when_enabled") is True
+            and after.get("tk_focus_matches_scan_entry_when_enabled") is True
+        ),
+        "window_contract_fields_stable": all(
+            before.get(key) == after.get(key) for key in stable_keys
+        ),
+        "before_pid_toplevels_contained": (
+            before.get("all_visible_pid_toplevels_contained") is True
+        ),
+        "after_pid_toplevels_contained": (
+            after.get("all_visible_pid_toplevels_contained") is True
+        ),
+    }
+    passed = all(checks.values())
     return {
-        "status": "PASS",
-        "requested_size_semantics": "outer-window-pixels",
-        "requested_outer_size": list(map(int, requested_outer_size)),
-        "captured_outer_pixel_size": list(map(int, captured_pixel_size)),
-        "root_hwnd_stable": True,
-        "window_and_client_rects_stable": True,
-        "visible_pid_toplevels_stable_and_contained": True,
+        "status": "PASS" if passed else "FAIL",
+        "gate_applicable": True,
+        "requested_size_semantics": "client-area-pixels",
+        "requested_client_size": list(map(int, requested_size)),
+        "captured_pixel_semantics": "client-area-pixels",
+        "capture_source": str(capture_source),
+        "captured_client_pixel_size": list(map(int, captured_pixel_size)),
+        "captured_screen_bbox": list(map(int, captured_screen_bbox)),
+        "checks": checks,
+        "passed": passed,
         "before": dict(before),
         "after": dict(after),
     }
@@ -4793,6 +5934,64 @@ def cancel_pending_responsive_callbacks(app: Any) -> dict[str, Any]:
         "status": "PASS",
         "attributes_cleared": list(attributes),
         "cancelled_ids": cancelled,
+    }
+
+
+def quiesce_post_foreground_responsive_callbacks(
+    app: Any, *, attempt_limit: int = 3
+) -> dict[str, Any]:
+    """Cancel only known Configure/layout timers created while raising the window."""
+
+    if int(attempt_limit) < 1:
+        raise ValueError("post-foreground callback attempt_limit must be positive")
+    attempts: list[dict[str, Any]] = []
+    attributes = (
+        "_operator_layout_settle_after_id",
+        "_responsive_after_id",
+    )
+    for ordinal in range(1, int(attempt_limit) + 1):
+        pending = _pending_after_ids(app)
+        if not pending:
+            return {
+                "status": "PASS",
+                "attempt_limit": int(attempt_limit),
+                "attempt_count": len(attempts),
+                "attempts": attempts,
+                "remaining_after": 0,
+            }
+        known = {
+            str(value)
+            for attribute in attributes
+            if (value := app.__dict__.get(attribute))
+        }
+        unexpected = sorted(set(pending) - known)
+        if unexpected:
+            raise RuntimeError(
+                "unexpected scheduled jobs appeared after foreground acquisition: "
+                f"pending={pending} known={sorted(known)} unexpected={unexpected}"
+            )
+        cancellation = cancel_pending_responsive_callbacks(app)
+        app.update_idletasks()
+        attempts.append(
+            {
+                "ordinal": ordinal,
+                "pending_before": list(pending),
+                "known_responsive_ids": sorted(known),
+                "cancellation": cancellation,
+            }
+        )
+    remaining = _pending_after_ids(app)
+    if remaining:
+        raise RuntimeError(
+            "known responsive callbacks did not quiesce after foreground acquisition: "
+            f"attempt_limit={attempt_limit} remaining={remaining}"
+        )
+    return {
+        "status": "PASS",
+        "attempt_limit": int(attempt_limit),
+        "attempt_count": len(attempts),
+        "attempts": attempts,
+        "remaining_after": 0,
     }
 
 
@@ -5040,6 +6239,119 @@ def place_hidden_on_work_area(
     }
 
 
+def _win32_window_client_geometry(
+    hwnd: int,
+    *,
+    win32gui_module: Any,
+) -> dict[str, Any]:
+    window_rect = list(map(int, win32gui_module.GetWindowRect(hwnd)))
+    client_local = list(map(int, win32gui_module.GetClientRect(hwnd)))
+    client_left, client_top = win32gui_module.ClientToScreen(
+        hwnd, (client_local[0], client_local[1])
+    )
+    client_right, client_bottom = win32gui_module.ClientToScreen(
+        hwnd, (client_local[2], client_local[3])
+    )
+    client_rect = [
+        int(client_left),
+        int(client_top),
+        int(client_right),
+        int(client_bottom),
+    ]
+    return {
+        "hwnd": int(hwnd),
+        "window_rect": window_rect,
+        "window_size": [
+            window_rect[2] - window_rect[0],
+            window_rect[3] - window_rect[1],
+        ],
+        "client_rect": client_rect,
+        "client_size": [
+            client_rect[2] - client_rect[0],
+            client_rect[3] - client_rect[1],
+        ],
+        "nonclient_insets": [
+            client_rect[0] - window_rect[0],
+            client_rect[1] - window_rect[1],
+            window_rect[2] - client_rect[2],
+            window_rect[3] - client_rect[3],
+        ],
+    }
+
+
+def _align_requested_client_to_work_area(
+    app: Any,
+    size: tuple[int, int],
+    work: Sequence[int],
+    *,
+    win32gui_module: Any,
+    attempt_limit: int = 4,
+) -> dict[str, Any]:
+    width, height = map(int, size)
+    left, top = int(work[0]), int(work[1])
+    attempts: list[dict[str, Any]] = []
+    for ordinal in range(1, int(attempt_limit) + 1):
+        hwnd = _window_root_hwnd(app, win32gui_module=win32gui_module)
+        before = _win32_window_client_geometry(
+            hwnd, win32gui_module=win32gui_module
+        )
+        inset_left, inset_top, inset_right, inset_bottom = before[
+            "nonclient_insets"
+        ]
+        desired_window_rect = [
+            left - inset_left,
+            top - inset_top,
+            left + width + inset_right,
+            top + height + inset_bottom,
+        ]
+        moved = bool(
+            win32gui_module.MoveWindow(
+                hwnd,
+                desired_window_rect[0],
+                desired_window_rect[1],
+                desired_window_rect[2] - desired_window_rect[0],
+                desired_window_rect[3] - desired_window_rect[1],
+                True,
+            )
+        )
+        app.update_idletasks()
+        fresh_hwnd = _window_root_hwnd(app, win32gui_module=win32gui_module)
+        after = _win32_window_client_geometry(
+            fresh_hwnd, win32gui_module=win32gui_module
+        )
+        passed = bool(
+            after["client_rect"] == [left, top, left + width, top + height]
+            and after["client_size"] == [width, height]
+        )
+        attempts.append(
+            {
+                "ordinal": ordinal,
+                "source_hwnd": int(hwnd),
+                "fresh_hwnd": int(fresh_hwnd),
+                "move_window_returned": moved,
+                "before": before,
+                "desired_window_rect": desired_window_rect,
+                "after": after,
+                "passed": passed,
+            }
+        )
+        if passed:
+            return {
+                "status": "PASS",
+                "requested_client_size": [width, height],
+                "requested_client_rect": [left, top, left + width, top + height],
+                "attempt_limit": int(attempt_limit),
+                "attempt_count": len(attempts),
+                "attempts": attempts,
+                "final": after,
+                "passed": True,
+            }
+    raise RuntimeError(
+        "client-area alignment failed: "
+        + json.dumps(attempts, ensure_ascii=False, sort_keys=True)
+    )
+
+
 def _configure_size(
     app: Any,
     size: tuple[int, int],
@@ -5057,7 +6369,7 @@ def _configure_size(
     width, height = map(int, size)
     if width > work_width or height > work_height:
         raise RuntimeError(
-            f"requested outer size {width}x{height} exceeds DISPLAY2 work area "
+            f"requested client size {width}x{height} exceeds DISPLAY2 work area "
             f"{work_width}x{work_height}"
         )
     hwnd = _window_root_hwnd(app, win32gui_module=win32gui)
@@ -5070,24 +6382,38 @@ def _configure_size(
         )
     app.state("normal")
     app.resizable(True, True)
+    app.geometry(f"{width}x{height}")
     app.update_idletasks()
     # Tk can recreate the native wrapper while changing to normal/resizable.
     # Never reuse the pre-state-change HWND for the visible move.
     hwnd = _window_root_hwnd(app, win32gui_module=win32gui)
     if not win32gui.IsWindow(hwnd):
         raise RuntimeError("Tk root HWND is invalid after normal-state transition")
-    left, top = work[0], work[1]
-    win32gui.MoveWindow(hwnd, left, top, width, height, True)
-    pump_tk(app, 320)
+    initial_alignment = _align_requested_client_to_work_area(
+        app,
+        size,
+        work,
+        win32gui_module=win32gui,
+    )
+    pump_tk(app, 160)
+    hwnd = _window_root_hwnd(app, win32gui_module=win32gui)
     settle = settle_responsive_layout(app, hwnd=hwnd)
-    win32gui.MoveWindow(hwnd, left, top, width, height, True)
+    final_alignment = _align_requested_client_to_work_area(
+        app,
+        size,
+        work,
+        win32gui_module=win32gui,
+    )
     app.update_idletasks()
-    rect = list(map(int, win32gui.GetWindowRect(hwnd)))
-    expected_rect = [left, top, left + width, top + height]
+    hwnd = _window_root_hwnd(app, win32gui_module=win32gui)
+    geometry = _win32_window_client_geometry(
+        hwnd, win32gui_module=win32gui
+    )
     monitor = _monitor_for_window(hwnd)
     placement_ok = bool(
-        _rect_matches(rect, expected_rect)
-        and _rect_contains(work, rect)
+        geometry["client_size"] == [width, height]
+        and _rect_contains(work, geometry["client_rect"])
+        and _rect_contains(geometry["window_rect"], geometry["client_rect"])
         and monitor["device"].casefold()
         == str(monitor_target["device"]).casefold()
         and monitor["is_primary"] is False
@@ -5097,15 +6423,23 @@ def _configure_size(
     )
     if not placement_ok:
         raise RuntimeError(
-            f"DISPLAY2 size placement failed: rect={rect} expected={expected_rect} "
+            "DISPLAY2 client size placement failed: "
+            f"geometry={geometry} requested={[width, height]} work={work} "
             f"monitor={monitor}"
         )
     return {
         "status": "PASS",
-        "requested_outer_size": [width, height],
-        "window_rect": rect,
+        "requested_size_semantics": "client-area-pixels",
+        "requested_client_size": [width, height],
+        "window_rect": geometry["window_rect"],
+        "client_rect": geometry["client_rect"],
+        "client_size": geometry["client_size"],
+        "client_contained_in_work_area": True,
+        "outer_window_may_extend_beyond_work_area": True,
         "monitor": monitor,
         "previsible_placement": previsible_placement,
+        "initial_client_alignment": initial_alignment,
+        "final_client_alignment": final_alignment,
         "settle": settle,
     }
 
@@ -5412,14 +6746,6 @@ def run_capture_matrix(
     screenshots = resolved_output / "screenshots"
     screenshots.mkdir(parents=True, exist_ok=True)
     data_root = resolved_output / "_isolated_data"
-    environment_isolation = prepare_isolated_environment(
-        data_root,
-        output_base=CAPTURE_OUTPUT_BASE,
-        source_root=source_root,
-    )
-    guards = environment_isolation.guards
-    settings = build_isolated_app_settings(data_root, requested_scale)
-    fixture_map = {fixture.state_id: fixture for fixture in build_state_fixtures()}
     manifest: dict[str, Any] = {
         "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "tool": "tools/capture_label_operator_ui.py",
@@ -5430,14 +6756,11 @@ def run_capture_matrix(
         "expected_source_tree": str(expected_source_tree),
         "output_root": str(resolved_output),
         "data_root": str(data_root.resolve()),
-        "isolation_guards": {
-            "keys": sorted(guards),
-            "programdata_isolated": True,
-            "localappdata_isolated": True,
-            "computername_isolated": True,
-            "removed_logistics_key_count": len(environment_isolation.removed_keys),
-            "values_recorded": False,
-        },
+        "application_startup_path": APPLICATION_STARTUP_PATH,
+        "requested_size_semantics": "client-area-pixels",
+        "capture_size_semantics": "client-pixels",
+        "matrix_complete": False,
+        "approval_eligible": False,
         "requested_display_device": str(display_device),
         "requested_work_area": list(requested_work_area),
         "requested_sizes": [list(size) for size in sizes],
@@ -5458,11 +6781,35 @@ def run_capture_matrix(
     }
     app = None
     module = None
+    environment_isolation = None
     import_isolation = None
     original_hostname_resolver = None
     previous_dont_write_bytecode = sys.dont_write_bytecode
     manifest_path = resolved_output / "manifest.json"
     try:
+        environment_isolation = prepare_isolated_environment(
+            data_root,
+            output_base=CAPTURE_OUTPUT_BASE,
+            source_root=source_root,
+        )
+        guards = environment_isolation.guards
+        manifest["isolation_guards"] = {
+            "keys": sorted(guards),
+            "programdata_isolated": True,
+            "localappdata_isolated": True,
+            "computername_isolated": True,
+            "removed_logistics_key_count": len(environment_isolation.removed_keys),
+            "startup_override_keys_removed": [
+                "LABEL_MATCH_CAPTURE_STARTUP_DPI",
+                "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY",
+            ],
+            "startup_override_restore_tracked": True,
+            "values_recorded": False,
+        }
+        settings = build_isolated_app_settings(data_root, requested_scale)
+        fixture_map = {
+            fixture.state_id: fixture for fixture in build_state_fixtures()
+        }
         harness_identity = verify_harness_identity(ROOT)
         manifest["harness_identity"] = harness_identity
         manifest["execution_source_binding"] = validate_execution_source_binding(
@@ -5547,19 +6894,33 @@ def run_capture_matrix(
                     app,
                     fixture,
                 )
+                foreground_acquisition = settle_capture_foreground(app, state_id)
+                pending_before_capture = _pending_after_ids(app)
+                if pending_before_capture:
+                    raise RuntimeError(
+                        "scheduled jobs appeared after foreground acquisition: "
+                        f"{pending_before_capture}"
+                    )
                 geometry = collect_ui_geometry(app, fixture)
                 before_window = collect_window_capture_contract(
-                    app, monitor_target
+                    app, monitor_target, state_id=state_id
                 )
-                image, source = capture_tk_client(app)
+                image, source, capture_screen_bbox = capture_tk_client(
+                    app, pump_events=False
+                )
                 after_window = collect_window_capture_contract(
-                    app, monitor_target
+                    app, monitor_target, state_id=state_id
                 )
-                window_capture_contract = validate_window_capture_pair(
+                capture_geometry_gate = validate_window_capture_pair(
                     before_window,
                     after_window,
-                    requested_outer_size=size,
+                    requested_client_size=size,
                     captured_pixel_size=image.size,
+                    captured_screen_bbox=capture_screen_bbox,
+                    capture_source=source,
+                )
+                capture_geometry_gate["foreground_acquisition"] = (
+                    foreground_acquisition
                 )
                 path = size_dir / f"{state_id}.png"
                 image.save(path, format="PNG", optimize=True)
@@ -5568,32 +6929,25 @@ def run_capture_matrix(
                     for record in geometry["widgets"]
                     if record["name"] == "workbench"
                 )
-                client_offset = before_window["client_offset_in_window"]
                 client_size = before_window["client_size"]
-                client_bbox = [
-                    int(client_offset[0]),
-                    int(client_offset[1]),
-                    int(client_offset[0]) + int(client_size[0]),
-                    int(client_offset[1]) + int(client_size[1]),
-                ]
-                workbench_bbox = [
-                    int(workbench_record["bbox"][0]) + int(client_offset[0]),
-                    int(workbench_record["bbox"][1]) + int(client_offset[1]),
-                    int(workbench_record["bbox"][2]) + int(client_offset[0]),
-                    int(workbench_record["bbox"][3]) + int(client_offset[1]),
-                ]
+                client_bbox = [0, 0, int(client_size[0]), int(client_size[1])]
+                workbench_bbox = list(map(int, workbench_record["bbox"]))
                 record: dict[str, Any] = {
                     "id": f"{size[0]}x{size[1]}-{state_id}",
+                    "capture_gate_schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
                     "state": state_id,
                     "state_label": fixture.label,
                     "requested_size": list(size),
                     "actual_client_size": list(geometry["root_size"]),
-                    "actual_outer_size": list(image.size),
-                    "requested_size_semantics": "outer-window-pixels",
+                    "actual_outer_size": list(before_window["window_size"]),
+                    "actual_capture_size": list(image.size),
+                    "requested_size_semantics": "client-area-pixels",
+                    "capture_pixel_semantics": "client-area-pixels",
                     "requested_scale": requested_scale,
                     "applied_scale_factor": float(app.scale_factor),
                     "path": path.relative_to(resolved_output).as_posix(),
                     "capture_source": source,
+                    "capture_screen_bbox": list(capture_screen_bbox),
                     "capture_source_authoritative": (
                         source == AUTHORITATIVE_CAPTURE_SOURCE
                     ),
@@ -5602,11 +6956,14 @@ def run_capture_matrix(
                         image, workbench_bbox
                     ),
                     "client_outer_bbox": client_bbox,
+                    "client_capture_bbox": client_bbox,
                     "workbench_outer_bbox": workbench_bbox,
+                    "workbench_capture_bbox": workbench_bbox,
                     "file_size_bytes": path.stat().st_size,
                     "display_placement": size_placement,
                     "responsive_settle": settle,
-                    "window_capture_contract": window_capture_contract,
+                    "window_capture_contract": capture_geometry_gate,
+                    "capture_geometry_gate": capture_geometry_gate,
                     "presenter_refresh_method": refresh_method,
                     "fixture": asdict(fixture),
                     "image_analysis": analyze_image(
@@ -5662,6 +7019,10 @@ def run_capture_matrix(
             and not issue_counts
             and round_trip_ok,
         }
+        manifest["matrix_complete"] = len(manifest["captures"]) == expected_count
+        manifest["approval_eligible"] = bool(
+            manifest["matrix_complete"] and manifest["summary"]["passed"]
+        )
         return manifest_path, manifest
     except Exception as exc:
         manifest["live_contract_ready"] = False
@@ -5709,30 +7070,32 @@ def run_capture_matrix(
                     f"import_restore:{type(exc).__name__}:{exc}"
                 )
         sys.dont_write_bytecode = previous_dont_write_bytecode
-        try:
-            manifest["environment_restore"] = environment_isolation.restore()
-        except Exception as exc:
+        if environment_isolation is not None:
+            try:
+                manifest["environment_restore"] = environment_isolation.restore()
+            except Exception as exc:
+                manifest["environment_restore"] = {
+                    "status": "FAIL",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "values_recorded": False,
+                }
+                cleanup_failures.append(
+                    f"environment_restore:{type(exc).__name__}:{exc}"
+                )
+        else:
             manifest["environment_restore"] = {
-                "status": "FAIL",
-                "error": f"{type(exc).__name__}: {exc}",
+                "status": "NOT_STARTED",
                 "values_recorded": False,
             }
-            cleanup_failures.append(
-                f"environment_restore:{type(exc).__name__}:{exc}"
-            )
-        if cleanup_failures:
-            summary = manifest.setdefault("summary", {})
-            summary["passed"] = False
-            summary["fatal_error"] = "cleanup_contract_failed"
-            manifest["cleanup_contract"] = {
-                "status": "FAIL",
-                "failures": cleanup_failures,
-            }
-        else:
-            manifest["cleanup_contract"] = {"status": "PASS"}
+        record_cleanup_contract(manifest, cleanup_failures)
         try:
             sanitized, redacted_labels = redact_sensitive_manifest_values(
-                manifest, environment_isolation.sensitive_values
+                manifest,
+                (
+                    environment_isolation.sensitive_values
+                    if environment_isolation is not None
+                    else {}
+                ),
             )
             manifest.clear()
             manifest.update(sanitized)
@@ -5797,7 +7160,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--sizes",
         type=parse_sizes,
         default=DEFAULT_SIZES,
-        help="comma-separated outer window sizes within DISPLAY2 work area",
+        help="comma-separated client-area pixel sizes within DISPLAY2 work area",
     )
     parser.add_argument(
         "--states",
