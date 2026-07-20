@@ -19,8 +19,14 @@ from PIL import Image
 
 from tools import capture_label_operator_ui as capture
 from tools.capture_label_operator_ui import (
+    APPLICATION_STARTUP_PATH,
     AUTHORITATIVE_CAPTURE_SOURCE,
     CANCEL_BUTTON_ALIASES,
+    CANCELLATION_CONFLICT_COUNT,
+    CANCELLATION_CONFLICT_MESSAGE,
+    CANCELLATION_CONFLICT_TITLE,
+    CANCELLATION_SURFACE_CAPTURE_CONTRACT,
+    CAPTURE_MANIFEST_SCHEMA_VERSION,
     DEFAULT_SCALE,
     DEFAULT_SIZES,
     DEFAULT_STATE_IDS,
@@ -57,6 +63,7 @@ from tools.capture_label_operator_ui import (
     validate_live_contract,
     validate_presenter_rows,
     validate_capture_matrix_request,
+    validate_cancellation_surface_capture_contract,
     validate_qa_detail_contract,
     validate_window_capture_pair,
     validate_root_only_toplevels,
@@ -80,6 +87,7 @@ def test_default_capture_matrix_covers_required_sizes_states_and_scale():
         "qa_progress",
         "qa_product_2",
         "qa_product_3",
+        "cancellation_conflict",
         "sealed",
         "error",
         "full_complete",
@@ -120,7 +128,7 @@ def test_cli_parsers_validate_deduplicate_and_keep_korean_multiplication_mark():
             parse_work_area(value)
 
 
-def test_programmatic_matrix_requires_all_five_sizes_all_fifteen_states_once():
+def test_programmatic_matrix_requires_all_five_sizes_all_sixteen_states_once():
     sizes, states = validate_capture_matrix_request(
         tuple(reversed(DEFAULT_SIZES)), tuple(reversed(DEFAULT_STATE_IDS))
     )
@@ -141,6 +149,34 @@ def test_programmatic_matrix_requires_all_five_sizes_all_fifteen_states_once():
         validate_capture_matrix_request(DEFAULT_SIZES, DEFAULT_STATE_IDS[:-1])
 
 
+def test_manifest_contract_captures_only_persistent_cancellation_conflict():
+    cancellation = validate_cancellation_surface_capture_contract(
+        DEFAULT_STATE_IDS
+    )
+    assert cancellation == {
+        "status": "PASS",
+        "persistent_capture_states": ["cancellation_conflict"],
+        "modal_only_excluded_states": [
+            "cancellation_acked",
+            "cancellation_pending",
+        ],
+        "extra_visible_toplevels_allowed": False,
+    }
+    for metadata in CANCELLATION_SURFACE_CAPTURE_CONTRACT[
+        "modal_only_exclusions"
+    ].values():
+        assert "nonpersistent" in metadata["runtime_surface"]
+        assert "messagebox" in metadata["runtime_surface"]
+        assert "root-only visible capture" in metadata["reason"]
+        assert "PrintWindow" not in metadata["reason"]
+    assert CAPTURE_MANIFEST_SCHEMA_VERSION == 6
+    assert APPLICATION_STARTUP_PATH == "disabled_for_inprocess_matrix"
+    with pytest.raises(RuntimeError, match="cannot be persistent captures"):
+        validate_cancellation_surface_capture_contract(
+            (*DEFAULT_STATE_IDS, "cancellation_pending")
+        )
+
+
 def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
 
@@ -150,6 +186,15 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     assert len(fixtures["qa_progress"].qa_scans) == 2
     assert len(fixtures["qa_product_2"].qa_scans) == 3
     assert len(fixtures["qa_product_3"].qa_scans) == 4
+    assert (
+        fixtures["cancellation_conflict"].qa_scans
+        == fixtures["qa_product_3"].qa_scans
+    )
+    assert fixtures["cancellation_conflict"].selected_qa_index == 4
+    assert (
+        fixtures["cancellation_conflict"].last_normal_scan
+        == fixtures["qa_product_3"].last_normal_scan
+    )
     assert fixtures["error"].qa_scans == fixtures["qa_product_3"].qa_scans
     assert fixtures["error"].last_normal_scan == fixtures["qa_product_3"].last_normal_scan
     assert fixtures["error"].has_error is True
@@ -216,6 +261,41 @@ def test_apply_error_fixture_sets_and_clears_all_renderer_error_aliases():
     assert app._workflow_error_message == ""
 
 
+def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
+    from Label_Match import Label_Match
+
+    app = SimpleNamespace(
+        current_set_info={},
+        operator_workbench_ready=False,
+        _workflow_widgets_ready=False,
+        _refresh_operator_workbench=lambda: None,
+    )
+    app._refresh_package_cancellation_review_notice = lambda: (
+        Label_Match._refresh_package_cancellation_review_notice(app)
+    )
+    fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+
+    view, _method = apply_state_fixture(app, fixtures["cancellation_conflict"])
+
+    assert view.notice is None
+    assert view.scan_input_enabled is True
+    assert view.cancel_current_enabled is True
+    assert view.cancel_completed_enabled is True
+    assert view.f3_enabled is True
+    assert view.f4_enabled is False
+    assert app._workflow_blocking_notice is None
+    assert len(app._package_cancellation_review_rows) == CANCELLATION_CONFLICT_COUNT
+    notice = app._package_cancellation_review_notice
+    assert notice.title == CANCELLATION_CONFLICT_TITLE
+    assert notice.message == CANCELLATION_CONFLICT_MESSAGE
+    assert notice.kind == "package_cancellation_review"
+    assert notice.tone == "danger"
+
+    apply_state_fixture(app, fixtures["waiting"])
+    assert app._package_cancellation_review_notice is None
+    assert app._package_cancellation_review_rows == ()
+
+
 def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
     class FakeNotebook:
         def __init__(self):
@@ -246,6 +326,84 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
         assert notebook.selections[-1] is session_tab
 
 
+def test_apply_fixture_seeds_real_activity_rows_without_touching_business_maps():
+    from Label_Match import Label_Match
+
+    class MemoryTree:
+        def __init__(self):
+            self.rows = {}
+            self.order = []
+
+        def get_children(self, _parent=""):
+            return tuple(self.order)
+
+        def delete(self, *iids):
+            for iid in iids:
+                self.rows.pop(str(iid), None)
+                if str(iid) in self.order:
+                    self.order.remove(str(iid))
+
+        def insert(self, _parent, _index, *, iid, values, tags=()):
+            key = str(iid)
+            self.rows[key] = {"values": tuple(values), "tags": tuple(tags)}
+            self.order.append(key)
+            return key
+
+        def item(self, iid, option=None, **changes):
+            row = self.rows[str(iid)]
+            row.update(changes)
+            return row.get(option) if option else dict(row)
+
+        def column(self, _column, _option=None):
+            return 180
+
+    app = Label_Match.__new__(Label_Match)
+    app.current_set_info = {}
+    app.history_tree = MemoryTree()
+    app.session_tree = MemoryTree()
+    app.operator_history_notebook = None
+    app.operator_notebook = None
+    app.ui_profile_name = "standard"
+    app.tree_font_size = 13
+    app.history_row_details_map = {"sentinel": {"raw": "unchanged"}}
+    app.set_details_map = {"sentinel": {"raw": "unchanged"}}
+    app.scan_count = {"sentinel": {"AAA": 7}}
+    app._refresh_operator_workbench = lambda: None
+    sentinels = (
+        app.history_row_details_map,
+        app.set_details_map,
+        app.scan_count,
+    )
+    fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+
+    for state_id in DEFAULT_STATE_IDS:
+        apply_state_fixture(app, fixtures[state_id])
+        history_iids = app.history_tree.get_children("")
+        session_iids = app.session_tree.get_children("")
+        assert history_iids == (
+            "capture-activity-001",
+            "capture-activity-002",
+        )
+        assert session_iids == tuple(f"session-{iid}" for iid in history_iids)
+        for history_iid, session_iid in zip(history_iids, session_iids):
+            history_values = app.history_tree.item(history_iid, "values")
+            session_values = app.session_tree.item(session_iid, "values")
+            assert len(history_values) == 8
+            assert session_values == (
+                history_values[7],
+                history_values[1],
+                history_values[6],
+            )
+        assert app.history_tree.item(history_iids[0], "values")[1] == "AAA2270730100"
+        assert app.history_tree.item(history_iids[1], "values")[1] == "AAA2270730200"
+
+    assert sentinels == (
+        {"sentinel": {"raw": "unchanged"}},
+        {"sentinel": {"raw": "unchanged"}},
+        {"sentinel": {"AAA": 7}},
+    )
+
+
 @pytest.mark.parametrize("state_id", DEFAULT_STATE_IDS)
 def test_fixtures_are_accepted_by_the_real_workflow_presenter(state_id):
     fixture = next(
@@ -264,6 +422,12 @@ def test_fixtures_are_accepted_by_the_real_workflow_presenter(state_id):
         assert view.scan_input_enabled is False
     if state_id in {"error", "submission_blocked"}:
         assert view.scan_input_enabled is False
+    if state_id == "cancellation_conflict":
+        assert view.notice is None
+        assert view.scan_input_enabled is True
+        assert view.cancel_current_enabled is True
+        assert view.cancel_completed_enabled is True
+        assert view.f3_enabled is True
 
 
 def test_live_contract_reports_missing_widgets_and_never_false_passes_legacy_ui():
@@ -923,6 +1087,211 @@ def test_tree_text_fit_proxy_rejects_non_authoritative_nonblank_measurement():
     assert result["suspected"] is True
 
 
+class _TreeFitTree:
+    def __init__(
+        self,
+        *,
+        actual_heading_widths=(100, 80),
+        configured_widths=(100, 100),
+        row_height=46,
+        values=("AAA2270730200", "간략 식별값"),
+    ):
+        self.columns = ("Stage", "Value")
+        self.actual_heading_widths = tuple(map(int, actual_heading_widths))
+        self.configured_widths = tuple(map(int, configured_widths))
+        self.row_height = int(row_height)
+        self.values = tuple(values)
+        self.tk = SimpleNamespace(splitlist=lambda value: tuple(str(value).split()))
+
+    @staticmethod
+    def winfo_ismapped():
+        return True
+
+    def cget(self, option):
+        return {
+            "columns": self.columns,
+            "displaycolumns": ("#all",),
+            "style": "Operator.Treeview",
+        }[option]
+
+    def winfo_width(self):
+        return sum(self.actual_heading_widths)
+
+    @staticmethod
+    def winfo_height():
+        return 100
+
+    def heading(self, column, option=None):
+        value = {
+            "text": "단계" if column == "Stage" else "실제 스캔값",
+            "image": "",
+        }
+        return value if option is None else value[option]
+
+    @staticmethod
+    def get_children(_parent=""):
+        return ("row-1",)
+
+    def bbox(self, _iid, column=None):
+        if column is None:
+            return (0, 24, self.winfo_width(), self.row_height)
+        index = self.columns.index(column)
+        return (
+            sum(self.configured_widths[:index]),
+            24,
+            self.configured_widths[index],
+            self.row_height,
+        )
+
+    def item(self, _iid, option=None):
+        value = {"values": self.values, "text": "", "tags": ()}
+        return value if option is None else value[option]
+
+
+def _collect_tree_fit(monkeypatch, tree, measures, configured_rowheight=46):
+    monkeypatch.setattr(
+        capture,
+        "_tree_heading_pixels",
+        lambda _tree: {
+            "visible_heading_widths_px": {
+                "#1": tree.actual_heading_widths[0],
+                "#2": tree.actual_heading_widths[1],
+            },
+            "viewport_width_px": sum(tree.actual_heading_widths),
+        },
+    )
+    monkeypatch.setattr(
+        capture,
+        "_ttk_style_lookup",
+        lambda _tree, _style, option: (
+            configured_rowheight if option == "rowheight" else (4,)
+        ),
+    )
+    monkeypatch.setattr(
+        capture,
+        "_tk_font_metrics_with_source",
+        lambda _tree, text, heading=False: (
+            int(measures.get(str(text), max(1, len(str(text))) * 8)),
+            24 if heading else 41,
+            "tk",
+        ),
+    )
+    return capture.collect_tree_text_fit(tree, "current_set_tree")
+
+
+def test_tree_heading_pixel_scan_uses_actual_visible_spans():
+    tree = SimpleNamespace(
+        winfo_width=lambda: 180,
+        winfo_height=lambda: 100,
+        identify_region=lambda x, y: "heading" if y < 20 else "nothing",
+        identify_column=lambda x: "#1" if x < 100 else "#2",
+    )
+
+    result = capture._tree_heading_pixels(tree)
+
+    assert result["visible_heading_widths_px"] == {"#1": 100, "#2": 80}
+
+
+def test_tree_text_fit_uses_actual_heading_span_not_configured_column_width(
+    monkeypatch,
+):
+    tree = _TreeFitTree(
+        actual_heading_widths=(100, 80),
+        configured_widths=(100, 140),
+    )
+    result = _collect_tree_fit(
+        monkeypatch,
+        tree,
+        {"단계": 40, "실제 스캔값": 73, "AAA2270730200": 60, "간략 식별값": 40},
+    )
+
+    value_heading = result["heading_records"][1]
+    assert value_heading["width"] == 80
+    assert value_heading["available_text_width"] == 72
+    assert value_heading["text_width"] == 73
+    assert value_heading["fit_slack_px"] == -1
+    assert value_heading["passed"] is False
+    assert result["checks"]["all_heading_text_fits"] is False
+    assert result["passed"] is False
+
+
+def test_tree_text_fit_uses_visible_data_cell_intersection_not_raw_bbox_width(
+    monkeypatch,
+):
+    tree = _TreeFitTree(
+        actual_heading_widths=(100, 80),
+        configured_widths=(100, 100),
+    )
+    result = _collect_tree_fit(
+        monkeypatch,
+        tree,
+        {"단계": 40, "실제 스캔값": 40, "AAA2270730200": 60, "간략 식별값": 73},
+    )
+
+    value_cell = result["data_cell_records"][1]
+    assert value_cell["cell_bbox"] == [100, 24, 100, 46]
+    assert value_cell["visible_cell_width_px"] == 80
+    assert value_cell["available_text_width"] == 72
+    assert value_cell["text_width"] == 73
+    assert value_cell["fit_slack_px"] == -1
+    assert value_cell["passed"] is False
+    assert result["checks"]["all_data_cells_measured"] is True
+    assert result["checks"]["all_data_text_fits"] is False
+    assert result["passed"] is False
+
+
+@pytest.mark.parametrize(
+    ("configured_rowheight", "actual_rowheight", "failed_check"),
+    (
+        (39, 46, "configured_row_height_fits_body_font"),
+        (46, 39, "actual_row_heights_fit_body_font"),
+    ),
+)
+def test_tree_text_fit_rejects_configured_or_actual_rowheight_below_body_font(
+    monkeypatch,
+    configured_rowheight,
+    actual_rowheight,
+    failed_check,
+):
+    tree = _TreeFitTree(row_height=actual_rowheight)
+    result = _collect_tree_fit(
+        monkeypatch,
+        tree,
+        {"단계": 40, "실제 스캔값": 40, "AAA2270730200": 60, "간략 식별값": 40},
+        configured_rowheight,
+    )
+
+    assert result["body_font_linespace_px"] == 41
+    assert result["minimum_data_row_height_px"] == 45
+    assert result["configured_row_height_px"] == configured_rowheight
+    assert result["visible_row_heights_px"] == [actual_rowheight]
+    assert result["checks"][failed_check] is False
+    assert result["passed"] is False
+
+
+def test_tree_text_fit_fails_when_existing_rows_have_no_visible_cell_measurement(
+    monkeypatch,
+):
+    tree = _TreeFitTree()
+    original_bbox = tree.bbox
+    tree.bbox = lambda iid, column=None: (
+        original_bbox(iid, column)[0],
+        120,
+        original_bbox(iid, column)[2],
+        original_bbox(iid, column)[3],
+    )
+    result = _collect_tree_fit(
+        monkeypatch,
+        tree,
+        {"단계": 40, "실제 스캔값": 40, "AAA2270730200": 60, "간략 식별값": 40},
+    )
+
+    assert result["data_row_count"] == 1
+    assert result["visible_data_row_count"] == 0
+    assert result["checks"]["all_data_cells_measured"] is False
+    assert result["passed"] is False
+
+
 def test_middle_ellipsis_requires_start_end_and_pixel_fit():
     raw = "PHS|CLC=AAA2270730100|" + "X" * 240 + "|6D=20260716|END"
     displayed = raw[:38] + "..." + raw[-16:]
@@ -1458,28 +1827,307 @@ def test_scheduled_job_query_and_cancel_fail_closed_and_success_is_rechecked():
     assert capture.quiesce_scheduled_jobs(passing)["remaining_after"] == 0
 
 
+def test_post_foreground_quiescence_accepts_only_known_responsive_jobs():
+    class FakeTk:
+        def __init__(self, app):
+            self.app = app
+
+        def call(self, *args):
+            assert args == ("after", "info")
+            return tuple(self.app.pending)
+
+        @staticmethod
+        def splitlist(value):
+            return tuple(value)
+
+    class FakeApp:
+        def __init__(self, *, unexpected=False, regenerate=False):
+            self.pending = ["after#responsive"]
+            self._responsive_after_id = "after#responsive"
+            self._operator_layout_settle_after_id = None
+            self.unexpected = unexpected
+            self.regenerate = regenerate
+            self.updated = 0
+            self.tk = FakeTk(self)
+            if unexpected:
+                self.pending.append("after#unknown")
+
+        def after_cancel(self, after_id):
+            self.pending.remove(str(after_id))
+
+        def update_idletasks(self):
+            self.updated += 1
+            if self.regenerate and self.updated == 1:
+                self._responsive_after_id = "after#responsive-2"
+                self.pending.append("after#responsive-2")
+
+    passing = FakeApp(regenerate=True)
+    result = capture.quiesce_post_foreground_responsive_callbacks(passing)
+    assert result["status"] == "PASS"
+    assert result["attempt_count"] == 2
+    assert result["remaining_after"] == 0
+    assert passing.pending == []
+
+    unexpected = FakeApp(unexpected=True)
+    with pytest.raises(RuntimeError, match="unexpected scheduled jobs"):
+        capture.quiesce_post_foreground_responsive_callbacks(unexpected)
+    assert unexpected.pending == ["after#responsive", "after#unknown"]
+
+
 def test_capture_rechecks_after_queue_after_its_full_update(monkeypatch):
     root = SimpleNamespace(update_idletasks=lambda: None, update=lambda: None)
     monkeypatch.setattr(capture, "_pending_after_ids", lambda _root: ("after-9",))
     monkeypatch.setattr(
-        capture,
-        "_capture_outer_with_print_window",
-        lambda _root: (_ for _ in ()).throw(AssertionError("must not capture")),
+        capture.ImageGrab,
+        "grab",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not capture")),
     )
 
     with pytest.raises(RuntimeError, match="pre-capture full update"):
         capture.capture_tk_client(root)
 
 
-def test_window_capture_pair_requires_stable_outer_client_pid_windows_and_pixels():
+def test_capture_tk_client_uses_visible_client_imagegrab_without_event_pump(
+    monkeypatch,
+):
+    events = []
+    root = SimpleNamespace(
+        update_idletasks=lambda: events.append("update_idletasks"),
+        update=lambda: events.append("update"),
+        winfo_rootx=lambda: 701,
+        winfo_rooty=lambda: -1409,
+        winfo_width=lambda: 1350,
+        winfo_height=lambda: 729,
+    )
+    expected_image = Image.new("RGB", (1350, 729), "white")
+    calls = []
+
+    def grab(*, bbox, all_screens):
+        calls.append((bbox, all_screens))
+        return expected_image
+
+    monkeypatch.setattr(capture.ImageGrab, "grab", grab)
+
+    image, source, screen_bbox = capture.capture_tk_client(
+        root, pump_events=False
+    )
+
+    assert image is expected_image
+    assert source == "ImageGrab(visible-client-bbox)"
+    assert source == AUTHORITATIVE_CAPTURE_SOURCE
+    assert screen_bbox == [701, -1409, 2051, -680]
+    assert calls == [((701, -1409, 2051, -680), True)]
+    assert events == []
+
+
+def test_printwindow_fallback_is_marked_non_authoritative_and_rejected(
+    monkeypatch,
+):
+    root = SimpleNamespace(
+        winfo_rootx=lambda: 701,
+        winfo_rooty=lambda: -1409,
+        winfo_width=lambda: 1350,
+        winfo_height=lambda: 729,
+    )
+    fallback_image = Image.new("RGB", (1350, 729), "white")
+    monkeypatch.setattr(
+        capture.ImageGrab,
+        "grab",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("screen unavailable")),
+    )
+    monkeypatch.setattr(
+        capture,
+        "_capture_client_with_print_window",
+        lambda _root: (
+            fallback_image,
+            "PrintWindow(test)+client-crop",
+            [701, -1409, 2051, -680],
+        ),
+    )
+
+    image, source, screen_bbox = capture.capture_tk_client(
+        root, pump_events=False
+    )
+
+    assert image is fallback_image
+    assert source.startswith("PrintWindow(test)+client-crop; ImageGrab failed:")
+    assert source != AUTHORITATIVE_CAPTURE_SOURCE
+    assert screen_bbox == [701, -1409, 2051, -680]
+    record = _valid_capture_record("qa_progress")
+    record["capture_source"] = source
+    record["capture_geometry_gate"]["checks"][
+        "visible_screen_capture_used"
+    ] = False
+    record["capture_geometry_gate"]["passed"] = False
+    issues = evaluate_capture(record)
+    assert "non_authoritative_capture_source" in issues
+    assert "capture_geometry_gate_visible_screen_capture_used" in issues
+
+
+class _FakeForegroundUser32:
+    def __init__(self, mode):
+        self.mode = mode
+        self.target_hwnd = 701
+        self.foreground_hwnd = 900
+        self.attached = False
+        self.calls = []
+        self.pids = {701: 91, 900: 92}
+        self.threads = {701: 11, 900: 12}
+
+    @staticmethod
+    def GetAncestor(hwnd, _flag):
+        return hwnd
+
+    def GetWindowThreadProcessId(self, hwnd, pid_pointer):
+        pid_pointer._obj.value = self.pids.get(int(hwnd), 0)
+        return self.threads.get(int(hwnd), 0)
+
+    def GetForegroundWindow(self):
+        return self.foreground_hwnd
+
+    def ShowWindow(self, hwnd, command):
+        self.calls.append(("restore", hwnd, command))
+        return 1
+
+    def BringWindowToTop(self, hwnd):
+        self.calls.append(("bring", hwnd))
+        return 1
+
+    def SetForegroundWindow(self, hwnd):
+        self.calls.append(("set", hwnd))
+        if self.mode == "direct_success" or (
+            self.mode in {"attached_success", "detach_denied"} and self.attached
+        ):
+            self.foreground_hwnd = int(hwnd)
+        # Deliberately report API success even when foreground ownership did
+        # not move. Acceptance must use a fresh observation, not this value.
+        return 1
+
+    def SetFocus(self, hwnd):
+        self.calls.append(("focus", hwnd))
+        return hwnd
+
+    def AttachThreadInput(self, target_thread, foreground_thread, attach):
+        self.calls.append(
+            ("attach_thread_input", target_thread, foreground_thread, bool(attach))
+        )
+        if attach:
+            if self.mode == "attach_denied":
+                return 0
+            self.attached = True
+            return 1
+        self.attached = False
+        return 0 if self.mode == "detach_denied" else 1
+
+    def __getattr__(self, name):
+        if name in {"SendInput", "keybd_event", "PostMessageW", "SendMessageW"}:
+            raise AssertionError(f"key/message injection is forbidden: {name}")
+        raise AttributeError(name)
+
+
+def test_foreground_acquisition_uses_one_bounded_attach_and_fresh_observation():
+    user32 = _FakeForegroundUser32("attached_success")
+
+    telemetry = capture.acquire_win32_foreground(701, 91, user32=user32)
+
+    assert telemetry["strategy"] == "direct_then_bounded_attach_thread_input"
+    assert telemetry["attempt_limit"] == 2
+    assert telemetry["attempt_count"] == 2
+    assert [attempt["phase"] for attempt in telemetry["attempts"]] == [
+        "direct",
+        "attached_input_queues",
+    ]
+    assert telemetry["attempts"][0]["api_results"]["SetForegroundWindow"] == 1
+    assert telemetry["attempts"][0]["passed"] is False
+    assert telemetry["thread_input"]["attach_attempted"] is True
+    assert telemetry["thread_input"]["attach_succeeded"] is True
+    assert telemetry["thread_input"]["detach_attempted"] is True
+    assert telemetry["thread_input"]["detach_succeeded"] is True
+    assert telemetry["final_observation"]["foreground_root_hwnd"] == 701
+    assert telemetry["final_observation"]["foreground_pid"] == 91
+    assert telemetry["ownership_acquired"] is True
+    assert telemetry["thread_input_cleanup_passed"] is True
+    assert telemetry["passed"] is True
+    attach_calls = [call for call in user32.calls if call[0] == "attach_thread_input"]
+    assert attach_calls == [
+        ("attach_thread_input", 11, 12, True),
+        ("attach_thread_input", 11, 12, False),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_cleanup"),
+    (("attach_denied", True), ("detach_denied", False)),
+)
+def test_foreground_acquisition_fails_closed_on_attach_or_detach_failure(
+    mode,
+    expected_cleanup,
+):
+    user32 = _FakeForegroundUser32(mode)
+
+    telemetry = capture.acquire_win32_foreground(701, 91, user32=user32)
+
+    assert telemetry["attempt_count"] <= telemetry["attempt_limit"] == 2
+    assert telemetry["thread_input_cleanup_passed"] is expected_cleanup
+    assert telemetry["passed"] is False
+    assert telemetry["failure_reason"]
+
+
+def test_focus_target_resolver_uses_entry_notice_and_history_by_runtime_state():
+    class Widget:
+        def __init__(self, path, *, state="normal", mapped=True):
+            self.path, self.state, self.mapped = path, state, mapped
+
+        def cget(self, option):
+            assert option == "state"
+            return self.state
+
+        def winfo_ismapped(self):
+            return self.mapped
+
+        def __str__(self):
+            return self.path
+
+    entry = Widget(".scan_entry")
+    notice = Widget(".notice_action")
+    history = Widget(".history_tree")
+    app = SimpleNamespace(
+        entry=entry,
+        workflow_notice_action_button=notice,
+        history_tree=history,
+    )
+
+    assert capture.resolve_capture_focus_target(app, "error")["kind"] == "scan_entry"
+    entry.state = "disabled"
+    assert (
+        capture.resolve_capture_focus_target(app, "history_readonly")["kind"]
+        == "history_tree"
+    )
+    assert capture.resolve_capture_focus_target(app, "error")["kind"] == "notice_action"
+
+
+def _window_snapshot(**changes):
     snapshot = {
         "status": "PASS",
         "current_pid": 9001,
         "root_hwnd": 101,
-        "window_rect": [693, -1440, 2059, -672],
-        "window_size": [1366, 768],
-        "client_rect": [701, -1409, 2051, -680],
-        "client_size": [1350, 729],
+        "root_pid": 9001,
+        "foreground_root_hwnd": 101,
+        "foreground_pid": 9001,
+        "foreground_root_matches_capture_root": True,
+        "foreground_pid_matches_process": True,
+        "tk_focus_path": ".scan_entry",
+        "tk_focus_owned_by_root": True,
+        "expected_focus_kind": "scan_entry",
+        "expected_focus_path": ".scan_entry",
+        "focus_target_contract_passed": True,
+        "scan_entry_path": ".scan_entry",
+        "scan_entry_enabled": True,
+        "tk_focus_matches_scan_entry_when_enabled": True,
+        "window_rect": [693, -1440, 2075, -633],
+        "window_size": [1382, 807],
+        "client_rect": [701, -1409, 2067, -641],
+        "client_size": [1366, 768],
         "client_offset_in_window": [8, 31],
         "visible_pid_toplevels": [
             {
@@ -1490,23 +2138,172 @@ def test_window_capture_pair_requires_stable_outer_client_pid_windows_and_pixels
         ],
         "all_visible_pid_toplevels_contained": True,
     }
-    result = validate_window_capture_pair(
+    snapshot.update(changes)
+    return snapshot
+
+
+def _window_pair(before, after=None, *, source=AUTHORITATIVE_CAPTURE_SOURCE):
+    return validate_window_capture_pair(
+        before,
+        dict(before) if after is None else after,
+        requested_client_size=(1366, 768),
+        captured_pixel_size=(1366, 768),
+        captured_screen_bbox=before["client_rect"],
+        capture_source=source,
+    )
+
+
+def test_window_capture_pair_requires_exact_client_pixels_and_stable_focus_geometry():
+    snapshot = _window_snapshot()
+    result = _window_pair(snapshot)
+    assert result["requested_size_semantics"] == "client-area-pixels"
+    assert result["requested_client_size"] == [1366, 768]
+    assert result["captured_pixel_semantics"] == "client-area-pixels"
+    assert result["checks"]["captured_pixels_match_client_size"] is True
+    assert result["checks"][
+        "capture_screen_bbox_matches_before_client_rect"
+    ] is True
+    assert result["checks"]["capture_screen_bbox_matches_after_client_rect"] is True
+    assert result["checks"]["visible_screen_capture_used"] is True
+    assert result["passed"] is True
+
+    fallback = _window_pair(
+        snapshot, source="PrintWindow(test)+client-crop"
+    )
+    assert fallback["checks"]["visible_screen_capture_used"] is False
+    assert fallback["passed"] is False
+
+    shifted_bbox = validate_window_capture_pair(
         snapshot,
         dict(snapshot),
-        requested_outer_size=(1366, 768),
+        requested_client_size=(1366, 768),
         captured_pixel_size=(1366, 768),
+        captured_screen_bbox=(702, -1409, 2068, -641),
+        capture_source=AUTHORITATIVE_CAPTURE_SOURCE,
     )
-    assert result["requested_size_semantics"] == "outer-window-pixels"
+    assert shifted_bbox["checks"][
+        "capture_screen_bbox_matches_before_client_rect"
+    ] is False
+    assert shifted_bbox["checks"][
+        "capture_screen_bbox_matches_after_client_rect"
+    ] is False
+    assert shifted_bbox["passed"] is False
 
     moved = dict(snapshot)
-    moved["client_rect"] = [702, -1409, 2052, -680]
-    with pytest.raises(RuntimeError, match="client_rect"):
-        validate_window_capture_pair(
-            snapshot,
-            moved,
-            requested_outer_size=(1366, 768),
-            captured_pixel_size=(1350, 729),
+    moved["client_rect"] = [702, -1409, 2068, -641]
+    moved_gate = _window_pair(snapshot, moved)
+    assert moved_gate["checks"]["client_geometry_stable_during_capture"] is False
+    assert moved_gate["passed"] is False
+
+    foreground_changed = dict(snapshot)
+    foreground_changed["foreground_root_hwnd"] = 202
+    foreground_changed["foreground_pid"] = 9002
+    foreground_changed["foreground_root_matches_capture_root"] = False
+    foreground_gate = _window_pair(snapshot, foreground_changed)
+    assert foreground_gate["checks"]["foreground_root_hwnd_stable"] is False
+    assert foreground_gate["checks"][
+        "foreground_root_hwnd_matches_capture_root"
+    ] is False
+    assert foreground_gate["checks"][
+        "foreground_pid_stable_and_matches_process"
+    ] is False
+    assert foreground_gate["passed"] is False
+
+
+@pytest.mark.parametrize(
+    ("kind", "path"),
+    (
+        ("scan_entry", ".scan_entry"),
+        ("notice_action", ".notice_action"),
+        ("history_tree", ".history_tree"),
+    ),
+)
+def test_window_pair_requires_exact_state_focus_target_before_and_after(kind, path):
+    snapshot = _window_snapshot(
+        expected_focus_kind=kind,
+        expected_focus_path=path,
+        tk_focus_path=path,
+        scan_entry_enabled=kind == "scan_entry",
+        tk_focus_matches_scan_entry_when_enabled=True,
+    )
+    assert _window_pair(snapshot)["passed"] is True
+
+    both_wrong = dict(snapshot, tk_focus_path=".wrong-but-stable")
+    gate = _window_pair(both_wrong)
+    assert gate["checks"]["tk_focus_path_stable"] is True
+    assert gate["checks"]["focus_target_contract_passed"] is False
+    assert gate["passed"] is False
+
+
+class _ClientAlignmentWin32Gui:
+    INSETS = (8, 31, 8, 8)
+
+    def __init__(self):
+        self.window_rect = [685, -1471, 3261, -40]
+        self.moves = []
+        self.ancestor_calls = []
+
+    def GetAncestor(self, hwnd, _flag):
+        self.ancestor_calls.append(hwnd)
+        return hwnd
+
+    def GetWindowRect(self, _hwnd):
+        return tuple(self.window_rect)
+
+    def GetClientRect(self, _hwnd):
+        left, top, right, bottom = self.window_rect
+        inset_left, inset_top, inset_right, inset_bottom = self.INSETS
+        return (
+            0,
+            0,
+            right - left - inset_left - inset_right,
+            bottom - top - inset_top - inset_bottom,
         )
+
+    def ClientToScreen(self, _hwnd, point):
+        return (
+            self.window_rect[0] + self.INSETS[0] + int(point[0]),
+            self.window_rect[1] + self.INSETS[1] + int(point[1]),
+        )
+
+    def MoveWindow(self, hwnd, left, top, width, height, repaint):
+        self.moves.append((hwnd, left, top, width, height, repaint))
+        self.window_rect = [left, top, left + width, top + height]
+        return 1
+
+
+@pytest.mark.parametrize("size", ((1366, 768), (2560, 1392)))
+def test_client_alignment_uses_exact_client_size_and_contains_maximum_client(size):
+    win32gui = _ClientAlignmentWin32Gui()
+    app = SimpleNamespace(
+        winfo_id=lambda: 701,
+        update_idletasks=lambda: None,
+    )
+
+    result = capture._align_requested_client_to_work_area(
+        app,
+        size,
+        TARGET_DISPLAY_WORK_AREA,
+        win32gui_module=win32gui,
+    )
+
+    expected_rect = [
+        TARGET_DISPLAY_WORK_AREA[0],
+        TARGET_DISPLAY_WORK_AREA[1],
+        TARGET_DISPLAY_WORK_AREA[0] + size[0],
+        TARGET_DISPLAY_WORK_AREA[1] + size[1],
+    ]
+    assert result["requested_client_size"] == list(size)
+    assert result["requested_client_rect"] == expected_rect
+    assert result["final"]["client_rect"] == expected_rect
+    assert result["final"]["client_size"] == list(size)
+    assert result["passed"] is True
+    assert result["attempt_count"] == 1
+    assert len(win32gui.ancestor_calls) >= 2
+    if size == (2560, 1392):
+        assert result["final"]["client_rect"] == list(TARGET_DISPLAY_WORK_AREA)
+        assert result["final"]["window_rect"][0] < TARGET_DISPLAY_WORK_AREA[0]
+        assert result["final"]["window_rect"][1] < TARGET_DISPLAY_WORK_AREA[1]
 
 
 def test_root_only_printwindow_contract_rejects_contained_dialog_toplevel():
@@ -1718,6 +2515,36 @@ def test_long_last_normal_uses_raw_detail_and_fitted_cell_and_rejects_duplicates
     assert "last_normal_fixture_source_count:2!=1" in duplicate_result["issues"]
 
 
+_CAPTURE_GEOMETRY_CHECKS = (
+    "before_client_size_matches_request",
+    "after_client_size_matches_request",
+    "client_geometry_stable_during_capture",
+    "captured_pixels_match_client_size",
+    "visible_screen_capture_used",
+    "root_hwnd_stable",
+    "foreground_root_hwnd_stable",
+    "foreground_root_hwnd_matches_capture_root",
+    "foreground_pid_stable",
+    "foreground_pid_matches_process",
+    "foreground_pid_stable_and_matches_process",
+    "tk_focus_owned_by_capture_root",
+    "tk_focus_path_stable",
+    "expected_focus_target_stable",
+    "focus_target_contract_passed",
+    "scan_entry_focus_contract_passed",
+    "window_contract_fields_stable",
+    "before_pid_toplevels_contained",
+    "after_pid_toplevels_contained",
+)
+
+
+def _passing_capture_geometry_gate():
+    return {
+        "checks": dict.fromkeys(_CAPTURE_GEOMETRY_CHECKS, True),
+        "passed": True,
+    }
+
+
 def _valid_capture_record(state_id: str = "qa_progress"):
     fixture = next(
         fixture for fixture in build_state_fixtures() if fixture.state_id == state_id
@@ -1732,23 +2559,77 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         {"text": str(index), "values": [barcode], "tags": ["complete"]}
         for index, barcode in enumerate(fixture.exact_barcodes, 1)
     ]
+    activity_specs = (
+        (1, "AAA2270730100", "통과", "19:41:03"),
+        (2, "AAA2270730200", "불일치", "19:42:17"),
+    )
+    history_rows = [
+        {
+            "iid": f"capture-activity-{index:03d}",
+            "text": "",
+            "values": [
+                str(index),
+                item,
+                "제품1",
+                "제품2",
+                "제품3",
+                "라벨",
+                result,
+                timestamp,
+            ],
+            "tags": ["success" if result == "통과" else "error"],
+        }
+        for index, item, result, timestamp in activity_specs
+    ]
+    session_rows = [
+        {
+            "iid": f"session-{row['iid']}",
+            "text": "",
+            "values": [row["values"][7], row["values"][1], row["values"][6]],
+            "tags": [],
+        }
+        for row in history_rows
+    ]
     notice = view.notice
+    display_notice = (
+        SimpleNamespace(
+            title=CANCELLATION_CONFLICT_TITLE,
+            message=CANCELLATION_CONFLICT_MESSAGE,
+            kind="package_cancellation_review",
+            tone="danger",
+        )
+        if state_id == "cancellation_conflict"
+        else notice
+    )
+    selected_iid = (
+        f"qa-slot-{fixture.selected_qa_index}"
+        if fixture.selected_qa_index
+        else None
+    )
+    selected_raw = (
+        fixture.qa_scans[fixture.selected_qa_index - 1]
+        if fixture.selected_qa_index
+        else ""
+    )
     return {
+        "capture_gate_schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "state": state_id,
         "requested_size": [1366, 768],
         "capture_source": AUTHORITATIVE_CAPTURE_SOURCE,
+        "capture_geometry_gate": _passing_capture_geometry_gate(),
         "window_capture_contract": {
             "status": "PASS",
             "before": {
-                "client_size": [1350, 729],
-                "client_offset_in_window": [8, 0],
+                "client_size": [1366, 768],
+                "client_offset_in_window": [8, 31],
             },
             "after": {
-                "client_size": [1350, 729],
-                "client_offset_in_window": [8, 0],
+                "client_size": [1366, 768],
+                "client_offset_in_window": [8, 31],
             },
         },
-        "client_outer_bbox": [8, 0, 1358, 729],
+        "client_outer_bbox": [0, 0, 1366, 768],
+        "client_capture_bbox": [0, 0, 1366, 768],
         "sha256": f"raw-{state_id}",
         "workbench_sha256": f"workbench-{state_id}",
         "requested_scale": 1.0,
@@ -1756,8 +2637,8 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         "fixture": asdict(fixture),
         "image_analysis": {
             "analysis_region": "window_client",
-            "analysis_bbox": [8, 0, 1358, 729],
-            "analysis_pixel_size": [1350, 729],
+            "analysis_bbox": [0, 0, 1366, 768],
+            "analysis_pixel_size": [1366, 768],
             "pixel_size_matches": True,
             "capture_pixels_valid": True,
             "blank_suspected": False,
@@ -1810,6 +2691,10 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         "rendered_state": {
             "current_set_rows": rendered_rows,
             "exact_rescan_rows": exact_rows,
+            "session_rows": session_rows,
+            "history_rows": history_rows,
+            "session_row_count": len(session_rows),
+            "history_row_count": len(history_rows),
             "presenter_rows": expected_presenter_rows(view),
             "expected_qa_display_values": [
                 str(row.get("values", [""])[0]) for row in rendered_rows
@@ -1830,13 +2715,36 @@ def _valid_capture_record(state_id: str = "qa_progress"):
                 if notice
                 else None
             ),
-            "notice_title_occurrences": 1 if notice else 0,
-            "notice_message_occurrences": 1 if notice else 0,
+            "display_notice": (
+                {
+                    "title": display_notice.title,
+                    "message": display_notice.message,
+                    "kind": display_notice.kind,
+                    "tone": display_notice.tone,
+                }
+                if display_notice
+                else None
+            ),
+            "presenter_action_gates": {
+                "scan_input_enabled": bool(view.scan_input_enabled),
+                "f1_cancel_current_enabled": bool(view.cancel_current_enabled),
+                "f2_cancel_completed_enabled": bool(view.cancel_completed_enabled),
+                "f3_enabled": bool(view.f3_enabled),
+                "f4_enabled": bool(view.f4_enabled),
+            },
+            "button_states": {
+                "reset_button": "normal" if view.cancel_current_enabled else "disabled",
+                "cancel_button": "normal" if view.cancel_completed_enabled else "disabled",
+                "manual_complete_button": "normal" if view.f3_enabled else "disabled",
+                "exact_rescan_button": "normal" if view.f4_enabled else "disabled",
+            },
+            "notice_title_occurrences": 1 if display_notice else 0,
+            "notice_message_occurrences": 1 if display_notice else 0,
             "notice_display_contract": {
                 "passed": True,
                 "issues": [],
-                "title_occurrences": 1 if notice else 0,
-                "message_occurrences": 1 if notice else 0,
+                "title_occurrences": 1 if display_notice else 0,
+                "message_occurrences": 1 if display_notice else 0,
             },
             "last_normal_occurrences_on_screen": 1 if fixture.last_normal_scan else 0,
             "last_normal_occurrences_in_center": 1 if fixture.last_normal_scan else 0,
@@ -1856,7 +2764,13 @@ def _valid_capture_record(state_id: str = "qa_progress"):
             "session_tree_mapped": state_id != "history_readonly",
             "current_tree_mapped": not exact_mode,
             "exact_tree_mapped": exact_mode,
-            "qa_detail_contract": {"passed": True, "issues": []},
+            "qa_detail_contract": {
+                "passed": True,
+                "issues": [],
+                "selected_iid": selected_iid,
+                "selected_raw": selected_raw,
+                "selected_detail_text": selected_raw,
+            },
             "qa_summary_contract": {"passed": True, "issues": []},
             "exact_summary_contract": {"passed": True, "issues": []},
             "qa_display_contract": {"passed": True, "issues": []},
@@ -1879,9 +2793,86 @@ def test_capture_evaluation_accepts_complete_synthetic_contract(state_id):
     assert evaluate_capture(record) == []
 
 
+@pytest.mark.parametrize("state_id", ("qa_progress", "error", "full_complete"))
+def test_capture_evaluation_requires_two_complete_session_activity_rows(state_id):
+    record = _valid_capture_record(state_id)
+    record["rendered_state"]["session_rows"].pop()
+
+    assert "session_activity_rows_missing" in evaluate_capture(record)
+
+    record = _valid_capture_record(state_id)
+    record["rendered_state"]["session_rows"][0]["values"][1] = ""
+    assert "session_activity_row_shape_invalid" in evaluate_capture(record)
+
+
+def test_capture_evaluation_requires_complete_history_activity_rows():
+    record = _valid_capture_record("history_readonly")
+    record["rendered_state"]["history_rows"].pop()
+
+    assert "history_activity_rows_missing" in evaluate_capture(record)
+
+    record = _valid_capture_record("history_readonly")
+    record["rendered_state"]["history_rows"][0]["iid"] = "loading"
+    assert "history_activity_row_shape_invalid" in evaluate_capture(record)
+
+    record = _valid_capture_record("history_readonly")
+    record["rendered_state"]["history_rows"][0]["values"][7] = ""
+    assert "history_activity_row_shape_invalid" in evaluate_capture(record)
+
+
+def test_capture_evaluation_binds_activity_counts_to_serialized_rows():
+    record = _valid_capture_record("qa_progress")
+    record["rendered_state"]["session_row_count"] = 99
+    assert "session_activity_row_count_mismatch" in evaluate_capture(record)
+
+    record = _valid_capture_record("history_readonly")
+    record["rendered_state"]["history_row_count"] = 99
+    assert "history_activity_row_count_mismatch" in evaluate_capture(record)
+
+
+def test_capture_evaluation_binds_activity_rows_and_visible_tab_to_fixture():
+    record = _valid_capture_record("qa_progress")
+    record["rendered_state"]["session_tree_mapped"] = False
+    assert "session_activity_tree_mapping_mismatch" in evaluate_capture(record)
+
+    record = _valid_capture_record("history_readonly")
+    record["rendered_state"]["session_tree_mapped"] = True
+    assert "session_activity_tree_mapping_mismatch" in evaluate_capture(record)
+
+    record = _valid_capture_record("full_complete")
+    record["rendered_state"]["session_rows"][0]["values"][1] = "AAA9999999999"
+    assert "session_activity_fixture_identity_mismatch" in evaluate_capture(record)
+
+    record = _valid_capture_record("history_readonly")
+    record["rendered_state"]["history_rows"][1]["values"][6] = "통과"
+    assert "history_activity_fixture_identity_mismatch" in evaluate_capture(record)
+
+
+def test_schema_v6_capture_evaluation_requires_visible_geometry_gate():
+    record = _valid_capture_record("qa_progress")
+    record.pop("capture_geometry_gate")
+
+    assert evaluate_capture(record) == ["capture_geometry_gate_missing"]
+
+
+@pytest.mark.parametrize(
+    "check_name",
+    _CAPTURE_GEOMETRY_CHECKS,
+)
+def test_schema_v6_capture_geometry_gate_fails_each_geometry_focus_or_pixel_check(
+    check_name,
+):
+    record = _valid_capture_record("qa_product_3")
+    record["capture_geometry_gate"]["checks"][check_name] = False
+    record["capture_geometry_gate"]["passed"] = False
+
+    assert f"capture_geometry_gate_{check_name}" in evaluate_capture(record)
+
+
 def _shift_both_recorded_client_boxes(record):
-    shifted = [0, 0, 1350, 729]
+    shifted = [1, 0, 1367, 768]
     record["client_outer_bbox"] = shifted
+    record["client_capture_bbox"] = shifted
     record["image_analysis"]["analysis_bbox"] = shifted
 
 
@@ -1896,13 +2887,13 @@ def _shift_both_recorded_client_boxes(record):
         ),
         (
             lambda record: record["image_analysis"].update(
-                analysis_bbox=[0, 0, 1366, 768]
+                analysis_bbox=[0, 0, 1365, 768]
             ),
             "image_analysis_bbox_not_attested_client",
         ),
         (
             lambda record: record["image_analysis"].update(
-                analysis_pixel_size=[1366, 768]
+                analysis_pixel_size=[1365, 768]
             ),
             "image_analysis_size_not_attested_client",
         ),
@@ -1942,6 +2933,24 @@ def test_capture_evaluation_rejects_stale_notice_action_on_active_state():
     record["rendered_state"]["notice_action_text"] = "제출 재시도"
 
     assert "notice_action_mapping_mismatch" in evaluate_capture(record)
+
+
+def test_cancellation_conflict_evaluation_is_exact_and_nonblocking():
+    record = _valid_capture_record("cancellation_conflict")
+    assert evaluate_capture(record) == []
+
+    record["rendered_state"]["display_notice"]["message"] = "미확인 3건"
+    record["rendered_state"]["presenter_action_gates"]["f3_enabled"] = False
+    record["rendered_state"]["qa_detail_contract"]["selected_detail_text"] = (
+        "abbreviated"
+    )
+    record["rendered_state"]["current_set_rows"].pop()
+
+    issues = evaluate_capture(record)
+    assert "cancellation_conflict_notice_mismatch" in issues
+    assert "cancellation_conflict_action_gates_changed" in issues
+    assert "cancellation_conflict_selected_raw_detail_changed" in issues
+    assert "cancellation_conflict_five_row_scan_list_missing" in issues
 
 
 def test_capture_evaluation_fails_closed_when_scan_summary_contract_is_missing_or_failed():
@@ -2044,10 +3053,11 @@ def test_capture_evaluation_fails_new_detail_action_footer_and_text_gates():
 
 def test_cross_capture_contract_preserves_center_geometry_and_scan_values():
     qa = _valid_capture_record("qa_product_3")
+    conflict = _valid_capture_record("cancellation_conflict")
     error = _valid_capture_record("error")
     completed = _valid_capture_record("full_complete")
     blocked = _valid_capture_record("submission_blocked")
-    captures = [qa, error, completed, blocked]
+    captures = [qa, conflict, error, completed, blocked]
 
     apply_cross_capture_contracts(captures)
     assert all(capture["passed"] for capture in captures)
@@ -2066,6 +3076,24 @@ def test_cross_capture_contract_preserves_center_geometry_and_scan_values():
     assert "center_scan_list_geometry_changed_across_states" in blocked["issues"]
     assert error["passed"] is False
     assert blocked["passed"] is False
+
+
+def test_cross_capture_conflict_preserves_selected_raw_and_fkey_gates():
+    qa = _valid_capture_record("qa_product_3")
+    conflict = _valid_capture_record("cancellation_conflict")
+    apply_cross_capture_contracts([qa, conflict])
+    assert conflict["passed"] is True
+
+    conflict["rendered_state"]["qa_detail_contract"]["selected_raw"] = "changed"
+    conflict["rendered_state"]["button_states"]["manual_complete_button"] = (
+        "disabled"
+    )
+    apply_cross_capture_contracts([qa, conflict])
+
+    assert "cancellation_conflict_selected_raw_changed" in conflict["issues"]
+    assert (
+        "cancellation_conflict_fkey_button_states_changed" in conflict["issues"]
+    )
 
 
 def test_cross_capture_qa_preservation_ignores_status_values_and_tags():
@@ -2804,6 +3832,10 @@ def test_environment_isolation_restores_and_redacts_real_host_values(
     monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\real\AppData\Local")
     monkeypatch.setenv("COMPUTERNAME", "REAL-HOST-77")
     monkeypatch.setenv("LABEL_MATCH_LOGISTICS_TOKEN", "secret")
+    monkeypatch.setenv(
+        "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY", "1366x768+693-1440"
+    )
+    monkeypatch.setenv("LABEL_MATCH_CAPTURE_STARTUP_DPI", "144")
     isolation = capture.prepare_isolated_environment(
         output_base / "run" / "_isolated_data",
         output_base=output_base,
@@ -2811,6 +3843,12 @@ def test_environment_isolation_restores_and_redacts_real_host_values(
     )
     assert os.environ["COMPUTERNAME"] == "CAPTURE-DISPLAY2"
     assert "LABEL_MATCH_LOGISTICS_TOKEN" not in os.environ
+    assert "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY" not in os.environ
+    assert "LABEL_MATCH_CAPTURE_STARTUP_DPI" not in os.environ
+    assert {
+        "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY",
+        "LABEL_MATCH_CAPTURE_STARTUP_DPI",
+    }.issubset(set(isolation.removed_keys))
     sanitized, labels = capture.redact_sensitive_manifest_values(
         {
             "host": "REAL-HOST-77",
@@ -2825,6 +3863,51 @@ def test_environment_isolation_restores_and_redacts_real_host_values(
     assert isolation.restore()["status"] == "PASS"
     assert os.environ["COMPUTERNAME"] == "REAL-HOST-77"
     assert os.environ["LABEL_MATCH_LOGISTICS_TOKEN"] == "secret"
+    assert (
+        os.environ["LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY"]
+        == "1366x768+693-1440"
+    )
+    assert os.environ["LABEL_MATCH_CAPTURE_STARTUP_DPI"] == "144"
+
+
+def test_matrix_restores_environment_when_initialization_fails(
+    monkeypatch, tmp_path
+):
+    source_root = tmp_path / "source"
+    output_base = tmp_path / "external-captures"
+    source_root.mkdir()
+    output_base.mkdir()
+    monkeypatch.setattr(capture, "CAPTURE_OUTPUT_BASE", output_base)
+    monkeypatch.setenv("COMPUTERNAME", "REAL-HOST-88")
+    monkeypatch.setenv(
+        "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY", "1366x768+693-1440"
+    )
+    monkeypatch.setattr(
+        capture,
+        "build_isolated_app_settings",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fixture initialization failed")
+        ),
+    )
+
+    manifest_path, manifest = capture.run_capture_matrix(
+        output_root=output_base / "failed-run",
+        source_root=source_root,
+        expected_source_commit="deadbeef",
+        expected_source_tree="cafebabe",
+    )
+
+    assert manifest_path.is_file()
+    assert manifest["summary"]["passed"] is False
+    assert "fixture initialization failed" in manifest["summary"]["fatal_error"]
+    assert manifest["environment_restore"]["status"] == "PASS"
+    assert manifest["cleanup_contract"]["status"] == "PASS"
+    assert manifest["approval_eligible"] is False
+    assert os.environ["COMPUTERNAME"] == "REAL-HOST-88"
+    assert (
+        os.environ["LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY"]
+        == "1366x768+693-1440"
+    )
 
 
 def test_privacy_failure_manifest_discards_original_sensitive_keys_and_values():
@@ -2836,3 +3919,29 @@ def test_privacy_failure_manifest_discards_original_sensitive_keys_and_values():
     assert "Users" not in serialized
     assert minimal["privacy_contract"]["original_manifest_discarded"] is True
     assert minimal["summary"]["passed"] is False
+
+
+def test_cleanup_contract_is_part_of_approval_eligibility():
+    successful = {
+        "matrix_complete": True,
+        "approval_eligible": False,
+        "summary": {"passed": True},
+    }
+    assert capture.record_cleanup_contract(successful, []) == {"status": "PASS"}
+    assert successful["approval_eligible"] is True
+
+    failed = {
+        "matrix_complete": True,
+        "approval_eligible": True,
+        "summary": {"passed": True},
+    }
+    result = capture.record_cleanup_contract(failed, ["environment_restore:failed"])
+    assert result == {
+        "status": "FAIL",
+        "failures": ["environment_restore:failed"],
+    }
+    assert failed["summary"] == {
+        "passed": False,
+        "fatal_error": "cleanup_contract_failed",
+    }
+    assert failed["approval_eligible"] is False

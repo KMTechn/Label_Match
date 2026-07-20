@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
+from http.client import HTTPException, IncompleteRead
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -23,12 +26,14 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v2"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v3"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
 PACKAGE_HTTP_USER_AGENT = "KMTech-Worker-ClaimClient/1.0 LabelMatch"
 PACKAGE_HTTP_CLIENT_HEADER = "Label_Match"
+MAX_RETRY_AFTER_SECONDS = 1800.0
+SENDING_LEASE_SECONDS = 300.0
 
 
 class PackageLogisticsError(RuntimeError):
@@ -40,15 +45,94 @@ class PackageTransportError(PackageLogisticsError):
 
 
 class PackageApiError(PackageLogisticsError):
-    def __init__(self, status_code: int, code: str, message: str):
-        super().__init__(f"{code}: {message}")
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        *,
+        retryable: bool | None = None,
+        committed: bool | None = None,
+        retry_after_seconds: float | None = None,
+    ):
+        normalized_code = str(code or "PACKAGE_API_ERROR")
+        normalized_message = str(message or "package command rejected")
+        super().__init__(f"{normalized_code}: {normalized_message}")
         self.status_code = int(status_code)
-        self.code = str(code or "PACKAGE_API_ERROR")
-        self.message = str(message or "package command rejected")
+        self.code = normalized_code
+        self.message = normalized_message
+        self.retryable = retryable if isinstance(retryable, bool) else None
+        self.committed = committed if isinstance(committed, bool) else None
+        self.retry_after_seconds = _bounded_retry_after_seconds(
+            retry_after_seconds
+        )
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _utc_after(seconds: float) -> str:
+    bounded = _bounded_retry_after_seconds(seconds)
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=bounded or 0.0)
+    ).isoformat().replace("+00:00", "Z")
+
+
+def _utc_before(seconds: float) -> str:
+    bounded = _bounded_retry_after_seconds(seconds)
+    return (
+        datetime.now(timezone.utc) - timedelta(seconds=bounded or 0.0)
+    ).isoformat().replace("+00:00", "Z")
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes"}:
+        return True
+    if normalized in {"0", "false", "no"}:
+        return False
+    return None
+
+
+def _first_optional_bool(*values: Any) -> bool | None:
+    for value in values:
+        parsed = _optional_bool(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _bounded_retry_after_seconds(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return min(MAX_RETRY_AFTER_SECONDS, max(0.0, parsed))
+
+
+def _parse_retry_after_seconds(value: Any) -> float | None:
+    normalized = str(value if value is not None else "").strip()
+    if not normalized:
+        return None
+    try:
+        return _bounded_retry_after_seconds(float(normalized))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(normalized)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return _bounded_retry_after_seconds(
+            (parsed - datetime.now(timezone.utc)).total_seconds()
+        )
 
 
 def canonical_member_ids(values: Iterable[Any]) -> tuple[str, ...]:
@@ -287,7 +371,7 @@ def _normalize_barcode(value: Any) -> str:
 
 
 def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
-    """Atomically install the complete v2 create/cancellation outbox schema."""
+    """Atomically install v3 without disturbing live SENDING leases."""
 
     cancellation_table_existed = (
         conn.execute(
@@ -337,6 +421,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             local_event_committed INTEGER NOT NULL DEFAULT 0
                 CHECK(local_event_committed IN (0,1)),
             local_event_committed_at TEXT,
+            retry_after_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(package_idempotency_key)
@@ -368,6 +453,14 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE package_cancellation_outbox ADD COLUMN local_event_committed_at TEXT"
         )
+    if "retry_after_at" not in cancellation_columns:
+        conn.execute(
+            "ALTER TABLE package_cancellation_outbox ADD COLUMN retry_after_at TEXT"
+        )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS ix_package_cancellation_outbox_due
+               ON package_cancellation_outbox(status,retry_after_at,created_at)"""
+    )
     if cancellation_table_existed and added_local_commit_column:
         # The pre-gate implementation enqueued only after the local CSV event
         # was flushed. Preserve that fact during the additive migration.
@@ -376,9 +469,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
                   SET local_event_committed=1,
                       local_event_committed_at=COALESCE(local_event_committed_at,updated_at)"""
         )
-    conn.execute("UPDATE package_command_outbox SET status='PENDING' WHERE status='SENDING'")
-    conn.execute("UPDATE package_cancellation_outbox SET status='PENDING' WHERE status='SENDING'")
-    # Stamp v2 only after every v2 table/column/index is present.
+    # Stamp v3 only after every v3 table/column/index is present.
     conn.execute(
         "INSERT OR REPLACE INTO package_outbox_schema_info(key,value) VALUES ('schema_version',?)",
         (OUTBOX_SCHEMA_VERSION,),
@@ -448,8 +539,15 @@ class PackageOutbox:
 
     def claim_next(self) -> dict[str, Any] | None:
         now = utc_now()
+        stale_before = _utc_before(SENDING_LEASE_SECONDS)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """UPDATE package_command_outbox
+                      SET status='PENDING',updated_at=?
+                    WHERE status='SENDING' AND updated_at<=?""",
+                (now, stale_before),
+            )
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING' ORDER BY created_at,idempotency_key LIMIT 1"""
@@ -673,19 +771,39 @@ class PackageCancellationOutbox:
     def claim_next(self) -> dict[str, Any] | None:
         self.promote_deferred()
         now = utc_now()
+        stale_before = _utc_before(SENDING_LEASE_SECONDS)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """UPDATE package_cancellation_outbox
+                      SET status='PENDING',retry_after_at=NULL,updated_at=?
+                    WHERE status='SENDING' AND updated_at<=?""",
+                (now, stale_before),
+            )
             row = conn.execute(
-                """SELECT * FROM package_cancellation_outbox
-                     WHERE status='PENDING' AND local_event_committed=1
-                     ORDER BY created_at,idempotency_key LIMIT 1"""
+                """SELECT cancellation.*,
+                          package.idempotency_key AS linked_create_idempotency_key,
+                          package.status AS create_status,
+                          package.command_json AS create_command_json,
+                          package.draft_json AS create_draft_json,
+                          package.receipt_json AS create_receipt_json
+                     FROM package_cancellation_outbox AS cancellation
+                     JOIN package_command_outbox AS package
+                       ON package.idempotency_key=cancellation.package_idempotency_key
+                    WHERE cancellation.status='PENDING'
+                      AND cancellation.local_event_committed=1
+                      AND (cancellation.retry_after_at IS NULL
+                           OR cancellation.retry_after_at<=?)
+                    ORDER BY cancellation.created_at,cancellation.idempotency_key LIMIT 1""",
+                (now,),
             ).fetchone()
             if row is None:
                 conn.commit()
                 return None
             cursor = conn.execute(
                 """UPDATE package_cancellation_outbox
-                       SET status='SENDING',attempt_count=attempt_count+1,updated_at=?
+                       SET status='SENDING',attempt_count=attempt_count+1,
+                           retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='PENDING'""",
                 (now, row["idempotency_key"]),
             )
@@ -693,7 +811,16 @@ class PackageCancellationOutbox:
                 conn.rollback()
                 return None
             claimed = conn.execute(
-                "SELECT * FROM package_cancellation_outbox WHERE idempotency_key=?",
+                """SELECT cancellation.*,
+                          package.idempotency_key AS linked_create_idempotency_key,
+                          package.status AS create_status,
+                          package.command_json AS create_command_json,
+                          package.draft_json AS create_draft_json,
+                          package.receipt_json AS create_receipt_json
+                     FROM package_cancellation_outbox AS cancellation
+                     JOIN package_command_outbox AS package
+                       ON package.idempotency_key=cancellation.package_idempotency_key
+                    WHERE cancellation.idempotency_key=?""",
                 (row["idempotency_key"],),
             ).fetchone()
             conn.commit()
@@ -738,7 +865,7 @@ class PackageCancellationOutbox:
             cursor = conn.execute(
                 """UPDATE package_cancellation_outbox
                        SET status='ACKED',receipt_json=?,last_error_code=NULL,
-                           last_error_message=NULL,updated_at=?
+                           last_error_message=NULL,retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='SENDING'""",
                 (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), utc_now(), key),
             )
@@ -778,12 +905,37 @@ class PackageCancellationOutbox:
 
     def mark_retry(self, key: str, error: Exception) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """UPDATE package_cancellation_outbox
-                       SET status='PENDING',last_error_code=?,last_error_message=?,updated_at=?
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT attempt_count FROM package_cancellation_outbox
                      WHERE idempotency_key=? AND status='SENDING'""",
-                (error.__class__.__name__, str(error), utc_now(), key),
+                (key,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "package cancellation retry state changed concurrently"
+                )
+            attempt_count = max(1, int(row["attempt_count"] or 1))
+            local_backoff = min(1800.0, 30.0 * (2 ** min(attempt_count - 1, 6)))
+            server_backoff = _bounded_retry_after_seconds(
+                getattr(error, "retry_after_seconds", None)
+            ) or 0.0
+            retry_after_at = _utc_after(max(local_backoff, server_backoff))
+            code = str(getattr(error, "code", error.__class__.__name__))
+            message = str(getattr(error, "message", str(error)))
+            cursor = conn.execute(
+                """UPDATE package_cancellation_outbox
+                       SET status='PENDING',last_error_code=?,last_error_message=?,
+                           retry_after_at=?,updated_at=?
+                     WHERE idempotency_key=? AND status='SENDING'""",
+                (code, message, retry_after_at, utc_now(), key),
             )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "package cancellation retry state changed concurrently"
+                )
             conn.commit()
 
     def mark_conflict(self, key: str, error: Exception) -> None:
@@ -792,7 +944,8 @@ class PackageCancellationOutbox:
         with self._connect() as conn:
             conn.execute(
                 """UPDATE package_cancellation_outbox
-                       SET status='CONFLICT',last_error_code=?,last_error_message=?,updated_at=?
+                       SET status='CONFLICT',last_error_code=?,last_error_message=?,
+                           retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status IN ('DEFERRED','SENDING')""",
                 (code, message, utc_now(), key),
             )
@@ -801,7 +954,16 @@ class PackageCancellationOutbox:
     def get_by_event_id(self, cancellation_event_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM package_cancellation_outbox WHERE cancellation_event_id=?",
+                """SELECT cancellation.*,
+                          package.idempotency_key AS linked_create_idempotency_key,
+                          package.status AS create_status,
+                          package.command_json AS create_command_json,
+                          package.draft_json AS create_draft_json,
+                          package.receipt_json AS create_receipt_json
+                     FROM package_cancellation_outbox AS cancellation
+                     LEFT JOIN package_command_outbox AS package
+                       ON package.idempotency_key=cancellation.package_idempotency_key
+                    WHERE cancellation.cancellation_event_id=?""",
                 (str(cancellation_event_id),),
             ).fetchone()
             return dict(row) if row else None
@@ -812,6 +974,20 @@ class PackageCancellationOutbox:
                 """SELECT * FROM package_cancellation_outbox
                      WHERE set_id=? ORDER BY created_at,idempotency_key""",
                 (str(set_id),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def list_conflicts(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT cancellation_event_id,set_id,package_bundle_id,
+                          last_error_code,last_error_message AS last_error,
+                          updated_at,status
+                     FROM package_cancellation_outbox
+                    WHERE status='CONFLICT'
+                    ORDER BY updated_at DESC,idempotency_key DESC
+                    LIMIT ?""",
+                (max(0, int(limit)),),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -977,13 +1153,30 @@ class PackageClientConfig:
 Transport = Callable[[str, str, Mapping[str, str], bytes | None, float], Mapping[str, Any]]
 
 
+def _read_http_body(response: Any) -> str:
+    try:
+        raw = response.read()
+    except (IncompleteRead, HTTPException, OSError) as exc:
+        raise PackageTransportError(
+            f"package API response body was incomplete: {exc.__class__.__name__}"
+        ) from exc
+    if not isinstance(raw, (bytes, bytearray)):
+        raise PackageTransportError("package API response body must be bytes")
+    try:
+        return bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PackageTransportError(
+            "package API response body was not valid UTF-8"
+        ) from exc
+
+
 def _default_transport(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float):
     request = Request(url, data=body, headers=dict(headers), method=method)
     try:
         with urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
+            raw = _read_http_body(response)
     except HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
+        raw = _read_http_body(exc)
         try:
             value = json.loads(raw)
         except json.JSONDecodeError:
@@ -991,12 +1184,33 @@ def _default_transport(method: str, url: str, headers: Mapping[str, str], body: 
         error = value.get("error") if isinstance(value, Mapping) else {}
         if not isinstance(error, Mapping):
             error = {}
+        retry_after_candidates = []
+        if "retry_after_seconds" in error:
+            retry_after_candidates.append(error.get("retry_after_seconds"))
+        if isinstance(value, Mapping) and "retry_after_seconds" in value:
+            retry_after_candidates.append(value.get("retry_after_seconds"))
+        if exc.headers:
+            retry_after_candidates.append(exc.headers.get("Retry-After"))
+        retry_after = None
+        for candidate in retry_after_candidates:
+            retry_after = _parse_retry_after_seconds(candidate)
+            if retry_after is not None:
+                break
         raise PackageApiError(
             exc.code,
             str(error.get("code") or f"HTTP_{exc.code}"),
             str(error.get("message") or "package API rejected the request"),
+            retryable=_first_optional_bool(
+                error.get("retryable") if "retryable" in error else None,
+                value.get("retryable") if isinstance(value, Mapping) else None,
+            ),
+            committed=_first_optional_bool(
+                error.get("committed") if "committed" in error else None,
+                value.get("committed") if isinstance(value, Mapping) else None,
+            ),
+            retry_after_seconds=retry_after,
         ) from exc
-    except (URLError, TimeoutError, OSError) as exc:
+    except (URLError, TimeoutError, OSError, HTTPException) as exc:
         raise PackageTransportError(f"package API transport failed: {exc.__class__.__name__}") from exc
     try:
         value = json.loads(raw)
@@ -1258,10 +1472,29 @@ class PackageLogisticsClient:
     def _data(response: Mapping[str, Any]) -> dict[str, Any]:
         if response.get("ok") is False:
             error = response.get("error") if isinstance(response.get("error"), Mapping) else {}
+            retry_after = None
+            retry_after_candidates = []
+            if "retry_after_seconds" in error:
+                retry_after_candidates.append(error.get("retry_after_seconds"))
+            if "retry_after_seconds" in response:
+                retry_after_candidates.append(response.get("retry_after_seconds"))
+            for candidate in retry_after_candidates:
+                retry_after = _parse_retry_after_seconds(candidate)
+                if retry_after is not None:
+                    break
             raise PackageApiError(
                 int(error.get("status_code") or 400),
                 str(error.get("code") or "PACKAGE_API_ERROR"),
                 str(error.get("message") or "package command rejected"),
+                retryable=_first_optional_bool(
+                    error.get("retryable") if "retryable" in error else None,
+                    response.get("retryable"),
+                ),
+                committed=_first_optional_bool(
+                    error.get("committed") if "committed" in error else None,
+                    response.get("committed"),
+                ),
+                retry_after_seconds=retry_after,
             )
         data = response.get("data", response)
         if not isinstance(data, Mapping):
@@ -1425,6 +1658,10 @@ class PackageCancellationOutboxProcessor:
                         evidence=dict(intent_data.get("evidence") or {}),
                         local_event_details=dict(intent_data.get("local_event_details") or {}),
                     )
+                    # Fail closed before any cancellation GET/POST when the
+                    # linked authoritative CREATE receipt is missing or has
+                    # drifted from its immutable command/draft membership.
+                    self._validate_linked_create_receipt(row)
                     if row.get("command_json"):
                         command = json.loads(row["command_json"])
                         scope = str(command.get("authority_scope_id") or "").strip()
@@ -1452,7 +1689,17 @@ class PackageCancellationOutboxProcessor:
                     self.outbox.mark_acked(key, receipt)
                     counts["acked"] += 1
                 except PackageApiError as exc:
-                    if exc.status_code >= 500:
+                    if exc.committed is True:
+                        self.outbox.mark_conflict(key, exc)
+                        counts["conflict"] += 1
+                    elif (
+                        exc.status_code not in {409, 412}
+                        and (
+                            exc.status_code in {408, 425, 429}
+                            or exc.status_code >= 500
+                            or exc.retryable is True
+                        )
+                    ):
                         self.outbox.mark_retry(key, exc)
                         counts["retry"] += 1
                     else:
@@ -1468,6 +1715,198 @@ class PackageCancellationOutboxProcessor:
                     counts["conflict"] += 1
         counts["deferred"] = self.outbox.counts()["DEFERRED"]
         return counts
+
+    @staticmethod
+    def _validate_linked_create_receipt(
+        outbox_row: Mapping[str, Any],
+    ) -> tuple[tuple[str, ...], int, str]:
+        expected_key = str(
+            outbox_row.get("package_idempotency_key") or ""
+        ).strip()
+        linked_key = str(
+            outbox_row.get("linked_create_idempotency_key") or ""
+        ).strip()
+        package_bundle_id = str(
+            outbox_row.get("package_bundle_id") or ""
+        ).strip()
+        if (
+            not expected_key
+            or linked_key != expected_key
+            or str(outbox_row.get("create_status") or "").upper() != "ACKED"
+            or not package_bundle_id
+        ):
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE identity is invalid"
+            )
+        try:
+            create_command = json.loads(
+                str(outbox_row.get("create_command_json") or "")
+            )
+            create_draft = json.loads(
+                str(outbox_row.get("create_draft_json") or "")
+            )
+            create_receipt = json.loads(
+                str(outbox_row.get("create_receipt_json") or "")
+            )
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE receipt is invalid"
+            ) from exc
+        if (
+            not isinstance(create_command, Mapping)
+            or not isinstance(create_draft, Mapping)
+            or not isinstance(create_receipt, Mapping)
+        ):
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE receipt is invalid"
+            )
+        create_payload = create_command.get("payload")
+        try:
+            create_authority_epoch = int(
+                create_command.get("authority_epoch")
+            )
+            create_plane_epoch = int(create_command.get("plane_epoch"))
+            expected_authority_epoch = int(
+                outbox_row.get("authority_epoch")
+            )
+            expected_plane_epoch = int(outbox_row.get("plane_epoch"))
+        except (TypeError, ValueError) as exc:
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE authority identity is invalid"
+            ) from exc
+        if (
+            str(create_command.get("contract_version") or "")
+            != PACKAGE_CONTRACT_VERSION
+            or str(create_command.get("command_type") or "") != "CREATE_PACKAGE"
+            or str(create_command.get("idempotency_key") or "") != expected_key
+            or str(create_command.get("authority_scope_id") or "")
+            != str(outbox_row.get("authority_scope_id") or "")
+            or create_authority_epoch != expected_authority_epoch
+            or str(create_command.get("ledger_plane") or "").upper()
+            != str(outbox_row.get("ledger_plane") or "").upper()
+            or create_plane_epoch != expected_plane_epoch
+            or not isinstance(create_payload, Mapping)
+            or str(create_payload.get("package_bundle_id") or "")
+            != package_bundle_id
+            or str(create_draft.get("set_id") or "")
+            != str(outbox_row.get("set_id") or "")
+            or str(create_draft.get("package_bundle_id") or "")
+            != package_bundle_id
+            or (
+                str(create_draft.get("source_bundle_id") or "")
+                and str(create_payload.get("source_bundle_id") or "")
+                != str(create_draft.get("source_bundle_id") or "")
+            )
+            or not str(create_receipt.get("receipt_id") or "").strip()
+        ):
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE identity is invalid"
+            )
+        receipt_command_type = str(
+            create_receipt.get("command_type") or ""
+        ).strip()
+        receipt_contract_version = str(
+            create_receipt.get("contract_version") or ""
+        ).strip()
+        receipt_status = str(create_receipt.get("status") or "").strip().upper()
+        try:
+            receipt_authority_epoch = int(create_receipt.get("authority_epoch"))
+            receipt_plane_epoch = int(create_receipt.get("resolved_plane_epoch"))
+        except (TypeError, ValueError) as exc:
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE receipt authority identity is invalid"
+            ) from exc
+        if (
+            receipt_command_type != "CREATE_PACKAGE"
+            or receipt_contract_version != PACKAGE_CONTRACT_VERSION
+            or receipt_status != "COMMITTED"
+            or str(create_receipt.get("authority_scope_id") or "")
+            != str(create_command.get("authority_scope_id") or "")
+            or receipt_authority_epoch != create_authority_epoch
+            or str(create_receipt.get("resolved_ledger_plane") or "").upper()
+            != str(create_command.get("ledger_plane") or "").upper()
+            or receipt_plane_epoch != create_plane_epoch
+            or not str(create_receipt.get("committed_at") or "").strip()
+            or not isinstance(create_receipt.get("event_ids"), (list, tuple))
+            or not create_receipt.get("event_ids")
+            or any(
+                not str(value or "").strip()
+                for value in (create_receipt.get("event_ids") or ())
+            )
+            or not isinstance(create_receipt.get("outbox_ids"), (list, tuple))
+            or not create_receipt.get("outbox_ids")
+            or any(
+                not str(value or "").strip()
+                for value in (create_receipt.get("outbox_ids") or ())
+            )
+        ):
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE receipt identity is invalid"
+            )
+        create_data = (
+            create_receipt.get("data")
+            if isinstance(create_receipt.get("data"), Mapping)
+            else create_receipt
+        )
+        if (
+            not isinstance(create_data, Mapping)
+            or str(create_data.get("package_bundle_id") or "")
+            != package_bundle_id
+        ):
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE receipt data is invalid"
+            )
+        create_raw_members = create_data.get("member_ids")
+        if not isinstance(create_raw_members, (list, tuple)):
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE exact member IDs are missing"
+            )
+        create_members = canonical_member_ids(create_raw_members)
+        create_normalized_raw = tuple(
+            str(value or "").strip() for value in create_raw_members
+        )
+        try:
+            create_count = int(create_data.get("member_count") or 0)
+            expected_count = int(create_draft.get("expected_member_count") or 0)
+            expected_version = int(
+                outbox_row.get("expected_bundle_version") or 0
+            )
+        except (TypeError, ValueError) as exc:
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE member count/version is invalid"
+            ) from exc
+        create_digest = str(
+            create_data.get("membership_hash") or ""
+        ).strip().lower()
+        expected_digest = str(
+            create_draft.get("expected_membership_hash") or ""
+        ).strip().lower()
+        versions = create_receipt.get("entity_versions")
+        if not isinstance(versions, Mapping):
+            versions = create_data.get("entity_versions")
+        try:
+            receipt_version = int(
+                (versions or {}).get(f"bundle:{package_bundle_id}") or 0
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE receipt version is invalid"
+            ) from exc
+        if (
+            not create_members
+            or any(not value for value in create_normalized_raw)
+            or len(create_normalized_raw) != len(create_members)
+            or create_count != len(create_members)
+            or create_digest != membership_hash(create_members)
+            or (expected_count and create_count != expected_count)
+            or (expected_digest and create_digest != expected_digest)
+            or expected_version < 1
+            or receipt_version != expected_version
+        ):
+            raise PackageLogisticsError(
+                "linked CREATE_PACKAGE membership/version is invalid"
+            )
+        return create_members, create_count, create_digest
 
     @staticmethod
     def _validate_receipt(outbox_row: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
@@ -1542,8 +1981,16 @@ class PackageCancellationOutboxProcessor:
             or not str(receipt.get("committed_at") or "").strip()
             or not isinstance(receipt.get("event_ids"), (list, tuple))
             or not receipt.get("event_ids")
+            or any(
+                not str(value or "").strip()
+                for value in (receipt.get("event_ids") or ())
+            )
             or not isinstance(receipt.get("outbox_ids"), (list, tuple))
             or not receipt.get("outbox_ids")
+            or any(
+                not str(value or "").strip()
+                for value in (receipt.get("outbox_ids") or ())
+            )
             or (receipt_idempotency_key and receipt_idempotency_key != key)
         ):
             raise PackageLogisticsError("package cancellation receipt identity is invalid")
@@ -1591,6 +2038,19 @@ class PackageCancellationOutboxProcessor:
             raise PackageLogisticsError("package cancellation member count is invalid")
         if digest != membership_hash(members):
             raise PackageLogisticsError("package cancellation membership hash is invalid")
+        create_members, create_count, create_digest = (
+            PackageCancellationOutboxProcessor._validate_linked_create_receipt(
+                outbox_row
+            )
+        )
+        if (
+            members != create_members
+            or member_count != create_count
+            or digest != create_digest
+        ):
+            raise PackageLogisticsError(
+                "package cancellation membership does not match linked CREATE_PACKAGE receipt"
+            )
 
 
 def package_client_from_env() -> PackageLogisticsClient | None:

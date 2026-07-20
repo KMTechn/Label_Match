@@ -109,6 +109,8 @@ LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
 _LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_AUTOMATED_TEST_ENV = "LABEL_MATCH_AUTOMATED_TEST"
+LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV = "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY"
+LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV = "LABEL_MATCH_CAPTURE_STARTUP_DPI"
 LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV = "LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
@@ -182,6 +184,323 @@ def _label_match_automated_test_mode():
     return bool(os.environ.get("PYTEST_CURRENT_TEST")) or any(
         "pytest" in str(argument or "").lower() for argument in sys.argv
     )
+
+
+def _label_match_explicit_automated_test_mode():
+    value = os.environ.get(LABEL_MATCH_AUTOMATED_TEST_ENV, "").strip().lower()
+    return value in {"1", "true", "yes", "on", "enabled"}
+
+
+def _label_match_capture_startup_request():
+    """Return a strict capture-only geometry/DPI request for automated evidence."""
+
+    geometry_value = os.environ.get(
+        LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV, ""
+    ).strip()
+    dpi_value = os.environ.get(LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV, "").strip()
+    if not geometry_value and not dpi_value:
+        return None
+    if not _label_match_explicit_automated_test_mode():
+        return None
+    if not geometry_value or not dpi_value:
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} and "
+            f"{LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV} must be set together"
+        )
+    match = re.fullmatch(
+        r"([0-9]{3,5})x([0-9]{3,5})([+-][0-9]{1,6})([+-][0-9]{1,6})",
+        geometry_value,
+    )
+    if match is None:
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} must be WIDTHxHEIGHT+X+Y"
+        )
+    width, height, x, y = (int(part) for part in match.groups())
+    if not (640 <= width <= 7680 and 480 <= height <= 4320):
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} has unsupported dimensions"
+        )
+    if not (-32768 <= x <= 32768 and -32768 <= y <= 32768):
+        raise RuntimeError(
+            f"{LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV} has unsupported coordinates"
+        )
+    if not re.fullmatch(r"[0-9]{2,4}", dpi_value):
+        raise RuntimeError(f"{LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV} must be an integer")
+    target_dpi = int(dpi_value)
+    if not (72 <= target_dpi <= 384):
+        raise RuntimeError(f"{LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV} is unsupported")
+    return {
+        "geometry": f"{width}x{height}{x:+d}{y:+d}",
+        "target_dpi": target_dpi,
+    }
+
+
+def _label_match_enable_capture_per_monitor_dpi():
+    """Set and verify per-monitor DPI awareness before Tk creates the root."""
+
+    if os.name != "nt":
+        raise RuntimeError("capture startup DPI awareness requires Windows")
+    import ctypes
+
+    shcore = ctypes.windll.shcore
+    requested = 2
+    set_hresult = int(shcore.SetProcessDpiAwareness(requested))
+    observed = ctypes.c_int(-1)
+    query_hresult = int(shcore.GetProcessDpiAwareness(0, ctypes.byref(observed)))
+    if query_hresult != 0 or observed.value != requested:
+        raise RuntimeError(
+            "capture process is not per-monitor DPI aware: "
+            f"set_hresult={set_hresult} query_hresult={query_hresult} "
+            f"observed={observed.value}"
+        )
+    return {
+        "requested": requested,
+        "set_hresult": set_hresult,
+        "query_hresult": query_hresult,
+        "observed": int(observed.value),
+    }
+
+
+def _label_match_capture_window_dpi(root_or_hwnd):
+    """Return native DPI with a pointer-width-safe HWND signature."""
+
+    if os.name != "nt":
+        raise RuntimeError("capture window DPI attestation requires Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
+    user32.GetDpiForWindow.restype = wintypes.UINT
+    raw_hwnd = (
+        int(root_or_hwnd.winfo_id())
+        if hasattr(root_or_hwnd, "winfo_id")
+        else int(root_or_hwnd)
+    )
+    wrapper_hwnd = int(user32.GetAncestor(wintypes.HWND(raw_hwnd), 2) or raw_hwnd)
+    window_dpi = int(user32.GetDpiForWindow(wintypes.HWND(wrapper_hwnd)))
+    if window_dpi <= 0:
+        raise RuntimeError("capture window DPI attestation returned zero")
+    return window_dpi
+
+
+def _label_match_scaled_tk_geometry(geometry, source_dpi, target_dpi):
+    """Compensate Tk's source-monitor logical coordinates before first mapping."""
+
+    match = re.fullmatch(
+        r"([0-9]{3,5})x([0-9]{3,5})([+-][0-9]{1,6})([+-][0-9]{1,6})",
+        str(geometry or ""),
+    )
+    if match is None:
+        raise RuntimeError("capture Tk placement received invalid geometry")
+    if int(source_dpi) <= 0 or int(target_dpi) <= 0:
+        raise RuntimeError("capture Tk placement received invalid DPI")
+    width, height, x, y = (int(part) for part in match.groups())
+    scale = int(source_dpi) / int(target_dpi)
+    scaled_width = round(width * scale)
+    scaled_height = round(height * scale)
+    scaled_x = round(x * scale)
+    scaled_y = round(y * scale)
+    if not (
+        1 <= scaled_width <= 32767
+        and 1 <= scaled_height <= 32767
+        and -32768 <= scaled_x <= 32767
+        and -32768 <= scaled_y <= 32767
+    ):
+        raise RuntimeError("capture Tk placement exceeds native geometry limits")
+    return f"{scaled_width}x{scaled_height}{scaled_x:+d}{scaled_y:+d}"
+
+
+def _label_match_place_hidden_native_window(root, geometry, target_dpi):
+    """Place the withdrawn Tk wrapper at an absolute virtual-desktop rectangle."""
+
+    if os.name != "nt":
+        raise RuntimeError("capture native placement requires Windows")
+    match = re.fullmatch(
+        r"([0-9]{3,5})x([0-9]{3,5})([+-][0-9]{1,6})([+-][0-9]{1,6})",
+        str(geometry or ""),
+    )
+    if match is None:
+        raise RuntimeError("capture native placement received invalid geometry")
+    width, height, x, y = (int(part) for part in match.groups())
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.SetWindowPos.argtypes = (
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    )
+    user32.SetWindowPos.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
+    user32.GetDpiForWindow.restype = wintypes.UINT
+
+    GA_ROOT = 2
+    SWP_NOZORDER = 0x0004
+    SWP_NOACTIVATE = 0x0010
+    SWP_NOOWNERZORDER = 0x0200
+    child_hwnd = int(root.winfo_id())
+    wrapper_hwnd = int(user32.GetAncestor(wintypes.HWND(child_hwnd), GA_ROOT) or child_hwnd)
+    hwnd = wintypes.HWND(wrapper_hwnd)
+    if bool(user32.IsWindowVisible(hwnd)):
+        raise RuntimeError("capture native placement requires a withdrawn window")
+    if not bool(
+        user32.SetWindowPos(
+            hwnd,
+            wintypes.HWND(0),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    rect = wintypes.RECT()
+    if not bool(user32.GetWindowRect(hwnd, ctypes.byref(rect))):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if bool(user32.IsWindowVisible(hwnd)):
+        raise RuntimeError("capture native placement unexpectedly revealed the window")
+    window_dpi = int(user32.GetDpiForWindow(hwnd))
+    if window_dpi != int(target_dpi):
+        raise RuntimeError(
+            "capture hidden window DPI does not match target DPI: "
+            f"expected={target_dpi} actual={window_dpi}"
+        )
+    native_rect = [int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)]
+    if abs(native_rect[0] - x) > 2 or abs(native_rect[1] - y) > 2:
+        raise RuntimeError(
+            "capture hidden window did not reach the requested origin: "
+            f"expected=({x},{y}) actual=({native_rect[0]},{native_rect[1]})"
+        )
+    return {
+        "wrapper_hwnd": wrapper_hwnd,
+        "native_rect": native_rect,
+        "window_dpi": window_dpi,
+        "visible": False,
+    }
+
+
+def _label_match_prepare_capture_startup(
+    root,
+    geometry,
+    target_dpi,
+    *,
+    native_window_placer=None,
+    initial_window_dpi_getter=None,
+):
+    """Place a root while hidden so its first visible map can occur on the target."""
+
+    if not geometry:
+        return None
+    if target_dpi is None:
+        raise RuntimeError("capture startup target DPI is missing")
+    root.withdraw()
+    root._label_match_capture_revealed = False
+    if initial_window_dpi_getter is None:
+        initial_window_dpi_getter = _label_match_capture_window_dpi
+    initial_window_dpi = int(initial_window_dpi_getter(root))
+    tk_geometry = _label_match_scaled_tk_geometry(
+        geometry,
+        initial_window_dpi,
+        target_dpi,
+    )
+    root.geometry(tk_geometry)
+    root.update_idletasks()
+    root.geometry(tk_geometry)
+    expected_scaling = int(target_dpi) / 72.0
+    root.tk.call("tk", "scaling", expected_scaling)
+    observed_scaling = float(root.tk.call("tk", "scaling"))
+    pixels_per_inch = float(root.winfo_fpixels("1i"))
+    if abs(observed_scaling - expected_scaling) > 0.01:
+        raise RuntimeError(
+            "capture Tk scaling does not match target DPI: "
+            f"expected={expected_scaling:.6f} actual={observed_scaling:.6f}"
+        )
+    if abs(pixels_per_inch - int(target_dpi)) > 0.75:
+        raise RuntimeError(
+            "capture Tk physical-inch conversion does not match target DPI: "
+            f"expected={target_dpi} actual={pixels_per_inch:.6f}"
+        )
+    if native_window_placer is None:
+        native_window_placer = _label_match_place_hidden_native_window
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    root.update_idletasks()
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    if bool(native_placement.get("visible")):
+        raise RuntimeError("capture native placement reported a visible window")
+    if int(native_placement.get("window_dpi", 0)) != int(target_dpi):
+        raise RuntimeError("capture native placement reported an unexpected DPI")
+    return {
+        "geometry": geometry,
+        "tk_geometry": tk_geometry,
+        "initial_window_dpi": initial_window_dpi,
+        "target_dpi": int(target_dpi),
+        "expected_tk_scaling": expected_scaling,
+        "observed_tk_scaling": observed_scaling,
+        "pixels_per_inch": pixels_per_inch,
+        "native_placement": native_placement,
+    }
+
+
+def _label_match_reveal_capture_startup(
+    root,
+    geometry,
+    target_dpi=None,
+    *,
+    window_dpi_getter=None,
+    native_window_placer=None,
+):
+    """Reveal once, then attest the native window DPI on its mapped monitor."""
+
+    if not geometry:
+        return False
+    if bool(getattr(root, "_label_match_capture_revealed", False)):
+        raise RuntimeError("capture startup root was already revealed")
+    if target_dpi is None:
+        raise RuntimeError("capture startup target DPI is missing at reveal")
+    root.update_idletasks()
+    if native_window_placer is None:
+        native_window_placer = _label_match_place_hidden_native_window
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    root.update_idletasks()
+    native_placement = native_window_placer(root, geometry, target_dpi)
+    if bool(native_placement.get("visible")):
+        raise RuntimeError("capture root became visible before the reveal boundary")
+    if int(native_placement.get("window_dpi", 0)) != int(target_dpi):
+        raise RuntimeError("capture root DPI changed before the reveal boundary")
+    wrapper_hwnd = int(native_placement.get("wrapper_hwnd", 0))
+    if wrapper_hwnd <= 0:
+        raise RuntimeError("capture native placement did not return a wrapper HWND")
+    root._label_match_capture_revealed = True
+    root.deiconify()
+    root.update_idletasks()
+    if window_dpi_getter is None:
+        window_dpi_getter = _label_match_capture_window_dpi
+    window_dpi = int(window_dpi_getter(wrapper_hwnd))
+    if window_dpi != int(target_dpi):
+        raise RuntimeError(
+            "capture window DPI does not match target DPI after reveal: "
+            f"expected={target_dpi} actual={window_dpi}"
+        )
+    return {
+        "window_dpi": window_dpi,
+        "native_placement_before_reveal": native_placement,
+    }
 
 
 def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
@@ -2613,8 +2932,33 @@ class Label_Match(tk.Tk):
 
     def __init__(self, run_tests=False):
         _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
+        capture_startup_request = _label_match_capture_startup_request()
+        capture_startup_geometry = (
+            capture_startup_request["geometry"] if capture_startup_request else None
+        )
+        capture_startup_dpi = (
+            capture_startup_request["target_dpi"] if capture_startup_request else None
+        )
+        capture_dpi_awareness = (
+            _label_match_enable_capture_per_monitor_dpi()
+            if capture_startup_request
+            else None
+        )
         super().__init__()
-        _label_match_startup_trace("app_init_after_tk", title=self.title())
+        self._capture_startup_geometry = capture_startup_geometry
+        self._capture_startup_dpi = capture_startup_dpi
+        self._capture_dpi_awareness = capture_dpi_awareness
+        self._capture_startup_placement = _label_match_prepare_capture_startup(
+            self,
+            capture_startup_geometry,
+            capture_startup_dpi,
+        )
+        _label_match_startup_trace(
+            "app_init_after_tk",
+            title=self.title(),
+            capture_startup_geometry=capture_startup_geometry or "",
+            capture_startup_dpi=capture_startup_dpi or 0,
+        )
         self.run_tests = run_tests
         self.initialized_successfully = False
         self.audio_ready = False
@@ -2673,6 +3017,7 @@ class Label_Match(tk.Tk):
         )
         self.package_outbox_thread = None
         self.package_outbox_after_id = None
+        self.package_outbox_poll_after_id = None
         _label_match_startup_trace("app_init_after_data_manager", worker_name=self.worker_name, unique_id=self.unique_id)
         self.current_set_info = {} 
         self.is_blinking = False
@@ -2693,6 +3038,8 @@ class Label_Match(tk.Tk):
         self._workflow_display_parsed_scans = ()
         self._workflow_last_normal_override = None
         self._workflow_blocking_notice = None
+        self._package_cancellation_review_notice = None
+        self._package_cancellation_review_rows = ()
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
         self._workflow_pending_error = None
@@ -2700,8 +3047,16 @@ class Label_Match(tk.Tk):
         self._workflow_item_snapshot = None
         self.title(f"바코드 세트 검증기 ({APP_VERSION}) - 로딩 중...")
         _label_match_startup_trace("app_init_after_title", title=self.title())
-        self.state('zoomed')
-        _label_match_startup_trace("app_init_after_zoomed", state=self.state())
+        if capture_startup_geometry:
+            _label_match_startup_trace(
+                "app_init_capture_hidden",
+                geometry=capture_startup_geometry,
+                tk_geometry=self._capture_startup_placement["tk_geometry"],
+                state=self.state(),
+            )
+        else:
+            self.state('zoomed')
+            _label_match_startup_trace("app_init_after_zoomed", state=self.state())
         self.configure(bg=self.colors.get("background", "#ECEFF1"))
         self.ui_profile_name, self.ui_profile = self._select_ui_profile()
         self._responsive_after_id = None
@@ -2740,6 +3095,19 @@ class Label_Match(tk.Tk):
         self.after(250, self._start_audio_initialization)
         self.after(300, self._start_package_outbox_drain)
         self.after(1000, lambda: _label_match_startup_trace("app_alive_after_1s", title=self.title(), state=self.state()))
+        capture_reveal_receipt = _label_match_reveal_capture_startup(
+            self,
+            capture_startup_geometry,
+            capture_startup_dpi,
+        )
+        if capture_reveal_receipt:
+            self._capture_startup_placement.update(capture_reveal_receipt)
+            _label_match_startup_trace(
+                "app_init_capture_revealed",
+                geometry=capture_startup_geometry,
+                state=self.state(),
+                window_dpi=capture_reveal_receipt["window_dpi"],
+            )
         _label_match_startup_trace("app_init_complete")
 
     def _start_package_outbox_drain(self):
@@ -2749,9 +3117,11 @@ class Label_Match(tk.Tk):
             (package_processor is None and cancellation_processor is None)
             or self.__dict__.get("run_tests", False)
         ):
+            self._refresh_package_cancellation_review_notice()
             return None
         current = self.__dict__.get("package_outbox_thread")
         if current is not None and current.is_alive():
+            self._schedule_package_outbox_poll()
             return current
 
         def worker():
@@ -2764,23 +3134,87 @@ class Label_Match(tk.Tk):
                     cancellation_processor.drain(limit=20)
             except Exception as exc:
                 print(f"포장 물류 outbox 처리 오류: {exc}")
-            finally:
-                try:
-                    if self.__dict__.get("package_outbox_after_id") is None:
-                        self.package_outbox_after_id = self.after(
-                            30000, self._run_scheduled_package_outbox_drain
-                        )
-                except TclError:
-                    pass
 
         thread = threading.Thread(target=worker, name="label-match-package-outbox", daemon=True)
         self.package_outbox_thread = thread
         thread.start()
+        self._schedule_package_outbox_poll()
         return thread
+
+    def _schedule_package_outbox_poll(self):
+        if self.__dict__.get("package_outbox_poll_after_id") is not None:
+            return self.package_outbox_poll_after_id
+        try:
+            self.package_outbox_poll_after_id = self.after(
+                100, self._poll_package_outbox_drain
+            )
+        except (TclError, RuntimeError):
+            self.package_outbox_poll_after_id = None
+        return self.package_outbox_poll_after_id
+
+    def _poll_package_outbox_drain(self):
+        """Observe the worker from Tk's thread and schedule every Tk callback there."""
+
+        self.package_outbox_poll_after_id = None
+        current = self.__dict__.get("package_outbox_thread")
+        if current is not None and current.is_alive():
+            self._schedule_package_outbox_poll()
+            return current
+        self._refresh_package_cancellation_review_notice()
+        if self.__dict__.get("package_outbox_after_id") is None:
+            try:
+                self.package_outbox_after_id = self.after(
+                    30000, self._run_scheduled_package_outbox_drain
+                )
+            except (TclError, RuntimeError):
+                self.package_outbox_after_id = None
+        return None
 
     def _run_scheduled_package_outbox_drain(self):
         self.package_outbox_after_id = None
         return self._start_package_outbox_drain()
+
+    def _refresh_package_cancellation_review_notice(self):
+        """Keep terminal central-cancellation conflicts visible to the operator."""
+
+        outbox = self.__dict__.get("package_cancellation_outbox")
+        if outbox is None or not hasattr(outbox, "list_conflicts"):
+            conflicts = ()
+        else:
+            try:
+                conflicts = tuple(outbox.list_conflicts(limit=21))
+            except Exception as exc:
+                print(f"중앙 취소 확인 상태 조회 오류: {exc}")
+                return 0
+
+        has_more_conflicts = len(conflicts) > 20
+        visible_conflicts = conflicts[:20]
+        self._package_cancellation_review_rows = visible_conflicts
+        if conflicts:
+            first = conflicts[0]
+            code = str(first.get("last_error_code") or "CENTRAL_CONFLICT").strip()
+            package_bundle_id = str(first.get("package_bundle_id") or "").strip()
+            identifier = package_bundle_id or str(first.get("set_id") or "").strip()
+            identity_text = f" · {identifier}" if identifier else ""
+            count_text = "20건 이상" if has_more_conflicts else f"{len(conflicts)}건"
+            self._package_cancellation_review_notice = WorkflowNotice(
+                title="중앙 취소 확인 필요",
+                message=(
+                    f"미확인 {count_text} · {code}{identity_text}. "
+                    "해당 트레이는 반출하지 말고 관리자에게 중앙 취소 상태 확인을 요청하세요."
+                ),
+                kind="package_cancellation_review",
+                tone="danger",
+            )
+        else:
+            self._package_cancellation_review_notice = None
+
+        if bool(
+            self.__dict__.get("operator_workbench_ready")
+            or self.__dict__.get("_workflow_widgets_ready")
+        ):
+            self._render_operator_workbench()
+        return len(conflicts)
 
     def _start_audio_initialization(self):
         if self.run_tests or _label_match_automated_test_mode() or self.audio_init_started or not _label_match_audio_enabled():
@@ -3235,6 +3669,87 @@ class Label_Match(tk.Tk):
             widths[target] -= 1
             overflow -= 1
         return widths
+
+    def _fit_history_display_widths(self, total_width, preferred_widths):
+        """Fit the three operator-facing history columns without clipping.
+
+        The internal set id and every barcode column remain in the Treeview's
+        value contract.  The compact operator tab only displays the master
+        item, result, and time; the selected-row detail keeps the complete
+        record available without making an operator horizontally scroll past
+        an otherwise redundant set number.
+        """
+
+        columns = ("Input1", "Result", "Timestamp")
+        total_width = max(len(columns) * 24, int(total_width or 0))
+        heading_size = max(
+            8,
+            int(
+                self.__dict__.get(
+                    "_current_tree_heading_font_size",
+                    self.__dict__.get("_current_effective_tree_heading_font_size", 14),
+                )
+            ),
+        )
+        body_size = max(
+            8,
+            int(
+                self.__dict__.get(
+                    "_current_tree_body_font_size",
+                    self.__dict__.get("tree_font_size", 13),
+                )
+            ),
+        )
+        heading_font = (self.default_font_name, heading_size, "bold")
+        body_font = (self.default_font_name, body_size)
+        heading_samples = {
+            "Input1": "현품표",
+            "Result": "결과",
+            "Timestamp": "시간",
+        }
+        body_samples = {
+            # Packaging item codes use the fixed operator-facing form shown
+            # by the active scan list, never the complete barcode telegram.
+            "Input1": "AAA0000000000",
+            "Result": self.Results.IN_PROGRESS,
+            "Timestamp": "23:59:59",
+        }
+        minimum_widths = {
+            column: max(
+                42,
+                self._text_pixel_width(heading_samples[column], heading_font) + 19,
+                self._text_pixel_width(body_samples[column], body_font) + 16,
+            )
+            for column in columns
+        }
+        if sum(minimum_widths.values()) > total_width:
+            # Preserve readable cells and let the existing horizontal
+            # scrollbar expose the overflow.  Compressing below these measured
+            # minima would recreate the glyph clipping this helper prevents.
+            return minimum_widths
+
+        widths = dict(minimum_widths)
+        remaining = total_width - sum(widths.values())
+        for column in columns:
+            desired = max(widths[column], int(preferred_widths.get(column, 0)))
+            addition = min(remaining, desired - widths[column])
+            widths[column] += addition
+            remaining -= addition
+        # The master item is the primary value in this secondary tab.  Give it
+        # any final spare pixels so the full item code remains visible.
+        widths["Input1"] += remaining
+        return widths
+
+    def _operator_tree_font_linespace(self, font_spec, font_size):
+        """Measure live-list text height with a conservative DPI-safe fallback."""
+
+        try:
+            return int(tkFont.Font(root=self, font=font_spec).metrics("linespace"))
+        except (TclError, AttributeError, TypeError, ValueError):
+            # Tuple-font point sizes can approach two device pixels per point
+            # on field displays.  If Tk cannot report its authoritative metric,
+            # reserve that larger bound instead of recreating a 30px short row.
+            return max(1, int(font_size) * 2)
 
     def _history_header_text_options(self):
         full_text = self.__dict__.get("_history_header_full_text")
@@ -3735,6 +4250,12 @@ class Label_Match(tk.Tk):
                     except Exception:
                         pass
                 self._replace_closed_data_manager_after_close_failure(self.data_manager)
+                try:
+                    # Closing is being abandoned, so restore the cancellation
+                    # advisory/retry cycle that _cancel_pending_ui_jobs stopped.
+                    self._start_package_outbox_drain()
+                except Exception as outbox_error:
+                    print(f"종료 보류 후 포장 물류 재시작 오류: {outbox_error}")
                 if self.run_tests:
                     raise
                 messagebox.showerror("종료 보류", f"작업 로그 저장을 완료하지 못해 종료를 중단했습니다.\n\n[상세 오류]\n{e}")
@@ -3752,7 +4273,14 @@ class Label_Match(tk.Tk):
             self.destroy()
 
     def _cancel_pending_ui_jobs(self):
-        for attr_name in ("_responsive_after_id", "_zoom_after_id", "_ui_redraw_after_id", "_clock_after_id"):
+        for attr_name in (
+            "_responsive_after_id",
+            "_zoom_after_id",
+            "_ui_redraw_after_id",
+            "_clock_after_id",
+            "package_outbox_after_id",
+            "package_outbox_poll_after_id",
+        ):
             after_id = self.__dict__.get(attr_name)
             if not after_id:
                 continue
@@ -4710,6 +5238,62 @@ class Label_Match(tk.Tk):
             "expected_membership_hash": draft.expected_membership_hash,
         }
 
+    @staticmethod
+    def _local_event_has_authoritative_package(local_event_details):
+        """Detect central package metadata even when the local outbox row is lost."""
+
+        pending = [local_event_details]
+        visited = set()
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                identity = id(value)
+                if identity in visited:
+                    continue
+                visited.add(identity)
+                package_metadata = value.get("package_logistics")
+                if isinstance(package_metadata, dict):
+                    status = str(package_metadata.get("status") or "").strip().upper()
+                    has_central_identity = any(
+                        str(package_metadata.get(key) or "").strip()
+                        for key in (
+                            "idempotency_key",
+                            "package_bundle_id",
+                            "source_bundle_id",
+                        )
+                    )
+                    if has_central_identity or (
+                        status
+                        and status
+                        not in {"LEGACY_DIRECT_SYNC_ONLY", "LOCAL_ONLY"}
+                    ):
+                        return True
+                pending.extend(value.values())
+            elif isinstance(value, (list, tuple)):
+                identity = id(value)
+                if identity in visited:
+                    continue
+                visited.add(identity)
+                pending.extend(value)
+        return False
+
+    @staticmethod
+    def _package_cancellation_completion_message(cancellation):
+        if not cancellation:
+            return "해당 작업이 정상적으로 취소되었습니다."
+        status = str(cancellation.get("status") or "").strip().upper()
+        if bool(cancellation.get("central_cancellation_acked")) or status == "ACKED":
+            return "로컬 기록과 중앙 포장이 모두 취소되었습니다."
+        if status == "CONFLICT":
+            return (
+                "로컬 취소 기록은 저장되었지만 중앙 취소 확인이 필요합니다. "
+                "해당 트레이를 반출하지 말고 관리자에게 확인을 요청하세요."
+            )
+        return (
+            "로컬 취소 기록이 저장되었습니다. 중앙 취소 전송·확인 중입니다. "
+            "중앙 확인 전 해당 트레이를 반출하지 마세요."
+        )
+
     def _queue_authoritative_package_cancellation(
         self,
         *,
@@ -4728,6 +5312,11 @@ class Label_Match(tk.Tk):
             else None
         )
         if package_row is None:
+            if self._local_event_has_authoritative_package(local_event_details):
+                raise PackageLogisticsError(
+                    "central package metadata exists but its durable CREATE outbox row "
+                    "is missing; local cancellation is blocked for operator review"
+                )
             return None
         outbox = self.__dict__.get("package_cancellation_outbox")
         if outbox is None:
@@ -5161,6 +5750,10 @@ class Label_Match(tk.Tk):
             return
 
         deleted_count = 0
+        central_pending_count = 0
+        central_acked_count = 0
+        central_conflict_count = 0
+        failure = None
         try:
             for iid in selected_iids:
                 if iid == 'loading':
@@ -5185,6 +5778,18 @@ class Label_Match(tk.Tk):
                 )
                 if cancellation and cancellation.get("idempotency_key"):
                     self._start_package_outbox_drain()
+                    cancellation_status = str(
+                        cancellation.get("status") or ""
+                    ).strip().upper()
+                    if (
+                        cancellation.get("central_cancellation_acked")
+                        or cancellation_status == "ACKED"
+                    ):
+                        central_acked_count += 1
+                    elif cancellation_status == "CONFLICT":
+                        central_conflict_count += 1
+                    else:
+                        central_pending_count += 1
 
                 if deleted_details:
                     result = _label_match_tray_complete_result(deleted_details)
@@ -5209,9 +5814,21 @@ class Label_Match(tk.Tk):
                 self._remove_history_details_for_iid(iid)
                 deleted_count += 1
         except Exception as e:
-            self._show_delete_failure(e)
+            failure = e
+        finally:
+            if deleted_count:
+                try:
+                    self._rebuild_global_scanned_set_from_details()
+                    self._update_summary_tree()
+                    self._render_history_detail()
+                except Exception as rebuild_error:
+                    if failure is None:
+                        failure = rebuild_error
+
+        if failure is not None:
+            self._show_delete_failure(failure)
             if self.__dict__.get("run_tests", False):
-                raise
+                raise failure
             return
 
         if deleted_count == 0:
@@ -5219,11 +5836,45 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning("선택 필요", "삭제할 수 있는 기록이 없습니다.")
             return
 
-        self._rebuild_global_scanned_set_from_details()
-        self._update_summary_tree()
-        self._render_history_detail()
         if not self.run_tests:
-            messagebox.showinfo("삭제 완료", f"{deleted_count}개의 기록이 삭제 처리되었습니다.")
+            if central_conflict_count:
+                pending_suffix = (
+                    f" 추가로 {central_pending_count}건은 전송·확인 중입니다."
+                    if central_pending_count
+                    else ""
+                )
+                messagebox.showwarning(
+                    "중앙 취소 확인 필요",
+                    (
+                        f"{deleted_count}개의 로컬 기록을 삭제했습니다.\n"
+                        f"중앙 취소 확인 필요 {central_conflict_count}건입니다."
+                        f"{pending_suffix}\n"
+                        "해당 트레이를 반출하지 말고 관리자에게 확인을 요청하세요."
+                    ),
+                    parent=self,
+                )
+            elif central_pending_count:
+                messagebox.showwarning(
+                    "중앙 취소 확인 중",
+                    (
+                        f"{deleted_count}개의 로컬 기록을 삭제했습니다.\n"
+                        f"중앙 취소 {central_pending_count}건은 전송·확인 중입니다.\n"
+                        "중앙 확인 전 해당 트레이를 반출하지 마세요."
+                    ),
+                    parent=self,
+                )
+            elif central_acked_count:
+                messagebox.showinfo(
+                    "삭제 완료",
+                    f"{deleted_count}개의 로컬 기록과 중앙 포장을 취소했습니다.",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo(
+                    "삭제 완료",
+                    f"{deleted_count}개의 기록이 삭제 처리되었습니다.",
+                    parent=self,
+                )
 
     def _rebuild_global_scanned_set_from_details(self):
         rebuilt = set()
@@ -5590,7 +6241,23 @@ class Label_Match(tk.Tk):
             self._update_summary_tree()
             
             if not self.run_tests:
-                messagebox.showinfo("처리 완료", f"해당 작업이 정상적으로 취소되었습니다.", parent=self)
+                completion_message = self._package_cancellation_completion_message(
+                    cancellation
+                )
+                if cancellation and not cancellation.get("central_cancellation_acked"):
+                    warning_title = (
+                        "중앙 취소 확인 필요"
+                        if str(cancellation.get("status") or "").strip().upper()
+                        == "CONFLICT"
+                        else "중앙 취소 확인 중"
+                    )
+                    messagebox.showwarning(
+                        warning_title, completion_message, parent=self
+                    )
+                else:
+                    messagebox.showinfo(
+                        "처리 완료", completion_message, parent=self
+                    )
 
         except Exception as e:
             if not self.run_tests:
@@ -6840,8 +7507,14 @@ class Label_Match(tk.Tk):
                 width=right_inner_width,
                 height=max(140, right_inner_height - action_total_height - 10),
             )
+            operator_tree_font = (self.default_font_name, live_list_font_size)
+            operator_tree_linespace = self._operator_tree_font_linespace(
+                operator_tree_font,
+                live_list_font_size,
+            )
             tree_row_height = max(
                 30,
+                operator_tree_linespace + 4,
                 int(
                     live_list_font_size
                     * (2.05 if constrained_large_text else 2.35)
@@ -6849,7 +7522,7 @@ class Label_Match(tk.Tk):
             )
             self.style.configure(
                 "Operator.Treeview",
-                font=(self.default_font_name, live_list_font_size),
+                font=operator_tree_font,
                 rowheight=tree_row_height,
             )
             center_inner_width = max(320, panes.center_width - card_padding * 2)
@@ -6926,11 +7599,11 @@ class Label_Match(tk.Tk):
                 minsize=live_list_height,
                 weight=1,
             )
-            self.session_tree.column("Time", width=64, minwidth=54, stretch=False)
-            self.session_tree.column("Result", width=68, minwidth=58, stretch=False)
+            self.session_tree.column("Time", width=80, minwidth=68, stretch=False)
+            self.session_tree.column("Result", width=80, minwidth=68, stretch=False)
             self.session_tree.column(
                 "Item",
-                width=max(100, right_inner_width - 148),
+                width=max(100, right_inner_width - 176),
                 minwidth=90,
                 stretch=True,
             )
@@ -7577,7 +8250,10 @@ class Label_Match(tk.Tk):
         # The central list and its selected-row detail retain the complete last
         # normal scan.  Repeating that raw value in the fixed notice row both
         # duplicates information and can force a short-screen height overflow.
-        self._set_workflow_notice_ui(view.notice, view.next_action)
+        display_notice = view.notice or self.__dict__.get(
+            "_package_cancellation_review_notice"
+        )
+        self._set_workflow_notice_ui(display_notice, view.next_action)
         last_scan_label = self.__dict__.get("operator_last_scan_label")
         if last_scan_label is None:
             last_scan_label = self.__dict__.get("status_label")
@@ -8461,7 +9137,7 @@ class Label_Match(tk.Tk):
         self.history_tree = ttk.Treeview(
             tree_frame_hist,
             columns=hist_cols,
-            displaycolumns=("Set", "Input1", "Result", "Timestamp"),
+            displaycolumns=("Input1", "Result", "Timestamp"),
             show="headings",
             yscrollcommand=v_scroll_hist.set,
             xscrollcommand=h_scroll_hist.set,
@@ -9069,10 +9745,22 @@ class Label_Match(tk.Tk):
         try:
             hist_width = self.history_tree.winfo_width() - padding
             if hist_width > 1:
-                total_prop = sum(self.hist_proportions.values())
-                for col, prop in self.hist_proportions.items():
-                    width = max(hist_min_widths.get(col, 80), int(hist_width * (prop / total_prop)))
-                    self.history_tree.column(col, width=width, minwidth=hist_min_widths.get(col, 80), stretch=False)
+                display_widths = self._fit_history_display_widths(
+                    hist_width,
+                    hist_min_widths,
+                )
+                for col in self.hist_proportions:
+                    width = display_widths.get(col, hist_min_widths.get(col, 80))
+                    self.history_tree.column(
+                        col,
+                        width=width,
+                        minwidth=(
+                            width
+                            if col in display_widths
+                            else hist_min_widths.get(col, 80)
+                        ),
+                        stretch=False,
+                    )
 
             summary_width = self.summary_tree.winfo_width() - padding
             if summary_width > 1:
@@ -9367,4 +10055,6 @@ if __name__ == "__main__":
             error=repr(exc),
             traceback=traceback.format_exc(),
         )
+        if _label_match_explicit_automated_test_mode():
+            raise SystemExit(1) from None
         raise

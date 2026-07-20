@@ -1,5 +1,10 @@
 # Label Match v2.0.36 작업 중심 UI 증빙
 
+> **2026-07-20 통합 주의:** 이 문서는 아래에 고정한 과거 feature-source의
+> 로컬 UI 증빙입니다. 이후 cancellation/visible-capture 통합 `main`의 정확한
+> 매뉴얼, 서명 패키지 또는 현장 승인 증빙이 아니며 production 승격 판단은
+> 계속 `DENY`입니다.
+
 이 문서는 작업 중심 UI의 기능 브랜치 구현과 로컬 시각 검증 결과를
 고정한다. 현장 승인, `main` 병합, tag, 서명, release 또는 배포를
 승인하는 문서가 아니다.
