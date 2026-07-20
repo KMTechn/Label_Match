@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import json
 from pathlib import Path
 import sqlite3
@@ -13,6 +14,9 @@ import Label_Match as label_module
 import package_logistics as package_module
 from package_logistics import (
     PackageClientConfig,
+    PackageCancellationIntent,
+    PackageCancellationOutbox,
+    PackageCancellationOutboxProcessor,
     PackageCommandDraft,
     PackageLogisticsClient,
     PackageLogisticsError,
@@ -98,6 +102,82 @@ def _receipt(draft):
                 if draft.exact_rescan_barcodes
                 else None
             ),
+        },
+    }
+
+
+def _ack_package_creation(outbox, draft):
+    row = outbox.enqueue(draft)
+    claimed = outbox.claim_next()
+    assert claimed["idempotency_key"] == row["idempotency_key"]
+    command = {
+        "contract_version": "logistics-v1",
+        "command_type": "CREATE_PACKAGE",
+        "authority_scope_id": SCOPE,
+        "authority_epoch": 5,
+        "ledger_plane": "AUTHORITATIVE",
+        "plane_epoch": 3,
+        "idempotency_key": row["idempotency_key"],
+        "expected_versions": {f"bundle:{TRANSFER}": 7},
+        "payload": {
+            "source_bundle_id": TRANSFER,
+            "package_bundle_id": draft.package_bundle_id,
+        },
+    }
+    outbox.save_command(row["idempotency_key"], TRANSFER, command)
+    outbox.mark_acked(row["idempotency_key"], _receipt(draft))
+    return outbox.get_by_set_id(draft.set_id)
+
+
+def _cancellation_intent(draft, *, event_type="TRAY_COMPLETION_CANCELLED"):
+    return PackageCancellationIntent.build(
+        set_id=draft.set_id,
+        event_type=event_type,
+        reason=(
+            "LOCAL_TRAY_COMPLETION_CANCELLED"
+            if event_type == "TRAY_COMPLETION_CANCELLED"
+            else "LOCAL_COMPLETED_SET_DELETED"
+        ),
+        evidence={"operator_action": "test-cancel"},
+    )
+
+
+def _cancellation_receipt(draft, *, intent=None, expected_version=1):
+    intent = intent or _cancellation_intent(draft)
+    package_version = expected_version + 1
+    create_key = f"label-package-{package_module.stable_id('cmd', draft.set_id, draft.package_bundle_id)}"
+    cancellation_evidence = {
+        **dict(intent.evidence),
+        "cancellation_event_id": intent.cancellation_event_id,
+        "event_type": intent.event_type,
+        "set_id": intent.set_id,
+        "create_package_idempotency_key": create_key,
+    }
+    return {
+        "contract_version": "logistics-v1",
+        "receipt_id": "receipt-package-cancel",
+        "command_type": "CANCEL_PACKAGE",
+        "status": "COMMITTED",
+        "authority_scope_id": SCOPE,
+        "authority_epoch": 5,
+        "resolved_ledger_plane": "AUTHORITATIVE",
+        "resolved_plane_epoch": 3,
+        "entity_versions": {f"bundle:{draft.package_bundle_id}": package_version},
+        "event_ids": ["event-package-cancel"],
+        "outbox_ids": ["outbox-package-cancel"],
+        "committed_at": "2026-07-15T00:00:00Z",
+        "data": {
+            "package_bundle_id": draft.package_bundle_id,
+            "package_state": "CANCELLED",
+            "bundle_state": "AVAILABLE",
+            "invalidated": True,
+            "current_location": "SHIPPING-WAIT",
+            "member_ids": list(UNITS),
+            "member_count": len(UNITS),
+            "membership_hash": MEMBERSHIP_HASH,
+            "package_entity_version": package_version,
+            "reason": intent.reason,
+            "evidence": cancellation_evidence,
         },
     }
 
@@ -228,6 +308,34 @@ def test_outbox_enqueue_and_immutable_command_cas(tmp_path):
         )
 
 
+@pytest.mark.parametrize("outbox_type", [PackageOutbox, PackageCancellationOutbox])
+def test_v2_schema_is_complete_before_version_is_stamped(tmp_path, outbox_type):
+    db_path = tmp_path / f"schema-{outbox_type.__name__}.sqlite3"
+    outbox_type(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(package_cancellation_outbox)"
+            ).fetchall()
+        }
+        version = conn.execute(
+            "SELECT value FROM package_outbox_schema_info WHERE key='schema_version'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert {"package_command_outbox", "package_cancellation_outbox"}.issubset(tables)
+    assert {"local_event_committed", "local_event_committed_at"}.issubset(columns)
+    assert version == package_module.OUTBOX_SCHEMA_VERSION
+
+
 def test_outbox_explicitly_closes_every_connection_before_immediate_file_cleanup(
     tmp_path, monkeypatch
 ):
@@ -281,6 +389,319 @@ def test_outbox_explicitly_closes_every_connection_before_immediate_file_cleanup
         moved = candidate.with_name(f"{candidate.name}.moved")
         candidate.replace(moved)
         moved.unlink()
+
+
+def test_acked_package_cancellation_enqueues_and_posts_exact_server_contract(tmp_path):
+    draft = _draft()
+    db_path = tmp_path / "cancel-after-ack.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    _ack_package_creation(package_outbox, draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    intent = _cancellation_intent(draft)
+
+    queued = cancellation_outbox.enqueue(intent)
+    assert queued["status"] == "PENDING"
+    assert queued["expected_bundle_version"] == 1
+    cancellation_outbox.mark_local_event_committed(intent.cancellation_event_id)
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append((method, url, dict(headers), json.loads(body.decode("utf-8"))))
+        return {"ok": True, "data": _cancellation_receipt(draft, intent=intent)}
+
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=transport,
+    )
+    result = PackageCancellationOutboxProcessor(cancellation_outbox, client).drain(limit=1)
+
+    assert result == {"acked": 1, "retry": 0, "conflict": 0, "deferred": 0}
+    assert len(calls) == 1
+    method, url, headers, command = calls[0]
+    assert method == "POST"
+    assert url.endswith("/logistics/api/v1/packages/cancel")
+    assert headers["Idempotency-Key"] == queued["idempotency_key"]
+    assert command["command_type"] == "CANCEL_PACKAGE"
+    assert command["expected_versions"] == {f"bundle:{draft.package_bundle_id}": 1}
+    assert command["payload"]["package_bundle_id"] == draft.package_bundle_id
+    assert command["payload"]["reason"] == "LOCAL_TRAY_COMPLETION_CANCELLED"
+    assert command["payload"]["evidence"]["cancellation_event_id"] == intent.cancellation_event_id
+    assert command["payload"]["evidence"]["set_id"] == draft.set_id
+    assert cancellation_outbox.get_by_event_id(intent.cancellation_event_id)["status"] == "ACKED"
+
+
+def test_package_cancellation_before_create_ack_stays_deferred_then_promotes(tmp_path):
+    draft = _draft()
+    db_path = tmp_path / "cancel-deferred.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    package_outbox.enqueue(draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    intent = _cancellation_intent(draft, event_type="SET_DELETED")
+    queued = cancellation_outbox.enqueue(intent)
+    assert queued["status"] == "DEFERRED"
+    cancellation_outbox.mark_local_event_committed(intent.cancellation_event_id)
+
+    calls = []
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=lambda *args: calls.append(args)
+        or {"ok": True, "data": _cancellation_receipt(draft, intent=intent)},
+    )
+    processor = PackageCancellationOutboxProcessor(cancellation_outbox, client)
+    assert processor.drain(limit=1) == {
+        "acked": 0,
+        "retry": 0,
+        "conflict": 0,
+        "deferred": 1,
+    }
+    assert calls == []
+
+    _ack_package_creation(package_outbox, draft)
+    assert processor.drain(limit=1)["acked"] == 1
+    assert len(calls) == 1
+    assert cancellation_outbox.get_by_event_id(intent.cancellation_event_id)["status"] == "ACKED"
+
+
+def test_package_cancellation_retry_recovers_saved_command_receipt_without_duplicate_post(tmp_path):
+    draft = _draft()
+    db_path = tmp_path / "cancel-retry.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    _ack_package_creation(package_outbox, draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    intent = _cancellation_intent(draft)
+    queued = cancellation_outbox.enqueue(intent)
+    cancellation_outbox.mark_local_event_committed(intent.cancellation_event_id)
+    builder = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=lambda *args: (_ for _ in ()).throw(AssertionError("unexpected transport")),
+    )
+
+    class LostAckClient:
+        def __init__(self):
+            self.build_calls = 0
+            self.cancel_calls = 0
+
+        def build_cancel_package_command(self, intent, row, *, idempotency_key):
+            self.build_calls += 1
+            return builder.build_cancel_package_command(
+                intent, row, idempotency_key=idempotency_key
+            )
+
+        def cancel_package(self, command):
+            self.cancel_calls += 1
+            raise PackageTransportError("lost ACK")
+
+        def get_receipt_if_exists(self, key, *, authority_scope_id):
+            return None
+
+    first_client = LostAckClient()
+    first = PackageCancellationOutboxProcessor(cancellation_outbox, first_client).drain(limit=1)
+    assert first == {"acked": 0, "retry": 1, "conflict": 0, "deferred": 0}
+    pending = cancellation_outbox.get_by_event_id(intent.cancellation_event_id)
+    saved_command = pending["command_json"]
+    assert saved_command
+    assert first_client.build_calls == 1
+    assert first_client.cancel_calls == 1
+
+    class RecoveryClient(LostAckClient):
+        def get_receipt_if_exists(self, key, *, authority_scope_id):
+            assert key == queued["idempotency_key"]
+            assert authority_scope_id == SCOPE
+            return _cancellation_receipt(draft, intent=intent)
+
+        def cancel_package(self, command):
+            raise AssertionError("receipt replay must not repost")
+
+    restarted = PackageCancellationOutbox(db_path)
+    recovery_client = RecoveryClient()
+    recovered = PackageCancellationOutboxProcessor(restarted, recovery_client).drain(limit=1)
+    assert recovered == {"acked": 1, "retry": 0, "conflict": 0, "deferred": 0}
+    acked = restarted.get_by_event_id(intent.cancellation_event_id)
+    assert acked["status"] == "ACKED"
+    assert acked["command_json"] == saved_command
+    assert recovery_client.build_calls == 0
+
+
+def test_package_cancellation_event_is_deduplicated_and_immutable(tmp_path):
+    draft = _draft()
+    db_path = tmp_path / "cancel-dedupe.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    _ack_package_creation(package_outbox, draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    intent = _cancellation_intent(draft)
+
+    first = cancellation_outbox.enqueue(intent)
+    replay = cancellation_outbox.enqueue(intent)
+    assert replay["idempotency_key"] == first["idempotency_key"]
+    assert len(cancellation_outbox.get_by_set_id(draft.set_id)) == 1
+
+    changed = PackageCancellationIntent.build(
+        set_id=draft.set_id,
+        event_type=intent.event_type,
+        reason=intent.reason,
+        evidence={"operator_action": "changed"},
+        cancellation_event_id=intent.cancellation_event_id,
+    )
+    with pytest.raises(PackageLogisticsError, match="different data"):
+        cancellation_outbox.enqueue(changed)
+    assert len(cancellation_outbox.get_by_set_id(draft.set_id)) == 1
+
+
+def test_deferred_cancellation_becomes_actionable_conflict_when_create_is_terminal(tmp_path):
+    draft = _draft()
+    db_path = tmp_path / "cancel-create-conflict.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    package_outbox.enqueue(draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    intent = _cancellation_intent(draft)
+    assert cancellation_outbox.enqueue(intent)["status"] == "DEFERRED"
+    claimed = package_outbox.claim_next()
+    package_outbox.mark_conflict(
+        claimed["idempotency_key"], PackageLogisticsError("invalid CREATE_PACKAGE receipt")
+    )
+    cancellation_outbox.promote_deferred()
+    row = cancellation_outbox.get_by_event_id(intent.cancellation_event_id)
+
+    assert row["status"] == "CONFLICT"
+    assert row["last_error_code"] == "CREATE_PACKAGE_CONFLICT"
+    assert "invalid CREATE_PACKAGE receipt" in row["last_error_message"]
+    assert cancellation_outbox.counts()["DEFERRED"] == 0
+
+
+def test_cancellation_receipt_requires_command_identity_versions_and_exact_members(tmp_path):
+    draft = _draft()
+    db_path = tmp_path / "cancel-strict-receipt.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    _ack_package_creation(package_outbox, draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    intent = _cancellation_intent(draft)
+    cancellation_outbox.enqueue(intent)
+    cancellation_outbox.mark_local_event_committed(intent.cancellation_event_id)
+    row = cancellation_outbox.claim_next()
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=lambda *args: (_ for _ in ()).throw(AssertionError("unexpected transport")),
+    )
+    command = client.build_cancel_package_command(
+        intent, row, idempotency_key=row["idempotency_key"]
+    )
+    cancellation_outbox.save_command(row["idempotency_key"], command)
+    saved = cancellation_outbox.get_by_event_id(intent.cancellation_event_id)
+    valid = _cancellation_receipt(draft, intent=intent)
+    PackageCancellationOutboxProcessor._validate_receipt(saved, valid)
+
+    mutations = (
+        (lambda value: value.pop("entity_versions"), "entity versions"),
+        (lambda value: value["data"].pop("member_ids"), "member IDs"),
+        (
+            lambda value: value["data"].update(
+                {"member_ids": list(reversed(value["data"]["member_ids"]))}
+            ),
+            "member count",
+        ),
+        (
+            lambda value: value["data"].update({"membership_hash": "0" * 64}),
+            "membership hash",
+        ),
+        (lambda value: value.update({"receipt_id": ""}), "receipt identity"),
+        (lambda value: value.update({"command_type": "CREATE_PACKAGE"}), "receipt identity"),
+    )
+    for mutate, expected in mutations:
+        changed = json.loads(json.dumps(valid))
+        mutate(changed)
+        with pytest.raises(PackageLogisticsError, match=expected):
+            PackageCancellationOutboxProcessor._validate_receipt(saved, changed)
+
+    bad_command_row = dict(saved)
+    bad_command = json.loads(bad_command_row["command_json"])
+    bad_command["idempotency_key"] = "different-key"
+    bad_command_row["command_json"] = json.dumps(bad_command)
+    with pytest.raises(PackageLogisticsError, match="command identity"):
+        PackageCancellationOutboxProcessor._validate_receipt(
+            bad_command_row, valid
+        )
+
+
+def test_startup_reconciles_prelogged_cancellation_intent_once_after_crash(tmp_path):
+    draft = _draft()
+    db_path = tmp_path / "package_logistics_outbox.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    _ack_package_creation(package_outbox, draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    manager = label_module.DataManager(str(tmp_path), "포장실", "tester", "PC-CANCEL")
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.save_directory = str(tmp_path)
+    app.unique_id = "PC-CANCEL"
+    app.data_manager = manager
+    app.package_outbox = package_outbox
+    app.package_cancellation_outbox = cancellation_outbox
+    local_details = {
+        "cancelled_set_id": draft.set_id,
+        "cancelled_by_label": "PHS-CANCEL",
+        "details": {"set_id": draft.set_id, "final_result": "통과"},
+    }
+    cancellation = label_module.Label_Match._queue_authoritative_package_cancellation(
+        app,
+        set_id=draft.set_id,
+        event_type=label_module.Label_Match.Events.TRAY_COMPLETION_CANCELLED,
+        reason="LOCAL_TRAY_COMPLETION_CANCELLED",
+        evidence={"cancelled_by_label": "PHS-CANCEL"},
+        local_event_details=local_details,
+    )
+    row = cancellation_outbox.get_by_event_id(cancellation["cancellation_event_id"])
+    assert row["local_event_committed"] == 0
+    assert cancellation_outbox.claim_next() is None
+    manager.close(timeout=5)
+
+    restarted_manager = label_module.DataManager(
+        str(tmp_path), "포장실", "tester", "PC-CANCEL"
+    )
+    restarted = label_module.Label_Match.__new__(label_module.Label_Match)
+    restarted.save_directory = str(tmp_path)
+    restarted.unique_id = "PC-CANCEL"
+    restarted.data_manager = restarted_manager
+    restarted.package_cancellation_outbox = PackageCancellationOutbox(db_path)
+    assert label_module.Label_Match._reconcile_package_cancellation_local_events(restarted) == 1
+    restarted_manager.close(timeout=5)
+    committed = restarted.package_cancellation_outbox.get_by_event_id(
+        cancellation["cancellation_event_id"]
+    )
+    assert committed["local_event_committed"] == 1
+
+    # Simulate a crash after CSV flush but before the SQLite committed flag.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """UPDATE package_cancellation_outbox
+                  SET local_event_committed=0,local_event_committed_at=NULL
+                WHERE cancellation_event_id=?""",
+            (cancellation["cancellation_event_id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    replay_manager = label_module.DataManager(
+        str(tmp_path), "포장실", "tester", "PC-CANCEL"
+    )
+    replay = label_module.Label_Match.__new__(label_module.Label_Match)
+    replay.save_directory = str(tmp_path)
+    replay.unique_id = "PC-CANCEL"
+    replay.data_manager = replay_manager
+    replay.package_cancellation_outbox = PackageCancellationOutbox(db_path)
+    assert label_module.Label_Match._reconcile_package_cancellation_local_events(replay) == 1
+    replay_manager.close(timeout=5)
+
+    log_path = replay_manager._get_log_filepath()
+    with open(log_path, "r", encoding="utf-8-sig", newline="") as handle:
+        matching = [
+            json.loads(record["details"])
+            for record in csv.DictReader(handle)
+            if record["event"]
+            == label_module.Label_Match.Events.TRAY_COMPLETION_CANCELLED
+        ]
+    assert [
+        details["cancellation_event_id"] for details in matching
+    ] == [cancellation["cancellation_event_id"]]
 
 
 def test_dynamic_qr_scope_builds_inherit_command_without_sample_membership():

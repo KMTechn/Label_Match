@@ -2973,6 +2973,48 @@ def test_cancel_completed_tray_finds_legacy_base64_unique_master_without_metadat
     assert app.global_scanned_set == set()
 
 
+def test_central_tray_cancel_fails_closed_before_local_event_when_outbox_write_fails():
+    module = load_label_match_module()
+
+    class PackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            return {"set_id": set_id, "status": "PENDING"}
+
+    class BrokenCancellationOutbox:
+        @staticmethod
+        def enqueue(intent):
+            raise OSError("simulated cancellation intent failure")
+
+    details = _completed_details(
+        set_id="central-tray",
+        master_code="CENTRAL-TRAY",
+        end_time="2026-07-15T09:00:00",
+        raw_scans=["CENTRAL-TRAY", "PRODUCT-1"],
+    )
+    app = object.__new__(module.Label_Match)
+    app.set_details_map = {"central-tray": details}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = module._label_match_duplicate_index_barcodes(details)
+    app.history_tree = _RecordingTree()
+    app.history_tree.insert("", "end", iid="central-tray", values=())
+    app.data_manager = _FakeLoggingDataManager()
+    app.package_outbox = PackageOutbox()
+    app.package_cancellation_outbox = BrokenCancellationOutbox()
+    app.run_tests = True
+    app._update_summary_tree = lambda: None
+
+    module.Label_Match._cancel_completed_tray_by_label(app, "CENTRAL-TRAY")
+
+    assert "central-tray" in app.set_details_map
+    assert app.history_tree.exists("central-tray")
+    assert all(
+        event != module.Label_Match.Events.TRAY_COMPLETION_CANCELLED
+        for event, _details in app.data_manager.events
+    )
+    assert app.data_manager.events[-1][0] == module.Label_Match.Events.UI_ERROR
+
+
 def test_delete_selected_row_handles_string_iid_against_numeric_detail_key():
     module = load_label_match_module()
 
@@ -3024,6 +3066,67 @@ def test_delete_selected_row_handles_string_iid_against_numeric_detail_key():
     assert app.global_scanned_set == set()
     assert app.data_manager.events[0][0] == module.Label_Match.Events.SET_DELETED
     assert app.data_manager.events[0][1]["set_id"] == "123"
+
+
+def test_central_package_delete_fails_closed_before_local_event_when_outbox_write_fails():
+    module = load_label_match_module()
+
+    class SelectableTree(_RecordingTree):
+        def selection(self):
+            return ("central-set",)
+
+        def item(self, iid, option=None):
+            if option == "values":
+                return self.rows[iid]["values"]
+            return self.rows[iid]
+
+    class PackageOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            return {"set_id": set_id, "status": "ACKED"}
+
+    class BrokenCancellationOutbox:
+        @staticmethod
+        def enqueue(intent):
+            raise OSError("simulated durable outbox failure")
+
+    details = _completed_details(
+        set_id="central-set",
+        master_code="CENTRAL-MASTER",
+        end_time="2026-07-15T08:00:00",
+        raw_scans=["MASTER", "PRODUCT-1"],
+    )
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.run_tests = True
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.history_load_pending = False
+    app.history_active_load_pending = False
+    app.history_tree = SelectableTree()
+    app.history_tree.insert(
+        "",
+        "end",
+        iid="central-set",
+        values=("central-set", "MASTER", "PRODUCT-1", "", "", "", "통과", "08:00:00"),
+    )
+    app.set_details_map = {"central-set": details}
+    app.history_row_details_map = {"central-set": details}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = {"PRODUCT-1"}
+    app.data_manager = _FakeLoggingDataManager()
+    app.package_outbox = PackageOutbox()
+    app.package_cancellation_outbox = BrokenCancellationOutbox()
+    app._update_summary_tree = lambda: None
+    app._render_history_detail = lambda *args, **kwargs: None
+
+    with pytest.raises(OSError, match="durable outbox failure"):
+        module.Label_Match._delete_selected_row(app)
+
+    assert "central-set" in app.history_tree.rows
+    assert "central-set" in app.set_details_map
+    assert app.data_manager.events == []
 
 
 def test_danger_action_button_contract_keeps_cancel_actions_separate():
