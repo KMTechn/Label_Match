@@ -34,6 +34,19 @@ jobs:
         run: |
           python -I -S tools/verify_release_identity.py --expected-tag "$env:LABEL_MATCH_RELEASE_TAG" --expected-sha "$env:GITHUB_SHA" --reviewed-ref "refs/remotes/origin/main" --report "$env:RUNNER_TEMP\label-match-release-identity.json"
 
+      - name: Resolve private update feed publish mode
+        id: private_feed
+        shell: pwsh
+        env:
+          PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ vars.ENABLE_PRIVATE_UPDATE_FEED_PUBLISH }}
+        run: |
+          $privateFeedMode = if ($null -eq $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE) { "" } else { $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE }
+          if (@("", "false", "true") -cnotcontains $privateFeedMode) {
+            throw "ENABLE_PRIVATE_UPDATE_FEED_PUBLISH must be exactly 'true', 'false', or unset."
+          }
+          $enabled = if ($privateFeedMode -ceq "true") { "true" } else { "false" }
+          "enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -80,10 +93,13 @@ jobs:
       - name: Attach install update settings
         shell: pwsh
         env:
+          PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ steps.private_feed.outputs.enabled }}
           PRIVATE_UPDATE_MANIFEST_URL: ${{ vars.PRIVATE_UPDATE_MANIFEST_URL }}
           PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL: ${{ vars.PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL }}
           PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: ${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}
           PRIVATE_UPDATE_CHANNEL: ${{ vars.PRIVATE_UPDATE_CHANNEL }}
+          PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
+          COMPANY_UPDATE_UPLOAD_URL: ${{ vars.COMPANY_UPDATE_UPLOAD_URL }}
         run: |
           $settingsPaths = @(
             "dist/Label_Match/_internal/config/app_settings.json",
@@ -95,9 +111,15 @@ jobs:
           }
           $settings = Get-Content -Raw -Encoding UTF8 -LiteralPath $settingsPath | ConvertFrom-Json
           $channel = if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_CHANNEL)) { "stable" } else { $env:PRIVATE_UPDATE_CHANNEL.Trim() }
-          if (-not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_URL) -or -not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)) {
+          $publishPrivateFeed = $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE -ceq "true"
+          if ($publishPrivateFeed) {
             if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_URL) -or [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)) {
               throw "PRIVATE_UPDATE_MANIFEST_URL and PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be set together."
+            }
+            foreach ($name in @("PRIVATE_UPDATE_ARTIFACT_BASE_URL", "COMPANY_UPDATE_UPLOAD_URL")) {
+              if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
+                throw "$name is required when ENABLE_PRIVATE_UPDATE_FEED_PUBLISH is true."
+              }
             }
             $updateSettings = [ordered]@{
               provider = "private_manifest"
@@ -171,7 +193,7 @@ jobs:
           "$hash  $zipPath" | Set-Content -Encoding utf8NoBOM "$zipPath.sha256"
 
       - name: Generate private update manifest
-        if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
+        if: ${{ steps.private_feed.outputs.enabled == 'true' }}
         shell: pwsh
         env:
           PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
@@ -254,7 +276,7 @@ jobs:
           $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM $manifestPath
 
       - name: Sign private update manifest
-        if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
+        if: ${{ steps.private_feed.outputs.enabled == 'true' }}
         shell: pwsh
         env:
           PRIVATE_UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.PRIVATE_UPDATE_MANIFEST_SIGNING_KEY }}
@@ -321,7 +343,7 @@ jobs:
           }
 
       - name: Publish private update feed
-        if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}
+        if: ${{ steps.private_feed.outputs.enabled == 'true' }}
         shell: pwsh
         env:
           COMPANY_UPDATE_UPLOAD_URL: ${{ vars.COMPANY_UPDATE_UPLOAD_URL }}

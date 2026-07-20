@@ -171,6 +171,46 @@ def test_release_workflow_generates_private_update_manifest():
     assert "tag_name: ${{ env.LABEL_MATCH_RELEASE_TAG }}" in upload_block
 
 
+def test_release_workflow_requires_explicit_private_feed_publish_opt_in():
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    explicit_opt_in = "${{ steps.private_feed.outputs.enabled == 'true' }}"
+
+    assert "PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ vars.ENABLE_PRIVATE_UPDATE_FEED_PUBLISH }}" in workflow
+    assert "id: private_feed" in workflow
+    assert "ENABLE_PRIVATE_UPDATE_FEED_PUBLISH must be exactly 'true', 'false', or unset." in workflow
+    assert '$enabled = if ($privateFeedMode -ceq "true") { "true" } else { "false" }' in workflow
+    assert '"enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append' in workflow
+    assert "PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ steps.private_feed.outputs.enabled }}" in workflow
+    assert '$publishPrivateFeed = $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE -ceq "true"' in workflow
+    assert 'foreach ($name in @("PRIVATE_UPDATE_ARTIFACT_BASE_URL", "COMPANY_UPDATE_UPLOAD_URL"))' in workflow
+    assert 'throw "$name is required when ENABLE_PRIVATE_UPDATE_FEED_PUBLISH is true."' in workflow
+    assert workflow.count(f"if: {explicit_opt_in}") == 3
+    assert "if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}" not in workflow
+
+    attach_block = workflow[
+        workflow.index("- name: Attach install update settings"):
+        workflow.index("- name: Sign and verify release executables")
+    ]
+    manifest_block = workflow[
+        workflow.index("- name: Generate private update manifest"):
+        workflow.index("- name: Sign private update manifest")
+    ]
+    sign_block = workflow[
+        workflow.index("- name: Sign private update manifest"):
+        workflow.index("- name: Publish private update feed")
+    ]
+    publish_block = workflow[
+        workflow.index("- name: Publish private update feed"):
+        workflow.index("- name: Create Release and Upload Asset")
+    ]
+
+    assert 'provider = "github"' in attach_block
+    assert 'provider = "private_manifest"' in attach_block
+    assert f"if: {explicit_opt_in}" in manifest_block
+    assert f"if: {explicit_opt_in}" in sign_block
+    assert f"if: {explicit_opt_in}" in publish_block
+
+
 def test_release_workflow_self_verifies_private_manifest_signature_before_publish(tmp_path):
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
