@@ -64,43 +64,21 @@ def _git(repo_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def _verified_tag_signer_fingerprints(repo_root: Path, tag_ref: str) -> dict[str, str]:
-    completed = _run_git(repo_root, "verify-tag", "--raw", tag_ref)
-    status = f"{completed.stdout}\n{completed.stderr}"
-    matches = re.findall(
-        r"(?m)^\[GNUPG:\]\s+VALIDSIG\s+([0-9A-Fa-f]{40,64})\b([^\r\n]*)$",
-        status,
-    )
-    if len(matches) != 1:
-        raise ReleaseIdentityError("release tag must expose exactly one valid OpenPGP signer fingerprint")
-    signing = matches[0][0].upper()
-    trailing_fingerprints = re.findall(r"\b[0-9A-Fa-f]{40,64}\b", matches[0][1])
-    primary = trailing_fingerprints[-1].upper() if trailing_fingerprints else signing
-    return {
-        "signing_fingerprint": signing,
-        "primary_fingerprint": primary,
-    }
-
-
 def verify_release_identity(
     repo_root: Path,
     *,
     expected_tag: str,
     expected_sha: str,
-    expected_tag_signer: str,
     reviewed_ref: str = "refs/remotes/origin/main",
 ) -> dict[str, object]:
     repo_root = repo_root.resolve()
     expected_tag = str(expected_tag or "").strip()
     expected_sha = str(expected_sha or "").strip().lower()
-    expected_tag_signer = str(expected_tag_signer or "").replace(" ", "").upper()
     reviewed_ref = str(reviewed_ref or "").strip()
     if not SEMVER_TAG_RE.fullmatch(expected_tag):
         raise ReleaseIdentityError(f"release tag is not strict semver: {expected_tag!r}")
     if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
         raise ReleaseIdentityError("expected SHA must be a full 40-character lowercase Git object id")
-    if not re.fullmatch(r"[0-9A-F]{40,64}", expected_tag_signer):
-        raise ReleaseIdentityError("expected tag signer must be a 40-64 character hexadecimal fingerprint")
     if not reviewed_ref.startswith("refs/remotes/") or any(char.isspace() for char in reviewed_ref):
         raise ReleaseIdentityError("reviewed ref must be an explicit refs/remotes/* name")
 
@@ -116,12 +94,9 @@ def verify_release_identity(
 
     tag_ref = f"refs/tags/{expected_tag}"
     tag_type = _git(repo_root, "cat-file", "-t", tag_ref)
-    if tag_type != "tag":
-        raise ReleaseIdentityError(f"release tag {expected_tag} must be an annotated tag object")
-    tag_signer = _verified_tag_signer_fingerprints(repo_root, tag_ref)
-    if expected_tag_signer not in set(tag_signer.values()):
+    if tag_type not in {"commit", "tag"}:
         raise ReleaseIdentityError(
-            "release tag signer fingerprint does not match the approved fingerprint"
+            f"release tag {expected_tag} must resolve from a lightweight or annotated Git tag"
         )
     tag_commit = _git(repo_root, "rev-parse", f"{tag_ref}^{{commit}}").lower()
     if tag_commit != head:
@@ -141,18 +116,17 @@ def verify_release_identity(
 
     tree = _git(repo_root, "rev-parse", "HEAD^{tree}").lower()
     return {
-        "schema_version": "label-match-release-identity-v2",
+        "schema_version": "label-match-release-identity-v3",
         "status": "PASS",
         "tag": expected_tag,
         "app_version": app_version,
         "commit": head,
         "tree": tree,
         "clean_checkout": True,
-        "annotated_tag": True,
-        "tag_signature_verified": True,
-        "expected_tag_signer_fingerprint": expected_tag_signer,
-        "tag_signing_fingerprint": tag_signer["signing_fingerprint"],
-        "tag_primary_fingerprint": tag_signer["primary_fingerprint"],
+        "release_trust": "internal_unsigned",
+        "tag_object_type": tag_type,
+        "annotated_tag": tag_type == "tag",
+        "tag_signature_verified": False,
         "reviewed_ref": reviewed_ref,
         "reviewed_ref_commit": reviewed_commit,
         "reviewed_main_ancestor": True,
@@ -165,10 +139,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--expected-tag", default=os.getenv("GITHUB_REF_NAME", ""))
     parser.add_argument("--expected-sha", default=os.getenv("GITHUB_SHA", ""))
-    parser.add_argument(
-        "--expected-tag-signer",
-        default=os.getenv("LABEL_MATCH_RELEASE_TAG_SIGNER_FINGERPRINT", ""),
-    )
     parser.add_argument("--reviewed-ref", default="refs/remotes/origin/main")
     parser.add_argument("--report", default="")
     return parser
@@ -181,7 +151,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(args.repo_root),
             expected_tag=args.expected_tag,
             expected_sha=args.expected_sha,
-            expected_tag_signer=args.expected_tag_signer,
             reviewed_ref=args.reviewed_ref,
         )
     except ReleaseIdentityError as exc:

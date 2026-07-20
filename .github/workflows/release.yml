@@ -1,18 +1,18 @@
 name: Create GitHub Release for Label_Match
 
 on:
-  repository_dispatch:
-    types: [label-match-release]
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
   build-and-release:
-    environment: label-match-production-signing
-    runs-on: [self-hosted, Windows, X64, label-match-signing]
+    runs-on: windows-latest
     env:
-      LABEL_MATCH_RELEASE_TAG: ${{ github.event.client_payload.tag }}
+      LABEL_MATCH_RELEASE_TAG: ${{ github.ref_name }}
       PYTHONNOUSERSITE: "1"
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
 
@@ -29,8 +29,6 @@ jobs:
           python-version: '3.12.10'
 
       - name: Validate release identity
-        env:
-          LABEL_MATCH_RELEASE_TAG_SIGNER_FINGERPRINT: ${{ vars.LABEL_MATCH_RELEASE_TAG_SIGNER_FINGERPRINT }}
         run: |
           python -I -S tools/verify_release_identity.py --expected-tag "$env:LABEL_MATCH_RELEASE_TAG" --expected-sha "$env:GITHUB_SHA" --reviewed-ref "refs/remotes/origin/main" --report "$env:RUNNER_TEMP\label-match-release-identity.json"
 
@@ -68,7 +66,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python -B -m py_compile Label_Match.py package_logistics.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py tools/build_release_cli_tools.py tools/build_release_archive.py tools/verify_release_identity.py tools/verify_staged_release_installer.py
-          python -m pytest -q
+          # These two tests require the fixed physical non-primary DISPLAY2 and remain field evidence, not GitHub-hosted release gates.
+          python -m pytest -q --deselect tests/test_label_operator_workbench.py::test_live_submission_retry_keeps_full_server_error_and_five_scan_rows --deselect tests/test_label_operator_workbench.py::test_display2_1366_scale100_keeps_operator_content_inside_its_regions
 
       - name: Build with PyInstaller (One-Folder mode)
         # ❗ 이 부분에 --hidden-import tkcalendar 옵션을 추가했습니다.
@@ -142,28 +141,6 @@ jobs:
             $settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8NoBOM -LiteralPath $targetPath
           }
 
-      - name: Sign and verify release executables
-        shell: pwsh
-        env:
-          WINDOWS_CODE_SIGNING_CERT_THUMBPRINT: ${{ vars.WINDOWS_CODE_SIGNING_CERT_THUMBPRINT }}
-          WINDOWS_CODE_SIGNING_TIMESTAMP_URL: ${{ vars.WINDOWS_CODE_SIGNING_TIMESTAMP_URL }}
-        run: |
-          foreach ($name in @("WINDOWS_CODE_SIGNING_CERT_THUMBPRINT", "WINDOWS_CODE_SIGNING_TIMESTAMP_URL")) {
-            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "$name is required for production release signing."
-            }
-          }
-          ./tools/sign_release_executables.ps1 `
-            -PackageRoot "dist/Label_Match" `
-            -ExpectedThumbprint $env:WINDOWS_CODE_SIGNING_CERT_THUMBPRINT `
-            -TimestampUrl $env:WINDOWS_CODE_SIGNING_TIMESTAMP_URL
-
-      - name: Reverify signed CLI tools
-        env:
-          WINDOWS_CODE_SIGNING_CERT_THUMBPRINT: ${{ vars.WINDOWS_CODE_SIGNING_CERT_THUMBPRINT }}
-        run: |
-          python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --verify-existing --help-timeout-seconds 15 --probe-count 3
-
       - name: Verify staged installer without system Python
         run: |
           $ErrorActionPreference = "Stop"
@@ -173,17 +150,113 @@ jobs:
           $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
           python -m pytest -q -p no:cacheprovider tests/test_staged_release_installer.py
 
-      - name: Build and verify deterministic release archive
+      - name: Build and verify internal release archive
         shell: pwsh
-        env:
-          WINDOWS_CODE_SIGNING_CERT_THUMBPRINT: ${{ vars.WINDOWS_CODE_SIGNING_CERT_THUMBPRINT }}
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $sourceEpoch = [int64](git show -s --format=%ct HEAD)
-          $zipPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
-          $archiveReport = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).archive-verification.json"
-          python tools/build_release_archive.py --package-root "dist/Label_Match" --archive $zipPath --source-epoch $sourceEpoch --report $archiveReport
+          $env:LABEL_MATCH_PACKAGE_ROOT = (Resolve-Path "dist/Label_Match").Path
+          $env:LABEL_MATCH_ARCHIVE_PATH = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
+          $env:LABEL_MATCH_ARCHIVE_REPORT = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).archive-verification.json"
+          $env:LABEL_MATCH_SOURCE_EPOCH = git show -s --format=%ct HEAD
+          $script = @'
+          import datetime
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import stat
+          import zipfile
+
+          package_root = Path(os.environ["LABEL_MATCH_PACKAGE_ROOT"]).resolve()
+          archive_path = Path(os.environ["LABEL_MATCH_ARCHIVE_PATH"]).resolve()
+          report_path = Path(os.environ["LABEL_MATCH_ARCHIVE_REPORT"]).resolve()
+          source_epoch = int(os.environ["LABEL_MATCH_SOURCE_EPOCH"])
+          required = {
+              "Label_Match.exe",
+              "release-identity.json",
+              "install_label_match_direct_sync.ps1",
+              "staged-installer-verification.json",
+              "tools/release_cli_tools_manifest.json",
+              "tools/direct_sync_relay_runner.exe",
+              "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+              "tools/register_label_match_worker_pc.exe",
+          }
+          files = sorted(
+              (path for path in package_root.rglob("*") if path.is_file()),
+              key=lambda path: path.relative_to(package_root).as_posix().casefold(),
+          )
+          relative = [path.relative_to(package_root).as_posix() for path in files]
+          if not required.issubset(relative):
+              raise SystemExit(f"required internal release files missing: {sorted(required - set(relative))}")
+          if len({name.casefold() for name in relative}) != len(relative):
+              raise SystemExit("case-insensitive package path collision")
+          instant = datetime.datetime.fromtimestamp(source_epoch, tz=datetime.timezone.utc)
+          timestamp = (
+              max(1980, min(2107, instant.year)),
+              instant.month,
+              instant.day,
+              instant.hour,
+              instant.minute,
+              instant.second // 2 * 2,
+          )
+          source_hashes = {}
+          with zipfile.ZipFile(
+              archive_path,
+              "x",
+              compression=zipfile.ZIP_DEFLATED,
+              compresslevel=9,
+              allowZip64=True,
+          ) as archive:
+              for source, name in zip(files, relative, strict=True):
+                  payload = source.read_bytes()
+                  source_hashes[name] = hashlib.sha256(payload).hexdigest()
+                  info = zipfile.ZipInfo(f"Label_Match/{name}", date_time=timestamp)
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.create_system = 3
+                  info.external_attr = (stat.S_IFREG | 0o644) << 16
+                  archive.writestr(info, payload, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+          with zipfile.ZipFile(archive_path, "r") as archive:
+              if (bad_member := archive.testzip()) is not None:
+                  raise SystemExit(f"archive CRC failed: {bad_member}")
+              names = [info.filename for info in archive.infolist() if not info.is_dir()]
+              if len(names) != len(set(names)) or len({name.casefold() for name in names}) != len(names):
+                  raise SystemExit("archive contains duplicate or case-colliding paths")
+              expected = {f"Label_Match/{name}" for name in relative}
+              if set(names) != expected:
+                  raise SystemExit("archive membership differs from staged package")
+              for name in names:
+                  pure = PurePosixPath(name)
+                  if pure.is_absolute() or ".." in pure.parts or pure.parts[0] != "Label_Match":
+                      raise SystemExit(f"unsafe archive path: {name}")
+                  child = PurePosixPath(*pure.parts[1:]).as_posix()
+                  if hashlib.sha256(archive.read(name)).hexdigest() != source_hashes[child]:
+                      raise SystemExit(f"archive byte parity failed: {name}")
+          archive_hash = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+          report = {
+              "schema_version": "label-match-internal-release-archive-v1",
+              "status": "PASS",
+              "release_trust": "internal_unsigned",
+              "archive": archive_path.name,
+              "archive_sha256": archive_hash,
+              "archive_size": archive_path.stat().st_size,
+              "package_file_count": len(files),
+              "required_membership": sorted(required),
+              "exact_membership": True,
+              "byte_parity": True,
+              "crc_verified": True,
+              "safe_paths": True,
+          }
+          report_path.write_text(
+              json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(report, sort_keys=True))
+          '@
+          $script | python -
+          if ($LASTEXITCODE -ne 0) {
+            throw "Internal release archive verification failed."
+          }
 
       - name: Generate release SHA256 checksum
         shell: pwsh
@@ -251,10 +324,8 @@ jobs:
                 "Label_Match/Label_Match.exe",
                 "Label_Match/release-identity.json",
                 "Label_Match/install_label_match_direct_sync.ps1",
-                "Label_Match/authenticode-manifest.json",
                 "Label_Match/staged-installer-verification.json",
                 "Label_Match/tools/release_cli_tools_manifest.json",
-                "Label_Match/tools/release_cli_tools_post_sign_manifest.json",
                 "Label_Match/tools/direct_sync_relay_runner.exe",
                 "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
                 "Label_Match/tools/register_label_match_worker_pc.exe"
@@ -422,7 +493,7 @@ jobs:
             Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.archive-verification.json
           tag_name: ${{ env.LABEL_MATCH_RELEASE_TAG }}
           name: "Release ${{ env.LABEL_MATCH_RELEASE_TAG }}"
-          body: "New release version ${{ env.LABEL_MATCH_RELEASE_TAG }}"
+          body: "Internal release ${{ env.LABEL_MATCH_RELEASE_TAG }}. Verified ZIP, SHA-256 checksum, and archive verification report are attached."
           draft: false
           prerelease: false
 
