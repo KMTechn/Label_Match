@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import json
 from pathlib import Path
@@ -14,6 +15,28 @@ assert SPEC and SPEC.loader
 verifier = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = verifier
 SPEC.loader.exec_module(verifier)
+
+
+@pytest.mark.skipif(verifier.os.name != "nt", reason="Windows-only path alias behavior")
+def test_same_path_accepts_8dot3_alias_but_rejects_a_different_file(tmp_path):
+    target = tmp_path / "long-staged-installer-directory" / "Label_Match" / "_internal"
+    target.mkdir(parents=True)
+    settings = target / "app_settings.json"
+    settings.write_text("{}\n", encoding="utf-8")
+    other = target / "other_settings.json"
+    other.write_text("{}\n", encoding="utf-8")
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetShortPathNameW(str(settings), buffer, len(buffer))
+    if not length:
+        pytest.skip("8.3 aliases are disabled on this volume")
+    short_alias = buffer.value
+    if verifier.os.path.normcase(verifier.os.path.abspath(short_alias)) == verifier.os.path.normcase(
+        verifier.os.path.abspath(settings)
+    ):
+        pytest.skip("Windows returned the long spelling instead of an 8.3 alias")
+
+    assert verifier._same_path(short_alias, settings)
+    assert not verifier._same_path(short_alias, other)
 
 
 def _package(tmp_path: Path) -> Path:

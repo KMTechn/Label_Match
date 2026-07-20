@@ -50,10 +50,15 @@ def _inventory_digest(inventory: list[dict[str, object]]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _canonical_path(path: Path | str) -> str:
+    """Resolve Windows aliases (including 8.3 names) before comparing paths."""
+
+    absolute = os.path.abspath(os.fspath(path))
+    return os.path.normcase(os.path.normpath(os.path.realpath(absolute)))
+
+
 def _same_path(left: Path | str, right: Path | str) -> bool:
-    return os.path.normcase(os.path.abspath(os.fspath(left))) == os.path.normcase(
-        os.path.abspath(os.fspath(right))
-    )
+    return _canonical_path(left) == _canonical_path(right)
 
 
 def verify_staged_installer(package_root: Path) -> dict[str, object]:
@@ -123,14 +128,25 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
             if (staged_copy / "_internal").is_dir()
             else staged_copy / "config/app_settings.json"
         )
-        if not _same_path(str(install_report.get("app_settings_path") or ""), expected_settings):
-            raise StagedInstallerVerificationError("installer did not bind the packaged app settings path")
+        observed_settings = str(install_report.get("app_settings_path") or "")
+        if not _same_path(observed_settings, expected_settings):
+            raise StagedInstallerVerificationError(
+                "installer did not bind the packaged app settings path: "
+                f"observed={observed_settings!r} "
+                f"observed_canonical={_canonical_path(observed_settings)!r} "
+                f"expected={str(expected_settings)!r} "
+                f"expected_canonical={_canonical_path(expected_settings)!r}"
+            )
         try:
             settings = json.loads(expected_settings.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as exc:
             raise StagedInstallerVerificationError("installer did not write valid packaged app settings") from exc
-        if not _same_path(str(settings.get("custom_save_path") or ""), scan_source):
-            raise StagedInstallerVerificationError("packaged app save path differs from relay scan source")
+        observed_save_path = str(settings.get("custom_save_path") or "")
+        if not _same_path(observed_save_path, scan_source):
+            raise StagedInstallerVerificationError(
+                "packaged app save path differs from relay scan source: "
+                f"observed={observed_save_path!r} expected={str(scan_source)!r}"
+            )
 
         runner = staged_copy / "tools" / "direct_sync_relay_runner.exe"
         registration = staged_copy / "tools" / "register_label_match_worker_pc.exe"
