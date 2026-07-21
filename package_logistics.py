@@ -8,10 +8,11 @@ TRANSFER bundle, or supplied as a separate full exact rescan.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
+import ipaddress
 from http.client import HTTPException, IncompleteRead
 import json
 import math
@@ -25,8 +26,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+from logistics_runtime_profile import (
+    LogisticsRuntimeConfigurationError,
+    load_logistics_runtime_profile,
+    logistics_runtime_required,
+)
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v3"
+
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v4"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
@@ -151,6 +158,27 @@ def canonical_barcodes(values: Iterable[Any]) -> tuple[str, ...]:
     )
 
 
+def canonical_member_barcodes(values: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    rows: list[tuple[str, str]] = []
+    for value in values:
+        if not isinstance(value, Mapping):
+            return ()
+        unit_id = str(value.get("unit_id") or "").strip()
+        barcode = _normalize_barcode(value.get("normalized_barcode"))
+        if not unit_id or not barcode:
+            return ()
+        rows.append((unit_id, barcode))
+    result = tuple(sorted(rows))
+    if (
+        len({unit_id for unit_id, _barcode in result}) != len(result)
+        or len({barcode for _unit_id, barcode in result}) != len(result)
+    ):
+        return ()
+    return result
+
+
 def membership_hash(values: Iterable[Any]) -> str:
     body = json.dumps(canonical_member_ids(values), ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -185,6 +213,10 @@ class PackageCommandDraft:
     membership_mode: str
     sample_barcodes: tuple[str, ...]
     exact_rescan_barcodes: tuple[str, ...] = ()
+    expected_seal_id: str = ""
+    expected_seal_revision: int = 0
+    expected_seal_token: str = ""
+    expected_seal_qr_payload: str = ""
 
     @classmethod
     def build(
@@ -207,6 +239,10 @@ class PackageCommandDraft:
         membership_mode: str = "INHERIT_ALL",
         sample_barcodes: Iterable[str] = (),
         exact_rescan_barcodes: Iterable[str] = (),
+        expected_seal_id: str = "",
+        expected_seal_revision: int = 0,
+        expected_seal_token: str = "",
+        expected_seal_qr_payload: str = "",
     ) -> "PackageCommandDraft":
         normalized_set_id = str(set_id or "").strip()
         normalized_item = str(item_code or "").strip()
@@ -221,8 +257,10 @@ class PackageCommandDraft:
         raw_exact = tuple(_normalize_barcode(value) for value in exact_rescan_barcodes)
         if not normalized_set_id or not normalized_item or not final_label:
             raise PackageLogisticsError("set_id, item_code, and external_label are required")
-        if not source_id and not source_label and not source_input_tag and not source_hint:
-            raise PackageLogisticsError("sealed transfer bundle identity or external label is required")
+        if not source_id and not source_input_tag and not source_hint:
+            raise PackageLogisticsError(
+                "sealed transfer QR or structured PHS BND/ITG identity is required"
+            )
         if mode not in MEMBERSHIP_MODES:
             raise PackageLogisticsError("membership_mode must be INHERIT_ALL or EXACT_RESCAN")
         if any(not value for value in raw_samples) or len(raw_samples) != len(set(raw_samples)):
@@ -230,9 +268,9 @@ class PackageCommandDraft:
         if len(raw_samples) > 3:
             raise PackageLogisticsError("legacy packaging QA samples cannot exceed three barcodes")
         exact = canonical_barcodes(raw_exact)
-        if mode == "INHERIT_ALL" and not source_id:
+        if mode == "INHERIT_ALL" and not (source_id or source_input_tag or source_hint):
             raise PackageLogisticsError(
-                "INHERIT_ALL requires a sealed transfer QR with transfer bundle ID"
+                "INHERIT_ALL requires a sealed transfer QR or structured PHS BND/ITG identity"
             )
         if mode == "INHERIT_ALL" and exact:
             raise PackageLogisticsError("INHERIT_ALL cannot use sample/exact rescan barcodes as membership")
@@ -262,6 +300,10 @@ class PackageCommandDraft:
             membership_mode=mode,
             sample_barcodes=canonical_barcodes(raw_samples),
             exact_rescan_barcodes=exact,
+            expected_seal_id=str(expected_seal_id or "").strip(),
+            expected_seal_revision=max(0, int(expected_seal_revision or 0)),
+            expected_seal_token=str(expected_seal_token or "").strip(),
+            expected_seal_qr_payload=str(expected_seal_qr_payload or "").strip(),
         )
 
     def fingerprint(self) -> str:
@@ -288,6 +330,10 @@ class PackageCommandDraft:
             "membership_mode": self.membership_mode,
             "sample_barcodes": list(self.sample_barcodes),
             "exact_rescan_barcodes": list(self.exact_rescan_barcodes),
+            "expected_seal_id": self.expected_seal_id,
+            "expected_seal_revision": self.expected_seal_revision,
+            "expected_seal_token": self.expected_seal_token,
+            "expected_seal_qr_payload": self.expected_seal_qr_payload,
         }
 
 
@@ -371,7 +417,7 @@ def _normalize_barcode(value: Any) -> str:
 
 
 def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
-    """Atomically install v3 without disturbing live SENDING leases."""
+    """Atomically install the current schema without disturbing live SENDING leases."""
 
     cancellation_table_existed = (
         conn.execute(
@@ -394,6 +440,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             last_error_code TEXT,
             last_error_message TEXT,
             receipt_json TEXT,
+            retry_after_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -437,6 +484,18 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    command_columns = {
+        str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
+        for row in conn.execute("PRAGMA table_info(package_command_outbox)").fetchall()
+    }
+    if "retry_after_at" not in command_columns:
+        conn.execute(
+            "ALTER TABLE package_command_outbox ADD COLUMN retry_after_at TEXT"
+        )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS ix_package_command_outbox_due
+               ON package_command_outbox(status,retry_after_at,created_at)"""
+    )
     cancellation_columns = {
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
         for row in conn.execute("PRAGMA table_info(package_cancellation_outbox)").fetchall()
@@ -469,7 +528,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
                   SET local_event_committed=1,
                       local_event_committed_at=COALESCE(local_event_committed_at,updated_at)"""
         )
-    # Stamp v3 only after every v3 table/column/index is present.
+    # Stamp the version only after every table/column/index is present.
     conn.execute(
         "INSERT OR REPLACE INTO package_outbox_schema_info(key,value) VALUES ('schema_version',?)",
         (OUTBOX_SCHEMA_VERSION,),
@@ -550,14 +609,18 @@ class PackageOutbox:
             )
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
-                     WHERE status='PENDING' ORDER BY created_at,idempotency_key LIMIT 1"""
+                     WHERE status='PENDING'
+                       AND (retry_after_at IS NULL OR retry_after_at<=?)
+                     ORDER BY created_at,idempotency_key LIMIT 1""",
+                (now,),
             ).fetchone()
             if row is None:
                 conn.commit()
                 return None
             cursor = conn.execute(
                 """UPDATE package_command_outbox
-                       SET status='SENDING',attempt_count=attempt_count+1,updated_at=?
+                       SET status='SENDING',attempt_count=attempt_count+1,
+                           retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='PENDING'""",
                 (now, row["idempotency_key"]),
             )
@@ -610,7 +673,7 @@ class PackageOutbox:
             cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET status='ACKED',receipt_json=?,last_error_code=NULL,
-                           last_error_message=NULL,updated_at=?
+                            last_error_message=NULL,retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='SENDING'""",
                 (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), utc_now(), key),
             )
@@ -619,12 +682,27 @@ class PackageOutbox:
             conn.commit()
 
     def mark_retry(self, key: str, error: Exception) -> None:
+        retry_after_seconds = _bounded_retry_after_seconds(
+            getattr(error, "retry_after_seconds", None)
+        )
+        retry_after_at = (
+            _utc_after(retry_after_seconds)
+            if retry_after_seconds is not None
+            else None
+        )
         with self._connect() as conn:
             conn.execute(
                 """UPDATE package_command_outbox
-                       SET status='PENDING',last_error_code=?,last_error_message=?,updated_at=?
+                       SET status='PENDING',last_error_code=?,last_error_message=?,
+                           retry_after_at=?,updated_at=?
                      WHERE idempotency_key=? AND status='SENDING'""",
-                (error.__class__.__name__, str(error), utc_now(), key),
+                (
+                    str(getattr(error, "code", error.__class__.__name__)),
+                    str(error),
+                    retry_after_at,
+                    utc_now(),
+                    key,
+                ),
             )
             conn.commit()
 
@@ -634,7 +712,8 @@ class PackageOutbox:
         with self._connect() as conn:
             conn.execute(
                 """UPDATE package_command_outbox
-                       SET status='CONFLICT',last_error_code=?,last_error_message=?,updated_at=?
+                       SET status='CONFLICT',last_error_code=?,last_error_message=?,
+                           retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='SENDING'""",
                 (code, message, utc_now(), key),
             )
@@ -1136,18 +1215,44 @@ class PackageCancellationOutbox:
 @dataclass(frozen=True)
 class PackageClientConfig:
     base_url: str
-    token: str
+    token: str = field(repr=False)
     authority_scope_id: str
     source_host_id: str
     device_id: str
     timeout_seconds: float = 8.0
+    authority_epoch: int = 0
+    authority_plane: str = ""
+    plane_epoch: int = 0
+    authoritative_required: bool = False
 
     def validate(self) -> None:
         parsed = urlsplit(self.base_url)
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             raise PackageLogisticsError("package logistics base URL must be credential-free HTTPS")
+        hostname = str(parsed.hostname or "").rstrip(".").lower()
+        is_loopback = hostname == "localhost"
+        try:
+            is_loopback = is_loopback or ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            pass
+        if self.authoritative_required and is_loopback:
+            raise PackageLogisticsError("machine package logistics URL must not use loopback")
         if not all((self.token, self.source_host_id, self.device_id)):
             raise PackageLogisticsError("package logistics machine identity/configuration is incomplete")
+        if self.authoritative_required and (
+            not self.authority_scope_id
+            or self.authority_epoch < 1
+            or str(self.authority_plane or "").upper() != "AUTHORITATIVE"
+            or self.plane_epoch < 1
+        ):
+            raise PackageLogisticsError("authoritative package logistics profile is incomplete")
 
 
 Transport = Callable[[str, str, Mapping[str, str], bytes | None, float], Mapping[str, Any]]
@@ -1227,6 +1332,27 @@ class PackageLogisticsClient:
         self.config = config
         self._transport = transport or _default_transport
 
+    def _assert_authority(
+        self,
+        scope: str,
+        *,
+        authority_epoch: Any = None,
+        ledger_plane: str = "",
+        plane_epoch: Any = None,
+    ) -> None:
+        scope_id = str(scope or "").strip()
+        configured = str(self.config.authority_scope_id or "").strip()
+        if configured and scope_id != configured:
+            raise PackageLogisticsError(
+                "AUTHORITY_PROFILE_MISMATCH: scanned scope is outside the installed profile"
+            )
+        if self.config.authority_epoch and authority_epoch is not None and int(authority_epoch) != self.config.authority_epoch:
+            raise PackageLogisticsError("AUTHORITY_PROFILE_MISMATCH: authority epoch differs")
+        if self.config.authority_plane and ledger_plane and str(ledger_plane).upper() != str(self.config.authority_plane).upper():
+            raise PackageLogisticsError("AUTHORITY_PROFILE_MISMATCH: ledger plane differs")
+        if self.config.plane_epoch and plane_epoch is not None and int(plane_epoch) != self.config.plane_epoch:
+            raise PackageLogisticsError("AUTHORITY_PROFILE_MISMATCH: plane epoch differs")
+
     def get_bundle(self, bundle_id: str, *, authority_scope_id: str = "") -> dict[str, Any]:
         source_id = str(bundle_id or "").strip()
         if not source_id:
@@ -1234,6 +1360,7 @@ class PackageLogisticsClient:
         scope = str(authority_scope_id or self.config.authority_scope_id or "").strip()
         if not scope:
             raise PackageLogisticsError("authority scope is required to get a sealed transfer")
+        self._assert_authority(scope)
         path = (
             "/logistics/api/v1/bundles/"
             + quote(scope, safe="")
@@ -1241,6 +1368,94 @@ class PackageLogisticsClient:
             + quote(source_id, safe="")
         )
         return self._data(self._request("GET", path))
+
+    def get_capabilities(self) -> dict[str, Any]:
+        """Return the server-advertised logistics contract surface.
+
+        Product replacement is deliberately capability-gated because older
+        servers cannot invalidate a printed transfer seal safely.
+        """
+
+        return self._data(self._request("GET", "/logistics/api/v1/capabilities"))
+
+    def resolve_good_source(
+        self, *, authority_scope_id: str, barcode: str
+    ) -> dict[str, Any]:
+        scope = str(authority_scope_id or self.config.authority_scope_id or "").strip()
+        normalized = _normalize_barcode(barcode)
+        if not scope or not normalized:
+            raise PackageLogisticsError(
+                "authority scope and barcode are required to resolve a replacement good"
+            )
+        self._assert_authority(scope)
+        query = urlencode({"authority_scope_id": scope, "barcode": normalized})
+        return self._data(
+            self._request(
+                "GET",
+                f"/logistics/api/v1/replacements/good-source/resolve?{query}",
+            )
+        )
+
+    def replace_and_reseal_transfer(
+        self, command: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Atomically replace members in an AVAILABLE transfer and reseal it."""
+
+        key = str(command.get("idempotency_key") or "").strip()
+        scope = str(command.get("authority_scope_id") or "").strip()
+        payload = command.get("payload")
+        target = (
+            str(payload.get("target_bundle_id") or "").strip()
+            if isinstance(payload, Mapping)
+            else ""
+        )
+        if not key or not scope or not target:
+            raise PackageLogisticsError(
+                "sealed transfer replacement command identity is incomplete"
+            )
+        self._assert_authority(
+            scope,
+            authority_epoch=command.get("authority_epoch"),
+            ledger_plane=str(command.get("ledger_plane") or ""),
+            plane_epoch=command.get("plane_epoch"),
+        )
+        body = json.dumps(
+            dict(command), ensure_ascii=False, allow_nan=False, sort_keys=True
+        ).encode("utf-8")
+        path = (
+            "/logistics/api/v1/transfers/"
+            + quote(target, safe="")
+            + "/members/replace-and-reseal"
+        )
+        try:
+            return self._data(self._request("POST", path, body=body, key=key))
+        except PackageApiError as original:
+            should_recover_receipt = (
+                original.committed is True
+                or original.committed is None
+                or original.status_code >= 500
+            )
+            if not should_recover_receipt:
+                raise
+            try:
+                recovered = self.get_receipt_if_exists(
+                    key, authority_scope_id=scope
+                )
+            except PackageLogisticsError:
+                raise original
+            if recovered is not None:
+                return recovered
+            raise original
+        except PackageTransportError as original:
+            try:
+                recovered = self.get_receipt_if_exists(
+                    key, authority_scope_id=scope
+                )
+            except PackageLogisticsError:
+                raise original
+            if recovered is not None:
+                return recovered
+            raise original
 
     def resolve_transfer_bundle(
         self,
@@ -1253,18 +1468,29 @@ class PackageLogisticsClient:
         source_bundle_hint: str = "",
     ) -> dict[str, Any]:
         exact = canonical_barcodes(exact_rescan_barcodes)
-        query = urlencode(
-            {
-                "external_label": str(external_label or "").strip(),
-                "input_tag_id": str(input_tag_id or "").strip(),
-                "bundle_id": str(source_bundle_hint or "").strip(),
-                "item_id": str(item_id or "").strip(),
-                "authority_scope_id": str(authority_scope_id or "").strip(),
-                "bundle_role": "PACKAGE_SOURCE",
-                "member_count": len(exact) if exact else "",
-                "barcode_membership_hash": barcode_membership_hash(exact) if exact else "",
-            }
-        )
+        input_tag = str(input_tag_id or "").strip()
+        bundle_hint = str(source_bundle_hint or "").strip()
+        if not input_tag and not bundle_hint:
+            raise PackageLogisticsError(
+                "PACKAGE_SOURCE resolution requires structured PHS BND or ITG lineage"
+            )
+        params = {
+            "item_id": str(item_id or "").strip(),
+            "authority_scope_id": str(authority_scope_id or "").strip(),
+            "bundle_role": "PACKAGE_SOURCE",
+        }
+        self._assert_authority(params["authority_scope_id"])
+        if input_tag:
+            params["input_tag_id"] = input_tag
+        if bundle_hint:
+            params["bundle_id"] = bundle_hint
+        if exact:
+            params["member_count"] = len(exact)
+            params["barcode_membership_hash"] = barcode_membership_hash(exact)
+        # external_label is intentionally not a resolver key here.  A printed
+        # label or compatibility WID can match multiple partial/remainder
+        # lineages, while BND/ITG are structured server identities.
+        query = urlencode(params)
         return self._data(self._request("GET", f"/logistics/api/v1/bundles/resolve?{query}"))
 
     def build_create_package_command(
@@ -1280,6 +1506,7 @@ class PackageLogisticsClient:
             and draft.source_authority_scope_id != self.config.authority_scope_id
         ):
             raise PackageLogisticsError("sealed transfer QR scope is outside the configured allowlist")
+        resolved_projection: Mapping[str, Any] | None = None
         if not source_id:
             resolved = self.resolve_transfer_bundle(
                 external_label=draft.source_external_label,
@@ -1289,28 +1516,43 @@ class PackageLogisticsClient:
                 exact_rescan_barcodes=draft.exact_rescan_barcodes,
                 source_bundle_hint=draft.source_bundle_hint,
             )
-            source = resolved.get("bundle") if isinstance(resolved.get("bundle"), Mapping) else resolved
+            source = self._resolver_bundle(resolved)
+            self._validate_projection(
+                source,
+                draft,
+                expected_scope=scope,
+                require_package_source_role=True,
+            )
             source_id = str(
                 source.get("transfer_bundle_id") or source.get("bundle_id") or ""
             ).strip()
             if not source_id:
                 raise PackageLogisticsError("sealed transfer resolver returned no transfer bundle ID")
+            resolved_projection = source
         projection = self.get_bundle(source_id, authority_scope_id=scope)
-        self._validate_projection(projection, draft)
+        evidence = self._validate_projection(
+            projection,
+            draft,
+            expected_scope=scope,
+        )
+        projection_id = str(
+            projection.get("transfer_bundle_id") or projection.get("bundle_id") or ""
+        ).strip()
+        if projection_id != source_id:
+            raise PackageLogisticsError("sealed transfer projection identity changed after resolution")
+        if resolved_projection is not None:
+            resolved_id = str(
+                resolved_projection.get("transfer_bundle_id")
+                or resolved_projection.get("bundle_id")
+                or ""
+            ).strip()
+            if resolved_id != projection_id:
+                raise PackageLogisticsError("PACKAGE_SOURCE resolver lineage changed before packaging")
         version = int(projection.get("entity_version") or 0)
         if version < 1:
             raise PackageLogisticsError("sealed transfer bundle entity_version is invalid")
-        member_rows = projection.get("members")
-        if not isinstance(member_rows, list):
-            member_rows = []
-        barcode_to_unit = {
-            _normalize_barcode(row.get("normalized_barcode")): str(row.get("unit_id") or "").strip()
-            for row in member_rows
-            if isinstance(row, Mapping)
-        }
-        server_barcodes = canonical_barcodes(barcode_to_unit)
-        if len(server_barcodes) != int(projection.get("member_count") or 0):
-            raise PackageLogisticsError("sealed transfer barcode mapping is not exact")
+        barcode_to_unit = evidence["barcode_to_unit"]
+        server_barcodes = evidence["barcodes"]
         if draft.sample_barcodes and not set(draft.sample_barcodes).issubset(set(server_barcodes)):
             raise PackageLogisticsError("QA sample barcode is outside the sealed transfer membership")
         payload: dict[str, Any] = {
@@ -1320,6 +1562,12 @@ class PackageLogisticsClient:
             "membership_mode": draft.membership_mode,
             "sample_barcodes": list(draft.sample_barcodes),
         }
+        if draft.membership_mode == "INHERIT_ALL":
+            payload["source_evidence"] = {
+                "member_ids": list(evidence["member_ids"]),
+                "membership_hash": evidence["membership_hash"],
+                "barcode_membership_hash": evidence["barcode_membership_hash"],
+            }
         if draft.membership_mode == "EXACT_RESCAN":
             if draft.exact_rescan_barcodes != server_barcodes:
                 raise PackageLogisticsError("EXACT_RESCAN must equal the sealed transfer full membership")
@@ -1341,15 +1589,40 @@ class PackageLogisticsClient:
             "expected_versions": {f"bundle:{source_id}": version},
             "payload": payload,
         }
+        self._assert_authority(
+            command["authority_scope_id"],
+            authority_epoch=command["authority_epoch"],
+            ledger_plane=command["ledger_plane"],
+            plane_epoch=command["plane_epoch"],
+        )
         return source_id, command
 
     def create_package(self, command: Mapping[str, Any]) -> dict[str, Any]:
         key = str(command.get("idempotency_key") or "").strip()
         if not key:
             raise PackageLogisticsError("idempotency key is required")
+        self._assert_authority(
+            str(command.get("authority_scope_id") or ""),
+            authority_epoch=command.get("authority_epoch"),
+            ledger_plane=str(command.get("ledger_plane") or ""),
+            plane_epoch=command.get("plane_epoch"),
+        )
         body = json.dumps(dict(command), ensure_ascii=False, sort_keys=True).encode("utf-8")
         try:
             return self._data(self._request("POST", "/logistics/api/v1/packages", body=body, key=key))
+        except PackageApiError as original:
+            if original.committed is not True:
+                raise
+            try:
+                recovered = self.get_receipt_if_exists(
+                    key,
+                    authority_scope_id=str(command.get("authority_scope_id") or ""),
+                )
+            except PackageLogisticsError:
+                recovered = None
+            if recovered is not None:
+                return recovered
+            raise original
         except PackageTransportError as original:
             try:
                 return self.get_receipt(key, authority_scope_id=str(command.get("authority_scope_id") or ""))
@@ -1388,7 +1661,7 @@ class PackageLogisticsClient:
                 outbox_row.get("package_idempotency_key") or ""
             ),
         }
-        return {
+        command = {
             "contract_version": PACKAGE_CONTRACT_VERSION,
             "command_type": "CANCEL_PACKAGE",
             "authority_scope_id": scope,
@@ -1403,11 +1676,24 @@ class PackageLogisticsClient:
                 "evidence": evidence,
             },
         }
+        self._assert_authority(
+            scope,
+            authority_epoch=authority_epoch,
+            ledger_plane=plane,
+            plane_epoch=plane_epoch,
+        )
+        return command
 
     def cancel_package(self, command: Mapping[str, Any]) -> dict[str, Any]:
         key = str(command.get("idempotency_key") or "").strip()
         if not key:
             raise PackageLogisticsError("package cancellation idempotency key is required")
+        self._assert_authority(
+            str(command.get("authority_scope_id") or ""),
+            authority_epoch=command.get("authority_epoch"),
+            ledger_plane=str(command.get("ledger_plane") or ""),
+            plane_epoch=command.get("plane_epoch"),
+        )
         body = json.dumps(dict(command), ensure_ascii=False, sort_keys=True).encode("utf-8")
         try:
             return self._data(
@@ -1429,6 +1715,7 @@ class PackageLogisticsClient:
         scope = str(authority_scope_id or self.config.authority_scope_id or "").strip()
         if not scope:
             raise PackageLogisticsError("authority scope is required for receipt recovery")
+        self._assert_authority(scope)
         path = (
             "/logistics/api/v1/receipts/"
             + quote(scope, safe="")
@@ -1502,7 +1789,33 @@ class PackageLogisticsClient:
         return dict(data)
 
     @staticmethod
-    def _validate_projection(projection: Mapping[str, Any], draft: PackageCommandDraft) -> None:
+    def _resolver_bundle(resolved: Mapping[str, Any]) -> dict[str, Any]:
+        bundle = resolved.get("bundle") if isinstance(resolved, Mapping) else None
+        if not isinstance(bundle, Mapping):
+            raise PackageLogisticsError(
+                "PACKAGE_SOURCE resolver response is missing its canonical bundle projection"
+            )
+        candidate_count = resolved.get("candidate_count")
+        if (
+            isinstance(candidate_count, bool)
+            or not isinstance(candidate_count, int)
+            or candidate_count != 1
+        ):
+            raise PackageLogisticsError("PACKAGE_SOURCE resolver did not select exactly one transfer")
+        return dict(bundle)
+
+    @staticmethod
+    def _validate_projection(
+        projection: Mapping[str, Any],
+        draft: PackageCommandDraft,
+        *,
+        expected_scope: str = "",
+        require_package_source_role: bool = False,
+    ) -> dict[str, Any]:
+        if not isinstance(projection, Mapping):
+            raise PackageLogisticsError("sealed transfer projection must be an object")
+        if require_package_source_role and str(projection.get("bundle_role") or "").upper() != "PACKAGE_SOURCE":
+            raise PackageLogisticsError("PACKAGE_SOURCE resolver returned the wrong bundle role")
         if str(projection.get("bundle_type") or "").upper() != "TRANSFER":
             raise PackageLogisticsError("package source must be a TRANSFER bundle")
         if str(projection.get("bundle_state") or "").upper() != "AVAILABLE":
@@ -1510,13 +1823,89 @@ class PackageLogisticsClient:
         if str(projection.get("current_location") or "").upper() != "TRANSFER":
             raise PackageLogisticsError("package source is not at TRANSFER location")
         item_id = str(projection.get("item_id") or "").strip()
-        if item_id and item_id != draft.item_code:
+        if not item_id or item_id != draft.item_code:
             raise PackageLogisticsError("sealed transfer item does not match the packaging master label")
-        member_ids = canonical_member_ids(projection.get("member_ids") or [])
-        if not member_ids or len(member_ids) != int(projection.get("member_count") or 0):
+        scope = str(projection.get("authority_scope_id") or "").strip()
+        if not scope or (expected_scope and scope != expected_scope):
+            raise PackageLogisticsError("sealed transfer authority scope does not match the request")
+        authority_epoch = projection.get("authority_epoch")
+        plane_epoch = projection.get("plane_epoch")
+        entity_version = projection.get("entity_version")
+        ledger_plane = str(projection.get("ledger_plane") or "").strip().upper()
+        if (
+            isinstance(authority_epoch, bool)
+            or not isinstance(authority_epoch, int)
+            or authority_epoch < 0
+            or isinstance(plane_epoch, bool)
+            or not isinstance(plane_epoch, int)
+            or plane_epoch < 1
+            or isinstance(entity_version, bool)
+            or not isinstance(entity_version, int)
+            or entity_version < 1
+            or ledger_plane not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
+        ):
+            raise PackageLogisticsError("sealed transfer authority/ledger identity is invalid")
+        raw_member_ids = projection.get("member_ids")
+        if not isinstance(raw_member_ids, list):
+            raise PackageLogisticsError("sealed transfer exact member IDs are missing")
+        normalized_member_ids = tuple(str(value or "").strip() for value in raw_member_ids)
+        member_ids = canonical_member_ids(normalized_member_ids)
+        member_count = projection.get("member_count")
+        if (
+            not member_ids
+            or any(not value for value in normalized_member_ids)
+            or len(normalized_member_ids) != len(member_ids)
+            or isinstance(member_count, bool)
+            or not isinstance(member_count, int)
+            or len(member_ids) != member_count
+        ):
             raise PackageLogisticsError("sealed transfer exact member count is invalid")
-        if str(projection.get("membership_hash") or "") != membership_hash(member_ids):
+        expected_membership_hash = membership_hash(member_ids)
+        if str(projection.get("membership_hash") or "").lower() != expected_membership_hash:
             raise PackageLogisticsError("sealed transfer membership hash is invalid")
+        member_rows = projection.get("members")
+        if not isinstance(member_rows, list) or len(member_rows) != len(member_ids):
+            raise PackageLogisticsError("sealed transfer barcode mapping is partial")
+        row_unit_ids: list[str] = []
+        row_barcodes: list[str] = []
+        for row in member_rows:
+            if not isinstance(row, Mapping):
+                raise PackageLogisticsError("sealed transfer barcode mapping row is invalid")
+            unit_id = str(row.get("unit_id") or "").strip()
+            barcode = _normalize_barcode(row.get("normalized_barcode"))
+            if not unit_id or not barcode:
+                raise PackageLogisticsError("sealed transfer barcode mapping identifier is missing")
+            row_unit_ids.append(unit_id)
+            row_barcodes.append(barcode)
+        if (
+            len(set(row_unit_ids)) != len(row_unit_ids)
+            or len(set(row_barcodes)) != len(row_barcodes)
+            or set(row_unit_ids) != set(member_ids)
+        ):
+            raise PackageLogisticsError("sealed transfer barcode mapping is ambiguous")
+        barcode_member_count = projection.get("barcode_member_count")
+        expected_barcode_hash = barcode_membership_hash(row_barcodes)
+        barcode_projection_valid = not (
+            isinstance(barcode_member_count, bool)
+            or not isinstance(barcode_member_count, int)
+            or barcode_member_count != len(row_barcodes)
+            or str(projection.get("barcode_membership_hash") or "").lower()
+            != expected_barcode_hash
+        )
+        if not barcode_projection_valid:
+            active_seal_fallback = projection.get("active_seal")
+            barcode_projection_valid = bool(
+                draft.expected_seal_id
+                and isinstance(active_seal_fallback, Mapping)
+                and active_seal_fallback.get("sealed_member_count")
+                == len(row_barcodes)
+                and str(
+                    active_seal_fallback.get("sealed_barcode_membership_hash") or ""
+                ).lower()
+                == expected_barcode_hash
+            )
+        if not barcode_projection_valid:
+            raise PackageLogisticsError("sealed transfer barcode membership evidence is invalid")
         if draft.source_authority_scope_id and (
             str(projection.get("authority_scope_id") or "") != draft.source_authority_scope_id
         ):
@@ -1540,6 +1929,55 @@ class PackageLogisticsClient:
             int(projection.get("plane_epoch") or 0) != draft.expected_plane_epoch
         ):
             raise PackageLogisticsError("sealed transfer plane epoch differs from its QR")
+        if any(
+            (
+                draft.expected_seal_id,
+                draft.expected_seal_revision,
+                draft.expected_seal_token,
+                draft.expected_seal_qr_payload,
+            )
+        ):
+            active_seal = projection.get("active_seal")
+            if not isinstance(active_seal, Mapping):
+                raise PackageLogisticsError("sealed transfer active seal evidence is missing")
+            if (
+                active_seal.get("seal_contract_version") != "transfer-seal-qr-v1"
+                or active_seal.get("seal_state") != "ACTIVE"
+                or str(active_seal.get("seal_id") or "") != draft.expected_seal_id
+                or active_seal.get("seal_revision") != draft.expected_seal_revision
+                or str(active_seal.get("seal_token") or "")
+                != draft.expected_seal_token
+                or str(active_seal.get("seal_qr_payload") or "")
+                != draft.expected_seal_qr_payload
+                or str(active_seal.get("sealed_bundle_id") or "")
+                != str(projection.get("bundle_id") or "")
+                or active_seal.get("sealed_bundle_version") != entity_version
+                or canonical_member_ids(active_seal.get("sealed_member_ids") or ())
+                != member_ids
+                or canonical_member_barcodes(active_seal.get("sealed_members"))
+                != tuple(sorted(zip(row_unit_ids, row_barcodes, strict=True)))
+                or active_seal.get("sealed_member_count") != len(member_ids)
+                or str(active_seal.get("sealed_membership_hash") or "").lower()
+                != expected_membership_hash
+                or canonical_barcodes(
+                    active_seal.get("sealed_normalized_barcodes") or ()
+                )
+                != canonical_barcodes(row_barcodes)
+                or str(
+                    active_seal.get("sealed_barcode_membership_hash") or ""
+                ).lower()
+                != expected_barcode_hash
+            ):
+                raise PackageLogisticsError(
+                    "printed transfer seal is stale; scan the active resealed QR"
+                )
+        return {
+            "member_ids": member_ids,
+            "membership_hash": expected_membership_hash,
+            "barcodes": canonical_barcodes(row_barcodes),
+            "barcode_membership_hash": expected_barcode_hash,
+            "barcode_to_unit": dict(zip(row_barcodes, row_unit_ids, strict=True)),
+        }
 
 
 class PackageOutboxProcessor:
@@ -1582,11 +2020,21 @@ class PackageOutboxProcessor:
                         )
                         self.outbox.save_command(key, source_id, command)
                         receipt = self.client.create_package(command)
-                    self._validate_receipt(draft, source_id, receipt)
+                    self._validate_receipt(draft, source_id, receipt, command=command)
                     self.outbox.mark_acked(key, receipt)
                     counts["acked"] += 1
                 except PackageApiError as exc:
-                    if exc.status_code >= 500:
+                    if exc.committed is True:
+                        self.outbox.mark_conflict(key, exc)
+                        counts["conflict"] += 1
+                    elif (
+                        exc.status_code not in {409, 412}
+                        and (
+                            exc.status_code in {408, 425, 429}
+                            or exc.status_code >= 500
+                            or exc.retryable is True
+                        )
+                    ):
                         self.outbox.mark_retry(key, exc)
                         counts["retry"] += 1
                     else:
@@ -1602,7 +2050,11 @@ class PackageOutboxProcessor:
 
     @staticmethod
     def _validate_receipt(
-        draft: PackageCommandDraft, source_bundle_id: str, receipt: Mapping[str, Any]
+        draft: PackageCommandDraft,
+        source_bundle_id: str,
+        receipt: Mapping[str, Any],
+        *,
+        command: Mapping[str, Any] | None = None,
     ) -> None:
         data = receipt.get("data") if isinstance(receipt.get("data"), Mapping) else receipt
         if not isinstance(data, Mapping):
@@ -1611,11 +2063,70 @@ class PackageOutboxProcessor:
             raise PackageLogisticsError("package receipt source bundle does not match")
         if str(data.get("package_bundle_id") or "") != draft.package_bundle_id:
             raise PackageLogisticsError("package receipt package bundle does not match")
-        members = canonical_member_ids(data.get("member_ids") or [])
-        if not members or len(members) != int(data.get("member_count") or 0):
+        raw_members = data.get("member_ids")
+        if not isinstance(raw_members, list):
+            raise PackageLogisticsError("package receipt member IDs are missing")
+        normalized_members = tuple(str(value or "").strip() for value in raw_members)
+        members = canonical_member_ids(normalized_members)
+        member_count = data.get("member_count")
+        if (
+            not members
+            or any(not value for value in normalized_members)
+            or len(normalized_members) != len(members)
+            or isinstance(member_count, bool)
+            or not isinstance(member_count, int)
+            or len(members) != member_count
+        ):
             raise PackageLogisticsError("package receipt member count is invalid")
         if str(data.get("membership_hash") or "") != membership_hash(members):
             raise PackageLogisticsError("package receipt membership hash is invalid")
+        if str(data.get("source_bundle_type") or "").upper() != "TRANSFER":
+            raise PackageLogisticsError("package receipt source bundle type is invalid")
+        if str(data.get("membership_mode") or "").upper() != draft.membership_mode:
+            raise PackageLogisticsError("package receipt membership mode does not match")
+        if draft.membership_mode == "INHERIT_ALL":
+            command_payload = command.get("payload") if isinstance(command, Mapping) else None
+            expected_evidence = (
+                command_payload.get("source_evidence")
+                if isinstance(command_payload, Mapping)
+                else None
+            )
+            actual_evidence = data.get("source_evidence")
+            if not isinstance(expected_evidence, Mapping):
+                raise PackageLogisticsError(
+                    "saved INHERIT_ALL command is missing immutable source evidence"
+                )
+            if not isinstance(actual_evidence, Mapping):
+                raise PackageLogisticsError(
+                    "package receipt is missing inherited source evidence"
+                )
+            expected_raw_ids = expected_evidence.get("member_ids")
+            actual_raw_ids = actual_evidence.get("member_ids")
+            if not isinstance(expected_raw_ids, list) or not isinstance(actual_raw_ids, list):
+                raise PackageLogisticsError("package source evidence member IDs are invalid")
+            expected_ids_normalized = tuple(str(value or "").strip() for value in expected_raw_ids)
+            actual_ids_normalized = tuple(str(value or "").strip() for value in actual_raw_ids)
+            expected_ids = canonical_member_ids(expected_ids_normalized)
+            actual_ids = canonical_member_ids(actual_ids_normalized)
+            expected_digest = membership_hash(expected_ids) if expected_ids else ""
+            if (
+                not expected_ids
+                or any(not value for value in expected_ids_normalized + actual_ids_normalized)
+                or len(expected_ids_normalized) != len(expected_ids)
+                or len(actual_ids_normalized) != len(actual_ids)
+                or actual_ids != expected_ids
+                or members != expected_ids
+                or str(expected_evidence.get("membership_hash") or "").lower()
+                != expected_digest
+                or str(actual_evidence.get("membership_hash") or "").lower()
+                != expected_digest
+                or str(actual_evidence.get("barcode_membership_hash") or "").lower()
+                != str(expected_evidence.get("barcode_membership_hash") or "").lower()
+                or not str(expected_evidence.get("barcode_membership_hash") or "").strip()
+            ):
+                raise PackageLogisticsError(
+                    "package receipt inherited membership differs from source evidence"
+                )
         if draft.membership_mode == "EXACT_RESCAN":
             raw_exact = tuple(
                 _normalize_barcode(value)
@@ -2053,39 +2564,127 @@ class PackageCancellationOutboxProcessor:
             )
 
 
-def package_client_from_env() -> PackageLogisticsClient | None:
-    base_url = str(
-        os.environ.get("LABEL_MATCH_LOGISTICS_API_BASE_URL")
-        or os.environ.get("WORKER_ANALYSIS_LOGISTICS_API_BASE_URL")
-        or ""
-    ).strip()
-    token = str(
-        os.environ.get("LABEL_MATCH_LOGISTICS_API_TOKEN")
-        or os.environ.get("WORKER_ANALYSIS_LOGISTICS_API_TOKEN")
-        or ""
-    ).strip()
-    scope = str(
-        os.environ.get("LABEL_MATCH_LOGISTICS_AUTHORITY_SCOPE_ID")
-        or os.environ.get("WORKER_ANALYSIS_LOGISTICS_AUTHORITY_SCOPE_ID")
-        or ""
-    ).strip()
-    host = str(
-        os.environ.get("LABEL_MATCH_LOGISTICS_SOURCE_HOST_ID")
-        or os.environ.get("COMPUTERNAME")
-        or ""
-    ).strip()
-    if not all((base_url, token, host)):
-        return None
-    return PackageLogisticsClient(
-        PackageClientConfig(
+def package_client_from_env(
+    *,
+    transport: Transport | None = None,
+    probe_required: bool = True,
+    environ: Mapping[str, str] | None = None,
+    profile_decryptor: Any = None,
+) -> PackageLogisticsClient | None:
+    values = os.environ if environ is None else environ
+    required = logistics_runtime_required(environ)
+    profile = load_logistics_runtime_profile(
+        required,
+        environ=environ,
+        decryptor=profile_decryptor,
+    )
+    if profile is not None:
+        config = PackageClientConfig(
+            base_url=profile.base_url,
+            token=profile.bearer_token,
+            authority_scope_id=profile.authority_scope,
+            source_host_id=profile.source_host_id,
+            device_id=profile.device_id,
+            timeout_seconds=profile.timeout_seconds,
+            authority_epoch=profile.authority_epoch,
+            authority_plane=profile.authority_plane,
+            plane_epoch=profile.plane_epoch,
+            authoritative_required=required,
+        )
+    else:
+        base_url = str(
+            values.get("LABEL_MATCH_LOGISTICS_API_BASE_URL")
+            or values.get("WORKER_ANALYSIS_LOGISTICS_API_BASE_URL")
+            or ""
+        ).strip()
+        token = str(
+            values.get("LABEL_MATCH_LOGISTICS_API_TOKEN")
+            or values.get("WORKER_ANALYSIS_LOGISTICS_API_TOKEN")
+            or ""
+        ).strip()
+        scope = str(
+            values.get("LABEL_MATCH_LOGISTICS_AUTHORITY_SCOPE_ID")
+            or values.get("WORKER_ANALYSIS_LOGISTICS_AUTHORITY_SCOPE_ID")
+            or ""
+        ).strip()
+        host = str(
+            values.get("LABEL_MATCH_LOGISTICS_SOURCE_HOST_ID")
+            or values.get("COMPUTERNAME")
+            or ""
+        ).strip()
+        if not base_url and not token:
+            return None
+        if not all((base_url, token, host)):
+            raise LogisticsRuntimeConfigurationError(
+                "legacy Label logistics environment profile is incomplete"
+            )
+        try:
+            timeout = float(values.get("LABEL_MATCH_LOGISTICS_TIMEOUT_SECONDS") or 8)
+        except (TypeError, ValueError) as exc:
+            raise LogisticsRuntimeConfigurationError(
+                "legacy Label logistics timeout is invalid"
+            ) from exc
+        config = PackageClientConfig(
             base_url=base_url,
             token=token,
             authority_scope_id=scope,
             source_host_id=host,
-            device_id=str(os.environ.get("LABEL_MATCH_LOGISTICS_DEVICE_ID") or host).strip(),
-            timeout_seconds=float(os.environ.get("LABEL_MATCH_LOGISTICS_TIMEOUT_SECONDS") or 8),
+            device_id=str(values.get("LABEL_MATCH_LOGISTICS_DEVICE_ID") or host).strip(),
+            timeout_seconds=timeout,
         )
-    )
+    try:
+        client = PackageLogisticsClient(config, transport=transport)
+    except PackageLogisticsError as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "Label logistics runtime profile is invalid"
+        ) from exc
+    if required and probe_required:
+        try:
+            capabilities = client.get_capabilities()
+            capability = (capabilities.get("capabilities") or {}).get(
+                "sealed_transfer_member_replacement_v1"
+            )
+            if (
+                "sealed_transfer_member_replacement_v1"
+                not in (capabilities.get("capability_ids") or [])
+                or not isinstance(capability, Mapping)
+                or capability.get("enabled") is not True
+                or capability.get("command_type")
+                != "REPLACE_SEALED_TRANSFER_MEMBERS"
+                or capability.get("endpoint_template")
+                != "/logistics/api/v1/transfers/{target_bundle_id}/members/replace-and-reseal"
+                or capability.get("receipt_contract_version")
+                != "sealed-transfer-member-replacement-v1"
+                or capability.get("replacement_source_bundle_cardinality")
+                != "EXACTLY_ONE_ACTIVE_MEMBER"
+                or capability.get("multi_member_source_policy")
+                != "REJECT_STALE_PHYSICAL_LABEL"
+                or capability.get("multi_member_source_error_code")
+                != "REPLACEMENT_SOURCE_NOT_SINGLETON"
+                or capability.get("seal_qr_contract_version")
+                != "transfer-seal-qr-v1"
+                or capability.get("max_pairs") != 2
+                or capability.get("atomic") is not True
+                or capability.get("fail_closed_when_unavailable") is not True
+                or capability.get("disabled_server_behavior")
+                != "REJECT_COMMAND_DO_NOT_MUTATE_LOCAL_STATE"
+                or capability.get("client_rollout_gate")
+                != "REQUIRE_ENABLED_CAPABILITY_AND_EXACT_RECEIPT"
+            ):
+                raise LogisticsRuntimeConfigurationError(
+                    "authoritative package capability readiness is incomplete"
+                )
+        except LogisticsRuntimeConfigurationError:
+            raise
+        except PackageApiError as exc:
+            raise LogisticsRuntimeConfigurationError(
+                f"authoritative package readiness failed: {exc.code}"
+            ) from exc
+        except Exception as exc:
+            raise LogisticsRuntimeConfigurationError(
+                f"authoritative package readiness failed: {exc.__class__.__name__}"
+            ) from exc
+    return client
 
 
 __all__ = [
@@ -2105,4 +2704,5 @@ __all__ = [
     "canonical_member_ids",
     "membership_hash",
     "package_client_from_env",
+    "LogisticsRuntimeConfigurationError",
 ]

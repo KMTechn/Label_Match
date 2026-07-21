@@ -275,7 +275,7 @@ def test_clean_checkout_is_required(monkeypatch, tmp_path):
         builder._verify_clean_checkout(tmp_path)
 
 
-def test_authenticode_manifest_must_bind_exact_four_signed_executables(tmp_path, monkeypatch):
+def test_authenticode_manifest_must_bind_exact_six_signed_executables(tmp_path, monkeypatch):
     package_root = tmp_path / "Label_Match"
     destination = package_root / "tools"
     destination.mkdir(parents=True)
@@ -294,6 +294,19 @@ def test_authenticode_manifest_must_bind_exact_four_signed_executables(tmp_path,
             "timestamp_thumbprint": timestamp,
         }
     ]
+    for executable_name in builder.LOGISTICS_PROFILE_EXECUTABLE_NAMES:
+        executable = package_root / executable_name
+        executable.write_bytes(executable_name.encode())
+        entries.append(
+            {
+                "path": executable_name,
+                "size": executable.stat().st_size,
+                "sha256": builder._sha256(executable),
+                "status": "Valid",
+                "signer_thumbprint": signer,
+                "timestamp_thumbprint": timestamp,
+            }
+        )
     for spec in builder.TOOL_SPECS:
         if spec.mode == "onefile":
             executable = destination / spec.executable_name
@@ -350,6 +363,8 @@ def test_authenticode_manifest_must_bind_exact_four_signed_executables(tmp_path,
     assert digest == builder._sha256(manifest)
     assert {entry["path"] for entry in verification} == {
         "Label_Match.exe",
+        "KMTech_Logistics_Profile_Install.exe",
+        "KMTech_Logistics_Profile_Check.exe",
         "tools/direct_sync_relay_runner.exe",
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "tools/register_label_match_worker_pc.exe",
@@ -386,6 +401,19 @@ def test_authenticode_manifest_rejects_duplicate_paths_and_live_signature_mismat
             "timestamp_thumbprint": timestamp,
         }
     ]
+    for executable_name in builder.LOGISTICS_PROFILE_EXECUTABLE_NAMES:
+        executable = package_root / executable_name
+        executable.write_bytes(executable_name.encode())
+        entries.append(
+            {
+                "path": executable_name,
+                "size": executable.stat().st_size,
+                "sha256": builder._sha256(executable),
+                "status": "Valid",
+                "signer_thumbprint": signer,
+                "timestamp_thumbprint": timestamp,
+            }
+        )
     manifest = package_root / "authenticode-manifest.json"
     manifest.write_text(
         json.dumps({"status": "PASS", "signer_thumbprint": signer, "executables": entries + entries}),
@@ -418,7 +446,7 @@ def test_authenticode_manifest_rejects_duplicate_paths_and_live_signature_mismat
         )
 
 
-def test_signing_script_uses_thumbprint_store_timestamp_and_four_exact_targets():
+def test_signing_script_uses_thumbprint_store_timestamp_and_six_exact_targets():
     script = (Path(__file__).resolve().parents[1] / "tools" / "sign_release_executables.ps1").read_text(
         encoding="utf-8"
     )
@@ -434,4 +462,6 @@ def test_signing_script_uses_thumbprint_store_timestamp_and_four_exact_targets()
     assert "1.3.6.1.5.5.7.3.3" in script
     assert "ExpectedThumbprint" in script
     assert "direct_sync_relay_install_pack\\direct_sync_relay_install_pack.exe" in script
+    assert "KMTech_Logistics_Profile_Install.exe" in script
+    assert "KMTech_Logistics_Profile_Check.exe" in script
     assert "authenticode-manifest.json" in script
