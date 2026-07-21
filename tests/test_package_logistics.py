@@ -252,6 +252,57 @@ def test_five_scan_draft_keeps_three_samples_out_of_exact_membership(monkeypatch
     assert draft.expected_membership_hash == MEMBERSHIP_HASH
 
 
+@pytest.mark.parametrize(
+    "master",
+    [
+        _qr(),
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-CENTRAL-2SCAN|CLC=ITEM000000001",
+    ],
+)
+def test_central_two_scan_draft_inherits_all_without_product_samples(master):
+    final_label = "FINAL-ITEM000000001-LABEL-LONG-20260722\x1d6D20260722"
+    current = {
+        "id": "SET-CENTRAL-2SCAN",
+        "raw": [master, final_label],
+        "central_inherit_all": True,
+    }
+
+    draft = label_module._label_match_package_draft(
+        current,
+        item_code="ITEM000000001",
+    )
+
+    assert draft.membership_mode == "INHERIT_ALL"
+    assert draft.sample_barcodes == ()
+    assert draft.exact_rescan_barcodes == ()
+    assert draft.external_label == final_label
+    if master.startswith("TRF=1"):
+        assert draft.source_bundle_id == TRANSFER
+        assert draft.expected_member_count == 4
+        assert draft.expected_membership_hash == MEMBERSHIP_HASH
+    else:
+        assert draft.source_input_tag_id == "ITG-CENTRAL-2SCAN"
+
+
+def test_central_two_scan_workflow_routes_second_scan_as_final_label():
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.package_logistics_client = object()
+    app.current_set_info = {
+        "raw": [_qr()],
+        "parsed": ["ITEM000000001"],
+        "central_inherit_all": True,
+    }
+    app.history_view_updates_active_state = True
+
+    assert app._workflow_total_scan_count() == 2
+    assert app._workflow_final_label_position() == 2
+    assert app._next_action_text(1) == "2/2 포장 라벨 스캔"
+    assert (
+        label_module._label_match_manual_complete_block_reason(app.current_set_info)
+        == "manual_complete_disabled_for_central_inherit_all"
+    )
+
+
 def test_legacy_inherit_is_blocked_and_full_exact_rescan_is_separate(monkeypatch):
     current = {
         "id": "SET-LEGACY",

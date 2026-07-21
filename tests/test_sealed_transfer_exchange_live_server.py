@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 import sys
 from urllib.parse import urlsplit
 
@@ -54,7 +55,8 @@ def test_packaging_exchange_traverses_live_capability_resolver_and_reseal(tmp_pa
             source_host_id="label-live-host",
             device_id="label-live-device",
             authority_epoch=2,
-            authority_plane="SHADOW_CANDIDATE",
+            authority_plane="AUTHORITATIVE",
+            ledger_plane="SHADOW_CANDIDATE",
             plane_epoch=1,
         ),
         transport=transport,
@@ -81,7 +83,7 @@ def test_packaging_exchange_traverses_live_capability_resolver_and_reseal(tmp_pa
 
 
 def test_two_pair_live_reseal_accepts_aggregated_movement_receipts(tmp_path):
-    app, _db_path = _app(tmp_path / "server", opening_qty=4)
+    app, db_path = _app(tmp_path / "server", opening_qty=4)
     web = app.test_client()
     seed = _seed(web, source_count=1)
     source_two_id, _source_two_version, _source_two_members = _complete_phs(
@@ -115,7 +117,8 @@ def test_two_pair_live_reseal_accepts_aggregated_movement_receipts(tmp_path):
             source_host_id="label-live-host",
             device_id="label-live-device",
             authority_epoch=2,
-            authority_plane="SHADOW_CANDIDATE",
+            authority_plane="AUTHORITATIVE",
+            ledger_plane="SHADOW_CANDIDATE",
             plane_epoch=1,
         ),
         transport=transport,
@@ -142,4 +145,18 @@ def test_two_pair_live_reseal_accepts_aggregated_movement_receipts(tmp_path):
 
     assert result.status == "ACKED", result
     assert receipt["data"]["pair_count"] == 2
-    assert len(receipt["data"]["movement_ids"]) == 2
+    movement_ids = receipt["data"]["movement_ids"]
+    assert len(movement_ids) == len(set(movement_ids)) == 3
+    with sqlite3.connect(db_path) as conn:
+        movements = conn.execute(
+            f"""SELECT movement_type,quantity
+                  FROM logistics_movements
+                 WHERE movement_id IN ({','.join('?' for _ in movement_ids)})
+                 ORDER BY movement_type,quantity""",
+            movement_ids,
+        ).fetchall()
+    assert movements == [
+        ("SEALED_TRANSFER_DAMAGE_REMOVAL", 2),
+        ("SEALED_TRANSFER_GOOD_REPLACEMENT", 1),
+        ("SEALED_TRANSFER_GOOD_REPLACEMENT", 1),
+    ]
