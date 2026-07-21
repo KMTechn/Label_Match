@@ -22,6 +22,7 @@ DPAPI_REFERENCE_PREFIX = "dpapi:"
 DEFAULT_TOKEN_REF = "dpapi:secrets/bearer-token.dpapi"
 DPAPI_ENTROPY = b"KMTech Logistics Runtime Profile v1"
 DEFAULT_PROFILE_RELATIVE_PATH = Path("KMTech") / "Logistics" / "runtime-profile.json"
+SUPPORTED_LEDGER_PLANES = frozenset({"AUTHORITATIVE", "SHADOW_CANDIDATE"})
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_SECRET_BYTES = 64 * 1024
 _MACHINE_ENVIRONMENT_KEY = (
@@ -39,6 +40,7 @@ class LogisticsRuntimeProfile:
     authority_scope: str
     authority_epoch: int
     authority_plane: str
+    ledger_plane: str
     plane_epoch: int
     device_id: str
     source_host_id: str
@@ -54,6 +56,7 @@ class LogisticsRuntimeProfile:
             "authority_scope": self.authority_scope,
             "authority_epoch": self.authority_epoch,
             "authority_plane": self.authority_plane,
+            "ledger_plane": self.ledger_plane,
             "plane_epoch": self.plane_epoch,
             "device_id": self.device_id,
             "source_host_id": self.source_host_id,
@@ -213,6 +216,19 @@ def _positive_int(value: Any, field_name: str) -> int:
     return parsed
 
 
+def _selected_ledger_plane(
+    values: Mapping[str, Any], authority_plane: str
+) -> str:
+    if "ledger_plane" not in values:
+        return authority_plane
+    ledger_plane = _safe_text(values.get("ledger_plane"), "ledger_plane").upper()
+    if ledger_plane not in SUPPORTED_LEDGER_PLANES:
+        raise LogisticsRuntimeConfigurationError(
+            "machine logistics ledger_plane must be AUTHORITATIVE or SHADOW_CANDIDATE"
+        )
+    return ledger_plane
+
+
 def _https_base_url(value: Any) -> str:
     url = _safe_text(value, "base_url").rstrip("/")
     if any(character.isspace() for character in url) or "\\" in url:
@@ -364,11 +380,14 @@ def load_logistics_runtime_profile(
         or any(character.isspace() for character in token)
     ):
         raise LogisticsRuntimeConfigurationError("DPAPI bearer token is empty or invalid")
-    plane = _safe_text(profile.get("authority_plane"), "authority_plane").upper()
-    if plane != "AUTHORITATIVE":
+    authority_plane = _safe_text(
+        profile.get("authority_plane"), "authority_plane"
+    ).upper()
+    if authority_plane != "AUTHORITATIVE":
         raise LogisticsRuntimeConfigurationError(
             "machine logistics authority_plane must be AUTHORITATIVE"
         )
+    ledger_plane = _selected_ledger_plane(profile, authority_plane)
     try:
         timeout = float(profile.get("timeout_seconds", 10.0))
     except (TypeError, ValueError) as exc:
@@ -379,7 +398,8 @@ def load_logistics_runtime_profile(
         base_url=_https_base_url(profile.get("base_url")),
         authority_scope=_safe_text(profile.get("authority_scope"), "authority_scope"),
         authority_epoch=_positive_int(profile.get("authority_epoch"), "authority_epoch"),
-        authority_plane=plane,
+        authority_plane=authority_plane,
+        ledger_plane=ledger_plane,
         plane_epoch=_positive_int(profile.get("plane_epoch"), "plane_epoch"),
         device_id=_safe_text(profile.get("device_id"), "device_id"),
         source_host_id=_safe_text(profile.get("source_host_id"), "source_host_id"),
@@ -408,9 +428,12 @@ def profile_from_values(
         or any(character.isspace() for character in token)
     ):
         raise LogisticsRuntimeConfigurationError("bearer token is empty or invalid")
-    plane = _safe_text(values.get("authority_plane"), "authority_plane").upper()
-    if plane != "AUTHORITATIVE":
+    authority_plane = _safe_text(
+        values.get("authority_plane"), "authority_plane"
+    ).upper()
+    if authority_plane != "AUTHORITATIVE":
         raise LogisticsRuntimeConfigurationError("machine logistics authority_plane must be AUTHORITATIVE")
+    ledger_plane = _selected_ledger_plane(values, authority_plane)
     try:
         timeout = float(values.get("timeout_seconds", 10.0))
     except (TypeError, ValueError) as exc:
@@ -421,7 +444,8 @@ def profile_from_values(
         base_url=_https_base_url(values.get("base_url")),
         authority_scope=_safe_text(values.get("authority_scope"), "authority_scope"),
         authority_epoch=_positive_int(values.get("authority_epoch"), "authority_epoch"),
-        authority_plane=plane,
+        authority_plane=authority_plane,
+        ledger_plane=ledger_plane,
         plane_epoch=_positive_int(values.get("plane_epoch"), "plane_epoch"),
         device_id=_safe_text(values.get("device_id"), "device_id"),
         source_host_id=_safe_text(values.get("source_host_id"), "source_host_id"),

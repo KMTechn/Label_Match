@@ -436,6 +436,23 @@ def test_normal_action_states_distinguish_current_and_completed_cancellation():
     assert active.cancel_completed_enabled is True
 
 
+def test_central_inherit_all_presents_two_scan_workflow_without_f3_samples():
+    view = present_workflow(
+        WorkflowSnapshot(
+            qa_scans=("TRANSFER-QR",),
+            sealed_transfer=True,
+            central_inherit_all=True,
+        )
+    )
+
+    assert view.qa_total == 2
+    assert view.qa_progress_text == "1/2"
+    assert [slot.label for slot in view.slots] == ["현품표/이적 묶음", "포장 라벨"]
+    assert view.next_action == "2/2 포장 라벨 스캔"
+    assert view.f3_enabled is False
+    assert view.f4_enabled is True
+
+
 def test_invalid_completion_kind_and_empty_blocking_notice_fail_fast():
     with pytest.raises(ValueError, match="completion_kind"):
         present_workflow(WorkflowSnapshot(completion_kind="unknown"))

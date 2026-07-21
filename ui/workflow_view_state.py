@@ -18,6 +18,10 @@ SLOT_DEFINITIONS = (
     ("product_3", "제품3"),
     ("final_label", "최종 라벨"),
 )
+CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
+    ("master_label", "현품표/이적 묶음"),
+    ("final_label", "포장 라벨"),
+)
 COMPLETION_KINDS = frozenset({"full", "partial", "failed"})
 
 
@@ -48,6 +52,7 @@ class WorkflowSnapshot:
     history_readonly: bool = False
     history_loading: bool = False
     sealed_transfer: bool = False
+    central_inherit_all: bool = False
     exact_rescan_active: bool = False
     exact_rescan_complete: bool = False
     exact_rescan_target: int = 0
@@ -119,6 +124,14 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     exact_target = max(int(snapshot.exact_rescan_target or 0), 0)
     exact_completed = len(exact_members)
     qa_completed = len(scans)
+    slot_definitions = (
+        CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS
+        if snapshot.central_inherit_all
+        else SLOT_DEFINITIONS
+    )
+    qa_total = len(slot_definitions)
+    if qa_completed > qa_total:
+        raise ValueError(f"qa_scans cannot contain more than {qa_total} entries for this workflow")
     readonly = bool(snapshot.history_readonly)
     completion_kind = _normalize_completion_kind(snapshot.completion_kind)
     interaction_blocked = (
@@ -133,8 +146,9 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
 
     f3_enabled = (
         action_gate_reason is None
+        and not snapshot.central_inherit_all
         and not snapshot.exact_rescan_active
-        and 2 <= qa_completed < QA_TOTAL
+        and 2 <= qa_completed < qa_total
     )
     f3_hint = _f3_hint(
         qa_completed=qa_completed,
@@ -145,7 +159,7 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     f4_enabled = (
         action_gate_reason is None
         and (
-            (snapshot.sealed_transfer and 1 <= qa_completed < QA_TOTAL)
+            (snapshot.sealed_transfer and 1 <= qa_completed < qa_total)
             or (not snapshot.sealed_transfer and qa_completed == 1)
         )
         and not snapshot.exact_rescan_active
@@ -170,11 +184,14 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     primary = _primary_view(
         snapshot=snapshot,
         qa_completed=qa_completed,
+        qa_total=qa_total,
+        slot_definitions=slot_definitions,
         completion_kind=completion_kind,
         exact_rescan=exact_rescan,
     )
     slots = _slot_views(
         scans=scans,
+        slot_definitions=slot_definitions,
         readonly=readonly,
         has_error=snapshot.has_error,
     )
@@ -188,7 +205,7 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     cancel_current_enabled = (
         not interaction_blocked
         and completion_kind is None
-        and 0 < qa_completed < QA_TOTAL
+        and 0 < qa_completed < qa_total
     )
     cancel_completed_enabled = not interaction_blocked
 
@@ -200,8 +217,8 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
         last_successful_scan=last_successful_scan,
         last_normal_scan=last_successful_scan,
         qa_completed=qa_completed,
-        qa_total=QA_TOTAL,
-        qa_progress_text=f"{qa_completed}/{QA_TOTAL}",
+        qa_total=qa_total,
+        qa_progress_text=f"{qa_completed}/{qa_total}",
         exact_rescan=exact_rescan,
         f3_enabled=f3_enabled,
         f3_hint=f3_hint,
@@ -221,19 +238,21 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
 def _slot_views(
     *,
     scans: tuple[str, ...],
+    slot_definitions: tuple[tuple[str, str], ...],
     readonly: bool,
     has_error: bool,
 ) -> tuple[ScanSlotView, ...]:
     completed = len(scans)
+    qa_total = len(slot_definitions)
     rows: list[ScanSlotView] = []
-    for offset, (key, label) in enumerate(SLOT_DEFINITIONS):
+    for offset, (key, label) in enumerate(slot_definitions):
         filled = offset < completed
         value = scans[offset] if filled else ""
         if readonly:
             state = "readonly"
         elif filled:
             state = "complete"
-        elif has_error and offset == min(completed, QA_TOTAL - 1):
+        elif has_error and offset == min(completed, qa_total - 1):
             state = "error"
         elif offset == completed:
             state = "current"
@@ -256,6 +275,8 @@ def _primary_view(
     *,
     snapshot: WorkflowSnapshot,
     qa_completed: int,
+    qa_total: int,
+    slot_definitions: tuple[tuple[str, str], ...],
     completion_kind: str | None,
     exact_rescan: ExactRescanView,
 ) -> _PrimaryView:
@@ -312,7 +333,10 @@ def _primary_view(
         )
         return _PrimaryView("error", notice.title, action, notice, "danger")
     if completion_kind is not None:
-        return _completion_view(completion_kind)
+        return _completion_view(
+            completion_kind,
+            central_inherit_all=snapshot.central_inherit_all,
+        )
     if exact_rescan.status == "active":
         return _PrimaryView(
             "exact_rescan",
@@ -321,7 +345,7 @@ def _primary_view(
             None,
             "primary",
         )
-    if qa_completed >= QA_TOTAL:
+    if qa_completed >= qa_total:
         return _PrimaryView(
             "complete",
             "통과 완료",
@@ -330,22 +354,32 @@ def _primary_view(
             "success",
         )
 
-    key, label = SLOT_DEFINITIONS[qa_completed]
+    key, label = slot_definitions[qa_completed]
     if qa_completed == 0:
-        action = "1/5 현품표 스캔"
-    elif qa_completed < QA_TOTAL - 1:
-        action = f"{qa_completed + 1}/5 제품 {qa_completed} 스캔"
+        action = f"1/{qa_total} 현품표 스캔"
+    elif snapshot.central_inherit_all:
+        action = f"2/{qa_total} 포장 라벨 스캔"
+    elif qa_completed < qa_total - 1:
+        action = f"{qa_completed + 1}/{qa_total} 제품 {qa_completed} 스캔"
     else:
-        action = "5/5 최종 라벨 스캔"
+        action = f"{qa_total}/{qa_total} 최종 라벨 스캔"
     tone = "success" if exact_rescan.status == "complete" else "primary"
     return _PrimaryView(key, label, action, None, tone)
 
 
-def _completion_view(completion_kind: str) -> _PrimaryView:
+def _completion_view(
+    completion_kind: str,
+    *,
+    central_inherit_all: bool = False,
+) -> _PrimaryView:
     if completion_kind == "full":
         notice = WorkflowNotice(
             "통과 완료",
-            "정상 5단계를 기록했습니다.",
+            (
+                "서버 전체 멤버십 상속 포장을 기록했습니다."
+                if central_inherit_all
+                else "정상 5단계를 기록했습니다."
+            ),
             kind="completion_full",
             tone="success",
         )

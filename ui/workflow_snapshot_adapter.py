@@ -84,6 +84,7 @@ def adapt_workflow_snapshot(
         history_readonly=bool(history_readonly),
         history_loading=bool(history_loading),
         sealed_transfer=bool(current_set_info.get("sealed_transfer")),
+        central_inherit_all=bool(current_set_info.get("central_inherit_all")),
         exact_rescan_active=bool(
             current_set_info.get("exact_rescan_active", False)
         ),

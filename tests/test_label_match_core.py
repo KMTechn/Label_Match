@@ -198,6 +198,47 @@ def test_success_scan_sound_mapping_keeps_product_one_as_scan_one():
     assert sound_key("not-a-position") is None
 
 
+def test_central_inherit_all_second_scan_finalizes_without_product_samples():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.package_logistics_client = object()
+    app.current_set_info = {
+        "id": "central-two-scan",
+        "raw": [
+            "TRF=1|BND=TRANSFER-1|AUTH_SCOPE=SCOPE-1|CLC=AAA2270730100|QT=1|"
+            f"HSH={'a' * 64}|EPOCH=1|PLANE=AUTHORITATIVE|PE=1"
+        ],
+        "parsed": ["AAA2270730100"],
+        "central_inherit_all": True,
+    }
+    app.history_view_updates_active_state = True
+    app.is_running_simulation = True
+    app.progress_bar = _FakeProgressBar()
+    app.data_manager = _FakeLoggingDataManager()
+    app.update_big_display = lambda *args, **kwargs: None
+    app._update_status_label = lambda: None
+    app._update_history_tree_in_progress = lambda: None
+    app._save_current_set_state = lambda: None
+    app._render_operator_workbench = lambda: None
+    finalized = []
+    app._finalize_set = lambda *args, **kwargs: finalized.append((args, kwargs))
+
+    module.Label_Match._update_on_success_scan(
+        app,
+        "FINAL-AAA2270730100-LABEL-20260722\x1d6D20260722",
+        "AAA2270730100",
+    )
+
+    assert len(app.current_set_info["raw"]) == 2
+    assert finalized == [((module.Label_Match.Results.PASS,), {})]
+    event_type, details = app.data_manager.events[-1]
+    assert event_type == module.Label_Match.Events.SCAN_OK
+    assert details["barcode_role"] == "final_packaging_label"
+    assert details["product_barcode"] is None
+    assert details["packaging_scan_mode"] == "CENTRAL_INHERIT_ALL"
+
+
 def test_default_sound_config_starts_counting_on_master_scan():
     settings = json.loads((Path(__file__).resolve().parents[1] / "config" / "app_settings.json").read_text(encoding="utf-8-sig"))
     sound_files = settings["sound_files"]

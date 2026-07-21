@@ -67,6 +67,7 @@ def install_runtime_profile(
     authority_scope: str,
     authority_epoch: int,
     authority_plane: str,
+    ledger_plane: str | None = None,
     plane_epoch: int,
     device_id: str,
     source_host_id: str,
@@ -79,12 +80,14 @@ def install_runtime_profile(
     target = assert_path_has_no_reparse_components(
         profile_path, label="runtime profile"
     )
+    selected_ledger_plane = authority_plane if ledger_plane is None else ledger_plane
     values = {
         "contract_version": PROFILE_CONTRACT_VERSION,
         "base_url": base_url,
         "authority_scope": authority_scope,
         "authority_epoch": authority_epoch,
         "authority_plane": authority_plane,
+        "ledger_plane": selected_ledger_plane,
         "plane_epoch": plane_epoch,
         "device_id": device_id,
         "source_host_id": source_host_id,
@@ -130,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--authority-scope", required=True)
     parser.add_argument("--authority-epoch", type=int, required=True)
     parser.add_argument("--authority-plane", default="AUTHORITATIVE")
+    parser.add_argument("--ledger-plane")
     parser.add_argument("--plane-epoch", type=int, required=True)
     parser.add_argument("--device-id", required=True)
     parser.add_argument("--source-host-id", required=True)
@@ -154,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             authority_scope=args.authority_scope,
             authority_epoch=args.authority_epoch,
             authority_plane=args.authority_plane,
+            ledger_plane=args.ledger_plane,
             plane_epoch=args.plane_epoch,
             device_id=args.device_id,
             source_host_id=args.source_host_id,

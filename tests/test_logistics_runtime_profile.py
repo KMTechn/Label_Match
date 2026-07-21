@@ -98,9 +98,40 @@ def test_machine_profile_and_required_probe_are_secure(tmp_path, monkeypatch):
     )
 
     assert profile is not None and client is not None
+    assert profile.authority_plane == "AUTHORITATIVE"
+    assert profile.ledger_plane == "AUTHORITATIVE"
     assert client.config.authoritative_required is True
     assert "machine-secret" not in repr(profile)
     assert "machine-secret" not in repr(client.config)
+
+
+def test_required_profile_separates_authority_mode_from_selected_ledger_plane(
+    tmp_path, monkeypatch
+):
+    path = _profile(tmp_path, ledger_plane="SHADOW_CANDIDATE")
+    _env(monkeypatch, path)
+
+    client = package_client_from_env(
+        transport=_transport,
+        profile_decryptor=lambda _value: "machine-secret",
+    )
+
+    assert client is not None
+    assert client.config.authority_plane == "AUTHORITATIVE"
+    assert client.config.ledger_plane == "SHADOW_CANDIDATE"
+    client._assert_authority(
+        "scope-machine",
+        authority_epoch=7,
+        ledger_plane="SHADOW_CANDIDATE",
+        plane_epoch=3,
+    )
+    with pytest.raises(PackageLogisticsError, match="ledger plane"):
+        client._assert_authority(
+            "scope-machine",
+            authority_epoch=7,
+            ledger_plane="AUTHORITATIVE",
+            plane_epoch=3,
+        )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI round-trip")
@@ -213,6 +244,8 @@ def test_hklm_machine_profile_ignores_process_path_override(tmp_path, monkeypatc
         ({"base_url": "https://logistics.example.invalid/prefix"}, "HTTPS"),
         ({"base_url": "https://logistics.example.invalid:99999"}, "valid URL"),
         ({"base_url": "https://localhost:8443"}, "loopback"),
+        ({"authority_plane": "SHADOW_CANDIDATE"}, "AUTHORITATIVE"),
+        ({"ledger_plane": "UNKNOWN"}, "ledger_plane"),
         ({"bearer_token_ref": "dpapi:../token.dpapi"}, "profile directory"),
         ({"bearer_token": "plaintext"}, "plaintext"),
     ],
@@ -290,6 +323,7 @@ def test_installer_dry_run_is_write_free_and_redacted(tmp_path, monkeypatch, cap
             "--base-url", "https://logistics.example.invalid",
             "--authority-scope", "scope-machine",
             "--authority-epoch", "7",
+            "--ledger-plane", "SHADOW_CANDIDATE",
             "--plane-epoch", "3",
             "--device-id", "label-pc-01",
             "--source-host-id", "label-host-01",
@@ -300,6 +334,9 @@ def test_installer_dry_run_is_write_free_and_redacted(tmp_path, monkeypatch, cap
     captured = capsys.readouterr()
     assert result == 0
     assert token not in captured.out + captured.err
+    report = json.loads(captured.out)
+    assert report["authority_plane"] == "AUTHORITATIVE"
+    assert report["ledger_plane"] == "SHADOW_CANDIDATE"
     assert not target.parent.exists()
 
 

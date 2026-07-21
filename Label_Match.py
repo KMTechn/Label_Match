@@ -91,6 +91,8 @@ LABEL_MATCH_PRODUCT_SAMPLE_COUNT = 3
 LABEL_MATCH_MASTER_SCAN_POSITION = 1
 LABEL_MATCH_FINAL_LABEL_SCAN_POSITION = LABEL_MATCH_PRODUCT_SAMPLE_COUNT + 2
 LABEL_MATCH_TOTAL_SCAN_COUNT = LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
+LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT = 2
+LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION = 2
 LABEL_MATCH_RESULT_PASS = "통과"
 LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
@@ -1392,6 +1394,8 @@ def _label_match_tray_complete_passed(details):
 
 def _label_match_manual_complete_block_reason(current_set_info):
     current = current_set_info or {}
+    if current.get("central_inherit_all"):
+        return "manual_complete_disabled_for_central_inherit_all"
     if current.get("exact_rescan_active"):
         return "manual_complete_blocked_during_exact_rescan"
     scan_count = len(current.get("raw") or current.get("parsed") or [])
@@ -1657,6 +1661,21 @@ def _label_match_parse_sealed_transfer_qr(raw_value):
     return parsed
 
 
+def _label_match_has_central_source_identity(raw_value):
+    """Return whether one scan can resolve an exact server package source."""
+
+    try:
+        if _label_match_parse_sealed_transfer_qr(raw_value):
+            return True
+    except ValueError:
+        return False
+    fields = _label_match_parse_new_format_fields(raw_value) or {}
+    return bool(
+        str(fields.get("BND") or "").strip()
+        or str(fields.get("ITG") or "").strip()
+    )
+
+
 def _label_match_apply_sealed_exchange_state(
     current_set_info,
     *,
@@ -1718,7 +1737,17 @@ def _label_match_apply_sealed_exchange_state(
 def _label_match_package_draft(current_set_info, *, item_code):
     current = current_set_info or {}
     raw = list(current.get("raw") or [])
-    if len(raw) != LABEL_MATCH_TOTAL_SCAN_COUNT:
+    central_inherit_all = bool(current.get("central_inherit_all"))
+    required_scan_count = (
+        LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+        if central_inherit_all
+        else LABEL_MATCH_TOTAL_SCAN_COUNT
+    )
+    if len(raw) != required_scan_count:
+        if central_inherit_all:
+            raise PackageLogisticsError(
+                "central INHERIT_ALL packaging requires source and final-label scans"
+            )
         raise PackageLogisticsError("authoritative packaging requires the complete five-scan set")
     transfer = _label_match_parse_sealed_transfer_qr(raw[0])
     configured_mode = os.environ.get(
@@ -1809,7 +1838,11 @@ def _label_match_package_draft(current_set_info, *, item_code):
         expected_plane_epoch=expected_plane_epoch,
         external_label=str(raw[-1]),
         membership_mode=configured_mode,
-        sample_barcodes=raw[1:1 + LABEL_MATCH_PRODUCT_SAMPLE_COUNT],
+        sample_barcodes=(
+            ()
+            if central_inherit_all
+            else raw[1:1 + LABEL_MATCH_PRODUCT_SAMPLE_COUNT]
+        ),
         exact_rescan_barcodes=exact_rescan,
         expected_seal_id=expected_seal_id,
         expected_seal_revision=expected_seal_revision,
@@ -2012,7 +2045,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.37" # private update feed release
+APP_VERSION = "v2.0.38" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -3026,6 +3059,7 @@ class Label_Match(tk.Tk):
         "manual_complete_only_for_partial_sets": f"이미 {LABEL_MATCH_TOTAL_SCAN_COUNT}개 완료됨",
         "manual_complete_blocked_after_error": "오류 세트는 불가",
         "manual_complete_blocked_during_exact_rescan": "전체 재스캔 중에는 불가",
+        "manual_complete_disabled_for_central_inherit_all": "중앙 전체 상속은 포장 라벨 스캔으로 완료",
     }
     class FILES:
         CURRENT_STATE = "_current_set_state_packaging.json"
@@ -3057,6 +3091,33 @@ class Label_Match(tk.Tk):
         IN_PROGRESS = "진행중..."
     class Worker:
         PACKAGING = "포장실"
+
+    def _central_inherit_all_active(self):
+        current = self.__dict__.get("current_set_info", {}) or {}
+        if current.get("exact_rescan_active") or current.get("exact_rescan_complete"):
+            return False
+        if current.get("central_inherit_all"):
+            return True
+        raw = list(current.get("raw") or [])
+        return bool(
+            self.__dict__.get("package_logistics_client") is not None
+            and raw
+            and _label_match_has_central_source_identity(raw[0])
+        )
+
+    def _workflow_total_scan_count(self):
+        return (
+            LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+            if self._central_inherit_all_active()
+            else self.TOTAL_SCAN_COUNT
+        )
+
+    def _workflow_final_label_position(self):
+        return (
+            LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION
+            if self._central_inherit_all_active()
+            else self.FINAL_LABEL_SCAN_POSITION
+        )
 
     def __init__(self, run_tests=False):
         _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
@@ -3203,6 +3264,7 @@ class Label_Match(tk.Tk):
         self._workflow_widgets_ready = False
         self._workflow_completion_kind = None
         self._workflow_display_scans = ()
+        self._workflow_display_central_inherit_all = False
         self._workflow_display_parsed_scans = ()
         self._workflow_last_normal_override = None
         self._workflow_blocking_notice = None
@@ -5411,6 +5473,8 @@ class Label_Match(tk.Tk):
                     _label_match_decode_possible_base64_label(processed_input)
                 )
                 self.current_set_info["sealed_transfer"] = transfer_label_data
+                if self.__dict__.get("package_logistics_client") is not None:
+                    self.current_set_info["central_inherit_all"] = True
                 self._update_on_success_scan(raw_input, client_code)
             elif new_label_data:
                 reusable_input_master = (
@@ -5431,6 +5495,11 @@ class Label_Match(tk.Tk):
                 phase = new_label_data.get('PHS')
                 self.current_set_info['phase'] = phase
                 self.current_set_info['item_name_override'] = supplier_code
+                if (
+                    self.__dict__.get("package_logistics_client") is not None
+                    and _label_match_has_central_source_identity(processed_input)
+                ):
+                    self.current_set_info["central_inherit_all"] = True
                 self._update_on_success_scan(raw_input, client_code)
             else:
                 MASTER_LABEL_LENGTH = 13
@@ -5452,7 +5521,7 @@ class Label_Match(tk.Tk):
                     return
                 self._update_on_success_scan(raw_input, raw_input)
 
-        elif 2 <= scan_pos <= self.TOTAL_SCAN_COUNT:
+        elif 2 <= scan_pos <= self._workflow_total_scan_count():
             if scan_pos == 2 and raw_input.upper().startswith("TEST_LOG_"):
                 parts = raw_input.split('_')
                 if len(parts) == 3 and parts[2].isdigit():
@@ -5472,14 +5541,15 @@ class Label_Match(tk.Tk):
                     return
 
             master_code = self.current_set_info['parsed'][0]
-            if scan_pos < self.FINAL_LABEL_SCAN_POSITION and len(raw_input) <= len(master_code):
+            final_label_position = self._workflow_final_label_position()
+            if scan_pos < final_label_position and len(raw_input) <= len(master_code):
                 self._handle_input_error(
                     raw_input,
                     title="[바코드 종류 오류]",
                     reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
                 )
                 return
-            if scan_pos == self.FINAL_LABEL_SCAN_POSITION and len(raw_input) < 31:
+            if scan_pos == final_label_position and len(raw_input) < 31:
                 self._handle_input_error(
                     raw_input,
                     title="[라벨 형식 오류]",
@@ -5504,7 +5574,7 @@ class Label_Match(tk.Tk):
                 )
                 return
             production_date = None
-            if scan_pos == self.FINAL_LABEL_SCAN_POSITION:
+            if scan_pos == final_label_position:
                 production_date = self._extract_production_date(raw_input)
                 if not production_date:
                     self._handle_input_error(
@@ -6112,15 +6182,33 @@ class Label_Match(tk.Tk):
         self.current_set_info['parsed'].append(parsed)
 
         num_scans = len(self.current_set_info['parsed'])
+        workflow_total = self._workflow_total_scan_count()
+        final_label_position = self._workflow_final_label_position()
         next_text = self._next_action_text(num_scans)
-        self.update_big_display(next_text, "green" if num_scans < self.TOTAL_SCAN_COUNT else "primary")
+        self.update_big_display(next_text, "green" if num_scans < workflow_total else "primary")
         if not self.is_running_simulation:
-            sound_key = self._sound_key_for_success_scan(num_scans)
+            sound_key = (
+                None
+                if self._central_inherit_all_active()
+                and num_scans == final_label_position
+                else self._sound_key_for_success_scan(num_scans)
+            )
             if sound_key:
                 self._play_sound(sound_key)
+        try:
+            self.progress_bar.configure(maximum=workflow_total)
+        except (AttributeError, TclError):
+            pass
         self.progress_bar['value'] = num_scans
         self._update_status_label()
         self._update_history_tree_in_progress()
+        scan_role = (
+            "material_master_label"
+            if num_scans == LABEL_MATCH_MASTER_SCAN_POSITION
+            else "final_packaging_label"
+            if num_scans == final_label_position
+            else "product"
+        )
         self.data_manager.log_event(
             self.Events.SCAN_OK,
             {
@@ -6129,11 +6217,24 @@ class Label_Match(tk.Tk):
                 "set_id": self.current_set_info['id'],
                 "scan_position": num_scans,
                 "scan_pos": num_scans,
+                "barcode_role": scan_role,
+                "product_barcode": raw if scan_role == "product" else None,
+                "barcode_projection_status": (
+                    "INCLUDED" if scan_role == "product" else "ROLE_NOT_PRODUCT"
+                ),
+                "barcode_exclusion_reason_code": (
+                    None if scan_role == "product" else "NON_PRODUCT_BARCODE_ROLE"
+                ),
+                "packaging_scan_mode": (
+                    "CENTRAL_INHERIT_ALL"
+                    if self._central_inherit_all_active()
+                    else "LEGACY_QA_SAMPLES"
+                ),
             },
         )
         self._save_current_set_state()
         self._render_operator_workbench()
-        if num_scans == self.TOTAL_SCAN_COUNT:
+        if num_scans == workflow_total:
             self._finalize_set(self.Results.PASS)
 
     @classmethod
@@ -6165,8 +6266,16 @@ class Label_Match(tk.Tk):
             return None
         current = self.current_set_info or {}
         raw = list(current.get("raw") or [])
-        if len(raw) != self.TOTAL_SCAN_COUNT:
+        central_inherit_all = self._central_inherit_all_active()
+        required_scan_count = (
+            LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+            if central_inherit_all
+            else self.TOTAL_SCAN_COUNT
+        )
+        if len(raw) != required_scan_count:
             return None
+        if central_inherit_all:
+            current["central_inherit_all"] = True
         try:
             sealed_transfer = _label_match_parse_sealed_transfer_qr(raw[0])
         except ValueError as exc:
@@ -6432,6 +6541,8 @@ class Label_Match(tk.Tk):
     def _finalize_set(self, result, error_details="", is_manual_complete=False):
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
+        central_inherit_all = self._central_inherit_all_active()
+        completed_scan_count = len(raw_scans_to_log)
         item_code = parsed_scans_to_log[0] if parsed_scans_to_log else "N/A"
 
         item_name_override = self.current_set_info.get('item_name_override')
@@ -6470,6 +6581,30 @@ class Label_Match(tk.Tk):
             'set_id': set_id_for_log,
             'phase': phase
         }
+        details['packaging_scan_mode'] = (
+            "CENTRAL_INHERIT_ALL" if central_inherit_all else "LEGACY_QA_SAMPLES"
+        )
+        details['central_membership_inherited'] = central_inherit_all
+        if central_inherit_all and len(raw_scans_to_log) == 2:
+            details['barcode_roles'] = [
+                _label_match_barcode_projection(
+                    raw_scans_to_log[0],
+                    parsed_scans_to_log[0] if parsed_scans_to_log else "",
+                    LABEL_MATCH_MASTER_SCAN_POSITION,
+                ),
+                {
+                    **_label_match_barcode_projection(
+                        raw_scans_to_log[1],
+                        parsed_scans_to_log[1] if len(parsed_scans_to_log) > 1 else "",
+                        LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION,
+                    ),
+                    "barcode_role": "final_packaging_label",
+                    "product_barcode": None,
+                    "barcode_projection_status": "ROLE_NOT_PRODUCT",
+                    "barcode_exclusion_reason_code": "NON_PRODUCT_BARCODE_ROLE",
+                },
+            ]
+            details['product_sample_barcodes'] = []
         if master_label_fields:
             details['master_label_fields'] = master_label_fields
         if master_label_identity_key:
@@ -6568,7 +6703,7 @@ class Label_Match(tk.Tk):
         self._reset_current_set(from_finalize=True)
         if "big_display_label" in self.__dict__:
             if result == self.Results.PASS:
-                self._show_completion_progress(result)
+                self._show_completion_progress(result, scan_count=completed_scan_count)
                 self.update_big_display("통과 완료 - 다음 현품표 스캔", "green")
             else:
                 self.update_big_display("오류 처리 완료 - 새 현품표부터 시작", "red")
@@ -6936,6 +7071,7 @@ class Label_Match(tk.Tk):
             'start_time': None, 'error_count': 0, 'has_error_or_reset': False,
             'phase': None, 'item_name_override': None, 'production_date': None,
             'sealed_transfer': None,
+            'central_inherit_all': False,
             'sealed_transfer_exchange_intent_id': '',
             'exact_rescan_active': False,
             'exact_rescan_complete': False,
@@ -6951,17 +7087,25 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
         return True
 
-    def _show_completion_progress(self, result):
+    def _show_completion_progress(self, result, *, scan_count=None):
         if result != self.Results.PASS:
             return
         if not getattr(self, "history_view_updates_active_state", True):
             return
+        completed = int(scan_count or self.TOTAL_SCAN_COUNT)
         if "progress_bar" in self.__dict__:
-            self.progress_bar['value'] = self.TOTAL_SCAN_COUNT
-        self._update_step_rail(self.TOTAL_SCAN_COUNT)
+            try:
+                self.progress_bar.configure(maximum=completed)
+            except (AttributeError, TclError):
+                pass
+            self.progress_bar['value'] = completed
+        self._update_step_rail(
+            completed,
+            central_inherit_all=(completed == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT),
+        )
         if "status_label" in self.__dict__:
             self.status_label.config(
-                text=f"{self.TOTAL_SCAN_COUNT}/{self.TOTAL_SCAN_COUNT} 통과 완료 | 다음 현품표 스캔 대기",
+                text=f"{completed}/{completed} 통과 완료 | 다음 현품표 스캔 대기",
                 style="Status.TLabel",
             )
 
@@ -7305,6 +7449,10 @@ class Label_Match(tk.Tk):
         self.is_generating_test_logs = True
         self.entry.config(state='disabled')
         self.update_big_display(f"테스트 데이터 생성 시작...", "primary")
+        try:
+            self.progress_bar.configure(maximum=self.TOTAL_SCAN_COUNT)
+        except (AttributeError, TclError):
+            pass
         self.progress_bar['value'] = 0
         self._simulation_result_queue = queue.Queue()
         stop_event = self.__dict__.setdefault(
@@ -8749,6 +8897,9 @@ class Label_Match(tk.Tk):
                 self.__dict__.get("_workflow_display_parsed_scans", ()) or ()
             )
             source["parsed"] = list(display_parsed or display_scans)
+            source["central_inherit_all"] = bool(
+                self.__dict__.get("_workflow_display_central_inherit_all", False)
+            )
         source.setdefault("raw", [])
         source.setdefault("parsed", [])
         source.setdefault("exact_rescan_barcodes", [])
@@ -9196,6 +9347,7 @@ class Label_Match(tk.Tk):
         progress = self.__dict__.get("progress_bar")
         if progress is not None:
             try:
+                progress.configure(maximum=view.qa_total)
                 progress["value"] = view.qa_completed
             except (TclError, AttributeError, TypeError):
                 try:
@@ -9204,7 +9356,11 @@ class Label_Match(tk.Tk):
                     pass
         if "step_labels" in self.__dict__:
             try:
-                self._update_step_rail(view.qa_completed, error=view.current_stage == "error")
+                self._update_step_rail(
+                    view.qa_completed,
+                    error=view.current_stage == "error",
+                    central_inherit_all=bool(source.get("central_inherit_all")),
+                )
             except (TclError, AttributeError, KeyError):
                 pass
 
@@ -9551,6 +9707,7 @@ class Label_Match(tk.Tk):
         self._workflow_completion_kind = normalized
         self._workflow_display_scans = raw_scans
         self._workflow_display_parsed_scans = parsed_scans
+        self._workflow_display_central_inherit_all = self._central_inherit_all_active()
         self._workflow_last_normal_override = raw_scans[-1] if raw_scans else ""
         self._workflow_blocking_notice = None
         self._workflow_notice = None
@@ -9579,13 +9736,17 @@ class Label_Match(tk.Tk):
         self._workflow_completion_kind = None
         self._workflow_display_scans = ()
         self._workflow_display_parsed_scans = ()
+        self._workflow_display_central_inherit_all = False
         self._workflow_last_normal_override = None
         self._workflow_item_snapshot = None
 
     def _publish_submission_block(self, error):
         message = f"오류: {error}"
         notice = WorkflowNotice(
-            title="중앙 제출 차단 · 5/5 유지",
+            title=(
+                f"중앙 제출 차단 · {self._workflow_total_scan_count()}/"
+                f"{self._workflow_total_scan_count()} 유지"
+            ),
             message=message,
             kind="submission_blocked",
             tone="danger",
@@ -10979,17 +11140,25 @@ class Label_Match(tk.Tk):
             num_scans = len(current.get('parsed', []))
         if num_scans <= 0:
             return self._idle_instruction_text()
-        if num_scans < self.FINAL_LABEL_SCAN_POSITION - 1:
-            return f"{num_scans + 1}/{self.TOTAL_SCAN_COUNT} 제품 {num_scans} 스캔"
-        if num_scans == self.FINAL_LABEL_SCAN_POSITION - 1:
-            return f"{self.FINAL_LABEL_SCAN_POSITION}/{self.TOTAL_SCAN_COUNT} 라벨지 스캔"
+        workflow_total = self._workflow_total_scan_count()
+        final_label_position = self._workflow_final_label_position()
+        if num_scans < final_label_position - 1:
+            return f"{num_scans + 1}/{workflow_total} 제품 {num_scans} 스캔"
+        if num_scans == final_label_position - 1:
+            return f"{final_label_position}/{workflow_total} 포장 라벨 스캔"
         return "통과 완료"
 
     def _manual_complete_hint(self):
         reason = _label_match_manual_complete_block_reason(getattr(self, "current_set_info", {}))
         return self.MANUAL_COMPLETE_HINTS.get(reason, "F3 소량 완료 가능")
 
-    def _update_step_rail(self, num_scans=None, error=False):
+    def _update_step_rail(
+        self,
+        num_scans=None,
+        error=False,
+        *,
+        central_inherit_all=None,
+    ):
         if "step_labels" not in self.__dict__:
             return
         current = getattr(self, "current_set_info", {}) or {}
@@ -10998,7 +11167,28 @@ class Label_Match(tk.Tk):
         if not getattr(self, "history_view_updates_active_state", True):
             num_scans = 0
             error = False
+        if central_inherit_all is None:
+            central_inherit_all = self._central_inherit_all_active()
+        step_names = (
+            ("현품표/이적 묶음", "포장 라벨")
+            if central_inherit_all
+            else self.STEP_NAMES
+        )
         for index, label in enumerate(self.step_labels):
+            visible = index < len(step_names)
+            try:
+                if visible:
+                    label.grid()
+                    label.configure(text=f"{index + 1}. {step_names[index]}")
+                else:
+                    label.grid_remove()
+                    continue
+            except (AttributeError, TclError):
+                if visible:
+                    try:
+                        label.configure(text=f"{index + 1}. {step_names[index]}")
+                    except (AttributeError, TclError):
+                        pass
             if error and index == min(num_scans, len(self.step_labels) - 1):
                 bg, fg, relief = self.colors["danger"], "white", "solid"
             elif index < num_scans:

@@ -1222,6 +1222,7 @@ class PackageClientConfig:
     timeout_seconds: float = 8.0
     authority_epoch: int = 0
     authority_plane: str = ""
+    ledger_plane: str = ""
     plane_epoch: int = 0
     authoritative_required: bool = False
 
@@ -1246,10 +1247,14 @@ class PackageClientConfig:
             raise PackageLogisticsError("machine package logistics URL must not use loopback")
         if not all((self.token, self.source_host_id, self.device_id)):
             raise PackageLogisticsError("package logistics machine identity/configuration is incomplete")
+        selected_ledger_plane = str(
+            self.ledger_plane or self.authority_plane or ""
+        ).upper()
         if self.authoritative_required and (
             not self.authority_scope_id
             or self.authority_epoch < 1
             or str(self.authority_plane or "").upper() != "AUTHORITATIVE"
+            or selected_ledger_plane not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
             or self.plane_epoch < 1
         ):
             raise PackageLogisticsError("authoritative package logistics profile is incomplete")
@@ -1348,7 +1353,10 @@ class PackageLogisticsClient:
             )
         if self.config.authority_epoch and authority_epoch is not None and int(authority_epoch) != self.config.authority_epoch:
             raise PackageLogisticsError("AUTHORITY_PROFILE_MISMATCH: authority epoch differs")
-        if self.config.authority_plane and ledger_plane and str(ledger_plane).upper() != str(self.config.authority_plane).upper():
+        configured_ledger_plane = str(
+            self.config.ledger_plane or self.config.authority_plane or ""
+        ).upper()
+        if configured_ledger_plane and ledger_plane and str(ledger_plane).upper() != configured_ledger_plane:
             raise PackageLogisticsError("AUTHORITY_PROFILE_MISMATCH: ledger plane differs")
         if self.config.plane_epoch and plane_epoch is not None and int(plane_epoch) != self.config.plane_epoch:
             raise PackageLogisticsError("AUTHORITY_PROFILE_MISMATCH: plane epoch differs")
@@ -1560,8 +1568,9 @@ class PackageLogisticsClient:
             "package_bundle_id": draft.package_bundle_id,
             "external_label": draft.external_label,
             "membership_mode": draft.membership_mode,
-            "sample_barcodes": list(draft.sample_barcodes),
         }
+        if draft.sample_barcodes:
+            payload["sample_barcodes"] = list(draft.sample_barcodes)
         if draft.membership_mode == "INHERIT_ALL":
             payload["source_evidence"] = {
                 "member_ids": list(evidence["member_ids"]),
@@ -2588,6 +2597,7 @@ def package_client_from_env(
             timeout_seconds=profile.timeout_seconds,
             authority_epoch=profile.authority_epoch,
             authority_plane=profile.authority_plane,
+            ledger_plane=profile.ledger_plane,
             plane_epoch=profile.plane_epoch,
             authoritative_required=required,
         )
