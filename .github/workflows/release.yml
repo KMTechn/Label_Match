@@ -65,7 +65,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python -B -m py_compile Label_Match.py package_logistics.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py tools/build_release_cli_tools.py tools/build_release_archive.py tools/verify_release_identity.py tools/verify_staged_release_installer.py
+          python -B -m py_compile Label_Match.py package_logistics.py logistics_runtime_profile.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py tools/install_logistics_runtime_profile.py tools/check_logistics_runtime_profile.py tools/build_release_cli_tools.py tools/build_release_archive.py tools/verify_release_identity.py tools/verify_staged_release_installer.py
           # These two tests require the fixed physical non-primary DISPLAY2 and remain field evidence, not GitHub-hosted release gates.
           python -m pytest -q --deselect tests/test_label_operator_workbench.py::test_live_submission_retry_keeps_full_server_error_and_five_scan_rows --deselect tests/test_label_operator_workbench.py::test_display2_1366_scale100_keeps_operator_content_inside_its_regions
 
@@ -77,13 +77,20 @@ jobs:
         run: |
           python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --help-timeout-seconds 15 --probe-count 3
 
+      - name: Build shared logistics profile tools
+        run: |
+          python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Install" --onefile --console --distpath dist/Label_Match --workpath build/logistics_profile_install_pyinstaller --specpath build/logistics_profile_install_pyinstaller --clean --noupx --noconfirm tools/install_logistics_runtime_profile.py
+          python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Check" --onefile --console --distpath dist/Label_Match --workpath build/logistics_profile_check_pyinstaller --specpath build/logistics_profile_check_pyinstaller --clean --noupx --noconfirm tools/check_logistics_runtime_profile.py
+
       - name: Include direct-sync relay tools
         run: |
           New-Item -ItemType Directory -Force -Path dist/Label_Match/tools
           Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match
           Copy-Item "$env:RUNNER_TEMP\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json
           Copy-Item direct_sync_push.py,direct_sync_runtime.py,direct_sync_operator.py -Destination dist/Label_Match
-          Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,tools/register_label_match_worker_pc.py -Destination dist/Label_Match/tools
+          Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,tools/register_label_match_worker_pc.py,tools/install_logistics_runtime_profile.py,tools/check_logistics_runtime_profile.py -Destination dist/Label_Match/tools
+          Copy-Item logistics_runtime_profile.py -Destination dist/Label_Match/logistics_runtime_profile.py
+          Copy-Item docs/LOGISTICS_RUNTIME_PROFILE.md -Destination dist/Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md
 
       - name: Record tokenless self-enrollment note
         run: |
@@ -181,6 +188,12 @@ jobs:
               "tools/direct_sync_relay_runner.exe",
               "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
               "tools/register_label_match_worker_pc.exe",
+              "KMTech_Logistics_Profile_Install.exe",
+              "KMTech_Logistics_Profile_Check.exe",
+              "CENTRAL_LOGISTICS_PC_ROLLOUT.md",
+              "logistics_runtime_profile.py",
+              "tools/install_logistics_runtime_profile.py",
+              "tools/check_logistics_runtime_profile.py",
           }
           files = sorted(
               (path for path in package_root.rglob("*") if path.is_file()),
@@ -328,7 +341,13 @@ jobs:
                 "Label_Match/tools/release_cli_tools_manifest.json",
                 "Label_Match/tools/direct_sync_relay_runner.exe",
                 "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-                "Label_Match/tools/register_label_match_worker_pc.exe"
+                "Label_Match/tools/register_label_match_worker_pc.exe",
+                "Label_Match/KMTech_Logistics_Profile_Install.exe",
+                "Label_Match/KMTech_Logistics_Profile_Check.exe",
+                "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md",
+                "Label_Match/logistics_runtime_profile.py",
+                "Label_Match/tools/install_logistics_runtime_profile.py",
+                "Label_Match/tools/check_logistics_runtime_profile.py"
               )
               deny_runtime_state = $true
             }

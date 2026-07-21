@@ -144,8 +144,10 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
 
     f4_enabled = (
         action_gate_reason is None
-        and qa_completed == 1
-        and not snapshot.sealed_transfer
+        and (
+            (snapshot.sealed_transfer and 1 <= qa_completed < QA_TOTAL)
+            or (not snapshot.sealed_transfer and qa_completed == 1)
+        )
         and not snapshot.exact_rescan_active
         and not snapshot.exact_rescan_complete
     )
@@ -536,7 +538,9 @@ def _f4_hint(
     if gate_reason:
         return gate_reason
     if sealed_transfer:
-        return "sealed 멤버십 상속으로 불필요"
+        if 1 <= qa_completed < QA_TOTAL:
+            return "포장 확정 전 제품 1~2개 교체"
+        return "포장 확정 후에는 교체 불가"
     if exact_rescan_active:
         return "전체 재스캔 진행 중"
     if exact_rescan_complete:

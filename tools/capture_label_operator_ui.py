@@ -6473,6 +6473,16 @@ def _make_capture_app(
     target_dpi: int | None = None,
 ) -> Any:
     class CaptureLabelMatch(module.Label_Match):
+        def _setup_paths(self) -> None:
+            super()._setup_paths()
+            capture_config_dir = (
+                Path(str(settings["custom_save_path"])) / "_capture_config"
+            )
+            capture_config_dir.mkdir(parents=True, exist_ok=True)
+            self.app_settings_path = str(
+                capture_config_dir / self.FILES.SETTINGS
+            )
+
         def _load_app_settings(self) -> dict[str, Any]:
             # JSON round-trip detaches nested dictionaries from this harness.
             return json.loads(json.dumps(settings, ensure_ascii=False))
@@ -7059,7 +7069,15 @@ def run_capture_matrix(
                     f"toplevel_guard_restore:{type(exc).__name__}:{exc}"
                 )
             try:
-                app.destroy()
+                orderly_close = getattr(app, "on_closing", None)
+                if callable(orderly_close):
+                    # The capture app runs with run_tests=True, so this closes
+                    # its log writer and scheduled jobs without prompting
+                    # before destroying Tcl.  Direct destroy leaves a daemon
+                    # writer holding the old interpreter until process exit.
+                    orderly_close()
+                else:
+                    app.destroy()
             except Exception as exc:
                 cleanup_failures.append(f"app_destroy:{type(exc).__name__}:{exc}")
         if import_isolation is not None:

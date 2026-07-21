@@ -20,13 +20,14 @@ def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert len(lines) == 25
+    assert len(lines) == 26
     assert all("==" in line for line in lines)
     assert all(" --hash=sha256:" in line for line in lines)
     assert all(line.count("--hash=sha256:") == 1 for line in lines)
     assert any(line.startswith("pyinstaller==6.20.0 ") for line in lines)
     assert any(line.startswith("pytest==9.1.1 ") for line in lines)
     assert any(line.startswith("pywin32==311 ") for line in lines)
+    assert any(line.startswith("qrcode==8.2 ") for line in lines)
 
 
 def test_release_workflow_packages_direct_sync_relay_tools():
@@ -91,14 +92,22 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert (
         "Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,"
         "tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,"
-        "tools/register_label_match_worker_pc.py "
+        "tools/register_label_match_worker_pc.py,tools/install_logistics_runtime_profile.py,"
+        "tools/check_logistics_runtime_profile.py "
         "-Destination dist/Label_Match/tools"
     ) in packaging_block
+    assert 'python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Install"' in workflow
+    assert 'python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Check"' in workflow
+    assert "Copy-Item logistics_runtime_profile.py -Destination dist/Label_Match/logistics_runtime_profile.py" in packaging_block
+    assert "CENTRAL_LOGISTICS_PC_ROLLOUT.md" in packaging_block
     assert "Copy-Item dist/direct_sync_relay_runner.exe" not in packaging_block
     assert 'Copy-Item "$env:RUNNER_TEMP\\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json' in packaging_block
     assert "tools/register_label_match_worker_pc.py" in packaging_block
     assert "direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe" in workflow
     assert "Label_Match/tools/release_cli_tools_manifest.json" in workflow
+    assert "Label_Match/KMTech_Logistics_Profile_Install.exe" in workflow
+    assert "Label_Match/KMTech_Logistics_Profile_Check.exe" in workflow
+    assert "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md" in workflow
     assert "Label_Match/tools/release_cli_tools_post_sign_manifest.json" not in workflow
     assert "release_trust" in workflow
     assert "internal_unsigned" in workflow
@@ -198,6 +207,12 @@ def test_internal_release_archive_script_verifies_membership_bytes_and_paths(tmp
         "tools/direct_sync_relay_runner.exe",
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "tools/register_label_match_worker_pc.exe",
+        "KMTech_Logistics_Profile_Install.exe",
+        "KMTech_Logistics_Profile_Check.exe",
+        "CENTRAL_LOGISTICS_PC_ROLLOUT.md",
+        "logistics_runtime_profile.py",
+        "tools/install_logistics_runtime_profile.py",
+        "tools/check_logistics_runtime_profile.py",
     )
     for index, relative in enumerate(required, start=1):
         target = package / relative
@@ -498,8 +513,17 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
         "direct_sync_relay_install_pack.py",
         "direct_sync_phase_g_label_match_runtime_report.py",
         "register_label_match_worker_pc.py",
+        "install_logistics_runtime_profile.py",
+        "check_logistics_runtime_profile.py",
     ]:
         shutil.copy2(source_root / "tools" / filename, staged_tools / filename)
+    shutil.copy2(source_root / "logistics_runtime_profile.py", staged_root / "logistics_runtime_profile.py")
+    shutil.copy2(source_root / "docs" / "LOGISTICS_RUNTIME_PROFILE.md", staged_root / "CENTRAL_LOGISTICS_PC_ROLLOUT.md")
+    for filename in [
+        "KMTech_Logistics_Profile_Install.exe",
+        "KMTech_Logistics_Profile_Check.exe",
+    ]:
+        (staged_root / filename).write_bytes(b"fixture exe")
     for filename in ["direct_sync_relay_runner.exe", "register_label_match_worker_pc.exe"]:
         (staged_tools / filename).write_bytes(b"fixture exe")
     install_payload = staged_tools / "direct_sync_relay_install_pack"
@@ -535,6 +559,12 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
         "Label_Match/tools/direct_sync_relay_install_pack.py",
         "Label_Match/tools/direct_sync_phase_g_label_match_runtime_report.py",
         "Label_Match/tools/register_label_match_worker_pc.py",
+        "Label_Match/tools/install_logistics_runtime_profile.py",
+        "Label_Match/tools/check_logistics_runtime_profile.py",
+        "Label_Match/logistics_runtime_profile.py",
+        "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md",
+        "Label_Match/KMTech_Logistics_Profile_Install.exe",
+        "Label_Match/KMTech_Logistics_Profile_Check.exe",
         "Label_Match/tools/direct_sync_relay_runner.exe",
         "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "Label_Match/tools/register_label_match_worker_pc.exe",

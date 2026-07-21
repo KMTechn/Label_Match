@@ -69,6 +69,8 @@ def _package(tmp_path: Path) -> Path:
         "tools/direct_sync_relay_runner.exe": b"runner signed exe",
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe": b"installer signed exe",
         "tools/register_label_match_worker_pc.exe": b"registration signed exe",
+        "KMTech_Logistics_Profile_Install.exe": b"profile installer signed exe",
+        "KMTech_Logistics_Profile_Check.exe": b"profile readiness signed exe",
     }
     signed_entries = []
     for relative, payload in signed_paths.items():
@@ -95,8 +97,14 @@ def _package(tmp_path: Path) -> Path:
         "direct_sync_relay_install_pack.py",
         "direct_sync_phase_g_label_match_runtime_report.py",
         "register_label_match_worker_pc.py",
+        "install_logistics_runtime_profile.py",
+        "check_logistics_runtime_profile.py",
     ):
         (tools / source_name).write_text("# fixture\n", encoding="utf-8")
+    (root / "logistics_runtime_profile.py").write_text("# fixture\n", encoding="utf-8")
+    (root / "CENTRAL_LOGISTICS_PC_ROLLOUT.md").write_text(
+        "# rollout\n", encoding="utf-8"
+    )
     (tools / "enrollment_token.txt.template").write_text(
         "Tokenless self-enrollment is the production default.\n",
         encoding="utf-8",
@@ -294,13 +302,31 @@ def test_build_release_archive_is_deterministic_and_byte_exact(tmp_path):
     assert first_report["byte_parity"] is True
     assert first_report["exact_membership"] is True
     assert first_report["install_onedir_runtime_file_count"] == 1
-    assert first_report["signed_executable_count"] == 4
+    assert first_report["signed_executable_count"] == 6
     assert first_report["archive_sha256"] == second_report["archive_sha256"]
     assert first.read_bytes() == second.read_bytes()
     with zipfile.ZipFile(first) as archive:
         names = set(archive.namelist())
     assert "Label_Match/tools/direct_sync_relay_install_pack/_internal/python312.dll" in names
+    assert "Label_Match/KMTech_Logistics_Profile_Install.exe" in names
+    assert "Label_Match/KMTech_Logistics_Profile_Check.exe" in names
     assert len(names) == first_report["package_file_count"]
+
+
+def test_build_release_archive_rejects_missing_profile_rollout_runbook(tmp_path):
+    package = _package(tmp_path)
+    (package / "CENTRAL_LOGISTICS_PC_ROLLOUT.md").unlink()
+    _refresh_staged_inventory(package)
+
+    with pytest.raises(
+        archive_builder.ReleaseArchiveError,
+        match="profile release assets are missing",
+    ):
+        archive_builder.build_release_archive(
+            package,
+            tmp_path / "missing-profile-runbook.zip",
+            source_epoch=1_700_000_000,
+        )
 
 
 def test_build_release_archive_rejects_changed_onedir_runtime(tmp_path):

@@ -105,7 +105,7 @@ def test_f4_exact_rescan_has_separate_progress(
     assert view.f4_enabled is False
 
 
-def test_sealed_transfer_marks_inherited_membership_and_disables_f4():
+def test_sealed_transfer_marks_inherited_membership_and_enables_prepackage_exchange():
     view = present_workflow(
         WorkflowSnapshot(qa_scans=("SEALED-TRANSFER",), sealed_transfer=True)
     )
@@ -113,8 +113,8 @@ def test_sealed_transfer_marks_inherited_membership_and_disables_f4():
     assert view.current_stage == "product_1"
     assert view.exact_rescan.status == "sealed"
     assert view.exact_rescan.progress_text == "서버 상속"
-    assert view.f4_enabled is False
-    assert view.f4_hint == "sealed 멤버십 상속으로 불필요"
+    assert view.f4_enabled is True
+    assert view.f4_hint == "포장 확정 전 제품 1~2개 교체"
     assert "sealed 멤버십" in view.badges
 
 

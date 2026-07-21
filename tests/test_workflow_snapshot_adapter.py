@@ -152,7 +152,7 @@ def test_sealed_sample_forwards_presence_without_parsing_business_payload():
 
     assert snapshot.sealed_transfer is True
     assert view.exact_rescan.status == "sealed"
-    assert view.f4_enabled is False
+    assert view.f4_enabled is True
 
 
 @pytest.mark.parametrize(

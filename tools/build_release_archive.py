@@ -153,6 +153,8 @@ def _validate_release_evidence(
 
     expected_signed_paths = {
         "Label_Match.exe",
+        "KMTech_Logistics_Profile_Install.exe",
+        "KMTech_Logistics_Profile_Check.exe",
         "tools/direct_sync_relay_runner.exe",
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "tools/register_label_match_worker_pc.exe",
@@ -192,7 +194,7 @@ def _validate_release_evidence(
         ):
             raise ReleaseArchiveError(f"final live Authenticode verification mismatch: {relative}")
     if signed_paths != expected_signed_paths:
-        raise ReleaseArchiveError("post-sign manifest does not bind exactly four release executables")
+        raise ReleaseArchiveError("post-sign manifest does not bind exactly six release executables")
 
     tools = post.get("tools")
     if not isinstance(tools, list) or len(tools) != 3:
@@ -390,12 +392,29 @@ def _validate_release_evidence(
     if current_without_staged_report != normalized_staged_inventory:
         raise ReleaseArchiveError("package membership changed after staged installer verification")
 
+    required_profile_assets = {
+        "KMTech_Logistics_Profile_Install.exe",
+        "KMTech_Logistics_Profile_Check.exe",
+        "CENTRAL_LOGISTICS_PC_ROLLOUT.md",
+        "logistics_runtime_profile.py",
+    }
+    missing_profile_assets = sorted(
+        name for name in required_profile_assets if not (package_root / name).is_file()
+    )
+    if missing_profile_assets:
+        raise ReleaseArchiveError(
+            "shared logistics profile release assets are missing: "
+            + ", ".join(missing_profile_assets)
+        )
+
     allowed_tool_entries = {
         "direct_sync_relay_runner.py",
         "direct_sync_relay_operator.py",
         "direct_sync_relay_install_pack.py",
         "direct_sync_phase_g_label_match_runtime_report.py",
         "register_label_match_worker_pc.py",
+        "install_logistics_runtime_profile.py",
+        "check_logistics_runtime_profile.py",
         "direct_sync_relay_runner.exe",
         "register_label_match_worker_pc.exe",
         "direct_sync_relay_install_pack",

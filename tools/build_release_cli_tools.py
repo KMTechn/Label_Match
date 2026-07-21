@@ -25,6 +25,10 @@ import uuid
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_NAME = "release_cli_tools_manifest.json"
 POST_SIGN_REPORT_NAME = "release_cli_tools_post_sign_manifest.json"
+LOGISTICS_PROFILE_EXECUTABLE_NAMES = (
+    "KMTech_Logistics_Profile_Install.exe",
+    "KMTech_Logistics_Profile_Check.exe",
+)
 
 
 class ReleaseCliBuildError(RuntimeError):
@@ -666,6 +670,8 @@ $signature = Get-AuthenticodeSignature -LiteralPath $env:LABEL_MATCH_SIGNATURE_T
 
 def _signed_executable_paths(destination: Path, built_tools: Sequence[BuiltTool]) -> dict[str, Path]:
     paths = {"Label_Match.exe": destination.parent / "Label_Match.exe"}
+    for executable_name in LOGISTICS_PROFILE_EXECUTABLE_NAMES:
+        paths[executable_name] = destination.parent / executable_name
     for built in built_tools:
         if built.spec.mode == "onefile":
             relative = f"tools/{built.spec.executable_name}"

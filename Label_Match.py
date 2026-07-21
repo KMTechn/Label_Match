@@ -56,10 +56,11 @@ _label_match_startup_trace("after_requests_import")
 import zipfile
 import subprocess
 import uuid
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 import base64
 import binascii
 import unittest
+import copy
 
 from package_logistics import (
     PackageCancellationIntent,
@@ -72,6 +73,12 @@ from package_logistics import (
     canonical_barcodes,
     package_client_from_env,
 )
+from sealed_transfer_exchange import (
+    SealedTransferExchangeCoordinator,
+    SealedTransferExchangeStore,
+    normalize_barcode as normalize_exchange_barcode,
+)
+from logistics_runtime_profile import logistics_runtime_required
 from ui.operator_layout import build_operator_layout
 from ui.style_tokens import build_style_tokens
 from ui.workflow_snapshot_adapter import adapt_workflow_snapshot
@@ -106,6 +113,7 @@ LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS = 45
 LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS = 5
 LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS = 10
 LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
+LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS = 5
 _LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_AUTOMATED_TEST_ENV = "LABEL_MATCH_AUTOMATED_TEST"
@@ -1600,7 +1608,7 @@ def _label_match_parse_sealed_transfer_qr(raw_value):
     if "|" not in decoded or "=" not in decoded:
         return None
     fields = {
-        key.strip().upper(): value.strip()
+        key.strip().upper(): unquote(value.strip())
         for key, value in (
             part.split("=", 1) for part in decoded.split("|") if "=" in part
         )
@@ -1624,7 +1632,19 @@ def _label_match_parse_sealed_transfer_qr(raw_value):
     plane = fields["PLANE"].upper()
     if plane not in {"SHADOW_CANDIDATE", "AUTHORITATIVE"}:
         raise ValueError("sealed transfer QR ledger plane is invalid")
-    return {
+    seal_fields = ("SID", "SREV", "STK")
+    has_any_seal_evidence = any(fields.get(key) for key in seal_fields)
+    if has_any_seal_evidence and any(not fields.get(key) for key in seal_fields):
+        raise ValueError("sealed transfer QR seal evidence is partial")
+    seal_revision = 0
+    if has_any_seal_evidence:
+        try:
+            seal_revision = int(fields["SREV"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("sealed transfer QR seal revision must be an integer") from exc
+        if seal_revision < 1 or "|" in fields["SID"] or "|" in fields["STK"]:
+            raise ValueError("sealed transfer QR seal evidence is invalid")
+    parsed = {
         **fields,
         "QT": quantity,
         "HSH": digest,
@@ -1632,6 +1652,67 @@ def _label_match_parse_sealed_transfer_qr(raw_value):
         "PLANE": plane,
         "PE": plane_epoch,
     }
+    if has_any_seal_evidence:
+        parsed["SREV"] = seal_revision
+    return parsed
+
+
+def _label_match_apply_sealed_exchange_state(
+    current_set_info,
+    *,
+    old_seal_qr_payload,
+    new_seal_qr_payload,
+    old_barcodes,
+    new_barcodes,
+):
+    """Return an all-at-once local state projection for an ACKed reseal."""
+
+    current = copy.deepcopy(dict(current_set_info or {}))
+    raw = list(current.get("raw") or [])
+    parsed = list(current.get("parsed") or [])
+    if not 1 <= len(raw) < LABEL_MATCH_TOTAL_SCAN_COUNT or len(raw) != len(parsed):
+        raise PackageLogisticsError(
+            "sealed transfer replacement can only apply before CREATE_PACKAGE"
+        )
+    current_master = _label_match_decode_possible_base64_label(raw[0])
+    old_qr = str(old_seal_qr_payload or "").strip()
+    new_qr = str(new_seal_qr_payload or "").strip()
+    if current_master not in {old_qr, new_qr}:
+        raise PackageLogisticsError(
+            "local packaging master differs from both old and new server seals"
+        )
+    old_fields = _label_match_parse_sealed_transfer_qr(old_qr)
+    new_fields = _label_match_parse_sealed_transfer_qr(new_qr)
+    if not old_fields or not new_fields:
+        raise PackageLogisticsError("server reseal QR is invalid")
+    if (
+        any(
+            old_fields.get(key) != new_fields.get(key)
+            for key in ("BND", "AUTH_SCOPE", "CLC", "QT", "EPOCH", "PLANE", "PE")
+        )
+        or int(new_fields.get("SREV") or 0) != int(old_fields.get("SREV") or 0) + 1
+        or new_fields.get("SID") == old_fields.get("SID")
+        or new_fields.get("STK") == old_fields.get("STK")
+    ):
+        raise PackageLogisticsError("server reseal QR lineage/revision is invalid")
+    old_values = tuple(normalize_exchange_barcode(value) for value in old_barcodes)
+    new_values = tuple(normalize_exchange_barcode(value) for value in new_barcodes)
+    if not 1 <= len(old_values) <= 2 or len(old_values) != len(new_values):
+        raise PackageLogisticsError("local replacement pair count is invalid")
+    replacement_by_barcode = dict(zip(old_values, new_values, strict=True))
+    raw[0] = new_qr
+    for index in range(1, min(len(raw), 4)):
+        replacement = replacement_by_barcode.get(
+            normalize_exchange_barcode(raw[index])
+        )
+        if replacement:
+            raw[index] = replacement
+    new_fields["_seal_qr_payload"] = new_qr
+    current["raw"] = raw
+    current["parsed"] = parsed
+    current["sealed_transfer"] = new_fields
+    current["sealed_transfer_exchange_intent_id"] = ""
+    return current
 
 
 def _label_match_package_draft(current_set_info, *, item_code):
@@ -1644,9 +1725,18 @@ def _label_match_package_draft(current_set_info, *, item_code):
         LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV, "INHERIT_ALL"
     ).strip().upper()
     exact_rescan = tuple(current.get("exact_rescan_barcodes") or ())
+    legacy_fields = _label_match_parse_new_format_fields(raw[0]) or {}
+    source_input_tag_id = str(legacy_fields.get("ITG") or "").strip()
+    source_bundle_hint = str(legacy_fields.get("BND") or "").strip()
+    has_structured_phs_identity = bool(source_input_tag_id or source_bundle_hint)
     if current.get("exact_rescan_complete"):
         configured_mode = "EXACT_RESCAN"
     elif transfer:
+        configured_mode = "INHERIT_ALL"
+    elif has_structured_phs_identity:
+        # The original PHS is only an authoritative lookup key.  The server
+        # PACKAGE_SOURCE resolver must still return one exact AVAILABLE
+        # TRANSFER; the PHS membership itself is never packaged directly.
         configured_mode = "INHERIT_ALL"
     if transfer:
         if str(transfer["CLC"]) != str(item_code):
@@ -1661,32 +1751,49 @@ def _label_match_package_draft(current_set_info, *, item_code):
         expected_plane = str(transfer["PLANE"])
         expected_plane_epoch = int(transfer["PE"])
     else:
-        if configured_mode != "EXACT_RESCAN":
+        if configured_mode == "INHERIT_ALL" and has_structured_phs_identity:
+            source_bundle_id = ""
+            source_scope = str(legacy_fields.get("AUTH_SCOPE") or "").strip()
+            source_label = ""
+            source_hint = source_bundle_hint
+            expected_count = 0
+            expected_hash = ""
+            expected_authority_epoch = 0
+            expected_plane = ""
+            expected_plane_epoch = 0
+        elif configured_mode != "EXACT_RESCAN":
             raise PackageLogisticsError(
-                "legacy master labels require a separate FULL EXACT_RESCAN; three QA samples are insufficient"
+                "legacy master labels without structured BND/ITG lineage require a separate "
+                "FULL EXACT_RESCAN; three QA samples are insufficient"
             )
-        target_count = int(current.get("exact_rescan_target_count") or 0)
-        if (
-            not current.get("exact_rescan_complete")
-            or target_count < 1
-            or len(exact_rescan) != target_count
-        ):
-            raise PackageLogisticsError("FULL EXACT_RESCAN is incomplete")
-        source_bundle_id = str(current.get("exact_rescan_source_bundle_id") or "").strip()
-        legacy_fields = _label_match_parse_new_format_fields(raw[0]) or {}
-        source_scope = ""
-        source_label = str(
-            legacy_fields.get("WID") or legacy_fields.get("PHS_EXTERNAL_ID") or ""
-        ).strip()
-        source_input_tag_id = str(legacy_fields.get("ITG") or "").strip()
-        source_hint = str(legacy_fields.get("BND") or "").strip()
-        expected_count = target_count
-        expected_hash = ""
-        expected_authority_epoch = 0
-        expected_plane = ""
-        expected_plane_epoch = 0
+        else:
+            target_count = int(current.get("exact_rescan_target_count") or 0)
+            if (
+                not current.get("exact_rescan_complete")
+                or target_count < 1
+                or len(exact_rescan) != target_count
+            ):
+                raise PackageLogisticsError("FULL EXACT_RESCAN is incomplete")
+            # The operator-provided value is a TRANSFER bundle ID.  If it is
+            # absent, only the structured PHS lineage may be resolved; a WID
+            # or raw label string is deliberately never used as sole identity.
+            source_bundle_id = str(current.get("exact_rescan_source_bundle_id") or "").strip()
+            source_scope = str(legacy_fields.get("AUTH_SCOPE") or "").strip()
+            source_label = ""
+            source_hint = source_bundle_hint
+            expected_count = target_count
+            expected_hash = ""
+            expected_authority_epoch = 0
+            expected_plane = ""
+            expected_plane_epoch = 0
     if transfer:
         source_input_tag_id = ""
+    expected_seal_id = str(transfer.get("SID") or "") if transfer else ""
+    expected_seal_revision = int(transfer.get("SREV") or 0) if transfer else 0
+    expected_seal_token = str(transfer.get("STK") or "") if transfer else ""
+    expected_seal_qr_payload = (
+        _label_match_decode_possible_base64_label(raw[0]) if expected_seal_id else ""
+    )
     return PackageCommandDraft.build(
         set_id=str(current.get("id") or ""),
         item_code=str(item_code or ""),
@@ -1704,6 +1811,10 @@ def _label_match_package_draft(current_set_info, *, item_code):
         membership_mode=configured_mode,
         sample_barcodes=raw[1:1 + LABEL_MATCH_PRODUCT_SAMPLE_COUNT],
         exact_rescan_barcodes=exact_rescan,
+        expected_seal_id=expected_seal_id,
+        expected_seal_revision=expected_seal_revision,
+        expected_seal_token=expected_seal_token,
+        expected_seal_qr_payload=expected_seal_qr_payload,
     )
 
 
@@ -1901,7 +2012,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.36" # private update feed release
+APP_VERSION = "v2.0.37" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -2534,10 +2645,14 @@ del "%~f0"
         subprocess.Popen(updater_script_path, creationflags=subprocess.CREATE_NEW_CONSOLE)
         sys.exit(0)
     except Exception as e:
-        root_alert = tk.Tk()
-        root_alert.withdraw()
+        root_alert = getattr(tk, "_default_root", None)
+        owns_alert_root = root_alert is None
+        if owns_alert_root:
+            root_alert = tk.Tk()
+            root_alert.withdraw()
         messagebox.showerror("업데이트 실패", f"업데이트 파일을 적용하는 중 예상치 못한 오류가 발생했습니다.\n프로그램을 다시 시작하여 업데이트를 재시도해주세요.\n\n[오류 상세 정보]\n{e}", parent=root_alert)
-        root_alert.destroy()
+        if owns_alert_root:
+            root_alert.destroy()
         sys.exit(1)
 
 def threaded_update_check():
@@ -2548,12 +2663,22 @@ def threaded_update_check():
         if not _can_apply_updates():
             print(f"업데이트 {candidate['version']} 확인됨. 소스 실행 모드에서는 자동 업데이트 적용을 건너뜁니다.")
             return
+        if threading.current_thread() is not threading.main_thread():
+            # Tk roots and message boxes may only be created by the process
+            # main thread.  Label_Match itself uses its queue-based update
+            # poller; this guard keeps legacy callers fail-safe as well.
+            print("업데이트 프롬프트를 생략했습니다: Tk main thread가 아닙니다.")
+            return
         download_url = candidate["url"]
         new_version = candidate["version"]
-        root_alert = tk.Tk()
-        root_alert.withdraw()
+        root_alert = getattr(tk, "_default_root", None)
+        owns_alert_root = root_alert is None
+        if owns_alert_root:
+            root_alert = tk.Tk()
+            root_alert.withdraw()
         if messagebox.askyesno("업데이트 발견", f"새로운 버전({new_version})이 있습니다.\n지금 업데이트하시겠습니까? (현재 버전: {APP_VERSION})", parent=root_alert):
-            root_alert.destroy()
+            if owns_alert_root:
+                root_alert.destroy()
             download_and_apply_update(
                 download_url,
                 expected_sha256=candidate.get("sha256"),
@@ -2561,7 +2686,8 @@ def threaded_update_check():
             )
         else:
             print("사용자가 업데이트를 거부했습니다.")
-            root_alert.destroy()
+            if owns_alert_root:
+                root_alert.destroy()
     else:
         print("업데이트 확인 완료. 최신 버전이거나 확인 중 오류가 발생했습니다.")
 
@@ -2922,6 +3048,8 @@ class Label_Match(tk.Tk):
         EXACT_RESCAN_STARTED = "EXACT_RESCAN_STARTED"
         EXACT_RESCAN_OK = "EXACT_RESCAN_OK"
         EXACT_RESCAN_COMPLETED = "EXACT_RESCAN_COMPLETED"
+        SEALED_TRANSFER_EXCHANGE_ACKED = "SEALED_TRANSFER_EXCHANGE_ACKED"
+        SEALED_TRANSFER_EXCHANGE_APPLIED = "SEALED_TRANSFER_EXCHANGE_APPLIED"
     class Results:
         PASS = LABEL_MATCH_RESULT_PASS
         FAIL_MISMATCH = LABEL_MATCH_RESULT_FAIL_MISMATCH
@@ -2932,6 +3060,11 @@ class Label_Match(tk.Tk):
 
     def __init__(self, run_tests=False):
         _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
+        # Resolve/decrypt the machine profile and perform the authenticated
+        # readiness probe before Tcl exists. Required mode can never fall back
+        # to a local/direct-sync-only packaging result.
+        startup_package_logistics_client = package_client_from_env()
+        startup_logistics_required = logistics_runtime_required()
         capture_startup_request = _label_match_capture_startup_request()
         capture_startup_geometry = (
             capture_startup_request["geometry"] if capture_startup_request else None
@@ -2945,6 +3078,31 @@ class Label_Match(tk.Tk):
             else None
         )
         super().__init__()
+        # Every exit path, including constructor failures and capture helpers
+        # that call ``destroy()`` directly, must pass through one Tk-thread
+        # teardown guard.  Worker callbacks observe this before touching Tcl.
+        self._tk_shutdown_requested = False
+        self._tk_destroy_in_progress = False
+        self._tk_destroy_complete = False
+        self._initial_load_thread = None
+        self._history_loader_threads = []
+        self._audio_init_thread = None
+        self._update_check_thread = None
+        self._simulation_thread = None
+        self._siren_threads = []
+        self._audio_init_result_queue = queue.Queue(maxsize=1)
+        self._audio_stop_event = threading.Event()
+        self._audio_init_after_id = None
+        self._simulation_result_queue = queue.Queue()
+        self._simulation_stop_event = threading.Event()
+        self._simulation_after_id = None
+        self._siren_result_queue = queue.Queue()
+        self._siren_stop_event = threading.Event()
+        self._siren_after_id = None
+        self._tk_destroy_retry_after_id = None
+        self._initial_load_after_id = None
+        self._history_after_id = None
+        self._update_check_after_id = None
         self._capture_startup_geometry = capture_startup_geometry
         self._capture_startup_dpi = capture_startup_dpi
         self._capture_dpi_awareness = capture_dpi_awareness
@@ -3002,7 +3160,17 @@ class Label_Match(tk.Tk):
         package_outbox_path = os.path.join(self.save_directory, "package_logistics_outbox.sqlite3")
         self.package_outbox = PackageOutbox(package_outbox_path)
         self.package_cancellation_outbox = PackageCancellationOutbox(package_outbox_path)
-        self.package_logistics_client = package_client_from_env()
+        self.package_logistics_client = startup_package_logistics_client
+        self._logistics_authoritative_required = startup_logistics_required
+        self.sealed_transfer_exchange_store = SealedTransferExchangeStore(
+            package_outbox_path
+        )
+        self.sealed_transfer_exchange_coordinator = (
+            SealedTransferExchangeCoordinator(
+                self.sealed_transfer_exchange_store,
+                self.package_logistics_client,
+            )
+        )
         self.package_outbox_processor = (
             PackageOutboxProcessor(self.package_outbox, self.package_logistics_client)
             if self.package_logistics_client is not None
@@ -3085,9 +3253,16 @@ class Label_Match(tk.Tk):
         self.show_loading_overlay()
         _label_match_startup_trace("app_init_after_loading_overlay")
         self.initial_load_queue = queue.Queue()
-        threading.Thread(target=self._async_initial_load, daemon=True).start()
+        self._initial_load_thread = threading.Thread(
+            target=self._async_initial_load,
+            name="label-match-initial-load",
+            daemon=True,
+        )
+        self._initial_load_thread.start()
         _label_match_startup_trace("app_init_after_initial_load_thread")
-        self.after(100, self._process_initial_load_queue)
+        self._initial_load_after_id = self.after(
+            100, self._process_initial_load_queue
+        )
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.bind_all("<Control-MouseWheel>", self.on_ctrl_wheel)
         self.bind("<Button-1>", self._on_root_click)
@@ -3132,6 +3307,11 @@ class Label_Match(tk.Tk):
                     package_processor.drain(limit=20)
                 if cancellation_processor is not None:
                     cancellation_processor.drain(limit=20)
+                exchange_coordinator = self.__dict__.get(
+                    "sealed_transfer_exchange_coordinator"
+                )
+                if exchange_coordinator is not None:
+                    exchange_coordinator.drain_pending()
             except Exception as exc:
                 print(f"포장 물류 outbox 처리 오류: {exc}")
 
@@ -3161,6 +3341,7 @@ class Label_Match(tk.Tk):
             self._schedule_package_outbox_poll()
             return current
         self._refresh_package_cancellation_review_notice()
+        self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
         if self.__dict__.get("package_outbox_after_id") is None:
             try:
                 self.package_outbox_after_id = self.after(
@@ -3221,34 +3402,75 @@ class Label_Match(tk.Tk):
             self.audio_init_finished = True
             return
         self.audio_init_started = True
+        self._audio_stop_event.clear()
+        result_queue = self._audio_init_result_queue
+        stop_event = self._audio_stop_event
 
         def initialize_audio():
             error_message = ""
             ready = False
+            pygame_module = None
             try:
                 import pygame
 
                 pygame.mixer.init()
-                self.pygame_module = pygame
+                pygame_module = pygame
+                if stop_event.is_set():
+                    pygame.mixer.quit()
+                    return
                 ready = True
             except Exception as exc:
                 error_message = str(exc)
-
-            def finish():
-                self.audio_ready = ready
-                self.audio_error = error_message
-                self.audio_init_finished = True
-                if ready and self.initialized_successfully:
-                    self.sound_objects = self._preload_sounds()
-                elif error_message:
-                    print(f"오디오 초기화 오류: {error_message}")
-
+            if stop_event.is_set():
+                if pygame_module is not None:
+                    try:
+                        pygame_module.mixer.quit()
+                    except Exception:
+                        pass
+                return
             try:
-                self.after(0, finish)
-            except TclError:
-                pass
+                result_queue.put_nowait((pygame_module, ready, error_message))
+            except queue.Full:
+                if pygame_module is not None:
+                    try:
+                        pygame_module.mixer.quit()
+                    except Exception:
+                        pass
 
-        threading.Thread(target=initialize_audio, name="label-match-audio-init", daemon=True).start()
+        self._audio_init_thread = threading.Thread(
+            target=initialize_audio,
+            name="label-match-audio-init",
+            daemon=True,
+        )
+        self._audio_init_thread.start()
+        self._audio_init_after_id = self.after(50, self._poll_audio_initialization)
+
+    def _poll_audio_initialization(self):
+        self._audio_init_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return None
+        try:
+            pygame_module, ready, error_message = (
+                self._audio_init_result_queue.get_nowait()
+            )
+        except queue.Empty:
+            thread = self.__dict__.get("_audio_init_thread")
+            if thread is not None and thread.is_alive():
+                self._audio_init_after_id = self.after(
+                    50, self._poll_audio_initialization
+                )
+                return thread
+            self.audio_init_finished = True
+            return None
+        self.pygame_module = pygame_module
+        self.audio_ready = bool(ready)
+        self.audio_error = str(error_message or "")
+        self.audio_init_finished = True
+        if ready and self.initialized_successfully:
+            self.sound_objects = self._preload_sounds()
+        elif error_message:
+            print(f"오디오 초기화 오류: {error_message}")
+        return None
 
     def _on_root_click(self, event):
         if event.widget not in [self.history_tree, self.summary_tree]:
@@ -3294,6 +3516,9 @@ class Label_Match(tk.Tk):
             _label_match_startup_trace("async_initial_load_error", error=str(e))
 
     def _process_initial_load_queue(self):
+        self._initial_load_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return
         try:
             result = self.initial_load_queue.get_nowait()
             _label_match_startup_trace("initial_load_queue_result", keys=sorted(result.keys()))
@@ -3322,23 +3547,93 @@ class Label_Match(tk.Tk):
             _label_match_startup_trace("initial_load_ui_ready", title=self.title())
             if not self.run_tests:
                 self._start_direct_sync_auto_bootstrap()
-                threading.Thread(target=threaded_update_check, daemon=True).start()
+                self._start_update_check()
         except queue.Empty:
-            self.after(100, self._process_initial_load_queue)
+            if not self.__dict__.get("_tk_shutdown_requested", False):
+                self._initial_load_after_id = self.after(
+                    100, self._process_initial_load_queue
+                )
         except Exception as e:
             self.hide_loading_overlay()
             if not self.run_tests:
                 messagebox.showerror("초기화 오류", f"프로그램을 시작하는 마지막 단계에서 오류가 발생했습니다.\n일시적인 문제일 수 있으니 프로그램을 다시 시작해보세요.\n\n[상세 오류]\n{e}\n\n프로그램을 종료합니다.")
             self.destroy()
 
+    def _start_update_check(self):
+        """Run only update I/O in a worker; all Tk work stays on this thread."""
+
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return None
+        result_queue = queue.Queue(maxsize=1)
+
+        def worker():
+            candidate = _check_update_candidate()
+            try:
+                result_queue.put_nowait(candidate)
+            except queue.Full:
+                pass
+
+        self._update_check_result_queue = result_queue
+        thread = threading.Thread(
+            target=worker,
+            name="label-match-update-check",
+            daemon=True,
+        )
+        self._update_check_thread = thread
+        thread.start()
+        self._update_check_after_id = self.after(100, self._poll_update_check)
+        return thread
+
+    def _poll_update_check(self):
+        self._update_check_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return None
+        result_queue = self.__dict__.get("_update_check_result_queue")
+        try:
+            candidate = result_queue.get_nowait() if result_queue is not None else None
+        except queue.Empty:
+            thread = self.__dict__.get("_update_check_thread")
+            if thread is not None and thread.is_alive():
+                self._update_check_after_id = self.after(100, self._poll_update_check)
+            return None
+        if not candidate:
+            print("업데이트 확인 완료. 최신 버전이거나 확인 중 오류가 발생했습니다.")
+            return None
+        if not _can_apply_updates():
+            print(
+                f"업데이트 {candidate['version']} 확인됨. "
+                "소스 실행 모드에서는 자동 업데이트 적용을 건너뜁니다."
+            )
+            return candidate
+        should_apply = messagebox.askyesno(
+            "업데이트 발견",
+            (
+                f"새로운 버전({candidate['version']})이 있습니다.\n"
+                f"지금 업데이트하시겠습니까? (현재 버전: {APP_VERSION})"
+            ),
+            parent=self,
+        )
+        if should_apply and not self.__dict__.get("_tk_shutdown_requested", False):
+            download_and_apply_update(
+                candidate["url"],
+                expected_sha256=candidate.get("sha256"),
+                archive_policy=candidate.get("archive"),
+            )
+        elif not should_apply:
+            print("사용자가 업데이트를 거부했습니다.")
+        return candidate
+
     def _start_direct_sync_auto_bootstrap(self):
         context = _label_match_direct_sync_context(self.save_directory, self.app_settings_path)
         self.direct_sync_bootstrap_context = context
-        threading.Thread(
+        self._direct_sync_auto_bootstrap_thread = threading.Thread(
             target=_label_match_auto_bootstrap_direct_sync,
             args=(context,),
+            name="label-match-direct-sync-bootstrap",
             daemon=True,
-        ).start()
+        )
+        self._direct_sync_auto_bootstrap_thread.start()
+        return self._direct_sync_auto_bootstrap_thread
 
     def show_loading_overlay(self):
         self.loading_overlay.grid(row=0, column=0, rowspan=3, sticky='nsew')
@@ -4213,12 +4508,142 @@ class Label_Match(tk.Tk):
         thread.start()
         self._app_close_poll_after_id = self.after(100, self._poll_app_close_direct_sync)
 
+    def _tracked_tk_shutdown_threads(self):
+        """Return app-owned workers that can retain or callback into this root."""
+
+        state = self.__dict__
+        candidates = [
+            state.get("_initial_load_thread"),
+            state.get("_audio_init_thread"),
+            state.get("_update_check_thread"),
+            state.get("_simulation_thread"),
+            state.get("package_outbox_thread"),
+            state.get("_direct_sync_auto_bootstrap_thread"),
+            state.get("_app_close_sync_thread"),
+            state.get("direct_sync_session_thread"),
+        ]
+        for attr_name in (
+            "_history_loader_threads",
+            "_siren_threads",
+            "direct_sync_session_threads",
+        ):
+            candidates.extend(state.get(attr_name, ()) or ())
+        current = threading.current_thread()
+        unique = []
+        seen = set()
+        for thread in candidates:
+            if thread is None or thread is current or id(thread) in seen:
+                continue
+            seen.add(id(thread))
+            unique.append(thread)
+        return unique
+
+    def _join_tk_shutdown_threads(self):
+        deadline = (
+            time.monotonic() + LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS
+        )
+        remaining_names = []
+        for thread in self._tracked_tk_shutdown_threads():
+            if not thread.is_alive():
+                continue
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining:
+                thread.join(timeout=remaining)
+            if thread.is_alive():
+                remaining_names.append(thread.name)
+        if remaining_names:
+            print(
+                "Tk 종료 대기 시간을 초과한 백그라운드 작업: "
+                + ", ".join(sorted(set(remaining_names)))
+            )
+        return tuple(remaining_names)
+
+    def _close_data_manager_before_tk_destroy(self):
+        manager = self.__dict__.get("data_manager")
+        close = getattr(manager, "close", None)
+        if not callable(close):
+            return True
+        try:
+            close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
+            return True
+        except Exception as exc:
+            # A writer error must not leave its worker alive while Tcl is
+            # destroyed.  DataManager.close joins before surfacing that error.
+            print(f"Tk 종료 중 로그 writer 정리 오류: {exc}")
+            return False
+
+    def destroy(self):
+        """Idempotently stop app-owned workers before destroying Tcl.
+
+        Several capture/E2E tools legitimately call ``destroy()`` directly.
+        Keeping the safety gate here prevents those paths, constructor error
+        paths, and WM_CLOSE from diverging again.
+        """
+
+        state = self.__dict__
+        if state.get("_tk_destroy_complete", False):
+            return None
+        if state.get("_tk_destroy_in_progress", False):
+            return None
+        state["_tk_destroy_in_progress"] = True
+        state["_tk_shutdown_requested"] = True
+        self._stop_error_siren()
+        destroy_completed = False
+        try:
+            self._cancel_pending_ui_jobs()
+            remaining_threads = self._join_tk_shutdown_threads()
+            if remaining_threads:
+                # Tk must outlive every worker that ever held a reference to
+                # this root.  Keep the interpreter intact and re-check from
+                # the Tk thread instead of tearing down Tcl under a live worker.
+                try:
+                    state["_tk_destroy_retry_after_id"] = self.after(
+                        100, self.destroy
+                    )
+                except (TclError, RuntimeError):
+                    state["_tk_destroy_retry_after_id"] = None
+                return None
+            self._close_data_manager_before_tk_destroy()
+            audio_result_queue = state.get("_audio_init_result_queue")
+            if audio_result_queue is not None:
+                while True:
+                    try:
+                        queued_pygame, _ready, _error = audio_result_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if queued_pygame is not None:
+                        try:
+                            queued_pygame.mixer.quit()
+                        except Exception:
+                            pass
+            pygame_module = state.get("pygame_module")
+            if pygame_module is not None:
+                try:
+                    pygame_module.mixer.quit()
+                except Exception:
+                    pass
+            try:
+                result = super().destroy()
+                destroy_completed = True
+                return result
+            except TclError:
+                # Tcl may already be gone after a constructor failure.  The
+                # app-owned workers and writer have still been joined above.
+                destroy_completed = True
+                return None
+        finally:
+            if destroy_completed:
+                state["_tk_destroy_complete"] = True
+            state["_tk_destroy_in_progress"] = False
+
     def on_closing(self):
         if self.__dict__.get("_app_close_in_progress", False):
             return
         if not self.initialized_successfully:
             self._cancel_pending_ui_jobs()
             self.destroy()
+            return
+        if self._sealed_transfer_exchange_blocks_local_action("프로그램 종료"):
             return
         if self._has_background_work():
             if not self.run_tests:
@@ -4273,22 +4698,60 @@ class Label_Match(tk.Tk):
             self.destroy()
 
     def _cancel_pending_ui_jobs(self):
+        for event_name in (
+            "_audio_stop_event",
+            "_simulation_stop_event",
+            "_siren_stop_event",
+        ):
+            stop_event = self.__dict__.get(event_name)
+            if stop_event is not None:
+                stop_event.set()
         for attr_name in (
             "_responsive_after_id",
             "_zoom_after_id",
             "_ui_redraw_after_id",
             "_clock_after_id",
+            "_initial_load_after_id",
+            "_history_after_id",
+            "_update_check_after_id",
+            "_app_close_poll_after_id",
             "package_outbox_after_id",
             "package_outbox_poll_after_id",
+            "_audio_init_after_id",
+            "_simulation_after_id",
+            "_siren_after_id",
+            "_tk_destroy_retry_after_id",
         ):
             after_id = self.__dict__.get(attr_name)
             if not after_id:
                 continue
             try:
                 self.after_cancel(after_id)
-            except TclError:
+            except (TclError, RuntimeError):
                 pass
             self.__dict__[attr_name] = None
+        # Some legacy UI callbacks do not retain their ``after`` identifier.
+        # Cancel every remaining Tcl timer while the interpreter is still
+        # owned by this thread, before Tk.destroy tears its command table down.
+        tkapp = self.__dict__.get("tk")
+        if tkapp is None:
+            return
+        try:
+            raw_pending = tkapp.call("after", "info")
+            pending = (
+                tuple(raw_pending)
+                if isinstance(raw_pending, (tuple, list))
+                else tuple(tkapp.splitlist(raw_pending))
+            )
+        except (TclError, RuntimeError, TypeError):
+            pending = ()
+        for after_id in pending:
+            if isinstance(after_id, (tuple, list)):
+                continue
+            try:
+                self.after_cancel(str(after_id))
+            except (TclError, RuntimeError, TypeError):
+                pass
 
     def _replace_closed_data_manager_after_close_failure(self, failed_manager):
         if not getattr(failed_manager, '_close_requested', False):
@@ -4332,7 +4795,25 @@ class Label_Match(tk.Tk):
 
         msg = f"이전에 완료되지 않은 스캔 세트가 있습니다.\n(스캔 수: {len(state_data.get('current_set_info', {}).get('raw', []))})\n\n이어서 진행하시겠습니까?"
         
-        should_restore = self.run_tests or messagebox.askyesno("작업 복구", msg)
+        saved_set_id = str(
+            state_data.get("current_set_info", {}).get("id") or ""
+        ).strip()
+        exchange_rows = (
+            self.sealed_transfer_exchange_store.blocking_rows(set_id=saved_set_id)
+            if saved_set_id
+            else []
+        )
+        if exchange_rows:
+            should_restore = True
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "제품 교체 복구 필요",
+                    "중앙 제품 교체가 진행 중이거나 ACK 후 로컬 반영 대기 중이므로 "
+                    "이 세트는 자동 복구됩니다.",
+                    parent=self,
+                )
+        else:
+            should_restore = self.run_tests or messagebox.askyesno("작업 복구", msg)
 
         if should_restore:
             saved_worker_name = state_data.get('worker_name')
@@ -4366,6 +4847,7 @@ class Label_Match(tk.Tk):
             self._update_history_tree_in_progress()
             self._workflow_recovered = True
             self._render_operator_workbench()
+            self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
         else:
             self.data_manager.delete_current_state()
 
@@ -4421,7 +4903,19 @@ class Label_Match(tk.Tk):
 
         loading_values = ("", "기록을 불러오는 중입니다...", *[""] * (self.TOTAL_SCAN_COUNT - 1), "", "")
         self.history_tree.insert("", "end", iid="loading", values=loading_values, tags=("in_progress",))
-        loader_thread = threading.Thread(target=self._async_load_history_task, args=(self.history_queue, target_date, updates_active_state, load_generation), daemon=True)
+        loader_thread = threading.Thread(
+            target=self._async_load_history_task,
+            args=(self.history_queue, target_date, updates_active_state, load_generation),
+            name=f"label-match-history-load-{load_generation}",
+            daemon=True,
+        )
+        active_loaders = [
+            thread
+            for thread in self.__dict__.get("_history_loader_threads", [])
+            if thread.is_alive()
+        ]
+        active_loaders.append(loader_thread)
+        self._history_loader_threads = active_loaders
         loader_thread.start()
 
     def _async_load_history_task(self, result_queue, target_date=None, updates_active_state=None, load_generation=None):
@@ -4516,6 +5010,9 @@ class Label_Match(tk.Tk):
             result_queue.put({'error': str(e), 'load_generation': load_generation})
 
     def _process_history_queue(self):
+        self._history_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return
         try:
             while True:
                 result = self.history_queue.get_nowait()
@@ -4551,8 +5048,16 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
             print("비동기 기록 로드 및 UI 적용 완료.")
         except queue.Empty:
-            if self.__dict__.get('history_load_pending', self.__dict__.get('history_active_load_pending', False)):
-                self.after(100, self._process_history_queue)
+            if (
+                not self.__dict__.get("_tk_shutdown_requested", False)
+                and self.__dict__.get(
+                    'history_load_pending',
+                    self.__dict__.get('history_active_load_pending', False),
+                )
+            ):
+                self._history_after_id = self.after(
+                    100, self._process_history_queue
+                )
         except Exception as e:
             print(f"UI 업데이트 중 오류 발생: {e}")
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
@@ -4836,6 +5341,8 @@ class Label_Match(tk.Tk):
 
         if self.is_blinking or not self.initialized_successfully: return
         if not raw_input: return
+        if self._sealed_transfer_exchange_blocks_local_action("다음 스캔"):
+            return
         if raw_input in {'_RUN_AUTO_TEST_', '_RUN_DEMO_'}:
             if self._block_view_only_action("테스트 기능을 실행"):
                 return
@@ -4900,6 +5407,9 @@ class Label_Match(tk.Tk):
                     return
                 client_code = str(transfer_label_data["CLC"])
                 self.current_set_info["phase"] = "TRANSFER"
+                transfer_label_data["_seal_qr_payload"] = (
+                    _label_match_decode_possible_base64_label(processed_input)
+                )
                 self.current_set_info["sealed_transfer"] = transfer_label_data
                 self._update_on_success_scan(raw_input, client_code)
             elif new_label_data:
@@ -5005,6 +5515,448 @@ class Label_Match(tk.Tk):
                     return
                 self.current_set_info['production_date'] = production_date
             self._update_on_success_scan(raw_input, master_code)
+
+    def _current_sealed_transfer_exchange_attempt(self):
+        store = self.__dict__.get("sealed_transfer_exchange_store")
+        current_set_info = self.__dict__.get("current_set_info") or {}
+        set_id = str(current_set_info.get("id") or "").strip()
+        if store is None or not set_id:
+            return None
+        rows = store.blocking_rows(set_id=set_id)
+        if not rows:
+            return None
+        coordinator = self.__dict__.get("sealed_transfer_exchange_coordinator")
+        return coordinator._attempt(rows[-1]) if coordinator is not None else None
+
+    def _sealed_transfer_exchange_blocks_local_action(self, action):
+        attempt = self._current_sealed_transfer_exchange_attempt()
+        if attempt is None:
+            return False
+        if attempt.status == "ACKED" and attempt.seal_verification_status == "PENDING":
+            message = (
+                "중앙 제품 교체가 완료되어 새 봉인 QR 확인이 필요합니다.\n"
+                "새 QR을 확인·재스캔한 뒤 계속하세요."
+            )
+            self._prompt_new_seal_verification(attempt)
+        elif (
+            attempt.status == "OPERATOR_REVIEW"
+            or attempt.local_apply_status == "OPERATOR_REVIEW"
+            or attempt.seal_verification_status == "OPERATOR_REVIEW"
+        ):
+            message = (
+                "제품 교체 결과가 운영자 확인 잠금 상태입니다.\n"
+                f"{action} 작업을 진행하지 말고 중앙 receipt와 현재 포장 상태를 확인하세요."
+            )
+            if not self.run_tests:
+                messagebox.showwarning("제품 교체 확인 필요", message, parent=self)
+        else:
+            message = (
+                "제품 교체 명령의 중앙 결과를 확인 중입니다.\n"
+                f"{action} 작업은 receipt 복구가 끝난 뒤 가능합니다."
+            )
+            if not self.run_tests:
+                messagebox.showwarning("제품 교체 처리 중", message, parent=self)
+        return True
+
+    def _apply_acked_sealed_transfer_exchange(self, intent_id):
+        store = self.sealed_transfer_exchange_store
+        row = store.load(intent_id)
+        attempt = self.sealed_transfer_exchange_coordinator._attempt(row)
+        if (
+            attempt.status != "ACKED"
+            or attempt.seal_verification_status != "VERIFIED"
+            or attempt.local_apply_status != "PENDING"
+        ):
+            return attempt.local_apply_status == "APPLIED"
+        before = copy.deepcopy(self.current_set_info)
+        try:
+            after = _label_match_apply_sealed_exchange_state(
+                before,
+                old_seal_qr_payload=attempt.old_seal_qr_payload,
+                new_seal_qr_payload=attempt.new_seal_qr_payload,
+                old_barcodes=attempt.old_barcodes,
+                new_barcodes=attempt.new_barcodes,
+            )
+            after["sealed_transfer_exchange_intent_id"] = intent_id
+            self.current_set_info = after
+            self._save_current_set_state()
+            self.data_manager.log_event(
+                self.Events.SEALED_TRANSFER_EXCHANGE_APPLIED,
+                {
+                    "set_id": attempt.set_id,
+                    "intent_id": intent_id,
+                    "receipt_id": attempt.receipt_id,
+                    "target_bundle_id": attempt.target_bundle_id,
+                    "damage_bundle_id": attempt.damage_bundle_id,
+                    "old_barcodes": list(attempt.old_barcodes),
+                    "new_barcodes": list(attempt.new_barcodes),
+                    "old_seal_qr_payload": attempt.old_seal_qr_payload,
+                    "new_seal_qr_payload": attempt.new_seal_qr_payload,
+                    "entity_versions": dict(attempt.entity_versions),
+                    "atomic_local_apply": True,
+                },
+            )
+            store.mark_local_applied(
+                intent_id,
+                {
+                    "set_id": attempt.set_id,
+                    "new_master_qr": attempt.new_seal_qr_payload,
+                    "raw_scan_count": len(after.get("raw") or []),
+                    "old_barcodes": list(attempt.old_barcodes),
+                    "new_barcodes": list(attempt.new_barcodes),
+                },
+            )
+        except Exception as exc:
+            self.current_set_info = before
+            try:
+                self._save_current_set_state()
+            except Exception:
+                store.mark_local_review(
+                    intent_id,
+                    "local state update and rollback both failed; operator review required",
+                )
+            if self.run_tests:
+                raise
+            messagebox.showerror(
+                "제품 교체 로컬 반영 보류",
+                "중앙 교체 receipt는 보존됐지만 현재 포장 화면 저장에 실패했습니다.\n"
+                "프로그램을 종료하지 말고 다시 시도하세요.\n\n"
+                f"상세: {exc}",
+                parent=self,
+            )
+            return False
+        self._update_history_tree_in_progress()
+        self._update_status_label()
+        self._render_operator_workbench()
+        self.update_big_display("제품 교체 및 새 봉인 확인 완료", "green")
+        return True
+
+    def _prompt_new_seal_verification(self, attempt):
+        if attempt is None or attempt.status != "ACKED":
+            return False
+        existing = self.__dict__.get("_sealed_transfer_reseal_window")
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    return True
+            except TclError:
+                pass
+        if attempt.seal_verification_status == "VERIFIED":
+            return self._apply_acked_sealed_transfer_exchange(attempt.intent_id)
+        if self.run_tests:
+            return False
+        popup = tk.Toplevel(self)
+        self._sealed_transfer_reseal_window = popup
+        popup.title("새 이적 봉인 QR 확인")
+        popup.transient(self)
+        popup.grab_set()
+        popup.geometry("760x720")
+        popup.configure(bg=self.colors.get("background", "#ECEFF1"))
+        frame = ttk.Frame(popup, padding=18)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(
+            frame,
+            text="중앙 교체 완료 · 기존 QR은 즉시 무효",
+            style="Title.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "아래 새 봉인 QR을 현품표에 부착할 라벨로 출력한 뒤,\n"
+                "그 새 QR을 스캐너로 다시 읽어야 포장 작업을 계속할 수 있습니다."
+            ),
+            justify="left",
+        ).pack(anchor="w", pady=(8, 12))
+        qr_holder = ttk.Label(frame)
+        qr_holder.pack(pady=8)
+        try:
+            import qrcode
+            from PIL import ImageTk
+
+            qr_code = qrcode.QRCode(
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=4,
+                border=4,
+            )
+            qr_code.add_data(attempt.new_seal_qr_payload)
+            qr_code.make(fit=True)
+            image = qr_code.make_image(fill_color="black", back_color="white")
+            photo = ImageTk.PhotoImage(image)
+            qr_holder.configure(image=photo)
+            popup._sealed_qr_photo = photo
+        except Exception as exc:
+            qr_holder.configure(text=f"QR 표시 모듈 오류: {exc}")
+        payload_box = tk.Text(frame, height=4, wrap="word")
+        payload_box.insert("1.0", attempt.new_seal_qr_payload)
+        payload_box.configure(state="disabled")
+        payload_box.pack(fill="x", pady=(8, 10))
+        status_var = tk.StringVar(value="새 봉인 QR 재스캔 대기")
+        ttk.Label(frame, textvariable=status_var).pack(anchor="w")
+        scan_entry = ttk.Entry(frame, font=(self.default_font_name, 14))
+        scan_entry.pack(fill="x", pady=(6, 10))
+
+        def verify(event=None):
+            scanned = _label_match_decode_possible_base64_label(
+                scan_entry.get().strip()
+            )
+            scan_entry.delete(0, tk.END)
+            try:
+                self.sealed_transfer_exchange_store.mark_seal_verified(
+                    attempt.intent_id, scanned
+                )
+            except Exception:
+                status_var.set("기존 QR 또는 다른 QR입니다. 새 봉인 QR을 스캔하세요.")
+                scan_entry.focus_set()
+                return "break"
+            popup.grab_release()
+            popup.destroy()
+            self._sealed_transfer_reseal_window = None
+            self._apply_acked_sealed_transfer_exchange(attempt.intent_id)
+            return "break"
+
+        scan_entry.bind("<Return>", verify)
+        ttk.Button(frame, text="새 QR 확인", command=verify).pack(anchor="e")
+        popup.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: (
+                popup.grab_release(),
+                popup.destroy(),
+                setattr(self, "_sealed_transfer_reseal_window", None),
+            ),
+        )
+        scan_entry.focus_set()
+        return True
+
+    def _reconcile_pending_sealed_transfer_exchanges(self, prompt_operator=False):
+        coordinator = self.__dict__.get("sealed_transfer_exchange_coordinator")
+        if coordinator is None or not isinstance(self.current_set_info, dict):
+            return False
+        set_id = str(self.current_set_info.get("id") or "").strip()
+        if not set_id:
+            return False
+        changed = False
+        for attempt in coordinator.pending_local_attempts(set_id=set_id):
+            current_master = ""
+            raw = list(self.current_set_info.get("raw") or [])
+            if raw:
+                current_master = _label_match_decode_possible_base64_label(raw[0])
+            if current_master not in {
+                attempt.old_seal_qr_payload,
+                attempt.new_seal_qr_payload,
+            }:
+                coordinator.store.mark_local_review(
+                    attempt.intent_id,
+                    "restored packaging master differs from old and new seal",
+                )
+                continue
+            if attempt.seal_verification_status == "VERIFIED":
+                changed = self._apply_acked_sealed_transfer_exchange(
+                    attempt.intent_id
+                ) or changed
+            elif prompt_operator:
+                self._prompt_new_seal_verification(attempt)
+        return changed
+
+    def _prompt_sealed_transfer_exchange(self):
+        raw = list(self.current_set_info.get("raw") or [])
+        if not 1 <= len(raw) < self.TOTAL_SCAN_COUNT:
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "제품 교체 불가",
+                    "sealed transfer를 스캔한 뒤 포장 완료 전까지만 교체할 수 있습니다.",
+                    parent=self,
+                )
+            return False
+        sealed = self.current_set_info.get("sealed_transfer")
+        if not isinstance(sealed, dict) or not all(
+            sealed.get(key) for key in ("BND", "AUTH_SCOPE", "CLC", "SID", "SREV", "STK")
+        ):
+            if not self.run_tests:
+                messagebox.showerror(
+                    "제품 교체 불가",
+                    "현재 현품표에 중앙 봉인 증거가 없습니다. 기존 형식 QR은 교체할 수 없습니다.",
+                    parent=self,
+                )
+            return False
+        pending = self._current_sealed_transfer_exchange_attempt()
+        if pending is not None:
+            if pending.status == "ACKED":
+                return self._prompt_new_seal_verification(pending)
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "제품 교체 처리 중",
+                    "이전 교체 명령의 중앙 receipt를 확인 중입니다.",
+                    parent=self,
+                )
+            return False
+        if self.package_logistics_client is None:
+            if not self.run_tests:
+                messagebox.showerror(
+                    "중앙 연결 필요",
+                    "제품 교체는 중앙 물류 API가 설정된 PC에서만 가능합니다.",
+                    parent=self,
+                )
+            return False
+        quantity = 1 if self.run_tests else simpledialog.askinteger(
+            "제품 교체",
+            "교체할 제품 수량을 입력하세요. (1~2)",
+            parent=self,
+            minvalue=1,
+            maxvalue=2,
+        )
+        if not quantity:
+            return False
+        if self.run_tests:
+            return True
+        popup = tk.Toplevel(self)
+        popup.title("sealed transfer 제품 교체")
+        popup.transient(self)
+        popup.grab_set()
+        popup.geometry("680x420")
+        frame = ttk.Frame(popup, padding=20)
+        frame.pack(fill="both", expand=True)
+        title_var = tk.StringVar(value=f"교체 대상 제품 1/{quantity} 스캔")
+        ttk.Label(frame, textvariable=title_var, style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="교체 대상 → 새 양품 순서로 스캔합니다. 중앙에서 1~2개를 한 트랜잭션으로 처리합니다.",
+            wraplength=620,
+        ).pack(anchor="w", pady=(8, 18))
+        rows_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=rows_var, justify="left").pack(
+            fill="x", pady=(0, 12)
+        )
+        scan_entry = ttk.Entry(frame, font=(self.default_font_name, 16))
+        scan_entry.pack(fill="x")
+        status_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=status_var).pack(anchor="w", pady=(8, 0))
+        old_values = []
+        new_values = []
+        stage = {"value": "old"}
+
+        def render_rows():
+            lines = []
+            for index in range(quantity):
+                old = old_values[index] if index < len(old_values) else "-"
+                new = new_values[index] if index < len(new_values) else "-"
+                lines.append(f"{index + 1}. 교체 대상: {old}  →  새 양품: {new}")
+            rows_var.set("\n".join(lines))
+
+        def poll_result(result_queue):
+            try:
+                result = result_queue.get_nowait()
+            except queue.Empty:
+                popup.after(100, poll_result, result_queue)
+                return
+            if isinstance(result, Exception):
+                status_var.set(f"교체 준비 오류: {result}")
+                scan_entry.configure(state="normal")
+                return
+            if result.status == "ACKED":
+                self.data_manager.log_event(
+                    self.Events.SEALED_TRANSFER_EXCHANGE_ACKED,
+                    {
+                        "set_id": result.set_id,
+                        "intent_id": result.intent_id,
+                        "receipt_id": result.receipt_id,
+                        "target_bundle_id": result.target_bundle_id,
+                        "damage_bundle_id": result.damage_bundle_id,
+                        "old_barcodes": list(result.old_barcodes),
+                        "new_barcodes": list(result.new_barcodes),
+                        "new_seal_qr_payload": result.new_seal_qr_payload,
+                    },
+                )
+                popup.grab_release()
+                popup.destroy()
+                self._prompt_new_seal_verification(result)
+                return
+            status_var.set(
+                "중앙 결과 확인 대기" if result.retryable else
+                f"교체 차단: {result.error_code} {result.error_message}"
+            )
+            if not result.retryable:
+                scan_entry.configure(state="normal")
+
+        def submit_to_server():
+            scan_entry.configure(state="disabled")
+            title_var.set("중앙 원자 교체 및 재봉인 처리 중")
+            status_var.set("창을 닫지 마세요.")
+            result_queue = queue.Queue()
+
+            def worker():
+                try:
+                    old_qr = str(
+                        sealed.get("_seal_qr_payload")
+                        or _label_match_decode_possible_base64_label(raw[0])
+                    )
+                    prepared = self.sealed_transfer_exchange_coordinator.prepare(
+                        set_id=str(self.current_set_info.get("id") or ""),
+                        old_seal_qr_payload=old_qr,
+                        old_seal_fields=sealed,
+                        operator=self.worker_name,
+                        old_barcodes=old_values,
+                        new_barcodes=new_values,
+                    )
+                    result_queue.put(
+                        self.sealed_transfer_exchange_coordinator.attempt(
+                            prepared.intent_id
+                        )
+                    )
+                except Exception as exc:
+                    result_queue.put(exc)
+
+            threading.Thread(
+                target=worker,
+                name="label-match-sealed-transfer-exchange",
+                daemon=True,
+            ).start()
+            popup.after(100, poll_result, result_queue)
+
+        def accept_scan(event=None):
+            value = normalize_exchange_barcode(scan_entry.get())
+            scan_entry.delete(0, tk.END)
+            if not value:
+                return "break"
+            if stage["value"] == "old":
+                if value in old_values or value in new_values:
+                    status_var.set("중복된 제품은 교체할 수 없습니다.")
+                    return "break"
+                old_values.append(value)
+                stage["value"] = "new"
+                title_var.set(f"새 양품 {len(old_values)}/{quantity} 스캔")
+            else:
+                if value in old_values or value in new_values:
+                    status_var.set("교체 대상과 새 양품은 서로 달라야 합니다.")
+                    return "break"
+                current_samples = {
+                    normalize_exchange_barcode(sample)
+                    for sample in raw[1:4]
+                }
+                if value in current_samples:
+                    status_var.set("이미 현재 QA 표본으로 스캔된 제품은 새 양품으로 사용할 수 없습니다.")
+                    return "break"
+                new_values.append(value)
+                stage["value"] = "old"
+                if len(new_values) == quantity:
+                    render_rows()
+                    submit_to_server()
+                    return "break"
+                title_var.set(f"교체 대상 제품 {len(old_values) + 1}/{quantity} 스캔")
+            status_var.set("")
+            render_rows()
+            return "break"
+
+        render_rows()
+        scan_entry.bind("<Return>", accept_scan)
+        popup.protocol("WM_DELETE_WINDOW", lambda: (popup.grab_release(), popup.destroy()))
+        scan_entry.focus_set()
+        return True
+
+    def _handle_f4_action(self):
+        if self.current_set_info.get("sealed_transfer"):
+            return self._prompt_sealed_transfer_exchange()
+        return self._prompt_exact_rescan()
 
     def _prompt_exact_rescan(self):
         raw = list(self.current_set_info.get("raw") or [])
@@ -5197,11 +6149,19 @@ class Label_Match(tk.Tk):
         return None
 
     def _queue_authoritative_package(self, *, item_code, is_manual_complete):
+        required_mode = bool(
+            self.__dict__.get("_logistics_authoritative_required", False)
+        ) or logistics_runtime_required()
         if (
-            is_manual_complete
-            or self.__dict__.get("run_tests", False)
+            self.__dict__.get("run_tests", False)
             or self.__dict__.get("is_running_simulation", False)
         ):
+            return None
+        if is_manual_complete:
+            if required_mode:
+                raise PackageLogisticsError(
+                    "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
+                )
             return None
         current = self.current_set_info or {}
         raw = list(current.get("raw") or [])
@@ -5213,12 +6173,23 @@ class Label_Match(tk.Tk):
             raise PackageLogisticsError(str(exc)) from exc
         exact_mode = bool(self.current_set_info.get("exact_rescan_complete"))
         central_enabled = self.__dict__.get("package_logistics_client") is not None
+        if required_mode and not central_enabled:
+            raise PackageLogisticsError(
+                "AUTHORITATIVE_LOGISTICS_REQUIRED: installed central client/profile is unavailable"
+            )
         if not sealed_transfer and not exact_mode:
-            if central_enabled:
+            fields = _label_match_parse_new_format_fields(raw[0]) or {}
+            has_structured_phs_identity = bool(
+                str(fields.get("BND") or "").strip()
+                or str(fields.get("ITG") or "").strip()
+            )
+            if central_enabled and not has_structured_phs_identity:
                 raise PackageLogisticsError(
-                    "central packaging requires a sealed transfer QR; three product samples are not membership"
+                    "central packaging requires a sealed transfer QR, structured PHS BND/ITG "
+                    "lineage, or FULL EXACT_RESCAN; three product samples are not membership"
                 )
-            return {"status": "LEGACY_DIRECT_SYNC_ONLY", "sample_barcodes_are_membership": False}
+            if not central_enabled:
+                return {"status": "LEGACY_DIRECT_SYNC_ONLY", "sample_barcodes_are_membership": False}
         outbox = self.__dict__.get("package_outbox")
         if outbox is None:
             raise PackageLogisticsError("durable package outbox is unavailable")
@@ -5935,6 +6906,12 @@ class Label_Match(tk.Tk):
 
     def _reset_current_set(self, full_reset=False, from_finalize=False):
         if self.is_blinking: return False
+        if (
+            full_reset
+            and not from_finalize
+            and self._sealed_transfer_exchange_blocks_local_action("현재 세트 취소")
+        ):
+            return False
         if full_reset and not from_finalize and self._block_active_history_load_action("현재 세트를 취소"):
             return False
         if full_reset and not from_finalize and self._block_view_only_action("현재 세트를 취소"):
@@ -5959,6 +6936,7 @@ class Label_Match(tk.Tk):
             'start_time': None, 'error_count': 0, 'has_error_or_reset': False,
             'phase': None, 'item_name_override': None, 'production_date': None,
             'sealed_transfer': None,
+            'sealed_transfer_exchange_intent_id': '',
             'exact_rescan_active': False,
             'exact_rescan_complete': False,
             'exact_rescan_target_count': 0,
@@ -5991,27 +6969,82 @@ class Label_Match(tk.Tk):
         if popup.winfo_exists():
             popup.grab_release()
             popup.destroy()
-        self.is_blinking = False
+        self._stop_error_siren()
         self.entry.focus_set()
         self.after(50, self.entry.focus_force)
         if not self.current_set_info.get('id'):
             self.current_set_info['id'] = str(time.time_ns())
         self.after(10, lambda: self._finalize_set(result, error_details))
 
-    def _play_error_siren_loop(self):
-        if self.__dict__.get("run_tests", False) or _label_match_automated_test_mode():
-            return
-        sound = self.sound_objects.get("fail")
-        if not sound:
-            self.after_idle(lambda: messagebox.showwarning("사운드 설정 오류", "경고음 파일을 찾을 수 없습니다.\n(assets 폴더의 fail.wav 파일 확인 필요)\n\n오류 발생 시 경고음이 울리지 않습니다."))
-            return
+    @staticmethod
+    def _play_error_siren_loop(sound, stop_event, result_queue):
         try:
             sound.play(loops=-1)
-            while self.is_blinking:
-                time.sleep(0.1)
+            stop_event.wait()
             sound.stop()
         except Exception as e:
-            self.after_idle(lambda: messagebox.showerror("사운드 재생 오류", f"경고음을 재생하는 중 오류가 발생했습니다.\n스피커 또는 사운드 드라이버를 확인해주세요.\n\n[상세 오류]\n{e}"))
+            result_queue.put(("error", str(e)))
+
+    def _start_error_siren_thread(self):
+        if (
+            self.__dict__.get("run_tests", False)
+            or _label_match_automated_test_mode()
+            or self.__dict__.get("_tk_shutdown_requested", False)
+        ):
+            return None
+        sound = self.sound_objects.get("fail")
+        if not sound:
+            messagebox.showwarning(
+                "사운드 설정 오류",
+                "경고음 파일을 찾을 수 없습니다.\n(assets 폴더의 fail.wav 파일 확인 필요)\n\n"
+                "오류 발생 시 경고음이 울리지 않습니다.",
+                parent=self,
+            )
+            return None
+        self._siren_stop_event.clear()
+        thread = threading.Thread(
+            target=self._play_error_siren_loop,
+            args=(sound, self._siren_stop_event, self._siren_result_queue),
+            name="label-match-error-siren",
+            daemon=True,
+        )
+        active = [
+            item
+            for item in self.__dict__.get("_siren_threads", [])
+            if item.is_alive()
+        ]
+        active.append(thread)
+        self._siren_threads = active
+        thread.start()
+        if self.__dict__.get("_siren_after_id") is None:
+            self._siren_after_id = self.after(50, self._poll_error_siren)
+        return thread
+
+    def _poll_error_siren(self):
+        self._siren_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return None
+        try:
+            kind, detail = self._siren_result_queue.get_nowait()
+        except queue.Empty:
+            kind = detail = None
+        if kind == "error":
+            messagebox.showerror(
+                "사운드 재생 오류",
+                "경고음을 재생하는 중 오류가 발생했습니다.\n"
+                "스피커 또는 사운드 드라이버를 확인해주세요.\n\n"
+                f"[상세 오류]\n{detail}",
+                parent=self,
+            )
+        if any(thread.is_alive() for thread in self.__dict__.get("_siren_threads", [])):
+            self._siren_after_id = self.after(50, self._poll_error_siren)
+        return None
+
+    def _stop_error_siren(self):
+        self.is_blinking = False
+        stop_event = self.__dict__.get("_siren_stop_event")
+        if stop_event is not None:
+            stop_event.set()
 
     def _trigger_modal_error(self, title, message, result, error_details):
         if self.__dict__.get("operator_workbench_ready"):
@@ -6024,7 +7057,7 @@ class Label_Match(tk.Tk):
         if self.is_blinking: return
         self.is_blinking = True
         if not self.run_tests and not _label_match_automated_test_mode():
-            threading.Thread(target=self._play_error_siren_loop, daemon=True).start()
+            self._start_error_siren_thread()
         self.after(0, self._blink_background_loop)
         try:
             self.update_idletasks()
@@ -6073,7 +7106,7 @@ class Label_Match(tk.Tk):
 
         except Exception as e:
             self.data_manager.log_event(self.Events.UI_ERROR, {"context": "modal_popup_creation", "error": str(e), "original_message": message})
-            self.is_blinking = False
+            self._stop_error_siren()
             fail_sound = self.sound_objects.get("fail")
             if fail_sound: fail_sound.stop()
             if not self.run_tests:
@@ -6273,21 +7306,46 @@ class Label_Match(tk.Tk):
         self.entry.config(state='disabled')
         self.update_big_display(f"테스트 데이터 생성 시작...", "primary")
         self.progress_bar['value'] = 0
+        self._simulation_result_queue = queue.Queue()
+        stop_event = self.__dict__.setdefault(
+            "_simulation_stop_event", threading.Event()
+        )
+        stop_event.clear()
 
-        sim_thread = threading.Thread(target=self._execute_test_simulation, args=(master_code_to_test, num_sets,), daemon=True)
-        sim_thread.start()
+        self._simulation_thread = threading.Thread(
+            target=self._execute_test_simulation,
+            args=(master_code_to_test, num_sets,),
+            name="label-match-test-log-simulation",
+            daemon=True,
+        )
+        self._simulation_thread.start()
+        if "after" in self.__dict__ or self.__dict__.get("tk") is not None:
+            self._simulation_after_id = self.after(
+                50, self._poll_test_simulation_queue
+            )
 
     def _execute_test_simulation(self, master_code, num_sets):
+        result_queue = self.__dict__.setdefault(
+            "_simulation_result_queue", queue.Queue()
+        )
+        stop_event = self.__dict__.setdefault(
+            "_simulation_stop_event", threading.Event()
+        )
         try:
             item_info = self.items_data.get(master_code, {"Item Name": "테스트 품목", "Spec": "T-SPEC"})
 
             for i in range(num_sets):
+                if stop_event.is_set():
+                    result_queue.put(("stopped",))
+                    return
                 progress_text = f"테스트 진행 중... ({i + 1}/{num_sets})"
-                self.after(0, self.update_big_display, progress_text, "primary")
+                result_queue.put(("progress", progress_text))
 
                 set_id = f"TEST_{time.time_ns()}"
                 start_time = datetime.now()
-                time.sleep(0.01)
+                if stop_event.wait(0.01):
+                    result_queue.put(("stopped",))
+                    return
                 end_time = datetime.now()
                 production_date = datetime.now().strftime('%Y-%m-%d')
                 phase = str((i % 3) + 1)
@@ -6315,18 +7373,61 @@ class Label_Match(tk.Tk):
                 }
 
                 self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
-                self.scan_count[production_date][(master_code, phase)] += 1
-                self.set_details_map[set_id] = details
-                self.global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
-                self.after(0, self._add_test_set_to_history_ui, set_id, details, i + 1)
+                result_queue.put(("row", set_id, details, i + 1))
 
-            self.after(0, self._finalize_test_simulation, num_sets)
+            result_queue.put(("done", num_sets))
         except Exception as e:
             print(f"테스트 데이터 생성 오류: {e}")
+            result_queue.put(("error", str(e)))
+        finally:
+            if threading.current_thread() is threading.main_thread():
+                self._poll_test_simulation_queue(reschedule=False)
+
+    def _poll_test_simulation_queue(self, *, reschedule=True):
+        self._simulation_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return None
+        terminal = False
+        result_queue = self.__dict__.get("_simulation_result_queue")
+        while result_queue is not None:
             try:
-                self.after(0, self._finalize_test_simulation_error, str(e))
-            except Exception:
+                event = result_queue.get_nowait()
+            except queue.Empty:
+                break
+            kind = event[0]
+            if kind == "progress":
+                self.update_big_display(event[1], "primary")
+            elif kind == "row":
+                _kind, set_id, details, display_index = event
+                production_date = details["production_date"]
+                item_code = details["item_code"]
+                phase = details["phase"]
+                self.scan_count[production_date][(item_code, phase)] += 1
+                self.set_details_map[set_id] = details
+                self.global_scanned_set.update(
+                    _label_match_duplicate_index_barcodes(details)
+                )
+                self._add_test_set_to_history_ui(set_id, details, display_index)
+            elif kind == "done":
+                terminal = True
+                self._finalize_test_simulation(event[1])
+            elif kind == "error":
+                terminal = True
+                self._finalize_test_simulation_error(event[1])
+            elif kind == "stopped":
+                terminal = True
                 self.is_generating_test_logs = False
+        thread = self.__dict__.get("_simulation_thread")
+        if (
+            reschedule
+            and not terminal
+            and thread is not None
+            and thread.is_alive()
+        ):
+            self._simulation_after_id = self.after(
+                50, self._poll_test_simulation_queue
+            )
+        return None
 
     def _add_test_set_to_history_ui(self, set_id, details, display_index):
         if not self.history_tree.winfo_exists(): return
@@ -8282,6 +9383,7 @@ class Label_Match(tk.Tk):
             entry_enabled = bool(
                 view.scan_input_enabled
                 and self.__dict__.get("initialized_successfully", False)
+                and self._current_sealed_transfer_exchange_attempt() is None
             )
             try:
                 entry.configure(state="normal" if entry_enabled else "disabled")
@@ -8296,9 +9398,26 @@ class Label_Match(tk.Tk):
             button = self.__dict__.get(name)
             if button is not None:
                 try:
+                    if (
+                        self._current_sealed_transfer_exchange_attempt() is not None
+                        and name != "exact_rescan_button"
+                    ):
+                        enabled = False
                     button.configure(state="normal" if enabled else "disabled")
                 except (TclError, AttributeError):
                     pass
+        f4_button = self.__dict__.get("exact_rescan_button")
+        if f4_button is not None:
+            try:
+                f4_button.configure(
+                    text=(
+                        "제품 교체 (F4)"
+                        if self.current_set_info.get("sealed_transfer")
+                        else self.EXACT_RESCAN_BUTTON_TEXT
+                    )
+                )
+            except (TclError, AttributeError):
+                pass
         self._update_operator_item_panel(view, source)
         return view
 
@@ -8341,7 +9460,7 @@ class Label_Match(tk.Tk):
         elif action == "f3":
             self._prompt_manual_complete()
         elif action == "f4":
-            self._prompt_exact_rescan()
+            self._handle_f4_action()
         return "break"
 
     def _handle_workflow_escape(self, event=None):
@@ -8358,7 +9477,7 @@ class Label_Match(tk.Tk):
             "_workflow_pending_error"
         )
         if pending:
-            self.is_blinking = False
+            self._stop_error_siren()
             fail_sound = self.__dict__.get("sound_objects", {}).get("fail")
             if fail_sound is not None:
                 try:
@@ -8413,7 +9532,7 @@ class Label_Match(tk.Tk):
             and not _label_match_automated_test_mode()
             and self.__dict__.get("sound_objects", {}).get("fail") is not None
         ):
-            threading.Thread(target=self._play_error_siren_loop, daemon=True).start()
+            self._start_error_siren_thread()
         self._render_operator_workbench()
         button = self.__dict__.get("workflow_notice_action_button")
         if button is not None:
@@ -9272,7 +10391,7 @@ class Label_Match(tk.Tk):
         self.exact_rescan_button = ttk.Button(
             self.operator_action_frame,
             text=self.EXACT_RESCAN_BUTTON_TEXT,
-            command=self._prompt_exact_rescan,
+            command=self._handle_f4_action,
             style=self.MANUAL_COMPLETE_BUTTON_STYLE,
             state="disabled",
         )
@@ -9534,12 +10653,12 @@ class Label_Match(tk.Tk):
         self.exact_rescan_button = ttk.Button(
             bottom_frame,
             text=self.EXACT_RESCAN_BUTTON_TEXT,
-            command=self._prompt_exact_rescan,
+            command=self._handle_f4_action,
             style=self.MANUAL_COMPLETE_BUTTON_STYLE,
             state="disabled",
         )
         self.exact_rescan_button.grid(row=0, column=3, sticky="w", padx=(20, 0))
-        self.bind("<F4>", lambda e: self._prompt_exact_rescan())
+        self.bind("<F4>", lambda e: self._handle_f4_action())
 
         self.bind("<Delete>", self._delete_selected_row_from_shortcut)
 
@@ -9978,12 +11097,17 @@ class Label_Match(tk.Tk):
                 sealed = True
         enabled = (
             getattr(self, "history_view_updates_active_state", True)
-            and len(raw) == 1
-            and not sealed
+            and (
+                (sealed and 1 <= len(raw) < self.TOTAL_SCAN_COUNT)
+                or (not sealed and len(raw) == 1)
+            )
             and not self.current_set_info.get("exact_rescan_active")
             and not self.current_set_info.get("exact_rescan_complete")
         )
-        self.exact_rescan_button.config(state="normal" if enabled else "disabled")
+        self.exact_rescan_button.config(
+            state="normal" if enabled else "disabled",
+            text=("제품 교체 (F4)" if sealed else self.EXACT_RESCAN_BUTTON_TEXT),
+        )
 
     def _update_history_tree_in_progress(self):
         if not self.initialized_successfully: return

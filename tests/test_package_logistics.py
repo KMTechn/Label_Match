@@ -40,6 +40,14 @@ BARCODES = ("ITEM000000001-A", "ITEM000000001-B", "ITEM000000001-C", "ITEM000000
 MEMBERSHIP_HASH = membership_hash(UNITS)
 
 
+def _source_evidence():
+    return {
+        "member_ids": list(UNITS),
+        "membership_hash": MEMBERSHIP_HASH,
+        "barcode_membership_hash": barcode_membership_hash(BARCODES),
+    }
+
+
 def _qr(*, plane="AUTHORITATIVE", count=4, digest=MEMBERSHIP_HASH):
     return (
         f"TRF=1|BND={TRANSFER}|AUTH_SCOPE={SCOPE}|CLC=ITEM000000001|QT={count}|"
@@ -92,10 +100,19 @@ def _projection():
         "member_ids": list(UNITS),
         "member_count": 4,
         "membership_hash": MEMBERSHIP_HASH,
+        "barcode_member_count": len(BARCODES),
+        "barcode_membership_hash": barcode_membership_hash(BARCODES),
         "members": [
             {"unit_id": unit_id, "normalized_barcode": barcode}
             for unit_id, barcode in zip(UNITS, BARCODES, strict=True)
         ],
+    }
+
+
+def _resolved_projection():
+    return {
+        "candidate_count": 1,
+        "bundle": {**_projection(), "bundle_role": "PACKAGE_SOURCE"},
     }
 
 
@@ -121,6 +138,7 @@ def _receipt(draft):
             "member_ids": list(UNITS),
             "member_count": 4,
             "membership_hash": MEMBERSHIP_HASH,
+            "source_evidence": _source_evidence(),
             "exact_rescan_barcodes": list(draft.exact_rescan_barcodes),
             "exact_rescan_count": len(draft.exact_rescan_barcodes),
             "barcode_membership_hash": (
@@ -148,6 +166,7 @@ def _ack_package_creation(outbox, draft):
         "payload": {
             "source_bundle_id": TRANSFER,
             "package_bundle_id": draft.package_bundle_id,
+            "source_evidence": _source_evidence(),
         },
     }
     outbox.save_command(row["idempotency_key"], TRANSFER, command)
@@ -270,7 +289,26 @@ def test_legacy_minimal_input_tag_qr_uses_itg_without_raw_qr_as_external_identit
     assert draft.source_external_label != master
 
 
-def test_legacy_base64_wid_qr_separates_actual_external_label_and_input_tag():
+def test_structured_phs_itg_defaults_to_server_inherited_membership():
+    master = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-PACKAGE-1|CLC=ITEM000000001"
+    current = {
+        "id": "SET-PHS-INHERIT",
+        "raw": [master, *BARCODES[:3], "FINAL-LABEL"],
+    }
+
+    draft = label_module._label_match_package_draft(
+        current, item_code="ITEM000000001"
+    )
+
+    assert draft.membership_mode == "INHERIT_ALL"
+    assert draft.source_bundle_id == ""
+    assert draft.source_input_tag_id == "ITG-PACKAGE-1"
+    assert draft.source_external_label == ""
+    assert draft.exact_rescan_barcodes == ()
+    assert draft.sample_barcodes == BARCODES[:3]
+
+
+def test_input_tag_qr_does_not_promote_compat_wid_to_resolver_identity():
     decoded = (
         "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-WID-1|CLC=ITEM000000001|"
         "WID=PHS-EXTERNAL-WID-1"
@@ -285,8 +323,20 @@ def test_legacy_base64_wid_qr_separates_actual_external_label_and_input_tag():
     }
     draft = label_module._label_match_package_draft(current, item_code="ITEM000000001")
     assert draft.source_input_tag_id == "ITG-WID-1"
-    assert draft.source_external_label == "PHS-EXTERNAL-WID-1"
+    assert draft.source_external_label == ""
     assert draft.source_external_label != master
+
+
+def test_external_label_without_structured_lineage_is_rejected():
+    with pytest.raises(PackageLogisticsError, match="BND/ITG"):
+        PackageCommandDraft.build(
+            set_id="SET-AMBIGUOUS-LABEL",
+            item_code="ITEM000000001",
+            source_external_label="PRINTED-LABEL-ONLY",
+            external_label="FINAL-LABEL",
+            membership_mode="INHERIT_ALL",
+            sample_barcodes=BARCODES[:3],
+        )
 
 
 def test_exact_rescan_operational_input_is_durably_recoverable(tmp_path):
@@ -335,7 +385,7 @@ def test_outbox_enqueue_and_immutable_command_cas(tmp_path):
 
 
 @pytest.mark.parametrize("outbox_type", [PackageOutbox, PackageCancellationOutbox])
-def test_v3_schema_is_complete_before_version_is_stamped(tmp_path, outbox_type):
+def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_type):
     db_path = tmp_path / f"schema-{outbox_type.__name__}.sqlite3"
     outbox_type(db_path)
     conn = sqlite3.connect(db_path)
@@ -346,10 +396,16 @@ def test_v3_schema_is_complete_before_version_is_stamped(tmp_path, outbox_type):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        columns = {
+        cancellation_columns = {
             row[1]
             for row in conn.execute(
                 "PRAGMA table_info(package_cancellation_outbox)"
+            ).fetchall()
+        }
+        command_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(package_command_outbox)"
             ).fetchall()
         }
         version = conn.execute(
@@ -362,7 +418,8 @@ def test_v3_schema_is_complete_before_version_is_stamped(tmp_path, outbox_type):
         "local_event_committed",
         "local_event_committed_at",
         "retry_after_at",
-    }.issubset(columns)
+    }.issubset(cancellation_columns)
+    assert "retry_after_at" in command_columns
     assert version == package_module.OUTBOX_SCHEMA_VERSION
 
 
@@ -1731,6 +1788,44 @@ def test_client_lost_ack_recovers_receipt_in_command_scope():
     assert "Idempotency-Key" not in calls[1][2]
 
 
+def test_committed_create_error_recovers_receipt_without_reposting():
+    calls = []
+    draft = _draft()
+    receipt = _receipt(draft)
+
+    def transport(method, url, headers, body, timeout):
+        calls.append((method, url))
+        if method == "POST":
+            return {
+                "ok": False,
+                "error": {
+                    "status_code": 409,
+                    "code": "COMMITTED_RESPONSE_LOST",
+                    "message": "command committed; fetch receipt",
+                    "committed": True,
+                    "retryable": False,
+                },
+            }
+        return {"ok": True, "data": receipt}
+
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=transport,
+    )
+    command = {
+        "authority_scope_id": SCOPE,
+        "idempotency_key": "committed-create",
+        "payload": {
+            "source_bundle_id": TRANSFER,
+            "package_bundle_id": draft.package_bundle_id,
+            "source_evidence": _source_evidence(),
+        },
+    }
+
+    assert client.create_package(command) == receipt
+    assert [method for method, _url in calls] == ["POST", "GET"]
+
+
 def test_legacy_exact_rescan_resolver_uses_package_source_lineage_role():
     calls = []
 
@@ -1739,16 +1834,14 @@ def test_legacy_exact_rescan_resolver_uses_package_source_lineage_role():
         if "/bundles/resolve?" in url:
             query = parse_qs(urlsplit(url).query, keep_blank_values=True)
             assert query == {
-                "external_label": ["LEGACY-PHS-LABEL"],
                 "input_tag_id": ["ITG-LEGACY-RESOLVE"],
-                "bundle_id": [""],
                 "item_id": ["ITEM000000001"],
                 "authority_scope_id": [SCOPE],
                 "bundle_role": ["PACKAGE_SOURCE"],
                 "member_count": ["4"],
                 "barcode_membership_hash": [barcode_membership_hash(BARCODES)],
             }
-            return {"ok": True, "data": {"bundle_id": TRANSFER}}
+            return {"ok": True, "data": _resolved_projection()}
         return {"ok": True, "data": _projection()}
 
     client = PackageLogisticsClient(
@@ -1811,13 +1904,13 @@ def test_minimal_itg_only_identity_resolves_without_raw_external_label():
         if "/bundles/resolve?" in url:
             query = parse_qs(urlsplit(url).query, keep_blank_values=True)
             assert query["input_tag_id"] == ["ITG-ONLY-RESOLVE"]
-            assert query["external_label"] == [""]
+            assert "external_label" not in query
             assert query["item_id"] == ["ITEM000000001"]
             assert query["authority_scope_id"] == [SCOPE]
             assert query["bundle_role"] == ["PACKAGE_SOURCE"]
             assert query["member_count"] == ["4"]
             assert query["barcode_membership_hash"] == [barcode_membership_hash(BARCODES)]
-            return {"ok": True, "data": {"bundle_id": TRANSFER}}
+            return {"ok": True, "data": _resolved_projection()}
         return {"ok": True, "data": _projection()}
 
     client = PackageLogisticsClient(
@@ -1837,6 +1930,108 @@ def test_minimal_itg_only_identity_resolves_without_raw_external_label():
         draft, idempotency_key="itg-only-resolve"
     )
     assert source_id == TRANSFER
+
+
+def test_original_phs_itg_resolves_one_transfer_and_inherits_exact_server_membership():
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append((method, url, body))
+        if "/bundles/resolve?" in url:
+            query = parse_qs(urlsplit(url).query)
+            assert query["input_tag_id"] == ["ITG-PHS-INHERIT"]
+            assert query["bundle_role"] == ["PACKAGE_SOURCE"]
+            assert "external_label" not in query
+            return {"ok": True, "data": _resolved_projection()}
+        return {"ok": True, "data": _projection()}
+
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=transport,
+    )
+    draft = PackageCommandDraft.build(
+        set_id="SET-PHS-INHERIT-COMMAND",
+        item_code="ITEM000000001",
+        source_input_tag_id="ITG-PHS-INHERIT",
+        external_label="FINAL-LABEL",
+        membership_mode="INHERIT_ALL",
+        sample_barcodes=BARCODES[:3],
+    )
+
+    source_id, command = client.build_create_package_command(
+        draft, idempotency_key="phs-inherit-command"
+    )
+
+    assert source_id == TRANSFER
+    assert len(calls) == 2
+    assert command["expected_versions"] == {f"bundle:{TRANSFER}": 7}
+    assert command["payload"]["source_evidence"] == _source_evidence()
+    assert "member_ids" not in command["payload"]
+
+
+@pytest.mark.parametrize(
+    "mutation", ["top_level", "missing_candidate_count", "partial", "duplicate_barcode"]
+)
+def test_package_source_resolver_rejects_ambiguous_or_partial_projection(mutation):
+    source = {**_projection(), "bundle_role": "PACKAGE_SOURCE"}
+    if mutation == "partial":
+        source["members"] = source["members"][:-1]
+    elif mutation == "duplicate_barcode":
+        source["members"][1]["normalized_barcode"] = source["members"][0][
+            "normalized_barcode"
+        ]
+    if mutation == "top_level":
+        response = source
+    elif mutation == "missing_candidate_count":
+        response = {"bundle": source}
+    else:
+        response = {"candidate_count": 1, "bundle": source}
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append(url)
+        if "/bundles/resolve?" in url:
+            return {"ok": True, "data": response}
+        raise AssertionError("invalid resolver projection must fail before bundle GET")
+
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=transport,
+    )
+    draft = PackageCommandDraft.build(
+        set_id=f"SET-INVALID-{mutation}",
+        item_code="ITEM000000001",
+        source_input_tag_id="ITG-INVALID",
+        external_label="FINAL-LABEL",
+        membership_mode="INHERIT_ALL",
+        sample_barcodes=BARCODES[:3],
+    )
+
+    with pytest.raises(PackageLogisticsError):
+        client.build_create_package_command(
+            draft, idempotency_key=f"invalid-{mutation}"
+        )
+    assert len(calls) == 1
+
+
+def test_inherit_receipt_must_echo_the_immutable_source_evidence():
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=lambda *args: {"ok": True, "data": _projection()},
+    )
+    draft = _draft()
+    source_id, command = client.build_create_package_command(
+        draft, idempotency_key="source-evidence-receipt"
+    )
+    receipt = _receipt(draft)
+    PackageOutboxProcessor._validate_receipt(
+        draft, source_id, receipt, command=command
+    )
+    receipt["data"]["source_evidence"]["member_ids"] = list(UNITS[:-1])
+    with pytest.raises(PackageLogisticsError, match="source evidence"):
+        PackageOutboxProcessor._validate_receipt(
+            draft, source_id, receipt, command=command
+        )
 
 
 def test_exact_rescan_receipt_count_hash_and_membership_are_fail_closed():
@@ -1904,6 +2099,34 @@ def test_qr_projection_quantity_hash_item_and_scope_mismatches_fail_closed():
         )
 
 
+def test_packaging_refuses_stale_seal_qr_after_exact_membership_replacement():
+    projection = _projection()
+    replacement_units = ["unit-z", *list(UNITS[1:])]
+    replacement_barcodes = ["ITEM000000001-Z", *list(BARCODES[1:])]
+    projection["member_ids"] = replacement_units
+    projection["membership_hash"] = membership_hash(replacement_units)
+    projection["barcode_membership_hash"] = barcode_membership_hash(
+        replacement_barcodes
+    )
+    projection["members"] = [
+        {"unit_id": unit_id, "normalized_barcode": barcode}
+        for unit_id, barcode in zip(
+            replacement_units, replacement_barcodes, strict=True
+        )
+    ]
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "token", SCOPE, "host", "device"),
+        transport=lambda *args: {"ok": True, "data": projection},
+    )
+
+    with pytest.raises(
+        PackageLogisticsError, match="membership hash differs from its QR"
+    ):
+        client.build_create_package_command(
+            _draft(), idempotency_key="stale-seal-after-replacement"
+        )
+
+
 class RestartClient:
     def __init__(self, draft, *, receipt=None, lose_ack=False):
         self.draft = draft
@@ -1919,7 +2142,11 @@ class RestartClient:
             "authority_scope_id": SCOPE,
             "idempotency_key": idempotency_key,
             "expected_versions": {f"bundle:{TRANSFER}": 7},
-            "payload": {"source_bundle_id": TRANSFER, "package_bundle_id": draft.package_bundle_id},
+            "payload": {
+                "source_bundle_id": TRANSFER,
+                "package_bundle_id": draft.package_bundle_id,
+                "source_evidence": _source_evidence(),
+            },
         }
 
     def create_package(self, command):
@@ -1963,7 +2190,11 @@ def test_saved_command_reposts_identical_payload_when_receipt_not_yet_visible(tm
     command = {
         "authority_scope_id": SCOPE,
         "idempotency_key": row["idempotency_key"],
-        "payload": {"source_bundle_id": TRANSFER, "package_bundle_id": draft.package_bundle_id},
+        "payload": {
+            "source_bundle_id": TRANSFER,
+            "package_bundle_id": draft.package_bundle_id,
+            "source_evidence": _source_evidence(),
+        },
     }
     outbox.save_command(row["idempotency_key"], TRANSFER, command)
     outbox.mark_retry(row["idempotency_key"], PackageTransportError("restart"))
@@ -1984,6 +2215,56 @@ def test_deterministic_local_validation_is_conflict_not_retry(tmp_path):
             raise PackageLogisticsError("QR quantity mismatch")
 
     result = PackageOutboxProcessor(outbox, InvalidClient(draft)).drain(limit=1)
+    assert result == {"acked": 0, "retry": 0, "conflict": 1}
+    assert outbox.get_by_set_id(draft.set_id)["status"] == "CONFLICT"
+
+
+def test_create_package_429_waits_until_retry_after_instead_of_conflicting(tmp_path):
+    draft = _draft()
+    outbox = PackageOutbox(tmp_path / "create-retry-after.sqlite3")
+    outbox.enqueue(draft)
+
+    class ThrottledClient(RestartClient):
+        def create_package(self, command):
+            raise PackageApiError(
+                429,
+                "RATE_LIMITED",
+                "too many concurrent terminals",
+                retryable=True,
+                committed=False,
+                retry_after_seconds=120,
+            )
+
+    result = PackageOutboxProcessor(outbox, ThrottledClient(draft)).drain(limit=1)
+    row = outbox.get_by_set_id(draft.set_id)
+
+    assert result == {"acked": 0, "retry": 1, "conflict": 0}
+    assert row["status"] == "PENDING"
+    assert row["last_error_code"] == "RATE_LIMITED"
+    assert row["retry_after_at"]
+    assert outbox.claim_next() is None
+
+
+@pytest.mark.parametrize("status_code", [409, 412])
+def test_create_package_cas_conflict_is_terminal_even_if_server_marks_retryable(
+    tmp_path, status_code
+):
+    draft = _draft()
+    outbox = PackageOutbox(tmp_path / f"create-cas-{status_code}.sqlite3")
+    outbox.enqueue(draft)
+
+    class ConflictingClient(RestartClient):
+        def create_package(self, command):
+            raise PackageApiError(
+                status_code,
+                "STALE_VERSION",
+                "source transfer changed",
+                retryable=True,
+                committed=False,
+            )
+
+    result = PackageOutboxProcessor(outbox, ConflictingClient(draft)).drain(limit=1)
+
     assert result == {"acked": 0, "retry": 0, "conflict": 1}
     assert outbox.get_by_set_id(draft.set_id)["status"] == "CONFLICT"
 

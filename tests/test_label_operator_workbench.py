@@ -1001,12 +1001,19 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
             monkeypatch.delenv(key, raising=False)
 
     settings = build_isolated_app_settings(data_root, 1.4)
+    project_settings_path = (
+        Path(__file__).resolve().parents[1] / "config" / "app_settings.json"
+    )
+    project_settings_before = project_settings_path.read_bytes()
     app = None
     try:
         app = _make_capture_app(
             label_match_module,
             settings,
             target_dpi=TARGET_DISPLAY_DPI[0],
+        )
+        assert Path(app.app_settings_path).resolve().is_relative_to(
+            data_root.resolve()
         )
         _wait_until_ready(app)
         _apply_scale(app, 1.4)
@@ -1391,8 +1398,23 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         assert compact_history_after == compact_history_before
 
     finally:
-        if app is not None:
-            app.destroy()
+        try:
+            if app is not None:
+                # ``destroy()`` alone tears down Tcl but leaves DataManager's
+                # writer thread alive.  A later threaded SQLite test can then
+                # trigger cyclic GC on that stale Tk interpreter from a worker
+                # thread, which makes Tcl panic with 0x80000003 on Windows.
+                app.on_closing()
+        finally:
+            project_settings_after = (
+                project_settings_path.read_bytes()
+                if project_settings_path.exists()
+                else None
+            )
+            if project_settings_after != project_settings_before:
+                project_settings_path.parent.mkdir(parents=True, exist_ok=True)
+                project_settings_path.write_bytes(project_settings_before)
+            assert project_settings_after == project_settings_before
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Label Match is a Windows Tk application")
@@ -1507,12 +1529,19 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
         )
 
     settings = build_isolated_app_settings(data_root, 1.0)
+    project_settings_path = (
+        Path(__file__).resolve().parents[1] / "config" / "app_settings.json"
+    )
+    project_settings_before = project_settings_path.read_bytes()
     app = None
     try:
         app = _make_capture_app(
             label_match_module,
             settings,
             target_dpi=int(monitor_target["dpi"][0]),
+        )
+        assert Path(app.app_settings_path).resolve().is_relative_to(
+            data_root.resolve()
         )
         _wait_until_ready(app)
         _apply_scale(app, 1.0)
@@ -1794,5 +1823,16 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
         assert abs(widths[2] - widths[3]) <= 2
         assert max(heights) - min(heights) <= 2
     finally:
-        if app is not None:
-            app.destroy()
+        try:
+            if app is not None:
+                app.on_closing()
+        finally:
+            project_settings_after = (
+                project_settings_path.read_bytes()
+                if project_settings_path.exists()
+                else None
+            )
+            if project_settings_after != project_settings_before:
+                project_settings_path.parent.mkdir(parents=True, exist_ok=True)
+                project_settings_path.write_bytes(project_settings_before)
+            assert project_settings_after == project_settings_before
