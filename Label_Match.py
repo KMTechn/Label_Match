@@ -91,8 +91,13 @@ LABEL_MATCH_PRODUCT_SAMPLE_COUNT = 3
 LABEL_MATCH_MASTER_SCAN_POSITION = 1
 LABEL_MATCH_FINAL_LABEL_SCAN_POSITION = LABEL_MATCH_PRODUCT_SAMPLE_COUNT + 2
 LABEL_MATCH_TOTAL_SCAN_COUNT = LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
-LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT = 2
-LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION = 2
+# A central PHS2 is the one physical label carried from inspection through
+# transfer, packaging, and shipping.  Packaging therefore accepts that single
+# scan, keeps the set open for an optional F4 member exchange, and commits with
+# the explicit F3 "package complete" action.  A second/final packaging label is
+# not part of this workflow.
+LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT = 1
+LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION = 1
 LABEL_MATCH_RESULT_PASS = "통과"
 LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
@@ -1392,10 +1397,67 @@ def _label_match_tray_complete_passed(details):
     return _label_match_tray_complete_result(details) == LABEL_MATCH_RESULT_PASS
 
 
+def _label_match_summary_date(details):
+    source = details or {}
+    return str(
+        source.get("production_date")
+        or source.get("packaging_completed_date")
+        or ""
+    ).strip()
+
+
+def _label_match_local_completion_event_exists(data_manager, set_id):
+    """Find an already-flushed TRAY_COMPLETE after an ACK crash window."""
+
+    identity = str(set_id or "").strip()
+    save_directory = str(
+        getattr(data_manager, "save_directory", "") or ""
+    ).strip()
+    process_name = str(getattr(data_manager, "process_name", "") or "").strip()
+    unique_id = str(getattr(data_manager, "unique_id", "") or "").strip()
+    if not identity or not save_directory or not os.path.isdir(save_directory):
+        return False
+    prefix = f"{process_name}작업이벤트로그_{unique_id}_"
+    try:
+        candidates = [
+            os.path.join(save_directory, name)
+            for name in os.listdir(save_directory)
+            if name.startswith(prefix) and name.lower().endswith(".csv")
+        ]
+    except OSError:
+        return False
+    for path in sorted(candidates, reverse=True):
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    if row.get("event") != "TRAY_COMPLETE":
+                        continue
+                    try:
+                        details = json.loads(row.get("details") or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if str(details.get("set_id") or "").strip() == identity:
+                        return True
+        except (OSError, csv.Error):
+            continue
+    return False
+
+
 def _label_match_manual_complete_block_reason(current_set_info):
     current = current_set_info or {}
+    if current.get("recovery_operator_review"):
+        return "package_recovery_operator_review"
     if current.get("central_inherit_all"):
-        return "manual_complete_disabled_for_central_inherit_all"
+        if current.get("exact_rescan_active") or current.get("exact_rescan_complete"):
+            return "central_package_legacy_exact_rescan_state_invalid"
+        if current.get("has_error_or_reset") or current.get("error_count", 0):
+            return "manual_complete_blocked_after_error"
+        scan_count = len(current.get("raw") or current.get("parsed") or [])
+        if scan_count < LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT:
+            return "package_complete_requires_phs2"
+        if scan_count > LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT:
+            return "package_complete_requires_exactly_one_phs2"
+        return None
     if current.get("exact_rescan_active"):
         return "manual_complete_blocked_during_exact_rescan"
     scan_count = len(current.get("raw") or current.get("parsed") or [])
@@ -1462,6 +1524,40 @@ def _label_match_parse_new_format_fields(raw_value):
         fields = normalized
     if not all(fields.get(key) for key in ('CLC', 'SPC', 'PHS')):
         return None
+    return fields
+
+
+def _label_match_parse_compact_phs2(raw_value):
+    """Parse the exact six-field central PHS2 physical-label contract."""
+
+    decoded = _label_match_decode_possible_base64_label(raw_value)
+    parts = decoded.split("|") if decoded else []
+    expected_keys = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
+    if len(parts) != len(expected_keys):
+        raise ValueError("PHS2 must contain exactly six canonical fields")
+    fields = {}
+    keys = []
+    for part in parts:
+        if part.count("=") != 1:
+            raise ValueError("PHS2 field syntax is invalid")
+        key, value = part.split("=", 1)
+        key = key.strip().upper()
+        value = value.strip()
+        if not key or not value or key in fields:
+            raise ValueError("PHS2 fields must be non-empty and unique")
+        keys.append(key)
+        fields[key] = value
+    if tuple(keys) != expected_keys:
+        raise ValueError(
+            "PHS2 fields must be ordered PHS,SRC,ITG,CLC,LBL,HSH"
+        )
+    if fields["PHS"] != "2" or fields["SRC"].upper() != "KMTECH_INPUT_TAG":
+        raise ValueError("only central KMTECH_INPUT_TAG PHS=2 is accepted")
+    digest = fields["HSH"].lower()
+    if len(digest) != 16 or any(value not in "0123456789abcdef" for value in digest):
+        raise ValueError("PHS2 HSH must be a 16-character hexadecimal prefix")
+    fields["SRC"] = "KMTECH_INPUT_TAG"
+    fields["HSH"] = digest
     return fields
 
 
@@ -1669,11 +1765,10 @@ def _label_match_has_central_source_identity(raw_value):
             return True
     except ValueError:
         return False
-    fields = _label_match_parse_new_format_fields(raw_value) or {}
-    return bool(
-        str(fields.get("BND") or "").strip()
-        or str(fields.get("ITG") or "").strip()
-    )
+    try:
+        return bool(_label_match_parse_compact_phs2(raw_value))
+    except ValueError:
+        return False
 
 
 def _label_match_apply_sealed_exchange_state(
@@ -1694,11 +1789,23 @@ def _label_match_apply_sealed_exchange_state(
             "sealed transfer replacement can only apply before CREATE_PACKAGE"
         )
     current_master = _label_match_decode_possible_base64_label(raw[0])
+    master_fields = _label_match_parse_new_format_fields(current_master) or {}
+    keeps_physical_phs2 = bool(
+        str(master_fields.get("PHS") or "").strip() == "2"
+        and str(master_fields.get("ITG") or "").strip()
+    )
     old_qr = str(old_seal_qr_payload or "").strip()
     new_qr = str(new_seal_qr_payload or "").strip()
-    if current_master not in {old_qr, new_qr}:
+    current_sealed = current.get("sealed_transfer")
+    current_seal_qr = (
+        str(current_sealed.get("_seal_qr_payload") or "").strip()
+        if isinstance(current_sealed, dict)
+        else ""
+    )
+    local_seal_proof = current_seal_qr if keeps_physical_phs2 else current_master
+    if local_seal_proof not in {old_qr, new_qr}:
         raise PackageLogisticsError(
-            "local packaging master differs from both old and new server seals"
+            "local packaging seal evidence differs from both old and new server seals"
         )
     old_fields = _label_match_parse_sealed_transfer_qr(old_qr)
     new_fields = _label_match_parse_sealed_transfer_qr(new_qr)
@@ -1719,7 +1826,8 @@ def _label_match_apply_sealed_exchange_state(
     if not 1 <= len(old_values) <= 2 or len(old_values) != len(new_values):
         raise PackageLogisticsError("local replacement pair count is invalid")
     replacement_by_barcode = dict(zip(old_values, new_values, strict=True))
-    raw[0] = new_qr
+    if not keeps_physical_phs2:
+        raw[0] = new_qr
     for index in range(1, min(len(raw), 4)):
         replacement = replacement_by_barcode.get(
             normalize_exchange_barcode(raw[index])
@@ -1730,11 +1838,33 @@ def _label_match_apply_sealed_exchange_state(
     current["raw"] = raw
     current["parsed"] = parsed
     current["sealed_transfer"] = new_fields
+    # Membership changed.  F3 must perform a fresh PACKAGE_SOURCE preflight
+    # and bind CREATE_PACKAGE to the new seal/version instead of reusing the
+    # snapshot taken before the exchange.
+    current["package_source_snapshot"] = None
+    current["resolved_transfer_bundle_id"] = ""
     current["sealed_transfer_exchange_intent_id"] = ""
     return current
 
 
-def _label_match_package_draft(current_set_info, *, item_code):
+def _label_match_system_package_external_label(master_label, set_id):
+    """Return a deterministic non-printed package identity for one PHS2 set."""
+
+    master = _label_match_decode_possible_base64_label(master_label)
+    stable_set_id = str(set_id or "").strip()
+    if not master or not stable_set_id:
+        raise PackageLogisticsError(
+            "central packaging requires a PHS2 master and stable set identity"
+        )
+    digest = hashlib.sha256(
+        f"{master}\n{stable_set_id}".encode("utf-8")
+    ).hexdigest()[:32].upper()
+    return f"PKG-PHS2-{digest}"
+
+
+def _label_match_package_draft(
+    current_set_info, *, item_code, require_source_snapshot=False
+):
     current = current_set_info or {}
     raw = list(current.get("raw") or [])
     central_inherit_all = bool(current.get("central_inherit_all"))
@@ -1746,7 +1876,7 @@ def _label_match_package_draft(current_set_info, *, item_code):
     if len(raw) != required_scan_count:
         if central_inherit_all:
             raise PackageLogisticsError(
-                "central INHERIT_ALL packaging requires source and final-label scans"
+                "central INHERIT_ALL packaging requires exactly one PHS2 source scan"
             )
         raise PackageLogisticsError("authoritative packaging requires the complete five-scan set")
     transfer = _label_match_parse_sealed_transfer_qr(raw[0])
@@ -1755,9 +1885,36 @@ def _label_match_package_draft(current_set_info, *, item_code):
     ).strip().upper()
     exact_rescan = tuple(current.get("exact_rescan_barcodes") or ())
     legacy_fields = _label_match_parse_new_format_fields(raw[0]) or {}
+    if central_inherit_all and not transfer:
+        try:
+            legacy_fields = _label_match_parse_compact_phs2(raw[0])
+        except ValueError as exc:
+            raise PackageLogisticsError(str(exc)) from exc
     source_input_tag_id = str(legacy_fields.get("ITG") or "").strip()
+    source_input_tag_label_id = str(legacy_fields.get("LBL") or "").strip()
+    source_input_tag_hash_prefix = str(legacy_fields.get("HSH") or "").strip().lower()
+    if not source_input_tag_label_id or not source_input_tag_hash_prefix:
+        # Legacy PHS identities predate the compact PHS2 LBL/HSH pair.  Keep
+        # their ITG-only resolver compatibility without treating partial
+        # evidence as a canonical PHS2 identity.
+        source_input_tag_label_id = ""
+        source_input_tag_hash_prefix = ""
     source_bundle_hint = str(legacy_fields.get("BND") or "").strip()
     has_structured_phs_identity = bool(source_input_tag_id or source_bundle_hint)
+    source_snapshot = (
+        current.get("package_source_snapshot")
+        if isinstance(current.get("package_source_snapshot"), dict)
+        else {}
+    )
+    if (
+        require_source_snapshot
+        and central_inherit_all
+        and not transfer
+        and not source_snapshot
+    ):
+        raise PackageLogisticsError(
+            "PHS2 package source preflight is required before CREATE_PACKAGE"
+        )
     if current.get("exact_rescan_complete"):
         configured_mode = "EXACT_RESCAN"
     elif transfer:
@@ -1781,15 +1938,25 @@ def _label_match_package_draft(current_set_info, *, item_code):
         expected_plane_epoch = int(transfer["PE"])
     else:
         if configured_mode == "INHERIT_ALL" and has_structured_phs_identity:
-            source_bundle_id = ""
-            source_scope = str(legacy_fields.get("AUTH_SCOPE") or "").strip()
+            source_bundle_id = str(source_snapshot.get("bundle_id") or "").strip()
+            source_scope = str(
+                source_snapshot.get("authority_scope_id")
+                or legacy_fields.get("AUTH_SCOPE")
+                or ""
+            ).strip()
             source_label = ""
-            source_hint = source_bundle_hint
-            expected_count = 0
-            expected_hash = ""
-            expected_authority_epoch = 0
-            expected_plane = ""
-            expected_plane_epoch = 0
+            source_hint = "" if source_bundle_id else source_bundle_hint
+            expected_count = int(source_snapshot.get("member_count") or 0)
+            expected_hash = str(
+                source_snapshot.get("membership_hash") or ""
+            ).strip().lower()
+            expected_authority_epoch = int(
+                source_snapshot.get("authority_epoch") or 0
+            )
+            expected_plane = str(
+                source_snapshot.get("ledger_plane") or ""
+            ).strip().upper()
+            expected_plane_epoch = int(source_snapshot.get("plane_epoch") or 0)
         elif configured_mode != "EXACT_RESCAN":
             raise PackageLogisticsError(
                 "legacy master labels without structured BND/ITG lineage require a separate "
@@ -1817,11 +1984,23 @@ def _label_match_package_draft(current_set_info, *, item_code):
             expected_plane_epoch = 0
     if transfer:
         source_input_tag_id = ""
-    expected_seal_id = str(transfer.get("SID") or "") if transfer else ""
-    expected_seal_revision = int(transfer.get("SREV") or 0) if transfer else 0
-    expected_seal_token = str(transfer.get("STK") or "") if transfer else ""
+    staged_seal = (
+        current.get("sealed_transfer")
+        if isinstance(current.get("sealed_transfer"), dict)
+        else {}
+    )
+    seal_evidence = transfer or staged_seal
+    expected_seal_id = str(seal_evidence.get("SID") or "")
+    expected_seal_revision = int(seal_evidence.get("SREV") or 0)
+    expected_seal_token = str(seal_evidence.get("STK") or "")
     expected_seal_qr_payload = (
-        _label_match_decode_possible_base64_label(raw[0]) if expected_seal_id else ""
+        (
+            _label_match_decode_possible_base64_label(raw[0])
+            if transfer
+            else str(staged_seal.get("_seal_qr_payload") or "").strip()
+        )
+        if expected_seal_id
+        else ""
     )
     return PackageCommandDraft.build(
         set_id=str(current.get("id") or ""),
@@ -1829,6 +2008,8 @@ def _label_match_package_draft(current_set_info, *, item_code):
         source_bundle_id=source_bundle_id,
         source_external_label=source_label,
         source_input_tag_id=source_input_tag_id,
+        source_input_tag_label_id=source_input_tag_label_id,
+        source_input_tag_hash_prefix=source_input_tag_hash_prefix,
         source_bundle_hint=source_hint,
         source_authority_scope_id=source_scope,
         expected_member_count=expected_count,
@@ -1836,7 +2017,13 @@ def _label_match_package_draft(current_set_info, *, item_code):
         expected_authority_epoch=expected_authority_epoch,
         expected_ledger_plane=expected_plane,
         expected_plane_epoch=expected_plane_epoch,
-        external_label=str(raw[-1]),
+        external_label=(
+            _label_match_system_package_external_label(
+                raw[0], current.get("id")
+            )
+            if central_inherit_all
+            else str(raw[-1])
+        ),
         membership_mode=configured_mode,
         sample_barcodes=(
             ()
@@ -1849,6 +2036,309 @@ def _label_match_package_draft(current_set_info, *, item_code):
         expected_seal_token=expected_seal_token,
         expected_seal_qr_payload=expected_seal_qr_payload,
     )
+
+
+def _label_match_active_seal_from_package_source(projection):
+    """Validate the active electronic seal returned for a PHS2 source."""
+
+    source = dict(projection or {})
+    if source.get("controlled_reseal_eligible") is not True:
+        raise PackageLogisticsError(
+            "package source is not eligible for controlled member replacement"
+        )
+    active = source.get("active_seal")
+    if not isinstance(active, dict):
+        raise PackageLogisticsError(
+            "package source has no active transfer seal"
+        )
+    qr_payload = str(active.get("seal_qr_payload") or "").strip()
+    try:
+        sealed = _label_match_parse_sealed_transfer_qr(qr_payload)
+    except ValueError as exc:
+        raise PackageLogisticsError(str(exc)) from exc
+    if not sealed:
+        raise PackageLogisticsError("package source active seal QR is invalid")
+
+    bundle_id = str(
+        source.get("transfer_bundle_id") or source.get("bundle_id") or ""
+    ).strip()
+    try:
+        expected = {
+            "BND": bundle_id,
+            "AUTH_SCOPE": str(source.get("authority_scope_id") or "").strip(),
+            "CLC": str(source.get("item_id") or "").strip(),
+            "QT": int(source.get("member_count") or 0),
+            "HSH": str(source.get("membership_hash") or "").strip().lower(),
+            "EPOCH": int(source.get("authority_epoch") or 0),
+            "PLANE": str(source.get("ledger_plane") or "").strip().upper(),
+            "PE": int(source.get("plane_epoch") or 0),
+            "SID": str(active.get("seal_id") or "").strip(),
+            "SREV": int(active.get("seal_revision") or 0),
+            "STK": str(active.get("seal_token") or "").strip(),
+        }
+        sealed_bundle_version = int(active.get("sealed_bundle_version") or 0)
+        source_entity_version = int(source.get("entity_version") or 0)
+        sealed_member_count = int(active.get("sealed_member_count") or 0)
+    except (TypeError, ValueError) as exc:
+        raise PackageLogisticsError(
+            "package source active seal numeric evidence is invalid"
+        ) from exc
+    if any(sealed.get(key) != value for key, value in expected.items()):
+        raise PackageLogisticsError(
+            "package source active seal differs from its transfer projection"
+        )
+    if (
+        active.get("seal_contract_version") != "transfer-seal-qr-v1"
+        or str(active.get("seal_state") or "").upper() != "ACTIVE"
+        or str(active.get("sealed_bundle_id") or "") != bundle_id
+        or sealed_bundle_version != source_entity_version
+        or sealed_member_count != expected["QT"]
+        or str(active.get("sealed_membership_hash") or "").strip().lower()
+        != expected["HSH"]
+    ):
+        raise PackageLogisticsError(
+            "package source active seal evidence is stale or incomplete"
+        )
+    sealed["_seal_qr_payload"] = qr_payload
+    return sealed
+
+
+def _label_match_package_source_snapshot(projection):
+    """Detach the exact source evidence an operator's PHS2 resolved to."""
+
+    source = dict(projection or {})
+    bundle_id = str(
+        source.get("transfer_bundle_id") or source.get("bundle_id") or ""
+    ).strip()
+    scope = str(source.get("authority_scope_id") or "").strip()
+    membership_hash = str(source.get("membership_hash") or "").strip().lower()
+    ledger_plane = str(source.get("ledger_plane") or "").strip().upper()
+    try:
+        member_count = int(source.get("member_count") or 0)
+        authority_epoch = int(source.get("authority_epoch") or 0)
+        plane_epoch = int(source.get("plane_epoch") or 0)
+        entity_version = int(source.get("entity_version") or 0)
+    except (TypeError, ValueError) as exc:
+        raise PackageLogisticsError(
+            "package source numeric evidence is invalid"
+        ) from exc
+    if (
+        not bundle_id
+        or not scope
+        or member_count < 1
+        or len(membership_hash) != 64
+        or any(value not in "0123456789abcdef" for value in membership_hash)
+        or ledger_plane not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
+        or plane_epoch < 1
+        or entity_version < 1
+    ):
+        raise PackageLogisticsError(
+            "package source exact snapshot is incomplete"
+        )
+    return {
+        "bundle_id": bundle_id,
+        "authority_scope_id": scope,
+        "item_id": str(source.get("item_id") or "").strip(),
+        "member_count": member_count,
+        "membership_hash": membership_hash,
+        "authority_epoch": authority_epoch,
+        "ledger_plane": ledger_plane,
+        "plane_epoch": plane_epoch,
+        "entity_version": entity_version,
+    }
+
+
+def _label_match_existing_package_row_metadata(row, current_set_info, item_code):
+    """Validate an immutable queued command before reusing it after restart."""
+
+    source = dict(row or {})
+    try:
+        draft = json.loads(str(source.get("draft_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PackageLogisticsError(
+            "existing package outbox draft is unreadable"
+        ) from exc
+    current = current_set_info or {}
+    set_id = str(current.get("id") or "").strip()
+    item = str(item_code or "").strip()
+    if (
+        str(draft.get("set_id") or "").strip() != set_id
+        or str(draft.get("item_code") or "").strip() != item
+    ):
+        raise PackageLogisticsError(
+            "existing package outbox identity differs from the restored set"
+        )
+    raw = list(current.get("raw") or [])
+    if not raw:
+        raise PackageLogisticsError("restored package set has no master scan")
+    try:
+        transfer = _label_match_parse_sealed_transfer_qr(raw[0])
+    except ValueError as exc:
+        raise PackageLogisticsError(str(exc)) from exc
+    if transfer:
+        queued_bundle = str(draft.get("source_bundle_id") or "").strip()
+        if queued_bundle and queued_bundle != str(transfer.get("BND") or ""):
+            raise PackageLogisticsError(
+                "existing package outbox transfer differs from the restored QR"
+            )
+    else:
+        try:
+            phs2 = _label_match_parse_compact_phs2(raw[0])
+        except ValueError as exc:
+            raise PackageLogisticsError(str(exc)) from exc
+        if (
+            str(draft.get("source_input_tag_id") or "").strip()
+            != phs2["ITG"]
+            or (
+                str(draft.get("source_input_tag_label_id") or "").strip()
+                and str(draft.get("source_input_tag_label_id") or "").strip()
+                != phs2["LBL"]
+            )
+            or (
+                str(draft.get("source_input_tag_hash_prefix") or "").strip().lower()
+                and str(draft.get("source_input_tag_hash_prefix") or "").strip().lower()
+                != phs2["HSH"]
+            )
+        ):
+            raise PackageLogisticsError(
+                "existing package outbox PHS2 differs from the restored scan"
+            )
+    return {
+        "status": str(source.get("status") or "PENDING"),
+        "idempotency_key": str(source.get("idempotency_key") or ""),
+        "source_bundle_id": str(
+            source.get("resolved_source_bundle_id")
+            or draft.get("source_bundle_id")
+            or ""
+        ),
+        "source_external_label": str(draft.get("source_external_label") or ""),
+        "package_bundle_id": str(draft.get("package_bundle_id") or ""),
+        "membership_mode": str(draft.get("membership_mode") or ""),
+        "sample_barcodes": list(draft.get("sample_barcodes") or []),
+        "sample_barcodes_are_membership": False,
+        "exact_rescan_count": len(draft.get("exact_rescan_barcodes") or []),
+        "expected_member_count": int(draft.get("expected_member_count") or 0),
+        "expected_membership_hash": str(
+            draft.get("expected_membership_hash") or ""
+        ),
+    }
+
+
+def _label_match_recover_central_state_from_package_row(row):
+    """Rebuild the one physical PHS2 slot from an orphan durable command."""
+
+    source = dict(row or {})
+    try:
+        draft = json.loads(str(source.get("draft_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PackageLogisticsError("orphan package draft is unreadable") from exc
+
+    set_id = str(draft.get("set_id") or source.get("set_id") or "").strip()
+    item_code = str(draft.get("item_code") or "").strip()
+    input_tag_id = str(draft.get("source_input_tag_id") or "").strip()
+    label_id = str(draft.get("source_input_tag_label_id") or "").strip()
+    hash_prefix = str(
+        draft.get("source_input_tag_hash_prefix") or ""
+    ).strip().lower()
+    if str(draft.get("membership_mode") or "").strip().upper() != "INHERIT_ALL":
+        raise PackageLogisticsError("orphan package is not a central PHS2 command")
+    if not all((set_id, item_code, input_tag_id, label_id, hash_prefix)):
+        raise PackageLogisticsError("orphan package has no complete physical PHS2 identity")
+
+    phs2_qr = (
+        f"PHS=2|SRC=KMTECH_INPUT_TAG|ITG={input_tag_id}|CLC={item_code}|"
+        f"LBL={label_id}|HSH={hash_prefix}"
+    )
+    try:
+        _label_match_parse_compact_phs2(phs2_qr)
+    except ValueError as exc:
+        raise PackageLogisticsError(str(exc)) from exc
+
+    source_bundle_id = str(draft.get("source_bundle_id") or "").strip()
+    scope = str(draft.get("source_authority_scope_id") or "").strip()
+    membership_hash_value = str(
+        draft.get("expected_membership_hash") or ""
+    ).strip().lower()
+    ledger_plane = str(draft.get("expected_ledger_plane") or "").strip().upper()
+    try:
+        member_count = int(draft.get("expected_member_count") or 0)
+        authority_epoch = int(draft.get("expected_authority_epoch") or 0)
+        plane_epoch = int(draft.get("expected_plane_epoch") or 0)
+        seal_revision = int(draft.get("expected_seal_revision") or 0)
+    except (TypeError, ValueError) as exc:
+        raise PackageLogisticsError("orphan package numeric evidence is invalid") from exc
+    if (
+        not source_bundle_id
+        or not scope
+        or member_count < 1
+        or len(membership_hash_value) != 64
+        or any(value not in "0123456789abcdef" for value in membership_hash_value)
+        or authority_epoch < 1
+        or ledger_plane not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
+        or plane_epoch < 1
+    ):
+        raise PackageLogisticsError("orphan package source snapshot is incomplete")
+
+    seal_qr_payload = str(draft.get("expected_seal_qr_payload") or "").strip()
+    try:
+        sealed_transfer = _label_match_parse_sealed_transfer_qr(seal_qr_payload)
+    except ValueError as exc:
+        raise PackageLogisticsError(str(exc)) from exc
+    if not sealed_transfer:
+        raise PackageLogisticsError("orphan package has no valid active transfer seal")
+    expected_seal = {
+        "BND": source_bundle_id,
+        "AUTH_SCOPE": scope,
+        "CLC": item_code,
+        "QT": member_count,
+        "HSH": membership_hash_value,
+        "EPOCH": authority_epoch,
+        "PLANE": ledger_plane,
+        "PE": plane_epoch,
+        "SID": str(draft.get("expected_seal_id") or "").strip(),
+        "SREV": seal_revision,
+        "STK": str(draft.get("expected_seal_token") or "").strip(),
+    }
+    if any(sealed_transfer.get(key) != value for key, value in expected_seal.items()):
+        raise PackageLogisticsError("orphan package seal differs from its source snapshot")
+    sealed_transfer["_seal_qr_payload"] = seal_qr_payload
+
+    return {
+        "id": set_id,
+        "parsed": [item_code],
+        "raw": [phs2_qr],
+        "start_time": str(source.get("created_at") or datetime.now().isoformat()),
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": None,
+        "item_name_override": None,
+        "production_date": None,
+        "sealed_transfer": sealed_transfer,
+        "central_inherit_all": True,
+        "package_source_snapshot": {
+            "bundle_id": source_bundle_id,
+            "authority_scope_id": scope,
+            "item_id": item_code,
+            "member_count": member_count,
+            "membership_hash": membership_hash_value,
+            "authority_epoch": authority_epoch,
+            "ledger_plane": ledger_plane,
+            "plane_epoch": plane_epoch,
+            "entity_version": 0,
+        },
+        "resolved_transfer_bundle_id": source_bundle_id,
+        "package_submission_idempotency_key": str(
+            source.get("idempotency_key") or ""
+        ).strip(),
+        "package_submission_status": str(source.get("status") or "PENDING").upper(),
+        "sealed_transfer_exchange_intent_id": "",
+        "exact_rescan_active": False,
+        "exact_rescan_complete": False,
+        "exact_rescan_target_count": 0,
+        "exact_rescan_source_bundle_id": "",
+        "exact_rescan_barcodes": [],
+        "restored_from_package_outbox": True,
+    }
 
 
 def _normalize_barcode_for_exact_rescan(value):
@@ -1869,6 +2359,25 @@ def _label_match_new_format_identity_key(raw_value):
     fields = _label_match_parse_new_format_fields(raw_value)
     if not fields:
         return None
+    if (
+        str(fields.get("SRC") or "").strip().upper()
+        == "KMTECH_INPUT_TAG"
+        and str(fields.get("PHS") or "").strip() == "2"
+    ):
+        # PHS2 is an individual physical identity, not merely an item/phase.
+        # Keep every available registry proof so two same-item trays can never
+        # alias during duplicate checks or completed-package cancellation.
+        identity_parts = (
+            ("SRC", str(fields.get("SRC") or "").strip().upper()),
+            ("PHS", "2"),
+            ("ITG", str(fields.get("ITG") or "").strip()),
+            ("LBL", str(fields.get("LBL") or "").strip()),
+            ("HSH", str(fields.get("HSH") or "").strip().lower()),
+            ("CLC", str(fields.get("CLC") or "").strip()),
+        )
+        return "|".join(
+            f"{key}={value}" for key, value in identity_parts if value
+        )
     return f"CLC={fields['CLC']}|SPC={fields['SPC']}|PHS={fields['PHS']}"
 
 
@@ -1898,11 +2407,10 @@ def _label_match_unique_master_index_keys(raw_value):
 
 
 def _label_match_reusable_input_master_label(raw_value):
-    fields = _label_match_parse_new_format_fields(raw_value) or {}
-    return (
-        str(fields.get("SRC") or "").strip().upper() == "KMTECH_INPUT_TAG"
-        and str(fields.get("PHS") or "").strip() == "2"
-    )
+    # Packaging consumes the active TRANSFER behind a PHS2.  A completed PHS2
+    # must remain locally indexed until the central package is explicitly
+    # cancelled and its local completed record is removed.
+    return False
 
 
 def _label_match_duplicate_index_barcodes(details):
@@ -2045,7 +2553,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.38" # private update feed release
+APP_VERSION = "v2.0.39" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -2061,6 +2569,13 @@ UPDATE_DEFAULT_CHANNEL = "stable"
 UPDATE_APP_ID = "Label_Match"
 UPDATE_PC_ID_ENV = "LABEL_MATCH_UPDATE_PC_ID"
 UPDATE_ALLOWED_INSTALL_STRATEGIES = {"manual", "robocopy_backup_then_mirror", "replace_exe", "none"}
+UPDATE_AUTOMATIC_INSTALL_STRATEGY = "robocopy_backup_then_mirror"
+UPDATE_REQUIRED_PRESERVE_PATHS = (
+    "config/app_settings.json",
+    "_internal/config/app_settings.json",
+)
+UPDATE_DEFAULT_RESTART_EXECUTABLE = "Label_Match.exe"
+UPDATER_BATCH_UNSAFE_CHARS = set('%"&|<>^\r\n')
 UPDATE_DIRECT_GITHUB_ARTIFACT_HOSTS = {"objects.githubusercontent.com", "github-releases.githubusercontent.com"}
 UPDATE_GITHUB_UPDATE_HOSTS = {"api.github.com", "github.com", "www.github.com"}
 UPDATE_SECRET_QUERY_KEYS = {
@@ -2182,11 +2697,82 @@ def _is_github_hosted_update_url(url):
 def _validate_relative_manifest_path(value, field_name):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Update manifest {field_name} must be a non-empty relative path")
-    normalized = value.replace("\\", "/")
+    normalized = value.strip().replace("\\", "/")
     if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
         raise ValueError(f"Update manifest {field_name} must be relative")
-    if any(part in {"", ".", ".."} or ":" in part for part in normalized.split("/")):
+    if any(
+        part in {"", ".", ".."}
+        or ":" in part
+        or any(char in UPDATER_BATCH_UNSAFE_CHARS for char in part)
+        for part in normalized.split("/")
+    ):
         raise ValueError(f"Update manifest {field_name} contains an unsafe path")
+    return normalized
+
+
+def _normalize_update_install_policy(install):
+    if not isinstance(install, dict):
+        raise ValueError("Update manifest install must be an object")
+    strategy = str(install.get("strategy") or "").strip()
+    if strategy not in UPDATE_ALLOWED_INSTALL_STRATEGIES:
+        raise ValueError("Update manifest install.strategy is unsupported")
+    if strategy != UPDATE_AUTOMATIC_INSTALL_STRATEGY:
+        raise ValueError(
+            "Automatic update requires install.strategy "
+            f"{UPDATE_AUTOMATIC_INSTALL_STRATEGY}"
+        )
+
+    preserve_paths = install.get("preserve_paths")
+    if not isinstance(preserve_paths, list) or not all(
+        isinstance(item, str) for item in preserve_paths
+    ):
+        raise ValueError("Update manifest install.preserve_paths must be a list of strings")
+    normalized_paths = []
+    seen_paths = set()
+    for item in preserve_paths:
+        normalized = _validate_relative_manifest_path(
+            item, "install.preserve_paths[]"
+        )
+        key = normalized.casefold()
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        normalized_paths.append(normalized)
+
+    missing_required = [
+        item
+        for item in UPDATE_REQUIRED_PRESERVE_PATHS
+        if item.casefold() not in seen_paths
+    ]
+    if missing_required:
+        raise ValueError(
+            "Update manifest install.preserve_paths must preserve both Label_Match "
+            f"settings files: {', '.join(missing_required)}"
+        )
+
+    restart_executable = _validate_relative_manifest_path(
+        install.get("restart_executable") or UPDATE_DEFAULT_RESTART_EXECUTABLE,
+        "install.restart_executable",
+    )
+    if restart_executable.casefold() != UPDATE_DEFAULT_RESTART_EXECUTABLE.casefold():
+        raise ValueError(
+            "Update manifest install.restart_executable must be Label_Match.exe"
+        )
+    return {
+        "strategy": strategy,
+        "preserve_paths": normalized_paths,
+        "restart_executable": restart_executable,
+    }
+
+
+def _default_update_install_policy():
+    return _normalize_update_install_policy(
+        {
+            "strategy": UPDATE_AUTOMATIC_INSTALL_STRATEGY,
+            "preserve_paths": list(UPDATE_REQUIRED_PRESERVE_PATHS),
+            "restart_executable": UPDATE_DEFAULT_RESTART_EXECUTABLE,
+        }
+    )
 
 
 def _canonical_update_pc_id():
@@ -2266,21 +2852,26 @@ def _validate_private_update_manifest_policy(manifest, expected_channel):
     required_files = archive.get("required_files")
     if not isinstance(required_files, list) or not required_files or not all(isinstance(item, str) for item in required_files):
         raise ValueError("Update manifest archive.required_files must be a non-empty list of strings")
+    normalized_required_files = []
     for item in required_files:
-        _validate_relative_manifest_path(item, "archive.required_files[]")
+        normalized_required_files.append(
+            _validate_relative_manifest_path(item, "archive.required_files[]")
+        )
     if archive.get("top_level") is not None:
         _validate_relative_manifest_path(archive.get("top_level"), "archive.top_level")
+    required_file_keys = {item.casefold() for item in normalized_required_files}
+    missing_archive_settings = [
+        item
+        for item in _default_update_archive_policy()["required_files"]
+        if item.casefold() not in required_file_keys
+    ]
+    if missing_archive_settings:
+        raise ValueError(
+            "Update manifest archive.required_files must include executable and both "
+            f"settings files: {', '.join(missing_archive_settings)}"
+        )
 
-    install = manifest.get("install")
-    if not isinstance(install, dict):
-        raise ValueError("Update manifest install must be an object")
-    if install.get("strategy") not in UPDATE_ALLOWED_INSTALL_STRATEGIES:
-        raise ValueError("Update manifest install.strategy is unsupported")
-    preserve_paths = install.get("preserve_paths", [])
-    if not isinstance(preserve_paths, list) or not all(isinstance(item, str) for item in preserve_paths):
-        raise ValueError("Update manifest install.preserve_paths must be a list of strings")
-    for item in preserve_paths:
-        _validate_relative_manifest_path(item, "install.preserve_paths[]")
+    install = _normalize_update_install_policy(manifest.get("install"))
 
     return {
         "artifact": artifact,
@@ -2288,6 +2879,7 @@ def _validate_private_update_manifest_policy(manifest, expected_channel):
         "download_url": download_url,
         "sha256": expected_sha256,
         "archive": _archive_policy_from_manifest(archive),
+        "install": install,
         "version": latest_version,
     }
 
@@ -2360,6 +2952,7 @@ def _update_candidate_from_manifest(manifest, expected_channel):
         "version": latest_version,
         "sha256": policy["sha256"],
         "archive": policy["archive"],
+        "install": policy["install"],
         "provider": UPDATE_PROVIDER_PRIVATE_MANIFEST,
     }
 
@@ -2459,6 +3052,8 @@ def _check_github_release_for_updates():
         "url": download_url,
         "version": latest_version,
         "sha256": expected_sha256,
+        "archive": _default_update_archive_policy(),
+        "install": _default_update_install_policy(),
         "provider": UPDATE_PROVIDER_GITHUB,
     }
 
@@ -2495,6 +3090,17 @@ def _archive_policy_from_manifest(archive):
         "required_files": list(archive.get("required_files") or []),
     }
     return policy
+
+
+def _default_update_archive_policy():
+    return {
+        "top_level": "Label_Match",
+        "required_files": [
+            "Label_Match/Label_Match.exe",
+            "Label_Match/config/app_settings.json",
+            "Label_Match/_internal/config/app_settings.json",
+        ],
+    }
 
 
 def _normalize_update_archive_member_name(member_name):
@@ -2615,75 +3221,314 @@ def _safe_extract_update_zip(zip_ref, destination_path, archive_policy=None):
             shutil.copyfileobj(source, target)
 
 
-def download_and_apply_update(url, expected_sha256=None, archive_policy=None):
-    """업데이트 .zip 파일을 다운로드하고, 압축 해제 후 적용 스크립트를 실행합니다."""
+def _validate_updater_batch_value(name, value):
+    text = str(value or "")
+    if not text:
+        raise ValueError(f"Updater script {name} must not be empty")
+    if any(char in UPDATER_BATCH_UNSAFE_CHARS for char in text):
+        raise ValueError(f"Updater script {name} contains an unsafe batch character")
+    return text
+
+
+def _prepare_update_workspace(application_path):
+    application_path = os.path.abspath(application_path)
+    application_parent = os.path.dirname(application_path)
+    if not application_parent or application_parent == application_path:
+        raise ValueError("Automatic update requires an application directory with a parent")
+    update_id = uuid.uuid4().hex
+    update_temp_root = os.path.join(
+        application_parent, f".label_match_update_{update_id}"
+    )
+    log_root = os.path.join(application_parent, ".label_match_update_logs")
+    os.makedirs(update_temp_root, exist_ok=False)
+    os.makedirs(log_root, exist_ok=True)
+    application_drive = os.path.splitdrive(application_path)[0].casefold()
+    backup_drive = os.path.splitdrive(update_temp_root)[0].casefold()
+    if application_drive != backup_drive:
+        shutil.rmtree(update_temp_root, ignore_errors=True)
+        raise ValueError("Update backup must be created on the application volume")
+    return {
+        "update_id": update_id,
+        "update_temp_root": update_temp_root,
+        "log_root": log_root,
+        "log_path": os.path.join(log_root, f"Label_Match-update-{update_id}.log"),
+        "updater_script_path": os.path.join(
+            log_root, f"Label_Match-update-{update_id}.bat"
+        ),
+    }
+
+
+def _build_updater_script(
+    *,
+    application_path,
+    new_program_folder_path,
+    update_temp_root,
+    log_path,
+    current_pid,
+    install_policy,
+):
+    policy = _normalize_update_install_policy(install_policy)
+    application_path = _validate_updater_batch_value(
+        "application_path", os.path.abspath(application_path)
+    )
+    new_program_folder_path = _validate_updater_batch_value(
+        "new_program_folder_path", os.path.abspath(new_program_folder_path)
+    )
+    update_temp_root = _validate_updater_batch_value(
+        "update_temp_root", os.path.abspath(update_temp_root)
+    )
+    log_path = _validate_updater_batch_value("log_path", os.path.abspath(log_path))
+    current_pid = int(current_pid)
+    if current_pid < 1:
+        raise ValueError("Updater script current_pid must be positive")
+
+    application_drive = os.path.splitdrive(application_path)[0].casefold()
+    update_drive = os.path.splitdrive(update_temp_root)[0].casefold()
+    if application_drive != update_drive:
+        raise ValueError("Updater backup and application must be on the same volume")
+
+    preserve_blocks = []
+    restore_blocks = []
+    exclude_paths = []
+    for index, relative_path in enumerate(policy["preserve_paths"], start=1):
+        relative_path = _validate_updater_batch_value(
+            f"preserve_path_{index}", relative_path.replace("/", "\\")
+        )
+        parent_path = relative_path.rsplit("\\", 1)[0]
+        preserve_blocks.extend(
+            [
+                f'if not exist "%APP_PATH%\\{relative_path}" goto PRESERVE_REQUIRED_MISSING',
+                f'if not exist "%PRESERVE_PATH%\\{parent_path}" mkdir "%PRESERVE_PATH%\\{parent_path}"',
+                "if errorlevel 1 goto PRESERVE_FAILED",
+                f'copy /B /Y "%APP_PATH%\\{relative_path}" "%PRESERVE_PATH%\\{relative_path}" > nul',
+                "if errorlevel 1 goto PRESERVE_FAILED",
+                f'fc /B "%APP_PATH%\\{relative_path}" "%PRESERVE_PATH%\\{relative_path}" > nul',
+                "if errorlevel 1 goto PRESERVE_FAILED",
+            ]
+        )
+        restore_blocks.extend(
+            [
+                f'if not exist "%APP_PATH%\\{parent_path}" mkdir "%APP_PATH%\\{parent_path}"',
+                "if errorlevel 1 goto ROLLBACK",
+                f'copy /B /Y "%PRESERVE_PATH%\\{relative_path}" "%APP_PATH%\\{relative_path}" > nul',
+                "if errorlevel 1 goto ROLLBACK",
+                f'fc /B "%PRESERVE_PATH%\\{relative_path}" "%APP_PATH%\\{relative_path}" > nul',
+                "if errorlevel 1 goto ROLLBACK",
+            ]
+        )
+        exclude_paths.append(f'"%NEW_PATH%\\{relative_path}"')
+
+    preserve_commands = "\n".join(preserve_blocks)
+    restore_commands = "\n".join(restore_blocks)
+    exclude_arguments = " ".join(exclude_paths)
+    restart_relative = _validate_updater_batch_value(
+        "restart_executable", policy["restart_executable"].replace("/", "\\")
+    )
+    backup_path = _validate_updater_batch_value(
+        "backup_path", os.path.join(update_temp_root, "backup")
+    )
+    preserve_path = _validate_updater_batch_value(
+        "preserve_path", os.path.join(update_temp_root, "preserve")
+    )
+
+    return f"""@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+chcp 65001 > nul
+set "APP_PATH={application_path}"
+set "NEW_PATH={new_program_folder_path}"
+set "UPDATE_TEMP_ROOT={update_temp_root}"
+set "BACKUP_PATH={backup_path}"
+set "PRESERVE_PATH={preserve_path}"
+set "LOG_PATH={log_path}"
+set "CURRENT_PID={current_pid}"
+set "RESTART_PATH=%APP_PATH%\\{restart_relative}"
+call :LOG "SCRIPT_BEGIN"
+timeout /t 3 /nobreak > nul
+taskkill /F /PID %CURRENT_PID% > nul 2> nul
+
+call :LOG "BACKUP_BEGIN"
+if exist "%BACKUP_PATH%" rmdir /s /q "%BACKUP_PATH%"
+robocopy "%APP_PATH%" "%BACKUP_PATH%" /MIR /IS /IT /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
+set "ROBOCOPY_RC=%ERRORLEVEL%"
+if %ROBOCOPY_RC% GEQ 8 goto BACKUP_FAILED
+robocopy "%APP_PATH%" "%BACKUP_PATH%" /MIR /L /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
+set "ROBOCOPY_RC=%ERRORLEVEL%"
+if not "%ROBOCOPY_RC%"=="0" goto BACKUP_VERIFY_FAILED
+call :LOG "BACKUP_VERIFIED"
+
+call :LOG "PRESERVE_BEGIN"
+if exist "%PRESERVE_PATH%" rmdir /s /q "%PRESERVE_PATH%"
+{preserve_commands}
+call :LOG "PRESERVE_VERIFIED"
+
+call :LOG "MIRROR_BEGIN"
+robocopy "%NEW_PATH%" "%APP_PATH%" /MIR /IS /IT /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /XF {exclude_arguments} /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
+set "ROBOCOPY_RC=%ERRORLEVEL%"
+if %ROBOCOPY_RC% GEQ 8 goto ROLLBACK
+robocopy "%NEW_PATH%" "%APP_PATH%" /MIR /L /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /XF {exclude_arguments} /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
+set "ROBOCOPY_RC=%ERRORLEVEL%"
+if not "%ROBOCOPY_RC%"=="0" goto ROLLBACK
+call :LOG "MIRROR_VERIFIED"
+
+call :LOG "RESTORE_BEGIN"
+{restore_commands}
+call :LOG "RESTORE_VERIFIED"
+if not exist "%RESTART_PATH%" goto ROLLBACK
+
+call :LOG "RESTART_BEGIN"
+start "" "%RESTART_PATH%"
+if errorlevel 1 goto ROLLBACK
+call :LOG "UPDATE_SUCCESS"
+rmdir /s /q "%UPDATE_TEMP_ROOT%" > nul 2> nul
+del "%~f0" > nul 2> nul
+exit /b 0
+
+:ROLLBACK
+call :LOG "UPDATE_FAILED_ROLLBACK_BEGIN_RESTART_BLOCKED"
+robocopy "%BACKUP_PATH%" "%APP_PATH%" /MIR /IS /IT /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
+set "ROBOCOPY_RC=%ERRORLEVEL%"
+if %ROBOCOPY_RC% GEQ 8 goto ROLLBACK_FAILED
+robocopy "%BACKUP_PATH%" "%APP_PATH%" /MIR /L /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
+set "ROBOCOPY_RC=%ERRORLEVEL%"
+if not "%ROBOCOPY_RC%"=="0" goto ROLLBACK_FAILED
+call :LOG "ROLLBACK_VERIFIED_RESTART_BLOCKED"
+echo 업데이트 적용에 실패하여 기존 버전을 복원했습니다. 프로그램을 직접 확인한 뒤 실행하세요.
+echo 로그: %LOG_PATH%
+pause
+exit /b 1
+
+:PRESERVE_REQUIRED_MISSING
+call :LOG "PRESERVE_REQUIRED_PATH_MISSING_RESTART_BLOCKED"
+goto ROLLBACK
+
+:PRESERVE_FAILED
+call :LOG "PRESERVE_FAILED_RESTART_BLOCKED"
+goto ROLLBACK
+
+:BACKUP_FAILED
+call :LOG "BACKUP_FAILED_RESTART_BLOCKED"
+echo 전체 백업에 실패하여 업데이트를 적용하지 않았습니다.
+echo 로그: %LOG_PATH%
+pause
+exit /b 1
+
+:BACKUP_VERIFY_FAILED
+call :LOG "BACKUP_VERIFY_FAILED_RESTART_BLOCKED"
+echo 전체 백업 검증에 실패하여 업데이트를 적용하지 않았습니다.
+echo 로그: %LOG_PATH%
+pause
+exit /b 1
+
+:ROLLBACK_FAILED
+call :LOG "ROLLBACK_FAILED_RESTART_BLOCKED_MANUAL_RECOVERY_REQUIRED"
+echo 자동 복원에 실패했습니다. 백업 폴더와 로그를 보존하고 수동 복구하세요.
+echo 백업: %BACKUP_PATH%
+echo 로그: %LOG_PATH%
+pause
+exit /b 1
+
+:LOG
+>>"%LOG_PATH%" echo [%date% %time%] %~1
+exit /b 0
+"""
+
+
+def download_and_apply_update(
+    url,
+    expected_sha256=None,
+    archive_policy=None,
+    install_policy=None,
+):
+    """검증된 ZIP을 같은 볼륨에 준비하고 원자적 updater를 실행합니다."""
+    workspace = None
+    updater_launched = False
     try:
         if not _can_apply_updates():
             raise RuntimeError("Automatic update apply is only allowed from the packaged executable.")
         _assert_https_update_url(url, require_zip=True)
         if not _is_sha256(str(expected_sha256 or "").strip()):
             raise ValueError("Automatic update apply requires an expected SHA256 hash")
-        temp_dir = os.environ.get("TEMP", "C:\\Temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        zip_path = os.path.join(temp_dir, "update.zip")
+        policy = _normalize_update_install_policy(
+            install_policy or _default_update_install_policy()
+        )
+        application_path = os.path.dirname(os.path.abspath(sys.executable))
+        workspace = _prepare_update_workspace(application_path)
+        update_temp_root = workspace["update_temp_root"]
+        zip_path = os.path.join(update_temp_root, "update.zip")
+        temp_update_folder = os.path.join(update_temp_root, "extracted")
+        with open(workspace["log_path"], "a", encoding="utf-8") as log_file:
+            log_file.write(
+                f"{datetime.now(timezone.utc).isoformat()} PREPARE_BEGIN "
+                f"strategy={policy['strategy']}\n"
+            )
+
         response = requests.get(url, stream=True, timeout=120)
         response.raise_for_status()
-        with open(zip_path, 'wb') as f:
+        with open(zip_path, "wb") as target:
             for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+                if chunk:
+                    target.write(chunk)
         _verify_update_file_hash(zip_path, expected_sha256)
-        temp_update_folder = os.path.join(temp_dir, "temp_update")
-        if os.path.exists(temp_update_folder):
-            shutil.rmtree(temp_update_folder)
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            _safe_extract_update_zip(zip_ref, temp_update_folder, archive_policy=archive_policy)
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            _safe_extract_update_zip(
+                zip_ref, temp_update_folder, archive_policy=archive_policy
+            )
         os.remove(zip_path)
-        if getattr(sys, 'frozen', False):
-            application_path = os.path.dirname(sys.executable)
-        else:
-            application_path = os.path.dirname(os.path.abspath(__file__))
-        updater_script_path = os.path.join(application_path, "updater.bat")
         extracted_content = os.listdir(temp_update_folder)
-        if len(extracted_content) == 1 and os.path.isdir(os.path.join(temp_update_folder, extracted_content[0])):
-            new_program_folder_path = os.path.join(temp_update_folder, extracted_content[0])
+        if len(extracted_content) == 1 and os.path.isdir(
+            os.path.join(temp_update_folder, extracted_content[0])
+        ):
+            new_program_folder_path = os.path.join(
+                temp_update_folder, extracted_content[0]
+            )
         else:
             new_program_folder_path = temp_update_folder
-        with open(updater_script_path, "w", encoding='utf-8') as bat_file:
-            bat_file.write(f"""@echo off
-chcp 65001 > nul
-echo.
-echo ==========================================================
-echo    프로그램을 업데이트합니다. 이 창을 닫지 마세요.
-echo ==========================================================
-echo.
-echo 잠시 후 프로그램이 자동으로 종료됩니다...
-timeout /t 3 /nobreak > nul
-taskkill /F /IM "{os.path.basename(sys.executable)}" > nul
-echo.
-echo 기존 파일을 백업하고 새 파일로 교체합니다...
-xcopy "{new_program_folder_path}" "{application_path}" /E /H /C /I /Y > nul
-echo.
-echo 임시 업데이트 파일을 삭제합니다...
-rmdir /s /q "{temp_update_folder}"
-echo.
-echo ========================================
-echo    업데이트 완료!
-echo ========================================
-echo.
-echo 3초 후에 프로그램을 다시 시작합니다.
-timeout /t 3 /nobreak > nul
-start "" "{os.path.join(application_path, os.path.basename(sys.executable))}"
-del "%~f0"
-            """)
-        subprocess.Popen(updater_script_path, creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+        updater_script = _build_updater_script(
+            application_path=application_path,
+            new_program_folder_path=new_program_folder_path,
+            update_temp_root=update_temp_root,
+            log_path=workspace["log_path"],
+            current_pid=os.getpid(),
+            install_policy=policy,
+        )
+        with open(
+            workspace["updater_script_path"], "w", encoding="utf-8", newline="\r\n"
+        ) as bat_file:
+            bat_file.write(updater_script)
+        subprocess.Popen(
+            [workspace["updater_script_path"]],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        updater_launched = True
         sys.exit(0)
     except Exception as e:
+        if workspace is not None and not updater_launched:
+            try:
+                with open(workspace["log_path"], "a", encoding="utf-8") as log_file:
+                    log_file.write(
+                        f"{datetime.now(timezone.utc).isoformat()} PREPARE_FAILED "
+                        f"error={e.__class__.__name__}\n"
+                    )
+            except OSError:
+                pass
+            shutil.rmtree(workspace["update_temp_root"], ignore_errors=True)
+            try:
+                os.remove(workspace["updater_script_path"])
+            except FileNotFoundError:
+                pass
         root_alert = getattr(tk, "_default_root", None)
         owns_alert_root = root_alert is None
         if owns_alert_root:
             root_alert = tk.Tk()
             root_alert.withdraw()
-        messagebox.showerror("업데이트 실패", f"업데이트 파일을 적용하는 중 예상치 못한 오류가 발생했습니다.\n프로그램을 다시 시작하여 업데이트를 재시도해주세요.\n\n[오류 상세 정보]\n{e}", parent=root_alert)
+        messagebox.showerror(
+            "업데이트 실패",
+            "업데이트를 안전하게 준비하지 못해 기존 프로그램을 변경하지 않았습니다.\n"
+            "프로그램을 다시 시작하여 업데이트를 재시도해주세요.\n\n"
+            f"[오류 상세 정보]\n{e}",
+            parent=root_alert,
+        )
         if owns_alert_root:
             root_alert.destroy()
         sys.exit(1)
@@ -2716,6 +3561,7 @@ def threaded_update_check():
                 download_url,
                 expected_sha256=candidate.get("sha256"),
                 archive_policy=candidate.get("archive"),
+                install_policy=candidate.get("install"),
             )
         else:
             print("사용자가 업데이트를 거부했습니다.")
@@ -2864,6 +3710,7 @@ class DataManager:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, state_path)
+            return True
         except Exception as e:
             try:
                 if os.path.exists(temp_path):
@@ -2871,6 +3718,7 @@ class DataManager:
             except Exception:
                 pass
             print(f"임시 상태 저장 실패: {e}")
+            return False
     def load_current_state(self):
         state_path = os.path.join(self.save_directory, Label_Match.FILES.CURRENT_STATE)
         if not os.path.exists(state_path): return None
@@ -3059,7 +3907,9 @@ class Label_Match(tk.Tk):
         "manual_complete_only_for_partial_sets": f"이미 {LABEL_MATCH_TOTAL_SCAN_COUNT}개 완료됨",
         "manual_complete_blocked_after_error": "오류 세트는 불가",
         "manual_complete_blocked_during_exact_rescan": "전체 재스캔 중에는 불가",
-        "manual_complete_disabled_for_central_inherit_all": "중앙 전체 상속은 포장 라벨 스캔으로 완료",
+        "package_complete_requires_phs2": "PHS2 스캔 후 가능",
+        "package_complete_requires_exactly_one_phs2": "PHS2 한 장만 스캔해야 함",
+        "package_recovery_operator_review": "복구 상태 관리자 확인 필요",
     }
     class FILES:
         CURRENT_STATE = "_current_set_state_packaging.json"
@@ -3094,16 +3944,42 @@ class Label_Match(tk.Tk):
 
     def _central_inherit_all_active(self):
         current = self.__dict__.get("current_set_info", {}) or {}
-        if current.get("exact_rescan_active") or current.get("exact_rescan_complete"):
-            return False
         if current.get("central_inherit_all"):
             return True
+        if current.get("exact_rescan_active") or current.get("exact_rescan_complete"):
+            return False
         raw = list(current.get("raw") or [])
         return bool(
             self.__dict__.get("package_logistics_client") is not None
             and raw
             and _label_match_has_central_source_identity(raw[0])
         )
+
+    def _standard_phs2_workflow_expected(self, source=None):
+        """Return whether operator copy must describe the production PHS2 flow."""
+
+        current = dict(
+            source
+            if isinstance(source, dict)
+            else self.__dict__.get("current_set_info", {}) or {}
+        )
+        if current.get("central_inherit_all"):
+            return True
+        raw = list(current.get("raw") or [])
+        if raw:
+            return bool(
+                len(raw) == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+                and _label_match_has_central_source_identity(raw[0])
+            )
+        return bool(
+            self.__dict__.get("_logistics_authoritative_required", False)
+            or self.__dict__.get("package_logistics_client") is not None
+        )
+
+    def _operator_workflow_hint_text(self, source=None):
+        if self._standard_phs2_workflow_expected(source):
+            return "PHS2 1회 스캔 → 필요 시 F4로 1~2개 원자 교체 → 랩핑 후 F3 포장 완료"
+        return "레거시 전용: QA 5단계와 F4 전체 재스캔 절차를 사용합니다."
 
     def _workflow_total_scan_count(self):
         return (
@@ -3270,6 +4146,8 @@ class Label_Match(tk.Tk):
         self._workflow_blocking_notice = None
         self._package_cancellation_review_notice = None
         self._package_cancellation_review_rows = ()
+        self._package_create_review_notice = None
+        self._package_create_review_rows = ()
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
         self._workflow_pending_error = None
@@ -3404,6 +4282,7 @@ class Label_Match(tk.Tk):
             return current
         self._refresh_package_cancellation_review_notice()
         self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
+        self._reconcile_active_package_submission()
         if self.__dict__.get("package_outbox_after_id") is None:
             try:
                 self.package_outbox_after_id = self.after(
@@ -3417,8 +4296,252 @@ class Label_Match(tk.Tk):
         self.package_outbox_after_id = None
         return self._start_package_outbox_drain()
 
+    def _set_active_package_submission_notice(self, row):
+        status = str((row or {}).get("status") or "").strip().upper()
+        current = self.__dict__.get("current_set_info", {}) or {}
+        set_id = str(current.get("id") or "").strip()
+        if status == "CONFLICT":
+            code = str(
+                (row or {}).get("last_error_code") or "CENTRAL_PACKAGE_CONFLICT"
+            ).strip()
+            message = str((row or {}).get("last_error_message") or "").strip()
+            notice = WorkflowNotice(
+                title="중앙 포장 충돌 · 실물 작업 중지",
+                message=(
+                    f"{code} · 세트 {set_id}. {message} "
+                    "이 PHS2를 포장 완료로 표시하지 않았습니다. 관리자에게 중앙 상태 확인을 요청하세요."
+                ).strip(),
+                kind="submission_blocked",
+                tone="danger",
+            )
+            self._workflow_notice_action = None
+            self._workflow_notice_action_text = "확인"
+        else:
+            notice = WorkflowNotice(
+                title="중앙 포장 확정 대기",
+                message=(
+                    f"세트 {set_id}의 CREATE_PACKAGE ACK를 확인 중입니다. "
+                    "확정 전에는 PHS2를 이동하거나 다음 포장을 시작하지 마세요."
+                ),
+                kind="submission_blocked",
+                tone="warning",
+            )
+            self._workflow_notice_action = self._retry_blocked_submission
+            self._workflow_notice_action_text = "제출 재시도"
+        self._workflow_blocking_notice = notice
+        self._workflow_notice = notice
+        self._render_operator_workbench()
+        return False
+
+    def _reconcile_active_package_submission(self):
+        current = self.__dict__.get("current_set_info", {}) or {}
+        if not current.get("central_inherit_all") or not current.get("id"):
+            return False
+        outbox = self.__dict__.get("package_outbox")
+        if outbox is None:
+            return False
+        row = outbox.get_by_set_id(str(current.get("id") or ""))
+        if row is None:
+            return False
+        status = str(row.get("status") or "").strip().upper()
+        current["package_submission_idempotency_key"] = str(
+            row.get("idempotency_key") or ""
+        ).strip()
+        current["package_submission_status"] = status
+        if status == "ACKED":
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            self._workflow_notice_action = None
+            self._workflow_notice_action_text = "확인"
+            key = str(row.get("idempotency_key") or "").strip()
+            local_committed = bool(
+                int(row.get("local_completion_committed") or 0)
+            )
+            log_exists = _label_match_local_completion_event_exists(
+                self.__dict__.get("data_manager"),
+                current.get("id"),
+            )
+            if local_committed or log_exists:
+                if not local_committed:
+                    outbox.mark_local_completion_committed(key)
+                return self._finish_recovered_package_completion()
+            return bool(self._finalize_set(self.Results.PASS))
+        if status in {"PENDING", "SENDING", "CONFLICT"}:
+            self._save_current_set_state()
+            return self._set_active_package_submission_notice(row)
+        return False
+
+    def _finish_recovered_package_completion(self):
+        """Clear an ACKed set whose local completion was already durable."""
+
+        completed = copy.deepcopy(
+            self.__dict__.get("current_set_info", {}) or {}
+        )
+        self._delete_current_set_state()
+        if self.__dict__.get("operator_workbench_ready"):
+            self._publish_workflow_completion("full")
+        self._reset_current_set(from_finalize=True)
+        if "big_display_label" in self.__dict__:
+            self.update_big_display("포장 완료 복구 - 다음 PHS2 스캔", "green")
+            self._show_completion_progress(
+                self.Results.PASS,
+                scan_count=len(completed.get("raw") or ()),
+            )
+        return True
+
+    def _enqueue_central_package_submission(self):
+        try:
+            package_logistics = self._queue_authoritative_package(
+                item_code=(self.current_set_info.get("parsed") or [""])[0],
+                is_manual_complete=False,
+            )
+        except PackageLogisticsError as exc:
+            return self._publish_submission_block(exc)
+        if not package_logistics or not package_logistics.get("idempotency_key"):
+            return self._publish_submission_block(
+                PackageLogisticsError(
+                    "central package submission could not be durably queued"
+                )
+            )
+        self.current_set_info["package_submission_idempotency_key"] = str(
+            package_logistics["idempotency_key"]
+        )
+        self.current_set_info["package_submission_status"] = str(
+            package_logistics.get("status") or "PENDING"
+        ).upper()
+        if not self._save_current_set_state():
+            return self._publish_submission_block(
+                PackageLogisticsError(
+                    "central package command is durable, but its local recovery state "
+                    "could not be saved; keep this PHS2 in place and retry"
+                )
+            )
+        if self.current_set_info["package_submission_status"] == "ACKED":
+            return self._reconcile_active_package_submission()
+        self._set_active_package_submission_notice(
+            {
+                "status": self.current_set_info["package_submission_status"],
+                "idempotency_key": package_logistics["idempotency_key"],
+            }
+        )
+        self._start_package_outbox_drain()
+        return True
+
+    def _begin_central_package_submission(self):
+        if self.__dict__.get("_central_package_preflight_in_progress", False):
+            return False
+        outbox = self.__dict__.get("package_outbox")
+        set_id = str(self.current_set_info.get("id") or "").strip()
+        existing = outbox.get_by_set_id(set_id) if outbox is not None and set_id else None
+        if existing is not None:
+            status = str(existing.get("status") or "").strip().upper()
+            if status == "ACKED":
+                return self._reconcile_active_package_submission()
+            self._set_active_package_submission_notice(existing)
+            if status in {"PENDING", "SENDING"}:
+                self._start_package_outbox_drain()
+            return status != "CONFLICT"
+
+        captured = copy.deepcopy(self.current_set_info)
+        captured_raw = tuple(captured.get("raw") or ())
+        captured_set_id = str(captured.get("id") or "")
+        result_queue = queue.Queue(maxsize=1)
+        self._central_package_preflight_in_progress = True
+        notice = WorkflowNotice(
+            title="PHS2 포장 대상 확인 중",
+            message=(
+                "현재 TRANSFER 멤버십과 활성 봉인을 확인하고 있습니다. "
+                "확인이 끝날 때까지 실물을 이동하지 마세요."
+            ),
+            kind="submission_blocked",
+            tone="warning",
+        )
+        self._workflow_blocking_notice = notice
+        self._workflow_notice = notice
+        self._workflow_notice_action = None
+        self._render_operator_workbench()
+
+        def worker():
+            try:
+                result_queue.put(
+                    (
+                        True,
+                        self._resolve_central_phs2_seal_for_exchange(captured),
+                    )
+                )
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        def poll():
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+            self._central_package_preflight_in_progress = False
+            if (
+                str(self.current_set_info.get("id") or "") != captured_set_id
+                or tuple(self.current_set_info.get("raw") or ()) != captured_raw
+            ):
+                self._workflow_blocking_notice = None
+                self._workflow_notice = None
+                self._render_operator_workbench()
+                return
+            if not ok:
+                return self._publish_submission_block(value)
+            sealed, snapshot = value
+            try:
+                self._apply_resolved_central_phs2_seal(sealed, snapshot)
+            except Exception as exc:
+                return self._publish_submission_block(exc)
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            self._render_operator_workbench()
+            self._enqueue_central_package_submission()
+
+        thread = threading.Thread(
+            target=worker,
+            name="label-match-package-source-preflight",
+            daemon=True,
+        )
+        self._central_package_preflight_thread = thread
+        thread.start()
+        self.after(100, poll)
+        return True
+
     def _refresh_package_cancellation_review_notice(self):
         """Keep terminal central-cancellation conflicts visible to the operator."""
+
+        package_outbox = self.__dict__.get("package_outbox")
+        if package_outbox is None or not hasattr(package_outbox, "list_conflicts"):
+            package_conflicts = ()
+        else:
+            try:
+                package_conflicts = tuple(package_outbox.list_conflicts(limit=21))
+            except Exception as exc:
+                print(f"중앙 포장 충돌 상태 조회 오류: {exc}")
+                package_conflicts = ()
+        self._package_create_review_rows = package_conflicts[:20]
+        if package_conflicts:
+            first_package = package_conflicts[0]
+            package_code = str(
+                first_package.get("last_error_code") or "CENTRAL_PACKAGE_CONFLICT"
+            ).strip()
+            package_set_id = str(first_package.get("set_id") or "").strip()
+            package_count = (
+                "20건 이상" if len(package_conflicts) > 20 else f"{len(package_conflicts)}건"
+            )
+            self._package_create_review_notice = WorkflowNotice(
+                title="중앙 포장 충돌 확인 필요",
+                message=(
+                    f"미확인 {package_count} · {package_code} · 세트 {package_set_id}. "
+                    "로컬 성공으로 처리되지 않았습니다. 해당 PHS2 실물을 격리하고 관리자에게 확인을 요청하세요."
+                ),
+                kind="package_create_review",
+                tone="danger",
+            )
+        else:
+            self._package_create_review_notice = None
 
         outbox = self.__dict__.get("package_cancellation_outbox")
         if outbox is None or not hasattr(outbox, "list_conflicts"):
@@ -3680,6 +4803,7 @@ class Label_Match(tk.Tk):
                 candidate["url"],
                 expected_sha256=candidate.get("sha256"),
                 archive_policy=candidate.get("archive"),
+                install_policy=candidate.get("install"),
             )
         elif not should_apply:
             print("사용자가 업데이트를 거부했습니다.")
@@ -4580,6 +5704,8 @@ class Label_Match(tk.Tk):
             state.get("_update_check_thread"),
             state.get("_simulation_thread"),
             state.get("package_outbox_thread"),
+            state.get("_central_seal_lookup_thread"),
+            state.get("_central_package_preflight_thread"),
             state.get("_direct_sync_auto_bootstrap_thread"),
             state.get("_app_close_sync_thread"),
             state.get("direct_sync_session_thread"),
@@ -4834,18 +5960,153 @@ class Label_Match(tk.Tk):
             return False
 
     def _save_current_set_state(self):
-        if not self.initialized_successfully or not self.current_set_info['raw']: return
+        if not self.initialized_successfully or not self.current_set_info['raw']:
+            return True
         state_data = {'current_set_info': self.current_set_info, 'timestamp': datetime.now().isoformat()}
-        self.data_manager.save_current_state(state_data)
+        return bool(self.data_manager.save_current_state(state_data))
+
+    def _migrate_restored_central_package_state(self, saved_set_info):
+        saved = copy.deepcopy(dict(saved_set_info or {}))
+        raw = list(saved.get("raw") or [])
+        parsed = list(saved.get("parsed") or [])
+        if not raw:
+            return saved
+        central = bool(saved.get("central_inherit_all"))
+        if not central:
+            central = _label_match_has_central_source_identity(raw[0])
+        if not central:
+            return saved
+        saved["central_inherit_all"] = True
+        if saved.get("exact_rescan_active") or saved.get("exact_rescan_complete"):
+            saved["discarded_legacy_exact_rescan_state"] = {
+                "active": bool(saved.get("exact_rescan_active")),
+                "complete": bool(saved.get("exact_rescan_complete")),
+                "target_count": int(saved.get("exact_rescan_target_count") or 0),
+                "scanned_count": len(saved.get("exact_rescan_barcodes") or []),
+            }
+            saved["exact_rescan_active"] = False
+            saved["exact_rescan_complete"] = False
+            saved["exact_rescan_target_count"] = 0
+            saved["exact_rescan_source_bundle_id"] = ""
+            saved["exact_rescan_barcodes"] = []
+        if len(raw) == 2 and len(parsed) == 2:
+            saved["legacy_final_label_removed_on_restore"] = raw[1]
+            saved["raw"] = raw[:1]
+            saved["parsed"] = parsed[:1]
+            saved["production_date"] = None
+            saved["restored_contract_migration"] = "CENTRAL_2_SCAN_TO_PHS2_1_SCAN"
+        elif len(raw) != 1 or len(parsed) != 1:
+            # Keep the physical PHS2 visible but never feed an overfull state
+            # into the one-slot presenter. Submission will remain blocked for
+            # operator review if the discarded legacy state was malformed.
+            saved["discarded_legacy_scan_count"] = max(len(raw) - 1, 0)
+            saved["raw"] = raw[:1]
+            saved["parsed"] = parsed[:1]
+            saved["restored_contract_migration"] = "CENTRAL_OVERFULL_TO_OPERATOR_REVIEW"
+            saved["recovery_operator_review"] = True
+        return saved
 
     def _load_current_set_state(self):
         state_data = self.data_manager.load_current_state()
-        if not state_data: return
+        if not state_data:
+            package_outbox = self.__dict__.get("package_outbox")
+            list_pending = getattr(
+                package_outbox, "list_local_completion_pending", None
+            )
+            rows = list_pending(limit=21) if callable(list_pending) else []
+            recoverable = []
+            invalid = []
+            for row in rows:
+                try:
+                    draft = json.loads(str(row.get("draft_json") or "{}"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                is_physical_phs2 = bool(
+                    str(draft.get("membership_mode") or "").strip().upper()
+                    == "INHERIT_ALL"
+                    and str(draft.get("source_input_tag_id") or "").strip()
+                    and str(draft.get("source_input_tag_label_id") or "").strip()
+                    and str(draft.get("source_input_tag_hash_prefix") or "").strip()
+                )
+                if not is_physical_phs2:
+                    continue
+                try:
+                    recovered = _label_match_recover_central_state_from_package_row(
+                        row
+                    )
+                except PackageLogisticsError as exc:
+                    invalid.append((row, exc))
+                    continue
+                if (
+                    str(row.get("status") or "").upper() == "ACKED"
+                    and _label_match_local_completion_event_exists(
+                        self.data_manager, recovered.get("id")
+                    )
+                ):
+                    package_outbox.mark_local_completion_committed(
+                        str(row.get("idempotency_key") or "")
+                    )
+                    continue
+                recoverable.append((row, recovered))
+
+            if len(recoverable) == 1 and not invalid:
+                row, recovered = recoverable[0]
+                state_data = {
+                    "worker_name": self.worker_name,
+                    "timestamp": str(
+                        row.get("updated_at") or datetime.now().isoformat()
+                    ),
+                    "current_set_info": recovered,
+                }
+                self.data_manager.save_current_state(state_data)
+            elif recoverable or invalid:
+                detail = (
+                    "복구 가능한 미완료 명령이 여러 건입니다."
+                    if len(recoverable) > 1
+                    else "중앙 포장 명령의 PHS2/봉인 증거가 손상되었습니다."
+                )
+                notice = WorkflowNotice(
+                    title="중앙 포장 복구 잠금",
+                    message=(
+                        f"{detail} 새 포장을 시작하지 말고 관리자에게 outbox 확인을 요청하세요."
+                    ),
+                    kind="submission_blocked",
+                    tone="danger",
+                )
+                self._workflow_blocking_notice = notice
+                self._workflow_notice = notice
+                self._workflow_notice_action = None
+                self._workflow_notice_action_text = "확인"
+                self._render_operator_workbench()
+                return
+            else:
+                return
+        saved_set_info = dict(state_data.get("current_set_info") or {})
+        saved_set_id = str(saved_set_info.get("id") or "").strip()
+        package_outbox = self.__dict__.get("package_outbox")
+        package_row = (
+            package_outbox.get_by_set_id(saved_set_id)
+            if package_outbox is not None and saved_set_id
+            else None
+        )
+        durable_central_state = bool(
+            saved_set_info.get("central_inherit_all")
+            or package_row is not None
+            or (
+                (saved_set_info.get("raw") or [])
+                and _label_match_has_central_source_identity(
+                    (saved_set_info.get("raw") or [""])[0]
+                )
+            )
+        )
         try:
             saved_timestamp_str = state_data.get('timestamp')
             if saved_timestamp_str:
                 saved_dt = datetime.fromisoformat(saved_timestamp_str)
-                if saved_dt.date() != datetime.now().date():
+                if (
+                    saved_dt.date() != datetime.now().date()
+                    and not durable_central_state
+                ):
                     if not self.run_tests:
                         messagebox.showinfo("이전 작업 만료", "어제 완료되지 않은 작업 데이터는 자동으로 삭제됩니다.")
                     self.data_manager.delete_current_state()
@@ -4855,23 +6116,26 @@ class Label_Match(tk.Tk):
             self.data_manager.delete_current_state()
             return
 
-        msg = f"이전에 완료되지 않은 스캔 세트가 있습니다.\n(스캔 수: {len(state_data.get('current_set_info', {}).get('raw', []))})\n\n이어서 진행하시겠습니까?"
+        saved_set_info = self._migrate_restored_central_package_state(
+            saved_set_info
+        )
+        state_data["current_set_info"] = saved_set_info
+        msg = f"이전에 완료되지 않은 스캔 세트가 있습니다.\n(스캔 수: {len(saved_set_info.get('raw', []))})\n\n이어서 진행하시겠습니까?"
         
-        saved_set_id = str(
-            state_data.get("current_set_info", {}).get("id") or ""
-        ).strip()
         exchange_rows = (
             self.sealed_transfer_exchange_store.blocking_rows(set_id=saved_set_id)
             if saved_set_id
             else []
         )
-        if exchange_rows:
+        if exchange_rows or package_row is not None:
             should_restore = True
             if not self.run_tests:
                 messagebox.showwarning(
-                    "제품 교체 복구 필요",
-                    "중앙 제품 교체가 진행 중이거나 ACK 후 로컬 반영 대기 중이므로 "
-                    "이 세트는 자동 복구됩니다.",
+                    "중앙 포장 작업 복구 필요",
+                    (
+                        "중앙 제품 교체 또는 CREATE_PACKAGE 확인이 진행 중이므로 "
+                        "이 PHS2 세트는 자동 복구됩니다."
+                    ),
                     parent=self,
                 )
         else:
@@ -4879,7 +6143,11 @@ class Label_Match(tk.Tk):
 
         if should_restore:
             saved_worker_name = state_data.get('worker_name')
-            if saved_worker_name and saved_worker_name != self.worker_name:
+            if (
+                saved_worker_name
+                and saved_worker_name != self.worker_name
+                and package_row is None
+            ):
                 response = True
                 if not self.run_tests:
                     response = messagebox.askyesnocancel("작업자 불일치",
@@ -4892,8 +6160,20 @@ class Label_Match(tk.Tk):
                     if not self.run_tests:
                         messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
                     return
-            saved_set_info = state_data.get('current_set_info', {})
             self.current_set_info.update(saved_set_info)
+
+            if self.current_set_info.get("recovery_operator_review"):
+                notice = WorkflowNotice(
+                    title="복구 상태 관리자 확인 필요",
+                    message=(
+                        "구버전 중앙 포장 상태에 예상보다 많은 스캔이 저장되어 자동 제출을 차단했습니다. "
+                        "PHS2와 중앙 outbox를 확인한 뒤 관리자 절차로 정리하세요."
+                    ),
+                    kind="submission_blocked",
+                    tone="danger",
+                )
+                self._workflow_blocking_notice = notice
+                self._workflow_notice = notice
 
             if self.current_set_info.get('start_time') and isinstance(self.current_set_info['start_time'], str):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
@@ -4910,6 +6190,7 @@ class Label_Match(tk.Tk):
             self._workflow_recovered = True
             self._render_operator_workbench()
             self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
+            self._reconcile_active_package_submission()
         else:
             self.data_manager.delete_current_state()
 
@@ -5053,7 +6334,7 @@ class Label_Match(tk.Tk):
                 details = data['details']
                 if _label_match_tray_complete_passed(details):
                     passed_code = details.get('item_code')
-                    production_date = details.get('production_date')
+                    production_date = _label_match_summary_date(details)
                     phase = details.get('phase') or '-'
                     if passed_code and production_date:
                         temp_scan_count[production_date][(passed_code, phase)] += 1
@@ -5429,6 +6710,19 @@ class Label_Match(tk.Tk):
             self._process_exact_rescan_product(raw_input)
             return
 
+        if (
+            self._central_inherit_all_active()
+            and len(self.current_set_info.get("raw") or [])
+            >= LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+        ):
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "포장 완료 대기",
+                    "PHS2가 확인되었습니다. 제품 교체는 F4, 랩핑 완료는 F3을 누르세요.",
+                    parent=self,
+                )
+            return
+
         self.data_manager.log_event(self.Events.SCAN_ATTEMPT, {"raw_input": raw_input, "scan_pos": len(self.current_set_info['raw']) + 1})
         scan_pos = len(self.current_set_info['raw']) + 1
         
@@ -5456,26 +6750,36 @@ class Label_Match(tk.Tk):
                     reason=str(exc),
                 )
                 return
-            new_label_data = self._parse_new_format_label(processed_input)
-            if transfer_label_data:
-                duplicate_keys = _label_match_unique_master_index_keys(raw_input)
-                duplicate_keys.update(_label_match_unique_master_index_keys(processed_input))
-                if duplicate_keys & self.global_scanned_set:
+            display_fields = _label_match_display_fields(processed_input)
+            looks_like_input_tag_label = bool(
+                str(display_fields.get("SRC") or "").strip().upper()
+                == "KMTECH_INPUT_TAG"
+                or str(display_fields.get("ITG") or "").strip()
+            )
+            if looks_like_input_tag_label:
+                try:
+                    new_label_data = _label_match_parse_compact_phs2(
+                        processed_input
+                    )
+                except ValueError as exc:
                     self._handle_input_error(
                         raw_input,
-                        title="[이적 컨테이너 중복 스캔]",
-                        reason="이미 포장 처리된 sealed transfer bundle입니다.",
+                        title="[PHS2 현품표 오류]",
+                        reason=str(exc),
                     )
                     return
-                client_code = str(transfer_label_data["CLC"])
-                self.current_set_info["phase"] = "TRANSFER"
-                transfer_label_data["_seal_qr_payload"] = (
-                    _label_match_decode_possible_base64_label(processed_input)
+            else:
+                new_label_data = self._parse_new_format_label(processed_input)
+            if transfer_label_data:
+                self._handle_input_error(
+                    raw_input,
+                    title="[PHS2 현품표 필요]",
+                    reason=(
+                        "이적 봉인 QR은 제품 교체 후 보조 증거이며 포장 시작 라벨이 아닙니다. "
+                        "원본 PHS2 현품표를 스캔하세요."
+                    ),
                 )
-                self.current_set_info["sealed_transfer"] = transfer_label_data
-                if self.__dict__.get("package_logistics_client") is not None:
-                    self.current_set_info["central_inherit_all"] = True
-                self._update_on_success_scan(raw_input, client_code)
+                return
             elif new_label_data:
                 reusable_input_master = (
                     _label_match_reusable_input_master_label(raw_input)
@@ -5495,10 +6799,7 @@ class Label_Match(tk.Tk):
                 phase = new_label_data.get('PHS')
                 self.current_set_info['phase'] = phase
                 self.current_set_info['item_name_override'] = supplier_code
-                if (
-                    self.__dict__.get("package_logistics_client") is not None
-                    and _label_match_has_central_source_identity(processed_input)
-                ):
+                if _label_match_has_central_source_identity(processed_input):
                     self.current_set_info["central_inherit_all"] = True
                 self._update_on_success_scan(raw_input, client_code)
             else:
@@ -5599,6 +6900,52 @@ class Label_Match(tk.Tk):
         return coordinator._attempt(rows[-1]) if coordinator is not None else None
 
     def _sealed_transfer_exchange_blocks_local_action(self, action):
+        current_state = self.__dict__.get("current_set_info", {}) or {}
+        if (
+            current_state.get("recovery_operator_review")
+            and str(action or "") != "프로그램 종료"
+        ):
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "복구 상태 관리자 확인 필요",
+                    f"{action} 작업을 진행할 수 없습니다. 중앙 PHS2/outbox 상태를 관리자와 확인하세요.",
+                    parent=self,
+                )
+            return True
+        if (
+            self.__dict__.get("_central_seal_lookup_in_progress", False)
+            or self.__dict__.get("_central_package_preflight_in_progress", False)
+        ):
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "중앙 이적 정보 확인 중",
+                    f"PHS2의 현재 이적·봉인 정보를 확인 중입니다.\n{action} 작업은 조회가 끝난 뒤 진행하세요.",
+                    parent=self,
+                )
+            return True
+        if str(action or "") != "프로그램 종료":
+            outbox = self.__dict__.get("package_outbox")
+            current = self.__dict__.get("current_set_info", {}) or {}
+            set_id = str(current.get("id") or "").strip()
+            row = outbox.get_by_set_id(set_id) if outbox is not None and set_id else None
+            package_status = str((row or {}).get("status") or "").upper()
+            if package_status in {
+                "PENDING",
+                "SENDING",
+                "ACKED",
+                "CONFLICT",
+            }:
+                if package_status == "ACKED":
+                    self._reconcile_active_package_submission()
+                    return True
+                self._set_active_package_submission_notice(row)
+                if not self.run_tests:
+                    messagebox.showwarning(
+                        "중앙 포장 확정 필요",
+                        f"{action} 작업은 CREATE_PACKAGE 중앙 상태가 확정된 뒤 진행할 수 있습니다.",
+                        parent=self,
+                    )
+                return True
         attempt = self._current_sealed_transfer_exchange_attempt()
         if attempt is None:
             return False
@@ -5670,7 +7017,8 @@ class Label_Match(tk.Tk):
                 intent_id,
                 {
                     "set_id": attempt.set_id,
-                    "new_master_qr": attempt.new_seal_qr_payload,
+                    "new_master_qr": str((after.get("raw") or [""])[0]),
+                    "new_seal_qr": attempt.new_seal_qr_payload,
                     "raw_scan_count": len(after.get("raw") or []),
                     "old_barcodes": list(attempt.old_barcodes),
                     "new_barcodes": list(attempt.new_barcodes),
@@ -5725,6 +7073,13 @@ class Label_Match(tk.Tk):
         popup.configure(bg=self.colors.get("background", "#ECEFF1"))
         frame = ttk.Frame(popup, padding=18)
         frame.pack(fill="both", expand=True)
+        master_fields = _label_match_parse_new_format_fields(
+            (self.current_set_info.get("raw") or [""])[0]
+        ) or {}
+        keeps_physical_phs2 = bool(
+            str(master_fields.get("PHS") or "").strip() == "2"
+            and str(master_fields.get("ITG") or "").strip()
+        )
         ttk.Label(
             frame,
             text="중앙 교체 완료 · 기존 QR은 즉시 무효",
@@ -5733,8 +7088,15 @@ class Label_Match(tk.Tk):
         ttk.Label(
             frame,
             text=(
-                "아래 새 봉인 QR을 현품표에 부착할 라벨로 출력한 뒤,\n"
-                "그 새 QR을 스캐너로 다시 읽어야 포장 작업을 계속할 수 있습니다."
+                (
+                    "기존 PHS2는 그대로 유지하며 별도 라벨을 만들지 않습니다.\n"
+                    "아래 새 전자 봉인 QR을 화면에서 스캐너로 다시 읽어 확인하세요."
+                )
+                if keeps_physical_phs2
+                else (
+                    "아래 새 전자 봉인 QR을 화면에서 스캐너로 다시 읽어야\n"
+                    "포장 작업을 계속할 수 있습니다."
+                )
             ),
             justify="left",
         ).pack(anchor="w", pady=(8, 12))
@@ -5811,7 +7173,14 @@ class Label_Match(tk.Tk):
             raw = list(self.current_set_info.get("raw") or [])
             if raw:
                 current_master = _label_match_decode_possible_base64_label(raw[0])
-            if current_master not in {
+            current_sealed = self.current_set_info.get("sealed_transfer")
+            current_seal_qr = (
+                str(current_sealed.get("_seal_qr_payload") or "").strip()
+                if isinstance(current_sealed, dict)
+                else ""
+            )
+            local_seal_proof = current_seal_qr or current_master
+            if local_seal_proof not in {
                 attempt.old_seal_qr_payload,
                 attempt.new_seal_qr_payload,
             }:
@@ -5827,6 +7196,113 @@ class Label_Match(tk.Tk):
             elif prompt_operator:
                 self._prompt_new_seal_verification(attempt)
         return changed
+
+    def _resolve_central_phs2_seal_for_exchange(self, current_set_info=None):
+        current = copy.deepcopy(
+            current_set_info
+            if current_set_info is not None
+            else (self.current_set_info or {})
+        )
+        raw = list(current.get("raw") or [])
+        parsed = list(current.get("parsed") or [])
+        if (
+            not current.get("central_inherit_all")
+            or len(raw) != LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+            or len(parsed) != LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+        ):
+            raise PackageLogisticsError(
+                "scan exactly one central PHS2 before replacing products"
+            )
+        if self.package_logistics_client is None:
+            raise PackageLogisticsError(
+                "central logistics client is required for product replacement"
+            )
+        draft = _label_match_package_draft(current, item_code=parsed[0])
+        projection = self.package_logistics_client.resolve_package_source_projection(
+            draft
+        )
+        sealed = _label_match_active_seal_from_package_source(projection)
+        snapshot = _label_match_package_source_snapshot(projection)
+        return sealed, snapshot
+
+    def _apply_resolved_central_phs2_seal(self, sealed, snapshot):
+        current = self.current_set_info or {}
+        current["sealed_transfer"] = dict(sealed or {})
+        current["package_source_snapshot"] = dict(snapshot or {})
+        current["resolved_transfer_bundle_id"] = str(
+            current["package_source_snapshot"].get("bundle_id") or ""
+        ).strip()
+        self.current_set_info = current
+        if not self._save_current_set_state():
+            raise PackageLogisticsError(
+                "PHS2 source was verified, but local recovery state could not be saved; "
+                "central packaging was not submitted"
+            )
+        return current["sealed_transfer"]
+
+    def _start_central_phs2_exchange(self):
+        if self.__dict__.get("_central_seal_lookup_in_progress", False):
+            return False
+        if self.run_tests:
+            sealed, snapshot = self._resolve_central_phs2_seal_for_exchange()
+            self._apply_resolved_central_phs2_seal(sealed, snapshot)
+            return self._prompt_sealed_transfer_exchange()
+
+        set_id = str(self.current_set_info.get("id") or "")
+        master = tuple(self.current_set_info.get("raw") or ())
+        captured = copy.deepcopy(self.current_set_info)
+        result_queue = queue.Queue(maxsize=1)
+        self._central_seal_lookup_in_progress = True
+        self.update_big_display("PHS2 이적·봉인 정보 확인 중", "primary")
+        self._render_operator_workbench()
+
+        def worker():
+            try:
+                result_queue.put(
+                    (
+                        True,
+                        self._resolve_central_phs2_seal_for_exchange(captured),
+                    )
+                )
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        def poll():
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+            self._central_seal_lookup_in_progress = False
+            if (
+                str(self.current_set_info.get("id") or "") != set_id
+                or tuple(self.current_set_info.get("raw") or ()) != master
+            ):
+                self._render_operator_workbench()
+                return
+            if not ok:
+                self.update_big_display("제품 교체 준비 차단", "red")
+                self._render_operator_workbench()
+                messagebox.showerror(
+                    "제품 교체 준비 실패",
+                    str(value),
+                    parent=self,
+                )
+                return
+            sealed, snapshot = value
+            self._apply_resolved_central_phs2_seal(sealed, snapshot)
+            self._render_operator_workbench()
+            self._prompt_sealed_transfer_exchange()
+
+        thread = threading.Thread(
+            target=worker,
+            name="label-match-phs2-seal-resolve",
+            daemon=True,
+        )
+        self._central_seal_lookup_thread = thread
+        thread.start()
+        self.after(100, poll)
+        return True
 
     def _prompt_sealed_transfer_exchange(self):
         raw = list(self.current_set_info.get("raw") or [])
@@ -6024,8 +7500,12 @@ class Label_Match(tk.Tk):
         return True
 
     def _handle_f4_action(self):
+        if self._sealed_transfer_exchange_blocks_local_action("제품 교체"):
+            return False
         if self.current_set_info.get("sealed_transfer"):
             return self._prompt_sealed_transfer_exchange()
+        if self._central_inherit_all_active():
+            return self._start_central_phs2_exchange()
         return self._prompt_exact_rescan()
 
     def _prompt_exact_rescan(self):
@@ -6185,14 +7665,12 @@ class Label_Match(tk.Tk):
         workflow_total = self._workflow_total_scan_count()
         final_label_position = self._workflow_final_label_position()
         next_text = self._next_action_text(num_scans)
-        self.update_big_display(next_text, "green" if num_scans < workflow_total else "primary")
+        self.update_big_display(
+            next_text,
+            "green" if num_scans < workflow_total else "primary",
+        )
         if not self.is_running_simulation:
-            sound_key = (
-                None
-                if self._central_inherit_all_active()
-                and num_scans == final_label_position
-                else self._sound_key_for_success_scan(num_scans)
-            )
+            sound_key = self._sound_key_for_success_scan(num_scans)
             if sound_key:
                 self._play_sound(sound_key)
         try:
@@ -6234,7 +7712,7 @@ class Label_Match(tk.Tk):
         )
         self._save_current_set_state()
         self._render_operator_workbench()
-        if num_scans == workflow_total:
+        if num_scans == workflow_total and not self._central_inherit_all_active():
             self._finalize_set(self.Results.PASS)
 
     @classmethod
@@ -6302,7 +7780,20 @@ class Label_Match(tk.Tk):
         outbox = self.__dict__.get("package_outbox")
         if outbox is None:
             raise PackageLogisticsError("durable package outbox is unavailable")
-        draft = _label_match_package_draft(current, item_code=item_code)
+        existing_row = outbox.get_by_set_id(
+            str(current.get("id") or "")
+        )
+        if existing_row is not None:
+            return _label_match_existing_package_row_metadata(
+                existing_row,
+                current,
+                item_code,
+            )
+        draft = _label_match_package_draft(
+            current,
+            item_code=item_code,
+            require_source_snapshot=central_inherit_all,
+        )
         row = outbox.enqueue(draft)
         return {
             "status": str(row.get("status") or "PENDING"),
@@ -6578,6 +8069,11 @@ class Label_Match(tk.Tk):
             'is_partial_submission': is_manual_complete, 'start_time': start_time,
             'end_time': datetime.now(),
             'production_date': production_date,
+            'packaging_completed_date': (
+                datetime.now().strftime('%Y-%m-%d')
+                if central_inherit_all and result == self.Results.PASS
+                else None
+            ),
             'set_id': set_id_for_log,
             'phase': phase
         }
@@ -6585,26 +8081,26 @@ class Label_Match(tk.Tk):
             "CENTRAL_INHERIT_ALL" if central_inherit_all else "LEGACY_QA_SAMPLES"
         )
         details['central_membership_inherited'] = central_inherit_all
-        if central_inherit_all and len(raw_scans_to_log) == 2:
+        if (
+            central_inherit_all
+            and len(raw_scans_to_log)
+            == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+        ):
             details['barcode_roles'] = [
                 _label_match_barcode_projection(
                     raw_scans_to_log[0],
                     parsed_scans_to_log[0] if parsed_scans_to_log else "",
                     LABEL_MATCH_MASTER_SCAN_POSITION,
                 ),
-                {
-                    **_label_match_barcode_projection(
-                        raw_scans_to_log[1],
-                        parsed_scans_to_log[1] if len(parsed_scans_to_log) > 1 else "",
-                        LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION,
-                    ),
-                    "barcode_role": "final_packaging_label",
-                    "product_barcode": None,
-                    "barcode_projection_status": "ROLE_NOT_PRODUCT",
-                    "barcode_exclusion_reason_code": "NON_PRODUCT_BARCODE_ROLE",
-                },
             ]
             details['product_sample_barcodes'] = []
+            details['package_completion_action'] = "F3_EXPLICIT_WRAP_CONFIRM"
+            details['package_external_label_source'] = "SYSTEM_DERIVED_FROM_PHS2"
+            details['package_external_label'] = (
+                _label_match_system_package_external_label(
+                    raw_scans_to_log[0], set_id_for_log
+                )
+            )
         if master_label_fields:
             details['master_label_fields'] = master_label_fields
         if master_label_identity_key:
@@ -6625,6 +8121,20 @@ class Label_Match(tk.Tk):
                 if result == self.Results.PASS
                 else None
             )
+            if (
+                central_inherit_all
+                and result == self.Results.PASS
+                and not self.__dict__.get("run_tests", False)
+                and not self.__dict__.get("is_running_simulation", False)
+                and (
+                    not package_logistics
+                    or str(package_logistics.get("status") or "").upper()
+                    != "ACKED"
+                )
+            ):
+                raise PackageLogisticsError(
+                    "central CREATE_PACKAGE ACK is required before local completion"
+                )
         except PackageLogisticsError as exc:
             if self.__dict__.get("operator_workbench_ready"):
                 self._play_sound("fail")
@@ -6644,6 +8154,18 @@ class Label_Match(tk.Tk):
             self._play_sound("pass")
         self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
         self._flush_data_manager_if_supported()
+        if central_inherit_all and package_logistics:
+            try:
+                outbox = self.__dict__.get("package_outbox")
+                if outbox is None:
+                    raise PackageLogisticsError(
+                        "durable package outbox disappeared before local completion"
+                    )
+                outbox.mark_local_completion_committed(
+                    package_logistics.get("idempotency_key")
+                )
+            except PackageLogisticsError as exc:
+                return self._publish_submission_block(exc)
         if package_logistics and package_logistics.get("idempotency_key"):
             self._start_package_outbox_drain()
         state = self.__dict__
@@ -6668,8 +8190,9 @@ class Label_Match(tk.Tk):
 
         self.__dict__.setdefault("history_row_details_map", {})[set_id_for_log] = details
         if result == self.Results.PASS:
-            if item_code != "N/A" and production_date:
-                self.scan_count[production_date][(item_code, phase)] += 1
+            summary_date = _label_match_summary_date(details)
+            if item_code != "N/A" and summary_date:
+                self.scan_count[summary_date][(item_code, phase)] += 1
             self.set_details_map[set_id_for_log] = details
             self.global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
 
@@ -6712,6 +8235,7 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
             else:
                 self.after(1800, self._show_idle_instruction_if_idle)
+        return True
 
     def _handle_input_error(self, raw, title="[입력 오류]", reason="알 수 없는 입력 오류가 발생했습니다."):
         set_id = self._ensure_current_set_id()
@@ -6904,7 +8428,7 @@ class Label_Match(tk.Tk):
                 else:
                     result = self._history_result_value(values)
                 if deleted_details and result == self.Results.PASS:
-                    production_date = deleted_details.get('production_date')
+                    production_date = _label_match_summary_date(deleted_details)
                     passed_code = deleted_details.get('item_code')
                     phase = deleted_details.get('phase') or '-'
                     if production_date and passed_code:
@@ -7072,6 +8596,10 @@ class Label_Match(tk.Tk):
             'phase': None, 'item_name_override': None, 'production_date': None,
             'sealed_transfer': None,
             'central_inherit_all': False,
+            'package_source_snapshot': None,
+            'resolved_transfer_bundle_id': '',
+            'package_submission_idempotency_key': '',
+            'package_submission_status': '',
             'sealed_transfer_exchange_intent_id': '',
             'exact_rescan_active': False,
             'exact_rescan_complete': False,
@@ -7282,8 +8810,10 @@ class Label_Match(tk.Tk):
         self._cancel_completed_tray_by_label(master_label)
     
     def _prompt_manual_complete(self):
-        """사용자에게 현재 세트를 수동으로 완료할지 확인하고 처리합니다."""
+        """Confirm a legacy partial set or commit one staged central PHS2."""
         if not self.initialized_successfully:
+            return
+        if self._sealed_transfer_exchange_blocks_local_action("포장 완료"):
             return
         if self._block_active_history_load_action("현재 세트를 완료", parent=self):
             return
@@ -7299,15 +8829,34 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning("수동 완료 불가", "현재 세트는 수동 완료할 수 없습니다.", parent=self)
             return
 
+        central_inherit_all = self._central_inherit_all_active()
         num_scans = len(self.current_set_info['raw'])
-        msg = (f"현재 {num_scans}개만 스캔되었습니다.\n"
-               f"이 세트를 '통과'로 즉시 완료하시겠습니까?\n\n"
-               f"(샘플 출고 등 소량 작업 시 사용)")
+        if central_inherit_all:
+            msg = (
+                "스캔한 PHS2의 현재 이적 멤버 전체를 기준으로\n"
+                "랩핑과 포장을 완료 처리하시겠습니까?\n\n"
+                "제품 교체가 필요하면 완료 전에 F4를 사용하세요."
+            )
+        else:
+            msg = (
+                f"현재 {num_scans}개만 스캔되었습니다.\n"
+                f"이 세트를 '통과'로 즉시 완료하시겠습니까?\n\n"
+                f"(샘플 출고 등 소량 작업 시 사용)"
+            )
 
-        should_complete = self.run_tests or messagebox.askyesno("수동 완료 확인", msg, icon='question')
+        title = "포장 완료 확인" if central_inherit_all else "수동 완료 확인"
+        should_complete = self.run_tests or messagebox.askyesno(
+            title, msg, icon='question'
+        )
 
         if should_complete:
-            self._finalize_set(self.Results.PASS, is_manual_complete=True)
+            if central_inherit_all and not self.run_tests:
+                self._begin_central_package_submission()
+            else:
+                self._finalize_set(
+                    self.Results.PASS,
+                    is_manual_complete=not central_inherit_all,
+                )
 
     # [수정됨] 버그가 수정되고 로직이 개선된 최종 버전
     def _cancel_completed_tray_by_label(self, label_to_cancel):
@@ -7399,7 +8948,7 @@ class Label_Match(tk.Tk):
             if cancellation and cancellation.get("idempotency_key"):
                 self._start_package_outbox_drain()
 
-            production_date = target_details.get('production_date')
+            production_date = _label_match_summary_date(target_details)
             item_code = target_details.get('item_code')
             phase = target_details.get('phase') or '-'
             if production_date and item_code:
@@ -8188,7 +9737,9 @@ class Label_Match(tk.Tk):
         return None
 
     def _idle_instruction_text(self):
-        return f"1/{self.TOTAL_SCAN_COUNT} 현품표 스캔"
+        if self._standard_phs2_workflow_expected():
+            return "PHS2 현품표 1장 스캔"
+        return f"1/{self.TOTAL_SCAN_COUNT} 현품표 스캔 (레거시)"
 
     def _history_values_for_display(self, values):
         values = list(values or [])
@@ -8903,6 +10454,11 @@ class Label_Match(tk.Tk):
         source.setdefault("raw", [])
         source.setdefault("parsed", [])
         source.setdefault("exact_rescan_barcodes", [])
+        # Presentation-only default: before the first scan, an authoritative
+        # workstation must already show the one-slot PHS2 workflow.  Do not
+        # mutate current_set_info; legacy state remains independently readable.
+        if not source["raw"] and self._standard_phs2_workflow_expected(source):
+            source["central_inherit_all"] = True
         return source
 
     @staticmethod
@@ -9273,7 +10829,8 @@ class Label_Match(tk.Tk):
                 except (TclError, AttributeError):
                     pass
 
-        membership = "일반 QA 5단계"
+        standard_phs2 = self._standard_phs2_workflow_expected(source)
+        membership = "PHS2 1장 · 중앙 멤버십 상속" if standard_phs2 else "레거시 QA 5단계"
         if view.exact_rescan.status == "sealed":
             membership = "서버 멤버십 상속"
         elif view.exact_rescan.status == "active":
@@ -9354,6 +10911,12 @@ class Label_Match(tk.Tk):
                     progress.configure(value=view.qa_completed)
                 except (TclError, AttributeError):
                     pass
+        hint_label = self.__dict__.get("operator_left_hint_label")
+        if hint_label is not None:
+            try:
+                hint_label.configure(text=self._operator_workflow_hint_text(source))
+            except (TclError, AttributeError):
+                pass
         if "step_labels" in self.__dict__:
             try:
                 self._update_step_rail(
@@ -9508,6 +11071,8 @@ class Label_Match(tk.Tk):
         # normal scan.  Repeating that raw value in the fixed notice row both
         # duplicates information and can force a short-screen height overflow.
         display_notice = view.notice or self.__dict__.get(
+            "_package_create_review_notice"
+        ) or self.__dict__.get(
             "_package_cancellation_review_notice"
         )
         self._set_workflow_notice_ui(display_notice, view.next_action)
@@ -9540,6 +11105,12 @@ class Label_Match(tk.Tk):
                 view.scan_input_enabled
                 and self.__dict__.get("initialized_successfully", False)
                 and self._current_sealed_transfer_exchange_attempt() is None
+                and not self.__dict__.get(
+                    "_central_seal_lookup_in_progress", False
+                )
+                and not self.__dict__.get(
+                    "_central_package_preflight_in_progress", False
+                )
             )
             try:
                 entry.configure(state="normal" if entry_enabled else "disabled")
@@ -9554,7 +11125,13 @@ class Label_Match(tk.Tk):
             button = self.__dict__.get(name)
             if button is not None:
                 try:
-                    if (
+                    if self.__dict__.get(
+                        "_central_seal_lookup_in_progress", False
+                    ) or self.__dict__.get(
+                        "_central_package_preflight_in_progress", False
+                    ):
+                        enabled = False
+                    elif (
                         self._current_sealed_transfer_exchange_attempt() is not None
                         and name != "exact_rescan_button"
                     ):
@@ -9569,7 +11146,22 @@ class Label_Match(tk.Tk):
                     text=(
                         "제품 교체 (F4)"
                         if self.current_set_info.get("sealed_transfer")
+                        or self._central_inherit_all_active()
+                        or self._standard_phs2_workflow_expected(source)
                         else self.EXACT_RESCAN_BUTTON_TEXT
+                    )
+                )
+            except (TclError, AttributeError):
+                pass
+        f3_button = self.__dict__.get("manual_complete_button")
+        if f3_button is not None:
+            try:
+                f3_button.configure(
+                    text=(
+                        "포장 완료 (F3)"
+                        if self._central_inherit_all_active()
+                        or self._standard_phs2_workflow_expected(source)
+                        else self.MANUAL_COMPLETE_BUTTON_TEXT
                     )
                 )
             except (TclError, AttributeError):
@@ -9771,7 +11363,10 @@ class Label_Match(tk.Tk):
         self._workflow_notice = None
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
-        self._finalize_set(self.Results.PASS, "")
+        if self._central_inherit_all_active() and not self.run_tests:
+            self._begin_central_package_submission()
+        else:
+            self._finalize_set(self.Results.PASS, "")
         return True
 
     def _refresh_session_tree(self):
@@ -9966,7 +11561,11 @@ class Label_Match(tk.Tk):
         self.operator_membership_heading_label.grid(row=4, column=0, sticky="w")
         self.operator_membership_label = ttk.Label(
             self.operator_left_pane,
-            text="일반 QA 5단계",
+            text=(
+                "PHS2 1장 · 중앙 멤버십 상속"
+                if self._standard_phs2_workflow_expected()
+                else "레거시 QA 5단계"
+            ),
             style="Header.TLabel",
             wraplength=max(150, panes.left_width - 40),
         )
@@ -9981,7 +11580,7 @@ class Label_Match(tk.Tk):
         self.operator_badges_label.grid_remove()
         self.operator_left_hint_label = ttk.Label(
             self.operator_left_pane,
-            text="F3은 소량 예외, F4는 QA 5단계와 별도의 전체 재스캔입니다.",
+            text=self._operator_workflow_hint_text(),
             style="Status.TLabel",
             wraplength=max(150, panes.left_width - 40),
             justify=tk.LEFT,
@@ -10020,6 +11619,7 @@ class Label_Match(tk.Tk):
         self.step_rail_frame = ttk.Frame(self.progress_frame, style="Borderless.TFrame")
         self.step_rail_frame.grid(row=0, column=0, sticky="ew")
         self.step_labels = []
+        initial_standard_phs2 = self._standard_phs2_workflow_expected()
         for index, step_name in enumerate(self.STEP_NAMES):
             self.step_rail_frame.grid_columnconfigure(index, weight=1, uniform="scan_steps")
             step_label = tk.Label(
@@ -10033,12 +11633,21 @@ class Label_Match(tk.Tk):
                 anchor="center",
             )
             step_label.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
+            if initial_standard_phs2:
+                if index == 0:
+                    step_label.configure(text="1. PHS2 현품표")
+                else:
+                    step_label.grid_remove()
             self.step_labels.append(step_label)
         self.progress_bar = ttk.Progressbar(
             self.progress_frame,
             orient="horizontal",
             mode="determinate",
-            maximum=self.TOTAL_SCAN_COUNT,
+            maximum=(
+                LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+                if initial_standard_phs2
+                else self.TOTAL_SCAN_COUNT
+            ),
             style="green.Horizontal.TProgressbar",
         )
         self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -10543,7 +12152,11 @@ class Label_Match(tk.Tk):
         self.bottom_frame = self.operator_action_frame
         self.manual_complete_button = ttk.Button(
             self.operator_action_frame,
-            text=self.MANUAL_COMPLETE_BUTTON_TEXT,
+            text=(
+                "포장 완료 (F3)"
+                if self._standard_phs2_workflow_expected()
+                else self.MANUAL_COMPLETE_BUTTON_TEXT
+            ),
             command=self._prompt_manual_complete,
             style=self.MANUAL_COMPLETE_BUTTON_STYLE,
             state="disabled",
@@ -10551,7 +12164,11 @@ class Label_Match(tk.Tk):
         self.manual_complete_button.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
         self.exact_rescan_button = ttk.Button(
             self.operator_action_frame,
-            text=self.EXACT_RESCAN_BUTTON_TEXT,
+            text=(
+                "제품 교체 (F4)"
+                if self._standard_phs2_workflow_expected()
+                else self.EXACT_RESCAN_BUTTON_TEXT
+            ),
             command=self._handle_f4_action,
             style=self.MANUAL_COMPLETE_BUTTON_STYLE,
             state="disabled",
@@ -10807,13 +12424,27 @@ class Label_Match(tk.Tk):
         cancel_tray_button.grid(row=0, column=1, sticky="w", padx=(20, 0))
         self.bind("<F2>", lambda e: self._prompt_and_cancel_completed_tray())
         
-        self.manual_complete_button = ttk.Button(bottom_frame, text=self.MANUAL_COMPLETE_BUTTON_TEXT, command=self._prompt_manual_complete, style=self.MANUAL_COMPLETE_BUTTON_STYLE, state="disabled")
+        self.manual_complete_button = ttk.Button(
+            bottom_frame,
+            text=(
+                "포장 완료 (F3)"
+                if self._standard_phs2_workflow_expected()
+                else self.MANUAL_COMPLETE_BUTTON_TEXT
+            ),
+            command=self._prompt_manual_complete,
+            style=self.MANUAL_COMPLETE_BUTTON_STYLE,
+            state="disabled",
+        )
         self.manual_complete_button.grid(row=0, column=2, sticky="w", padx=(20, 0))
         self.bind("<F3>", lambda e: self._prompt_manual_complete())
 
         self.exact_rescan_button = ttk.Button(
             bottom_frame,
-            text=self.EXACT_RESCAN_BUTTON_TEXT,
+            text=(
+                "제품 교체 (F4)"
+                if self._standard_phs2_workflow_expected()
+                else self.EXACT_RESCAN_BUTTON_TEXT
+            ),
             command=self._handle_f4_action,
             style=self.MANUAL_COMPLETE_BUTTON_STYLE,
             state="disabled",
@@ -11140,6 +12771,8 @@ class Label_Match(tk.Tk):
             num_scans = len(current.get('parsed', []))
         if num_scans <= 0:
             return self._idle_instruction_text()
+        if self._central_inherit_all_active():
+            return "랩핑 후 F3 포장 완료"
         workflow_total = self._workflow_total_scan_count()
         final_label_position = self._workflow_final_label_position()
         if num_scans < final_label_position - 1:
@@ -11150,6 +12783,8 @@ class Label_Match(tk.Tk):
 
     def _manual_complete_hint(self):
         reason = _label_match_manual_complete_block_reason(getattr(self, "current_set_info", {}))
+        if reason is None and self._central_inherit_all_active():
+            return "랩핑 후 포장 완료 가능"
         return self.MANUAL_COMPLETE_HINTS.get(reason, "F3 소량 완료 가능")
 
     def _update_step_rail(
@@ -11168,9 +12803,12 @@ class Label_Match(tk.Tk):
             num_scans = 0
             error = False
         if central_inherit_all is None:
-            central_inherit_all = self._central_inherit_all_active()
+            central_inherit_all = bool(
+                self._central_inherit_all_active()
+                or self._standard_phs2_workflow_expected(current)
+            )
         step_names = (
-            ("현품표/이적 묶음", "포장 라벨")
+            ("PHS2 현품표",)
             if central_inherit_all
             else self.STEP_NAMES
         )
@@ -11273,7 +12911,15 @@ class Label_Match(tk.Tk):
             state = "disabled"
         else:
             state = "normal" if _label_match_manual_complete_allowed(self.current_set_info) else "disabled"
-        self.manual_complete_button.config(state=state)
+        self.manual_complete_button.config(
+            state=state,
+            text=(
+                "포장 완료 (F3)"
+                if self._central_inherit_all_active()
+                or self._standard_phs2_workflow_expected()
+                else self.MANUAL_COMPLETE_BUTTON_TEXT
+            ),
+        )
 
     def _update_exact_rescan_button_state(self):
         if not self.initialized_successfully or "exact_rescan_button" not in self.__dict__:
@@ -11289,6 +12935,10 @@ class Label_Match(tk.Tk):
             getattr(self, "history_view_updates_active_state", True)
             and (
                 (sealed and 1 <= len(raw) < self.TOTAL_SCAN_COUNT)
+                or (
+                    self._central_inherit_all_active()
+                    and len(raw) == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+                )
                 or (not sealed and len(raw) == 1)
             )
             and not self.current_set_info.get("exact_rescan_active")
@@ -11296,7 +12946,13 @@ class Label_Match(tk.Tk):
         )
         self.exact_rescan_button.config(
             state="normal" if enabled else "disabled",
-            text=("제품 교체 (F4)" if sealed else self.EXACT_RESCAN_BUTTON_TEXT),
+            text=(
+                "제품 교체 (F4)"
+                if sealed
+                or self._central_inherit_all_active()
+                or self._standard_phs2_workflow_expected()
+                else self.EXACT_RESCAN_BUTTON_TEXT
+            ),
         )
 
     def _update_history_tree_in_progress(self):

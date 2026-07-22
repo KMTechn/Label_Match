@@ -436,7 +436,7 @@ def test_normal_action_states_distinguish_current_and_completed_cancellation():
     assert active.cancel_completed_enabled is True
 
 
-def test_central_inherit_all_presents_two_scan_workflow_without_f3_samples():
+def test_central_inherit_all_presents_one_phs2_stage_with_explicit_actions():
     view = present_workflow(
         WorkflowSnapshot(
             qa_scans=("TRANSFER-QR",),
@@ -445,11 +445,13 @@ def test_central_inherit_all_presents_two_scan_workflow_without_f3_samples():
         )
     )
 
-    assert view.qa_total == 2
-    assert view.qa_progress_text == "1/2"
-    assert [slot.label for slot in view.slots] == ["현품표/이적 묶음", "포장 라벨"]
-    assert view.next_action == "2/2 포장 라벨 스캔"
-    assert view.f3_enabled is False
+    assert view.qa_total == 1
+    assert view.qa_progress_text == "1/1"
+    assert [slot.label for slot in view.slots] == ["PHS2 현품표"]
+    assert view.next_action == "랩핑 후 F3 포장 완료"
+    assert view.current_stage == "package_ready"
+    assert view.scan_input_enabled is False
+    assert view.f3_enabled is True
     assert view.f4_enabled is True
 
 

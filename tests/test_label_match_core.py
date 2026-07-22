@@ -198,18 +198,15 @@ def test_success_scan_sound_mapping_keeps_product_one_as_scan_one():
     assert sound_key("not-a-position") is None
 
 
-def test_central_inherit_all_second_scan_finalizes_without_product_samples():
+def test_central_inherit_all_phs2_scan_stages_without_auto_finalize():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
     app.Results = module.Label_Match.Results
     app.package_logistics_client = object()
     app.current_set_info = {
-        "id": "central-two-scan",
-        "raw": [
-            "TRF=1|BND=TRANSFER-1|AUTH_SCOPE=SCOPE-1|CLC=AAA2270730100|QT=1|"
-            f"HSH={'a' * 64}|EPOCH=1|PLANE=AUTHORITATIVE|PE=1"
-        ],
-        "parsed": ["AAA2270730100"],
+        "id": None,
+        "raw": [],
+        "parsed": [],
         "central_inherit_all": True,
     }
     app.history_view_updates_active_state = True
@@ -226,17 +223,226 @@ def test_central_inherit_all_second_scan_finalizes_without_product_samples():
 
     module.Label_Match._update_on_success_scan(
         app,
-        "FINAL-AAA2270730100-LABEL-20260722\x1d6D20260722",
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=AAA2270730100|"
+        "LBL=LBL-1|HSH=0123456789abcdef",
         "AAA2270730100",
     )
 
-    assert len(app.current_set_info["raw"]) == 2
-    assert finalized == [((module.Label_Match.Results.PASS,), {})]
+    assert len(app.current_set_info["raw"]) == 1
+    assert finalized == []
     event_type, details = app.data_manager.events[-1]
     assert event_type == module.Label_Match.Events.SCAN_OK
-    assert details["barcode_role"] == "final_packaging_label"
+    assert details["barcode_role"] == "material_master_label"
     assert details["product_barcode"] is None
     assert details["packaging_scan_mode"] == "CENTRAL_INHERIT_ALL"
+
+
+def test_compact_phs2_stays_one_scan_fail_closed_when_central_client_is_missing():
+    module = load_label_match_module()
+    master = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-NO-CLIENT|CLC=AAA2270730100|"
+        "LBL=LBL-NO-CLIENT|HSH=0123456789abcdef"
+    )
+    app = object.__new__(module.Label_Match)
+    app.package_logistics_client = None
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": None,
+        "item_name_override": None,
+        "production_date": None,
+        "central_inherit_all": False,
+    }
+    app.entry = _FakeEntry(master)
+    app.status_label = _FakeLabel()
+    app.data_manager = _FakeLoggingDataManager()
+    app.global_scanned_set = set()
+    app.history_view_updates_active_state = True
+    app.history_active_load_pending = False
+    app.run_tests = True
+    app.is_blinking = False
+    app.is_running_simulation = False
+    app.initialized_successfully = True
+    app.items_data = {}
+    app.progress_bar = _FakeProgressBar()
+    app.history_tree = _FakeHistoryTree()
+    app.update_big_display = lambda *args, **kwargs: None
+    app._play_sound = lambda *args, **kwargs: None
+    app._update_status_label = lambda: None
+    app._update_history_tree_in_progress = lambda: None
+    app._save_current_set_state = lambda: None
+    app._render_operator_workbench = lambda: None
+
+    module.Label_Match.process_input(app)
+
+    assert app.current_set_info["raw"] == [master]
+    assert app.current_set_info["central_inherit_all"] is True
+    assert app._workflow_total_scan_count() == 1
+
+
+def test_transfer_seal_qr_is_rejected_as_packaging_start_label():
+    module = load_label_match_module()
+    seal_qr = (
+        "TRF=1|BND=TRANSFER-1|AUTH_SCOPE=SCOPE-1|CLC=AAA2270730100|QT=1|"
+        f"HSH={'a' * 64}|EPOCH=1|PLANE=AUTHORITATIVE|PE=1"
+    )
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "central_inherit_all": False,
+    }
+    app.entry = _FakeEntry(seal_qr)
+    app.status_label = _FakeLabel()
+    app.data_manager = _FakeLoggingDataManager()
+    app.global_scanned_set = set()
+    app.history_view_updates_active_state = True
+    app.history_active_load_pending = False
+    app.run_tests = True
+    app.is_blinking = False
+    app.is_running_simulation = False
+    app.initialized_successfully = True
+    app._update_manual_complete_button_state = lambda: None
+    app.update_big_display = lambda *args, **kwargs: None
+
+    module.Label_Match.process_input(app)
+
+    assert app.current_set_info["raw"] == []
+    assert [event for event, _details in app.data_manager.events][-1] == module.Label_Match.Events.ERROR_INPUT
+
+
+def test_restore_migrates_obsolete_central_final_label_to_one_phs2_scan():
+    module = load_label_match_module()
+    phs2 = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-RESTORE|CLC=AAA2270730100|"
+        "LBL=LBL-RESTORE|HSH=0123456789abcdef"
+    )
+    app = object.__new__(module.Label_Match)
+
+    migrated = module.Label_Match._migrate_restored_central_package_state(
+        app,
+        {
+            "id": "restore-set",
+            "raw": [phs2, "OBSOLETE-FINAL-LABEL"],
+            "parsed": ["AAA2270730100", "AAA2270730100"],
+            "central_inherit_all": True,
+            "production_date": "2026-07-21",
+        },
+    )
+
+    assert migrated["raw"] == [phs2]
+    assert migrated["parsed"] == ["AAA2270730100"]
+    assert migrated["production_date"] is None
+    assert migrated["legacy_final_label_removed_on_restore"] == "OBSOLETE-FINAL-LABEL"
+    assert migrated["restored_contract_migration"] == "CENTRAL_2_SCAN_TO_PHS2_1_SCAN"
+
+
+def test_malformed_overfull_central_restore_is_operator_locked():
+    module = load_label_match_module()
+    phs2 = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-REVIEW|CLC=AAA2270730100|"
+        "LBL=LBL-REVIEW|HSH=0123456789abcdef"
+    )
+    app = object.__new__(module.Label_Match)
+    migrated = module.Label_Match._migrate_restored_central_package_state(
+        app,
+        {
+            "raw": [phs2, "EXTRA-1", "EXTRA-2"],
+            "parsed": ["AAA2270730100"] * 3,
+            "central_inherit_all": True,
+        },
+    )
+
+    assert migrated["raw"] == [phs2]
+    assert migrated["recovery_operator_review"] is True
+    assert module._label_match_manual_complete_block_reason(migrated) == "package_recovery_operator_review"
+
+
+def test_restored_phs2_cannot_fall_back_to_legacy_partial_via_exact_rescan_flags():
+    module = load_label_match_module()
+    phs2 = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-EXACT-STALE|CLC=AAA2270730100|"
+        "LBL=LBL-EXACT-STALE|HSH=0123456789abcdef"
+    )
+    stale = {
+        "id": "restore-exact-stale",
+        "raw": [phs2],
+        "parsed": ["AAA2270730100"],
+        "central_inherit_all": True,
+        "exact_rescan_active": False,
+        "exact_rescan_complete": True,
+        "exact_rescan_target_count": 2,
+        "exact_rescan_barcodes": ["OLD-A", "OLD-B"],
+    }
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = stale
+    app.package_logistics_client = object()
+
+    assert app._central_inherit_all_active() is True
+    assert app._workflow_total_scan_count() == 1
+    assert module._label_match_manual_complete_block_reason(stale) == (
+        "central_package_legacy_exact_rescan_state_invalid"
+    )
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.run_tests = True
+    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._block_active_history_load_action = lambda *_args, **_kwargs: False
+    blocked_updates = []
+    app._update_manual_complete_button_state = lambda: blocked_updates.append(True)
+    app._finalize_set = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("stale central PHS2 must not use legacy local finalize")
+    )
+    app._prompt_manual_complete()
+    assert blocked_updates == [True]
+
+    migrated = app._migrate_restored_central_package_state(stale)
+    assert migrated["central_inherit_all"] is True
+    assert migrated["exact_rescan_complete"] is False
+    assert migrated["exact_rescan_barcodes"] == []
+    assert migrated["discarded_legacy_exact_rescan_state"] == {
+        "active": False,
+        "complete": True,
+        "target_count": 2,
+        "scanned_count": 2,
+    }
+
+
+def test_standard_operator_copy_describes_one_phs2_and_atomic_replacement():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"raw": [], "parsed": []}
+    app._logistics_authoritative_required = True
+    app.package_logistics_client = None
+
+    assert app._idle_instruction_text() == "PHS2 현품표 1장 스캔"
+    assert app._standard_phs2_workflow_expected() is True
+    hint = app._operator_workflow_hint_text()
+    assert "PHS2 1회 스캔" in hint
+    assert "F4로 1~2개 원자 교체" in hint
+    assert "F3 포장 완료" in hint
+    assert "전체 재스캔" not in hint
+    presentation_source = app._workflow_view_source()
+    assert presentation_source["central_inherit_all"] is True
+    assert "central_inherit_all" not in app.current_set_info
+
+
+def test_legacy_operator_copy_is_explicitly_isolated_from_standard_phs2():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"raw": [], "parsed": []}
+    app._logistics_authoritative_required = False
+    app.package_logistics_client = None
+
+    assert app._idle_instruction_text() == "1/5 현품표 스캔 (레거시)"
+    assert app._standard_phs2_workflow_expected() is False
+    assert app._operator_workflow_hint_text().startswith("레거시 전용:")
 
 
 def test_default_sound_config_starts_counting_on_master_scan():
@@ -1053,6 +1259,32 @@ def test_prompt_manual_complete_calls_finalize_for_clean_partial_set():
     assert calls == [((module.Label_Match.Results.PASS,), {"is_manual_complete": True})]
 
 
+def test_prompt_manual_complete_treats_one_phs2_as_full_package_not_partial():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.initialized_successfully = True
+    app.history_active_load_pending = False
+    app.history_view_updates_active_state = True
+    app.run_tests = True
+    app.current_set_info = {
+        "raw": [
+            "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-F3|CLC=AAA2270730100|"
+            "LBL=LBL-F3|HSH=0123456789abcdef"
+        ],
+        "parsed": ["AAA2270730100"],
+        "central_inherit_all": True,
+        "error_count": 0,
+        "has_error_or_reset": False,
+    }
+    calls = []
+    app._finalize_set = lambda *args, **kwargs: calls.append((args, kwargs))
+
+    module.Label_Match._prompt_manual_complete(app)
+
+    assert calls == [((module.Label_Match.Results.PASS,), {"is_manual_complete": False})]
+
+
 def test_prompt_manual_complete_rejects_unscanned_or_full_sets_without_finalizing():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
@@ -1612,7 +1844,9 @@ def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_
 
     monkeypatch.setattr(module.os, "replace", failing_replace)
 
-    module.DataManager.save_current_state(manager, {"current_set_info": {"raw": ["NEW"]}})
+    assert module.DataManager.save_current_state(
+        manager, {"current_set_info": {"raw": ["NEW"]}}
+    ) is False
 
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert saved["worker_name"] == "old-worker"
@@ -2016,7 +2250,7 @@ def test_new_format_unique_master_duplicate_blocks_base64_and_decoded_equivalent
     ]
 
 
-def test_phs2_input_tag_reuse_does_not_block_first_scan():
+def test_completed_phs2_remains_duplicate_blocked_until_central_cancel():
     module = load_label_match_module()
     reusable_master = (
         "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-20260708-104012-72AB3B|"
@@ -2030,10 +2264,13 @@ def test_phs2_input_tag_reuse_does_not_block_first_scan():
         item_name_override="AAA2270730100",
         phase="2",
     )
-    assert module._label_match_duplicate_index_barcodes(completed_details) == {
+    duplicate_keys = module._label_match_duplicate_index_barcodes(completed_details)
+    assert duplicate_keys == {
         "PRODUCT-OLD-1",
         "PRODUCT-OLD-2",
         "FINAL-LABEL\x1D6D20260708",
+        reusable_master,
+        module._label_match_new_format_identity_key(reusable_master),
     }
 
     app = object.__new__(module.Label_Match)
@@ -2069,12 +2306,30 @@ def test_phs2_input_tag_reuse_does_not_block_first_scan():
 
     module.Label_Match.process_input(app)
 
-    assert app.current_set_info["raw"] == [reusable_master]
-    assert app.current_set_info["phase"] == "2"
+    assert app.current_set_info["raw"] == []
+    assert app.current_set_info["phase"] is None
     assert [event for event, _details in app.data_manager.events] == [
         module.Label_Match.Events.SCAN_ATTEMPT,
-        module.Label_Match.Events.SCAN_OK,
+        module.Label_Match.Events.ERROR_INPUT,
     ]
+
+
+def test_same_item_phs2_labels_keep_distinct_cancel_and_duplicate_identity():
+    module = load_label_match_module()
+    first = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A|CLC=AAA2270730100|"
+        "LBL=LBL-A|HSH=0123456789abcdef"
+    )
+    second = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-B|CLC=AAA2270730100|"
+        "LBL=LBL-B|HSH=fedcba9876543210"
+    )
+
+    assert module._label_match_new_format_identity_key(first) != module._label_match_new_format_identity_key(second)
+    assert module._label_match_unique_master_labels_equivalent(first, second) is False
+    assert module._label_match_unique_master_index_keys(first).isdisjoint(
+        module._label_match_unique_master_index_keys(second)
+    )
 
 
 def test_legacy_base64_new_format_without_metadata_is_indexed_as_unique_master():
@@ -3252,6 +3507,117 @@ def test_package_worker_never_calls_tk_after_from_background_thread():
         (main_thread_id, 100),
         (main_thread_id, 30000),
     ]
+
+
+def test_active_package_submission_never_completes_locally_before_ack():
+    module = load_label_match_module()
+
+    class Outbox:
+        status = "PENDING"
+
+        def get_by_set_id(self, _set_id):
+            return {
+                "status": self.status,
+                "idempotency_key": "package-key",
+                "local_completion_committed": 0,
+            }
+
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.current_set_info = {
+        "id": "phs2-ack-gate",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "central_inherit_all": True,
+    }
+    app.package_outbox = Outbox()
+    app.data_manager = object()
+    app._save_current_set_state = lambda: None
+    notices = []
+    app._set_active_package_submission_notice = lambda row: notices.append(row) or False
+    finalized = []
+    app._finalize_set = lambda *args, **kwargs: finalized.append((args, kwargs)) or True
+
+    assert module.Label_Match._reconcile_active_package_submission(app) is False
+    assert finalized == []
+    assert notices[-1]["status"] == "PENDING"
+
+    app.package_outbox.status = "ACKED"
+    assert module.Label_Match._reconcile_active_package_submission(app) is True
+    assert finalized == [((module.Label_Match.Results.PASS,), {})]
+
+
+def test_central_package_preflight_state_must_be_durable_before_enqueue():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "id": "phs2-save-gate",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "central_inherit_all": True,
+    }
+    app._save_current_set_state = lambda: False
+
+    with pytest.raises(module.PackageLogisticsError, match="was not submitted"):
+        module.Label_Match._apply_resolved_central_phs2_seal(
+            app,
+            {"SID": "seal-1"},
+            {"bundle_id": "TRANSFER-1"},
+        )
+
+    assert app.current_set_info["resolved_transfer_bundle_id"] == "TRANSFER-1"
+
+
+def test_acked_package_with_flushed_local_event_recovers_without_duplicate_log(tmp_path):
+    module = load_label_match_module()
+    set_id = "phs2-crash-window"
+    log_path = tmp_path / "포장실작업이벤트로그_PC1_20260722.csv"
+    with log_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["timestamp", "worker_name", "event", "details"])
+        writer.writerow([
+            "2026-07-22T10:00:00",
+            "worker",
+            module.Label_Match.Events.TRAY_COMPLETE,
+            json.dumps({"set_id": set_id}, ensure_ascii=False),
+        ])
+
+    class Manager:
+        save_directory = str(tmp_path)
+        process_name = "포장실"
+        unique_id = "PC1"
+
+    class Outbox:
+        marked = []
+
+        @staticmethod
+        def get_by_set_id(_set_id):
+            return {
+                "status": "ACKED",
+                "idempotency_key": "package-key",
+                "local_completion_committed": 0,
+            }
+
+        def mark_local_completion_committed(self, key):
+            self.marked.append(key)
+
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.current_set_info = {
+        "id": set_id,
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "central_inherit_all": True,
+    }
+    app.package_outbox = Outbox()
+    app.data_manager = Manager()
+    app._finish_recovered_package_completion = lambda: "recovered"
+    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("must not append a second TRAY_COMPLETE")
+    )
+
+    assert module.Label_Match._reconcile_active_package_submission(app) == "recovered"
+    assert app.package_outbox.marked == ["package-key"]
 
 
 def test_cancellation_review_notice_is_visible_but_does_not_block_scanning():

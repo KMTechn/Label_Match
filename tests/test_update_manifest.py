@@ -1,6 +1,8 @@
 ﻿import hashlib
 import importlib.util
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -55,11 +57,19 @@ def valid_manifest():
             "format": "zip",
             "top_level": "Label_Match",
             "entrypoint": "Label_Match.exe",
-            "required_files": ["Label_Match/Label_Match.exe"],
+            "required_files": [
+                "Label_Match/Label_Match.exe",
+                "Label_Match/config/app_settings.json",
+                "Label_Match/_internal/config/app_settings.json",
+            ],
         },
         "install": {
             "strategy": "robocopy_backup_then_mirror",
-            "preserve_paths": ["config/app_settings.json"],
+            "preserve_paths": [
+                "config/app_settings.json",
+                "_internal/config/app_settings.json",
+            ],
+            "restart_executable": "Label_Match.exe",
         },
         "rollout": {
             "percentage": 100,
@@ -130,7 +140,19 @@ def test_private_manifest_provider_returns_update_candidate(monkeypatch):
     assert candidate["sha256"] == "b" * 64
     assert candidate["archive"] == {
         "top_level": "Label_Match",
-        "required_files": ["Label_Match/Label_Match.exe"],
+        "required_files": [
+            "Label_Match/Label_Match.exe",
+            "Label_Match/config/app_settings.json",
+            "Label_Match/_internal/config/app_settings.json",
+        ],
+    }
+    assert candidate["install"] == {
+        "strategy": "robocopy_backup_then_mirror",
+        "preserve_paths": [
+            "config/app_settings.json",
+            "_internal/config/app_settings.json",
+        ],
+        "restart_executable": "Label_Match.exe",
     }
 
 
@@ -168,6 +190,13 @@ def test_private_manifest_rollout_blocks_and_allowlists_current_pc(monkeypatch):
         lambda manifest: manifest["artifact"].update({"url": "https://raw.githubusercontent.com/KMTechn/update-feed/main/Label_Match-v2.0.24.zip"}),
         lambda manifest: manifest.pop("archive"),
         lambda manifest: manifest.pop("install"),
+        lambda manifest: manifest["install"].update({"strategy": "replace_exe"}),
+        lambda manifest: manifest["install"].update(
+            {"preserve_paths": ["config/app_settings.json"]}
+        ),
+        lambda manifest: manifest["install"].update(
+            {"restart_executable": "other.exe"}
+        ),
         lambda manifest: manifest.pop("rollout"),
         lambda manifest: manifest["rollout"].pop("allow_pc_ids"),
         lambda manifest: manifest["rollout"].update({"percentage": True}),
@@ -356,6 +385,8 @@ def test_github_provider_uses_release_asset_with_checksum_when_explicit(monkeypa
     candidate = module._check_update_candidate()
     assert candidate["sha256"] == "e" * 64
     assert candidate["provider"] == module.UPDATE_PROVIDER_GITHUB
+    assert candidate["archive"] == module._default_update_archive_policy()
+    assert candidate["install"] == module._default_update_install_policy()
 
 
 def test_github_provider_uses_release_asset_digest_when_present(monkeypatch):
@@ -384,6 +415,7 @@ def test_github_provider_uses_release_asset_digest_when_present(monkeypatch):
 
     assert candidate["url"] == zip_url
     assert candidate["sha256"] == "f" * 64
+    assert candidate["install"] == module._default_update_install_policy()
 
 
 def test_source_mode_cannot_apply_updates():
@@ -402,10 +434,16 @@ def test_threaded_update_check_passes_private_manifest_archive_policy_to_apply(m
     monkeypatch.setattr(module.tk, "Tk", lambda: FakeTk())
     monkeypatch.setattr(module.messagebox, "askyesno", lambda *args, **kwargs: True)
 
-    def fake_apply(url, expected_sha256=None, archive_policy=None):
+    def fake_apply(
+        url,
+        expected_sha256=None,
+        archive_policy=None,
+        install_policy=None,
+    ):
         captured["url"] = url
         captured["expected_sha256"] = expected_sha256
         captured["archive_policy"] = archive_policy
+        captured["install_policy"] = install_policy
 
     monkeypatch.setattr(module, "download_and_apply_update", fake_apply)
 
@@ -415,6 +453,7 @@ def test_threaded_update_check_passes_private_manifest_archive_policy_to_apply(m
         "url": candidate["url"],
         "expected_sha256": candidate["sha256"],
         "archive_policy": candidate["archive"],
+        "install_policy": candidate["install"],
     }
 
 
@@ -469,6 +508,144 @@ def test_download_and_apply_update_source_mode_aborts_before_network_or_batch(mo
     assert popen_calls == []
     assert errors
     assert not (tmp_path / "update.zip").exists()
+
+
+def test_updater_script_is_backup_mirror_preserve_rollback_fail_closed(tmp_path):
+    module = load_label_match_module()
+    application_path = tmp_path / "Label_Match"
+    update_root = tmp_path / ".label_match_update_test"
+    new_path = update_root / "extracted" / "Label_Match"
+    log_path = tmp_path / ".label_match_update_logs" / "update.log"
+
+    script = module._build_updater_script(
+        application_path=str(application_path),
+        new_program_folder_path=str(new_path),
+        update_temp_root=str(update_root),
+        log_path=str(log_path),
+        current_pid=1234,
+        install_policy=module._default_update_install_policy(),
+    )
+
+    assert "xcopy " not in script.lower()
+    assert script.index('call :LOG "BACKUP_BEGIN"') < script.index(
+        'call :LOG "MIRROR_BEGIN"'
+    )
+    assert script.index('call :LOG "BACKUP_VERIFIED"') < script.index(
+        'call :LOG "MIRROR_BEGIN"'
+    )
+    assert "robocopy \"%APP_PATH%\" \"%BACKUP_PATH%\" /MIR" in script
+    assert "robocopy \"%NEW_PATH%\" \"%APP_PATH%\" /MIR" in script
+    assert script.count("/MIR /IS /IT") == 3
+    assert "/XF \"%NEW_PATH%\\config\\app_settings.json\"" in script
+    assert '"%NEW_PATH%\\_internal\\config\\app_settings.json"' in script
+    assert 'if not exist "%APP_PATH%\\config\\app_settings.json"' in script
+    assert 'if not exist "%APP_PATH%\\_internal\\config\\app_settings.json"' in script
+    assert 'fc /B "%PRESERVE_PATH%\\config\\app_settings.json"' in script
+    assert 'fc /B "%PRESERVE_PATH%\\_internal\\config\\app_settings.json"' in script
+    rollback = script[script.index("\n:ROLLBACK\n") : script.index("\n:PRESERVE_REQUIRED_MISSING\n")]
+    assert "ROLLBACK_VERIFIED_RESTART_BLOCKED" in rollback
+    assert 'start ""' not in rollback
+    assert script.index('call :LOG "RESTORE_VERIFIED"') < script.index(
+        'call :LOG "RESTART_BEGIN"'
+    )
+    assert "if errorlevel 1 goto ROLLBACK" in script
+    assert "ROLLBACK_FAILED_RESTART_BLOCKED_MANUAL_RECOVERY_REQUIRED" in script
+
+
+@pytest.mark.skipif(shutil.which("robocopy") is None, reason="robocopy is Windows-only")
+def test_robocopy_mirror_excludes_both_existing_settings_files(tmp_path):
+    source = tmp_path / "new" / "Label_Match"
+    destination = tmp_path / "installed" / "Label_Match"
+    for root in (source, destination):
+        (root / "config").mkdir(parents=True)
+        (root / "_internal" / "config").mkdir(parents=True)
+    (source / "Label_Match.exe").write_bytes(b"new executable")
+    (source / "config" / "app_settings.json").write_bytes(b"new source settings")
+    (source / "_internal" / "config" / "app_settings.json").write_bytes(
+        b"new runtime settings"
+    )
+    (destination / "Label_Match.exe").write_bytes(b"old executable")
+    (destination / "config" / "app_settings.json").write_bytes(
+        b"existing source settings"
+    )
+    (destination / "_internal" / "config" / "app_settings.json").write_bytes(
+        b"existing runtime settings"
+    )
+
+    completed = subprocess.run(
+        [
+            "robocopy",
+            str(source),
+            str(destination),
+            "/MIR",
+            "/IS",
+            "/IT",
+            "/R:0",
+            "/W:0",
+            "/XJ",
+            "/XF",
+            str(source / "config" / "app_settings.json"),
+            str(source / "_internal" / "config" / "app_settings.json"),
+            "/NFL",
+            "/NDL",
+            "/NJH",
+            "/NJS",
+            "/NP",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode < 8, completed.stdout + completed.stderr
+    assert (destination / "Label_Match.exe").read_bytes() == b"new executable"
+    assert (destination / "config" / "app_settings.json").read_bytes() == (
+        b"existing source settings"
+    )
+    assert (
+        destination / "_internal" / "config" / "app_settings.json"
+    ).read_bytes() == b"existing runtime settings"
+
+
+def test_update_workspace_keeps_backup_on_application_volume(tmp_path):
+    module = load_label_match_module()
+    application_path = tmp_path / "install" / "Label_Match"
+    application_path.mkdir(parents=True)
+
+    workspace = module._prepare_update_workspace(str(application_path))
+    try:
+        assert Path(workspace["update_temp_root"]).parent == application_path.parent
+        assert (
+            Path(workspace["log_path"]).parent
+            == application_path.parent / ".label_match_update_logs"
+        )
+    finally:
+        import shutil
+
+        shutil.rmtree(workspace["update_temp_root"], ignore_errors=True)
+        shutil.rmtree(workspace["log_root"], ignore_errors=True)
+
+
+def test_default_install_policy_requires_both_settings_paths():
+    module = load_label_match_module()
+
+    assert module._default_update_install_policy() == {
+        "strategy": "robocopy_backup_then_mirror",
+        "preserve_paths": [
+            "config/app_settings.json",
+            "_internal/config/app_settings.json",
+        ],
+        "restart_executable": "Label_Match.exe",
+    }
+    with pytest.raises(ValueError, match="both Label_Match settings files"):
+        module._normalize_update_install_policy(
+            {
+                "strategy": "robocopy_backup_then_mirror",
+                "preserve_paths": ["_internal/config/app_settings.json"],
+                "restart_executable": "Label_Match.exe",
+            }
+        )
 
 
 def test_verify_update_file_hash_accepts_matching_sha256(tmp_path):

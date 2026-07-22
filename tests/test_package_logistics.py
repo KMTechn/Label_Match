@@ -256,14 +256,16 @@ def test_five_scan_draft_keeps_three_samples_out_of_exact_membership(monkeypatch
     "master",
     [
         _qr(),
-        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-CENTRAL-2SCAN|CLC=ITEM000000001",
+        (
+            "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-CENTRAL-2SCAN|"
+            "CLC=ITEM000000001|LBL=LBL-CENTRAL-2SCAN|HSH=0123456789abcdef"
+        ),
     ],
 )
-def test_central_two_scan_draft_inherits_all_without_product_samples(master):
-    final_label = "FINAL-ITEM000000001-LABEL-LONG-20260722\x1d6D20260722"
+def test_central_one_phs2_scan_draft_inherits_all_without_product_samples(master):
     current = {
-        "id": "SET-CENTRAL-2SCAN",
-        "raw": [master, final_label],
+        "id": "SET-CENTRAL-ONE-SCAN",
+        "raw": [master],
         "central_inherit_all": True,
     }
 
@@ -275,16 +277,22 @@ def test_central_two_scan_draft_inherits_all_without_product_samples(master):
     assert draft.membership_mode == "INHERIT_ALL"
     assert draft.sample_barcodes == ()
     assert draft.exact_rescan_barcodes == ()
-    assert draft.external_label == final_label
+    assert draft.external_label.startswith("PKG-PHS2-")
+    assert draft.external_label != master
+    assert draft.external_label == label_module._label_match_system_package_external_label(
+        master, "SET-CENTRAL-ONE-SCAN"
+    )
     if master.startswith("TRF=1"):
         assert draft.source_bundle_id == TRANSFER
         assert draft.expected_member_count == 4
         assert draft.expected_membership_hash == MEMBERSHIP_HASH
     else:
         assert draft.source_input_tag_id == "ITG-CENTRAL-2SCAN"
+        assert draft.source_input_tag_label_id == "LBL-CENTRAL-2SCAN"
+        assert draft.source_input_tag_hash_prefix == "0123456789abcdef"
 
 
-def test_central_two_scan_workflow_routes_second_scan_as_final_label():
+def test_central_one_scan_workflow_waits_for_explicit_package_complete():
     app = label_module.Label_Match.__new__(label_module.Label_Match)
     app.package_logistics_client = object()
     app.current_set_info = {
@@ -294,13 +302,68 @@ def test_central_two_scan_workflow_routes_second_scan_as_final_label():
     }
     app.history_view_updates_active_state = True
 
-    assert app._workflow_total_scan_count() == 2
-    assert app._workflow_final_label_position() == 2
-    assert app._next_action_text(1) == "2/2 포장 라벨 스캔"
-    assert (
-        label_module._label_match_manual_complete_block_reason(app.current_set_info)
-        == "manual_complete_disabled_for_central_inherit_all"
+    assert app._workflow_total_scan_count() == 1
+    assert app._workflow_final_label_position() == 1
+    assert app._next_action_text(1) == "랩핑 후 F3 포장 완료"
+    assert label_module._label_match_manual_complete_block_reason(app.current_set_info) is None
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "PHS=1|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=0123456789abcdef",
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|HSH=0123456789abcdef",
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=0123456789abcdef|QT=4",
+        "SRC=KMTECH_INPUT_TAG|PHS=2|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=0123456789abcdef",
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=not-hex-prefix",
+    ],
+)
+def test_compact_phs2_contract_rejects_phase1_partial_extra_or_noncanonical(invalid):
+    with pytest.raises(ValueError):
+        label_module._label_match_parse_compact_phs2(invalid)
+    assert label_module._label_match_has_central_source_identity(invalid) is False
+
+
+def test_phs2_create_draft_requires_and_binds_resolved_transfer_snapshot():
+    master = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-SNAPSHOT|CLC=ITEM000000001|"
+        "LBL=LBL-SNAPSHOT|HSH=0123456789abcdef"
     )
+    current = {
+        "id": "SET-SNAPSHOT",
+        "raw": [master],
+        "central_inherit_all": True,
+    }
+    with pytest.raises(PackageLogisticsError, match="preflight"):
+        label_module._label_match_package_draft(
+            current,
+            item_code="ITEM000000001",
+            require_source_snapshot=True,
+        )
+
+    current["package_source_snapshot"] = {
+        "bundle_id": TRANSFER,
+        "authority_scope_id": SCOPE,
+        "member_count": 4,
+        "membership_hash": MEMBERSHIP_HASH,
+        "authority_epoch": 5,
+        "ledger_plane": "AUTHORITATIVE",
+        "plane_epoch": 3,
+        "entity_version": 7,
+    }
+    draft = label_module._label_match_package_draft(
+        current,
+        item_code="ITEM000000001",
+        require_source_snapshot=True,
+    )
+
+    assert draft.source_bundle_id == TRANSFER
+    assert draft.source_authority_scope_id == SCOPE
+    assert draft.expected_member_count == 4
+    assert draft.expected_membership_hash == MEMBERSHIP_HASH
+    assert draft.expected_authority_epoch == 5
+    assert draft.expected_ledger_plane == "AUTHORITATIVE"
+    assert draft.expected_plane_epoch == 3
 
 
 def test_legacy_inherit_is_blocked_and_full_exact_rescan_is_separate(monkeypatch):
@@ -340,8 +403,11 @@ def test_legacy_minimal_input_tag_qr_uses_itg_without_raw_qr_as_external_identit
     assert draft.source_external_label != master
 
 
-def test_structured_phs_itg_defaults_to_server_inherited_membership():
-    master = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-PACKAGE-1|CLC=ITEM000000001"
+def test_structured_phs2_itg_defaults_to_server_inherited_membership():
+    master = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-PACKAGE-1|CLC=ITEM000000001|"
+        "LBL=LBL-PACKAGE-1|HSH=fedcba9876543210"
+    )
     current = {
         "id": "SET-PHS-INHERIT",
         "raw": [master, *BARCODES[:3], "FINAL-LABEL"],
@@ -354,6 +420,8 @@ def test_structured_phs_itg_defaults_to_server_inherited_membership():
     assert draft.membership_mode == "INHERIT_ALL"
     assert draft.source_bundle_id == ""
     assert draft.source_input_tag_id == "ITG-PACKAGE-1"
+    assert draft.source_input_tag_label_id == "LBL-PACKAGE-1"
+    assert draft.source_input_tag_hash_prefix == "fedcba9876543210"
     assert draft.source_external_label == ""
     assert draft.exact_rescan_barcodes == ()
     assert draft.sample_barcodes == BARCODES[:3]
@@ -435,6 +503,20 @@ def test_outbox_enqueue_and_immutable_command_cas(tmp_path):
         )
 
 
+def test_package_outbox_lists_only_locally_uncommitted_completions(tmp_path):
+    outbox = PackageOutbox(tmp_path / "outbox.sqlite3")
+    draft = _draft()
+    row = _ack_package_creation(outbox, draft)
+
+    pending = outbox.list_local_completion_pending()
+    assert [item["idempotency_key"] for item in pending] == [
+        row["idempotency_key"]
+    ]
+
+    outbox.mark_local_completion_committed(row["idempotency_key"])
+    assert outbox.list_local_completion_pending() == []
+
+
 @pytest.mark.parametrize("outbox_type", [PackageOutbox, PackageCancellationOutbox])
 def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_type):
     db_path = tmp_path / f"schema-{outbox_type.__name__}.sqlite3"
@@ -470,7 +552,11 @@ def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_t
         "local_event_committed_at",
         "retry_after_at",
     }.issubset(cancellation_columns)
-    assert "retry_after_at" in command_columns
+    assert {
+        "retry_after_at",
+        "local_completion_committed",
+        "local_completion_committed_at",
+    }.issubset(command_columns)
     assert version == package_module.OUTBOX_SCHEMA_VERSION
 
 
@@ -574,8 +660,26 @@ def test_real_v1_database_migration_preserves_create_rows_and_states(tmp_path):
     for key, values in expected.items():
         for field, value in values.items():
             assert migrated[key][field] == value
+        assert migrated[key]["local_completion_committed"] == 0
     assert "retry_after_at" in cancellation_columns
     assert version == package_module.OUTBOX_SCHEMA_VERSION
+
+
+def test_local_completion_marker_requires_acked_package_and_is_idempotent(tmp_path):
+    outbox = PackageOutbox(tmp_path / "local-completion.sqlite3")
+    draft = _draft_for_set("LOCAL-COMPLETION-SET")
+    pending = outbox.enqueue(draft)
+
+    with pytest.raises(PackageLogisticsError, match="ACKED"):
+        outbox.mark_local_completion_committed(pending["idempotency_key"])
+
+    acked = _ack_package_creation(outbox, draft)
+    outbox.mark_local_completion_committed(acked["idempotency_key"])
+    outbox.mark_local_completion_committed(acked["idempotency_key"])
+
+    committed = outbox.get_by_set_id(draft.set_id)
+    assert committed["local_completion_committed"] == 1
+    assert committed["local_completion_committed_at"]
 
 
 def test_concurrent_initialization_is_atomic_and_leaves_complete_schema(tmp_path):
@@ -1991,6 +2095,8 @@ def test_original_phs_itg_resolves_one_transfer_and_inherits_exact_server_member
         if "/bundles/resolve?" in url:
             query = parse_qs(urlsplit(url).query)
             assert query["input_tag_id"] == ["ITG-PHS-INHERIT"]
+            assert query["input_tag_label_id"] == ["LBL-PHS-INHERIT"]
+            assert query["input_tag_hash_prefix"] == ["0123456789abcdef"]
             assert query["bundle_role"] == ["PACKAGE_SOURCE"]
             assert "external_label" not in query
             return {"ok": True, "data": _resolved_projection()}
@@ -2004,6 +2110,8 @@ def test_original_phs_itg_resolves_one_transfer_and_inherits_exact_server_member
         set_id="SET-PHS-INHERIT-COMMAND",
         item_code="ITEM000000001",
         source_input_tag_id="ITG-PHS-INHERIT",
+        source_input_tag_label_id="LBL-PHS-INHERIT",
+        source_input_tag_hash_prefix="0123456789abcdef",
         external_label="FINAL-LABEL",
         membership_mode="INHERIT_ALL",
         sample_barcodes=BARCODES[:3],
