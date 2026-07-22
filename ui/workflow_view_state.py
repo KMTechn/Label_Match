@@ -1,4 +1,4 @@
-"""Pure workflow presentation state for the five-scan Label Match flow.
+"""Pure workflow presentation state for legacy QA and central PHS2 packaging.
 
 This module deliberately has no Tk, persistence, logistics, or API imports.  It
 turns an already-validated snapshot of the active set into values that a UI can
@@ -19,8 +19,7 @@ SLOT_DEFINITIONS = (
     ("final_label", "최종 라벨"),
 )
 CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
-    ("master_label", "현품표/이적 묶음"),
-    ("final_label", "포장 라벨"),
+    ("master_label", "PHS2 현품표"),
 )
 COMPLETION_KINDS = frozenset({"full", "partial", "failed"})
 
@@ -144,23 +143,46 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     )
     action_gate_reason = _action_gate_reason(snapshot, completion_kind)
 
-    f3_enabled = (
+    f3_enabled = bool(
         action_gate_reason is None
-        and not snapshot.central_inherit_all
         and not snapshot.exact_rescan_active
-        and 2 <= qa_completed < qa_total
+        and (
+            (
+                snapshot.central_inherit_all
+                and qa_completed == qa_total == 1
+            )
+            or (
+                not snapshot.central_inherit_all
+                and 2 <= qa_completed < qa_total
+            )
+        )
     )
     f3_hint = _f3_hint(
         qa_completed=qa_completed,
+        qa_total=qa_total,
+        central_inherit_all=snapshot.central_inherit_all,
         exact_rescan_active=snapshot.exact_rescan_active,
         gate_reason=action_gate_reason,
     )
 
+    inherited_membership = bool(
+        snapshot.sealed_transfer or snapshot.central_inherit_all
+    )
     f4_enabled = (
         action_gate_reason is None
         and (
-            (snapshot.sealed_transfer and 1 <= qa_completed < qa_total)
-            or (not snapshot.sealed_transfer and qa_completed == 1)
+            (
+                snapshot.central_inherit_all
+                and qa_completed == qa_total == 1
+            )
+            or (
+                snapshot.sealed_transfer
+                and 1 <= qa_completed < qa_total
+            )
+            or (
+                not inherited_membership
+                and qa_completed == 1
+            )
         )
         and not snapshot.exact_rescan_active
         and not snapshot.exact_rescan_complete
@@ -168,13 +190,14 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     f4_hint = _f4_hint(
         qa_completed=qa_completed,
         sealed_transfer=snapshot.sealed_transfer,
+        central_inherit_all=snapshot.central_inherit_all,
         exact_rescan_active=snapshot.exact_rescan_active,
         exact_rescan_complete=snapshot.exact_rescan_complete,
         gate_reason=action_gate_reason,
     )
 
     exact_rescan = _exact_rescan_view(
-        sealed_transfer=snapshot.sealed_transfer,
+        sealed_transfer=inherited_membership,
         active=snapshot.exact_rescan_active,
         complete=snapshot.exact_rescan_complete,
         completed=exact_completed,
@@ -201,11 +224,23 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     else:
         last_successful_scan = _last_successful_scan(scans, exact_members)
 
-    scan_input_enabled = not interaction_blocked
+    scan_input_enabled = bool(
+        not interaction_blocked
+        and not (
+            snapshot.central_inherit_all
+            and qa_completed == qa_total == 1
+        )
+    )
     cancel_current_enabled = (
         not interaction_blocked
         and completion_kind is None
-        and 0 < qa_completed < qa_total
+        and (
+            0 < qa_completed < qa_total
+            or (
+                snapshot.central_inherit_all
+                and qa_completed == qa_total == 1
+            )
+        )
     )
     cancel_completed_enabled = not interaction_blocked
 
@@ -345,6 +380,17 @@ def _primary_view(
             None,
             "primary",
         )
+    if (
+        snapshot.central_inherit_all
+        and qa_completed == qa_total == 1
+    ):
+        return _PrimaryView(
+            "package_ready",
+            "포장 준비",
+            "랩핑 후 F3 포장 완료",
+            None,
+            "primary",
+        )
     if qa_completed >= qa_total:
         return _PrimaryView(
             "complete",
@@ -358,7 +404,7 @@ def _primary_view(
     if qa_completed == 0:
         action = f"1/{qa_total} 현품표 스캔"
     elif snapshot.central_inherit_all:
-        action = f"2/{qa_total} 포장 라벨 스캔"
+        action = "랩핑 후 F3 포장 완료"
     elif qa_completed < qa_total - 1:
         action = f"{qa_completed + 1}/{qa_total} 제품 {qa_completed} 스캔"
     else:
@@ -493,6 +539,8 @@ def _badges(snapshot: WorkflowSnapshot, exact_rescan: ExactRescanView) -> tuple[
         badges.append("복구됨")
     if snapshot.sealed_transfer:
         badges.append("sealed 멤버십")
+    elif snapshot.central_inherit_all:
+        badges.append("PHS2 서버 멤버십")
     if exact_rescan.status == "active":
         badges.append(f"F4 {exact_rescan.progress_text}")
     elif exact_rescan.status == "complete":
@@ -547,6 +595,8 @@ def _action_gate_reason(
 def _f3_hint(
     *,
     qa_completed: int,
+    qa_total: int,
+    central_inherit_all: bool,
     exact_rescan_active: bool,
     gate_reason: str | None,
 ) -> str:
@@ -554,6 +604,10 @@ def _f3_hint(
         return gate_reason
     if exact_rescan_active:
         return "전체 재스캔 중에는 불가"
+    if central_inherit_all:
+        if qa_completed == qa_total == 1:
+            return "랩핑 후 포장 완료"
+        return "PHS2 스캔 후 가능"
     if qa_completed < 2:
         return "제품 1개 이상 스캔 후 가능"
     if qa_completed >= QA_TOTAL:
@@ -565,12 +619,17 @@ def _f4_hint(
     *,
     qa_completed: int,
     sealed_transfer: bool,
+    central_inherit_all: bool,
     exact_rescan_active: bool,
     exact_rescan_complete: bool,
     gate_reason: str | None,
 ) -> str:
     if gate_reason:
         return gate_reason
+    if central_inherit_all:
+        if qa_completed == 1:
+            return "포장 확정 전 제품 1~2개 교체"
+        return "PHS2 스캔 후 가능"
     if sealed_transfer:
         if 1 <= qa_completed < QA_TOTAL:
             return "포장 확정 전 제품 1~2개 교체"

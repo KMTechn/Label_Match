@@ -236,6 +236,7 @@ def test_update_worker_never_constructs_tk_or_prompts_off_main_thread(monkeypatc
         "version": "9.9.9",
         "sha256": "a" * 64,
         "archive": {"top_level": "Label_Match-9.9.9", "required_files": ["Label_Match.exe"]},
+        "install": module._default_update_install_policy(),
     }
     prompt_threads = []
     apply_calls = []
@@ -275,9 +276,10 @@ def test_update_worker_never_constructs_tk_or_prompts_off_main_thread(monkeypatc
         (
             (candidate["url"],),
             {
-                "expected_sha256": candidate["sha256"],
-                "archive_policy": candidate["archive"],
-            },
+                    "expected_sha256": candidate["sha256"],
+                    "archive_policy": candidate["archive"],
+                    "install_policy": candidate["install"],
+                },
         )
     ]
 

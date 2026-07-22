@@ -45,6 +45,21 @@ jobs:
           $enabled = if ($privateFeedMode -ceq "true") { "true" } else { "false" }
           "enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Resolve canary prerelease mode
+        id: canary_release
+        shell: pwsh
+        env:
+          PRIVATE_UPDATE_CANARY_PRERELEASE: ${{ vars.PRIVATE_UPDATE_CANARY_PRERELEASE }}
+        run: |
+          $canaryMode = if ($null -eq $env:PRIVATE_UPDATE_CANARY_PRERELEASE) { "" } else { $env:PRIVATE_UPDATE_CANARY_PRERELEASE }
+          if (@("", "false", "true") -cnotcontains $canaryMode) {
+            throw "PRIVATE_UPDATE_CANARY_PRERELEASE must be exactly 'true', 'false', or unset."
+          }
+          $enabled = if ($canaryMode -ceq "true") { "true" } else { "false" }
+          $makeLatest = if ($enabled -ceq "true") { "false" } else { "legacy" }
+          "enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "make_latest=$makeLatest" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -181,6 +196,8 @@ jobs:
           source_epoch = int(os.environ["LABEL_MATCH_SOURCE_EPOCH"])
           required = {
               "Label_Match.exe",
+              "config/app_settings.json",
+              "_internal/config/app_settings.json",
               "release-identity.json",
               "install_label_match_direct_sync.ps1",
               "staged-installer-verification.json",
@@ -284,6 +301,8 @@ jobs:
         env:
           PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
           PRIVATE_UPDATE_ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}
+          PRIVATE_UPDATE_ALLOW_PC_IDS: ${{ vars.PRIVATE_UPDATE_ALLOW_PC_IDS }}
+          PRIVATE_UPDATE_DENY_PC_IDS: ${{ vars.PRIVATE_UPDATE_DENY_PC_IDS }}
         run: |
           $zipPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
@@ -314,6 +333,43 @@ jobs:
           if ($rolloutPercentage -lt 0 -or $rolloutPercentage -gt 100) {
             throw "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE must be an integer from 0 to 100."
           }
+          function ConvertTo-CanonicalPcIds {
+            param(
+              [AllowEmptyString()][string]$RawValue,
+              [Parameter(Mandatory = $true)][string]$VariableName
+            )
+            if ([string]::IsNullOrWhiteSpace($RawValue)) {
+              return @()
+            }
+            $canonical = [System.Collections.Generic.List[string]]::new()
+            $seen = [System.Collections.Generic.HashSet[string]]::new(
+              [System.StringComparer]::OrdinalIgnoreCase
+            )
+            foreach ($rawToken in ($RawValue -split '[,\r\n]+')) {
+              $token = $rawToken.Trim().ToLowerInvariant()
+              if ([string]::IsNullOrWhiteSpace($token)) {
+                continue
+              }
+              if ($token -cnotmatch '^[a-z0-9][a-z0-9._-]{0,63}$') {
+                throw "$VariableName contains an invalid PC id token."
+              }
+              if ($seen.Add($token)) {
+                $canonical.Add($token)
+              }
+            }
+            return @($canonical.ToArray())
+          }
+          $allowPcIds = @(ConvertTo-CanonicalPcIds -RawValue $env:PRIVATE_UPDATE_ALLOW_PC_IDS -VariableName "PRIVATE_UPDATE_ALLOW_PC_IDS")
+          $denyPcIds = @(ConvertTo-CanonicalPcIds -RawValue $env:PRIVATE_UPDATE_DENY_PC_IDS -VariableName "PRIVATE_UPDATE_DENY_PC_IDS")
+          $denySet = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]$denyPcIds,
+            [System.StringComparer]::OrdinalIgnoreCase
+          )
+          foreach ($pcId in $allowPcIds) {
+            if ($denySet.Contains($pcId)) {
+              throw "PRIVATE_UPDATE_ALLOW_PC_IDS and PRIVATE_UPDATE_DENY_PC_IDS must not overlap."
+            }
+          }
           $artifactUrl = "$baseUrl/$zipPath"
           $manifest = [ordered]@{
             schema_version = "kmtech-private-update-manifest-v1"
@@ -335,6 +391,8 @@ jobs:
               entrypoint = "Label_Match.exe"
               required_files = @(
                 "Label_Match/Label_Match.exe",
+                "Label_Match/config/app_settings.json",
+                "Label_Match/_internal/config/app_settings.json",
                 "Label_Match/release-identity.json",
                 "Label_Match/install_label_match_direct_sync.ps1",
                 "Label_Match/staged-installer-verification.json",
@@ -358,8 +416,8 @@ jobs:
             }
             rollout = [ordered]@{
               percentage = $rolloutPercentage
-              allow_pc_ids = @()
-              deny_pc_ids = @()
+              allow_pc_ids = $allowPcIds
+              deny_pc_ids = $denyPcIds
             }
           }
           $manifestPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).manifest.json"
@@ -514,7 +572,8 @@ jobs:
           name: "Release ${{ env.LABEL_MATCH_RELEASE_TAG }}"
           body: "Internal release ${{ env.LABEL_MATCH_RELEASE_TAG }}. Verified ZIP, SHA-256 checksum, and archive verification report are attached."
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.canary_release.outputs.enabled == 'true' }}
+          make_latest: ${{ steps.canary_release.outputs.make_latest }}
 
       - name: Clean release virtual environment
         if: ${{ always() }}

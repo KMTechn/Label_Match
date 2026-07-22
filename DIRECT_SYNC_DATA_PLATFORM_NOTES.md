@@ -1,6 +1,6 @@
 # Direct Sync Data Platform Notes
 
-작성 기준: 2026-07-01
+작성 기준: 2026-07-22
 
 이 파일은 포장 프로그램이 서버 취합/direct-sync 장기 구조와 맞물릴 때 유지해야 할 사항이다.
 
@@ -12,9 +12,10 @@
 
 ## 이 프로그램의 역할
 
-- `Label_Match`는 포장실 현품표, 제품 3개, 최종 라벨지 scan set을 검증하고 포장 이벤트를 만든다.
+- `Label_Match`의 중앙 표준 경로는 원본 compact PHS2 한 번으로 이적 완료 멤버십을 조회하고, 필요 시 F4로 동일 품목 1~2개를 원자 교체한 뒤 F3 포장 완료 명령을 만든다. 제품 3개와 최종 라벨 scan set은 명시적으로 분류된 레거시 입력에만 적용한다.
+- 중앙 PHS2 포장은 durable outbox에 먼저 기록되고 중앙 `ACKED` 뒤에만 완료된다. `PENDING/SENDING/CONFLICT`를 로컬 성공 이벤트로 투영하지 않는다.
 - 이벤트는 로컬 저장소와 direct-sync spool을 거쳐 서버로 올라간다.
-- 포장 데이터는 서버 projection에서 제품/라벨 trace를 맞추는 핵심 입력이다.
+- 포장 데이터는 서버 projection에서 원본 PHS2, 현재 제품 멤버십, F4 교체 이력과 포장 ACK를 맞추는 핵심 입력이다.
 
 ## 꼭 유지할 사항
 
@@ -23,7 +24,9 @@
 - Relay id 기반 deterministic retry jitter를 유지한다.
 - 서버 `Retry-After`가 유효하면 producer가 보존해야 한다. `0`도 유효한 즉시 재시도 값이다.
 - 서버가 이미 commit한 non-2xx는 무한 retry로 되돌리지 말고 operator review 계열로 분리한다.
-- Scan set schema나 barcode field 이름을 바꿀 때는 서버 trace projection과 legacy fallback을 같이 확인한다.
+- PHS2/F4/F3 명령 schema나 barcode field 이름을 바꿀 때는 서버 trace projection, idempotency/CAS와 명시적 legacy fallback을 같이 확인한다.
+- 동일 PHS2의 다중 PC 요청은 중앙에서 한 번만 commit하고 나머지는 conflict로 격리해야 한다. 재전송은 같은 idempotency key를 유지한다.
+- 날짜가 바뀌어도 미확정 중앙 outbox와 PHS2 상태를 삭제하지 않는다.
 
 ## 미룬 작업
 

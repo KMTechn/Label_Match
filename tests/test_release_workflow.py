@@ -105,6 +105,8 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert "tools/register_label_match_worker_pc.py" in packaging_block
     assert "direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe" in workflow
     assert "Label_Match/tools/release_cli_tools_manifest.json" in workflow
+    assert "Label_Match/config/app_settings.json" in workflow
+    assert "Label_Match/_internal/config/app_settings.json" in workflow
     assert "Label_Match/KMTech_Logistics_Profile_Install.exe" in workflow
     assert "Label_Match/KMTech_Logistics_Profile_Check.exe" in workflow
     assert "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md" in workflow
@@ -134,6 +136,11 @@ def test_release_workflow_generates_private_update_manifest():
     assert ".githubusercontent.com" in workflow
     assert "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE" in workflow
     assert "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE must be an integer from 0 to 100." in workflow
+    assert "PRIVATE_UPDATE_ALLOW_PC_IDS" in workflow
+    assert "PRIVATE_UPDATE_DENY_PC_IDS" in workflow
+    assert "ConvertTo-CanonicalPcIds" in workflow
+    assert "^[a-z0-9][a-z0-9._-]{0,63}$" in workflow
+    assert "must not overlap" in workflow
     assert "$artifactUrl = \"$baseUrl/$zipPath\"" in workflow
     assert "\"$hash  $zipPath\" | Set-Content -Encoding utf8NoBOM \"$zipPath.sha256\"" in workflow
     assert "releases/download" not in workflow
@@ -200,6 +207,8 @@ def test_internal_release_archive_script_verifies_membership_bytes_and_paths(tmp
     package = tmp_path / "dist" / "Label_Match"
     required = (
         "Label_Match.exe",
+        "config/app_settings.json",
+        "_internal/config/app_settings.json",
         "release-identity.json",
         "install_label_match_direct_sync.ps1",
         "staged-installer-verification.json",
@@ -288,6 +297,136 @@ def test_release_workflow_requires_explicit_private_feed_publish_opt_in():
     assert f"if: {explicit_opt_in}" in manifest_block
     assert f"if: {explicit_opt_in}" in sign_block
     assert f"if: {explicit_opt_in}" in publish_block
+    assert "canary_release.outputs" not in manifest_block
+    assert "canary_release.outputs" not in sign_block
+    assert "canary_release.outputs" not in publish_block
+
+    assert "id: canary_release" in workflow
+    assert (
+        "PRIVATE_UPDATE_CANARY_PRERELEASE: "
+        "${{ vars.PRIVATE_UPDATE_CANARY_PRERELEASE }}"
+    ) in workflow
+    assert (
+        "PRIVATE_UPDATE_CANARY_PRERELEASE must be exactly 'true', 'false', or unset."
+        in workflow
+    )
+    assert (
+        '$enabled = if ($canaryMode -ceq "true") { "true" } else { "false" }'
+        in workflow
+    )
+    release_block = workflow[
+        workflow.index("- name: Create Release and Upload Asset") :
+    ]
+    assert (
+        "prerelease: ${{ steps.canary_release.outputs.enabled == 'true' }}"
+        in release_block
+    )
+    assert "prerelease: false" not in release_block
+    assert (
+        "make_latest: ${{ steps.canary_release.outputs.make_latest }}"
+        in release_block
+    )
+
+
+def test_private_feed_pc_id_lists_are_canonical_deduplicated_and_fail_closed():
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    start = workflow.index("function ConvertTo-CanonicalPcIds {")
+    end = workflow.index('$artifactUrl = "$baseUrl/$zipPath"', start)
+    parser_script = textwrap.dedent(workflow[start:end]) + """
+[ordered]@{
+  allow = @($allowPcIds)
+  deny = @($denyPcIds)
+} | ConvertTo-Json -Compress
+"""
+    powershell = next(
+        (
+            executable
+            for name in ("pwsh", "powershell", "powershell.exe")
+            if (executable := shutil.which(name))
+        ),
+        None,
+    )
+    assert powershell is not None
+
+    def run_parser(allow, deny):
+        env = os.environ.copy()
+        env["PRIVATE_UPDATE_ALLOW_PC_IDS"] = allow
+        env["PRIVATE_UPDATE_DENY_PC_IDS"] = deny
+        encoded = base64.b64encode(parser_script.encode("utf-16le")).decode("ascii")
+        return subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+
+    accepted = run_parser(" TEST1, test1\nLINE-A_01 ", " BLOCKED-1,blocked-1 ")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    parsed = json.loads(accepted.stdout.strip())
+    assert parsed == {"allow": ["test1", "line-a_01"], "deny": ["blocked-1"]}
+
+    invalid = run_parser("test1,bad token", "")
+    assert invalid.returncode != 0
+    assert "invalid PC id token" in invalid.stderr
+
+    overlap = run_parser("TEST1", "test1")
+    assert overlap.returncode != 0
+    assert "must not overlap" in overlap.stderr
+
+
+def test_canary_prerelease_gate_accepts_only_exact_lowercase_values(tmp_path):
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    start = workflow.index("- name: Resolve canary prerelease mode")
+    end = workflow.index("\n      - name:", start + 1)
+    step = workflow[start:end]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1]).strip()
+    powershell = next(
+        (
+            executable
+            for name in ("pwsh", "powershell", "powershell.exe")
+            if (executable := shutil.which(name))
+        ),
+        None,
+    )
+    assert powershell is not None
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+
+    def run_gate(value):
+        output = tmp_path / "github-output.txt"
+        output.unlink(missing_ok=True)
+        env = os.environ.copy()
+        env["GITHUB_OUTPUT"] = str(output)
+        if value is None:
+            env.pop("PRIVATE_UPDATE_CANARY_PRERELEASE", None)
+        else:
+            env["PRIVATE_UPDATE_CANARY_PRERELEASE"] = value
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        return completed, output.read_text(encoding="utf-8-sig") if output.exists() else ""
+
+    for value, expected, expected_latest in (
+        (None, "false", "legacy"),
+        ("false", "false", "legacy"),
+        ("true", "true", "false"),
+    ):
+        completed, output = run_gate(value)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert f"enabled={expected}" in output
+        assert f"make_latest={expected_latest}" in output
+
+    for invalid in ("TRUE", "False", "1", " true "):
+        completed, output = run_gate(invalid)
+        assert completed.returncode != 0
+        assert output == ""
+        assert "must be exactly" in completed.stderr
 
 
 def test_release_workflow_self_verifies_private_manifest_signature_before_publish(tmp_path):

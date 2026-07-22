@@ -33,7 +33,7 @@ from logistics_runtime_profile import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v4"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v5"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
@@ -212,6 +212,8 @@ class PackageCommandDraft:
     external_label: str
     membership_mode: str
     sample_barcodes: tuple[str, ...]
+    source_input_tag_label_id: str = ""
+    source_input_tag_hash_prefix: str = ""
     exact_rescan_barcodes: tuple[str, ...] = ()
     expected_seal_id: str = ""
     expected_seal_revision: int = 0
@@ -227,6 +229,8 @@ class PackageCommandDraft:
         source_bundle_id: str = "",
         source_external_label: str = "",
         source_input_tag_id: str = "",
+        source_input_tag_label_id: str = "",
+        source_input_tag_hash_prefix: str = "",
         source_bundle_hint: str = "",
         source_authority_scope_id: str = "",
         expected_member_count: int = 0,
@@ -249,6 +253,8 @@ class PackageCommandDraft:
         source_id = str(source_bundle_id or "").strip()
         source_label = str(source_external_label or "").strip()
         source_input_tag = str(source_input_tag_id or "").strip()
+        source_input_tag_label = str(source_input_tag_label_id or "").strip()
+        source_input_tag_hash = str(source_input_tag_hash_prefix or "").strip().lower()
         source_hint = str(source_bundle_hint or "").strip()
         source_scope = str(source_authority_scope_id or "").strip()
         final_label = str(external_label or "").strip()
@@ -261,6 +267,15 @@ class PackageCommandDraft:
             raise PackageLogisticsError(
                 "sealed transfer QR or structured PHS BND/ITG identity is required"
             )
+        if bool(source_input_tag_label) != bool(source_input_tag_hash):
+            raise PackageLogisticsError(
+                "structured PHS2 LBL and HSH identity must be supplied together"
+            )
+        if source_input_tag_hash and (
+            len(source_input_tag_hash) != 16
+            or any(value not in "0123456789abcdef" for value in source_input_tag_hash)
+        ):
+            raise PackageLogisticsError("structured PHS2 HSH must be a 16-character hex prefix")
         if mode not in MEMBERSHIP_MODES:
             raise PackageLogisticsError("membership_mode must be INHERIT_ALL or EXACT_RESCAN")
         if any(not value for value in raw_samples) or len(raw_samples) != len(set(raw_samples)):
@@ -299,6 +314,8 @@ class PackageCommandDraft:
             external_label=final_label,
             membership_mode=mode,
             sample_barcodes=canonical_barcodes(raw_samples),
+            source_input_tag_label_id=source_input_tag_label,
+            source_input_tag_hash_prefix=source_input_tag_hash,
             exact_rescan_barcodes=exact,
             expected_seal_id=str(expected_seal_id or "").strip(),
             expected_seal_revision=max(0, int(expected_seal_revision or 0)),
@@ -318,6 +335,8 @@ class PackageCommandDraft:
             "source_bundle_id": self.source_bundle_id,
             "source_external_label": self.source_external_label,
             "source_input_tag_id": self.source_input_tag_id,
+            "source_input_tag_label_id": self.source_input_tag_label_id,
+            "source_input_tag_hash_prefix": self.source_input_tag_hash_prefix,
             "source_bundle_hint": self.source_bundle_hint,
             "source_authority_scope_id": self.source_authority_scope_id,
             "expected_member_count": self.expected_member_count,
@@ -441,6 +460,9 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             last_error_message TEXT,
             receipt_json TEXT,
             retry_after_at TEXT,
+            local_completion_committed INTEGER NOT NULL DEFAULT 0
+                CHECK(local_completion_committed IN (0,1)),
+            local_completion_committed_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -491,6 +513,16 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
     if "retry_after_at" not in command_columns:
         conn.execute(
             "ALTER TABLE package_command_outbox ADD COLUMN retry_after_at TEXT"
+        )
+    if "local_completion_committed" not in command_columns:
+        conn.execute(
+            """ALTER TABLE package_command_outbox
+                   ADD COLUMN local_completion_committed INTEGER NOT NULL DEFAULT 0
+                   CHECK(local_completion_committed IN (0,1))"""
+        )
+    if "local_completion_committed_at" not in command_columns:
+        conn.execute(
+            "ALTER TABLE package_command_outbox ADD COLUMN local_completion_committed_at TEXT"
         )
     conn.execute(
         """CREATE INDEX IF NOT EXISTS ix_package_command_outbox_due
@@ -726,6 +758,52 @@ class PackageOutbox:
             ).fetchone()
             return dict(row) if row else None
 
+    def list_local_completion_pending(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return durable package commands whose local completion is unresolved."""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM package_command_outbox
+                     WHERE local_completion_committed=0
+                     ORDER BY created_at,idempotency_key
+                     LIMIT ?""",
+                (max(0, int(limit)),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def mark_local_completion_committed(self, key: str) -> None:
+        """Record that the durable local TRAY_COMPLETE projection exists."""
+
+        identity = str(key or "").strip()
+        if not identity:
+            raise PackageLogisticsError(
+                "package local completion identity is required"
+            )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT status,local_completion_committed
+                       FROM package_command_outbox
+                      WHERE idempotency_key=?""",
+                (identity,),
+            ).fetchone()
+            if row is None or str(row["status"] or "") != "ACKED":
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "package must be ACKED before local completion is committed"
+                )
+            if int(row["local_completion_committed"] or 0) == 0:
+                conn.execute(
+                    """UPDATE package_command_outbox
+                          SET local_completion_committed=1,
+                              local_completion_committed_at=?,updated_at=?
+                        WHERE idempotency_key=?
+                          AND status='ACKED'
+                          AND local_completion_committed=0""",
+                    (utc_now(), utc_now(), identity),
+                )
+            conn.commit()
+
     def counts(self) -> dict[str, int]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -734,6 +812,17 @@ class PackageOutbox:
             result = {status: 0 for status in ("PENDING", "SENDING", "ACKED", "CONFLICT")}
             result.update({row["status"]: int(row["count"]) for row in rows})
             return result
+
+    def list_conflicts(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM package_command_outbox
+                     WHERE status='CONFLICT'
+                     ORDER BY updated_at DESC,idempotency_key
+                     LIMIT ?""",
+                (max(0, int(limit)),),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
 
 class PackageCancellationOutbox:
@@ -1470,6 +1559,8 @@ class PackageLogisticsClient:
         *,
         external_label: str,
         input_tag_id: str,
+        input_tag_label_id: str = "",
+        input_tag_hash_prefix: str = "",
         item_id: str,
         authority_scope_id: str,
         exact_rescan_barcodes: Iterable[str] = (),
@@ -1490,6 +1581,15 @@ class PackageLogisticsClient:
         self._assert_authority(params["authority_scope_id"])
         if input_tag:
             params["input_tag_id"] = input_tag
+            input_tag_label = str(input_tag_label_id or "").strip()
+            input_tag_hash = str(input_tag_hash_prefix or "").strip().lower()
+            if bool(input_tag_label) != bool(input_tag_hash):
+                raise PackageLogisticsError(
+                    "PACKAGE_SOURCE PHS2 LBL and HSH identity must be supplied together"
+                )
+            if input_tag_label:
+                params["input_tag_label_id"] = input_tag_label
+                params["input_tag_hash_prefix"] = input_tag_hash
         if bundle_hint:
             params["bundle_id"] = bundle_hint
         if exact:
@@ -1500,6 +1600,57 @@ class PackageLogisticsClient:
         # lineages, while BND/ITG are structured server identities.
         query = urlencode(params)
         return self._data(self._request("GET", f"/logistics/api/v1/bundles/resolve?{query}"))
+
+    def resolve_package_source_projection(
+        self, draft: PackageCommandDraft
+    ) -> dict[str, Any]:
+        """Resolve and validate the live TRANSFER behind a scanned PHS2.
+
+        This read-only preflight is used by the packaging UI before a sealed
+        member exchange.  CREATE_PACKAGE still performs its own fresh resolve
+        and versioned read so this convenience method cannot weaken the final
+        command's compare-and-swap boundary.
+        """
+
+        scope = str(
+            draft.source_authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        if not scope:
+            raise PackageLogisticsError(
+                "packaging authority scope is required"
+            )
+        if draft.source_bundle_id:
+            projection = self.get_bundle(
+                draft.source_bundle_id,
+                authority_scope_id=scope,
+            )
+            self._validate_projection(
+                projection,
+                draft,
+                expected_scope=scope,
+            )
+            return dict(projection)
+
+        resolved = self.resolve_transfer_bundle(
+            external_label=draft.source_external_label,
+            input_tag_id=draft.source_input_tag_id,
+            input_tag_label_id=draft.source_input_tag_label_id,
+            input_tag_hash_prefix=draft.source_input_tag_hash_prefix,
+            item_id=draft.item_code,
+            authority_scope_id=scope,
+            exact_rescan_barcodes=draft.exact_rescan_barcodes,
+            source_bundle_hint=draft.source_bundle_hint,
+        )
+        projection = self._resolver_bundle(resolved)
+        self._validate_projection(
+            projection,
+            draft,
+            expected_scope=scope,
+            require_package_source_role=True,
+        )
+        return projection
 
     def build_create_package_command(
         self, draft: PackageCommandDraft, *, idempotency_key: str
@@ -1519,6 +1670,8 @@ class PackageLogisticsClient:
             resolved = self.resolve_transfer_bundle(
                 external_label=draft.source_external_label,
                 input_tag_id=draft.source_input_tag_id,
+                input_tag_label_id=draft.source_input_tag_label_id,
+                input_tag_hash_prefix=draft.source_input_tag_hash_prefix,
                 item_id=draft.item_code,
                 authority_scope_id=scope,
                 exact_rescan_barcodes=draft.exact_rescan_barcodes,

@@ -16,7 +16,11 @@ from sealed_transfer_exchange import (
     SealedTransferExchangeCoordinator,
     SealedTransferExchangeStore,
 )
-from Label_Match import Label_Match, _label_match_apply_sealed_exchange_state
+from Label_Match import (
+    Label_Match,
+    _label_match_apply_sealed_exchange_state,
+    _label_match_recover_central_state_from_package_row,
+)
 
 
 SCOPE = "scope-main"
@@ -409,6 +413,47 @@ def test_new_seal_must_be_scanned_before_atomic_local_apply_and_recovers(tmp_pat
     assert reopened.pending_local(set_id="set-1") == []
 
 
+def test_reseal_keeps_original_phs2_physical_identity_and_invalidates_snapshot(tmp_path):
+    coordinator = SealedTransferExchangeCoordinator(
+        SealedTransferExchangeStore(tmp_path / "package.db"), FakeClient()
+    )
+    result = coordinator.attempt(_prepare(coordinator).intent_id)
+    phs2 = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-PACK|CLC=ITEM-001|"
+        "LBL=LBL-PACK|HSH=0123456789abcdef"
+    )
+    before = {
+        "id": "phs2-set",
+        "raw": [phs2],
+        "parsed": [ITEM],
+        "central_inherit_all": True,
+        "sealed_transfer": {**_fields(), "_seal_qr_payload": OLD_QR},
+        "package_source_snapshot": {"bundle_id": TARGET, "entity_version": 1},
+    }
+
+    after = _label_match_apply_sealed_exchange_state(
+        before,
+        old_seal_qr_payload=OLD_QR,
+        new_seal_qr_payload=result.new_seal_qr_payload,
+        old_barcodes=result.old_barcodes,
+        new_barcodes=result.new_barcodes,
+    )
+
+    assert after["raw"] == [phs2]
+    assert after["sealed_transfer"]["_seal_qr_payload"] == result.new_seal_qr_payload
+    assert after["package_source_snapshot"] is None
+    assert after["resolved_transfer_bundle_id"] == ""
+
+    recovered = _label_match_apply_sealed_exchange_state(
+        after,
+        old_seal_qr_payload=OLD_QR,
+        new_seal_qr_payload=result.new_seal_qr_payload,
+        old_barcodes=result.old_barcodes,
+        new_barcodes=result.new_barcodes,
+    )
+    assert recovered["raw"] == [phs2]
+
+
 def test_package_projection_rejects_rotated_old_seal_even_if_membership_is_same():
     projection = _target_projection(
         qr=_qr(revision=2, seal_id="seal-2", token="token-2"),
@@ -437,6 +482,48 @@ def test_package_projection_rejects_rotated_old_seal_even_if_membership_is_same(
         PackageLogisticsClient._validate_projection(
             projection, draft, expected_scope=SCOPE
         )
+
+
+def test_orphan_package_command_recovers_the_original_physical_phs2_slot():
+    draft = PackageCommandDraft.build(
+        set_id="set-orphan",
+        item_code=ITEM,
+        source_bundle_id=TARGET,
+        source_input_tag_id="ITG-ORPHAN",
+        source_input_tag_label_id="LBL-ORPHAN",
+        source_input_tag_hash_prefix="0123456789abcdef",
+        source_authority_scope_id=SCOPE,
+        expected_member_count=len(OLD_IDS),
+        expected_membership_hash=membership_hash(OLD_IDS),
+        expected_authority_epoch=7,
+        expected_ledger_plane="AUTHORITATIVE",
+        expected_plane_epoch=3,
+        expected_seal_id="seal-1",
+        expected_seal_revision=1,
+        expected_seal_token="token-1",
+        expected_seal_qr_payload=OLD_QR,
+        external_label="PKG-PHS2-ORPHAN",
+        sample_barcodes=(),
+    )
+    state = _label_match_recover_central_state_from_package_row(
+        {
+            "set_id": draft.set_id,
+            "idempotency_key": "package-orphan-key",
+            "status": "ACKED",
+            "created_at": "2026-07-22T10:00:00+00:00",
+            "draft_json": json.dumps(draft.to_dict()),
+        }
+    )
+
+    assert state["raw"] == [
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-ORPHAN|CLC=ITEM-001|"
+        "LBL=LBL-ORPHAN|HSH=0123456789abcdef"
+    ]
+    assert state["parsed"] == [ITEM]
+    assert state["central_inherit_all"] is True
+    assert state["resolved_transfer_bundle_id"] == TARGET
+    assert state["sealed_transfer"]["_seal_qr_payload"] == OLD_QR
+    assert state["package_submission_status"] == "ACKED"
 
 
 def test_more_than_two_pairs_are_rejected_before_network(tmp_path):
