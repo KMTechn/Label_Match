@@ -52,6 +52,7 @@ import queue
 import socket
 _label_match_startup_trace("before_requests_import")
 import requests
+from item_catalog_sync import ACTIVE_PATH_ENV, refresh_item_catalog
 _label_match_startup_trace("after_requests_import")
 import zipfile
 import subprocess
@@ -2553,7 +2554,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.40" # private update feed release
+APP_VERSION = "v2.0.41" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -5551,7 +5552,7 @@ class Label_Match(tk.Tk):
                     self.entry.focus_set()
 
     def _load_items_data(self):
-        items_path = resource_path(os.path.join("assets", self.FILES.ITEMS))
+        items_path = os.environ.get(ACTIVE_PATH_ENV) or resource_path(os.path.join("assets", self.FILES.ITEMS))
         if not os.path.exists(items_path):
             os.makedirs(os.path.dirname(items_path), exist_ok=True)
             with open(items_path, 'w', newline='', encoding='utf-8-sig') as f:
@@ -13011,9 +13012,17 @@ class Label_Match(tk.Tk):
         self.after(0, blink)
 
 
+def prepare_startup_item_catalog():
+    bundled_path = resource_path(os.path.join("assets", Label_Match.FILES.ITEMS))
+    active_path = refresh_item_catalog(bundled_path)
+    os.environ[ACTIVE_PATH_ENV] = str(active_path)
+    return str(active_path)
+
+
 if __name__ == "__main__":
     _label_match_startup_trace("main_enter")
     try:
+        prepare_startup_item_catalog()
         app = Label_Match()
         _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
         _label_match_startup_trace("mainloop_enter")
