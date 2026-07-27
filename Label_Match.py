@@ -2554,7 +2554,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.41" # private update feed release
+APP_VERSION = "v2.0.42" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -6997,7 +6997,11 @@ class Label_Match(tk.Tk):
             )
             after["sealed_transfer_exchange_intent_id"] = intent_id
             self.current_set_info = after
-            self._save_current_set_state()
+            if not self._save_current_set_state():
+                raise PackageLogisticsError(
+                    "central exchange receipt is ACKed, but the local packaging "
+                    "state could not be saved"
+                )
             self.data_manager.log_event(
                 self.Events.SEALED_TRANSFER_EXCHANGE_APPLIED,
                 {
@@ -7027,9 +7031,12 @@ class Label_Match(tk.Tk):
             )
         except Exception as exc:
             self.current_set_info = before
+            rollback_saved = False
             try:
-                self._save_current_set_state()
+                rollback_saved = bool(self._save_current_set_state())
             except Exception:
+                rollback_saved = False
+            if not rollback_saved:
                 store.mark_local_review(
                     intent_id,
                     "local state update and rollback both failed; operator review required",
