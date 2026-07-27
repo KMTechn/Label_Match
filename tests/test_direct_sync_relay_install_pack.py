@@ -547,6 +547,8 @@ def test_install_pack_apply_supports_stored_password_task_without_leaking_passwo
             str(report_path),
             "--task-run-user",
             "TEST1\\kmtech-remote-admin",
+            "--app-run-user",
+            "TEST1\\Worker_1",
             "--task-run-password-env",
             "TASK_PASSWORD_FOR_TEST",
             "--apply",
@@ -569,13 +571,90 @@ def test_install_pack_apply_supports_stored_password_task_without_leaking_passwo
     assert report["task_runtime_acl"]["enabled"] is True
     assert report["task_runtime_acl"]["principal"] == "TEST1\\kmtech-remote-admin"
     assert str(program_data_root.resolve()) in report["task_runtime_acl"]["paths"]
+    assert report["app_runtime_acl"]["enabled"] is True
+    assert report["app_runtime_acl"]["principal"] == "TEST1\\Worker_1"
+    assert report["app_runtime_acl"]["rights"] == "M"
+    assert report["app_runtime_acl"]["inheritance"] == "(OI)(CI)"
+    assert report["app_runtime_acl"]["recursive_existing"] is True
+    assert report["app_runtime_acl"]["paths"] == [str(scan_source_dir.resolve())]
     assert any(
         command[:3] == ["icacls.exe", str(program_data_root.resolve()), "/grant:r"]
         and command[3] == "TEST1\\kmtech-remote-admin:(OI)(CI)M"
         for command in commands
     )
+    assert any(
+        command
+        == [
+            "icacls.exe",
+            str(scan_source_dir.resolve()),
+            "/grant:r",
+            "TEST1\\Worker_1:(OI)(CI)M",
+            "/T",
+        ]
+        for command in commands
+    )
     assert report["scheduled_task_create_command"][report["scheduled_task_create_command"].index("/RP") + 1] == "[redacted]"
     assert "stored-task-password" not in report_text
+
+
+def test_app_runtime_acl_is_scoped_to_data_dir_and_existing_sqlite_sidecars(
+    tmp_path, monkeypatch
+):
+    module = load_install_pack_module()
+    data_root = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    data_root.mkdir(parents=True)
+    for name in (
+        "package_logistics_outbox.sqlite3",
+        "package_logistics_outbox.sqlite3-wal",
+        "package_logistics_outbox.sqlite3-shm",
+    ):
+        (data_root / name).write_bytes(b"fixture")
+    commands = []
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: commands.append(command)
+        or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+    plan = module._app_runtime_acl_plan(
+        argparse.Namespace(
+            app_run_user=r"TEST1\Worker_1",
+            scan_source_dir=str(data_root),
+            uninstall=False,
+        )
+    )
+
+    result = module._apply_task_runtime_acl(plan)
+
+    assert plan["status"] == "PASS"
+    assert plan["paths"] == [str(data_root.resolve())]
+    assert plan["recursive_existing"] is True
+    assert result["status"] == "PASS"
+    assert commands == [
+        [
+            "icacls.exe",
+            str(data_root.resolve()),
+            "/grant:r",
+            r"TEST1\Worker_1:(OI)(CI)M",
+            "/T",
+        ]
+    ]
+
+
+def test_app_runtime_acl_rejects_filesystem_root():
+    module = load_install_pack_module()
+    filesystem_root = Path.cwd().anchor
+
+    plan = module._app_runtime_acl_plan(
+        argparse.Namespace(
+            app_run_user=r"TEST1\Worker_1",
+            scan_source_dir=filesystem_root,
+            uninstall=False,
+        )
+    )
+
+    assert plan["status"] == "FAIL"
+    assert plan["blocked_reason"] == "scan_source_dir must not be a filesystem root"
 
 
 def test_install_pack_apply_supports_password_file_without_leaking_password(tmp_path, monkeypatch):

@@ -423,6 +423,32 @@ def _task_runtime_acl_plan(args: argparse.Namespace) -> dict:
     }
 
 
+def _app_runtime_acl_plan(args: argparse.Namespace) -> dict:
+    user = str(getattr(args, "app_run_user", "") or "").strip()
+    raw_data_root = str(getattr(args, "scan_source_dir", "") or "").strip()
+    enabled = bool(user) and not bool(getattr(args, "uninstall", False))
+    status = "PASS"
+    blocked_reason = ""
+    data_root = Path(raw_data_root).expanduser()
+    if enabled and not data_root.is_absolute():
+        status = "FAIL"
+        blocked_reason = "scan_source_dir must be absolute for app runtime ACL"
+    resolved_root = data_root.resolve()
+    if enabled and resolved_root.parent == resolved_root:
+        status = "FAIL"
+        blocked_reason = "scan_source_dir must not be a filesystem root"
+    return {
+        "status": status,
+        "blocked_reason": blocked_reason,
+        "enabled": enabled,
+        "principal": user,
+        "rights": "M",
+        "inheritance": "(OI)(CI)",
+        "recursive_existing": True,
+        "paths": [str(resolved_root)] if enabled else [],
+    }
+
+
 def _apply_task_runtime_acl(plan: dict) -> dict:
     if plan.get("status") != "PASS":
         return {
@@ -455,9 +481,12 @@ def _apply_task_runtime_acl(plan: dict) -> dict:
     rights = str(plan.get("rights") or "M")
     inheritance = str(plan.get("inheritance") or "(OI)(CI)")
     grant = f"{principal}:{inheritance}{rights}"
+    recursive_existing = bool(plan.get("recursive_existing"))
     command_results = []
     for path in paths:
         command = ["icacls.exe", path, "/grant:r", grant]
+        if recursive_existing:
+            command.append("/T")
         result = _run_command(command)
         command_results.append({
             "command": command,
@@ -807,6 +836,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     source_scan = _source_scan_config(args)
     backpressure = _backpressure_config(args)
     task_runtime_acl = _task_runtime_acl_plan(args)
+    app_runtime_acl = _app_runtime_acl_plan(args)
     local_test_task_environment = _local_test_task_environment(args)
     self_enroll = bool(getattr(args, "self_enroll", False))
     uninstall = bool(getattr(args, "uninstall", False))
@@ -883,6 +913,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "credential_path": str(credential_path),
         "runtime_paths": paths,
         "task_runtime_acl": task_runtime_acl,
+        "app_runtime_acl": app_runtime_acl,
         "directories_to_create": _directories_to_create(args.program_data_root, paths, source_scan),
         "runtime_path_boundary": runtime_path_boundary,
         "source_scan": source_scan,
@@ -1117,6 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--confirm-production-install", action="store_true")
     parser.add_argument("--task-run-user", default="")
+    parser.add_argument("--app-run-user", default="")
     parser.add_argument("--task-run-password-env", default="")
     parser.add_argument("--task-run-password-file", default="")
     parser.add_argument("--allow-interactive-task-for-local-test", action="store_true")
@@ -1190,6 +1222,12 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(Path(args.report_path), plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2
+    if not args.uninstall and plan["app_runtime_acl"]["status"] != "PASS":
+        plan["status"] = "BLOCKED"
+        plan["blocked_reason"] = plan["app_runtime_acl"]["blocked_reason"]
+        _write_json(Path(args.report_path), plan)
+        print(f"install_pack_report={Path(args.report_path).resolve()}")
+        return 2
 
     if args.apply:
         if args.uninstall:
@@ -1229,6 +1267,14 @@ def main(argv: list[str] | None = None) -> int:
             if acl_result["status"] == "FAIL":
                 plan["status"] = "FAIL"
                 plan["blocked_reason"] = acl_result["blocked_reason"]
+                _write_json(Path(args.report_path), plan)
+                print(f"install_pack_report={Path(args.report_path).resolve()}")
+                return 1
+            app_acl_result = _apply_task_runtime_acl(plan["app_runtime_acl"])
+            plan["app_runtime_acl"]["apply_result"] = app_acl_result
+            if app_acl_result["status"] == "FAIL":
+                plan["status"] = "FAIL"
+                plan["blocked_reason"] = app_acl_result["blocked_reason"]
                 _write_json(Path(args.report_path), plan)
                 print(f"install_pack_report={Path(args.report_path).resolve()}")
                 return 1
