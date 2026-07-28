@@ -52,6 +52,7 @@ import queue
 import socket
 _label_match_startup_trace("before_requests_import")
 import requests
+from item_catalog_sync import ACTIVE_PATH_ENV, refresh_item_catalog
 _label_match_startup_trace("after_requests_import")
 import zipfile
 import subprocess
@@ -77,6 +78,13 @@ from sealed_transfer_exchange import (
     SealedTransferExchangeCoordinator,
     SealedTransferExchangeStore,
     normalize_barcode as normalize_exchange_barcode,
+)
+from phs_label_workflow import (
+    PHSLabelExchangeCoordinator,
+    PHSLabelExchangeJournal,
+    PHSLabelRenderer,
+    PHSLabelWorkflowError,
+    normalize_packaging_phs_label_evidence,
 )
 from logistics_runtime_profile import logistics_runtime_required
 from ui.operator_layout import build_operator_layout
@@ -1884,12 +1892,36 @@ def _label_match_package_draft(
         LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV, "INHERIT_ALL"
     ).strip().upper()
     exact_rescan = tuple(current.get("exact_rescan_barcodes") or ())
-    legacy_fields = _label_match_parse_new_format_fields(raw[0]) or {}
+    canonical_master = str(
+        current.get("canonical_input_tag_qr") or raw[0]
+    ).strip()
+    active_physical_master = str(
+        current.get("active_label_qr_payload") or canonical_master
+    ).strip()
+    legacy_fields = (
+        _label_match_parse_new_format_fields(active_physical_master)
+        or {}
+    )
     if central_inherit_all and not transfer:
         try:
-            legacy_fields = _label_match_parse_compact_phs2(raw[0])
+            legacy_fields = _label_match_parse_compact_phs2(
+                active_physical_master
+            )
         except ValueError as exc:
             raise PackageLogisticsError(str(exc)) from exc
+        try:
+            canonical_fields = _label_match_parse_compact_phs2(
+                canonical_master
+            )
+        except ValueError as exc:
+            raise PackageLogisticsError(str(exc)) from exc
+        if any(
+            canonical_fields[key] != legacy_fields[key]
+            for key in ("ITG", "CLC")
+        ):
+            raise PackageLogisticsError(
+                "active PHS2 label differs from its immutable input-tag anchor"
+            )
     source_input_tag_id = str(legacy_fields.get("ITG") or "").strip()
     source_input_tag_label_id = str(legacy_fields.get("LBL") or "").strip()
     source_input_tag_hash_prefix = str(legacy_fields.get("HSH") or "").strip().lower()
@@ -2010,6 +2042,31 @@ def _label_match_package_draft(
         source_input_tag_id=source_input_tag_id,
         source_input_tag_label_id=source_input_tag_label_id,
         source_input_tag_hash_prefix=source_input_tag_hash_prefix,
+        source_canonical_input_tag_qr=(
+            canonical_master
+            if central_inherit_all and source_input_tag_id
+            else ""
+        ),
+        source_active_label_qr_payload=(
+            active_physical_master
+            if central_inherit_all and source_input_tag_id
+            else ""
+        ),
+        source_active_label_business_date=str(
+            current.get("active_label_business_date") or ""
+        ),
+        source_active_label_worker_code=str(
+            current.get("active_label_worker_code") or ""
+        ),
+        source_active_label_instruction_id=str(
+            current.get("active_label_instruction_id") or ""
+        ),
+        source_active_label_version=int(
+            current.get("active_label_version") or 0
+        ),
+        source_active_membership_version=int(
+            current.get("active_membership_version") or 0
+        ),
         source_bundle_hint=source_hint,
         source_authority_scope_id=source_scope,
         expected_member_count=expected_count,
@@ -2183,21 +2240,59 @@ def _label_match_existing_package_row_metadata(row, current_set_info, item_code)
             )
     else:
         try:
-            phs2 = _label_match_parse_compact_phs2(raw[0])
+            canonical_phs2 = _label_match_parse_compact_phs2(
+                str(
+                    current.get("canonical_input_tag_qr")
+                    or raw[0]
+                )
+            )
+            active_qr = str(
+                current.get("active_label_qr_payload")
+                or current.get("canonical_input_tag_qr")
+                or raw[0]
+            )
+            active_phs2 = _label_match_parse_compact_phs2(
+                active_qr
+            )
         except ValueError as exc:
             raise PackageLogisticsError(str(exc)) from exc
         if (
             str(draft.get("source_input_tag_id") or "").strip()
-            != phs2["ITG"]
+            != canonical_phs2["ITG"]
+            or active_phs2["ITG"] != canonical_phs2["ITG"]
+            or active_phs2["CLC"] != canonical_phs2["CLC"]
             or (
                 str(draft.get("source_input_tag_label_id") or "").strip()
                 and str(draft.get("source_input_tag_label_id") or "").strip()
-                != phs2["LBL"]
+                != active_phs2["LBL"]
             )
             or (
                 str(draft.get("source_input_tag_hash_prefix") or "").strip().lower()
                 and str(draft.get("source_input_tag_hash_prefix") or "").strip().lower()
-                != phs2["HSH"]
+                != active_phs2["HSH"]
+            )
+            or (
+                str(
+                    draft.get("source_canonical_input_tag_qr")
+                    or ""
+                ).strip()
+                and str(
+                    draft.get("source_canonical_input_tag_qr")
+                ).strip()
+                != str(
+                    current.get("canonical_input_tag_qr")
+                    or raw[0]
+                ).strip()
+            )
+            or (
+                str(
+                    draft.get("source_active_label_qr_payload")
+                    or ""
+                ).strip()
+                and str(
+                    draft.get("source_active_label_qr_payload")
+                ).strip()
+                != active_qr
             )
         ):
             raise PackageLogisticsError(
@@ -2245,14 +2340,38 @@ def _label_match_recover_central_state_from_package_row(row):
     if not all((set_id, item_code, input_tag_id, label_id, hash_prefix)):
         raise PackageLogisticsError("orphan package has no complete physical PHS2 identity")
 
-    phs2_qr = (
+    reconstructed_active_qr = (
         f"PHS=2|SRC=KMTECH_INPUT_TAG|ITG={input_tag_id}|CLC={item_code}|"
         f"LBL={label_id}|HSH={hash_prefix}"
     )
+    active_phs2_qr = str(
+        draft.get("source_active_label_qr_payload")
+        or reconstructed_active_qr
+    ).strip()
+    canonical_phs2_qr = str(
+        draft.get("source_canonical_input_tag_qr")
+        or active_phs2_qr
+    ).strip()
     try:
-        _label_match_parse_compact_phs2(phs2_qr)
+        active_fields = _label_match_parse_compact_phs2(
+            active_phs2_qr
+        )
+        canonical_fields = _label_match_parse_compact_phs2(
+            canonical_phs2_qr
+        )
     except ValueError as exc:
         raise PackageLogisticsError(str(exc)) from exc
+    if (
+        active_fields["ITG"] != input_tag_id
+        or active_fields["CLC"] != item_code
+        or active_fields["LBL"] != label_id
+        or active_fields["HSH"] != hash_prefix
+        or canonical_fields["ITG"] != input_tag_id
+        or canonical_fields["CLC"] != item_code
+    ):
+        raise PackageLogisticsError(
+            "orphan package canonical/active PHS2 identity differs"
+        )
 
     source_bundle_id = str(draft.get("source_bundle_id") or "").strip()
     scope = str(draft.get("source_authority_scope_id") or "").strip()
@@ -2306,7 +2425,7 @@ def _label_match_recover_central_state_from_package_row(row):
     return {
         "id": set_id,
         "parsed": [item_code],
-        "raw": [phs2_qr],
+        "raw": [canonical_phs2_qr],
         "start_time": str(source.get("created_at") or datetime.now().isoformat()),
         "error_count": 0,
         "has_error_or_reset": False,
@@ -2315,6 +2434,34 @@ def _label_match_recover_central_state_from_package_row(row):
         "production_date": None,
         "sealed_transfer": sealed_transfer,
         "central_inherit_all": True,
+        "canonical_input_tag_qr": canonical_phs2_qr,
+        "physical_scanned_qr_payload": "",
+        "active_label_qr_payload": active_phs2_qr,
+        "active_label_id": active_fields["LBL"],
+        "active_label_business_date": str(
+            draft.get("source_active_label_business_date") or ""
+        ).strip(),
+        "active_label_worker_code": str(
+            draft.get("source_active_label_worker_code") or ""
+        ).strip(),
+        "active_label_instruction_id": str(
+            draft.get("source_active_label_instruction_id") or ""
+        ).strip(),
+        "active_label_version": int(
+            draft.get("source_active_label_version") or 0
+        ),
+        "active_membership_version": int(
+            draft.get("source_active_membership_version") or 0
+        ),
+        "active_label_resolution": (
+            "OVERLAY_REPLACED"
+            if canonical_phs2_qr != active_phs2_qr
+            else "LEGACY_ACTIVE"
+        ),
+        "phs_label_replaced_scan": bool(
+            canonical_phs2_qr != active_phs2_qr
+        ),
+        "phs_label_guidance": "",
         "package_source_snapshot": {
             "bundle_id": source_bundle_id,
             "authority_scope_id": scope,
@@ -3868,6 +4015,7 @@ class Label_Match(tk.Tk):
     COMPLETED_TRAY_CANCEL_BUTTON_TEXT = f"{COMPLETED_TRAY_CANCEL_ACTION_TEXT} (F2)"
     MANUAL_COMPLETE_BUTTON_TEXT = "현재 세트 완료 (F3)"
     EXACT_RESCAN_BUTTON_TEXT = "전체 재스캔 시작 (F4)"
+    PHS_LABEL_EXCHANGE_BUTTON_TEXT = "현품표 날짜 교환 (F5)"
     CURRENT_SET_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
     COMPLETED_TRAY_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
     MANUAL_COMPLETE_BUTTON_STYLE = "Action.TButton"
@@ -4108,6 +4256,26 @@ class Label_Match(tk.Tk):
                 self.package_logistics_client,
             )
         )
+        phs_label_recovery_root = os.path.join(
+            self.save_directory,
+            "phs_label_exchange",
+        )
+        self.phs_label_exchange_coordinator = PHSLabelExchangeCoordinator(
+            self.package_logistics_client,
+            PHSLabelExchangeJournal(
+                os.path.join(
+                    phs_label_recovery_root,
+                    "phs_label_exchange_recovery.json",
+                )
+            ),
+            PHSLabelRenderer(
+                os.path.join(phs_label_recovery_root, "labels")
+            ),
+        )
+        self._phs_label_scan_lookup_in_progress = False
+        self._phs_label_candidate_pending = False
+        self._phs_label_exchange_pending = False
+        self._phs_label_candidate_window = None
         self.package_outbox_processor = (
             PackageOutboxProcessor(self.package_outbox, self.package_logistics_client)
             if self.package_logistics_client is not None
@@ -4142,6 +4310,7 @@ class Label_Match(tk.Tk):
         self._workflow_display_scans = ()
         self._workflow_display_central_inherit_all = False
         self._workflow_display_parsed_scans = ()
+        self._workflow_display_active_label_qr = ""
         self._workflow_last_normal_override = None
         self._workflow_blocking_notice = None
         self._package_cancellation_review_notice = None
@@ -4150,6 +4319,7 @@ class Label_Match(tk.Tk):
         self._package_create_review_rows = ()
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
+        self._phs_label_guidance_notice = None
         self._workflow_pending_error = None
         self._workflow_recovered = False
         self._workflow_item_snapshot = None
@@ -4459,6 +4629,7 @@ class Label_Match(tk.Tk):
         self._workflow_blocking_notice = notice
         self._workflow_notice = notice
         self._workflow_notice_action = None
+        self._phs_label_guidance_notice = None
         self._render_operator_workbench()
 
         def worker():
@@ -4489,9 +4660,13 @@ class Label_Match(tk.Tk):
                 return
             if not ok:
                 return self._publish_submission_block(value)
-            sealed, snapshot = value
+            sealed, snapshot, active_updates = value
             try:
-                self._apply_resolved_central_phs2_seal(sealed, snapshot)
+                self._apply_resolved_central_phs2_seal(
+                    sealed,
+                    snapshot,
+                    active_updates,
+                )
             except Exception as exc:
                 return self._publish_submission_block(exc)
             self._workflow_blocking_notice = None
@@ -5551,7 +5726,7 @@ class Label_Match(tk.Tk):
                     self.entry.focus_set()
 
     def _load_items_data(self):
-        items_path = resource_path(os.path.join("assets", self.FILES.ITEMS))
+        items_path = os.environ.get(ACTIVE_PATH_ENV) or resource_path(os.path.join("assets", self.FILES.ITEMS))
         if not os.path.exists(items_path):
             os.makedirs(os.path.dirname(items_path), exist_ok=True)
             with open(items_path, 'w', newline='', encoding='utf-8-sig') as f:
@@ -5977,6 +6152,44 @@ class Label_Match(tk.Tk):
         if not central:
             return saved
         saved["central_inherit_all"] = True
+        canonical_master = str(
+            saved.get("canonical_input_tag_qr") or raw[0]
+        ).strip()
+        active_master = str(
+            saved.get("active_label_qr_payload")
+            or canonical_master
+        ).strip()
+        try:
+            canonical_fields = _label_match_parse_compact_phs2(
+                canonical_master
+            )
+            active_fields = _label_match_parse_compact_phs2(
+                active_master
+            )
+        except ValueError:
+            saved["recovery_operator_review"] = True
+        else:
+            if any(
+                canonical_fields[key] != active_fields[key]
+                for key in ("ITG", "CLC")
+            ):
+                saved["recovery_operator_review"] = True
+            saved["canonical_input_tag_qr"] = canonical_master
+            saved["active_label_qr_payload"] = active_master
+            saved.setdefault(
+                "physical_scanned_qr_payload", canonical_master
+            )
+            saved.setdefault("active_label_id", active_fields["LBL"])
+            saved.setdefault("active_label_business_date", "")
+            saved.setdefault("active_label_worker_code", "")
+            saved.setdefault("active_label_instruction_id", "")
+            saved.setdefault("active_label_version", 0)
+            saved.setdefault("active_membership_version", 0)
+            saved.setdefault(
+                "active_label_resolution", "LEGACY_ACTIVE"
+            )
+            saved.setdefault("phs_label_replaced_scan", False)
+            saved.setdefault("phs_label_guidance", "")
         if saved.get("exact_rescan_active") or saved.get("exact_rescan_complete"):
             saved["discarded_legacy_exact_rescan_state"] = {
                 "active": bool(saved.get("exact_rescan_active")),
@@ -6675,7 +6888,239 @@ class Label_Match(tk.Tk):
         self.process_input()
         
         self.after(1500, self._demo_step, index + 1, barcodes)
-        
+
+    def _resolve_central_phs2_scan_overlay(
+        self,
+        physical_qr_payload,
+        item_code,
+    ):
+        """Resolve package source and physical ACTIVE label before acceptance."""
+
+        client = self.__dict__.get("package_logistics_client")
+        if client is None:
+            raise PackageLogisticsError(
+                "central logistics client is required for PHS2 label resolution"
+            )
+        physical_qr = str(physical_qr_payload or "").strip()
+        fields = _label_match_parse_compact_phs2(physical_qr)
+        if str(item_code or "").strip() != fields["CLC"]:
+            raise PackageLogisticsError(
+                "PHS2 item differs from the accepted packaging item"
+            )
+        provisional = {
+            "id": "phs-scan-" + hashlib.sha256(
+                physical_qr.encode("utf-8")
+            ).hexdigest()[:24],
+            "raw": [physical_qr],
+            "parsed": [fields["CLC"]],
+            "central_inherit_all": True,
+            "package_source_snapshot": None,
+            "sealed_transfer": None,
+            "exact_rescan_active": False,
+            "exact_rescan_complete": False,
+            "exact_rescan_barcodes": [],
+        }
+        draft = _label_match_package_draft(
+            provisional,
+            item_code=fields["CLC"],
+        )
+        response = client.resolve_package_source_evidence(draft)
+        evidence = normalize_packaging_phs_label_evidence(
+            physical_qr,
+            response,
+        )
+        projection = response.get("bundle")
+        if not isinstance(projection, dict):
+            raise PackageLogisticsError(
+                "central package source projection is missing"
+            )
+        snapshot = _label_match_package_source_snapshot(projection)
+        if (
+            str(snapshot.get("authority_scope_id") or "").strip()
+            != evidence.authority_scope_id
+            or int(snapshot.get("member_count") or 0)
+            != evidence.member_count
+            or str(snapshot.get("membership_hash") or "").strip().lower()
+            != evidence.membership_hash
+        ):
+            raise PackageLogisticsError(
+                "PHS2 active-label and package-source evidence differ"
+            )
+        sealed = None
+        try:
+            sealed = _label_match_active_seal_from_package_source(
+                projection
+            )
+        except PackageLogisticsError:
+            # The standard package preflight remains authoritative at F3.
+            # Label overlay resolution must not invent seal evidence.
+            sealed = None
+        return evidence, snapshot, sealed
+
+    def _accept_resolved_central_phs2_scan(
+        self,
+        evidence,
+        snapshot,
+        sealed,
+    ):
+        if list(self.current_set_info.get("raw") or []):
+            raise PackageLogisticsError(
+                "current packaging set changed during PHS2 resolution"
+            )
+        self.current_set_info.update(evidence.state_fields())
+        self.current_set_info["central_inherit_all"] = True
+        self.current_set_info["package_source_snapshot"] = dict(
+            snapshot or {}
+        )
+        self.current_set_info["resolved_transfer_bundle_id"] = str(
+            (snapshot or {}).get("bundle_id") or ""
+        ).strip()
+        if isinstance(sealed, dict):
+            self.current_set_info["sealed_transfer"] = dict(sealed)
+        self._update_on_success_scan(
+            evidence.canonical_input_tag_qr,
+            evidence.item_id,
+        )
+        self._workflow_last_normal_override = (
+            evidence.active_label_qr_payload
+        )
+        self.data_manager.log_event(
+            "PHS_LABEL_ACTIVE_RESOLVED",
+            {
+                "set_id": self.current_set_info.get("id"),
+                "canonical_input_tag_qr": (
+                    evidence.canonical_input_tag_qr
+                ),
+                "physical_scanned_qr_payload": (
+                    evidence.physical_scanned_qr_payload
+                ),
+                "active_label_qr_payload": (
+                    evidence.active_label_qr_payload
+                ),
+                "active_label_id": evidence.active_label_id,
+                "active_label_business_date": (
+                    evidence.active_label_business_date
+                ),
+                "active_label_worker_code": (
+                    evidence.active_label_worker_code
+                ),
+                "resolution": evidence.active_label_resolution,
+                "replaced_scan": evidence.replaced_scan,
+                "member_count": evidence.member_count,
+                "membership_hash": evidence.membership_hash,
+            },
+        )
+        if evidence.replaced_scan:
+            guidance = WorkflowNotice(
+                title="교체된 현품표 자동 전환",
+                message=(
+                    "스캔한 이전 현품표 대신 현재 ACTIVE "
+                    f"{evidence.active_label_worker_code or evidence.active_label_id}"
+                    "로 전환했습니다. 포장 수량과 진행 상태는 유지됩니다."
+                ),
+                kind="phs_label_guidance",
+                tone="warning",
+            )
+            self._phs_label_guidance_notice = guidance
+        self._save_current_set_state()
+        self._render_operator_workbench()
+        self._focus_scan_entry_if_available()
+        return True
+
+    def _begin_central_phs2_scan_overlay(
+        self,
+        physical_qr_payload,
+        item_code,
+    ):
+        if self.__dict__.get(
+            "_phs_label_scan_lookup_in_progress", False
+        ):
+            return False
+        if self.run_tests:
+            evidence, snapshot, sealed = (
+                self._resolve_central_phs2_scan_overlay(
+                    physical_qr_payload,
+                    item_code,
+                )
+            )
+            return self._accept_resolved_central_phs2_scan(
+                evidence,
+                snapshot,
+                sealed,
+            )
+        captured_raw = tuple(
+            self.current_set_info.get("raw") or ()
+        )
+        result_queue = queue.Queue(maxsize=1)
+        self._phs_label_scan_lookup_in_progress = True
+        self.update_big_display(
+            "현재 ACTIVE 현품표와 포장 source 확인 중",
+            "primary",
+        )
+        self._render_operator_workbench()
+
+        def worker():
+            try:
+                result_queue.put(
+                    (
+                        True,
+                        self._resolve_central_phs2_scan_overlay(
+                            physical_qr_payload,
+                            item_code,
+                        ),
+                    )
+                )
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        def poll():
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+            self._phs_label_scan_lookup_in_progress = False
+            if tuple(
+                self.current_set_info.get("raw") or ()
+            ) != captured_raw:
+                self._render_operator_workbench()
+                return
+            if not ok:
+                error_code = str(
+                    getattr(value, "code", "") or ""
+                ).strip()
+                self._handle_input_error(
+                    physical_qr_payload,
+                    title="[PHS2 ACTIVE 현품표 확인 실패]",
+                    reason=(
+                        f"{error_code + ': ' if error_code else ''}{value}\n\n"
+                        "→ 현재 ACTIVE 현품표와 중앙 포장 source를 확인하세요."
+                    ),
+                )
+                self._render_operator_workbench()
+                return
+            evidence, snapshot, sealed = value
+            try:
+                self._accept_resolved_central_phs2_scan(
+                    evidence,
+                    snapshot,
+                    sealed,
+                )
+            except Exception as exc:
+                self._handle_input_error(
+                    physical_qr_payload,
+                    title="[PHS2 로컬 반영 실패]",
+                    reason=str(exc),
+                )
+
+        threading.Thread(
+            target=worker,
+            name="label-match-phs-label-resolve",
+            daemon=True,
+        ).start()
+        self.after(100, poll)
+        return True
+
     def process_input(self, event=None):
         if self.__dict__.get("_app_close_in_progress", False):
             return
@@ -6797,6 +7242,23 @@ class Label_Match(tk.Tk):
                 client_code = new_label_data.get('CLC')
                 supplier_code = new_label_data.get('SPC')
                 phase = new_label_data.get('PHS')
+                if (
+                    _label_match_has_central_source_identity(
+                        processed_input
+                    )
+                    and self.__dict__.get(
+                        "package_logistics_client"
+                    )
+                    is not None
+                ):
+                    self.current_set_info["phase"] = phase
+                    self.current_set_info[
+                        "item_name_override"
+                    ] = supplier_code
+                    return self._begin_central_phs2_scan_overlay(
+                        processed_input,
+                        client_code,
+                    )
                 self.current_set_info['phase'] = phase
                 self.current_set_info['item_name_override'] = supplier_code
                 if _label_match_has_central_source_identity(processed_input):
@@ -6901,6 +7363,41 @@ class Label_Match(tk.Tk):
 
     def _sealed_transfer_exchange_blocks_local_action(self, action):
         current_state = self.__dict__.get("current_set_info", {}) or {}
+        if (
+            self.__dict__.get("_phs_label_scan_lookup_in_progress", False)
+            or self.__dict__.get("_phs_label_candidate_pending", False)
+            or self.__dict__.get("_phs_label_exchange_pending", False)
+        ):
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "현품표 날짜 교환 처리 중",
+                    f"{action} 작업은 현재 현품표 확인·교환이 끝난 뒤 진행하세요.",
+                    parent=self,
+                )
+            return True
+        label_coordinator = self.__dict__.get(
+            "phs_label_exchange_coordinator"
+        )
+        try:
+            pending_label_exchange = bool(
+                label_coordinator is not None
+                and label_coordinator.blocks_other_action(
+                    current_state
+                )
+            )
+        except PHSLabelWorkflowError:
+            pending_label_exchange = True
+        if (
+            pending_label_exchange
+            and str(action or "") != "현품표 날짜 교환"
+        ):
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "현품표 날짜 교환 복구 필요",
+                    f"{action} 작업 전에 F5로 미완료 현품표 교환을 복구하세요.",
+                    parent=self,
+                )
+            return True
         if (
             current_state.get("recovery_operator_review")
             and str(action or "") != "프로그램 종료"
@@ -7217,18 +7714,130 @@ class Label_Match(tk.Tk):
             raise PackageLogisticsError(
                 "central logistics client is required for product replacement"
             )
+        canonical_qr = str(
+            current.get("canonical_input_tag_qr") or raw[0]
+        ).strip()
+        canonical_fields = _label_match_parse_compact_phs2(
+            canonical_qr
+        )
+        active_updates = {
+            "canonical_input_tag_qr": canonical_qr,
+            "active_label_qr_payload": str(
+                current.get("active_label_qr_payload")
+                or canonical_qr
+            ).strip(),
+            "active_label_id": str(
+                current.get("active_label_id")
+                or _label_match_parse_compact_phs2(
+                    str(
+                        current.get("active_label_qr_payload")
+                        or canonical_qr
+                    )
+                )["LBL"]
+            ).strip(),
+            "active_label_business_date": str(
+                current.get("active_label_business_date") or ""
+            ).strip(),
+            "active_label_worker_code": str(
+                current.get("active_label_worker_code") or ""
+            ).strip(),
+            "active_label_instruction_id": str(
+                current.get("active_label_instruction_id") or ""
+            ).strip(),
+            "active_label_version": int(
+                current.get("active_label_version") or 0
+            ),
+            "active_membership_version": int(
+                current.get("active_membership_version") or 0
+            ),
+            "active_label_resolution": str(
+                current.get("active_label_resolution")
+                or "LEGACY_ACTIVE"
+            ).strip().upper(),
+        }
+        if (
+            active_updates["active_label_resolution"]
+            != "LEGACY_ACTIVE"
+            or active_updates["active_label_version"] > 0
+        ):
+            active_projection = (
+                self.package_logistics_client.resolve_active_phs_label(
+                    canonical_fields["ITG"],
+                    authority_scope_id=str(
+                        (
+                            current.get("package_source_snapshot")
+                            or {}
+                        ).get("authority_scope_id")
+                        or getattr(
+                            getattr(
+                                self.package_logistics_client,
+                                "config",
+                                None,
+                            ),
+                            "authority_scope_id",
+                            "",
+                        )
+                        or ""
+                    ).strip(),
+                )
+            )
+            active = (
+                PHSLabelExchangeCoordinator._active_from_projection(
+                    active_projection,
+                    canonical_fields,
+                )
+            )
+            active_updates.update(
+                {
+                    "active_label_qr_payload": str(
+                        active.get("qr_payload") or ""
+                    ).strip(),
+                    "active_label_id": str(
+                        active.get("label_id") or ""
+                    ).strip(),
+                    "active_label_business_date": str(
+                        active.get("business_date") or ""
+                    ).strip(),
+                    "active_label_worker_code": str(
+                        active.get("worker_code") or ""
+                    ).strip(),
+                    "active_label_instruction_id": str(
+                        active.get("instruction_id") or ""
+                    ).strip(),
+                    "active_label_version": int(
+                        active.get("label_version") or 0
+                    ),
+                    "active_membership_version": int(
+                        active.get("membership_version") or 0
+                    ),
+                    "active_label_resolution": str(
+                        active_projection.get("resolution") or ""
+                    ).strip().upper(),
+                }
+            )
+        current.update(active_updates)
         draft = _label_match_package_draft(current, item_code=parsed[0])
         projection = self.package_logistics_client.resolve_package_source_projection(
             draft
         )
         sealed = _label_match_active_seal_from_package_source(projection)
         snapshot = _label_match_package_source_snapshot(projection)
-        return sealed, snapshot
+        return sealed, snapshot, active_updates
 
-    def _apply_resolved_central_phs2_seal(self, sealed, snapshot):
+    def _apply_resolved_central_phs2_seal(
+        self,
+        sealed,
+        snapshot,
+        active_label_updates=None,
+    ):
         current = self.current_set_info or {}
+        previous_active_qr = str(
+            current.get("active_label_qr_payload") or ""
+        ).strip()
         current["sealed_transfer"] = dict(sealed or {})
         current["package_source_snapshot"] = dict(snapshot or {})
+        if isinstance(active_label_updates, dict):
+            current.update(active_label_updates)
         current["resolved_transfer_bundle_id"] = str(
             current["package_source_snapshot"].get("bundle_id") or ""
         ).strip()
@@ -7238,14 +7847,39 @@ class Label_Match(tk.Tk):
                 "PHS2 source was verified, but local recovery state could not be saved; "
                 "central packaging was not submitted"
             )
+        refreshed_active_qr = str(
+            current.get("active_label_qr_payload") or ""
+        ).strip()
+        if (
+            refreshed_active_qr
+            and previous_active_qr
+            and refreshed_active_qr != previous_active_qr
+        ):
+            self._phs_label_guidance_notice = WorkflowNotice(
+                title="현재 ACTIVE 현품표 자동 전환",
+                message=(
+                    "포장 제출 전 중앙 successor를 다시 확인해 "
+                    f"{current.get('active_label_worker_code') or current.get('active_label_id')}"
+                    "로 전환했습니다. 수량과 멤버십은 유지됩니다."
+                ),
+                kind="phs_label_guidance",
+                tone="warning",
+            )
+            self._workflow_last_normal_override = refreshed_active_qr
         return current["sealed_transfer"]
 
     def _start_central_phs2_exchange(self):
         if self.__dict__.get("_central_seal_lookup_in_progress", False):
             return False
         if self.run_tests:
-            sealed, snapshot = self._resolve_central_phs2_seal_for_exchange()
-            self._apply_resolved_central_phs2_seal(sealed, snapshot)
+            sealed, snapshot, active_updates = (
+                self._resolve_central_phs2_seal_for_exchange()
+            )
+            self._apply_resolved_central_phs2_seal(
+                sealed,
+                snapshot,
+                active_updates,
+            )
             return self._prompt_sealed_transfer_exchange()
 
         set_id = str(self.current_set_info.get("id") or "")
@@ -7289,8 +7923,12 @@ class Label_Match(tk.Tk):
                     parent=self,
                 )
                 return
-            sealed, snapshot = value
-            self._apply_resolved_central_phs2_seal(sealed, snapshot)
+            sealed, snapshot, active_updates = value
+            self._apply_resolved_central_phs2_seal(
+                sealed,
+                snapshot,
+                active_updates,
+            )
             self._render_operator_workbench()
             self._prompt_sealed_transfer_exchange()
 
@@ -7498,6 +8136,430 @@ class Label_Match(tk.Tk):
         popup.protocol("WM_DELETE_WINDOW", lambda: (popup.grab_release(), popup.destroy()))
         scan_entry.focus_set()
         return True
+
+    def _phs_label_exchange_enabled_for_current(self):
+        current = self.__dict__.get("current_set_info", {}) or {}
+        coordinator = self.__dict__.get(
+            "phs_label_exchange_coordinator"
+        )
+        return bool(
+            coordinator is not None
+            and coordinator.available()
+            and current.get("central_inherit_all")
+            and len(current.get("raw") or [])
+            == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+            and len(current.get("parsed") or [])
+            == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
+            and str(
+                current.get("canonical_input_tag_qr")
+                or (current.get("raw") or [""])[0]
+            ).strip()
+            and isinstance(
+                current.get("package_source_snapshot"), dict
+            )
+            and not str(
+                current.get("package_submission_status") or ""
+            ).strip()
+        )
+
+    def _show_phs_label_candidate_window(self, candidates):
+        existing = self.__dict__.get(
+            "_phs_label_candidate_window"
+        )
+        if existing is not None:
+            try:
+                existing.destroy()
+            except (TclError, AttributeError):
+                pass
+        popup = tk.Toplevel(self)
+        self._phs_label_candidate_window = popup
+        popup.title("현품표 날짜 교환 작업지시")
+        popup.transient(self)
+        popup.grab_set()
+        popup.geometry("720x390")
+        frame = ttk.Frame(popup, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(
+            frame,
+            text="교환할 작업지시 선택",
+            style="Title.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "↑/↓로 선택하고 Enter를 누르세요. 실제 출력 성공 전까지 "
+                "기존 현품표가 ACTIVE로 유지됩니다."
+            ),
+            wraplength=670,
+        ).pack(anchor="w", pady=(6, 14))
+        listbox = tk.Listbox(
+            frame,
+            font=(self.default_font_name, 15),
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        listbox.pack(fill="both", expand=True)
+        for candidate in candidates:
+            listbox.insert(
+                tk.END,
+                (
+                    f"{candidate.get('business_date')}  ·  "
+                    f"{candidate.get('worker_code')}  ·  "
+                    f"{candidate.get('target_qty_pcs')} Pcs  ·  "
+                    f"{candidate.get('instruction_id')}"
+                ),
+            )
+        listbox.selection_set(0)
+        listbox.activate(0)
+
+        def close(event=None):
+            try:
+                popup.grab_release()
+            except TclError:
+                pass
+            popup.destroy()
+            self._phs_label_candidate_window = None
+            self._focus_scan_entry_if_available()
+            return "break"
+
+        def choose(event=None):
+            selected = listbox.curselection()
+            if not selected:
+                return "break"
+            target = dict(candidates[int(selected[0])])
+            close()
+            self._start_phs_label_exchange(target)
+            return "break"
+
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill="x", pady=(12, 0))
+        ttk.Button(
+            button_frame,
+            text="선택 (Enter)",
+            command=choose,
+            style="Action.TButton",
+        ).pack(side=tk.RIGHT)
+        ttk.Button(
+            button_frame,
+            text="취소 (Esc)",
+            command=close,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+        listbox.bind("<Return>", choose)
+        listbox.bind("<KP_Enter>", choose)
+        popup.bind("<Escape>", close)
+        popup.protocol("WM_DELETE_WINDOW", close)
+        listbox.focus_set()
+        return True
+
+    def _begin_phs_label_candidate_lookup(self, business_date):
+        if self.__dict__.get("_phs_label_candidate_pending", False):
+            return False
+        coordinator = self.phs_label_exchange_coordinator
+        captured_set_id = str(
+            self.current_set_info.get("id") or ""
+        )
+        captured_raw = tuple(
+            self.current_set_info.get("raw") or ()
+        )
+        current_copy = copy.deepcopy(self.current_set_info)
+        result_queue = queue.Queue(maxsize=1)
+        self._phs_label_candidate_pending = True
+        self.update_big_display("교환할 작업지시 조회 중", "primary")
+        self._render_operator_workbench()
+
+        def worker():
+            try:
+                result_queue.put(
+                    (
+                        True,
+                        coordinator.list_candidates(
+                            current_copy, business_date
+                        ),
+                    )
+                )
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        def poll():
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+            self._phs_label_candidate_pending = False
+            if (
+                str(self.current_set_info.get("id") or "")
+                != captured_set_id
+                or tuple(self.current_set_info.get("raw") or ())
+                != captured_raw
+            ):
+                self._render_operator_workbench()
+                return
+            if not ok:
+                messagebox.showerror(
+                    "현품표 교환 후보 조회 실패",
+                    str(value),
+                    parent=self,
+                )
+                self._render_operator_workbench()
+                self._focus_scan_entry_if_available()
+                return
+            if not value:
+                messagebox.showinfo(
+                    "교환 가능한 작업지시 없음",
+                    (
+                        f"{business_date}에 현재 품목·수량과 일치하는 "
+                        "PLANNED 현품표가 없습니다."
+                    ),
+                    parent=self,
+                )
+                self._render_operator_workbench()
+                self._focus_scan_entry_if_available()
+                return
+            self._render_operator_workbench()
+            self._show_phs_label_candidate_window(value)
+
+        threading.Thread(
+            target=worker,
+            name="label-match-phs-label-candidates",
+            daemon=True,
+        ).start()
+        self.after(100, poll)
+        return True
+
+    def _start_phs_label_exchange(
+        self,
+        target_instruction=None,
+        *,
+        confirm_ambiguous_reprint=False,
+    ):
+        if self.__dict__.get("_phs_label_exchange_pending", False):
+            return False
+        captured_set_id = str(
+            self.current_set_info.get("id") or ""
+        )
+        captured_raw = tuple(
+            self.current_set_info.get("raw") or ()
+        )
+        captured_parsed = tuple(
+            self.current_set_info.get("parsed") or ()
+        )
+        captured_snapshot = copy.deepcopy(
+            self.current_set_info.get("package_source_snapshot")
+        )
+        working = copy.deepcopy(self.current_set_info)
+        result_queue = queue.Queue(maxsize=1)
+        self._phs_label_exchange_pending = True
+        self.update_big_display(
+            "현품표 prepare → 실제 출력 → ACTIVE 전환 중",
+            "primary",
+        )
+        self._render_operator_workbench()
+
+        def persist_working():
+            return bool(
+                self.data_manager.save_current_state(
+                    {
+                        "current_set_info": working,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+            )
+
+        def worker():
+            try:
+                result_queue.put(
+                    (
+                        True,
+                        self.phs_label_exchange_coordinator.execute_single(
+                            working,
+                            target_instruction,
+                            persist_current_set=persist_working,
+                            confirm_ambiguous_reprint=(
+                                confirm_ambiguous_reprint
+                            ),
+                        ),
+                    )
+                )
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        def poll():
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+            self._phs_label_exchange_pending = False
+            current_unchanged = bool(
+                str(self.current_set_info.get("id") or "")
+                == captured_set_id
+                and tuple(self.current_set_info.get("raw") or ())
+                == captured_raw
+                and tuple(
+                    self.current_set_info.get("parsed") or ()
+                )
+                == captured_parsed
+                and self.current_set_info.get(
+                    "package_source_snapshot"
+                )
+                == captured_snapshot
+            )
+            if not current_unchanged:
+                self._render_operator_workbench()
+                messagebox.showerror(
+                    "현품표 교환 로컬 상태 충돌",
+                    (
+                        "교환 중 현재 포장 상태가 변경됐습니다. 중앙 receipt와 "
+                        "로컬 recovery journal을 확인하세요."
+                    ),
+                    parent=self,
+                )
+                return
+            if not ok:
+                # The coordinator works on a detached copy.  Any accepted
+                # active-successor refresh was durably saved before an error;
+                # failed local target writes roll their copy back.
+                self.current_set_info = working
+                if (
+                    isinstance(value, PHSLabelWorkflowError)
+                    and value.code
+                    == "PHS_PRINT_REPRINT_CONFIRMATION_REQUIRED"
+                ):
+                    confirmed = messagebox.askyesno(
+                        "실물 출력 확인 필요",
+                        (
+                            f"{value}\n\n실물 출력 여부를 확인했습니다. "
+                            "같은 print-attempt를 명시적으로 재출력하시겠습니까?"
+                        ),
+                        parent=self,
+                    )
+                    self._render_operator_workbench()
+                    if confirmed:
+                        return self._start_phs_label_exchange(
+                            target_instruction,
+                            confirm_ambiguous_reprint=True,
+                        )
+                    self._focus_scan_entry_if_available()
+                    return
+                messagebox.showerror(
+                    "현품표 날짜 교환 실패",
+                    (
+                        f"{getattr(value, 'code', '')}: {value}"
+                        if getattr(value, "code", "")
+                        else str(value)
+                    ),
+                    parent=self,
+                )
+                self._render_operator_workbench()
+                self._focus_scan_entry_if_available()
+                return
+            self.current_set_info = working
+            result = value
+            notice = WorkflowNotice(
+                title=(
+                    "현품표 날짜 교환 완료"
+                    if result.success
+                    else "현품표 실제 출력 실패"
+                ),
+                message=result.message,
+                kind="phs_label_exchange",
+                tone="success" if result.success else "danger",
+            )
+            self._phs_label_guidance_notice = notice
+            self._workflow_last_normal_override = str(
+                working.get("active_label_qr_payload") or ""
+            )
+            self.data_manager.log_event(
+                "PHS_LABEL_EXCHANGE_RESULT",
+                {
+                    "set_id": captured_set_id,
+                    "success": bool(result.success),
+                    "status": result.status,
+                    "exchange_id": result.exchange_id,
+                    "error_code": result.error_code,
+                    "canonical_input_tag_qr": working.get(
+                        "canonical_input_tag_qr"
+                    ),
+                    "active_label_id": working.get(
+                        "active_label_id"
+                    ),
+                    "active_label_business_date": working.get(
+                        "active_label_business_date"
+                    ),
+                    "active_label_worker_code": working.get(
+                        "active_label_worker_code"
+                    ),
+                    "raw_count": len(working.get("raw") or []),
+                    "membership_hash": (
+                        working.get("package_source_snapshot") or {}
+                    ).get("membership_hash"),
+                },
+            )
+            self._render_operator_workbench()
+            self._focus_scan_entry_if_available()
+
+        threading.Thread(
+            target=worker,
+            name="label-match-phs-label-exchange",
+            daemon=True,
+        ).start()
+        self.after(100, poll)
+        return True
+
+    def _handle_phs_label_exchange_shortcut(self, event=None):
+        if not self._phs_label_exchange_enabled_for_current():
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "현품표 날짜 교환 불가",
+                    (
+                        "중앙 PHS2를 한 장 스캔하고 포장 완료 전인 "
+                        "상태에서만 날짜를 교환할 수 있습니다."
+                    ),
+                    parent=self,
+                )
+            return "break"
+        if self._sealed_transfer_exchange_blocks_local_action(
+            "현품표 날짜 교환"
+        ):
+            return "break"
+        coordinator = self.phs_label_exchange_coordinator
+        try:
+            recoverable = coordinator.blocks_other_action(
+                self.current_set_info
+            )
+        except PHSLabelWorkflowError as exc:
+            if not self.run_tests:
+                messagebox.showerror(
+                    "현품표 교환 복구 journal 오류",
+                    str(exc),
+                    parent=self,
+                )
+            return "break"
+        if recoverable:
+            self._start_phs_label_exchange(None)
+            return "break"
+        initial_date = str(
+            self.current_set_info.get(
+                "active_label_business_date"
+            )
+            or date.today().isoformat()
+        )
+        if self.run_tests:
+            return "break"
+        business_date = simpledialog.askstring(
+            "현품표 날짜 교환",
+            "교환할 작업일을 입력하세요. (YYYY-MM-DD)",
+            parent=self,
+            initialvalue=initial_date,
+        )
+        if business_date:
+            self._begin_phs_label_candidate_lookup(
+                str(business_date).strip()
+            )
+        else:
+            self._focus_scan_entry_if_available()
+        return "break"
 
     def _handle_f4_action(self):
         if self._sealed_transfer_exchange_blocks_local_action("제품 교체"):
@@ -8588,6 +9650,7 @@ class Label_Match(tk.Tk):
             self._workflow_blocking_notice = None
             self._workflow_notice = None
             self._workflow_notice_action = None
+            self._phs_label_guidance_notice = None
             self._workflow_recovered = False
 
         self.current_set_info = {
@@ -8596,6 +9659,18 @@ class Label_Match(tk.Tk):
             'phase': None, 'item_name_override': None, 'production_date': None,
             'sealed_transfer': None,
             'central_inherit_all': False,
+            'canonical_input_tag_qr': '',
+            'physical_scanned_qr_payload': '',
+            'active_label_qr_payload': '',
+            'active_label_id': '',
+            'active_label_business_date': '',
+            'active_label_worker_code': '',
+            'active_label_instruction_id': '',
+            'active_label_version': 0,
+            'active_membership_version': 0,
+            'active_label_resolution': '',
+            'phs_label_replaced_scan': False,
+            'phs_label_guidance': '',
             'package_source_snapshot': None,
             'resolved_transfer_bundle_id': '',
             'package_submission_idempotency_key': '',
@@ -10454,6 +11529,29 @@ class Label_Match(tk.Tk):
         source.setdefault("raw", [])
         source.setdefault("parsed", [])
         source.setdefault("exact_rescan_barcodes", [])
+        active_display_qr = str(
+            source.get("active_label_qr_payload")
+            or (
+                self.__dict__.get(
+                    "_workflow_display_active_label_qr"
+                )
+                if self.__dict__.get("_workflow_completion_kind")
+                else ""
+            )
+            or ""
+        ).strip()
+        if (
+            active_display_qr
+            and source["raw"]
+            and source.get("central_inherit_all")
+        ):
+            # The persisted raw[0] remains the immutable registry QR used by
+            # package idempotency and history.  Only the operator projection
+            # follows the current physical ACTIVE successor.
+            source["raw"] = [
+                active_display_qr,
+                *list(source["raw"])[1:],
+            ]
         # Presentation-only default: before the first scan, an authoritative
         # workstation must already show the one-slot PHS2 workflow.  Do not
         # mutate current_set_info; legacy state remains independently readable.
@@ -11074,6 +12172,8 @@ class Label_Match(tk.Tk):
             "_package_create_review_notice"
         ) or self.__dict__.get(
             "_package_cancellation_review_notice"
+        ) or self.__dict__.get(
+            "_phs_label_guidance_notice"
         )
         self._set_workflow_notice_ui(display_notice, view.next_action)
         last_scan_label = self.__dict__.get("operator_last_scan_label")
@@ -11111,16 +12211,40 @@ class Label_Match(tk.Tk):
                 and not self.__dict__.get(
                     "_central_package_preflight_in_progress", False
                 )
+                and not self.__dict__.get(
+                    "_phs_label_scan_lookup_in_progress", False
+                )
+                and not self.__dict__.get(
+                    "_phs_label_candidate_pending", False
+                )
+                and not self.__dict__.get(
+                    "_phs_label_exchange_pending", False
+                )
             )
             try:
                 entry.configure(state="normal" if entry_enabled else "disabled")
             except (TclError, AttributeError):
                 pass
+        try:
+            phs_label_recovery_pending = bool(
+                self.__dict__.get(
+                    "phs_label_exchange_coordinator"
+                )
+                and self.phs_label_exchange_coordinator.blocks_other_action(
+                    self.current_set_info
+                )
+            )
+        except PHSLabelWorkflowError:
+            phs_label_recovery_pending = True
         for name, enabled in (
             ("manual_complete_button", view.f3_enabled),
             ("exact_rescan_button", view.f4_enabled),
             ("reset_button", view.cancel_current_enabled),
             ("cancel_tray_button", view.cancel_completed_enabled),
+            (
+                "phs_label_exchange_button",
+                self._phs_label_exchange_enabled_for_current(),
+            ),
         ):
             button = self.__dict__.get(name)
             if button is not None:
@@ -11132,8 +12256,26 @@ class Label_Match(tk.Tk):
                     ):
                         enabled = False
                     elif (
+                        self.__dict__.get(
+                            "_phs_label_scan_lookup_in_progress",
+                            False,
+                        )
+                        or self.__dict__.get(
+                            "_phs_label_candidate_pending", False
+                        )
+                        or self.__dict__.get(
+                            "_phs_label_exchange_pending", False
+                        )
+                    ):
+                        enabled = False
+                    elif (
                         self._current_sealed_transfer_exchange_attempt() is not None
                         and name != "exact_rescan_button"
+                    ):
+                        enabled = False
+                    elif (
+                        phs_label_recovery_pending
+                        and name != "phs_label_exchange_button"
                     ):
                         enabled = False
                     button.configure(state="normal" if enabled else "disabled")
@@ -11300,6 +12442,9 @@ class Label_Match(tk.Tk):
         self._workflow_display_scans = raw_scans
         self._workflow_display_parsed_scans = parsed_scans
         self._workflow_display_central_inherit_all = self._central_inherit_all_active()
+        self._workflow_display_active_label_qr = str(
+            self.current_set_info.get("active_label_qr_payload") or ""
+        ).strip()
         self._workflow_last_normal_override = raw_scans[-1] if raw_scans else ""
         self._workflow_blocking_notice = None
         self._workflow_notice = None
@@ -11329,6 +12474,7 @@ class Label_Match(tk.Tk):
         self._workflow_display_scans = ()
         self._workflow_display_parsed_scans = ()
         self._workflow_display_central_inherit_all = False
+        self._workflow_display_active_label_qr = ""
         self._workflow_last_normal_override = None
         self._workflow_item_snapshot = None
 
@@ -12188,11 +13334,29 @@ class Label_Match(tk.Tk):
             style=self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE,
         )
         self.cancel_tray_button.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
+        self.phs_label_exchange_button = ttk.Button(
+            self.operator_action_frame,
+            text=self.PHS_LABEL_EXCHANGE_BUTTON_TEXT,
+            command=self._handle_phs_label_exchange_shortcut,
+            style=self.MANUAL_COMPLETE_BUTTON_STYLE,
+            state="disabled",
+        )
+        self.phs_label_exchange_button.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="nsew",
+            pady=(8, 0),
+        )
 
         self.bind("<F1>", lambda event: self._handle_workflow_shortcut("f1", event))
         self.bind("<F2>", lambda event: self._handle_workflow_shortcut("f2", event))
         self.bind("<F3>", lambda event: self._handle_workflow_shortcut("f3", event))
         self.bind("<F4>", lambda event: self._handle_workflow_shortcut("f4", event))
+        self.bind(
+            "<F5>",
+            self._handle_phs_label_exchange_shortcut,
+        )
         self.bind("<Escape>", self._handle_workflow_escape)
         self.bind("<Delete>", self._delete_selected_row_from_shortcut)
 
@@ -13011,9 +14175,17 @@ class Label_Match(tk.Tk):
         self.after(0, blink)
 
 
+def prepare_startup_item_catalog():
+    bundled_path = resource_path(os.path.join("assets", Label_Match.FILES.ITEMS))
+    active_path = refresh_item_catalog(bundled_path)
+    os.environ[ACTIVE_PATH_ENV] = str(active_path)
+    return str(active_path)
+
+
 if __name__ == "__main__":
     _label_match_startup_trace("main_enter")
     try:
+        prepare_startup_item_catalog()
         app = Label_Match()
         _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
         _label_match_startup_trace("mainloop_enter")

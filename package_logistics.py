@@ -214,6 +214,13 @@ class PackageCommandDraft:
     sample_barcodes: tuple[str, ...]
     source_input_tag_label_id: str = ""
     source_input_tag_hash_prefix: str = ""
+    source_canonical_input_tag_qr: str = ""
+    source_active_label_qr_payload: str = ""
+    source_active_label_business_date: str = ""
+    source_active_label_worker_code: str = ""
+    source_active_label_instruction_id: str = ""
+    source_active_label_version: int = 0
+    source_active_membership_version: int = 0
     exact_rescan_barcodes: tuple[str, ...] = ()
     expected_seal_id: str = ""
     expected_seal_revision: int = 0
@@ -231,6 +238,13 @@ class PackageCommandDraft:
         source_input_tag_id: str = "",
         source_input_tag_label_id: str = "",
         source_input_tag_hash_prefix: str = "",
+        source_canonical_input_tag_qr: str = "",
+        source_active_label_qr_payload: str = "",
+        source_active_label_business_date: str = "",
+        source_active_label_worker_code: str = "",
+        source_active_label_instruction_id: str = "",
+        source_active_label_version: int = 0,
+        source_active_membership_version: int = 0,
         source_bundle_hint: str = "",
         source_authority_scope_id: str = "",
         expected_member_count: int = 0,
@@ -255,6 +269,12 @@ class PackageCommandDraft:
         source_input_tag = str(source_input_tag_id or "").strip()
         source_input_tag_label = str(source_input_tag_label_id or "").strip()
         source_input_tag_hash = str(source_input_tag_hash_prefix or "").strip().lower()
+        canonical_input_tag_qr = str(
+            source_canonical_input_tag_qr or ""
+        ).strip()
+        active_label_qr = str(
+            source_active_label_qr_payload or ""
+        ).strip()
         source_hint = str(source_bundle_hint or "").strip()
         source_scope = str(source_authority_scope_id or "").strip()
         final_label = str(external_label or "").strip()
@@ -276,6 +296,14 @@ class PackageCommandDraft:
             or any(value not in "0123456789abcdef" for value in source_input_tag_hash)
         ):
             raise PackageLogisticsError("structured PHS2 HSH must be a 16-character hex prefix")
+        if any(
+            len(value.encode("utf-8")) > 2048
+            or any(ord(character) < 32 for character in value)
+            for value in (canonical_input_tag_qr, active_label_qr)
+        ):
+            raise PackageLogisticsError(
+                "PHS2 canonical/active QR recovery evidence is invalid"
+            )
         if mode not in MEMBERSHIP_MODES:
             raise PackageLogisticsError("membership_mode must be INHERIT_ALL or EXACT_RESCAN")
         if any(not value for value in raw_samples) or len(raw_samples) != len(set(raw_samples)):
@@ -316,6 +344,23 @@ class PackageCommandDraft:
             sample_barcodes=canonical_barcodes(raw_samples),
             source_input_tag_label_id=source_input_tag_label,
             source_input_tag_hash_prefix=source_input_tag_hash,
+            source_canonical_input_tag_qr=canonical_input_tag_qr,
+            source_active_label_qr_payload=active_label_qr,
+            source_active_label_business_date=str(
+                source_active_label_business_date or ""
+            ).strip(),
+            source_active_label_worker_code=str(
+                source_active_label_worker_code or ""
+            ).strip(),
+            source_active_label_instruction_id=str(
+                source_active_label_instruction_id or ""
+            ).strip(),
+            source_active_label_version=max(
+                0, int(source_active_label_version or 0)
+            ),
+            source_active_membership_version=max(
+                0, int(source_active_membership_version or 0)
+            ),
             exact_rescan_barcodes=exact,
             expected_seal_id=str(expected_seal_id or "").strip(),
             expected_seal_revision=max(0, int(expected_seal_revision or 0)),
@@ -337,6 +382,13 @@ class PackageCommandDraft:
             "source_input_tag_id": self.source_input_tag_id,
             "source_input_tag_label_id": self.source_input_tag_label_id,
             "source_input_tag_hash_prefix": self.source_input_tag_hash_prefix,
+            "source_canonical_input_tag_qr": self.source_canonical_input_tag_qr,
+            "source_active_label_qr_payload": self.source_active_label_qr_payload,
+            "source_active_label_business_date": self.source_active_label_business_date,
+            "source_active_label_worker_code": self.source_active_label_worker_code,
+            "source_active_label_instruction_id": self.source_active_label_instruction_id,
+            "source_active_label_version": self.source_active_label_version,
+            "source_active_membership_version": self.source_active_membership_version,
             "source_bundle_hint": self.source_bundle_hint,
             "source_authority_scope_id": self.source_authority_scope_id,
             "expected_member_count": self.expected_member_count,
@@ -1651,6 +1703,325 @@ class PackageLogisticsClient:
             require_package_source_role=True,
         )
         return projection
+
+    def resolve_package_source_evidence(
+        self, draft: PackageCommandDraft
+    ) -> dict[str, Any]:
+        """Return the exact package source plus PHS physical-label evidence.
+
+        ``resolve_package_source_projection`` intentionally returns only the
+        canonical bundle for older callers.  The packaging scan path also
+        needs the immutable input-tag QR and the active physical-label
+        overlay, so keep the complete server response after applying the same
+        strict bundle validation.
+        """
+
+        scope = str(
+            draft.source_authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        if not scope:
+            raise PackageLogisticsError(
+                "packaging authority scope is required"
+            )
+        if draft.source_bundle_id:
+            projection = self.get_bundle(
+                draft.source_bundle_id,
+                authority_scope_id=scope,
+            )
+            self._validate_projection(
+                projection,
+                draft,
+                expected_scope=scope,
+            )
+            return {"bundle": dict(projection)}
+
+        resolved = self.resolve_transfer_bundle(
+            external_label=draft.source_external_label,
+            input_tag_id=draft.source_input_tag_id,
+            input_tag_label_id=draft.source_input_tag_label_id,
+            input_tag_hash_prefix=draft.source_input_tag_hash_prefix,
+            item_id=draft.item_code,
+            authority_scope_id=scope,
+            exact_rescan_barcodes=draft.exact_rescan_barcodes,
+            source_bundle_hint=draft.source_bundle_hint,
+        )
+        projection = self._resolver_bundle(resolved)
+        self._validate_projection(
+            projection,
+            draft,
+            expected_scope=scope,
+            require_package_source_role=True,
+        )
+        evidence = dict(resolved)
+        evidence["bundle"] = projection
+        return evidence
+
+    def list_phs_work_instruction_candidates(
+        self,
+        *,
+        authority_scope_id: str,
+        business_date: str,
+        item_id: str,
+        target_qty_pcs: int,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        if not scope:
+            raise PackageLogisticsError(
+                "authority scope is required for PHS work instructions"
+            )
+        self._assert_authority(scope)
+        query = urlencode(
+            {
+                "authority_scope_id": scope,
+                "business_date": str(business_date or "").strip(),
+                "item_id": str(item_id or "").strip(),
+                "target_qty_pcs": int(target_qty_pcs),
+                "limit": int(limit),
+            }
+        )
+        return self._data(
+            self._request(
+                "GET",
+                f"/logistics/api/v1/phs-work-instructions/candidates?{query}",
+            )
+        )
+
+    def resolve_active_phs_label(
+        self,
+        input_tag_id: str,
+        *,
+        authority_scope_id: str,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        query = urlencode({"authority_scope_id": scope})
+        return self._data(
+            self._request(
+                "GET",
+                "/logistics/api/v1/input-tags/"
+                f"{quote(str(input_tag_id or '').strip(), safe='')}"
+                f"/phs-label?{query}",
+            )
+        )
+
+    def adopt_phs_label(
+        self,
+        *,
+        authority_scope_id: str,
+        qr_payload: str,
+        business_date: str = "",
+        expected_session_version: int | None = None,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        payload: dict[str, Any] = {
+            "authority_scope_id": scope,
+            "qr_payload": str(qr_payload or "").strip(),
+        }
+        if business_date:
+            payload["business_date"] = str(business_date).strip()
+        if expected_session_version is not None:
+            payload["expected_session_version"] = int(
+                expected_session_version
+            )
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        return self._data(
+            self._request(
+                "POST",
+                "/logistics/api/v1/phs-labels/adopt",
+                body=body,
+            )
+        )
+
+    def prepare_phs_label_exchange(
+        self,
+        *,
+        authority_scope_id: str,
+        exchange_kind: str,
+        sources: list[dict[str, Any]],
+        targets: list[dict[str, Any]],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        payload = {
+            "authority_scope_id": scope,
+            "exchange_kind": str(exchange_kind or "").strip().upper(),
+            "sources": list(sources),
+            "targets": list(targets),
+        }
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        return self._data(
+            self._request(
+                "POST",
+                "/logistics/api/v1/phs-label-exchanges/prepare",
+                body=body,
+                key=str(idempotency_key or "").strip(),
+            )
+        )
+
+    def get_phs_label_exchange(
+        self,
+        exchange_id: str,
+        *,
+        authority_scope_id: str,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        query = urlencode({"authority_scope_id": scope})
+        return self._data(
+            self._request(
+                "GET",
+                "/logistics/api/v1/phs-label-exchanges/"
+                f"{quote(str(exchange_id or '').strip(), safe='')}?{query}",
+            )
+        )
+
+    def request_phs_label_print(
+        self,
+        exchange_id: str,
+        *,
+        authority_scope_id: str,
+        label_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        payload = {
+            "authority_scope_id": scope,
+            "label_id": str(label_id or "").strip(),
+        }
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        return self._data(
+            self._request(
+                "POST",
+                "/logistics/api/v1/phs-label-exchanges/"
+                f"{quote(str(exchange_id or '').strip(), safe='')}/prints",
+                body=body,
+                key=str(idempotency_key or "").strip(),
+            )
+        )
+
+    def complete_phs_label_print(
+        self,
+        print_attempt_id: str,
+        *,
+        authority_scope_id: str,
+        succeeded: bool,
+        rendered_artifact_hash: str = "",
+        proof: Mapping[str, Any] | None = None,
+        error_code: str = "",
+        error_message: str = "",
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        payload: dict[str, Any] = {
+            "authority_scope_id": scope,
+            "succeeded": bool(succeeded),
+        }
+        if succeeded:
+            payload["rendered_artifact_hash"] = str(
+                rendered_artifact_hash or ""
+            ).strip().lower()
+            payload["proof"] = dict(proof or {})
+        else:
+            payload["error_code"] = str(error_code or "").strip()
+            payload["error_message"] = str(error_message or "").strip()
+            if proof is not None:
+                payload["proof"] = dict(proof)
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        return self._data(
+            self._request(
+                "POST",
+                "/logistics/api/v1/phs-label-print-attempts/"
+                f"{quote(str(print_attempt_id or '').strip(), safe='')}"
+                "/complete",
+                body=body,
+            )
+        )
+
+    def activate_phs_label_exchange(
+        self,
+        exchange_id: str,
+        *,
+        authority_scope_id: str,
+        expected_exchange_version: int,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        payload = {
+            "authority_scope_id": scope,
+            "expected_exchange_version": int(expected_exchange_version),
+        }
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        return self._data(
+            self._request(
+                "POST",
+                "/logistics/api/v1/phs-label-exchanges/"
+                f"{quote(str(exchange_id or '').strip(), safe='')}/activate",
+                body=body,
+            )
+        )
 
     def build_create_package_command(
         self, draft: PackageCommandDraft, *, idempotency_key: str
