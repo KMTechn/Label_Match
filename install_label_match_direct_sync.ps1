@@ -6,6 +6,7 @@ param(
     [string]$EnrollmentTokenFile = "",
     [string]$TaskName = "",
     [string]$TaskRunUser = "",
+    [string]$AppRunUser = "",
     [string]$TaskRunPasswordEnv = "",
     [string]$TaskRunPasswordFile = "",
     [switch]$AllowInteractiveTaskForLocalTest
@@ -56,6 +57,9 @@ if ([string]::IsNullOrWhiteSpace($ProgramDataRoot)) {
 }
 if ([string]::IsNullOrWhiteSpace($TaskName)) {
     $TaskName = "direct-sync-relay-$sourceHostId"
+}
+if ([string]::IsNullOrWhiteSpace($AppRunUser)) {
+    $AppRunUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 }
 
 function Write-Utf8JsonFile([string]$Path, $Payload) {
@@ -162,6 +166,7 @@ $arguments += @(
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
     "--scan-source-dir", $ScanSourceDir,
+    "--app-run-user", $AppRunUser,
     "--task-name", $TaskName,
     "--report-path", $reportPath,
     "--app-settings-path", $settingsPath
@@ -231,6 +236,8 @@ $summary = [ordered]@{
     python_exe = $pythonExe
     bundled_registration_exe_present = Test-Path -LiteralPath $registrationExe
     task_name = $TaskName
+    app_run_user = $AppRunUser
+    app_runtime_acl = if ($null -ne $installReport) { $installReport.app_runtime_acl } else { $null }
     source_host_id = if ($null -ne $registrationSummary) { $registrationSummary.source_host_id } else { $null }
     producer_install_id = if ($null -ne $registrationSummary) { $registrationSummary.producer_install_id } else { $null }
     producer_id = if ($null -ne $registrationSummary) { $registrationSummary.producer_id } else { $null }

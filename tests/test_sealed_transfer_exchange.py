@@ -1,3 +1,4 @@
+from copy import deepcopy
 import hashlib
 import json
 
@@ -411,6 +412,116 @@ def test_new_seal_must_be_scanned_before_atomic_local_apply_and_recovers(tmp_pat
         result.intent_id, {"set_id": "set-1", "new_master_qr": result.new_seal_qr_payload}
     )
     assert reopened.pending_local(set_id="set-1") == []
+
+
+def _local_apply_app(coordinator, current_set_info, save_results):
+    class DataManager:
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event_type, details):
+            self.events.append((event_type, details))
+
+    app = Label_Match.__new__(Label_Match)
+    app.current_set_info = deepcopy(current_set_info)
+    app.sealed_transfer_exchange_store = coordinator.store
+    app.sealed_transfer_exchange_coordinator = coordinator
+    app.data_manager = DataManager()
+    app.run_tests = True
+    app.saved_states = []
+    app._save_results = iter(save_results)
+
+    def save_current_set_state():
+        app.saved_states.append(deepcopy(app.current_set_info))
+        return next(app._save_results)
+
+    app._save_current_set_state = save_current_set_state
+    app._update_history_tree_in_progress = lambda: None
+    app._update_status_label = lambda: None
+    app._render_operator_workbench = lambda: None
+    app.update_big_display = lambda *_args, **_kwargs: None
+    return app
+
+
+def test_local_save_false_keeps_receipt_pending_and_retry_never_posts_again(tmp_path):
+    client = FakeClient()
+    coordinator = SealedTransferExchangeCoordinator(
+        SealedTransferExchangeStore(tmp_path / "local-save-retry.db"), client
+    )
+    result = coordinator.attempt(_prepare(coordinator).intent_id)
+    coordinator.store.mark_seal_verified(
+        result.intent_id, result.new_seal_qr_payload
+    )
+    phs2 = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-LOCAL-RETRY|CLC=ITEM-001|"
+        "LBL=LBL-LOCAL-RETRY|HSH=0123456789abcdef"
+    )
+    before = {
+        "id": "set-1",
+        "raw": [phs2],
+        "parsed": [ITEM],
+        "central_inherit_all": True,
+        "sealed_transfer": {**_fields(), "_seal_qr_payload": OLD_QR},
+        "package_source_snapshot": {"bundle_id": TARGET, "entity_version": 1},
+    }
+    app = _local_apply_app(coordinator, before, [False, True])
+
+    with pytest.raises(PackageLogisticsError, match="could not be saved"):
+        app._apply_acked_sealed_transfer_exchange(result.intent_id)
+
+    failed_row = coordinator.store.load(result.intent_id)
+    assert failed_row["status"] == "ACKED"
+    assert failed_row["seal_verification_status"] == "VERIFIED"
+    assert failed_row["local_apply_status"] == "PENDING"
+    assert failed_row["local_apply_receipt_json"] is None
+    saved_receipt = failed_row["receipt_json"]
+    assert saved_receipt
+    assert app.current_set_info == before
+    assert app.data_manager.events == []
+    assert len(client.commands) == 1
+
+    app._save_results = iter([True])
+    assert app._reconcile_pending_sealed_transfer_exchanges() is True
+
+    applied_row = coordinator.store.load(result.intent_id)
+    assert applied_row["status"] == "ACKED"
+    assert applied_row["seal_verification_status"] == "VERIFIED"
+    assert applied_row["local_apply_status"] == "APPLIED"
+    assert applied_row["receipt_json"] == saved_receipt
+    assert applied_row["local_apply_receipt_json"]
+    assert len(app.data_manager.events) == 1
+    assert len(client.commands) == 1
+
+
+def test_local_save_and_rollback_false_fail_closed_for_operator_review(tmp_path):
+    client = FakeClient()
+    coordinator = SealedTransferExchangeCoordinator(
+        SealedTransferExchangeStore(tmp_path / "local-save-review.db"), client
+    )
+    result = coordinator.attempt(_prepare(coordinator).intent_id)
+    coordinator.store.mark_seal_verified(
+        result.intent_id, result.new_seal_qr_payload
+    )
+    before = {
+        "id": "set-1",
+        "raw": [OLD_QR, "BC-OLD", "BC-KEEP"],
+        "parsed": [ITEM, ITEM, ITEM],
+        "sealed_transfer": {**_fields(), "_seal_qr_payload": OLD_QR},
+    }
+    app = _local_apply_app(coordinator, before, [False, False])
+
+    with pytest.raises(PackageLogisticsError, match="could not be saved"):
+        app._apply_acked_sealed_transfer_exchange(result.intent_id)
+
+    review_row = coordinator.store.load(result.intent_id)
+    assert review_row["status"] == "ACKED"
+    assert review_row["seal_verification_status"] == "VERIFIED"
+    assert review_row["local_apply_status"] == "OPERATOR_REVIEW"
+    assert review_row["local_apply_receipt_json"] is None
+    assert review_row["last_error_code"] == "LOCAL_APPLY_CONFLICT"
+    assert app.current_set_info == before
+    assert app.data_manager.events == []
+    assert len(client.commands) == 1
 
 
 def test_reseal_keeps_original_phs2_physical_identity_and_invalidates_snapshot(tmp_path):
