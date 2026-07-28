@@ -1815,6 +1815,53 @@ class PackageLogisticsClient:
             )
         )
 
+    def resolve_phs_reconciliation_actions(
+        self,
+        *,
+        authority_scope_id: str,
+        scan_payload: str,
+        process_context: str = "packaging",
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        scan = str(scan_payload or "").strip()
+        context = str(process_context or "").strip().lower()
+        bounded_limit = int(limit)
+        if not scan:
+            raise PackageLogisticsError(
+                "PHS reconciliation scan_payload is required"
+            )
+        if context != "packaging":
+            raise PackageLogisticsError(
+                "PHS reconciliation process_context must be packaging"
+            )
+        if bounded_limit < 1 or bounded_limit > 20:
+            raise PackageLogisticsError(
+                "PHS reconciliation limit must be between 1 and 20"
+            )
+        query = urlencode(
+            {
+                "authority_scope_id": scope,
+                "scan_payload": scan,
+                "process_context": context,
+                "limit": bounded_limit,
+            }
+        )
+        return self._data(
+            self._request(
+                "GET",
+                (
+                    "/logistics/api/v1/phs-work-reconciliations/"
+                    f"actions/resolve?{query}"
+                ),
+            )
+        )
+
     def adopt_phs_label(
         self,
         *,
@@ -1886,6 +1933,74 @@ class PackageLogisticsClient:
                 "/logistics/api/v1/phs-label-exchanges/prepare",
                 body=body,
                 key=str(idempotency_key or "").strip(),
+            )
+        )
+
+    def prepare_phs_reconciliation_label_exchange(
+        self,
+        reconciliation_id: str,
+        *,
+        authority_scope_id: str,
+        action_ids: list[str],
+        expected_reconciliation_version: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        scope = str(
+            authority_scope_id
+            or self.config.authority_scope_id
+            or ""
+        ).strip()
+        self._assert_authority(scope)
+        reconciliation = str(reconciliation_id or "").strip()
+        selected_action_ids = [
+            str(value or "").strip()
+            for value in list(action_ids or [])
+        ]
+        expected_version = int(expected_reconciliation_version)
+        key = str(idempotency_key or "").strip()
+        if not reconciliation:
+            raise PackageLogisticsError(
+                "PHS reconciliation_id is required"
+            )
+        if (
+            not selected_action_ids
+            or any(not value for value in selected_action_ids)
+            or len(selected_action_ids)
+            != len(set(selected_action_ids))
+            or len(selected_action_ids) > 20
+        ):
+            raise PackageLogisticsError(
+                "PHS reconciliation action_ids must be bounded, nonempty, and unique"
+            )
+        if expected_version < 1:
+            raise PackageLogisticsError(
+                "PHS expected reconciliation version must be positive"
+            )
+        if not key:
+            raise PackageLogisticsError(
+                "PHS reconciliation idempotency key is required"
+            )
+        payload = {
+            "authority_scope_id": scope,
+            "action_ids": selected_action_ids,
+            "expected_reconciliation_version": expected_version,
+        }
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        return self._data(
+            self._request(
+                "POST",
+                (
+                    "/logistics/api/v1/phs-work-reconciliations/"
+                    f"{quote(reconciliation, safe='')}"
+                    "/label-exchange/prepare"
+                ),
+                body=body,
+                key=key,
             )
         )
 

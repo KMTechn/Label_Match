@@ -1911,6 +1911,124 @@ def test_dynamic_qr_scope_builds_inherit_command_without_sample_membership():
     assert "barcode_membership_hash" not in command["payload"]
 
 
+def test_phs_reconciliation_machine_routes_send_only_exact_action_contract():
+    calls = []
+    scan_payload = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-001|"
+        "CLC=AAA2270730200|LBL=LBL-001|HSH=aaaaaaaaaaaaaaaa"
+    )
+
+    def transport(method, url, headers, body, timeout):
+        calls.append((method, url, dict(headers), body))
+        return {"ok": True, "data": {"status": "ok"}}
+
+    client = PackageLogisticsClient(
+        PackageClientConfig(
+            "https://logistics.test",
+            "token",
+            SCOPE,
+            "host",
+            "device",
+        ),
+        transport=transport,
+    )
+
+    client.resolve_phs_reconciliation_actions(
+        authority_scope_id=SCOPE,
+        scan_payload=scan_payload,
+        process_context="packaging",
+        limit=20,
+    )
+    client.prepare_phs_reconciliation_label_exchange(
+        "PHSR-001",
+        authority_scope_id=SCOPE,
+        action_ids=["PHSA-2", "PHSA-1"],
+        expected_reconciliation_version=7,
+        idempotency_key="reconciliation-prepare-001",
+    )
+
+    assert calls[0][0] == "GET"
+    assert calls[0][1].startswith(
+        "https://logistics.test/logistics/api/v1/"
+        "phs-work-reconciliations/actions/resolve?"
+    )
+    assert parse_qs(urlsplit(calls[0][1]).query) == {
+        "authority_scope_id": [SCOPE],
+        "scan_payload": [scan_payload],
+        "process_context": ["packaging"],
+        "limit": ["20"],
+    }
+    assert calls[1][0] == "POST"
+    assert calls[1][1].endswith(
+        "/phs-work-reconciliations/PHSR-001/label-exchange/prepare"
+    )
+    assert calls[1][2]["Idempotency-Key"] == "reconciliation-prepare-001"
+    assert json.loads(calls[1][3].decode("utf-8")) == {
+        "authority_scope_id": SCOPE,
+        "action_ids": ["PHSA-2", "PHSA-1"],
+        "expected_reconciliation_version": 7,
+    }
+
+
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [
+        (
+            "resolve",
+            {
+                "authority_scope_id": SCOPE,
+                "scan_payload": "PHS2",
+                "process_context": "inspection",
+                "limit": 20,
+            },
+        ),
+        (
+            "resolve",
+            {
+                "authority_scope_id": SCOPE,
+                "scan_payload": "PHS2",
+                "process_context": "packaging",
+                "limit": 21,
+            },
+        ),
+        (
+            "prepare",
+            {
+                "authority_scope_id": SCOPE,
+                "action_ids": ["PHSA-1", "PHSA-1"],
+                "expected_reconciliation_version": 7,
+                "idempotency_key": "key",
+            },
+        ),
+    ],
+)
+def test_phs_reconciliation_client_rejects_wrong_process_or_selection(
+    method,
+    kwargs,
+):
+    client = PackageLogisticsClient(
+        PackageClientConfig(
+            "https://logistics.test",
+            "token",
+            SCOPE,
+            "host",
+            "device",
+        ),
+        transport=lambda *_args: pytest.fail(
+            "invalid request must not reach transport"
+        ),
+    )
+
+    with pytest.raises(PackageLogisticsError):
+        if method == "resolve":
+            client.resolve_phs_reconciliation_actions(**kwargs)
+        else:
+            client.prepare_phs_reconciliation_label_exchange(
+                "PHSR-001",
+                **kwargs,
+            )
+
+
 def test_client_lost_ack_recovers_receipt_in_command_scope():
     calls = []
     draft = _draft()

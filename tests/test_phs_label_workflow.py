@@ -178,6 +178,7 @@ class _Client:
     def __init__(self):
         self.calls = []
         self.exchange_state = "PREPARED"
+        self.source_membership_hash = MEMBERSHIP_HASH
         self.target = _label(
             label_id="LBL-NEW",
             qr_payload=TARGET_QR,
@@ -275,6 +276,14 @@ class _Client:
 
     def _exchange(self, state, version):
         target = dict(self.target)
+        source = _label(
+            label_id="LBL-OLD",
+            qr_payload=CANONICAL_QR,
+            hash_prefix="aaaaaaaaaaaaaaaa",
+            state=("SUPERSEDED" if state == "COMMITTED" else "ACTIVE"),
+            label_version=(2 if state == "COMMITTED" else 1),
+        )
+        source["membership_hash"] = self.source_membership_hash
         if state == "COMMITTED":
             target["state"] = "ACTIVE"
             target["label_version"] = 2
@@ -286,6 +295,7 @@ class _Client:
                 "state": state,
                 "entity_version": version,
             },
+            "source_labels": [source],
             "target_labels": [target],
         }
 
@@ -439,6 +449,32 @@ def test_print_failure_keeps_old_label_active_and_never_activates(tmp_path):
     assert current["active_label_qr_payload"] == CANONICAL_QR
     assert ("complete_print", False) in client.calls
     assert not any(name == "activate" for name, *_rest in client.calls)
+
+
+def test_source_target_membership_mismatch_blocks_print_and_activation(tmp_path):
+    current = _current_set()
+    client = _Client()
+    client.source_membership_hash = "f" * 64
+    coordinator = PHSLabelExchangeCoordinator(
+        client,
+        PHSLabelExchangeJournal(tmp_path / "journal.json"),
+        _Renderer(tmp_path / "label.png"),
+        _Printer(),
+    )
+
+    with pytest.raises(PHSLabelWorkflowError) as error:
+        coordinator.execute_single(
+            current,
+            TARGET_INSTRUCTION,
+            persist_current_set=lambda: True,
+        )
+
+    assert error.value.code == "PHS_TARGET_LABEL_INVALID"
+    assert current["active_label_qr_payload"] == CANONICAL_QR
+    assert not any(
+        name in {"request_print", "complete_print", "activate"}
+        for name, *_rest in client.calls
+    )
 
 
 def test_corrupt_journal_blocks_second_prepare(tmp_path):
