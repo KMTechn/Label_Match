@@ -199,6 +199,81 @@ def stable_id(prefix: str, *values: str) -> str:
     return f"{prefix}-{digest}"
 
 
+def canonical_json(value: Any) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise PackageLogisticsError(
+            "package work-group evidence is not canonical JSON"
+        ) from exc
+
+
+def canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _json_clone_mapping(
+    value: Mapping[str, Any] | None, *, field_name: str
+) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise PackageLogisticsError(f"{field_name} must be an object")
+    try:
+        cloned = json.loads(canonical_json(dict(value)))
+    except json.JSONDecodeError as exc:  # pragma: no cover - canonical JSON is readable
+        raise PackageLogisticsError(f"{field_name} is invalid") from exc
+    if not isinstance(cloned, dict):
+        raise PackageLogisticsError(f"{field_name} must be an object")
+    return cloned
+
+
+def _strict_int(value: Any, field_name: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise PackageLogisticsError(f"{field_name} is invalid")
+    return value
+
+
+def _strict_member_ids(
+    value: Any, field_name: str, *, allow_empty: bool = False
+) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise PackageLogisticsError(f"{field_name} is missing")
+    raw = tuple(str(item or "").strip() for item in value)
+    normalized = canonical_member_ids(raw)
+    if (
+        any(not item for item in raw)
+        or raw != normalized
+        or (not allow_empty and not normalized)
+    ):
+        raise PackageLogisticsError(f"{field_name} is not exact canonical membership")
+    return normalized
+
+
+def _strict_entity_versions(
+    value: Any, field_name: str = "entity_versions"
+) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        raise PackageLogisticsError(f"{field_name} is missing")
+    result: dict[str, int] = {}
+    for raw_key, raw_version in value.items():
+        key = str(raw_key or "").strip()
+        if not key or key != raw_key or key in result:
+            raise PackageLogisticsError(f"{field_name} contains an invalid entity key")
+        result[key] = _strict_int(
+            raw_version, f"{field_name}.{key}", minimum=0
+        )
+    if not result:
+        raise PackageLogisticsError(f"{field_name} is empty")
+    return result
+
+
 @dataclass(frozen=True)
 class PackageCommandDraft:
     set_id: str
@@ -231,6 +306,10 @@ class PackageCommandDraft:
     expected_seal_revision: int = 0
     expected_seal_token: str = ""
     expected_seal_qr_payload: str = ""
+    source_resolution_basis: str = ""
+    phs_work_group: Mapping[str, Any] = field(default_factory=dict)
+    work_group_source: Mapping[str, Any] = field(default_factory=dict)
+    source_session_ids: tuple[str, ...] = ()
 
     @classmethod
     def build(
@@ -266,6 +345,10 @@ class PackageCommandDraft:
         expected_seal_revision: int = 0,
         expected_seal_token: str = "",
         expected_seal_qr_payload: str = "",
+        source_resolution_basis: str = "",
+        phs_work_group: Mapping[str, Any] | None = None,
+        work_group_source: Mapping[str, Any] | None = None,
+        source_session_ids: Iterable[str] = (),
     ) -> "PackageCommandDraft":
         normalized_set_id = str(set_id or "").strip()
         normalized_item = str(item_code or "").strip()
@@ -284,13 +367,48 @@ class PackageCommandDraft:
         source_scope = str(source_authority_scope_id or "").strip()
         final_label = str(external_label or "").strip()
         mode = str(membership_mode or "").strip().upper()
+        resolution_basis = str(source_resolution_basis or "").strip().upper()
+        frozen_group = _json_clone_mapping(
+            phs_work_group, field_name="phs_work_group"
+        )
+        frozen_source = _json_clone_mapping(
+            work_group_source, field_name="work_group_source"
+        )
+        sessions = canonical_member_ids(source_session_ids)
         raw_samples = tuple(_normalize_barcode(value) for value in sample_barcodes)
         raw_exact = tuple(_normalize_barcode(value) for value in exact_rescan_barcodes)
         if not normalized_set_id or not normalized_item or not final_label:
             raise PackageLogisticsError("set_id, item_code, and external_label are required")
-        if not source_id and not source_input_tag and not source_hint:
+        if (
+            not source_id
+            and not source_input_tag
+            and not source_hint
+            and resolution_basis != "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+        ):
             raise PackageLogisticsError(
                 "sealed transfer QR or structured PHS BND/ITG identity is required"
+            )
+        if resolution_basis:
+            if resolution_basis != "PHS_WORK_GROUP_EXACT_MEMBERSHIP":
+                raise PackageLogisticsError(
+                    "unsupported package source resolution basis"
+                )
+            if (
+                not frozen_group
+                or not frozen_source
+                or not source_input_tag
+                or not sessions
+            ):
+                raise PackageLogisticsError(
+                    "package work-group draft requires frozen group, source topology, and origins"
+                )
+            if source_id or source_hint:
+                raise PackageLogisticsError(
+                    "package work-group draft cannot collapse to one transfer identity"
+                )
+        elif frozen_group or frozen_source or sessions:
+            raise PackageLogisticsError(
+                "package work-group evidence requires its exact resolution basis"
             )
         if bool(source_input_tag_label) != bool(source_input_tag_hash):
             raise PackageLogisticsError(
@@ -324,12 +442,25 @@ class PackageCommandDraft:
             raise PackageLogisticsError("INHERIT_ALL cannot use sample/exact rescan barcodes as membership")
         if mode == "EXACT_RESCAN" and (not exact or len(exact) != len(raw_exact)):
             raise PackageLogisticsError("EXACT_RESCAN requires a non-empty unique full rescan")
-        package_id = str(package_bundle_id or "").strip() or stable_id(
-            "PACKAGE",
-            source_id or source_hint or source_input_tag or source_label,
-            normalized_set_id,
-            final_label,
-        )
+        package_id = str(package_bundle_id or "").strip()
+        if resolution_basis:
+            if (
+                not package_id
+                or package_id
+                != str(frozen_source.get("package_bundle_id") or "").strip()
+                or final_label
+                != str(frozen_source.get("package_external_label") or "").strip()
+            ):
+                raise PackageLogisticsError(
+                    "package work-group deterministic package identity differs from preflight"
+                )
+        else:
+            package_id = package_id or stable_id(
+                "PACKAGE",
+                source_id or source_hint or source_input_tag or source_label,
+                normalized_set_id,
+                final_label,
+            )
         return cls(
             set_id=normalized_set_id,
             item_code=normalized_item,
@@ -371,7 +502,30 @@ class PackageCommandDraft:
             expected_seal_revision=max(0, int(expected_seal_revision or 0)),
             expected_seal_token=str(expected_seal_token or "").strip(),
             expected_seal_qr_payload=str(expected_seal_qr_payload or "").strip(),
+            source_resolution_basis=resolution_basis,
+            phs_work_group=frozen_group,
+            work_group_source=frozen_source,
+            source_session_ids=sessions,
         )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PackageCommandDraft":
+        if not isinstance(value, Mapping):
+            raise PackageLogisticsError("saved CREATE_PACKAGE draft is invalid")
+        data = dict(value)
+        data["sample_barcodes"] = tuple(data.get("sample_barcodes") or ())
+        data["exact_rescan_barcodes"] = tuple(
+            data.get("exact_rescan_barcodes") or ()
+        )
+        data["source_session_ids"] = tuple(
+            data.get("source_session_ids") or ()
+        )
+        try:
+            return cls.build(**data)
+        except (TypeError, ValueError, PackageLogisticsError) as exc:
+            raise PackageLogisticsError(
+                "saved CREATE_PACKAGE draft is invalid"
+            ) from exc
 
     def fingerprint(self) -> str:
         return hashlib.sha256(
@@ -410,6 +564,10 @@ class PackageCommandDraft:
             "expected_seal_revision": self.expected_seal_revision,
             "expected_seal_token": self.expected_seal_token,
             "expected_seal_qr_payload": self.expected_seal_qr_payload,
+            "source_resolution_basis": self.source_resolution_basis,
+            "phs_work_group": dict(self.phs_work_group),
+            "work_group_source": dict(self.work_group_source),
+            "source_session_ids": list(self.source_session_ids),
         }
 
 
@@ -1241,14 +1399,14 @@ class PackageCancellationOutbox:
     def _load_package_draft(package_row: Mapping[str, Any]) -> PackageCommandDraft:
         try:
             draft_data = json.loads(package_row["draft_json"])
-            return PackageCommandDraft(
-                **{
-                    **draft_data,
-                    "sample_barcodes": tuple(draft_data["sample_barcodes"]),
-                    "exact_rescan_barcodes": tuple(draft_data["exact_rescan_barcodes"]),
-                }
-            )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            return PackageCommandDraft.from_dict(draft_data)
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            PackageLogisticsError,
+        ) as exc:
             raise PackageLogisticsError("saved CREATE_PACKAGE draft is invalid") from exc
 
     @staticmethod
@@ -1701,6 +1859,21 @@ class PackageLogisticsClient:
             exact_rescan_barcodes=draft.exact_rescan_barcodes,
             source_bundle_hint=draft.source_bundle_hint,
         )
+        if (
+            resolved.get("source_resolution_basis")
+            == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+        ):
+            self._validate_work_group_source(
+                resolved,
+                draft,
+                expected_scope=scope,
+            )
+            projection = resolved.get("bundle")
+            if not isinstance(projection, Mapping):
+                raise PackageLogisticsError(
+                    "package work-group bundle projection is missing"
+                )
+            return dict(projection)
         projection = self._resolver_bundle(resolved)
         self._validate_projection(
             projection,
@@ -1753,6 +1926,19 @@ class PackageLogisticsClient:
             exact_rescan_barcodes=draft.exact_rescan_barcodes,
             source_bundle_hint=draft.source_bundle_hint,
         )
+        if (
+            resolved.get("source_resolution_basis")
+            == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+        ):
+            work_group_evidence = self._validate_work_group_source(
+                resolved,
+                draft,
+                expected_scope=scope,
+            )
+            evidence = dict(resolved)
+            evidence["bundle"] = dict(resolved["bundle"])
+            evidence["work_group_evidence"] = work_group_evidence
+            return evidence
         projection = self._resolver_bundle(resolved)
         self._validate_projection(
             projection,
@@ -2177,6 +2363,86 @@ class PackageLogisticsClient:
             and draft.source_authority_scope_id != self.config.authority_scope_id
         ):
             raise PackageLogisticsError("sealed transfer QR scope is outside the configured allowlist")
+        if draft.source_resolution_basis:
+            resolved = self.resolve_transfer_bundle(
+                external_label=draft.source_external_label,
+                input_tag_id=draft.source_input_tag_id,
+                input_tag_label_id=draft.source_input_tag_label_id,
+                input_tag_hash_prefix=draft.source_input_tag_hash_prefix,
+                item_id=draft.item_code,
+                authority_scope_id=scope,
+                exact_rescan_barcodes=draft.exact_rescan_barcodes,
+                source_bundle_hint="",
+            )
+            evidence = self._validate_work_group_source(
+                resolved,
+                draft,
+                expected_scope=scope,
+            )
+            server_barcodes = evidence["barcodes"]
+            if draft.sample_barcodes and not set(
+                draft.sample_barcodes
+            ).issubset(set(server_barcodes)):
+                raise PackageLogisticsError(
+                    "QA sample barcode is outside the package work-group membership"
+                )
+            payload: dict[str, Any] = {
+                "source_resolution_basis": (
+                    "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+                ),
+                "phs_work_group": evidence["phs_work_group"],
+                "source_transfers": evidence["source_transfers"],
+                "remainder_cover_groups": evidence[
+                    "remainder_cover_groups"
+                ],
+                "topology_hash": evidence["topology_hash"],
+                "package_bundle_id": evidence["package_bundle_id"],
+                "external_label": evidence["package_external_label"],
+                "item_id": evidence["item_id"],
+                "uom": evidence["uom"],
+                "membership_mode": draft.membership_mode,
+                "member_ids": list(evidence["member_ids"]),
+                "membership_hash": evidence["membership_hash"],
+                "sample_barcodes": list(draft.sample_barcodes),
+            }
+            if draft.membership_mode == "EXACT_RESCAN":
+                if draft.exact_rescan_barcodes != server_barcodes:
+                    raise PackageLogisticsError(
+                        "EXACT_RESCAN must equal the package work-group full membership"
+                    )
+                payload["exact_rescan_barcodes"] = list(
+                    draft.exact_rescan_barcodes
+                )
+                payload["barcode_membership_hash"] = (
+                    barcode_membership_hash(
+                        draft.exact_rescan_barcodes
+                    )
+                )
+            command = {
+                "contract_version": PACKAGE_CONTRACT_VERSION,
+                "command_type": "CREATE_PACKAGE",
+                "authority_scope_id": evidence["authority_scope_id"],
+                "authority_epoch": evidence["authority_epoch"],
+                "ledger_plane": evidence["ledger_plane"],
+                "plane_epoch": evidence["plane_epoch"],
+                "idempotency_key": idempotency_key,
+                "expected_versions": dict(evidence["entity_versions"]),
+                "payload": payload,
+            }
+            self._assert_authority(
+                command["authority_scope_id"],
+                authority_epoch=command["authority_epoch"],
+                ledger_plane=command["ledger_plane"],
+                plane_epoch=command["plane_epoch"],
+            )
+            group_id = str(
+                evidence["phs_work_group"].get("group_id") or ""
+            ).strip()
+            if not group_id:
+                raise PackageLogisticsError(
+                    "package work-group resolver returned no group identity"
+                )
+            return group_id, command
         resolved_projection: Mapping[str, Any] | None = None
         if not source_id:
             resolved = self.resolve_transfer_bundle(
@@ -2479,6 +2745,770 @@ class PackageLogisticsClient:
         return dict(bundle)
 
     @staticmethod
+    def _validate_transfer_seal(
+        value: Any,
+        *,
+        bundle_id: str,
+        bundle_version: int,
+        member_ids: tuple[str, ...],
+        item_id: str,
+        expected_state: str,
+    ) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise PackageLogisticsError("transfer seal evidence is missing")
+        seal = dict(value)
+        sealed_members = _strict_member_ids(
+            seal.get("sealed_member_ids"),
+            "transfer seal member_ids",
+        )
+        pairs = canonical_member_barcodes(seal.get("sealed_members"))
+        raw_barcodes = seal.get("sealed_normalized_barcodes")
+        if not isinstance(raw_barcodes, (list, tuple)):
+            raise PackageLogisticsError(
+                "transfer seal barcode membership is missing"
+            )
+        barcodes = canonical_barcodes(raw_barcodes)
+        token = str(seal.get("seal_token") or "").strip()
+        if (
+            seal.get("seal_contract_version") != "transfer-seal-qr-v1"
+            or str(seal.get("seal_state") or "").strip().upper()
+            != expected_state
+            or not str(seal.get("seal_id") or "").strip()
+            or _strict_int(
+                seal.get("seal_revision"),
+                "transfer seal revision",
+                minimum=1,
+            )
+            < 1
+            or not token
+            or str(seal.get("seal_token_hash") or "").strip().lower()
+            != hashlib.sha256(token.encode("utf-8")).hexdigest()
+            or not str(seal.get("seal_qr_payload") or "").strip()
+            or str(seal.get("sealed_bundle_id") or "").strip()
+            != bundle_id
+            or _strict_int(
+                seal.get("sealed_bundle_version"),
+                "transfer seal bundle version",
+                minimum=1,
+            )
+            != bundle_version
+            or sealed_members != member_ids
+            or _strict_int(
+                seal.get("sealed_member_count"),
+                "transfer seal member count",
+                minimum=1,
+            )
+            != len(member_ids)
+            or str(seal.get("sealed_membership_hash") or "").strip().lower()
+            != membership_hash(member_ids)
+            or len(pairs) != len(member_ids)
+            or tuple(unit_id for unit_id, _barcode in pairs) != member_ids
+            or not barcodes
+            or len(raw_barcodes) != len(barcodes)
+            or tuple(sorted(barcode for _unit_id, barcode in pairs))
+            != barcodes
+            or str(
+                seal.get("sealed_barcode_membership_hash") or ""
+            ).strip().lower()
+            != barcode_membership_hash(barcodes)
+        ):
+            raise PackageLogisticsError(
+                f"{item_id} transfer seal exact evidence is invalid"
+            )
+        return seal
+
+    @staticmethod
+    def _validate_work_group_source(
+        resolved: Mapping[str, Any],
+        draft: PackageCommandDraft,
+        *,
+        expected_scope: str,
+    ) -> dict[str, Any]:
+        if not isinstance(resolved, Mapping):
+            raise PackageLogisticsError(
+                "package work-group resolver response is invalid"
+            )
+        if (
+            resolved.get("source_resolution_basis")
+            != "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+            or _strict_int(
+                resolved.get("candidate_count"),
+                "package work-group candidate_count",
+                minimum=1,
+            )
+            != 1
+        ):
+            raise PackageLogisticsError(
+                "PACKAGE_SOURCE resolver did not select one exact work group"
+            )
+        group_value = resolved.get("phs_work_group")
+        source_value = resolved.get("work_group_source")
+        bundle_value = resolved.get("bundle")
+        if (
+            not isinstance(group_value, Mapping)
+            or not isinstance(source_value, Mapping)
+            or not isinstance(bundle_value, Mapping)
+        ):
+            raise PackageLogisticsError(
+                "package work-group resolver topology is missing"
+            )
+        group = _json_clone_mapping(
+            group_value, field_name="phs_work_group"
+        )
+        source = _json_clone_mapping(
+            source_value, field_name="work_group_source"
+        )
+        bundle = _json_clone_mapping(
+            bundle_value, field_name="bundle"
+        )
+        scope = str(source.get("authority_scope_id") or "").strip()
+        ledger_plane = str(source.get("ledger_plane") or "").strip().upper()
+        plane_epoch = _strict_int(
+            source.get("plane_epoch"),
+            "work_group_source.plane_epoch",
+            minimum=1,
+        )
+        authority_epoch = _strict_int(
+            bundle.get("authority_epoch"),
+            "bundle.authority_epoch",
+            minimum=0,
+        )
+        item_id = str(source.get("item_id") or "").strip()
+        uom = str(source.get("uom") or "").strip().upper()
+        if (
+            not scope
+            or scope != expected_scope
+            or str(bundle.get("authority_scope_id") or "").strip() != scope
+            or str(bundle.get("ledger_plane") or "").strip().upper()
+            != ledger_plane
+            or _strict_int(
+                bundle.get("plane_epoch"),
+                "bundle.plane_epoch",
+                minimum=1,
+            )
+            != plane_epoch
+            or ledger_plane not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
+            or str(bundle.get("bundle_role") or "").strip().upper()
+            != "PACKAGE_SOURCE"
+            or str(bundle.get("bundle_type") or "").strip().upper()
+            != "TRANSFER"
+            or str(bundle.get("bundle_state") or "").strip().upper()
+            != "AVAILABLE"
+            or str(bundle.get("current_location") or "").strip().upper()
+            != "TRANSFER"
+            or item_id != draft.item_code
+            or str(bundle.get("item_id") or "").strip() != item_id
+            or str(bundle.get("uom") or "").strip().upper() != uom
+            or not uom
+        ):
+            raise PackageLogisticsError(
+                "package work-group authority, item, or location identity is invalid"
+            )
+
+        members = _strict_member_ids(
+            source.get("member_ids"), "work_group_source.member_ids"
+        )
+        group_members = _strict_member_ids(
+            group.get("member_ids"), "phs_work_group.member_ids"
+        )
+        bundle_members = _strict_member_ids(
+            bundle.get("member_ids"), "bundle.member_ids"
+        )
+        member_digest = membership_hash(members)
+        if (
+            group_members != members
+            or bundle_members != members
+            or _strict_int(
+                source.get("member_count"),
+                "work_group_source.member_count",
+                minimum=1,
+            )
+            != len(members)
+            or _strict_int(
+                group.get("member_count"),
+                "phs_work_group.member_count",
+                minimum=1,
+            )
+            != len(members)
+            or _strict_int(
+                bundle.get("member_count"),
+                "bundle.member_count",
+                minimum=1,
+            )
+            != len(members)
+            or any(
+                str(value or "").strip().lower() != member_digest
+                for value in (
+                    source.get("membership_hash"),
+                    group.get("membership_hash"),
+                    bundle.get("membership_hash"),
+                )
+            )
+        ):
+            raise PackageLogisticsError(
+                "package work-group exact membership proof is inconsistent"
+            )
+        group_id = str(group.get("group_id") or "").strip()
+        label_id = str(group.get("label_id") or "").strip()
+        scan_payload = str(group.get("scan_payload") or "").strip()
+        anchor_input_tag_id = str(
+            group.get("scan_anchor_input_tag_id") or ""
+        ).strip()
+        if (
+            not group_id
+            or not label_id
+            or str(group.get("state") or "").strip().upper() != "ACTIVE"
+            or str(group.get("item_id") or "").strip() != item_id
+            or str(group.get("uom") or "").strip().upper() != uom
+            or not scan_payload
+            or not anchor_input_tag_id
+            or (
+                draft.source_input_tag_id
+                and anchor_input_tag_id != draft.source_input_tag_id
+            )
+            or (
+                draft.source_active_label_qr_payload
+                and scan_payload != draft.source_active_label_qr_payload
+            )
+        ):
+            raise PackageLogisticsError(
+                "package work-group physical label proof is invalid"
+            )
+        group_entity_version = _strict_int(
+            group.get("group_entity_version"),
+            "phs_work_group.group_entity_version",
+            minimum=1,
+        )
+        membership_version = _strict_int(
+            group.get("membership_version"),
+            "phs_work_group.membership_version",
+            minimum=1,
+        )
+        label_version = _strict_int(
+            group.get("label_version"),
+            "phs_work_group.label_version",
+            minimum=1,
+        )
+        label_entity_version = _strict_int(
+            group.get("label_entity_version"),
+            "phs_work_group.label_entity_version",
+            minimum=1,
+        )
+
+        rows = source.get("members")
+        if not isinstance(rows, list) or len(rows) != len(members):
+            raise PackageLogisticsError(
+                "package work-group selected barcode mapping is incomplete"
+            )
+        barcode_to_unit: dict[str, str] = {}
+        unit_to_barcode: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise PackageLogisticsError(
+                    "package work-group selected barcode row is invalid"
+                )
+            unit_id = str(row.get("unit_id") or "").strip()
+            barcode = _normalize_barcode(row.get("normalized_barcode"))
+            if (
+                not unit_id
+                or not barcode
+                or unit_id in unit_to_barcode
+                or barcode in barcode_to_unit
+            ):
+                raise PackageLogisticsError(
+                    "package work-group selected barcode mapping is ambiguous"
+                )
+            unit_to_barcode[unit_id] = barcode
+            barcode_to_unit[barcode] = unit_id
+        barcodes = canonical_barcodes(unit_to_barcode.values())
+        barcode_digest = barcode_membership_hash(barcodes)
+        if (
+            canonical_member_ids(unit_to_barcode) != members
+            or _strict_int(
+                source.get("barcode_member_count"),
+                "work_group_source.barcode_member_count",
+                minimum=1,
+            )
+            != len(barcodes)
+            or str(
+                source.get("barcode_membership_hash") or ""
+            ).strip().lower()
+            != barcode_digest
+            or _strict_int(
+                bundle.get("barcode_member_count"),
+                "bundle.barcode_member_count",
+                minimum=1,
+            )
+            != len(barcodes)
+            or str(
+                bundle.get("barcode_membership_hash") or ""
+            ).strip().lower()
+            != barcode_digest
+        ):
+            raise PackageLogisticsError(
+                "package work-group barcode membership proof is inconsistent"
+            )
+
+        raw_sources = source.get("source_transfers")
+        if not isinstance(raw_sources, list) or not raw_sources:
+            raise PackageLogisticsError(
+                "package work-group source transfers are missing"
+            )
+        sources: list[dict[str, Any]] = []
+        all_source_members: set[str] = set()
+        selected_union: set[str] = set()
+        remainder_union: set[str] = set()
+        source_ids: list[str] = []
+        source_seals: list[dict[str, Any]] = []
+        source_iin = str(source.get("source_iin") or "").strip()
+        for raw_source in raw_sources:
+            if not isinstance(raw_source, Mapping):
+                raise PackageLogisticsError(
+                    "package work-group source transfer is invalid"
+                )
+            source_spec = _json_clone_mapping(
+                raw_source, field_name="source_transfer"
+            )
+            source_id = str(source_spec.get("bundle_id") or "").strip()
+            source_members = _strict_member_ids(
+                source_spec.get("source_member_ids"),
+                "source_transfer.source_member_ids",
+            )
+            selected_members = _strict_member_ids(
+                source_spec.get("selected_member_ids"),
+                "source_transfer.selected_member_ids",
+            )
+            remainder_members = _strict_member_ids(
+                source_spec.get("remainder_member_ids"),
+                "source_transfer.remainder_member_ids",
+                allow_empty=True,
+            )
+            source_version = _strict_int(
+                source_spec.get("entity_version"),
+                "source_transfer.entity_version",
+                minimum=1,
+            )
+            if (
+                not source_id
+                or source_id in source_ids
+                or str(source_spec.get("bundle_type") or "").strip().upper()
+                != "TRANSFER"
+                or str(source_spec.get("bundle_state") or "").strip().upper()
+                != "AVAILABLE"
+                or str(
+                    source_spec.get("accounting_inbound_iin") or ""
+                ).strip()
+                != source_iin
+                or not source_iin
+                or _strict_int(
+                    source_spec.get("source_member_count"),
+                    "source_transfer.source_member_count",
+                    minimum=1,
+                )
+                != len(source_members)
+                or str(
+                    source_spec.get("source_membership_hash") or ""
+                ).strip().lower()
+                != membership_hash(source_members)
+                or _strict_int(
+                    source_spec.get("selected_member_count"),
+                    "source_transfer.selected_member_count",
+                    minimum=1,
+                )
+                != len(selected_members)
+                or str(
+                    source_spec.get("selected_membership_hash") or ""
+                ).strip().lower()
+                != membership_hash(selected_members)
+                or _strict_int(
+                    source_spec.get("remainder_member_count"),
+                    "source_transfer.remainder_member_count",
+                    minimum=0,
+                )
+                != len(remainder_members)
+                or (
+                    str(
+                        source_spec.get("remainder_membership_hash") or ""
+                    ).strip().lower()
+                    if remainder_members
+                    else source_spec.get("remainder_membership_hash")
+                )
+                != (
+                    membership_hash(remainder_members)
+                    if remainder_members
+                    else None
+                )
+                or set(selected_members).intersection(remainder_members)
+                or canonical_member_ids(
+                    (*selected_members, *remainder_members)
+                )
+                != source_members
+                or set(source_members).intersection(all_source_members)
+                or set(selected_members).intersection(selected_union)
+            ):
+                raise PackageLogisticsError(
+                    "package work-group source partition is inconsistent"
+                )
+            expected_remainder_id = (
+                "TRANSFER-WORK-REMAINDER-"
+                + canonical_sha256(
+                    {
+                        "source_transfer_bundle_id": source_id,
+                        "member_ids": list(remainder_members),
+                    }
+                )[:24].upper()
+                if remainder_members
+                else None
+            )
+            if (
+                source_spec.get("remainder_transfer_bundle_id")
+                != expected_remainder_id
+            ):
+                raise PackageLogisticsError(
+                    "package work-group remainder identity is not deterministic"
+                )
+            cover_ids = _strict_member_ids(
+                source_spec.get("remainder_cover_group_ids"),
+                "source_transfer.remainder_cover_group_ids",
+                allow_empty=True,
+            )
+            if bool(cover_ids) != bool(remainder_members):
+                raise PackageLogisticsError(
+                    "package work-group remainder cover proof is incomplete"
+                )
+            seal = PackageLogisticsClient._validate_transfer_seal(
+                source_spec.get("active_seal"),
+                bundle_id=source_id,
+                bundle_version=source_version,
+                member_ids=source_members,
+                item_id=item_id,
+                expected_state="ACTIVE",
+            )
+            source_ids.append(source_id)
+            all_source_members.update(source_members)
+            selected_union.update(selected_members)
+            remainder_union.update(remainder_members)
+            source_seals.append(seal)
+            sources.append(source_spec)
+        if (
+            tuple(source_ids) != tuple(sorted(source_ids))
+            or _strict_int(
+                source.get("source_transfer_count"),
+                "work_group_source.source_transfer_count",
+                minimum=1,
+            )
+            != len(sources)
+            or source.get("source_transfer_bundle_ids") != source_ids
+            or canonical_member_ids(selected_union) != members
+        ):
+            raise PackageLogisticsError(
+                "package work-group source transfer union is inconsistent"
+            )
+
+        raw_covers = source.get("remainder_cover_groups")
+        if not isinstance(raw_covers, list):
+            raise PackageLogisticsError(
+                "package work-group remainder cover groups are missing"
+            )
+        covers: list[dict[str, Any]] = []
+        cover_ids: list[str] = []
+        covered_union: set[str] = set()
+        cover_by_id: dict[str, tuple[str, ...]] = {}
+        for raw_cover in raw_covers:
+            if not isinstance(raw_cover, Mapping):
+                raise PackageLogisticsError(
+                    "package work-group remainder cover is invalid"
+                )
+            cover = _json_clone_mapping(
+                raw_cover, field_name="remainder_cover_group"
+            )
+            cover_id = str(cover.get("group_id") or "").strip()
+            cover_label_id = str(cover.get("label_id") or "").strip()
+            cover_members = _strict_member_ids(
+                cover.get("member_ids"), "remainder_cover_group.member_ids"
+            )
+            covered_members = _strict_member_ids(
+                cover.get("covered_member_ids"),
+                "remainder_cover_group.covered_member_ids",
+            )
+            if (
+                not cover_id
+                or cover_id == group_id
+                or cover_id in cover_ids
+                or not cover_label_id
+                or cover_members != covered_members
+                or set(covered_members).intersection(covered_union)
+                or _strict_int(
+                    cover.get("member_count"),
+                    "remainder_cover_group.member_count",
+                    minimum=1,
+                )
+                != len(cover_members)
+                or str(
+                    cover.get("membership_hash") or ""
+                ).strip().lower()
+                != membership_hash(cover_members)
+                or _strict_int(
+                    cover.get("covered_member_count"),
+                    "remainder_cover_group.covered_member_count",
+                    minimum=1,
+                )
+                != len(covered_members)
+                or str(
+                    cover.get("covered_membership_hash") or ""
+                ).strip().lower()
+                != membership_hash(covered_members)
+                or str(cover.get("item_id") or "").strip() != item_id
+                or str(cover.get("uom") or "").strip().upper() != uom
+                or not str(cover.get("scan_payload") or "").strip()
+                or not str(
+                    cover.get("scan_anchor_input_tag_id") or ""
+                ).strip()
+            ):
+                raise PackageLogisticsError(
+                    "package work-group remainder cover membership is inconsistent"
+                )
+            _strict_int(
+                cover.get("membership_version"),
+                "remainder_cover_group.membership_version",
+                minimum=1,
+            )
+            _strict_int(
+                cover.get("label_version"),
+                "remainder_cover_group.label_version",
+                minimum=1,
+            )
+            _strict_int(
+                cover.get("group_entity_version"),
+                "remainder_cover_group.group_entity_version",
+                minimum=1,
+            )
+            _strict_int(
+                cover.get("label_entity_version"),
+                "remainder_cover_group.label_entity_version",
+                minimum=1,
+            )
+            cover_ids.append(cover_id)
+            covered_union.update(covered_members)
+            cover_by_id[cover_id] = covered_members
+            covers.append(cover)
+        if (
+            tuple(cover_ids) != tuple(sorted(cover_ids))
+            or canonical_member_ids(covered_union)
+            != canonical_member_ids(remainder_union)
+        ):
+            raise PackageLogisticsError(
+                "package work-group remainder topology is not exactly covered"
+            )
+        for source_spec in sources:
+            expected_cover_ids = tuple(
+                sorted(
+                    cover_id
+                    for cover_id, cover_members in cover_by_id.items()
+                    if set(cover_members).intersection(
+                        source_spec["remainder_member_ids"]
+                    )
+                )
+            )
+            if tuple(source_spec["remainder_cover_group_ids"]) != expected_cover_ids:
+                raise PackageLogisticsError(
+                    "package work-group source-to-cover topology is inconsistent"
+                )
+
+        package_id = str(source.get("package_bundle_id") or "").strip()
+        package_external_label = str(
+            source.get("package_external_label") or ""
+        ).strip()
+        expected_package_id = (
+            "PACKAGE-WORK-"
+            + canonical_sha256(
+                {
+                    "group_id": group_id,
+                    "label_id": label_id,
+                    "member_ids": list(members),
+                }
+            )[:24].upper()
+        )
+        if (
+            package_id != expected_package_id
+            or not package_external_label
+            or (
+                draft.source_resolution_basis
+                and draft.package_bundle_id != package_id
+            )
+            or (
+                draft.source_resolution_basis
+                and draft.external_label != package_external_label
+            )
+        ):
+            raise PackageLogisticsError(
+                "package work-group package identity is inconsistent"
+            )
+        expected_versions = {
+            f"phs_work_group:{group_id}": group_entity_version,
+            f"phs_work_membership:{group_id}": membership_version,
+            f"phs_work_label_version:{group_id}": label_version,
+            f"phs_label:{label_id}": label_entity_version,
+            **{
+                f"bundle:{source_spec['bundle_id']}": int(
+                    source_spec["entity_version"]
+                )
+                for source_spec in sources
+            },
+            f"bundle:{package_id}": 0,
+        }
+        for source_spec in sources:
+            remainder_id = source_spec.get(
+                "remainder_transfer_bundle_id"
+            )
+            if remainder_id:
+                expected_versions[f"bundle:{remainder_id}"] = 0
+        for cover in covers:
+            cover_id = str(cover["group_id"])
+            expected_versions.update(
+                {
+                    f"phs_work_group:{cover_id}": int(
+                        cover["group_entity_version"]
+                    ),
+                    f"phs_work_membership:{cover_id}": int(
+                        cover["membership_version"]
+                    ),
+                    f"phs_work_label_version:{cover_id}": int(
+                        cover["label_version"]
+                    ),
+                    f"phs_label:{cover['label_id']}": int(
+                        cover["label_entity_version"]
+                    ),
+                }
+            )
+        actual_versions = _strict_entity_versions(
+            source.get("entity_versions"),
+            "work_group_source.entity_versions",
+        )
+        if (
+            actual_versions != expected_versions
+            or _strict_entity_versions(
+                resolved.get("entity_versions"), "entity_versions"
+            )
+            != expected_versions
+            or _strict_entity_versions(
+                bundle.get("entity_versions"), "bundle.entity_versions"
+            )
+            != expected_versions
+        ):
+            raise PackageLogisticsError(
+                "package work-group expected_versions are not the full topology"
+            )
+        topology_hash = canonical_sha256(
+            {
+                "phs_work_group": group,
+                "source_transfers": sources,
+                "remainder_cover_groups": covers,
+                "source_iin": source_iin,
+                "barcode_membership_hash": barcode_digest,
+                "package_bundle_id": package_id,
+            }
+        )
+        if (
+            str(source.get("topology_hash") or "").strip().lower()
+            != topology_hash
+            or str(resolved.get("topology_hash") or "").strip().lower()
+            != topology_hash
+        ):
+            raise PackageLogisticsError(
+                "package work-group topology hash is invalid"
+            )
+        sessions = _strict_member_ids(
+            source.get("source_session_ids"),
+            "work_group_source.source_session_ids",
+        )
+        if (
+            bundle.get("active_seals") != source_seals
+            or (
+                len(sources) == 1
+                and bundle.get("active_seal") != source_seals[0]
+            )
+            or (
+                len(sources) != 1
+                and bundle.get("active_seal") is not None
+            )
+        ):
+            raise PackageLogisticsError(
+                "package work-group plural transfer seals are inconsistent"
+            )
+        full_single_transfer = bool(
+            len(sources) == 1
+            and sources[0]["selected_member_ids"]
+            == sources[0]["source_member_ids"]
+            and not sources[0]["remainder_member_ids"]
+            and sources[0].get("remainder_transfer_bundle_id") is None
+            and not covers
+        )
+        if bool(bundle.get("controlled_reseal_eligible")) != (
+            len(sources) == 1
+        ):
+            raise PackageLogisticsError(
+                "package work-group reseal eligibility evidence is invalid"
+            )
+        if draft.source_resolution_basis:
+            if (
+                draft.source_resolution_basis
+                != "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+                or canonical_json(dict(draft.phs_work_group))
+                != canonical_json(group)
+                or canonical_json(dict(draft.work_group_source))
+                != canonical_json(source)
+                or draft.source_session_ids != sessions
+            ):
+                raise PackageLogisticsError(
+                    "package work-group topology changed after local preflight"
+                )
+        if (
+            draft.expected_member_count
+            and draft.expected_member_count != len(members)
+        ) or (
+            draft.expected_membership_hash
+            and draft.expected_membership_hash != member_digest
+        ) or (
+            draft.expected_authority_epoch
+            and draft.expected_authority_epoch != authority_epoch
+        ) or (
+            draft.expected_ledger_plane
+            and draft.expected_ledger_plane != ledger_plane
+        ) or (
+            draft.expected_plane_epoch
+            and draft.expected_plane_epoch != plane_epoch
+        ):
+            raise PackageLogisticsError(
+                "package work-group identity differs from its frozen draft"
+            )
+        return {
+            "authority_scope_id": scope,
+            "authority_epoch": authority_epoch,
+            "ledger_plane": ledger_plane,
+            "plane_epoch": plane_epoch,
+            "item_id": item_id,
+            "uom": uom,
+            "member_ids": members,
+            "membership_hash": member_digest,
+            "barcodes": barcodes,
+            "barcode_membership_hash": barcode_digest,
+            "barcode_to_unit": barcode_to_unit,
+            "phs_work_group": group,
+            "work_group_source": source,
+            "source_transfers": sources,
+            "remainder_cover_groups": covers,
+            "source_session_ids": sessions,
+            "source_transfer_bundle_ids": tuple(source_ids),
+            "package_bundle_id": package_id,
+            "package_external_label": package_external_label,
+            "topology_hash": topology_hash,
+            "entity_versions": expected_versions,
+            "full_single_transfer": full_single_transfer,
+            "active_seal": source_seals[0] if full_single_transfer else None,
+        }
+
+    @staticmethod
     def _validate_projection(
         projection: Mapping[str, Any],
         draft: PackageCommandDraft,
@@ -2670,13 +3700,7 @@ class PackageOutboxProcessor:
                 key = row["idempotency_key"]
                 try:
                     draft_data = json.loads(row["draft_json"])
-                    draft = PackageCommandDraft(
-                        **{
-                            **draft_data,
-                            "sample_barcodes": tuple(draft_data["sample_barcodes"]),
-                            "exact_rescan_barcodes": tuple(draft_data["exact_rescan_barcodes"]),
-                        }
-                    )
+                    draft = PackageCommandDraft.from_dict(draft_data)
                     if row.get("command_json"):
                         command = json.loads(row["command_json"])
                         source_id = str(row.get("resolved_source_bundle_id") or "").strip()
@@ -2723,6 +3747,476 @@ class PackageOutboxProcessor:
         return counts
 
     @staticmethod
+    def _validate_work_group_receipt(
+        draft: PackageCommandDraft,
+        source_identity: str,
+        receipt: Mapping[str, Any],
+        *,
+        command: Mapping[str, Any] | None,
+    ) -> None:
+        if not isinstance(receipt, Mapping) or not isinstance(command, Mapping):
+            raise PackageLogisticsError(
+                "package work-group command/receipt is invalid"
+            )
+        payload = command.get("payload")
+        command_versions = command.get("expected_versions")
+        if not isinstance(payload, Mapping):
+            raise PackageLogisticsError(
+                "saved package work-group command payload is invalid"
+            )
+        group = _json_clone_mapping(
+            draft.phs_work_group, field_name="phs_work_group"
+        )
+        source = _json_clone_mapping(
+            draft.work_group_source, field_name="work_group_source"
+        )
+        sources = source.get("source_transfers")
+        covers = source.get("remainder_cover_groups")
+        if not isinstance(sources, list) or not isinstance(covers, list):
+            raise PackageLogisticsError(
+                "saved package work-group topology is invalid"
+            )
+        group_id = str(group.get("group_id") or "").strip()
+        package_id = str(source.get("package_bundle_id") or "").strip()
+        expected_versions = _strict_entity_versions(
+            source.get("entity_versions"),
+            "work_group_source.entity_versions",
+        )
+        members = _strict_member_ids(
+            source.get("member_ids"), "work_group_source.member_ids"
+        )
+        member_digest = membership_hash(members)
+        expected_payload = {
+            "source_resolution_basis": (
+                "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+            ),
+            "phs_work_group": group,
+            "source_transfers": sources,
+            "remainder_cover_groups": covers,
+            "topology_hash": str(source.get("topology_hash") or ""),
+            "package_bundle_id": package_id,
+            "external_label": str(
+                source.get("package_external_label") or ""
+            ),
+            "item_id": str(source.get("item_id") or ""),
+            "uom": str(source.get("uom") or ""),
+            "membership_mode": draft.membership_mode,
+            "member_ids": list(members),
+            "membership_hash": member_digest,
+            "sample_barcodes": list(draft.sample_barcodes),
+        }
+        if draft.membership_mode == "EXACT_RESCAN":
+            expected_payload["exact_rescan_barcodes"] = list(
+                draft.exact_rescan_barcodes
+            )
+            expected_payload["barcode_membership_hash"] = (
+                barcode_membership_hash(draft.exact_rescan_barcodes)
+            )
+        if (
+            not group_id
+            or source_identity != group_id
+            or str(command.get("contract_version") or "")
+            != PACKAGE_CONTRACT_VERSION
+            or str(command.get("command_type") or "")
+            != "CREATE_PACKAGE"
+            or not str(command.get("idempotency_key") or "").strip()
+            or str(command.get("authority_scope_id") or "")
+            != str(source.get("authority_scope_id") or "")
+            or _strict_int(
+                command.get("authority_epoch"),
+                "command.authority_epoch",
+                minimum=0,
+            )
+            != draft.expected_authority_epoch
+            or str(command.get("ledger_plane") or "").upper()
+            != str(source.get("ledger_plane") or "").upper()
+            or _strict_int(
+                command.get("plane_epoch"),
+                "command.plane_epoch",
+                minimum=1,
+            )
+            != int(source.get("plane_epoch") or 0)
+            or _strict_entity_versions(
+                command_versions, "command.expected_versions"
+            )
+            != expected_versions
+            or canonical_json(dict(payload))
+            != canonical_json(expected_payload)
+        ):
+            raise PackageLogisticsError(
+                "saved package work-group command differs from frozen preflight"
+            )
+
+        receipt_id = str(receipt.get("receipt_id") or "").strip()
+        if (
+            not receipt_id
+            or str(receipt.get("contract_version") or "")
+            != PACKAGE_CONTRACT_VERSION
+            or str(receipt.get("command_type") or "")
+            != "CREATE_PACKAGE"
+            or str(receipt.get("status") or "").strip().upper()
+            != "COMMITTED"
+            or str(receipt.get("authority_scope_id") or "")
+            != str(command.get("authority_scope_id") or "")
+            or _strict_int(
+                receipt.get("authority_epoch"),
+                "receipt.authority_epoch",
+                minimum=0,
+            )
+            != int(command.get("authority_epoch") or 0)
+            or str(
+                receipt.get("resolved_ledger_plane") or ""
+            ).strip().upper()
+            != str(command.get("ledger_plane") or "").strip().upper()
+            or _strict_int(
+                receipt.get("resolved_plane_epoch"),
+                "receipt.resolved_plane_epoch",
+                minimum=1,
+            )
+            != int(command.get("plane_epoch") or 0)
+            or not str(receipt.get("committed_at") or "").strip()
+            or not isinstance(receipt.get("event_ids"), (list, tuple))
+            or len(receipt.get("event_ids") or ()) != 1
+            or not str((receipt.get("event_ids") or ("",))[0] or "").strip()
+            or not isinstance(receipt.get("outbox_ids"), (list, tuple))
+            or len(receipt.get("outbox_ids") or ()) != 1
+            or not str((receipt.get("outbox_ids") or ("",))[0] or "").strip()
+        ):
+            raise PackageLogisticsError(
+                "package work-group receipt identity is invalid"
+            )
+        data = receipt.get("data")
+        if not isinstance(data, Mapping):
+            raise PackageLogisticsError(
+                "package work-group receipt data is missing"
+            )
+        source_ids = [str(value.get("bundle_id") or "") for value in sources]
+        source_sessions = list(draft.source_session_ids)
+        selected_rows = source.get("members")
+        if not isinstance(selected_rows, list):
+            raise PackageLogisticsError(
+                "package work-group selected members are missing"
+            )
+        expected_member_rows = [
+            {
+                "unit_id": str(row.get("unit_id") or ""),
+                "normalized_barcode": _normalize_barcode(
+                    row.get("normalized_barcode")
+                ),
+            }
+            for row in selected_rows
+            if isinstance(row, Mapping)
+        ]
+        if len(expected_member_rows) != len(members):
+            raise PackageLogisticsError(
+                "package work-group selected member rows are invalid"
+            )
+
+        expected_transitions: list[dict[str, Any]] = []
+        expected_remainder_bases: list[dict[str, Any]] = []
+        remainder_ids: list[str] = []
+        source_seals_consumed: list[dict[str, Any]] = []
+        cover_remainder_roots: set[tuple[str, str]] = set()
+        for source_spec in sources:
+            source_id = str(source_spec.get("bundle_id") or "")
+            source_members = _strict_member_ids(
+                source_spec.get("source_member_ids"),
+                "source_transfer.source_member_ids",
+            )
+            selected = _strict_member_ids(
+                source_spec.get("selected_member_ids"),
+                "source_transfer.selected_member_ids",
+            )
+            remainder = _strict_member_ids(
+                source_spec.get("remainder_member_ids"),
+                "source_transfer.remainder_member_ids",
+                allow_empty=True,
+            )
+            before = _strict_int(
+                source_spec.get("entity_version"),
+                "source_transfer.entity_version",
+                minimum=1,
+            )
+            remainder_id = source_spec.get(
+                "remainder_transfer_bundle_id"
+            )
+            expected_transitions.append(
+                {
+                    "source_transfer_bundle_id": source_id,
+                    "entity_version_before": before,
+                    "entity_version_after": before + 1,
+                    "state_before": "AVAILABLE",
+                    "state_after": "CONSUMED",
+                    "source_member_ids": list(source_members),
+                    "source_member_count": len(source_members),
+                    "source_membership_hash": membership_hash(
+                        source_members
+                    ),
+                    "selected_member_ids": list(selected),
+                    "selected_member_count": len(selected),
+                    "selected_membership_hash": membership_hash(selected),
+                    "remainder_transfer_bundle_id": remainder_id,
+                }
+            )
+            active_seal = _json_clone_mapping(
+                source_spec.get("active_seal"),
+                field_name="source_transfer.active_seal",
+            )
+            source_seals_consumed.append(
+                {**active_seal, "seal_state": "CONSUMED"}
+            )
+            if remainder_id:
+                remainder_id = str(remainder_id)
+                remainder_ids.append(remainder_id)
+                pair_map = dict(
+                    canonical_member_barcodes(
+                        active_seal.get("sealed_members")
+                    )
+                )
+                remainder_rows = [
+                    {
+                        "unit_id": unit_id,
+                        "normalized_barcode": pair_map.get(unit_id, ""),
+                    }
+                    for unit_id in remainder
+                ]
+                if any(
+                    not row["normalized_barcode"]
+                    for row in remainder_rows
+                ):
+                    raise PackageLogisticsError(
+                        "saved remainder barcode mapping is incomplete"
+                    )
+                expected_remainder_bases.append(
+                    {
+                        "source_transfer_bundle_id": source_id,
+                        "remainder_transfer_bundle_id": remainder_id,
+                        "member_ids": list(remainder),
+                        "members": remainder_rows,
+                        "member_count": len(remainder),
+                        "membership_hash": membership_hash(remainder),
+                        "entity_version": 1,
+                    }
+                )
+                for cover_id in source_spec.get(
+                    "remainder_cover_group_ids"
+                ) or ():
+                    cover_remainder_roots.add(
+                        (str(cover_id), remainder_id)
+                    )
+        if data.get("source_transitions") != expected_transitions:
+            raise PackageLogisticsError(
+                "package work-group receipt source transitions are invalid"
+            )
+
+        remainder_values = data.get("remainder_transfers")
+        remainder_seals = data.get("remainder_transfer_seals")
+        if (
+            not isinstance(remainder_values, list)
+            or len(remainder_values) != len(expected_remainder_bases)
+            or not isinstance(remainder_seals, list)
+            or len(remainder_seals) != len(expected_remainder_bases)
+        ):
+            raise PackageLogisticsError(
+                "package work-group receipt remainder evidence is invalid"
+            )
+        seal_keys = {
+            "seal_contract_version",
+            "seal_state",
+            "seal_id",
+            "seal_revision",
+            "seal_token",
+            "seal_token_hash",
+            "seal_qr_payload",
+            "sealed_bundle_id",
+            "sealed_bundle_version",
+            "sealed_member_ids",
+            "sealed_members",
+            "sealed_member_count",
+            "sealed_membership_hash",
+            "sealed_normalized_barcodes",
+            "sealed_barcode_membership_hash",
+        }
+        validated_remainder_seals: list[dict[str, Any]] = []
+        for actual, expected_base, listed_seal in zip(
+            remainder_values,
+            expected_remainder_bases,
+            remainder_seals,
+            strict=True,
+        ):
+            if not isinstance(actual, Mapping) or not isinstance(
+                listed_seal, Mapping
+            ):
+                raise PackageLogisticsError(
+                    "package work-group remainder receipt row is invalid"
+                )
+            if any(actual.get(key) != value for key, value in expected_base.items()):
+                raise PackageLogisticsError(
+                    "package work-group remainder membership differs from topology"
+                )
+            actual_seal = {
+                key: actual.get(key)
+                for key in seal_keys
+                if key in actual
+            }
+            if (
+                set(actual_seal) != seal_keys
+                or actual_seal != dict(listed_seal)
+            ):
+                raise PackageLogisticsError(
+                    "package work-group remainder seal receipt is inconsistent"
+                )
+            PackageLogisticsClient._validate_transfer_seal(
+                actual_seal,
+                bundle_id=str(
+                    expected_base["remainder_transfer_bundle_id"]
+                ),
+                bundle_version=1,
+                member_ids=tuple(expected_base["member_ids"]),
+                item_id=draft.item_code,
+                expected_state="ACTIVE",
+            )
+            validated_remainder_seals.append(actual_seal)
+        if (
+            data.get("remainder_transfer_bundle_ids") != remainder_ids
+            or data.get("remainder_transfer_seals")
+            != validated_remainder_seals
+            or data.get("source_transfer_seals_consumed")
+            != source_seals_consumed
+        ):
+            raise PackageLogisticsError(
+                "package work-group plural seal evidence is invalid"
+            )
+
+        expected_roots = [
+            {
+                "group_id": group_id,
+                "root_type": "PACKAGE",
+                "root_id": package_id,
+                "root_role": "SOURCE",
+                "added_receipt_id": receipt_id,
+            },
+            *[
+                {
+                    "group_id": cover_id,
+                    "root_type": "TRANSFER_BUNDLE",
+                    "root_id": remainder_id,
+                    "root_role": "SOURCE",
+                    "added_receipt_id": receipt_id,
+                }
+                for cover_id, remainder_id in sorted(
+                    cover_remainder_roots
+                )
+            ],
+        ]
+        expected_roots.sort(
+            key=lambda value: (
+                value["group_id"],
+                value["root_type"],
+                value["root_id"],
+            )
+        )
+        if data.get("root_proof") != expected_roots:
+            raise PackageLogisticsError(
+                "package work-group root proof is invalid"
+            )
+        group_versions_after = {
+            group_id: int(group["group_entity_version"]) + 1,
+            **{
+                str(cover["group_id"]): int(
+                    cover["group_entity_version"]
+                )
+                + 1
+                for cover in covers
+            },
+        }
+        topology_after = canonical_sha256(
+            {
+                "topology_hash_before": str(source["topology_hash"]),
+                "package_bundle_id": package_id,
+                "remainder_transfer_bundle_ids": remainder_ids,
+                "root_proof": expected_roots,
+                "group_entity_versions": group_versions_after,
+            }
+        )
+        receipt_versions = dict(expected_versions)
+        for source_spec in sources:
+            source_id = str(source_spec["bundle_id"])
+            receipt_versions[f"bundle:{source_id}"] = (
+                int(source_spec["entity_version"]) + 1
+            )
+        receipt_versions[f"bundle:{package_id}"] = 1
+        for remainder_id in remainder_ids:
+            receipt_versions[f"bundle:{remainder_id}"] = 1
+        for after_group_id, version in group_versions_after.items():
+            receipt_versions[f"phs_work_group:{after_group_id}"] = version
+        if (
+            data.get("atomic") is not True
+            or data.get("receipt_contract_version")
+            != "PHS_WORK_GROUP_PACKAGE_V1"
+            or data.get("source_resolution_basis")
+            != "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+            or data.get("phs_work_group") != group
+            or data.get("source_transfers") != sources
+            or data.get("remainder_cover_groups") != covers
+            or data.get("source_bundle_id")
+            != (source_ids[0] if len(source_ids) == 1 else None)
+            or data.get("source_bundle_ids") != source_ids
+            or data.get("source_bundle_count") != len(source_ids)
+            or data.get("source_session_ids") != source_sessions
+            or str(data.get("package_bundle_id") or "") != package_id
+            or str(data.get("membership_mode") or "").upper()
+            != draft.membership_mode
+            or data.get("member_ids") != list(members)
+            or data.get("members") != expected_member_rows
+            or data.get("member_count") != len(members)
+            or str(data.get("membership_hash") or "").lower()
+            != member_digest
+            or data.get("source_location") != "TRANSFER"
+            or data.get("destination_location") != "SHIPPING-WAIT"
+            or not str(data.get("movement_id") or "").strip()
+            or data.get("sample_barcodes")
+            != list(draft.sample_barcodes)
+            or str(data.get("inbound_iin") or "")
+            != str(source.get("source_iin") or "")
+            or str(data.get("item_id") or "") != draft.item_code
+            or str(data.get("uom") or "").upper()
+            != str(source.get("uom") or "").upper()
+            or data.get("topology_hash_before")
+            != str(source.get("topology_hash") or "")
+            or data.get("topology_hash_after") != topology_after
+            or data.get("group_entity_versions_after")
+            != group_versions_after
+            or _strict_entity_versions(
+                receipt.get("entity_versions"),
+                "receipt.entity_versions",
+            )
+            != receipt_versions
+        ):
+            raise PackageLogisticsError(
+                "package work-group receipt aggregate proof is invalid"
+            )
+        expected_exact = (
+            list(draft.exact_rescan_barcodes)
+            if draft.membership_mode == "EXACT_RESCAN"
+            else []
+        )
+        expected_barcode_hash = (
+            barcode_membership_hash(draft.exact_rescan_barcodes)
+            if draft.membership_mode == "EXACT_RESCAN"
+            else None
+        )
+        if (
+            data.get("exact_rescan_barcodes") != expected_exact
+            or data.get("exact_rescan_count") != len(expected_exact)
+            or data.get("barcode_membership_hash")
+            != expected_barcode_hash
+        ):
+            raise PackageLogisticsError(
+                "package work-group receipt barcode evidence is invalid"
+            )
+
+    @staticmethod
     def _validate_receipt(
         draft: PackageCommandDraft,
         source_bundle_id: str,
@@ -2730,6 +4224,14 @@ class PackageOutboxProcessor:
         *,
         command: Mapping[str, Any] | None = None,
     ) -> None:
+        if draft.source_resolution_basis:
+            PackageOutboxProcessor._validate_work_group_receipt(
+                draft,
+                source_bundle_id,
+                receipt,
+                command=command,
+            )
+            return
         data = receipt.get("data") if isinstance(receipt.get("data"), Mapping) else receipt
         if not isinstance(data, Mapping):
             raise PackageLogisticsError("package receipt data is invalid")

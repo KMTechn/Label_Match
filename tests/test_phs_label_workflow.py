@@ -27,6 +27,12 @@ TARGET_QR = (
     f"ITG={INPUT_TAG_ID}|CLC={ITEM_ID}|LBL=LBL-NEW|"
     "HSH=bbbbbbbbbbbbbbbb"
 )
+SECOND_INPUT_TAG_ID = "ITAG-TEST-LABEL-MATCH-SECOND"
+SECOND_QR = (
+    "PHS=2|SRC=KMTECH_INPUT_TAG|"
+    f"ITG={SECOND_INPUT_TAG_ID}|CLC={ITEM_ID}|LBL=LBL-SECOND|"
+    "HSH=dddddddddddddddd"
+)
 
 
 def _label(
@@ -79,6 +85,59 @@ def _package_response(resolution):
         },
         "phs_label_resolution": resolution,
     }
+
+
+def _source_input_tag(
+    input_tag_id,
+    qr_payload,
+    *,
+    lifecycle="INSPECTION_COMPLETED",
+    item_id=ITEM_ID,
+    uom="PCS",
+):
+    fields = {
+        part.split("=", 1)[0]: part.split("=", 1)[1]
+        for part in qr_payload.split("|")
+    }
+    return {
+        "input_tag_id": input_tag_id,
+        "label_id": fields["LBL"],
+        "item_id": item_id,
+        "hash_prefix": fields["HSH"],
+        "label_instance_hash": fields["HSH"] + ("0" * 48),
+        "source_marker": "KMTECH_INPUT_TAG",
+        "qr_payload": qr_payload,
+        "lifecycle": lifecycle,
+        "uom": uom,
+    }
+
+
+def _multi_source_package_response():
+    response = _package_response(_replaced_resolution())
+    response["bundle"].update(
+        {
+            "source_session_id": None,
+            "uom": "PCS",
+        }
+    )
+    response["input_tag"] = _source_input_tag(
+        INPUT_TAG_ID,
+        CANONICAL_QR,
+    )
+    response["source_resolution_basis"] = (
+        "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+    )
+    response["source_input_tags"] = [
+        copy.deepcopy(response["input_tag"]),
+        _source_input_tag(SECOND_INPUT_TAG_ID, SECOND_QR),
+    ]
+    response["phs_work_group"] = {
+        "group_id": "PHSG-MERGED",
+        "scan_anchor_input_tag_id": INPUT_TAG_ID,
+        "item_id": ITEM_ID,
+        "uom": "PCS",
+    }
+    return response
 
 
 def _replaced_resolution(*, effective=None):
@@ -313,6 +372,85 @@ def test_replaced_scan_keeps_canonical_and_selects_one_active_successor():
     assert evidence.active_label_business_date == "2026-07-28"
     assert evidence.active_label_worker_code == "2270730200-2"
     assert evidence.replaced_scan is True
+
+
+def test_merge_package_source_accepts_exact_multi_input_tag_origins():
+    evidence = normalize_packaging_phs_label_evidence(
+        CANONICAL_QR,
+        _multi_source_package_response(),
+    )
+
+    assert evidence.input_tag_id == INPUT_TAG_ID
+    assert evidence.item_id == ITEM_ID
+    assert evidence.member_count == 2
+
+
+def test_single_package_source_keeps_exact_session_contract():
+    response = _multi_source_package_response()
+    response["bundle"]["source_session_id"] = INPUT_TAG_ID
+    response["source_input_tags"] = [response["source_input_tags"][0]]
+
+    evidence = normalize_packaging_phs_label_evidence(
+        CANONICAL_QR,
+        response,
+    )
+
+    assert evidence.input_tag_id == INPUT_TAG_ID
+
+
+@pytest.mark.parametrize(
+    ("mutate",),
+    [
+        (
+            lambda response: response["phs_work_group"].update(
+                {"scan_anchor_input_tag_id": "ITAG-NOT-IN-SOURCES"}
+            ),
+        ),
+        (
+            lambda response: response["source_input_tags"][1].update(
+                {"lifecycle": "CLAIMED"}
+            ),
+        ),
+        (
+            lambda response: response["source_input_tags"][1].update(
+                {"uom": "BOX"}
+            ),
+        ),
+        (
+            lambda response: response["source_input_tags"][1].update(
+                {"item_id": "AAA2270730201"}
+            ),
+        ),
+        (
+            lambda response: response["source_input_tags"][1].update(
+                {"label_id": "LBL-CORRUPT"}
+            ),
+        ),
+    ],
+)
+def test_merge_package_source_rejects_invalid_exact_origin_proof(mutate):
+    response = _multi_source_package_response()
+    mutate(response)
+
+    with pytest.raises(PHSLabelWorkflowError) as error:
+        normalize_packaging_phs_label_evidence(CANONICAL_QR, response)
+
+    assert error.value.code == "PHS2_PACKAGE_SOURCE_INVALID"
+
+
+def test_package_source_does_not_loosely_accept_missing_session_identity():
+    response = _multi_source_package_response()
+    response["source_input_tags"] = [response["source_input_tags"][0]]
+
+    with pytest.raises(PHSLabelWorkflowError) as missing_multi:
+        normalize_packaging_phs_label_evidence(CANONICAL_QR, response)
+    assert missing_multi.value.code == "PHS2_PACKAGE_SOURCE_INVALID"
+
+    response = _multi_source_package_response()
+    response["bundle"]["source_session_id"] = ""
+    with pytest.raises(PHSLabelWorkflowError) as empty_session:
+        normalize_packaging_phs_label_evidence(CANONICAL_QR, response)
+    assert empty_session.value.code == "PHS2_PACKAGE_SOURCE_INVALID"
 
 
 def test_pending_or_ambiguous_successor_is_fail_closed():

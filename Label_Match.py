@@ -1982,6 +1982,9 @@ def _label_match_package_draft(
         if isinstance(current.get("package_source_snapshot"), dict)
         else {}
     )
+    work_group_basis = str(
+        source_snapshot.get("source_resolution_basis") or ""
+    ).strip().upper()
     if (
         require_source_snapshot
         and central_inherit_all
@@ -2014,14 +2017,24 @@ def _label_match_package_draft(
         expected_plane_epoch = int(transfer["PE"])
     else:
         if configured_mode == "INHERIT_ALL" and has_structured_phs_identity:
-            source_bundle_id = str(source_snapshot.get("bundle_id") or "").strip()
+            source_bundle_id = (
+                ""
+                if work_group_basis
+                == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+                else str(source_snapshot.get("bundle_id") or "").strip()
+            )
             source_scope = str(
                 source_snapshot.get("authority_scope_id")
                 or legacy_fields.get("AUTH_SCOPE")
                 or ""
             ).strip()
             source_label = ""
-            source_hint = "" if source_bundle_id else source_bundle_hint
+            source_hint = (
+                ""
+                if work_group_basis
+                == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+                else ("" if source_bundle_id else source_bundle_hint)
+            )
             expected_count = int(source_snapshot.get("member_count") or 0)
             expected_hash = str(
                 source_snapshot.get("membership_hash") or ""
@@ -2065,7 +2078,15 @@ def _label_match_package_draft(
         if isinstance(current.get("sealed_transfer"), dict)
         else {}
     )
-    seal_evidence = transfer or staged_seal
+    seal_evidence = (
+        transfer
+        or (
+            staged_seal
+            if not work_group_basis
+            or source_snapshot.get("full_single_transfer")
+            else {}
+        )
+    )
     expected_seal_id = str(seal_evidence.get("SID") or "")
     expected_seal_revision = int(seal_evidence.get("SREV") or 0)
     expected_seal_token = str(seal_evidence.get("STK") or "")
@@ -2118,8 +2139,16 @@ def _label_match_package_draft(
         expected_authority_epoch=expected_authority_epoch,
         expected_ledger_plane=expected_plane,
         expected_plane_epoch=expected_plane_epoch,
+        package_bundle_id=str(
+            source_snapshot.get("package_bundle_id") or ""
+        ),
         external_label=(
-            _label_match_system_package_external_label(
+            str(
+                source_snapshot.get("package_external_label") or ""
+            )
+            if work_group_basis
+            == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+            else _label_match_system_package_external_label(
                 raw[0], current.get("id")
             )
             if central_inherit_all
@@ -2136,6 +2165,10 @@ def _label_match_package_draft(
         expected_seal_revision=expected_seal_revision,
         expected_seal_token=expected_seal_token,
         expected_seal_qr_payload=expected_seal_qr_payload,
+        source_resolution_basis=work_group_basis,
+        phs_work_group=source_snapshot.get("phs_work_group"),
+        work_group_source=source_snapshot.get("work_group_source"),
+        source_session_ids=source_snapshot.get("source_session_ids") or (),
     )
 
 
@@ -2208,6 +2241,140 @@ def _label_match_package_source_snapshot(projection):
     """Detach the exact source evidence an operator's PHS2 resolved to."""
 
     source = dict(projection or {})
+    if (
+        source.get("source_resolution_basis")
+        == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+    ):
+        work_source = source.get("work_group_source")
+        group = source.get("phs_work_group")
+        bundle = source.get("bundle")
+        if (
+            not isinstance(work_source, dict)
+            or not isinstance(group, dict)
+            or not isinstance(bundle, dict)
+        ):
+            raise PackageLogisticsError(
+                "package work-group exact snapshot is incomplete"
+            )
+        sources = work_source.get("source_transfers")
+        covers = work_source.get("remainder_cover_groups")
+        sessions = work_source.get("source_session_ids")
+        source_ids = work_source.get("source_transfer_bundle_ids")
+        versions = work_source.get("entity_versions")
+        if (
+            not isinstance(sources, list)
+            or not sources
+            or not isinstance(covers, list)
+            or not isinstance(sessions, list)
+            or not sessions
+            or not isinstance(source_ids, list)
+            or len(source_ids) != len(sources)
+            or not isinstance(versions, dict)
+            or not versions
+        ):
+            raise PackageLogisticsError(
+                "package work-group topology snapshot is incomplete"
+            )
+        try:
+            member_count = int(work_source.get("member_count") or 0)
+            authority_epoch = int(bundle.get("authority_epoch") or 0)
+            plane_epoch = int(work_source.get("plane_epoch") or 0)
+        except (TypeError, ValueError) as exc:
+            raise PackageLogisticsError(
+                "package work-group numeric snapshot is invalid"
+            ) from exc
+        membership_hash = str(
+            work_source.get("membership_hash") or ""
+        ).strip().lower()
+        scope = str(
+            work_source.get("authority_scope_id") or ""
+        ).strip()
+        ledger_plane = str(
+            work_source.get("ledger_plane") or ""
+        ).strip().upper()
+        package_bundle_id = str(
+            work_source.get("package_bundle_id") or ""
+        ).strip()
+        package_external_label = str(
+            work_source.get("package_external_label") or ""
+        ).strip()
+        topology_hash = str(
+            work_source.get("topology_hash") or ""
+        ).strip().lower()
+        full_single = bool(
+            len(sources) == 1
+            and list(sources[0].get("selected_member_ids") or ())
+            == list(sources[0].get("source_member_ids") or ())
+            and not list(sources[0].get("remainder_member_ids") or ())
+            and sources[0].get("remainder_transfer_bundle_id") is None
+            and not covers
+        )
+        if (
+            not scope
+            or member_count < 1
+            or len(membership_hash) != 64
+            or any(
+                value not in "0123456789abcdef"
+                for value in membership_hash
+            )
+            or ledger_plane
+            not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
+            or plane_epoch < 1
+            or not package_bundle_id
+            or not package_external_label
+            or len(topology_hash) != 64
+            or any(
+                value not in "0123456789abcdef"
+                for value in topology_hash
+            )
+            or str(group.get("item_id") or "").strip()
+            != str(work_source.get("item_id") or "").strip()
+            or str(group.get("uom") or "").strip().upper()
+            != str(work_source.get("uom") or "").strip().upper()
+        ):
+            raise PackageLogisticsError(
+                "package work-group exact snapshot is incomplete"
+            )
+        return {
+            "source_resolution_basis": (
+                "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+            ),
+            "bundle_id": (
+                str(sources[0].get("bundle_id") or "").strip()
+                if full_single
+                else ""
+            ),
+            "authority_scope_id": scope,
+            "item_id": str(work_source.get("item_id") or "").strip(),
+            "uom": str(work_source.get("uom") or "").strip().upper(),
+            "member_count": member_count,
+            "membership_hash": membership_hash,
+            "authority_epoch": authority_epoch,
+            "ledger_plane": ledger_plane,
+            "plane_epoch": plane_epoch,
+            "entity_version": (
+                int(sources[0].get("entity_version") or 0)
+                if full_single
+                else 0
+            ),
+            "phs_work_group": copy.deepcopy(group),
+            "work_group_source": copy.deepcopy(work_source),
+            "source_session_ids": list(sessions),
+            "source_transfer_bundle_ids": list(source_ids),
+            "source_transfer_count": len(sources),
+            "remainder_transfer_bundle_ids": [
+                str(value.get("remainder_transfer_bundle_id") or "")
+                for value in sources
+                if value.get("remainder_transfer_bundle_id")
+            ],
+            "topology_hash": topology_hash,
+            "entity_versions": copy.deepcopy(versions),
+            "package_bundle_id": package_bundle_id,
+            "package_external_label": package_external_label,
+            "full_single_transfer": full_single,
+        }
+    if isinstance(source.get("bundle"), dict):
+        source = dict(source["bundle"])
     bundle_id = str(
         source.get("transfer_bundle_id") or source.get("bundle_id") or ""
     ).strip()
@@ -2247,6 +2414,40 @@ def _label_match_package_source_snapshot(projection):
         "plane_epoch": plane_epoch,
         "entity_version": entity_version,
     }
+
+
+def _label_match_apply_package_source_origins(details, snapshot):
+    """Attach exact plural work-group origins to one local completion."""
+
+    target = details if isinstance(details, dict) else {}
+    source = snapshot if isinstance(snapshot, dict) else {}
+    if (
+        source.get("source_resolution_basis")
+        != "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+    ):
+        return target
+    source_sessions = list(source.get("source_session_ids") or ())
+    source_bundles = list(
+        source.get("source_transfer_bundle_ids") or ()
+    )
+    group = source.get("phs_work_group")
+    group_id = (
+        str(group.get("group_id") or "").strip()
+        if isinstance(group, dict)
+        else ""
+    )
+    if not source_sessions or not source_bundles or not group_id:
+        raise PackageLogisticsError(
+            "package work-group local origin evidence is incomplete"
+        )
+    target["source_session_ids"] = source_sessions
+    target["source_transfer_bundle_ids"] = source_bundles
+    target["source_work_group_id"] = group_id
+    if len(source_sessions) == 1:
+        target["source_session_id"] = source_sessions[0]
+    else:
+        target.pop("source_session_id", None)
+    return target
 
 
 def _label_match_existing_package_row_metadata(row, current_set_info, item_code):
@@ -2342,14 +2543,38 @@ def _label_match_existing_package_row_metadata(row, current_set_info, item_code)
             raise PackageLogisticsError(
                 "existing package outbox PHS2 differs from the restored scan"
             )
+    work_source = (
+        draft.get("work_group_source")
+        if isinstance(draft.get("work_group_source"), dict)
+        else {}
+    )
+    work_group_mode = (
+        str(draft.get("source_resolution_basis") or "").strip().upper()
+        == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+    )
     return {
         "status": str(source.get("status") or "PENDING"),
         "idempotency_key": str(source.get("idempotency_key") or ""),
         "source_bundle_id": str(
-            source.get("resolved_source_bundle_id")
-            or draft.get("source_bundle_id")
-            or ""
+            ""
+            if work_group_mode
+            else (
+                source.get("resolved_source_bundle_id")
+                or draft.get("source_bundle_id")
+                or ""
+            )
         ),
+        "source_bundle_ids": list(
+            work_source.get("source_transfer_bundle_ids") or ()
+        ),
+        "source_session_ids": list(
+            draft.get("source_session_ids") or ()
+        ),
+        "source_work_group_id": str(
+            source.get("resolved_source_bundle_id") or ""
+        )
+        if work_group_mode
+        else "",
         "source_external_label": str(draft.get("source_external_label") or ""),
         "package_bundle_id": str(draft.get("package_bundle_id") or ""),
         "membership_mode": str(draft.get("membership_mode") or ""),
@@ -2417,54 +2642,163 @@ def _label_match_recover_central_state_from_package_row(row):
             "orphan package canonical/active PHS2 identity differs"
         )
 
-    source_bundle_id = str(draft.get("source_bundle_id") or "").strip()
-    scope = str(draft.get("source_authority_scope_id") or "").strip()
-    membership_hash_value = str(
-        draft.get("expected_membership_hash") or ""
-    ).strip().lower()
-    ledger_plane = str(draft.get("expected_ledger_plane") or "").strip().upper()
-    try:
-        member_count = int(draft.get("expected_member_count") or 0)
-        authority_epoch = int(draft.get("expected_authority_epoch") or 0)
-        plane_epoch = int(draft.get("expected_plane_epoch") or 0)
-        seal_revision = int(draft.get("expected_seal_revision") or 0)
-    except (TypeError, ValueError) as exc:
-        raise PackageLogisticsError("orphan package numeric evidence is invalid") from exc
-    if (
-        not source_bundle_id
-        or not scope
-        or member_count < 1
-        or len(membership_hash_value) != 64
-        or any(value not in "0123456789abcdef" for value in membership_hash_value)
-        or authority_epoch < 1
-        or ledger_plane not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
-        or plane_epoch < 1
-    ):
-        raise PackageLogisticsError("orphan package source snapshot is incomplete")
+    work_group_draft = (
+        str(draft.get("source_resolution_basis") or "").strip().upper()
+        == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+    )
+    if work_group_draft:
+        work_source = draft.get("work_group_source")
+        group = draft.get("phs_work_group")
+        if not isinstance(work_source, dict) or not isinstance(group, dict):
+            raise PackageLogisticsError(
+                "orphan package work-group topology is incomplete"
+            )
+        package_snapshot = _label_match_package_source_snapshot(
+            {
+                "source_resolution_basis": (
+                    "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+                ),
+                "work_group_source": work_source,
+                "phs_work_group": group,
+                "bundle": {
+                    "authority_epoch": int(
+                        draft.get("expected_authority_epoch") or 0
+                    )
+                },
+            }
+        )
+        source_bundle_id = str(
+            package_snapshot.get("bundle_id") or ""
+        ).strip()
+        scope = str(
+            package_snapshot.get("authority_scope_id") or ""
+        ).strip()
+        membership_hash_value = str(
+            package_snapshot.get("membership_hash") or ""
+        ).strip().lower()
+        ledger_plane = str(
+            package_snapshot.get("ledger_plane") or ""
+        ).strip().upper()
+        member_count = int(package_snapshot.get("member_count") or 0)
+        authority_epoch = int(
+            package_snapshot.get("authority_epoch") or 0
+        )
+        plane_epoch = int(package_snapshot.get("plane_epoch") or 0)
+        sealed_transfer = None
+        if package_snapshot.get("full_single_transfer"):
+            transfer_source = work_source["source_transfers"][0]
+            sealed_transfer = _label_match_active_seal_from_package_source(
+                {
+                    "controlled_reseal_eligible": True,
+                    "bundle_id": transfer_source.get("bundle_id"),
+                    "authority_scope_id": scope,
+                    "item_id": item_code,
+                    "member_count": transfer_source.get(
+                        "source_member_count"
+                    ),
+                    "membership_hash": transfer_source.get(
+                        "source_membership_hash"
+                    ),
+                    "authority_epoch": authority_epoch,
+                    "ledger_plane": ledger_plane,
+                    "plane_epoch": plane_epoch,
+                    "entity_version": transfer_source.get(
+                        "entity_version"
+                    ),
+                    "active_seal": transfer_source.get("active_seal"),
+                }
+            )
+    else:
+        source_bundle_id = str(
+            draft.get("source_bundle_id") or ""
+        ).strip()
+        scope = str(
+            draft.get("source_authority_scope_id") or ""
+        ).strip()
+        membership_hash_value = str(
+            draft.get("expected_membership_hash") or ""
+        ).strip().lower()
+        ledger_plane = str(
+            draft.get("expected_ledger_plane") or ""
+        ).strip().upper()
+        try:
+            member_count = int(draft.get("expected_member_count") or 0)
+            authority_epoch = int(
+                draft.get("expected_authority_epoch") or 0
+            )
+            plane_epoch = int(
+                draft.get("expected_plane_epoch") or 0
+            )
+            seal_revision = int(
+                draft.get("expected_seal_revision") or 0
+            )
+        except (TypeError, ValueError) as exc:
+            raise PackageLogisticsError(
+                "orphan package numeric evidence is invalid"
+            ) from exc
+        if (
+            not source_bundle_id
+            or not scope
+            or member_count < 1
+            or len(membership_hash_value) != 64
+            or any(
+                value not in "0123456789abcdef"
+                for value in membership_hash_value
+            )
+            or authority_epoch < 1
+            or ledger_plane
+            not in {"AUTHORITATIVE", "SHADOW_CANDIDATE"}
+            or plane_epoch < 1
+        ):
+            raise PackageLogisticsError(
+                "orphan package source snapshot is incomplete"
+            )
 
-    seal_qr_payload = str(draft.get("expected_seal_qr_payload") or "").strip()
-    try:
-        sealed_transfer = _label_match_parse_sealed_transfer_qr(seal_qr_payload)
-    except ValueError as exc:
-        raise PackageLogisticsError(str(exc)) from exc
-    if not sealed_transfer:
-        raise PackageLogisticsError("orphan package has no valid active transfer seal")
-    expected_seal = {
-        "BND": source_bundle_id,
-        "AUTH_SCOPE": scope,
-        "CLC": item_code,
-        "QT": member_count,
-        "HSH": membership_hash_value,
-        "EPOCH": authority_epoch,
-        "PLANE": ledger_plane,
-        "PE": plane_epoch,
-        "SID": str(draft.get("expected_seal_id") or "").strip(),
-        "SREV": seal_revision,
-        "STK": str(draft.get("expected_seal_token") or "").strip(),
-    }
-    if any(sealed_transfer.get(key) != value for key, value in expected_seal.items()):
-        raise PackageLogisticsError("orphan package seal differs from its source snapshot")
-    sealed_transfer["_seal_qr_payload"] = seal_qr_payload
+        seal_qr_payload = str(
+            draft.get("expected_seal_qr_payload") or ""
+        ).strip()
+        try:
+            sealed_transfer = _label_match_parse_sealed_transfer_qr(
+                seal_qr_payload
+            )
+        except ValueError as exc:
+            raise PackageLogisticsError(str(exc)) from exc
+        if not sealed_transfer:
+            raise PackageLogisticsError(
+                "orphan package has no valid active transfer seal"
+            )
+        expected_seal = {
+            "BND": source_bundle_id,
+            "AUTH_SCOPE": scope,
+            "CLC": item_code,
+            "QT": member_count,
+            "HSH": membership_hash_value,
+            "EPOCH": authority_epoch,
+            "PLANE": ledger_plane,
+            "PE": plane_epoch,
+            "SID": str(draft.get("expected_seal_id") or "").strip(),
+            "SREV": seal_revision,
+            "STK": str(draft.get("expected_seal_token") or "").strip(),
+        }
+        if any(
+            sealed_transfer.get(key) != value
+            for key, value in expected_seal.items()
+        ):
+            raise PackageLogisticsError(
+                "orphan package seal differs from its source snapshot"
+            )
+        sealed_transfer["_seal_qr_payload"] = seal_qr_payload
+        package_snapshot = {
+            "bundle_id": source_bundle_id,
+            "authority_scope_id": scope,
+            "item_id": item_code,
+            "member_count": member_count,
+            "membership_hash": membership_hash_value,
+            "authority_epoch": authority_epoch,
+            "ledger_plane": ledger_plane,
+            "plane_epoch": plane_epoch,
+            "entity_version": 0,
+        }
 
     return {
         "id": set_id,
@@ -2506,18 +2840,12 @@ def _label_match_recover_central_state_from_package_row(row):
             canonical_phs2_qr != active_phs2_qr
         ),
         "phs_label_guidance": "",
-        "package_source_snapshot": {
-            "bundle_id": source_bundle_id,
-            "authority_scope_id": scope,
-            "item_id": item_code,
-            "member_count": member_count,
-            "membership_hash": membership_hash_value,
-            "authority_epoch": authority_epoch,
-            "ledger_plane": ledger_plane,
-            "plane_epoch": plane_epoch,
-            "entity_version": 0,
-        },
-        "resolved_transfer_bundle_id": source_bundle_id,
+        "package_source_snapshot": package_snapshot,
+        "resolved_transfer_bundle_id": (
+            source_bundle_id
+            if package_snapshot.get("full_single_transfer", True)
+            else ""
+        ),
         "package_submission_idempotency_key": str(
             source.get("idempotency_key") or ""
         ).strip(),
@@ -2744,7 +3072,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.46" # private update feed release
+APP_VERSION = "v2.0.47" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -6981,7 +7309,7 @@ class Label_Match(tk.Tk):
             raise PackageLogisticsError(
                 "central package source projection is missing"
             )
-        snapshot = _label_match_package_source_snapshot(projection)
+        snapshot = _label_match_package_source_snapshot(response)
         if (
             str(snapshot.get("authority_scope_id") or "").strip()
             != evidence.authority_scope_id
@@ -6994,14 +7322,15 @@ class Label_Match(tk.Tk):
                 "PHS2 active-label and package-source evidence differ"
             )
         sealed = None
-        try:
-            sealed = _label_match_active_seal_from_package_source(
-                projection
-            )
-        except PackageLogisticsError:
-            # The standard package preflight remains authoritative at F3.
-            # Label overlay resolution must not invent seal evidence.
-            sealed = None
+        if snapshot.get("full_single_transfer"):
+            try:
+                sealed = _label_match_active_seal_from_package_source(
+                    projection
+                )
+            except PackageLogisticsError:
+                # The standard package preflight remains authoritative at F3.
+                # Label overlay resolution must not invent seal evidence.
+                sealed = None
         return evidence, snapshot, sealed
 
     def _accept_resolved_central_phs2_scan(
@@ -7878,11 +8207,20 @@ class Label_Match(tk.Tk):
             )
         current.update(active_updates)
         draft = _label_match_package_draft(current, item_code=parsed[0])
-        projection = self.package_logistics_client.resolve_package_source_projection(
+        response = self.package_logistics_client.resolve_package_source_evidence(
             draft
         )
-        sealed = _label_match_active_seal_from_package_source(projection)
-        snapshot = _label_match_package_source_snapshot(projection)
+        snapshot = _label_match_package_source_snapshot(response)
+        projection = response.get("bundle")
+        if not isinstance(projection, dict):
+            raise PackageLogisticsError(
+                "central package source projection is missing"
+            )
+        sealed = (
+            _label_match_active_seal_from_package_source(projection)
+            if snapshot.get("full_single_transfer")
+            else None
+        )
         return sealed, snapshot, active_updates
 
     def _apply_resolved_central_phs2_seal(
@@ -7895,7 +8233,10 @@ class Label_Match(tk.Tk):
         previous_active_qr = str(
             current.get("active_label_qr_payload") or ""
         ).strip()
-        current["sealed_transfer"] = dict(sealed or {})
+        if isinstance(sealed, dict):
+            current["sealed_transfer"] = dict(sealed)
+        else:
+            current["sealed_transfer"] = None
         current["package_source_snapshot"] = dict(snapshot or {})
         if isinstance(active_label_updates, dict):
             current.update(active_label_updates)
@@ -7927,7 +8268,7 @@ class Label_Match(tk.Tk):
                 tone="warning",
             )
             self._workflow_last_normal_override = refreshed_active_qr
-        return current["sealed_transfer"]
+        return current.get("sealed_transfer")
 
     def _start_central_phs2_exchange(self):
         if self.__dict__.get("_central_seal_lookup_in_progress", False):
@@ -7941,6 +8282,8 @@ class Label_Match(tk.Tk):
                 snapshot,
                 active_updates,
             )
+            if not isinstance(sealed, dict):
+                return False
             return self._prompt_sealed_transfer_exchange()
 
         set_id = str(self.current_set_info.get("id") or "")
@@ -7991,6 +8334,17 @@ class Label_Match(tk.Tk):
                 active_updates,
             )
             self._render_operator_workbench()
+            if not isinstance(sealed, dict):
+                messagebox.showerror(
+                    "제품 교체 불가",
+                    (
+                        "현재 현품표는 여러 이적 묶음을 합치거나 일부만 "
+                        "나눈 작업입니다. 포장(F3)은 가능하지만 제품 교체(F4)는 "
+                        "원본 이적 묶음 전체를 대표하는 단일 현품표에서만 가능합니다."
+                    ),
+                    parent=self,
+                )
+                return
             self._prompt_sealed_transfer_exchange()
 
         thread = threading.Thread(
@@ -9129,6 +9483,27 @@ class Label_Match(tk.Tk):
     def _handle_f4_action(self):
         if self._sealed_transfer_exchange_blocks_local_action("제품 교체"):
             return False
+        snapshot = self.current_set_info.get("package_source_snapshot")
+        if (
+            isinstance(snapshot, dict)
+            and snapshot.get("source_resolution_basis")
+            == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+            and snapshot.get("full_single_transfer") is not True
+        ):
+            message = (
+                "현재 현품표는 여러 이적 묶음을 합치거나 원본 이적 묶음의 "
+                "일부만 나눈 작업입니다. 포장(F3)은 가능하지만 제품 교체(F4)는 "
+                "원본 이적 묶음 전체를 대표하는 단일 현품표에서만 가능합니다."
+            )
+            self.update_big_display("제품 교체 불가", "red")
+            self._render_operator_workbench()
+            if not self.run_tests:
+                messagebox.showerror(
+                    "제품 교체 불가",
+                    message,
+                    parent=self,
+                )
+            return False
         if self.current_set_info.get("sealed_transfer"):
             return self._prompt_sealed_transfer_exchange()
         if self._central_inherit_all_active():
@@ -9426,6 +9801,16 @@ class Label_Match(tk.Tk):
             "status": str(row.get("status") or "PENDING"),
             "idempotency_key": row["idempotency_key"],
             "source_bundle_id": draft.source_bundle_id,
+            "source_bundle_ids": list(
+                draft.work_group_source.get(
+                    "source_transfer_bundle_ids"
+                )
+                or ()
+            ),
+            "source_session_ids": list(draft.source_session_ids),
+            "source_work_group_id": str(
+                draft.phs_work_group.get("group_id") or ""
+            ),
             "source_external_label": draft.source_external_label,
             "package_bundle_id": draft.package_bundle_id,
             "membership_mode": draft.membership_mode,
@@ -9458,6 +9843,7 @@ class Label_Match(tk.Tk):
                             "idempotency_key",
                             "package_bundle_id",
                             "source_bundle_id",
+                            "source_work_group_id",
                         )
                     )
                     if has_central_identity or (
@@ -9724,7 +10110,13 @@ class Label_Match(tk.Tk):
             details['package_completion_action'] = "F3_EXPLICIT_WRAP_CONFIRM"
             details['package_external_label_source'] = "SYSTEM_DERIVED_FROM_PHS2"
             details['package_external_label'] = (
-                _label_match_system_package_external_label(
+                (
+                    self.current_set_info.get(
+                        "package_source_snapshot"
+                    )
+                    or {}
+                ).get("package_external_label")
+                or _label_match_system_package_external_label(
                     raw_scans_to_log[0], set_id_for_log
                 )
             )
@@ -9739,6 +10131,21 @@ class Label_Match(tk.Tk):
             if inspection_trace.get('input_tag_id'):
                 details.setdefault('source_session_id', inspection_trace['input_tag_id'])
             details['inspection_trace'] = inspection_trace
+        package_snapshot = (
+            self.current_set_info.get("package_source_snapshot")
+            if isinstance(
+                self.current_set_info.get("package_source_snapshot"),
+                dict,
+            )
+            else {}
+        )
+        if (
+            package_snapshot.get("source_resolution_basis")
+            == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+        ):
+            _label_match_apply_package_source_origins(
+                details, package_snapshot
+            )
         try:
             package_logistics = (
                 self._queue_authoritative_package(

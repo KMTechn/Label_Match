@@ -244,6 +244,127 @@ def _validate_active_label(
     return active, active_fields
 
 
+def _validate_package_source_input_tags(
+    data: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+    input_tag: Mapping[str, Any],
+    *,
+    canonical_fields: Mapping[str, str],
+    source_session_id: Any,
+) -> None:
+    """Validate the exact input-tag origins of one work-group transfer."""
+
+    source_values = data.get("source_input_tags")
+    group_value = data.get("phs_work_group")
+    has_work_group_evidence = (
+        source_values is not None or group_value is not None
+    )
+    multi_source = source_session_id is None
+    if not has_work_group_evidence and not multi_source:
+        # Backward compatibility for the original single-source projection.
+        return
+    if (
+        data.get("source_resolution_basis")
+        != "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+        or not isinstance(source_values, list)
+        or not isinstance(group_value, Mapping)
+    ):
+        raise PHSLabelWorkflowError(
+            "PHS2_PACKAGE_SOURCE_INVALID",
+            "중앙 package source의 exact 원본 현품표 증거가 없습니다.",
+        )
+
+    group = dict(group_value)
+    item_id = str(bundle.get("item_id") or "").strip()
+    uom = str(bundle.get("uom") or "").strip().upper()
+    anchor_input_tag_id = str(
+        group.get("scan_anchor_input_tag_id") or ""
+    ).strip()
+    if (
+        not item_id
+        or not uom
+        or anchor_input_tag_id != canonical_fields["ITG"]
+        or str(group.get("item_id") or "").strip() != item_id
+        or str(group.get("uom") or "").strip().upper() != uom
+        or (multi_source and len(source_values) < 2)
+        or (not multi_source and len(source_values) != 1)
+    ):
+        raise PHSLabelWorkflowError(
+            "PHS2_PACKAGE_SOURCE_INVALID",
+            "중앙 package source의 work-group 원본 증거가 일치하지 않습니다.",
+        )
+
+    source_identities: dict[str, tuple[str, ...]] = {}
+    for value in source_values:
+        if not isinstance(value, Mapping):
+            raise PHSLabelWorkflowError(
+                "PHS2_PACKAGE_SOURCE_INVALID",
+                "중앙 package source의 원본 현품표 형식이 올바르지 않습니다.",
+            )
+        source = dict(value)
+        qr_payload = str(source.get("qr_payload") or "").strip()
+        try:
+            fields = parse_compact_phs2(qr_payload)
+        except PHSLabelWorkflowError as exc:
+            raise PHSLabelWorkflowError(
+                "PHS2_PACKAGE_SOURCE_INVALID",
+                "중앙 package source의 원본 현품표 identity가 올바르지 않습니다.",
+            ) from exc
+        input_tag_id = str(source.get("input_tag_id") or "").strip()
+        hash_prefix = str(source.get("hash_prefix") or "").strip().lower()
+        label_hash = str(
+            source.get("label_instance_hash") or ""
+        ).strip().lower()
+        identity = (
+            input_tag_id,
+            str(source.get("label_id") or "").strip(),
+            str(source.get("item_id") or "").strip(),
+            hash_prefix,
+            qr_payload,
+        )
+        if (
+            str(source.get("lifecycle") or "").strip().upper()
+            != "INSPECTION_COMPLETED"
+            or identity[0] != fields["ITG"]
+            or identity[1] != fields["LBL"]
+            or identity[2] != fields["CLC"]
+            or identity[2] != item_id
+            or identity[3] != fields["HSH"]
+            or str(source.get("uom") or "").strip().upper() != uom
+            or str(source.get("source_marker") or "").strip().upper()
+            != "KMTECH_INPUT_TAG"
+            or not _SHA256.fullmatch(label_hash)
+            or not label_hash.startswith(hash_prefix)
+            or input_tag_id in source_identities
+        ):
+            raise PHSLabelWorkflowError(
+                "PHS2_PACKAGE_SOURCE_INVALID",
+                "중앙 package source의 원본 현품표 lifecycle·품목·identity가 일치하지 않습니다.",
+            )
+        source_identities[input_tag_id] = identity
+
+    anchor_identity = source_identities.get(anchor_input_tag_id)
+    input_identity = (
+        str(input_tag.get("input_tag_id") or "").strip(),
+        str(input_tag.get("label_id") or "").strip(),
+        str(input_tag.get("item_id") or "").strip(),
+        str(input_tag.get("hash_prefix") or "").strip().lower(),
+        str(input_tag.get("qr_payload") or "").strip(),
+    )
+    if anchor_identity is None or anchor_identity != input_identity:
+        raise PHSLabelWorkflowError(
+            "PHS2_PACKAGE_SOURCE_INVALID",
+            "스캔 anchor가 exact 원본 현품표 집합에 포함되지 않습니다.",
+        )
+    if not multi_source and tuple(source_identities) != (
+        str(source_session_id),
+    ):
+        raise PHSLabelWorkflowError(
+            "PHS2_PACKAGE_SOURCE_INVALID",
+            "단일 package source의 원본 세션 identity가 일치하지 않습니다.",
+        )
+
+
 def normalize_packaging_phs_label_evidence(
     scanned_qr_payload: str,
     response: Mapping[str, Any],
@@ -298,6 +419,7 @@ def normalize_packaging_phs_label_evidence(
         or data.get("authority_scope_id")
         or ""
     ).strip()
+    source_session_id = bundle.get("source_session_id")
     if (
         int(bundle.get("candidate_count") or data.get("candidate_count") or 0)
         != 1
@@ -306,8 +428,13 @@ def normalize_packaging_phs_label_evidence(
         or str(bundle.get("bundle_state") or "").strip().upper()
         != "AVAILABLE"
         or str(bundle.get("item_id") or "").strip() != item_id
-        or str(bundle.get("source_session_id") or "").strip()
-        != input_tag_id
+        or (
+            source_session_id is not None
+            and (
+                not isinstance(source_session_id, str)
+                or source_session_id.strip() != input_tag_id
+            )
+        )
         or member_count < 1
         or not _SHA256.fullmatch(membership_digest)
         or not authority_scope_id
@@ -316,6 +443,14 @@ def normalize_packaging_phs_label_evidence(
             "PHS2_PACKAGE_SOURCE_INVALID",
             "중앙 package source의 역할·상태·품목·수량 증거가 일치하지 않습니다.",
         )
+
+    _validate_package_source_input_tags(
+        data,
+        bundle,
+        input_tag,
+        canonical_fields=canonical_fields,
+        source_session_id=source_session_id,
+    )
 
     resolution_value = data.get("phs_label_resolution")
     if resolution_value is None:
