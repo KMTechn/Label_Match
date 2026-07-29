@@ -432,13 +432,14 @@ def test_operator_tree_linespace_fallback_is_conservative(monkeypatch):
     assert app._operator_tree_font_linespace(("Malgun Gothic", 15), 15) + 4 == 34
 
 
-def test_four_existing_actions_form_a_two_by_two_grid_in_right_pane(operator_workbench):
+def test_five_actions_fit_two_rows_in_right_pane(operator_workbench):
     app = operator_workbench
     action_frame = _required_widget(app, "operator_action_frame")
     right = _required_widget(app, "operator_right_pane")
     buttons = (
         app.manual_complete_button,
         app.exact_rescan_button,
+        app.phs_label_exchange_button,
         app.reset_button,
         app.cancel_tray_button,
     )
@@ -448,9 +449,11 @@ def test_four_existing_actions_form_a_two_by_two_grid_in_right_pane(operator_wor
     assert [(button.grid_options.get("row"), button.grid_options.get("column")) for button in buttons] == [
         (0, 0),
         (0, 1),
+        (0, 2),
         (1, 0),
         (1, 1),
     ]
+    assert app.cancel_tray_button.grid_options.get("columnspan") == 2
 
 
 def test_workbench_renderer_uses_snapshot_adapter_then_pure_presenter():
@@ -1093,6 +1096,7 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         for button in (
             app.manual_complete_button,
             app.exact_rescan_button,
+            app.phs_label_exchange_button,
             app.reset_button,
             app.cancel_tray_button,
         ):
@@ -1670,6 +1674,7 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             for button in (
                 app.manual_complete_button,
                 app.exact_rescan_button,
+                app.phs_label_exchange_button,
                 app.reset_button,
                 app.cancel_tray_button,
             ):

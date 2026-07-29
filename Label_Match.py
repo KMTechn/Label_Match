@@ -3072,7 +3072,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.47" # private update feed release
+APP_VERSION = "v2.0.48" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -14278,7 +14278,11 @@ class Label_Match(tk.Tk):
 
         self.operator_action_frame = ttk.Frame(self.operator_right_pane)
         self.operator_action_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        self.operator_action_frame.grid_columnconfigure((0, 1), weight=1, uniform="operator_actions")
+        self.operator_action_frame.grid_columnconfigure(
+            (0, 1, 2),
+            weight=1,
+            uniform="operator_actions",
+        )
         self.bottom_frame = self.operator_action_frame
         self.manual_complete_button = ttk.Button(
             self.operator_action_frame,
@@ -14303,7 +14307,13 @@ class Label_Match(tk.Tk):
             style=self.MANUAL_COMPLETE_BUTTON_STYLE,
             state="disabled",
         )
-        self.exact_rescan_button.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
+        self.exact_rescan_button.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=4,
+            pady=(0, 4),
+        )
         self.reset_button = ttk.Button(
             self.operator_action_frame,
             text=self.CURRENT_SET_CANCEL_BUTTON_TEXT,
@@ -14317,7 +14327,14 @@ class Label_Match(tk.Tk):
             command=self._prompt_and_cancel_completed_tray,
             style=self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE,
         )
-        self.cancel_tray_button.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(4, 0))
+        self.cancel_tray_button.grid(
+            row=1,
+            column=1,
+            columnspan=2,
+            sticky="nsew",
+            padx=(4, 0),
+            pady=(4, 0),
+        )
         self.phs_label_exchange_button = ttk.Button(
             self.operator_action_frame,
             text=self.PHS_LABEL_EXCHANGE_BUTTON_TEXT,
@@ -14326,11 +14343,11 @@ class Label_Match(tk.Tk):
             state="disabled",
         )
         self.phs_label_exchange_button.grid(
-            row=2,
-            column=0,
-            columnspan=2,
+            row=0,
+            column=2,
             sticky="nsew",
-            pady=(8, 0),
+            padx=(4, 0),
+            pady=(0, 4),
         )
 
         self.bind("<F1>", lambda event: self._handle_workflow_shortcut("f1", event))
