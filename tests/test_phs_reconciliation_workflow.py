@@ -296,6 +296,7 @@ class _Client:
         *,
         lose_prepare_ack=False,
         lose_complete_ack_label_id="",
+        lose_activate_ack=False,
     ):
         self.config = type(
             "Config",
@@ -323,6 +324,8 @@ class _Client:
             lose_complete_ack_label_id
         )
         self.complete_ack_lost = False
+        self.lose_activate_ack = lose_activate_ack
+        self.activate_ack_lost = False
         self.exchange_state = "PREPARED"
         self.exchange_version = 1
         self.attempts = {}
@@ -448,6 +451,9 @@ class _Client:
         assert self.exchange_state == "READY"
         self.exchange_state = "COMMITTED"
         self.exchange_version += 1
+        if self.lose_activate_ack and not self.activate_ack_lost:
+            self.activate_ack_lost = True
+            raise RuntimeError("lost activate ACK")
         return self._projection()
 
     def _projection(self):
@@ -775,6 +781,23 @@ def test_lost_prepare_ack_restarts_with_same_key_and_one_server_write(tmp_path):
     assert len(set(client.prepare_keys)) == 1
     assert client.prepare_write_count == 1
     assert [call[0] for call in client.calls].count("activate") == 1
+
+
+def test_lost_activate_ack_recovers_committed_exchange_by_get(tmp_path):
+    resolution = _resolution("SINGLE")
+    client = _Client(resolution, lose_activate_ack=True)
+
+    result = _coordinator(tmp_path, client).execute_reconciliation(
+        resolution
+    )
+
+    assert result.success is True
+    assert [call[0] for call in client.calls].count("activate") == 1
+    assert [call[0] for call in client.calls].count("get") == 2
+    assert [call[0] for call in client.calls][-2:] == [
+        "activate",
+        "get",
+    ]
 
 
 def test_committed_local_failure_recovers_by_get_without_second_prepare(
