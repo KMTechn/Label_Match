@@ -2874,7 +2874,8 @@ class PackageLogisticsClient:
             minimum=0,
         )
         item_id = str(source.get("item_id") or "").strip()
-        uom = str(source.get("uom") or "").strip().upper()
+        uom = str(source.get("uom") or "").strip()
+        normalized_uom = uom.upper()
         if (
             not scope
             or scope != expected_scope
@@ -2898,7 +2899,8 @@ class PackageLogisticsClient:
             != "TRANSFER"
             or item_id != draft.item_code
             or str(bundle.get("item_id") or "").strip() != item_id
-            or str(bundle.get("uom") or "").strip().upper() != uom
+            or str(bundle.get("uom") or "").strip().upper()
+            != normalized_uom
             or not uom
         ):
             raise PackageLogisticsError(
@@ -2959,7 +2961,8 @@ class PackageLogisticsClient:
             or not label_id
             or str(group.get("state") or "").strip().upper() != "ACTIVE"
             or str(group.get("item_id") or "").strip() != item_id
-            or str(group.get("uom") or "").strip().upper() != uom
+            or str(group.get("uom") or "").strip().upper()
+            != normalized_uom
             or not scan_payload
             or not anchor_input_tag_id
             or (
@@ -3259,7 +3262,8 @@ class PackageLogisticsClient:
                 ).strip().lower()
                 != membership_hash(covered_members)
                 or str(cover.get("item_id") or "").strip() != item_id
-                or str(cover.get("uom") or "").strip().upper() != uom
+                or str(cover.get("uom") or "").strip().upper()
+                != normalized_uom
                 or not str(cover.get("scan_payload") or "").strip()
                 or not str(
                     cover.get("scan_anchor_input_tag_id") or ""

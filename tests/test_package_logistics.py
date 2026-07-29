@@ -3248,6 +3248,48 @@ def test_work_group_package_build_uses_one_resolver_get_and_full_topology(
     )
 
 
+def test_work_group_package_preserves_server_uom_spelling_in_command():
+    response = _work_group_response(split=False)
+    response["work_group_source"]["uom"] = "Pcs"
+    response["phs_work_group"]["uom"] = "Pcs"
+    response["bundle"]["uom"] = "Pcs"
+    topology_hash = package_module.canonical_sha256(
+        {
+            "phs_work_group": response["phs_work_group"],
+            "source_transfers": response["work_group_source"][
+                "source_transfers"
+            ],
+            "remainder_cover_groups": response["work_group_source"][
+                "remainder_cover_groups"
+            ],
+            "source_iin": response["work_group_source"]["source_iin"],
+            "barcode_membership_hash": response["work_group_source"][
+                "barcode_membership_hash"
+            ],
+            "package_bundle_id": response["work_group_source"][
+                "package_bundle_id"
+            ],
+        }
+    )
+    response["work_group_source"]["topology_hash"] = topology_hash
+    response["topology_hash"] = topology_hash
+    draft = _work_group_draft(response)
+    client = PackageLogisticsClient(
+        PackageClientConfig(
+            "https://logistics.test", "token", SCOPE, "host", "device"
+        ),
+        transport=lambda *_args: {"ok": True, "data": response},
+    )
+
+    _source_identity, command = client.build_create_package_command(
+        draft, idempotency_key="work-group-preserve-server-uom"
+    )
+    snapshot = label_module._label_match_package_source_snapshot(response)
+
+    assert command["payload"]["uom"] == "Pcs"
+    assert snapshot["uom"] == "Pcs"
+
+
 def test_initial_phs_scan_accepts_server_deterministic_work_group_identity():
     response = _work_group_response(split=False)
     group = response["phs_work_group"]

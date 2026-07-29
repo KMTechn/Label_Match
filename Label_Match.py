@@ -2346,7 +2346,7 @@ def _label_match_package_source_snapshot(projection):
             ),
             "authority_scope_id": scope,
             "item_id": str(work_source.get("item_id") or "").strip(),
-            "uom": str(work_source.get("uom") or "").strip().upper(),
+            "uom": str(work_source.get("uom") or "").strip(),
             "member_count": member_count,
             "membership_hash": membership_hash,
             "authority_epoch": authority_epoch,
@@ -3072,7 +3072,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.48" # private update feed release
+APP_VERSION = "v2.0.49" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
