@@ -424,6 +424,69 @@ def test_submission_blocked_preserves_five_of_five_and_last_normal_override():
     assert view.f4_enabled is False
 
 
+def test_recoverable_prewrite_package_conflict_enables_only_current_set_cancel():
+    notice = WorkflowNotice(
+        title="중앙 포장 충돌",
+        message="중앙 영수증이 없어 같은 PHS2를 다시 스캔해야 합니다.",
+        kind="submission_blocked",
+        tone="danger",
+        allow_current_set_cancel=True,
+    )
+    view = present_workflow(
+        WorkflowSnapshot(
+            qa_scans=("PHS2",),
+            central_inherit_all=True,
+            blocking_notice=notice,
+        )
+    )
+
+    assert view.current_stage == "submission_blocked"
+    assert view.cancel_current_enabled is True
+    assert view.scan_input_enabled is False
+    assert view.cancel_completed_enabled is False
+    assert view.f3_enabled is False
+    assert view.f4_enabled is False
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        WorkflowSnapshot(
+            qa_scans=("PHS2",),
+            central_inherit_all=False,
+            blocking_notice=WorkflowNotice(
+                "중앙 포장 충돌",
+                "중앙 확인 필요",
+                allow_current_set_cancel=True,
+            ),
+        ),
+        WorkflowSnapshot(
+            qa_scans=("PHS2",),
+            central_inherit_all=True,
+            blocking_notice=WorkflowNotice(
+                "중앙 포장 충돌",
+                "중앙 확인 필요",
+                allow_current_set_cancel=True,
+            ),
+            has_error=True,
+        ),
+        WorkflowSnapshot(
+            qa_scans=("PHS2",),
+            central_inherit_all=True,
+            blocking_notice=WorkflowNotice(
+                "중앙 포장 충돌",
+                "중앙 확인 필요",
+                allow_current_set_cancel=True,
+            ),
+            history_readonly=True,
+        ),
+    ],
+    ids=("not-inherit-all", "additional-error", "history-readonly"),
+)
+def test_recoverable_cancel_flag_does_not_bypass_other_action_gates(snapshot):
+    assert present_workflow(snapshot).cancel_current_enabled is False
+
+
 def test_normal_action_states_distinguish_current_and_completed_cancellation():
     idle = present_workflow(WorkflowSnapshot())
     active = present_workflow(WorkflowSnapshot(qa_scans=("MASTER",)))

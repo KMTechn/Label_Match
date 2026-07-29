@@ -145,4 +145,7 @@ def _detached_notice(
         message=value.get("message", ""),
         kind=value.get("kind", "blocking"),
         tone=value.get("tone", "danger"),
+        allow_current_set_cancel=bool(
+            value.get("allow_current_set_cancel", False)
+        ),
     )

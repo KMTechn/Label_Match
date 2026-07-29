@@ -3547,6 +3547,112 @@ def test_active_package_submission_never_completes_locally_before_ack():
     assert finalized == [((module.Label_Match.Results.PASS,), {})]
 
 
+def test_exact_prewrite_package_conflict_is_the_only_recoverable_conflict():
+    module = load_label_match_module()
+    row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "idempotency_key": "label-package-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+    }
+
+    assert module._label_match_is_recoverable_prewrite_package_conflict(row)
+
+    for override in (
+        {"status": "PENDING"},
+        {"last_error_code": "PHS_WORK_GROUP_TOPOLOGY_STALE"},
+        {"command_json": None},
+        {"receipt_json": '{"receipt_id":"receipt-1"}'},
+        {"local_completion_committed": 1},
+        {"local_completion_committed": "invalid"},
+    ):
+        candidate = {**row, **override}
+        assert not module._label_match_is_recoverable_prewrite_package_conflict(
+            candidate
+        )
+
+
+def test_exact_prewrite_package_conflict_notice_offers_f1_recovery():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"id": "set-conflict"}
+    app._render_operator_workbench = lambda: None
+    row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "last_error_message": "uom differs",
+        "idempotency_key": "label-package-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+    }
+
+    assert module.Label_Match._set_active_package_submission_notice(app, row) is False
+    assert app._workflow_blocking_notice.allow_current_set_cancel is True
+    assert "F1" in app._workflow_blocking_notice.message
+    assert "충돌 증거는 보존" in app._workflow_blocking_notice.message
+
+
+def test_recoverable_conflict_current_set_reset_preserves_durable_outbox_row():
+    module = load_label_match_module()
+
+    class Manager:
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event, details):
+            self.events.append((event, details))
+
+    class EmptyHistory:
+        @staticmethod
+        def exists(_set_id):
+            return False
+
+    durable_row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "idempotency_key": "label-package-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+    }
+
+    class DurableOutbox:
+        row = dict(durable_row)
+
+    app = object.__new__(module.Label_Match)
+    app.Events = module.Label_Match.Events
+    app.is_blinking = False
+    app.current_set_info = {
+        "id": "set-conflict",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "central_inherit_all": True,
+        "has_error_or_reset": False,
+    }
+    app.package_outbox = DurableOutbox()
+    app.data_manager = Manager()
+    app.history_tree = EmptyHistory()
+    app.history_row_details_map = {}
+    app.progress_bar = {}
+    app.initialized_successfully = False
+    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._block_active_history_load_action = lambda _action: False
+    app._block_view_only_action = lambda _action: False
+    app._delete_current_set_state = lambda: None
+    app._clear_workflow_completion = lambda: None
+
+    assert module.Label_Match._reset_current_set(app, full_reset=True) is True
+    assert app.current_set_info["id"] is None
+    assert app.package_outbox.row == durable_row
+    assert app.data_manager.events[0][0] == module.Label_Match.Events.SET_CANCELLED
+
+
 def test_central_package_preflight_state_must_be_durable_before_enqueue():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)

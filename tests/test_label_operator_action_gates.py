@@ -303,6 +303,30 @@ def test_shortcut_handler_calls_only_the_presenter_enabled_action(action, view, 
     assert app.calls == [expected]
 
 
+def test_shortcut_handler_allows_only_f1_for_recoverable_prewrite_conflict():
+    view = present_workflow(
+        WorkflowSnapshot(
+            qa_scans=("PHS2",),
+            central_inherit_all=True,
+            blocking_notice=WorkflowNotice(
+                "중앙 포장 충돌",
+                "중앙 영수증 없음",
+                kind="submission_blocked",
+                allow_current_set_cancel=True,
+            ),
+        )
+    )
+    app = _action_app(view)
+
+    assert Label_Match._handle_workflow_shortcut(app, "f1") == "break"
+    assert app.calls == [("f1", {"full_reset": True})]
+
+    for action in ("f2", "f3", "f4"):
+        app.calls.clear()
+        assert Label_Match._handle_workflow_shortcut(app, action) == "break"
+        assert app.calls == []
+
+
 @pytest.mark.parametrize("sequence", ("<Return>", "<KP_Enter>"))
 def test_notice_action_button_binds_both_enter_keys_to_acknowledgement(sequence):
     source = inspect.getsource(Label_Match._create_widgets)

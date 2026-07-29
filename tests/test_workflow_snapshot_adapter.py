@@ -98,6 +98,7 @@ def test_adapter_never_mutates_or_aliases_runtime_mapping_and_lists():
         "message": "ACK 확인 필요",
         "kind": "submission_blocked",
         "tone": "danger",
+        "allow_current_set_cancel": True,
     }
     current_before = deepcopy(current)
     notice_before = deepcopy(notice)
@@ -112,6 +113,7 @@ def test_adapter_never_mutates_or_aliases_runtime_mapping_and_lists():
     assert snapshot.qa_scans == ("RAW:MASTER",)
     assert snapshot.exact_rescan_barcodes == ("EXACT-1",)
     assert snapshot.blocking_notice.message == "ACK 확인 필요"
+    assert snapshot.blocking_notice.allow_current_set_cancel is True
 
 
 def test_recovered_sample_preserves_live_stage_and_recovery_flag():

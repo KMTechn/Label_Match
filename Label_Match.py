@@ -2588,6 +2588,28 @@ def _label_match_existing_package_row_metadata(row, current_set_info, item_code)
     }
 
 
+def _label_match_is_recoverable_prewrite_package_conflict(row):
+    """Return whether a durable conflict can only discard its local UI set."""
+
+    source = dict(row or {})
+    try:
+        local_completion_committed = int(
+            source.get("local_completion_committed") or 0
+        )
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        str(source.get("status") or "").strip().upper() == "CONFLICT"
+        and str(source.get("last_error_code") or "").strip().upper()
+        == "PHS_WORK_GROUP_COMMAND_CONFLICT"
+        and str(source.get("idempotency_key") or "").strip()
+        and str(source.get("set_id") or "").strip()
+        and str(source.get("command_json") or "").strip()
+        and not str(source.get("receipt_json") or "").strip()
+        and local_completion_committed == 0
+    )
+
+
 def _label_match_recover_central_state_from_package_row(row):
     """Rebuild the one physical PHS2 slot from an orphan durable command."""
 
@@ -3072,7 +3094,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.49" # private update feed release
+APP_VERSION = "v2.0.50" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -4846,6 +4868,9 @@ class Label_Match(tk.Tk):
         current = self.__dict__.get("current_set_info", {}) or {}
         set_id = str(current.get("id") or "").strip()
         if status == "CONFLICT":
+            recoverable_prewrite_conflict = (
+                _label_match_is_recoverable_prewrite_package_conflict(row)
+            )
             code = str(
                 (row or {}).get("last_error_code") or "CENTRAL_PACKAGE_CONFLICT"
             ).strip()
@@ -4853,11 +4878,22 @@ class Label_Match(tk.Tk):
             notice = WorkflowNotice(
                 title="중앙 포장 충돌 · 실물 작업 중지",
                 message=(
-                    f"{code} · 세트 {set_id}. {message} "
-                    "이 PHS2를 포장 완료로 표시하지 않았습니다. 관리자에게 중앙 상태 확인을 요청하세요."
+                    (
+                        f"{code} · 세트 {set_id}. {message} "
+                        "중앙 포장 영수증이 없어 완료로 표시하지 않았습니다. "
+                        "F1로 현재 세트만 비운 뒤 같은 PHS2를 다시 스캔하세요. "
+                        "충돌 증거는 보존됩니다."
+                    )
+                    if recoverable_prewrite_conflict
+                    else (
+                        f"{code} · 세트 {set_id}. {message} "
+                        "이 PHS2를 포장 완료로 표시하지 않았습니다. "
+                        "관리자에게 중앙 상태 확인을 요청하세요."
+                    )
                 ).strip(),
                 kind="submission_blocked",
                 tone="danger",
+                allow_current_set_cancel=recoverable_prewrite_conflict,
             )
             self._workflow_notice_action = None
             self._workflow_notice_action_text = "확인"

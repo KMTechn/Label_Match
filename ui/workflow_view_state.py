@@ -32,6 +32,7 @@ class WorkflowNotice:
     message: str
     kind: str = "blocking"
     tone: str = "danger"
+    allow_current_set_cancel: bool = False
 
 
 @dataclass(frozen=True)
@@ -231,16 +232,28 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
             and qa_completed == qa_total == 1
         )
     )
-    cancel_current_enabled = (
-        not interaction_blocked
-        and completion_kind is None
-        and (
-            0 < qa_completed < qa_total
-            or (
-                snapshot.central_inherit_all
-                and qa_completed == qa_total == 1
-            )
+    cancelable_active_set = bool(
+        0 < qa_completed < qa_total
+        or (
+            snapshot.central_inherit_all
+            and qa_completed == qa_total == 1
         )
+    )
+    recoverable_blocked_cancel = bool(
+        snapshot.blocking_notice is not None
+        and snapshot.blocking_notice.allow_current_set_cancel
+        and snapshot.central_inherit_all
+        and qa_completed == qa_total == 1
+        and snapshot.initialized
+        and not snapshot.loading
+        and not readonly
+        and not snapshot.history_loading
+        and not snapshot.has_error
+    )
+    cancel_current_enabled = (
+        completion_kind is None
+        and cancelable_active_set
+        and (not interaction_blocked or recoverable_blocked_cancel)
     )
     cancel_completed_enabled = not interaction_blocked
 
@@ -568,6 +581,7 @@ def _normalized_notice(notice: WorkflowNotice) -> WorkflowNotice:
         message=message,
         kind=str(notice.kind or "blocking").strip().lower() or "blocking",
         tone=str(notice.tone or "danger").strip().lower() or "danger",
+        allow_current_set_cancel=bool(notice.allow_current_set_cancel),
     )
 
 
