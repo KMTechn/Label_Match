@@ -3094,7 +3094,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.51" # private update feed release
+APP_VERSION = "v2.0.52" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -10649,6 +10649,44 @@ class Label_Match(tk.Tk):
             return False
         if full_reset and not from_finalize and self._block_view_only_action("현재 세트를 취소"):
             return False
+        dismissed_package_conflict = False
+        if full_reset and not from_finalize:
+            package_outbox = self.__dict__.get("package_outbox")
+            set_id = str(self.current_set_info.get("id") or "").strip()
+            package_row = (
+                package_outbox.get_by_set_id(set_id)
+                if package_outbox is not None and set_id
+                else None
+            )
+            if _label_match_is_recoverable_prewrite_package_conflict(
+                package_row
+            ):
+                dismiss = getattr(
+                    package_outbox,
+                    "dismiss_recoverable_prewrite_conflict",
+                    None,
+                )
+                if not callable(dismiss):
+                    self._set_active_package_submission_notice(package_row)
+                    return False
+                try:
+                    dismiss(str(package_row["idempotency_key"]))
+                except Exception as exc:
+                    # Fail closed: keep the physical set visible unless the
+                    # durable local-recovery dismissal is recorded.
+                    self._set_active_package_submission_notice(package_row)
+                    if not self.run_tests:
+                        messagebox.showwarning(
+                            "현재 세트 취소 보류",
+                            (
+                                "충돌 증거의 로컬 복구 해제 상태를 저장하지 "
+                                "못했습니다. 현재 세트는 유지됩니다.\n\n"
+                                f"{exc}"
+                            ),
+                            parent=self,
+                        )
+                    return False
+                dismissed_package_conflict = True
         if full_reset and self.current_set_info.get('id'):
             self.data_manager.log_event(self.Events.SET_CANCELLED, {"set_id": self.current_set_info['id'], "cancelled_set": self.current_set_info})
             if self.history_tree.exists(str(self.current_set_info['id'])):
@@ -10695,6 +10733,8 @@ class Label_Match(tk.Tk):
             'exact_rescan_barcodes': [],
         }
         self.progress_bar['value'] = 0
+        if dismissed_package_conflict:
+            self._refresh_package_cancellation_review_notice()
         if self.initialized_successfully:
             self._update_status_label()
             self.update_big_display(self._idle_instruction_text(), "")
@@ -11636,7 +11676,15 @@ class Label_Match(tk.Tk):
             scan_position,
         )
 
-    def _fit_operator_tree_cell_text(self, tree, column, value, *, padding=20):
+    def _fit_operator_tree_cell_text(
+        self,
+        tree,
+        column,
+        value,
+        *,
+        padding=20,
+        use_scan_viewport=True,
+    ):
         """Fit a scan value to its visible column while retaining both ends.
 
         The complete accepted value remains in ``_qa_scan_detail_rows`` and the
@@ -11653,7 +11701,7 @@ class Label_Match(tk.Tk):
                 stretch = bool(tree.column(column, "stretch"))
             except (TclError, TypeError, ValueError):
                 stretch = False
-            if stretch:
+            if stretch and use_scan_viewport:
                 # Tk stretches the value column to consume the live widget
                 # width after the responsive pass.  Fit against that final
                 # width immediately so a settle pass does not leave every
@@ -11691,6 +11739,54 @@ class Label_Match(tk.Tk):
             return best
         except (TclError, AttributeError, RecursionError, TypeError, ValueError):
             return self._middle_ellipsis(text, 72)
+
+    def _fit_session_display_widths(self, total_width, font_size):
+        """Fit time, item, and result columns to the realized right pane."""
+
+        total = max(168, int(total_width or 0))
+        body_font = (
+            self.default_font_name,
+            max(10, int(font_size or 10)),
+        )
+        heading_font = (
+            self.default_font_name,
+            max(10, int(font_size or 10)),
+            "bold",
+        )
+        minimums = {
+            "Time": max(
+                56,
+                self._text_pixel_width("시각", heading_font) + 16,
+                self._text_pixel_width("23:59:59", body_font) + 16,
+            ),
+            "Item": max(
+                56,
+                self._text_pixel_width("현품표", heading_font) + 16,
+                self._text_pixel_width("N/A", body_font) + 16,
+            ),
+            "Result": max(
+                56,
+                self._text_pixel_width("결과", heading_font) + 16,
+                self._text_pixel_width("입력 오류", body_font) + 16,
+            ),
+        }
+        if sum(minimums.values()) > total:
+            return self._scaled_widths_to_total(
+                minimums,
+                total,
+                floor=56,
+            )
+        widths = dict(minimums)
+        widths["Item"] += total - sum(widths.values())
+        return widths
+
+    @staticmethod
+    def _operator_session_time_text(value):
+        """Keep one complete HH:MM:SS value in the narrow session table."""
+
+        text = str(value or "").strip()
+        match = re.search(r"(?<!\d)(\d{2}:\d{2}:\d{2})(?!\d)", text)
+        return match.group(1) if match else text
 
     def _compact_operator_notice_message(self, message):
         """Keep one fixed notice region to reason, key value, and next action."""
@@ -12373,12 +12469,10 @@ class Label_Match(tk.Tk):
                 font=action_font,
                 padding=(4, 6),
             )
-            for button_name, compact_text, compact_style in (
-                ("manual_complete_button", "소량\n완료 (F3)", "Operator.Action.TButton"),
-                ("exact_rescan_button", "전체\n재스캔 (F4)", "Operator.Action.TButton"),
-                ("reset_button", "현재 세트\n취소 (F1)", "Operator.Danger.Action.TButton"),
-                ("cancel_tray_button", "완료 트레이\n취소 (F2)", "Operator.Danger.Action.TButton"),
-            ):
+            for button_name, (
+                compact_text,
+                compact_style,
+            ) in self._operator_action_button_presentations().items():
                 button = self.__dict__.get(button_name)
                 if button is not None:
                     button.configure(text=compact_text, style=compact_style, width=1)
@@ -12411,6 +12505,36 @@ class Label_Match(tk.Tk):
                 "Operator.Treeview",
                 font=operator_tree_font,
                 rowheight=tree_row_height,
+            )
+            session_font_size = max(11, min(14, live_list_font_size))
+            session_heading_size = max(11, min(14, session_font_size))
+            session_font = (
+                self.default_font_name,
+                session_font_size,
+            )
+            session_row_height = max(
+                28,
+                self._operator_tree_font_linespace(
+                    session_font,
+                    session_font_size,
+                )
+                + 6,
+            )
+            self.style.configure(
+                "Operator.Session.Treeview",
+                font=session_font,
+                rowheight=session_row_height,
+            )
+            self.style.configure(
+                "Operator.Session.Treeview.Heading",
+                font=(
+                    self.default_font_name,
+                    session_heading_size,
+                    "bold",
+                ),
+            )
+            self.session_tree.configure(
+                style="Operator.Session.Treeview"
             )
             center_inner_width = max(320, panes.center_width - card_padding * 2)
             if compact_large_text:
@@ -12486,12 +12610,26 @@ class Label_Match(tk.Tk):
                 minsize=live_list_height,
                 weight=1,
             )
-            self.session_tree.column("Time", width=80, minwidth=68, stretch=False)
-            self.session_tree.column("Result", width=80, minwidth=68, stretch=False)
+            session_widths = self._fit_session_display_widths(
+                max(180, right_inner_width - 4),
+                session_font_size,
+            )
+            self.session_tree.column(
+                "Time",
+                width=session_widths["Time"],
+                minwidth=56,
+                stretch=False,
+            )
+            self.session_tree.column(
+                "Result",
+                width=session_widths["Result"],
+                minwidth=56,
+                stretch=False,
+            )
             self.session_tree.column(
                 "Item",
-                width=max(100, right_inner_width - 176),
-                minwidth=90,
+                width=session_widths["Item"],
+                minwidth=56,
                 stretch=True,
             )
             if settle:
@@ -12580,6 +12718,45 @@ class Label_Match(tk.Tk):
             "error": "오류",
             "readonly": "조회",
         }.get(str(state), str(state or "-"))
+
+    def _operator_action_button_presentations(self, source=None):
+        """Return stable two-line labels for the narrow right action pane."""
+
+        current = (
+            source
+            if isinstance(source, dict)
+            else (self.__dict__.get("current_set_info", {}) or {})
+        )
+        central_workflow = bool(
+            self._central_inherit_all_active()
+            or self._standard_phs2_workflow_expected(current)
+        )
+        return {
+            "manual_complete_button": (
+                "포장 완료\n(F3)"
+                if central_workflow
+                else "현재 세트\n완료 (F3)",
+                "Operator.Action.TButton",
+            ),
+            "exact_rescan_button": (
+                "제품 교체\n(F4)"
+                if current.get("sealed_transfer") or central_workflow
+                else "전체 재스캔\n(F4)",
+                "Operator.Action.TButton",
+            ),
+            "phs_label_exchange_button": (
+                "현품표 교체\n(F5)",
+                "Operator.Action.TButton",
+            ),
+            "reset_button": (
+                "현재 세트\n취소 (F1)",
+                "Operator.Danger.Action.TButton",
+            ),
+            "cancel_tray_button": (
+                "완료 트레이\n취소 (F2)",
+                "Operator.Danger.Action.TButton",
+            ),
+        }
 
     def _selected_qa_scan_iid(self):
         """Return the selected live QA row without changing keyboard focus."""
@@ -13305,33 +13482,20 @@ class Label_Match(tk.Tk):
                     button.configure(state="normal" if enabled else "disabled")
                 except (TclError, AttributeError):
                     pass
-        f4_button = self.__dict__.get("exact_rescan_button")
-        if f4_button is not None:
-            try:
-                f4_button.configure(
-                    text=(
-                        "제품 교체 (F4)"
-                        if self.current_set_info.get("sealed_transfer")
-                        or self._central_inherit_all_active()
-                        or self._standard_phs2_workflow_expected(source)
-                        else self.EXACT_RESCAN_BUTTON_TEXT
+        for button_name, (
+            button_text,
+            button_style,
+        ) in self._operator_action_button_presentations(source).items():
+            button = self.__dict__.get(button_name)
+            if button is not None:
+                try:
+                    button.configure(
+                        text=button_text,
+                        style=button_style,
+                        width=1,
                     )
-                )
-            except (TclError, AttributeError):
-                pass
-        f3_button = self.__dict__.get("manual_complete_button")
-        if f3_button is not None:
-            try:
-                f3_button.configure(
-                    text=(
-                        "포장 완료 (F3)"
-                        if self._central_inherit_all_active()
-                        or self._standard_phs2_workflow_expected(source)
-                        else self.MANUAL_COMPLETE_BUTTON_TEXT
-                    )
-                )
-            except (TclError, AttributeError):
-                pass
+                except (TclError, AttributeError):
+                    pass
         self._update_operator_item_panel(view, source)
         return view
 
@@ -13555,9 +13719,29 @@ class Label_Match(tk.Tk):
                 values = list(history_tree.item(iid, "values") or ())
                 if len(values) < self.TOTAL_SCAN_COUNT + 3:
                     continue
-                item = values[1]
-                result = values[1 + self.TOTAL_SCAN_COUNT]
-                timestamp = values[2 + self.TOTAL_SCAN_COUNT]
+                item = self._fit_operator_tree_cell_text(
+                    session_tree,
+                    "Item",
+                    values[1],
+                    padding=14,
+                    use_scan_viewport=False,
+                )
+                result = self._fit_operator_tree_cell_text(
+                    session_tree,
+                    "Result",
+                    values[1 + self.TOTAL_SCAN_COUNT],
+                    padding=14,
+                    use_scan_viewport=False,
+                )
+                timestamp = self._fit_operator_tree_cell_text(
+                    session_tree,
+                    "Time",
+                    self._operator_session_time_text(
+                        values[2 + self.TOTAL_SCAN_COUNT]
+                    ),
+                    padding=12,
+                    use_scan_viewport=False,
+                )
                 session_tree.insert(
                     "",
                     "end",

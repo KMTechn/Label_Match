@@ -33,7 +33,7 @@ from logistics_runtime_profile import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v5"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v6"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
@@ -678,6 +678,9 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             local_completion_committed INTEGER NOT NULL DEFAULT 0
                 CHECK(local_completion_committed IN (0,1)),
             local_completion_committed_at TEXT,
+            local_recovery_dismissed INTEGER NOT NULL DEFAULT 0
+                CHECK(local_recovery_dismissed IN (0,1)),
+            local_recovery_dismissed_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -739,9 +742,25 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE package_command_outbox ADD COLUMN local_completion_committed_at TEXT"
         )
+    if "local_recovery_dismissed" not in command_columns:
+        conn.execute(
+            """ALTER TABLE package_command_outbox
+                   ADD COLUMN local_recovery_dismissed INTEGER NOT NULL DEFAULT 0
+                   CHECK(local_recovery_dismissed IN (0,1))"""
+        )
+    if "local_recovery_dismissed_at" not in command_columns:
+        conn.execute(
+            "ALTER TABLE package_command_outbox ADD COLUMN local_recovery_dismissed_at TEXT"
+        )
     conn.execute(
         """CREATE INDEX IF NOT EXISTS ix_package_command_outbox_due
                ON package_command_outbox(status,retry_after_at,created_at)"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS ix_package_command_outbox_review
+               ON package_command_outbox(
+                   status,local_recovery_dismissed,updated_at
+               )"""
     )
     cancellation_columns = {
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
@@ -980,11 +999,74 @@ class PackageOutbox:
             rows = conn.execute(
                 """SELECT * FROM package_command_outbox
                      WHERE local_completion_committed=0
+                       AND local_recovery_dismissed=0
                      ORDER BY created_at,idempotency_key
                      LIMIT ?""",
                 (max(0, int(limit)),),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def dismiss_recoverable_prewrite_conflict(
+        self, key: str
+    ) -> dict[str, Any]:
+        """Dismiss local recovery without deleting terminal conflict evidence."""
+
+        identity = str(key or "").strip()
+        if not identity:
+            raise PackageLogisticsError(
+                "package conflict identity is required"
+            )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT * FROM package_command_outbox
+                     WHERE idempotency_key=?""",
+                (identity,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "package conflict does not exist"
+                )
+            if int(row["local_recovery_dismissed"] or 0) == 1:
+                conn.commit()
+                return dict(row)
+            if (
+                str(row["status"] or "").strip().upper() != "CONFLICT"
+                or str(row["last_error_code"] or "").strip().upper()
+                != "PHS_WORK_GROUP_COMMAND_CONFLICT"
+                or not str(row["set_id"] or "").strip()
+                or not str(row["command_json"] or "").strip()
+                or str(row["receipt_json"] or "").strip()
+                or int(row["local_completion_committed"] or 0) != 0
+            ):
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "only an uncommitted PHS work-group command conflict "
+                    "can dismiss local recovery"
+                )
+            now = utc_now()
+            cursor = conn.execute(
+                """UPDATE package_command_outbox
+                      SET local_recovery_dismissed=1,
+                          local_recovery_dismissed_at=?,updated_at=?
+                    WHERE idempotency_key=?
+                      AND status='CONFLICT'
+                      AND local_recovery_dismissed=0""",
+                (now, now, identity),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "package conflict dismissal changed concurrently"
+                )
+            updated = conn.execute(
+                """SELECT * FROM package_command_outbox
+                     WHERE idempotency_key=?""",
+                (identity,),
+            ).fetchone()
+            conn.commit()
+            return dict(updated)
 
     def mark_local_completion_committed(self, key: str) -> None:
         """Record that the durable local TRAY_COMPLETE projection exists."""
@@ -1029,6 +1111,20 @@ class PackageOutbox:
             return result
 
     def list_conflicts(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM package_command_outbox
+                     WHERE status='CONFLICT'
+                       AND local_recovery_dismissed=0
+                     ORDER BY updated_at DESC,idempotency_key
+                     LIMIT ?""",
+                (max(0, int(limit)),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def list_all_conflicts(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return terminal conflicts, including locally dismissed evidence."""
+
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM package_command_outbox

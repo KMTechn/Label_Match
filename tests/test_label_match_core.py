@@ -3597,7 +3597,7 @@ def test_exact_prewrite_package_conflict_notice_offers_f1_recovery():
     assert "충돌 증거는 보존" in app._workflow_blocking_notice.message
 
 
-def test_recoverable_conflict_current_set_reset_preserves_durable_outbox_row():
+def test_recoverable_conflict_reset_preserves_evidence_and_dismisses_warning():
     module = load_label_match_module()
 
     class Manager:
@@ -3629,6 +3629,19 @@ def test_recoverable_conflict_current_set_reset_preserves_durable_outbox_row():
             assert set_id == "set-conflict"
             return dict(self.row)
 
+        def dismiss_recoverable_prewrite_conflict(self, key):
+            assert key == "label-package-key"
+            self.row["local_recovery_dismissed"] = 1
+            self.row["local_recovery_dismissed_at"] = (
+                "2026-07-30T08:20:00Z"
+            )
+            return dict(self.row)
+
+        @staticmethod
+        def list_conflicts(*, limit):
+            assert limit == 21
+            return []
+
     app = object.__new__(module.Label_Match)
     app.Events = module.Label_Match.Events
     app.is_blinking = False
@@ -3654,7 +3667,11 @@ def test_recoverable_conflict_current_set_reset_preserves_durable_outbox_row():
 
     assert module.Label_Match._reset_current_set(app, full_reset=True) is True
     assert app.current_set_info["id"] is None
-    assert app.package_outbox.row == durable_row
+    assert {
+        key: app.package_outbox.row[key] for key in durable_row
+    } == durable_row
+    assert app.package_outbox.row["local_recovery_dismissed"] == 1
+    assert app._package_create_review_notice is None
     assert app.data_manager.events[0][0] == module.Label_Match.Events.SET_CANCELLED
 
 

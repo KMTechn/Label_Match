@@ -2620,6 +2620,64 @@ def test_deterministic_local_validation_is_conflict_not_retry(tmp_path):
     assert outbox.get_by_set_id(draft.set_id)["status"] == "CONFLICT"
 
 
+def test_f1_dismisses_only_local_recovery_and_preserves_conflict_evidence(
+    tmp_path,
+):
+    draft = _draft()
+    db_path = tmp_path / "dismiss-recoverable-conflict.sqlite3"
+    outbox = PackageOutbox(db_path)
+    queued = outbox.enqueue(draft)
+    claimed = outbox.claim_next()
+    assert claimed["idempotency_key"] == queued["idempotency_key"]
+    command = {
+        "command_type": "CREATE_PACKAGE",
+        "authority_scope_id": SCOPE,
+        "idempotency_key": queued["idempotency_key"],
+        "payload": {
+            "source_bundle_id": TRANSFER,
+            "package_bundle_id": draft.package_bundle_id,
+        },
+    }
+    outbox.save_command(
+        queued["idempotency_key"],
+        TRANSFER,
+        command,
+    )
+
+    class PrewriteConflict(Exception):
+        code = "PHS_WORK_GROUP_COMMAND_CONFLICT"
+        message = "exact preflight differs"
+
+    outbox.mark_conflict(
+        queued["idempotency_key"],
+        PrewriteConflict(),
+    )
+    before = outbox.get_by_set_id(draft.set_id)
+    assert outbox.list_conflicts(limit=1)[0]["status"] == "CONFLICT"
+    assert outbox.list_local_completion_pending(limit=1)
+
+    dismissed = outbox.dismiss_recoverable_prewrite_conflict(
+        queued["idempotency_key"]
+    )
+    restarted = PackageOutbox(db_path)
+    after = restarted.get_by_set_id(draft.set_id)
+
+    assert dismissed["local_recovery_dismissed"] == 1
+    assert after["status"] == "CONFLICT"
+    assert after["last_error_code"] == before["last_error_code"]
+    assert after["command_json"] == before["command_json"]
+    assert after["receipt_json"] is None
+    assert after["local_completion_committed"] == 0
+    assert after["local_recovery_dismissed"] == 1
+    assert after["local_recovery_dismissed_at"]
+    assert restarted.counts()["CONFLICT"] == 1
+    assert restarted.list_conflicts() == []
+    assert restarted.list_local_completion_pending() == []
+    assert restarted.list_all_conflicts(limit=1)[0]["idempotency_key"] == (
+        queued["idempotency_key"]
+    )
+
+
 def test_create_package_429_waits_until_retry_after_instead_of_conflicting(tmp_path):
     draft = _draft()
     outbox = PackageOutbox(tmp_path / "create-retry-after.sqlite3")
