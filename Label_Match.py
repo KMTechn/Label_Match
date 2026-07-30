@@ -3094,7 +3094,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.50" # private update feed release
+APP_VERSION = "v2.0.51" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -7845,7 +7845,11 @@ class Label_Match(tk.Tk):
             set_id = str(current.get("id") or "").strip()
             row = outbox.get_by_set_id(set_id) if outbox is not None and set_id else None
             package_status = str((row or {}).get("status") or "").upper()
-            if package_status in {
+            recoverable_prewrite_cancel = bool(
+                str(action or "") == "현재 세트 취소"
+                and _label_match_is_recoverable_prewrite_package_conflict(row)
+            )
+            if not recoverable_prewrite_cancel and package_status in {
                 "PENDING",
                 "SENDING",
                 "ACKED",

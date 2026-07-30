@@ -3625,9 +3625,14 @@ def test_recoverable_conflict_current_set_reset_preserves_durable_outbox_row():
     class DurableOutbox:
         row = dict(durable_row)
 
+        def get_by_set_id(self, set_id):
+            assert set_id == "set-conflict"
+            return dict(self.row)
+
     app = object.__new__(module.Label_Match)
     app.Events = module.Label_Match.Events
     app.is_blinking = False
+    app.run_tests = True
     app.current_set_info = {
         "id": "set-conflict",
         "raw": ["PHS2"],
@@ -3641,7 +3646,7 @@ def test_recoverable_conflict_current_set_reset_preserves_durable_outbox_row():
     app.history_row_details_map = {}
     app.progress_bar = {}
     app.initialized_successfully = False
-    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._current_sealed_transfer_exchange_attempt = lambda: None
     app._block_active_history_load_action = lambda _action: False
     app._block_view_only_action = lambda _action: False
     app._delete_current_set_state = lambda: None
@@ -3651,6 +3656,39 @@ def test_recoverable_conflict_current_set_reset_preserves_durable_outbox_row():
     assert app.current_set_info["id"] is None
     assert app.package_outbox.row == durable_row
     assert app.data_manager.events[0][0] == module.Label_Match.Events.SET_CANCELLED
+
+
+def test_recoverable_prewrite_package_conflict_still_blocks_non_cancel_actions():
+    module = load_label_match_module()
+
+    row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "idempotency_key": "label-package-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+    }
+
+    class DurableOutbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            assert set_id == "set-conflict"
+            return dict(row)
+
+    app = object.__new__(module.Label_Match)
+    app.run_tests = True
+    app.current_set_info = {"id": "set-conflict"}
+    app.package_outbox = DurableOutbox()
+    app._current_sealed_transfer_exchange_attempt = lambda: None
+    notices = []
+    app._set_active_package_submission_notice = (
+        lambda durable_row: notices.append(durable_row) or False
+    )
+
+    assert app._sealed_transfer_exchange_blocks_local_action("포장 완료") is True
+    assert notices == [row]
 
 
 def test_central_package_preflight_state_must_be_durable_before_enqueue():
