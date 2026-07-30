@@ -3616,6 +3616,124 @@ def test_exact_prewrite_package_conflict_is_the_only_recoverable_conflict():
         )
 
 
+def test_only_dismissed_recoverable_conflict_is_inactive_operator_work():
+    module = load_label_match_module()
+    row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "idempotency_key": "label-package-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+        "local_recovery_dismissed": 1,
+    }
+
+    assert module._label_match_is_dismissed_recoverable_package_conflict(row)
+    assert not module._label_match_is_dismissed_recoverable_package_conflict(
+        {**row, "local_recovery_dismissed": 0}
+    )
+    assert not module._label_match_is_dismissed_recoverable_package_conflict(
+        {**row, "status": "PENDING"}
+    )
+
+
+def test_startup_drops_superseded_conflict_state_before_operator_restore():
+    module = load_label_match_module()
+    calls = []
+    row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "idempotency_key": "label-package-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+        "local_recovery_dismissed": 0,
+    }
+
+    class Manager:
+        @staticmethod
+        def load_current_state():
+            calls.append("load")
+            return {
+                "timestamp": "2026-07-30T20:00:00",
+                "worker_name": "worker",
+                "current_set_info": {
+                    "id": "set-conflict",
+                    "raw": ["PHS2"],
+                    "parsed": ["ITEM"],
+                    "central_inherit_all": True,
+                },
+            }
+
+        @staticmethod
+        def delete_current_state():
+            calls.append("delete")
+
+    class Outbox:
+        @staticmethod
+        def dismiss_superseded_recoverable_prewrite_conflicts():
+            calls.append("reconcile")
+            row["local_recovery_dismissed"] = 1
+            return 1
+
+        @staticmethod
+        def get_by_set_id(set_id):
+            calls.append(("get", set_id))
+            return dict(row)
+
+    app = object.__new__(module.Label_Match)
+    app.data_manager = Manager()
+    app.package_outbox = Outbox()
+
+    assert module.Label_Match._load_current_set_state(app) is None
+    assert calls == [
+        "reconcile",
+        "load",
+        ("get", "set-conflict"),
+        "delete",
+    ]
+
+
+def test_active_superseded_conflict_returns_to_idle_without_notice():
+    module = load_label_match_module()
+    row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "idempotency_key": "label-package-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+        "local_recovery_dismissed": 1,
+    }
+
+    class Outbox:
+        @staticmethod
+        def get_by_set_id(set_id):
+            assert set_id == "set-conflict"
+            return dict(row)
+
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "id": "set-conflict",
+        "central_inherit_all": True,
+    }
+    app.package_outbox = Outbox()
+    app._workflow_blocking_notice = object()
+    app._workflow_notice = object()
+    app._workflow_notice_action = object()
+    app._workflow_notice_action_text = "old"
+    idle_returns = []
+    app._return_to_idle_after_finalized_set = (
+        lambda: idle_returns.append(True) or True
+    )
+
+    assert module.Label_Match._reconcile_active_package_submission(app) is True
+    assert idle_returns == [True]
+
+
 def test_exact_prewrite_package_conflict_notice_offers_f1_recovery():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)

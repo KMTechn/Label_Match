@@ -2610,6 +2610,20 @@ def _label_match_is_recoverable_prewrite_package_conflict(row):
     )
 
 
+def _label_match_is_dismissed_recoverable_package_conflict(row):
+    """Return whether a recoverable conflict is no longer active operator work."""
+
+    source = dict(row or {})
+    try:
+        locally_dismissed = int(source.get("local_recovery_dismissed") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        locally_dismissed == 1
+        and _label_match_is_recoverable_prewrite_package_conflict(source)
+    )
+
+
 def _label_match_recover_central_state_from_package_row(row):
     """Rebuild the one physical PHS2 slot from an orphan durable command."""
 
@@ -3094,7 +3108,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.53" # private update feed release
+APP_VERSION = "v2.0.54" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -4925,6 +4939,11 @@ class Label_Match(tk.Tk):
         if row is None:
             return False
         status = str(row.get("status") or "").strip().upper()
+        if _label_match_is_dismissed_recoverable_package_conflict(row):
+            # A newer, fully committed command for the exact same source has
+            # already superseded this pre-write conflict.  Preserve the row as
+            # audit evidence, but never revive it as active operator work.
+            return bool(self._return_to_idle_after_finalized_set())
         current["package_submission_idempotency_key"] = str(
             row.get("idempotency_key") or ""
         ).strip()
@@ -6630,9 +6649,23 @@ class Label_Match(tk.Tk):
         return saved
 
     def _load_current_set_state(self):
+        package_outbox = self.__dict__.get("package_outbox")
+        reconcile_superseded = getattr(
+            package_outbox,
+            "dismiss_superseded_recoverable_prewrite_conflicts",
+            None,
+        )
+        if callable(reconcile_superseded):
+            try:
+                # Run before orphan/state recovery so historical conflicts
+                # cannot be reconstructed as today's active work.
+                reconcile_superseded()
+            except Exception as exc:
+                # This review projection is best-effort.  A failure here must
+                # not turn application startup into a fatal error.
+                print(f"과거 중앙 포장 충돌 시작 정리 오류: {exc}")
         state_data = self.data_manager.load_current_state()
         if not state_data:
-            package_outbox = self.__dict__.get("package_outbox")
             list_pending = getattr(
                 package_outbox, "list_local_completion_pending", None
             )
@@ -6706,12 +6739,14 @@ class Label_Match(tk.Tk):
                 return
         saved_set_info = dict(state_data.get("current_set_info") or {})
         saved_set_id = str(saved_set_info.get("id") or "").strip()
-        package_outbox = self.__dict__.get("package_outbox")
         package_row = (
             package_outbox.get_by_set_id(saved_set_id)
             if package_outbox is not None and saved_set_id
             else None
         )
+        if _label_match_is_dismissed_recoverable_package_conflict(package_row):
+            self.data_manager.delete_current_state()
+            return
         durable_central_state = bool(
             saved_set_info.get("central_inherit_all")
             or package_row is not None
