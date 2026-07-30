@@ -3094,7 +3094,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.52" # private update feed release
+APP_VERSION = "v2.0.53" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -4955,20 +4955,7 @@ class Label_Match(tk.Tk):
     def _finish_recovered_package_completion(self):
         """Clear an ACKed set whose local completion was already durable."""
 
-        completed = copy.deepcopy(
-            self.__dict__.get("current_set_info", {}) or {}
-        )
-        self._delete_current_set_state()
-        if self.__dict__.get("operator_workbench_ready"):
-            self._publish_workflow_completion("full")
-        self._reset_current_set(from_finalize=True)
-        if "big_display_label" in self.__dict__:
-            self.update_big_display("포장 완료 복구 - 다음 PHS2 스캔", "green")
-            self._show_completion_progress(
-                self.Results.PASS,
-                scan_count=len(completed.get("raw") or ()),
-            )
-        return True
+        return self._return_to_idle_after_finalized_set()
 
     def _enqueue_central_package_submission(self):
         try:
@@ -5102,6 +5089,18 @@ class Label_Match(tk.Tk):
         if package_outbox is None or not hasattr(package_outbox, "list_conflicts"):
             package_conflicts = ()
         else:
+            reconcile_superseded = getattr(
+                package_outbox,
+                "dismiss_superseded_recoverable_prewrite_conflicts",
+                None,
+            )
+            if callable(reconcile_superseded):
+                try:
+                    reconcile_superseded()
+                except Exception as exc:
+                    # Review projection maintenance must never stop scanning.
+                    # Keep the evidence visible and retry on the next poll.
+                    print(f"과거 중앙 포장 충돌 정리 오류: {exc}")
             try:
                 package_conflicts = tuple(package_outbox.list_conflicts(limit=21))
             except Exception as exc:
@@ -10086,7 +10085,6 @@ class Label_Match(tk.Tk):
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
         central_inherit_all = self._central_inherit_all_active()
-        completed_scan_count = len(raw_scans_to_log)
         item_code = parsed_scans_to_log[0] if parsed_scans_to_log else "N/A"
 
         item_name_override = self.current_set_info.get('item_name_override')
@@ -10292,23 +10290,28 @@ class Label_Match(tk.Tk):
         self.save_status_label.config(text=f"✓ 기록됨 ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
+        return self._return_to_idle_after_finalized_set()
+
+    def _return_to_idle_after_finalized_set(self):
+        """Clear transient set UI after its durable result has been recorded."""
+
         if self.__dict__.get("operator_workbench_ready"):
-            self._publish_finalize_completion(
-                is_manual_complete=is_manual_complete,
-                result=result,
-            )
+            self._clear_workflow_completion()
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            self._workflow_notice_action = None
+            self._workflow_notice_action_text = "확인"
+            self._phs_label_guidance_notice = None
+            self._pending_workflow_error = None
+            self._workflow_pending_error = None
+            self._workflow_error_message = ""
+            self._workflow_recovered = False
         self._reset_current_set(from_finalize=True)
-        if "big_display_label" in self.__dict__:
-            if result == self.Results.PASS:
-                self._show_completion_progress(result, scan_count=completed_scan_count)
-                self.update_big_display("통과 완료 - 다음 현품표 스캔", "green")
-            else:
-                self.update_big_display("오류 처리 완료 - 새 현품표부터 시작", "red")
-            if self.__dict__.get("operator_workbench_ready"):
-                self._refresh_session_tree()
-                self._render_operator_workbench()
-            else:
-                self.after(1800, self._show_idle_instruction_if_idle)
+        if self.__dict__.get("operator_workbench_ready"):
+            self._refresh_session_tree()
+            self._render_operator_workbench()
+        elif "big_display_label" in self.__dict__:
+            self.after(1800, self._show_idle_instruction_if_idle)
         return True
 
     def _handle_input_error(self, raw, title="[입력 오류]", reason="알 수 없는 입력 오류가 발생했습니다."):

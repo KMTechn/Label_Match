@@ -2678,6 +2678,141 @@ def test_f1_dismisses_only_local_recovery_and_preserves_conflict_evidence(
     )
 
 
+def _prepare_superseded_prewrite_conflict(db_path):
+    outbox = PackageOutbox(db_path)
+    stale_draft = _draft_for_set("SET-STALE-CONFLICT")
+    stale = outbox.enqueue(stale_draft)
+    claimed = outbox.claim_next()
+    assert claimed["idempotency_key"] == stale["idempotency_key"]
+    stale_command = {
+        "command_type": "CREATE_PACKAGE",
+        "authority_scope_id": SCOPE,
+        "idempotency_key": stale["idempotency_key"],
+        "payload": {
+            "source_bundle_id": TRANSFER,
+            "package_bundle_id": stale_draft.package_bundle_id,
+        },
+    }
+    outbox.save_command(stale["idempotency_key"], TRANSFER, stale_command)
+
+    class PrewriteConflict(Exception):
+        code = "PHS_WORK_GROUP_COMMAND_CONFLICT"
+        message = "stale exact preflight"
+
+    outbox.mark_conflict(stale["idempotency_key"], PrewriteConflict())
+
+    completed_draft = _draft_for_set("SET-LATER-COMPLETION")
+    completed = _ack_package_creation(outbox, completed_draft)
+    outbox.mark_local_completion_committed(completed["idempotency_key"])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """UPDATE package_command_outbox SET created_at=?
+                 WHERE idempotency_key=?""",
+            ("2026-07-30T08:00:00Z", stale["idempotency_key"]),
+        )
+        conn.execute(
+            """UPDATE package_command_outbox SET created_at=?
+                 WHERE idempotency_key=?""",
+            ("2026-07-30T08:05:00Z", completed["idempotency_key"]),
+        )
+    return outbox, stale, completed
+
+
+def test_later_completed_source_hides_stale_conflict_without_deleting_evidence(
+    tmp_path,
+):
+    db_path = tmp_path / "superseded-conflict.sqlite3"
+    outbox, stale, _completed = _prepare_superseded_prewrite_conflict(db_path)
+    before = outbox.get_by_set_id("SET-STALE-CONFLICT")
+
+    assert outbox.dismiss_superseded_recoverable_prewrite_conflicts() == 1
+    assert outbox.dismiss_superseded_recoverable_prewrite_conflicts() == 0
+
+    restarted = PackageOutbox(db_path)
+    after = restarted.get_by_set_id("SET-STALE-CONFLICT")
+    assert after["status"] == "CONFLICT"
+    assert after["last_error_code"] == before["last_error_code"]
+    assert after["last_error_message"] == before["last_error_message"]
+    assert after["command_json"] == before["command_json"]
+    assert after["receipt_json"] is None
+    assert after["local_completion_committed"] == 0
+    assert after["local_recovery_dismissed"] == 1
+    assert after["local_recovery_dismissed_at"]
+    assert restarted.counts()["CONFLICT"] == 1
+    assert restarted.list_conflicts() == []
+    assert restarted.list_all_conflicts(limit=1)[0]["idempotency_key"] == (
+        stale["idempotency_key"]
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "nonrecoverable_error",
+        "missing_stale_source",
+        "different_source",
+        "stale_has_receipt",
+        "stale_local_completion",
+        "completed_missing_receipt",
+        "completed_local_pending",
+        "completed_not_acked",
+        "completed_not_newer",
+    ],
+)
+def test_stale_conflict_dismissal_requires_exact_later_completion_evidence(
+    tmp_path,
+    mutation,
+):
+    db_path = tmp_path / f"superseded-negative-{mutation}.sqlite3"
+    outbox, stale, completed = _prepare_superseded_prewrite_conflict(db_path)
+    updates = {
+        "nonrecoverable_error": (
+            "UPDATE package_command_outbox SET last_error_code=? WHERE idempotency_key=?",
+            ("PACKAGE_MEMBERSHIP_CONFLICT", stale["idempotency_key"]),
+        ),
+        "missing_stale_source": (
+            "UPDATE package_command_outbox SET resolved_source_bundle_id=NULL WHERE idempotency_key=?",
+            (stale["idempotency_key"],),
+        ),
+        "different_source": (
+            "UPDATE package_command_outbox SET resolved_source_bundle_id=? WHERE idempotency_key=?",
+            ("TRANSFER-DIFFERENT", completed["idempotency_key"]),
+        ),
+        "stale_has_receipt": (
+            "UPDATE package_command_outbox SET receipt_json=? WHERE idempotency_key=?",
+            ('{"receipt_id":"unexpected"}', stale["idempotency_key"]),
+        ),
+        "stale_local_completion": (
+            "UPDATE package_command_outbox SET local_completion_committed=1 WHERE idempotency_key=?",
+            (stale["idempotency_key"],),
+        ),
+        "completed_missing_receipt": (
+            "UPDATE package_command_outbox SET receipt_json=NULL WHERE idempotency_key=?",
+            (completed["idempotency_key"],),
+        ),
+        "completed_local_pending": (
+            "UPDATE package_command_outbox SET local_completion_committed=0 WHERE idempotency_key=?",
+            (completed["idempotency_key"],),
+        ),
+        "completed_not_acked": (
+            "UPDATE package_command_outbox SET status='PENDING' WHERE idempotency_key=?",
+            (completed["idempotency_key"],),
+        ),
+        "completed_not_newer": (
+            "UPDATE package_command_outbox SET created_at=? WHERE idempotency_key=?",
+            ("2026-07-30T07:59:59Z", completed["idempotency_key"]),
+        ),
+    }
+    sql, params = updates[mutation]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(sql, params)
+
+    assert outbox.dismiss_superseded_recoverable_prewrite_conflicts() == 0
+    assert outbox.list_conflicts(limit=1)[0]["idempotency_key"] == (
+        stale["idempotency_key"]
+    )
+
+
 def test_create_package_429_waits_until_retry_after_instead_of_conflicting(tmp_path):
     draft = _draft()
     outbox = PackageOutbox(tmp_path / "create-retry-after.sqlite3")

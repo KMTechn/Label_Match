@@ -160,6 +160,53 @@ def test_full_and_partial_completion_publish_distinct_view_kinds():
     assert published == ["full", "partial"]
 
 
+def test_durable_completion_clears_transient_status_and_returns_to_idle():
+    app = _error_app(
+        "MASTER-001",
+        "PRODUCT-001",
+        "PRODUCT-002",
+        "PRODUCT-003",
+        "FINAL-001",
+        workbench_ready=True,
+    )
+    app._workflow_completion_kind = "full"
+    app._workflow_display_scans = tuple(app.current_set_info["raw"])
+    app._workflow_display_parsed_scans = tuple(app.current_set_info["parsed"])
+    app._workflow_display_central_inherit_all = True
+    app._workflow_display_active_label_qr = "PHS2"
+    app._workflow_last_normal_override = "FINAL-001"
+    app._workflow_item_snapshot = {"set_id": "set-1"}
+    app._workflow_blocking_notice = object()
+    app._workflow_notice = object()
+    app._workflow_notice_action = lambda: None
+    app._workflow_notice_action_text = "재시도"
+    app._phs_label_guidance_notice = object()
+    app._pending_workflow_error = {"result": app.Results.FAIL_INPUT_ERROR}
+    app._workflow_pending_error = {"result": app.Results.FAIL_INPUT_ERROR}
+    app._workflow_error_message = "old error"
+    app._workflow_recovered = True
+    reset_calls = []
+    refresh_calls = []
+    app._reset_current_set = lambda **kwargs: reset_calls.append(kwargs) or True
+    app._refresh_session_tree = lambda: refresh_calls.append(True)
+
+    assert Label_Match._return_to_idle_after_finalized_set(app) is True
+    assert reset_calls == [{"from_finalize": True}]
+    assert refresh_calls == [True]
+    assert app._workflow_completion_kind is None
+    assert app._workflow_display_scans == ()
+    assert app._workflow_blocking_notice is None
+    assert app._workflow_notice is None
+    assert app._workflow_notice_action is None
+    assert app._workflow_notice_action_text == "확인"
+    assert app._phs_label_guidance_notice is None
+    assert app._pending_workflow_error is None
+    assert app._workflow_pending_error is None
+    assert app._workflow_error_message == ""
+    assert app._workflow_recovered is False
+    assert app.big_display_label.cget("text") == ""
+
+
 def test_submission_block_keeps_all_five_scans_and_offers_retry_without_reset(monkeypatch):
     scans = ["MASTER-001", "PRODUCT-001", "PRODUCT-002", "PRODUCT-003", "FINAL-001"]
     app = _error_app(*scans, workbench_ready=True)

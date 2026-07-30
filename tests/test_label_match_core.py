@@ -3451,6 +3451,47 @@ def test_terminal_cancellation_conflict_stays_in_separate_operator_review_notice
     assert len(render_calls) == 3
 
 
+@pytest.mark.parametrize("reconcile_fails", [False, True])
+def test_historical_package_review_reconciliation_never_blocks_scanning(
+    reconcile_fails,
+):
+    module = load_label_match_module()
+    calls = []
+
+    class PackageOutbox:
+        @staticmethod
+        def dismiss_superseded_recoverable_prewrite_conflicts():
+            calls.append("reconcile")
+            if reconcile_fails:
+                raise RuntimeError("temporary review projection failure")
+            return 1
+
+        @staticmethod
+        def list_conflicts(*, limit):
+            assert limit == 21
+            calls.append("list")
+            return []
+
+    class CancellationOutbox:
+        @staticmethod
+        def list_conflicts(*, limit):
+            assert limit == 21
+            return []
+
+    app = object.__new__(module.Label_Match)
+    app.package_outbox = PackageOutbox()
+    app.package_cancellation_outbox = CancellationOutbox()
+    app.operator_workbench_ready = False
+    app._workflow_widgets_ready = False
+    app._package_create_review_notice = object()
+    app._package_create_review_rows = (object(),)
+
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 0
+    assert calls == ["reconcile", "list"]
+    assert app._package_create_review_notice is None
+    assert app._package_create_review_rows == ()
+
+
 def test_existing_cancellation_conflicts_refresh_without_configured_client():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)

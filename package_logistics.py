@@ -1068,6 +1068,48 @@ class PackageOutbox:
             conn.commit()
             return dict(updated)
 
+    def dismiss_superseded_recoverable_prewrite_conflicts(self) -> int:
+        """Hide stale recovery notices after the same source was completed later.
+
+        The terminal conflict row remains immutable audit evidence. Only its
+        local operator-review projection is dismissed, and only after a newer
+        ACKed command for the exact same resolved source bundle has both a
+        receipt and a durable local completion marker.
+        """
+
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                UPDATE package_command_outbox AS stale
+                   SET local_recovery_dismissed=1,
+                       local_recovery_dismissed_at=?,
+                       updated_at=?
+                 WHERE stale.status='CONFLICT'
+                   AND UPPER(TRIM(COALESCE(stale.last_error_code,'')))
+                       ='PHS_WORK_GROUP_COMMAND_CONFLICT'
+                   AND TRIM(COALESCE(stale.resolved_source_bundle_id,''))<>''
+                   AND TRIM(COALESCE(stale.receipt_json,''))=''
+                   AND stale.local_completion_committed=0
+                   AND stale.local_recovery_dismissed=0
+                   AND EXISTS (
+                       SELECT 1
+                         FROM package_command_outbox AS completed
+                        WHERE completed.resolved_source_bundle_id
+                              =stale.resolved_source_bundle_id
+                          AND completed.status='ACKED'
+                          AND TRIM(COALESCE(completed.receipt_json,''))<>''
+                          AND completed.local_completion_committed=1
+                          AND completed.created_at>stale.created_at
+                   )
+                """,
+                (now, now),
+            )
+            dismissed = max(0, int(cursor.rowcount or 0))
+            conn.commit()
+            return dismissed
+
     def mark_local_completion_committed(self, key: str) -> None:
         """Record that the durable local TRAY_COMPLETE projection exists."""
 
