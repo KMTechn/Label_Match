@@ -41,11 +41,6 @@ PACKAGE_HTTP_USER_AGENT = "KMTech-Worker-ClaimClient/1.0 LabelMatch"
 PACKAGE_HTTP_CLIENT_HEADER = "Label_Match"
 MAX_RETRY_AFTER_SECONDS = 1800.0
 SENDING_LEASE_SECONDS = 300.0
-TEST1_GOAL_SCOPE_ID = "TEST1-GOAL-20260722-EXACT-SIX"
-TEST1_COMMON_DEVICE_ID = "test1-common-host"
-TEST1_DROP_RECONCILIATION_PREPARE_ACK_ENV = (
-    "KMTECH_TEST1_DROP_PHS_RECONCILIATION_PREPARE_ACK_ONCE"
-)
 
 
 class PackageLogisticsError(RuntimeError):
@@ -1778,7 +1773,6 @@ class PackageLogisticsClient:
         config.validate()
         self.config = config
         self._transport = transport or _default_transport
-        self._test1_reconciliation_prepare_ack_dropped = False
 
     def _assert_authority(
         self,
@@ -2333,25 +2327,6 @@ class PackageLogisticsClient:
                 key=key,
             )
         )
-        exchange = (
-            response.get("exchange")
-            if isinstance(response.get("exchange"), Mapping)
-            else {}
-        )
-        if (
-            not self._test1_reconciliation_prepare_ack_dropped
-            and scope == TEST1_GOAL_SCOPE_ID
-            and str(self.config.device_id or "") == TEST1_COMMON_DEVICE_ID
-            and os.environ.get(
-                TEST1_DROP_RECONCILIATION_PREPARE_ACK_ENV
-            )
-            == reconciliation
-            and bool(str(exchange.get("exchange_id") or "").strip())
-        ):
-            self._test1_reconciliation_prepare_ack_dropped = True
-            raise PackageTransportError(
-                "TEST1 reconciliation prepare response was intentionally lost"
-            )
         return response
 
     def get_phs_label_exchange(
