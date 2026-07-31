@@ -588,6 +588,7 @@ def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_t
         "package_command_outbox",
         "package_cancellation_outbox",
         "package_replacement_waiting_outbox",
+        "package_post_review_outbox",
     }.issubset(tables)
     assert {
         "local_event_committed",
@@ -617,6 +618,23 @@ def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_t
         "created_at",
         "updated_at",
     }.issubset(replacement_columns)
+    with sqlite3.connect(db_path) as conn:
+        post_review_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(package_post_review_outbox)"
+            ).fetchall()
+        }
+    assert {
+        "review_event_id",
+        "package_idempotency_key",
+        "event_fingerprint",
+        "event_json",
+        "local_csv_committed",
+        "local_csv_committed_at",
+        "created_at",
+        "updated_at",
+    }.issubset(post_review_columns)
     assert version == package_module.OUTBOX_SCHEMA_VERSION
 
 
@@ -2768,6 +2786,180 @@ def test_deterministic_local_validation_is_conflict_not_retry(tmp_path):
     assert conflict["local_completion_committed"] == 1
 
 
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_origin", "expected_code"),
+    [
+        ("api", "PACKAGE_API_CONFLICT", "STALE_VERSION"),
+        (
+            "local_validation",
+            "LOCAL_VALIDATION_OR_RECEIPT_CONFLICT",
+            "LOCAL_VALIDATION_CONFLICT",
+        ),
+        (
+            "receipt_validation",
+            "LOCAL_VALIDATION_OR_RECEIPT_CONFLICT",
+            "LOCAL_VALIDATION_CONFLICT",
+        ),
+    ],
+)
+def test_every_post_local_package_conflict_creates_one_durable_review_case(
+    tmp_path,
+    failure_kind,
+    expected_origin,
+    expected_code,
+):
+    draft = _draft_for_set(f"SET-POST-REVIEW-{failure_kind}")
+    db_path = tmp_path / f"post-review-{failure_kind}.sqlite3"
+    outbox = PackageOutbox(db_path)
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
+
+    class ConflictClient(RestartClient):
+        def build_create_package_command(self, draft, *, idempotency_key):
+            if failure_kind == "local_validation":
+                raise PackageLogisticsError("local membership validation failed")
+            return super().build_create_package_command(
+                draft, idempotency_key=idempotency_key
+            )
+
+        def create_package(self, command):
+            if failure_kind == "api":
+                raise PackageApiError(
+                    409,
+                    "STALE_VERSION",
+                    "source transfer changed",
+                    retryable=False,
+                    committed=False,
+                )
+            receipt = super().create_package(command)
+            if failure_kind == "receipt_validation":
+                receipt["data"]["package_bundle_id"] = "WRONG-PACKAGE"
+            return receipt
+
+    result = PackageOutboxProcessor(
+        outbox, ConflictClient(draft)
+    ).drain(limit=1)
+
+    assert result == {"acked": 0, "retry": 0, "conflict": 1}
+    conflict = outbox.get_by_set_id(draft.set_id)
+    assert conflict["status"] == "CONFLICT"
+    assert conflict["local_completion_committed"] == 1
+    pending = outbox.list_post_review_csv_pending()
+    assert len(pending) == 1
+    event = json.loads(pending[0]["event_json"])
+    assert event == {
+        "case_id": pending[0]["review_event_id"],
+        "case_status": "OPEN",
+        "case_type": "PACKAGE_CREATE_POST_LOCAL_CONFLICT",
+        "conflict_code": expected_code,
+        "conflict_origin": expected_origin,
+        "dedupe_key": pending[0]["review_event_id"],
+        "event_version": "label-match-post-review-required-v1",
+        "local_completion_committed": True,
+        "package_bundle_id": draft.package_bundle_id,
+        "package_idempotency_key": queued["idempotency_key"],
+        "required_at": conflict["updated_at"],
+        "review_event_id": pending[0]["review_event_id"],
+        "review_status": "OPERATOR_REVIEW",
+        "set_id": draft.set_id,
+    }
+
+    restarted = PackageOutbox(db_path)
+    assert restarted.get_by_set_id(draft.set_id)[
+        "local_completion_committed"
+    ] == 1
+    assert [
+        row["review_event_id"]
+        for row in restarted.list_post_review_csv_pending()
+    ] == [pending[0]["review_event_id"]]
+    assert PackageOutboxProcessor(
+        restarted, ConflictClient(draft)
+    ).drain(limit=1) == {"acked": 0, "retry": 0, "conflict": 0}
+    assert len(restarted.list_post_review_csv_pending()) == 1
+
+
+def test_post_review_projection_is_exact_once_across_instances(tmp_path):
+    draft = _draft_for_set("SET-POST-REVIEW-EXACT-ONCE")
+    db_path = tmp_path / "post-review-exact-once.sqlite3"
+    outbox = PackageOutbox(db_path)
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
+
+    class InvalidClient(RestartClient):
+        def build_create_package_command(self, draft, *, idempotency_key):
+            raise PackageLogisticsError("receipt proof cannot be validated")
+
+    assert PackageOutboxProcessor(
+        outbox, InvalidClient(draft)
+    ).drain(limit=1)["conflict"] == 1
+    pending = outbox.list_post_review_csv_pending()
+    review_event_id = pending[0]["review_event_id"]
+    projected = []
+    barrier = threading.Barrier(8)
+
+    def commit(instance):
+        barrier.wait()
+        return instance.commit_post_review_csv_projection(
+            review_event_id,
+            lambda saved: projected.append(saved["review_event_id"]),
+        )
+
+    instances = [PackageOutbox(db_path) for _ in range(8)]
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda box=box: results.append(commit(box))
+        )
+        for box in instances
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert results.count(True) == 1
+    assert results.count(False) == 7
+    assert projected == [review_event_id]
+    assert outbox.get_post_review_event(review_event_id)[
+        "local_csv_committed"
+    ] == 1
+
+
+def test_v8_post_local_conflict_is_backfilled_as_pending_review_case(tmp_path):
+    draft = _draft_for_set("SET-V8-POST-REVIEW")
+    db_path = tmp_path / "v8-post-review-backfill.sqlite3"
+    outbox = PackageOutbox(db_path)
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
+
+    class InvalidClient(RestartClient):
+        def build_create_package_command(self, draft, *, idempotency_key):
+            raise PackageLogisticsError("legacy receipt proof mismatch")
+
+    assert PackageOutboxProcessor(
+        outbox, InvalidClient(draft)
+    ).drain(limit=1)["conflict"] == 1
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE package_post_review_outbox")
+        conn.execute(
+            """UPDATE package_outbox_schema_info
+                  SET value='label-match-package-outbox-v8'
+                WHERE key='schema_version'"""
+        )
+
+    restarted = PackageOutbox(db_path)
+    pending = restarted.list_post_review_csv_pending()
+
+    assert len(pending) == 1
+    event = json.loads(pending[0]["event_json"])
+    assert event["package_idempotency_key"] == queued["idempotency_key"]
+    assert event["conflict_origin"] == "RECOVERED_EXISTING_CONFLICT"
+    assert restarted.get_by_set_id(draft.set_id)[
+        "local_completion_committed"
+    ] == 1
+
+
 def test_f1_dismisses_only_local_recovery_and_preserves_conflict_evidence(
     tmp_path,
 ):
@@ -2810,6 +3002,7 @@ def test_f1_dismisses_only_local_recovery_and_preserves_conflict_evidence(
     before = outbox.get_by_set_id(draft.set_id)
     assert outbox.list_conflicts(limit=1)[0]["status"] == "CONFLICT"
     assert outbox.list_local_completion_pending(limit=1)
+    assert outbox.list_post_review_csv_pending() == []
 
     dismissed = outbox.dismiss_recoverable_prewrite_conflict(
         queued["idempotency_key"]

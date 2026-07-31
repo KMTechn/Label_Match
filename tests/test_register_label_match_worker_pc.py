@@ -70,23 +70,29 @@ def test_label_match_registration_manifest_includes_runtime_event_contract(tmp_p
     )()
 
     manifest, _credential, _report = module.build_payloads(args)
-    raw_event_names = set(manifest["streams"][0]["raw_event_names"])
+    raw_event_names = manifest["streams"][0]["raw_event_names"]
 
-    assert {
+    assert raw_event_names == [
         "APP_START",
         "APP_CLOSE",
+        "LABEL_MATCHED",
+        "PACKAGING_WAITING_OBSERVED",
+        "SHIPPING_WAITING_OBSERVED",
         "SCAN_ATTEMPT",
         "SCAN_OK",
         "TRAY_COMPLETE",
-        "SET_CANCELLED",
+        "POST_REVIEW_REQUIRED",
+        "PHS_REPLACEMENT_WAITING_MARKED",
         "SET_DELETED",
         "SET_RESTORED",
+        "SET_CANCELLED",
         "TRAY_COMPLETION_CANCELLED",
         "UI_ERROR",
         "ERROR_INPUT",
         "ERROR_MISMATCH",
         "BASE64_DECODED",
-    }.issubset(raw_event_names)
+    ]
+    assert raw_event_names == module.RAW_EVENT_NAMES
 
 
 def test_label_match_registration_apply_writes_manifest_credential_and_receipt_without_raw_secret(

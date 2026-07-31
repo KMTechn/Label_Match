@@ -214,8 +214,13 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     assert fixtures["partial_complete"].completion_kind == "partial"
     assert fixtures["recovery"].recovered is True
     assert fixtures["history_readonly"].history_readonly is True
-    assert fixtures["submission_blocked"].notice_title
-    assert fixtures["submission_blocked"].qa_scans == fixtures["full_complete"].qa_scans
+    assert fixtures["submission_blocked"].central_inherit_all is True
+    assert fixtures["submission_blocked"].notice_title == (
+        "1/1 유지 · 로컬 기록 저장 필요"
+    )
+    assert fixtures["submission_blocked"].qa_scans == fixtures["qa_master"].qa_scans
+    assert "HTTP" not in fixtures["submission_blocked"].notice_message
+    assert "제출 재시도" not in fixtures["submission_blocked"].notice_message
     assert all(
         "PHS=" in raw and len(raw) >= 160
         for raw in fixtures["full_complete"].qa_scans
@@ -259,6 +264,32 @@ def test_apply_error_fixture_sets_and_clears_all_renderer_error_aliases():
     assert app._pending_workflow_error is None
     assert app._workflow_pending_error is None
     assert app._workflow_error_message == ""
+
+
+def test_apply_submission_blocked_fixture_calls_production_durable_renderer():
+    calls = []
+    app = SimpleNamespace(
+        current_set_info={},
+        _refresh_operator_workbench=lambda: None,
+    )
+
+    def publish(error, *, retry_action=None):
+        calls.append((str(error), callable(retry_action)))
+        app._workflow_notice_action = retry_action
+        app._workflow_notice_action_text = "저장 재시도"
+
+    app._publish_durable_commit_block = publish
+    fixture = next(
+        value
+        for value in build_state_fixtures()
+        if value.state_id == "submission_blocked"
+    )
+
+    apply_state_fixture(app, fixture)
+
+    assert calls == [("capture durable write failure", True)]
+    assert "HTTP 503" not in calls[0][0]
+    assert app._workflow_notice_action_text == "저장 재시도"
 
 
 def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
@@ -413,7 +444,9 @@ def test_fixtures_are_accepted_by_the_real_workflow_presenter(state_id):
     )
     view = build_presenter_view(fixture)
 
-    assert len(view.slots) == 5
+    assert len(view.slots) == (
+        1 if fixture.central_inherit_all else 5
+    )
     assert view.qa_completed == len(fixture.qa_scans)
     assert view.last_normal_scan == fixture.last_normal_scan
     if state_id == "exact_active":
@@ -2757,7 +2790,7 @@ def _valid_capture_record(state_id: str = "qa_progress"):
             "center_visible_texts": [view.current_stage_label, view.next_action],
             "notice_action_mapped": state_id in {"error", "submission_blocked"},
             "notice_action_text": (
-                "제출 재시도" if state_id == "submission_blocked" else "확인"
+                "저장 재시도" if state_id == "submission_blocked" else "확인"
             ),
             "entry_state": "disabled"
             if state_id in {"error", "history_readonly", "submission_blocked"}
@@ -2935,6 +2968,15 @@ def test_capture_evaluation_rejects_stale_notice_action_on_active_state():
     record["rendered_state"]["notice_action_text"] = "제출 재시도"
 
     assert "notice_action_mapping_mismatch" in evaluate_capture(record)
+
+
+def test_capture_evaluation_rejects_old_submission_retry_copy():
+    record = _valid_capture_record("submission_blocked")
+    record["rendered_state"]["notice_action_text"] = "제출 재시도"
+
+    assert "submission_notice_action_text_mismatch" in evaluate_capture(
+        record
+    )
 
 
 def test_cancellation_conflict_evaluation_is_exact_and_nonblocking():

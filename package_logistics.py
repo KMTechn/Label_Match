@@ -33,8 +33,9 @@ from logistics_runtime_profile import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v8"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v9"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
+POST_REVIEW_EVENT_VERSION = "label-match-post-review-required-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
 PACKAGE_HTTP_USER_AGENT = "KMTech-Worker-ClaimClient/1.0 LabelMatch"
@@ -645,6 +646,65 @@ def _normalize_barcode(value: Any) -> str:
     return unicodedata.normalize("NFKC", str(value or "")).strip().upper()
 
 
+def _post_review_event_payload(
+    row: Mapping[str, Any],
+    *,
+    conflict_code: str,
+    conflict_origin: str,
+    required_at: str,
+) -> tuple[str, dict[str, Any], str]:
+    key = str(row.get("idempotency_key") or "").strip()
+    set_id = str(row.get("set_id") or "").strip()
+    if not key or not set_id:
+        raise PackageLogisticsError(
+            "post-review package conflict identity is incomplete"
+        )
+    try:
+        draft = json.loads(str(row.get("draft_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PackageLogisticsError(
+            "post-review package draft is unreadable"
+        ) from exc
+    if not isinstance(draft, Mapping):
+        raise PackageLogisticsError(
+            "post-review package draft is invalid"
+        )
+    package_bundle_id = str(draft.get("package_bundle_id") or "").strip()
+    normalized_code = str(conflict_code or "LOCAL_VALIDATION_CONFLICT").strip()
+    normalized_origin = str(conflict_origin or "").strip()
+    normalized_required_at = str(required_at or "").strip()
+    if not package_bundle_id or not normalized_origin or not normalized_required_at:
+        raise PackageLogisticsError(
+            "post-review package conflict evidence is incomplete"
+        )
+    review_event_id = stable_id("label-package-review", key)
+    event = {
+        "case_id": review_event_id,
+        "case_status": "OPEN",
+        "case_type": "PACKAGE_CREATE_POST_LOCAL_CONFLICT",
+        "conflict_code": normalized_code,
+        "conflict_origin": normalized_origin,
+        "dedupe_key": review_event_id,
+        "event_version": POST_REVIEW_EVENT_VERSION,
+        "local_completion_committed": True,
+        "package_bundle_id": package_bundle_id,
+        "package_idempotency_key": key,
+        "required_at": normalized_required_at,
+        "review_event_id": review_event_id,
+        "review_status": "OPERATOR_REVIEW",
+        "set_id": set_id,
+    }
+    encoded = canonical_json(event)
+    fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return review_event_id, event, fingerprint
+
+
+def _post_review_conflict_origin(error: Exception) -> str:
+    if isinstance(error, PackageApiError):
+        return "PACKAGE_API_CONFLICT"
+    return "LOCAL_VALIDATION_OR_RECEIPT_CONFLICT"
+
+
 def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
     """Atomically install the current schema without disturbing live SENDING leases."""
 
@@ -731,6 +791,23 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             ON package_replacement_waiting_outbox(
                 local_csv_committed,created_at,dedupe_key
             );
+        CREATE TABLE IF NOT EXISTS package_post_review_outbox (
+            review_event_id TEXT PRIMARY KEY,
+            package_idempotency_key TEXT NOT NULL UNIQUE,
+            event_fingerprint TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            local_csv_committed INTEGER NOT NULL DEFAULT 0
+                CHECK(local_csv_committed IN (0,1)),
+            local_csv_committed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(package_idempotency_key)
+                REFERENCES package_command_outbox(idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS ix_package_post_review_pending
+            ON package_post_review_outbox(
+                local_csv_committed,created_at,review_event_id
+            );
         CREATE TABLE IF NOT EXISTS package_outbox_schema_info (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -799,6 +876,42 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
               SET review_status='OPERATOR_REVIEW'
             WHERE status='CONFLICT' AND review_status IS NULL"""
     )
+    post_review_rows = conn.execute(
+        """SELECT * FROM package_command_outbox
+             WHERE status='CONFLICT'
+               AND local_completion_committed=1
+             ORDER BY updated_at,idempotency_key"""
+    ).fetchall()
+    for source_row in post_review_rows:
+        source = dict(source_row)
+        review_event_id, event, fingerprint = _post_review_event_payload(
+            source,
+            conflict_code=str(
+                source.get("last_error_code")
+                or "LOCAL_VALIDATION_CONFLICT"
+            ),
+            conflict_origin="RECOVERED_EXISTING_CONFLICT",
+            required_at=str(
+                source.get("updated_at")
+                or source.get("created_at")
+                or utc_now()
+            ),
+        )
+        encoded = canonical_json(event)
+        conn.execute(
+            """INSERT OR IGNORE INTO package_post_review_outbox(
+                   review_event_id,package_idempotency_key,event_fingerprint,
+                   event_json,local_csv_committed,created_at,updated_at
+               ) VALUES (?,?,?,?,0,?,?)""",
+            (
+                review_event_id,
+                source["idempotency_key"],
+                fingerprint,
+                encoded,
+                event["required_at"],
+                event["required_at"],
+            ),
+        )
     cancellation_columns = {
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
         for row in conn.execute("PRAGMA table_info(package_cancellation_outbox)").fetchall()
@@ -1069,6 +1182,87 @@ class PackageOutbox:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def commit_post_review_csv_projection(
+        self,
+        review_event_id: str,
+        projector: Callable[[Mapping[str, Any]], None],
+    ) -> bool:
+        """Project one durable review case to CSV exactly once.
+
+        As with replacement-waiting events, the SQLite transaction spans the
+        fsynced projector call. Recovery can therefore close the crash window
+        by detecting the deterministic review_event_id in CSV before it marks
+        this row committed.
+        """
+
+        identity = str(review_event_id or "").strip()
+        if not identity or not callable(projector):
+            raise PackageLogisticsError(
+                "post-review CSV projection identity is required"
+            )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT * FROM package_post_review_outbox
+                     WHERE review_event_id=?""",
+                (identity,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "post-review event ledger row does not exist"
+                )
+            if int(row["local_csv_committed"] or 0) == 1:
+                conn.commit()
+                return False
+            try:
+                payload = json.loads(str(row["event_json"] or "{}"))
+                if not isinstance(payload, dict):
+                    raise ValueError("event payload is not an object")
+                projector(payload)
+            except Exception:
+                conn.rollback()
+                raise
+            now = utc_now()
+            cursor = conn.execute(
+                """UPDATE package_post_review_outbox
+                       SET local_csv_committed=1,
+                           local_csv_committed_at=?,updated_at=?
+                     WHERE review_event_id=? AND local_csv_committed=0""",
+                (now, now, identity),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "post-review CSV commit marker changed concurrently"
+                )
+            conn.commit()
+            return True
+
+    def get_post_review_event(
+        self, review_event_id: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM package_post_review_outbox
+                     WHERE review_event_id=?""",
+                (str(review_event_id or "").strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_post_review_csv_pending(
+        self, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM package_post_review_outbox
+                     WHERE local_csv_committed=0
+                     ORDER BY created_at,review_event_id
+                     LIMIT ?""",
+                (max(0, int(limit)),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def claim_next(
         self, *, exclude_keys: Iterable[str] = ()
     ) -> dict[str, Any] | None:
@@ -1203,15 +1397,58 @@ class PackageOutbox:
     def mark_conflict(self, key: str, error: Exception) -> None:
         code = str(getattr(error, "code", "LOCAL_VALIDATION_CONFLICT"))
         message = str(getattr(error, "message", str(error)))
-        with self._connect() as conn:
-            conn.execute(
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT * FROM package_command_outbox
+                     WHERE idempotency_key=?""",
+                (key,),
+            ).fetchone()
+            if row is None or str(row["status"] or "") != "SENDING":
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "package outbox conflict state changed concurrently"
+                )
+            now = utc_now()
+            cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET status='CONFLICT',review_status='OPERATOR_REVIEW',
                            last_error_code=?,last_error_message=?,
                            retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='SENDING'""",
-                (code, message, utc_now(), key),
+                (code, message, now, key),
             )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "package outbox conflict state changed concurrently"
+                )
+            if int(row["local_completion_committed"] or 0) == 1:
+                source = dict(row)
+                source["updated_at"] = now
+                review_event_id, event, fingerprint = (
+                    _post_review_event_payload(
+                        source,
+                        conflict_code=code,
+                        conflict_origin=_post_review_conflict_origin(error),
+                        required_at=now,
+                    )
+                )
+                conn.execute(
+                    """INSERT INTO package_post_review_outbox(
+                           review_event_id,package_idempotency_key,
+                           event_fingerprint,event_json,local_csv_committed,
+                           created_at,updated_at
+                       ) VALUES (?,?,?,?,0,?,?)""",
+                    (
+                        review_event_id,
+                        key,
+                        fingerprint,
+                        canonical_json(event),
+                        now,
+                        now,
+                    ),
+                )
             conn.commit()
 
     def get_by_set_id(self, set_id: str) -> dict[str, Any] | None:

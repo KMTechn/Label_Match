@@ -207,6 +207,7 @@ class StateFixture:
     notice_tone: str = "danger"
     last_normal_scan: str = ""
     selected_qa_index: int = 0
+    central_inherit_all: bool = False
 
 
 def fixture_parsed_scans(fixture: StateFixture) -> tuple[str, ...]:
@@ -492,14 +493,16 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
         ),
         StateFixture(
             "submission_blocked",
-            "제출 차단",
-            qa_scans=qa_full,
-            notice_title="중앙 제출 차단 · 5/5 유지",
+            "로컬 저장 차단",
+            qa_scans=(master,),
+            notice_title="1/1 유지 · 로컬 기록 저장 필요",
             notice_message=(
-                "오류: HTTP 503 Service Unavailable: "
-                "중앙 포장 API 연결 시간이 초과되었습니다."
+                "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
+                "실물을 이동하거나 다음 작업을 시작하지 말고 저장을 다시 시도하세요. "
+                "계속 실패하면 관리자에게 확인을 요청하세요."
             ),
-            last_normal_scan=final_label,
+            last_normal_scan=master,
+            central_inherit_all=True,
         ),
     )
 
@@ -1760,6 +1763,7 @@ def build_presenter_view(fixture: StateFixture) -> Any:
         "exact_rescan_target_count": fixture.exact_target,
         "exact_rescan_barcodes": list(fixture.exact_barcodes),
         "sealed_transfer": fixture.sealed_transfer,
+        "central_inherit_all": fixture.central_inherit_all,
     }
     snapshot = adapt_workflow_snapshot(
         current,
@@ -1994,6 +1998,7 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
             "exact_rescan_target_count": fixture.exact_target,
             "exact_rescan_barcodes": list(fixture.exact_barcodes),
             "sealed_transfer": fixture.sealed_transfer,
+            "central_inherit_all": fixture.central_inherit_all,
         }
     )
     app.current_set_info = current
@@ -2012,12 +2017,8 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     app._pending_workflow_error = pending_error
     app._workflow_pending_error = pending_error
     app._workflow_error_message = fixture.error_message or ""
-    app._workflow_notice_action = (
-        (lambda: None) if fixture.state_id == "submission_blocked" else None
-    )
-    app._workflow_notice_action_text = (
-        "제출 재시도" if fixture.state_id == "submission_blocked" else "확인"
-    )
+    app._workflow_notice_action = None
+    app._workflow_notice_action_text = "확인"
     app._workflow_blocking_notice = (
         WorkflowNotice(
             fixture.notice_title,
@@ -2052,6 +2053,57 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     else:
         app._package_cancellation_review_notice = None
         app._package_cancellation_review_rows = ()
+    if fixture.state_id == "submission_blocked":
+        retry_action = lambda: None
+        publish_durable_block = getattr(
+            app, "_publish_durable_commit_block", None
+        )
+        if callable(publish_durable_block):
+            production_renderer = (
+                getattr(
+                    getattr(publish_durable_block, "__func__", None),
+                    "__name__",
+                    "",
+                )
+                == "_publish_durable_commit_block"
+            )
+            restore_render = False
+            if (
+                production_renderer
+                and not bool(
+                    getattr(app, "__dict__", {}).get(
+                        "operator_workbench_ready", False
+                    )
+                )
+            ):
+                restore_render = "_render_operator_workbench" not in getattr(
+                    app, "__dict__", {}
+                )
+                if restore_render:
+                    app._render_operator_workbench = lambda: None
+            try:
+                publish_durable_block(
+                    RuntimeError("capture durable write failure"),
+                    retry_action=retry_action,
+                )
+            finally:
+                if restore_render:
+                    app.__dict__.pop("_render_operator_workbench", None)
+            if production_renderer:
+                rendered_notice = getattr(
+                    app, "_workflow_blocking_notice", None
+                )
+                if (
+                    rendered_notice is None
+                    or rendered_notice.title != fixture.notice_title
+                    or rendered_notice.message != fixture.notice_message
+                ):
+                    raise RuntimeError(
+                        "production durable-block renderer diverged from capture fixture"
+                    )
+        else:
+            app._workflow_notice_action = retry_action
+            app._workflow_notice_action_text = "저장 재시도"
     view = build_presenter_view(fixture)
     # Capture-only mirrors let a renderer with an explicit view parameter and
     # a renderer that rebuilds from runtime state share the same harness.
@@ -4701,7 +4753,7 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
         rendered.get("notice_action_text") or ""
     ):
         issues.append("error_notice_action_text_mismatch")
-    if record["state"] == "submission_blocked" and "제출 재시도" not in str(
+    if record["state"] == "submission_blocked" and "저장 재시도" not in str(
         rendered.get("notice_action_text") or ""
     ):
         issues.append("submission_notice_action_text_mismatch")
@@ -4966,7 +5018,7 @@ def apply_cross_capture_contracts(captures: list[dict[str, Any]]) -> None:
         for normal_id, blocked_id in (
             ("qa_product_3", "error"),
             ("qa_product_3", "cancellation_conflict"),
-            ("full_complete", "submission_blocked"),
+            ("qa_master", "submission_blocked"),
         ):
             normal, blocked = group.get(normal_id), group.get(blocked_id)
             if not normal or not blocked:

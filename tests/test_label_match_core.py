@@ -1674,7 +1674,10 @@ def test_central_finalize_durable_intent_write_failure_never_shows_success():
 def test_durable_commit_block_hides_raw_error_and_disables_next_work():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
-    app.current_set_info = {"raw": ["PHS2"]}
+    app.current_set_info = {
+        "raw": ["PHS2"],
+        "central_inherit_all": True,
+    }
     app._workflow_last_normal_override = None
     app._workflow_notice_action = None
     app._workflow_notice_action_text = "확인"
@@ -1695,6 +1698,7 @@ def test_durable_commit_block_hides_raw_error_and_disables_next_work():
     notice = app._workflow_blocking_notice
     assert notice.kind == "submission_blocked"
     assert notice.tone == "danger"
+    assert notice.title == "1/1 유지 · 로컬 기록 저장 필요"
     assert "로컬 완료 기록" in notice.message
     assert "관리자" in notice.message
     assert rendered == [True]
@@ -1707,6 +1711,127 @@ def test_durable_commit_block_hides_raw_error_and_disables_next_work():
         "ledger",
     ):
         assert internal.lower() not in notice.message.lower()
+
+
+def test_durable_commit_block_uses_actual_legacy_partial_progress():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "raw": ["MASTER", "PRODUCT-1", "PRODUCT-2"],
+        "central_inherit_all": False,
+    }
+    app._retry_blocked_submission = lambda: True
+    app._render_operator_workbench = lambda: None
+
+    assert module.Label_Match._publish_durable_commit_block(
+        app, OSError("disk write failed")
+    ) is False
+
+    assert app._workflow_blocking_notice.title == (
+        "3/5 유지 · 로컬 기록 저장 필요"
+    )
+
+
+def test_post_review_csv_crash_window_recovers_without_duplicate_event(tmp_path):
+    module = load_label_match_module()
+    review_event_id = "label-package-review-crash-window"
+    payload = {
+        "case_id": review_event_id,
+        "case_status": "OPEN",
+        "case_type": "PACKAGE_CREATE_POST_LOCAL_CONFLICT",
+        "conflict_code": "STALE_VERSION",
+        "conflict_origin": "PACKAGE_API_CONFLICT",
+        "dedupe_key": review_event_id,
+        "event_version": "label-match-post-review-required-v1",
+        "local_completion_committed": True,
+        "package_bundle_id": "PACKAGE-1",
+        "package_idempotency_key": "label-package-key-1",
+        "required_at": "2026-08-01T11:30:00Z",
+        "review_event_id": review_event_id,
+        "review_status": "OPERATOR_REVIEW",
+        "set_id": "SET-POST-REVIEW-1",
+    }
+
+    class CrashWindowManager:
+        save_directory = str(tmp_path)
+        process_name = "포장실"
+        unique_id = "PC-POST-REVIEW"
+
+        def __init__(self):
+            self.log_count = 0
+            self.fail_flush_once = True
+
+        def log_event(self, event_type, details):
+            self.log_count += 1
+            path = tmp_path / (
+                "포장실작업이벤트로그_PC-POST-REVIEW_20260801.csv"
+            )
+            exists = path.exists()
+            with path.open("a", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                if not exists:
+                    writer.writerow(
+                        ["timestamp", "worker_name", "event", "details"]
+                    )
+                writer.writerow(
+                    [
+                        "2026-08-01T11:30:00",
+                        "worker",
+                        event_type,
+                        json.dumps(details, ensure_ascii=False),
+                    ]
+                )
+                handle.flush()
+
+        def flush(self, timeout=None):
+            if self.fail_flush_once:
+                self.fail_flush_once = False
+                raise RuntimeError("crash after CSV flush")
+
+    class DurableReviewOutbox:
+        committed = False
+
+        def commit_post_review_csv_projection(self, identity, projector):
+            assert identity == review_event_id
+            if self.committed:
+                return False
+            projector(dict(payload))
+            self.committed = True
+            return True
+
+        def list_post_review_csv_pending(self, *, limit):
+            assert limit == 100
+            return [] if self.committed else [
+                {"review_event_id": review_event_id}
+            ]
+
+    manager = CrashWindowManager()
+    outbox = DurableReviewOutbox()
+    first = object.__new__(module.Label_Match)
+    first.Events = module.Label_Match.Events
+    first.data_manager = manager
+    first.package_outbox = outbox
+
+    with pytest.raises(RuntimeError, match="crash after CSV flush"):
+        module.Label_Match._project_post_review_required_event(
+            first, review_event_id
+        )
+
+    restarted = object.__new__(module.Label_Match)
+    restarted.Events = module.Label_Match.Events
+    restarted.data_manager = manager
+    restarted.package_outbox = outbox
+
+    assert module.Label_Match._reconcile_post_review_required_events(
+        restarted
+    ) == 1
+    assert outbox.committed is True
+    assert manager.log_count == 1
+    with (tmp_path / (
+        "포장실작업이벤트로그_PC-POST-REVIEW_20260801.csv"
+    )).open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["event"] for row in rows] == ["POST_REVIEW_REQUIRED"]
 
 
 def test_finalize_set_triggers_session_direct_sync_after_flush(monkeypatch):
@@ -1929,6 +2054,16 @@ def test_data_manager_fsyncs_local_completion_before_flush_returns(
     manager.close(timeout=5.0)
 
     assert len(fsync_calls) == 1
+
+
+def test_durable_event_manifest_includes_completion_replacement_and_review():
+    module = load_label_match_module()
+
+    assert module.LABEL_MATCH_DURABLE_EVENT_TYPES == {
+        module.Label_Match.Events.TRAY_COMPLETE,
+        module.Label_Match.Events.PHS_REPLACEMENT_WAITING_MARKED,
+        module.Label_Match.Events.POST_REVIEW_REQUIRED,
+    }
 
 
 def test_default_save_path_uses_programdata_durable_root(monkeypatch, tmp_path):

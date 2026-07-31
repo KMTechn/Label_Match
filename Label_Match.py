@@ -111,6 +111,7 @@ LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
 LABEL_MATCH_DURABLE_EVENT_TYPES = {
     "TRAY_COMPLETE",
     "PHS_REPLACEMENT_WAITING_MARKED",
+    "POST_REVIEW_REQUIRED",
 }
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
 LABEL_MATCH_DEFAULT_SAVE_SUBDIR = ("KMTech", "Label_Match", "data")
@@ -1498,6 +1499,48 @@ def _label_match_replacement_waiting_event_exists(data_manager, dedupe_key):
                     if str(
                         details.get("dedupe_key")
                         or details.get("intent_id")
+                        or ""
+                    ).strip() == identity:
+                        return True
+        except (OSError, csv.Error):
+            continue
+    return False
+
+
+def _label_match_post_review_event_exists(data_manager, review_event_id):
+    """Find an fsynced POST_REVIEW_REQUIRED projection by durable case ID."""
+
+    identity = str(review_event_id or "").strip()
+    save_directory = str(
+        getattr(data_manager, "save_directory", "") or ""
+    ).strip()
+    process_name = str(getattr(data_manager, "process_name", "") or "").strip()
+    unique_id = str(getattr(data_manager, "unique_id", "") or "").strip()
+    if not identity or not save_directory or not os.path.isdir(save_directory):
+        return False
+    prefix = f"{process_name}작업이벤트로그_{unique_id}_"
+    try:
+        candidates = [
+            os.path.join(save_directory, name)
+            for name in os.listdir(save_directory)
+            if name.startswith(prefix) and name.lower().endswith(".csv")
+        ]
+    except OSError:
+        return False
+    for path in sorted(candidates, reverse=True):
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    if row.get("event") != "POST_REVIEW_REQUIRED":
+                        continue
+                    try:
+                        details = json.loads(row.get("details") or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if str(
+                        details.get("review_event_id")
+                        or details.get("dedupe_key")
+                        or details.get("case_id")
                         or ""
                     ).strip() == identity:
                         return True
@@ -4594,6 +4637,7 @@ class Label_Match(tk.Tk):
         EXACT_RESCAN_OK = "EXACT_RESCAN_OK"
         EXACT_RESCAN_COMPLETED = "EXACT_RESCAN_COMPLETED"
         PHS_REPLACEMENT_WAITING_MARKED = "PHS_REPLACEMENT_WAITING_MARKED"
+        POST_REVIEW_REQUIRED = "POST_REVIEW_REQUIRED"
         SEALED_TRANSFER_EXCHANGE_ACKED = "SEALED_TRANSFER_EXCHANGE_ACKED"
         SEALED_TRANSFER_EXCHANGE_APPLIED = "SEALED_TRANSFER_EXCHANGE_APPLIED"
     class Results:
@@ -4916,9 +4960,18 @@ class Label_Match(tk.Tk):
     def _start_package_outbox_drain(self):
         package_processor = self.__dict__.get("package_outbox_processor")
         cancellation_processor = self.__dict__.get("package_cancellation_outbox_processor")
+        post_review_recovery = getattr(
+            self.__dict__.get("package_outbox"),
+            "list_post_review_csv_pending",
+            None,
+        )
+        if self.__dict__.get("run_tests", False):
+            self._refresh_package_cancellation_review_notice()
+            return None
         if (
-            (package_processor is None and cancellation_processor is None)
-            or self.__dict__.get("run_tests", False)
+            package_processor is None
+            and cancellation_processor is None
+            and not callable(post_review_recovery)
         ):
             self._refresh_package_cancellation_review_notice()
             return None
@@ -4942,6 +4995,12 @@ class Label_Match(tk.Tk):
                     exchange_coordinator.drain_pending()
             except Exception as exc:
                 print(f"포장 물류 outbox 처리 오류: {exc}")
+            try:
+                self._reconcile_post_review_required_events()
+            except Exception as exc:
+                # SQLite remains the durable source of truth. Preserve local
+                # completion and retry only this CSV projection next cycle.
+                print(f"포장 확인 필요 이벤트 투영 오류: {exc}")
 
         thread = threading.Thread(target=worker, name="label-match-package-outbox", daemon=True)
         self.package_outbox_thread = thread
@@ -5297,6 +5356,12 @@ class Label_Match(tk.Tk):
             except Exception as exc:
                 replacement_waiting_recovery_failed = True
                 print(f"현품표 교체 대기 로컬 복구 오류: {exc}")
+            try:
+                self._reconcile_post_review_required_events()
+            except Exception as exc:
+                # The scheduled outbox worker retries this projection without
+                # changing the already-committed local completion.
+                print(f"포장 확인 필요 이벤트 로컬 복구 오류: {exc}")
             items_data = self._load_items_data()
             loaded_data = {
                 "items": items_data,
@@ -8727,6 +8792,46 @@ class Label_Match(tk.Tk):
             self._flush_data_manager_if_supported()
 
         return commit_projection(dedupe_key, project)
+
+    def _project_post_review_required_event(self, review_event_id):
+        outbox = self.__dict__.get("package_outbox")
+        commit_projection = getattr(
+            outbox, "commit_post_review_csv_projection", None
+        )
+        if not callable(commit_projection):
+            raise PackageLogisticsError(
+                "durable post-review event store is unavailable"
+            )
+        manager = self.__dict__.get("data_manager")
+        log_event = getattr(manager, "log_event", None)
+        if not callable(log_event):
+            raise PackageLogisticsError(
+                "durable post-review event writer is unavailable"
+            )
+
+        def project(payload):
+            if _label_match_post_review_event_exists(
+                manager, review_event_id
+            ):
+                return
+            log_event(self.Events.POST_REVIEW_REQUIRED, dict(payload))
+            self._flush_data_manager_if_supported()
+
+        return commit_projection(review_event_id, project)
+
+    def _reconcile_post_review_required_events(self):
+        outbox = self.__dict__.get("package_outbox")
+        list_pending = getattr(
+            outbox, "list_post_review_csv_pending", None
+        )
+        if not callable(list_pending):
+            return 0
+        rows = list_pending(limit=100)
+        for row in rows:
+            self._project_post_review_required_event(
+                str(row.get("review_event_id") or "")
+            )
+        return len(rows)
 
     def _commit_phs_replacement_waiting_event(self, payload):
         outbox = self.__dict__.get("package_outbox")
@@ -13903,8 +14008,11 @@ class Label_Match(tk.Tk):
             "실물을 이동하거나 다음 작업을 시작하지 말고 저장을 다시 시도하세요. "
             "계속 실패하면 관리자에게 확인을 요청하세요."
         )
+        scans = tuple(self.current_set_info.get("raw") or ())
+        total = max(1, int(self._workflow_total_scan_count()))
+        completed = min(total, len(scans))
         notice = WorkflowNotice(
-            title="5/5 유지 · 로컬 기록 저장 필요",
+            title=f"{completed}/{total} 유지 · 로컬 기록 저장 필요",
             message=message,
             kind="submission_blocked",
             tone="danger",
@@ -13917,7 +14025,6 @@ class Label_Match(tk.Tk):
             else self._retry_blocked_submission
         )
         self._workflow_notice_action_text = "저장 재시도"
-        scans = tuple(self.current_set_info.get("raw") or ())
         self._workflow_last_normal_override = scans[-1] if scans else ""
         notice_label = self.__dict__.get("workflow_notice_label")
         if notice_label is not None:
