@@ -8878,7 +8878,6 @@ class Label_Match(tk.Tk):
         self._phs_label_candidate_window = popup
         popup.title("현품표 교체 확인")
         popup.transient(self)
-        popup.grab_set()
         popup.geometry("840x520")
         frame = ttk.Frame(popup, padding=22)
         frame.pack(fill="both", expand=True)
@@ -8891,7 +8890,7 @@ class Label_Match(tk.Tk):
             frame,
             text=(
                 "Enter로 실행합니다. 모든 새 현품표가 실제 출력된 뒤 "
-                "한 번만 ACTIVE로 전환됩니다."
+                "기존 표를 새 현품표로 교체해 주세요."
             ),
             wraplength=790,
         ).pack(anchor="w", pady=(6, 12))
@@ -8915,25 +8914,17 @@ class Label_Match(tk.Tk):
         ):
             text.insert(
                 "end",
-                "\n\n※ 이전 라벨 스캔을 현재 ACTIVE successor로 해석했습니다.",
+                "\n\n※ 새 현품표가 출력되면 기존 표를 교체해 주세요.",
             )
         text.configure(state="disabled")
 
         def close(event=None):
-            try:
-                popup.grab_release()
-            except TclError:
-                pass
             popup.destroy()
             self._phs_label_candidate_window = None
             self._focus_scan_entry_if_available()
             return "break"
 
         def execute(event=None):
-            try:
-                popup.grab_release()
-            except TclError:
-                pass
             popup.destroy()
             self._phs_label_candidate_window = None
             self._start_phs_reconciliation_exchange(resolution)

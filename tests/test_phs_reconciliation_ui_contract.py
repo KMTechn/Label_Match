@@ -84,3 +84,14 @@ def test_f5_scan_and_background_exchange_restore_scanner_focus():
     assert "threading.Thread" in exchange_source
     assert "_focus_scan_entry_if_available()" in exchange_source
     assert "messagebox.showinfo" not in exchange_source
+
+
+def test_replacement_action_window_is_non_modal_and_uses_operator_language():
+    source = inspect.getsource(
+        label_module.Label_Match._show_phs_reconciliation_action_window
+    )
+
+    assert ".grab_set(" not in source
+    assert "ACTIVE successor" not in source
+    assert "ACTIVE로 전환" not in source
+    assert "새 현품표가 출력되면 기존 표를 교체해 주세요." in source
