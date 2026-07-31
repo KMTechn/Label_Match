@@ -554,6 +554,7 @@ def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_t
     }.issubset(cancellation_columns)
     assert {
         "retry_after_at",
+        "review_status",
         "local_completion_committed",
         "local_completion_committed_at",
     }.issubset(command_columns)
@@ -665,19 +666,16 @@ def test_real_v1_database_migration_preserves_create_rows_and_states(tmp_path):
     assert version == package_module.OUTBOX_SCHEMA_VERSION
 
 
-def test_local_completion_marker_requires_acked_package_and_is_idempotent(tmp_path):
+def test_local_completion_marker_is_durable_before_central_ack_and_idempotent(tmp_path):
     outbox = PackageOutbox(tmp_path / "local-completion.sqlite3")
     draft = _draft_for_set("LOCAL-COMPLETION-SET")
     pending = outbox.enqueue(draft)
 
-    with pytest.raises(PackageLogisticsError, match="ACKED"):
-        outbox.mark_local_completion_committed(pending["idempotency_key"])
-
-    acked = _ack_package_creation(outbox, draft)
-    outbox.mark_local_completion_committed(acked["idempotency_key"])
-    outbox.mark_local_completion_committed(acked["idempotency_key"])
+    outbox.mark_local_completion_committed(pending["idempotency_key"])
+    outbox.mark_local_completion_committed(pending["idempotency_key"])
 
     committed = outbox.get_by_set_id(draft.set_id)
+    assert committed["status"] == "PENDING"
     assert committed["local_completion_committed"] == 1
     assert committed["local_completion_committed_at"]
 
@@ -2446,13 +2444,15 @@ class RestartClient:
 def test_restart_uses_saved_command_and_recovers_server_receipt_without_rebuild(tmp_path):
     draft = _draft()
     outbox = PackageOutbox(tmp_path / "restart.sqlite3")
-    outbox.enqueue(draft)
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
     first_client = RestartClient(draft, lose_ack=True)
     first = PackageOutboxProcessor(outbox, first_client).drain(limit=1)
     assert first == {"acked": 0, "retry": 1, "conflict": 0}
     pending = outbox.get_by_set_id(draft.set_id)
     saved_command = pending["command_json"]
     assert saved_command
+    assert pending["local_completion_committed"] == 1
 
     restarted = PackageOutbox(tmp_path / "restart.sqlite3")
     recovery_client = RestartClient(draft, receipt=_receipt(draft))
@@ -2463,6 +2463,80 @@ def test_restart_uses_saved_command_and_recovers_server_receipt_without_rebuild(
     acked = restarted.get_by_set_id(draft.set_id)
     assert acked["command_json"] == saved_command
     assert acked["status"] == "ACKED"
+    assert acked["idempotency_key"] == queued["idempotency_key"]
+    assert acked["local_completion_committed"] == 1
+
+
+def test_offline_drain_attempts_multiple_locally_completed_packages_once_each(tmp_path):
+    outbox = PackageOutbox(tmp_path / "offline-multiple.sqlite3")
+    drafts = [_draft_for_set("SET-OFFLINE-1"), _draft_for_set("SET-OFFLINE-2")]
+    keys = []
+    for draft in drafts:
+        row = outbox.enqueue(draft)
+        keys.append(row["idempotency_key"])
+        outbox.mark_local_completion_committed(row["idempotency_key"])
+
+    class OfflineClient(RestartClient):
+        def __init__(self):
+            super().__init__(drafts[0])
+            self.attempted_keys = []
+
+        def build_create_package_command(self, draft, *, idempotency_key):
+            self.attempted_keys.append(idempotency_key)
+            return super().build_create_package_command(
+                draft, idempotency_key=idempotency_key
+            )
+
+        def create_package(self, command):
+            raise PackageTransportError("offline")
+
+    client = OfflineClient()
+    result = PackageOutboxProcessor(outbox, client).drain(limit=20)
+
+    assert result == {"acked": 0, "retry": 2, "conflict": 0}
+    assert client.attempted_keys == keys
+    assert [outbox.get_by_set_id(draft.set_id)["status"] for draft in drafts] == [
+        "PENDING",
+        "PENDING",
+    ]
+    assert all(
+        outbox.get_by_set_id(draft.set_id)["local_completion_committed"] == 1
+        for draft in drafts
+    )
+
+
+def test_duplicate_replay_reuses_one_key_and_yields_one_central_effect(tmp_path):
+    draft = _draft_for_set("SET-DUPLICATE-REPLAY")
+    outbox = PackageOutbox(tmp_path / "duplicate-replay.sqlite3")
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
+
+    class DeduplicatingServerClient(RestartClient):
+        def __init__(self):
+            super().__init__(draft)
+            self.effects = set()
+
+        def create_package(self, command):
+            key = command["idempotency_key"]
+            self.commands.append(json.loads(json.dumps(command)))
+            self.effects.add(key)
+            if len(self.commands) == 1:
+                raise PackageTransportError("ACK lost after commit")
+            return _receipt(draft)
+
+        def get_receipt_if_exists(self, key, *, authority_scope_id):
+            return None
+
+    client = DeduplicatingServerClient()
+    assert PackageOutboxProcessor(outbox, client).drain(limit=1)["retry"] == 1
+    assert PackageOutboxProcessor(outbox, client).drain(limit=1)["acked"] == 1
+
+    assert [command["idempotency_key"] for command in client.commands] == [
+        queued["idempotency_key"],
+        queued["idempotency_key"],
+    ]
+    assert client.effects == {queued["idempotency_key"]}
+    assert outbox.get_by_set_id(draft.set_id)["status"] == "ACKED"
 
 
 def test_saved_command_reposts_identical_payload_when_receipt_not_yet_visible(tmp_path):
@@ -2491,7 +2565,8 @@ def test_saved_command_reposts_identical_payload_when_receipt_not_yet_visible(tm
 def test_deterministic_local_validation_is_conflict_not_retry(tmp_path):
     draft = _draft()
     outbox = PackageOutbox(tmp_path / "conflict.sqlite3")
-    outbox.enqueue(draft)
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
 
     class InvalidClient(RestartClient):
         def build_create_package_command(self, draft, *, idempotency_key):
@@ -2499,7 +2574,10 @@ def test_deterministic_local_validation_is_conflict_not_retry(tmp_path):
 
     result = PackageOutboxProcessor(outbox, InvalidClient(draft)).drain(limit=1)
     assert result == {"acked": 0, "retry": 0, "conflict": 1}
-    assert outbox.get_by_set_id(draft.set_id)["status"] == "CONFLICT"
+    conflict = outbox.get_by_set_id(draft.set_id)
+    assert conflict["status"] == "CONFLICT"
+    assert conflict["review_status"] == "OPERATOR_REVIEW"
+    assert conflict["local_completion_committed"] == 1
 
 
 def test_f1_dismisses_only_local_recovery_and_preserves_conflict_evidence(

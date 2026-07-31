@@ -135,6 +135,16 @@ def test_replacement_required_notice_is_yellow_and_once_per_pair():
     app._phs_replacement_notice_pairs = set()
     app._phs_label_guidance_notice = None
     app._render_operator_workbench = lambda: renders.append("render")
+    replacement_intents = []
+    flushes = []
+    app.data_manager = SimpleNamespace(
+        process_name="포장실",
+        unique_id="PACK-PC-1",
+        log_event=lambda event, details: replacement_intents.append(
+            (event, details)
+        ),
+        flush=lambda timeout=None: flushes.append(timeout),
+    )
     before = {
         "raw": list(app.current_set_info["raw"]),
         "parsed": list(app.current_set_info["parsed"]),
@@ -159,6 +169,17 @@ def test_replacement_required_notice_is_yellow_and_once_per_pair():
     assert notice.message == expected
     assert notice.tone == "warning"
     assert renders == ["render"]
+    assert [event for event, _details in replacement_intents] == [
+        "PHS_REPLACEMENT_WAITING_MARKED"
+    ]
+    intent = replacement_intents[0][1]
+    assert intent["set_id"] == "SET-1"
+    assert intent["old_label_id"] == "LBL-OLD-INTERNAL"
+    assert intent["new_label_id"] == "LBL-NEW-INTERNAL"
+    assert intent["process"] == "PACKAGING"
+    assert intent["location"] == "PACKAGING"
+    assert intent["dedupe_key"]
+    assert flushes == [5.0]
     assert app.current_set_info["raw"] == before["raw"]
     assert app.current_set_info["parsed"] == before["parsed"]
     assert app.current_set_info["progress_marker"] == before["progress_marker"]

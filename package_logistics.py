@@ -33,7 +33,7 @@ from logistics_runtime_profile import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v6"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v7"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
@@ -668,6 +668,9 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             attempt_count INTEGER NOT NULL DEFAULT 0,
             last_error_code TEXT,
             last_error_message TEXT,
+            review_status TEXT
+                CHECK(review_status IN ('OPERATOR_REVIEW','MANUAL_REVIEW')
+                      OR review_status IS NULL),
             receipt_json TEXT,
             retry_after_at TEXT,
             local_completion_committed INTEGER NOT NULL DEFAULT 0
@@ -727,6 +730,13 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE package_command_outbox ADD COLUMN retry_after_at TEXT"
         )
+    if "review_status" not in command_columns:
+        conn.execute(
+            """ALTER TABLE package_command_outbox
+                   ADD COLUMN review_status TEXT
+                   CHECK(review_status IN ('OPERATOR_REVIEW','MANUAL_REVIEW')
+                         OR review_status IS NULL)"""
+        )
     if "local_completion_committed" not in command_columns:
         conn.execute(
             """ALTER TABLE package_command_outbox
@@ -756,6 +766,11 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
                ON package_command_outbox(
                    status,local_recovery_dismissed,updated_at
                )"""
+    )
+    conn.execute(
+        """UPDATE package_command_outbox
+              SET review_status='OPERATOR_REVIEW'
+            WHERE status='CONFLICT' AND review_status IS NULL"""
     )
     cancellation_columns = {
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
@@ -857,9 +872,27 @@ class PackageOutbox:
             conn.commit()
             return dict(row)
 
-    def claim_next(self) -> dict[str, Any] | None:
+    def claim_next(
+        self, *, exclude_keys: Iterable[str] = ()
+    ) -> dict[str, Any] | None:
         now = utc_now()
         stale_before = _utc_before(SENDING_LEASE_SECONDS)
+        excluded = tuple(
+            sorted(
+                {
+                    str(value or "").strip()
+                    for value in exclude_keys
+                    if str(value or "").strip()
+                }
+            )
+        )
+        exclusion_sql = (
+            " AND idempotency_key NOT IN ("
+            + ",".join("?" for _ in excluded)
+            + ")"
+            if excluded
+            else ""
+        )
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -871,9 +904,10 @@ class PackageOutbox:
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING'
-                       AND (retry_after_at IS NULL OR retry_after_at<=?)
-                     ORDER BY created_at,idempotency_key LIMIT 1""",
-                (now,),
+                       AND (retry_after_at IS NULL OR retry_after_at<=?)"""
+                + exclusion_sql
+                + " ORDER BY created_at,idempotency_key LIMIT 1",
+                (now, *excluded),
             ).fetchone()
             if row is None:
                 conn.commit()
@@ -973,7 +1007,8 @@ class PackageOutbox:
         with self._connect() as conn:
             conn.execute(
                 """UPDATE package_command_outbox
-                       SET status='CONFLICT',last_error_code=?,last_error_message=?,
+                       SET status='CONFLICT',review_status='OPERATOR_REVIEW',
+                           last_error_code=?,last_error_message=?,
                            retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='SENDING'""",
                 (code, message, utc_now(), key),
@@ -1106,7 +1141,12 @@ class PackageOutbox:
             return dismissed
 
     def mark_local_completion_committed(self, key: str) -> None:
-        """Record that the durable local TRAY_COMPLETE projection exists."""
+        """Record the durable local completion independently of central ACK.
+
+        The command row is the append-only central intent.  Once the local
+        TRAY_COMPLETE event has been flushed, this marker may be committed in
+        any central delivery state; later retries or review must never undo it.
+        """
 
         identity = str(key or "").strip()
         if not identity:
@@ -1121,10 +1161,10 @@ class PackageOutbox:
                       WHERE idempotency_key=?""",
                 (identity,),
             ).fetchone()
-            if row is None or str(row["status"] or "") != "ACKED":
+            if row is None:
                 conn.rollback()
                 raise PackageLogisticsError(
-                    "package must be ACKED before local completion is committed"
+                    "package local completion intent does not exist"
                 )
             if int(row["local_completion_committed"] or 0) == 0:
                 conn.execute(
@@ -1132,7 +1172,6 @@ class PackageOutbox:
                           SET local_completion_committed=1,
                               local_completion_committed_at=?,updated_at=?
                         WHERE idempotency_key=?
-                          AND status='ACKED'
                           AND local_completion_committed=0""",
                     (utc_now(), utc_now(), identity),
                 )
@@ -3810,11 +3849,13 @@ class PackageOutboxProcessor:
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0}
         with self._drain_lock:
+            attempted_keys: set[str] = set()
             for _ in range(max(0, int(limit))):
-                row = self.outbox.claim_next()
+                row = self.outbox.claim_next(exclude_keys=attempted_keys)
                 if row is None:
                     break
                 key = row["idempotency_key"]
+                attempted_keys.add(str(key))
                 try:
                     draft_data = json.loads(row["draft_json"])
                     draft = PackageCommandDraft.from_dict(draft_data)

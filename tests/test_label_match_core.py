@@ -1526,10 +1526,11 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     app.data_manager = FlushFailingDataManager()
     app.history_tree = _FailingHistoryTree()
     app.save_status_label = _FakeLabel()
-    app.is_running_simulation = True
+    app.is_running_simulation = False
     app.initialized_successfully = True
     app.run_tests = True
-    app._play_sound = lambda sound_key: None
+    played = []
+    app._play_sound = lambda sound_key: played.append(sound_key)
     app._update_summary_tree = lambda: (_ for _ in ()).throw(AssertionError("summary should not update"))
     app._reset_current_set = lambda **kwargs: (_ for _ in ()).throw(AssertionError("current set should not reset"))
     app.after = lambda delay, callback: None
@@ -1542,6 +1543,124 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     assert app.set_details_map == {}
     assert app.global_scanned_set == set()
     assert app.history_row_details_map == {}
+    assert played == []
+
+
+def test_central_finalize_commits_intent_and_local_event_before_ui_success():
+    module = load_label_match_module()
+    actions = []
+
+    class OrderedManager:
+        def __init__(self):
+            self.events = []
+
+        def log_event(self, event_type, details):
+            actions.append("log")
+            self.events.append((event_type, details))
+
+        def flush(self, timeout=None):
+            actions.append("flush")
+
+    class OrderedOutbox:
+        def mark_local_completion_committed(self, key):
+            assert key == "package-key"
+            actions.append("mark-local")
+
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.current_set_info = {
+        "id": "central-local-first",
+        "raw": [
+            "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-LOCAL-FIRST|"
+            "CLC=ITEM-1|LBL=LBL-LOCAL-FIRST|HSH=0123456789abcdef"
+        ],
+        "parsed": ["ITEM-1"],
+        "central_inherit_all": True,
+        "package_source_snapshot": {},
+        "start_time": datetime(2026, 8, 1, 10, 0, 0),
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": "-",
+        "item_name_override": None,
+        "production_date": None,
+    }
+    app.items_data = {"ITEM-1": {"Item Name": "Item", "Spec": "Spec"}}
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = set()
+    app.set_details_map = {}
+    app.history_row_details_map = {}
+    app.data_manager = OrderedManager()
+    app.package_outbox = OrderedOutbox()
+    app.history_tree = _FakeHistoryTree()
+    app.save_status_label = _FakeLabel()
+    app.is_running_simulation = False
+    app.initialized_successfully = True
+    app.run_tests = True
+    app._queue_authoritative_package = lambda **_kwargs: (
+        actions.append("intent")
+        or {
+            "status": "PENDING",
+            "idempotency_key": "package-key",
+            "membership_mode": "INHERIT_ALL",
+        }
+    )
+    app._play_sound = lambda sound_key: actions.append(f"sound:{sound_key}")
+    app._start_package_outbox_drain = lambda: actions.append("drain")
+    app._update_summary_tree = lambda: actions.append("summary")
+    app._return_to_idle_after_finalized_set = (
+        lambda: actions.append("idle") or True
+    )
+    app.after = lambda _delay, _callback: None
+
+    assert module.Label_Match._finalize_set(app, app.Results.PASS) is True
+
+    assert actions[:6] == [
+        "intent",
+        "log",
+        "flush",
+        "mark-local",
+        "sound:pass",
+        "drain",
+    ]
+    details = app.data_manager.events[0][1]
+    assert details["package_logistics"]["status"] == "PENDING"
+    assert details["final_result"] == app.Results.PASS
+
+
+def test_central_finalize_durable_intent_write_failure_never_shows_success():
+    module = load_label_match_module()
+    actions = []
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.Events = module.Label_Match.Events
+    app.current_set_info = {
+        "id": "central-intent-failure",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM-1"],
+        "central_inherit_all": True,
+        "start_time": datetime(2026, 8, 1, 10, 0, 0),
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": "-",
+        "item_name_override": None,
+        "production_date": None,
+    }
+    app.items_data = {"ITEM-1": {"Item Name": "Item", "Spec": "Spec"}}
+    app.data_manager = _FakeLoggingDataManager()
+    app.is_running_simulation = False
+    app.run_tests = True
+    app._queue_authoritative_package = lambda **_kwargs: (
+        actions.append("intent-failed")
+        or (_ for _ in ()).throw(OSError("outbox disk unavailable"))
+    )
+    app._play_sound = lambda sound_key: actions.append(f"sound:{sound_key}")
+
+    with pytest.raises(OSError, match="outbox disk unavailable"):
+        module.Label_Match._finalize_set(app, app.Results.PASS)
+
+    assert actions == ["intent-failed"]
+    assert app.data_manager.events == []
 
 
 def test_finalize_set_triggers_session_direct_sync_after_flush(monkeypatch):
@@ -1740,6 +1859,30 @@ def test_data_manager_close_flushes_queue_using_event_timestamp_date(tmp_path):
     assert rows[0] == ["timestamp", "worker_name", "event", "details"]
     assert rows[1] == ["2026-06-22T23:59:59", "worker-a", "TEST_EVENT", "{}"]
     assert manager.log_thread.is_alive() is False
+
+
+def test_data_manager_fsyncs_local_completion_before_flush_returns(
+    tmp_path, monkeypatch
+):
+    module = load_label_match_module()
+    fsync_calls = []
+    monkeypatch.setattr(
+        module.os,
+        "fsync",
+        lambda file_descriptor: fsync_calls.append(file_descriptor),
+    )
+    manager = module.DataManager(
+        str(tmp_path), "포장실", "worker-a", "PC01"
+    )
+
+    manager.log_event(
+        module.Label_Match.Events.TRAY_COMPLETE,
+        {"set_id": "durable-local-completion"},
+    )
+    manager.flush(timeout=5.0)
+    manager.close(timeout=5.0)
+
+    assert len(fsync_calls) == 1
 
 
 def test_default_save_path_uses_programdata_durable_root(monkeypatch, tmp_path):
@@ -3550,7 +3693,7 @@ def test_package_worker_never_calls_tk_after_from_background_thread():
     ]
 
 
-def test_active_package_submission_never_completes_locally_before_ack():
+def test_active_package_submission_recovers_local_completion_without_waiting_for_ack():
     module = load_label_match_module()
 
     class Outbox:
@@ -3579,13 +3722,16 @@ def test_active_package_submission_never_completes_locally_before_ack():
     finalized = []
     app._finalize_set = lambda *args, **kwargs: finalized.append((args, kwargs)) or True
 
-    assert module.Label_Match._reconcile_active_package_submission(app) is False
-    assert finalized == []
-    assert notices[-1]["status"] == "PENDING"
+    assert module.Label_Match._reconcile_active_package_submission(app) is True
+    assert finalized == [((module.Label_Match.Results.PASS,), {})]
+    assert notices == []
 
     app.package_outbox.status = "ACKED"
     assert module.Label_Match._reconcile_active_package_submission(app) is True
-    assert finalized == [((module.Label_Match.Results.PASS,), {})]
+    assert finalized == [
+        ((module.Label_Match.Results.PASS,), {}),
+        ((module.Label_Match.Results.PASS,), {}),
+    ]
 
 
 def test_exact_prewrite_package_conflict_is_the_only_recoverable_conflict():

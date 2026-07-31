@@ -108,6 +108,10 @@ LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT = 1
 LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION = 1
 LABEL_MATCH_RESULT_PASS = "통과"
 LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
+LABEL_MATCH_DURABLE_EVENT_TYPES = {
+    "TRAY_COMPLETE",
+    "PHS_REPLACEMENT_WAITING_MARKED",
+}
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
 LABEL_MATCH_DEFAULT_SAVE_SUBDIR = ("KMTech", "Label_Match", "data")
 LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP"
@@ -1425,7 +1429,7 @@ def _label_match_summary_date(details):
 
 
 def _label_match_local_completion_event_exists(data_manager, set_id):
-    """Find an already-flushed TRAY_COMPLETE after an ACK crash window."""
+    """Find an already-flushed TRAY_COMPLETE after a local commit crash window."""
 
     identity = str(set_id or "").strip()
     save_directory = str(
@@ -4270,6 +4274,9 @@ class DataManager:
                     if not file_exists or os.stat(filepath).st_size == 0:
                         writer.writerow(["timestamp", "worker_name", "event", "details"])
                     writer.writerow(log_item)
+                    if str(log_item[2] or "") in LABEL_MATCH_DURABLE_EVENT_TYPES:
+                        f.flush()
+                        os.fsync(f.fileno())
             except queue.Empty:
                 continue
             except Exception as e:
@@ -4545,6 +4552,7 @@ class Label_Match(tk.Tk):
         EXACT_RESCAN_STARTED = "EXACT_RESCAN_STARTED"
         EXACT_RESCAN_OK = "EXACT_RESCAN_OK"
         EXACT_RESCAN_COMPLETED = "EXACT_RESCAN_COMPLETED"
+        PHS_REPLACEMENT_WAITING_MARKED = "PHS_REPLACEMENT_WAITING_MARKED"
         SEALED_TRANSFER_EXCHANGE_ACKED = "SEALED_TRANSFER_EXCHANGE_ACKED"
         SEALED_TRANSFER_EXCHANGE_APPLIED = "SEALED_TRANSFER_EXCHANGE_APPLIED"
     class Results:
@@ -5006,27 +5014,26 @@ class Label_Match(tk.Tk):
             row.get("idempotency_key") or ""
         ).strip()
         current["package_submission_status"] = status
-        if status == "ACKED":
-            self._workflow_blocking_notice = None
-            self._workflow_notice = None
-            self._workflow_notice_action = None
-            self._workflow_notice_action_text = "확인"
-            key = str(row.get("idempotency_key") or "").strip()
-            local_committed = bool(
-                int(row.get("local_completion_committed") or 0)
-            )
-            log_exists = _label_match_local_completion_event_exists(
-                self.__dict__.get("data_manager"),
-                current.get("id"),
-            )
-            if local_committed or log_exists:
-                if not local_committed:
-                    outbox.mark_local_completion_committed(key)
-                return self._finish_recovered_package_completion()
+        self._workflow_blocking_notice = None
+        self._workflow_notice = None
+        self._workflow_notice_action = None
+        self._workflow_notice_action_text = "확인"
+        key = str(row.get("idempotency_key") or "").strip()
+        local_committed = bool(
+            int(row.get("local_completion_committed") or 0)
+        )
+        log_exists = _label_match_local_completion_event_exists(
+            self.__dict__.get("data_manager"),
+            current.get("id"),
+        )
+        if local_committed or log_exists:
+            if not local_committed:
+                outbox.mark_local_completion_committed(key)
+            return self._finish_recovered_package_completion()
+        if status in {"PENDING", "SENDING", "ACKED", "CONFLICT"}:
+            # The append-only command intent already exists.  Finish the local
+            # event first; central delivery/review remains independent.
             return bool(self._finalize_set(self.Results.PASS))
-        if status in {"PENDING", "SENDING", "CONFLICT"}:
-            self._save_current_set_state()
-            return self._set_active_package_submission_notice(row)
         return False
 
     def _finish_recovered_package_completion(self):
@@ -5035,129 +5042,16 @@ class Label_Match(tk.Tk):
         return self._return_to_idle_after_finalized_set()
 
     def _enqueue_central_package_submission(self):
-        try:
-            package_logistics = self._queue_authoritative_package(
-                item_code=(self.current_set_info.get("parsed") or [""])[0],
-                is_manual_complete=False,
-            )
-        except PackageLogisticsError as exc:
-            return self._publish_submission_block(exc)
-        if not package_logistics or not package_logistics.get("idempotency_key"):
-            return self._publish_submission_block(
-                PackageLogisticsError(
-                    "central package submission could not be durably queued"
-                )
-            )
-        self.current_set_info["package_submission_idempotency_key"] = str(
-            package_logistics["idempotency_key"]
-        )
-        self.current_set_info["package_submission_status"] = str(
-            package_logistics.get("status") or "PENDING"
-        ).upper()
-        if not self._save_current_set_state():
-            return self._publish_submission_block(
-                PackageLogisticsError(
-                    "central package command is durable, but its local recovery state "
-                    "could not be saved; keep this PHS2 in place and retry"
-                )
-            )
-        if self.current_set_info["package_submission_status"] == "ACKED":
-            return self._reconcile_active_package_submission()
-        self._set_active_package_submission_notice(
-            {
-                "status": self.current_set_info["package_submission_status"],
-                "idempotency_key": package_logistics["idempotency_key"],
-            }
-        )
-        self._start_package_outbox_drain()
-        return True
+        return bool(self._finalize_set(self.Results.PASS))
 
     def _begin_central_package_submission(self):
         if self.__dict__.get("_central_package_preflight_in_progress", False):
             return False
-        outbox = self.__dict__.get("package_outbox")
-        set_id = str(self.current_set_info.get("id") or "").strip()
-        existing = outbox.get_by_set_id(set_id) if outbox is not None and set_id else None
-        if existing is not None:
-            status = str(existing.get("status") or "").strip().upper()
-            if status == "ACKED":
-                return self._reconcile_active_package_submission()
-            self._set_active_package_submission_notice(existing)
-            if status in {"PENDING", "SENDING"}:
-                self._start_package_outbox_drain()
-            return status != "CONFLICT"
-
-        captured = copy.deepcopy(self.current_set_info)
-        captured_raw = tuple(captured.get("raw") or ())
-        captured_set_id = str(captured.get("id") or "")
-        result_queue = queue.Queue(maxsize=1)
-        self._central_package_preflight_in_progress = True
-        notice = WorkflowNotice(
-            title="PHS2 포장 대상 확인 중",
-            message=(
-                "현재 TRANSFER 멤버십과 활성 봉인을 확인하고 있습니다. "
-                "확인이 끝날 때까지 실물을 이동하지 마세요."
-            ),
-            kind="submission_blocked",
-            tone="warning",
-        )
-        self._workflow_blocking_notice = notice
-        self._workflow_notice = notice
-        self._workflow_notice_action = None
-        self._phs_label_guidance_notice = None
-        self._render_operator_workbench()
-
-        def worker():
-            try:
-                result_queue.put(
-                    (
-                        True,
-                        self._resolve_central_phs2_seal_for_exchange(captured),
-                    )
-                )
-            except Exception as exc:
-                result_queue.put((False, exc))
-
-        def poll():
-            try:
-                ok, value = result_queue.get_nowait()
-            except queue.Empty:
-                self.after(100, poll)
-                return
-            self._central_package_preflight_in_progress = False
-            if (
-                str(self.current_set_info.get("id") or "") != captured_set_id
-                or tuple(self.current_set_info.get("raw") or ()) != captured_raw
-            ):
-                self._workflow_blocking_notice = None
-                self._workflow_notice = None
-                self._render_operator_workbench()
-                return
-            if not ok:
-                return self._publish_submission_block(value)
-            sealed, snapshot, active_updates = value
-            try:
-                self._apply_resolved_central_phs2_seal(
-                    sealed,
-                    snapshot,
-                    active_updates,
-                )
-            except Exception as exc:
-                return self._publish_submission_block(exc)
-            self._workflow_blocking_notice = None
-            self._workflow_notice = None
-            self._render_operator_workbench()
-            self._enqueue_central_package_submission()
-
-        thread = threading.Thread(
-            target=worker,
-            name="label-match-package-source-preflight",
-            daemon=True,
-        )
-        self._central_package_preflight_thread = thread
-        thread.start()
-        self.after(100, poll)
-        return True
+        # PHS2 acceptance/F4 already captured strict source evidence.  F3 now
+        # durably records that frozen intent and the local completion without a
+        # network round trip.  The processor performs the same fresh central
+        # resolution, membership, overlap, and CAS validation on replay.
+        return self._enqueue_central_package_submission()
 
     def _refresh_package_cancellation_review_notice(self):
         """Keep terminal central-cancellation conflicts visible to the operator."""
@@ -8759,6 +8653,56 @@ class Label_Match(tk.Tk):
             self._phs_replacement_notice_pairs = seen
         if pair in seen:
             return False
+        old_label_id, new_label_id = pair
+        current = self.__dict__.get("current_set_info", {}) or {}
+        set_id = str(current.get("id") or "").strip()
+        session_id = str(
+            current.get("source_session_id")
+            or current.get("input_tag_id")
+        ).strip()
+        if not session_id:
+            try:
+                session_id = str(
+                    _label_match_parse_compact_phs2(
+                        current.get("canonical_input_tag_qr") or ""
+                    ).get("ITG")
+                    or ""
+                ).strip()
+            except ValueError:
+                session_id = ""
+        session_id = session_id or set_id
+        dedupe_key = "phs-replacement-waiting-" + hashlib.sha256(
+            "\x1f".join((session_id, old_label_id, new_label_id)).encode(
+                "utf-8"
+            )
+        ).hexdigest()[:32]
+        manager = self.__dict__.get("data_manager")
+        log_event = getattr(manager, "log_event", None)
+        if callable(log_event):
+            log_event(
+                self.Events.PHS_REPLACEMENT_WAITING_MARKED,
+                {
+                    "intent_version": "phs-replacement-waiting-v1",
+                    "intent_id": dedupe_key,
+                    "dedupe_key": dedupe_key,
+                    "set_id": set_id,
+                    "session_id": session_id,
+                    "old_label_id": old_label_id,
+                    "new_label_id": new_label_id,
+                    "process": "PACKAGING",
+                    "location": "PACKAGING",
+                    "current_process": "PACKAGING",
+                    "current_location": "PACKAGING",
+                    "source_system": LABEL_MATCH_SOURCE_SYSTEM,
+                    "source_pc_id": str(
+                        getattr(manager, "unique_id", "") or ""
+                    ).strip(),
+                    "marked_at": datetime.now().isoformat(),
+                },
+            )
+            # The direct-sync event is the replayable evidence even while a
+            # dedicated central replacement-waiting endpoint is unavailable.
+            self._flush_data_manager_if_supported()
         seen.add(pair)
         self._phs_label_guidance_notice = WorkflowNotice(
             title="현품표 교체 필요",
@@ -10320,20 +10264,6 @@ class Label_Match(tk.Tk):
                 if result == self.Results.PASS
                 else None
             )
-            if (
-                central_inherit_all
-                and result == self.Results.PASS
-                and not self.__dict__.get("run_tests", False)
-                and not self.__dict__.get("is_running_simulation", False)
-                and (
-                    not package_logistics
-                    or str(package_logistics.get("status") or "").upper()
-                    != "ACKED"
-                )
-            ):
-                raise PackageLogisticsError(
-                    "central CREATE_PACKAGE ACK is required before local completion"
-                )
         except PackageLogisticsError as exc:
             if self.__dict__.get("operator_workbench_ready"):
                 self._play_sound("fail")
@@ -10349,10 +10279,16 @@ class Label_Match(tk.Tk):
             details["package_logistics"] = package_logistics
             details["package_membership_mode"] = package_logistics.get("membership_mode")
             details["sample_barcodes_are_membership"] = False
-        if result == self.Results.PASS and not self.is_running_simulation:
-            self._play_sound("pass")
-        self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
-        self._flush_data_manager_if_supported()
+        local_event_exists = bool(
+            central_inherit_all
+            and package_logistics
+            and _label_match_local_completion_event_exists(
+                self.__dict__.get("data_manager"), set_id_for_log
+            )
+        )
+        if not local_event_exists:
+            self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
+            self._flush_data_manager_if_supported()
         if central_inherit_all and package_logistics:
             try:
                 outbox = self.__dict__.get("package_outbox")
@@ -10365,6 +10301,10 @@ class Label_Match(tk.Tk):
                 )
             except PackageLogisticsError as exc:
                 return self._publish_submission_block(exc)
+        if result == self.Results.PASS and not self.is_running_simulation:
+            # Sound and all visible success mutations happen only after the
+            # append-only intent, CSV event, and local commit marker are durable.
+            self._play_sound("pass")
         if package_logistics and package_logistics.get("idempotency_key"):
             self._start_package_outbox_drain()
         state = self.__dict__
