@@ -214,6 +214,16 @@ def _label_match_explicit_automated_test_mode():
     return value in {"1", "true", "yes", "on", "enabled"}
 
 
+def label_match_test_tools_enabled(*, run_tests: bool = False) -> bool:
+    """Expose synthetic scan commands only to an isolated automation launch."""
+    return bool(run_tests) or _label_match_explicit_automated_test_mode()
+
+
+def label_match_startup_package_client():
+    """Load the protected profile without probing the network before Tk."""
+    return package_client_from_env(probe_required=False)
+
+
 def _label_match_capture_startup_request():
     """Return a strict capture-only geometry/DPI request for automated evidence."""
 
@@ -4553,10 +4563,10 @@ class Label_Match(tk.Tk):
 
     def __init__(self, run_tests=False):
         _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
-        # Resolve/decrypt the machine profile and perform the authenticated
-        # readiness probe before Tcl exists. Required mode can never fall back
-        # to a local/direct-sync-only packaging result.
-        startup_package_logistics_client = package_client_from_env()
+        # Resolve/decrypt the protected machine profile before Tcl, but let the
+        # durable outbox own network retries so recovery stays available while
+        # the server is unreachable.
+        startup_package_logistics_client = label_match_startup_package_client()
         startup_logistics_required = logistics_runtime_required()
         capture_startup_request = _label_match_capture_startup_request()
         capture_startup_geometry = (
@@ -7577,7 +7587,17 @@ class Label_Match(tk.Tk):
         if not raw_input: return
         if self._sealed_transfer_exchange_blocks_local_action("다음 스캔"):
             return
+        test_tools_enabled = label_match_test_tools_enabled(
+            run_tests=bool(self.__dict__.get("run_tests", False))
+        )
         if raw_input in {'_RUN_AUTO_TEST_', '_RUN_DEMO_'}:
+            if not test_tools_enabled:
+                self._handle_input_error(
+                    raw_input,
+                    title="[지원하지 않는 입력]",
+                    reason="현재 작업에 사용할 수 없는 코드입니다.",
+                )
+                return
             if self._block_view_only_action("테스트 기능을 실행"):
                 return
             if self._block_active_history_load_action("테스트 기능을 실행"):
@@ -7712,7 +7732,9 @@ class Label_Match(tk.Tk):
                 self._update_on_success_scan(raw_input, client_code)
             else:
                 MASTER_LABEL_LENGTH = 13
-                is_test_code = any(s in raw_input for s in ["DEMO", "VALID-", "TEST_"])
+                is_test_code = test_tools_enabled and any(
+                    marker in raw_input for marker in ["DEMO", "VALID-", "TEST_"]
+                )
                 
                 if not is_test_code and len(raw_input) != MASTER_LABEL_LENGTH and not self.items_data.get(raw_input):
                     self._handle_input_error(
@@ -7731,7 +7753,11 @@ class Label_Match(tk.Tk):
                 self._update_on_success_scan(raw_input, raw_input)
 
         elif 2 <= scan_pos <= self._workflow_total_scan_count():
-            if scan_pos == 2 and raw_input.upper().startswith("TEST_LOG_"):
+            if (
+                test_tools_enabled
+                and scan_pos == 2
+                and raw_input.upper().startswith("TEST_LOG_")
+            ):
                 parts = raw_input.split('_')
                 if len(parts) == 3 and parts[2].isdigit():
                     num_sets = int(parts[2])

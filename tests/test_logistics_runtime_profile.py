@@ -24,6 +24,32 @@ from tools.install_logistics_runtime_profile import (
 from tools.check_logistics_runtime_profile import main as readiness_main
 
 
+def test_gui_startup_builds_client_without_network_readiness_probe(monkeypatch):
+    calls = []
+    sentinel = object()
+
+    def fake_factory(*, probe_required=True):
+        calls.append(probe_required)
+        return sentinel
+
+    monkeypatch.setattr(label_module, "package_client_from_env", fake_factory)
+
+    assert label_module.label_match_startup_package_client() is sentinel
+    assert calls == [False]
+
+
+def test_production_test_commands_require_explicit_automation_switch(monkeypatch):
+    monkeypatch.delenv(label_module.LABEL_MATCH_AUTOMATED_TEST_ENV, raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(label_module.sys, "argv", ["Label_Match.py"])
+
+    assert label_module.label_match_test_tools_enabled(run_tests=False) is False
+
+    monkeypatch.setenv(label_module.LABEL_MATCH_AUTOMATED_TEST_ENV, "1")
+    assert label_module.label_match_test_tools_enabled(run_tests=False) is True
+    assert label_module.label_match_test_tools_enabled(run_tests=True) is True
+
+
 def _profile(tmp_path, **changes):
     profile_path = tmp_path / "machine" / "profile.json"
     secret_path = profile_path.parent / "secrets" / "bearer-token.dpapi"
