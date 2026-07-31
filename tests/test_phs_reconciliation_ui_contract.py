@@ -1,6 +1,25 @@
 import inspect
+from types import SimpleNamespace
 
 import Label_Match as label_module
+
+
+class _Entry:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+def _replacement_resolution():
+    return {
+        "scan": {
+            "replacement_required": True,
+            "scanned_label_id": "LBL-OLD-INTERNAL",
+            "active_label_id": "LBL-NEW-INTERNAL",
+        }
+    }
 
 
 def test_worker_summary_hides_internal_instruction_and_label_ids():
@@ -92,6 +111,148 @@ def test_replacement_action_window_is_non_modal_and_uses_operator_language():
     )
 
     assert ".grab_set(" not in source
+    assert "popup.focus_set()" not in source
+    assert "_focus_scan_entry_if_available()" in source
     assert "ACTIVE successor" not in source
     assert "ACTIVE로 전환" not in source
     assert "새 현품표가 출력되면 기존 표를 교체해 주세요." in source
+
+
+def test_replacement_required_notice_is_yellow_and_once_per_pair():
+    expected = (
+        "현품표 교체 필요. 작업은 계속할 수 있습니다. "
+        "현재 현품표를 교체 대기로 분리해 주세요."
+    )
+    renders = []
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {
+        "id": "SET-1",
+        "raw": ["PHS2", "PRODUCT-1"],
+        "parsed": ["ITEM", "PRODUCT-1"],
+        "progress_marker": "KEEP",
+    }
+    app.entry = _Entry("UNSUBMITTED-INPUT")
+    app._phs_replacement_notice_pairs = set()
+    app._phs_label_guidance_notice = None
+    app._render_operator_workbench = lambda: renders.append("render")
+    before = {
+        "raw": list(app.current_set_info["raw"]),
+        "parsed": list(app.current_set_info["parsed"]),
+        "progress_marker": app.current_set_info["progress_marker"],
+        "entry": app.entry.get(),
+    }
+
+    assert (
+        app._show_phs_replacement_required_notice_once(
+            _replacement_resolution()
+        )
+        is True
+    )
+    assert (
+        app._show_phs_replacement_required_notice_once(
+            _replacement_resolution()
+        )
+        is False
+    )
+
+    notice = app._phs_label_guidance_notice
+    assert notice.message == expected
+    assert notice.tone == "warning"
+    assert renders == ["render"]
+    assert app.current_set_info["raw"] == before["raw"]
+    assert app.current_set_info["parsed"] == before["parsed"]
+    assert app.current_set_info["progress_marker"] == before["progress_marker"]
+    assert app.entry.get() == before["entry"]
+    assert not any(
+        marker in notice.message
+        for marker in (
+            "ACTIVE successor",
+            "OVERLAY_REPLACED",
+            "LBL-",
+            "UUID",
+            "hash",
+        )
+    )
+
+
+def test_exchange_execute_rechecks_lookup_capture_before_starting_worker():
+    calls = []
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {
+        "id": "SET-1",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "package_source_snapshot": {"version": 1},
+    }
+    captured = label_module._label_match_capture_current_set(
+        app.current_set_info
+    )
+    app.current_set_info["raw"].append("PRODUCT-1")
+    app._phs_label_exchange_pending = False
+    app._phs_label_guidance_notice = None
+    app._render_operator_workbench = lambda: calls.append("render")
+    app._focus_scan_entry_if_available = lambda: calls.append("focus")
+
+    started = app._start_phs_reconciliation_exchange(
+        _replacement_resolution(),
+        expected_current_set=captured,
+    )
+
+    assert started is False
+    assert app.current_set_info["raw"] == ["PHS2", "PRODUCT-1"]
+    assert app.current_set_info["parsed"] == ["ITEM"]
+    assert calls == ["render", "focus"]
+    assert app._phs_label_guidance_notice.tone == "warning"
+    assert "포장 상태가 바뀌어" in app._phs_label_guidance_notice.message
+
+
+def test_direct_replaced_label_scan_uses_exact_operator_notice():
+    expected = (
+        "현품표 교체 필요. 작업은 계속할 수 있습니다. "
+        "현재 현품표를 교체 대기로 분리해 주세요."
+    )
+    old_qr = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM-1|"
+        "LBL=LBL-OLD-INTERNAL|HSH=aaaaaaaaaaaaaaaa"
+    )
+    evidence = SimpleNamespace(
+        replaced_scan=True,
+        physical_scanned_qr_payload=old_qr,
+        canonical_input_tag_qr=old_qr,
+        active_label_qr_payload=old_qr.replace(
+            "LBL-OLD-INTERNAL", "LBL-NEW-INTERNAL"
+        ),
+        active_label_id="LBL-NEW-INTERNAL",
+        active_label_business_date="2026-08-01",
+        active_label_worker_code="8월1일-1",
+        active_label_resolution="OVERLAY_REPLACED",
+        item_id="ITEM-1",
+        member_count=2,
+        membership_hash="b" * 64,
+        state_fields=lambda: {
+            "active_label_id": "LBL-NEW-INTERNAL",
+            "phs_label_replaced_scan": True,
+        },
+    )
+    renders = []
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {"id": "SET-1", "raw": [], "parsed": []}
+    app._phs_replacement_notice_pairs = set()
+    app._phs_label_guidance_notice = None
+    app._update_on_success_scan = lambda *_args, **_kwargs: None
+    app.data_manager = SimpleNamespace(log_event=lambda *_args, **_kwargs: None)
+    app._save_current_set_state = lambda: True
+    app._render_operator_workbench = lambda: renders.append("render")
+    app._focus_scan_entry_if_available = lambda: None
+
+    assert app._accept_resolved_central_phs2_scan(
+        evidence,
+        {"bundle_id": "BUNDLE-1"},
+        None,
+    ) is True
+
+    notice = app._phs_label_guidance_notice
+    assert notice.message == expected
+    assert notice.tone == "warning"
+    assert "LBL-" not in notice.message
+    assert renders
