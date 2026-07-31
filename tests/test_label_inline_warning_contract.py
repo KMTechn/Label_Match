@@ -207,7 +207,9 @@ def test_durable_completion_clears_transient_status_and_returns_to_idle():
     assert app.big_display_label.cget("text") == ""
 
 
-def test_submission_block_keeps_all_five_scans_and_offers_retry_without_reset(monkeypatch):
+def test_submission_block_keeps_all_five_scans_and_offers_retry_without_reset(
+    monkeypatch, capsys
+):
     scans = ["MASTER-001", "PRODUCT-001", "PRODUCT-002", "PRODUCT-003", "FINAL-001"]
     app = _error_app(*scans, workbench_ready=True)
     app.items_data = {}
@@ -223,8 +225,11 @@ def test_submission_block_keeps_all_five_scans_and_offers_retry_without_reset(mo
     assert app.current_set_info["raw"] == scans
     assert app.current_set_info["parsed"] == scans
     assert "5/5 유지" in app._workflow_blocking_notice.title
-    assert "서버 ACK 확인 필요" in app.workflow_notice_label.cget("text")
-    assert app._workflow_notice_action_text == "제출 재시도"
+    worker_message = app.workflow_notice_label.cget("text")
+    assert "로컬 완료 기록을 안전하게 저장하지 못했습니다" in worker_message
+    assert "서버 ACK 확인 필요" not in worker_message
+    assert "서버 ACK 확인 필요" in capsys.readouterr().out
+    assert app._workflow_notice_action_text == "저장 재시도"
     assert callable(app._workflow_notice_action)
 
     original = deepcopy(app.current_set_info)

@@ -33,7 +33,7 @@ from logistics_runtime_profile import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v7"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v8"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
@@ -673,6 +673,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
                       OR review_status IS NULL),
             receipt_json TEXT,
             retry_after_at TEXT,
+            last_attempt_at TEXT,
             local_completion_committed INTEGER NOT NULL DEFAULT 0
                 CHECK(local_completion_committed IN (0,1)),
             local_completion_committed_at TEXT,
@@ -716,6 +717,20 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             ON package_cancellation_outbox(status, created_at);
         CREATE INDEX IF NOT EXISTS ix_package_cancellation_outbox_set
             ON package_cancellation_outbox(set_id, created_at);
+        CREATE TABLE IF NOT EXISTS package_replacement_waiting_outbox (
+            dedupe_key TEXT PRIMARY KEY,
+            event_fingerprint TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            local_csv_committed INTEGER NOT NULL DEFAULT 0
+                CHECK(local_csv_committed IN (0,1)),
+            local_csv_committed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_package_replacement_waiting_pending
+            ON package_replacement_waiting_outbox(
+                local_csv_committed,created_at,dedupe_key
+            );
         CREATE TABLE IF NOT EXISTS package_outbox_schema_info (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -736,6 +751,10 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
                    ADD COLUMN review_status TEXT
                    CHECK(review_status IN ('OPERATOR_REVIEW','MANUAL_REVIEW')
                          OR review_status IS NULL)"""
+        )
+    if "last_attempt_at" not in command_columns:
+        conn.execute(
+            "ALTER TABLE package_command_outbox ADD COLUMN last_attempt_at TEXT"
         )
     if "local_completion_committed" not in command_columns:
         conn.execute(
@@ -759,7 +778,15 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         )
     conn.execute(
         """CREATE INDEX IF NOT EXISTS ix_package_command_outbox_due
-               ON package_command_outbox(status,retry_after_at,created_at)"""
+               ON package_command_outbox(
+                   status,retry_after_at,last_attempt_at,created_at
+               )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS ix_package_command_outbox_fair_due
+               ON package_command_outbox(
+                   status,retry_after_at,last_attempt_at,created_at,idempotency_key
+               )"""
     )
     conn.execute(
         """CREATE INDEX IF NOT EXISTS ix_package_command_outbox_review
@@ -872,6 +899,176 @@ class PackageOutbox:
             conn.commit()
             return dict(row)
 
+    @staticmethod
+    def _replacement_waiting_event_payload(
+        payload: Mapping[str, Any],
+    ) -> tuple[str, dict[str, Any], str]:
+        event = dict(payload or {})
+        key = str(event.get("dedupe_key") or "").strip()
+        if not key or str(event.get("intent_id") or "").strip() != key:
+            raise PackageLogisticsError(
+                "replacement-waiting event identity is required"
+            )
+        required = (
+            "intent_version",
+            "set_id",
+            "session_id",
+            "old_label_id",
+            "new_label_id",
+            "process",
+            "location",
+            "current_process",
+            "current_location",
+            "source_system",
+            "source_pc_id",
+            "marked_at",
+        )
+        if any(not str(event.get(name) or "").strip() for name in required):
+            raise PackageLogisticsError(
+                "replacement-waiting event payload is incomplete"
+            )
+        immutable = dict(event)
+        # A replay reconstructs the wall-clock field after restart.  Preserve
+        # the first durable timestamp while requiring every business field,
+        # including process and location, to remain immutable.
+        immutable.pop("marked_at", None)
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                immutable,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return key, event, fingerprint
+
+    def enqueue_replacement_waiting_event(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Commit one immutable replacement-waiting event before CSV projection."""
+
+        key, event, fingerprint = self._replacement_waiting_event_payload(
+            payload
+        )
+        now = utc_now()
+        encoded = json.dumps(
+            event,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """SELECT * FROM package_replacement_waiting_outbox
+                     WHERE dedupe_key=?""",
+                (key,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["event_fingerprint"] or "") != fingerprint:
+                    conn.rollback()
+                    raise PackageLogisticsError(
+                        "replacement-waiting event payload is immutable"
+                    )
+                conn.commit()
+                return dict(existing)
+            conn.execute(
+                """INSERT INTO package_replacement_waiting_outbox(
+                       dedupe_key,event_fingerprint,event_json,
+                       local_csv_committed,created_at,updated_at
+                   ) VALUES (?,?,?,0,?,?)""",
+                (key, fingerprint, encoded, now, now),
+            )
+            row = conn.execute(
+                """SELECT * FROM package_replacement_waiting_outbox
+                     WHERE dedupe_key=?""",
+                (key,),
+            ).fetchone()
+            conn.commit()
+            return dict(row)
+
+    def commit_replacement_waiting_csv_projection(
+        self,
+        key: str,
+        projector: Callable[[Mapping[str, Any]], None],
+    ) -> bool:
+        """Serialize one fsynced CSV projection with its durable commit marker.
+
+        The SQLite write transaction intentionally spans the projector call.
+        This is a rare local event and the cross-process lock closes the
+        scan/append race.  If the process dies after CSV fsync but before this
+        transaction commits, recovery sees the durable PENDING ledger row,
+        finds the CSV dedupe key, and marks it committed without appending.
+        """
+
+        identity = str(key or "").strip()
+        if not identity or not callable(projector):
+            raise PackageLogisticsError(
+                "replacement-waiting CSV projection identity is required"
+            )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT * FROM package_replacement_waiting_outbox
+                     WHERE dedupe_key=?""",
+                (identity,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "replacement-waiting event ledger row does not exist"
+                )
+            if int(row["local_csv_committed"] or 0) == 1:
+                conn.commit()
+                return False
+            try:
+                payload = json.loads(str(row["event_json"] or "{}"))
+                if not isinstance(payload, dict):
+                    raise ValueError("event payload is not an object")
+                projector(payload)
+            except Exception:
+                conn.rollback()
+                raise
+            now = utc_now()
+            cursor = conn.execute(
+                """UPDATE package_replacement_waiting_outbox
+                       SET local_csv_committed=1,
+                           local_csv_committed_at=?,updated_at=?
+                     WHERE dedupe_key=? AND local_csv_committed=0""",
+                (now, now, identity),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise PackageLogisticsError(
+                    "replacement-waiting CSV commit marker changed concurrently"
+                )
+            conn.commit()
+            return True
+
+    def get_replacement_waiting_event(self, key: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM package_replacement_waiting_outbox
+                     WHERE dedupe_key=?""",
+                (str(key or "").strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_replacement_waiting_csv_pending(
+        self, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM package_replacement_waiting_outbox
+                     WHERE local_csv_committed=0
+                     ORDER BY created_at,dedupe_key
+                     LIMIT ?""",
+                (max(0, int(limit)),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def claim_next(
         self, *, exclude_keys: Iterable[str] = ()
     ) -> dict[str, Any] | None:
@@ -904,9 +1101,11 @@ class PackageOutbox:
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING'
+                       AND local_completion_committed=1
                        AND (retry_after_at IS NULL OR retry_after_at<=?)"""
                 + exclusion_sql
-                + " ORDER BY created_at,idempotency_key LIMIT 1",
+                + " ORDER BY COALESCE(last_attempt_at,created_at),"
+                  "created_at,idempotency_key LIMIT 1",
                 (now, *excluded),
             ).fetchone()
             if row is None:
@@ -915,9 +1114,9 @@ class PackageOutbox:
             cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET status='SENDING',attempt_count=attempt_count+1,
-                           retry_after_at=NULL,updated_at=?
+                           retry_after_at=NULL,last_attempt_at=?,updated_at=?
                      WHERE idempotency_key=? AND status='PENDING'""",
-                (now, row["idempotency_key"]),
+                (now, now, row["idempotency_key"]),
             )
             if cursor.rowcount != 1:
                 conn.rollback()

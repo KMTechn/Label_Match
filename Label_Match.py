@@ -1465,6 +1465,47 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
     return False
 
 
+def _label_match_replacement_waiting_event_exists(data_manager, dedupe_key):
+    """Find an fsynced replacement-waiting CSV projection by durable key."""
+
+    identity = str(dedupe_key or "").strip()
+    save_directory = str(
+        getattr(data_manager, "save_directory", "") or ""
+    ).strip()
+    process_name = str(getattr(data_manager, "process_name", "") or "").strip()
+    unique_id = str(getattr(data_manager, "unique_id", "") or "").strip()
+    if not identity or not save_directory or not os.path.isdir(save_directory):
+        return False
+    prefix = f"{process_name}작업이벤트로그_{unique_id}_"
+    try:
+        candidates = [
+            os.path.join(save_directory, name)
+            for name in os.listdir(save_directory)
+            if name.startswith(prefix) and name.lower().endswith(".csv")
+        ]
+    except OSError:
+        return False
+    for path in sorted(candidates, reverse=True):
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    if row.get("event") != "PHS_REPLACEMENT_WAITING_MARKED":
+                        continue
+                    try:
+                        details = json.loads(row.get("details") or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if str(
+                        details.get("dedupe_key")
+                        or details.get("intent_id")
+                        or ""
+                    ).strip() == identity:
+                        return True
+        except (OSError, csv.Error):
+            continue
+    return False
+
+
 def _label_match_manual_complete_block_reason(current_set_info):
     current = current_set_info or {}
     if current.get("recovery_operator_review"):
@@ -4951,23 +4992,26 @@ class Label_Match(tk.Tk):
             recoverable_prewrite_conflict = (
                 _label_match_is_recoverable_prewrite_package_conflict(row)
             )
-            code = str(
-                (row or {}).get("last_error_code") or "CENTRAL_PACKAGE_CONFLICT"
-            ).strip()
-            message = str((row or {}).get("last_error_message") or "").strip()
+            local_committed = bool(
+                int((row or {}).get("local_completion_committed") or 0)
+            )
             notice = WorkflowNotice(
                 title="중앙 포장 충돌 · 실물 작업 중지",
                 message=(
                     (
-                        f"{code} · 세트 {set_id}. {message} "
-                        "중앙 포장 영수증이 없어 완료로 표시하지 않았습니다. "
+                        "중앙 확인 전에 멈춘 포장 작업입니다. "
                         "F1로 현재 세트만 비운 뒤 같은 PHS2를 다시 스캔하세요. "
                         "충돌 증거는 보존됩니다."
                     )
                     if recoverable_prewrite_conflict
                     else (
-                        f"{code} · 세트 {set_id}. {message} "
-                        "이 PHS2를 포장 완료로 표시하지 않았습니다. "
+                        "로컬 포장 완료 기록은 안전하게 유지됩니다. "
+                        "해당 PHS2 실물을 구분 보관하고 관리자에게 중앙 상태 확인을 요청하세요."
+                    )
+                    if local_committed
+                    else (
+                        "현재 포장 상태를 자동으로 확정하지 못했습니다. "
+                        "해당 PHS2 실물을 구분 보관하고 "
                         "관리자에게 중앙 상태 확인을 요청하세요."
                     )
                 ).strip(),
@@ -4981,8 +5025,8 @@ class Label_Match(tk.Tk):
             notice = WorkflowNotice(
                 title="중앙 포장 확정 대기",
                 message=(
-                    f"세트 {set_id}의 CREATE_PACKAGE ACK를 확인 중입니다. "
-                    "확정 전에는 PHS2를 이동하거나 다음 포장을 시작하지 마세요."
+                    "저장된 포장 완료 기록을 복구하고 있습니다. "
+                    "복구가 끝날 때까지 PHS2를 이동하거나 다음 포장을 시작하지 마세요."
                 ),
                 kind="submission_blocked",
                 tone="warning",
@@ -5080,18 +5124,22 @@ class Label_Match(tk.Tk):
         self._package_create_review_rows = package_conflicts[:20]
         if package_conflicts:
             first_package = package_conflicts[0]
-            package_code = str(
-                first_package.get("last_error_code") or "CENTRAL_PACKAGE_CONFLICT"
-            ).strip()
-            package_set_id = str(first_package.get("set_id") or "").strip()
             package_count = (
                 "20건 이상" if len(package_conflicts) > 20 else f"{len(package_conflicts)}건"
+            )
+            local_committed = bool(
+                int(first_package.get("local_completion_committed") or 0)
             )
             self._package_create_review_notice = WorkflowNotice(
                 title="중앙 포장 충돌 확인 필요",
                 message=(
-                    f"미확인 {package_count} · {package_code} · 세트 {package_set_id}. "
-                    "로컬 성공으로 처리되지 않았습니다. 해당 PHS2 실물을 격리하고 관리자에게 확인을 요청하세요."
+                    f"관리자 확인이 필요한 포장이 {package_count} 있습니다. "
+                    + (
+                        "로컬 포장 완료 기록은 유지됩니다. "
+                        if local_committed
+                        else "현재 포장 기록은 자동 확정되지 않았습니다. "
+                    )
+                    + "해당 PHS2 실물을 구분 보관하고 관리자에게 확인을 요청하세요."
                 ),
                 kind="package_create_review",
                 tone="danger",
@@ -5113,16 +5161,11 @@ class Label_Match(tk.Tk):
         visible_conflicts = conflicts[:20]
         self._package_cancellation_review_rows = visible_conflicts
         if conflicts:
-            first = conflicts[0]
-            code = str(first.get("last_error_code") or "CENTRAL_CONFLICT").strip()
-            package_bundle_id = str(first.get("package_bundle_id") or "").strip()
-            identifier = package_bundle_id or str(first.get("set_id") or "").strip()
-            identity_text = f" · {identifier}" if identifier else ""
             count_text = "20건 이상" if has_more_conflicts else f"{len(conflicts)}건"
             self._package_cancellation_review_notice = WorkflowNotice(
                 title="중앙 취소 확인 필요",
                 message=(
-                    f"미확인 {count_text} · {code}{identity_text}. "
+                    f"관리자 확인이 필요한 취소가 {count_text} 있습니다. "
                     "해당 트레이는 반출하지 말고 관리자에게 중앙 취소 상태 확인을 요청하세요."
                 ),
                 kind="package_cancellation_review",
@@ -5248,8 +5291,19 @@ class Label_Match(tk.Tk):
         _label_match_startup_trace("async_initial_load_start")
         try:
             self._reconcile_package_cancellation_local_events()
+            replacement_waiting_recovery_failed = False
+            try:
+                self._reconcile_phs_replacement_waiting_events()
+            except Exception as exc:
+                replacement_waiting_recovery_failed = True
+                print(f"현품표 교체 대기 로컬 복구 오류: {exc}")
             items_data = self._load_items_data()
-            loaded_data = {"items": items_data}
+            loaded_data = {
+                "items": items_data,
+                "replacement_waiting_recovery_failed": (
+                    replacement_waiting_recovery_failed
+                ),
+            }
             self.initial_load_queue.put(loaded_data)
             _label_match_startup_trace("async_initial_load_ok", item_count=len(items_data or {}))
         except Exception as e:
@@ -5283,6 +5337,11 @@ class Label_Match(tk.Tk):
             self._load_history_and_rebuild_summary()
             self._process_history_queue()
             self._load_current_set_state()
+            if result.get("replacement_waiting_recovery_failed"):
+                self._publish_durable_commit_block(
+                    RuntimeError("replacement-waiting recovery failed"),
+                    retry_action=self._retry_phs_replacement_waiting_commit,
+                )
             self.after(200, self._update_ui_scaling)
             self._update_clock()
             _label_match_startup_trace("initial_load_ui_ready", title=self.title())
@@ -6676,7 +6735,7 @@ class Label_Match(tk.Tk):
                 notice = WorkflowNotice(
                     title="중앙 포장 복구 잠금",
                     message=(
-                        f"{detail} 새 포장을 시작하지 말고 관리자에게 outbox 확인을 요청하세요."
+                        f"{detail} 새 포장을 시작하지 말고 관리자에게 저장 상태 확인을 요청하세요."
                     ),
                     kind="submission_blocked",
                     tone="danger",
@@ -6743,7 +6802,7 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning(
                     "중앙 포장 작업 복구 필요",
                     (
-                        "중앙 제품 교체 또는 CREATE_PACKAGE 확인이 진행 중이므로 "
+                        "중앙 제품 교체 또는 포장 확인이 진행 중이므로 "
                         "이 PHS2 세트는 자동 복구됩니다."
                     ),
                     parent=self,
@@ -6777,7 +6836,7 @@ class Label_Match(tk.Tk):
                     title="복구 상태 관리자 확인 필요",
                     message=(
                         "구버전 중앙 포장 상태에 예상보다 많은 스캔이 저장되어 자동 제출을 차단했습니다. "
-                        "PHS2와 중앙 outbox를 확인한 뒤 관리자 절차로 정리하세요."
+                        "PHS2와 중앙 저장 상태를 확인한 뒤 관리자 절차로 정리하세요."
                     ),
                     kind="submission_blocked",
                     tone="danger",
@@ -7832,7 +7891,7 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showwarning(
                     "복구 상태 관리자 확인 필요",
-                    f"{action} 작업을 진행할 수 없습니다. 중앙 PHS2/outbox 상태를 관리자와 확인하세요.",
+                    f"{action} 작업을 진행할 수 없습니다. PHS2 저장 상태를 관리자와 확인하세요.",
                     parent=self,
                 )
             return True
@@ -7870,7 +7929,7 @@ class Label_Match(tk.Tk):
                 if not self.run_tests:
                     messagebox.showwarning(
                         "중앙 포장 확정 필요",
-                        f"{action} 작업은 CREATE_PACKAGE 중앙 상태가 확정된 뒤 진행할 수 있습니다.",
+                        f"{action} 작업은 중앙 포장 상태가 확정된 뒤 진행할 수 있습니다.",
                         parent=self,
                     )
                 return True
@@ -7890,14 +7949,14 @@ class Label_Match(tk.Tk):
         ):
             message = (
                 "제품 교체 결과가 운영자 확인 잠금 상태입니다.\n"
-                f"{action} 작업을 진행하지 말고 중앙 receipt와 현재 포장 상태를 확인하세요."
+                f"{action} 작업을 진행하지 말고 중앙 처리 결과와 현재 포장 상태를 확인하세요."
             )
             if not self.run_tests:
                 messagebox.showwarning("제품 교체 확인 필요", message, parent=self)
         else:
             message = (
                 "제품 교체 명령의 중앙 결과를 확인 중입니다.\n"
-                f"{action} 작업은 receipt 복구가 끝난 뒤 가능합니다."
+                f"{action} 작업은 중앙 처리 결과 복구가 끝난 뒤 가능합니다."
             )
             if not self.run_tests:
                 messagebox.showwarning("제품 교체 처리 중", message, parent=self)
@@ -7972,7 +8031,7 @@ class Label_Match(tk.Tk):
                 raise
             messagebox.showerror(
                 "제품 교체 로컬 반영 보류",
-                "중앙 교체 receipt는 보존됐지만 현재 포장 화면 저장에 실패했습니다.\n"
+                "중앙 교체 결과는 보존됐지만 현재 포장 화면 저장에 실패했습니다.\n"
                 "프로그램을 종료하지 말고 다시 시도하세요.\n\n"
                 f"상세: {exc}",
                 parent=self,
@@ -8435,7 +8494,7 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showwarning(
                     "제품 교체 처리 중",
-                    "이전 교체 명령의 중앙 receipt를 확인 중입니다.",
+                    "이전 교체 명령의 중앙 처리 결과를 확인 중입니다.",
                     parent=self,
                 )
             return False
@@ -8643,6 +8702,107 @@ class Label_Match(tk.Tk):
             or ""
         ).strip()
 
+    def _project_phs_replacement_waiting_event(self, dedupe_key):
+        outbox = self.__dict__.get("package_outbox")
+        commit_projection = getattr(
+            outbox, "commit_replacement_waiting_csv_projection", None
+        )
+        if not callable(commit_projection):
+            raise PackageLogisticsError(
+                "durable replacement-waiting event store is unavailable"
+            )
+        manager = self.__dict__.get("data_manager")
+        log_event = getattr(manager, "log_event", None)
+        if not callable(log_event):
+            raise PackageLogisticsError(
+                "durable replacement-waiting event writer is unavailable"
+            )
+
+        def project(payload):
+            if _label_match_replacement_waiting_event_exists(
+                manager, dedupe_key
+            ):
+                return
+            log_event(self.Events.PHS_REPLACEMENT_WAITING_MARKED, dict(payload))
+            self._flush_data_manager_if_supported()
+
+        return commit_projection(dedupe_key, project)
+
+    def _commit_phs_replacement_waiting_event(self, payload):
+        outbox = self.__dict__.get("package_outbox")
+        enqueue = getattr(outbox, "enqueue_replacement_waiting_event", None)
+        if not callable(enqueue):
+            raise PackageLogisticsError(
+                "durable replacement-waiting event store is unavailable"
+            )
+        row = enqueue(payload)
+        key = str(row.get("dedupe_key") or "").strip()
+        if not key:
+            raise PackageLogisticsError(
+                "durable replacement-waiting event identity is missing"
+            )
+        self._project_phs_replacement_waiting_event(key)
+        return row
+
+    def _reconcile_phs_replacement_waiting_events(self):
+        outbox = self.__dict__.get("package_outbox")
+        list_pending = getattr(
+            outbox, "list_replacement_waiting_csv_pending", None
+        )
+        if not callable(list_pending):
+            return 0
+        rows = list_pending(limit=100)
+        for row in rows:
+            self._project_phs_replacement_waiting_event(
+                str(row.get("dedupe_key") or "")
+            )
+        return len(rows)
+
+    def _retry_phs_replacement_waiting_commit(self):
+        pending = self.__dict__.get("_pending_phs_replacement_waiting_commit")
+        if not isinstance(pending, dict):
+            try:
+                self._reconcile_phs_replacement_waiting_events()
+            except Exception as exc:
+                return self._publish_durable_commit_block(
+                    exc,
+                    retry_action=self._retry_phs_replacement_waiting_commit,
+                )
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            self._workflow_notice_action = None
+            self._workflow_notice_action_text = "확인"
+            self._render_operator_workbench()
+            return True
+        pair = pending.get("pair")
+        payload = pending.get("payload")
+        try:
+            self._commit_phs_replacement_waiting_event(payload)
+        except Exception as exc:
+            return self._publish_durable_commit_block(
+                exc,
+                retry_action=self._retry_phs_replacement_waiting_commit,
+            )
+        self._pending_phs_replacement_waiting_commit = None
+        seen = self.__dict__.get("_phs_replacement_notice_pairs")
+        if not isinstance(seen, set):
+            seen = set()
+            self._phs_replacement_notice_pairs = seen
+        if isinstance(pair, tuple):
+            seen.add(pair)
+        self._workflow_blocking_notice = None
+        self._workflow_notice = None
+        self._workflow_notice_action = None
+        self._workflow_notice_action_text = "확인"
+        self._phs_label_guidance_notice = WorkflowNotice(
+            title="현품표 교체 필요",
+            message=PHS_REPLACEMENT_REQUIRED_NOTICE,
+            kind="phs_label_guidance",
+            tone="warning",
+        )
+        self._render_operator_workbench()
+        return True
+
     def _show_phs_replacement_required_notice_once(self, resolution):
         pair = _label_match_phs_replacement_notice_pair(resolution)
         if pair is None:
@@ -8659,6 +8819,10 @@ class Label_Match(tk.Tk):
         session_id = str(
             current.get("source_session_id")
             or current.get("input_tag_id")
+            or (resolution or {}).get("session_id")
+            or (resolution or {}).get("input_tag_id")
+            or ((resolution or {}).get("scan") or {}).get("session_id")
+            or ((resolution or {}).get("scan") or {}).get("input_tag_id")
         ).strip()
         if not session_id:
             try:
@@ -8670,39 +8834,43 @@ class Label_Match(tk.Tk):
                 ).strip()
             except ValueError:
                 session_id = ""
-        session_id = session_id or set_id
+        session_id = session_id or set_id or "UNSCOPED-REPLACEMENT"
+        set_id = set_id or session_id
         dedupe_key = "phs-replacement-waiting-" + hashlib.sha256(
             "\x1f".join((session_id, old_label_id, new_label_id)).encode(
                 "utf-8"
             )
         ).hexdigest()[:32]
         manager = self.__dict__.get("data_manager")
-        log_event = getattr(manager, "log_event", None)
-        if callable(log_event):
-            log_event(
-                self.Events.PHS_REPLACEMENT_WAITING_MARKED,
-                {
-                    "intent_version": "phs-replacement-waiting-v1",
-                    "intent_id": dedupe_key,
-                    "dedupe_key": dedupe_key,
-                    "set_id": set_id,
-                    "session_id": session_id,
-                    "old_label_id": old_label_id,
-                    "new_label_id": new_label_id,
-                    "process": "PACKAGING",
-                    "location": "PACKAGING",
-                    "current_process": "PACKAGING",
-                    "current_location": "PACKAGING",
-                    "source_system": LABEL_MATCH_SOURCE_SYSTEM,
-                    "source_pc_id": str(
-                        getattr(manager, "unique_id", "") or ""
-                    ).strip(),
-                    "marked_at": datetime.now().isoformat(),
-                },
+        payload = {
+            "intent_version": "phs-replacement-waiting-v1",
+            "intent_id": dedupe_key,
+            "dedupe_key": dedupe_key,
+            "set_id": set_id,
+            "session_id": session_id,
+            "old_label_id": old_label_id,
+            "new_label_id": new_label_id,
+            "process": "PACKAGING",
+            "location": "PACKAGING",
+            "current_process": "PACKAGING",
+            "current_location": "PACKAGING",
+            "source_system": LABEL_MATCH_SOURCE_SYSTEM,
+            "source_pc_id": str(
+                getattr(manager, "unique_id", "") or "LOCAL"
+            ).strip(),
+            "marked_at": datetime.now().isoformat(),
+        }
+        try:
+            self._commit_phs_replacement_waiting_event(payload)
+        except Exception as exc:
+            self._pending_phs_replacement_waiting_commit = {
+                "pair": pair,
+                "payload": payload,
+            }
+            return self._publish_durable_commit_block(
+                exc,
+                retry_action=self._retry_phs_replacement_waiting_commit,
             )
-            # The direct-sync event is the replayable evidence even while a
-            # dedicated central replacement-waiting endpoint is unavailable.
-            self._flush_data_manager_if_supported()
         seen.add(pair)
         self._phs_label_guidance_notice = WorkflowNotice(
             title="현품표 교체 필요",
@@ -10264,33 +10432,23 @@ class Label_Match(tk.Tk):
                 if result == self.Results.PASS
                 else None
             )
-        except PackageLogisticsError as exc:
-            if self.__dict__.get("operator_workbench_ready"):
-                self._play_sound("fail")
-                return self._publish_submission_block(exc)
-            status_label = self.__dict__.get("status_label")
-            if status_label is not None:
-                status_label.config(text=f"❌ 중앙 포장 차단: {exc}", style="Error.TLabel")
-            self._play_sound("fail")
-            if not self.__dict__.get("run_tests", False):
-                messagebox.showerror("중앙 포장 차단", str(exc), parent=self)
-            return False
-        if package_logistics:
-            details["package_logistics"] = package_logistics
-            details["package_membership_mode"] = package_logistics.get("membership_mode")
-            details["sample_barcodes_are_membership"] = False
-        local_event_exists = bool(
-            central_inherit_all
-            and package_logistics
-            and _label_match_local_completion_event_exists(
-                self.__dict__.get("data_manager"), set_id_for_log
+            if package_logistics:
+                details["package_logistics"] = package_logistics
+                details["package_membership_mode"] = package_logistics.get(
+                    "membership_mode"
+                )
+                details["sample_barcodes_are_membership"] = False
+            local_event_exists = bool(
+                central_inherit_all
+                and package_logistics
+                and _label_match_local_completion_event_exists(
+                    self.__dict__.get("data_manager"), set_id_for_log
+                )
             )
-        )
-        if not local_event_exists:
-            self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
-            self._flush_data_manager_if_supported()
-        if central_inherit_all and package_logistics:
-            try:
+            if not local_event_exists:
+                self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
+                self._flush_data_manager_if_supported()
+            if central_inherit_all and package_logistics:
                 outbox = self.__dict__.get("package_outbox")
                 if outbox is None:
                     raise PackageLogisticsError(
@@ -10299,8 +10457,8 @@ class Label_Match(tk.Tk):
                 outbox.mark_local_completion_committed(
                     package_logistics.get("idempotency_key")
                 )
-            except PackageLogisticsError as exc:
-                return self._publish_submission_block(exc)
+        except Exception as exc:
+            return self._publish_durable_commit_block(exc)
         if result == self.Results.PASS and not self.is_running_simulation:
             # Sound and all visible success mutations happen only after the
             # append-only intent, CSV event, and local commit marker are durable.
@@ -13735,6 +13893,40 @@ class Label_Match(tk.Tk):
         self._workflow_display_active_label_qr = ""
         self._workflow_last_normal_override = None
         self._workflow_item_snapshot = None
+
+    def _publish_durable_commit_block(self, error, *, retry_action=None):
+        """Hard-block the worker surface without exposing storage internals."""
+
+        print(f"로컬 durable commit 오류: {error}")
+        message = (
+            "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
+            "실물을 이동하거나 다음 작업을 시작하지 말고 저장을 다시 시도하세요. "
+            "계속 실패하면 관리자에게 확인을 요청하세요."
+        )
+        notice = WorkflowNotice(
+            title="5/5 유지 · 로컬 기록 저장 필요",
+            message=message,
+            kind="submission_blocked",
+            tone="danger",
+        )
+        self._workflow_blocking_notice = notice
+        self._workflow_notice = notice
+        self._workflow_notice_action = (
+            retry_action
+            if callable(retry_action)
+            else self._retry_blocked_submission
+        )
+        self._workflow_notice_action_text = "저장 재시도"
+        scans = tuple(self.current_set_info.get("raw") or ())
+        self._workflow_last_normal_override = scans[-1] if scans else ""
+        notice_label = self.__dict__.get("workflow_notice_label")
+        if notice_label is not None:
+            try:
+                notice_label.configure(text=message)
+            except (TclError, AttributeError):
+                pass
+        self._render_operator_workbench()
+        return False
 
     def _publish_submission_block(self, error):
         message = f"오류: {error}"

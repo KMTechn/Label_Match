@@ -152,6 +152,7 @@ def _receipt(draft):
 
 def _ack_package_creation(outbox, draft):
     row = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(row["idempotency_key"])
     claimed = outbox.claim_next()
     assert claimed["idempotency_key"] == row["idempotency_key"]
     command = {
@@ -282,6 +283,26 @@ def test_central_one_phs2_scan_draft_inherits_all_without_product_samples(master
     assert draft.external_label == label_module._label_match_system_package_external_label(
         master, "SET-CENTRAL-ONE-SCAN"
     )
+
+
+def _replacement_waiting_payload(*, marked_at="2026-08-01T10:00:00"):
+    dedupe_key = "phs-replacement-waiting-test-key"
+    return {
+        "intent_version": "phs-replacement-waiting-v1",
+        "intent_id": dedupe_key,
+        "dedupe_key": dedupe_key,
+        "set_id": "SET-REPLACEMENT-1",
+        "session_id": "ITG-REPLACEMENT-1",
+        "old_label_id": "LBL-OLD-1",
+        "new_label_id": "LBL-NEW-1",
+        "process": "PACKAGING",
+        "location": "PACKAGING",
+        "current_process": "PACKAGING",
+        "current_location": "PACKAGING",
+        "source_system": "label_match",
+        "source_pc_id": "PACK-PC-1",
+        "marked_at": marked_at,
+    }
     if master.startswith("TRF=1"):
         assert draft.source_bundle_id == TRANSFER
         assert draft.expected_member_count == 4
@@ -493,6 +514,8 @@ def test_outbox_enqueue_and_immutable_command_cas(tmp_path):
     draft = _draft()
     first = outbox.enqueue(draft)
     assert outbox.enqueue(draft)["idempotency_key"] == first["idempotency_key"]
+    assert outbox.claim_next() is None
+    outbox.mark_local_completion_committed(first["idempotency_key"])
     claimed = outbox.claim_next()
     command = {"authority_scope_id": SCOPE, "idempotency_key": claimed["idempotency_key"], "payload": {"x": 1}}
     outbox.save_command(claimed["idempotency_key"], TRANSFER, command)
@@ -506,7 +529,7 @@ def test_outbox_enqueue_and_immutable_command_cas(tmp_path):
 def test_package_outbox_lists_only_locally_uncommitted_completions(tmp_path):
     outbox = PackageOutbox(tmp_path / "outbox.sqlite3")
     draft = _draft()
-    row = _ack_package_creation(outbox, draft)
+    row = outbox.enqueue(draft)
 
     pending = outbox.list_local_completion_pending()
     assert [item["idempotency_key"] for item in pending] == [
@@ -515,6 +538,21 @@ def test_package_outbox_lists_only_locally_uncommitted_completions(tmp_path):
 
     outbox.mark_local_completion_committed(row["idempotency_key"])
     assert outbox.list_local_completion_pending() == []
+
+
+def test_package_outbox_never_claims_before_durable_local_completion(tmp_path):
+    outbox = PackageOutbox(tmp_path / "local-first-claim.sqlite3")
+    draft = _draft_for_set("LOCAL-FIRST-CLAIM")
+    queued = outbox.enqueue(draft)
+
+    assert queued["local_completion_committed"] == 0
+    assert outbox.claim_next() is None
+
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
+    claimed = outbox.claim_next()
+
+    assert claimed["idempotency_key"] == queued["idempotency_key"]
+    assert claimed["status"] == "SENDING"
 
 
 @pytest.mark.parametrize("outbox_type", [PackageOutbox, PackageCancellationOutbox])
@@ -546,7 +584,11 @@ def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_t
         ).fetchone()[0]
     finally:
         conn.close()
-    assert {"package_command_outbox", "package_cancellation_outbox"}.issubset(tables)
+    assert {
+        "package_command_outbox",
+        "package_cancellation_outbox",
+        "package_replacement_waiting_outbox",
+    }.issubset(tables)
     assert {
         "local_event_committed",
         "local_event_committed_at",
@@ -555,10 +597,98 @@ def test_current_schema_is_complete_before_version_is_stamped(tmp_path, outbox_t
     assert {
         "retry_after_at",
         "review_status",
+        "last_attempt_at",
         "local_completion_committed",
         "local_completion_committed_at",
     }.issubset(command_columns)
+    with sqlite3.connect(db_path) as conn:
+        replacement_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(package_replacement_waiting_outbox)"
+            ).fetchall()
+        }
+    assert {
+        "dedupe_key",
+        "event_fingerprint",
+        "event_json",
+        "local_csv_committed",
+        "local_csv_committed_at",
+        "created_at",
+        "updated_at",
+    }.issubset(replacement_columns)
     assert version == package_module.OUTBOX_SCHEMA_VERSION
+
+
+def test_replacement_waiting_ledger_is_immutable_and_projection_is_exact_once(
+    tmp_path,
+):
+    db_path = tmp_path / "replacement-waiting.sqlite3"
+    first = PackageOutbox(db_path)
+    second = PackageOutbox(db_path)
+    payload = _replacement_waiting_payload()
+
+    queued = first.enqueue_replacement_waiting_event(payload)
+    replayed = second.enqueue_replacement_waiting_event(
+        _replacement_waiting_payload(marked_at="2026-08-01T10:05:00")
+    )
+
+    assert replayed["dedupe_key"] == queued["dedupe_key"]
+    assert json.loads(replayed["event_json"])["marked_at"] == payload["marked_at"]
+    changed = {**payload, "location": "SHIPPING"}
+    with pytest.raises(PackageLogisticsError, match="immutable"):
+        second.enqueue_replacement_waiting_event(changed)
+
+    projected = []
+    barrier = threading.Barrier(8)
+
+    def commit(instance):
+        barrier.wait()
+        return instance.commit_replacement_waiting_csv_projection(
+            payload["dedupe_key"],
+            lambda saved: projected.append(saved["dedupe_key"]),
+        )
+
+    instances = [PackageOutbox(db_path) for _ in range(8)]
+    results = []
+    threads = [
+        threading.Thread(target=lambda box=box: results.append(commit(box)))
+        for box in instances
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert results.count(True) == 1
+    assert results.count(False) == 7
+    assert projected == [payload["dedupe_key"]]
+    row = first.get_replacement_waiting_event(payload["dedupe_key"])
+    assert row["local_csv_committed"] == 1
+
+
+def test_replacement_waiting_projection_failure_keeps_durable_retry(tmp_path):
+    outbox = PackageOutbox(tmp_path / "replacement-retry.sqlite3")
+    payload = _replacement_waiting_payload()
+    outbox.enqueue_replacement_waiting_event(payload)
+    writes = []
+
+    def crash_after_write(saved):
+        writes.append(saved["dedupe_key"])
+        raise RuntimeError("crash after CSV fsync")
+
+    with pytest.raises(RuntimeError, match="crash after CSV fsync"):
+        outbox.commit_replacement_waiting_csv_projection(
+            payload["dedupe_key"], crash_after_write
+        )
+
+    pending = outbox.list_replacement_waiting_csv_pending()
+    assert [row["dedupe_key"] for row in pending] == [payload["dedupe_key"]]
+    assert outbox.commit_replacement_waiting_csv_projection(
+        payload["dedupe_key"], lambda saved: writes.append(saved["dedupe_key"])
+    )
+    assert writes == [payload["dedupe_key"], payload["dedupe_key"]]
 
 
 def test_real_v1_database_migration_preserves_create_rows_and_states(tmp_path):
@@ -927,7 +1057,10 @@ def test_separate_process_cannot_reclaim_recent_live_create_or_cancel_claim(tmp_
     assert cancellation_outbox.claim_next()["status"] == "SENDING"
 
     create_draft = _draft_for_set("LIVE-CREATE-SET")
-    package_outbox.enqueue(create_draft)
+    create_row = package_outbox.enqueue(create_draft)
+    package_outbox.mark_local_completion_committed(
+        create_row["idempotency_key"]
+    )
     assert package_outbox.claim_next()["status"] == "SENDING"
     probe = """
 import json
@@ -993,6 +1126,7 @@ def test_outbox_explicitly_closes_every_connection_before_immediate_file_cleanup
     outbox = PackageOutbox(db_path)
     draft = _draft()
     row = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(row["idempotency_key"])
     claimed = outbox.claim_next()
     assert claimed["idempotency_key"] == row["idempotency_key"]
     command = {
@@ -1088,7 +1222,10 @@ def test_package_cancellation_before_create_ack_stays_deferred_then_promotes(tmp
     draft = _draft()
     db_path = tmp_path / "cancel-deferred.sqlite3"
     package_outbox = PackageOutbox(db_path)
-    package_outbox.enqueue(draft)
+    package_row = package_outbox.enqueue(draft)
+    package_outbox.mark_local_completion_committed(
+        package_row["idempotency_key"]
+    )
     cancellation_outbox = PackageCancellationOutbox(db_path)
     intent = _cancellation_intent(draft, event_type="SET_DELETED")
     queued = cancellation_outbox.enqueue(intent)
@@ -1581,7 +1718,10 @@ def test_deferred_cancellation_becomes_actionable_conflict_when_create_is_termin
     draft = _draft()
     db_path = tmp_path / "cancel-create-conflict.sqlite3"
     package_outbox = PackageOutbox(db_path)
-    package_outbox.enqueue(draft)
+    package_row = package_outbox.enqueue(draft)
+    package_outbox.mark_local_completion_committed(
+        package_row["idempotency_key"]
+    )
     cancellation_outbox = PackageCancellationOutbox(db_path)
     intent = _cancellation_intent(draft)
     assert cancellation_outbox.enqueue(intent)["status"] == "DEFERRED"
@@ -2338,6 +2478,7 @@ def test_exact_rescan_command_evidence_is_saved_immutably_in_outbox(tmp_path):
     )
     outbox = PackageOutbox(tmp_path / "exact-evidence.sqlite3")
     row = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(row["idempotency_key"])
     outbox.claim_next()
     source_id, command = client.build_create_package_command(
         draft, idempotency_key=row["idempotency_key"]
@@ -2505,6 +2646,52 @@ def test_offline_drain_attempts_multiple_locally_completed_packages_once_each(tm
     )
 
 
+def test_offline_retry_fairness_survives_limit_and_restart_without_starvation(
+    tmp_path,
+):
+    db_path = tmp_path / "offline-fairness.sqlite3"
+    outbox = PackageOutbox(db_path)
+    drafts = [_draft_for_set(f"SET-OFFLINE-{index:02d}") for index in range(21)]
+    keys = []
+    for draft in drafts:
+        row = outbox.enqueue(draft)
+        keys.append(row["idempotency_key"])
+        outbox.mark_local_completion_committed(row["idempotency_key"])
+
+    class OfflineClient:
+        def __init__(self):
+            self.attempted_keys = []
+
+        @staticmethod
+        def build_create_package_command(draft, *, idempotency_key):
+            return TRANSFER, {
+                "authority_scope_id": SCOPE,
+                "idempotency_key": idempotency_key,
+                "payload": {"package_bundle_id": draft.package_bundle_id},
+            }
+
+        @staticmethod
+        def get_receipt_if_exists(key, *, authority_scope_id):
+            return None
+
+        def create_package(self, command):
+            self.attempted_keys.append(command["idempotency_key"])
+            raise PackageTransportError("offline")
+
+    client = OfflineClient()
+    first = PackageOutboxProcessor(outbox, client).drain(limit=20)
+    first_attempts = list(client.attempted_keys)
+    restarted = PackageOutbox(db_path)
+    second = PackageOutboxProcessor(restarted, client).drain(limit=20)
+    second_attempts = client.attempted_keys[len(first_attempts):]
+
+    assert first == {"acked": 0, "retry": 20, "conflict": 0}
+    assert second == {"acked": 0, "retry": 20, "conflict": 0}
+    assert first_attempts == keys[:20]
+    assert second_attempts[0] == keys[20]
+    assert set(keys).issubset(client.attempted_keys)
+
+
 def test_duplicate_replay_reuses_one_key_and_yields_one_central_effect(tmp_path):
     draft = _draft_for_set("SET-DUPLICATE-REPLAY")
     outbox = PackageOutbox(tmp_path / "duplicate-replay.sqlite3")
@@ -2543,6 +2730,7 @@ def test_saved_command_reposts_identical_payload_when_receipt_not_yet_visible(tm
     draft = _draft()
     outbox = PackageOutbox(tmp_path / "repost.sqlite3")
     row = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(row["idempotency_key"])
     claimed = outbox.claim_next()
     command = {
         "authority_scope_id": SCOPE,
@@ -2587,7 +2775,14 @@ def test_f1_dismisses_only_local_recovery_and_preserves_conflict_evidence(
     db_path = tmp_path / "dismiss-recoverable-conflict.sqlite3"
     outbox = PackageOutbox(db_path)
     queued = outbox.enqueue(draft)
-    claimed = outbox.claim_next()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """UPDATE package_command_outbox
+                  SET status='SENDING',attempt_count=1,updated_at=?
+                WHERE idempotency_key=?""",
+            (package_module.utc_now(), queued["idempotency_key"]),
+        )
+    claimed = outbox.get_by_set_id(draft.set_id)
     assert claimed["idempotency_key"] == queued["idempotency_key"]
     command = {
         "command_type": "CREATE_PACKAGE",
@@ -2642,7 +2837,14 @@ def _prepare_superseded_prewrite_conflict(db_path):
     outbox = PackageOutbox(db_path)
     stale_draft = _draft_for_set("SET-STALE-CONFLICT")
     stale = outbox.enqueue(stale_draft)
-    claimed = outbox.claim_next()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """UPDATE package_command_outbox
+                  SET status='SENDING',attempt_count=1,updated_at=?
+                WHERE idempotency_key=?""",
+            (package_module.utc_now(), stale["idempotency_key"]),
+        )
+    claimed = outbox.get_by_set_id(stale_draft.set_id)
     assert claimed["idempotency_key"] == stale["idempotency_key"]
     stale_command = {
         "command_type": "CREATE_PACKAGE",
@@ -2776,7 +2978,8 @@ def test_stale_conflict_dismissal_requires_exact_later_completion_evidence(
 def test_create_package_429_waits_until_retry_after_instead_of_conflicting(tmp_path):
     draft = _draft()
     outbox = PackageOutbox(tmp_path / "create-retry-after.sqlite3")
-    outbox.enqueue(draft)
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
 
     class ThrottledClient(RestartClient):
         def create_package(self, command):
@@ -2805,7 +3008,8 @@ def test_create_package_cas_conflict_is_terminal_even_if_server_marks_retryable(
 ):
     draft = _draft()
     outbox = PackageOutbox(tmp_path / f"create-cas-{status_code}.sqlite3")
-    outbox.enqueue(draft)
+    queued = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(queued["idempotency_key"])
 
     class ConflictingClient(RestartClient):
         def create_package(self, command):
@@ -3588,6 +3792,7 @@ def test_work_group_restart_is_receipt_first_without_rebuild(
     )
     outbox = PackageOutbox(tmp_path / "work-group-restart.sqlite3")
     row = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(row["idempotency_key"])
     claimed = outbox.claim_next()
     assert claimed["idempotency_key"] == row["idempotency_key"]
     source_identity, command = builder.build_create_package_command(

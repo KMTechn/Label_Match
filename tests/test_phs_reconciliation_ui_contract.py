@@ -1,7 +1,11 @@
+import csv
 import inspect
+import json
+import threading
 from types import SimpleNamespace
 
 import Label_Match as label_module
+from package_logistics import PackageOutbox
 
 
 class _Entry:
@@ -20,6 +24,32 @@ def _replacement_resolution():
             "active_label_id": "LBL-NEW-INTERNAL",
         }
     }
+
+
+def _replacement_app(manager, outbox):
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {
+        "id": "SET-1",
+        "source_session_id": "ITG-REPLACEMENT-1",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+    }
+    app.data_manager = manager
+    app.package_outbox = outbox
+    app._phs_replacement_notice_pairs = set()
+    app._phs_label_guidance_notice = None
+    app._render_operator_workbench = lambda: None
+    return app
+
+
+def _replacement_csv_events(root):
+    events = []
+    for path in root.glob("*.csv"):
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                if row.get("event") == "PHS_REPLACEMENT_WAITING_MARKED":
+                    events.append(json.loads(row["details"]))
+    return events
 
 
 def test_worker_summary_hides_internal_instruction_and_label_ids():
@@ -118,7 +148,7 @@ def test_replacement_action_window_is_non_modal_and_uses_operator_language():
     assert "새 현품표가 출력되면 기존 표를 교체해 주세요." in source
 
 
-def test_replacement_required_notice_is_yellow_and_once_per_pair():
+def test_replacement_required_notice_is_yellow_and_once_per_pair(tmp_path):
     expected = (
         "현품표 교체 필요. 작업은 계속할 수 있습니다. "
         "현재 현품표를 교체 대기로 분리해 주세요."
@@ -135,9 +165,11 @@ def test_replacement_required_notice_is_yellow_and_once_per_pair():
     app._phs_replacement_notice_pairs = set()
     app._phs_label_guidance_notice = None
     app._render_operator_workbench = lambda: renders.append("render")
+    app.package_outbox = PackageOutbox(tmp_path / "replacement.sqlite3")
     replacement_intents = []
     flushes = []
     app.data_manager = SimpleNamespace(
+        save_directory=str(tmp_path),
         process_name="포장실",
         unique_id="PACK-PC-1",
         log_event=lambda event, details: replacement_intents.append(
@@ -196,6 +228,94 @@ def test_replacement_required_notice_is_yellow_and_once_per_pair():
     )
 
 
+def test_replacement_waiting_event_is_exact_once_across_restart_and_concurrency(
+    tmp_path,
+):
+    db_path = tmp_path / "replacement.sqlite3"
+    manager = label_module.DataManager(
+        str(tmp_path), "포장실", "worker", "PACK-PC-1"
+    )
+    barrier = threading.Barrier(8)
+    results = []
+    apps = [
+        _replacement_app(manager, PackageOutbox(db_path)) for _ in range(8)
+    ]
+
+    def record(app):
+        barrier.wait()
+        results.append(
+            app._show_phs_replacement_required_notice_once(
+                _replacement_resolution()
+            )
+        )
+
+    threads = [threading.Thread(target=record, args=(app,)) for app in apps]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == len(threads)
+    assert all(results)
+
+    restarted = _replacement_app(manager, PackageOutbox(db_path))
+    assert restarted._show_phs_replacement_required_notice_once(
+        _replacement_resolution()
+    )
+    manager.close(timeout=5)
+
+    events = _replacement_csv_events(tmp_path)
+    assert len(events) == 1
+    assert events[0]["process"] == "PACKAGING"
+    assert events[0]["location"] == "PACKAGING"
+    row = PackageOutbox(db_path).get_replacement_waiting_event(
+        events[0]["dedupe_key"]
+    )
+    assert row["local_csv_committed"] == 1
+
+
+def test_replacement_waiting_csv_fsync_crash_recovers_without_duplicate(tmp_path):
+    db_path = tmp_path / "replacement-crash.sqlite3"
+    manager = label_module.DataManager(
+        str(tmp_path), "포장실", "worker", "PACK-PC-1"
+    )
+
+    class CrashAfterProjectionOutbox(PackageOutbox):
+        def commit_replacement_waiting_csv_projection(self, key, projector):
+            def crash_after_fsync(payload):
+                projector(payload)
+                raise RuntimeError("simulated crash after CSV fsync")
+
+            return super().commit_replacement_waiting_csv_projection(
+                key, crash_after_fsync
+            )
+
+    crashed = _replacement_app(manager, CrashAfterProjectionOutbox(db_path))
+    durable_blocks = []
+    crashed._publish_durable_commit_block = (
+        lambda error, **_kwargs: durable_blocks.append(str(error)) or False
+    )
+    assert not crashed._show_phs_replacement_required_notice_once(
+        _replacement_resolution()
+    )
+    assert durable_blocks == ["simulated crash after CSV fsync"]
+
+    recovered = _replacement_app(manager, PackageOutbox(db_path))
+    assert recovered._show_phs_replacement_required_notice_once(
+        _replacement_resolution()
+    )
+    manager.close(timeout=5)
+
+    events = _replacement_csv_events(tmp_path)
+    assert len(events) == 1
+    assert events[0]["process"] == "PACKAGING"
+    assert events[0]["location"] == "PACKAGING"
+    row = PackageOutbox(db_path).get_replacement_waiting_event(
+        events[0]["dedupe_key"]
+    )
+    assert row["local_csv_committed"] == 1
+
+
 def test_exchange_execute_rechecks_lookup_capture_before_starting_worker():
     calls = []
     app = label_module.Label_Match.__new__(label_module.Label_Match)
@@ -227,7 +347,7 @@ def test_exchange_execute_rechecks_lookup_capture_before_starting_worker():
     assert "포장 상태가 바뀌어" in app._phs_label_guidance_notice.message
 
 
-def test_direct_replaced_label_scan_uses_exact_operator_notice():
+def test_direct_replaced_label_scan_uses_exact_operator_notice(tmp_path):
     expected = (
         "현품표 교체 필요. 작업은 계속할 수 있습니다. "
         "현재 현품표를 교체 대기로 분리해 주세요."
@@ -260,8 +380,15 @@ def test_direct_replaced_label_scan_uses_exact_operator_notice():
     app.current_set_info = {"id": "SET-1", "raw": [], "parsed": []}
     app._phs_replacement_notice_pairs = set()
     app._phs_label_guidance_notice = None
+    app.package_outbox = PackageOutbox(tmp_path / "replacement.sqlite3")
     app._update_on_success_scan = lambda *_args, **_kwargs: None
-    app.data_manager = SimpleNamespace(log_event=lambda *_args, **_kwargs: None)
+    app.data_manager = SimpleNamespace(
+        save_directory=str(tmp_path),
+        process_name="포장실",
+        unique_id="PACK-PC-1",
+        log_event=lambda *_args, **_kwargs: None,
+        flush=lambda timeout=None: True,
+    )
     app._save_current_set_state = lambda: True
     app._render_operator_workbench = lambda: renders.append("render")
     app._focus_scan_entry_if_available = lambda: None

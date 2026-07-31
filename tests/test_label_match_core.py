@@ -1534,9 +1534,12 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     app._update_summary_tree = lambda: (_ for _ in ()).throw(AssertionError("summary should not update"))
     app._reset_current_set = lambda **kwargs: (_ for _ in ()).throw(AssertionError("current set should not reset"))
     app.after = lambda delay, callback: None
+    durable_blocks = []
+    app._publish_durable_commit_block = (
+        lambda error, **_kwargs: durable_blocks.append(str(error)) or False
+    )
 
-    with pytest.raises(RuntimeError, match="flush failed"):
-        module.Label_Match._finalize_set(app, app.Results.PASS)
+    assert module.Label_Match._finalize_set(app, app.Results.PASS) is False
 
     assert app.data_manager.events[0][0] == module.Label_Match.Events.TRAY_COMPLETE
     assert app.scan_count == {}
@@ -1544,6 +1547,7 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     assert app.global_scanned_set == set()
     assert app.history_row_details_map == {}
     assert played == []
+    assert durable_blocks == ["flush failed"]
 
 
 def test_central_finalize_commits_intent_and_local_event_before_ui_success():
@@ -1655,12 +1659,54 @@ def test_central_finalize_durable_intent_write_failure_never_shows_success():
         or (_ for _ in ()).throw(OSError("outbox disk unavailable"))
     )
     app._play_sound = lambda sound_key: actions.append(f"sound:{sound_key}")
+    durable_blocks = []
+    app._publish_durable_commit_block = (
+        lambda error, **_kwargs: durable_blocks.append(str(error)) or False
+    )
 
-    with pytest.raises(OSError, match="outbox disk unavailable"):
-        module.Label_Match._finalize_set(app, app.Results.PASS)
+    assert module.Label_Match._finalize_set(app, app.Results.PASS) is False
 
     assert actions == ["intent-failed"]
     assert app.data_manager.events == []
+    assert durable_blocks == ["outbox disk unavailable"]
+
+
+def test_durable_commit_block_hides_raw_error_and_disables_next_work():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"raw": ["PHS2"]}
+    app._workflow_last_normal_override = None
+    app._workflow_notice_action = None
+    app._workflow_notice_action_text = "확인"
+    app._retry_blocked_submission = lambda: True
+    rendered = []
+    app._render_operator_workbench = lambda: rendered.append(True)
+
+    assert (
+        module.Label_Match._publish_durable_commit_block(
+            app,
+            OSError(
+                "package_logistics_outbox.sqlite3 PHS_WORK_GROUP_COMMAND_CONFLICT"
+            ),
+        )
+        is False
+    )
+
+    notice = app._workflow_blocking_notice
+    assert notice.kind == "submission_blocked"
+    assert notice.tone == "danger"
+    assert "로컬 완료 기록" in notice.message
+    assert "관리자" in notice.message
+    assert rendered == [True]
+    for internal in (
+        "outbox",
+        "sqlite3",
+        "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "UUID",
+        "hash",
+        "ledger",
+    ):
+        assert internal.lower() not in notice.message.lower()
 
 
 def test_finalize_set_triggers_session_direct_sync_after_flush(monkeypatch):
@@ -3571,7 +3617,9 @@ def test_terminal_cancellation_conflict_stays_in_separate_operator_review_notice
     assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 1
     notice = app._package_cancellation_review_notice
     assert notice.title == "중앙 취소 확인 필요"
-    assert "PACKAGE_ALREADY_SHIPPED" in notice.message
+    assert "PACKAGE_ALREADY_SHIPPED" not in notice.message
+    assert "bundle-1" not in notice.message
+    assert "set-1" not in notice.message
     assert "반출하지 말고" in notice.message
     assert app._package_cancellation_review_rows[0]["set_id"] == "set-1"
 
@@ -3592,6 +3640,47 @@ def test_terminal_cancellation_conflict_stays_in_separate_operator_review_notice
     assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 0
     assert app._package_cancellation_review_notice is None
     assert len(render_calls) == 3
+
+
+def test_locally_committed_package_conflict_preserves_success_and_hides_internals():
+    module = load_label_match_module()
+
+    class PackageOutbox:
+        @staticmethod
+        def list_conflicts(*, limit):
+            assert limit == 21
+            return [
+                {
+                    "status": "CONFLICT",
+                    "review_status": "OPERATOR_REVIEW",
+                    "local_completion_committed": 1,
+                    "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+                    "last_error_message": "membership hash differs",
+                    "set_id": "1722492000123456789",
+                    "idempotency_key": "label-package-secret-key",
+                }
+            ]
+
+    app = object.__new__(module.Label_Match)
+    app.package_outbox = PackageOutbox()
+    app.package_cancellation_outbox = None
+    app.operator_workbench_ready = False
+
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 0
+    notice = app._package_create_review_notice
+    assert "로컬 포장 완료 기록은 유지" in notice.message
+    assert "관리자" in notice.message
+    assert "성공으로 처리되지 않았" not in notice.message
+    for internal in (
+        "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "1722492000123456789",
+        "label-package-secret-key",
+        "hash",
+        "outbox",
+        "ledger",
+        "UUID",
+    ):
+        assert internal.lower() not in notice.message.lower()
 
 
 @pytest.mark.parametrize("reconcile_fails", [False, True])

@@ -288,6 +288,8 @@ def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
     notice = app._package_cancellation_review_notice
     assert notice.title == CANCELLATION_CONFLICT_TITLE
     assert notice.message == CANCELLATION_CONFLICT_MESSAGE
+    assert "IMMUTABLE_CAS" not in notice.message
+    assert "PACKAGE-CANCEL-CAPTURE-001" not in notice.message
     assert notice.kind == "package_cancellation_review"
     assert notice.tone == "danger"
 
