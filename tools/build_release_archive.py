@@ -153,6 +153,7 @@ def _validate_release_evidence(
 
     expected_signed_paths = {
         "Label_Match.exe",
+        "Label_Match_Protected_Admin_Install.exe",
         "KMTech_Logistics_Profile_Install.exe",
         "KMTech_Logistics_Profile_Check.exe",
         "tools/direct_sync_relay_runner.exe",
@@ -194,7 +195,7 @@ def _validate_release_evidence(
         ):
             raise ReleaseArchiveError(f"final live Authenticode verification mismatch: {relative}")
     if signed_paths != expected_signed_paths:
-        raise ReleaseArchiveError("post-sign manifest does not bind exactly six release executables")
+        raise ReleaseArchiveError("post-sign manifest does not bind exactly seven release executables")
 
     tools = post.get("tools")
     if not isinstance(tools, list) or len(tools) != 3:
@@ -405,6 +406,22 @@ def _validate_release_evidence(
         raise ReleaseArchiveError(
             "shared logistics profile release assets are missing: "
             + ", ".join(missing_profile_assets)
+        )
+
+    required_protected_admin_assets = {
+        "Label_Match_Protected_Admin_Install.exe",
+        "PROVISION_PROTECTED_ADMIN_ACL.ps1",
+        "PROTECTED_ADMIN_PROVISIONING.md",
+    }
+    missing_protected_admin_assets = sorted(
+        name
+        for name in required_protected_admin_assets
+        if not (package_root / name).is_file()
+    )
+    if missing_protected_admin_assets:
+        raise ReleaseArchiveError(
+            "protected administrator release assets are missing: "
+            + ", ".join(missing_protected_admin_assets)
         )
 
     allowed_tool_entries = {

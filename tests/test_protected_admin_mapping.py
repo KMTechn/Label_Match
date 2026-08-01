@@ -856,7 +856,7 @@ def test_cli_prompts_twice_and_never_accepts_credential_via_arguments(
     def fake_install(candidate, **kwargs):
         captured_candidate.append(candidate)
         return {
-            "status": "dry-run",
+            "status": "installed",
             "schema_version": 1,
             "role": PROTECTED_ADMIN_ROLE,
             "profile_path": kwargs["profile_path"],
@@ -867,7 +867,14 @@ def test_cli_prompts_twice_and_never_accepts_credential_via_arguments(
     monkeypatch.setattr(installer, "install_protected_admin_profile", fake_install)
     target = tmp_path / "profile.json"
 
-    assert installer.main(["--dry-run", "--profile-path", str(target)]) == 0
+    assert installer.main(
+        [
+            "--profile-path",
+            str(target),
+            "--reader-principal",
+            TEST_READER,
+        ]
+    ) == 0
     output = capsys.readouterr()
     assert len(prompts) == 2
     assert len(compared) == 1
@@ -896,7 +903,12 @@ def test_cli_confirmation_mismatch_never_calls_installer(
     )
 
     assert installer.main(
-        ["--dry-run", "--profile-path", str(tmp_path / "profile.json")]
+        [
+            "--profile-path",
+            str(tmp_path / "profile.json"),
+            "--reader-principal",
+            TEST_READER,
+        ]
     ) == 2
     output = capsys.readouterr()
     assert SYNTHETIC_ADMIN_CODE not in output.out + output.err
@@ -917,7 +929,7 @@ def test_cli_rejects_credential_arguments_without_reflecting_them(
     assert SYNTHETIC_ADMIN_CODE not in output.out + output.err
 
 
-def test_cli_does_not_accept_credential_from_environment(
+def test_cli_dry_run_ignores_credential_environment_and_does_not_prompt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -925,9 +937,9 @@ def test_cli_does_not_accept_credential_from_environment(
     monkeypatch.setattr(
         installer.getpass,
         "getpass",
-        lambda _prompt: (_ for _ in ()).throw(EOFError()),
+        lambda _prompt: pytest.fail("dry-run must not request a protected code"),
     )
-    assert installer.main(["--dry-run"]) == 2
+    assert installer.main(["--dry-run"]) == 0
     output = capsys.readouterr()
     assert SYNTHETIC_ADMIN_CODE not in output.out + output.err
 

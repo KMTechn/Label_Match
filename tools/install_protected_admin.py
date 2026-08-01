@@ -678,6 +678,20 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         print("BLOCKED: unsupported command-line argument", file=sys.stderr)
         return 2
+    if args.dry_run:
+        try:
+            report = install_protected_admin_profile(
+                None,
+                profile_path=args.profile_path,
+                reader_principal=args.reader_principal,
+                dry_run=True,
+                replace=args.replace,
+            )
+        except Exception as exc:
+            print(f"BLOCKED: {exc.__class__.__name__}", file=sys.stderr)
+            return 2
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return 0
     if not args.dry_run and not str(args.reader_principal or "").strip():
         print("BLOCKED: --reader-principal is required for an actual install", file=sys.stderr)
         return 2

@@ -98,8 +98,15 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     ) in packaging_block
     assert 'python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Install"' in workflow
     assert 'python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Check"' in workflow
+    assert 'python -m PyInstaller --paths . --name "Label_Match_Protected_Admin_Install" --onefile --console' in workflow
+    assert "tools/install_protected_admin.py" in workflow
     assert "Copy-Item logistics_runtime_profile.py -Destination dist/Label_Match/logistics_runtime_profile.py" in packaging_block
     assert "CENTRAL_LOGISTICS_PC_ROLLOUT.md" in packaging_block
+    assert "PROVISION_PROTECTED_ADMIN_ACL.ps1" in packaging_block
+    assert "PROTECTED_ADMIN_PROVISIONING.md" in packaging_block
+    assert "Label_Match_Protected_Admin_Install.exe --help" in packaging_block
+    assert "Label_Match_Protected_Admin_Install.exe --dry-run" in packaging_block
+    assert "PROVISION_PROTECTED_ADMIN_ACL.ps1 -DryRun" in packaging_block
     assert "Copy-Item dist/direct_sync_relay_runner.exe" not in packaging_block
     assert 'Copy-Item "$env:RUNNER_TEMP\\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json' in packaging_block
     assert "tools/register_label_match_worker_pc.py" in packaging_block
@@ -109,6 +116,9 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert "Label_Match/_internal/config/app_settings.json" in workflow
     assert "Label_Match/KMTech_Logistics_Profile_Install.exe" in workflow
     assert "Label_Match/KMTech_Logistics_Profile_Check.exe" in workflow
+    assert "Label_Match/Label_Match_Protected_Admin_Install.exe" in workflow
+    assert "Label_Match/PROVISION_PROTECTED_ADMIN_ACL.ps1" in workflow
+    assert "Label_Match/PROTECTED_ADMIN_PROVISIONING.md" in workflow
     assert "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md" in workflow
     assert "Label_Match/tools/release_cli_tools_post_sign_manifest.json" not in workflow
     assert "release_trust" in workflow
@@ -218,6 +228,9 @@ def test_internal_release_archive_script_verifies_membership_bytes_and_paths(tmp
         "tools/register_label_match_worker_pc.exe",
         "KMTech_Logistics_Profile_Install.exe",
         "KMTech_Logistics_Profile_Check.exe",
+        "Label_Match_Protected_Admin_Install.exe",
+        "PROVISION_PROTECTED_ADMIN_ACL.ps1",
+        "PROTECTED_ADMIN_PROVISIONING.md",
         "CENTRAL_LOGISTICS_PC_ROLLOUT.md",
         "logistics_runtime_profile.py",
         "tools/install_logistics_runtime_profile.py",
@@ -658,9 +671,12 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
         shutil.copy2(source_root / "tools" / filename, staged_tools / filename)
     shutil.copy2(source_root / "logistics_runtime_profile.py", staged_root / "logistics_runtime_profile.py")
     shutil.copy2(source_root / "docs" / "LOGISTICS_RUNTIME_PROFILE.md", staged_root / "CENTRAL_LOGISTICS_PC_ROLLOUT.md")
+    shutil.copy2(source_root / "tools" / "provision_protected_admin_acl.ps1", staged_root / "PROVISION_PROTECTED_ADMIN_ACL.ps1")
+    shutil.copy2(source_root / "docs" / "PROTECTED_ADMIN_PROVISIONING.md", staged_root / "PROTECTED_ADMIN_PROVISIONING.md")
     for filename in [
         "KMTech_Logistics_Profile_Install.exe",
         "KMTech_Logistics_Profile_Check.exe",
+        "Label_Match_Protected_Admin_Install.exe",
     ]:
         (staged_root / filename).write_bytes(b"fixture exe")
     for filename in ["direct_sync_relay_runner.exe", "register_label_match_worker_pc.exe"]:
@@ -704,6 +720,9 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
         "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md",
         "Label_Match/KMTech_Logistics_Profile_Install.exe",
         "Label_Match/KMTech_Logistics_Profile_Check.exe",
+        "Label_Match/Label_Match_Protected_Admin_Install.exe",
+        "Label_Match/PROVISION_PROTECTED_ADMIN_ACL.ps1",
+        "Label_Match/PROTECTED_ADMIN_PROVISIONING.md",
         "Label_Match/tools/direct_sync_relay_runner.exe",
         "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "Label_Match/tools/register_label_match_worker_pc.exe",

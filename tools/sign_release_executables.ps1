@@ -31,6 +31,7 @@ if ($expectedSignerThumbprint -notmatch "^[0-9A-F]{40}$") {
 
 $targets = @(
     "Label_Match.exe",
+    "Label_Match_Protected_Admin_Install.exe",
     "KMTech_Logistics_Profile_Install.exe",
     "KMTech_Logistics_Profile_Check.exe",
     "tools\direct_sync_relay_runner.exe",

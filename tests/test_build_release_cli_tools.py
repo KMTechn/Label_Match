@@ -275,7 +275,7 @@ def test_clean_checkout_is_required(monkeypatch, tmp_path):
         builder._verify_clean_checkout(tmp_path)
 
 
-def test_authenticode_manifest_must_bind_exact_six_signed_executables(tmp_path, monkeypatch):
+def test_authenticode_manifest_must_bind_exact_seven_signed_executables(tmp_path, monkeypatch):
     package_root = tmp_path / "Label_Match"
     destination = package_root / "tools"
     destination.mkdir(parents=True)
@@ -307,6 +307,18 @@ def test_authenticode_manifest_must_bind_exact_six_signed_executables(tmp_path, 
                 "timestamp_thumbprint": timestamp,
             }
         )
+    protected_admin_executable = package_root / builder.PROTECTED_ADMIN_EXECUTABLE_NAME
+    protected_admin_executable.write_bytes(b"protected admin installer")
+    entries.append(
+        {
+            "path": builder.PROTECTED_ADMIN_EXECUTABLE_NAME,
+            "size": protected_admin_executable.stat().st_size,
+            "sha256": builder._sha256(protected_admin_executable),
+            "status": "Valid",
+            "signer_thumbprint": signer,
+            "timestamp_thumbprint": timestamp,
+        }
+    )
     for spec in builder.TOOL_SPECS:
         if spec.mode == "onefile":
             executable = destination / spec.executable_name
@@ -365,6 +377,7 @@ def test_authenticode_manifest_must_bind_exact_six_signed_executables(tmp_path, 
         "Label_Match.exe",
         "KMTech_Logistics_Profile_Install.exe",
         "KMTech_Logistics_Profile_Check.exe",
+        "Label_Match_Protected_Admin_Install.exe",
         "tools/direct_sync_relay_runner.exe",
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "tools/register_label_match_worker_pc.exe",
@@ -414,6 +427,18 @@ def test_authenticode_manifest_rejects_duplicate_paths_and_live_signature_mismat
                 "timestamp_thumbprint": timestamp,
             }
         )
+    protected_admin_executable = package_root / builder.PROTECTED_ADMIN_EXECUTABLE_NAME
+    protected_admin_executable.write_bytes(b"protected admin installer")
+    entries.append(
+        {
+            "path": builder.PROTECTED_ADMIN_EXECUTABLE_NAME,
+            "size": protected_admin_executable.stat().st_size,
+            "sha256": builder._sha256(protected_admin_executable),
+            "status": "Valid",
+            "signer_thumbprint": signer,
+            "timestamp_thumbprint": timestamp,
+        }
+    )
     manifest = package_root / "authenticode-manifest.json"
     manifest.write_text(
         json.dumps({"status": "PASS", "signer_thumbprint": signer, "executables": entries + entries}),
@@ -446,7 +471,7 @@ def test_authenticode_manifest_rejects_duplicate_paths_and_live_signature_mismat
         )
 
 
-def test_signing_script_uses_thumbprint_store_timestamp_and_six_exact_targets():
+def test_signing_script_uses_thumbprint_store_timestamp_and_seven_exact_targets():
     script = (Path(__file__).resolve().parents[1] / "tools" / "sign_release_executables.ps1").read_text(
         encoding="utf-8"
     )
@@ -464,4 +489,5 @@ def test_signing_script_uses_thumbprint_store_timestamp_and_six_exact_targets():
     assert "direct_sync_relay_install_pack\\direct_sync_relay_install_pack.exe" in script
     assert "KMTech_Logistics_Profile_Install.exe" in script
     assert "KMTech_Logistics_Profile_Check.exe" in script
+    assert "Label_Match_Protected_Admin_Install.exe" in script
     assert "authenticode-manifest.json" in script

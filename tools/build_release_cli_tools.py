@@ -29,6 +29,7 @@ LOGISTICS_PROFILE_EXECUTABLE_NAMES = (
     "KMTech_Logistics_Profile_Install.exe",
     "KMTech_Logistics_Profile_Check.exe",
 )
+PROTECTED_ADMIN_EXECUTABLE_NAME = "Label_Match_Protected_Admin_Install.exe"
 
 
 class ReleaseCliBuildError(RuntimeError):
@@ -672,6 +673,9 @@ def _signed_executable_paths(destination: Path, built_tools: Sequence[BuiltTool]
     paths = {"Label_Match.exe": destination.parent / "Label_Match.exe"}
     for executable_name in LOGISTICS_PROFILE_EXECUTABLE_NAMES:
         paths[executable_name] = destination.parent / executable_name
+    paths[PROTECTED_ADMIN_EXECUTABLE_NAME] = (
+        destination.parent / PROTECTED_ADMIN_EXECUTABLE_NAME
+    )
     for built in built_tools:
         if built.spec.mode == "onefile":
             relative = f"tools/{built.spec.executable_name}"
