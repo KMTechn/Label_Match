@@ -7,6 +7,7 @@ render without changing any business or durability contract.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -22,6 +23,73 @@ CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
     ("master_label", "PHS2 현품표"),
 )
 COMPLETION_KINDS = frozenset({"full", "partial", "failed"})
+
+_OPERATOR_INTERNAL_LANGUAGE = (
+    "authority",
+    "cas",
+    "error_code",
+    "hash",
+    "http",
+    "https",
+    "idempotency",
+    "journal",
+    "ledger",
+    "manifest",
+    "outbox",
+    "package status",
+    "package_",
+    "principal",
+    "readback",
+    "receipt",
+    "reconciliation",
+    "registry",
+    "relay",
+    "row version",
+    "scope",
+    "status=",
+    "token",
+    "uuid",
+    "writer claim",
+    "writer_claim",
+)
+_OPERATOR_INTERNAL_ENUMS = frozenset(
+    {"ACK", "ACKED", "CONFLICT", "OPERATOR_REVIEW", "PENDING", "SENDING"}
+)
+_OPERATOR_ERROR_CODE_PREFIX = re.compile(r"(?:^|\s)[A-Z][A-Z0-9_]{2,}\s*:")
+_OPERATOR_ENUM_TOKEN = re.compile(
+    r"(?<![A-Z0-9_])[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?![A-Z0-9_])"
+)
+_OPERATOR_UUID_TOKEN = re.compile(
+    r"(?i)(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![0-9a-f])"
+)
+_OPERATOR_INTERNAL_ID_TOKEN = re.compile(
+    r"(?i)(?<![A-Z0-9])(?:AUTH|LBL|PHSI|PHSG|CLAIM|SESSION|BUNDLE|EVENT|"
+    r"OUTBOX|RECEIPT|WRITER)-[A-Z0-9][A-Z0-9._:-]*(?![A-Z0-9])"
+)
+_OPERATOR_SHA256_TOKEN = re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
+
+
+def operator_safe_message(message: object, *, fallback: str) -> str:
+    """Return worker guidance without central/API diagnostic evidence."""
+
+    safe_fallback = str(fallback or "다시 확인해 주세요.").strip() or "다시 확인해 주세요."
+    candidate = str(message or "").strip()
+    if not candidate:
+        return safe_fallback
+    lowered = candidate.casefold()
+    tokens = set(re.findall(r"[A-Z][A-Z0-9_]*", candidate))
+    if (
+        _OPERATOR_ERROR_CODE_PREFIX.search(candidate)
+        or _OPERATOR_ENUM_TOKEN.search(candidate)
+        or _OPERATOR_UUID_TOKEN.search(candidate)
+        or _OPERATOR_INTERNAL_ID_TOKEN.search(candidate)
+        or _OPERATOR_SHA256_TOKEN.search(candidate)
+        or bool(tokens & _OPERATOR_INTERNAL_ENUMS)
+        or any(marker in lowered for marker in _OPERATOR_INTERNAL_LANGUAGE)
+    ):
+        return safe_fallback
+    return candidate
 
 
 @dataclass(frozen=True)
@@ -331,11 +399,17 @@ def _primary_view(
     """Resolve the only headline/notice using the documented priority order."""
 
     if not snapshot.initialized:
-        message = str(snapshot.loading_message or "앱을 초기화하고 있습니다.").strip()
+        message = operator_safe_message(
+            snapshot.loading_message,
+            fallback="앱을 초기화하고 있습니다.",
+        )
         notice = WorkflowNotice("초기화 중", message, kind="initializing", tone="info")
         return _PrimaryView("initializing", notice.title, "잠시 기다리세요.", notice, "muted")
     if snapshot.loading:
-        message = str(snapshot.loading_message or "작업 화면을 준비하고 있습니다.").strip()
+        message = operator_safe_message(
+            snapshot.loading_message,
+            fallback="작업 화면을 준비하고 있습니다.",
+        )
         notice = WorkflowNotice("로딩 중", message, kind="loading", tone="info")
         return _PrimaryView("loading", notice.title, "로딩이 끝날 때까지 기다리세요.", notice, "muted")
     if snapshot.history_readonly:
@@ -371,11 +445,14 @@ def _primary_view(
         stage = "submission_blocked" if notice.kind == "submission_blocked" else "blocked"
         return _PrimaryView(stage, notice.title, notice.message, notice, notice.tone)
     if snapshot.has_error:
-        detail = str(snapshot.error_message or "").strip()
+        detail = operator_safe_message(
+            snapshot.error_message,
+            fallback="잘못된 입력을 확인하고 새 현품표부터 다시 시작하세요.",
+        )
         action = "새 현품표부터 다시 스캔하세요."
         notice = WorkflowNotice(
             "오류 발생",
-            detail or "잘못된 입력을 확인하고 새 현품표부터 다시 시작하세요.",
+            detail,
             kind="error",
             tone="danger",
         )
@@ -576,10 +653,22 @@ def _normalized_notice(notice: WorkflowNotice) -> WorkflowNotice:
     message = str(notice.message or "").strip()
     if not title or not message:
         raise ValueError("blocking_notice requires a title and message")
+    kind = str(notice.kind or "blocking").strip().lower() or "blocking"
+    title_fallback = (
+        "중앙 제출 확인 필요"
+        if kind == "submission_blocked"
+        else "작업 확인 필요"
+    )
+    message_fallback = (
+        "중앙 제출 상태를 자동으로 확인하지 못했습니다. 현재 세트를 유지하고 "
+        "재시도하세요. 계속 실패하면 관리자에게 확인을 요청하세요."
+        if kind == "submission_blocked"
+        else "현재 작업을 유지하고 관리자에게 확인을 요청하세요."
+    )
     return WorkflowNotice(
-        title=title,
-        message=message,
-        kind=str(notice.kind or "blocking").strip().lower() or "blocking",
+        title=operator_safe_message(title, fallback=title_fallback),
+        message=operator_safe_message(message, fallback=message_fallback),
+        kind=kind,
         tone=str(notice.tone or "danger").strip().lower() or "danger",
         allow_current_set_cancel=bool(notice.allow_current_set_cancel),
     )

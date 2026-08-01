@@ -958,7 +958,7 @@ def test_f4_list_hides_reversibly_without_replacing_live_qa_rows(operator_workbe
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Label Match is a Windows Tk application")
-def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
+def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
     tmp_path,
     monkeypatch,
 ):
@@ -1109,7 +1109,12 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
         assert app.operator_status_frame.winfo_height() <= 32
 
         notice_text = str(app.workflow_notice_label.cget("text"))
-        assert server_error in notice_text
+        assert "중앙 서비스에서 제출을 확인하지 못했습니다." in notice_text
+        assert "현재 세트는 유지됩니다." in notice_text
+        assert "제출 재시도" in notice_text
+        assert server_error not in notice_text
+        assert "HTTP" not in notice_text
+        assert "503" not in notice_text
         actual = (
             app.workflow_notice_label.winfo_width(),
             app.workflow_notice_label.winfo_height(),
@@ -1119,7 +1124,7 @@ def test_live_submission_retry_keeps_full_server_error_and_five_scan_rows(
             app.workflow_notice_label.winfo_reqheight(),
         )
         assert actual[0] >= requested[0] and actual[1] >= requested[1], (
-            "retry notice clips the server error: "
+            "retry notice clips the worker guidance: "
             f"actual={actual}, requested={requested}, text={notice_text!r}"
         )
 

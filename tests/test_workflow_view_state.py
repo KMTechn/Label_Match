@@ -1,6 +1,11 @@
 import pytest
 
-from ui.workflow_view_state import WorkflowNotice, WorkflowSnapshot, present_workflow
+from ui.workflow_view_state import (
+    WorkflowNotice,
+    WorkflowSnapshot,
+    operator_safe_message,
+    present_workflow,
+)
 
 
 @pytest.mark.parametrize(
@@ -414,7 +419,12 @@ def test_submission_blocked_preserves_five_of_five_and_last_normal_override():
 
     assert view.current_stage == "submission_blocked"
     assert view.qa_progress_text == "5/5"
-    assert view.notice == notice
+    assert view.notice is not None
+    assert view.notice.title == notice.title
+    assert view.notice.message != notice.message
+    assert "ACK" not in view.notice.message
+    assert "readback" not in view.notice.message
+    assert "현재 세트를 유지" in view.notice.message
     assert view.last_normal_scan == "LAST-ACCEPTED-BARCODE"
     assert view.last_successful_scan == "LAST-ACCEPTED-BARCODE"
     assert view.scan_input_enabled is False
@@ -422,6 +432,79 @@ def test_submission_blocked_preserves_five_of_five_and_last_normal_override():
     assert view.cancel_completed_enabled is False
     assert view.f3_enabled is False
     assert view.f4_enabled is False
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    (
+        "HTTP 503 Service Unavailable",
+        "PHS_WORK_GROUP_COMMAND_CONFLICT: package_submission_status=PENDING",
+        "authority_scope_id=AUTH-123 CAS ledger registry writer_claim=WRITER-7",
+        "idempotency_key=550e8400-e29b-41d4-a716-446655440000",
+        "membership_hash=" + "a" * 64,
+        "receipt BUNDLE-77 status=ACKED",
+    ),
+)
+def test_operator_safe_message_fails_closed_for_internal_diagnostics(diagnostic):
+    fallback = "현재 작업을 유지하고 관리자에게 확인을 요청하세요."
+
+    assert operator_safe_message(diagnostic, fallback=fallback) == fallback
+
+
+def test_operator_safe_message_preserves_plain_worker_guidance():
+    guidance = "제품을 제거하고 새 현품표부터 다시 스캔하세요."
+
+    assert operator_safe_message(guidance, fallback="관리자 확인") == guidance
+
+
+def test_presenter_sanitizes_blocking_notice_and_error_message_at_final_boundary():
+    blocked = present_workflow(
+        WorkflowSnapshot(
+            qa_scans=("PHS2",),
+            central_inherit_all=True,
+            blocking_notice=WorkflowNotice(
+                "HTTP 503 package_submission_status=PENDING",
+                "authority_scope_id=AUTH-123 CAS ledger registry writer_claim=WRITER-7",
+                kind="submission_blocked",
+            ),
+        )
+    )
+    failed = present_workflow(
+        WorkflowSnapshot(
+            has_error=True,
+            error_message="CONFLICT idempotency_key=UUID-9 membership_hash=deadbeef",
+        )
+    )
+
+    combined = " ".join(
+        (
+            blocked.notice.title,
+            blocked.notice.message,
+            blocked.next_action,
+            failed.notice.message,
+            failed.next_action,
+        )
+    )
+    for internal in (
+        "HTTP",
+        "503",
+        "package_submission_status",
+        "PENDING",
+        "authority",
+        "AUTH-123",
+        "CAS",
+        "ledger",
+        "registry",
+        "writer_claim",
+        "CONFLICT",
+        "idempotency_key",
+        "UUID-9",
+        "hash",
+        "deadbeef",
+    ):
+        assert internal.lower() not in combined.lower()
+    assert "현재 세트를 유지" in blocked.notice.message
+    assert "새 현품표부터 다시 시작" in failed.notice.message
 
 
 def test_recoverable_prewrite_package_conflict_enables_only_current_set_cancel():

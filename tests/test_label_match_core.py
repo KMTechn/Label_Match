@@ -1713,6 +1713,53 @@ def test_durable_commit_block_hides_raw_error_and_disables_next_work():
         assert internal.lower() not in notice.message.lower()
 
 
+def test_submission_block_keeps_central_diagnostics_out_of_operator_notice(capsys):
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"raw": ["PHS2"]}
+    app._workflow_total_scan_count = lambda: 1
+    app._retry_blocked_submission = lambda: True
+    rendered = []
+    app._render_operator_workbench = lambda: rendered.append(True)
+    diagnostic = (
+        "HTTP 503 Service Unavailable status=CONFLICT "
+        "authority_scope_id=AUTH-123 CAS ledger registry writer_claim=WRITER-7 "
+        "package_submission_status=PENDING idempotency_key=UUID-9 "
+        "membership_hash=deadbeef"
+    )
+
+    assert module.Label_Match._publish_submission_block(app, diagnostic) is False
+
+    notice = app._workflow_blocking_notice
+    assert notice.kind == "submission_blocked"
+    assert notice.tone == "danger"
+    assert notice.title == "중앙 제출 차단 · 1/1 유지"
+    assert "중앙 서비스에서 제출을 확인하지 못했습니다." in notice.message
+    assert "현재 세트는 유지됩니다." in notice.message
+    assert "제출 재시도" in notice.message
+    assert "관리자" in notice.message
+    assert rendered == [True]
+    for internal in (
+        "HTTP",
+        "503",
+        "CONFLICT",
+        "authority",
+        "CAS",
+        "ledger",
+        "registry",
+        "writer_claim",
+        "package_submission_status",
+        "PENDING",
+        "idempotency_key",
+        "UUID-9",
+        "hash",
+        "deadbeef",
+    ):
+        assert internal.lower() not in notice.message.lower()
+
+    assert diagnostic in capsys.readouterr().out
+
+
 def test_durable_commit_block_uses_actual_legacy_partial_progress():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
@@ -4932,7 +4979,7 @@ def test_delete_shortcut_runs_only_for_history_tree_focus():
     assert calls == ["delete"]
 
 
-def test_delete_selected_row_keeps_row_when_delete_log_write_fails(monkeypatch):
+def test_delete_selected_row_keeps_row_when_delete_log_write_fails(monkeypatch, capsys):
     module = load_label_match_module()
 
     class SelectableTree(_RecordingTree):
@@ -4988,7 +5035,10 @@ def test_delete_selected_row_keeps_row_when_delete_log_write_fails(monkeypatch):
     assert "set-1" in app.set_details_map
     assert errors
     assert errors[0][0][0] == "삭제 실패"
-    assert "disk full" in errors[0][0][1]
+    assert "disk full" not in errors[0][0][1]
+    assert "다시 시도" in errors[0][0][1]
+    assert "관리자" in errors[0][0][1]
+    assert "disk full" in capsys.readouterr().out
     assert app.status_label.kwargs["text"] == "❌ 기록 삭제 실패"
 
 

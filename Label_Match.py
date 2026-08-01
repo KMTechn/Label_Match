@@ -149,7 +149,7 @@ from logistics_runtime_profile import logistics_runtime_required
 from ui.operator_layout import build_operator_layout
 from ui.style_tokens import build_style_tokens
 from ui.workflow_snapshot_adapter import adapt_workflow_snapshot
-from ui.workflow_view_state import WorkflowNotice, present_workflow
+from ui.workflow_view_state import WorkflowNotice, operator_safe_message, present_workflow
 
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
@@ -4305,6 +4305,7 @@ def download_and_apply_update(
         updater_launched = True
         sys.exit(0)
     except Exception as e:
+        print(f"업데이트 준비 기술 진단: {e}")
         if workspace is not None and not updater_launched:
             try:
                 with open(workspace["log_path"], "a", encoding="utf-8") as log_file:
@@ -4327,8 +4328,7 @@ def download_and_apply_update(
         messagebox.showerror(
             "업데이트 실패",
             "업데이트를 안전하게 준비하지 못해 기존 프로그램을 변경하지 않았습니다.\n"
-            "프로그램을 다시 시작하여 업데이트를 재시도해주세요.\n\n"
-            f"[오류 상세 정보]\n{e}",
+            "프로그램을 다시 시작하여 업데이트를 재시도해주세요.",
             parent=root_alert,
         )
         if owns_alert_root:
@@ -5545,8 +5545,15 @@ class Label_Match(tk.Tk):
             _label_match_startup_trace("initial_load_queue_result", keys=sorted(result.keys()))
             if "error" in result:
                 self.hide_loading_overlay()
+                print(f"초기 로드 기술 진단: {result['error']}")
                 if not self.run_tests:
-                    messagebox.showerror("초기화 오류", f"프로그램 시작에 필요한 중요 파일을 불러올 수 없습니다.\n프로그램이 설치된 폴더가 손상되었거나 파일이 없을 수 있습니다.\n\n[오류 원인]\n{result['error']}\n\n프로그램을 종료합니다.")
+                    messagebox.showerror(
+                        "초기화 오류",
+                        "프로그램 시작에 필요한 중요 파일을 불러올 수 없습니다.\n"
+                        "프로그램이 설치된 폴더를 확인하고 다시 실행하세요. "
+                        "계속 실패하면 관리자에게 확인을 요청하세요.\n\n"
+                        "프로그램을 종료합니다.",
+                    )
                 self.destroy()
                 return
             self.items_data = result.get('items', {})
@@ -5581,8 +5588,14 @@ class Label_Match(tk.Tk):
                 )
         except Exception as e:
             self.hide_loading_overlay()
+            print(f"초기화 기술 진단: {e}")
             if not self.run_tests:
-                messagebox.showerror("초기화 오류", f"프로그램을 시작하는 마지막 단계에서 오류가 발생했습니다.\n일시적인 문제일 수 있으니 프로그램을 다시 시작해보세요.\n\n[상세 오류]\n{e}\n\n프로그램을 종료합니다.")
+                messagebox.showerror(
+                    "초기화 오류",
+                    "프로그램을 시작하지 못했습니다. 프로그램을 다시 시작해보세요.\n"
+                    "계속 실패하면 관리자에게 확인을 요청하세요.\n\n"
+                    "프로그램을 종료합니다.",
+                )
             self.destroy()
 
     def _start_update_check(self):
@@ -6455,8 +6468,13 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning("기준 정보 파일 없음", f"품목 정보 파일({self.FILES.ITEMS})이 없어 품목명을 표시할 수 없습니다.\n프로그램 폴더 내 'assets' 폴더를 확인해주세요.")
             return {}
         except Exception as e:
+            print(f"기준 정보 로드 기술 진단: {e}")
             if not self.run_tests:
-                messagebox.showerror("기준 정보 로드 오류", f"품목 정보를 불러오는 중 오류가 발생했습니다.\n\n[상세 오류]\n{e}")
+                messagebox.showerror(
+                    "기준 정보 로드 오류",
+                    "품목 정보를 불러오지 못했습니다. 프로그램 폴더의 기준 정보 파일을 "
+                    "확인하고 다시 시도하세요. 계속 실패하면 관리자에게 확인을 요청하세요.",
+                )
             return {}
 
     def _record_app_close_failure(self, context, result):
@@ -6741,6 +6759,7 @@ class Label_Match(tk.Tk):
                 self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
                 self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
             except Exception as e:
+                print(f"종료 보류 기술 진단: {e}")
                 self._app_close_in_progress = False
                 if entry is not None:
                     try:
@@ -6757,7 +6776,11 @@ class Label_Match(tk.Tk):
                     print(f"종료 보류 후 포장 물류 재시작 오류: {outbox_error}")
                 if self.run_tests:
                     raise
-                messagebox.showerror("종료 보류", f"작업 로그 저장을 완료하지 못해 종료를 중단했습니다.\n\n[상세 오류]\n{e}")
+                messagebox.showerror(
+                    "종료 보류",
+                    "작업 로그 저장을 완료하지 못해 종료를 중단했습니다. "
+                    "잠시 후 다시 시도하고 계속 실패하면 관리자에게 확인을 요청하세요.",
+                )
                 return
             if not self.run_tests:
                 context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
@@ -7312,8 +7335,13 @@ class Label_Match(tk.Tk):
             if 'error' in result:
                 self.history_load_pending = False
                 self.history_active_load_pending = False
+                print(f"기록 로딩 기술 진단: {result['error']}")
                 if not self.run_tests:
-                    messagebox.showerror("기록 로딩 오류", f"작업 기록을 불러오는 중 오류가 발생했습니다.\n로그 파일이 손상되었을 수 있습니다.\n\n[오류 원인]\n{result['error']}")
+                    messagebox.showerror(
+                        "기록 로딩 오류",
+                        "작업 기록을 불러오지 못했습니다. 다시 시도하고 계속 실패하면 "
+                        "관리자에게 확인을 요청하세요.",
+                    )
                 return
             updates_active_state = result.get('updates_active_state', True)
             self.history_view_updates_active_state = updates_active_state
@@ -7351,7 +7379,11 @@ class Label_Match(tk.Tk):
             print(f"UI 업데이트 중 오류 발생: {e}")
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
             if not self.run_tests:
-                messagebox.showerror("UI 업데이트 오류", f"기록을 화면에 표시하는 과정에서 예상치 못한 오류가 발생했습니다.\n프로그램을 다시 시작해주세요.\n\n[상세 오류]\n{e}")
+                messagebox.showerror(
+                    "UI 업데이트 오류",
+                    "기록을 화면에 표시하지 못했습니다. 프로그램을 다시 시작해주세요. "
+                    "계속 실패하면 관리자에게 확인을 요청하세요.",
+                )
 
     def _parse_new_format_label(self, raw_input):
         return _label_match_parse_new_format_fields(raw_input)
@@ -8293,6 +8325,7 @@ class Label_Match(tk.Tk):
                 },
             )
         except Exception as exc:
+            print(f"제품 교체 로컬 반영 기술 진단: {exc}")
             self.current_set_info = before
             rollback_saved = False
             try:
@@ -8309,8 +8342,8 @@ class Label_Match(tk.Tk):
             messagebox.showerror(
                 "제품 교체 로컬 반영 보류",
                 "중앙 교체 결과는 보존됐지만 현재 포장 화면 저장에 실패했습니다.\n"
-                "프로그램을 종료하지 말고 다시 시도하세요.\n\n"
-                f"상세: {exc}",
+                "프로그램을 종료하지 말고 다시 시도하세요. "
+                "계속 실패하면 관리자에게 확인을 요청하세요.",
                 parent=self,
             )
             return False
@@ -8389,7 +8422,10 @@ class Label_Match(tk.Tk):
             qr_holder.configure(image=photo)
             popup._sealed_qr_photo = photo
         except Exception as exc:
-            qr_holder.configure(text=f"QR 표시 모듈 오류: {exc}")
+            print(f"QR 표시 기술 진단: {exc}")
+            qr_holder.configure(
+                text="QR을 표시하지 못했습니다. 관리자에게 확인을 요청하세요."
+            )
         payload_box = tk.Text(frame, height=4, wrap="word")
         payload_box.insert("1.0", attempt.new_seal_qr_payload)
         payload_box.configure(state="disabled")
@@ -8835,7 +8871,11 @@ class Label_Match(tk.Tk):
                 popup.after(100, poll_result, result_queue)
                 return
             if isinstance(result, Exception):
-                status_var.set(f"교체 준비 오류: {result}")
+                print(f"제품 교체 준비 기술 진단: {result}")
+                status_var.set(
+                    "교체를 준비하지 못했습니다. 다시 시도하고 계속 실패하면 "
+                    "관리자에게 확인을 요청하세요."
+                )
                 scan_entry.configure(state="normal")
                 return
             if result.status == "ACKED":
@@ -8856,10 +8896,17 @@ class Label_Match(tk.Tk):
                 popup.destroy()
                 self._prompt_new_seal_verification(result)
                 return
-            status_var.set(
-                "중앙 결과 확인 대기" if result.retryable else
-                f"교체 차단: {result.error_code} {result.error_message}"
-            )
+            if result.retryable:
+                status_var.set("중앙 결과 확인 대기")
+            else:
+                print(
+                    "제품 교체 차단 기술 진단: "
+                    f"error_code={result.error_code} error_message={result.error_message}"
+                )
+                status_var.set(
+                    "교체를 완료하지 못했습니다. 스캔 내용을 확인하고 다시 시도하세요. "
+                    "계속 실패하면 관리자에게 확인을 요청하세요."
+                )
             if not result.retryable:
                 scan_entry.configure(state="normal")
 
@@ -10857,6 +10904,11 @@ class Label_Match(tk.Tk):
         return True
 
     def _handle_input_error(self, raw, title="[입력 오류]", reason="알 수 없는 입력 오류가 발생했습니다."):
+        safe_title = operator_safe_message(title, fallback="입력 오류")
+        safe_reason = operator_safe_message(
+            reason,
+            fallback="입력을 확인하고 새 현품표부터 다시 시작하세요.",
+        )
         set_id = self._ensure_current_set_id()
         self.data_manager.log_event(
             self.Events.ERROR_INPUT,
@@ -10870,7 +10922,13 @@ class Label_Match(tk.Tk):
         self._mark_current_set_error()
 
         self.update_big_display("입력 오류 - 새 현품표부터 시작", "red")
-        self.status_label.config(text=f"{title}: {reason.split(chr(10))[0]} | 확인 후 새 현품표부터 시작", style="Error.TLabel")
+        self.status_label.config(
+            text=(
+                f"{safe_title}: {safe_reason.split(chr(10))[0]} | "
+                "확인 후 새 현품표부터 시작"
+            ),
+            style="Error.TLabel",
+        )
 
         if self.is_running_simulation:
             print(f"  - 시뮬레이션 오류 처리: {title}")
@@ -10972,7 +11030,11 @@ class Label_Match(tk.Tk):
         self._dict_pop_by_string_key(self.__dict__.get("history_row_details_map", {}), iid)
 
     def _show_delete_failure(self, error):
-        message = f"기록 삭제 중 오류가 발생했습니다.\n로그 파일 저장 권한 또는 선택된 기록 상태를 확인하세요.\n\n[오류 원인]\n{error}"
+        print(f"기록 삭제 기술 진단: {error}")
+        message = (
+            "기록을 삭제하지 못했습니다. 로그 파일 저장 권한과 선택한 기록 상태를 "
+            "확인하고 다시 시도하세요. 계속 실패하면 관리자에게 확인을 요청하세요."
+        )
         status_label = self.__dict__.get("status_label")
         if status_label is not None:
             status_label.config(text="❌ 기록 삭제 실패", style="Error.TLabel")
@@ -11217,6 +11279,7 @@ class Label_Match(tk.Tk):
                 try:
                     dismiss(str(package_row["idempotency_key"]))
                 except Exception as exc:
+                    print(f"현재 세트 충돌 해제 기술 진단: {exc}")
                     # Fail closed: keep the physical set visible unless the
                     # durable local-recovery dismissal is recorded.
                     self._set_active_package_submission_notice(package_row)
@@ -11225,8 +11288,8 @@ class Label_Match(tk.Tk):
                             "현재 세트 취소 보류",
                             (
                                 "충돌 증거의 로컬 복구 해제 상태를 저장하지 "
-                                "못했습니다. 현재 세트는 유지됩니다.\n\n"
-                                f"{exc}"
+                                "못했습니다. 현재 세트는 유지됩니다. "
+                                "관리자에게 확인을 요청하세요."
                             ),
                             parent=self,
                         )
@@ -11373,11 +11436,12 @@ class Label_Match(tk.Tk):
         except queue.Empty:
             kind = detail = None
         if kind == "error":
+            print(f"사운드 재생 기술 진단: {detail}")
             messagebox.showerror(
                 "사운드 재생 오류",
                 "경고음을 재생하는 중 오류가 발생했습니다.\n"
-                "스피커 또는 사운드 드라이버를 확인해주세요.\n\n"
-                f"[상세 오류]\n{detail}",
+                "스피커 또는 사운드 드라이버를 확인해주세요. "
+                "계속 실패하면 관리자에게 확인을 요청하세요.",
                 parent=self,
             )
         if any(thread.is_alive() for thread in self.__dict__.get("_siren_threads", [])):
@@ -11398,6 +11462,11 @@ class Label_Match(tk.Tk):
                 result,
                 error_details,
             )
+        safe_title = operator_safe_message(title, fallback="입력 오류")
+        safe_message = operator_safe_message(
+            message,
+            fallback="입력을 확인하고 새 현품표부터 다시 시작하세요.",
+        )
         if self.is_blinking: return
         self.is_blinking = True
         if not self.run_tests and not _label_match_automated_test_mode():
@@ -11413,7 +11482,7 @@ class Label_Match(tk.Tk):
             button_font_size = max(18, min(28, popup_width // 52))
             message_wraplength = max(560, min(popup_width - 180, int(popup_width * 0.78)))
             popup = tk.Toplevel(self)
-            popup.title(f"⚠️ {title}")
+            popup.title(f"⚠️ {safe_title}")
             popup.geometry(f"{popup_width}x{popup_height}+{popup_x}+{popup_y}")
             popup.resizable(False, False)
             popup.configure(bg=self.colors.get("danger", "#E74C3C"))
@@ -11431,7 +11500,7 @@ class Label_Match(tk.Tk):
                             relief="raised", borderwidth=5)
             btn.pack(ipady=20, ipadx=50)
 
-            label = tk.Label(popup_frame, text=f"⚠️\n\n{message}",
+            label = tk.Label(popup_frame, text=f"⚠️\n\n{safe_message}",
                                      font=("Malgun Gothic", message_font_size, "bold"), fg='white',
                                      bg=self.colors.get("danger", "#E74C3C"),
                                      anchor='center', justify='center',
@@ -11450,11 +11519,16 @@ class Label_Match(tk.Tk):
 
         except Exception as e:
             self.data_manager.log_event(self.Events.UI_ERROR, {"context": "modal_popup_creation", "error": str(e), "original_message": message})
+            print(f"오류 경고창 표시 기술 진단: {e}; original={message}")
             self._stop_error_siren()
             fail_sound = self.sound_objects.get("fail")
             if fail_sound: fail_sound.stop()
             if not self.run_tests:
-                messagebox.showerror("시스템 오류", f"오류 경고창을 표시하는 데 실패했습니다.\n프로그램을 재시작해야 할 수 있습니다.\n\n[기존 오류 메시지]\n{message}")
+                messagebox.showerror(
+                    "시스템 오류",
+                    "오류 안내창을 표시하지 못했습니다. 프로그램을 다시 시작하세요. "
+                    "계속 실패하면 관리자에게 확인을 요청하세요.",
+                )
             self._reset_current_set(full_reset=True)
 
     def _prompt_and_cancel_completed_tray(self):
@@ -11658,8 +11732,14 @@ class Label_Match(tk.Tk):
                     )
 
         except Exception as e:
+            print(f"취소 작업 기술 진단: {e}")
             if not self.run_tests:
-                messagebox.showerror("처리 오류", f"취소 작업을 처리하는 중 오류가 발생했습니다.\n프로그램을 다시 시작하여 확인해주세요.\n\n[상세 오류]\n{e}", parent=self)
+                messagebox.showerror(
+                    "처리 오류",
+                    "취소 작업을 완료하지 못했습니다. 프로그램을 다시 시작하여 확인해주세요. "
+                    "계속 실패하면 관리자에게 확인을 요청하세요.",
+                    parent=self,
+                )
             self.data_manager.log_event(self.Events.UI_ERROR, {"context": "tray_cancellation_by_label", "error": str(e)})
 
     def run_test_log_simulation(self, master_code_to_test, num_sets):
@@ -11832,15 +11912,24 @@ class Label_Match(tk.Tk):
         self._reset_current_set()
 
     def _finalize_test_simulation_error(self, error_message):
+        print(f"테스트 데이터 생성 기술 진단: {error_message}")
         self.is_generating_test_logs = False
         if not self.winfo_exists(): return
 
         self.entry.config(state='normal')
         self.entry.focus_set()
         self.update_big_display("테스트 데이터 생성 실패", "red")
-        self.status_label.config(text=f"❌ 테스트 데이터 생성 실패: {error_message}", style="Error.TLabel")
+        self.status_label.config(
+            text="❌ 테스트 데이터 생성 실패 · 입력을 확인하고 다시 시도하세요.",
+            style="Error.TLabel",
+        )
         if not self.run_tests:
-            messagebox.showerror("테스트 생성 오류", f"테스트 데이터 생성 중 오류가 발생했습니다.\n\n[상세 오류]\n{error_message}", parent=self)
+            messagebox.showerror(
+                "테스트 생성 오류",
+                "테스트 데이터를 생성하지 못했습니다. 입력을 확인하고 다시 시도하세요. "
+                "계속 실패하면 관리자에게 확인을 요청하세요.",
+                parent=self,
+            )
 
     def open_settings_window(self):
         if self.current_set_info.get('id'):
@@ -11955,12 +12044,18 @@ class Label_Match(tk.Tk):
         try:
             self.data_manager.close(timeout=None)
         except Exception as e:
+            print(f"설정 변경 저장 기술 진단: {e}")
             self._replace_closed_data_manager_after_close_failure(self.data_manager)
             if worker_name_var is not None:
                 worker_name_var.set(display_operator_name(self.worker_name))
             if self.run_tests:
                 raise
-            messagebox.showerror("저장 보류", f"작업 로그 저장을 완료하지 못해 설정 변경을 중단했습니다.\n\n[상세 오류]\n{e}", parent=window)
+            messagebox.showerror(
+                "저장 보류",
+                "작업 로그 저장을 완료하지 못해 설정 변경을 중단했습니다. "
+                "잠시 후 다시 시도하고 계속 실패하면 관리자에게 확인을 요청하세요.",
+                parent=window,
+            )
             return
 
         self.worker_name = requested_worker_name
@@ -14199,8 +14294,14 @@ class Label_Match(tk.Tk):
         return "break"
 
     def _present_inline_workflow_error(self, title, message, result, error_details):
-        normalized_title = str(title or "입력 오류").strip("[] ") or "입력 오류"
-        normalized_message = str(message or "입력을 확인해 주세요.").strip()
+        normalized_title = operator_safe_message(
+            str(title or "입력 오류").strip("[] "),
+            fallback="입력 오류",
+        )
+        normalized_message = operator_safe_message(
+            message,
+            fallback="입력을 확인하고 새 현품표부터 다시 시작하세요.",
+        )
         self.is_blinking = True
         pending = {"result": result, "error_details": error_details}
         self._pending_workflow_error = pending
@@ -14320,7 +14421,15 @@ class Label_Match(tk.Tk):
         return False
 
     def _publish_submission_block(self, error):
-        message = f"오류: {error}"
+        # The exception can contain HTTP response text and central data-plane
+        # identifiers.  Keep that diagnostic in the internal log only; the
+        # operator surface needs a stable cause and a concrete recovery step.
+        print(f"중앙 제출 기술 진단: {error}")
+        message = (
+            "중앙 서비스에서 제출을 확인하지 못했습니다. 현재 세트는 유지됩니다. "
+            "잠시 후 제출 재시도를 누르세요. "
+            "계속 실패하면 관리자에게 확인을 요청하세요."
+        )
         notice = WorkflowNotice(
             title=(
                 f"중앙 제출 차단 · {self._workflow_total_scan_count()}/"
@@ -15527,8 +15636,14 @@ class Label_Match(tk.Tk):
                 self._load_history_and_rebuild_summary(target_datetime)
                 self._process_history_queue()
             except Exception as e:
+                print(f"기록 조회 기술 진단: {e}")
                 if not self.run_tests:
-                    messagebox.showerror("조회 오류", f"기록을 조회하는 중 오류가 발생했습니다.\n\n[상세 오류]\n{e}", parent=self)
+                    messagebox.showerror(
+                        "조회 오류",
+                        "기록을 조회하지 못했습니다. 다시 시도하고 계속 실패하면 "
+                        "관리자에게 확인을 요청하세요.",
+                        parent=self,
+                    )
 
     def _increase_tree_font(self):
         if not self.initialized_successfully: return

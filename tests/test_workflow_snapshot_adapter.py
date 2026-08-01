@@ -232,7 +232,12 @@ def test_submission_blocked_sample_forwards_one_notice_and_last_normal_scan():
     assert snapshot.blocking_notice is notice
     assert snapshot.last_normal_scan_override == "LAST-ACCEPTED"
     assert view.current_stage == "submission_blocked"
-    assert view.notice == notice
+    assert view.notice is not None
+    assert view.notice.title == notice.title
+    assert view.notice.message != notice.message
+    assert "ACK" not in view.notice.message
+    assert "readback" not in view.notice.message
+    assert "현재 세트를 유지" in view.notice.message
     assert view.last_normal_scan == "LAST-ACCEPTED"
 
 
