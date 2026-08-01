@@ -20,10 +20,25 @@ def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert len(lines) == 26
+    assert len(lines) == 38
     assert all("==" in line for line in lines)
     assert all(" --hash=sha256:" in line for line in lines)
     assert all(line.count("--hash=sha256:") == 1 for line in lines)
+    locked_names = {line.split("==", 1)[0].lower() for line in lines}
+    assert {
+        "blinker",
+        "click",
+        "flask",
+        "google-auth",
+        "itsdangerous",
+        "jinja2",
+        "markupsafe",
+        "pyasn1",
+        "pyasn1-modules",
+        "rsa",
+        "tzdata",
+        "werkzeug",
+    }.issubset(locked_names)
     assert any(line.startswith("pyinstaller==6.20.0 ") for line in lines)
     assert any(line.startswith("pytest==9.1.1 ") for line in lines)
     assert any(line.startswith("pywin32==311 ") for line in lines)
