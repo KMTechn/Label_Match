@@ -1429,12 +1429,13 @@ class PackageOutbox:
     ) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            now = utc_now()
             cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET status='ACKED',receipt_json=?,last_error_code=NULL,
                             last_error_message=NULL,retry_after_at=NULL,updated_at=?
                      WHERE idempotency_key=? AND status='SENDING'""",
-                (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), utc_now(), key),
+                (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), now, key),
             )
             if cursor.rowcount != 1:
                 conn.rollback()
@@ -1450,7 +1451,7 @@ class PackageOutbox:
                         canonical_json(
                             dict(operation_lease_consumption or {})
                         ),
-                        utc_now(),
+                        now,
                         operation_lease_id,
                     ),
                 )
@@ -1458,6 +1459,18 @@ class PackageOutbox:
                     conn.rollback()
                     raise PackageLogisticsError(
                         "operation lease ACK state changed concurrently"
+                    )
+                attempt_cursor = conn.execute(
+                    """UPDATE package_operation_lease_issue_attempts
+                           SET status='RETIRED',retire_reason='ACKED',
+                               retired_at=?,updated_at=?
+                         WHERE lease_id=? AND status='ACTIVE'""",
+                    (now, now, operation_lease_id),
+                )
+                if attempt_cursor.rowcount != 1:
+                    conn.rollback()
+                    raise PackageLogisticsError(
+                        "operation lease issue attempt ACK state changed concurrently"
                     )
             conn.commit()
 
@@ -1559,6 +1572,19 @@ class PackageOutbox:
                     conn.rollback()
                     raise PackageLogisticsError(
                         "operation lease review state changed concurrently"
+                    )
+                attempt_cursor = conn.execute(
+                    """UPDATE package_operation_lease_issue_attempts
+                           SET status='RETIRED',
+                               retire_reason='OPERATOR_REVIEW',
+                               retired_at=?,updated_at=?
+                         WHERE lease_id=? AND status='ACTIVE'""",
+                    (now, now, operation_lease_id),
+                )
+                if attempt_cursor.rowcount != 1:
+                    conn.rollback()
+                    raise PackageLogisticsError(
+                        "operation lease issue attempt review state changed concurrently"
                     )
             conn.commit()
 

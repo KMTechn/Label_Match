@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import threading
@@ -148,6 +149,39 @@ def physical_qr_sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def issue_request_fingerprint(
+    *,
+    program: str,
+    device_id: str,
+    source_host_id: str,
+    authority_scope_id: str,
+    operation: str,
+    physical_qr_hash: str,
+) -> str:
+    """Hash the exact server issue identity without retaining the physical QR."""
+
+    identity = {
+        "program": _bounded_text(program, field="program", maximum=64),
+        "device_id": _bounded_text(device_id, field="device_id"),
+        "source_host_id": _bounded_text(
+            source_host_id, field="source_host_id"
+        ),
+        "authority_scope_id": _bounded_text(
+            authority_scope_id, field="authority_scope_id"
+        ),
+        "operation": _bounded_text(operation, field="operation", maximum=64),
+        "physical_qr_sha256": _hash64(
+            physical_qr_hash, field="physical_qr_sha256"
+        ),
+    }
+    if identity["program"] != PROGRAM or identity["operation"] != OPERATION:
+        raise _error(
+            "OPERATION_LEASE_BINDING_MISMATCH",
+            "issue identity is not the Label_Match packaging operation",
+        )
+    return canonical_sha256(identity)
+
+
 def _bounded_text(value: Any, *, field: str, maximum: int = 256) -> str:
     if (
         not isinstance(value, str)
@@ -211,7 +245,11 @@ def _expected_versions(value: Any) -> dict[str, int]:
                 "OPERATION_LEASE_PAYLOAD_INVALID",
                 "expected_versions contains a duplicate key",
             )
-        result[key] = _positive_int(raw_version, field=f"expected_versions.{key}")
+        result[key] = _positive_int(
+            raw_version,
+            field=f"expected_versions.{key}",
+            allow_zero=True,
+        )
     return result
 
 
@@ -501,69 +539,401 @@ class OperationLeaseStore:
 
     def _initialize(self) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS package_operation_leases (
-                    lease_id TEXT PRIMARY KEY,
-                    resource_id TEXT NOT NULL UNIQUE,
-                    set_id TEXT UNIQUE,
-                    issue_idempotency_key TEXT NOT NULL UNIQUE,
-                    token TEXT NOT NULL,
-                    artifact_json TEXT NOT NULL,
-                    binding_json TEXT NOT NULL,
-                    operation_snapshot_json TEXT NOT NULL,
-                    snapshot_hash TEXT NOT NULL,
-                    fence INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN (
-                        'PREFETCHED','LOCAL_COMPLETED','ACKED','OPERATOR_REVIEW'
-                    )),
-                    operation_result_id TEXT,
-                    operation_completed_at TEXT,
-                    consume_idempotency_key TEXT,
-                    consume_claimed_at TEXT,
-                    consume_receipt_json TEXT,
-                    last_error_code TEXT,
-                    last_error_message TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS ix_package_operation_lease_status
-                    ON package_operation_leases(status,updated_at,lease_id);
-                """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            schema = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                ("package_operation_leases",),
+            ).fetchone()
+            legacy_resource_unique = bool(
+                schema
+                and re.search(
+                    r"resource_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE",
+                    str(schema["sql"] or ""),
+                    flags=re.IGNORECASE,
+                )
+            )
+            if legacy_resource_unique:
+                conn.execute(
+                    "ALTER TABLE package_operation_leases "
+                    "RENAME TO package_operation_leases_v1"
+                )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS package_operation_leases (
+                       lease_id TEXT PRIMARY KEY,
+                       resource_id TEXT NOT NULL,
+                       set_id TEXT UNIQUE,
+                       issue_idempotency_key TEXT NOT NULL UNIQUE,
+                       token TEXT NOT NULL,
+                       artifact_json TEXT NOT NULL,
+                       binding_json TEXT NOT NULL,
+                       operation_snapshot_json TEXT NOT NULL,
+                       snapshot_hash TEXT NOT NULL,
+                       fence INTEGER NOT NULL,
+                       status TEXT NOT NULL CHECK(status IN (
+                           'PREFETCHED','LOCAL_COMPLETED','ACKED','OPERATOR_REVIEW'
+                       )),
+                       operation_result_id TEXT,
+                       operation_completed_at TEXT,
+                       consume_idempotency_key TEXT,
+                       consume_claimed_at TEXT,
+                       consume_receipt_json TEXT,
+                       last_error_code TEXT,
+                       last_error_message TEXT,
+                       created_at TEXT NOT NULL,
+                       updated_at TEXT NOT NULL
+                   )"""
+            )
+            if legacy_resource_unique:
+                conn.execute(
+                    """INSERT INTO package_operation_leases(
+                           lease_id,resource_id,set_id,issue_idempotency_key,
+                           token,artifact_json,binding_json,
+                           operation_snapshot_json,snapshot_hash,fence,status,
+                           operation_result_id,operation_completed_at,
+                           consume_idempotency_key,consume_claimed_at,
+                           consume_receipt_json,last_error_code,
+                           last_error_message,created_at,updated_at
+                       ) SELECT
+                           lease_id,resource_id,set_id,issue_idempotency_key,
+                           token,artifact_json,binding_json,
+                           operation_snapshot_json,snapshot_hash,fence,status,
+                           operation_result_id,operation_completed_at,
+                           consume_idempotency_key,consume_claimed_at,
+                           consume_receipt_json,last_error_code,
+                           last_error_message,created_at,updated_at
+                         FROM package_operation_leases_v1"""
+                )
+                conn.execute("DROP TABLE package_operation_leases_v1")
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS ix_package_operation_lease_status
+                       ON package_operation_leases(status,updated_at,lease_id)"""
+            )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS
+                       ux_package_operation_lease_unresolved_resource
+                       ON package_operation_leases(resource_id)
+                       WHERE status IN ('PREFETCHED','LOCAL_COMPLETED')"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS
+                       package_operation_lease_issue_attempts (
+                       attempt_id TEXT PRIMARY KEY,
+                       request_fingerprint TEXT NOT NULL,
+                       issue_idempotency_key TEXT NOT NULL UNIQUE,
+                       lease_id TEXT UNIQUE,
+                       status TEXT NOT NULL CHECK(status IN ('ACTIVE','RETIRED')),
+                       retire_reason TEXT,
+                       retired_at TEXT,
+                       created_at TEXT NOT NULL,
+                       updated_at TEXT NOT NULL
+                   )"""
+            )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS
+                       ux_package_operation_lease_active_issue_request
+                       ON package_operation_lease_issue_attempts(request_fingerprint)
+                       WHERE status='ACTIVE'"""
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS
+                       ix_package_operation_lease_issue_attempt_status
+                       ON package_operation_lease_issue_attempts(
+                           status,updated_at,attempt_id
+                       )"""
+            )
+            self._backfill_issue_attempts(conn)
+            conn.commit()
+
+    @staticmethod
+    def _fingerprint_from_binding(binding: Mapping[str, Any]) -> str:
+        return issue_request_fingerprint(
+            program=str(binding.get("program") or ""),
+            device_id=str(binding.get("device_id") or ""),
+            source_host_id=str(binding.get("source_host_id") or ""),
+            authority_scope_id=str(
+                binding.get("authority_scope_id") or ""
+            ),
+            operation=str(binding.get("operation") or ""),
+            physical_qr_hash=str(
+                binding.get("physical_qr_sha256") or ""
+            ),
+        )
+
+    def _backfill_issue_attempts(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """SELECT lease_id,issue_idempotency_key,binding_json,status,
+                      created_at,updated_at
+                   FROM package_operation_leases
+                  WHERE issue_idempotency_key NOT IN (
+                      SELECT issue_idempotency_key
+                        FROM package_operation_lease_issue_attempts
+                  )
+                  ORDER BY created_at,lease_id"""
+        ).fetchall()
+        for row in rows:
+            try:
+                binding = json.loads(str(row["binding_json"]))
+                fingerprint = self._fingerprint_from_binding(binding)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise _error(
+                    "OPERATION_LEASE_STORE_INVALID",
+                    "stored lease binding cannot be migrated",
+                ) from exc
+            key = str(row["issue_idempotency_key"])
+            status = (
+                "ACTIVE"
+                if str(row["status"]) in {"PREFETCHED", "LOCAL_COMPLETED"}
+                else "RETIRED"
+            )
+            retired_at = None if status == "ACTIVE" else str(row["updated_at"])
+            reason = None if status == "ACTIVE" else str(row["status"])
+            conn.execute(
+                """INSERT INTO package_operation_lease_issue_attempts(
+                       attempt_id,request_fingerprint,issue_idempotency_key,
+                       lease_id,status,retire_reason,retired_at,
+                       created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    "lease-attempt-"
+                    + hashlib.sha256(key.encode("utf-8")).hexdigest(),
+                    fingerprint,
+                    key,
+                    str(row["lease_id"]),
+                    status,
+                    reason,
+                    retired_at,
+                    str(row["created_at"]),
+                    str(row["updated_at"]),
+                ),
             )
 
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    def reserve_issue_attempt(self, request_fingerprint: str) -> dict[str, Any]:
+        fingerprint = _hash64(
+            request_fingerprint, field="request_fingerprint"
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """SELECT * FROM package_operation_lease_issue_attempts
+                      WHERE request_fingerprint=? AND status='ACTIVE'""",
+                (fingerprint,),
+            ).fetchone()
+            if existing is not None:
+                conn.commit()
+                return dict(existing)
+            now = self._now()
+            for _attempt in range(5):
+                attempt_id = "lease-attempt-" + secrets.token_hex(16)
+                key = "lease-issue-" + secrets.token_hex(32)
+                try:
+                    conn.execute(
+                        """INSERT INTO package_operation_lease_issue_attempts(
+                               attempt_id,request_fingerprint,
+                               issue_idempotency_key,status,created_at,updated_at
+                           ) VALUES (?,?,?,'ACTIVE',?,?)""",
+                        (attempt_id, fingerprint, key, now, now),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
+                row = conn.execute(
+                    """SELECT * FROM package_operation_lease_issue_attempts
+                          WHERE attempt_id=?""",
+                    (attempt_id,),
+                ).fetchone()
+                conn.commit()
+                return dict(row)
+            conn.rollback()
+            raise _error(
+                "OPERATION_LEASE_STORE_CONFLICT",
+                "could not reserve a unique lease issue attempt",
+            )
+
+    def get_issue_attempt(
+        self,
+        *,
+        request_fingerprint: str = "",
+        issue_idempotency_key: str = "",
+    ) -> dict[str, Any] | None:
+        if not request_fingerprint and not issue_idempotency_key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM package_operation_lease_issue_attempts
+                      WHERE request_fingerprint=? OR issue_idempotency_key=?
+                      ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END,
+                               created_at DESC
+                      LIMIT 1""",
+                (request_fingerprint, issue_idempotency_key),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_reusable_prefetched(
+        self, request_fingerprint: str
+    ) -> dict[str, Any] | None:
+        fingerprint = _hash64(
+            request_fingerprint, field="request_fingerprint"
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT lease.*,
+                          attempt.request_fingerprint AS issue_request_fingerprint,
+                          attempt.status AS issue_attempt_status
+                     FROM package_operation_lease_issue_attempts AS attempt
+                     JOIN package_operation_leases AS lease
+                       ON lease.lease_id=attempt.lease_id
+                    WHERE attempt.request_fingerprint=?
+                      AND attempt.status='ACTIVE'
+                      AND lease.status='PREFETCHED'
+                    LIMIT 1""",
+                (fingerprint,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def retire_issue_attempt(
+        self,
+        *,
+        lease_id: str,
+        reason: str,
+    ) -> bool:
+        identity = _bounded_text(lease_id, field="lease_id", maximum=128)
+        selected_reason = _bounded_text(
+            reason, field="retire_reason", maximum=128
+        )
+        now = self._now()
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """UPDATE package_operation_lease_issue_attempts
+                      SET status='RETIRED',retire_reason=?,retired_at=?,updated_at=?
+                    WHERE lease_id=? AND status='ACTIVE'""",
+                (selected_reason, now, now, identity),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
     def save_prefetched(self, *, artifact: Mapping[str, Any], binding: Mapping[str, Any], issue_idempotency_key: str) -> dict[str, Any]:
         payload = dict(artifact.get("claims") or {})
         lease_id = str(payload.get("lease_id") or "")
         resource_id = str(payload.get("resource_id") or "")
-        if not lease_id or not resource_id or set(binding) != LEASE_BINDING_KEYS:
+        issue_key = str(issue_idempotency_key or "").strip()
+        if (
+            not lease_id
+            or not resource_id
+            or not issue_key
+            or set(binding) != LEASE_BINDING_KEYS
+        ):
             raise _error("OPERATION_LEASE_STORE_INVALID", "verified lease identity is missing")
+        fingerprint = self._fingerprint_from_binding(binding)
         encoded_artifact = canonical_json_bytes(dict(artifact)).decode("utf-8")
         encoded_binding = canonical_json_bytes(dict(binding)).decode("utf-8")
         encoded_snapshot = canonical_json_bytes(dict(artifact["operation_snapshot"])).decode("utf-8")
         now = self._now()
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            existing = conn.execute("SELECT * FROM package_operation_leases WHERE lease_id=? OR resource_id=?", (lease_id, resource_id)).fetchone()
-            if existing:
-                if existing["artifact_json"] != encoded_artifact or existing["binding_json"] != encoded_binding or existing["issue_idempotency_key"] != issue_idempotency_key:
+            attempt = conn.execute(
+                """SELECT * FROM package_operation_lease_issue_attempts
+                      WHERE issue_idempotency_key=?""",
+                (issue_key,),
+            ).fetchone()
+            if attempt is None:
+                active = conn.execute(
+                    """SELECT issue_idempotency_key
+                         FROM package_operation_lease_issue_attempts
+                        WHERE request_fingerprint=? AND status='ACTIVE'""",
+                    (fingerprint,),
+                ).fetchone()
+                if active is not None:
                     conn.rollback()
-                    raise _error("OPERATION_LEASE_STORE_CONFLICT", "resource already has a different durable lease")
+                    raise _error(
+                        "OPERATION_LEASE_STORE_CONFLICT",
+                        "lease issue request already has another active attempt",
+                    )
+                conn.execute(
+                    """INSERT INTO package_operation_lease_issue_attempts(
+                           attempt_id,request_fingerprint,issue_idempotency_key,
+                           status,created_at,updated_at
+                       ) VALUES (?,?,?,'ACTIVE',?,?)""",
+                    (
+                        "lease-attempt-" + secrets.token_hex(16),
+                        fingerprint,
+                        issue_key,
+                        now,
+                        now,
+                    ),
+                )
+                attempt = conn.execute(
+                    """SELECT * FROM package_operation_lease_issue_attempts
+                          WHERE issue_idempotency_key=?""",
+                    (issue_key,),
+                ).fetchone()
+            if (
+                str(attempt["request_fingerprint"]) != fingerprint
+                or str(attempt["status"]) != "ACTIVE"
+                or (
+                    attempt["lease_id"] is not None
+                    and str(attempt["lease_id"]) != lease_id
+                )
+            ):
+                conn.rollback()
+                raise _error(
+                    "OPERATION_LEASE_STORE_CONFLICT",
+                    "lease artifact differs from its durable issue attempt",
+                )
+            existing = conn.execute(
+                "SELECT * FROM package_operation_leases WHERE lease_id=?",
+                (lease_id,),
+            ).fetchone()
+            if existing:
+                if existing["artifact_json"] != encoded_artifact or existing["binding_json"] != encoded_binding or existing["issue_idempotency_key"] != issue_key:
+                    conn.rollback()
+                    raise _error("OPERATION_LEASE_STORE_CONFLICT", "lease already has different durable evidence")
+                conn.execute(
+                    """UPDATE package_operation_lease_issue_attempts
+                          SET lease_id=COALESCE(lease_id,?),updated_at=?
+                        WHERE issue_idempotency_key=? AND status='ACTIVE'
+                          AND (lease_id IS NULL OR lease_id=?)""",
+                    (lease_id, now, issue_key, lease_id),
+                )
                 conn.commit()
                 return dict(existing)
+            unresolved = conn.execute(
+                """SELECT lease_id FROM package_operation_leases
+                      WHERE resource_id=?
+                        AND status IN ('PREFETCHED','LOCAL_COMPLETED')""",
+                (resource_id,),
+            ).fetchone()
+            if unresolved is not None:
+                conn.rollback()
+                raise _error(
+                    "OPERATION_LEASE_STORE_CONFLICT",
+                    "resource already has another unresolved durable lease",
+                )
             conn.execute(
                 """INSERT INTO package_operation_leases(
                        lease_id,resource_id,issue_idempotency_key,token,artifact_json,
                        binding_json,operation_snapshot_json,snapshot_hash,fence,status,
                        created_at,updated_at
                    ) VALUES (?,?,?,?,?,?,?,?,?,'PREFETCHED',?,?)""",
-                (lease_id, resource_id, issue_idempotency_key, artifact["token"], encoded_artifact, encoded_binding, encoded_snapshot, payload["snapshot_hash"], payload["fence"], now, now),
+                (lease_id, resource_id, issue_key, artifact["token"], encoded_artifact, encoded_binding, encoded_snapshot, payload["snapshot_hash"], payload["fence"], now, now),
             )
+            cursor = conn.execute(
+                """UPDATE package_operation_lease_issue_attempts
+                      SET lease_id=?,updated_at=?
+                    WHERE issue_idempotency_key=? AND status='ACTIVE'
+                      AND lease_id IS NULL""",
+                (lease_id, now, issue_key),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise _error(
+                    "OPERATION_LEASE_STORE_CONFLICT",
+                    "lease issue attempt lost its durable binding",
+                )
             row = conn.execute("SELECT * FROM package_operation_leases WHERE lease_id=?", (lease_id,)).fetchone()
             conn.commit()
             return dict(row)
@@ -632,6 +1002,7 @@ __all__ = [
     "PROGRAM",
     "canonical_json_bytes",
     "canonical_sha256",
+    "issue_request_fingerprint",
     "normalize_issue_artifact",
     "physical_qr_sha256",
     "validate_payload",

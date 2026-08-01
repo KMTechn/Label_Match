@@ -80,3 +80,17 @@ def test_provisioning_document_and_version_contract_are_current() -> None:
     assert "환경 변수" in document
     assert "PowerShell transcript" in document
     assert _app_version() == "v2.0.56"
+
+
+def test_release_preflight_compiles_terminal_operation_lease_module() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    compile_command = next(
+        line.strip()
+        for line in workflow.splitlines()
+        if "python -B -m py_compile" in line
+    )
+    assert "Label_Match.py" in compile_command
+    assert "package_logistics.py" in compile_command
+    assert "terminal_operation_lease.py" in compile_command

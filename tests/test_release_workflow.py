@@ -71,7 +71,7 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert "Normal installs use PRODUCER_SELF_ENROLL_ALLOWED_IPS" in workflow
     assert (
         "--deselect tests/test_label_operator_workbench.py::"
-        "test_live_submission_retry_keeps_full_server_error_and_five_scan_rows"
+        "test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows"
     ) in workflow
     assert (
         "--deselect tests/test_label_operator_workbench.py::"

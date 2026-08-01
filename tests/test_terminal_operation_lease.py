@@ -1,6 +1,7 @@
 import base64
 import copy
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -26,6 +27,7 @@ from terminal_operation_lease import (
     PinnedOperationLeaseKeyring,
     canonical_json_bytes,
     canonical_sha256,
+    issue_request_fingerprint,
     jwk_thumbprint,
     normalize_issue_artifact,
 )
@@ -99,7 +101,7 @@ def binding(*, device_id="PACK-01", membership_hash="a" * 64):
         "ledger_plane": "AUTHORITATIVE",
         "plane_epoch": 7,
         "operation": "CREATE_PACKAGE",
-        "resource_id": "PHS-GROUP-001",
+        "resource_id": "phs-work-group:PHS-GROUP-001",
         "physical_label_id": "LBL-001",
         "physical_qr_sha256": "b" * 64,
         "item_id": "ITEM-001",
@@ -149,6 +151,17 @@ def verified_fixture(tmp_path):
     return signer, verifier, operation_snapshot, claims, token
 
 
+def issue_fingerprint():
+    return issue_request_fingerprint(
+        program="Label_Match",
+        device_id="PACK-01",
+        source_host_id="HOST-PACK-01",
+        authority_scope_id="scope-main",
+        operation="CREATE_PACKAGE",
+        physical_qr_hash="b" * 64,
+    )
+
+
 def test_signed_lease_verifies_exact_terminal_and_source_binding(tmp_path):
     _signer, verifier, snapshot, claims, token = verified_fixture(tmp_path)
 
@@ -162,15 +175,54 @@ def test_signed_lease_verifies_exact_terminal_and_source_binding(tmp_path):
     assert verified == claims
 
 
+def test_web_package_creation_snapshot_accepts_zero_expected_versions(tmp_path):
+    """Match the authoritative package snapshot emitted by the web service."""
+
+    signer = Signer()
+    operation_snapshot = {
+        "package_bundle_id": "PACKAGE-WORK-001",
+        "member_ids": ["UNIT-1", "UNIT-2", "UNIT-3"],
+    }
+    expected = binding()
+    expected["expected_versions"] = {
+        "bundle:TRANSFER-1": 4,
+        "bundle:PACKAGE-WORK-001": 0,
+        "bundle:REMAINDER-1": 0,
+        "phs_work_group:PHS-GROUP-001": 2,
+    }
+    claims = payload(
+        operation_snapshot,
+        expected_versions=expected["expected_versions"],
+    )
+    token = signer.sign(claims)
+    verifier = PinnedOperationLeaseKeyring(tmp_path / "keys.json")
+    verifier.bootstrap_authenticated(
+        keyring(signer), authenticated_online=True
+    )
+
+    verified = verifier.verify(
+        token,
+        expected=expected,
+        operation_snapshot=operation_snapshot,
+        now=datetime(2026, 8, 1, 1, 30, tzinfo=timezone.utc),
+    )
+
+    assert verified["expected_versions"] == expected["expected_versions"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "code"),
     (
         (lambda expected: expected.update(device_id="PACK-02"), "OPERATION_LEASE_BINDING_MISMATCH"),
+        (lambda expected: expected.update(source_host_id="HOST-PACK-02"), "OPERATION_LEASE_BINDING_MISMATCH"),
+        (lambda expected: expected.update(authority_scope_id="scope-other"), "OPERATION_LEASE_BINDING_MISMATCH"),
+        (lambda expected: expected.update(physical_qr_sha256="f" * 64), "OPERATION_LEASE_BINDING_MISMATCH"),
+        (lambda expected: expected.update(resource_id="phs-work-group:PHS-GROUP-OTHER"), "OPERATION_LEASE_BINDING_MISMATCH"),
         (lambda expected: expected.update(membership_hash="c" * 64), "OPERATION_LEASE_BINDING_MISMATCH"),
         (lambda expected: expected["expected_versions"].update({"bundle:TRANSFER-1": 5}), "OPERATION_LEASE_BINDING_MISMATCH"),
     ),
 )
-def test_lease_rejects_cross_device_membership_and_version_changes(
+def test_lease_rejects_terminal_physical_membership_and_version_changes(
     tmp_path, mutation, code
 ):
     _signer, verifier, snapshot, _claims, token = verified_fixture(tmp_path)
@@ -262,6 +314,51 @@ def test_issue_artifact_kid_must_match_the_signed_token(tmp_path):
     with pytest.raises(OperationLeaseError) as mismatch:
         normalize_issue_artifact(artifact)
     assert mismatch.value.code == "OPERATION_LEASE_ARTIFACT_INVALID"
+
+
+def test_keyring_requires_authenticated_bootstrap_and_never_tofus_token(
+    tmp_path,
+):
+    signer = Signer()
+    snapshot = {"source": "TRANSFER-1"}
+    token = signer.sign(payload(snapshot))
+    verifier = PinnedOperationLeaseKeyring(tmp_path / "keys.json")
+
+    with pytest.raises(OperationLeaseError) as unauthenticated:
+        verifier.bootstrap_authenticated(
+            keyring(signer), authenticated_online=False
+        )
+    assert unauthenticated.value.code == "OPERATION_LEASE_KEYRING_UNAUTHENTICATED"
+    with pytest.raises(OperationLeaseError) as not_pinned:
+        verifier.verify(
+            token,
+            expected=binding(),
+            operation_snapshot=snapshot,
+            now=datetime(2026, 8, 1, 1, 30, tzinfo=timezone.utc),
+        )
+    assert not_pinned.value.code == "OPERATION_LEASE_KEYRING_NOT_PINNED"
+
+
+def test_authenticated_rotation_rejects_kid_reuse_and_pin_removal(tmp_path):
+    first = Signer(kid="lease-key-1")
+    verifier = PinnedOperationLeaseKeyring(tmp_path / "keys.json")
+    verifier.bootstrap_authenticated(
+        keyring(first), authenticated_online=True
+    )
+
+    reused_kid = Signer(kid="lease-key-1")
+    with pytest.raises(OperationLeaseError) as reuse:
+        verifier.bootstrap_authenticated(
+            keyring(reused_kid), authenticated_online=True
+        )
+    assert reuse.value.code == "OPERATION_LEASE_KID_REUSE_REJECTED"
+
+    replacement = Signer(kid="lease-key-2")
+    with pytest.raises(OperationLeaseError) as removal:
+        verifier.bootstrap_authenticated(
+            keyring(replacement), authenticated_online=True
+        )
+    assert removal.value.code == "OPERATION_LEASE_KEY_REMOVAL_REJECTED"
 
 
 def test_issue_api_uses_machine_headers_exact_body_and_idempotency():
@@ -392,7 +489,7 @@ def test_local_completion_updates_outbox_and_business_lease_atomically(tmp_path)
         "operation_snapshot": {"source": "TRANSFER-1"},
         "claims": {
             "lease_id": draft.operation_lease_id,
-            "resource_id": "PHS-GROUP-001",
+            "resource_id": "phs-work-group:PHS-GROUP-001",
             "snapshot_hash": draft.operation_lease_snapshot_hash,
             "fence": draft.operation_lease_fence,
         },
@@ -419,6 +516,162 @@ def test_local_completion_updates_outbox_and_business_lease_atomically(tmp_path)
     assert "SENDING_LEASE" not in lease.values()
 
 
+def test_issue_attempt_survives_restart_then_retires_for_a_new_lifecycle(
+    tmp_path,
+):
+    database = tmp_path / "outbox.sqlite3"
+    outbox = PackageOutbox(database)
+    store = OperationLeaseStore(database)
+    first_attempt = store.reserve_issue_attempt(issue_fingerprint())
+
+    restarted = OperationLeaseStore(database)
+    replay_attempt = restarted.reserve_issue_attempt(issue_fingerprint())
+
+    assert replay_attempt["issue_idempotency_key"] == first_attempt[
+        "issue_idempotency_key"
+    ]
+    draft = lease_draft()
+    artifact = {
+        "token": draft.operation_lease_token,
+        "operation_snapshot": {"source": "TRANSFER-1"},
+        "claims": {
+            "lease_id": draft.operation_lease_id,
+            "resource_id": "phs-work-group:PHS-GROUP-001",
+            "snapshot_hash": draft.operation_lease_snapshot_hash,
+            "fence": draft.operation_lease_fence,
+        },
+    }
+    restarted.save_prefetched(
+        artifact=artifact,
+        binding=binding(),
+        issue_idempotency_key=first_attempt["issue_idempotency_key"],
+    )
+    restarted.attach_set(draft.operation_lease_id, draft.set_id)
+    row = outbox.enqueue(draft)
+    outbox.mark_local_completion_committed(
+        row["idempotency_key"],
+        operation_lease_id=draft.operation_lease_id,
+        operation_completed_at=draft.operation_lease_completed_at,
+    )
+    assert outbox.claim_next()["status"] == "SENDING"
+    outbox.mark_acked(
+        row["idempotency_key"],
+        {"receipt_id": "RECEIPT-1"},
+        operation_lease_id=draft.operation_lease_id,
+        operation_lease_consumption={"status": "CONSUMED"},
+    )
+
+    retired = restarted.get_issue_attempt(
+        issue_idempotency_key=first_attempt["issue_idempotency_key"]
+    )
+    next_attempt = restarted.reserve_issue_attempt(issue_fingerprint())
+    assert retired["status"] == "RETIRED"
+    assert retired["retire_reason"] == "ACKED"
+    assert next_attempt["issue_idempotency_key"] != first_attempt[
+        "issue_idempotency_key"
+    ]
+    restarted.save_prefetched(
+        artifact={
+            **artifact,
+            "claims": {
+                **artifact["claims"],
+                "lease_id": "LEASE-002",
+                "fence": 12,
+            },
+        },
+        binding=binding(),
+        issue_idempotency_key=next_attempt["issue_idempotency_key"],
+    )
+    assert restarted.get(lease_id="LEASE-002")["status"] == "PREFETCHED"
+
+
+def test_legacy_resource_unique_store_migrates_without_losing_active_lease(
+    tmp_path,
+):
+    database = tmp_path / "legacy.sqlite3"
+    encoded_binding = canonical_json_bytes(binding()).decode("utf-8")
+    encoded_snapshot = canonical_json_bytes({"source": "TRANSFER-1"}).decode(
+        "utf-8"
+    )
+    encoded_artifact = canonical_json_bytes(
+        {
+            "token": "a.b.c",
+            "operation_snapshot": {"source": "TRANSFER-1"},
+            "claims": {
+                "lease_id": "LEASE-LEGACY",
+                "resource_id": "phs-work-group:PHS-GROUP-001",
+                "snapshot_hash": "d" * 64,
+                "fence": 11,
+            },
+        }
+    ).decode("utf-8")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE package_operation_leases (
+                   lease_id TEXT PRIMARY KEY,
+                   resource_id TEXT NOT NULL UNIQUE,
+                   set_id TEXT UNIQUE,
+                   issue_idempotency_key TEXT NOT NULL UNIQUE,
+                   token TEXT NOT NULL,
+                   artifact_json TEXT NOT NULL,
+                   binding_json TEXT NOT NULL,
+                   operation_snapshot_json TEXT NOT NULL,
+                   snapshot_hash TEXT NOT NULL,
+                   fence INTEGER NOT NULL,
+                   status TEXT NOT NULL CHECK(status IN (
+                       'PREFETCHED','LOCAL_COMPLETED','ACKED','OPERATOR_REVIEW'
+                   )),
+                   operation_result_id TEXT,
+                   operation_completed_at TEXT,
+                   consume_idempotency_key TEXT,
+                   consume_claimed_at TEXT,
+                   consume_receipt_json TEXT,
+                   last_error_code TEXT,
+                   last_error_message TEXT,
+                   created_at TEXT NOT NULL,
+                   updated_at TEXT NOT NULL
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO package_operation_leases(
+                   lease_id,resource_id,issue_idempotency_key,token,
+                   artifact_json,binding_json,operation_snapshot_json,
+                   snapshot_hash,fence,status,created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,'PREFETCHED',?,?)""",
+            (
+                "LEASE-LEGACY",
+                "phs-work-group:PHS-GROUP-001",
+                "lease-issue-legacy",
+                "a.b.c",
+                encoded_artifact,
+                encoded_binding,
+                encoded_snapshot,
+                "d" * 64,
+                11,
+                "2026-08-01T01:00:00Z",
+                "2026-08-01T01:00:00Z",
+            ),
+        )
+
+    migrated = OperationLeaseStore(database)
+
+    assert migrated.get(lease_id="LEASE-LEGACY")["status"] == "PREFETCHED"
+    attempt = migrated.get_issue_attempt(
+        issue_idempotency_key="lease-issue-legacy"
+    )
+    assert attempt["lease_id"] == "LEASE-LEGACY"
+    assert attempt["status"] == "ACTIVE"
+    assert migrated.reserve_issue_attempt(issue_fingerprint())[
+        "issue_idempotency_key"
+    ] == "lease-issue-legacy"
+    with sqlite3.connect(database) as connection:
+        schema = connection.execute(
+            """SELECT sql FROM sqlite_master
+                 WHERE type='table' AND name='package_operation_leases'"""
+        ).fetchone()[0]
+    assert "resource_id TEXT NOT NULL UNIQUE" not in schema
+
+
 def test_post_completion_conflict_atomically_preserves_local_work_for_review(tmp_path):
     database = tmp_path / "outbox.sqlite3"
     outbox = PackageOutbox(database)
@@ -431,7 +684,7 @@ def test_post_completion_conflict_atomically_preserves_local_work_for_review(tmp
             "operation_snapshot": {"source": "TRANSFER-1"},
             "claims": {
                 "lease_id": draft.operation_lease_id,
-                "resource_id": "PHS-GROUP-001",
+                "resource_id": "phs-work-group:PHS-GROUP-001",
                 "snapshot_hash": draft.operation_lease_snapshot_hash,
                 "fence": draft.operation_lease_fence,
             },
@@ -465,6 +718,11 @@ def test_post_completion_conflict_atomically_preserves_local_work_for_review(tmp
     assert queued["local_completion_committed"] == 1
     assert lease["status"] == "OPERATOR_REVIEW"
     assert lease["operation_result_id"] == row["idempotency_key"]
+    attempt = lease_store.get_issue_attempt(
+        issue_idempotency_key="lease-issue-key"
+    )
+    assert attempt["status"] == "RETIRED"
+    assert attempt["retire_reason"] == "OPERATOR_REVIEW"
 
 
 def test_receipt_requires_exact_atomic_lease_consumption():

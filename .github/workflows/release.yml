@@ -80,9 +80,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python -B -m py_compile Label_Match.py package_logistics.py logistics_runtime_profile.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py tools/install_logistics_runtime_profile.py tools/check_logistics_runtime_profile.py tools/install_protected_admin.py tools/build_release_cli_tools.py tools/build_release_archive.py tools/verify_release_identity.py tools/verify_staged_release_installer.py
+          python -B -m py_compile Label_Match.py package_logistics.py terminal_operation_lease.py logistics_runtime_profile.py direct_sync_push.py direct_sync_runtime.py direct_sync_operator.py tools/direct_sync_relay_runner.py tools/direct_sync_relay_operator.py tools/direct_sync_relay_install_pack.py tools/direct_sync_phase_g_label_match_runtime_report.py tools/register_label_match_worker_pc.py tools/install_logistics_runtime_profile.py tools/check_logistics_runtime_profile.py tools/install_protected_admin.py tools/build_release_cli_tools.py tools/build_release_archive.py tools/verify_release_identity.py tools/verify_staged_release_installer.py
           # These two tests require the fixed physical non-primary DISPLAY2 and remain field evidence, not GitHub-hosted release gates.
-          python -m pytest -q --deselect tests/test_label_operator_workbench.py::test_live_submission_retry_keeps_full_server_error_and_five_scan_rows --deselect tests/test_label_operator_workbench.py::test_display2_1366_scale100_keeps_operator_content_inside_its_regions
+          python -m pytest -q --deselect tests/test_label_operator_workbench.py::test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows --deselect tests/test_label_operator_workbench.py::test_display2_1366_scale100_keeps_operator_content_inside_its_regions
 
       - name: Build with PyInstaller (One-Folder mode)
         # ❗ 이 부분에 --hidden-import tkcalendar 옵션을 추가했습니다.

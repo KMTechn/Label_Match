@@ -11,12 +11,19 @@ import subprocess
 import sys
 import threading
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import (
+    decode_dss_signature,
+)
 
 import Label_Match as label_module
 import package_logistics as package_module
+import terminal_operation_lease as lease_module
 from package_logistics import (
     PackageClientConfig,
     PackageApiError,
@@ -39,6 +46,93 @@ TRANSFER = "TRANSFER-SEALED-1"
 UNITS = ("unit-a", "unit-b", "unit-c", "unit-d")
 BARCODES = ("ITEM000000001-A", "ITEM000000001-B", "ITEM000000001-C", "ITEM000000001-D")
 MEMBERSHIP_HASH = membership_hash(UNITS)
+P256_ORDER = int(
+    "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551",
+    16,
+)
+
+
+class _OperationLeaseTestSigner:
+    def __init__(self):
+        self.kid = "label-match-test-key"
+        self.key = ec.generate_private_key(ec.SECP256R1())
+
+    @property
+    def jwk(self):
+        numbers = self.key.public_key().public_numbers()
+        encode = lambda value: base64.urlsafe_b64encode(value).rstrip(
+            b"="
+        ).decode("ascii")
+        return {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": encode(numbers.x.to_bytes(32, "big")),
+            "y": encode(numbers.y.to_bytes(32, "big")),
+        }
+
+    def sign(self, claims):
+        encode = lambda value: base64.urlsafe_b64encode(value).rstrip(
+            b"="
+        ).decode("ascii")
+        header = {
+            "alg": "ES256",
+            "kid": self.kid,
+            "typ": "terminal-operation-lease+jws",
+        }
+        head = encode(lease_module.canonical_json_bytes(header))
+        body = encode(lease_module.canonical_json_bytes(claims))
+        signing_input = f"{head}.{body}".encode("ascii")
+        r, s = decode_dss_signature(
+            self.key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+        )
+        if s > P256_ORDER // 2:
+            s = P256_ORDER - s
+        signature = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+        return f"{head}.{body}.{encode(signature)}"
+
+    def artifact(self, *, binding, operation_snapshot):
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        claims = {
+            "contract_version": lease_module.LEASE_CONTRACT_VERSION,
+            "lease_id": "LEASE-APP-001",
+            "site_id": "site-main",
+            **binding,
+            "issued_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "expires_at": (now + timedelta(hours=1)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "fence": 11,
+            "snapshot_hash": lease_module.canonical_sha256(
+                operation_snapshot
+            ),
+        }
+        token = self.sign(claims)
+        public_jwk = self.jwk
+        return {
+            "contract_version": lease_module.ARTIFACT_CONTRACT_VERSION,
+            "lease_id": claims["lease_id"],
+            "status": "ACTIVE",
+            "replayed": False,
+            "token": token,
+            "kid": self.kid,
+            "expires_at": claims["expires_at"],
+            "fence": claims["fence"],
+            "snapshot_hash": claims["snapshot_hash"],
+            "operation_snapshot": operation_snapshot,
+            "keyring": {
+                "contract_version": lease_module.KEYRING_CONTRACT_VERSION,
+                "site_id": claims["site_id"],
+                "current_kid": self.kid,
+                "keys": [
+                    {
+                        "kid": self.kid,
+                        "status": "current",
+                        "public_jwk": public_jwk,
+                        "thumbprint": lease_module.jwk_thumbprint(public_jwk),
+                    }
+                ],
+            },
+        }
 
 
 def _source_evidence():
@@ -4107,6 +4201,209 @@ def test_label_match_full_single_work_group_keeps_f4_path():
     assert prompts == [True]
 
 
+def test_initial_phs2_scan_is_read_only_so_f4_remains_available(tmp_path):
+    response = _work_group_response(split=False)
+    group = response["phs_work_group"]
+    issue_calls = []
+    resolve_calls = []
+
+    class Client:
+        config = PackageClientConfig(
+            base_url="https://logistics.example.test",
+            token="secret",
+            authority_scope_id=SCOPE,
+            source_host_id="HOST-PACK-01",
+            device_id="PACK-01",
+        )
+
+        def issue_operation_lease(self, **kwargs):
+            issue_calls.append(kwargs)
+            pytest.fail("initial scan must not take the exclusive F3 lease")
+
+        def resolve_package_source_evidence(self, _draft):
+            resolve_calls.append(True)
+            return response
+
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.package_logistics_client = Client()
+    app.package_operation_lease_store = label_module.OperationLeaseStore(
+        tmp_path / "read-only-scan.sqlite3"
+    )
+    app.package_operation_lease_keyring = (
+        label_module.PinnedOperationLeaseKeyring(tmp_path / "lease-keys.json")
+    )
+    sealed = {
+        "BND": "TRANSFER-1",
+        "AUTH_SCOPE": SCOPE,
+        "CLC": group["item_id"],
+        "SID": "seal-1",
+        "SREV": 1,
+        "STK": "key-1",
+    }
+    snapshot = {
+        "source_resolution_basis": "PHS_WORK_GROUP_EXACT_MEMBERSHIP",
+        "full_single_transfer": True,
+    }
+    app._central_phs2_response_parts = (
+        lambda _physical_qr, _response: ("evidence", snapshot, sealed)
+    )
+
+    _evidence, resolved, resolved_seal, lease = (
+        app._resolve_central_phs2_scan_overlay(
+            group["scan_payload"], group["item_id"]
+        )
+    )
+
+    assert resolve_calls == [True]
+    assert issue_calls == []
+    assert lease is None
+    assert resolved == snapshot
+    assert resolved_seal == sealed
+    app.current_set_info = {
+        "id": "SET-F4-BEFORE-LEASE",
+        "raw": [group["scan_payload"]],
+        "parsed": [group["item_id"]],
+        "physical_scanned_qr_payload": group["scan_payload"],
+        "sealed_transfer": sealed,
+        "package_source_snapshot": snapshot,
+    }
+    app.run_tests = True
+    app._current_sealed_transfer_exchange_attempt = lambda: None
+    assert app._prompt_sealed_transfer_exchange() is True
+    assert issue_calls == []
+
+
+def test_f3_restart_offline_reuses_exact_durable_prefetched_lease(tmp_path):
+    response = _work_group_response(split=False)
+    snapshot = label_module._label_match_package_source_snapshot(response)
+    group = response["phs_work_group"]
+    current = {
+        "id": "SET-LEASE-RESTART",
+        "raw": [group["scan_payload"]],
+        "parsed": [group["item_id"]],
+        "central_inherit_all": True,
+        "canonical_input_tag_qr": group["scan_payload"],
+        "physical_scanned_qr_payload": group["scan_payload"],
+        "active_label_qr_payload": group["scan_payload"],
+        "active_label_id": group["label_id"],
+        "package_source_snapshot": snapshot,
+        "sealed_transfer": None,
+        "exact_rescan_complete": False,
+        "operation_lease_id": "",
+    }
+    database = tmp_path / "restart-lease.sqlite3"
+    keyring_path = tmp_path / "operation-lease-keys.json"
+    config = PackageClientConfig(
+        base_url="https://logistics.example.test",
+        token="secret",
+        authority_scope_id=SCOPE,
+        authority_epoch=5,
+        ledger_plane="AUTHORITATIVE",
+        plane_epoch=3,
+        source_host_id="HOST-PACK-01",
+        device_id="PACK-01",
+    )
+    operation_snapshot = {"server_snapshot": "exact-v1"}
+    signer = _OperationLeaseTestSigner()
+    lease_binding = label_module._label_match_operation_lease_binding(
+        group["scan_payload"], snapshot, config
+    )
+    assert lease_binding["resource_id"] == (
+        "phs-work-group:" + group["group_id"]
+    )
+    artifact = signer.artifact(
+        binding=lease_binding,
+        operation_snapshot=operation_snapshot,
+    )
+    online_issue_calls = []
+
+    class OnlineClient:
+        def __init__(self):
+            self.config = config
+
+        def issue_operation_lease(self, **kwargs):
+            online_issue_calls.append(kwargs)
+            return artifact
+
+    preparing = label_module.Label_Match.__new__(label_module.Label_Match)
+    preparing.package_logistics_client = OnlineClient()
+    preparing.package_operation_lease_store = label_module.OperationLeaseStore(
+        database
+    )
+    preparing.package_operation_lease_keyring = (
+        label_module.PinnedOperationLeaseKeyring(keyring_path)
+    )
+    preparing._central_phs2_response_parts = (
+        lambda _physical_qr, _response: (object(), snapshot, None)
+    )
+
+    prepared = preparing._acquire_operation_lease(
+        group["scan_payload"], expected_snapshot=snapshot
+    )
+
+    lease_id = prepared[3]["lease_id"]
+    stored = preparing.package_operation_lease_store.get(lease_id=lease_id)
+    assert stored["status"] == "PREFETCHED"
+    assert stored["set_id"] is None
+    assert len(online_issue_calls) == 1
+
+    offline_issue_calls = []
+
+    class OfflineClient:
+        def __init__(self):
+            self.config = config
+
+        def issue_operation_lease(self, **kwargs):
+            offline_issue_calls.append(kwargs)
+            raise PackageTransportError("offline")
+
+    restarted = label_module.Label_Match.__new__(label_module.Label_Match)
+    restarted.current_set_info = copy.deepcopy(current)
+    restarted.run_tests = False
+    restarted.is_running_simulation = False
+    restarted.initialized_successfully = False
+    restarted._logistics_authoritative_required = True
+    restarted._central_inherit_all_active = lambda: True
+    restarted.package_logistics_client = OfflineClient()
+    restarted.package_outbox = PackageOutbox(database)
+    restarted.package_operation_lease_store = label_module.OperationLeaseStore(
+        database
+    )
+    restarted.package_operation_lease_keyring = (
+        label_module.PinnedOperationLeaseKeyring(keyring_path)
+    )
+    restarted._central_phs2_response_parts = (
+        lambda _physical_qr, _response: (object(), snapshot, None)
+    )
+
+    metadata = restarted._queue_authoritative_package(
+        item_code=group["item_id"],
+        is_manual_complete=False,
+    )
+
+    assert offline_issue_calls == []
+    assert metadata["operation_lease_id"] == lease_id
+    replayed_metadata = restarted._queue_authoritative_package(
+        item_code=group["item_id"],
+        is_manual_complete=False,
+    )
+    assert replayed_metadata["operation_lease_id"] == lease_id
+    assert replayed_metadata["operation_lease_completed_at"] == metadata[
+        "operation_lease_completed_at"
+    ]
+    row = restarted.package_outbox.get_by_set_id(current["id"])
+    restarted.package_outbox.mark_local_completion_committed(
+        row["idempotency_key"],
+        operation_lease_id=lease_id,
+        operation_completed_at=replayed_metadata[
+            "operation_lease_completed_at"
+        ],
+    )
+    assert restarted.package_operation_lease_store.get(
+        lease_id=lease_id
+    )["status"] == "LOCAL_COMPLETED"
+
+
 def test_label_match_offline_f4_fails_closed_without_local_package_mutation():
     app = label_module.Label_Match.__new__(label_module.Label_Match)
     original = {
@@ -4138,7 +4435,9 @@ def test_label_match_offline_f4_fails_closed_without_local_package_mutation():
     assert app.current_set_info == original
 
 
-def test_label_match_f3_requires_prefetched_exact_device_lease(tmp_path):
+def test_label_match_offline_f3_without_prefetched_lease_fails_before_mutation(
+    tmp_path,
+):
     response = _work_group_response(split=False)
     snapshot = label_module._label_match_package_source_snapshot(response)
     group = response["phs_work_group"]
@@ -4159,7 +4458,14 @@ def test_label_match_f3_requires_prefetched_exact_device_lease(tmp_path):
     app.is_running_simulation = False
     app._logistics_authoritative_required = True
     app._central_inherit_all_active = lambda: True
-    app.package_outbox = PackageOutbox(tmp_path / "no-lease.sqlite3")
+    database = tmp_path / "no-lease.sqlite3"
+    app.package_outbox = PackageOutbox(database)
+    app.package_operation_lease_store = label_module.OperationLeaseStore(
+        database
+    )
+    app.package_operation_lease_keyring = (
+        label_module.PinnedOperationLeaseKeyring(tmp_path / "lease-keys.json")
+    )
 
     class LeaseCapableClient:
         config = PackageClientConfig(
@@ -4174,21 +4480,31 @@ def test_label_match_f3_requires_prefetched_exact_device_lease(tmp_path):
         )
 
         def issue_operation_lease(self, **_kwargs):
-            pytest.fail("F3 must use the prefetched lease, not issue a new one")
+            raise PackageTransportError("offline")
 
     app.package_logistics_client = LeaseCapableClient()
 
+    before = copy.deepcopy(app.current_set_info)
     with pytest.raises(
         label_module.OperationLeaseError,
-        match="verified operation lease is required",
-    ):
+        match="offline",
+    ) as blocked:
         label_module.Label_Match._queue_authoritative_package(
             app,
             item_code=group["item_id"],
             is_manual_complete=False,
         )
 
+    assert blocked.value.code == "OPERATION_LEASE_ISSUE_FAILED"
     assert app.package_outbox.get_by_set_id("SET-NO-LEASE") is None
+    assert app.current_set_info == before
+    _scope, fingerprint = app._operation_lease_request_context(
+        group["scan_payload"]
+    )
+    attempt = app.package_operation_lease_store.get_issue_attempt(
+        request_fingerprint=fingerprint
+    )
+    assert attempt["status"] == "ACTIVE"
 
 
 def test_label_match_lease_failure_ui_hides_technical_details(capsys):

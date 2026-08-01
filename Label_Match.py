@@ -139,6 +139,8 @@ from terminal_operation_lease import (
     OperationLeaseError,
     OperationLeaseStore,
     PinnedOperationLeaseKeyring,
+    canonical_json_bytes as operation_lease_canonical_json_bytes,
+    issue_request_fingerprint as operation_lease_issue_request_fingerprint,
     normalize_issue_artifact,
     physical_qr_sha256 as operation_lease_physical_qr_sha256,
 )
@@ -2685,9 +2687,10 @@ def _label_match_operation_lease_binding(
     resource_id = str(snapshot.get("bundle_id") or "").strip()
     expected_versions = snapshot.get("entity_versions")
     if snapshot.get("source_resolution_basis") == "PHS_WORK_GROUP_EXACT_MEMBERSHIP":
-        resource_id = str(
+        group_id = str(
             (snapshot.get("phs_work_group") or {}).get("group_id") or ""
         ).strip()
+        resource_id = f"phs-work-group:{group_id}" if group_id else ""
     elif not isinstance(expected_versions, dict):
         version = int(snapshot.get("entity_version") or 0)
         expected_versions = (
@@ -2910,6 +2913,12 @@ def _label_match_existing_package_row_metadata(row, current_set_info, item_code)
         "expected_membership_hash": str(
             draft.get("expected_membership_hash") or ""
         ),
+        "operation_lease_id": str(
+            draft.get("operation_lease_id") or ""
+        ).strip(),
+        "operation_lease_completed_at": str(
+            draft.get("operation_lease_completed_at") or ""
+        ).strip(),
     }
 
 
@@ -7757,77 +7766,29 @@ class Label_Match(tk.Tk):
         
         self.after(1500, self._demo_step, index + 1, barcodes)
 
-    def _resolve_central_phs2_scan_overlay(
-        self,
-        physical_qr_payload,
-        item_code,
-    ):
-        """Resolve package source and physical ACTIVE label before acceptance."""
-
+    def _operation_lease_request_context(self, physical_qr, scope=""):
         client = self.__dict__.get("package_logistics_client")
-        if client is None:
-            raise PackageLogisticsError(
-                "central logistics client is required for PHS2 label resolution"
-            )
-        physical_qr = str(physical_qr_payload or "").strip()
-        fields = _label_match_parse_compact_phs2(physical_qr)
-        if str(item_code or "").strip() != fields["CLC"]:
-            raise PackageLogisticsError(
-                "PHS2 item differs from the accepted packaging item"
-            )
-        provisional = {
-            "id": "phs-scan-" + hashlib.sha256(
-                physical_qr.encode("utf-8")
-            ).hexdigest()[:24],
-            "raw": [physical_qr],
-            "parsed": [fields["CLC"]],
-            "central_inherit_all": True,
-            "package_source_snapshot": None,
-            "sealed_transfer": None,
-            "exact_rescan_active": False,
-            "exact_rescan_complete": False,
-            "exact_rescan_barcodes": [],
-        }
-        draft = _label_match_package_draft(
-            provisional,
-            item_code=fields["CLC"],
+        config = getattr(client, "config", None)
+        selected_scope = str(
+            scope or getattr(config, "authority_scope_id", "") or ""
+        ).strip()
+        qr_hash = operation_lease_physical_qr_sha256(
+            str(physical_qr or "").strip()
         )
-        operation_lease = None
-        issue_lease = getattr(client, "issue_operation_lease", None)
-        lease_store = self.__dict__.get("package_operation_lease_store")
-        lease_keyring = self.__dict__.get("package_operation_lease_keyring")
-        if callable(issue_lease):
-            if lease_store is None or lease_keyring is None:
-                raise PackageLogisticsError(
-                    "durable operation lease storage is unavailable"
-                )
-            scope = str(
-                draft.source_authority_scope_id
-                or getattr(getattr(client, "config", None), "authority_scope_id", "")
-                or ""
-            ).strip()
-            device_id = str(
-                getattr(getattr(client, "config", None), "device_id", "") or ""
-            ).strip()
-            issue_idempotency_key = "lease-issue-" + hashlib.sha256(
-                (
-                    f"Label_Match\n{device_id}\n{scope}\n"
-                    + operation_lease_physical_qr_sha256(physical_qr)
-                ).encode("utf-8")
-            ).hexdigest()
-            artifact = normalize_issue_artifact(
-                issue_lease(
-                    authority_scope_id=scope,
-                    operation=PACKAGE_OPERATION_LEASE_OPERATION,
-                    scan_payload=physical_qr,
-                    idempotency_key=issue_idempotency_key,
-                )
-            )
-            response = dict(artifact["operation_snapshot"])
-        else:
-            artifact = None
-            issue_idempotency_key = ""
-            response = client.resolve_package_source_evidence(draft)
+        fingerprint = operation_lease_issue_request_fingerprint(
+            program="Label_Match",
+            device_id=str(getattr(config, "device_id", "") or "").strip(),
+            source_host_id=str(
+                getattr(config, "source_host_id", "") or ""
+            ).strip(),
+            authority_scope_id=selected_scope,
+            operation=PACKAGE_OPERATION_LEASE_OPERATION,
+            physical_qr_hash=qr_hash,
+        )
+        return selected_scope, fingerprint
+
+    @staticmethod
+    def _central_phs2_response_parts(physical_qr, response):
         evidence = normalize_packaging_phs_label_evidence(
             physical_qr,
             response,
@@ -7859,50 +7820,243 @@ class Label_Match(tk.Tk):
                 # The standard package preflight remains authoritative at F3.
                 # Label overlay resolution must not invent seal evidence.
                 sealed = None
-        if artifact is not None:
-            binding = _label_match_operation_lease_binding(
-                physical_qr,
-                snapshot,
-                getattr(client, "config", None),
+        return evidence, snapshot, sealed
+
+    def _verify_operation_lease_artifact(
+        self,
+        *,
+        physical_qr,
+        artifact,
+        issue_idempotency_key,
+        authenticated_online,
+        existing_row=None,
+        expected_snapshot=None,
+    ):
+        client = self.__dict__.get("package_logistics_client")
+        lease_store = self.__dict__.get("package_operation_lease_store")
+        lease_keyring = self.__dict__.get("package_operation_lease_keyring")
+        if client is None or lease_store is None or lease_keyring is None:
+            raise PackageLogisticsError(
+                "durable operation lease verification is unavailable"
             )
+        normalized = normalize_issue_artifact(artifact)
+        response = dict(normalized["operation_snapshot"])
+        evidence, snapshot, sealed = self._central_phs2_response_parts(
+            physical_qr, response
+        )
+        binding = _label_match_operation_lease_binding(
+            physical_qr,
+            snapshot,
+            getattr(client, "config", None),
+        )
+        if authenticated_online is True:
             lease_keyring.bootstrap_authenticated(
-                artifact["keyring"], authenticated_online=True
+                normalized["keyring"], authenticated_online=True
             )
-            claims = lease_keyring.verify(
-                artifact["token"],
-                expected=binding,
-                operation_snapshot=response,
+        claims = lease_keyring.verify(
+            normalized["token"],
+            expected=binding,
+            operation_snapshot=response,
+        )
+        keyring_kids = {
+            str(entry.get("kid") or "")
+            for entry in normalized["keyring"]["keys"]
+        }
+        if (
+            normalized["lease_id"] != claims["lease_id"]
+            or normalized["kid"] not in keyring_kids
+            or normalized["expires_at"] != claims["expires_at"]
+            or normalized["fence"] != claims["fence"]
+            or normalized["snapshot_hash"] != claims["snapshot_hash"]
+        ):
+            raise OperationLeaseError(
+                "OPERATION_LEASE_ARTIFACT_MISMATCH",
+                "lease artifact metadata differs from its signature",
             )
-            keyring_kids = {
-                str(entry.get("kid") or "")
-                for entry in artifact["keyring"]["keys"]
-            }
-            if (
-                artifact["lease_id"] != claims["lease_id"]
-                or artifact["kid"] not in keyring_kids
-                or artifact["expires_at"] != claims["expires_at"]
-                or artifact["fence"] != claims["fence"]
-                or artifact["snapshot_hash"] != claims["snapshot_hash"]
-            ):
-                raise OperationLeaseError(
-                    "OPERATION_LEASE_ARTIFACT_MISMATCH",
-                    "lease artifact metadata differs from its signature",
-                )
-            durable_artifact = dict(artifact)
+        if existing_row is None:
+            durable_artifact = dict(normalized)
             durable_artifact["claims"] = claims
             row = lease_store.save_prefetched(
                 artifact=durable_artifact,
                 binding=binding,
                 issue_idempotency_key=issue_idempotency_key,
             )
-            operation_lease = {
-                "lease_id": claims["lease_id"],
-                "fence": claims["fence"],
-                "snapshot_hash": claims["snapshot_hash"],
-                "expires_at": claims["expires_at"],
-                "status": str(row.get("status") or "PREFETCHED"),
-            }
+        else:
+            row = dict(existing_row)
+            try:
+                stored_artifact = json.loads(str(row["artifact_json"]))
+                stored_binding = json.loads(str(row["binding_json"]))
+                stored_snapshot = json.loads(
+                    str(row["operation_snapshot_json"])
+                )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_STORE_INVALID",
+                    "durable lease evidence cannot be decoded",
+                ) from exc
+            stored_claims = stored_artifact.pop("claims", None)
+            if (
+                str(row.get("status") or "") != "PREFETCHED"
+                or str(row.get("token") or "") != normalized["token"]
+                or str(row.get("issue_idempotency_key") or "")
+                != issue_idempotency_key
+                or operation_lease_canonical_json_bytes(stored_artifact)
+                != operation_lease_canonical_json_bytes(normalized)
+                or operation_lease_canonical_json_bytes(stored_binding)
+                != operation_lease_canonical_json_bytes(binding)
+                or operation_lease_canonical_json_bytes(stored_snapshot)
+                != operation_lease_canonical_json_bytes(response)
+                or operation_lease_canonical_json_bytes(stored_claims)
+                != operation_lease_canonical_json_bytes(claims)
+            ):
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_STORE_INVALID",
+                    "durable lease evidence differs from verified evidence",
+                )
+        if expected_snapshot is not None and (
+            operation_lease_canonical_json_bytes(dict(expected_snapshot))
+            != operation_lease_canonical_json_bytes(snapshot)
+        ):
+            raise OperationLeaseError(
+                "OPERATION_LEASE_SOURCE_CHANGED",
+                "authoritative package source changed before lease acquisition",
+            )
+        operation_lease = {
+            "lease_id": claims["lease_id"],
+            "fence": claims["fence"],
+            "snapshot_hash": claims["snapshot_hash"],
+            "expires_at": claims["expires_at"],
+            "status": str(row.get("status") or "PREFETCHED"),
+        }
         return evidence, snapshot, sealed, operation_lease
+
+    def _load_reusable_operation_lease(
+        self,
+        physical_qr,
+        *,
+        expected_snapshot=None,
+    ):
+        lease_store = self.__dict__.get("package_operation_lease_store")
+        if lease_store is None:
+            return None
+        scope, fingerprint = self._operation_lease_request_context(physical_qr)
+        if not scope:
+            return None
+        row = lease_store.get_reusable_prefetched(fingerprint)
+        if row is None:
+            return None
+        try:
+            stored = json.loads(str(row["artifact_json"]))
+            stored.pop("claims", None)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise OperationLeaseError(
+                "OPERATION_LEASE_STORE_INVALID",
+                "durable lease artifact cannot be decoded",
+            ) from exc
+        return self._verify_operation_lease_artifact(
+            physical_qr=physical_qr,
+            artifact=stored,
+            issue_idempotency_key=str(
+                row.get("issue_idempotency_key") or ""
+            ),
+            authenticated_online=False,
+            existing_row=row,
+            expected_snapshot=expected_snapshot,
+        )
+
+    def _acquire_operation_lease(
+        self,
+        physical_qr,
+        *,
+        expected_snapshot,
+    ):
+        reusable = self._load_reusable_operation_lease(
+            physical_qr,
+            expected_snapshot=expected_snapshot,
+        )
+        if reusable is not None:
+            return reusable
+        client = self.__dict__.get("package_logistics_client")
+        issue_lease = getattr(client, "issue_operation_lease", None)
+        lease_store = self.__dict__.get("package_operation_lease_store")
+        lease_keyring = self.__dict__.get("package_operation_lease_keyring")
+        if not callable(issue_lease) or lease_store is None or lease_keyring is None:
+            raise PackageLogisticsError(
+                "online operation lease acquisition is unavailable"
+            )
+        expected_scope = str(
+            (expected_snapshot or {}).get("authority_scope_id") or ""
+        ).strip()
+        scope, fingerprint = self._operation_lease_request_context(
+            physical_qr, expected_scope
+        )
+        attempt = lease_store.reserve_issue_attempt(fingerprint)
+        issue_key = str(attempt.get("issue_idempotency_key") or "")
+        try:
+            artifact = issue_lease(
+                authority_scope_id=scope,
+                operation=PACKAGE_OPERATION_LEASE_OPERATION,
+                scan_payload=str(physical_qr or "").strip(),
+                idempotency_key=issue_key,
+            )
+        except PackageLogisticsError as exc:
+            raise OperationLeaseError(
+                "OPERATION_LEASE_ISSUE_FAILED",
+                str(exc),
+            ) from exc
+        return self._verify_operation_lease_artifact(
+            physical_qr=physical_qr,
+            artifact=artifact,
+            issue_idempotency_key=issue_key,
+            authenticated_online=True,
+            expected_snapshot=expected_snapshot,
+        )
+
+    def _resolve_central_phs2_scan_overlay(
+        self,
+        physical_qr_payload,
+        item_code,
+    ):
+        """Resolve package source without taking the exclusive F3 lease early."""
+
+        client = self.__dict__.get("package_logistics_client")
+        if client is None:
+            raise PackageLogisticsError(
+                "central logistics client is required for PHS2 label resolution"
+            )
+        physical_qr = str(physical_qr_payload or "").strip()
+        fields = _label_match_parse_compact_phs2(physical_qr)
+        if str(item_code or "").strip() != fields["CLC"]:
+            raise PackageLogisticsError(
+                "PHS2 item differs from the accepted packaging item"
+            )
+        issue_lease = getattr(client, "issue_operation_lease", None)
+        if callable(issue_lease):
+            reusable = self._load_reusable_operation_lease(physical_qr)
+            if reusable is not None:
+                return reusable
+        provisional = {
+            "id": "phs-scan-" + hashlib.sha256(
+                physical_qr.encode("utf-8")
+            ).hexdigest()[:24],
+            "raw": [physical_qr],
+            "parsed": [fields["CLC"]],
+            "central_inherit_all": True,
+            "package_source_snapshot": None,
+            "sealed_transfer": None,
+            "exact_rescan_active": False,
+            "exact_rescan_complete": False,
+            "exact_rescan_barcodes": [],
+        }
+        draft = _label_match_package_draft(
+            provisional,
+            item_code=fields["CLC"],
+        )
+        response = client.resolve_package_source_evidence(draft)
+        evidence, snapshot, sealed = self._central_phs2_response_parts(
+            physical_qr, response
+        )
+        return evidence, snapshot, sealed, None
 
     def _accept_resolved_central_phs2_scan(
         self,
@@ -8994,6 +9148,41 @@ class Label_Match(tk.Tk):
         self.after(100, poll)
         return True
 
+    def _operation_lease_blocks_f4(self):
+        store = self.__dict__.get("package_operation_lease_store")
+        if store is None:
+            return False
+        lease_id = str(
+            self.current_set_info.get("operation_lease_id") or ""
+        ).strip()
+        if lease_id:
+            row = store.get(lease_id=lease_id)
+            if row and str(row.get("status") or "") in {
+                "PREFETCHED",
+                "LOCAL_COMPLETED",
+            }:
+                return True
+        raw = list(self.current_set_info.get("raw") or [])
+        physical_qr = str(
+            self.current_set_info.get("physical_scanned_qr_payload")
+            or (raw[0] if raw else "")
+            or ""
+        ).strip()
+        if not physical_qr:
+            return False
+        try:
+            _scope, fingerprint = self._operation_lease_request_context(
+                physical_qr
+            )
+        except OperationLeaseError:
+            return True
+        attempt = store.get_issue_attempt(
+            request_fingerprint=fingerprint
+        )
+        return bool(
+            attempt and str(attempt.get("status") or "") == "ACTIVE"
+        )
+
     def _prompt_sealed_transfer_exchange(self):
         """Start F4 only with the online replace-and-reseal authority.
 
@@ -9020,6 +9209,17 @@ class Label_Match(tk.Tk):
                 messagebox.showerror(
                     "제품 교체 불가",
                     "현재 현품표에 중앙 봉인 증거가 없습니다. 기존 형식 QR은 교체할 수 없습니다.",
+                    parent=self,
+                )
+            return False
+        if self._operation_lease_blocks_f4():
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "포장 처리 우선",
+                    (
+                        "포장 완료 준비가 이미 시작되어 제품 교체를 진행할 수 없습니다. "
+                        "현재 포장 결과를 먼저 확정하거나 관리자에게 상태 확인을 요청하세요."
+                    ),
                     parent=self,
                 )
             return False
@@ -10673,17 +10873,51 @@ class Label_Match(tk.Tk):
             operation_lease_id = str(
                 current.get("operation_lease_id") or ""
             ).strip()
+            physical_qr = str(
+                current.get("physical_scanned_qr_payload")
+                or raw[0]
+                or ""
+            ).strip()
             lease_store = self.__dict__.get(
                 "package_operation_lease_store"
             )
             lease_keyring = self.__dict__.get(
                 "package_operation_lease_keyring"
             )
-            if not operation_lease_id or lease_store is None or lease_keyring is None:
+            if lease_store is None or lease_keyring is None:
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_REQUIRED",
+                    "durable operation lease support is required",
+                )
+            if operation_lease_id:
+                verified_parts = self._load_reusable_operation_lease(
+                    physical_qr,
+                    expected_snapshot=current.get("package_source_snapshot"),
+                )
+            else:
+                verified_parts = self._acquire_operation_lease(
+                    physical_qr,
+                    expected_snapshot=current.get("package_source_snapshot"),
+                )
+            if verified_parts is None:
                 raise OperationLeaseError(
                     "OPERATION_LEASE_REQUIRED",
                     "a verified operation lease is required",
                 )
+            verified_lease = dict(verified_parts[3] or {})
+            verified_lease_id = str(
+                verified_lease.get("lease_id") or ""
+            ).strip()
+            if operation_lease_id and operation_lease_id != verified_lease_id:
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_STATE_CONFLICT",
+                    "current work references a different durable lease",
+                )
+            operation_lease_id = verified_lease_id
+            lease_store.attach_set(
+                operation_lease_id,
+                str(current.get("id") or ""),
+            )
             lease_row = lease_store.get(lease_id=operation_lease_id)
             if (
                 not lease_row
@@ -10695,40 +10929,29 @@ class Label_Match(tk.Tk):
                     "OPERATION_LEASE_STATE_CONFLICT",
                     "the prefetched operation lease is unavailable",
                 )
-            try:
-                artifact = json.loads(lease_row["artifact_json"])
-                binding = _label_match_operation_lease_binding(
-                    raw[0],
-                    current.get("package_source_snapshot"),
-                    getattr(
-                        self.__dict__.get("package_logistics_client"),
-                        "config",
-                        None,
-                    ),
-                )
-                claims = lease_keyring.verify(
-                    str(lease_row.get("token") or ""),
-                    expected=binding,
-                    operation_snapshot=json.loads(
-                        lease_row["operation_snapshot_json"]
-                    ),
-                )
-            except OperationLeaseError:
-                raise
-            except Exception as exc:
-                raise OperationLeaseError(
-                    "OPERATION_LEASE_STORE_INVALID",
-                    "the durable operation lease cannot be verified",
-                ) from exc
             if (
-                str(artifact.get("lease_id") or "") != claims["lease_id"]
-                or str(lease_row.get("snapshot_hash") or "")
-                != claims["snapshot_hash"]
-                or int(lease_row.get("fence") or 0) != claims["fence"]
+                str(lease_row.get("snapshot_hash") or "")
+                != str(verified_lease.get("snapshot_hash") or "")
+                or int(lease_row.get("fence") or 0)
+                != int(verified_lease.get("fence") or 0)
             ):
                 raise OperationLeaseError(
                     "OPERATION_LEASE_ARTIFACT_MISMATCH",
                     "the durable operation lease metadata differs",
+                )
+            current["operation_lease_id"] = operation_lease_id
+            current["operation_lease_fence"] = int(
+                verified_lease.get("fence") or 0
+            )
+            current["operation_lease_snapshot_hash"] = str(
+                verified_lease.get("snapshot_hash") or ""
+            )
+            current["operation_lease_expires_at"] = str(
+                verified_lease.get("expires_at") or ""
+            )
+            if self.__dict__.get("initialized_successfully", False) and not self._save_current_set_state():
+                raise PackageLogisticsError(
+                    "prefetched operation lease current-state save failed"
                 )
             operation_completed_at = str(
                 current.get("operation_lease_completed_at") or ""
@@ -10739,14 +10962,16 @@ class Label_Match(tk.Tk):
             draft_data = draft.to_dict()
             draft_data.update(
                 {
-                    "operation_lease_id": claims["lease_id"],
+                    "operation_lease_id": operation_lease_id,
                     "operation_lease_token": str(
                         lease_row.get("token") or ""
                     ),
-                    "operation_lease_fence": claims["fence"],
-                    "operation_lease_snapshot_hash": claims[
-                        "snapshot_hash"
-                    ],
+                    "operation_lease_fence": int(
+                        verified_lease.get("fence") or 0
+                    ),
+                    "operation_lease_snapshot_hash": str(
+                        verified_lease.get("snapshot_hash") or ""
+                    ),
                     "operation_lease_completed_at": operation_completed_at,
                 }
             )
