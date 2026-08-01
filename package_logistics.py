@@ -18,6 +18,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import threading
 from typing import Any, Callable, Iterable, Iterator, Mapping
@@ -33,7 +34,7 @@ from logistics_runtime_profile import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v9"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v10"
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 POST_REVIEW_EVENT_VERSION = "label-match-post-review-required-v1"
 MEMBERSHIP_MODES = {"INHERIT_ALL", "EXACT_RESCAN"}
@@ -214,6 +215,20 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _attach_operation_lease(
+    payload: dict[str, Any], draft: "PackageCommandDraft"
+) -> None:
+    if not draft.operation_lease_id:
+        return
+    payload["operation_lease"] = {
+        "token": draft.operation_lease_token,
+        "lease_id": draft.operation_lease_id,
+        "fence": draft.operation_lease_fence,
+        "snapshot_hash": draft.operation_lease_snapshot_hash,
+        "operation_completed_at": draft.operation_lease_completed_at,
+    }
+
+
 def _json_clone_mapping(
     value: Mapping[str, Any] | None, *, field_name: str
 ) -> dict[str, Any]:
@@ -306,6 +321,11 @@ class PackageCommandDraft:
     phs_work_group: Mapping[str, Any] = field(default_factory=dict)
     work_group_source: Mapping[str, Any] = field(default_factory=dict)
     source_session_ids: tuple[str, ...] = ()
+    operation_lease_id: str = ""
+    operation_lease_token: str = ""
+    operation_lease_fence: int = 0
+    operation_lease_snapshot_hash: str = ""
+    operation_lease_completed_at: str = ""
 
     @classmethod
     def build(
@@ -345,6 +365,11 @@ class PackageCommandDraft:
         phs_work_group: Mapping[str, Any] | None = None,
         work_group_source: Mapping[str, Any] | None = None,
         source_session_ids: Iterable[str] = (),
+        operation_lease_id: str = "",
+        operation_lease_token: str = "",
+        operation_lease_fence: int = 0,
+        operation_lease_snapshot_hash: str = "",
+        operation_lease_completed_at: str = "",
     ) -> "PackageCommandDraft":
         normalized_set_id = str(set_id or "").strip()
         normalized_item = str(item_code or "").strip()
@@ -371,6 +396,11 @@ class PackageCommandDraft:
             work_group_source, field_name="work_group_source"
         )
         sessions = canonical_member_ids(source_session_ids)
+        lease_id = str(operation_lease_id or "").strip()
+        lease_token = str(operation_lease_token or "").strip()
+        lease_fence = int(operation_lease_fence or 0)
+        lease_snapshot_hash = str(operation_lease_snapshot_hash or "").strip().lower()
+        lease_completed_at = str(operation_lease_completed_at or "").strip()
         raw_samples = tuple(_normalize_barcode(value) for value in sample_barcodes)
         raw_exact = tuple(_normalize_barcode(value) for value in exact_rescan_barcodes)
         if not normalized_set_id or not normalized_item or not final_label:
@@ -406,6 +436,29 @@ class PackageCommandDraft:
             raise PackageLogisticsError(
                 "package work-group evidence requires its exact resolution basis"
             )
+        lease_values_present = (
+            bool(lease_id),
+            bool(lease_token),
+            lease_fence > 0,
+            bool(lease_snapshot_hash),
+            bool(lease_completed_at),
+        )
+        if any(lease_values_present) and not all(lease_values_present):
+            raise PackageLogisticsError(
+                "operation lease fields must be supplied together"
+            )
+        if lease_id and (
+            not lease_token.isascii()
+            or len(lease_token.encode("ascii")) > 32_768
+            or len(lease_snapshot_hash) != 64
+            or any(value not in "0123456789abcdef" for value in lease_snapshot_hash)
+            or re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                lease_completed_at,
+            )
+            is None
+        ):
+            raise PackageLogisticsError("operation lease evidence is invalid")
         if bool(source_input_tag_label) != bool(source_input_tag_hash):
             raise PackageLogisticsError(
                 "structured PHS2 LBL and HSH identity must be supplied together"
@@ -502,6 +555,11 @@ class PackageCommandDraft:
             phs_work_group=frozen_group,
             work_group_source=frozen_source,
             source_session_ids=sessions,
+            operation_lease_id=lease_id,
+            operation_lease_token=lease_token,
+            operation_lease_fence=lease_fence,
+            operation_lease_snapshot_hash=lease_snapshot_hash,
+            operation_lease_completed_at=lease_completed_at,
         )
 
     @classmethod
@@ -564,6 +622,11 @@ class PackageCommandDraft:
             "phs_work_group": dict(self.phs_work_group),
             "work_group_source": dict(self.work_group_source),
             "source_session_ids": list(self.source_session_ids),
+            "operation_lease_id": self.operation_lease_id,
+            "operation_lease_token": self.operation_lease_token,
+            "operation_lease_fence": self.operation_lease_fence,
+            "operation_lease_snapshot_hash": self.operation_lease_snapshot_hash,
+            "operation_lease_completed_at": self.operation_lease_completed_at,
         }
 
 
@@ -1356,8 +1419,16 @@ class PackageOutbox:
                 raise PackageLogisticsError("package command lost its immutable save CAS")
             conn.commit()
 
-    def mark_acked(self, key: str, receipt: Mapping[str, Any]) -> None:
+    def mark_acked(
+        self,
+        key: str,
+        receipt: Mapping[str, Any],
+        *,
+        operation_lease_id: str = "",
+        operation_lease_consumption: Mapping[str, Any] | None = None,
+    ) -> None:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET status='ACKED',receipt_json=?,last_error_code=NULL,
@@ -1366,7 +1437,28 @@ class PackageOutbox:
                 (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), utc_now(), key),
             )
             if cursor.rowcount != 1:
+                conn.rollback()
                 raise PackageLogisticsError("package outbox ACK state changed concurrently")
+            if operation_lease_id:
+                lease_cursor = conn.execute(
+                    """UPDATE package_operation_leases
+                           SET status='ACKED',consume_receipt_json=?,
+                               consume_claimed_at=NULL,last_error_code=NULL,
+                               last_error_message=NULL,updated_at=?
+                         WHERE lease_id=? AND status='LOCAL_COMPLETED'""",
+                    (
+                        canonical_json(
+                            dict(operation_lease_consumption or {})
+                        ),
+                        utc_now(),
+                        operation_lease_id,
+                    ),
+                )
+                if lease_cursor.rowcount != 1:
+                    conn.rollback()
+                    raise PackageLogisticsError(
+                        "operation lease ACK state changed concurrently"
+                    )
             conn.commit()
 
     def mark_retry(self, key: str, error: Exception) -> None:
@@ -1394,7 +1486,13 @@ class PackageOutbox:
             )
             conn.commit()
 
-    def mark_conflict(self, key: str, error: Exception) -> None:
+    def mark_conflict(
+        self,
+        key: str,
+        error: Exception,
+        *,
+        operation_lease_id: str = "",
+    ) -> None:
         code = str(getattr(error, "code", "LOCAL_VALIDATION_CONFLICT"))
         message = str(getattr(error, "message", str(error)))
         with self._lock, self._connect() as conn:
@@ -1449,6 +1547,19 @@ class PackageOutbox:
                         now,
                     ),
                 )
+            if operation_lease_id:
+                lease_cursor = conn.execute(
+                    """UPDATE package_operation_leases
+                           SET status='OPERATOR_REVIEW',consume_claimed_at=NULL,
+                               last_error_code=?,last_error_message=?,updated_at=?
+                         WHERE lease_id=? AND status='LOCAL_COMPLETED'""",
+                    (code, message, now, operation_lease_id),
+                )
+                if lease_cursor.rowcount != 1:
+                    conn.rollback()
+                    raise PackageLogisticsError(
+                        "operation lease review state changed concurrently"
+                    )
             conn.commit()
 
     def get_by_set_id(self, set_id: str) -> dict[str, Any] | None:
@@ -1576,7 +1687,13 @@ class PackageOutbox:
             conn.commit()
             return dismissed
 
-    def mark_local_completion_committed(self, key: str) -> None:
+    def mark_local_completion_committed(
+        self,
+        key: str,
+        *,
+        operation_lease_id: str = "",
+        operation_completed_at: str = "",
+    ) -> None:
         """Record the durable local completion independently of central ACK.
 
         The command row is the append-only central intent.  Once the local
@@ -1610,6 +1727,45 @@ class PackageOutbox:
                         WHERE idempotency_key=?
                           AND local_completion_committed=0""",
                     (utc_now(), utc_now(), identity),
+                )
+            if operation_lease_id:
+                lease = conn.execute(
+                    """SELECT status,operation_result_id,operation_completed_at
+                           FROM package_operation_leases
+                          WHERE lease_id=?""",
+                    (operation_lease_id,),
+                ).fetchone()
+                if lease is None or lease["status"] not in {
+                    "PREFETCHED",
+                    "LOCAL_COMPLETED",
+                }:
+                    conn.rollback()
+                    raise PackageLogisticsError(
+                        "operation lease cannot record local completion"
+                    )
+                if lease["status"] == "LOCAL_COMPLETED" and (
+                    str(lease["operation_result_id"] or "") != identity
+                    or str(lease["operation_completed_at"] or "")
+                    != operation_completed_at
+                ):
+                    conn.rollback()
+                    raise PackageLogisticsError(
+                        "operation lease local completion is immutable"
+                    )
+                conn.execute(
+                    """UPDATE package_operation_leases
+                           SET status='LOCAL_COMPLETED',
+                               operation_result_id=?,operation_completed_at=?,
+                               consume_idempotency_key=?,updated_at=?
+                         WHERE lease_id=?
+                           AND status IN ('PREFETCHED','LOCAL_COMPLETED')""",
+                    (
+                        identity,
+                        operation_completed_at,
+                        identity,
+                        utc_now(),
+                        operation_lease_id,
+                    ),
                 )
             conn.commit()
 
@@ -2297,6 +2453,52 @@ class PackageLogisticsClient:
         """
 
         return self._data(self._request("GET", "/logistics/api/v1/capabilities"))
+
+    def issue_operation_lease(
+        self,
+        *,
+        authority_scope_id: str,
+        operation: str,
+        scan_payload: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Prefetch one signed terminal-exclusive operation lease online."""
+
+        scope = str(
+            authority_scope_id or self.config.authority_scope_id or ""
+        ).strip()
+        selected_operation = str(operation or "").strip().upper()
+        physical_scan = str(scan_payload or "").strip()
+        key = str(idempotency_key or "").strip()
+        if (
+            not scope
+            or selected_operation != "CREATE_PACKAGE"
+            or not physical_scan
+            or not key
+        ):
+            raise PackageLogisticsError(
+                "operation lease request identity is incomplete"
+            )
+        self._assert_authority(scope)
+        body = json.dumps(
+            {
+                "authority_scope_id": scope,
+                "operation": selected_operation,
+                "scan_payload": physical_scan,
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return self._data(
+            self._request(
+                "POST",
+                "/logistics/api/v1/operation-leases/issue",
+                body=body,
+                key=key,
+            )
+        )
 
     def resolve_good_source(
         self, *, authority_scope_id: str, barcode: str
@@ -3006,6 +3208,7 @@ class PackageLogisticsClient:
                         draft.exact_rescan_barcodes
                     )
                 )
+            _attach_operation_lease(payload, draft)
             command = {
                 "contract_version": PACKAGE_CONTRACT_VERSION,
                 "command_type": "CREATE_PACKAGE",
@@ -3106,6 +3309,7 @@ class PackageLogisticsClient:
             payload["barcode_membership_hash"] = barcode_membership_hash(
                 draft.exact_rescan_barcodes
             )
+        _attach_operation_lease(payload, draft)
         command = {
             "contract_version": PACKAGE_CONTRACT_VERSION,
             "command_type": "CREATE_PACKAGE",
@@ -3267,6 +3471,7 @@ class PackageLogisticsClient:
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
             "Authorization": f"Bearer {self.config.token}",
+            "X-Logistics-API-Token": self.config.token,
             "User-Agent": PACKAGE_HTTP_USER_AGENT,
             "X-KMTech-Client": PACKAGE_HTTP_CLIENT_HEADER,
             "X-Logistics-Source-Host-Id": self.config.source_host_id,
@@ -4277,7 +4482,11 @@ class PackageLogisticsClient:
 
 
 class PackageOutboxProcessor:
-    def __init__(self, outbox: PackageOutbox, client: PackageLogisticsClient):
+    def __init__(
+        self,
+        outbox: PackageOutbox,
+        client: PackageLogisticsClient,
+    ):
         self.outbox = outbox
         self.client = client
         self._drain_lock = threading.Lock()
@@ -4292,6 +4501,7 @@ class PackageOutboxProcessor:
                     break
                 key = row["idempotency_key"]
                 attempted_keys.add(str(key))
+                draft: PackageCommandDraft | None = None
                 try:
                     draft_data = json.loads(row["draft_json"])
                     draft = PackageCommandDraft.from_dict(draft_data)
@@ -4313,11 +4523,29 @@ class PackageOutboxProcessor:
                         self.outbox.save_command(key, source_id, command)
                         receipt = self.client.create_package(command)
                     self._validate_receipt(draft, source_id, receipt, command=command)
-                    self.outbox.mark_acked(key, receipt)
+                    consumption = (
+                        receipt.get("data", receipt).get(
+                            "operation_lease_consumption"
+                        )
+                        if isinstance(receipt.get("data", receipt), Mapping)
+                        else None
+                    )
+                    self.outbox.mark_acked(
+                        key,
+                        receipt,
+                        operation_lease_id=draft.operation_lease_id,
+                        operation_lease_consumption=consumption,
+                    )
                     counts["acked"] += 1
                 except PackageApiError as exc:
                     if exc.committed is True:
-                        self.outbox.mark_conflict(key, exc)
+                        self.outbox.mark_conflict(
+                            key,
+                            exc,
+                            operation_lease_id=(
+                                draft.operation_lease_id if draft else ""
+                            ),
+                        )
                         counts["conflict"] += 1
                     elif (
                         exc.status_code not in {409, 412}
@@ -4330,15 +4558,81 @@ class PackageOutboxProcessor:
                         self.outbox.mark_retry(key, exc)
                         counts["retry"] += 1
                     else:
-                        self.outbox.mark_conflict(key, exc)
+                        self.outbox.mark_conflict(
+                            key,
+                            exc,
+                            operation_lease_id=(
+                                draft.operation_lease_id if draft else ""
+                            ),
+                        )
                         counts["conflict"] += 1
                 except PackageTransportError as exc:
                     self.outbox.mark_retry(key, exc)
                     counts["retry"] += 1
                 except PackageLogisticsError as exc:
-                    self.outbox.mark_conflict(key, exc)
+                    self.outbox.mark_conflict(
+                        key,
+                        exc,
+                        operation_lease_id=(
+                            draft.operation_lease_id if draft else ""
+                        ),
+                    )
                     counts["conflict"] += 1
         return counts
+
+    @staticmethod
+    def _validate_operation_lease_receipt(
+        draft: PackageCommandDraft,
+        receipt: Mapping[str, Any],
+    ) -> None:
+        if not draft.operation_lease_id:
+            return
+        data = (
+            receipt.get("data")
+            if isinstance(receipt.get("data"), Mapping)
+            else receipt
+        )
+        consumption = (
+            data.get("operation_lease_consumption")
+            if isinstance(data, Mapping)
+            else None
+        )
+        if not isinstance(consumption, Mapping) or set(consumption) != {
+            "contract_version",
+            "lease_id",
+            "status",
+            "fence",
+            "operation_result_id",
+            "consumed_at",
+        }:
+            raise PackageLogisticsError(
+                "package receipt operation lease consumption is missing"
+            )
+        receipt_id = str(
+            data.get("receipt_id")
+            or receipt.get("receipt_id")
+            or ""
+        ).strip()
+        if (
+            consumption.get("contract_version")
+            != "terminal-operation-lease-consume-v1"
+            or consumption.get("status") != "CONSUMED"
+            or str(consumption.get("lease_id") or "")
+            != draft.operation_lease_id
+            or int(consumption.get("fence") or 0)
+            != draft.operation_lease_fence
+            or not receipt_id
+            or str(consumption.get("operation_result_id") or "")
+            != receipt_id
+            or re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                str(consumption.get("consumed_at") or ""),
+            )
+            is None
+        ):
+            raise PackageLogisticsError(
+                "package receipt operation lease consumption is invalid"
+            )
 
     @staticmethod
     def _validate_work_group_receipt(
@@ -4406,6 +4700,7 @@ class PackageOutboxProcessor:
             expected_payload["barcode_membership_hash"] = (
                 barcode_membership_hash(draft.exact_rescan_barcodes)
             )
+        _attach_operation_lease(expected_payload, draft)
         if (
             not group_id
             or source_identity != group_id
@@ -4818,6 +5113,9 @@ class PackageOutboxProcessor:
         *,
         command: Mapping[str, Any] | None = None,
     ) -> None:
+        PackageOutboxProcessor._validate_operation_lease_receipt(
+            draft, receipt
+        )
         if draft.source_resolution_basis:
             PackageOutboxProcessor._validate_work_group_receipt(
                 draft,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import io
 import json
@@ -4104,6 +4105,113 @@ def test_label_match_full_single_work_group_keeps_f4_path():
 
     assert label_module.Label_Match._handle_f4_action(app) is True
     assert prompts == [True]
+
+
+def test_label_match_offline_f4_fails_closed_without_local_package_mutation():
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    original = {
+        "id": "SET-OFFLINE-F4",
+        "raw": ["PHS2|offline"],
+        "parsed": ["ITEM-1"],
+        "sealed_transfer": {
+            "BND": "TRANSFER-1",
+            "AUTH_SCOPE": SCOPE,
+            "CLC": "cycle-1",
+            "SID": "seal-1",
+            "SREV": 1,
+            "STK": "key-1",
+        },
+        "package_source_snapshot": {
+            "source_resolution_basis": "PHS_WORK_GROUP_EXACT_MEMBERSHIP",
+            "full_single_transfer": True,
+        },
+    }
+    app.current_set_info = copy.deepcopy(original)
+    app.run_tests = True
+    app.package_logistics_client = None
+    app._current_sealed_transfer_exchange_attempt = lambda: None
+
+    assert (
+        label_module.Label_Match._prompt_sealed_transfer_exchange(app)
+        is False
+    )
+    assert app.current_set_info == original
+
+
+def test_label_match_f3_requires_prefetched_exact_device_lease(tmp_path):
+    response = _work_group_response(split=False)
+    snapshot = label_module._label_match_package_source_snapshot(response)
+    group = response["phs_work_group"]
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {
+        "id": "SET-NO-LEASE",
+        "raw": [group["scan_payload"]],
+        "parsed": [group["item_id"]],
+        "central_inherit_all": True,
+        "canonical_input_tag_qr": group["scan_payload"],
+        "active_label_qr_payload": group["scan_payload"],
+        "active_label_id": group["label_id"],
+        "package_source_snapshot": snapshot,
+        "sealed_transfer": None,
+        "exact_rescan_complete": False,
+    }
+    app.run_tests = False
+    app.is_running_simulation = False
+    app._logistics_authoritative_required = True
+    app._central_inherit_all_active = lambda: True
+    app.package_outbox = PackageOutbox(tmp_path / "no-lease.sqlite3")
+
+    class LeaseCapableClient:
+        config = PackageClientConfig(
+            base_url="https://logistics.example.test",
+            token="secret",
+            authority_scope_id=SCOPE,
+            authority_epoch=5,
+            ledger_plane="AUTHORITATIVE",
+            plane_epoch=7,
+            source_host_id="HOST-PACK-01",
+            device_id="PACK-01",
+        )
+
+        def issue_operation_lease(self, **_kwargs):
+            pytest.fail("F3 must use the prefetched lease, not issue a new one")
+
+    app.package_logistics_client = LeaseCapableClient()
+
+    with pytest.raises(
+        label_module.OperationLeaseError,
+        match="verified operation lease is required",
+    ):
+        label_module.Label_Match._queue_authoritative_package(
+            app,
+            item_code=group["item_id"],
+            is_manual_complete=False,
+        )
+
+    assert app.package_outbox.get_by_set_id("SET-NO-LEASE") is None
+
+
+def test_label_match_lease_failure_ui_hides_technical_details(capsys):
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {"raw": ["PHS2-PHYSICAL"]}
+    app._workflow_total_scan_count = lambda: 1
+    app._render_operator_workbench = lambda: None
+
+    result = label_module.Label_Match._publish_durable_commit_block(
+        app,
+        label_module.OperationLeaseError(
+            "OPERATION_LEASE_SIGNATURE_INVALID",
+            "token=a.b.c device=PACK-OTHER",
+        ),
+    )
+
+    assert result is False
+    message = app._workflow_notice.message
+    assert "token=" not in message
+    assert "PACK-OTHER" not in message
+    assert "OPERATION_LEASE" not in message
+    assert "관리자" in message
+    assert "token=a.b.c" in capsys.readouterr().out
 
 
 def test_label_match_work_group_orphan_recovery_and_plural_origins():

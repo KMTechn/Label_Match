@@ -133,6 +133,15 @@ from package_logistics import (
     canonical_barcodes,
     package_client_from_env,
 )
+from terminal_operation_lease import (
+    LEASE_BINDING_KEYS,
+    OPERATION as PACKAGE_OPERATION_LEASE_OPERATION,
+    OperationLeaseError,
+    OperationLeaseStore,
+    PinnedOperationLeaseKeyring,
+    normalize_issue_artifact,
+    physical_qr_sha256 as operation_lease_physical_qr_sha256,
+)
 from sealed_transfer_exchange import (
     SealedTransferExchangeCoordinator,
     SealedTransferExchangeStore,
@@ -2663,6 +2672,75 @@ def _label_match_package_source_snapshot(projection):
     }
 
 
+def _label_match_operation_lease_binding(
+    physical_qr_payload,
+    package_snapshot,
+    client_config,
+):
+    """Build the exact local context a signed CREATE_PACKAGE lease must bind."""
+
+    physical_qr = str(physical_qr_payload or "").strip()
+    fields = _label_match_parse_compact_phs2(physical_qr)
+    snapshot = dict(package_snapshot or {})
+    resource_id = str(snapshot.get("bundle_id") or "").strip()
+    expected_versions = snapshot.get("entity_versions")
+    if snapshot.get("source_resolution_basis") == "PHS_WORK_GROUP_EXACT_MEMBERSHIP":
+        resource_id = str(
+            (snapshot.get("phs_work_group") or {}).get("group_id") or ""
+        ).strip()
+    elif not isinstance(expected_versions, dict):
+        version = int(snapshot.get("entity_version") or 0)
+        expected_versions = (
+            {f"bundle:{resource_id}": version}
+            if resource_id and version > 0
+            else {}
+        )
+    member_count = int(snapshot.get("member_count") or 0)
+    binding = {
+        "program": "Label_Match",
+        "device_id": str(getattr(client_config, "device_id", "") or "").strip(),
+        "source_host_id": str(
+            getattr(client_config, "source_host_id", "") or ""
+        ).strip(),
+        "authority_scope_id": str(
+            snapshot.get("authority_scope_id") or ""
+        ).strip(),
+        "ledger_plane": str(snapshot.get("ledger_plane") or "").strip().upper(),
+        "plane_epoch": int(snapshot.get("plane_epoch") or 0),
+        "operation": PACKAGE_OPERATION_LEASE_OPERATION,
+        "resource_id": resource_id,
+        "physical_label_id": str(fields.get("LBL") or "").strip(),
+        "physical_qr_sha256": operation_lease_physical_qr_sha256(physical_qr),
+        "item_id": str(snapshot.get("item_id") or fields.get("CLC") or "").strip(),
+        "quantity": member_count,
+        "member_count": member_count,
+        "membership_hash": str(snapshot.get("membership_hash") or "").strip().lower(),
+        "expected_versions": copy.deepcopy(expected_versions),
+    }
+    if set(binding) != LEASE_BINDING_KEYS:
+        raise PackageLogisticsError("operation lease binding is incomplete")
+    if (
+        not all(
+            binding[key]
+            for key in (
+                "device_id",
+                "source_host_id",
+                "authority_scope_id",
+                "ledger_plane",
+                "resource_id",
+                "physical_label_id",
+                "item_id",
+                "membership_hash",
+            )
+        )
+        or binding["plane_epoch"] < 1
+        or binding["member_count"] < 1
+        or not binding["expected_versions"]
+    ):
+        raise PackageLogisticsError("operation lease binding is incomplete")
+    return binding
+
+
 def _label_match_apply_package_source_origins(details, snapshot):
     """Attach exact plural work-group origins to one local completion."""
 
@@ -3133,6 +3211,19 @@ def _label_match_recover_central_state_from_package_row(row):
             source.get("idempotency_key") or ""
         ).strip(),
         "package_submission_status": str(source.get("status") or "PENDING").upper(),
+        "operation_lease_id": str(
+            draft.get("operation_lease_id") or ""
+        ).strip(),
+        "operation_lease_fence": int(
+            draft.get("operation_lease_fence") or 0
+        ),
+        "operation_lease_snapshot_hash": str(
+            draft.get("operation_lease_snapshot_hash") or ""
+        ).strip(),
+        "operation_lease_expires_at": "",
+        "operation_lease_completed_at": str(
+            draft.get("operation_lease_completed_at") or ""
+        ).strip(),
         "sealed_transfer_exchange_intent_id": "",
         "exact_rescan_active": False,
         "exact_rescan_complete": False,
@@ -3355,7 +3446,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.55" # private update feed release
+APP_VERSION = "v2.0.56" # private update feed release
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -4961,6 +5052,15 @@ class Label_Match(tk.Tk):
         package_outbox_path = os.path.join(self.save_directory, "package_logistics_outbox.sqlite3")
         self.package_outbox = PackageOutbox(package_outbox_path)
         self.package_cancellation_outbox = PackageCancellationOutbox(package_outbox_path)
+        self.package_operation_lease_store = OperationLeaseStore(
+            package_outbox_path
+        )
+        self.package_operation_lease_keyring = PinnedOperationLeaseKeyring(
+            os.path.join(
+                self.save_directory,
+                "package_operation_lease_keyring.json",
+            )
+        )
         self.package_logistics_client = startup_package_logistics_client
         self._logistics_authoritative_required = startup_logistics_required
         self.sealed_transfer_exchange_store = SealedTransferExchangeStore(
@@ -4997,7 +5097,10 @@ class Label_Match(tk.Tk):
         self._phs_reconciliation_confirm_reprint_ids = set()
         self._phs_replacement_notice_pairs = set()
         self.package_outbox_processor = (
-            PackageOutboxProcessor(self.package_outbox, self.package_logistics_client)
+            PackageOutboxProcessor(
+                self.package_outbox,
+                self.package_logistics_client,
+            )
             if self.package_logistics_client is not None
             else None
         )
@@ -7689,7 +7792,42 @@ class Label_Match(tk.Tk):
             provisional,
             item_code=fields["CLC"],
         )
-        response = client.resolve_package_source_evidence(draft)
+        operation_lease = None
+        issue_lease = getattr(client, "issue_operation_lease", None)
+        lease_store = self.__dict__.get("package_operation_lease_store")
+        lease_keyring = self.__dict__.get("package_operation_lease_keyring")
+        if callable(issue_lease):
+            if lease_store is None or lease_keyring is None:
+                raise PackageLogisticsError(
+                    "durable operation lease storage is unavailable"
+                )
+            scope = str(
+                draft.source_authority_scope_id
+                or getattr(getattr(client, "config", None), "authority_scope_id", "")
+                or ""
+            ).strip()
+            device_id = str(
+                getattr(getattr(client, "config", None), "device_id", "") or ""
+            ).strip()
+            issue_idempotency_key = "lease-issue-" + hashlib.sha256(
+                (
+                    f"Label_Match\n{device_id}\n{scope}\n"
+                    + operation_lease_physical_qr_sha256(physical_qr)
+                ).encode("utf-8")
+            ).hexdigest()
+            artifact = normalize_issue_artifact(
+                issue_lease(
+                    authority_scope_id=scope,
+                    operation=PACKAGE_OPERATION_LEASE_OPERATION,
+                    scan_payload=physical_qr,
+                    idempotency_key=issue_idempotency_key,
+                )
+            )
+            response = dict(artifact["operation_snapshot"])
+        else:
+            artifact = None
+            issue_idempotency_key = ""
+            response = client.resolve_package_source_evidence(draft)
         evidence = normalize_packaging_phs_label_evidence(
             physical_qr,
             response,
@@ -7721,13 +7859,57 @@ class Label_Match(tk.Tk):
                 # The standard package preflight remains authoritative at F3.
                 # Label overlay resolution must not invent seal evidence.
                 sealed = None
-        return evidence, snapshot, sealed
+        if artifact is not None:
+            binding = _label_match_operation_lease_binding(
+                physical_qr,
+                snapshot,
+                getattr(client, "config", None),
+            )
+            lease_keyring.bootstrap_authenticated(
+                artifact["keyring"], authenticated_online=True
+            )
+            claims = lease_keyring.verify(
+                artifact["token"],
+                expected=binding,
+                operation_snapshot=response,
+            )
+            keyring_kids = {
+                str(entry.get("kid") or "")
+                for entry in artifact["keyring"]["keys"]
+            }
+            if (
+                artifact["lease_id"] != claims["lease_id"]
+                or artifact["kid"] not in keyring_kids
+                or artifact["expires_at"] != claims["expires_at"]
+                or artifact["fence"] != claims["fence"]
+                or artifact["snapshot_hash"] != claims["snapshot_hash"]
+            ):
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_ARTIFACT_MISMATCH",
+                    "lease artifact metadata differs from its signature",
+                )
+            durable_artifact = dict(artifact)
+            durable_artifact["claims"] = claims
+            row = lease_store.save_prefetched(
+                artifact=durable_artifact,
+                binding=binding,
+                issue_idempotency_key=issue_idempotency_key,
+            )
+            operation_lease = {
+                "lease_id": claims["lease_id"],
+                "fence": claims["fence"],
+                "snapshot_hash": claims["snapshot_hash"],
+                "expires_at": claims["expires_at"],
+                "status": str(row.get("status") or "PREFETCHED"),
+            }
+        return evidence, snapshot, sealed, operation_lease
 
     def _accept_resolved_central_phs2_scan(
         self,
         evidence,
         snapshot,
         sealed,
+        operation_lease=None,
     ):
         if list(self.current_set_info.get("raw") or []):
             raise PackageLogisticsError(
@@ -7758,6 +7940,27 @@ class Label_Match(tk.Tk):
             evidence.canonical_input_tag_qr,
             evidence.item_id,
         )
+        if operation_lease:
+            lease_id = str(operation_lease.get("lease_id") or "").strip()
+            lease_store = self.__dict__.get("package_operation_lease_store")
+            if not lease_id or lease_store is None:
+                raise PackageLogisticsError(
+                    "verified operation lease disappeared before acceptance"
+                )
+            lease_store.attach_set(
+                lease_id,
+                str(self.current_set_info.get("id") or ""),
+            )
+            self.current_set_info["operation_lease_id"] = lease_id
+            self.current_set_info["operation_lease_fence"] = int(
+                operation_lease.get("fence") or 0
+            )
+            self.current_set_info["operation_lease_snapshot_hash"] = str(
+                operation_lease.get("snapshot_hash") or ""
+            )
+            self.current_set_info["operation_lease_expires_at"] = str(
+                operation_lease.get("expires_at") or ""
+            )
         self._workflow_last_normal_override = (
             evidence.active_label_qr_payload
         )
@@ -7812,7 +8015,7 @@ class Label_Match(tk.Tk):
         ):
             return False
         if self.run_tests:
-            evidence, snapshot, sealed = (
+            evidence, snapshot, sealed, operation_lease = (
                 self._resolve_central_phs2_scan_overlay(
                     physical_qr_payload,
                     item_code,
@@ -7822,6 +8025,7 @@ class Label_Match(tk.Tk):
                 evidence,
                 snapshot,
                 sealed,
+                operation_lease,
             )
         captured_raw = tuple(
             self.current_set_info.get("raw") or ()
@@ -7861,6 +8065,7 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
                 return
             if not ok:
+                print(f"PHS2 포장 권한 확인 기술 진단: {value}")
                 self._handle_input_error(
                     physical_qr_payload,
                     title="[현재 사용 현품표 확인 실패]",
@@ -7871,18 +8076,24 @@ class Label_Match(tk.Tk):
                 )
                 self._render_operator_workbench()
                 return
-            evidence, snapshot, sealed = value
+            evidence, snapshot, sealed, operation_lease = value
             try:
                 self._accept_resolved_central_phs2_scan(
                     evidence,
                     snapshot,
                     sealed,
+                    operation_lease,
                 )
             except Exception as exc:
+                print(f"PHS2 로컬 반영 기술 진단: {exc}")
                 self._handle_input_error(
                     physical_qr_payload,
                     title="[PHS2 로컬 반영 실패]",
-                    reason=str(exc),
+                    reason=(
+                        "현재 현품표와 포장 권한을 안전하게 저장하지 못했습니다.\n\n"
+                        "→ 현재 실물을 유지하고 다시 스캔하세요. 계속 실패하면 "
+                        "관리자에게 확인을 요청하세요."
+                    ),
                 )
 
         threading.Thread(
@@ -8741,11 +8952,15 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
                 return
             if not ok:
+                print(f"제품 교체 준비 기술 진단: {value}")
                 self.update_big_display("제품 교체 준비 차단", "red")
                 self._render_operator_workbench()
                 messagebox.showerror(
                     "제품 교체 준비 실패",
-                    str(value),
+                    (
+                        "중앙 연결 상태를 확인한 뒤 다시 시도하세요. "
+                        "계속 실패하면 관리자에게 확인을 요청하세요."
+                    ),
                     parent=self,
                 )
                 return
@@ -8780,6 +8995,14 @@ class Label_Match(tk.Tk):
         return True
 
     def _prompt_sealed_transfer_exchange(self):
+        """Start F4 only with the online replace-and-reseal authority.
+
+        A prefetched CREATE_PACKAGE lease deliberately cannot authorize this
+        topology-changing command.  Offline F4 therefore fails closed without
+        changing the local package set; after an online ACK, PHS2 preflight must
+        issue a fresh CREATE_PACKAGE lease for the new seal and membership.
+        """
+
         raw = list(self.current_set_info.get("raw") or [])
         if not 1 <= len(raw) < self.TOTAL_SCAN_COUNT:
             if not self.run_tests:
@@ -10438,6 +10661,96 @@ class Label_Match(tk.Tk):
             item_code=item_code,
             require_source_snapshot=central_inherit_all,
         )
+        operation_lease_id = ""
+        operation_completed_at = ""
+        if central_inherit_all and callable(
+            getattr(
+                self.__dict__.get("package_logistics_client"),
+                "issue_operation_lease",
+                None,
+            )
+        ):
+            operation_lease_id = str(
+                current.get("operation_lease_id") or ""
+            ).strip()
+            lease_store = self.__dict__.get(
+                "package_operation_lease_store"
+            )
+            lease_keyring = self.__dict__.get(
+                "package_operation_lease_keyring"
+            )
+            if not operation_lease_id or lease_store is None or lease_keyring is None:
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_REQUIRED",
+                    "a verified operation lease is required",
+                )
+            lease_row = lease_store.get(lease_id=operation_lease_id)
+            if (
+                not lease_row
+                or str(lease_row.get("status") or "") != "PREFETCHED"
+                or str(lease_row.get("set_id") or "")
+                != str(current.get("id") or "")
+            ):
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_STATE_CONFLICT",
+                    "the prefetched operation lease is unavailable",
+                )
+            try:
+                artifact = json.loads(lease_row["artifact_json"])
+                binding = _label_match_operation_lease_binding(
+                    raw[0],
+                    current.get("package_source_snapshot"),
+                    getattr(
+                        self.__dict__.get("package_logistics_client"),
+                        "config",
+                        None,
+                    ),
+                )
+                claims = lease_keyring.verify(
+                    str(lease_row.get("token") or ""),
+                    expected=binding,
+                    operation_snapshot=json.loads(
+                        lease_row["operation_snapshot_json"]
+                    ),
+                )
+            except OperationLeaseError:
+                raise
+            except Exception as exc:
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_STORE_INVALID",
+                    "the durable operation lease cannot be verified",
+                ) from exc
+            if (
+                str(artifact.get("lease_id") or "") != claims["lease_id"]
+                or str(lease_row.get("snapshot_hash") or "")
+                != claims["snapshot_hash"]
+                or int(lease_row.get("fence") or 0) != claims["fence"]
+            ):
+                raise OperationLeaseError(
+                    "OPERATION_LEASE_ARTIFACT_MISMATCH",
+                    "the durable operation lease metadata differs",
+                )
+            operation_completed_at = str(
+                current.get("operation_lease_completed_at") or ""
+            ).strip() or datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            current["operation_lease_completed_at"] = operation_completed_at
+            draft_data = draft.to_dict()
+            draft_data.update(
+                {
+                    "operation_lease_id": claims["lease_id"],
+                    "operation_lease_token": str(
+                        lease_row.get("token") or ""
+                    ),
+                    "operation_lease_fence": claims["fence"],
+                    "operation_lease_snapshot_hash": claims[
+                        "snapshot_hash"
+                    ],
+                    "operation_lease_completed_at": operation_completed_at,
+                }
+            )
+            draft = PackageCommandDraft.from_dict(draft_data)
         row = outbox.enqueue(draft)
         return {
             "status": str(row.get("status") or "PENDING"),
@@ -10461,6 +10774,8 @@ class Label_Match(tk.Tk):
             "exact_rescan_count": len(draft.exact_rescan_barcodes),
             "expected_member_count": draft.expected_member_count,
             "expected_membership_hash": draft.expected_membership_hash,
+            "operation_lease_id": operation_lease_id,
+            "operation_lease_completed_at": operation_completed_at,
         }
 
     @staticmethod
@@ -10818,9 +11133,24 @@ class Label_Match(tk.Tk):
                     raise PackageLogisticsError(
                         "durable package outbox disappeared before local completion"
                     )
-                outbox.mark_local_completion_committed(
-                    package_logistics.get("idempotency_key")
+                lease_id = str(
+                    package_logistics.get("operation_lease_id") or ""
                 )
+                if lease_id:
+                    outbox.mark_local_completion_committed(
+                        package_logistics.get("idempotency_key"),
+                        operation_lease_id=lease_id,
+                        operation_completed_at=str(
+                            package_logistics.get(
+                                "operation_lease_completed_at"
+                            )
+                            or ""
+                        ),
+                    )
+                else:
+                    outbox.mark_local_completion_committed(
+                        package_logistics.get("idempotency_key")
+                    )
         except Exception as exc:
             return self._publish_durable_commit_block(exc)
         if result == self.Results.PASS and not self.is_running_simulation:
@@ -11333,6 +11663,11 @@ class Label_Match(tk.Tk):
             'resolved_transfer_bundle_id': '',
             'package_submission_idempotency_key': '',
             'package_submission_status': '',
+            'operation_lease_id': '',
+            'operation_lease_fence': 0,
+            'operation_lease_snapshot_hash': '',
+            'operation_lease_expires_at': '',
+            'operation_lease_completed_at': '',
             'sealed_transfer_exchange_intent_id': '',
             'exact_rescan_active': False,
             'exact_rescan_complete': False,
@@ -14388,16 +14723,29 @@ class Label_Match(tk.Tk):
         """Hard-block the worker surface without exposing storage internals."""
 
         print(f"로컬 durable commit 오류: {error}")
+        lease_failure = isinstance(error, OperationLeaseError)
         message = (
-            "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
-            "실물을 이동하거나 다음 작업을 시작하지 말고 저장을 다시 시도하세요. "
-            "계속 실패하면 관리자에게 확인을 요청하세요."
+            (
+                "이 장비의 포장 권한과 현재 현품표 상태를 확인하지 못했습니다. "
+                "현재 세트와 실물을 유지하고 네트워크 연결 후 다시 시도하세요. "
+                "계속 실패하면 관리자에게 확인을 요청하세요."
+            )
+            if lease_failure
+            else (
+                "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
+                "실물을 이동하거나 다음 작업을 시작하지 말고 저장을 다시 시도하세요. "
+                "계속 실패하면 관리자에게 확인을 요청하세요."
+            )
         )
         scans = tuple(self.current_set_info.get("raw") or ())
         total = max(1, int(self._workflow_total_scan_count()))
         completed = min(total, len(scans))
         notice = WorkflowNotice(
-            title=f"{completed}/{total} 유지 · 로컬 기록 저장 필요",
+            title=(
+                f"{completed}/{total} 유지 · 포장 권한 확인 필요"
+                if lease_failure
+                else f"{completed}/{total} 유지 · 로컬 기록 저장 필요"
+            ),
             message=message,
             kind="submission_blocked",
             tone="danger",
