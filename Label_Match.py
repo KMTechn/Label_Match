@@ -4,6 +4,45 @@ import json
 import traceback
 from datetime import datetime, date, timezone
 
+from protected_admin import (
+    PROTECTED_ADMIN_DISPLAY_NAME,
+    PROTECTED_ADMIN_OPERATOR_ID,
+    PROTECTED_ADMIN_ROLE,
+    display_operator_name,
+    is_protected_admin_code,
+    is_protected_admin_candidate,
+    persistent_operator_name,
+    redact_authenticated_credential_entry,
+    redact_protected_admin_code,
+    sanitize_persistent_value,
+)
+
+
+_LABEL_MATCH_SENSITIVE_TRACE_KEYS = frozenset({
+    "argv",
+    "candidate",
+    "hostname",
+    "operator",
+    "submitted_by",
+    "unique_id",
+    "worker_name",
+})
+
+
+def _label_match_safe_trace_value(value, *, key=""):
+    if str(key or "").strip().lower() in _LABEL_MATCH_SENSITIVE_TRACE_KEYS:
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _label_match_safe_trace_value(item, key=str(item_key))
+            for item_key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_label_match_safe_trace_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_protected_admin_code(value)
+    return value
+
 
 def _label_match_startup_trace(stage, **details):
     payload = {
@@ -15,14 +54,27 @@ def _label_match_startup_trace(stage, **details):
         "executable": sys.executable,
         "cwd": os.getcwd(),
     }
-    payload.update(details)
+    payload.update(
+        {
+            str(key): _label_match_safe_trace_value(value, key=str(key))
+            for key, value in details.items()
+        }
+    )
     filename = f"Label_Match-startup-{os.getpid()}.log"
-    candidate_roots = [
-        os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "KMTech", "startup-trace"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "KMTech", "startup-trace"),
-        os.path.join(os.environ.get("TEMP", ""), "KMTech-startup-trace"),
-        os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "startup-trace"),
-    ]
+    automated_test = bool(os.environ.get("PYTEST_CURRENT_TEST")) or any(
+        "pytest" in str(argument or "").lower() for argument in sys.argv
+    )
+    if automated_test:
+        candidate_roots = [
+            os.path.join(os.environ.get("TEMP", ""), "KMTech-startup-trace"),
+        ]
+    else:
+        candidate_roots = [
+            os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "KMTech", "startup-trace"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "KMTech", "startup-trace"),
+            os.path.join(os.environ.get("TEMP", ""), "KMTech-startup-trace"),
+            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "startup-trace"),
+        ]
     for root in candidate_roots:
         if not root:
             continue
@@ -30,7 +82,14 @@ def _label_match_startup_trace(stage, **details):
             os.makedirs(root, exist_ok=True)
             path = os.path.join(root, filename)
             with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+                handle.write(
+                    json.dumps(
+                        _label_match_safe_trace_value(payload),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
         except Exception:
             continue
 
@@ -146,6 +205,43 @@ LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME = "label_match_direct_sync_install.j
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 
+def _label_match_window_title():
+    return f"바코드 세트 검증기 ({APP_VERSION})"
+
+
+def _label_match_operator_context(worker_name):
+    return f"작업자 {display_operator_name(worker_name) or '-'}"
+
+
+def _label_match_sanitize_worker_settings(payload):
+    """Remove protected identity fields before settings reach runtime."""
+    if not isinstance(payload, dict):
+        return {}
+    sanitized = sanitize_persistent_value(dict(payload))
+    worker_name = str(sanitized.get("worker_name") or "").strip()
+    if (
+        is_protected_admin_code(worker_name)
+        or worker_name in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
+    ):
+        sanitized.pop("worker_name", None)
+        sanitized.pop("worker_role", None)
+
+    raw_history = sanitized.get("worker_history")
+    if isinstance(raw_history, list):
+        safe_history = []
+        for item in raw_history:
+            raw_name = item.get("name") if isinstance(item, dict) else item
+            name = str(raw_name or "").strip()
+            if (
+                is_protected_admin_code(name)
+                or name in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
+            ):
+                continue
+            safe_history.append(item)
+        sanitized["worker_history"] = safe_history
+    return sanitized
+
+
 def _default_label_match_save_path():
     env_save_dir = os.environ.get(LABEL_MATCH_SAVE_DIR_ENV, "").strip()
     if env_save_dir:
@@ -183,9 +279,15 @@ def _label_match_direct_sync_source_host_id():
     override = os.environ.get(LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "").strip()
     if override:
         return _label_match_safe_token(override, "label-match-worker").lower()
-    pc_id = _label_match_safe_token(os.environ.get("COMPUTERNAME") or socket.gethostname(), "worker-pc")
     suffix = hashlib.sha256(_label_match_machine_identity().encode("utf-8")).hexdigest()[:12]
-    return f"label-match-{pc_id}-{suffix}".lower()
+    return f"label-match-{suffix}".lower()
+
+
+def _label_match_local_log_id():
+    digest = hashlib.sha256(
+        _label_match_machine_identity().encode("utf-8")
+    ).hexdigest()[:16]
+    return f"local-{digest}"
 
 
 def _label_match_direct_sync_bootstrap_enabled():
@@ -4321,11 +4423,25 @@ class CalendarWindow(tk.Toplevel):
         self.destroy()
 
 class DataManager:
-    def __init__(self, save_dir, process_name, worker_name, unique_id):
+    def __init__(
+        self,
+        save_dir,
+        process_name,
+        worker_name,
+        unique_id,
+        *,
+        authenticated_admin=False,
+    ):
         self.save_directory = save_dir
-        self.process_name = process_name
-        self.worker_name = worker_name
-        self.unique_id = unique_id
+        self.process_name = redact_protected_admin_code(process_name)
+        self.worker_name = str(worker_name or "").strip()
+        self.worker_role = (
+            PROTECTED_ADMIN_ROLE
+            if authenticated_admin and self.worker_name == PROTECTED_ADMIN_OPERATOR_ID
+            else "PACKAGING"
+        )
+        self.persistent_worker_name = persistent_operator_name(self.worker_name)
+        self.unique_id = redact_protected_admin_code(unique_id)
         self.log_queue = queue.Queue()
         self._close_lock = threading.Lock()
         self._close_requested = False
@@ -4370,12 +4486,19 @@ class DataManager:
                 if got_item:
                     self.log_queue.task_done()
     def log_event(self, event_type, details):
-        enriched_details = _enrich_label_match_event(event_type, details or {}, self.unique_id)
+        enriched_details = sanitize_persistent_value(
+            _enrich_label_match_event(event_type, details or {}, self.unique_id)
+        )
+        detail_text = json.dumps(
+            enriched_details,
+            ensure_ascii=False,
+            cls=DateTimeEncoder,
+        )
         log_item = [
             datetime.now().isoformat(),
-            _csv_formula_safe_cell(self.worker_name),
-            event_type,
-            json.dumps(enriched_details, ensure_ascii=False, cls=DateTimeEncoder),
+            _csv_formula_safe_cell(persistent_operator_name(self.worker_name)),
+            redact_protected_admin_code(event_type),
+            redact_protected_admin_code(detail_text),
         ]
         with self._close_lock:
             if self._close_requested:
@@ -4407,7 +4530,10 @@ class DataManager:
         temp_path = f"{state_path}.tmp-{os.getpid()}-{threading.get_ident()}"
         try:
             os.makedirs(os.path.dirname(state_path), exist_ok=True)
-            state_data_with_worker = {'worker_name': self.worker_name, **state_data}
+            state_data_with_worker = sanitize_persistent_value(dict(state_data or {}))
+            state_data_with_worker['worker_name'] = persistent_operator_name(
+                self.worker_name
+            )
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(state_data_with_worker, f, ensure_ascii=False, indent=4, cls=DateTimeEncoder)
                 f.flush()
@@ -4426,7 +4552,29 @@ class DataManager:
         state_path = os.path.join(self.save_directory, Label_Match.FILES.CURRENT_STATE)
         if not os.path.exists(state_path): return None
         try:
-            with open(state_path, 'r', encoding='utf-8') as f: return json.load(f)
+            with open(state_path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            if isinstance(state, dict):
+                saved_worker = str(state.get('worker_name') or '').strip()
+                safe_state = sanitize_persistent_value(state)
+                safe_worker = persistent_operator_name(saved_worker)
+                safe_state['worker_name'] = safe_worker
+                if safe_state != state:
+                    state = safe_state
+                    temp_path = f"{state_path}.migrate-{os.getpid()}-{threading.get_ident()}"
+                    try:
+                        with open(temp_path, 'w', encoding='utf-8') as handle:
+                            json.dump(state, handle, ensure_ascii=False, indent=4, cls=DateTimeEncoder)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(temp_path, state_path)
+                    finally:
+                        try:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                        except OSError:
+                            pass
+            return state
         except Exception as e:
             print(f"임시 상태 로드 실패: {e}"); return None
     def delete_current_state(self):
@@ -4797,9 +4945,19 @@ class Label_Match(tk.Tk):
         self.sounds = self.app_settings.get("sound_files", {})
         self.sound_objects = {}
         self.items_data = {}
-        self.unique_id = socket.gethostname()
-        self.worker_name = self.app_settings.get("worker_name", self.Worker.PACKAGING)
-        self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
+        self.unique_id = _label_match_local_log_id()
+        self.worker_name = str(
+            self.app_settings.get("worker_name", self.Worker.PACKAGING)
+        ).strip() or self.Worker.PACKAGING
+        self.worker_role = "PACKAGING"
+        self._authenticated_protected_admin = False
+        self.data_manager = DataManager(
+            self.save_directory,
+            self.Worker.PACKAGING,
+            self.worker_name,
+            self.unique_id,
+            authenticated_admin=False,
+        )
         package_outbox_path = os.path.join(self.save_directory, "package_logistics_outbox.sqlite3")
         self.package_outbox = PackageOutbox(package_outbox_path)
         self.package_cancellation_outbox = PackageCancellationOutbox(package_outbox_path)
@@ -4853,7 +5011,10 @@ class Label_Match(tk.Tk):
         self.package_outbox_thread = None
         self.package_outbox_after_id = None
         self.package_outbox_poll_after_id = None
-        _label_match_startup_trace("app_init_after_data_manager", worker_name=self.worker_name, unique_id=self.unique_id)
+        _label_match_startup_trace(
+            "app_init_after_data_manager",
+            worker_role=self.worker_role,
+        )
         self.current_set_info = {} 
         self.is_blinking = False
         self.scan_count = defaultdict(lambda: defaultdict(int))
@@ -4885,7 +5046,7 @@ class Label_Match(tk.Tk):
         self._workflow_pending_error = None
         self._workflow_recovered = False
         self._workflow_item_snapshot = None
-        self.title(f"바코드 세트 검증기 ({APP_VERSION}) - 로딩 중...")
+        self.title(f"{_label_match_window_title()} - 로딩 중...")
         _label_match_startup_trace("app_init_after_title", title=self.title())
         if capture_startup_geometry:
             _label_match_startup_trace(
@@ -5394,7 +5555,7 @@ class Label_Match(tk.Tk):
             self.entry.config(state='normal')
             self.entry.focus_set()
             self._reset_current_set()
-            self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
+            self.title(_label_match_window_title())
             self.data_manager.log_event(self.Events.APP_START, {"message": "Application initialized."})
             self.initialized_successfully = True
             self._render_operator_workbench()
@@ -5551,7 +5712,23 @@ class Label_Match(tk.Tk):
     def _load_app_settings(self):
         try:
             with open(self.app_settings_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                loaded = json.load(f)
+            sanitized = _label_match_sanitize_worker_settings(loaded)
+            if sanitized != loaded:
+                temporary = f"{self.app_settings_path}.migrate-{os.getpid()}"
+                try:
+                    with open(temporary, 'w', encoding='utf-8') as handle:
+                        json.dump(sanitized, handle, indent=4, ensure_ascii=False)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temporary, self.app_settings_path)
+                finally:
+                    try:
+                        if os.path.exists(temporary):
+                            os.remove(temporary)
+                    except OSError:
+                        pass
+            return sanitized
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
 
@@ -5559,7 +5736,22 @@ class Label_Match(tk.Tk):
         try:
             if not self.initialized_successfully: return
             self._remember_worker_name(self.worker_name)
-            self.app_settings['worker_name'] = self.worker_name
+            protected_admin_active = bool(
+                self.worker_name == PROTECTED_ADMIN_OPERATOR_ID
+                and self.__dict__.get("_authenticated_protected_admin", False)
+            )
+            protected_identity_value = bool(
+                is_protected_admin_code(self.worker_name)
+                or self.worker_name
+                in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
+            )
+            if protected_admin_active or protected_identity_value:
+                self.app_settings.pop('worker_name', None)
+                self.app_settings.pop('worker_role', None)
+            else:
+                self.worker_role = "PACKAGING"
+                self.app_settings['worker_name'] = self.worker_name
+                self.app_settings['worker_role'] = self.worker_role
             if "ui_persistence" not in self.app_settings:
                 self.app_settings["ui_persistence"] = {}
             self.app_settings["ui_persistence"]["scale_factor"] = self.scale_factor
@@ -5570,6 +5762,7 @@ class Label_Match(tk.Tk):
                 self.app_settings["ui_persistence"]["sash_position"] = sashpos(0)
             self.app_settings["ui_persistence"]["summary_col_widths"] = {col: self.summary_tree.column(col, 'width') for col in self.summary_tree['columns']}
             self.app_settings["ui_persistence"]["history_col_widths"] = {col: self.history_tree.column(col, 'width') for col in self.history_tree['columns']}
+            self.app_settings = sanitize_persistent_value(self.app_settings)
             with open(self.app_settings_path, 'w', encoding='utf-8') as f:
                 json.dump(self.app_settings, f, indent=4, ensure_ascii=False)
         except Exception as e:
@@ -5602,12 +5795,19 @@ class Label_Match(tk.Tk):
                 last_used_at = ""
             if not name:
                 continue
+            if (
+                is_protected_admin_code(name)
+                or name in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
+            ):
+                continue
             if name not in by_name:
                 by_name[name] = {"name": name, "last_used_at": last_used_at}
                 order.append(name)
             elif self._worker_history_timestamp(last_used_at) > self._worker_history_timestamp(by_name[name].get("last_used_at")):
                 by_name[name] = {"name": name, "last_used_at": last_used_at}
         current_worker = str(getattr(self, "worker_name", "") or "").strip()
+        if current_worker == PROTECTED_ADMIN_OPERATOR_ID:
+            current_worker = ""
         if current_worker and current_worker not in by_name:
             by_name[current_worker] = {"name": current_worker, "last_used_at": ""}
             order.append(current_worker)
@@ -5623,6 +5823,12 @@ class Label_Match(tk.Tk):
     def _remember_worker_name(self, worker_name):
         name = str(worker_name or "").strip()
         if not name:
+            return
+        if (
+            is_protected_admin_code(name)
+            or name in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
+        ):
+            self.app_settings["worker_history"] = self._worker_history_entries()
             return
         entries = [entry for entry in self._worker_history_entries() if entry["name"] != name]
         entries.insert(0, {"name": name, "last_used_at": datetime.now().astimezone().isoformat(timespec="seconds")})
@@ -6633,6 +6839,11 @@ class Label_Match(tk.Tk):
                 failed_manager.process_name,
                 failed_manager.worker_name,
                 failed_manager.unique_id,
+                authenticated_admin=(
+                    getattr(failed_manager, "worker_role", "") == PROTECTED_ADMIN_ROLE
+                    and getattr(failed_manager, "worker_name", "")
+                    == PROTECTED_ADMIN_OPERATOR_ID
+                ),
             )
             return True
         except Exception as replacement_error:
@@ -6876,17 +7087,18 @@ class Label_Match(tk.Tk):
             should_restore = self.run_tests or messagebox.askyesno("작업 복구", msg)
 
         if should_restore:
-            saved_worker_name = state_data.get('worker_name')
+            saved_worker_name = persistent_operator_name(state_data.get('worker_name'))
+            state_data['worker_name'] = saved_worker_name
             if (
                 saved_worker_name
-                and saved_worker_name != self.worker_name
+                and saved_worker_name != persistent_operator_name(self.worker_name)
                 and package_row is None
             ):
                 response = True
                 if not self.run_tests:
                     response = messagebox.askyesnocancel("작업자 불일치",
-                                                       f"이 저장된 세트는 '{saved_worker_name}' 작업자의 것입니다.\n"
-                                                       f"현재 '{self.worker_name}' 작업자가 이어서 하시겠습니까?",
+                                                       f"이 저장된 세트는 '{display_operator_name(saved_worker_name)}' 작업자의 것입니다.\n"
+                                                       f"현재 '{display_operator_name(self.worker_name)}' 작업자가 이어서 하시겠습니까?",
                                                        icon='warning')
                 if response is None: return
                 elif response is False:
@@ -8667,7 +8879,7 @@ class Label_Match(tk.Tk):
                         set_id=str(self.current_set_info.get("id") or ""),
                         old_seal_qr_payload=old_qr,
                         old_seal_fields=sealed,
-                        operator=self.worker_name,
+                        operator=persistent_operator_name(self.worker_name),
                         old_barcodes=old_values,
                         new_barcodes=new_values,
                     )
@@ -11646,7 +11858,7 @@ class Label_Match(tk.Tk):
         main_frame.grid_columnconfigure(1, weight=1)
         ttk.Label(main_frame, text="작업자 이름", font=(self.default_font_name, 12, "bold")).grid(row=0, column=0, sticky='w', pady=(8,5), padx=(0, 10))
         ttk.Label(main_frame, text="저장 후 다음 작업부터 로그 작업자명이 변경됩니다.", style="Status.TLabel").grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
-        self.worker_name_var = tk.StringVar(value=self.worker_name)
+        self.worker_name_var = tk.StringVar(value=display_operator_name(self.worker_name))
         worker_entry = ttk.Combobox(
             main_frame,
             textvariable=self.worker_name_var,
@@ -11655,6 +11867,16 @@ class Label_Match(tk.Tk):
             font=(self.default_font_name, 12),
         )
         worker_entry.grid(row=2, column=0, columnspan=3, sticky='ew')
+        def update_worker_entry_mask(event=None):
+            value = str(self.worker_name_var.get() or "").strip()
+            mask = "●" if value.isascii() and value.isdecimal() else ""
+            try:
+                worker_entry.configure(show=mask)
+            except (TypeError, TclError):
+                pass
+        worker_entry.bind("<KeyRelease>", update_worker_entry_mask)
+        worker_entry.bind("<<ComboboxSelected>>", update_worker_entry_mask)
+        update_worker_entry_mask()
         button_frame = ttk.Frame(main_frame, padding=(0, 20, 0, 0), style="TFrame")
         button_frame.grid(row=3, column=0, columnspan=3, sticky='e', pady=(20,0))
         save_button = ttk.Button(button_frame, text="저장", command=lambda: self._save_settings_and_close(settings_window, self.worker_name_var.get()))
@@ -11683,23 +11905,86 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showerror("입력 오류", "작업자 이름은 비워둘 수 없습니다.", parent=window)
             return
-        requested_worker_name = new_worker_name.strip()
+        submitted_worker_name = new_worker_name.strip()
+        authenticated_admin = False
+        if is_protected_admin_candidate(submitted_worker_name):
+            if not is_protected_admin_code(submitted_worker_name):
+                worker_name_var = self.__dict__.get("worker_name_var")
+                if worker_name_var is not None:
+                    worker_name_var.set("")
+                submitted_worker_name = ""
+                new_worker_name = ""
+                if not self.run_tests:
+                    messagebox.showerror(
+                        "인증 오류",
+                        "관리자 코드를 확인할 수 없습니다. 보호 프로필과 입력값을 확인하세요.",
+                        parent=window,
+                    )
+                return
+            requested_worker_name = PROTECTED_ADMIN_OPERATOR_ID
+            authenticated_admin = True
+        elif (
+            submitted_worker_name == PROTECTED_ADMIN_DISPLAY_NAME
+            and self.__dict__.get("worker_name", "") == PROTECTED_ADMIN_OPERATOR_ID
+            and self.__dict__.get("_authenticated_protected_admin", False)
+        ):
+            requested_worker_name = PROTECTED_ADMIN_OPERATOR_ID
+            authenticated_admin = True
+        elif submitted_worker_name in {
+            PROTECTED_ADMIN_OPERATOR_ID,
+            PROTECTED_ADMIN_DISPLAY_NAME,
+        }:
+            if not self.run_tests:
+                messagebox.showerror(
+                    "인증 오류",
+                    "보호된 관리자는 관리자 코드를 다시 입력해야 합니다.",
+                    parent=window,
+                )
+            return
+        else:
+            requested_worker_name = submitted_worker_name
+        worker_name_var = self.__dict__.get("worker_name_var")
+        if authenticated_admin:
+            if worker_name_var is not None:
+                worker_name_var.set(PROTECTED_ADMIN_DISPLAY_NAME)
+            submitted_worker_name = redact_authenticated_credential_entry(
+                submitted_worker_name,
+                authenticated=True,
+            )
+            new_worker_name = ""
         try:
             self.data_manager.close(timeout=None)
         except Exception as e:
             self._replace_closed_data_manager_after_close_failure(self.data_manager)
+            if worker_name_var is not None:
+                worker_name_var.set(display_operator_name(self.worker_name))
             if self.run_tests:
                 raise
             messagebox.showerror("저장 보류", f"작업 로그 저장을 완료하지 못해 설정 변경을 중단했습니다.\n\n[상세 오류]\n{e}", parent=window)
             return
 
         self.worker_name = requested_worker_name
+        self._authenticated_protected_admin = authenticated_admin
+        self.worker_role = PROTECTED_ADMIN_ROLE if authenticated_admin else "PACKAGING"
         self._save_app_settings()
         self._update_save_directory()
-        self.data_manager = DataManager(self.save_directory, self.Worker.PACKAGING, self.worker_name, self.unique_id)
-        self.title(f"바코드 세트 검증기 ({APP_VERSION}) - {self.worker_name} ({self.unique_id})")
+        self.data_manager = DataManager(
+            self.save_directory,
+            self.Worker.PACKAGING,
+            self.worker_name,
+            self.unique_id,
+            authenticated_admin=authenticated_admin,
+        )
+        self.title(_label_match_window_title())
+        operator_context = self.__dict__.get("operator_header_context_label")
+        if operator_context is not None:
+            operator_context.configure(text=_label_match_operator_context(self.worker_name))
         if not self.run_tests:
-            messagebox.showinfo("저장 완료", f"설정이 변경되었습니다.\n- 작업자: {self.worker_name}", parent=self)
+            messagebox.showinfo(
+                "저장 완료",
+                f"설정이 변경되었습니다.\n- 작업자: {display_operator_name(self.worker_name)}",
+                parent=self,
+            )
         self._destroy_modal_and_refocus(window)
 
     def _show_about_window(self):
@@ -12543,9 +12828,8 @@ class Label_Match(tk.Tk):
                 15 if compact_large_text else tokens.fonts.live_list,
             )
             if constrained_large_text:
-                worker = str(self.__dict__.get("worker_name") or "작업자")
                 self.operator_title_label.configure(
-                    text=f"Label Match · {self._middle_ellipsis(worker, 10)}",
+                    text="Label Match · 포장 검증",
                     font=(self.default_font_name, 18, "bold"),
                 )
                 self.operator_header_context_label.grid_remove()
@@ -14171,9 +14455,8 @@ class Label_Match(tk.Tk):
         self.operator_title_label.grid(row=0, column=0, sticky="w")
         self.operator_header_context_label = ttk.Label(
             self.operator_header_frame,
-            text=(
-                f"작업자 {self.__dict__.get('worker_name', '-')}  ·  "
-                f"{self.__dict__.get('unique_id', '-')}"
+            text=_label_match_operator_context(
+                self.__dict__.get('worker_name', '-')
             ),
             style="Status.TLabel",
         )
