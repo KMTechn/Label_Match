@@ -12,6 +12,11 @@
 `timestamp,worker_name,event,details` 형식으로 기록된다. 이 문서의 나머지
 규칙 파일 설명은 legacy 참고로만 사용한다.
 
+**업데이트 안내 (2026-08-03):** frozen 배포본은 저장 설정에 updater 항목이
+없는 구 설치본도 내장된 공개키로 서명된 사내 stable feed를 확인한다. 새 버전이
+있으면 확인창에서 동의한 경우에만 SHA-256·archive 계약을 검증해 적용한다.
+환경변수 또는 설치 설정에 `provider=off`가 명시된 경우에는 확인하지 않는다.
+
 이 문서는 '바코드 검증 시스템'의 바코드 판별 규칙을 정의하는
 `validation_rules.csv` 파일의 사용법을 설명합니다.
 

@@ -3469,6 +3469,14 @@ UPDATE_MANIFEST_SCHEMA_VERSION = "kmtech-private-update-manifest-v1"
 UPDATE_MANIFEST_VERSION = 1
 UPDATE_DEFAULT_CHANNEL = "stable"
 UPDATE_APP_ID = "Label_Match"
+UPDATE_BOOTSTRAP_MANIFEST_URL = (
+    "https://worker.kmtecherp.com/static/update-feed/channels/"
+    "label_match/stable/latest.json"
+)
+UPDATE_BOOTSTRAP_MANIFEST_SIGNATURE_URL = UPDATE_BOOTSTRAP_MANIFEST_URL + ".sig"
+UPDATE_BOOTSTRAP_MANIFEST_PUBLIC_KEY = (
+    "8ce2c21a1196ac627a547432de2a2c74c2267875297981f11f7b0d72b851cddf"
+)
 UPDATE_PC_ID_ENV = "LABEL_MATCH_UPDATE_PC_ID"
 UPDATE_ALLOWED_INSTALL_STRATEGIES = {"manual", "robocopy_backup_then_mirror", "replace_exe", "none"}
 UPDATE_AUTOMATIC_INSTALL_STRATEGY = "robocopy_backup_then_mirror"
@@ -3527,8 +3535,14 @@ def _load_update_settings():
 
 def _get_update_provider():
     settings = _load_update_settings()
-    provider = os.environ.get(UPDATE_PROVIDER_ENV) or settings.get("provider") or UPDATE_PROVIDER_OFF
-    return str(provider).strip().lower()
+    provider = os.environ.get(UPDATE_PROVIDER_ENV)
+    if provider is None:
+        provider = settings.get("provider")
+    if provider is not None:
+        return str(provider).strip().lower() or UPDATE_PROVIDER_OFF
+    if _can_apply_updates():
+        return UPDATE_PROVIDER_PRIVATE_MANIFEST
+    return UPDATE_PROVIDER_OFF
 
 
 def _get_update_channel():
@@ -3539,19 +3553,35 @@ def _get_update_channel():
 
 def _get_update_manifest_url():
     settings = _load_update_settings()
-    url = os.environ.get(UPDATE_MANIFEST_URL_ENV) or settings.get("manifest_url") or ""
+    url = (
+        os.environ.get(UPDATE_MANIFEST_URL_ENV)
+        or settings.get("manifest_url")
+        or UPDATE_BOOTSTRAP_MANIFEST_URL
+    )
     return str(url).strip()
 
 
 def _get_update_manifest_signature_url(manifest_url):
     settings = _load_update_settings()
-    url = os.environ.get(UPDATE_MANIFEST_SIGNATURE_URL_ENV) or settings.get("manifest_signature_url") or ""
-    return str(url).strip() or f"{manifest_url}.sig"
+    url = str(
+        os.environ.get(UPDATE_MANIFEST_SIGNATURE_URL_ENV)
+        or settings.get("manifest_signature_url")
+        or ""
+    ).strip()
+    if url:
+        return url
+    if manifest_url == UPDATE_BOOTSTRAP_MANIFEST_URL:
+        return UPDATE_BOOTSTRAP_MANIFEST_SIGNATURE_URL
+    return f"{manifest_url}.sig"
 
 
 def _get_update_manifest_public_key():
     settings = _load_update_settings()
-    key = os.environ.get(UPDATE_MANIFEST_PUBLIC_KEY_ENV) or settings.get("manifest_public_key") or ""
+    key = (
+        os.environ.get(UPDATE_MANIFEST_PUBLIC_KEY_ENV)
+        or settings.get("manifest_public_key")
+        or UPDATE_BOOTSTRAP_MANIFEST_PUBLIC_KEY
+    )
     return str(key).strip()
 
 
