@@ -986,6 +986,10 @@ def _is_elevated_windows_process() -> bool:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL integration is Windows-only")
+@pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() == "true",
+    reason="GitHub Actions is not the trusted Windows ACL integration target",
+)
 def test_windows_temp_file_acl_readback_is_exact(tmp_path: Path) -> None:
     identity = subprocess.run(
         ["whoami.exe"],
@@ -1010,6 +1014,10 @@ def test_windows_temp_file_acl_readback_is_exact(tmp_path: Path) -> None:
 @pytest.mark.skipif(
     not _is_elevated_windows_process(),
     reason="exact Windows ACL integration requires an elevated temporary-path process",
+)
+@pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS", "").lower() == "true",
+    reason="GitHub Actions is not the trusted Windows ACL integration target",
 )
 def test_windows_temp_profile_has_exact_directory_and_file_acl(tmp_path: Path) -> None:
     identity = subprocess.run(
