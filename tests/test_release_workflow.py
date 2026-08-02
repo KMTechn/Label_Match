@@ -79,28 +79,22 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert "PYTHONNOUSERSITE" in workflow
     assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" in workflow
     assert "Clean release virtual environment" in workflow
-    assert workflow.count('$PSNativeCommandUseErrorActionPreference = $true') >= 4
+    assert workflow.count('$PSNativeCommandUseErrorActionPreference = $true') == 3
     assert "fetch-depth: 0" in workflow
     assert "persist-credentials: false" in workflow
     assert "LABEL_MATCH_ENROLLMENT_TOKEN" not in workflow
     assert "Normal installs use PRODUCER_SELF_ENROLL_ALLOWED_IPS" in workflow
-    assert (
-        "--deselect tests/test_label_operator_workbench.py::"
-        "test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows"
-    ) in workflow
-    assert (
-        "--deselect tests/test_label_operator_workbench.py::"
-        "test_display2_1366_scale100_keeps_operator_content_inside_its_regions"
-    ) in workflow
+    assert "test_live_submission_retry_hides_raw_server_error" not in workflow
+    assert "test_display2_1366_scale100" not in workflow
 
     include_step = workflow.index("- name: Include direct-sync relay tools")
     identity_step = workflow.index("- name: Validate release identity")
-    test_step = workflow.index("- name: Run tests")
+    test_step = workflow.index("- name: Verify staged installer without system Python")
     helper_build_step = workflow.index("- name: Build direct-sync CLI tools")
     zip_step = workflow.index("- name: Build and verify internal release archive")
     packaging_block = workflow[include_step:zip_step]
 
-    assert identity_step < test_step < helper_build_step < include_step < zip_step
+    assert identity_step < helper_build_step < include_step < test_step < zip_step
     assert "New-Item -ItemType Directory -Force -Path dist/Label_Match/tools" in packaging_block
     assert "Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match" in packaging_block
     assert "Copy-Item direct_sync_push.py,direct_sync_runtime.py,direct_sync_operator.py -Destination dist/Label_Match" in packaging_block
@@ -140,6 +134,26 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert "internal_unsigned" in workflow
 
 
+def test_full_ci_runs_regression_once_and_keeps_physical_display2_separate():
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "pull_request:" not in ci
+    assert "workflow_dispatch:" not in ci
+    assert "cancel-in-progress: true" in ci
+    assert ci.count("python -m pytest") == 2
+    assert "if: steps.ui_scope.outputs.required == 'true'" in ci
+    assert "test_live_submission_retry_hides_raw_server_error" in ci
+    assert ci.count("test_display2_1366_scale100") == 1
+    assert "py_compile" not in ci
+    assert "Run full regression" not in release
+    assert "Require successful exact-SHA main Full CI" in release
+    assert "actions/workflows/ci.yml/runs" in release
+    codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
+    assert "/.github/workflows/** @kevin9899" in codeowners
+    assert "/Label_Match.py @kevin9899" in codeowners
+
+
 def test_release_workflow_generates_private_update_manifest():
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
     uses_values = re.findall(r"(?m)^\s+uses:\s+([^\s#]+)", workflow)
@@ -174,7 +188,7 @@ def test_release_workflow_generates_private_update_manifest():
     assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip" in workflow
     assert "- name: Sign private update manifest" in workflow
     assert "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY" in workflow
-    assert "- name: Publish private update feed" in workflow
+    assert "- name: Promote private update feed after GitHub Release" in workflow
     assert "COMPANY_UPDATE_UPLOAD_TOKEN" in workflow
     assert "COMPANY_UPDATE_UPLOAD_ORIGIN_IP" in workflow
     assert "--resolve" in workflow
@@ -300,7 +314,8 @@ def test_release_workflow_requires_explicit_private_feed_publish_opt_in():
     assert '$publishPrivateFeed = $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE -ceq "true"' in workflow
     assert 'foreach ($name in @("PRIVATE_UPDATE_ARTIFACT_BASE_URL", "COMPANY_UPDATE_UPLOAD_URL"))' in workflow
     assert 'throw "$name is required when ENABLE_PRIVATE_UPDATE_FEED_PUBLISH is true."' in workflow
-    assert workflow.count(f"if: {explicit_opt_in}") == 3
+    assert workflow.count(f"if: {explicit_opt_in}") == 2
+    assert "if: steps.private_feed.outputs.enabled == 'true'" in workflow
     assert "if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}" not in workflow
 
     attach_block = workflow[
@@ -313,18 +328,20 @@ def test_release_workflow_requires_explicit_private_feed_publish_opt_in():
     ]
     sign_block = workflow[
         workflow.index("- name: Sign private update manifest"):
-        workflow.index("- name: Publish private update feed")
+        workflow.index("- name: Create Release and Upload Asset")
     ]
     publish_block = workflow[
-        workflow.index("- name: Publish private update feed"):
-        workflow.index("- name: Create Release and Upload Asset")
+        workflow.index("- name: Promote private update feed after GitHub Release"):
     ]
 
     assert 'provider = "github"' in attach_block
     assert 'provider = "private_manifest"' in attach_block
     assert f"if: {explicit_opt_in}" in manifest_block
     assert f"if: {explicit_opt_in}" in sign_block
-    assert f"if: {explicit_opt_in}" in publish_block
+    assert "if: steps.private_feed.outputs.enabled == 'true'" in publish_block
+    assert workflow.index("- name: Create Release and Upload Asset") < workflow.index(
+        "- name: Promote private update feed after GitHub Release"
+    )
     assert "canary_release.outputs" not in manifest_block
     assert "canary_release.outputs" not in sign_block
     assert "canary_release.outputs" not in publish_block
@@ -461,12 +478,13 @@ def test_release_workflow_self_verifies_private_manifest_signature_before_publis
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
     sign_step = workflow.index("- name: Sign private update manifest")
-    publish_step = workflow.index("- name: Publish private update feed")
+    publish_step = workflow.index("- name: Promote private update feed after GitHub Release")
     sign_block = workflow[sign_step:publish_step]
     next_step = workflow.index("\n      - name:", sign_step + 1)
     sign_step_block = workflow[sign_step:next_step]
 
     assert sign_step < publish_step
+    assert sign_step < workflow.index("- name: Create Release and Upload Asset") < publish_step
     assert (
         "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: "
         "${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}"
@@ -516,6 +534,7 @@ def test_release_workflow_self_verifies_private_manifest_signature_before_publis
     env["PRIVATE_UPDATE_MANIFEST_PATH"] = str(manifest_path)
     env["PRIVATE_UPDATE_MANIFEST_SIGNING_KEY"] = private_key_hex
     env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = public_key_hex
+    env["GITHUB_ENV"] = str(tmp_path / "github-env.txt")
     matching = subprocess.run(
         [sys.executable, "-c", embedded_script],
         capture_output=True,

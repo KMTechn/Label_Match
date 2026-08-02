@@ -34,7 +34,7 @@
 cd C:\company\program\Label_Match
 pip install -r requirements.txt
 python Label_Match.py
-python -m py_compile Label_Match.py
+python -m pytest -q -p no:cacheprovider <changed-test-node>
 ```
 
 배포 후보는 GitHub Actions workflow 기준으로 PyInstaller `--onedir --windowed` 빌드다.
