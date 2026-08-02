@@ -82,15 +82,17 @@ def test_provisioning_document_and_version_contract_are_current() -> None:
     assert _app_version() == "v2.0.57"
 
 
-def test_release_preflight_compiles_terminal_operation_lease_module() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+def test_release_consumes_full_ci_instead_of_recompiling_imported_modules() -> None:
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
-    compile_command = next(
-        line.strip()
-        for line in workflow.splitlines()
-        if "python -B -m py_compile" in line
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    lease_tests = (ROOT / "tests" / "test_terminal_operation_lease.py").read_text(
+        encoding="utf-8"
     )
-    assert "Label_Match.py" in compile_command
-    assert "package_logistics.py" in compile_command
-    assert "terminal_operation_lease.py" in compile_command
+
+    assert "py_compile" not in release
+    assert "py_compile" not in ci
+    assert "Require successful exact-SHA main Full CI" in release
+    assert "python -m pytest -q --deselect" in ci
+    assert "from terminal_operation_lease import" in lease_tests
