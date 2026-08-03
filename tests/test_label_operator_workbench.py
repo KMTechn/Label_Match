@@ -967,7 +967,6 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
     from tools.capture_label_operator_ui import (
         TARGET_DISPLAY_DPI,
         _apply_scale,
-        _configure_size,
         _make_capture_app,
         _pending_after_ids,
         _wait_until_ready,
@@ -1020,7 +1019,20 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
         )
         _wait_until_ready(app)
         _apply_scale(app, 1.4)
-        _configure_size(app, (1366, 768))
+
+        def configure_hosted_size(size):
+            width, height = map(int, size)
+            app.state("normal")
+            app.resizable(True, True)
+            app.geometry(f"{width}x{height}+0+0")
+            app.update_idletasks()
+            pump_tk(app, 160)
+            settle_responsive_layout(app)
+
+        # Hosted CI owns the live Tk retry/layout signal, not physical monitor
+        # placement. The separate DISPLAY2 test below remains fail-closed and
+        # runs only on the approved TEST1 non-primary monitor.
+        configure_hosted_size((1366, 768))
         app.entry.focus_set()
         pump_tk(app, 120)
         assert app.focus_get() == app.entry
@@ -1189,7 +1201,7 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
         assert app.focus_get() == app.entry
 
         _apply_scale(app, 1.0)
-        _configure_size(app, (2560, 1392))
+        configure_hosted_size((2560, 1392))
         error_fixture = next(
             fixture
             for fixture in build_state_fixtures()
@@ -1380,7 +1392,7 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
         )
 
         def history_signature_at(size):
-            _configure_size(app, size)
+            configure_hosted_size(size)
             apply_state_fixture(app, history_fixture)
             settle_responsive_layout(app)
             pump_tk(app, 180)
