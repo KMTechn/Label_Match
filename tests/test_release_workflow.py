@@ -152,6 +152,7 @@ def test_full_ci_runs_regression_once_and_keeps_physical_display2_separate():
     codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
     assert "/.github/workflows/** @kevin9899" in codeowners
     assert "/Label_Match.py @kevin9899" in codeowners
+    assert "/label_match_single_instance.py @kevin9899" in codeowners
     assert "/tools/classify_hosted_ui_scope.py @kevin9899" in codeowners
 
 

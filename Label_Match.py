@@ -16,6 +16,7 @@ from protected_admin import (
     redact_protected_admin_code,
     sanitize_persistent_value,
 )
+from label_match_single_instance import resolve_data_scope, run_guarded_entrypoint
 
 
 _LABEL_MATCH_SENSITIVE_TRACE_KEYS = frozenset({
@@ -3455,7 +3456,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.58"  # unreleased TEST1 candidate
+APP_VERSION = "v2.0.59"  # unreleased TEST1 candidate
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -16777,15 +16778,27 @@ def prepare_startup_item_catalog():
     return str(active_path)
 
 
-if __name__ == "__main__":
+def _run_label_match_application():
+    """Start the stateful application after single-instance ownership."""
+
+    prepare_startup_item_catalog()
+    app = Label_Match()
+    _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
+    _label_match_startup_trace("mainloop_enter")
+    app.mainloop()
+    _label_match_startup_trace("mainloop_exit")
+    return 0
+
+
+def main():
     _label_match_startup_trace("main_enter")
     try:
-        prepare_startup_item_catalog()
-        app = Label_Match()
-        _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
-        _label_match_startup_trace("mainloop_enter")
-        app.mainloop()
-        _label_match_startup_trace("mainloop_exit")
+        settings_path = resource_path(os.path.join("config", Label_Match.FILES.SETTINGS))
+        data_scope = resolve_data_scope(settings_path=settings_path)
+        return run_guarded_entrypoint(
+            _run_label_match_application,
+            data_scope=data_scope,
+        )
     except Exception as exc:
         _label_match_startup_trace(
             "main_exception",
@@ -16795,3 +16808,7 @@ if __name__ == "__main__":
         if _label_match_explicit_automated_test_mode():
             raise SystemExit(1) from None
         raise
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
