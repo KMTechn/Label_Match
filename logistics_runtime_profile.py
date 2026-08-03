@@ -7,7 +7,9 @@ import ipaddress
 import json
 import math
 import os
+import re
 import stat
+import sys
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +20,9 @@ from urllib.parse import urlsplit, urlunsplit
 PROFILE_CONTRACT_VERSION = "km-logistics-runtime-profile-v1"
 PROFILE_PATH_ENV = "KM_LOGISTICS_PROFILE_PATH"
 REQUIRED_ENV = "KM_LOGISTICS_REQUIRED"
+TEST1_ISOLATED_LEGACY_OVERRIDE_ENV = (
+    "KMTECH_TEST1_ALLOW_ISOLATED_LEGACY_LOGISTICS"
+)
 DPAPI_REFERENCE_PREFIX = "dpapi:"
 DEFAULT_TOKEN_REF = "dpapi:secrets/bearer-token.dpapi"
 DPAPI_ENTROPY = b"KMTech Logistics Runtime Profile v1"
@@ -25,6 +30,15 @@ DEFAULT_PROFILE_RELATIVE_PATH = Path("KMTech") / "Logistics" / "runtime-profile.
 SUPPORTED_LEDGER_PLANES = frozenset({"AUTHORITATIVE", "SHADOW_CANDIDATE"})
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_SECRET_BYTES = 64 * 1024
+_TEST1_RUNS_ROOT = Path(r"C:\KMTech\Test1\Runs")
+_TEST1_SCOPE_RE = re.compile(r"^TEST1-[A-Za-z0-9][A-Za-z0-9._-]{0,193}$")
+_TEST1_IDENTITY_RE = re.compile(r"^test1-[A-Za-z0-9][A-Za-z0-9._-]{0,193}$")
+_TEST1_APP_DATA_ROOT_ENV = "LABEL_MATCH_SAVE_DIR"
+_TEST1_LEGACY_BASE_URL_ENV = "LABEL_MATCH_LOGISTICS_API_BASE_URL"
+_TEST1_LEGACY_TOKEN_ENV = "LABEL_MATCH_LOGISTICS_API_TOKEN"
+_TEST1_LEGACY_SCOPE_ENV = "LABEL_MATCH_LOGISTICS_AUTHORITY_SCOPE_ID"
+_TEST1_LEGACY_SOURCE_ENV = "LABEL_MATCH_LOGISTICS_SOURCE_HOST_ID"
+_TEST1_LEGACY_DEVICE_ENV = "LABEL_MATCH_LOGISTICS_DEVICE_ID"
 _MACHINE_ENVIRONMENT_KEY = (
     r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
 )
@@ -170,9 +184,150 @@ def _machine_environment_value(name: str) -> str:
     return str(value or "").strip()
 
 
+def _test1_run_path(
+    value: object,
+    *,
+    environment_name: str,
+    label: str,
+) -> tuple[Path, str]:
+    raw_path = str(value or "")
+    if not raw_path or raw_path != raw_path.strip():
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires a nonempty "
+            f"{environment_name}"
+        )
+    source = Path(raw_path)
+    if not source.is_absolute():
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires an absolute "
+            f"{environment_name}"
+        )
+    inspected = assert_path_has_no_reparse_components(source, label=label)
+    try:
+        relative = inspected.resolve(strict=False).relative_to(
+            _TEST1_RUNS_ROOT.resolve(strict=False)
+        )
+    except (OSError, ValueError) as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires "
+            f"{environment_name} under "
+            r"C:\KMTech\Test1\Runs\<run>"
+        ) from exc
+    if not relative.parts:
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires a nonempty run "
+            f"directory in {environment_name}"
+        )
+    return inspected.resolve(strict=False), relative.parts[0]
+
+
+def _test1_isolated_legacy_override_enabled() -> bool:
+    """Validate the process-only TEST1 escape hatch before consulting HKLM."""
+    opt_in = os.environ.get(TEST1_ISOLATED_LEGACY_OVERRIDE_ENV)
+    if opt_in in (None, ""):
+        return False
+    if opt_in != "1":
+        raise LogisticsRuntimeConfigurationError(
+            f"{TEST1_ISOLATED_LEGACY_OVERRIDE_ENV} must be exactly 1"
+        )
+    if sys.platform != "win32":
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires Windows"
+        )
+    if str(os.environ.get("COMPUTERNAME") or "").casefold() != "test1":
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires COMPUTERNAME=TEST1"
+        )
+    if any(name in os.environ for name in (PROFILE_PATH_ENV, REQUIRED_ENV)):
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires process profile "
+            "anchors to be absent"
+        )
+
+    _app_data_root, run_name = _test1_run_path(
+        os.environ.get(_TEST1_APP_DATA_ROOT_ENV),
+        environment_name=_TEST1_APP_DATA_ROOT_ENV,
+        label="TEST1 isolated Label data root",
+    )
+
+    base_url = str(os.environ.get(_TEST1_LEGACY_BASE_URL_ENV) or "")
+    try:
+        parsed_url = urlsplit(base_url)
+        port = parsed_url.port
+    except ValueError as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires an exact HTTPS "
+            "loopback origin"
+        ) from exc
+    if (
+        port is None
+        or not 1 <= port <= 65535
+        or base_url != f"https://127.0.0.1:{port}"
+    ):
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires the exact "
+            "loopback origin https://127.0.0.1:<port>"
+        )
+
+    authority_scope = str(os.environ.get(_TEST1_LEGACY_SCOPE_ENV) or "")
+    source_host_id = str(os.environ.get(_TEST1_LEGACY_SOURCE_ENV) or "")
+    device_id = str(os.environ.get(_TEST1_LEGACY_DEVICE_ENV) or "")
+    if not _TEST1_SCOPE_RE.fullmatch(authority_scope):
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires a TEST1- "
+            "authority scope"
+        )
+    if not _TEST1_IDENTITY_RE.fullmatch(source_host_id):
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires a test1- source "
+            "host"
+        )
+    if not _TEST1_IDENTITY_RE.fullmatch(device_id):
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires a test1- device"
+        )
+    token = str(os.environ.get(_TEST1_LEGACY_TOKEN_ENV) or "")
+    if (
+        not token
+        or token != token.strip()
+        or len(token) > 16_384
+        or any(character.isspace() for character in token)
+    ):
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated legacy logistics override requires a valid token"
+        )
+
+    ca_bundle, ca_run_name = _test1_run_path(
+        os.environ.get("REQUESTS_CA_BUNDLE"),
+        environment_name="REQUESTS_CA_BUNDLE",
+        label="TEST1 isolated CA bundle",
+    )
+    if ca_run_name.casefold() != run_name.casefold():
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated REQUESTS_CA_BUNDLE must use the same run directory "
+            f"as {_TEST1_APP_DATA_ROOT_ENV}"
+        )
+    try:
+        is_ca_file = ca_bundle.is_file()
+        ca_size = ca_bundle.stat().st_size if is_ca_file else 0
+    except OSError as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated REQUESTS_CA_BUNDLE could not be inspected"
+        ) from exc
+    if not is_ca_file or not 1 <= ca_size <= MAX_SECRET_BYTES:
+        raise LogisticsRuntimeConfigurationError(
+            "TEST1 isolated REQUESTS_CA_BUNDLE must be a bounded non-reparse file"
+        )
+    return True
+
+
 def _runtime_environment(environ: Mapping[str, str] | None) -> Mapping[str, str]:
-    if environ is not None or os.name != "nt":
-        return os.environ if environ is None else environ
+    if environ is not None:
+        return environ
+    if _test1_isolated_legacy_override_enabled():
+        return os.environ
+    if os.name != "nt":
+        return os.environ
     machine_path = _machine_environment_value(PROFILE_PATH_ENV)
     machine_required = _machine_environment_value(REQUIRED_ENV)
     if machine_path or machine_required:
@@ -349,6 +504,12 @@ def load_logistics_runtime_profile(
     decryptor: Callable[[bytes], str] | None = None,
 ) -> LogisticsRuntimeProfile | None:
     values = _runtime_environment(environ)
+    if (
+        environ is None
+        and os.environ.get(TEST1_ISOLATED_LEGACY_OVERRIDE_ENV) == "1"
+        and not str(profile_path or "").strip()
+    ):
+        return None
     required_value = logistics_runtime_required(values) if required is None else bool(required)
     explicit_path = profile_path or str(values.get(PROFILE_PATH_ENV) or "").strip()
     path = assert_path_has_no_reparse_components(
@@ -479,6 +640,7 @@ __all__ = [
     "PROFILE_CONTRACT_VERSION",
     "PROFILE_PATH_ENV",
     "REQUIRED_ENV",
+    "TEST1_ISOLATED_LEGACY_OVERRIDE_ENV",
     "assert_logistics_runtime_ready",
     "assert_path_has_no_reparse_components",
     "default_logistics_profile_path",
