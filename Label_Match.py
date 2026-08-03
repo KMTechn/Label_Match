@@ -15029,9 +15029,9 @@ class Label_Match(tk.Tk):
         # operator surface needs a stable cause and a concrete recovery step.
         print(f"중앙 제출 기술 진단: {error}")
         message = (
-            "중앙 서비스에서 제출을 확인하지 못했습니다. 현재 세트는 유지됩니다. "
-            "잠시 후 제출 재시도를 누르세요. "
-            "계속 실패하면 관리자에게 확인을 요청하세요."
+            "중앙 제출을 확인하지 못했습니다.\n"
+            "현재 세트는 유지됩니다.\n"
+            "계속 실패 시 관리자 확인"
         )
         notice = WorkflowNotice(
             title=(

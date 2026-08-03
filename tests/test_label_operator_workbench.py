@@ -1132,9 +1132,10 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
         assert app.operator_status_frame.winfo_height() <= 32
 
         notice_text = str(app.workflow_notice_label.cget("text"))
-        assert "중앙 서비스에서 제출을 확인하지 못했습니다." in notice_text
+        assert "중앙 제출을 확인하지 못했습니다." in notice_text
         assert "현재 세트는 유지됩니다." in notice_text
-        assert "제출 재시도" in notice_text
+        assert "계속 실패 시 관리자 확인" in notice_text
+        assert notice_text.count("\n") == 2
         assert server_error not in notice_text
         assert "HTTP" not in notice_text
         assert "503" not in notice_text
