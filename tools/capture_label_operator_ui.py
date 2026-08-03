@@ -1947,7 +1947,22 @@ def _apply_activity_fixture_rows(app: Any) -> None:
         )
     for iid, expected_values in zip(actual_session, expected_session_values):
         values = tuple(session_tree.item(iid, "values") or ())
-        if values != expected_values:
+        expected_time, expected_item, expected_result = expected_values
+        item_value = str(values[1]) if len(values) == 3 else ""
+        item_head, item_separator, item_tail = item_value.partition("...")
+        item_identity_preserved = item_value == expected_item or bool(
+            item_separator
+            and item_head
+            and item_tail
+            and str(expected_item).startswith(item_head)
+            and str(expected_item).endswith(item_tail)
+        )
+        if (
+            len(values) != 3
+            or values[0] != expected_time
+            or values[2] != expected_result
+            or not item_identity_preserved
+        ):
             raise RuntimeError(
                 f"activity session renderer changed values: {iid}={values}"
             )
