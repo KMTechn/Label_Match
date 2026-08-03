@@ -41,17 +41,21 @@ jobs:
           $ErrorActionPreference = "Stop"
           $releaseCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
           $response = gh api --method GET "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" `
-            -f branch=main -f event=push -f head_sha="$releaseCommit" -f status=success -f per_page=100
+            -f branch=main -f event=push -f head_sha="$releaseCommit" -f status=completed -f per_page=100
           if ($LASTEXITCODE -ne 0) { throw "Unable to query Full CI evidence." }
-          $runs = ($response | ConvertFrom-Json).workflow_runs
+          $runs = (ConvertFrom-Json -InputObject $response).workflow_runs
           $matches = @($runs | Where-Object {
             $_.head_sha -ceq $releaseCommit -and $_.head_branch -ceq "main" -and
-            $_.event -ceq "push" -and $_.conclusion -ceq "success"
+            $_.event -ceq "push" -and $_.status -ceq "completed"
           })
-          if ($matches.Count -lt 1) {
-            throw "BLOCKED: exact release SHA has no successful main-push Full CI run. sha=$releaseCommit"
+          if ($matches.Count -ne 1) {
+            throw "BLOCKED: exact release SHA must have exactly one completed main-push Full CI run. sha=$releaseCommit count=$($matches.Count)"
           }
-          Write-Output "full_ci_attestation=PASS sha=$releaseCommit run_id=$($matches[0].id)"
+          $run = $matches[0]
+          if ($run.run_attempt -ne 1 -or $run.conclusion -cne "success") {
+            throw "BLOCKED: exact Full CI run must be attempt 1 success. sha=$releaseCommit attempt=$($run.run_attempt) conclusion=$($run.conclusion)"
+          }
+          Write-Output "full_ci_attestation=PASS sha=$releaseCommit run_id=$($run.id) attempt=1"
 
       - name: Resolve private update feed publish mode
         id: private_feed

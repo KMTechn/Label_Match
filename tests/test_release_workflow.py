@@ -149,6 +149,11 @@ def test_full_ci_runs_regression_once_and_keeps_physical_display2_separate():
     assert "Run full regression" not in release
     assert "Require successful exact-SHA main Full CI" in release
     assert "actions/workflows/ci.yml/runs" in release
+    assert "-f status=completed" in release
+    assert "-f status=success" not in release
+    assert "if ($matches.Count -ne 1)" in release
+    assert "$run.run_attempt -ne 1" in release
+    assert '$run.conclusion -cne "success"' in release
     codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
     assert "/.github/workflows/** @kevin9899" in codeowners
     assert "/Label_Match.py @kevin9899" in codeowners
