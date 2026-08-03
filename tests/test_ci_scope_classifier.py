@@ -53,6 +53,22 @@ def test_empty_or_mixed_change_sets_fail_closed():
 
 def test_ci_workflow_uses_the_fail_closed_classifier():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "python -I -S tools/classify_hosted_ui_scope.py" in workflow
-    assert "Hosted UI scope classifier failed closed." in workflow
+    classifier_start = workflow.index("- name: Classify hosted UI evidence scope")
+    classifier_end = workflow.index("\n      - name:", classifier_start + 1)
+    classifier_step = workflow[classifier_start:classifier_end]
+    consumer_start = workflow.index(
+        "- name: Run hosted UI retry geometry when UI changed"
+    )
+    consumer_end = workflow.find("\n      - name:", consumer_start + 1)
+    consumer_step = workflow[
+        consumer_start : consumer_end if consumer_end != -1 else len(workflow)
+    ]
+
+    assert "id: ui_scope" in classifier_step
+    assert "python -I -S tools/classify_hosted_ui_scope.py" in classifier_step
+    assert '@("true", "false") -cnotcontains $required[0]' in classifier_step
+    assert '"required=$($required[0])"' in classifier_step
+    assert "$env:GITHUB_OUTPUT" in classifier_step
+    assert "Hosted UI scope classifier failed closed." in classifier_step
+    assert "if: steps.ui_scope.outputs.required == 'true'" in consumer_step
     assert "Label_Match\\.py$|" not in workflow

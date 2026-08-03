@@ -423,6 +423,51 @@ def test_tag_release_has_no_stable_or_latest_bypass():
     assert "make_latest: legacy" not in release_block
 
 
+def test_private_feed_rollout_gate_accepts_only_exact_zero(tmp_path):
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    start = workflow.index("- name: Enforce private feed TEST1 rollout boundary")
+    end = workflow.index("\n      - name:", start + 1)
+    step = workflow[start:end]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1]).strip()
+
+    assert "if: steps.private_feed.outputs.enabled == 'true'" in step
+    assert "ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}" in step
+    assert '$env:ROLLOUT_PERCENTAGE -cne "0"' in script
+
+    powershell = next(
+        (
+            executable
+            for name in ("pwsh", "powershell", "powershell.exe")
+            if (executable := shutil.which(name))
+        ),
+        None,
+    )
+    assert powershell is not None
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+
+    def run_gate(value):
+        env = os.environ.copy()
+        if value is None:
+            env.pop("ROLLOUT_PERCENTAGE", None)
+        else:
+            env["ROLLOUT_PERCENTAGE"] = value
+        return subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+
+    accepted = run_gate("0")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    for value in (None, "", "00", "1", "100", " 0 "):
+        rejected = run_gate(value)
+        assert rejected.returncode != 0
+        assert "must use PRIVATE_UPDATE_ROLLOUT_PERCENTAGE=0" in rejected.stderr
+
+
 def test_release_workflow_self_verifies_private_manifest_signature_before_publish(tmp_path):
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
