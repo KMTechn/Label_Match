@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: full-ci-${{ github.workflow }}-${{ github.ref }}
@@ -35,11 +36,31 @@ jobs:
         id: ui_scope
         shell: pwsh
         env:
-          BEFORE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          $baseline = ""
+          try {
+            $response = gh api --method GET `
+              "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" `
+              -f branch=main -f event=push -f status=success -f per_page=100
+            if ($LASTEXITCODE -ne 0) { throw "Full CI baseline query failed." }
+            foreach ($run in @(($response | ConvertFrom-Json).workflow_runs)) {
+              $candidate = ([string]$run.head_sha).Trim().ToLowerInvariant()
+              if ($candidate -notmatch '^[0-9a-f]{40}$' -or
+                  $candidate -ceq "$env:GITHUB_SHA".ToLowerInvariant()) { continue }
+              git merge-base --is-ancestor $candidate $env:GITHUB_SHA 2>$null
+              if ($LASTEXITCODE -eq 0) {
+                $baseline = $candidate
+                break
+              }
+            }
+          } catch {
+            Write-Warning "No trusted successful Full CI baseline: $($_.Exception.Message)"
+            $baseline = ""
+          }
           $required = @(
             python -I -S tools/classify_hosted_ui_scope.py `
-              --before "$env:BEFORE_SHA" `
+              --baseline "$baseline" `
               --head "$env:GITHUB_SHA"
           )
           if ($LASTEXITCODE -ne 0 -or $required.Count -ne 1 -or
@@ -47,6 +68,7 @@ jobs:
             throw "Hosted UI scope classifier failed closed."
           }
           "required=$($required[0])" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Output "trusted_full_ci_baseline=$($baseline -replace '^$', '<none>')"
           Write-Output "hosted_ui_pack_required=$($required[0])"
 
       - name: Install hash-locked CI dependencies

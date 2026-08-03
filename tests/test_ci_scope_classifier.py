@@ -65,7 +65,13 @@ def test_ci_workflow_uses_the_fail_closed_classifier():
     ]
 
     assert "id: ui_scope" in classifier_step
+    assert "actions: read" in workflow
+    assert "BEFORE_SHA" not in workflow
+    assert "actions/workflows/ci.yml/runs" in classifier_step
+    assert "-f branch=main -f event=push -f status=success" in classifier_step
+    assert "git merge-base --is-ancestor $candidate $env:GITHUB_SHA" in classifier_step
     assert "python -I -S tools/classify_hosted_ui_scope.py" in classifier_step
+    assert '--baseline "$baseline"' in classifier_step
     assert '@("true", "false") -cnotcontains $required[0]' in classifier_step
     assert '"required=$($required[0])"' in classifier_step
     assert "$env:GITHUB_OUTPUT" in classifier_step

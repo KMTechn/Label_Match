@@ -58,21 +58,21 @@ def _git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str
     )
 
 
-def classify_commits(before: str, head: str) -> bool:
-    before = before.strip().lower()
+def classify_commits(baseline: str, head: str) -> bool:
+    baseline = baseline.strip().lower()
     head = head.strip().lower()
     if not COMMIT_RE.fullmatch(head):
         raise ValueError("head must be an exact 40-character lowercase commit SHA")
     _git("cat-file", "-e", f"{head}^{{commit}}")
-    if not COMMIT_RE.fullmatch(before) or set(before) == {"0"}:
+    if not COMMIT_RE.fullmatch(baseline) or set(baseline) == {"0"}:
         return True
-    if _git("cat-file", "-e", f"{before}^{{commit}}", check=False).returncode != 0:
+    if _git("cat-file", "-e", f"{baseline}^{{commit}}", check=False).returncode != 0:
         return True
     changed = _git(
         "diff",
         "--name-only",
         "--diff-filter=ACMRD",
-        before,
+        baseline,
         head,
     ).stdout.splitlines()
     return requires_hosted_ui_evidence(changed)
@@ -80,10 +80,10 @@ def classify_commits(before: str, head: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--before", required=True)
+    parser.add_argument("--baseline", required=True)
     parser.add_argument("--head", required=True)
     arguments = parser.parse_args()
-    print("true" if classify_commits(arguments.before, arguments.head) else "false")
+    print("true" if classify_commits(arguments.baseline, arguments.head) else "false")
     return 0
 
 
