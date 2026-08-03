@@ -399,11 +399,27 @@ def test_constructor_orders_capture_prepare_before_widgets_and_reveal_after_bind
     assert constructor.count("self.state('zoomed')") == 1
 
 
-def test_automated_capture_main_exception_exits_without_packaged_dialog():
-    source = (
-        Path(__file__).resolve().parents[1] / "Label_Match.py"
-    ).read_text(encoding="utf-8")
-    main_block = source[source.index('if __name__ == "__main__":') :]
+def test_automated_capture_main_exception_exits_without_packaged_dialog(
+    monkeypatch,
+    tmp_path,
+):
+    module = load_label_match_module(monkeypatch, tmp_path)
+    monkeypatch.setenv(module.LABEL_MATCH_AUTOMATED_TEST_ENV, "1")
+    monkeypatch.setattr(module, "resolve_data_scope", lambda **_kwargs: tmp_path)
+    dialog_calls = []
+    monkeypatch.setattr(
+        module.messagebox,
+        "showerror",
+        lambda *args, **kwargs: dialog_calls.append((args, kwargs)),
+    )
 
-    assert "if _label_match_explicit_automated_test_mode():" in main_block
-    assert "raise SystemExit(1) from None" in main_block
+    def fail_before_application_start(_callback, **_kwargs):
+        raise RuntimeError("capture startup failed")
+
+    monkeypatch.setattr(module, "run_guarded_entrypoint", fail_before_application_start)
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main()
+
+    assert exc_info.value.code == 1
+    assert dialog_calls == []
