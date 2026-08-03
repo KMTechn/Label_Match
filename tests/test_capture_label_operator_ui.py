@@ -2883,6 +2883,16 @@ def test_capture_evaluation_binds_activity_rows_and_visible_tab_to_fixture():
     assert "history_activity_fixture_identity_mismatch" in evaluate_capture(record)
 
 
+def test_capture_evaluation_accepts_identity_preserving_session_item_ellipsis():
+    record = _valid_capture_record("full_complete")
+    expected_item = record["rendered_state"]["session_rows"][0]["values"][1]
+    record["rendered_state"]["session_rows"][0]["values"][1] = (
+        f"{expected_item[:4]}...{expected_item[-4:]}"
+    )
+
+    assert evaluate_capture(record) == []
+
+
 def test_schema_v6_capture_evaluation_requires_visible_geometry_gate():
     record = _valid_capture_record("qa_progress")
     record.pop("capture_geometry_gate")

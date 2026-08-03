@@ -13572,11 +13572,11 @@ class Label_Match(tk.Tk):
             # compact notice contract's three message lines using the actual
             # font metrics for the window's current monitor DPI.
             label_vertical_chrome = 6
-            minimum_notice_height = (
-                140
-                if constrained_large_text
-                else 120 if short_auxiliary_height else 132
-            )
+            # The fixed notice surface must fit its title and the full
+            # three-line operator message on every supported Windows font/DPI
+            # profile. The previous profile-specific floors left the wide
+            # 100% profile five pixels short on GitHub's hosted Windows image.
+            minimum_notice_height = 148
             notice_height = max(
                 minimum_notice_height,
                 title_pad_top

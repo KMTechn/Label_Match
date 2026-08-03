@@ -1896,6 +1896,21 @@ def _fixture_activity_history_rows(app: Any) -> tuple[dict[str, Any], ...]:
     )
 
 
+def _activity_item_identity_preserved(actual: Any, expected: Any) -> bool:
+    actual_text = str(actual)
+    expected_text = str(expected)
+    if actual_text == expected_text:
+        return True
+    item_head, item_separator, item_tail = actual_text.partition("...")
+    return bool(
+        item_separator
+        and item_head
+        and item_tail
+        and expected_text.startswith(item_head)
+        and expected_text.endswith(item_tail)
+    )
+
+
 def _apply_activity_fixture_rows(app: Any) -> None:
     """Seed only live widgets, then exercise the real session-row renderer."""
 
@@ -1949,19 +1964,11 @@ def _apply_activity_fixture_rows(app: Any) -> None:
         values = tuple(session_tree.item(iid, "values") or ())
         expected_time, expected_item, expected_result = expected_values
         item_value = str(values[1]) if len(values) == 3 else ""
-        item_head, item_separator, item_tail = item_value.partition("...")
-        item_identity_preserved = item_value == expected_item or bool(
-            item_separator
-            and item_head
-            and item_tail
-            and str(expected_item).startswith(item_head)
-            and str(expected_item).endswith(item_tail)
-        )
         if (
             len(values) != 3
             or values[0] != expected_time
             or values[2] != expected_result
-            or not item_identity_preserved
+            or not _activity_item_identity_preserved(item_value, expected_item)
         ):
             raise RuntimeError(
                 f"activity session renderer changed values: {iid}={values}"
@@ -4865,7 +4872,27 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
     )
     if actual_history_identity != expected_history_identity:
         issues.append("history_activity_fixture_identity_mismatch")
-    if actual_session_identity != expected_session_identity:
+    session_identity_matches = (
+        len(actual_session_identity) == len(expected_session_identity)
+        and all(
+            actual_iid == expected_iid
+            and actual_time == expected_time
+            and actual_result == expected_result
+            and _activity_item_identity_preserved(actual_item, expected_item)
+            for (
+                actual_iid,
+                actual_time,
+                actual_item,
+                actual_result,
+            ), (
+                expected_iid,
+                expected_time,
+                expected_item,
+                expected_result,
+            ) in zip(actual_session_identity, expected_session_identity)
+        )
+    )
+    if not session_identity_matches:
         issues.append("session_activity_fixture_identity_mismatch")
     if history_mode:
         if len(history_rows) != 2:
