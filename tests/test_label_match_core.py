@@ -1734,10 +1734,13 @@ def test_submission_block_keeps_central_diagnostics_out_of_operator_notice(capsy
     assert notice.kind == "submission_blocked"
     assert notice.tone == "danger"
     assert notice.title == "중앙 제출 차단 · 1/1 유지"
-    assert "중앙 서비스에서 제출을 확인하지 못했습니다." in notice.message
-    assert "현재 세트는 유지됩니다." in notice.message
-    assert "제출 재시도" in notice.message
-    assert "관리자" in notice.message
+    assert notice.message.splitlines() == [
+        "중앙 제출을 확인하지 못했습니다.",
+        "현재 세트는 유지됩니다.",
+        "계속 실패 시 관리자 확인",
+    ]
+    assert app._workflow_notice_action_text == "제출 재시도"
+    assert app._workflow_notice_action is app._retry_blocked_submission
     assert rendered == [True]
     for internal in (
         "HTTP",
