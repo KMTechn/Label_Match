@@ -4,6 +4,7 @@
 /RELEASE_GATE_CONTRACT.md @kevin9899
 /Label_Match.py @kevin9899
 /tools/build_release_archive.py @kevin9899
+/tools/classify_hosted_ui_scope.py @kevin9899
 /tools/verify_release_identity.py @kevin9899
 /tools/verify_staged_release_installer.py @kevin9899
 /requirements-release.txt @kevin9899

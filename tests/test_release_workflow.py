@@ -152,6 +152,7 @@ def test_full_ci_runs_regression_once_and_keeps_physical_display2_separate():
     codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
     assert "/.github/workflows/** @kevin9899" in codeowners
     assert "/Label_Match.py @kevin9899" in codeowners
+    assert "/tools/classify_hosted_ui_scope.py @kevin9899" in codeowners
 
 
 def test_release_workflow_generates_private_update_manifest():
@@ -346,31 +347,15 @@ def test_release_workflow_requires_explicit_private_feed_publish_opt_in():
     assert "canary_release.outputs" not in sign_block
     assert "canary_release.outputs" not in publish_block
 
-    assert "id: canary_release" in workflow
-    assert (
-        "PRIVATE_UPDATE_CANARY_PRERELEASE: "
-        "${{ vars.PRIVATE_UPDATE_CANARY_PRERELEASE }}"
-    ) in workflow
-    assert (
-        "PRIVATE_UPDATE_CANARY_PRERELEASE must be exactly 'true', 'false', or unset."
-        in workflow
-    )
-    assert (
-        '$enabled = if ($canaryMode -ceq "true") { "true" } else { "false" }'
-        in workflow
-    )
+    assert "id: canary_release" not in workflow
+    assert "PRIVATE_UPDATE_CANARY_PRERELEASE" not in workflow
     release_block = workflow[
         workflow.index("- name: Create Release and Upload Asset") :
     ]
-    assert (
-        "prerelease: ${{ steps.canary_release.outputs.enabled == 'true' }}"
-        in release_block
-    )
+    assert "prerelease: true" in release_block
     assert "prerelease: false" not in release_block
-    assert (
-        "make_latest: ${{ steps.canary_release.outputs.make_latest }}"
-        in release_block
-    )
+    assert "make_latest: false" in release_block
+    assert "make_latest: legacy" not in release_block
 
 
 def test_private_feed_pc_id_lists_are_canonical_deduplicated_and_fail_closed():
@@ -421,57 +406,21 @@ def test_private_feed_pc_id_lists_are_canonical_deduplicated_and_fail_closed():
     assert "must not overlap" in overlap.stderr
 
 
-def test_canary_prerelease_gate_accepts_only_exact_lowercase_values(tmp_path):
+def test_tag_release_has_no_stable_or_latest_bypass():
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    start = workflow.index("- name: Resolve canary prerelease mode")
-    end = workflow.index("\n      - name:", start + 1)
-    step = workflow[start:end]
-    script = textwrap.dedent(step.split("        run: |\n", 1)[1]).strip()
-    powershell = next(
-        (
-            executable
-            for name in ("pwsh", "powershell", "powershell.exe")
-            if (executable := shutil.which(name))
-        ),
-        None,
+    release_start = workflow.index("- name: Create Release and Upload Asset")
+    release_end = workflow.index(
+        "- name: Promote private update feed after GitHub Release",
+        release_start,
     )
-    assert powershell is not None
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    release_block = workflow[release_start:release_end]
 
-    def run_gate(value):
-        output = tmp_path / "github-output.txt"
-        output.unlink(missing_ok=True)
-        env = os.environ.copy()
-        env["GITHUB_OUTPUT"] = str(output)
-        if value is None:
-            env.pop("PRIVATE_UPDATE_CANARY_PRERELEASE", None)
-        else:
-            env["PRIVATE_UPDATE_CANARY_PRERELEASE"] = value
-        completed = subprocess.run(
-            [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-            check=False,
-        )
-        return completed, output.read_text(encoding="utf-8-sig") if output.exists() else ""
-
-    for value, expected, expected_latest in (
-        (None, "false", "legacy"),
-        ("false", "false", "legacy"),
-        ("true", "true", "false"),
-    ):
-        completed, output = run_gate(value)
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert f"enabled={expected}" in output
-        assert f"make_latest={expected_latest}" in output
-
-    for invalid in ("TRUE", "False", "1", " true "):
-        completed, output = run_gate(invalid)
-        assert completed.returncode != 0
-        assert output == ""
-        assert "must be exactly" in completed.stderr
+    assert "prerelease: true" in release_block
+    assert "make_latest: false" in release_block
+    assert "PRIVATE_UPDATE_CANARY_PRERELEASE" not in workflow
+    assert "steps.canary_release.outputs" not in workflow
+    assert "prerelease: false" not in release_block
+    assert "make_latest: legacy" not in release_block
 
 
 def test_release_workflow_self_verifies_private_manifest_signature_before_publish(tmp_path):

@@ -66,31 +66,12 @@ jobs:
           $enabled = if ($privateFeedMode -ceq "true") { "true" } else { "false" }
           "enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Resolve canary prerelease mode
-        id: canary_release
-        shell: pwsh
-        env:
-          PRIVATE_UPDATE_CANARY_PRERELEASE: ${{ vars.PRIVATE_UPDATE_CANARY_PRERELEASE }}
-        run: |
-          $canaryMode = if ($null -eq $env:PRIVATE_UPDATE_CANARY_PRERELEASE) { "" } else { $env:PRIVATE_UPDATE_CANARY_PRERELEASE }
-          if (@("", "false", "true") -cnotcontains $canaryMode) {
-            throw "PRIVATE_UPDATE_CANARY_PRERELEASE must be exactly 'true', 'false', or unset."
-          }
-          $enabled = if ($canaryMode -ceq "true") { "true" } else { "false" }
-          $makeLatest = if ($enabled -ceq "true") { "false" } else { "legacy" }
-          "enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "make_latest=$makeLatest" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Enforce TEST1 canary rollout boundary
+      - name: Enforce private feed TEST1 rollout boundary
         if: steps.private_feed.outputs.enabled == 'true'
         shell: pwsh
         env:
-          CANARY_ENABLED: ${{ steps.canary_release.outputs.enabled }}
           ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}
         run: |
-          if ($env:CANARY_ENABLED -cne "true") {
-            throw "Private-feed tag releases must be GitHub prereleases until TEST1 approval."
-          }
           if ($env:ROLLOUT_PERCENTAGE -cne "0") {
             throw "Private-feed tag releases must use PRIVATE_UPDATE_ROLLOUT_PERCENTAGE=0 until TEST1 approval."
           }
@@ -550,8 +531,10 @@ jobs:
           name: "Release ${{ env.LABEL_MATCH_RELEASE_TAG }}"
           body: "Internal release ${{ env.LABEL_MATCH_RELEASE_TAG }}. Verified ZIP, SHA-256 checksum, and archive verification report are attached."
           draft: false
-          prerelease: ${{ steps.canary_release.outputs.enabled == 'true' }}
-          make_latest: ${{ steps.canary_release.outputs.make_latest }}
+          # Every tag is quarantined from /releases/latest until a separate,
+          # evidence-bound TEST1 promotion process is implemented and approved.
+          prerelease: true
+          make_latest: false
 
       - name: Promote private update feed after GitHub Release
         if: steps.private_feed.outputs.enabled == 'true'
