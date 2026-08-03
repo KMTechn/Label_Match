@@ -1072,11 +1072,22 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
         displayed_values = tuple(
             str(app.qa_scan_tree.item(row, "values")[1]) for row in rows
         )
-        assert displayed_values[0] == "AAA2270730100"
-        assert all(
-            value.startswith("AAA2270730100 · ID ")
-            for value in displayed_values[1:]
+        summary_values = tuple(
+            str(app._qa_scan_detail_rows[row]["summary"]) for row in rows
         )
+        assert displayed_values[0] == "AAA2270730100"
+        assert summary_values[0] == "AAA2270730100"
+        for summary in summary_values[1:]:
+            identifier = summary.rsplit("#", 1)[-1]
+            assert summary.startswith("AAA2270730100 · ID #")
+            assert len(identifier) == 12
+            assert all(character in "0123456789ABCDEF" for character in identifier)
+        for displayed, summary in zip(displayed_values[1:], summary_values[1:]):
+            if displayed == summary:
+                continue
+            head, separator, tail = displayed.partition("...")
+            assert separator and head and tail
+            assert summary.startswith(head) and summary.endswith(tail)
         assert all(raw not in displayed_values for raw in scans)
         assert all("|" not in value and "=" not in value for value in displayed_values)
         assert app.qa_scan_detail_text.get("1.0", "end-1c") == scans[-1]
