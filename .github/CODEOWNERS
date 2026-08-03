@@ -4,8 +4,13 @@
 /RELEASE_GATE_CONTRACT.md @kevin9899
 /Label_Match.py @kevin9899
 /label_match_single_instance.py @kevin9899
-/tools/build_release_archive.py @kevin9899
-/tools/classify_hosted_ui_scope.py @kevin9899
-/tools/verify_release_identity.py @kevin9899
-/tools/verify_staged_release_installer.py @kevin9899
+/package_logistics.py @kevin9899
+/sealed_transfer_exchange.py @kevin9899
+/direct_sync_*.py @kevin9899
+/logistics_runtime_profile.py @kevin9899
+/config/** @kevin9899
+/assets/** @kevin9899
+/tools/** @kevin9899
 /requirements-release.txt @kevin9899
+/tests/test_direct_sync_*.py @kevin9899
+/tests/test_release_workflow.py @kevin9899

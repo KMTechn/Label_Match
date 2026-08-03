@@ -1998,14 +1998,19 @@ def drain_one_relay_batch(
             error_message=result.error_message,
         )
     elif result.committed:
+        operator_review_error_code = result.error_code or "operator_review_required"
+        operator_review_error_message = (
+            result.error_message
+            or "server committed upload but operator review is required"
+        )
         _set_claimed_relay_status(
             row,
             db_path=db_path,
             status=RELAY_STATUS_OPERATOR_REVIEW,
             receipt=result.receipt,
             upload_status_path=result.status_path,
-            error_code=result.error_code,
-            error_message=result.error_message,
+            error_code=operator_review_error_code,
+            error_message=operator_review_error_message,
         )
     elif result.retryable:
         retry_after = (
