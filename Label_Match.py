@@ -13573,9 +13573,9 @@ class Label_Match(tk.Tk):
             # font metrics for the window's current monitor DPI.
             label_vertical_chrome = 6
             minimum_notice_height = (
-                120
-                if short_auxiliary_height and not constrained_large_text
-                else 132
+                140
+                if constrained_large_text
+                else 120 if short_auxiliary_height else 132
             )
             notice_height = max(
                 minimum_notice_height,
