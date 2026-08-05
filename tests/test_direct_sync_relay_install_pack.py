@@ -190,6 +190,7 @@ def test_install_pack_blocks_app_save_path_that_does_not_match_relay_scan_dir(tm
     for path in [
         app_root / "direct_sync_push.py",
         app_root / "direct_sync_runtime.py",
+        app_root / "producer_runtime_client.py",
         app_root / "direct_sync_operator.py",
         app_root / "tools" / "direct_sync_relay_runner.py",
     ]:

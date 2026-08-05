@@ -398,6 +398,9 @@ def load_credentials_from_json(path: str | os.PathLike[str]) -> ProducerCredenti
     secret = payload.get("secret")
     secret_ref = str(payload.get("secret_ref") or "").strip()
     endpoint_url = str(payload.get("endpoint_url") or "").strip()
+    runtime_lease_mode = str(payload.get("runtime_lease_mode") or "enforce").strip().lower()
+    if runtime_lease_mode not in {"observe", "enforce"}:
+        raise DirectSyncPushError("runtime_lease_mode must be observe or enforce")
     if secret and secret_ref:
         raise DirectSyncPushError("credential file must not contain both secret and secret_ref")
     if secret and _production_profile_enabled():
@@ -416,6 +419,7 @@ def load_credentials_from_json(path: str | os.PathLike[str]) -> ProducerCredenti
         key_id=key_id,
         secret=secret,
         endpoint_url=endpoint_url,
+        runtime_lease_mode=runtime_lease_mode,
     )
 
 

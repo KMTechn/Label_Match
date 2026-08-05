@@ -117,7 +117,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/Label_Match/tools
           Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match
           Copy-Item "$env:RUNNER_TEMP\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json
-          Copy-Item direct_sync_push.py,direct_sync_runtime.py,direct_sync_operator.py -Destination dist/Label_Match
+          Copy-Item direct_sync_push.py,direct_sync_runtime.py,producer_runtime_client.py,direct_sync_operator.py -Destination dist/Label_Match
           Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,tools/register_label_match_worker_pc.py,tools/install_logistics_runtime_profile.py,tools/check_logistics_runtime_profile.py -Destination dist/Label_Match/tools
           Copy-Item logistics_runtime_profile.py -Destination dist/Label_Match/logistics_runtime_profile.py
           Copy-Item docs/LOGISTICS_RUNTIME_PROFILE.md -Destination dist/Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md
@@ -195,6 +195,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python tools/verify_staged_release_installer.py --package-root "dist/Label_Match" --report "dist/Label_Match/staged-installer-verification.json"
+          python -I dist/Label_Match/tools/direct_sync_relay_runner.py --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Staged direct-sync relay source help probe failed." }
+          python -I dist/Label_Match/tools/direct_sync_relay_operator.py --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Staged direct-sync operator source help probe failed." }
           $env:LABEL_MATCH_STAGED_PACKAGE_ROOT = (Resolve-Path "dist/Label_Match").Path
           $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
           python -m pytest -q -p no:cacheprovider tests/test_staged_release_installer.py
@@ -227,6 +231,10 @@ jobs:
               "_internal/config/app_settings.json",
               "release-identity.json",
               "install_label_match_direct_sync.ps1",
+              "direct_sync_push.py",
+              "direct_sync_runtime.py",
+              "producer_runtime_client.py",
+              "direct_sync_operator.py",
               "staged-installer-verification.json",
               "tools/release_cli_tools_manifest.json",
               "tools/direct_sync_relay_runner.exe",
@@ -425,6 +433,10 @@ jobs:
                 "Label_Match/_internal/config/app_settings.json",
                 "Label_Match/release-identity.json",
                 "Label_Match/install_label_match_direct_sync.ps1",
+                "Label_Match/direct_sync_push.py",
+                "Label_Match/direct_sync_runtime.py",
+                "Label_Match/producer_runtime_client.py",
+                "Label_Match/direct_sync_operator.py",
                 "Label_Match/staged-installer-verification.json",
                 "Label_Match/tools/release_cli_tools_manifest.json",
                 "Label_Match/tools/direct_sync_relay_runner.exe",

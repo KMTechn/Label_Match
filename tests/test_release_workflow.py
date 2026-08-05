@@ -97,7 +97,11 @@ def test_release_workflow_packages_direct_sync_relay_tools():
     assert identity_step < helper_build_step < include_step < test_step < zip_step
     assert "New-Item -ItemType Directory -Force -Path dist/Label_Match/tools" in packaging_block
     assert "Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match" in packaging_block
-    assert "Copy-Item direct_sync_push.py,direct_sync_runtime.py,direct_sync_operator.py -Destination dist/Label_Match" in packaging_block
+    assert "Copy-Item direct_sync_push.py,direct_sync_runtime.py,producer_runtime_client.py,direct_sync_operator.py -Destination dist/Label_Match" in packaging_block
+    assert "python -I dist/Label_Match/tools/direct_sync_relay_runner.py --help" in packaging_block
+    assert "python -I dist/Label_Match/tools/direct_sync_relay_operator.py --help" in packaging_block
+    assert '"producer_runtime_client.py"' in workflow
+    assert '"Label_Match/producer_runtime_client.py"' in workflow
     assert (
         "Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,"
         "tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,"
@@ -257,6 +261,10 @@ def test_internal_release_archive_script_verifies_membership_bytes_and_paths(tmp
         "_internal/config/app_settings.json",
         "release-identity.json",
         "install_label_match_direct_sync.ps1",
+        "direct_sync_push.py",
+        "direct_sync_runtime.py",
+        "producer_runtime_client.py",
+        "direct_sync_operator.py",
         "staged-installer-verification.json",
         "tools/release_cli_tools_manifest.json",
         "tools/direct_sync_relay_runner.exe",
@@ -691,7 +699,12 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
     staged_tools.mkdir(parents=True)
 
     shutil.copy2(source_root / "install_label_match_direct_sync.ps1", staged_root / "install_label_match_direct_sync.ps1")
-    for filename in ["direct_sync_push.py", "direct_sync_runtime.py", "direct_sync_operator.py"]:
+    for filename in [
+        "direct_sync_push.py",
+        "direct_sync_runtime.py",
+        "producer_runtime_client.py",
+        "direct_sync_operator.py",
+    ]:
         shutil.copy2(source_root / filename, staged_root / filename)
     for filename in [
         "direct_sync_relay_runner.py",
@@ -721,14 +734,25 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
     (staged_tools / "release_cli_tools_manifest.json").write_text("{}\n", encoding="utf-8")
 
     completed = subprocess.run(
-        [sys.executable, str(staged_tools / "direct_sync_relay_runner.py"), "--help"],
+        [sys.executable, "-I", str(staged_tools / "direct_sync_relay_runner.py"), "--help"],
         check=False,
         capture_output=True,
         text=True,
+        cwd=tmp_path,
     )
 
     assert completed.returncode == 0
     assert "Label_Match direct-sync relay runner" in completed.stdout
+
+    operator_completed = subprocess.run(
+        [sys.executable, "-I", str(staged_tools / "direct_sync_relay_operator.py"), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert operator_completed.returncode == 0
+    assert "Label_Match direct-sync relay operator control" in operator_completed.stdout
 
     zip_path = tmp_path / "Label_Match-test.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
@@ -741,6 +765,7 @@ def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
     assert {
         "Label_Match/direct_sync_push.py",
         "Label_Match/direct_sync_runtime.py",
+        "Label_Match/producer_runtime_client.py",
         "Label_Match/direct_sync_operator.py",
         "Label_Match/install_label_match_direct_sync.ps1",
         "Label_Match/tools/direct_sync_relay_runner.py",
