@@ -2111,6 +2111,8 @@ def test_durable_event_manifest_includes_completion_replacement_and_review():
 
     assert module.LABEL_MATCH_DURABLE_EVENT_TYPES == {
         module.Label_Match.Events.TRAY_COMPLETE,
+        module.Label_Match.Events.SET_DELETED,
+        module.Label_Match.Events.TRAY_COMPLETION_CANCELLED,
         module.Label_Match.Events.PHS_REPLACEMENT_WAITING_MARKED,
         module.Label_Match.Events.POST_REVIEW_REQUIRED,
     }
