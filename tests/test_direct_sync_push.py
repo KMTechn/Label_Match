@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import direct_sync_push as direct_sync_push_module
+from producer_runtime_client import RuntimePreparation
 from direct_sync_push import (
     DEFAULT_ENDPOINT_PATH,
     DEFAULT_PRODUCER_USER_AGENT,
@@ -36,6 +37,20 @@ from direct_sync_push import (
     signed_headers,
     upload_source_file,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_legacy_relay_tests_from_runtime_lease(monkeypatch):
+    monkeypatch.setattr(
+        direct_sync_push_module,
+        "prepare_runtime_metadata",
+        lambda **kwargs: RuntimePreparation(metadata=dict(kwargs["metadata"])),
+    )
+    monkeypatch.setattr(
+        direct_sync_push_module,
+        "client_runtime_lease_mode",
+        lambda _credentials: "observe",
+    )
 
 
 def test_retry_after_seconds_uses_stable_bounded_jitter():
@@ -1362,7 +1377,7 @@ def test_acked_relay_retention_report_is_read_only_and_candidates_require_full_e
     candidates = acked_relay_retention_candidates(db_path)
     assert len(candidates) == 1
     assert candidates[0].relay_id == row.relay_id
-    assert candidates[0].receipt == receipt
+    assert candidates[0].receipt == result.receipt
     assert len(
         acked_relay_retention_candidates(
             db_path,
@@ -1384,10 +1399,10 @@ def test_acked_relay_retention_report_is_read_only_and_candidates_require_full_e
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "UPDATE direct_sync_relay_batches SET receipt_json = ? WHERE relay_id = ?",
-            (json.dumps(receipt, ensure_ascii=False, sort_keys=True), row.relay_id),
+            (json.dumps(result.receipt, ensure_ascii=False, sort_keys=True), row.relay_id),
         )
         conn.commit()
-    status_receipt_mismatch = dict(receipt)
+    status_receipt_mismatch = dict(result.receipt)
     status_receipt_mismatch["request_id"] = "request-wrong-status-artifact"
     Path(candidates[0].upload_status_path).write_text(
         json.dumps(
@@ -1405,7 +1420,7 @@ def test_acked_relay_retention_report_is_read_only_and_candidates_require_full_e
     assert acked_relay_retention_candidates(db_path) == ()
 
     Path(candidates[0].upload_status_path).write_text(
-        json.dumps({"success": True, "committed": True, "receipt": receipt, "metadata": {"relative_path": "wrong"}}),
+        json.dumps({"success": True, "committed": True, "receipt": result.receipt, "metadata": {"relative_path": "wrong"}}),
         encoding="utf-8",
     )
     assert acked_relay_retention_candidates(db_path) == ()

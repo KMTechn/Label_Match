@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+import direct_sync_push
 import direct_sync_runtime
+from producer_runtime_client import RuntimePreparation
 from direct_sync_operator import pause_relay, resume_relay
 from direct_sync_push import (
     DirectSyncPushError,
@@ -25,6 +27,16 @@ from direct_sync_push import (
     upload_source_file,
 )
 from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, load_credentials_from_json, run_relay_once
+
+
+@pytest.fixture(autouse=True)
+def _isolate_legacy_runtime_tests_from_runtime_lease(monkeypatch):
+    monkeypatch.setattr(
+        direct_sync_push,
+        "prepare_runtime_metadata",
+        lambda **kwargs: RuntimePreparation(metadata=dict(kwargs["metadata"])),
+    )
+    monkeypatch.setattr(direct_sync_push, "client_runtime_lease_mode", lambda _credentials: "observe")
 
 
 class FakeResponse:
@@ -281,6 +293,7 @@ def test_load_credentials_supports_env_secret_ref(monkeypatch, tmp_path):
                 "key_id": "key-runtime-1",
                 "secret_ref": "env:LABEL_RUNTIME_SECRET",
                 "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+                "runtime_lease_mode": "observe",
             },
             ensure_ascii=False,
         ),
@@ -290,6 +303,7 @@ def test_load_credentials_supports_env_secret_ref(monkeypatch, tmp_path):
     credentials = load_credentials_from_json(path)
 
     assert credentials.secret == "runtime-secret-from-env"
+    assert credentials.runtime_lease_mode == "observe"
     assert "runtime-secret-from-env" not in path.read_text(encoding="utf-8")
 
 

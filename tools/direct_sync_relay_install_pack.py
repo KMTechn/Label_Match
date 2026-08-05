@@ -587,7 +587,12 @@ def _install_preflight(
     else:
         add_file_check("python_exe", python_path)
         add_file_check("runner_script", runner_script)
-        for module_name in ["direct_sync_push.py", "direct_sync_runtime.py", "direct_sync_operator.py"]:
+        for module_name in [
+            "producer_runtime_client.py",
+            "direct_sync_push.py",
+            "direct_sync_runtime.py",
+            "direct_sync_operator.py",
+        ]:
             add_file_check(module_name, app_root / module_name)
     add_file_check("producer_manifest_path", producer_manifest_path)
     add_file_check("credential_path", credential_path)
@@ -704,7 +709,7 @@ def _install_preflight(
             "import json, pathlib, sys; "
             "sys.exit(3) if sys.version_info < (3, 10) else None; "
             "import requests; "
-            "import direct_sync_push, direct_sync_runtime, direct_sync_operator; "
+            "import producer_runtime_client, direct_sync_push, direct_sync_runtime, direct_sync_operator; "
             f"manifest=json.loads(pathlib.Path({str(producer_manifest_path)!r}).read_text(encoding='utf-8-sig')); "
             "identity=manifest.get('pc_identity') if isinstance(manifest, dict) else {}; "
             "sys.exit(4) if not isinstance(identity, dict) or not str(identity.get('producer_install_id') or '').strip() or not str(identity.get('source_host_id') or '').strip() else None; "
