@@ -11,6 +11,7 @@ import Label_Match as label_module
 import logistics_runtime_profile as runtime_module
 from logistics_runtime_profile import (
     LogisticsRuntimeConfigurationError,
+    TEST1_ISOLATED_LEGACY_OVERRIDE_ENV,
     default_logistics_profile_path,
     load_logistics_runtime_profile,
     protect_machine_secret,
@@ -238,6 +239,251 @@ def test_required_mode_missing_profile_never_uses_legacy_env(tmp_path, monkeypat
             transport=_transport,
             profile_decryptor=lambda _value: "machine-secret",
         )
+
+
+def _enable_valid_test1_legacy_override(monkeypatch):
+    run_root = runtime_module.Path(
+        r"C:\KMTech\Test1\Runs\run-label-20260804"
+    )
+    ca_bundle = run_root / "tls" / "test1-ca.pem"
+    monkeypatch.setattr(runtime_module.sys, "platform", "win32")
+    monkeypatch.setenv(TEST1_ISOLATED_LEGACY_OVERRIDE_ENV, "1")
+    monkeypatch.setenv("COMPUTERNAME", "test1")
+    monkeypatch.setenv(
+        "LABEL_MATCH_SAVE_DIR",
+        str(run_root / "LabelMatch"),
+    )
+    monkeypatch.setenv(
+        "LABEL_MATCH_LOGISTICS_API_BASE_URL",
+        "https://127.0.0.1:19443",
+    )
+    monkeypatch.setenv(
+        "LABEL_MATCH_LOGISTICS_API_TOKEN",
+        "test1-label-token",
+    )
+    monkeypatch.setenv(
+        "LABEL_MATCH_LOGISTICS_AUTHORITY_SCOPE_ID",
+        "TEST1-LABEL-RUN",
+    )
+    monkeypatch.setenv(
+        "LABEL_MATCH_LOGISTICS_SOURCE_HOST_ID",
+        "test1-label-host",
+    )
+    monkeypatch.setenv(
+        "LABEL_MATCH_LOGISTICS_DEVICE_ID",
+        "test1-label-device",
+    )
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.delenv("KM_LOGISTICS_PROFILE_PATH", raising=False)
+    monkeypatch.delenv("KM_LOGISTICS_REQUIRED", raising=False)
+
+    original_is_file = runtime_module.Path.is_file
+    original_stat = runtime_module.Path.stat
+    monkeypatch.setattr(
+        runtime_module.Path,
+        "is_file",
+        lambda path: path == ca_bundle or original_is_file(path),
+    )
+    monkeypatch.setattr(
+        runtime_module.Path,
+        "stat",
+        lambda path: (
+            SimpleNamespace(st_size=20)
+            if path == ca_bundle
+            else original_stat(path)
+        ),
+    )
+    return run_root, ca_bundle
+
+
+def test_test1_isolated_legacy_override_uses_only_process_environment(
+    monkeypatch,
+):
+    _enable_valid_test1_legacy_override(monkeypatch)
+    machine_reads = []
+    monkeypatch.setattr(
+        runtime_module,
+        "_machine_environment_value",
+        lambda name: machine_reads.append(name)
+        or {
+            "KM_LOGISTICS_PROFILE_PATH": (
+                r"C:\ProgramData\KMTech\Logistics\runtime-profile.json"
+            ),
+            "KM_LOGISTICS_REQUIRED": "1",
+        }.get(name, ""),
+    )
+
+    assert runtime_module._runtime_environment(None) is os.environ
+    assert load_logistics_runtime_profile(required=True) is None
+    client = package_client_from_env(
+        transport=_transport,
+        probe_required=False,
+    )
+
+    assert client is not None
+    assert client.config.base_url == "https://127.0.0.1:19443"
+    assert client.config.authority_scope_id == "TEST1-LABEL-RUN"
+    assert client.config.source_host_id == "test1-label-host"
+    assert client.config.device_id == "test1-label-device"
+    assert client.config.authoritative_required is False
+    assert machine_reads == []
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "value", "message"),
+    [
+        (
+            TEST1_ISOLATED_LEGACY_OVERRIDE_ENV,
+            "true",
+            "must be exactly 1",
+        ),
+        ("COMPUTERNAME", "TEST10", "COMPUTERNAME=TEST1"),
+        (
+            "KM_LOGISTICS_PROFILE_PATH",
+            "",
+            "anchors to be absent",
+        ),
+        (
+            "KM_LOGISTICS_REQUIRED",
+            "0",
+            "anchors to be absent",
+        ),
+        (
+            "LABEL_MATCH_SAVE_DIR",
+            "",
+            "nonempty LABEL_MATCH_SAVE_DIR",
+        ),
+        (
+            "LABEL_MATCH_SAVE_DIR",
+            r"C:\KMTech\Test1\Runs",
+            "nonempty run directory",
+        ),
+        (
+            "LABEL_MATCH_SAVE_DIR",
+            r"C:\ProgramData\KMTech\Test1\Runs\run-label-20260804",
+            "LABEL_MATCH_SAVE_DIR under",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_API_BASE_URL",
+            "http://127.0.0.1:19443",
+            "exact loopback origin",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_API_BASE_URL",
+            "https://localhost:19443",
+            "exact loopback origin",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_API_BASE_URL",
+            "https://127.0.0.1:19443/",
+            "exact loopback origin",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_API_BASE_URL",
+            "https://127.0.0.1:65536",
+            "exact HTTPS loopback origin",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_AUTHORITY_SCOPE_ID",
+            "PLANT-01",
+            "TEST1- authority scope",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_AUTHORITY_SCOPE_ID",
+            "TEST1-LABEL RUN",
+            "TEST1- authority scope",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_SOURCE_HOST_ID",
+            "label-host",
+            "test1- source host",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_SOURCE_HOST_ID",
+            "test1-label host",
+            "test1- source host",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_DEVICE_ID",
+            "label-device",
+            "test1- device",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_API_TOKEN",
+            "test1 token",
+            "valid token",
+        ),
+        (
+            "REQUESTS_CA_BUNDLE",
+            (
+                r"C:\KMTech\Test1\Runs\other-run"
+                r"\tls\test1-ca.pem"
+            ),
+            "same run directory",
+        ),
+        (
+            "REQUESTS_CA_BUNDLE",
+            r"C:\ProgramData\test1-ca.pem",
+            "REQUESTS_CA_BUNDLE under",
+        ),
+        (
+            "REQUESTS_CA_BUNDLE",
+            (
+                r"C:\KMTech\Test1\Runs\run-label-20260804"
+                r"\tls\missing.pem"
+            ),
+            "non-reparse file",
+        ),
+    ],
+)
+def test_test1_isolated_legacy_override_rejects_invalid_envelope(
+    monkeypatch,
+    environment_name,
+    value,
+    message,
+):
+    _enable_valid_test1_legacy_override(monkeypatch)
+    monkeypatch.setenv(environment_name, value)
+    machine_reads = []
+    monkeypatch.setattr(
+        runtime_module,
+        "_machine_environment_value",
+        lambda name: machine_reads.append(name) or "",
+    )
+
+    with pytest.raises(LogisticsRuntimeConfigurationError, match=message):
+        load_logistics_runtime_profile(required=True)
+    assert machine_reads == []
+
+
+def test_test1_isolated_legacy_override_rejects_non_windows(monkeypatch):
+    _enable_valid_test1_legacy_override(monkeypatch)
+    monkeypatch.setattr(runtime_module.sys, "platform", "linux")
+
+    with pytest.raises(LogisticsRuntimeConfigurationError, match="requires Windows"):
+        load_logistics_runtime_profile(required=True)
+
+
+def test_test1_isolated_legacy_override_rejects_reparse_ca_bundle(
+    monkeypatch,
+):
+    _run_root, ca_bundle = _enable_valid_test1_legacy_override(monkeypatch)
+    original_lstat = runtime_module.os.lstat
+
+    def fake_lstat(path):
+        if runtime_module.Path(path) == ca_bundle:
+            return SimpleNamespace(
+                st_mode=stat.S_IFREG,
+                st_file_attributes=0x400,
+            )
+        return original_lstat(path)
+
+    monkeypatch.setattr(runtime_module.os, "lstat", fake_lstat)
+    with pytest.raises(
+        LogisticsRuntimeConfigurationError,
+        match="symlink|junction",
+    ):
+        load_logistics_runtime_profile(required=True)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Machine environment trust boundary")

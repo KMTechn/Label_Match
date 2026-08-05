@@ -25,7 +25,7 @@ from direct_sync_push import (
 
 PAUSE_SCHEMA_VERSION = "direct-sync-relay-operator-pause-v1"
 AUDIT_SCHEMA_VERSION = "direct-sync-relay-operator-audit-v1"
-OPERATOR_TOOL_VERSION = "label-match-local-operator-v1"
+OPERATOR_TOOL_VERSION = "label-match-local-operator-v2"
 RETRYABLE_DEAD_STATUSES = frozenset({RELAY_STATUS_FAILED_PERMANENT})
 SQLITE_BUSY_TIMEOUT_MS = 30000
 
@@ -575,11 +575,12 @@ def ack_reviewed_relay_batch(
                 content_sha256=content_sha256,
             )
         previous_error_code = str(row["last_error_code"] or "")
-        if expected_error != "operator_review_required":
+        if previous_error_code != expected_error:
             conn.rollback()
             return blocked(
-                "relay_expected_error_code_not_ackable",
+                "relay_error_code_mismatch",
                 previous_status=previous_status,
+                previous_error_code=previous_error_code,
                 expected_error_code=expected_error,
             )
         try:
