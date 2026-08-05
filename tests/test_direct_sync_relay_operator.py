@@ -408,6 +408,8 @@ def test_operator_ack_reviewed_marks_committed_operator_review_as_acked(tmp_path
             (relay_id,),
         ).fetchone()
 
+    assert row["last_error_code"] == "operator_review_required"
+
     blocked = ack_reviewed_relay_batch(
         db_path=config.db_path,
         relay_id=relay_id,
@@ -442,7 +444,7 @@ def test_operator_ack_reviewed_marks_committed_operator_review_as_acked(tmp_path
             "--expected-request-id",
             "request-reviewed",
             "--expected-error-code",
-            "operator_review_required",
+            row["last_error_code"],
             "--audit-log-path",
             str(audit_path),
             "--report-path",
@@ -503,6 +505,44 @@ def test_operator_ack_reviewed_blocks_uncommitted_receipts(tmp_path):
     assert report["status"] == "BLOCKED"
     assert report["error_code"] == "relay_receipt_not_committed"
     assert report["previous_status"] == RELAY_STATUS_OPERATOR_REVIEW
+
+
+def test_operator_ack_reviewed_requires_exact_persisted_error_code(tmp_path):
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueued = enqueue_completed_source_file(config, source_file_path=source_file)
+    relay_id = enqueued["last_result"]["relay_id"]
+    row = _relay_review_fixture(config.db_path, relay_id)[0]
+    receipt = _accepted_review_receipt(
+        config.db_path,
+        relay_id,
+        request_id="request-wrong-error",
+    )
+    _put_operator_review_receipt(
+        config.db_path,
+        relay_id,
+        receipt,
+        error_code="producer_committed_status_mismatch",
+    )
+
+    report = ack_reviewed_relay_batch(
+        db_path=config.db_path,
+        relay_id=relay_id,
+        operator_id="operator-a",
+        reason="must bind the persisted operator-review reason",
+        review_evidence_ref="evidence://server-review",
+        expected_content_sha256=row["content_sha256"],
+        expected_request_id="request-wrong-error",
+        expected_error_code="operator_review_required",
+    )
+
+    assert report["status"] == "BLOCKED"
+    assert report["error_code"] == "relay_error_code_mismatch"
+    assert report["previous_error_code"] == "producer_committed_status_mismatch"
+    assert report["expected_error_code"] == "operator_review_required"
+    assert relay_queue_status(config.db_path)["counts"].get(
+        RELAY_STATUS_OPERATOR_REVIEW
+    ) == 1
 
 
 def test_operator_ack_reviewed_blocks_invalid_operator_review_receipts(tmp_path):

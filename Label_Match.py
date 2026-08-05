@@ -3456,7 +3456,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.59"  # unreleased TEST1 candidate
+APP_VERSION = "v2.0.60"  # unreleased TEST1 candidate
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -5454,11 +5454,96 @@ class Label_Match(tk.Tk):
     def _begin_central_package_submission(self):
         if self.__dict__.get("_central_package_preflight_in_progress", False):
             return False
-        # PHS2 acceptance/F4 already captured strict source evidence.  F3 now
-        # durably records that frozen intent and the local completion without a
-        # network round trip.  The processor performs the same fresh central
-        # resolution, membership, overlap, and CAS validation on replay.
-        return self._enqueue_central_package_submission()
+        current = self.current_set_info or {}
+        source_snapshot = current.get("package_source_snapshot")
+        needs_source_refresh = bool(
+            self._central_inherit_all_active()
+            and not (
+                isinstance(source_snapshot, dict)
+                and source_snapshot
+            )
+        )
+        if not needs_source_refresh:
+            # PHS2 acceptance already captured strict source evidence. F3 can
+            # now durably record that frozen intent and the local completion.
+            return self._enqueue_central_package_submission()
+
+        # F4 atomically changes the server membership and deliberately clears
+        # the older package-source snapshot. Refresh that read-only evidence
+        # before CREATE_PACKAGE instead of showing a local-save failure that
+        # the operator cannot resolve.
+        if self.run_tests:
+            sealed, snapshot, active_updates = (
+                self._resolve_central_phs2_seal_for_exchange()
+            )
+            self._apply_resolved_central_phs2_seal(
+                sealed,
+                snapshot,
+                active_updates,
+            )
+            return self._enqueue_central_package_submission()
+
+        set_id = str(current.get("id") or "")
+        master = tuple(current.get("raw") or ())
+        captured = copy.deepcopy(current)
+        result_queue = queue.Queue(maxsize=1)
+        self._central_package_preflight_in_progress = True
+        self.update_big_display(
+            "현재 제품 집합 다시 확인 중",
+            "primary",
+        )
+        self._render_operator_workbench()
+
+        def worker():
+            try:
+                result_queue.put(
+                    (
+                        True,
+                        self._resolve_central_phs2_seal_for_exchange(
+                            captured
+                        ),
+                    )
+                )
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        def poll():
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+            self._central_package_preflight_in_progress = False
+            if (
+                str(self.current_set_info.get("id") or "") != set_id
+                or tuple(self.current_set_info.get("raw") or ()) != master
+            ):
+                self._render_operator_workbench()
+                return
+            if not ok:
+                self._publish_submission_block(value)
+                return
+            sealed, snapshot, active_updates = value
+            try:
+                self._apply_resolved_central_phs2_seal(
+                    sealed,
+                    snapshot,
+                    active_updates,
+                )
+            except Exception as exc:
+                self._publish_durable_commit_block(exc)
+                return
+            self._enqueue_central_package_submission()
+
+        preflight_thread = threading.Thread(
+            target=worker,
+            name="label-match-package-source-refresh",
+            daemon=True,
+        )
+        self._central_package_preflight_thread = preflight_thread
+        preflight_thread.start()
+        self.after(100, poll)
+        return True
 
     def _refresh_package_cancellation_review_notice(self):
         """Keep terminal central-cancellation conflicts visible to the operator."""

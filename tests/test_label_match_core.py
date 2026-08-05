@@ -4308,6 +4308,76 @@ def test_central_package_preflight_state_must_be_durable_before_enqueue():
     assert app.current_set_info["resolved_transfer_bundle_id"] == "TRANSFER-1"
 
 
+def test_f3_after_f4_refreshes_cleared_source_snapshot_before_enqueue():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.run_tests = True
+    app.current_set_info = {
+        "id": "phs2-after-f4",
+        "raw": ["PHS=2|ITG=INPUT-1|CLC=ITEM-1"],
+        "parsed": ["ITEM-1"],
+        "central_inherit_all": True,
+        "package_source_snapshot": None,
+    }
+    app._central_inherit_all_active = lambda: True
+    calls = []
+
+    def resolve(current=None):
+        assert current is None
+        calls.append("resolve")
+        return (
+            {"SID": "seal-2"},
+            {"bundle_id": "TRANSFER-1", "entity_version": 2},
+            {"active_label_id": "PHS2-ACTIVE"},
+        )
+
+    def apply(sealed, snapshot, active_updates=None):
+        calls.append("apply")
+        assert sealed["SID"] == "seal-2"
+        assert snapshot["entity_version"] == 2
+        assert active_updates["active_label_id"] == "PHS2-ACTIVE"
+        app.current_set_info["package_source_snapshot"] = dict(snapshot)
+
+    def enqueue():
+        calls.append("enqueue")
+        assert app.current_set_info["package_source_snapshot"][
+            "entity_version"
+        ] == 2
+        return True
+
+    app._resolve_central_phs2_seal_for_exchange = resolve
+    app._apply_resolved_central_phs2_seal = apply
+    app._enqueue_central_package_submission = enqueue
+
+    assert app._begin_central_package_submission() is True
+    assert calls == ["resolve", "apply", "enqueue"]
+
+
+def test_f3_keeps_existing_source_snapshot_without_extra_refresh():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.run_tests = True
+    app.current_set_info = {
+        "id": "phs2-with-snapshot",
+        "raw": ["PHS=2|ITG=INPUT-1|CLC=ITEM-1"],
+        "parsed": ["ITEM-1"],
+        "central_inherit_all": True,
+        "package_source_snapshot": {
+            "bundle_id": "TRANSFER-1",
+            "entity_version": 1,
+        },
+    }
+    app._central_inherit_all_active = lambda: True
+    app._resolve_central_phs2_seal_for_exchange = (
+        lambda *_args, **_kwargs: pytest.fail(
+            "existing snapshot must not be refreshed"
+        )
+    )
+    app._enqueue_central_package_submission = lambda: True
+
+    assert app._begin_central_package_submission() is True
+
+
 def test_acked_package_with_flushed_local_event_recovers_without_duplicate_log(tmp_path):
     module = load_label_match_module()
     set_id = "phs2-crash-window"
