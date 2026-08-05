@@ -2136,6 +2136,70 @@ def test_startup_reconciles_prelogged_cancellation_intent_once_after_crash(tmp_p
     ] == [cancellation["cancellation_event_id"]]
 
 
+@pytest.mark.parametrize(
+    "event_type,reason",
+    [
+        (
+            label_module.Label_Match.Events.SET_DELETED,
+            "LOCAL_COMPLETED_SET_DELETED",
+        ),
+        (
+            label_module.Label_Match.Events.TRAY_COMPLETION_CANCELLED,
+            "LOCAL_TRAY_COMPLETION_CANCELLED",
+        ),
+    ],
+)
+def test_cancellation_fsync_failure_does_not_commit_local_event(
+    tmp_path, monkeypatch, event_type, reason
+):
+    draft = _draft()
+    db_path = tmp_path / "package_logistics_outbox.sqlite3"
+    package_outbox = PackageOutbox(db_path)
+    _ack_package_creation(package_outbox, draft)
+    cancellation_outbox = PackageCancellationOutbox(db_path)
+    manager = label_module.DataManager(
+        str(tmp_path), "포장실", "tester", "PC-CANCEL-FSYNC"
+    )
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.save_directory = str(tmp_path)
+    app.unique_id = "PC-CANCEL-FSYNC"
+    app.data_manager = manager
+    app.package_outbox = package_outbox
+    app.package_cancellation_outbox = cancellation_outbox
+    local_details = {
+        "cancelled_set_id": draft.set_id,
+        "details": {"set_id": draft.set_id, "final_result": "통과"},
+    }
+    cancellation = label_module.Label_Match._queue_authoritative_package_cancellation(
+        app,
+        set_id=draft.set_id,
+        event_type=event_type,
+        reason=reason,
+        local_event_details=local_details,
+    )
+
+    def fail_fsync(_file_descriptor):
+        raise OSError("simulated cancellation fsync failure")
+
+    monkeypatch.setattr(label_module.os, "fsync", fail_fsync)
+    with pytest.raises(RuntimeError, match="simulated cancellation fsync failure"):
+        label_module.Label_Match._commit_package_cancellation_local_event(
+            app,
+            event_type=event_type,
+            local_event_details=local_details,
+            cancellation=cancellation,
+        )
+
+    row = cancellation_outbox.get_by_event_id(
+        cancellation["cancellation_event_id"]
+    )
+    assert row["local_event_committed"] == 0
+    assert row["local_event_committed_at"] is None
+    assert cancellation_outbox.claim_next() is None
+    with pytest.raises(RuntimeError, match="simulated cancellation fsync failure"):
+        manager.close(timeout=5)
+
+
 def test_dynamic_qr_scope_builds_inherit_command_without_sample_membership():
     calls = []
 
