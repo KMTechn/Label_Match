@@ -8,7 +8,8 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 import requests
 
@@ -20,6 +21,12 @@ DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 REQUIRED_HEADER = ("Item Code", "Item Name", "Spec", "Tray Image")
 ACTIVE_PATH_ENV = "KMTECH_ITEM_CATALOG_ACTIVE_PATH"
 URL_ENV = "KMTECH_ITEM_CATALOG_URL"
+AUTHENTICATED_CATALOG_HOST = "worker.kmtecherp.com"
+AUTHENTICATED_CATALOG_AUTHORITIES = (
+    AUTHENTICATED_CATALOG_HOST,
+    f"{AUTHENTICATED_CATALOG_HOST}:443",
+)
+LOGISTICS_PROGRAM = "Label_Match"
 BASE_URL_ENV_NAMES = (
     "WORKER_ANALYSIS_SERVER_URL",
     "WORKER_ANALYSIS_LOGISTICS_API_BASE_URL",
@@ -54,6 +61,37 @@ def resolve_catalog_url(environ: Mapping[str, str] | None = None) -> str:
         DEFAULT_SERVER_BASE_URL,
     )
     return base_url.rstrip("/") + CATALOG_PATH
+
+
+def _load_item_catalog_logistics_profile() -> Any | None:
+    try:
+        from logistics_runtime_profile import load_logistics_runtime_profile
+
+        return load_logistics_runtime_profile(required=None)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Item catalog logistics credentials are unavailable; "
+            "continuing without authorization"
+        )
+        return None
+
+
+def _is_trusted_authenticated_catalog_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme == "https"
+            and parsed.netloc in AUTHENTICATED_CATALOG_AUTHORITIES
+            and parsed.hostname == AUTHENTICATED_CATALOG_HOST
+            and parsed.port in (None, 443)
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path == CATALOG_PATH
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        return False
 
 
 def validate_catalog_bytes(payload: bytes) -> None:
@@ -122,15 +160,34 @@ def refresh_item_catalog(
     cache = Path(cache_path) if cache_path is not None else default_cache_path()
     fallback = cache if _is_valid_catalog(cache) else bundled
     try:
-        response = get(url or resolve_catalog_url(), timeout=timeout_seconds)
+        effective_url = url or resolve_catalog_url()
+        request_kwargs: dict[str, object] = {
+            "timeout": timeout_seconds,
+            "allow_redirects": False,
+        }
+        profile = _load_item_catalog_logistics_profile()
+        if profile is not None:
+            if not _is_trusted_authenticated_catalog_url(effective_url):
+                raise ValueError("authenticated item catalog URL is not trusted")
+            request_kwargs["headers"] = {
+                "Authorization": f"Bearer {profile.bearer_token}",
+                "X-Logistics-Source-Host-Id": profile.source_host_id,
+                "X-Logistics-Device-Id": profile.device_id,
+                "X-Logistics-Program": LOGISTICS_PROGRAM,
+            }
+        response = get(effective_url, **request_kwargs)
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None and 300 <= int(status_code) < 400:
+            raise ValueError("item catalog redirects are not allowed")
         response.raise_for_status()
         payload = bytes(response.content)
         validate_catalog_bytes(payload)
         _atomic_write(cache, payload)
         return cache
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Item catalog sync skipped; using %s (%s)", fallback, exc)
-        return fallback
+    except Exception:  # noqa: BLE001
+        recovered = cache if _is_valid_catalog(cache) else fallback
+        logger.warning("Item catalog sync skipped; using %s", recovered)
+        return recovered
 
 
 def is_shared_catalog_cache(path: str | Path) -> bool:
