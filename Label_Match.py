@@ -102,6 +102,7 @@ from tkinter import ttk, messagebox, TclError, simpledialog
 _label_match_startup_trace("after_tkinter_import")
 from collections import defaultdict
 import csv
+import io
 import threading
 import time
 import hashlib
@@ -112,7 +113,13 @@ import queue
 import socket
 _label_match_startup_trace("before_requests_import")
 import requests
-from item_catalog_sync import ACTIVE_PATH_ENV, refresh_item_catalog
+from item_catalog_sync import (
+    ACTIVE_PATH_ENV,
+    ItemCatalogSyncError,
+    get_verified_catalog_snapshot,
+    refresh_item_catalog,
+    requires_verified_catalog_snapshot,
+)
 _label_match_startup_trace("after_requests_import")
 import zipfile
 import subprocess
@@ -6681,6 +6688,23 @@ class Label_Match(tk.Tk):
 
     def _load_items_data(self):
         items_path = os.environ.get(ACTIVE_PATH_ENV) or resource_path(os.path.join("assets", self.FILES.ITEMS))
+        verified_payload = get_verified_catalog_snapshot(items_path)
+        if requires_verified_catalog_snapshot(items_path):
+            if verified_payload is None:
+                raise ItemCatalogSyncError(
+                    "central item catalog snapshot is unavailable after verification"
+                )
+            try:
+                return {
+                    row['Item Code']: row
+                    for row in csv.DictReader(
+                        io.StringIO(verified_payload.decode("utf-8"), newline="")
+                    )
+                }
+            except (KeyError, UnicodeError, csv.Error) as exc:
+                raise ItemCatalogSyncError(
+                    "central item catalog snapshot could not be parsed"
+                ) from exc
         if not os.path.exists(items_path):
             os.makedirs(os.path.dirname(items_path), exist_ok=True)
             with open(items_path, 'w', newline='', encoding='utf-8-sig') as f:
@@ -16861,8 +16885,34 @@ class Label_Match(tk.Tk):
 def prepare_startup_item_catalog():
     bundled_path = resource_path(os.path.join("assets", Label_Match.FILES.ITEMS))
     active_path = refresh_item_catalog(bundled_path)
+    if (
+        requires_verified_catalog_snapshot(active_path)
+        and get_verified_catalog_snapshot(active_path) is None
+    ):
+        raise ItemCatalogSyncError(
+            "central item catalog snapshot is unavailable after verification"
+        )
     os.environ[ACTIVE_PATH_ENV] = str(active_path)
     return str(active_path)
+
+
+ITEM_CATALOG_STARTUP_EXIT_CODE = 3
+ITEM_CATALOG_STARTUP_ERROR_TITLE = "중앙 품목 목록 확인 실패"
+ITEM_CATALOG_STARTUP_ERROR_MESSAGE = (
+    "중앙 품목 목록을 확인할 수 없어 프로그램 시작을 중단했습니다.\n\n"
+    "네트워크 연결과 이 PC의 중앙 물류 설정을 확인한 뒤 다시 실행하세요. "
+    "계속 실패하면 IT 담당자에게 문의하세요."
+)
+
+
+def _show_item_catalog_startup_error():
+    try:
+        messagebox.showerror(
+            ITEM_CATALOG_STARTUP_ERROR_TITLE,
+            ITEM_CATALOG_STARTUP_ERROR_MESSAGE,
+        )
+    except Exception:  # The fail-closed exit must survive Tk initialization failures.
+        _label_match_startup_trace("item_catalog_startup_dialog_unavailable")
 
 
 def _run_label_match_application():
@@ -16886,6 +16936,13 @@ def main():
             _run_label_match_application,
             data_scope=data_scope,
         )
+    except ItemCatalogSyncError:
+        _label_match_startup_trace(
+            "item_catalog_startup_blocked",
+            exit_code=ITEM_CATALOG_STARTUP_EXIT_CODE,
+        )
+        _show_item_catalog_startup_error()
+        return ITEM_CATALOG_STARTUP_EXIT_CODE
     except Exception as exc:
         _label_match_startup_trace(
             "main_exception",

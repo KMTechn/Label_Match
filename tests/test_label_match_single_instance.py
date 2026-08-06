@@ -319,3 +319,54 @@ def test_entrypoint_acquires_guard_before_catalog_or_tk_construction():
     assert "prepare_startup_item_catalog()" not in main_source.split(
         "if __name__ == \"__main__\":", 1
     )[0]
+
+
+def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
+    import Label_Match as app_module
+
+    sensitive_marker = "profile-token-must-not-leak"
+    dialogs = []
+    traces = []
+
+    monkeypatch.setattr(app_module, "resolve_data_scope", lambda **_kwargs: r"C:\data")
+    monkeypatch.setattr(
+        app_module,
+        "run_guarded_entrypoint",
+        lambda start, *, data_scope: start(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "prepare_startup_item_catalog",
+        lambda: (_ for _ in ()).throw(
+            app_module.ItemCatalogSyncError(sensitive_marker)
+        ),
+    )
+
+    class NoTkLabelMatch:
+        FILES = app_module.Label_Match.FILES
+
+        def __init__(self):
+            raise AssertionError("catalog failure must stop before Tk construction")
+
+    monkeypatch.setattr(app_module, "Label_Match", NoTkLabelMatch)
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showerror",
+        lambda title, message: dialogs.append((title, message)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_label_match_startup_trace",
+        lambda stage, **details: traces.append((stage, details)),
+    )
+
+    result = app_module.main()
+
+    assert result == app_module.ITEM_CATALOG_STARTUP_EXIT_CODE == 3
+    assert len(dialogs) == 1
+    assert "중앙 품목 목록" in dialogs[0][0]
+    assert "IT 담당자" in dialogs[0][1]
+    assert sensitive_marker not in dialogs[0][0]
+    assert sensitive_marker not in dialogs[0][1]
+    assert sensitive_marker not in repr(traces)
+    assert ("item_catalog_startup_blocked", {"exit_code": 3}) in traces
