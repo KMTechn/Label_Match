@@ -9,6 +9,7 @@ import pytest
 
 import direct_sync_push
 import direct_sync_runtime
+import producer_runtime_client as runtime_client
 from producer_runtime_client import RuntimePreparation
 from direct_sync_operator import pause_relay, resume_relay
 from direct_sync_push import (
@@ -48,42 +49,75 @@ class FakeResponse:
         return self._payload
 
 
+_RUNTIME_LEASE_EXPIRES_AT = "2999-08-06T00:00:00Z"
+
+
+def _runtime_token(sequence):
+    return f"{int(sequence):043d}"
+
+
+def _runtime_lease_grant(request, *, producer_install_id, lease_id):
+    next_sequence = int(request.get("runtime_request_sequence") or 0) + 1
+    return FakeResponse(
+        200,
+        {
+            "ok": True,
+            "status": "ACTIVE",
+            "contract_version": runtime_client.CONTRACT_VERSION,
+            "operation": "renewed" if "runtime_fence" in request else "issued",
+            "lease_id": lease_id,
+            "producer_install_id": producer_install_id,
+            "runtime_instance_id": request["runtime_instance_id"],
+            "public_jwk_thumbprint": runtime_client._jwk_thumbprint(request["public_jwk"]),
+            "issue_idempotency_key": request["issue_idempotency_key"],
+            "fence": int(request.get("runtime_fence") or 1),
+            "issued_at": "2026-08-06T00:00:00Z",
+            "expires_at": _RUNTIME_LEASE_EXPIRES_AT,
+            "next_request_token": _runtime_token(next_sequence),
+            "next_request_sequence": next_sequence,
+        },
+    )
+
+
+def _with_runtime_lease_receipt(response, metadata, *, lease_id):
+    payload = dict(response.json())
+    if payload.get("committed") is not True or "runtime_request_token" not in metadata:
+        return response
+    next_sequence = int(metadata["runtime_request_sequence"]) + 1
+    payload.setdefault("producer_install_id", metadata["producer_install_id"])
+    payload.setdefault(
+        "runtime_lease",
+        {
+            "contract_version": runtime_client.CONTRACT_VERSION,
+            "validation_status": "consumed",
+            "lease_id": lease_id,
+            "fence": metadata["runtime_fence"],
+            "next_request_token": _runtime_token(next_sequence),
+            "next_request_sequence": next_sequence,
+            "expires_at": _RUNTIME_LEASE_EXPIRES_AT,
+        },
+    )
+    return FakeResponse(response.status_code, payload)
+
+
 class FakeSession:
-    def __init__(self, response):
+    def __init__(self, response, *, producer_install_id="install-label-runtime-1"):
         self.response = response
+        self.producer_install_id = producer_install_id
+        self.lease_id = "lease-label-runtime-fixture"
+        self.lease_calls = []
         self.calls = []
 
-    def post(self, url, *, data, files, headers, timeout, allow_redirects=False):
-        file_name, file_handle, content_type = files["file"]
-        self.calls.append(
-            {
-                "url": url,
-                "metadata": data["metadata"],
-                "headers": dict(headers),
-                "timeout": timeout,
-                "allow_redirects": allow_redirects,
-                "file_name": file_name,
-                "file_bytes": file_handle.read(),
-                "content_type": content_type,
-            }
-        )
-        return self.response
-
-
-class RaisingSession:
-    def __init__(self):
-        self.calls = []
-
-    def post(self, url, *, data, files, headers, timeout, allow_redirects=False):
-        self.calls.append({"url": url, "headers": dict(headers), "timeout": timeout, "allow_redirects": allow_redirects})
-        raise TimeoutError("Authorization: Bearer SHOULD-NOT-LEAK raw_payload")
-
-
-class EchoAcceptedSession:
-    def __init__(self):
-        self.calls = []
-
-    def post(self, url, *, data, files, headers, timeout, allow_redirects=False):
+    def post(self, url, *, data, files=None, headers, timeout, allow_redirects=False):
+        if str(url).endswith(runtime_client.ENDPOINT_PATH):
+            request = json.loads(bytes(data).decode("utf-8"))
+            self.lease_calls.append(request)
+            return _runtime_lease_grant(
+                request,
+                producer_install_id=self.producer_install_id,
+                lease_id=self.lease_id,
+            )
+        assert files is not None
         file_name, file_handle, content_type = files["file"]
         metadata = json.loads(data["metadata"])
         self.calls.append(
@@ -98,9 +132,53 @@ class EchoAcceptedSession:
                 "content_type": content_type,
             }
         )
-        return FakeResponse(
-            200,
+        return _with_runtime_lease_receipt(self.response, metadata, lease_id=self.lease_id)
+
+
+class RaisingSession:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, *, data, files, headers, timeout, allow_redirects=False):
+        self.calls.append({"url": url, "headers": dict(headers), "timeout": timeout, "allow_redirects": allow_redirects})
+        raise TimeoutError("Authorization: Bearer SHOULD-NOT-LEAK raw_payload")
+
+
+class EchoAcceptedSession:
+    def __init__(self, *, producer_install_id="install-label-runtime-1"):
+        self.producer_install_id = producer_install_id
+        self.lease_id = "lease-label-runtime-fixture"
+        self.lease_calls = []
+        self.calls = []
+
+    def post(self, url, *, data, files=None, headers, timeout, allow_redirects=False):
+        if str(url).endswith(runtime_client.ENDPOINT_PATH):
+            request = json.loads(bytes(data).decode("utf-8"))
+            self.lease_calls.append(request)
+            return _runtime_lease_grant(
+                request,
+                producer_install_id=self.producer_install_id,
+                lease_id=self.lease_id,
+            )
+        assert files is not None
+        file_name, file_handle, content_type = files["file"]
+        metadata = json.loads(data["metadata"])
+        self.calls.append(
             {
+                "url": url,
+                "metadata": data["metadata"],
+                "headers": dict(headers),
+                "timeout": timeout,
+                "allow_redirects": allow_redirects,
+                "file_name": file_name,
+                "file_bytes": file_handle.read(),
+                "content_type": content_type,
+            }
+        )
+        return _with_runtime_lease_receipt(
+            FakeResponse(
+                200,
+                {
                 "request_id": f"request-{metadata['client_batch_id']}",
                 "client_batch_id": metadata["client_batch_id"],
                 "server_source_file_id": (
@@ -112,7 +190,10 @@ class EchoAcceptedSession:
                 "retryable": False,
                 "next_retry_after": None,
                 "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
-            },
+                },
+            ),
+            metadata,
+            lease_id=self.lease_id,
         )
 
 

@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import sqlite3
 import subprocess
 import sys
 from argparse import Namespace
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -30,6 +32,7 @@ from direct_sync_push import (  # noqa: E402
     RELAY_STATUS_RETRY_WAIT,
     ProducerCredentials,
     build_source_file_plan,
+    canonical_json,
     claim_next_relay_batch,
     relay_queue_status,
     upload_source_file,
@@ -37,6 +40,7 @@ from direct_sync_push import (  # noqa: E402
 from direct_sync_operator import operator_status, pause_relay, resume_relay, retry_dead_relay_batch  # noqa: E402
 from direct_sync_relay_install_pack import build_install_plan  # noqa: E402
 from direct_sync_relay_runner import _scan_source_files  # noqa: E402
+import producer_runtime_client as runtime_client  # noqa: E402
 from direct_sync_runtime import (  # noqa: E402
     DirectSyncRuntimeConfig,
     enqueue_completed_source_file,
@@ -54,13 +58,233 @@ class FakeResponse:
         return self._payload
 
 
-class EchoAcceptedSession:
-    def __init__(self):
-        self.calls: list[dict] = []
+def _json_copy(value: dict) -> dict:
+    return json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True))
 
-    def post(self, url, *, data, files, headers, timeout, allow_redirects=False):
+
+class RuntimeLeaseFixtureAuthority:
+    """Stateful server-side model for lease rotation and ingest replay."""
+
+    def __init__(self, *, force_renew_on_issue: bool = False):
+        self.force_renew_on_issue = bool(force_renew_on_issue)
+        self.producer_id = "producer-label-phase-g"
+        self.key_id = "key-label-phase-g"
+        self.secret = b"label-phase-g-local-secret"
+        self.producer_install_id = "install-label-match-phase-g"
+        self.lease_id = "lease-label-match-phase-g-fixture"
+        self.runtime_instance_id = ""
+        self.public_jwk_thumbprint = ""
+        self.fence = 1
+        self.current_request_token = ""
+        self.current_request_sequence = 0
+        self.expires_at = ""
+        self.issue_count = 0
+        self.renew_count = 0
+        self.consume_count = 0
+        self.exact_replay_count = 0
+        self.mismatched_replay_count = 0
+        self._token_serial = 0
+        self._lease_anchors: dict[str, tuple[str, dict]] = {}
+        self._source_receipts: dict[str, tuple[str, int, dict]] = {}
+
+    def _next_token(self) -> str:
+        self._token_serial += 1
+        return f"T{self._token_serial:042d}"
+
+    def _assert_signed_lease_request(self, request: dict, headers: dict) -> None:
+        assert headers.get("X-Producer-Id") == self.producer_id
+        assert headers.get("X-Producer-Key-Id") == self.key_id
+        canonical = runtime_client._canonical_request(
+            timestamp=headers["X-Producer-Timestamp"],
+            nonce=headers["X-Producer-Nonce"],
+            producer_id=headers["X-Producer-Id"],
+            key_id=headers["X-Producer-Key-Id"],
+            body=request,
+        )
+        expected = hmac.new(self.secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+        assert hmac.compare_digest(expected, str(headers.get("X-Producer-Signature") or ""))
+
+    def acquire(self, request: dict, headers: dict) -> FakeResponse:
+        self._assert_signed_lease_request(request, headers)
+        assert request.get("contract_version") == runtime_client.CONTRACT_VERSION
+        issue_key = str(request["issue_idempotency_key"])
+        request_fingerprint = hashlib.sha256(canonical_json(request).encode("utf-8")).hexdigest()
+        anchored = self._lease_anchors.get(issue_key)
+        if anchored is not None:
+            assert anchored[0] == request_fingerprint
+            return FakeResponse(200, _json_copy(anchored[1]))
+
+        runtime_id = str(request["runtime_instance_id"])
+        thumbprint = runtime_client._jwk_thumbprint(request["public_jwk"])
+        renewal_fields = ("runtime_fence", "runtime_request_token", "runtime_request_sequence")
+        renewal_field_count = sum(field_name in request for field_name in renewal_fields)
+        assert renewal_field_count in {0, len(renewal_fields)}
+        renewing = renewal_field_count == len(renewal_fields)
+        if renewing:
+            renewal_proof_valid = (
+                self.runtime_instance_id == runtime_id
+                and self.public_jwk_thumbprint == thumbprint
+                and request["runtime_fence"] == self.fence
+                and request["runtime_request_token"] == self.current_request_token
+                and request["runtime_request_sequence"] == self.current_request_sequence
+            )
+            if not renewal_proof_valid:
+                return FakeResponse(
+                    409,
+                    {
+                        "ok": False,
+                        "status": "OPERATOR_REVIEW",
+                        "error": {
+                            "code": "STALE_RUNTIME_REQUEST_TOKEN",
+                            "message": "runtime renewal proof does not match current authority",
+                        },
+                    },
+                )
+            self.renew_count += 1
+            operation = "renewed"
+            next_sequence = self.current_request_sequence + 1
+            expires_at = "2099-08-06T00:00:00Z"
+        else:
+            assert not self.runtime_instance_id
+            self.runtime_instance_id = runtime_id
+            self.public_jwk_thumbprint = thumbprint
+            self.issue_count += 1
+            operation = "issued"
+            next_sequence = 1
+            expires_at = (
+                "2099-01-01T00:00:30Z"
+                if self.force_renew_on_issue
+                else "2099-08-06T00:00:00Z"
+            )
+
+        self.current_request_token = self._next_token()
+        self.current_request_sequence = next_sequence
+        self.expires_at = expires_at
+        grant = {
+            "ok": True,
+            "status": "ACTIVE",
+            "contract_version": runtime_client.CONTRACT_VERSION,
+            "operation": operation,
+            "lease_id": self.lease_id,
+            "producer_install_id": self.producer_install_id,
+            "runtime_instance_id": runtime_id,
+            "public_jwk_thumbprint": thumbprint,
+            "issue_idempotency_key": issue_key,
+            "fence": self.fence,
+            "issued_at": "2099-01-01T00:00:00Z",
+            "expires_at": expires_at,
+            "next_request_token": self.current_request_token,
+            "next_request_sequence": self.current_request_sequence,
+        }
+        self._lease_anchors[issue_key] = (request_fingerprint, _json_copy(grant))
+        return FakeResponse(200, grant)
+
+    @staticmethod
+    def _source_fingerprint(metadata: dict, file_bytes: bytes) -> str:
+        digest = hashlib.sha256()
+        digest.update(canonical_json(metadata).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_bytes)
+        return digest.hexdigest()
+
+    def source_response(
+        self,
+        *,
+        metadata: dict,
+        file_bytes: bytes,
+        response: FakeResponse,
+    ) -> FakeResponse:
+        payload = _json_copy(response.json())
+        replay_key = str(metadata.get("idempotency_key") or metadata.get("client_batch_id") or "")
+        assert replay_key
+        request_fingerprint = self._source_fingerprint(metadata, file_bytes)
+        stored = self._source_receipts.get(replay_key)
+        if stored is not None:
+            stored_fingerprint, stored_status_code, stored_payload = stored
+            if stored_fingerprint != request_fingerprint:
+                self.mismatched_replay_count += 1
+                return FakeResponse(
+                    409,
+                    {
+                        "committed": False,
+                        "retryable": False,
+                        "status": "operator_review",
+                        "error": {
+                            "code": "STALE_RUNTIME_REQUEST_TOKEN",
+                            "message": "lost-ACK replay request changed",
+                        },
+                    },
+                )
+            self.exact_replay_count += 1
+            return FakeResponse(stored_status_code, _json_copy(stored_payload))
+
+        if payload.get("committed") is not True:
+            return FakeResponse(response.status_code, payload)
+
+        try:
+            metadata_thumbprint = runtime_client._jwk_thumbprint(metadata["runtime_public_jwk"])
+        except (KeyError, TypeError, ValueError):
+            metadata_thumbprint = ""
+        consume_proof_valid = (
+            metadata.get("producer_install_id") == self.producer_install_id
+            and metadata.get("runtime_instance_id") == self.runtime_instance_id
+            and metadata_thumbprint == self.public_jwk_thumbprint
+            and metadata.get("runtime_fence") == self.fence
+            and metadata.get("runtime_request_token") == self.current_request_token
+            and metadata.get("runtime_request_sequence") == self.current_request_sequence
+        )
+        if not consume_proof_valid:
+            return FakeResponse(
+                409,
+                {
+                    "committed": False,
+                    "retryable": False,
+                    "status": "operator_review",
+                    "error": {
+                        "code": "STALE_RUNTIME_REQUEST_TOKEN",
+                        "message": "runtime consume proof does not match current authority",
+                    },
+                },
+            )
+
+        self.current_request_token = self._next_token()
+        self.current_request_sequence += 1
+        self.consume_count += 1
+        payload["producer_install_id"] = self.producer_install_id
+        payload["runtime_lease"] = {
+            "contract_version": runtime_client.CONTRACT_VERSION,
+            "validation_status": "consumed",
+            "lease_id": self.lease_id,
+            "fence": self.fence,
+            "next_request_token": self.current_request_token,
+            "next_request_sequence": self.current_request_sequence,
+            "expires_at": self.expires_at,
+        }
+        self._source_receipts[replay_key] = (
+            request_fingerprint,
+            response.status_code,
+            _json_copy(payload),
+        )
+        self._lease_anchors.clear()
+        return FakeResponse(response.status_code, payload)
+
+
+class RuntimeLeaseFixtureSession:
+    def __init__(self, *, authority: RuntimeLeaseFixtureAuthority | None = None):
+        self.authority = authority or RuntimeLeaseFixtureAuthority()
+        self.lease_calls: list[dict] = []
+        self.calls: list[dict] = []
+        self.source_responses: list[dict] = []
+
+    def post(self, url, *, data, files=None, headers, timeout, allow_redirects=False):
+        if str(url).endswith(runtime_client.ENDPOINT_PATH):
+            request = json.loads(bytes(data).decode("utf-8"))
+            self.lease_calls.append({"request": request, "headers": dict(headers)})
+            return self.authority.acquire(request, dict(headers))
+        assert files is not None
         file_name, file_handle, content_type = files["file"]
         metadata = json.loads(data["metadata"])
+        file_bytes = file_handle.read()
         self.calls.append(
             {
                 "url": url,
@@ -69,10 +293,24 @@ class EchoAcceptedSession:
                 "timeout": timeout,
                 "allow_redirects": allow_redirects,
                 "file_name": file_name,
-                "file_bytes": file_handle.read(),
+                "file_bytes": file_bytes,
                 "content_type": content_type,
             }
         )
+        response = self.authority.source_response(
+            metadata=metadata,
+            file_bytes=file_bytes,
+            response=self._source_response(metadata),
+        )
+        self.source_responses.append(_json_copy(response.json()))
+        return response
+
+    def _source_response(self, metadata: dict) -> FakeResponse:
+        raise NotImplementedError
+
+
+class EchoAcceptedSession(RuntimeLeaseFixtureSession):
+    def _source_response(self, metadata: dict) -> FakeResponse:
         return FakeResponse(
             200,
             {
@@ -91,25 +329,17 @@ class EchoAcceptedSession:
         )
 
 
-class FixedSession:
-    def __init__(self, response: FakeResponse):
+class FixedSession(RuntimeLeaseFixtureSession):
+    def __init__(
+        self,
+        response: FakeResponse,
+        *,
+        authority: RuntimeLeaseFixtureAuthority | None = None,
+    ):
+        super().__init__(authority=authority)
         self.response = response
-        self.calls: list[dict] = []
 
-    def post(self, url, *, data, files, headers, timeout, allow_redirects=False):
-        file_name, file_handle, content_type = files["file"]
-        self.calls.append(
-            {
-                "url": url,
-                "metadata": data["metadata"],
-                "headers": dict(headers),
-                "timeout": timeout,
-                "allow_redirects": allow_redirects,
-                "file_name": file_name,
-                "file_bytes": file_handle.read(),
-                "content_type": content_type,
-            }
-        )
+    def _source_response(self, metadata: dict) -> FakeResponse:
         return self.response
 
 
@@ -433,12 +663,14 @@ def _runner_status_log_report(tmp_root: Path) -> dict:
         and queue["counts"].get(RELAY_STATUS_ACKED) == 1
         and _artifacts_redacted(config)
         and len(session.calls) == 1
+        and len(session.lease_calls) == 1
     )
     return {
         "status": "PASS" if ok else "FAIL",
         "scope": "local Label_Match CSV queue/status/log runner proof with fixture session",
         "enqueue_status": enqueued["status"],
         "run_status": status["status"],
+        "runtime_lease_post_count": len(session.lease_calls),
         "queue": queue,
         "redaction_pass": _artifacts_redacted(config),
         "queue_db_path": str(config.db_path),
@@ -625,29 +857,154 @@ def _lost_ack_replay_report(tmp_root: Path) -> dict:
         relative_path=claimed.relative_path,
         client_batch_id=claimed.relay_id,
     )
-    committed_but_unacked = EchoAcceptedSession()
-    upload = upload_source_file(
-        plan,
-        credentials,
-        session=committed_but_unacked,
-        status_dir=tmp_root / "lost-ack" / "crash_status",
+    authority = RuntimeLeaseFixtureAuthority(force_renew_on_issue=True)
+    session = EchoAcceptedSession(authority=authority)
+    runtime_preparation = runtime_client.prepare_runtime_metadata(
+        db_path=config.db_path,
+        relay_id=claimed.relay_id,
+        metadata=plan.metadata,
+        credentials=credentials,
+        expected_lease_owner=claimed.lease_owner,
+        expected_attempt_count=claimed.attempt_count,
+        runtime_fencing_policy=claimed.runtime_fencing_policy,
+        session=session,
+        timeout=config.timeout_seconds,
+        now="2099-01-01T00:00:00Z",
     )
-    retry_session = EchoAcceptedSession()
-    retry = run_relay_once(config, session=retry_session, now="2099-01-01T00:00:02Z")
-    first_metadata = json.loads(committed_but_unacked.calls[0]["metadata"]) if committed_but_unacked.calls else {}
-    retry_metadata = json.loads(retry_session.calls[0]["metadata"]) if retry_session.calls else {}
+    prepared_metadata = dict(runtime_preparation.metadata or {})
+    with sqlite3.connect(config.db_path) as conn:
+        row = conn.execute(
+            "SELECT metadata_json FROM direct_sync_relay_batches WHERE relay_id=?",
+            (claimed.relay_id,),
+        ).fetchone()
+    persisted_metadata = json.loads(str(row[0])) if row and row[0] else {}
+    upload = None
+    if prepared_metadata:
+        upload = upload_source_file(
+            replace(plan, metadata=prepared_metadata),
+            credentials,
+            session=session,
+            status_dir=tmp_root / "lost-ack" / "crash_status",
+        )
+    first_runtime_lease_post_count = len(session.lease_calls)
+    first_source_post_count = len(session.calls)
+    retry = run_relay_once(config, session=session, now="2099-01-01T00:00:02Z")
+    retry_runtime_lease_post_count = len(session.lease_calls) - first_runtime_lease_post_count
+    retry_source_post_count = len(session.calls) - first_source_post_count
+    first_metadata = json.loads(session.calls[0]["metadata"]) if first_source_post_count == 1 else {}
+    retry_metadata = (
+        json.loads(session.calls[first_source_post_count]["metadata"])
+        if retry_source_post_count == 1
+        else {}
+    )
     queue = relay_queue_status(config.db_path)
+    runtime_fields = set(runtime_client.METADATA_FIELDS)
+    first_post_fenced = runtime_fields.issubset(first_metadata)
+    retry_post_fenced = runtime_fields.issubset(retry_metadata)
     same_replay_identity = (
         bool(claimed)
         and first_metadata.get("client_batch_id") == retry_metadata.get("client_batch_id") == claimed.relay_id
         and first_metadata.get("idempotency_key") == retry_metadata.get("idempotency_key")
         and first_metadata.get("content_sha256") == retry_metadata.get("content_sha256")
     )
-    ok = upload.success and retry["status"] == "acked" and retry["stale_leases_reset"] == 1 and same_replay_identity
+    exact_fenced_request_replayed = (
+        first_post_fenced
+        and retry_post_fenced
+        and first_metadata == retry_metadata == persisted_metadata
+    )
+    runtime_token_replayed_exactly = (
+        first_post_fenced
+        and first_metadata.get("runtime_request_token") == retry_metadata.get("runtime_request_token")
+    )
+    runtime_sequence_replayed_exactly = (
+        first_post_fenced
+        and first_metadata.get("runtime_request_sequence") == retry_metadata.get("runtime_request_sequence")
+    )
+    runtime_fence_replayed_exactly = (
+        first_post_fenced
+        and first_metadata.get("runtime_fence") == retry_metadata.get("runtime_fence")
+    )
+    first_transport_nonce = (
+        session.calls[0]["headers"].get("X-Producer-Nonce")
+        if first_source_post_count == 1
+        else ""
+    )
+    retry_transport_nonce = (
+        session.calls[first_source_post_count]["headers"].get("X-Producer-Nonce")
+        if retry_source_post_count == 1
+        else ""
+    )
+    fresh_transport_nonce = bool(
+        first_transport_nonce
+        and retry_transport_nonce
+        and first_transport_nonce != retry_transport_nonce
+    )
+    first_response = session.source_responses[0] if first_source_post_count == 1 else {}
+    retry_response = (
+        session.source_responses[first_source_post_count]
+        if retry_source_post_count == 1
+        else {}
+    )
+    exact_replay_response = bool(first_response) and canonical_json(first_response) == canonical_json(retry_response)
+    exact_runtime_receipt = (
+        isinstance(first_response.get("runtime_lease"), dict)
+        and canonical_json(first_response["runtime_lease"])
+        == canonical_json(retry_response.get("runtime_lease") or {})
+    )
+    lease_operations = [
+        "renew" if "runtime_fence" in call["request"] else "issue"
+        for call in session.lease_calls[:first_runtime_lease_post_count]
+    ]
+    ok = (
+        runtime_preparation.metadata is not None
+        and upload is not None
+        and upload.success
+        and upload.committed
+        and authority.issue_count == 1
+        and authority.renew_count == 1
+        and authority.consume_count == 1
+        and first_runtime_lease_post_count == 2
+        and retry_runtime_lease_post_count == 0
+        and first_source_post_count == 1
+        and retry_source_post_count == 1
+        and exact_fenced_request_replayed
+        and runtime_token_replayed_exactly
+        and runtime_sequence_replayed_exactly
+        and runtime_fence_replayed_exactly
+        and fresh_transport_nonce
+        and exact_replay_response
+        and exact_runtime_receipt
+        and lease_operations == ["issue", "renew"]
+        and authority.exact_replay_count == 1
+        and authority.mismatched_replay_count == 0
+        and retry["status"] == "acked"
+        and retry["stale_leases_reset"] == 1
+        and same_replay_identity
+        and queue["counts"].get(RELAY_STATUS_ACKED) == 1
+    )
     return {
         "status": "PASS" if ok else "FAIL",
-        "scope": "local committed-before-local-ack crash simulation with same relay batch retry",
+        "scope": "local stateful runtime lease issue/renew/consume and committed-before-local-ack exact replay",
         "same_replay_identity": same_replay_identity,
+        "first_post_fenced": first_post_fenced,
+        "retry_post_fenced": retry_post_fenced,
+        "exact_fenced_request_replayed": exact_fenced_request_replayed,
+        "runtime_token_replayed_exactly": runtime_token_replayed_exactly,
+        "runtime_sequence_replayed_exactly": runtime_sequence_replayed_exactly,
+        "runtime_fence_replayed_exactly": runtime_fence_replayed_exactly,
+        "fresh_transport_nonce": fresh_transport_nonce,
+        "issue_count": authority.issue_count,
+        "renew_count": authority.renew_count,
+        "consume_count": authority.consume_count,
+        "lease_operations": lease_operations,
+        "exact_replay_response": exact_replay_response,
+        "exact_runtime_receipt": exact_runtime_receipt,
+        "first_runtime_lease_post_count": first_runtime_lease_post_count,
+        "retry_runtime_lease_post_count": retry_runtime_lease_post_count,
+        "first_source_post_count": first_source_post_count,
+        "retry_source_post_count": retry_source_post_count,
+        "server_exact_replay_count": authority.exact_replay_count,
+        "server_mismatched_replay_count": authority.mismatched_replay_count,
         "stale_leases_reset": retry["stale_leases_reset"],
         "queue": queue,
     }
@@ -735,6 +1092,7 @@ def _operator_control_report(tmp_root: Path) -> dict:
     config = _runtime_config(tmp_root, name="operator-control")
     source_file = _write_source_file(tmp_root / "operator-control")
     audit_log_path = tmp_root / "operator-control" / "logs" / "operator.jsonl"
+    authority = RuntimeLeaseFixtureAuthority()
     paused = pause_relay(
         pause_path=config.operator_pause_path,
         operator_id="phase-g-operator",
@@ -760,7 +1118,8 @@ def _operator_control_report(tmp_root: Path) -> dict:
                     "retryable": False,
                     "error": {"code": "metadata_invalid", "message": "bad metadata"},
                 },
-            )
+            ),
+            authority=authority,
         ),
     )
     relay_id = str(enqueued.get("last_result", {}).get("relay_id") or "")
@@ -771,7 +1130,7 @@ def _operator_control_report(tmp_root: Path) -> dict:
         reason="local drill retry after permanent failure",
         audit_log_path=audit_log_path,
     )
-    acked = run_relay_once(config, session=EchoAcceptedSession())
+    acked = run_relay_once(config, session=EchoAcceptedSession(authority=authority))
     status_report = operator_status(db_path=config.db_path, pause_path=config.operator_pause_path)
     audit_bytes = Path(audit_log_path).read_bytes()
     forbidden = (b"label-phase-g-local-secret", b"X-Producer-Signature", b"PRODUCER-HMAC-SHA256-V1")

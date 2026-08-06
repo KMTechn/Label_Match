@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from direct_sync_push import (
+    canonical_json,
     DirectSyncPushError,
     ProducerCredentials,
     RELAY_STATUS_ACKED,
@@ -21,6 +22,7 @@ from direct_sync_push import (
     restore_raw_artifact_to_file,
     utc_now_text,
 )
+from producer_runtime_client import METADATA_FIELDS as RUNTIME_METADATA_FIELDS
 
 
 PAUSE_SCHEMA_VERSION = "direct-sync-relay-operator-pause-v1"
@@ -90,6 +92,24 @@ def _read_file_digest(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             total += len(chunk)
     return digest.hexdigest(), total
+
+
+def _metadata_for_runtime_retry(raw_metadata: str) -> str:
+    """Remove a terminal one-shot lease snapshot before reserving fresh authority."""
+
+    try:
+        metadata = json.loads(str(raw_metadata or "{}"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return raw_metadata
+    if not isinstance(metadata, Mapping):
+        return raw_metadata
+    retry_fields = (*RUNTIME_METADATA_FIELDS, "runtime_request_token_sha256")
+    if not any(field_name in metadata for field_name in retry_fields):
+        return raw_metadata
+    retry_metadata = dict(metadata)
+    for field_name in retry_fields:
+        retry_metadata.pop(field_name, None)
+    return canonical_json(retry_metadata)
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -406,7 +426,8 @@ def retry_dead_relay_batch(
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
-            SELECT relay_id, status, attempt_count, spooled_file_path, content_sha256, byte_length
+            SELECT relay_id, status, attempt_count, spooled_file_path, content_sha256, byte_length,
+                   metadata_json
             FROM direct_sync_relay_batches
             WHERE relay_id = ?
             """,
@@ -451,6 +472,7 @@ def retry_dead_relay_batch(
             }
             _append_operator_audit(audit_log_path, action="retry-dead-blocked", report=report)
             return report
+        retry_metadata_json = _metadata_for_runtime_retry(str(row["metadata_json"] or ""))
         cursor = conn.execute(
             """
             UPDATE direct_sync_relay_batches
@@ -460,13 +482,20 @@ def retry_dead_relay_batch(
                 next_attempt_at = NULL,
                 last_error_code = NULL,
                 last_error_message = NULL,
+                metadata_json = ?,
                 updated_at = ?
             WHERE relay_id = ?
               AND status = ?
               AND lease_owner IS NULL
               AND lease_expires_at IS NULL
             """,
-            (RELAY_STATUS_PENDING, now, relay, RELAY_STATUS_FAILED_PERMANENT),
+            (
+                RELAY_STATUS_PENDING,
+                retry_metadata_json,
+                now,
+                relay,
+                RELAY_STATUS_FAILED_PERMANENT,
+            ),
         )
         if cursor.rowcount != 1:
             conn.rollback()

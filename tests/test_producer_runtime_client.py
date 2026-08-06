@@ -18,6 +18,10 @@ import producer_runtime_client as runtime_client
 from direct_sync_push import ProducerCredentials, canonical_json, init_relay_queue_schema
 
 
+WORKER_ANALYSIS_GUI_ROOT = Path(__file__).resolve().parents[2] / "WorkerAnalysisGUI-web"
+PRODUCER_RUNTIME_LEASE_MODULE = WORKER_ANALYSIS_GUI_ROOT / "producer_runtime_lease.py"
+
+
 @dataclass
 class _Response:
     status_code: int
@@ -1280,8 +1284,12 @@ def test_two_workers_can_reserve_only_one_rotating_token(tmp_path):
     assert winners[0].metadata["runtime_request_token"] == "C" * 43
 
 
+@pytest.mark.skipif(
+    not PRODUCER_RUNTIME_LEASE_MODULE.is_file(),
+    reason="requires sibling WorkerAnalysisGUI-web/producer_runtime_lease.py external workspace",
+)
 def test_cloned_relay_databases_get_one_server_commit_and_one_stale_token(tmp_path):
-    server_root = Path(__file__).resolve().parents[2] / "WorkerAnalysisGUI-web"
+    server_root = WORKER_ANALYSIS_GUI_ROOT
     sys.path.insert(0, str(server_root))
     try:
         from producer_runtime_lease import (
