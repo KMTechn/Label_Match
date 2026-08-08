@@ -155,7 +155,6 @@ def _task_principal_args(args: argparse.Namespace, *, redact_password: bool) -> 
     user = str(getattr(args, "task_run_user", "") or "").strip()
     password_env = str(getattr(args, "task_run_password_env", "") or "").strip()
     password_file = str(getattr(args, "task_run_password_file", "") or "").strip()
-    apply_requested = bool(getattr(args, "apply", False))
     uninstall = bool(getattr(args, "uninstall", False))
     allow_interactive = bool(getattr(args, "allow_interactive_task_for_local_test", False))
     report = {
@@ -173,14 +172,17 @@ def _task_principal_args(args: argparse.Namespace, *, redact_password: bool) -> 
                 "status": "FAIL",
                 "blocked_reason": "task password source requires --task-run-user",
             })
-        elif apply_requested and not uninstall and not allow_interactive:
+        elif allow_interactive:
             report.update({
-                "status": "FAIL",
-                "blocked_reason": (
-                    "production apply requires --task-run-user with password source "
-                    "or --allow-interactive-task-for-local-test"
-                ),
+                "mode": "interactive_token_default",
+                "run_user": "",
             })
+        elif not uninstall:
+            report.update({
+                "mode": "system_service_account",
+                "run_user": "SYSTEM",
+            })
+            return ["/RU", "SYSTEM"], report
         return [], report
     password, source, error = _read_task_password(args)
     report.update({
@@ -1063,6 +1065,8 @@ def _self_enrollment_registration_command(args: argparse.Namespace) -> list[str]
         command.extend(["--enrollment-token", token])
     timeout_seconds = int(getattr(args, "enrollment_timeout_seconds", 30) or 30)
     command.extend(["--enrollment-timeout-seconds", str(max(1, timeout_seconds))])
+    if bool(getattr(args, "require_machine_credential_bundle", False)):
+        command.append("--require-machine-credential-bundle")
     return command
 
 
@@ -1132,6 +1136,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enrollment-token-file", default="")
     parser.add_argument("--enrollment-token-env", default=DEFAULT_ENROLLMENT_TOKEN_ENV)
     parser.add_argument("--enrollment-timeout-seconds", type=int, default=30)
+    parser.add_argument("--require-machine-credential-bundle", action="store_true")
     parser.add_argument("--pc-id", default="")
     parser.add_argument("--source-host-id", default="")
     parser.add_argument("--producer-install-id", default="")

@@ -158,11 +158,7 @@ def test_full_ci_runs_regression_once_and_keeps_physical_display2_separate():
     assert "if ($matches.Count -ne 1)" in release
     assert "$run.run_attempt -ne 1" in release
     assert '$run.conclusion -cne "success"' in release
-    codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
-    assert "/.github/workflows/** @kevin9899" in codeowners
-    assert "/Label_Match.py @kevin9899" in codeowners
-    assert "/label_match_single_instance.py @kevin9899" in codeowners
-    assert "/tools/** @kevin9899" in codeowners
+    assert not Path(".github/CODEOWNERS").exists()
 
 
 def test_release_workflow_generates_private_update_manifest():
@@ -260,6 +256,7 @@ def test_internal_release_archive_script_verifies_membership_bytes_and_paths(tmp
         "config/app_settings.json",
         "_internal/config/app_settings.json",
         "release-identity.json",
+        "INSTALL_THIS_PC.ps1",
         "install_label_match_direct_sync.ps1",
         "direct_sync_push.py",
         "direct_sync_runtime.py",

@@ -116,6 +116,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist/Label_Match/tools
           Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match
+          Copy-Item INSTALL_THIS_PC.ps1 -Destination dist/Label_Match
           Copy-Item "$env:RUNNER_TEMP\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json
           Copy-Item direct_sync_push.py,direct_sync_runtime.py,producer_runtime_client.py,direct_sync_operator.py -Destination dist/Label_Match
           Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,tools/register_label_match_worker_pc.py,tools/install_logistics_runtime_profile.py,tools/check_logistics_runtime_profile.py -Destination dist/Label_Match/tools
@@ -231,6 +232,7 @@ jobs:
               "_internal/config/app_settings.json",
               "release-identity.json",
               "install_label_match_direct_sync.ps1",
+              "INSTALL_THIS_PC.ps1",
               "direct_sync_push.py",
               "direct_sync_runtime.py",
               "producer_runtime_client.py",
@@ -433,6 +435,7 @@ jobs:
                 "Label_Match/_internal/config/app_settings.json",
                 "Label_Match/release-identity.json",
                 "Label_Match/install_label_match_direct_sync.ps1",
+                "Label_Match/INSTALL_THIS_PC.ps1",
                 "Label_Match/direct_sync_push.py",
                 "Label_Match/direct_sync_runtime.py",
                 "Label_Match/producer_runtime_client.py",

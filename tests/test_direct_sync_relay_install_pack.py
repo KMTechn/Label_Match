@@ -740,10 +740,20 @@ def test_install_pack_blocks_task_user_without_password_source(tmp_path):
     assert "requires --task-run-password" in report["blocked_reason"]
 
 
-def test_install_pack_apply_blocks_interactive_task_without_explicit_local_test_flag(tmp_path):
+def test_install_pack_apply_defaults_to_system_task_without_password(tmp_path, monkeypatch):
     module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
-    report_path = tmp_path / "install-pack-interactive-task-blocked.json"
+    report_path = tmp_path / "install-pack-system-task.json"
+    program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    scan_source_dir.mkdir(parents=True)
+    commands = []
+    monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(scan_source_dir))
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
 
     result = module.main(
         [
@@ -752,7 +762,9 @@ def test_install_pack_apply_blocks_interactive_task_without_explicit_local_test_
             "--credential-path",
             str(credential_path),
             "--program-data-root",
-            str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
+            str(program_data_root),
+            "--scan-source-dir",
+            str(scan_source_dir),
             "--report-path",
             str(report_path),
             "--apply",
@@ -760,12 +772,14 @@ def test_install_pack_apply_blocks_interactive_task_without_explicit_local_test_
         ]
     )
 
-    assert result == 2
+    assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
-    assert report["status"] == "BLOCKED"
-    assert report["task_principal"]["status"] == "FAIL"
-    assert "production apply requires --task-run-user" in report["blocked_reason"]
-    assert "--allow-interactive-task-for-local-test" in report["blocked_reason"]
+    assert report["status"] == "PASS"
+    assert report["task_principal"]["status"] == "PASS"
+    assert report["task_principal"]["mode"] == "system_service_account"
+    assert report["task_principal"]["run_user"] == "SYSTEM"
+    task_command = find_command(commands, "schtasks.exe")
+    assert task_command[task_command.index("/RU") + 1] == "SYSTEM"
 
 
 def test_install_pack_blocks_invalid_task_password_sources(tmp_path, monkeypatch):

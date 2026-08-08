@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,11 +28,35 @@ from logistics_runtime_profile import (  # noqa: E402
 
 
 DEFAULT_INSTALL_TOKEN_ENV = "KM_LOGISTICS_INSTALL_BEARER_TOKEN"
+MACHINE_CREDENTIAL_BUNDLE_CONTRACT_VERSION = (
+    "producer-self-enrollment-machine-credentials-v1"
+)
+MACHINE_CREDENTIAL_BUNDLE_FIELDS = frozenset(
+    {"contract_version", "bindings", "credentials", "profiles"}
+)
+MACHINE_CREDENTIAL_BINDING_FIELDS = frozenset(
+    {"app", "program", "source_host_id", "device_id", "authority_scope_id"}
+)
+MACHINE_CREDENTIAL_FIELDS = frozenset({"producer_ingest", "logistics"})
+MACHINE_PROFILE_FIELDS = frozenset({"logistics"})
+PRODUCER_INGEST_CREDENTIAL_FIELDS = frozenset(
+    {"audience", "auth_scheme", "key_id", "secret"}
+)
+LOGISTICS_PROFILE_FIELDS = frozenset(
+    {
+        "contract_version", "base_url", "authority_scope", "authority_epoch",
+        "authority_plane", "ledger_plane", "plane_epoch", "device_id",
+        "source_host_id", "timeout_seconds",
+    }
+)
+LOGISTICS_CREDENTIAL_FIELDS = frozenset(
+    {"audience", "auth_scheme", "token_header", "token"}
+)
 
 
 def _secure_profile_directory(path: Path, reader_principal: str) -> None:
     reader = str(reader_principal or "").strip()
-    if not reader or not re.fullmatch(r"[A-Za-z0-9가-힣 _.-]+(?:\\[A-Za-z0-9가-힣 _.$-]+)?", reader):
+    if not reader or not re.fullmatch(r"\*?[A-Za-z0-9가-힣 _.-]+(?:\\[A-Za-z0-9가-힣 _.$-]+)?", reader):
         raise ValueError("reader_principal is required and must be a safe account name")
     if os.name != "nt":
         raise RuntimeError("machine profile ACL installation requires Windows")
@@ -113,17 +137,140 @@ def install_runtime_profile(
     secret_relative = DEFAULT_TOKEN_REF.split(":", 1)[1].replace("/", os.sep)
     secret_path = (target.parent / secret_relative).resolve()
     secret_path.relative_to(target.parent.resolve())
-    _atomic_write(secret_path, protected)
-    _atomic_write(
-        target,
-        (json.dumps(values, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode(
-            "utf-8"
-        ),
-    )
-    readback = load_logistics_runtime_profile(required=True, profile_path=target)
-    if readback is None or readback != validated:
-        raise RuntimeError("runtime profile exact readback failed")
+    created: list[Path] = []
+    try:
+        _atomic_write(secret_path, protected)
+        created.append(secret_path)
+        _atomic_write(
+            target,
+            (json.dumps(values, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode(
+                "utf-8"
+            ),
+        )
+        created.append(target)
+        readback = load_logistics_runtime_profile(required=True, profile_path=target)
+        if readback is None or readback != validated:
+            raise RuntimeError("runtime profile exact readback failed")
+    except Exception:
+        for created_path in reversed(created):
+            created_path.unlink(missing_ok=True)
+        raise
+    summary["profile_path"] = str(target)
+    summary["created_paths"] = [str(target), str(secret_path)]
     return summary
+
+
+def ensure_runtime_profile_from_enrollment_bundle(
+    response_payload: Mapping[str, Any],
+    *,
+    expected_app: str,
+    expected_program: str,
+    expected_source_host_id: str,
+    expected_device_id: str,
+    reader_principal: str = "*S-1-5-32-545",
+    profile_path: str | os.PathLike[str] | None = None,
+) -> dict[str, Any] | None:
+    bundle = response_payload.get("machine_credential_bundle")
+    if bundle is None:
+        return None
+    if not isinstance(bundle, Mapping) or set(bundle) != MACHINE_CREDENTIAL_BUNDLE_FIELDS:
+        raise ValueError("machine credential bundle fields are invalid")
+    if bundle.get("contract_version") != MACHINE_CREDENTIAL_BUNDLE_CONTRACT_VERSION:
+        raise ValueError("machine credential bundle contract is invalid")
+    bindings = bundle.get("bindings")
+    credentials = bundle.get("credentials")
+    profiles = bundle.get("profiles")
+    if not all(isinstance(item, Mapping) for item in (bindings, credentials, profiles)):
+        raise ValueError("machine credential bundle sections are invalid")
+    if set(bindings) != MACHINE_CREDENTIAL_BINDING_FIELDS:
+        raise ValueError("machine credential bundle binding fields are invalid")
+    if set(credentials) != MACHINE_CREDENTIAL_FIELDS:
+        raise ValueError("machine credential bundle credential sections are invalid")
+    if set(profiles) != MACHINE_PROFILE_FIELDS:
+        raise ValueError("machine credential bundle profile sections are invalid")
+    for field, expected in {
+        "app": expected_app,
+        "program": expected_program,
+        "source_host_id": expected_source_host_id,
+        "device_id": expected_device_id,
+    }.items():
+        if bindings.get(field) != expected:
+            raise ValueError(f"machine credential bundle {field} binding mismatch")
+    profile = profiles.get("logistics")
+    producer_credential = credentials.get("producer_ingest")
+    logistics_credential = credentials.get("logistics")
+    if not isinstance(profile, Mapping) or set(profile) != LOGISTICS_PROFILE_FIELDS:
+        raise ValueError("machine logistics profile fields are invalid")
+    if (
+        not isinstance(producer_credential, Mapping)
+        or set(producer_credential) != PRODUCER_INGEST_CREDENTIAL_FIELDS
+    ):
+        raise ValueError("machine producer ingest credential fields are invalid")
+    if (
+        not isinstance(logistics_credential, Mapping)
+        or set(logistics_credential) != LOGISTICS_CREDENTIAL_FIELDS
+    ):
+        raise ValueError("machine logistics credential fields are invalid")
+    enrollment_key_id = response_payload.get("key_id")
+    producer_secret = response_payload.get("secret")
+    if (
+        producer_credential.get("audience") != "producer-ingest-hmac-v1"
+        or producer_credential.get("auth_scheme") != "hmac-sha256"
+        or not isinstance(enrollment_key_id, str)
+        or not enrollment_key_id.strip()
+        or producer_credential.get("key_id") != enrollment_key_id
+        or not isinstance(producer_secret, str)
+        or not producer_secret.strip()
+        or producer_credential.get("secret") != producer_secret
+    ):
+        raise ValueError("machine producer ingest credential contract is invalid")
+    token = logistics_credential.get("token")
+    if (
+        logistics_credential.get("audience") != "worker-analysis-logistics-v1"
+        or logistics_credential.get("auth_scheme") != "bearer"
+        or logistics_credential.get("token_header") != "X-Logistics-API-Token"
+        or not isinstance(token, str)
+        or not token.strip()
+    ):
+        raise ValueError("machine logistics credential contract is invalid")
+    if token == producer_secret:
+        raise ValueError("machine credential audiences must use distinct secrets")
+    if (
+        profile.get("source_host_id") != expected_source_host_id
+        or profile.get("device_id") != expected_device_id
+        or not isinstance(bindings.get("authority_scope_id"), str)
+        or not bindings["authority_scope_id"].strip()
+        or profile.get("authority_scope") != bindings["authority_scope_id"]
+    ):
+        raise ValueError("machine logistics profile identity mismatch")
+    target = Path(profile_path) if profile_path is not None else default_profile_path()
+    values = dict(profile)
+    values["bearer_token_ref"] = DEFAULT_TOKEN_REF
+    candidate = profile_from_values(values, profile_path=target, bearer_token=token, required=True)
+    if target.exists():
+        existing = load_logistics_runtime_profile(required=True, profile_path=target)
+        if existing != candidate:
+            raise FileExistsError("existing machine logistics profile conflicts with enrollment")
+        summary = existing.redacted_summary()
+        summary.update({"status": "reused", "profile_path": str(target), "created_paths": []})
+        return summary
+    secret_path = target.parent / DEFAULT_TOKEN_REF.split(":", 1)[1].replace("/", os.sep)
+    if secret_path.exists():
+        raise FileExistsError("orphan machine logistics credential already exists")
+    return install_runtime_profile(
+        profile_path=target,
+        base_url=str(profile["base_url"]),
+        authority_scope=str(profile["authority_scope"]),
+        authority_epoch=int(profile["authority_epoch"]),
+        authority_plane=str(profile["authority_plane"]),
+        ledger_plane=str(profile["ledger_plane"]),
+        plane_epoch=int(profile["plane_epoch"]),
+        device_id=str(profile["device_id"]),
+        source_host_id=str(profile["source_host_id"]),
+        bearer_token=token,
+        timeout_seconds=float(profile["timeout_seconds"]),
+        reader_principal=reader_principal,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

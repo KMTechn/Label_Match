@@ -1,3 +1,5 @@
+#Requires -RunAsAdministrator
+
 param(
     [switch]$DryRun,
     [string]$ServerBaseUrl = "https://worker.kmtecherp.com",
@@ -6,7 +8,7 @@ param(
     [string]$EnrollmentTokenFile = "",
     [string]$TaskName = "",
     [string]$TaskRunUser = "",
-    [string]$AppRunUser = "",
+    [string]$AppRunUser = "*S-1-5-32-545",
     [string]$TaskRunPasswordEnv = "",
     [string]$TaskRunPasswordFile = "",
     [switch]$AllowInteractiveTaskForLocalTest
@@ -58,10 +60,6 @@ if ([string]::IsNullOrWhiteSpace($ProgramDataRoot)) {
 if ([string]::IsNullOrWhiteSpace($TaskName)) {
     $TaskName = "direct-sync-relay-$sourceHostId"
 }
-if ([string]::IsNullOrWhiteSpace($AppRunUser)) {
-    $AppRunUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-}
-
 function Write-Utf8JsonFile([string]$Path, $Payload) {
     $parent = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($parent)) {
@@ -70,6 +68,37 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
     $json = $Payload | ConvertTo-Json -Depth 20
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $json + [System.Environment]::NewLine, $utf8NoBom)
+}
+
+function Remove-NewMachineProfilesFromRegistrationReport([string]$RegistrationReportPath) {
+    if (-not (Test-Path -LiteralPath $RegistrationReportPath -PathType Leaf)) {
+        return
+    }
+    $payload = Get-Content -LiteralPath $RegistrationReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($null -eq $payload.machine_profiles) {
+        return
+    }
+    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    $profileRoot = Join-Path $programData "KMTech\Logistics"
+    $allowed = @(
+        [System.IO.Path]::GetFullPath((Join-Path $profileRoot "runtime-profile.json")),
+        [System.IO.Path]::GetFullPath((Join-Path $profileRoot "secrets\bearer-token.dpapi"))
+    )
+    foreach ($property in $payload.machine_profiles.PSObject.Properties) {
+        $profile = $property.Value
+        if ([string]$profile.status -cne "installed") {
+            continue
+        }
+        foreach ($createdPath in @($profile.created_paths)) {
+            $fullPath = [System.IO.Path]::GetFullPath([string]$createdPath)
+            if ($allowed -notcontains $fullPath) {
+                throw "Refusing to roll back an unexpected machine profile path."
+            }
+            if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+                Remove-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+            }
+        }
+    }
 }
 
 function Set-LabelMatchSavePath([string]$AppRoot, [string]$TargetSaveDir) {
@@ -151,6 +180,7 @@ if (-not $runnerExeAvailable -or -not $registrationExeAvailable) {
 }
 $reportDir = Join-Path $ProgramDataRoot "status"
 $reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"
+$registrationReportPath = Join-Path $reportDir "label_match_worker_pc_registration.json"
 
 New-Item -ItemType Directory -Path $ScanSourceDir -Force | Out-Null
 New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
@@ -162,6 +192,7 @@ if ($installPackCommand.Count -gt 1) {
 }
 $arguments += @(
     "--self-enroll",
+    "--require-machine-credential-bundle",
     "--app-root", $appRoot,
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
@@ -219,10 +250,31 @@ if ($null -ne $installReport -and $null -ne $installReport.self_enrollment_regis
     $registrationSummary = $installReport.self_enrollment_registration.registration_report_summary
 }
 
+$taskStartStatus = "NOT_RUN"
+$taskStartError = $null
+if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
+    try {
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        $taskStartStatus = "STARTED"
+    }
+    catch {
+        $taskStartStatus = "FAILED"
+        $taskStartError = $_.Exception.Message
+        $exitCode = 1
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        try {
+            Remove-NewMachineProfilesFromRegistrationReport $registrationReportPath
+        }
+        catch {
+            $taskStartError += "; machine profile rollback failed: $($_.Exception.Message)"
+        }
+    }
+}
+
 $summary = [ordered]@{
     installer_report_version = "label-match-direct-sync-one-step-install-v1"
     status = if ($exitCode -eq 0) { if ($DryRun.IsPresent) { "DRY_RUN" } else { "PASS" } } else { "BLOCKED" }
-    blocked_reason = if ($null -ne $installReport) { $installReport.blocked_reason } else { $null }
+    blocked_reason = if ($taskStartStatus -eq "FAILED") { "scheduled task immediate start failed" } elseif ($null -ne $installReport) { $installReport.blocked_reason } else { $null }
     registration_blocked_reason = if ($null -ne $registrationSummary) { $registrationSummary.blocked_reason } else { $null }
     exit_code = $exitCode
     app_root = $appRoot
@@ -236,6 +288,10 @@ $summary = [ordered]@{
     python_exe = $pythonExe
     bundled_registration_exe_present = Test-Path -LiteralPath $registrationExe
     task_name = $TaskName
+    scheduled_task_start = [ordered]@{
+        status = $taskStartStatus
+        error = $taskStartError
+    }
     app_run_user = $AppRunUser
     app_runtime_acl = if ($null -ne $installReport) { $installReport.app_runtime_acl } else { $null }
     source_host_id = if ($null -ne $registrationSummary) { $registrationSummary.source_host_id } else { $null }
@@ -246,14 +302,5 @@ $summary = [ordered]@{
 }
 $summaryPath = Join-Path $reportDir "label_match_one_step_install_summary.json"
 Write-Utf8JsonFile $summaryPath $summary
-
-if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
-    try {
-        Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    }
-    catch {
-        # The scheduled task still exists and runs on its interval; startup is best-effort.
-    }
-}
 
 exit $exitCode

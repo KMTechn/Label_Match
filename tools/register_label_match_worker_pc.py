@@ -35,6 +35,9 @@ from direct_sync_push import (  # noqa: E402
     manifest_hash,
     validate_endpoint_url,
 )
+from tools.install_logistics_runtime_profile import (  # noqa: E402
+    ensure_runtime_profile_from_enrollment_bundle,
+)
 
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
@@ -488,10 +491,24 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
         raise DirectSyncPushError("self-enroll secret fingerprint mismatch")
     credential["producer_id"] = str(response_payload.get("producer_id") or credential["producer_id"])
     credential["key_id"] = str(response_payload.get("key_id") or credential["key_id"])
+    machine_profile = ensure_runtime_profile_from_enrollment_bundle(
+        response_payload,
+        expected_app=LABEL_MATCH_APP,
+        expected_program="Label_Match",
+        expected_source_host_id=str(report["source_host_id"]),
+        expected_device_id=str(manifest["pc_identity"]["pc_id"]),
+    )
+    if machine_profile is None and bool(getattr(args, "require_machine_credential_bundle", False)):
+        raise DirectSyncPushError("self-enroll response missing machine credential bundle")
     secret_target = str(credential["secret_ref"]).split(":", 1)[1]
-    secret_path = _write_dpapi_secret(credential["secret_data_dir"], secret_target, secret)
-    if not _verify_dpapi_secret(credential["secret_data_dir"], secret_target, secret):
-        raise DirectSyncPushError("dpapi secret verify failed")
+    try:
+        secret_path = _write_dpapi_secret(credential["secret_data_dir"], secret_target, secret)
+        if not _verify_dpapi_secret(credential["secret_data_dir"], secret_target, secret):
+            raise DirectSyncPushError("dpapi secret verify failed")
+    except Exception:
+        for created_path in (machine_profile or {}).get("created_paths", []):
+            Path(created_path).unlink(missing_ok=True)
+        raise
     report.update(
         {
             "status": "SELF_ENROLLMENT_REGISTERED",
@@ -505,6 +522,7 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
             "server_registration_verified": True,
             "token_source": token_source,
             "protected_secret_path": str(secret_path),
+            "machine_profiles": {"logistics": machine_profile} if machine_profile else {},
         }
     )
     client_receipt = response_payload.get("client_receipt")
@@ -526,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enrollment-token-file", default="")
     parser.add_argument("--enrollment-token-env", default=DEFAULT_ENROLLMENT_TOKEN_ENV)
     parser.add_argument("--enrollment-timeout-seconds", type=int, default=30)
+    parser.add_argument("--require-machine-credential-bundle", action="store_true")
     parser.add_argument("--pc-id", default="")
     parser.add_argument("--source-host-id", default="")
     parser.add_argument("--producer-install-id", default="")
