@@ -38,6 +38,7 @@ from direct_sync_push import (
     validate_endpoint_url,
 )
 from direct_sync_operator import read_operator_pause
+from producer_runtime_client import ensure_runtime_authority
 
 
 DEFAULT_WORKER_ID = "direct-sync-relay-label-match"
@@ -595,6 +596,7 @@ def _write_runtime_status(
     error_code: str = "",
     error_message: str = "",
     source_identity: Mapping[str, Any] | None = None,
+    runtime_lease: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_identity = dict(source_identity or _producer_manifest_identity(config))
     payload = {
@@ -613,6 +615,7 @@ def _write_runtime_status(
         "queue_backpressure": dict(queue_backpressure or {}),
         "error_code": error_code,
         "error_message": error_message,
+        "runtime_lease": dict(runtime_lease or {}),
         "updated_at": utc_now_text(),
     }
     _write_json_atomic(config.runtime_status_path, payload)
@@ -873,9 +876,27 @@ def run_relay_once(
         return status
 
     reset_count = 0
+    runtime_lease: dict[str, Any] = {}
     try:
-        reset_count = reset_stale_relay_leases(db_path=config.db_path, now=now or utc_now_text())
+        cycle_now = now or utc_now_text()
+        reset_count = reset_stale_relay_leases(db_path=config.db_path, now=cycle_now)
         creds = credentials or load_credentials_from_json(config.credential_path)
+        source_identity = _producer_manifest_identity(config)
+        if source_identity.get("status") != "PASS":
+            raise DirectSyncPushError(
+                str(source_identity.get("error_message") or "producer manifest identity is unavailable")
+            )
+        runtime_preparation = ensure_runtime_authority(
+            db_path=config.db_path,
+            credentials=creds,
+            producer_install_id=str(source_identity["producer_install_id"]),
+            session=session,
+            timeout=config.timeout_seconds,
+            now=cycle_now,
+        )
+        runtime_lease = dict(runtime_preparation.receipt or {})
+        if runtime_preparation.error_code:
+            raise DirectSyncPushError(runtime_preparation.error_code)
         result = drain_one_relay_batch(
             db_path=config.db_path,
             credentials=creds,
@@ -897,6 +918,7 @@ def run_relay_once(
             stale_leases_reset=reset_count,
             error_code=error_code,
             error_message=error_message,
+            runtime_lease=runtime_lease,
         )
         _append_runtime_event(config, "relay_runtime_error", status)
         return status
@@ -917,6 +939,7 @@ def run_relay_once(
         error_code=result_summary["error_code"] if result_summary["status"] != "acked" else "",
         error_message=result_summary["error_message"] if result_summary["status"] != "acked" else "",
         source_identity=result_source_identity,
+        runtime_lease=runtime_lease,
     )
     _append_runtime_event(config, "relay_runner_once", status)
     return status

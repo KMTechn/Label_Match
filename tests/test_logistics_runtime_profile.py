@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import stat
 from types import SimpleNamespace
 
@@ -51,8 +52,8 @@ def test_production_test_commands_require_explicit_automation_switch(monkeypatch
     assert label_module.label_match_test_tools_enabled(run_tests=True) is True
 
 
-def _profile(tmp_path, **changes):
-    profile_path = tmp_path / "machine" / "profile.json"
+def _profile(tmp_path, *, profile_path=None, **changes):
+    profile_path = Path(profile_path or (tmp_path / "machine" / "profile.json"))
     secret_path = profile_path.parent / "secrets" / "bearer-token.dpapi"
     secret_path.parent.mkdir(parents=True)
     secret_path.write_bytes(b"encrypted-token")
@@ -78,10 +79,75 @@ def _env(monkeypatch, profile_path):
     monkeypatch.setenv("KM_LOGISTICS_PROFILE_PATH", str(profile_path))
 
 
-def test_default_profile_path_matches_shared_four_app_contract(tmp_path):
+def test_default_profile_path_is_program_scoped(tmp_path):
     assert default_logistics_profile_path({"PROGRAMDATA": str(tmp_path)}) == (
-        tmp_path / "KMTech" / "Logistics" / "runtime-profile.json"
+        tmp_path
+        / "KMTech"
+        / "Logistics"
+        / "profiles"
+        / "Label_Match"
+        / "runtime-profile.json"
     )
+
+
+def test_program_scoped_default_precedes_legacy_machine_profile(
+    monkeypatch, tmp_path
+):
+    app_profile = default_logistics_profile_path({"PROGRAMDATA": str(tmp_path)})
+    legacy_profile = tmp_path / "KMTech" / "Logistics" / "runtime-profile.json"
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path))
+    monkeypatch.delenv("KM_LOGISTICS_PROFILE_PATH", raising=False)
+    monkeypatch.delenv("KM_LOGISTICS_REQUIRED", raising=False)
+
+    _profile(tmp_path, profile_path=legacy_profile)
+    loaded = load_logistics_runtime_profile(
+        required=True,
+        decryptor=lambda _value: "legacy-machine-secret",
+    )
+    assert loaded is not None
+    assert Path(loaded.profile_path) == legacy_profile.resolve()
+
+    _profile(tmp_path, profile_path=app_profile)
+    loaded = load_logistics_runtime_profile(
+        required=True,
+        environ={
+            "PROGRAMDATA": str(tmp_path),
+            "KM_LOGISTICS_PROFILE_PATH": str(legacy_profile),
+            "KM_LOGISTICS_REQUIRED": "1",
+        },
+        decryptor=lambda _value: "app-machine-secret",
+    )
+    assert loaded is not None
+    assert Path(loaded.profile_path) == app_profile.resolve()
+
+    explicit = load_logistics_runtime_profile(
+        required=True,
+        profile_path=legacy_profile,
+        environ={
+            "PROGRAMDATA": str(tmp_path),
+            "KM_LOGISTICS_PROFILE_PATH": str(legacy_profile),
+            "KM_LOGISTICS_REQUIRED": "1",
+        },
+        decryptor=lambda _value: "legacy-machine-secret",
+    )
+    assert explicit is not None
+    assert Path(explicit.profile_path) == legacy_profile.resolve()
+
+    custom_profile = _profile(
+        tmp_path,
+        profile_path=tmp_path / "custom" / "runtime-profile.json",
+    )
+    custom = load_logistics_runtime_profile(
+        required=True,
+        environ={
+            "PROGRAMDATA": str(tmp_path),
+            "KM_LOGISTICS_PROFILE_PATH": str(custom_profile),
+            "KM_LOGISTICS_REQUIRED": "1",
+        },
+        decryptor=lambda _value: "custom-machine-secret",
+    )
+    assert custom is not None
+    assert Path(custom.profile_path) == custom_profile.resolve()
 
 
 def _capabilities():

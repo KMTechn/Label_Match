@@ -226,6 +226,62 @@ def _metadata(relay_id: str) -> dict:
     }
 
 
+def test_idle_liveness_issues_once_and_renews_only_when_due_without_consuming_token(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    session = _LeaseSession()
+
+    issued = runtime_client.ensure_runtime_authority(
+        db_path=db_path,
+        credentials=_credentials(),
+        producer_install_id="install-test",
+        session=session,
+        now="2026-08-06T00:00:00Z",
+    )
+    assert issued.error_code == ""
+    assert issued.receipt["server_grant_accepted"] is True
+    assert issued.receipt["request_sent"] is True
+    assert len(session.calls) == 1
+    assert "runtime_request_token" not in session.calls[0][1]
+
+    current = runtime_client.ensure_runtime_authority(
+        db_path=db_path,
+        credentials=_credentials(),
+        producer_install_id="install-test",
+        session=session,
+        now="2026-08-06T00:01:00Z",
+    )
+    assert current.error_code == ""
+    assert current.receipt["request_sent"] is False
+    assert len(session.calls) == 1
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT next_request_token, next_request_sequence, assigned_relay_id "
+            "FROM direct_sync_runtime_authority"
+        ).fetchone()
+    assert row == ("A" * 43, 1, None)
+
+    renewed = runtime_client.ensure_runtime_authority(
+        db_path=db_path,
+        credentials=_credentials(),
+        producer_install_id="install-test",
+        session=session,
+        now="2099-08-05T23:59:30Z",
+        renewal_margin_seconds=60,
+    )
+    assert renewed.error_code == ""
+    assert renewed.receipt["request_sent"] is True
+    assert len(session.calls) == 2
+    renewal_body = session.calls[1][1]
+    assert renewal_body["runtime_request_token"] == "A" * 43
+    assert renewal_body["runtime_request_sequence"] == 1
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT next_request_token, next_request_sequence, assigned_relay_id "
+            "FROM direct_sync_runtime_authority"
+        ).fetchone()
+    assert row == ("B" * 43, 2, None)
+
+
 def _insert_claimed_row(db_path: Path, relay_id: str, *, owner: str = "worker") -> None:
     init_relay_queue_schema(db_path)
     metadata = _metadata(relay_id)
@@ -682,14 +738,32 @@ def test_lost_source_ack_retries_exact_metadata_and_idempotency_with_new_hmac_no
         retry_base_seconds=1,
     )
     assert first is not None and first.retryable is True
+
+    idle_liveness = runtime_client.ensure_runtime_authority(
+        db_path=db_path,
+        credentials=_credentials(),
+        producer_install_id="install-test",
+        session=session,
+    )
+    assert idle_liveness.error_code == ""
+    assert idle_liveness.receipt["status"] == "ACTIVE"
+    assert idle_liveness.receipt["server_grant_accepted"] is True
+    assert idle_liveness.receipt["request_in_flight"] is True
+    assert idle_liveness.receipt["request_sent"] is False
+    assert len(session.calls) == 1
     with sqlite3.connect(db_path) as connection:
         first_snapshot = connection.execute(
             "SELECT metadata_json FROM direct_sync_relay_batches WHERE relay_id='relay-a'"
         ).fetchone()[0]
+        authority_snapshot = connection.execute(
+            "SELECT assigned_relay_id, next_request_token, next_request_sequence "
+            "FROM direct_sync_runtime_authority"
+        ).fetchone()
         connection.execute(
             "UPDATE direct_sync_relay_batches SET next_attempt_at='2000-01-01T00:00:00Z' "
             "WHERE relay_id='relay-a'"
         )
+    assert authority_snapshot == ("relay-a", None, None)
     second = direct_sync_push.drain_one_relay_batch(
         db_path=db_path,
         credentials=_credentials(),

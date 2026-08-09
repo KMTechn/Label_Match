@@ -497,6 +497,8 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
         expected_program="Label_Match",
         expected_source_host_id=str(report["source_host_id"]),
         expected_device_id=str(manifest["pc_identity"]["pc_id"]),
+        profile_path=str(getattr(args, "logistics_profile_path", "") or "").strip()
+        or None,
     )
     if machine_profile is None and bool(getattr(args, "require_machine_credential_bundle", False)):
         raise DirectSyncPushError("self-enroll response missing machine credential bundle")
@@ -545,6 +547,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enrollment-token-env", default=DEFAULT_ENROLLMENT_TOKEN_ENV)
     parser.add_argument("--enrollment-timeout-seconds", type=int, default=30)
     parser.add_argument("--require-machine-credential-bundle", action="store_true")
+    parser.add_argument("--logistics-profile-path", default="")
     parser.add_argument("--pc-id", default="")
     parser.add_argument("--source-host-id", default="")
     parser.add_argument("--producer-install-id", default="")

@@ -1,9 +1,25 @@
 from pathlib import Path
+import subprocess
 
 import pytest
 from tools import install_logistics_runtime_profile as machine_profiles
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _assert_powershell_ast(path: Path) -> None:
+    escaped = str(path).replace("'", "''")
+    command = (
+        "$tokens=$null;$errors=$null;"
+        f"[void][System.Management.Automation.Language.Parser]::ParseFile('{escaped}',[ref]$tokens,[ref]$errors);"
+        "if($errors.Count){$errors|ForEach-Object{$_.Message}|Write-Error;exit 1}"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _machine_bundle():
@@ -28,7 +44,12 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
         encoding="utf-8"
     )
 
-    assert "#Requires -RunAsAdministrator" in alias
+    assert "#Requires -RunAsAdministrator" not in alias
+    assert "Invoke-SelfElevated $MyInvocation.MyCommand.Path $PSBoundParameters $args" in alias
+    assert "WindowsBuiltInRole]::Administrator" in alias
+    assert "-Verb RunAs" in alias
+    assert "-Wait -PassThru" in alias
+    _assert_powershell_ast(ROOT / "INSTALL_THIS_PC.ps1")
     assert "install_label_match_direct_sync.ps1" in alias
     assert "@args" in alias
     assert "tokenless self-enrollment" in alias
@@ -40,6 +61,12 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert '[string]$AppRunUser = "*S-1-5-32-545"' in installer
     assert "Read-Host" not in installer
     assert "Producer enrollment token" not in installer
+    assert (
+        'C:\\ProgramData\\KMTech\\Logistics\\profiles\\Label_Match'
+        '\\runtime-profile.json'
+    ) in installer
+    assert '"--logistics-profile-path", $LogisticsProfilePath' in installer
+    _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
 
 
 def test_release_contains_common_package_entrypoint():

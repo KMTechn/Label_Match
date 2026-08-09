@@ -968,6 +968,9 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             "endpoint_url": _endpoint_url(args),
             "enrollment_url": _enrollment_url(args),
             "enrollment_token_source": _enrollment_token_source(args),
+            "logistics_profile_path": str(
+                getattr(args, "logistics_profile_path", "") or ""
+            ).strip(),
             "registration_script": str(app_root / "tools" / "register_label_match_worker_pc.py"),
             "registration_executable": (
                 str(Path(str(getattr(args, "registration_exe", "") or "")).resolve())
@@ -1049,6 +1052,7 @@ def _self_enrollment_registration_command(args: argparse.Namespace) -> list[str]
     ])
     optional_pairs = [
         ("--enrollment-token-file", "enrollment_token_file"),
+        ("--logistics-profile-path", "logistics_profile_path"),
         ("--pc-id", "pc_id"),
         ("--source-host-id", "source_host_id"),
         ("--producer-install-id", "producer_install_id"),
@@ -1137,6 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enrollment-token-env", default=DEFAULT_ENROLLMENT_TOKEN_ENV)
     parser.add_argument("--enrollment-timeout-seconds", type=int, default=30)
     parser.add_argument("--require-machine-credential-bundle", action="store_true")
+    parser.add_argument("--logistics-profile-path", default="")
     parser.add_argument("--pc-id", default="")
     parser.add_argument("--source-host-id", default="")
     parser.add_argument("--producer-install-id", default="")

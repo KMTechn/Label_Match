@@ -20,13 +20,21 @@ from urllib.parse import urlsplit, urlunsplit
 PROFILE_CONTRACT_VERSION = "km-logistics-runtime-profile-v1"
 PROFILE_PATH_ENV = "KM_LOGISTICS_PROFILE_PATH"
 REQUIRED_ENV = "KM_LOGISTICS_REQUIRED"
+PROFILE_PROGRAM = "Label_Match"
 TEST1_ISOLATED_LEGACY_OVERRIDE_ENV = (
     "KMTECH_TEST1_ALLOW_ISOLATED_LEGACY_LOGISTICS"
 )
 DPAPI_REFERENCE_PREFIX = "dpapi:"
 DEFAULT_TOKEN_REF = "dpapi:secrets/bearer-token.dpapi"
 DPAPI_ENTROPY = b"KMTech Logistics Runtime Profile v1"
-DEFAULT_PROFILE_RELATIVE_PATH = Path("KMTech") / "Logistics" / "runtime-profile.json"
+DEFAULT_PROFILE_RELATIVE_PATH = (
+    Path("KMTech")
+    / "Logistics"
+    / "profiles"
+    / PROFILE_PROGRAM
+    / "runtime-profile.json"
+)
+LEGACY_PROFILE_RELATIVE_PATH = Path("KMTech") / "Logistics" / "runtime-profile.json"
 SUPPORTED_LEDGER_PLANES = frozenset({"AUTHORITATIVE", "SHADOW_CANDIDATE"})
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_SECRET_BYTES = 64 * 1024
@@ -345,6 +353,31 @@ def default_logistics_profile_path(environ: Mapping[str, str] | None = None) -> 
     return Path(program_data) / DEFAULT_PROFILE_RELATIVE_PATH
 
 
+def _preferred_default_profile_path(environ: Mapping[str, str]) -> Path:
+    program_data = str(environ.get("PROGRAMDATA") or r"C:\ProgramData").strip()
+    root = Path(program_data)
+    app_profile = root / DEFAULT_PROFILE_RELATIVE_PATH
+    legacy_profile = root / LEGACY_PROFILE_RELATIVE_PATH
+    if app_profile.is_file() or not legacy_profile.is_file():
+        return app_profile
+    return legacy_profile
+
+
+def _configured_or_preferred_profile_path(
+    configured_path: str, environ: Mapping[str, str]
+) -> Path:
+    configured = str(configured_path or "").strip()
+    program_data = str(environ.get("PROGRAMDATA") or r"C:\ProgramData").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        legacy_profile = Path(program_data) / LEGACY_PROFILE_RELATIVE_PATH
+        candidate_key = os.path.normcase(os.path.abspath(os.fspath(candidate)))
+        legacy_key = os.path.normcase(os.path.abspath(os.fspath(legacy_profile)))
+        if candidate_key != legacy_key:
+            return candidate
+    return _preferred_default_profile_path(environ)
+
+
 default_profile_path = default_logistics_profile_path
 
 
@@ -511,9 +544,16 @@ def load_logistics_runtime_profile(
     ):
         return None
     required_value = logistics_runtime_required(values) if required is None else bool(required)
-    explicit_path = profile_path or str(values.get(PROFILE_PATH_ENV) or "").strip()
+    requested_path = str(profile_path or "").strip()
+    configured_path = str(values.get(PROFILE_PATH_ENV) or "").strip()
+    explicit_path = requested_path or configured_path
+    selected_path = (
+        Path(requested_path).expanduser()
+        if requested_path
+        else _configured_or_preferred_profile_path(configured_path, values)
+    )
     path = assert_path_has_no_reparse_components(
-        Path(explicit_path) if explicit_path else default_logistics_profile_path(values),
+        selected_path,
         label="runtime profile",
     )
     if not path.exists():

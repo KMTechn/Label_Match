@@ -400,6 +400,9 @@ def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monk
         enrollment_url="",
         enrollment_token="direct-token-for-redaction",
         enrollment_token_file="",
+        logistics_profile_path=str(
+            tmp_path / "profiles" / "Label_Match" / "runtime-profile.json"
+        ),
         enrollment_token_env=module.DEFAULT_ENROLLMENT_TOKEN_ENV,
         enrollment_timeout_seconds=30,
         scan_source_dir=str(tmp_path / "scan-source"),
@@ -421,6 +424,12 @@ def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monk
     assert result["stderr_bytes"] > 0
     assert "direct-token-for-redaction" not in result["command_redacted"]
     assert "[redacted]" in result["command_redacted"]
+    profile_flag_index = result["command_redacted"].index(
+        "--logistics-profile-path"
+    )
+    assert result["command_redacted"][profile_flag_index + 1] == str(
+        tmp_path / "profiles" / "Label_Match" / "runtime-profile.json"
+    )
     token_env_index = result["command_redacted"].index("--enrollment-token-env")
     assert result["command_redacted"][token_env_index + 1] == "PRODUCER_SELF_ENROLL_TOKEN"
 

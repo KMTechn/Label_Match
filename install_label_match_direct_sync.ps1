@@ -7,6 +7,7 @@ param(
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
     [string]$EnrollmentTokenFile = "",
     [string]$TaskName = "",
+    [string]$LogisticsProfilePath = "C:\ProgramData\KMTech\Logistics\profiles\Label_Match\runtime-profile.json",
     [string]$TaskRunUser = "",
     [string]$AppRunUser = "*S-1-5-32-545",
     [string]$TaskRunPasswordEnv = "",
@@ -70,7 +71,10 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
     [System.IO.File]::WriteAllText($Path, $json + [System.Environment]::NewLine, $utf8NoBom)
 }
 
-function Remove-NewMachineProfilesFromRegistrationReport([string]$RegistrationReportPath) {
+function Remove-NewMachineProfilesFromRegistrationReport(
+    [string]$RegistrationReportPath,
+    [string]$ExpectedLogisticsProfilePath
+) {
     if (-not (Test-Path -LiteralPath $RegistrationReportPath -PathType Leaf)) {
         return
     }
@@ -78,10 +82,10 @@ function Remove-NewMachineProfilesFromRegistrationReport([string]$RegistrationRe
     if ($null -eq $payload.machine_profiles) {
         return
     }
-    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-    $profileRoot = Join-Path $programData "KMTech\Logistics"
+    $profilePath = [System.IO.Path]::GetFullPath($ExpectedLogisticsProfilePath)
+    $profileRoot = Split-Path -Parent $profilePath
     $allowed = @(
-        [System.IO.Path]::GetFullPath((Join-Path $profileRoot "runtime-profile.json")),
+        $profilePath,
         [System.IO.Path]::GetFullPath((Join-Path $profileRoot "secrets\bearer-token.dpapi"))
     )
     foreach ($property in $payload.machine_profiles.PSObject.Properties) {
@@ -197,6 +201,7 @@ $arguments += @(
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
     "--scan-source-dir", $ScanSourceDir,
+    "--logistics-profile-path", $LogisticsProfilePath,
     "--app-run-user", $AppRunUser,
     "--task-name", $TaskName,
     "--report-path", $reportPath,
@@ -263,7 +268,7 @@ if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
         $exitCode = 1
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
         try {
-            Remove-NewMachineProfilesFromRegistrationReport $registrationReportPath
+            Remove-NewMachineProfilesFromRegistrationReport $registrationReportPath $LogisticsProfilePath
         }
         catch {
             $taskStartError += "; machine profile rollback failed: $($_.Exception.Message)"
@@ -281,6 +286,7 @@ $summary = [ordered]@{
     settings_path = $settingsPath
     scan_source_dir = [System.IO.Path]::GetFullPath($ScanSourceDir)
     program_data_root = [System.IO.Path]::GetFullPath($ProgramDataRoot)
+    logistics_profile_path = [System.IO.Path]::GetFullPath($LogisticsProfilePath)
     install_pack_report_path = [System.IO.Path]::GetFullPath($reportPath)
     enrollment_token_file_present = -not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)
     bundled_runner_exe_present = Test-Path -LiteralPath $runnerExe

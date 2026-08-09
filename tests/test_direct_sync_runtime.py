@@ -38,6 +38,22 @@ def _isolate_legacy_runtime_tests_from_runtime_lease(monkeypatch):
         lambda **kwargs: RuntimePreparation(metadata=dict(kwargs["metadata"])),
     )
     monkeypatch.setattr(direct_sync_push, "client_runtime_lease_mode", lambda _credentials: "observe")
+    monkeypatch.setattr(
+        direct_sync_runtime,
+        "ensure_runtime_authority",
+        lambda **kwargs: RuntimePreparation(
+            status_code=200,
+            receipt={
+                "status": "ACTIVE",
+                "server_grant_accepted": True,
+                "producer_install_id": kwargs["producer_install_id"],
+                "lease_id": "lease-runtime-test",
+                "runtime_instance_id": "runtime-test",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "request_sent": False,
+            },
+        ),
+    )
 
 
 class FakeResponse:
