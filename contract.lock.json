@@ -1,7 +1,7 @@
 {
   "app_id": "label_match",
-  "contract_bundle_sha256": "a928db9179c4b829016a006270a4283d1ec662095267f84c0393f8946cbe2d7f",
-  "contract_bundle_version": "1.0.0",
+  "contract_bundle_sha256": "ee37c3a0d7757858bf3bab9548cbba01366290ba72b90f9e699c2cb189bec688",
+  "contract_bundle_version": "1.0.1",
   "db_schema_supported": {
     "maximum": 0,
     "minimum": 0

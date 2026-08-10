@@ -3,7 +3,7 @@
   "resources": [
     {
       "app_id": "container_audit",
-      "app_version": "v2.0.56",
+      "app_version": "v2.0.57",
       "credential_target": "dpapi:KMTech.DirectSync.ContainerAudit.{source_host_id}",
       "data_root": "%LOCALAPPDATA%/KMTech/ContainerAudit",
       "log_root": "%LOCALAPPDATA%/KMTech/ContainerAudit/events",
@@ -17,7 +17,7 @@
     },
     {
       "app_id": "defect_inspection",
-      "app_version": "v0.2.55",
+      "app_version": "v0.2.56",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
       "data_root": "%LOCALAPPDATA%/Defect_Inspection",
       "log_root": "C:/ProgramData/Defect_Inspection/audit",
@@ -31,7 +31,7 @@
     },
     {
       "app_id": "inspection_worker",
-      "app_version": "v2.0.106",
+      "app_version": "v2.0.107",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
       "data_root": "C:/ProgramData/KMTech/InspectionWorker",
       "log_root": "C:/ProgramData/KMTech/InspectionWorker/logs",
@@ -45,7 +45,7 @@
     },
     {
       "app_id": "label_match",
-      "app_version": "v2.0.61",
+      "app_version": "v2.0.62",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
       "data_root": "C:/ProgramData/KMTech/Label_Match/data",
       "log_root": "C:/ProgramData/KMTech/Label_Match/data",
@@ -59,7 +59,7 @@
     },
     {
       "app_id": "rework_worker",
-      "app_version": "v2.0.68",
+      "app_version": "v2.0.69",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
       "data_root": "C:/ProgramData/KMTech/InspectionWorker",
       "log_root": "C:/ProgramData/KMTech/InspectionWorker/logs",
