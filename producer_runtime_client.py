@@ -642,7 +642,7 @@ def ensure_runtime_authority(
     timeout: int = 30,
     now: str = "",
     ttl_seconds: int = _DEFAULT_TTL_SECONDS,
-    renewal_margin_seconds: int = 60,
+    renewal_margin_seconds: int = 120,
 ) -> RuntimePreparation:
     """Issue or renew install-scoped liveness without consuming row authority."""
 

@@ -260,13 +260,24 @@ def test_idle_liveness_issues_once_and_renews_only_when_due_without_consuming_to
         ).fetchone()
     assert row == ("A" * 43, 1, None)
 
+    explicit_margin_current = runtime_client.ensure_runtime_authority(
+        db_path=db_path,
+        credentials=_credentials(),
+        producer_install_id="install-test",
+        session=session,
+        now="2099-08-05T23:58:01Z",
+        renewal_margin_seconds=60,
+    )
+    assert explicit_margin_current.error_code == ""
+    assert explicit_margin_current.receipt["request_sent"] is False
+    assert len(session.calls) == 1
+
     renewed = runtime_client.ensure_runtime_authority(
         db_path=db_path,
         credentials=_credentials(),
         producer_install_id="install-test",
         session=session,
-        now="2099-08-05T23:59:30Z",
-        renewal_margin_seconds=60,
+        now="2099-08-05T23:58:01Z",
     )
     assert renewed.error_code == ""
     assert renewed.receipt["request_sent"] is True
