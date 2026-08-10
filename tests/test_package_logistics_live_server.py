@@ -45,6 +45,10 @@ def test_one_scan_central_package_inherits_every_server_member_atomically(tmp_pa
     )
     assert claimed.status_code == 200, claimed.get_json()
 
+    input_tag_key = "input_tag:ITG-LABEL-LIVE"
+    input_tag_version = claimed.get_json()["data"]["entity_versions"][
+        input_tag_key
+    ]
     session_version = 1
     for index in range(2):
         staged = _post(
@@ -52,7 +56,10 @@ def test_one_scan_central_package_inherits_every_server_member_atomically(tmp_pa
             "/logistics/api/v1/sessions/ITG-LABEL-LIVE/members/stage",
             "STAGE_DIRECT_MEMBER",
             f"label-live-stage-{index}",
-            {"session:ITG-LABEL-LIVE": session_version},
+            {
+                "session:ITG-LABEL-LIVE": session_version,
+                input_tag_key: input_tag_version,
+            },
             {
                 "barcode": f"LABEL-LIVE-{index:03d}",
                 "disposition": "GOOD",
@@ -69,7 +76,10 @@ def test_one_scan_central_package_inherits_every_server_member_atomically(tmp_pa
         "/logistics/api/v1/sessions/ITG-LABEL-LIVE/complete",
         "COMPLETE_SESSION",
         "label-live-complete",
-        {"session:ITG-LABEL-LIVE": session_version},
+        {
+            "session:ITG-LABEL-LIVE": session_version,
+            input_tag_key: input_tag_version,
+        },
         {
             "phs_bundle_id": "PHS-ITG-LABEL-LIVE",
             "input_tag_claim_id": "CLAIM-LABEL-LIVE",

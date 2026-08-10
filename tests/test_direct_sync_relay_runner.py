@@ -833,7 +833,8 @@ def test_runner_scan_source_dir_rejects_recursive_or_path_globs(tmp_path):
     raise AssertionError("expected SystemExit for recursive source glob")
 
 
-def test_runner_scan_source_dir_handles_no_matching_files(tmp_path, capsys):
+def test_runner_scan_source_dir_handles_no_matching_files(tmp_path, capsys, monkeypatch):
+    disable_scan_drain(monkeypatch)
     sync_dir = tmp_path / "sync"
     sync_dir.mkdir()
 
@@ -873,7 +874,8 @@ def test_runner_baselines_existing_source_file_without_enqueueing(tmp_path, caps
     assert "BC-1" not in payload
 
 
-def test_runner_scan_source_dir_defers_recent_matching_files(tmp_path, capsys):
+def test_runner_scan_source_dir_defers_recent_matching_files(tmp_path, capsys, monkeypatch):
+    disable_scan_drain(monkeypatch)
     sync_dir = tmp_path / "sync"
     csv_path = write_label_csv(sync_dir)
     now = time.time()
