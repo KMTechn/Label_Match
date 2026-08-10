@@ -1,5 +1,5 @@
 {
-  "contract_bundle_version": "1.0.1",
+  "contract_bundle_version": "1.0.2",
   "contract_set_schema_version": 1,
   "files": [
     {
@@ -14,7 +14,7 @@
     },
     {
       "path": "compatibility/resource-namespaces.json",
-      "sha256": "79490f7ec0a425e007b9a5357e2f60c24f8be76c821637d3b2f325e28e5a4998",
+      "sha256": "51cb7cc7b61b702d26723f93499d79cb020d2eaf72961eb223b600a7eb6facd1",
       "size": 4119
     },
     {
@@ -44,7 +44,7 @@
     },
     {
       "path": "schemas/contract-lock.schema.json",
-      "sha256": "0dd15b5048400209075470915ef74c09873138099cd16a1e23dbe8bcd0402f47",
+      "sha256": "25481bae357911f5f5e1cac432d0ab8913bf942ad3ca9b06ddebc1443ac1b5d0",
       "size": 1762
     },
     {

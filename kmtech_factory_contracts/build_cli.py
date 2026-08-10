@@ -142,7 +142,7 @@ def prepare_identity(
         "event_contract_version": lock["event_contract_version"],
         "manifest_contract_version": lock["manifest_contract_version"],
         "dependency": lock["dependency"],
-        "builder": {"name": "kmtech_factory_contracts.build_cli", "version": "1.0.1"},
+        "builder": {"name": "kmtech_factory_contracts.build_cli", "version": "1.0.2"},
         "python_version": ".".join(str(part) for part in sys.version_info[:3]),
         "pyinstaller_version": pyinstaller_version,
         "dependency_lock_sha256": canonical_sha256(lock),
