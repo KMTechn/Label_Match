@@ -1,0 +1,75 @@
+{
+  "declaration_schema_version": 1,
+  "resources": [
+    {
+      "app_id": "container_audit",
+      "app_version": "v2.0.56",
+      "credential_target": "dpapi:KMTech.DirectSync.ContainerAudit.{source_host_id}",
+      "data_root": "%LOCALAPPDATA%/KMTech/ContainerAudit",
+      "log_root": "%LOCALAPPDATA%/KMTech/ContainerAudit/events",
+      "machine_identity_scope": "container_audit:{pc_id}",
+      "profile_id": "C:/ProgramData/KMTech/Logistics/runtime-profile.json",
+      "state_db": "C:/ProgramData/KMTech/DirectSync/container_audit/relay_state.sqlite3",
+      "task_name": "direct-sync-relay-container-audit",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/container_audit/run/direct_sync_relay_runner.vbs",
+      "task_principal": "SYSTEM",
+      "install_root": "C:/Program Files/KMTech/Container_Audit"
+    },
+    {
+      "app_id": "defect_inspection",
+      "app_version": "v0.2.55",
+      "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
+      "data_root": "%LOCALAPPDATA%/Defect_Inspection",
+      "log_root": "C:/ProgramData/Defect_Inspection/audit",
+      "machine_identity_scope": "defect_inspection:{pc_id}",
+      "profile_id": "C:/ProgramData/KMTech/Logistics/runtime-profile.json",
+      "state_db": "C:/ProgramData/KMTech/DirectSync/defect_inspection/queue/direct_sync_hmac_relay.sqlite3",
+      "task_name": "direct-sync-relay-defect-inspection",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/defect_inspection/run/direct_sync_hmac_relay_runner.vbs",
+      "task_principal": "SYSTEM",
+      "install_root": "C:/Program Files/KMTech/Defect_Inspection"
+    },
+    {
+      "app_id": "inspection_worker",
+      "app_version": "v2.0.106",
+      "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
+      "data_root": "C:/ProgramData/KMTech/InspectionWorker",
+      "log_root": "C:/ProgramData/KMTech/InspectionWorker/logs",
+      "machine_identity_scope": "inspection_worker:{pc_id}",
+      "profile_id": "C:/ProgramData/KMTech/Logistics/profiles/Inspection_worker/runtime-profile.json",
+      "state_db": "C:/ProgramData/KMTech/InspectionWorker/ledger/inspection_product_ledger.sqlite3",
+      "task_name": "direct-sync-relay-inspection-worker",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/InspectionWorker/direct_sync/run/direct_sync_relay_runner.vbs",
+      "task_principal": "SYSTEM",
+      "install_root": "C:/Program Files/KMTech/Inspection_worker"
+    },
+    {
+      "app_id": "label_match",
+      "app_version": "v2.0.61",
+      "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
+      "data_root": "C:/ProgramData/KMTech/Label_Match/data",
+      "log_root": "C:/ProgramData/KMTech/Label_Match/data",
+      "machine_identity_scope": "label_match:{pc_id}",
+      "profile_id": "C:/ProgramData/KMTech/Logistics/profiles/Label_Match/runtime-profile.json",
+      "state_db": "C:/ProgramData/KMTech/DirectSync/label_match/relay_state.sqlite3",
+      "task_name": "direct-sync-relay-label-match",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/label_match/run/direct_sync_relay_runner.vbs",
+      "task_principal": "SYSTEM",
+      "install_root": "C:/Program Files/KMTech/Label_Match"
+    },
+    {
+      "app_id": "rework_worker",
+      "app_version": "v2.0.68",
+      "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
+      "data_root": "C:/ProgramData/KMTech/InspectionWorker",
+      "log_root": "C:/ProgramData/KMTech/InspectionWorker/logs",
+      "machine_identity_scope": "rework_worker:{pc_id}",
+      "profile_id": "C:/ProgramData/KMTech/Logistics/profiles/Rework_worker/runtime-profile.json",
+      "state_db": "C:/ProgramData/KMTech/InspectionWorker/ledger/inspection_product_ledger.sqlite3",
+      "task_name": "direct-sync-relay-rework",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/InspectionWorker/rework_direct_sync/run/direct_sync_relay_runner.vbs",
+      "task_principal": "SYSTEM",
+      "install_root": "C:/Program Files/KMTech/Rework_worker"
+    }
+  ]
+}

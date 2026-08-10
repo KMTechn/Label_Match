@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/http-command.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "correlation_id", "idempotency_key", "expected_versions", "command_type", "occurred_at_utc", "payload_digest", "payload"],
+  "properties": {
+    "contract_version": {"const": "logistics-v1"},
+    "correlation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+    "expected_versions": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "command_type": {"type": "string", "minLength": 1, "maxLength": 128},
+    "occurred_at_utc": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "payload_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "payload": {"type": "object"}
+  }
+}

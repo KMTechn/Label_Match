@@ -3,7 +3,9 @@ import sys
 import json
 import traceback
 from datetime import datetime, date, timezone
+from pathlib import Path
 
+from kmtech_factory_contracts import load_and_verify_contract_lock
 from protected_admin import (
     PROTECTED_ADMIN_DISPLAY_NAME,
     PROTECTED_ADMIN_OPERATOR_ID,
@@ -93,6 +95,24 @@ def _label_match_startup_trace(stage, **details):
                 )
         except Exception:
             continue
+
+
+FACTORY_CONTRACT_APP_ID = "label_match"
+
+
+def _factory_contract_lock_path():
+    runtime_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return runtime_root / "contract.lock.json"
+
+
+def verify_factory_contract_startup(lock_path=None):
+    resolved_lock_path = (
+        Path(lock_path) if lock_path is not None else _factory_contract_lock_path()
+    )
+    return load_and_verify_contract_lock(
+        resolved_lock_path,
+        expected_app_id=FACTORY_CONTRACT_APP_ID,
+    )
 
 
 _label_match_startup_trace("module_pre_imports", argv=sys.argv[:4])
@@ -300,8 +320,12 @@ def _label_match_direct_sync_source_host_id():
     override = os.environ.get(LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "").strip()
     if override:
         return _label_match_safe_token(override, "label-match-worker").lower()
+    safe_pc_id = _label_match_safe_token(
+        os.environ.get("COMPUTERNAME", ""),
+        "worker-pc",
+    )
     suffix = hashlib.sha256(_label_match_machine_identity().encode("utf-8")).hexdigest()[:12]
-    return f"label-match-{suffix}".lower()
+    return f"label-match-{safe_pc_id}-{suffix}".lower()
 
 
 def _label_match_local_log_id():
@@ -16928,6 +16952,7 @@ def _run_label_match_application():
 
 
 def main():
+    verify_factory_contract_startup()
     _label_match_startup_trace("main_enter")
     try:
         settings_path = resource_path(os.path.join("config", Label_Match.FILES.SETTINGS))

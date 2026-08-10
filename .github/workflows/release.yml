@@ -96,9 +96,18 @@ jobs:
           & $venvPython -I -m pip check
           (Join-Path $venvRoot "Scripts") | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Prepare exact factory compatibility identity
+        run: >-
+          python -m kmtech_factory_contracts.build_cli prepare
+          --repository .
+          --stage-root build/factory_contract_identity
+          --app-id label_match
+          --app-version "${{ env.LABEL_MATCH_RELEASE_TAG }}"
+          --db-schema-current 0
+
       - name: Build with PyInstaller (One-Folder mode)
         # ❗ 이 부분에 --hidden-import tkcalendar 옵션을 추가했습니다.
-        run: python -m PyInstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --hidden-import pygame --hidden-import PIL --hidden-import tkcalendar --clean --noupx --noconfirm Label_Match.py
+        run: python -m PyInstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --add-data "kmtech_factory_contracts/bundle;kmtech_factory_contracts/bundle" --add-data "build/factory_contract_identity/build-identity.json;." --add-data "build/factory_contract_identity/build-compatibility.json;." --add-data "contract.lock.json;." --hidden-import pygame --hidden-import PIL --hidden-import tkcalendar --clean --noupx --noconfirm Label_Match.py
 
       - name: Build direct-sync CLI tools
         run: |
@@ -118,6 +127,9 @@ jobs:
           Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match
           Copy-Item INSTALL_THIS_PC.ps1 -Destination dist/Label_Match
           Copy-Item "$env:RUNNER_TEMP\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json
+          Copy-Item build/factory_contract_identity/build-identity.json -Destination dist/Label_Match/build-identity.json
+          Copy-Item build/factory_contract_identity/build-compatibility.json -Destination dist/Label_Match/build-compatibility.json
+          Copy-Item build/factory_contract_identity/contract.lock.json -Destination dist/Label_Match/contract.lock.json
           Copy-Item direct_sync_push.py,direct_sync_runtime.py,producer_runtime_client.py,direct_sync_operator.py -Destination dist/Label_Match
           Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,tools/register_label_match_worker_pc.py,tools/install_logistics_runtime_profile.py,tools/check_logistics_runtime_profile.py -Destination dist/Label_Match/tools
           Copy-Item logistics_runtime_profile.py -Destination dist/Label_Match/logistics_runtime_profile.py
@@ -204,6 +216,21 @@ jobs:
           $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
           python -m pytest -q -p no:cacheprovider tests/test_staged_release_installer.py
 
+      - name: Seal and verify exact factory package manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m kmtech_factory_contracts.build_cli manifest `
+            --stage-root dist/Label_Match `
+            --expected-file Label_Match.exe `
+            --expected-file contract.lock.json `
+            --expected-file build-identity.json `
+            --expected-file build-compatibility.json
+          $contractHash = (python -c "from kmtech_factory_contracts.bundle import CONTRACT_BUNDLE_SHA256; print(CONTRACT_BUNDLE_SHA256)").Trim()
+          python -m kmtech_factory_contracts.build_cli verify `
+            --stage-root dist/Label_Match `
+            --expected-contract-sha256 $contractHash
+
       - name: Build and verify internal release archive
         shell: pwsh
         run: |
@@ -231,6 +258,10 @@ jobs:
               "config/app_settings.json",
               "_internal/config/app_settings.json",
               "release-identity.json",
+              "build-identity.json",
+              "build-compatibility.json",
+              "build-manifest.json",
+              "contract.lock.json",
               "install_label_match_direct_sync.ps1",
               "INSTALL_THIS_PC.ps1",
               "direct_sync_push.py",

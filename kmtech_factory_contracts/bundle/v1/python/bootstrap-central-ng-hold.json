@@ -1,0 +1,30 @@
+{
+  "capability_version": "central-ng-resolver-bootstrap-v1",
+  "domain_errors": [
+    {"code": "central_ng_resolver_authority_invalid", "retryable": false},
+    {"code": "central_ng_resolver_identity_invalid", "retryable": false},
+    {"code": "sync_gate_blocked", "retryable": true},
+    {"code": "unauthorized_role", "retryable": false}
+  ],
+  "function_name": "bootstrap_central_ng_hold_from_resolver",
+  "parameters": [
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "ng_bundle_id", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "central_source_bundle_id", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "authority_scope_id", "required": true},
+    {"annotation": "int", "kind": "KEYWORD_ONLY", "name": "authority_epoch", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "ledger_plane", "required": true},
+    {"annotation": "int", "kind": "KEYWORD_ONLY", "name": "plane_epoch", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "inbound_iin", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "item_code", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "uom", "required": true},
+    {"annotation": "list[str]", "kind": "KEYWORD_ONLY", "name": "member_ids", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "membership_hash", "required": true},
+    {"annotation": "list[dict[str, Any]]", "kind": "KEYWORD_ONLY", "name": "members", "required": true},
+    {"annotation": "int", "kind": "KEYWORD_ONLY", "name": "central_bundle_entity_version", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "source_session_id", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "actor", "required": true},
+    {"annotation": "str", "kind": "KEYWORD_ONLY", "name": "actor_role", "required": true}
+  ],
+  "result_fields": ["success", "ng_bundle_id", "manifest_id", "manifest_hash", "actual_quantity", "child_barcodes", "event_id", "outbox_id", "error_code", "error_message"],
+  "retryable": false
+}

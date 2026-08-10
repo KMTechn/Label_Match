@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/build-identity.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["build_identity_schema_version", "app_id", "app_version", "source_commit", "source_tree", "dirty", "contract_bundle_version", "contract_bundle_sha256", "db_schema", "server_api_contract_version", "event_contract_version", "manifest_contract_version", "dependency", "builder", "python_version", "pyinstaller_version", "dependency_lock_sha256", "build_compatibility_sha256"],
+  "properties": {
+    "build_identity_schema_version": {"const": 1},
+    "app_id": {"type": "string", "minLength": 1},
+    "app_version": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "source_tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "dirty": {"const": false},
+    "contract_bundle_version": {"type": "string", "minLength": 1},
+    "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "db_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current", "minimum", "maximum"],
+      "properties": {"current": {"type": "integer", "minimum": 0}, "minimum": {"type": "integer", "minimum": 0}, "maximum": {"type": "integer", "minimum": 0}}
+    },
+    "server_api_contract_version": {"const": "logistics-v1"},
+    "event_contract_version": {"const": "common-event-envelope-v1"},
+    "manifest_contract_version": {"const": "producer-onboarding-manifest-v1"},
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"type": "string", "minLength": 1}, "commit": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
+    },
+    "builder": {"type": "object"},
+    "python_version": {"type": "string", "minLength": 1},
+    "pyinstaller_version": {"type": "string", "minLength": 1},
+    "dependency_lock_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "build_compatibility_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

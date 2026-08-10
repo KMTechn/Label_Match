@@ -1,0 +1,107 @@
+{
+  "contract_bundle_version": "1.0.0",
+  "contract_set_schema_version": 1,
+  "files": [
+    {
+      "path": "catalogs/canonical-stream-catalog.json",
+      "sha256": "e58b7be56856b524b4870d9ca95b196d77f1b85c69be1bb868185c9f7fb8c494",
+      "size": 5216
+    },
+    {
+      "path": "compatibility/coinstall-matrix.json",
+      "sha256": "bdb8cb2de5b9b35c1b2f5383e1218f806218ca9af4208ecc7485e884154475ae",
+      "size": 1543
+    },
+    {
+      "path": "compatibility/resource-namespaces.json",
+      "sha256": "e19dcc569f86ba015457c844dd536ede2afb8fb1a4c0510faa5749b5dd050332",
+      "size": 4119
+    },
+    {
+      "path": "python/bootstrap-central-ng-hold.json",
+      "sha256": "c150937706db872a01282d0ec6712d84a13d9416cd67827313023d9851093065",
+      "size": 2152
+    },
+    {
+      "path": "schemas/build-compatibility.schema.json",
+      "sha256": "7eef0ceb38785d9117eecd08ec917613205523a2d3d7c2e1c1940839a854d33d",
+      "size": 2890
+    },
+    {
+      "path": "schemas/build-identity.schema.json",
+      "sha256": "af66bb252038fba9544abd0300b5f61725e5fabdcef24e18553ffc19c459b375",
+      "size": 2246
+    },
+    {
+      "path": "schemas/build-manifest.schema.json",
+      "sha256": "9e7587f2f28e0927efbdcdaf9fe1847c6b41828362e1d5238d756e41b2557357",
+      "size": 1716
+    },
+    {
+      "path": "schemas/canonical-stream-catalog.schema.json",
+      "sha256": "624d66fb863e5898ba631182f36abeacb2595c4afd90c391037d834b6669b528",
+      "size": 1186
+    },
+    {
+      "path": "schemas/contract-lock.schema.json",
+      "sha256": "e8766aea5406117b1217011e504f8b8679d85e80c0d6e62fd76148b720728711",
+      "size": 1762
+    },
+    {
+      "path": "schemas/deployment-policy.schema.json",
+      "sha256": "99eea0926c626e4b0c34ffa67037945c734ca170a94b46e9bdee76d7670f1e73",
+      "size": 1085
+    },
+    {
+      "path": "schemas/error-envelope.schema.json",
+      "sha256": "8018d4d51b77dd7083af05b2a21bf0aff3e6d17dcc489c0eee50f51331241e77",
+      "size": 1234
+    },
+    {
+      "path": "schemas/event-envelope.schema.json",
+      "sha256": "b79808754ab848da5c5f2d5d3aaffd92db720e244e94f24bcd8360a0bbb718bf",
+      "size": 1106
+    },
+    {
+      "path": "schemas/http-command.schema.json",
+      "sha256": "95c1515bf11917a200a9f2e5d11cafc923f825ea031702fcf501e6a519a1428d",
+      "size": 947
+    },
+    {
+      "path": "schemas/http-response.schema.json",
+      "sha256": "ae461f185a2cc286dd646c0695735d7e6a7cd6c13ad0e18651adfe65e14a2caf",
+      "size": 958
+    },
+    {
+      "path": "schemas/install-readiness.schema.json",
+      "sha256": "dbeb3a8186bfea00502a75e5e023f0bc139fe274ecbe04d1c27b35a40add9a90",
+      "size": 1356
+    },
+    {
+      "path": "schemas/producer-ingest.schema.json",
+      "sha256": "cc8c62f86014e51b51f074524bfff68a934ba26dc6c9181be7ea2cd3b61c24c2",
+      "size": 1058
+    },
+    {
+      "path": "schemas/producer-manifest.schema.json",
+      "sha256": "5e02a842b0c512e24f5f93af72d369e648e607bc158d92999b8ae92cbf89a19e",
+      "size": 1321
+    },
+    {
+      "path": "schemas/runtime-lease.schema.json",
+      "sha256": "98fe3b85cf37c01db9f1540fef2f35b203fb79d2bbf1491ace7d2a1ae6675084",
+      "size": 1036
+    },
+    {
+      "path": "schemas/self-enrollment.schema.json",
+      "sha256": "bb5d052456126f9f381f354bfbf3bed5ffbcd6d4ddf795992e48507dd44512ef",
+      "size": 865
+    },
+    {
+      "path": "semantics/source-liveness.json",
+      "sha256": "62d15dff00d4172ede8c7582243abeae2f78259cae0967a6ebc529984a7b5b47",
+      "size": 795
+    }
+  ],
+  "hash_algorithm": "sha256"
+}

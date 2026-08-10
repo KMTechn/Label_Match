@@ -493,6 +493,77 @@ def test_direct_sync_bootstrap_context_uses_per_pc_programdata_root(tmp_path, mo
     assert context["bootstrap_status_path"].endswith("label_match_direct_sync_auto_bootstrap.json")
 
 
+def test_direct_sync_default_contract_matches_one_step_installer(tmp_path, monkeypatch):
+    from tools import direct_sync_relay_install_pack as install_pack
+
+    module = load_label_match_module()
+    computer_name = "PACK LINE_01"
+    machine_identity = "fixture-machine-guid-01"
+    program_data = tmp_path / "ProgramData"
+    monkeypatch.setenv("COMPUTERNAME", computer_name)
+    monkeypatch.setenv("ProgramData", str(program_data))
+    monkeypatch.setattr(module, "_label_match_machine_identity", lambda: machine_identity)
+    for name in (
+        module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV,
+        module.LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV,
+        module.LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    suffix = module.hashlib.sha256(machine_identity.encode("utf-8")).hexdigest()[:12]
+    source_host_id = f"label-match-pack-line_01-{suffix}"
+    expected_root = program_data / "KMTech" / "DirectSync" / source_host_id
+    expected_status = expected_root / "status"
+    context = module._label_match_direct_sync_context(str(tmp_path / "scan-data"))
+    installer = (
+        Path(__file__).resolve().parents[1] / "install_label_match_direct_sync.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert '$safePcId = Get-SafeToken $env:COMPUTERNAME "worker-pc"' in installer
+    assert (
+        '$sourceHostId = ("label-match-{0}-{1}" -f $safePcId, '
+        '(Get-MachineStableSuffix)).ToLowerInvariant()'
+    ) in installer
+    assert '$ProgramDataRoot = "C:\\ProgramData\\KMTech\\DirectSync\\$sourceHostId"' in installer
+    assert '$TaskName = "direct-sync-relay-$sourceHostId"' in installer
+    assert '$reportDir = Join-Path $ProgramDataRoot "status"' in installer
+    assert '$reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"' in installer
+    assert (
+        '$registrationReportPath = Join-Path $reportDir '
+        '"label_match_worker_pc_registration.json"'
+    ) in installer
+    assert '"--program-data-root", $ProgramDataRoot' in installer
+    assert '"--task-name", $TaskName' in installer
+
+    assert context["source_host_id"] == source_host_id
+    assert context["program_data_root"] == str(expected_root)
+    assert context["task_name"] == f"direct-sync-relay-{source_host_id}"
+    assert context["status_dir"] == str(expected_status)
+    assert context["manifest_path"] == str(expected_root / "producer_manifest.json")
+    assert context["credential_path"] == str(expected_root / "credential.json")
+    assert context["install_report_path"] == str(
+        expected_status / "label_match_direct_sync_install.json"
+    )
+    assert context["registration_report_path"] == str(
+        expected_status / "label_match_worker_pc_registration.json"
+    )
+    assert context["runtime_status_path"] == str(
+        expected_status / "direct_sync_relay_status.json"
+    )
+    assert context["manifest_path"] == install_pack._default_manifest_path(
+        context["program_data_root"]
+    )
+    assert context["credential_path"] == install_pack._default_credential_path(
+        context["program_data_root"]
+    )
+    assert context["registration_report_path"] == (
+        install_pack._default_registration_report_path(context["program_data_root"])
+    )
+    assert context["runtime_status_path"] == install_pack._runtime_paths(
+        context["program_data_root"]
+    )["runtime_status_path"]
+
+
 @pytest.mark.parametrize("allow_interactive_task_for_local_test", [False, True])
 def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
     tmp_path,

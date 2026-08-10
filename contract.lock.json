@@ -1,0 +1,24 @@
+{
+  "app_id": "label_match",
+  "contract_bundle_sha256": "a928db9179c4b829016a006270a4283d1ec662095267f84c0393f8946cbe2d7f",
+  "contract_bundle_version": "1.0.0",
+  "db_schema_supported": {
+    "maximum": 0,
+    "minimum": 0
+  },
+  "dependency": {
+    "commit": null,
+    "kind": "none",
+    "sha256": null
+  },
+  "event_contract_version": "common-event-envelope-v1",
+  "lock_schema_version": 1,
+  "manifest_contract_version": "producer-onboarding-manifest-v1",
+  "minimum_installer_version": "1.0.0",
+  "minimum_verifier_version": "1.0.0",
+  "required_capabilities": {
+    "producer_ingest": "producer-ingest-v1",
+    "runtime_lease": "producer-runtime-lease-v1"
+  },
+  "server_api_contract_version": "logistics-v1"
+}

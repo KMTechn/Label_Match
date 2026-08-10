@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/http-response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "status", "committed", "retryable", "correlation_id", "contract_version", "expected_version", "received_version", "receipt", "error"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "status": {"enum": ["accepted", "committed", "replayed", "rejected", "conflict"]},
+    "committed": {"type": "boolean"},
+    "retryable": {"type": "boolean"},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "contract_version": {"const": "logistics-v1"},
+    "expected_version": {"type": ["integer", "null"], "minimum": 0},
+    "received_version": {"type": ["integer", "null"], "minimum": 0},
+    "receipt": {"type": ["object", "null"]},
+    "error": {"anyOf": [{"type": "null"}, {"$ref": "error-envelope.schema.json#/$defs/error"}]}
+  }
+}

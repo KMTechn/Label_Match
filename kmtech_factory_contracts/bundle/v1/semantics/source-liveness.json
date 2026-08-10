@@ -1,0 +1,12 @@
+{
+  "active_producer": ["connected", "clean_receipt_within_transport_sla"],
+  "connected": ["enrolled", "lease_active", "manifest_match", "not_quarantined", "profile_match"],
+  "connected_pc_count": "distinct physical pc_id where connected=true",
+  "enrolled": ["active_credential_reference", "active_manifest_binding"],
+  "idle_current": ["connected", "no_recent_business_event"],
+  "kpi_denominator": "distinct business entity/event set; never physical PC count",
+  "last_business_event": "display-only; not a connectivity predicate",
+  "lease_active": ["ACTIVE", "unexpired", "install_identity_match", "fence_identity_match"],
+  "semantics_schema_version": 1,
+  "unhealthy": ["lease_expired", "manifest_mismatch", "quarantine", "credential_or_profile_mismatch", "recent_transport_failure"]
+}

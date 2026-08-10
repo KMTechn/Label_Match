@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/install-readiness.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "status", "app", "preflight_passed", "server_grant_accepted", "manifest_match", "profile_match", "credential_reference_valid", "task_valid", "lease_state", "fence_identity_match", "connectivity_status", "receipt_totals", "rollback_receipt", "correlation_id", "reason_codes"],
+  "properties": {
+    "contract_version": {"const": "factory-install-readiness-v1"},
+    "status": {"enum": ["READY", "APPLIED_NOT_READY", "FAILED"]},
+    "app": {"type": "object"},
+    "preflight_passed": {"type": "boolean"},
+    "server_grant_accepted": {"type": "boolean"},
+    "manifest_match": {"type": "boolean"},
+    "profile_match": {"type": "boolean"},
+    "credential_reference_valid": {"type": "boolean"},
+    "task_valid": {"type": "boolean"},
+    "lease_state": {"type": "string"},
+    "fence_identity_match": {"type": "boolean"},
+    "connectivity_status": {"type": "string"},
+    "receipt_totals": {"type": "object"},
+    "rollback_receipt": {"type": "object"},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "reason_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+  }
+}

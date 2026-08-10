@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/canonical-stream-catalog.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["catalog_schema_version", "manifest_contract_version", "streams"],
+  "properties": {
+    "catalog_schema_version": {"const": 1},
+    "manifest_contract_version": {"const": "producer-onboarding-manifest-v1"},
+    "streams": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["app_id", "stream_id", "source_system", "source_transport", "event_contract_version", "raw_event_names"],
+        "properties": {
+          "app_id": {"type": "string", "minLength": 1},
+          "stream_id": {"type": "string", "minLength": 1},
+          "source_system": {"type": "string", "minLength": 1},
+          "source_transport": {"type": "string", "minLength": 1},
+          "event_contract_version": {"const": "common-event-envelope-v1"},
+          "raw_event_names": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+        }
+      }
+    }
+  }
+}

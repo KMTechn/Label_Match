@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/contract-lock.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lock_schema_version", "app_id", "contract_bundle_version", "contract_bundle_sha256", "required_capabilities", "server_api_contract_version", "event_contract_version", "manifest_contract_version", "dependency", "db_schema_supported", "minimum_verifier_version", "minimum_installer_version"],
+  "properties": {
+    "lock_schema_version": {"const": 1},
+    "app_id": {"type": "string", "minLength": 1},
+    "contract_bundle_version": {"const": "1.0.0"},
+    "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "required_capabilities": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+    "server_api_contract_version": {"const": "logistics-v1"},
+    "event_contract_version": {"const": "common-event-envelope-v1"},
+    "manifest_contract_version": {"const": "producer-onboarding-manifest-v1"},
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"type": "string", "minLength": 1}, "commit": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
+    },
+    "db_schema_supported": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum", "maximum"],
+      "properties": {"minimum": {"type": "integer", "minimum": 0}, "maximum": {"type": "integer", "minimum": 0}}
+    },
+    "minimum_verifier_version": {"const": "1.0.0"},
+    "minimum_installer_version": {"const": "1.0.0"}
+  }
+}

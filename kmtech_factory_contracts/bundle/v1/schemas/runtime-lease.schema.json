@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/runtime-lease.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "correlation_id", "producer_install_id", "runtime_id", "lease_state", "fence", "sequence", "issued_at_utc", "expires_at_utc", "manifest_hash"],
+  "properties": {
+    "contract_version": {"const": "producer-runtime-lease.v1"},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "producer_install_id": {"type": "string", "minLength": 1},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "lease_state": {"enum": ["ACTIVE", "EXPIRED", "QUARANTINED"]},
+    "fence": {"type": "integer", "minimum": 1},
+    "sequence": {"type": "integer", "minimum": 1},
+    "issued_at_utc": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "expires_at_utc": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "manifest_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/build-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["build_manifest_schema_version", "app_id", "app_version", "identity_path", "identity_sha256", "build_compatibility_path", "contract_bundle_sha256", "dependency", "build_compatibility_sha256", "payload_inventory", "payload_inventory_sha256", "expected_files", "built_at_utc"],
+  "properties": {
+    "build_manifest_schema_version": {"const": 1},
+    "app_id": {"type": "string", "minLength": 1},
+    "app_version": {"type": "string", "minLength": 1},
+    "identity_path": {"type": "string", "pattern": "^[^\\\\/].*$"},
+    "identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "build_compatibility_path": {"type": "string", "pattern": "^[^\\/].*$"},
+    "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "dependency": {"type": "object"},
+    "build_compatibility_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "payload_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "size", "sha256"],
+        "properties": {"path": {"type": "string", "minLength": 1}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+      }
+    },
+    "payload_inventory_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "expected_files": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "built_at_utc": {"type": "string", "format": "date-time", "pattern": "Z$"}
+  }
+}

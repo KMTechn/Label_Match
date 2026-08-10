@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/producer-ingest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "correlation_id", "idempotency_key", "producer_id", "producer_install_id", "source_system", "stream_name", "manifest_hash", "payload_sha256", "occurred_at_utc"],
+  "properties": {
+    "contract_version": {"const": "producer-ingest-source-file-v1"},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "producer_id": {"type": "string", "minLength": 1},
+    "producer_install_id": {"type": "string", "minLength": 1},
+    "source_system": {"type": "string", "minLength": 1},
+    "stream_name": {"type": "string", "minLength": 1},
+    "manifest_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "payload_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "occurred_at_utc": {"type": "string", "format": "date-time", "pattern": "Z$"}
+  }
+}

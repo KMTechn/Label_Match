@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/build-compatibility.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["matrix_schema_version", "app_id", "app_version", "source_commit", "source_tree", "build_identity_sha256", "contract_bundle_sha256", "dependency", "db_schema_supported", "server_api_contract_versions", "event_contract_version", "manifest_contract_version", "minimum_installer_version", "resources", "coinstall_with"],
+  "properties": {
+    "matrix_schema_version": {"const": 1},
+    "app_id": {"type": "string", "minLength": 1},
+    "app_version": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "source_tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "build_identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "dependency": {"type": "object"},
+    "db_schema_supported": {"type": "object", "required": ["minimum", "maximum"]},
+    "server_api_contract_versions": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+    "event_contract_version": {"type": "string", "minLength": 1},
+    "manifest_contract_version": {"type": "string", "minLength": 1},
+    "minimum_installer_version": {"type": "string", "minLength": 1},
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "credential_target", "task_name", "task_action", "task_principal", "install_root", "data_root", "state_db", "log_root", "machine_identity_scope"],
+      "properties": {
+        "profile_id": {"type": "string", "minLength": 1}, "credential_target": {"type": "string", "minLength": 1}, "task_name": {"type": "string", "minLength": 1}, "task_action": {"type": "string", "minLength": 1}, "task_principal": {"type": "string", "minLength": 1}, "install_root": {"type": "string", "minLength": 1}, "data_root": {"type": "string", "minLength": 1}, "state_db": {"type": "string", "minLength": 1}, "log_root": {"type": "string", "minLength": 1}, "machine_identity_scope": {"type": "string", "minLength": 1}
+      }
+    },
+    "coinstall_with": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["app_id", "app_version", "status", "reason_code", "shared_resources"],
+        "properties": {
+          "app_id": {"type": "string", "minLength": 1},
+          "app_version": {"type": "string", "minLength": 1},
+          "status": {"enum": ["allowed", "conditional"]},
+          "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+          "shared_resources": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        }
+      }
+    }
+  }
+}

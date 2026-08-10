@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/self-enrollment.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "correlation_id", "app_id", "app_version", "producer_install_id", "pc_id", "manifest_hash", "contract_bundle_sha256"],
+  "properties": {
+    "contract_version": {"const": "producer-self-enrollment-v1"},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "app_id": {"type": "string", "minLength": 1},
+    "app_version": {"type": "string", "minLength": 1},
+    "producer_install_id": {"type": "string", "minLength": 1},
+    "pc_id": {"type": "string", "minLength": 1},
+    "manifest_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}
