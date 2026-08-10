@@ -6,6 +6,8 @@ param(
     [string]$ProgramDataRoot = "",
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
     [string]$EnrollmentTokenFile = "",
+    [string]$ExistingProducerManifestPath = "",
+    [string]$ExistingCredentialPath = "",
     [string]$TaskName = "",
     [string]$LogisticsProfilePath = "C:\ProgramData\KMTech\Logistics\profiles\Label_Match\runtime-profile.json",
     [string]$TaskRunUser = "",
@@ -186,6 +188,27 @@ $reportDir = Join-Path $ProgramDataRoot "status"
 $reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"
 $registrationReportPath = Join-Path $reportDir "label_match_worker_pc_registration.json"
 
+$reuseExistingIdentity = (
+    -not [string]::IsNullOrWhiteSpace($ExistingProducerManifestPath) -or
+    -not [string]::IsNullOrWhiteSpace($ExistingCredentialPath)
+)
+if ($reuseExistingIdentity) {
+    if (
+        [string]::IsNullOrWhiteSpace($ExistingProducerManifestPath) -or
+        [string]::IsNullOrWhiteSpace($ExistingCredentialPath)
+    ) {
+        throw "ExistingProducerManifestPath and ExistingCredentialPath must be provided together."
+    }
+    foreach ($existingPath in @($ExistingProducerManifestPath, $ExistingCredentialPath)) {
+        if (-not (Test-Path -LiteralPath $existingPath -PathType Leaf)) {
+            throw "Existing registered identity file does not exist."
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)) {
+        throw "EnrollmentTokenFile cannot be combined with existing registered identity files."
+    }
+}
+
 New-Item -ItemType Directory -Path $ScanSourceDir -Force | Out-Null
 New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
 $settingsPath = Set-LabelMatchSavePath -AppRoot $appRoot -TargetSaveDir $ScanSourceDir
@@ -195,18 +218,28 @@ if ($installPackCommand.Count -gt 1) {
     $arguments += $installPackCommand[1]
 }
 $arguments += @(
-    "--self-enroll",
-    "--require-machine-credential-bundle",
     "--app-root", $appRoot,
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
     "--scan-source-dir", $ScanSourceDir,
-    "--logistics-profile-path", $LogisticsProfilePath,
     "--app-run-user", $AppRunUser,
     "--task-name", $TaskName,
     "--report-path", $reportPath,
     "--app-settings-path", $settingsPath
 )
+if ($reuseExistingIdentity) {
+    $arguments += @(
+        "--producer-manifest-path", $ExistingProducerManifestPath,
+        "--credential-path", $ExistingCredentialPath
+    )
+}
+else {
+    $arguments += @(
+        "--self-enroll",
+        "--require-machine-credential-bundle",
+        "--logistics-profile-path", $LogisticsProfilePath
+    )
+}
 if (-not [string]::IsNullOrWhiteSpace($pythonExe)) {
     $arguments += @("--python-exe", $pythonExe)
 }
@@ -289,6 +322,7 @@ $summary = [ordered]@{
     logistics_profile_path = [System.IO.Path]::GetFullPath($LogisticsProfilePath)
     install_pack_report_path = [System.IO.Path]::GetFullPath($reportPath)
     enrollment_token_file_present = -not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)
+    existing_identity_reused = $reuseExistingIdentity
     bundled_runner_exe_present = Test-Path -LiteralPath $runnerExe
     python_runner_script_present = Test-Path -LiteralPath $runnerScript
     python_exe = $pythonExe

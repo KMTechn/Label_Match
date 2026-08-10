@@ -61,6 +61,10 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert '[string]$AppRunUser = "*S-1-5-32-545"' in installer
     assert "Read-Host" not in installer
     assert "Producer enrollment token" not in installer
+    assert "ExistingProducerManifestPath" in installer
+    assert "ExistingCredentialPath" in installer
+    assert '"--producer-manifest-path", $ExistingProducerManifestPath' in installer
+    assert '"--credential-path", $ExistingCredentialPath' in installer
     assert (
         'C:\\ProgramData\\KMTech\\Logistics\\profiles\\Label_Match'
         '\\runtime-profile.json'
