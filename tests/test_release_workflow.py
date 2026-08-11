@@ -20,7 +20,7 @@ def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert len(lines) == 43
+    assert len(lines) == 44
     assert all("==" in line for line in lines)
     assert all(" --hash=sha256:" in line for line in lines)
     assert all(line.count("--hash=sha256:") == 1 for line in lines)
@@ -40,6 +40,7 @@ def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
         "referencing",
         "rpds-py",
         "rsa",
+        "typing-extensions",
         "tzdata",
         "werkzeug",
     }.issubset(locked_names)
