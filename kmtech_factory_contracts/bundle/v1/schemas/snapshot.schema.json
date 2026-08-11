@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/snapshot.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_run_id", "workflow_mode", "idempotency_key", "request_digest", "transaction_id", "target_pc", "owner_app_id", "resource_id", "captured_at_utc", "snapshot_root", "snapshot_sha256", "path_inventory", "database_identity", "environment_snapshot_protected", "task_principals", "observation_digest"],
+  "oneOf": [
+    {"required": ["qualification_run_id"], "not": {"required": ["canary_run_id"]}},
+    {"required": ["canary_run_id"], "not": {"required": ["qualification_run_id"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256}
+  },
+  "properties": {
+    "schema_version": {"const": "kmtech-factory-snapshot-v1.0.3-corrective-1"},
+    "release_run_id": {"$ref": "#/$defs/id"},
+    "qualification_run_id": {"$ref": "#/$defs/id"},
+    "canary_run_id": {"$ref": "#/$defs/id"},
+    "workflow_mode": {"enum": ["independent", "integrated"]},
+    "idempotency_key": {"$ref": "#/$defs/id"},
+    "request_digest": {"$ref": "#/$defs/sha256"},
+    "transaction_id": {"$ref": "#/$defs/id"},
+    "target_pc": {"$ref": "#/$defs/id"},
+    "owner_app_id": {"const": "inspection_worker"},
+    "resource_id": {"const": "inspection-rework-ledger"},
+    "captured_at_utc": {"type": "string", "format": "date-time"},
+    "snapshot_root": {"type": "string", "minLength": 1},
+    "snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "path_inventory": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["source_path", "snapshot_path", "kind", "existed", "sha256", "byte_length", "owner_app_id", "restore_mode"],
+        "properties": {
+          "source_path": {"type": "string", "minLength": 1},
+          "snapshot_path": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["file", "directory"]},
+          "existed": {"type": "boolean"},
+          "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+          "byte_length": {"type": "integer", "minimum": 0},
+          "owner_app_id": {"type": "string", "minLength": 1},
+          "restore_mode": {"enum": ["owner-controlled", "verify-only", "group-deferred"]}
+        }
+      }
+    },
+    "database_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "instance_id", "schema_version", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "instance_id": {"$ref": "#/$defs/id"},
+        "schema_version": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "environment_snapshot_protected": {"const": true},
+    "task_principals": {
+      "type": "object", "additionalProperties": false,
+      "required": ["interactive_session", "service_principal"],
+      "properties": {"interactive_session": {"const": "Session1"}, "service_principal": {"const": "SYSTEM"}}
+    },
+    "observation_digest": {"$ref": "#/$defs/sha256"}
+  }
+}

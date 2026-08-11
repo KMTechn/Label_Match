@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/active-work-evidence.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_run_id", "target_pc", "app_id", "app", "captured_at_utc", "probe_build_identity_sha256", "probe_artifact_sha256", "probe_source_commit", "evidence_source", "evidence_source_sha256", "database_identity", "profile_identity", "process_ids", "session_ids", "lease_ids", "work_ids", "pending_commit_ids", "counts", "production_mutation_count", "observation_digest"],
+  "oneOf": [
+    {"required": ["qualification_run_id"], "not": {"required": ["canary_run_id"]}},
+    {"required": ["canary_run_id"], "not": {"required": ["qualification_run_id"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "zero_ids": {"type": "array", "maxItems": 0, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+  },
+  "properties": {
+    "schema_version": {"const": "kmtech-active-work-evidence-v1.0.3-corrective-1"},
+    "release_run_id": {"$ref": "#/$defs/id"},
+    "qualification_run_id": {"$ref": "#/$defs/id"},
+    "canary_run_id": {"$ref": "#/$defs/id"},
+    "target_pc": {"$ref": "#/$defs/id"},
+    "app_id": {"enum": ["inspection_worker", "rework_worker", "defect_inspection", "container_audit", "label_match"]},
+    "app": {"enum": ["Inspection_worker", "Rework_worker", "Defect_Inspection", "Container_Audit", "Label_Match"]},
+    "captured_at_utc": {"type": "string", "format": "date-time"},
+    "probe_build_identity_sha256": {"$ref": "#/$defs/sha256"},
+    "probe_artifact_sha256": {"$ref": "#/$defs/sha256"},
+    "probe_source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "evidence_source": {"type": "string", "minLength": 1},
+    "evidence_source_sha256": {"$ref": "#/$defs/sha256"},
+    "database_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "instance_id", "schema_version", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "instance_id": {"$ref": "#/$defs/id"},
+        "schema_version": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "profile_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "sha256"],
+      "properties": {"profile_id": {"$ref": "#/$defs/id"}, "sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "process_ids": {"$ref": "#/$defs/zero_ids"},
+    "session_ids": {"$ref": "#/$defs/zero_ids"},
+    "lease_ids": {"$ref": "#/$defs/zero_ids"},
+    "work_ids": {"$ref": "#/$defs/zero_ids"},
+    "pending_commit_ids": {"$ref": "#/$defs/zero_ids"},
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active_process_count", "active_session_count", "active_lease_count", "active_work_count", "pending_commit_count"],
+      "properties": {
+        "active_process_count": {"const": 0},
+        "active_session_count": {"const": 0},
+        "active_lease_count": {"const": 0},
+        "active_work_count": {"const": 0},
+        "pending_commit_count": {"const": 0}
+      }
+    },
+    "production_mutation_count": {"const": 0},
+    "observation_digest": {"$ref": "#/$defs/sha256"}
+  }
+}

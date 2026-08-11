@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/rollback-request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_run_id", "workflow_mode", "idempotency_key", "request_digest", "transaction_id", "target_pc", "owner_app_id", "ordered_apps", "rollback_mode", "group_id", "snapshot_path", "snapshot_sha256", "requested_resource_ids", "prestate_digest", "expected_poststate_digest", "reason_code"],
+  "oneOf": [
+    {"required": ["qualification_run_id"], "not": {"required": ["canary_run_id"]}},
+    {"required": ["canary_run_id"], "not": {"required": ["qualification_run_id"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256}
+  },
+  "properties": {
+    "schema_version": {"const": "kmtech-factory-rollback-request-v1.0.3-corrective-1"},
+    "release_run_id": {"$ref": "#/$defs/id"},
+    "qualification_run_id": {"$ref": "#/$defs/id"},
+    "canary_run_id": {"$ref": "#/$defs/id"},
+    "workflow_mode": {"enum": ["independent", "integrated"]},
+    "idempotency_key": {"$ref": "#/$defs/id"},
+    "request_digest": {"$ref": "#/$defs/sha256"},
+    "transaction_id": {"$ref": "#/$defs/id"},
+    "target_pc": {"$ref": "#/$defs/id"},
+    "owner_app_id": {"const": "inspection_worker"},
+    "ordered_apps": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": {"enum": ["Inspection_worker", "Rework_worker", "Defect_Inspection", "Container_Audit", "Label_Match"]}},
+    "rollback_mode": {"enum": ["owner-controlled", "group-deferred"]},
+    "group_id": {"type": ["string", "null"], "minLength": 1},
+    "snapshot_path": {"type": "string", "minLength": 1},
+    "snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "requested_resource_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "prestate_digest": {"$ref": "#/$defs/sha256"},
+    "expected_poststate_digest": {"$ref": "#/$defs/sha256"},
+    "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"}
+  }
+}

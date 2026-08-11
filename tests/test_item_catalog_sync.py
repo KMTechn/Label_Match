@@ -640,6 +640,12 @@ def test_async_startup_load_uses_verified_snapshot_after_cache_tamper(
 ):
     import Label_Match as app_module
 
+    # prepare_startup_item_catalog() owns this process-wide handoff variable.
+    # Register it with monkeypatch so the temporary verified cache cannot leak
+    # into later live-app tests after this test deliberately forgets its bytes.
+    # ``delenv(..., raising=False)`` cannot register an absent key for later
+    # restoration, so seed an inert value that teardown will reliably remove.
+    monkeypatch.setenv(sync.ACTIVE_PATH_ENV, "")
     bundle = tmp_path / "bundle.csv"
     cache = tmp_path / "cache" / "Item.csv"
     bundle.write_bytes(CATALOG)

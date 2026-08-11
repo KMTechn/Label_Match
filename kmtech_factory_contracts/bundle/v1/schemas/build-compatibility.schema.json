@@ -3,7 +3,7 @@
   "$id": "https://contracts.kmtech.local/factory/v1/build-compatibility.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["matrix_schema_version", "app_id", "app_version", "source_commit", "source_tree", "build_identity_sha256", "contract_bundle_sha256", "dependency", "db_schema_supported", "server_api_contract_versions", "event_contract_version", "manifest_contract_version", "minimum_installer_version", "resources", "coinstall_with"],
+  "required": ["matrix_schema_version", "app_id", "app_version", "source_commit", "source_tree", "build_identity_sha256", "contract_bundle_corrective_revision", "contract_bundle_sha256", "dependency", "db_schema_supported", "server_api_contract_versions", "event_contract_version", "manifest_contract_version", "minimum_installer_version", "resources", "coinstall_with"],
   "properties": {
     "matrix_schema_version": {"const": 1},
     "app_id": {"type": "string", "minLength": 1},
@@ -12,12 +12,13 @@
     "source_tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "build_identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contract_bundle_corrective_revision": {"const": 1},
     "dependency": {"type": "object"},
     "db_schema_supported": {"type": "object", "required": ["minimum", "maximum"]},
     "server_api_contract_versions": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
     "event_contract_version": {"type": "string", "minLength": 1},
     "manifest_contract_version": {"type": "string", "minLength": 1},
-    "minimum_installer_version": {"const": "1.0.3"},
+    "minimum_installer_version": {"const": "1.0.3.4"},
     "resources": {
       "type": "object",
       "additionalProperties": false,

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .bundle import (
+    CONTRACT_BUNDLE_CORRECTIVE_REVISION,
     CONTRACT_BUNDLE_SHA256,
     CONTRACT_BUNDLE_VERSION,
     MINIMUM_INSTALLER_VERSION,
@@ -21,6 +22,7 @@ REQUIRED_FIELDS = {
     "lock_schema_version",
     "app_id",
     "contract_bundle_version",
+    "contract_bundle_corrective_revision",
     "contract_bundle_sha256",
     "required_capabilities",
     "server_api_contract_version",
@@ -51,6 +53,11 @@ def load_and_verify_contract_lock(
         raise FactoryContractError("CONTRACT_LOCK_INVALID", "consumer lock app identity differs")
     if raw.get("contract_bundle_version") != CONTRACT_BUNDLE_VERSION:
         raise FactoryContractError("CONTRACT_VERSION_MISMATCH", "consumer contract version differs")
+    if raw.get("contract_bundle_corrective_revision") != CONTRACT_BUNDLE_CORRECTIVE_REVISION:
+        raise FactoryContractError(
+            "CONTRACT_VERSION_MISMATCH",
+            "consumer contract corrective revision differs",
+        )
     if raw.get("contract_bundle_sha256") != CONTRACT_BUNDLE_SHA256:
         raise FactoryContractError("CONTRACT_HASH_MISMATCH", "consumer contract hash differs")
     if raw.get("minimum_verifier_version") != MINIMUM_VERIFIER_VERSION:

@@ -119,6 +119,7 @@ def build_contract_set(
     bundle_dir: Path,
     *,
     bundle_version: str,
+    corrective_revision: int = 1,
 ) -> dict[str, Any]:
     files = []
     for path in _bundle_files(bundle_dir):
@@ -133,6 +134,7 @@ def build_contract_set(
     return {
         "contract_set_schema_version": 1,
         "contract_bundle_version": bundle_version,
+        "contract_bundle_corrective_revision": corrective_revision,
         "hash_algorithm": "sha256",
         "files": files,
     }
@@ -142,8 +144,17 @@ def contract_set_sha256(contract_set: Mapping[str, Any]) -> str:
     return canonical_sha256(dict(contract_set))
 
 
-def write_contract_set(bundle_dir: Path, *, bundle_version: str) -> str:
-    contract_set = build_contract_set(bundle_dir, bundle_version=bundle_version)
+def write_contract_set(
+    bundle_dir: Path,
+    *,
+    bundle_version: str,
+    corrective_revision: int = 1,
+) -> str:
+    contract_set = build_contract_set(
+        bundle_dir,
+        bundle_version=bundle_version,
+        corrective_revision=corrective_revision,
+    )
     rendered = json.dumps(
         contract_set,
         ensure_ascii=False,
@@ -161,6 +172,7 @@ def verify_contract_set(
     bundle_dir: Path,
     *,
     expected_version: str | None = None,
+    expected_corrective_revision: int | None = None,
     expected_sha256: str | None = None,
 ) -> dict[str, Any]:
     manifest_path = bundle_dir / CONTRACT_SET_FILENAME
@@ -177,6 +189,15 @@ def verify_contract_set(
         raise FactoryContractError(
             "CONTRACT_VERSION_MISMATCH",
             "contract bundle version differs from the exact lock",
+        )
+    if (
+        expected_corrective_revision is not None
+        and manifest.get("contract_bundle_corrective_revision")
+        != expected_corrective_revision
+    ):
+        raise FactoryContractError(
+            "CONTRACT_VERSION_MISMATCH",
+            "contract bundle corrective revision differs from the exact lock",
         )
     rows = manifest.get("files")
     if not isinstance(rows, list):

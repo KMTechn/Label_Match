@@ -13,8 +13,9 @@ def bundle_root() -> Path:
 
 
 CONTRACT_BUNDLE_VERSION = "1.0.3"
-MINIMUM_VERIFIER_VERSION = "1.0.3"
-MINIMUM_INSTALLER_VERSION = "1.0.3"
+CONTRACT_BUNDLE_CORRECTIVE_REVISION = 1
+MINIMUM_VERIFIER_VERSION = "1.0.3.4"
+MINIMUM_INSTALLER_VERSION = "1.0.3.4"
 CONTRACT_BUNDLE_SHA256 = (bundle_root() / "bundle.sha256").read_text(
     encoding="ascii"
 ).strip()
@@ -32,5 +33,6 @@ def verify_bundled_contracts(*, expected_sha256: str | None = None) -> dict[str,
     return verify_contract_set(
         bundle_root(),
         expected_version=CONTRACT_BUNDLE_VERSION,
+        expected_corrective_revision=CONTRACT_BUNDLE_CORRECTIVE_REVISION,
         expected_sha256=expected,
     )

@@ -11,7 +11,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .bundle import CONTRACT_BUNDLE_SHA256, CONTRACT_BUNDLE_VERSION, load_contract_document
+from .bundle import (
+    CONTRACT_BUNDLE_CORRECTIVE_REVISION,
+    CONTRACT_BUNDLE_SHA256,
+    CONTRACT_BUNDLE_VERSION,
+    load_contract_document,
+)
 from .canonical import canonical_sha256
 from .errors import FactoryContractError
 from .lock import load_and_verify_contract_lock
@@ -132,6 +137,7 @@ def prepare_identity(
         "source_tree": source_tree,
         "dirty": dirty,
         "contract_bundle_version": CONTRACT_BUNDLE_VERSION,
+        "contract_bundle_corrective_revision": CONTRACT_BUNDLE_CORRECTIVE_REVISION,
         "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
         "db_schema": {
             "current": db_schema_current,

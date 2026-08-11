@@ -1,14 +1,20 @@
 {
-  "declaration_schema_version": 1,
+  "declaration_schema_version": 2,
+  "corrective_revision": 1,
+  "default_policy": {
+    "workflow_mode": "independent",
+    "cross_role_sharing": "blocked",
+    "broad_root_sharing": "forbidden"
+  },
   "resources": [
     {
       "app_id": "container_audit",
-      "app_version": "v2.0.59",
+      "app_version": "v2.0.60",
       "credential_target": "dpapi:KMTech.DirectSync.ContainerAudit.{source_host_id}",
       "data_root": "%LOCALAPPDATA%/KMTech/ContainerAudit",
       "log_root": "%LOCALAPPDATA%/KMTech/ContainerAudit/events",
       "machine_identity_scope": "container_audit:{pc_id}",
-      "profile_id": "C:/ProgramData/KMTech/Logistics/runtime-profile.json",
+      "profile_id": "C:/ProgramData/KMTech/Logistics/profiles/Container_Audit/runtime-profile.json",
       "state_db": "C:/ProgramData/KMTech/DirectSync/container_audit/queue/direct_sync_relay.sqlite3",
       "task_name": "direct-sync-relay-container-audit",
       "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/container_audit/bin/direct-sync-relay-container-audit.vbs",
@@ -17,12 +23,12 @@
     },
     {
       "app_id": "defect_inspection",
-      "app_version": "v0.2.58",
+      "app_version": "v0.2.59",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
       "data_root": "%LOCALAPPDATA%/Defect_Inspection",
       "log_root": "C:/ProgramData/Defect_Inspection/audit",
       "machine_identity_scope": "defect_inspection:{pc_id}",
-      "profile_id": "C:/ProgramData/KMTech/Logistics/runtime-profile.json",
+      "profile_id": "C:/ProgramData/KMTech/Logistics/profiles/Defect_Inspection/runtime-profile.json",
       "state_db": "C:/ProgramData/KMTech/DirectSync/defect_inspection/queue/direct_sync_hmac_relay.sqlite3",
       "task_name": "direct-sync-relay-defect-inspection",
       "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/defect_inspection/bin/direct_sync_hmac_relay_runner.vbs",
@@ -31,7 +37,7 @@
     },
     {
       "app_id": "inspection_worker",
-      "app_version": "v2.0.109",
+      "app_version": "v2.0.110",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
       "data_root": "C:/ProgramData/KMTech/InspectionWorker",
       "log_root": "C:/ProgramData/KMTech/InspectionWorker/logs",
@@ -45,7 +51,7 @@
     },
     {
       "app_id": "label_match",
-      "app_version": "v2.0.64",
+      "app_version": "v2.0.65",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
       "data_root": "C:/ProgramData/KMTech/Label_Match/data",
       "log_root": "C:/ProgramData/KMTech/Label_Match/data",
@@ -59,10 +65,10 @@
     },
     {
       "app_id": "rework_worker",
-      "app_version": "v2.0.71",
+      "app_version": "v2.0.72",
       "credential_target": "dpapi:producer-{source_host_id}-http-push-key",
-      "data_root": "C:/ProgramData/KMTech/InspectionWorker",
-      "log_root": "C:/ProgramData/KMTech/InspectionWorker/logs",
+      "data_root": "C:/ProgramData/KMTech/ReworkWorker",
+      "log_root": "C:/ProgramData/KMTech/ReworkWorker/logs",
       "machine_identity_scope": "rework_worker:{pc_id}",
       "profile_id": "C:/ProgramData/KMTech/Logistics/profiles/Rework_worker/runtime-profile.json",
       "state_db": "C:/ProgramData/KMTech/InspectionWorker/ledger/inspection_product_ledger.sqlite3",
@@ -70,6 +76,45 @@
       "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/rework/bin/direct_sync_relay_runner.vbs",
       "task_principal": "SYSTEM",
       "install_root": "C:/KMTech/Apps/Rework_worker/current"
+    }
+  ],
+  "legacy_read_only_aliases": [
+    {
+      "app_id": "defect_inspection",
+      "resource_field": "profile_id",
+      "path": "C:/ProgramData/KMTech/Logistics/runtime-profile.json",
+      "access": "read-only",
+      "purpose": "exact-identity-reuse-only"
+    }
+  ],
+  "shared_resources": [
+    {
+      "resource_id": "inspection-rework-ledger",
+      "resource_kind": "sqlite_database",
+      "path": "C:/ProgramData/KMTech/InspectionWorker/ledger/inspection_product_ledger.sqlite3",
+      "owner_app_id": "inspection_worker",
+      "initializer_app_id": "inspection_worker",
+      "migrator_app_id": "inspection_worker",
+      "restorer_app_id": "inspection_worker",
+      "participants": [
+        {
+          "app_id": "inspection_worker",
+          "access": ["initialize", "migrate", "read", "restore", "write"],
+          "rollback_mode": "owner-controlled"
+        },
+        {
+          "app_id": "rework_worker",
+          "access": ["read", "write"],
+          "rollback_mode": "group-deferred"
+        }
+      ],
+      "dependency_binding": {
+        "consumer_app_id": "rework_worker",
+        "provider_app_id": "inspection_worker",
+        "kind": "vendored_inspection_worker",
+        "commit": "4c7c165b74962aaa3f5ffc77731194f8b8360caa",
+        "sha256": "755c6644c97aaee85fc286bf888bef5ee47397fd0988e964b42785f5a0aacf75"
+      }
     }
   ]
 }

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/resource-namespaces.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["declaration_schema_version", "corrective_revision", "default_policy", "resources", "legacy_read_only_aliases", "shared_resources"],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "app_id": {"enum": ["container_audit", "defect_inspection", "inspection_worker", "label_match", "rework_worker"]},
+    "resource_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app_id", "app_version", "profile_id", "credential_target", "task_name", "task_action", "task_principal", "install_root", "data_root", "state_db", "log_root", "machine_identity_scope"],
+      "properties": {
+        "app_id": {"$ref": "#/$defs/app_id"},
+        "app_version": {"type": "string", "minLength": 1},
+        "profile_id": {"type": "string", "minLength": 1},
+        "credential_target": {"type": "string", "minLength": 1},
+        "task_name": {"type": "string", "minLength": 1},
+        "task_action": {"type": "string", "minLength": 1},
+        "task_principal": {"const": "SYSTEM"},
+        "install_root": {"type": "string", "minLength": 1},
+        "data_root": {"type": "string", "minLength": 1},
+        "state_db": {"type": "string", "minLength": 1},
+        "log_root": {"type": "string", "minLength": 1},
+        "machine_identity_scope": {"type": "string", "minLength": 1}
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app_id", "access", "rollback_mode"],
+      "properties": {
+        "app_id": {"$ref": "#/$defs/app_id"},
+        "access": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["initialize", "migrate", "read", "restore", "write"]}
+        },
+        "rollback_mode": {"enum": ["owner-controlled", "group-deferred"]}
+      }
+    }
+  },
+  "properties": {
+    "declaration_schema_version": {"const": 2},
+    "corrective_revision": {"const": 1},
+    "default_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow_mode", "cross_role_sharing", "broad_root_sharing"],
+      "properties": {
+        "workflow_mode": {"const": "independent"},
+        "cross_role_sharing": {"const": "blocked"},
+        "broad_root_sharing": {"const": "forbidden"}
+      }
+    },
+    "resources": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/resource_row"}},
+    "legacy_read_only_aliases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["app_id", "resource_field", "path", "access", "purpose"],
+        "properties": {
+          "app_id": {"const": "defect_inspection"},
+          "resource_field": {"const": "profile_id"},
+          "path": {"const": "C:/ProgramData/KMTech/Logistics/runtime-profile.json"},
+          "access": {"const": "read-only"},
+          "purpose": {"const": "exact-identity-reuse-only"}
+        }
+      }
+    },
+    "shared_resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource_id", "resource_kind", "path", "owner_app_id", "initializer_app_id", "migrator_app_id", "restorer_app_id", "participants", "dependency_binding"],
+        "properties": {
+          "resource_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"},
+          "resource_kind": {"const": "sqlite_database"},
+          "path": {"type": "string", "pattern": "\\.sqlite3$"},
+          "owner_app_id": {"$ref": "#/$defs/app_id"},
+          "initializer_app_id": {"$ref": "#/$defs/app_id"},
+          "migrator_app_id": {"$ref": "#/$defs/app_id"},
+          "restorer_app_id": {"$ref": "#/$defs/app_id"},
+          "participants": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/participant"}},
+          "dependency_binding": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["consumer_app_id", "provider_app_id", "kind", "commit", "sha256"],
+            "properties": {
+              "consumer_app_id": {"const": "rework_worker"},
+              "provider_app_id": {"const": "inspection_worker"},
+              "kind": {"const": "vendored_inspection_worker"},
+              "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+              "sha256": {"$ref": "#/$defs/sha256"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

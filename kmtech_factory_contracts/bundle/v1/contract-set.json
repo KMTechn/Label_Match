@@ -1,4 +1,5 @@
 {
+  "contract_bundle_corrective_revision": 1,
   "contract_bundle_version": "1.0.3",
   "contract_set_schema_version": 1,
   "files": [
@@ -9,18 +10,18 @@
     },
     {
       "path": "compatibility/coinstall-matrix.json",
-      "sha256": "ec1fb39ef82a1f2c6351872a98f714f6ab9e7dffbec0aac5cdab1b1c25845e1d",
-      "size": 1500
+      "sha256": "fc13c7a90cf83eddae234f701daec12cdafb5a42099973185be1ddf11e33aecb",
+      "size": 2163
     },
     {
       "path": "compatibility/installer-field-layout.json",
-      "sha256": "ef26feb289b2075bae6e0d37c1249bd7f496b400cfa453ef80c3cb25473242b4",
-      "size": 2857
+      "sha256": "206ef11c3bd3bb8acc019a389f371b9a902ac47d49e8587ce6e197267a189b0c",
+      "size": 2928
     },
     {
       "path": "compatibility/resource-namespaces.json",
-      "sha256": "b67133706a53abfe1d199a77ac3252e8feb8c3f6e1b9f00f829a0fdf3113ce4b",
-      "size": 4138
+      "sha256": "b1d5b5a5acc7aaacb229404dfd3272eb51006a890bc5279a0ec76331b51fb8ec",
+      "size": 5708
     },
     {
       "path": "python/bootstrap-central-ng-hold.json",
@@ -28,19 +29,24 @@
       "size": 2152
     },
     {
+      "path": "schemas/active-work-evidence.schema.json",
+      "sha256": "521463a0657ea379dec1b7c614526c3fb8a729c6a8fcbdd954405a3495f9488c",
+      "size": 3402
+    },
+    {
       "path": "schemas/build-compatibility.schema.json",
-      "sha256": "2ac4fc9eed0c5efc7351d5a7cceccff193ff86632b4987d7cf9b1dac4861b42a",
-      "size": 2874
+      "sha256": "06d80be3ad6018dca32451e7c5b61ca63145a6ab8677b14c40fb580a9a3a969d",
+      "size": 2972
     },
     {
       "path": "schemas/build-identity.schema.json",
-      "sha256": "024094ecfb7fbda394e380ca7413efb755b3d92c7ae9c6dfdbc87cf77ad9e246",
-      "size": 2452
+      "sha256": "d5440b418f205500b61b9181700ef4d616afa8de6bd0f3054892b778b8f5c521",
+      "size": 2548
     },
     {
       "path": "schemas/build-manifest.schema.json",
-      "sha256": "9e7587f2f28e0927efbdcdaf9fe1847c6b41828362e1d5238d756e41b2557357",
-      "size": 1716
+      "sha256": "7b4aba28a2761804c674f43d5430545d688a6cc342e031ee304f9e83c3a6478c",
+      "size": 1812
     },
     {
       "path": "schemas/canonical-stream-catalog.schema.json",
@@ -48,9 +54,19 @@
       "size": 1186
     },
     {
+      "path": "schemas/coinstall-matrix.schema.json",
+      "sha256": "87b9963b7ed071c70e1d23c2bb92442eb9864b9cf2f30577fd8a62ec2e9ab871",
+      "size": 2833
+    },
+    {
       "path": "schemas/contract-lock.schema.json",
-      "sha256": "038a56af3fd0efa4788e4440851958cf45990f3cb8bb9a6a2909e76c18704cad",
-      "size": 1762
+      "sha256": "6d20844be63154d15ca3d27d6b8411c029c751ad8b5d54f961734c80f0db507e",
+      "size": 1862
+    },
+    {
+      "path": "schemas/db-transition.schema.json",
+      "sha256": "b6f41b0373ba4380c078e5720badb33e426cdf8e16242f00546e2c8d325d6f03",
+      "size": 2942
     },
     {
       "path": "schemas/deployment-policy.schema.json",
@@ -83,6 +99,21 @@
       "size": 1356
     },
     {
+      "path": "schemas/installer-field-layout.schema.json",
+      "sha256": "8a1cb87888e641ade6c0ea9ad504679817a0fd65081aca82efa923fa6e68e4ac",
+      "size": 1649
+    },
+    {
+      "path": "schemas/installer-plan.schema.json",
+      "sha256": "c68909a6ca47a8b0815ee0db69048b8c8b3fad10b7cb505be7d81a33f0893725",
+      "size": 3997
+    },
+    {
+      "path": "schemas/preflight-report.schema.json",
+      "sha256": "08d0d4cb23b0b7a3b2a582312050e8960ff8b673844529d2ba524b23e110322f",
+      "size": 7602
+    },
+    {
       "path": "schemas/producer-ingest.schema.json",
       "sha256": "cc8c62f86014e51b51f074524bfff68a934ba26dc6c9181be7ea2cd3b61c24c2",
       "size": 1058
@@ -93,6 +124,21 @@
       "size": 1321
     },
     {
+      "path": "schemas/resource-namespaces.schema.json",
+      "sha256": "f1b11533c54a04fc4f11c32f540298cf9e54d0046985a56ce9a86b4147d3248b",
+      "size": 4731
+    },
+    {
+      "path": "schemas/rollback-receipt.schema.json",
+      "sha256": "dc54e4f4116f2f41f63e0337cafef799e090b2e29b45d82ae2dd3e9ac6785f63",
+      "size": 4435
+    },
+    {
+      "path": "schemas/rollback-request.schema.json",
+      "sha256": "fbc32474b444cb3c34168651d0931161d7abd9b0b632496bda003c109e781ad6",
+      "size": 2161
+    },
+    {
       "path": "schemas/runtime-lease.schema.json",
       "sha256": "98fe3b85cf37c01db9f1540fef2f35b203fb79d2bbf1491ace7d2a1ae6675084",
       "size": 1036
@@ -101,6 +147,16 @@
       "path": "schemas/self-enrollment.schema.json",
       "sha256": "bb5d052456126f9f381f354bfbf3bed5ffbcd6d4ddf795992e48507dd44512ef",
       "size": 865
+    },
+    {
+      "path": "schemas/snapshot.schema.json",
+      "sha256": "c94493f5418571684d2e2536296514a98e6ce3e2696f05da1ca1f8d9b6aa86bf",
+      "size": 3220
+    },
+    {
+      "path": "schemas/transaction-report.schema.json",
+      "sha256": "242d86729cf51ecd503af6d0a4b690c1ae513809a6bda4bb48ba1d69ad152aa1",
+      "size": 7674
     },
     {
       "path": "semantics/source-liveness.json",

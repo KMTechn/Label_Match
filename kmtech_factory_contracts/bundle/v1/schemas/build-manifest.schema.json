@@ -3,7 +3,7 @@
   "$id": "https://contracts.kmtech.local/factory/v1/build-manifest.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["build_manifest_schema_version", "app_id", "app_version", "identity_path", "identity_sha256", "build_compatibility_path", "contract_bundle_sha256", "dependency", "build_compatibility_sha256", "payload_inventory", "payload_inventory_sha256", "expected_files", "built_at_utc"],
+  "required": ["build_manifest_schema_version", "app_id", "app_version", "identity_path", "identity_sha256", "build_compatibility_path", "contract_bundle_corrective_revision", "contract_bundle_sha256", "dependency", "build_compatibility_sha256", "payload_inventory", "payload_inventory_sha256", "expected_files", "built_at_utc"],
   "properties": {
     "build_manifest_schema_version": {"const": 1},
     "app_id": {"type": "string", "minLength": 1},
@@ -12,6 +12,7 @@
     "identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "build_compatibility_path": {"type": "string", "pattern": "^[^\\/].*$"},
     "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contract_bundle_corrective_revision": {"const": 1},
     "dependency": {"type": "object"},
     "build_compatibility_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "payload_inventory": {

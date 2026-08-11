@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/installer-field-layout.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["field_layout_schema_version", "corrective_revision", "minimum_installer_version", "minimum_verifier_version", "apps"],
+  "properties": {
+    "field_layout_schema_version": {"const": 2},
+    "corrective_revision": {"const": 1},
+    "minimum_installer_version": {"const": "1.0.3.4"},
+    "minimum_verifier_version": {"const": "1.0.3.4"},
+    "apps": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["app_id", "app_version", "repository_name", "direct_sync_root", "install_root", "state_db", "task_name", "task_action"],
+        "properties": {
+          "app_id": {"enum": ["container_audit", "defect_inspection", "inspection_worker", "label_match", "rework_worker"]},
+          "app_version": {"type": "string", "minLength": 1},
+          "repository_name": {"enum": ["Container_Audit", "Defect_Inspection", "Inspection_worker", "Label_Match", "Rework_worker"]},
+          "direct_sync_root": {"type": "string", "pattern": "^C:/ProgramData/KMTech/DirectSync/"},
+          "install_root": {"type": "string", "pattern": "^C:/KMTech/Apps/.+/current$"},
+          "state_db": {"type": "string", "pattern": "^C:/ProgramData/"},
+          "task_name": {"type": "string", "minLength": 1},
+          "task_action": {"type": "string", "pattern": "^wscript\\.exe //B //NoLogo .+\\.vbs$"}
+        }
+      }
+    }
+  }
+}

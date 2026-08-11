@@ -1,5 +1,11 @@
 {
-  "matrix_schema_version": 1,
+  "matrix_schema_version": 2,
+  "corrective_revision": 1,
+  "default_policy": {
+    "workflow_mode": "independent",
+    "status": "blocked",
+    "reason_code": "ROLE_PC_SEPARATION_REQUIRED"
+  },
   "pairs": [
     {"apps": ["container_audit", "defect_inspection"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
     {"apps": ["container_audit", "inspection_worker"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
@@ -9,7 +15,25 @@
     {"apps": ["defect_inspection", "label_match"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
     {"apps": ["defect_inspection", "rework_worker"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
     {"apps": ["inspection_worker", "label_match"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
-    {"apps": ["inspection_worker", "rework_worker"], "reason_code": "INSPECTION_REWORK_IDENTITY_UNPROVEN", "shared_resources": [], "status": "blocked"},
+    {"apps": ["inspection_worker", "rework_worker"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
     {"apps": ["label_match", "rework_worker"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"}
+  ],
+  "integrated_workflows": [
+    {
+      "workflow_id": "test1-five-app-integrated",
+      "target_pc": "TEST1",
+      "workflow_mode": "integrated",
+      "status": "allowed",
+      "reason_code": "TEST1_INTEGRATED_WORKFLOW_ONLY",
+      "ordered_apps": [
+        "Inspection_worker",
+        "Rework_worker",
+        "Defect_Inspection",
+        "Container_Audit",
+        "Label_Match"
+      ],
+      "shared_resource_ids": ["inspection-rework-ledger"],
+      "rollback_mode": "group-deferred"
+    }
   ]
 }

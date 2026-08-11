@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/installer-plan.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_bundle_version", "corrective_revision", "minimum_installer_version", "release_run_id", "workflow_mode", "workflow_id", "target_pc", "idempotency_key", "request_digest", "contract_bundle_sha256", "ordered_apps", "artifacts", "compatibility_identity", "rollback_policy"],
+  "oneOf": [
+    {"required": ["qualification_run_id"], "not": {"required": ["canary_run_id"]}},
+    {"required": ["canary_run_id"], "not": {"required": ["qualification_run_id"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "commit": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"},
+        "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "kmtech-factory-installer-plan-v1.0.3-corrective-1"},
+    "contract_bundle_version": {"const": "1.0.3"},
+    "corrective_revision": {"const": 1},
+    "minimum_installer_version": {"const": "1.0.3.4"},
+    "release_run_id": {"$ref": "#/$defs/run_id"},
+    "qualification_run_id": {"$ref": "#/$defs/run_id"},
+    "canary_run_id": {"$ref": "#/$defs/run_id"},
+    "workflow_mode": {"enum": ["independent", "integrated"]},
+    "workflow_id": {"type": ["string", "null"], "minLength": 1},
+    "target_pc": {"type": "string", "minLength": 1},
+    "idempotency_key": {"$ref": "#/$defs/run_id"},
+    "request_digest": {"$ref": "#/$defs/sha256"},
+    "contract_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "ordered_apps": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": {"enum": ["Inspection_worker", "Rework_worker", "Defect_Inspection", "Container_Audit", "Label_Match"]}},
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["app_id", "app", "app_version", "source_commit", "artifact_path", "artifact_sha256", "build_identity_sha256", "dependency"],
+        "properties": {
+          "app_id": {"enum": ["inspection_worker", "rework_worker", "defect_inspection", "container_audit", "label_match"]},
+          "app": {"enum": ["Inspection_worker", "Rework_worker", "Defect_Inspection", "Container_Audit", "Label_Match"]},
+          "app_version": {"type": "string", "minLength": 1},
+          "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+          "artifact_path": {"type": "string", "minLength": 1},
+          "artifact_sha256": {"$ref": "#/$defs/sha256"},
+          "build_identity_sha256": {"$ref": "#/$defs/sha256"},
+          "dependency": {"$ref": "#/$defs/dependency"}
+        }
+      }
+    },
+    "compatibility_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coinstall_matrix_sha256", "resource_namespaces_sha256", "installer_field_layout_sha256"],
+      "properties": {
+        "coinstall_matrix_sha256": {"$ref": "#/$defs/sha256"},
+        "resource_namespaces_sha256": {"$ref": "#/$defs/sha256"},
+        "installer_field_layout_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "rollback_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "group_id", "requires_complete_group_receipt"],
+      "properties": {
+        "mode": {"enum": ["owner-controlled", "group-deferred"]},
+        "group_id": {"type": ["string", "null"], "minLength": 1},
+        "requires_complete_group_receipt": {"type": "boolean"}
+      }
+    }
+  }
+}

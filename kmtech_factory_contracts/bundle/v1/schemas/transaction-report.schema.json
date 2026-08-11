@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/transaction-report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_run_id", "workflow_mode", "idempotency_key", "request_digest", "transaction_id", "action", "target_pc", "apps", "bundle_identity", "classification", "phase_results", "mutation_inventory", "db_transition_receipt", "snapshot", "task_evidence", "readiness", "poststate_digest", "rollback_receipt", "error_code"],
+  "oneOf": [
+    {"required": ["qualification_run_id"], "not": {"required": ["canary_run_id"]}},
+    {"required": ["canary_run_id"], "not": {"required": ["qualification_run_id"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "app_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["app_id", "app", "app_version", "artifact_sha256", "build_identity_sha256"],
+      "properties": {
+        "app_id": {"enum": ["inspection_worker", "rework_worker", "defect_inspection", "container_audit", "label_match"]},
+        "app": {"enum": ["Inspection_worker", "Rework_worker", "Defect_Inspection", "Container_Audit", "Label_Match"]},
+        "app_version": {"$ref": "#/$defs/id"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "build_identity_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "classification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["automatic", "outcome", "reason_code", "observation_digest"],
+      "properties": {
+        "automatic": {"const": true},
+        "outcome": {"enum": ["PROVEN", "FAILED", "UNPROVEN", "NOT_TESTED"]},
+        "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+        "observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "phase": {
+      "type": "object", "additionalProperties": false,
+      "required": ["phase_index", "phase_id", "outcome", "observation_digest"],
+      "properties": {
+        "phase_index": {"type": "integer", "minimum": 1},
+        "phase_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"},
+        "outcome": {"enum": ["PROVEN", "FAILED", "UNPROVEN", "NOT_TESTED"]},
+        "observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "mutation_item": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "target", "operation", "owner_app_id"],
+      "properties": {
+        "kind": {"enum": ["file", "directory", "scheduled_task", "environment", "registry", "database", "profile", "credential"]},
+        "target": {"$ref": "#/$defs/id"},
+        "operation": {"enum": ["create", "update", "delete", "move", "restore"]},
+        "owner_app_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "receipt_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "owner_app_id", "migrator_app_id", "receipt_path", "receipt_sha256"],
+      "properties": {
+        "status": {"enum": ["NOT_REQUIRED", "PROVEN", "FAILED"]},
+        "owner_app_id": {"type": ["string", "null"], "minLength": 1},
+        "migrator_app_id": {"type": ["string", "null"], "minLength": 1},
+        "receipt_path": {"type": ["string", "null"], "minLength": 1},
+        "receipt_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "snapshot_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "path", "sha256"],
+      "properties": {
+        "status": {"enum": ["NOT_REQUIRED", "PROVEN", "FAILED"]},
+        "path": {"type": ["string", "null"], "minLength": 1},
+        "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "task_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["interactive_session", "service_principal", "scheduled_tasks", "observation_digest"],
+      "properties": {
+        "interactive_session": {"const": "Session1"},
+        "service_principal": {"const": "SYSTEM"},
+        "scheduled_tasks": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["name", "principal", "action_digest", "outcome"],
+            "properties": {
+              "name": {"$ref": "#/$defs/id"},
+              "principal": {"const": "SYSTEM"},
+              "action_digest": {"$ref": "#/$defs/sha256"},
+              "outcome": {"enum": ["PROVEN", "FAILED", "NOT_TESTED"]}
+            }
+          }
+        },
+        "observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "rollback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "group_id", "receipt_path", "receipt_sha256", "parity", "error_code"],
+      "properties": {
+        "status": {"enum": ["NOT_REQUIRED", "DEFERRED", "PASS", "FAILED"]},
+        "group_id": {"type": ["string", "null"], "minLength": 1},
+        "receipt_path": {"type": ["string", "null"], "minLength": 1},
+        "receipt_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "parity": {"type": ["boolean", "null"]},
+        "error_code": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]+$"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "kmtech-factory-transaction-report-v1.0.3-corrective-1"},
+    "release_run_id": {"$ref": "#/$defs/id"},
+    "qualification_run_id": {"$ref": "#/$defs/id"},
+    "canary_run_id": {"$ref": "#/$defs/id"},
+    "workflow_mode": {"enum": ["independent", "integrated"]},
+    "idempotency_key": {"$ref": "#/$defs/id"},
+    "request_digest": {"$ref": "#/$defs/sha256"},
+    "transaction_id": {"$ref": "#/$defs/id"},
+    "action": {"enum": ["Apply", "Validate", "Rollback"]},
+    "target_pc": {"$ref": "#/$defs/id"},
+    "apps": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"$ref": "#/$defs/app_identity"}},
+    "bundle_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_bundle_version", "corrective_revision", "contract_bundle_sha256"],
+      "properties": {
+        "contract_bundle_version": {"const": "1.0.3"},
+        "corrective_revision": {"const": 1},
+        "contract_bundle_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "classification": {"$ref": "#/$defs/classification"},
+    "phase_results": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/phase"}},
+    "mutation_inventory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["exact_count", "items"],
+      "properties": {"exact_count": {"type": "integer", "minimum": 0}, "items": {"type": "array", "items": {"$ref": "#/$defs/mutation_item"}}}
+    },
+    "db_transition_receipt": {"$ref": "#/$defs/receipt_ref"},
+    "snapshot": {"$ref": "#/$defs/snapshot_ref"},
+    "task_evidence": {"$ref": "#/$defs/task_evidence"},
+    "readiness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "operational_ready", "reason_codes", "observation_digest"],
+      "properties": {
+        "status": {"enum": ["READY", "APPLIED_NOT_READY", "FAILED"]},
+        "operational_ready": {"type": "boolean"},
+        "reason_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"}},
+        "observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "poststate_digest": {"$ref": "#/$defs/sha256"},
+    "rollback_receipt": {"$ref": "#/$defs/rollback"},
+    "error_code": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]+$"}
+  }
+}

@@ -1033,7 +1033,11 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
         # placement. The separate DISPLAY2 test below remains fail-closed and
         # runs only on the approved TEST1 non-primary monitor.
         configure_hosted_size((1366, 768))
-        app.entry.focus_set()
+        # Windows may decline a normal focus request after earlier full-suite
+        # Tk interpreters have been destroyed.  Establish this hosted test's
+        # initial focus deterministically; subsequent assertions still verify
+        # the application's own focus transitions.
+        app.entry.focus_force()
         pump_tk(app, 120)
         assert app.focus_get() == app.entry
 
@@ -1638,7 +1642,10 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
                 active_tree = app.qa_scan_tree
                 active_detail_frame = app.qa_scan_detail_frame
                 active_detail_text = app.qa_scan_detail_text
-                expected_row_count = 5
+                # An authoritative workstation presents the production PHS2
+                # one-scan contract before the first barcode.  The remaining
+                # fixtures explicitly carry legacy QA state and keep five rows.
+                expected_row_count = 1 if state_id == "waiting" else 5
             assert contains(active_frame, active_detail_frame), state_id
             assert contains(active_detail_frame, active_detail_text), state_id
             assert (

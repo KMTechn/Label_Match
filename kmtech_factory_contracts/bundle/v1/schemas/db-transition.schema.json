@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/db-transition.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_run_id", "workflow_mode", "idempotency_key", "request_digest", "transaction_id", "target_pc", "app_id", "app", "resource_id", "database_path", "database_instance_id", "owner_app_id", "initializer_app_id", "migrator_app_id", "restorer_app_id", "from_schema_version", "to_schema_version", "migration_operations", "prestate_digest", "poststate_digest", "snapshot_path", "snapshot_sha256", "status", "observation_digest", "error_code"],
+  "oneOf": [
+    {"required": ["qualification_run_id"], "not": {"required": ["canary_run_id"]}},
+    {"required": ["canary_run_id"], "not": {"required": ["qualification_run_id"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256}
+  },
+  "properties": {
+    "schema_version": {"const": "kmtech-factory-db-transition-v1.0.3-corrective-1"},
+    "release_run_id": {"$ref": "#/$defs/id"},
+    "qualification_run_id": {"$ref": "#/$defs/id"},
+    "canary_run_id": {"$ref": "#/$defs/id"},
+    "workflow_mode": {"enum": ["independent", "integrated"]},
+    "idempotency_key": {"$ref": "#/$defs/id"},
+    "request_digest": {"$ref": "#/$defs/sha256"},
+    "transaction_id": {"$ref": "#/$defs/id"},
+    "target_pc": {"$ref": "#/$defs/id"},
+    "app_id": {"const": "inspection_worker"},
+    "app": {"const": "Inspection_worker"},
+    "resource_id": {"const": "inspection-rework-ledger"},
+    "database_path": {"type": "string", "pattern": "\\.sqlite3$"},
+    "database_instance_id": {"$ref": "#/$defs/id"},
+    "owner_app_id": {"const": "inspection_worker"},
+    "initializer_app_id": {"const": "inspection_worker"},
+    "migrator_app_id": {"const": "inspection_worker"},
+    "restorer_app_id": {"const": "inspection_worker"},
+    "from_schema_version": {"type": "integer", "minimum": 0},
+    "to_schema_version": {"type": "integer", "minimum": 0},
+    "migration_operations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["migration_id", "script_sha256", "outcome"],
+        "properties": {
+          "migration_id": {"$ref": "#/$defs/id"},
+          "script_sha256": {"$ref": "#/$defs/sha256"},
+          "outcome": {"enum": ["APPLIED", "ALREADY_CURRENT", "FAILED"]}
+        }
+      }
+    },
+    "prestate_digest": {"$ref": "#/$defs/sha256"},
+    "poststate_digest": {"$ref": "#/$defs/sha256"},
+    "snapshot_path": {"type": "string", "minLength": 1},
+    "snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "status": {"enum": ["PROVEN", "FAILED"]},
+    "observation_digest": {"$ref": "#/$defs/sha256"},
+    "error_code": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]+$"}
+  }
+}

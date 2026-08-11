@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
-from .bundle import MINIMUM_INSTALLER_VERSION
+from .bundle import CONTRACT_BUNDLE_CORRECTIVE_REVISION, MINIMUM_INSTALLER_VERSION
 from .canonical import canonical_sha256, file_sha256, load_json_strict, require_posix_relative_path
 from .errors import FactoryContractError
 from .lock import load_and_verify_contract_lock
@@ -27,6 +27,7 @@ BUILD_IDENTITY_REQUIRED_FIELDS = (
     "source_tree",
     "dirty",
     "contract_bundle_version",
+    "contract_bundle_corrective_revision",
     "contract_bundle_sha256",
     "db_schema",
     "server_api_contract_version",
@@ -66,6 +67,11 @@ def validate_build_identity(
     normalized = dict(identity)
     if normalized.get("build_identity_schema_version") != BUILD_IDENTITY_SCHEMA_VERSION:
         raise FactoryContractError("PACKAGE_PROVENANCE_MISMATCH", "unsupported build identity schema")
+    if normalized.get("contract_bundle_corrective_revision") != CONTRACT_BUNDLE_CORRECTIVE_REVISION:
+        raise FactoryContractError(
+            "PACKAGE_PROVENANCE_MISMATCH",
+            "build identity corrective revision differs from the loaded contract bundle",
+        )
     for field in (
         "contract_bundle_sha256",
         "dependency_lock_sha256",
@@ -119,6 +125,9 @@ def create_build_compatibility(
         "source_tree": normalized["source_tree"],
         "build_identity_sha256": build_identity_binding_sha256(normalized),
         "contract_bundle_sha256": normalized["contract_bundle_sha256"],
+        "contract_bundle_corrective_revision": normalized[
+            "contract_bundle_corrective_revision"
+        ],
         "dependency": normalized["dependency"],
         "db_schema_supported": {
             "minimum": normalized["db_schema"]["minimum"],
@@ -152,6 +161,9 @@ def validate_build_compatibility(
         "source_tree": normalized_identity["source_tree"],
         "build_identity_sha256": build_identity_binding_sha256(normalized_identity),
         "contract_bundle_sha256": normalized_identity["contract_bundle_sha256"],
+        "contract_bundle_corrective_revision": normalized_identity[
+            "contract_bundle_corrective_revision"
+        ],
         "dependency": normalized_identity["dependency"],
         "event_contract_version": normalized_identity["event_contract_version"],
         "manifest_contract_version": normalized_identity["manifest_contract_version"],
@@ -253,6 +265,9 @@ def create_build_manifest(
         "identity_sha256": canonical_sha256(identity),
         "build_compatibility_path": normalized_compatibility_path,
         "contract_bundle_sha256": identity["contract_bundle_sha256"],
+        "contract_bundle_corrective_revision": identity[
+            "contract_bundle_corrective_revision"
+        ],
         "dependency": identity["dependency"],
         "build_compatibility_sha256": compatibility_sha256,
         "payload_inventory": inventory,
@@ -294,6 +309,9 @@ def verify_staged_package(
         )
     lock_bound_fields = {
         "contract_bundle_version": staged_lock.get("contract_bundle_version"),
+        "contract_bundle_corrective_revision": staged_lock.get(
+            "contract_bundle_corrective_revision"
+        ),
         "contract_bundle_sha256": staged_lock.get("contract_bundle_sha256"),
         "server_api_contract_version": staged_lock.get("server_api_contract_version"),
         "event_contract_version": staged_lock.get("event_contract_version"),
@@ -323,6 +341,13 @@ def verify_staged_package(
         raise FactoryContractError("EMBEDDED_IDENTITY_MISMATCH", "outer app identity differs")
     if manifest.get("contract_bundle_sha256") != identity.get("contract_bundle_sha256"):
         raise FactoryContractError("CONTRACT_HASH_MISMATCH", "outer and embedded contract hashes differ")
+    if manifest.get("contract_bundle_corrective_revision") != identity.get(
+        "contract_bundle_corrective_revision"
+    ):
+        raise FactoryContractError(
+            "CONTRACT_VERSION_MISMATCH",
+            "outer and embedded corrective revisions differ",
+        )
     compatibility_relative = require_posix_relative_path(
         str(manifest.get("build_compatibility_path") or "")
     )
@@ -369,6 +394,9 @@ def verify_staged_package(
         "source_commit": identity["source_commit"],
         "source_tree": identity["source_tree"],
         "contract_bundle_sha256": identity["contract_bundle_sha256"],
+        "contract_bundle_corrective_revision": identity[
+            "contract_bundle_corrective_revision"
+        ],
         "payload_inventory_sha256": manifest["payload_inventory_sha256"],
         "file_count": len(inventory),
     }

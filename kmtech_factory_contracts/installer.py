@@ -28,6 +28,7 @@ BUILD_COMPATIBILITY_FIELDS = {
     "source_tree",
     "build_identity_sha256",
     "contract_bundle_sha256",
+    "contract_bundle_corrective_revision",
     "dependency",
     "db_schema_supported",
     "server_api_contract_versions",
@@ -75,6 +76,7 @@ SAME_APP_EXACT_FIELDS = (
     "source_tree",
     "build_identity_sha256",
     "contract_bundle_sha256",
+    "contract_bundle_corrective_revision",
     "dependency",
     "db_schema_supported",
     "server_api_contract_versions",
@@ -93,7 +95,13 @@ PATH_RESOURCE_FIELDS = {
 }
 
 INSPECTION_REWORK_APPS = {"inspection_worker", "rework_worker"}
-INSPECTION_REWORK_SHARED_RESOURCES = {"data_root", "log_root", "state_db"}
+# Only the exact ledger file is shareable.  Directory roots remain independently
+# owned so a co-install declaration can never waive a broad-root collision.
+INSPECTION_REWORK_SHARED_RESOURCES = {"state_db"}
+ALLOWED_SHARED_RESOURCE_FIELDS = INSPECTION_REWORK_SHARED_RESOURCES
+INSPECTION_PROVIDER_DEPENDENCY_SHA256 = (
+    "755c6644c97aaee85fc286bf888bef5ee47397fd0988e964b42785f5a0aacf75"
+)
 REASON_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]+$")
 
 
@@ -180,7 +188,7 @@ def _validate_coinstall_rows(value: Any) -> bool:
             return False
         if (
             not isinstance(shared, list)
-            or any(field not in RESOURCE_FIELDS for field in shared)
+            or any(field not in ALLOWED_SHARED_RESOURCE_FIELDS for field in shared)
             or len(shared) != len(set(shared))
             or shared != sorted(shared)
         ):
@@ -221,6 +229,15 @@ def _declaration_issues(
                 "matrix_schema_version",
                 app_id,
                 "unsupported build compatibility schema",
+            )
+        )
+    if declaration.get("contract_bundle_corrective_revision") != 1:
+        issues.append(
+            _issue(
+                "COMPATIBILITY_DECLARATION_INVALID",
+                "contract_bundle_corrective_revision",
+                app_id,
+                "build compatibility corrective revision must be 1",
             )
         )
     for field in (
@@ -390,7 +407,7 @@ def _inspection_dependency_matches(
         and isinstance(dependency, Mapping)
         and dependency.get("kind") == "vendored_inspection_worker"
         and dependency.get("commit") == inspection.get("source_commit")
-        and _is_hex(dependency.get("sha256"), 64)
+        and dependency.get("sha256") == INSPECTION_PROVIDER_DEPENDENCY_SHA256
     )
 
 

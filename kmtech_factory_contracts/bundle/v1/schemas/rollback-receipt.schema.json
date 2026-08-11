@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.kmtech.local/factory/v1/rollback-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_run_id", "workflow_mode", "idempotency_key", "request_digest", "transaction_id", "target_pc", "owner_app_id", "ordered_apps", "rollback_mode", "group_id", "snapshot_path", "snapshot_sha256", "restored_inventory", "db_transition_receipt", "task_evidence", "parity", "poststate_digest", "classification", "status", "completed_at_utc", "error_code"],
+  "oneOf": [
+    {"required": ["qualification_run_id"], "not": {"required": ["canary_run_id"]}},
+    {"required": ["canary_run_id"], "not": {"required": ["qualification_run_id"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256}
+  },
+  "properties": {
+    "schema_version": {"const": "kmtech-factory-rollback-receipt-v1.0.3-corrective-1"},
+    "release_run_id": {"$ref": "#/$defs/id"},
+    "qualification_run_id": {"$ref": "#/$defs/id"},
+    "canary_run_id": {"$ref": "#/$defs/id"},
+    "workflow_mode": {"enum": ["independent", "integrated"]},
+    "idempotency_key": {"$ref": "#/$defs/id"},
+    "request_digest": {"$ref": "#/$defs/sha256"},
+    "transaction_id": {"$ref": "#/$defs/id"},
+    "target_pc": {"$ref": "#/$defs/id"},
+    "owner_app_id": {"const": "inspection_worker"},
+    "ordered_apps": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": {"enum": ["Inspection_worker", "Rework_worker", "Defect_Inspection", "Container_Audit", "Label_Match"]}},
+    "rollback_mode": {"enum": ["owner-controlled", "group-deferred"]},
+    "group_id": {"type": ["string", "null"], "minLength": 1},
+    "snapshot_path": {"type": "string", "minLength": 1},
+    "snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "restored_inventory": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["resource_id", "owner_app_id", "path", "expected_digest", "actual_digest", "parity"],
+        "properties": {
+          "resource_id": {"$ref": "#/$defs/id"},
+          "owner_app_id": {"$ref": "#/$defs/id"},
+          "path": {"$ref": "#/$defs/id"},
+          "expected_digest": {"$ref": "#/$defs/sha256"},
+          "actual_digest": {"$ref": "#/$defs/sha256"},
+          "parity": {"type": "boolean"}
+        }
+      }
+    },
+    "db_transition_receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["owner_app_id", "migrator_app_id", "restorer_app_id", "receipt_path", "receipt_sha256", "status"],
+      "properties": {
+        "owner_app_id": {"const": "inspection_worker"},
+        "migrator_app_id": {"const": "inspection_worker"},
+        "restorer_app_id": {"const": "inspection_worker"},
+        "receipt_path": {"type": "string", "minLength": 1},
+        "receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["PROVEN", "FAILED"]}
+      }
+    },
+    "task_evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["interactive_session", "service_principal", "observation_digest"],
+      "properties": {
+        "interactive_session": {"const": "Session1"},
+        "service_principal": {"const": "SYSTEM"},
+        "observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "parity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["expected_digest", "actual_digest", "match"],
+      "properties": {
+        "expected_digest": {"$ref": "#/$defs/sha256"},
+        "actual_digest": {"$ref": "#/$defs/sha256"},
+        "match": {"type": "boolean"}
+      }
+    },
+    "poststate_digest": {"$ref": "#/$defs/sha256"},
+    "classification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["automatic", "outcome", "reason_code", "observation_digest"],
+      "properties": {
+        "automatic": {"const": true},
+        "outcome": {"enum": ["PROVEN", "FAILED", "UNPROVEN"]},
+        "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+        "observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "status": {"enum": ["PASS", "FAILED"]},
+    "completed_at_utc": {"type": "string", "format": "date-time"},
+    "error_code": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]+$"}
+  }
+}
