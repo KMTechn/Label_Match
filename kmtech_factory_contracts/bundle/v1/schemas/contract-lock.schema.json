@@ -4,9 +4,23 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["lock_schema_version", "app_id", "contract_bundle_version", "contract_bundle_corrective_revision", "contract_bundle_sha256", "required_capabilities", "server_api_contract_version", "event_contract_version", "manifest_contract_version", "dependency", "db_schema_supported", "minimum_verifier_version", "minimum_installer_version"],
+  "$defs": {
+    "none_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"const": "none"}, "commit": {"type": "null"}, "sha256": {"type": "null"}}
+    },
+    "rework_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"const": "vendored_inspection_worker"}, "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    }
+  },
   "properties": {
     "lock_schema_version": {"const": 1},
-    "app_id": {"type": "string", "minLength": 1},
+    "app_id": {"enum": ["container_audit", "defect_inspection", "inspection_worker", "label_match", "rework_worker"]},
     "contract_bundle_version": {"const": "1.0.3"},
     "contract_bundle_corrective_revision": {"const": 1},
     "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
@@ -14,12 +28,7 @@
     "server_api_contract_version": {"const": "logistics-v1"},
     "event_contract_version": {"const": "common-event-envelope-v1"},
     "manifest_contract_version": {"const": "producer-onboarding-manifest-v1"},
-    "dependency": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "commit", "sha256"],
-      "properties": {"kind": {"type": "string", "minLength": 1}, "commit": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
-    },
+    "dependency": {"type": "object"},
     "db_schema_supported": {
       "type": "object",
       "additionalProperties": false,
@@ -28,5 +37,12 @@
     },
     "minimum_verifier_version": {"const": "1.0.3.4"},
     "minimum_installer_version": {"const": "1.0.3.4"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"app_id": {"const": "rework_worker"}}, "required": ["app_id"]},
+      "then": {"properties": {"dependency": {"$ref": "#/$defs/rework_dependency"}}},
+      "else": {"properties": {"dependency": {"$ref": "#/$defs/none_dependency"}}}
+    }
+  ]
 }

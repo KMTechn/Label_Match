@@ -4,9 +4,23 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["build_identity_schema_version", "app_id", "app_version", "source_commit", "source_tree", "dirty", "contract_bundle_version", "contract_bundle_corrective_revision", "contract_bundle_sha256", "db_schema", "server_api_contract_version", "event_contract_version", "manifest_contract_version", "dependency", "builder", "python_version", "pyinstaller_version", "dependency_lock_sha256", "build_compatibility_sha256"],
+  "$defs": {
+    "none_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"const": "none"}, "commit": {"type": "null"}, "sha256": {"type": "null"}}
+    },
+    "rework_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"const": "vendored_inspection_worker"}, "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    }
+  },
   "properties": {
     "build_identity_schema_version": {"const": 1},
-    "app_id": {"type": "string", "minLength": 1},
+    "app_id": {"enum": ["container_audit", "defect_inspection", "inspection_worker", "label_match", "rework_worker"]},
     "app_version": {"type": "string", "minLength": 1},
     "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "source_tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
@@ -23,12 +37,7 @@
     "server_api_contract_version": {"const": "logistics-v1"},
     "event_contract_version": {"const": "common-event-envelope-v1"},
     "manifest_contract_version": {"const": "producer-onboarding-manifest-v1"},
-    "dependency": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "commit", "sha256"],
-      "properties": {"kind": {"type": "string", "minLength": 1}, "commit": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
-    },
+    "dependency": {"type": "object"},
     "builder": {
       "type": "object",
       "additionalProperties": false,
@@ -42,5 +51,12 @@
     "pyinstaller_version": {"type": "string", "minLength": 1},
     "dependency_lock_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "build_compatibility_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"app_id": {"const": "rework_worker"}}, "required": ["app_id"]},
+      "then": {"properties": {"dependency": {"$ref": "#/$defs/rework_dependency"}}},
+      "else": {"properties": {"dependency": {"$ref": "#/$defs/none_dependency"}}}
+    }
+  ]
 }

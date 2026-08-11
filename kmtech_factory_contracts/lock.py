@@ -18,6 +18,15 @@ from .errors import FactoryContractError
 
 
 LOCK_SCHEMA_VERSION = 1
+DESKTOP_APP_IDS = frozenset(
+    {
+        "container_audit",
+        "defect_inspection",
+        "inspection_worker",
+        "label_match",
+        "rework_worker",
+    }
+)
 REQUIRED_FIELDS = {
     "lock_schema_version",
     "app_id",
@@ -33,6 +42,30 @@ REQUIRED_FIELDS = {
     "minimum_verifier_version",
     "minimum_installer_version",
 }
+
+
+def _is_lower_hex(value: Any, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and value == value.lower()
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def dependency_identity_is_valid(app_id: Any, dependency: Any) -> bool:
+    """Return whether a desktop dependency follows its app-specific lock policy."""
+    if app_id not in DESKTOP_APP_IDS or not isinstance(dependency, dict):
+        return False
+    if set(dependency) != {"kind", "commit", "sha256"}:
+        return False
+    if app_id == "rework_worker":
+        return (
+            dependency.get("kind") == "vendored_inspection_worker"
+            and _is_lower_hex(dependency.get("commit"), 40)
+            and _is_lower_hex(dependency.get("sha256"), 64)
+        )
+    return dependency == {"kind": "none", "commit": None, "sha256": None}
 
 
 def load_and_verify_contract_lock(
@@ -71,7 +104,7 @@ def load_and_verify_contract_lock(
     ):
         raise FactoryContractError("CONTRACT_LOCK_INVALID", "required capabilities are invalid")
     dependency = raw.get("dependency")
-    if not isinstance(dependency, dict) or set(dependency) != {"kind", "commit", "sha256"}:
+    if not dependency_identity_is_valid(raw.get("app_id"), dependency):
         raise FactoryContractError("CONTRACT_LOCK_INVALID", "dependency identity is invalid")
     db_range = raw.get("db_schema_supported")
     if (

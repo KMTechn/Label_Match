@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping
 from .bundle import CONTRACT_BUNDLE_CORRECTIVE_REVISION, MINIMUM_INSTALLER_VERSION
 from .canonical import canonical_sha256, file_sha256, load_json_strict, require_posix_relative_path
 from .errors import FactoryContractError
-from .lock import load_and_verify_contract_lock
+from .lock import dependency_identity_is_valid, load_and_verify_contract_lock
 
 
 BUILD_IDENTITY_SCHEMA_VERSION = 1
@@ -86,12 +86,11 @@ def validate_build_identity(
             "source commit and tree must be exact 40-character Git object IDs",
         )
     dependency = normalized.get("dependency")
-    if not isinstance(dependency, dict) or not dependency.get("kind"):
-        raise FactoryContractError("DEPENDENCY_PROVENANCE_MISMATCH", "dependency identity is required")
-    if dependency.get("sha256"):
-        _sha256(dependency.get("sha256"), "dependency.sha256")
-    if dependency.get("commit") and len(str(dependency["commit"])) != 40:
-        raise FactoryContractError("DEPENDENCY_PROVENANCE_MISMATCH", "dependency commit is invalid")
+    if not dependency_identity_is_valid(normalized.get("app_id"), dependency):
+        raise FactoryContractError(
+            "DEPENDENCY_PROVENANCE_MISMATCH",
+            "dependency identity violates the app-specific consumer lock policy",
+        )
     db_schema = normalized.get("db_schema")
     if not isinstance(db_schema, dict) or not {"current", "minimum", "maximum"} <= set(db_schema):
         raise FactoryContractError("PACKAGE_PROVENANCE_MISMATCH", "DB schema range is incomplete")
@@ -339,6 +338,11 @@ def verify_staged_package(
         raise FactoryContractError("EMBEDDED_IDENTITY_MISMATCH", "embedded and outer identity differ")
     if manifest.get("app_id") != identity.get("app_id") or manifest.get("app_version") != identity.get("app_version"):
         raise FactoryContractError("EMBEDDED_IDENTITY_MISMATCH", "outer app identity differs")
+    if manifest.get("dependency") != identity.get("dependency"):
+        raise FactoryContractError(
+            "DEPENDENCY_PROVENANCE_MISMATCH",
+            "outer and embedded dependency identities differ",
+        )
     if manifest.get("contract_bundle_sha256") != identity.get("contract_bundle_sha256"):
         raise FactoryContractError("CONTRACT_HASH_MISMATCH", "outer and embedded contract hashes differ")
     if manifest.get("contract_bundle_corrective_revision") != identity.get(

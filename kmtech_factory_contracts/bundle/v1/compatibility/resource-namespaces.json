@@ -112,8 +112,8 @@
         "consumer_app_id": "rework_worker",
         "provider_app_id": "inspection_worker",
         "kind": "vendored_inspection_worker",
-        "commit": "4c7c165b74962aaa3f5ffc77731194f8b8360caa",
-        "sha256": "755c6644c97aaee85fc286bf888bef5ee47397fd0988e964b42785f5a0aacf75"
+        "binding_source": "consumer_contract_lock",
+        "verification": "exact-provider-release-commit-and-vendor-provenance"
       }
     }
   ]

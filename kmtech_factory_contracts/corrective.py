@@ -41,6 +41,13 @@ APP_ID_TO_NAME = {app_id: app for app, app_id in APP_NAME_TO_ID.items()}
 APP_IDS = frozenset(APP_ID_TO_NAME)
 BROAD_ROOT_FIELDS = ("install_root", "data_root", "log_root")
 LIFECYCLE_ACCESS = frozenset({"initialize", "migrate", "restore"})
+DEPENDENCY_BINDING = {
+    "consumer_app_id": "rework_worker",
+    "provider_app_id": "inspection_worker",
+    "kind": "vendored_inspection_worker",
+    "binding_source": "consumer_contract_lock",
+    "verification": "exact-provider-release-commit-and-vendor-provenance",
+}
 
 DOCUMENT_SCHEMAS = {
     "active-work-evidence": "active-work-evidence.schema.json",
@@ -59,6 +66,15 @@ DOCUMENT_SCHEMAS = {
 
 def _fail(code: str, message: str, **details: Any) -> None:
     raise FactoryContractError(code, message, details=details)
+
+
+def _is_lower_hex(value: Any, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and value == value.lower()
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _normalized_kind(kind: str) -> str:
@@ -288,6 +304,11 @@ def _validate_resource_semantics(resources: Mapping[str, Any]) -> None:
                 "RESOURCE_OWNER_INVALID",
                 "Inspection_worker must own the Inspection/Rework ledger",
             )
+        if shared["dependency_binding"] != DEPENDENCY_BINDING:
+            _fail(
+                "DEPENDENCY_BINDING_INVALID",
+                "shared resource dependency binding must defer exact identity to the Rework consumer lock",
+            )
         declared_shared_paths.add(shared["path"].replace("\\", "/").casefold())
     duplicated_state = _duplicate_values(rows, "state_db")
     undeclared = {
@@ -446,19 +467,26 @@ def _validate_plan_semantics(
             "CONTRACT_HASH_MISMATCH",
             "installer plan bundle identity differs from the loaded canonical bundle",
         )
-    binding = resources["shared_resources"][0]["dependency_binding"]
     rework = next((row for row in artifacts if row["app_id"] == "rework_worker"), None)
-    if rework is not None and rework["dependency"] != {
-        "kind": binding["kind"],
-        "commit": binding["commit"],
-        "sha256": binding["sha256"],
-    }:
-        _fail(
-            "DEPENDENCY_SHA_MISMATCH",
-            "Rework dependency identity differs from the canonical Inspection provider binding",
-            expected_sha256=binding["sha256"],
-            actual_sha256=rework["dependency"].get("sha256"),
-        )
+    inspection = next((row for row in artifacts if row["app_id"] == "inspection_worker"), None)
+    if rework is not None:
+        dependency = rework["dependency"]
+        if (
+            dependency.get("kind") != DEPENDENCY_BINDING["kind"]
+            or not _is_lower_hex(dependency.get("commit"), 40)
+            or not _is_lower_hex(dependency.get("sha256"), 64)
+        ):
+            _fail(
+                "DEPENDENCY_PROVENANCE_INVALID",
+                "Rework must carry an exact provider commit and vendor provenance from its consumer lock",
+            )
+        if inspection is not None and dependency["commit"] != inspection["source_commit"]:
+            _fail(
+                "DEPENDENCY_COMMIT_MISMATCH",
+                "Rework dependency commit differs from the Inspection artifact release commit",
+                expected_commit=inspection["source_commit"],
+                actual_commit=dependency["commit"],
+            )
 
 
 def _validate_phase_and_mutation_semantics(document: Mapping[str, Any]) -> None:

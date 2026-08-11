@@ -92,13 +92,13 @@
           "dependency_binding": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["consumer_app_id", "provider_app_id", "kind", "commit", "sha256"],
+            "required": ["consumer_app_id", "provider_app_id", "kind", "binding_source", "verification"],
             "properties": {
               "consumer_app_id": {"const": "rework_worker"},
               "provider_app_id": {"const": "inspection_worker"},
               "kind": {"const": "vendored_inspection_worker"},
-              "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
-              "sha256": {"$ref": "#/$defs/sha256"}
+              "binding_source": {"const": "consumer_contract_lock"},
+              "verification": {"const": "exact-provider-release-commit-and-vendor-provenance"}
             }
           }
         }

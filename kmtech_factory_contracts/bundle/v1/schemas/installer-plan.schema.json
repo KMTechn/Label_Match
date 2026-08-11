@@ -11,14 +11,24 @@
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
-    "dependency": {
+    "none_dependency": {
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "commit", "sha256"],
       "properties": {
-        "kind": {"type": "string", "minLength": 1},
-        "commit": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"},
-        "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+        "kind": {"const": "none"},
+        "commit": {"type": "null"},
+        "sha256": {"type": "null"}
+      }
+    },
+    "rework_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {
+        "kind": {"const": "vendored_inspection_worker"},
+        "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       }
     }
   },
@@ -53,8 +63,15 @@
           "artifact_path": {"type": "string", "minLength": 1},
           "artifact_sha256": {"$ref": "#/$defs/sha256"},
           "build_identity_sha256": {"$ref": "#/$defs/sha256"},
-          "dependency": {"$ref": "#/$defs/dependency"}
-        }
+          "dependency": {"type": "object"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"app_id": {"const": "rework_worker"}}, "required": ["app_id"]},
+            "then": {"properties": {"dependency": {"$ref": "#/$defs/rework_dependency"}}},
+            "else": {"properties": {"dependency": {"$ref": "#/$defs/none_dependency"}}}
+          }
+        ]
       }
     },
     "compatibility_identity": {

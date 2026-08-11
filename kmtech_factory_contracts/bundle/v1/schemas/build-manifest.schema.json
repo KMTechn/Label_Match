@@ -4,9 +4,23 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["build_manifest_schema_version", "app_id", "app_version", "identity_path", "identity_sha256", "build_compatibility_path", "contract_bundle_corrective_revision", "contract_bundle_sha256", "dependency", "build_compatibility_sha256", "payload_inventory", "payload_inventory_sha256", "expected_files", "built_at_utc"],
+  "$defs": {
+    "none_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"const": "none"}, "commit": {"type": "null"}, "sha256": {"type": "null"}}
+    },
+    "rework_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "commit", "sha256"],
+      "properties": {"kind": {"const": "vendored_inspection_worker"}, "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    }
+  },
   "properties": {
     "build_manifest_schema_version": {"const": 1},
-    "app_id": {"type": "string", "minLength": 1},
+    "app_id": {"enum": ["container_audit", "defect_inspection", "inspection_worker", "label_match", "rework_worker"]},
     "app_version": {"type": "string", "minLength": 1},
     "identity_path": {"type": "string", "pattern": "^[^\\\\/].*$"},
     "identity_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
@@ -27,5 +41,12 @@
     "payload_inventory_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "expected_files": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
     "built_at_utc": {"type": "string", "format": "date-time", "pattern": "Z$"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"app_id": {"const": "rework_worker"}}, "required": ["app_id"]},
+      "then": {"properties": {"dependency": {"$ref": "#/$defs/rework_dependency"}}},
+      "else": {"properties": {"dependency": {"$ref": "#/$defs/none_dependency"}}}
+    }
+  ]
 }

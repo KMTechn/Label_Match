@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 
 from .bundle import MINIMUM_INSTALLER_VERSION
 from .errors import FactoryContractError
+from .lock import dependency_identity_is_valid
 
 
 INSTALLER_CONTRACT_VERSION = "factory-installer-v1"
@@ -99,9 +100,6 @@ INSPECTION_REWORK_APPS = {"inspection_worker", "rework_worker"}
 # owned so a co-install declaration can never waive a broad-root collision.
 INSPECTION_REWORK_SHARED_RESOURCES = {"state_db"}
 ALLOWED_SHARED_RESOURCE_FIELDS = INSPECTION_REWORK_SHARED_RESOURCES
-INSPECTION_PROVIDER_DEPENDENCY_SHA256 = (
-    "755c6644c97aaee85fc286bf888bef5ee47397fd0988e964b42785f5a0aacf75"
-)
 REASON_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]+$")
 
 
@@ -150,23 +148,6 @@ def _normalize_resource(field: str, value: Any) -> str:
     if field == "task_action":
         return text.replace("\\", "/").casefold()
     return text.casefold()
-
-
-def _validate_dependency(value: Any) -> bool:
-    if not isinstance(value, Mapping) or set(value) != {"kind", "commit", "sha256"}:
-        return False
-    kind = value.get("kind")
-    commit = value.get("commit")
-    sha256 = value.get("sha256")
-    if not _is_non_empty_text(kind):
-        return False
-    if commit is not None and not _is_hex(commit, 40):
-        return False
-    if sha256 is not None and not _is_hex(sha256, 64):
-        return False
-    if kind != "none" and (commit is None or sha256 is None):
-        return False
-    return True
 
 
 def _validate_coinstall_rows(value: Any) -> bool:
@@ -280,7 +261,7 @@ def _declaration_issues(
                     f"{field} has no exact lowercase hexadecimal identity",
                 )
             )
-    if not _validate_dependency(declaration.get("dependency")):
+    if not dependency_identity_is_valid(declaration.get("app_id"), declaration.get("dependency")):
         issues.append(
             _issue(
                 "COMPATIBILITY_DECLARATION_INVALID",
@@ -407,7 +388,7 @@ def _inspection_dependency_matches(
         and isinstance(dependency, Mapping)
         and dependency.get("kind") == "vendored_inspection_worker"
         and dependency.get("commit") == inspection.get("source_commit")
-        and dependency.get("sha256") == INSPECTION_PROVIDER_DEPENDENCY_SHA256
+        and _is_hex(dependency.get("sha256"), 64)
     )
 
 

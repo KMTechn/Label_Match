@@ -20,8 +20,8 @@
     },
     {
       "path": "compatibility/resource-namespaces.json",
-      "sha256": "b1d5b5a5acc7aaacb229404dfd3272eb51006a890bc5279a0ec76331b51fb8ec",
-      "size": 5708
+      "sha256": "55b63494d860aa9c0ececfa39bce03b1a65ddb3d9b67f3534f348e8d6783aa79",
+      "size": 5691
     },
     {
       "path": "python/bootstrap-central-ng-hold.json",
@@ -35,18 +35,18 @@
     },
     {
       "path": "schemas/build-compatibility.schema.json",
-      "sha256": "06d80be3ad6018dca32451e7c5b61ca63145a6ab8677b14c40fb580a9a3a969d",
-      "size": 2972
+      "sha256": "26845cc0dc7f14a429d99ee439eed106cdea9cd60f710e3659d561295764bcb9",
+      "size": 3923
     },
     {
       "path": "schemas/build-identity.schema.json",
-      "sha256": "d5440b418f205500b61b9181700ef4d616afa8de6bd0f3054892b778b8f5c521",
-      "size": 2548
+      "sha256": "db154259303b8eb4a7aa4c8cfa49ca676cef12c0511a5bc9ee6755a412fdaa0e",
+      "size": 3198
     },
     {
       "path": "schemas/build-manifest.schema.json",
-      "sha256": "7b4aba28a2761804c674f43d5430545d688a6cc342e031ee304f9e83c3a6478c",
-      "size": 1812
+      "sha256": "2604fe8e77bf71cd359e762390af0c4f64bc79c6e321938c61adf2730614616e",
+      "size": 2763
     },
     {
       "path": "schemas/canonical-stream-catalog.schema.json",
@@ -60,8 +60,8 @@
     },
     {
       "path": "schemas/contract-lock.schema.json",
-      "sha256": "6d20844be63154d15ca3d27d6b8411c029c751ad8b5d54f961734c80f0db507e",
-      "size": 1862
+      "sha256": "16ec4cb7cbd31165c60917fc1013333f57d965fbb834fea732abb1c547c3ef24",
+      "size": 2512
     },
     {
       "path": "schemas/db-transition.schema.json",
@@ -105,8 +105,8 @@
     },
     {
       "path": "schemas/installer-plan.schema.json",
-      "sha256": "c68909a6ca47a8b0815ee0db69048b8c8b3fad10b7cb505be7d81a33f0893725",
-      "size": 3997
+      "sha256": "130c98193f03c622f7610f56d8910cb9f55c3e7972111f273b91cbd8fcfe8679",
+      "size": 4585
     },
     {
       "path": "schemas/preflight-report.schema.json",
@@ -125,8 +125,8 @@
     },
     {
       "path": "schemas/resource-namespaces.schema.json",
-      "sha256": "f1b11533c54a04fc4f11c32f540298cf9e54d0046985a56ce9a86b4147d3248b",
-      "size": 4731
+      "sha256": "d1300cd2b759ef12207e8c5059b675b8f4e69a14ea998851021f8e1f0a756250",
+      "size": 4785
     },
     {
       "path": "schemas/rollback-receipt.schema.json",
