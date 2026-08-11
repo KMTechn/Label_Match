@@ -802,9 +802,17 @@ def test_one_step_installer_uses_bundled_tools_ip_allowlist_and_programdata_path
     assert "Test-Path -LiteralPath $tokenFile" not in script
     assert "Get-MachineStableSuffix" in script
     assert "label-match-{0}-{1}" in script
-    assert "C:\\ProgramData\\KMTech\\DirectSync\\$sourceHostId" in script
-    assert "direct-sync-relay-$sourceHostId" in script
-    assert "C:\\ProgramData\\KMTech\\DirectSync\\label_match" not in script
+    assert '"--source-host-id", $sourceHostId' in script
+    assert "C:\\ProgramData\\KMTech\\DirectSync\\$sourceHostId" not in script
+    assert "direct-sync-relay-$sourceHostId" not in script
+    assert "C:\\ProgramData\\KMTech\\DirectSync\\label_match" in script
+    assert "direct-sync-relay-label-match" in script
+    assert "C:\\KMTech\\Apps\\Label_Match\\current" in script
+    assert "bin\\run_direct-sync-relay-label-match.vbs" in script
+    assert "queue\\direct_sync_relay.sqlite3" in script
+    assert "field_layout_contract" in script
+    assert "AllowNoncanonicalLayoutForTest" in script
+    assert "KMTECH_FACTORY_INSTALL_TEST_MODE" in script
     assert "C:\\ProgramData\\KMTech\\Label_Match\\data" in script
     assert "custom_save_path" in script
     assert "--self-enroll" in script

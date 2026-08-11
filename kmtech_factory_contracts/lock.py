@@ -5,7 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .bundle import CONTRACT_BUNDLE_SHA256, CONTRACT_BUNDLE_VERSION, verify_bundled_contracts
+from .bundle import (
+    CONTRACT_BUNDLE_SHA256,
+    CONTRACT_BUNDLE_VERSION,
+    MINIMUM_INSTALLER_VERSION,
+    MINIMUM_VERIFIER_VERSION,
+    verify_bundled_contracts,
+)
 from .canonical import load_json_strict
 from .errors import FactoryContractError
 
@@ -47,6 +53,10 @@ def load_and_verify_contract_lock(
         raise FactoryContractError("CONTRACT_VERSION_MISMATCH", "consumer contract version differs")
     if raw.get("contract_bundle_sha256") != CONTRACT_BUNDLE_SHA256:
         raise FactoryContractError("CONTRACT_HASH_MISMATCH", "consumer contract hash differs")
+    if raw.get("minimum_verifier_version") != MINIMUM_VERIFIER_VERSION:
+        raise FactoryContractError("CONTRACT_LOCK_INVALID", "minimum verifier version differs")
+    if raw.get("minimum_installer_version") != MINIMUM_INSTALLER_VERSION:
+        raise FactoryContractError("CONTRACT_LOCK_INVALID", "minimum installer version differs")
     capabilities = raw.get("required_capabilities")
     if not isinstance(capabilities, dict) or not capabilities or any(
         not isinstance(key, str) or not key or not isinstance(value, str) or not value

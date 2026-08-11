@@ -8,6 +8,8 @@ database, contact a server, or mutate installer state during import.
 from .bundle import (
     CONTRACT_BUNDLE_VERSION,
     CONTRACT_BUNDLE_SHA256,
+    MINIMUM_INSTALLER_VERSION,
+    MINIMUM_VERIFIER_VERSION,
     bundle_root,
     load_contract_document,
     verify_bundled_contracts,
@@ -19,6 +21,8 @@ __all__ = [
     "CONTRACT_BUNDLE_SHA256",
     "CONTRACT_BUNDLE_VERSION",
     "FactoryContractError",
+    "MINIMUM_INSTALLER_VERSION",
+    "MINIMUM_VERIFIER_VERSION",
     "bundle_root",
     "load_contract_document",
     "load_and_verify_contract_lock",

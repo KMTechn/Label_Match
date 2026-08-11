@@ -12,7 +12,9 @@ def bundle_root() -> Path:
     return Path(__file__).resolve().parent / "bundle" / "v1"
 
 
-CONTRACT_BUNDLE_VERSION = "1.0.2"
+CONTRACT_BUNDLE_VERSION = "1.0.3"
+MINIMUM_VERIFIER_VERSION = "1.0.3"
+MINIMUM_INSTALLER_VERSION = "1.0.3"
 CONTRACT_BUNDLE_SHA256 = (bundle_root() / "bundle.sha256").read_text(
     encoding="ascii"
 ).strip()

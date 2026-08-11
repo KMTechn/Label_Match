@@ -18,6 +18,17 @@ class StagedInstallerVerificationError(RuntimeError):
     """Raised when the staged package cannot prove its installer wiring."""
 
 
+CANONICAL_INSTALL_ROOT = r"C:\KMTech\Apps\Label_Match\current"
+CANONICAL_DIRECT_SYNC_ROOT = r"C:\ProgramData\KMTech\DirectSync\label_match"
+CANONICAL_TASK_NAME = "direct-sync-relay-label-match"
+CANONICAL_TASK_LAUNCHER_PATH = (
+    r"C:\ProgramData\KMTech\DirectSync\label_match\bin\run_direct-sync-relay-label-match.vbs"
+)
+CANONICAL_STATE_DB_PATH = (
+    r"C:\ProgramData\KMTech\DirectSync\label_match\queue\direct_sync_relay.sqlite3"
+)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -122,6 +133,28 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
             raise StagedInstallerVerificationError("packaged installer report is invalid JSON") from exc
         if install_report.get("status") != "DRY_RUN":
             raise StagedInstallerVerificationError("packaged installer report status is not DRY_RUN")
+        field_layout = install_report.get("field_layout_contract")
+        if not isinstance(field_layout, dict):
+            raise StagedInstallerVerificationError("installer field-layout evidence is missing")
+        expected_layout = {
+            "expected_install_root": CANONICAL_INSTALL_ROOT,
+            "expected_direct_sync_root": CANONICAL_DIRECT_SYNC_ROOT,
+            "expected_task_launcher_path": CANONICAL_TASK_LAUNCHER_PATH,
+            "expected_state_db_path": CANONICAL_STATE_DB_PATH,
+        }
+        for field_name, expected_path in expected_layout.items():
+            if not _same_path(str(field_layout.get(field_name) or ""), expected_path):
+                raise StagedInstallerVerificationError(
+                    f"installer field-layout {field_name} is not canonical"
+                )
+        if field_layout.get("expected_task_name") != CANONICAL_TASK_NAME:
+            raise StagedInstallerVerificationError("installer field-layout task name is not canonical")
+        if field_layout.get("install_root_matches") is not False:
+            raise StagedInstallerVerificationError("staged dry-run unexpectedly matched the install root")
+        if field_layout.get("production_layout_matches") is not False:
+            raise StagedInstallerVerificationError("staged dry-run claimed a production field layout")
+        if field_layout.get("local_test_override_enabled") is not False:
+            raise StagedInstallerVerificationError("staged dry-run enabled a local layout override")
 
         expected_settings = (
             staged_copy / "_internal/config/app_settings.json"
@@ -185,6 +218,8 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
             "schema_version": "label-match-staged-installer-verification-v1",
             "status": "PASS",
             "installer_status": "DRY_RUN",
+            "field_layout_contract_verified": True,
+            "staged_dry_run_is_plan_only": True,
             "system_python_required": False,
             "installer": {
                 "path": "install_label_match_direct_sync.ps1",

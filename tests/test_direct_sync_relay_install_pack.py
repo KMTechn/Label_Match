@@ -10,6 +10,11 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _factory_install_test_mode(monkeypatch):
+    monkeypatch.setenv("KMTECH_FACTORY_INSTALL_TEST_MODE", "1")
+
+
 def load_install_pack_module():
     module_path = Path(__file__).resolve().parents[1] / "tools" / "direct_sync_relay_install_pack.py"
     spec = importlib.util.spec_from_file_location("direct_sync_relay_install_pack_for_tests", module_path)
@@ -86,6 +91,35 @@ def make_raw_secret_credential(tmp_path, *, secret="install-pack-secret"):
     return credential_path
 
 
+def test_canonical_field_layout_contract_matches_release_resources():
+    module = load_install_pack_module()
+    contract = module._field_layout_contract(
+        argparse.Namespace(
+            app_root=module.CANONICAL_INSTALL_ROOT,
+            program_data_root=module.DEFAULT_PROGRAM_DATA_ROOT,
+            task_name=module.DEFAULT_TASK_NAME,
+            allow_noncanonical_layout_for_test=False,
+        )
+    )
+
+    assert contract["status"] == "PASS"
+    assert contract["production_layout_matches"] is True
+    assert contract["production_apply_allowed"] is True
+    assert contract["actual_task_launcher_path"].endswith(
+        r"bin\run_direct-sync-relay-label-match.vbs"
+    )
+    assert contract["actual_state_db_path"].endswith(
+        r"queue\direct_sync_relay.sqlite3"
+    )
+
+
+def test_frozen_install_pack_defaults_to_canonical_install_root(monkeypatch):
+    module = load_install_pack_module()
+    monkeypatch.setattr(module.sys, "frozen", True, raising=False)
+
+    assert module._default_app_root() == r"C:\KMTech\Apps\Label_Match\current"
+
+
 def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack.json"
@@ -119,6 +153,21 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     report_text = report_path.read_text(encoding="utf-8-sig")
     assert report["status"] == "DRY_RUN"
+    assert report["field_layout_contract"]["expected_install_root"] == (
+        r"C:\KMTech\Apps\Label_Match\current"
+    )
+    assert report["field_layout_contract"]["expected_direct_sync_root"] == (
+        r"C:\ProgramData\KMTech\DirectSync\label_match"
+    )
+    assert report["field_layout_contract"]["expected_task_name"] == (
+        "direct-sync-relay-label-match"
+    )
+    assert report["field_layout_contract"]["expected_task_launcher_path"].endswith(
+        r"bin\run_direct-sync-relay-label-match.vbs"
+    )
+    assert report["field_layout_contract"]["expected_state_db_path"].endswith(
+        r"queue\direct_sync_relay.sqlite3"
+    )
     assert report["install_preflight"]["status"] == "PASS"
     assert report["task_name"] == "direct-sync-relay-label-match"
     assert "direct_sync_relay_runner.py" in " ".join(report["runner_command"])
@@ -375,6 +424,90 @@ def test_install_pack_apply_blocks_direct_enrollment_token_before_registration(t
     assert registration_calls == []
 
 
+def test_install_pack_apply_blocks_noncanonical_field_layout_before_registration(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    registration_calls = []
+    command_calls = []
+    monkeypatch.setattr(
+        module,
+        "_run_self_enrollment_registration",
+        lambda args: registration_calls.append(args),
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: command_calls.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+    report_path = tmp_path / "noncanonical-layout-blocked.json"
+
+    result = module.main(
+        [
+            "--self-enroll",
+            "--app-root",
+            str(tmp_path / "staging" / "Label_Match"),
+            "--program-data-root",
+            str(tmp_path / "ProgramData" / "DirectSync" / "label_match"),
+            "--report-path",
+            str(report_path),
+            "--apply",
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert result == 2
+    assert registration_calls == []
+    assert command_calls == []
+    assert report["status"] == "BLOCKED"
+    assert report["field_layout_contract"]["install_root_matches"] is False
+    assert report["field_layout_contract"]["direct_sync_root_matches"] is False
+    assert report["field_layout_contract"]["production_layout_matches"] is False
+    assert report["field_layout_contract"]["local_test_override_enabled"] is False
+    assert "canonical Label_Match field layout" in report["blocked_reason"]
+
+
+def test_noncanonical_layout_flag_requires_dedicated_test_marker(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    registration_calls = []
+    command_calls = []
+    monkeypatch.delenv("KMTECH_FACTORY_INSTALL_TEST_MODE", raising=False)
+    monkeypatch.setattr(
+        module,
+        "_run_self_enrollment_registration",
+        lambda args: registration_calls.append(args),
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: command_calls.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+    )
+    report_path = tmp_path / "noncanonical-layout-flag-alone.json"
+
+    result = module.main(
+        [
+            "--self-enroll",
+            "--app-root",
+            str(tmp_path / "staging" / "Label_Match"),
+            "--program-data-root",
+            str(tmp_path / "ProgramData" / "DirectSync" / "label_match"),
+            "--report-path",
+            str(report_path),
+            "--apply",
+            "--allow-noncanonical-layout-for-test",
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert result == 2
+    assert registration_calls == []
+    assert command_calls == []
+    assert report["field_layout_contract"]["local_test_override_requested"] is True
+    assert report["field_layout_contract"]["local_test_override_enabled"] is False
+    assert report["field_layout_contract"]["production_apply_allowed"] is False
+    assert report["blocked_reason"] == (
+        "noncanonical layout override requires KMTECH_FACTORY_INSTALL_TEST_MODE=1"
+    )
+
+
 def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monkeypatch):
     module = load_install_pack_module()
     assert module.DEFAULT_ENROLLMENT_TOKEN_ENV == "PRODUCER_SELF_ENROLL_TOKEN"
@@ -462,6 +595,7 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
             str(report_path),
             "--apply",
             "--confirm-production-install",
+            "--allow-noncanonical-layout-for-test",
             "--allow-interactive-task-for-local-test",
         ]
     )
@@ -469,6 +603,8 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
     assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "PASS"
+    assert report["field_layout_contract"]["local_test_override_enabled"] is True
+    assert report["field_layout_contract"]["production_apply_allowed"] is False
     assert report["directory_create_result"]["status"] == "PASS"
     assert scan_source_dir.is_dir()
     assert (program_data_root / "queue").is_dir()
@@ -563,6 +699,7 @@ def test_install_pack_apply_supports_stored_password_task_without_leaking_passwo
             "TASK_PASSWORD_FOR_TEST",
             "--apply",
             "--confirm-production-install",
+            "--allow-noncanonical-layout-for-test",
         ]
     )
 
@@ -701,6 +838,7 @@ def test_install_pack_apply_supports_password_file_without_leaking_password(tmp_
             str(password_file),
             "--apply",
             "--confirm-production-install",
+            "--allow-noncanonical-layout-for-test",
         ]
     )
 
@@ -778,6 +916,7 @@ def test_install_pack_apply_defaults_to_system_task_without_password(tmp_path, m
             str(report_path),
             "--apply",
             "--confirm-production-install",
+            "--allow-noncanonical-layout-for-test",
         ]
     )
 
@@ -952,6 +1091,7 @@ def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_pa
             str(report_path),
             "--apply",
             "--confirm-production-install",
+            "--allow-noncanonical-layout-for-test",
             "--allow-interactive-task-for-local-test",
         ]
     )
@@ -1171,6 +1311,7 @@ def test_install_pack_apply_with_missing_manifest_does_not_run_schtasks(tmp_path
             str(report_path),
             "--apply",
             "--confirm-production-install",
+            "--allow-noncanonical-layout-for-test",
             "--allow-interactive-task-for-local-test",
         ]
     )
@@ -1271,6 +1412,7 @@ def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypa
             "--report-path",
             str(report_path),
             "--apply",
+            "--allow-noncanonical-layout-for-test",
             "--allow-interactive-task-for-local-test",
         ]
     )

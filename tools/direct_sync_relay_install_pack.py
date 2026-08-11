@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 DEFAULT_TASK_NAME = "direct-sync-relay-label-match"
 DEFAULT_PROGRAM_DATA_ROOT = r"C:\ProgramData\KMTech\DirectSync\label_match"
+CANONICAL_INSTALL_ROOT = r"C:\KMTech\Apps\Label_Match\current"
+NONCANONICAL_LAYOUT_TEST_MODE_ENV = "KMTECH_FACTORY_INSTALL_TEST_MODE"
 DEFAULT_LABEL_MATCH_DATA_ROOT = r"C:\ProgramData\KMTech\Label_Match\data"
 DEFAULT_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
@@ -33,6 +35,12 @@ LOCAL_TEST_TASK_ENV_NAMES = (
     "REQUESTS_CA_BUNDLE",
     "SSL_CERT_FILE",
 )
+
+
+def _default_app_root() -> str:
+    if getattr(sys, "frozen", False):
+        return CANONICAL_INSTALL_ROOT
+    return str(Path(__file__).resolve().parents[1])
 
 
 def _quote_cmd(parts: Sequence[str]) -> str:
@@ -324,6 +332,58 @@ def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
         "runtime_status_path": str(root / "status" / "direct_sync_relay_status.json"),
         "log_path": str(root / "logs" / "direct_sync_relay.jsonl"),
         "operator_pause_path": str(root / "control" / "pause.json"),
+    }
+
+
+def _same_path(left: str | os.PathLike[str], right: str | os.PathLike[str]) -> bool:
+    return os.path.normcase(str(Path(left).expanduser().resolve())) == os.path.normcase(
+        str(Path(right).expanduser().resolve())
+    )
+
+
+def _field_layout_contract(args: argparse.Namespace) -> dict:
+    expected_install_root = Path(CANONICAL_INSTALL_ROOT)
+    actual_install_root = Path(args.app_root).expanduser().resolve()
+    expected_direct_sync_root = Path(DEFAULT_PROGRAM_DATA_ROOT)
+    actual_direct_sync_root = Path(args.program_data_root).expanduser().resolve()
+    expected_task_launcher_path = (
+        expected_direct_sync_root / "bin" / "run_direct-sync-relay-label-match.vbs"
+    )
+    actual_task_launcher_path = _task_launcher_path(actual_direct_sync_root, args.task_name)
+    expected_state_db_path = expected_direct_sync_root / "queue" / "direct_sync_relay.sqlite3"
+    actual_state_db_path = Path(_runtime_paths(actual_direct_sync_root)["db_path"])
+    matches = {
+        "install_root_matches": _same_path(actual_install_root, expected_install_root),
+        "direct_sync_root_matches": _same_path(actual_direct_sync_root, expected_direct_sync_root),
+        "task_name_matches": str(args.task_name) == DEFAULT_TASK_NAME,
+        "task_launcher_path_matches": _same_path(actual_task_launcher_path, expected_task_launcher_path),
+        "state_db_path_matches": _same_path(actual_state_db_path, expected_state_db_path),
+    }
+    production_layout_matches = all(matches.values())
+    local_test_override_requested = bool(
+        getattr(args, "allow_noncanonical_layout_for_test", False)
+    )
+    local_test_override_enabled = (
+        local_test_override_requested
+        and str(os.getenv(NONCANONICAL_LAYOUT_TEST_MODE_ENV) or "").strip() == "1"
+    )
+    return {
+        "status": "PASS" if production_layout_matches else "MISMATCH",
+        "expected_install_root": str(expected_install_root),
+        "actual_install_root": str(actual_install_root),
+        "expected_direct_sync_root": str(expected_direct_sync_root),
+        "actual_direct_sync_root": str(actual_direct_sync_root),
+        "expected_task_name": DEFAULT_TASK_NAME,
+        "actual_task_name": str(args.task_name),
+        "expected_task_launcher_path": str(expected_task_launcher_path),
+        "actual_task_launcher_path": str(actual_task_launcher_path),
+        "expected_state_db_path": str(expected_state_db_path),
+        "actual_state_db_path": str(actual_state_db_path),
+        **matches,
+        "production_layout_matches": production_layout_matches,
+        "local_test_override_requested": local_test_override_requested,
+        "local_test_override_enabled": local_test_override_enabled,
+        "production_apply_allowed": production_layout_matches,
     }
 
 
@@ -839,6 +899,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     credential_path = Path(getattr(args, "credential_path", "") or _default_credential_path(args.program_data_root)).resolve()
     app_settings_path = str(getattr(args, "app_settings_path", "") or "").strip()
     paths = _runtime_paths(args.program_data_root)
+    field_layout_contract = _field_layout_contract(args)
     runtime_path_boundary = _runtime_path_boundary_report(args.program_data_root, paths)
     source_scan = _source_scan_config(args)
     backpressure = _backpressure_config(args)
@@ -910,6 +971,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "apply": bool(args.apply),
         "uninstall": bool(args.uninstall),
         "task_name": args.task_name,
+        "field_layout_contract": field_layout_contract,
         "program_data_root": str(Path(args.program_data_root).expanduser().resolve()),
         "app_settings_path": str(
             Path(app_settings_path).expanduser().resolve()
@@ -999,6 +1061,11 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             "requires_confirm_production_install": False,
             "confirm_production_install": bool(args.confirm_production_install),
             "confirm_production_install_accepted_legacy_flag": True,
+            "requires_canonical_field_layout": True,
+            "canonical_field_layout": field_layout_contract["production_layout_matches"],
+            "allow_noncanonical_layout_for_test": field_layout_contract[
+                "local_test_override_enabled"
+            ],
         },
     }
 
@@ -1124,7 +1191,7 @@ def _run_self_enrollment_registration(args: argparse.Namespace) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Label_Match direct-sync relay scheduled-task install pack")
-    parser.add_argument("--app-root", default=str(Path(__file__).resolve().parents[1]))
+    parser.add_argument("--app-root", default=_default_app_root())
     parser.add_argument("--app-settings-path", default="")
     parser.add_argument("--python-exe", default=sys.executable)
     parser.add_argument("--runner-exe", default="")
@@ -1167,6 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task-run-password-env", default="")
     parser.add_argument("--task-run-password-file", default="")
     parser.add_argument("--allow-interactive-task-for-local-test", action="store_true")
+    parser.add_argument("--allow-noncanonical-layout-for-test", action="store_true")
     args = parser.parse_args(argv)
 
     if not args.self_enroll and (not args.producer_manifest_path or not args.credential_path) and not args.uninstall:
@@ -1195,6 +1263,22 @@ def main(argv: list[str] | None = None) -> int:
     if task_principal_plan["task_principal"]["status"] not in {"PASS", "SKIPPED"}:
         task_principal_plan["status"] = "BLOCKED"
         task_principal_plan["blocked_reason"] = task_principal_plan["task_principal"]["blocked_reason"]
+        _write_json(Path(args.report_path), task_principal_plan)
+        print(f"install_pack_report={Path(args.report_path).resolve()}")
+        return 2
+
+    if (
+        args.apply
+        and not args.uninstall
+        and not task_principal_plan["field_layout_contract"]["production_layout_matches"]
+        and not task_principal_plan["field_layout_contract"]["local_test_override_enabled"]
+    ):
+        task_principal_plan["status"] = "BLOCKED"
+        task_principal_plan["blocked_reason"] = (
+            f"noncanonical layout override requires {NONCANONICAL_LAYOUT_TEST_MODE_ENV}=1"
+            if args.allow_noncanonical_layout_for_test
+            else "production apply requires the canonical Label_Match field layout"
+        )
         _write_json(Path(args.report_path), task_principal_plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2

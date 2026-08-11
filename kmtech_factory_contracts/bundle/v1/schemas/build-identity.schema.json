@@ -11,7 +11,7 @@
     "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "source_tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "dirty": {"const": false},
-    "contract_bundle_version": {"type": "string", "minLength": 1},
+    "contract_bundle_version": {"const": "1.0.3"},
     "contract_bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "db_schema": {
       "type": "object",
@@ -28,7 +28,15 @@
       "required": ["kind", "commit", "sha256"],
       "properties": {"kind": {"type": "string", "minLength": 1}, "commit": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40}$"}, "sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
     },
-    "builder": {"type": "object"},
+    "builder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "kmtech_factory_contracts.build_cli"},
+        "version": {"const": "1.0.3"}
+      }
+    },
     "python_version": {"type": "string", "minLength": 1},
     "pyinstaller_version": {"type": "string", "minLength": 1},
     "dependency_lock_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

@@ -2,6 +2,7 @@
 
 param(
     [switch]$DryRun,
+    [switch]$AllowNoncanonicalLayoutForTest,
     [string]$ServerBaseUrl = "https://worker.kmtecherp.com",
     [string]$ProgramDataRoot = "",
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
@@ -58,10 +59,10 @@ function Get-MachineStableSuffix() {
 $safePcId = Get-SafeToken $env:COMPUTERNAME "worker-pc"
 $sourceHostId = ("label-match-{0}-{1}" -f $safePcId, (Get-MachineStableSuffix)).ToLowerInvariant()
 if ([string]::IsNullOrWhiteSpace($ProgramDataRoot)) {
-    $ProgramDataRoot = "C:\ProgramData\KMTech\DirectSync\$sourceHostId"
+    $ProgramDataRoot = "C:\ProgramData\KMTech\DirectSync\label_match"
 }
 if ([string]::IsNullOrWhiteSpace($TaskName)) {
-    $TaskName = "direct-sync-relay-$sourceHostId"
+    $TaskName = "direct-sync-relay-label-match"
 }
 function Write-Utf8JsonFile([string]$Path, $Payload) {
     $parent = Split-Path -Parent $Path
@@ -105,6 +106,12 @@ function Remove-NewMachineProfilesFromRegistrationReport(
             }
         }
     }
+}
+
+function Test-SamePath([string]$Left, [string]$Right) {
+    $leftFull = [System.IO.Path]::GetFullPath($Left).TrimEnd('\')
+    $rightFull = [System.IO.Path]::GetFullPath($Right).TrimEnd('\')
+    return $leftFull.Equals($rightFull, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Set-LabelMatchSavePath([string]$AppRoot, [string]$TargetSaveDir) {
@@ -187,6 +194,74 @@ if (-not $runnerExeAvailable -or -not $registrationExeAvailable) {
 $reportDir = Join-Path $ProgramDataRoot "status"
 $reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"
 $registrationReportPath = Join-Path $reportDir "label_match_worker_pc_registration.json"
+$expectedInstallRoot = "C:\KMTech\Apps\Label_Match\current"
+$expectedDirectSyncRoot = "C:\ProgramData\KMTech\DirectSync\label_match"
+$expectedTaskName = "direct-sync-relay-label-match"
+$expectedTaskLauncherPath = Join-Path $expectedDirectSyncRoot "bin\run_direct-sync-relay-label-match.vbs"
+$expectedStateDbPath = Join-Path $expectedDirectSyncRoot "queue\direct_sync_relay.sqlite3"
+$actualInstallRoot = [System.IO.Path]::GetFullPath($appRoot)
+$actualDirectSyncRoot = [System.IO.Path]::GetFullPath($ProgramDataRoot)
+$actualTaskLauncherPath = Join-Path $actualDirectSyncRoot ("bin\run_{0}.vbs" -f $TaskName)
+$actualStateDbPath = Join-Path $actualDirectSyncRoot "queue\direct_sync_relay.sqlite3"
+$installRootMatches = Test-SamePath $actualInstallRoot $expectedInstallRoot
+$directSyncRootMatches = Test-SamePath $actualDirectSyncRoot $expectedDirectSyncRoot
+$taskNameMatches = $TaskName -ceq $expectedTaskName
+$taskLauncherPathMatches = Test-SamePath $actualTaskLauncherPath $expectedTaskLauncherPath
+$stateDbPathMatches = Test-SamePath $actualStateDbPath $expectedStateDbPath
+$localTestOverrideEnabled = (
+    $AllowNoncanonicalLayoutForTest.IsPresent -and
+    [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq "1"
+)
+$productionLayoutMatches = (
+    $installRootMatches -and
+    $directSyncRootMatches -and
+    $taskNameMatches -and
+    $taskLauncherPathMatches -and
+    $stateDbPathMatches
+)
+$fieldLayoutContract = [ordered]@{
+    status = if ($productionLayoutMatches) { "PASS" } else { "MISMATCH" }
+    expected_install_root = $expectedInstallRoot
+    actual_install_root = $actualInstallRoot
+    expected_direct_sync_root = $expectedDirectSyncRoot
+    actual_direct_sync_root = $actualDirectSyncRoot
+    expected_task_name = $expectedTaskName
+    actual_task_name = $TaskName
+    expected_task_launcher_path = $expectedTaskLauncherPath
+    actual_task_launcher_path = $actualTaskLauncherPath
+    expected_state_db_path = $expectedStateDbPath
+    actual_state_db_path = $actualStateDbPath
+    install_root_matches = $installRootMatches
+    direct_sync_root_matches = $directSyncRootMatches
+    task_name_matches = $taskNameMatches
+    task_launcher_path_matches = $taskLauncherPathMatches
+    state_db_path_matches = $stateDbPathMatches
+    production_layout_matches = $productionLayoutMatches
+    local_test_override_requested = $AllowNoncanonicalLayoutForTest.IsPresent
+    local_test_override_enabled = $localTestOverrideEnabled
+    production_apply_allowed = $productionLayoutMatches
+}
+
+if (-not $DryRun.IsPresent -and -not $productionLayoutMatches -and -not $localTestOverrideEnabled) {
+    $blockedPlan = [ordered]@{
+        report_version = "label-match-direct-sync-install-pack-v1"
+        status = "BLOCKED"
+        blocked_reason = if ($AllowNoncanonicalLayoutForTest.IsPresent) { "noncanonical layout override requires KMTECH_FACTORY_INSTALL_TEST_MODE=1" } else { "production install requires the canonical Label_Match field layout" }
+        apply = $true
+        uninstall = $false
+        field_layout_contract = $fieldLayoutContract
+    }
+    Write-Utf8JsonFile $reportPath $blockedPlan
+    Write-Utf8JsonFile (Join-Path $reportDir "label_match_one_step_install_summary.json") ([ordered]@{
+        installer_report_version = "label-match-direct-sync-one-step-install-v1"
+        status = "BLOCKED"
+        blocked_reason = $blockedPlan.blocked_reason
+        exit_code = 2
+        source_host_id = $sourceHostId
+        field_layout_contract = $fieldLayoutContract
+    })
+    exit 2
+}
 
 $reuseExistingIdentity = (
     -not [string]::IsNullOrWhiteSpace($ExistingProducerManifestPath) -or
@@ -222,6 +297,7 @@ $arguments += @(
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
     "--scan-source-dir", $ScanSourceDir,
+    "--source-host-id", $sourceHostId,
     "--app-run-user", $AppRunUser,
     "--task-name", $TaskName,
     "--report-path", $reportPath,
@@ -266,6 +342,9 @@ if (-not [string]::IsNullOrWhiteSpace($TaskRunPasswordFile)) {
 }
 if ($AllowInteractiveTaskForLocalTest.IsPresent) {
     $arguments += @("--allow-interactive-task-for-local-test")
+}
+if ($AllowNoncanonicalLayoutForTest.IsPresent) {
+    $arguments += @("--allow-noncanonical-layout-for-test")
 }
 if (-not $DryRun.IsPresent) {
     $arguments += @("--apply")
@@ -328,13 +407,14 @@ $summary = [ordered]@{
     python_exe = $pythonExe
     bundled_registration_exe_present = Test-Path -LiteralPath $registrationExe
     task_name = $TaskName
+    field_layout_contract = if ($null -ne $installReport -and $null -ne $installReport.field_layout_contract) { $installReport.field_layout_contract } else { $fieldLayoutContract }
     scheduled_task_start = [ordered]@{
         status = $taskStartStatus
         error = $taskStartError
     }
     app_run_user = $AppRunUser
     app_runtime_acl = if ($null -ne $installReport) { $installReport.app_runtime_acl } else { $null }
-    source_host_id = if ($null -ne $registrationSummary) { $registrationSummary.source_host_id } else { $null }
+    source_host_id = if ($null -ne $registrationSummary) { $registrationSummary.source_host_id } else { $sourceHostId }
     producer_install_id = if ($null -ne $registrationSummary) { $registrationSummary.producer_install_id } else { $null }
     producer_id = if ($null -ne $registrationSummary) { $registrationSummary.producer_id } else { $null }
     key_id = if ($null -ne $registrationSummary) { $registrationSummary.key_id } else { $null }

@@ -1,0 +1,56 @@
+{
+  "field_layout_schema_version": 1,
+  "minimum_installer_version": "1.0.3",
+  "apps": [
+    {
+      "app_id": "container_audit",
+      "app_version": "v2.0.59",
+      "repository_name": "Container_Audit",
+      "direct_sync_root": "C:/ProgramData/KMTech/DirectSync/container_audit",
+      "install_root": "C:/KMTech/Apps/Container_Audit/current",
+      "state_db": "C:/ProgramData/KMTech/DirectSync/container_audit/queue/direct_sync_relay.sqlite3",
+      "task_name": "direct-sync-relay-container-audit",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/container_audit/bin/direct-sync-relay-container-audit.vbs"
+    },
+    {
+      "app_id": "defect_inspection",
+      "app_version": "v0.2.58",
+      "repository_name": "Defect_Inspection",
+      "direct_sync_root": "C:/ProgramData/KMTech/DirectSync/defect_inspection",
+      "install_root": "C:/KMTech/Apps/Defect_Inspection/current",
+      "state_db": "C:/ProgramData/KMTech/DirectSync/defect_inspection/queue/direct_sync_hmac_relay.sqlite3",
+      "task_name": "direct-sync-relay-defect-inspection",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/defect_inspection/bin/direct_sync_hmac_relay_runner.vbs"
+    },
+    {
+      "app_id": "inspection_worker",
+      "app_version": "v2.0.109",
+      "repository_name": "Inspection_worker",
+      "direct_sync_root": "C:/ProgramData/KMTech/DirectSync/inspection_worker",
+      "install_root": "C:/KMTech/Apps/Inspection_worker/current",
+      "state_db": "C:/ProgramData/KMTech/InspectionWorker/ledger/inspection_product_ledger.sqlite3",
+      "task_name": "direct-sync-relay-inspection-worker",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/inspection_worker/bin/direct_sync_relay_runner.vbs"
+    },
+    {
+      "app_id": "label_match",
+      "app_version": "v2.0.64",
+      "repository_name": "Label_Match",
+      "direct_sync_root": "C:/ProgramData/KMTech/DirectSync/label_match",
+      "install_root": "C:/KMTech/Apps/Label_Match/current",
+      "state_db": "C:/ProgramData/KMTech/DirectSync/label_match/queue/direct_sync_relay.sqlite3",
+      "task_name": "direct-sync-relay-label-match",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/label_match/bin/run_direct-sync-relay-label-match.vbs"
+    },
+    {
+      "app_id": "rework_worker",
+      "app_version": "v2.0.71",
+      "repository_name": "Rework_worker",
+      "direct_sync_root": "C:/ProgramData/KMTech/DirectSync/rework",
+      "install_root": "C:/KMTech/Apps/Rework_worker/current",
+      "state_db": "C:/ProgramData/KMTech/InspectionWorker/ledger/inspection_product_ledger.sqlite3",
+      "task_name": "direct-sync-relay-rework",
+      "task_action": "wscript.exe //B //NoLogo C:/ProgramData/KMTech/DirectSync/rework/bin/direct_sync_relay_runner.vbs"
+    }
+  ]
+}

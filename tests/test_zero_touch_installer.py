@@ -65,11 +65,21 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert "ExistingCredentialPath" in installer
     assert '"--producer-manifest-path", $ExistingProducerManifestPath' in installer
     assert '"--credential-path", $ExistingCredentialPath' in installer
+    assert '"--source-host-id", $sourceHostId' in installer
     assert (
         'C:\\ProgramData\\KMTech\\Logistics\\profiles\\Label_Match'
         '\\runtime-profile.json'
     ) in installer
     assert '"--logistics-profile-path", $LogisticsProfilePath' in installer
+    assert '"C:\\KMTech\\Apps\\Label_Match\\current"' in installer
+    assert '"C:\\ProgramData\\KMTech\\DirectSync\\label_match"' in installer
+    assert '"bin\\run_direct-sync-relay-label-match.vbs"' in installer
+    assert '"queue\\direct_sync_relay.sqlite3"' in installer
+    assert "field_layout_contract" in installer
+    assert "production_layout_matches" in installer
+    assert "AllowNoncanonicalLayoutForTest" in installer
+    assert "--allow-noncanonical-layout-for-test" in installer
+    assert "KMTECH_FACTORY_INSTALL_TEST_MODE" in installer
     _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
 
 

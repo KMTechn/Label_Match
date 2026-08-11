@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
+from .bundle import MINIMUM_INSTALLER_VERSION
 from .errors import FactoryContractError
 
 
@@ -238,6 +239,15 @@ def _declaration_issues(
                     f"{field} must be a non-empty string",
                 )
             )
+    if declaration.get("minimum_installer_version") != MINIMUM_INSTALLER_VERSION:
+        issues.append(
+            _issue(
+                "COMPATIBILITY_DECLARATION_INVALID",
+                "minimum_installer_version",
+                app_id,
+                "minimum installer version does not match this contract bundle",
+            )
+        )
     for field, length in (
         ("source_commit", 40),
         ("source_tree", 40),

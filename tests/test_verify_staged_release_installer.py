@@ -67,6 +67,16 @@ def _fake_run_with_report(command, **_kwargs):
     settings.write_text(json.dumps({"custom_save_path": str(Path(command[command.index("-ScanSourceDir") + 1]))}), encoding="utf-8")
     report = {
         "status": "DRY_RUN",
+        "field_layout_contract": {
+            "expected_install_root": verifier.CANONICAL_INSTALL_ROOT,
+            "expected_direct_sync_root": verifier.CANONICAL_DIRECT_SYNC_ROOT,
+            "expected_task_name": verifier.CANONICAL_TASK_NAME,
+            "expected_task_launcher_path": verifier.CANONICAL_TASK_LAUNCHER_PATH,
+            "expected_state_db_path": verifier.CANONICAL_STATE_DB_PATH,
+            "install_root_matches": False,
+            "production_layout_matches": False,
+            "local_test_override_enabled": False,
+        },
         "runner_exe": str(runner),
         "runner_command": [str(runner), "--help"],
         "app_settings_path": str(settings),
@@ -95,6 +105,8 @@ def test_verify_staged_installer_proves_exe_only_paths_without_mutating_package(
     assert report["runner"]["selected"] is True
     assert report["registration"]["selected"] is True
     assert report["app_save_path_matches_relay_scan_source"] is True
+    assert report["field_layout_contract_verified"] is True
+    assert report["staged_dry_run_is_plan_only"] is True
     assert verifier._inventory(package) == before
 
 

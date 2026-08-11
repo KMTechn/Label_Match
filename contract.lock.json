@@ -1,7 +1,7 @@
 {
   "app_id": "label_match",
-  "contract_bundle_sha256": "9bffe37595279c22387d0a90167aa7e0d8aae1b8fd6db140a8a84916345cec31",
-  "contract_bundle_version": "1.0.2",
+  "contract_bundle_sha256": "131b4922dd6fbe8fa31d3093c35690fa13dee23447e4f2b6547902efa3841fab",
+  "contract_bundle_version": "1.0.3",
   "db_schema_supported": {
     "maximum": 0,
     "minimum": 0
@@ -14,8 +14,8 @@
   "event_contract_version": "common-event-envelope-v1",
   "lock_schema_version": 1,
   "manifest_contract_version": "producer-onboarding-manifest-v1",
-  "minimum_installer_version": "1.0.0",
-  "minimum_verifier_version": "1.0.0",
+  "minimum_installer_version": "1.0.3",
+  "minimum_verifier_version": "1.0.3",
   "required_capabilities": {
     "producer_ingest": "producer-ingest-v1",
     "runtime_lease": "producer-runtime-lease-v1"

@@ -126,6 +126,11 @@ def test_staged_release_installer_dry_run_uses_nested_helper_and_bundled_runner(
 
     assert install_report["status"] == "DRY_RUN"
     assert install_report["apply"] is False
+    assert install_report["field_layout_contract"]["expected_install_root"] == (
+        r"C:\KMTech\Apps\Label_Match\current"
+    )
+    assert install_report["field_layout_contract"]["production_layout_matches"] is False
+    assert install_report["field_layout_contract"]["local_test_override_enabled"] is False
     assert install_report["self_enrollment"]["enabled"] is True
     assert _normalized(install_report["runner_exe"]) == _normalized(runner_exe)
     assert _normalized(install_report["runner_command"][0]) == _normalized(runner_exe)

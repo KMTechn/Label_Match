@@ -227,6 +227,9 @@ LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTR
 LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV = (
     "LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST"
 )
+LABEL_MATCH_DIRECT_SYNC_ALLOW_NONCANONICAL_LAYOUT_FOR_TEST_ENV = (
+    "LABEL_MATCH_DIRECT_SYNC_ALLOW_NONCANONICAL_LAYOUT_FOR_TEST"
+)
 LABEL_MATCH_SESSION_SYNC_TRIGGER_ENV = "LABEL_MATCH_SESSION_SYNC_TRIGGER"
 LABEL_MATCH_SESSION_SYNC_REQUEST_TIMEOUT_SECONDS = 15
 LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS = 45
@@ -241,6 +244,10 @@ LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY_ENV = "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY
 LABEL_MATCH_CAPTURE_STARTUP_DPI_ENV = "LABEL_MATCH_CAPTURE_STARTUP_DPI"
 LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV = "LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE"
 LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
+LABEL_MATCH_DIRECT_SYNC_DEFAULT_PROGRAM_DATA_ROOT = (
+    r"C:\ProgramData\KMTech\DirectSync\label_match"
+)
+LABEL_MATCH_DIRECT_SYNC_DEFAULT_TASK_NAME = "direct-sync-relay-label-match"
 LABEL_MATCH_DIRECT_SYNC_REPORT_NAME = "label_match_direct_sync_auto_bootstrap.json"
 LABEL_MATCH_DIRECT_SYNC_INSTALL_REPORT_NAME = "label_match_direct_sync_install.json"
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
@@ -696,13 +703,13 @@ def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
             os.environ.get("ProgramData", r"C:\ProgramData"),
             "KMTech",
             "DirectSync",
-            source_host_id,
+            "label_match",
         )
     program_data_root = os.path.abspath(program_data_root)
     scan_source_dir = os.path.abspath(scan_source_dir)
     task_name = os.environ.get(LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV, "").strip()
     if not task_name:
-        task_name = f"direct-sync-relay-{source_host_id}"
+        task_name = LABEL_MATCH_DIRECT_SYNC_DEFAULT_TASK_NAME
     status_dir = os.path.join(program_data_root, "status")
     return {
         "app_root": _label_match_runtime_app_root(),
@@ -1045,10 +1052,18 @@ def _label_match_install_report_ready(context):
     report = _label_match_json_file(context["install_report_path"])
     if report.get("status") != "PASS":
         return False
+    field_layout = report.get("field_layout_contract") or {}
+    if not (
+        field_layout.get("production_layout_matches") is True
+        or field_layout.get("local_test_override_enabled") is True
+    ):
+        return False
     try:
         report_root = os.path.abspath(str(report.get("program_data_root") or ""))
         expected_root = os.path.abspath(context["program_data_root"])
         if os.path.normcase(report_root) != os.path.normcase(expected_root):
+            return False
+        if str(report.get("task_name") or "") != context["task_name"]:
             return False
         source_scan = report.get("source_scan") or {}
         report_scan_dir = os.path.abspath(str(source_scan.get("scan_source_dir") or ""))
@@ -1414,6 +1429,10 @@ def _label_match_auto_bootstrap_direct_sync(context):
         LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
         "",
     ).strip().lower() in {"1", "true", "yes", "on"}
+    allow_noncanonical_layout_for_test = os.environ.get(
+        LABEL_MATCH_DIRECT_SYNC_ALLOW_NONCANONICAL_LAYOUT_FOR_TEST_ENV,
+        "",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     task_run_user = os.environ.get(LABEL_MATCH_DIRECT_SYNC_TASK_RUN_USER_ENV, "").strip()
     task_run_password_env = os.environ.get(
         LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_ENV_ENV,
@@ -1448,6 +1467,8 @@ def _label_match_auto_bootstrap_direct_sync(context):
         context["program_data_root"],
         "--scan-source-dir",
         context["scan_source_dir"],
+        "--source-host-id",
+        context["source_host_id"],
         "--task-name",
         context["task_name"],
         "--report-path",
@@ -1470,6 +1491,8 @@ def _label_match_auto_bootstrap_direct_sync(context):
         args.extend(["--task-run-password-file", task_run_password_file])
     if allow_interactive_task_for_local_test:
         args.append("--allow-interactive-task-for-local-test")
+    if allow_noncanonical_layout_for_test:
+        args.append("--allow-noncanonical-layout-for-test")
 
     env = os.environ.copy()
     env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
@@ -3489,7 +3512,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.63"
+APP_VERSION = "v2.0.64"
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"

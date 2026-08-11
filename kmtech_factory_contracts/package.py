@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from .bundle import MINIMUM_INSTALLER_VERSION
 from .canonical import canonical_sha256, file_sha256, load_json_strict, require_posix_relative_path
 from .errors import FactoryContractError
 from .lock import load_and_verify_contract_lock
@@ -126,7 +127,7 @@ def create_build_compatibility(
         "server_api_contract_versions": [normalized["server_api_contract_version"]],
         "event_contract_version": normalized["event_contract_version"],
         "manifest_contract_version": normalized["manifest_contract_version"],
-        "minimum_installer_version": "1.0.0",
+        "minimum_installer_version": MINIMUM_INSTALLER_VERSION,
         "resources": dict(resources),
         "coinstall_with": sorted(
             (dict(row) for row in coinstall_with),
@@ -154,6 +155,7 @@ def validate_build_compatibility(
         "dependency": normalized_identity["dependency"],
         "event_contract_version": normalized_identity["event_contract_version"],
         "manifest_contract_version": normalized_identity["manifest_contract_version"],
+        "minimum_installer_version": MINIMUM_INSTALLER_VERSION,
     }
     mismatched = sorted(
         field for field, expected in exact_fields.items() if normalized.get(field) != expected

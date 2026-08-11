@@ -1,5 +1,5 @@
 {
-  "contract_bundle_version": "1.0.2",
+  "contract_bundle_version": "1.0.3",
   "contract_set_schema_version": 1,
   "files": [
     {
@@ -9,13 +9,18 @@
     },
     {
       "path": "compatibility/coinstall-matrix.json",
-      "sha256": "bdb8cb2de5b9b35c1b2f5383e1218f806218ca9af4208ecc7485e884154475ae",
-      "size": 1543
+      "sha256": "ec1fb39ef82a1f2c6351872a98f714f6ab9e7dffbec0aac5cdab1b1c25845e1d",
+      "size": 1500
+    },
+    {
+      "path": "compatibility/installer-field-layout.json",
+      "sha256": "ef26feb289b2075bae6e0d37c1249bd7f496b400cfa453ef80c3cb25473242b4",
+      "size": 2857
     },
     {
       "path": "compatibility/resource-namespaces.json",
-      "sha256": "51cb7cc7b61b702d26723f93499d79cb020d2eaf72961eb223b600a7eb6facd1",
-      "size": 4119
+      "sha256": "b67133706a53abfe1d199a77ac3252e8feb8c3f6e1b9f00f829a0fdf3113ce4b",
+      "size": 4138
     },
     {
       "path": "python/bootstrap-central-ng-hold.json",
@@ -24,13 +29,13 @@
     },
     {
       "path": "schemas/build-compatibility.schema.json",
-      "sha256": "7eef0ceb38785d9117eecd08ec917613205523a2d3d7c2e1c1940839a854d33d",
-      "size": 2890
+      "sha256": "2ac4fc9eed0c5efc7351d5a7cceccff193ff86632b4987d7cf9b1dac4861b42a",
+      "size": 2874
     },
     {
       "path": "schemas/build-identity.schema.json",
-      "sha256": "af66bb252038fba9544abd0300b5f61725e5fabdcef24e18553ffc19c459b375",
-      "size": 2246
+      "sha256": "024094ecfb7fbda394e380ca7413efb755b3d92c7ae9c6dfdbc87cf77ad9e246",
+      "size": 2452
     },
     {
       "path": "schemas/build-manifest.schema.json",
@@ -44,7 +49,7 @@
     },
     {
       "path": "schemas/contract-lock.schema.json",
-      "sha256": "25481bae357911f5f5e1cac432d0ab8913bf942ad3ca9b06ddebc1443ac1b5d0",
+      "sha256": "038a56af3fd0efa4788e4440851958cf45990f3cb8bb9a6a2909e76c18704cad",
       "size": 1762
     },
     {

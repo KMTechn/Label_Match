@@ -9,7 +9,7 @@
     {"apps": ["defect_inspection", "label_match"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
     {"apps": ["defect_inspection", "rework_worker"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
     {"apps": ["inspection_worker", "label_match"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"},
-    {"apps": ["inspection_worker", "rework_worker"], "reason_code": "INSPECTION_DEPENDENCY_IDENTITY_REQUIRED", "shared_resources": ["data_root", "log_root", "state_db"], "status": "conditional"},
+    {"apps": ["inspection_worker", "rework_worker"], "reason_code": "INSPECTION_REWORK_IDENTITY_UNPROVEN", "shared_resources": [], "status": "blocked"},
     {"apps": ["label_match", "rework_worker"], "reason_code": "ROLE_PC_SEPARATION_REQUIRED", "shared_resources": [], "status": "blocked"}
   ]
 }
