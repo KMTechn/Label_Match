@@ -20,7 +20,7 @@ def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert len(lines) == 38
+    assert len(lines) == 43
     assert all("==" in line for line in lines)
     assert all(" --hash=sha256:" in line for line in lines)
     assert all(line.count("--hash=sha256:") == 1 for line in lines)
@@ -32,9 +32,13 @@ def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
         "google-auth",
         "itsdangerous",
         "jinja2",
+        "jsonschema",
+        "jsonschema-specifications",
         "markupsafe",
         "pyasn1",
         "pyasn1-modules",
+        "referencing",
+        "rpds-py",
         "rsa",
         "tzdata",
         "werkzeug",
