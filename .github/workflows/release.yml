@@ -121,6 +121,152 @@ jobs:
       - name: Build protected administrator provisioning executable
         run: python -m PyInstaller --paths . --name "Label_Match_Protected_Admin_Install" --onefile --console --distpath dist/Label_Match --workpath build/protected_admin_install_pyinstaller --specpath build/protected_admin_install_pyinstaller --clean --noupx --noconfirm tools/install_protected_admin.py
 
+      - name: Build and verify active-work probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller `
+            --paths . `
+            --name "KMTechActiveWorkProbe" `
+            --onefile `
+            --console `
+            --distpath dist/Label_Match `
+            --workpath build/active_work_probe_pyinstaller `
+            --specpath build/active_work_probe_pyinstaller `
+            --add-data "kmtech_factory_contracts/bundle;kmtech_factory_contracts/bundle" `
+            --collect-submodules kmtech_factory_contracts.active_work_probe `
+            --clean `
+            --noupx `
+            --noconfirm `
+            tools/active_work_probe.py
+          if ($LASTEXITCODE -ne 0) { throw "Active-work probe PyInstaller build failed." }
+
+          $packageRoot = (Resolve-Path -LiteralPath "dist/Label_Match").Path
+          $probeArtifactPath = [IO.Path]::GetFullPath((Join-Path $packageRoot "KMTechActiveWorkProbe.exe"))
+          $independentIdentityPath = [IO.Path]::GetFullPath((Join-Path $packageRoot "KMTechActiveWorkProbe.independent.build-identity.json"))
+          $integratedIdentityPath = [IO.Path]::GetFullPath((Join-Path $packageRoot "KMTechActiveWorkProbe.integrated.build-identity.json"))
+          if (-not (Test-Path -LiteralPath $probeArtifactPath -PathType Leaf)) {
+            throw "Active-work probe executable is missing: $probeArtifactPath"
+          }
+          foreach ($freshIdentityPath in @($independentIdentityPath, $integratedIdentityPath)) {
+            if (Test-Path -LiteralPath $freshIdentityPath) {
+              throw "Active-work probe identity path must be fresh: $freshIdentityPath"
+            }
+          }
+          $probeSourceCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $probeSourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Active-work probe source commit is invalid."
+          }
+          $probeName = "KMTechActiveWorkProbe"
+          $probeVersion = "v1.0.3.4"
+          $probeArtifactSha256 = (Get-FileHash -LiteralPath $probeArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $allProbeApps = "Inspection_worker,Rework_worker,Defect_Inspection,Container_Audit,Label_Match"
+
+          python -m kmtech_factory_contracts.active_work_probe `
+            -Mode build-identity `
+            -OutputPath $independentIdentityPath `
+            -ProbeArtifactPath $probeArtifactPath `
+            -ProbeSourceCommit $probeSourceCommit `
+            -WorkflowMode independent `
+            -SupportedApps "Label_Match" `
+            -ProbeName $probeName `
+            -ProbeVersion $probeVersion
+          if ($LASTEXITCODE -ne 0) { throw "Authoritative independent probe identity generation failed." }
+          python -m kmtech_factory_contracts.active_work_probe `
+            -Mode build-identity `
+            -OutputPath $integratedIdentityPath `
+            -ProbeArtifactPath $probeArtifactPath `
+            -ProbeSourceCommit $probeSourceCommit `
+            -WorkflowMode integrated `
+            -SupportedApps $allProbeApps `
+            -ProbeName $probeName `
+            -ProbeVersion $probeVersion
+          if ($LASTEXITCODE -ne 0) { throw "Authoritative integrated probe identity generation failed." }
+
+          function Assert-ProbeIdentity {
+            param(
+              [Parameter(Mandatory = $true)][string]$Path,
+              [Parameter(Mandatory = $true)][string]$ExpectedWorkflowMode,
+              [Parameter(Mandatory = $true)][string[]]$ExpectedSupportedApps
+            )
+            $identity = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
+            if ($identity.schema_version -cne "kmtech-active-work-probe-build-v1.0.3.4") { throw "Probe identity schema mismatch: $Path" }
+            if ($identity.probe_source_commit -cne $probeSourceCommit) { throw "Probe source commit mismatch: $Path" }
+            if ($identity.workflow_mode -cne $ExpectedWorkflowMode) { throw "Probe workflow mode mismatch: $Path" }
+            if ($identity.probe_name -cne $probeName) { throw "Probe name mismatch: $Path" }
+            if ($identity.probe_version -cne $probeVersion) { throw "Probe version mismatch: $Path" }
+            if ($identity.probe_artifact_sha256 -cne $probeArtifactSha256) { throw "Probe artifact hash mismatch: $Path" }
+            $supportedApps = @($identity.supported_apps)
+            if (
+              $supportedApps.Count -ne $ExpectedSupportedApps.Count -or
+              ($supportedApps -join ",") -cne ($ExpectedSupportedApps -join ",")
+            ) {
+              throw "Probe supported-app scope mismatch: $Path"
+            }
+          }
+
+          $independentApps = @("Label_Match")
+          $integratedApps = @($allProbeApps -split ",")
+          Assert-ProbeIdentity -Path $independentIdentityPath -ExpectedWorkflowMode independent -ExpectedSupportedApps $independentApps
+          Assert-ProbeIdentity -Path $integratedIdentityPath -ExpectedWorkflowMode integrated -ExpectedSupportedApps $integratedApps
+
+          $probeHelp = (& $probeArtifactPath --help 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $probeHelp -notmatch '(?i)-Mode') {
+            throw "Packaged active-work probe -Mode/--help smoke failed."
+          }
+
+          $comparisonRoot = [IO.Path]::Combine(
+            [IO.Path]::GetTempPath(),
+            "kmtech-active-work-probe-identity-$([Guid]::NewGuid().ToString('N'))"
+          )
+          if (Test-Path -LiteralPath $comparisonRoot) { throw "Fresh probe comparison directory already exists: $comparisonRoot" }
+          [IO.Directory]::CreateDirectory($comparisonRoot) | Out-Null
+          $packagedIndependentPath = [IO.Path]::GetFullPath((Join-Path $comparisonRoot "KMTechActiveWorkProbe.independent.build-identity.json"))
+          $packagedIntegratedPath = [IO.Path]::GetFullPath((Join-Path $comparisonRoot "KMTechActiveWorkProbe.integrated.build-identity.json"))
+          try {
+            & $probeArtifactPath `
+              -Mode build-identity `
+              -OutputPath $packagedIndependentPath `
+              -ProbeArtifactPath $probeArtifactPath `
+              -ProbeSourceCommit $probeSourceCommit `
+              -WorkflowMode independent `
+              -SupportedApps "Label_Match" `
+              -ProbeName $probeName `
+              -ProbeVersion $probeVersion
+            if ($LASTEXITCODE -ne 0) { throw "Packaged independent probe identity generation failed." }
+            & $probeArtifactPath `
+              -Mode build-identity `
+              -OutputPath $packagedIntegratedPath `
+              -ProbeArtifactPath $probeArtifactPath `
+              -ProbeSourceCommit $probeSourceCommit `
+              -WorkflowMode integrated `
+              -SupportedApps $allProbeApps `
+              -ProbeName $probeName `
+              -ProbeVersion $probeVersion
+            if ($LASTEXITCODE -ne 0) { throw "Packaged integrated probe identity generation failed." }
+            Assert-ProbeIdentity -Path $packagedIndependentPath -ExpectedWorkflowMode independent -ExpectedSupportedApps $independentApps
+            Assert-ProbeIdentity -Path $packagedIntegratedPath -ExpectedWorkflowMode integrated -ExpectedSupportedApps $integratedApps
+            foreach ($pair in @(
+              @($independentIdentityPath, $packagedIndependentPath),
+              @($integratedIdentityPath, $packagedIntegratedPath)
+            )) {
+              $sourceBytes = [System.IO.File]::ReadAllBytes($pair[0])
+              $packagedBytes = [System.IO.File]::ReadAllBytes($pair[1])
+              if (-not [System.Linq.Enumerable]::SequenceEqual($sourceBytes, $packagedBytes)) {
+                throw "Source and packaged active-work probe identities differ: $($pair[0])"
+              }
+            }
+          }
+          finally {
+            foreach ($smokeIdentityPath in @($packagedIndependentPath, $packagedIntegratedPath)) {
+              [IO.File]::Delete($smokeIdentityPath)
+            }
+            if ([IO.Directory]::Exists($comparisonRoot)) {
+              [IO.Directory]::Delete($comparisonRoot, $false)
+            }
+          }
+          if (Test-Path -LiteralPath $comparisonRoot) { throw "Probe comparison cleanup failed: $comparisonRoot" }
+
       - name: Include direct-sync relay tools
         run: |
           New-Item -ItemType Directory -Force -Path dist/Label_Match/tools
@@ -223,6 +369,9 @@ jobs:
           python -m kmtech_factory_contracts.build_cli manifest `
             --stage-root dist/Label_Match `
             --expected-file Label_Match.exe `
+            --expected-file KMTechActiveWorkProbe.exe `
+            --expected-file KMTechActiveWorkProbe.independent.build-identity.json `
+            --expected-file KMTechActiveWorkProbe.integrated.build-identity.json `
             --expected-file contract.lock.json `
             --expected-file build-identity.json `
             --expected-file build-compatibility.json
@@ -255,6 +404,9 @@ jobs:
           source_epoch = int(os.environ["LABEL_MATCH_SOURCE_EPOCH"])
           required = {
               "Label_Match.exe",
+              "KMTechActiveWorkProbe.exe",
+              "KMTechActiveWorkProbe.independent.build-identity.json",
+              "KMTechActiveWorkProbe.integrated.build-identity.json",
               "config/app_settings.json",
               "_internal/config/app_settings.json",
               "release-identity.json",
@@ -462,6 +614,9 @@ jobs:
               entrypoint = "Label_Match.exe"
               required_files = @(
                 "Label_Match/Label_Match.exe",
+                "Label_Match/KMTechActiveWorkProbe.exe",
+                "Label_Match/KMTechActiveWorkProbe.independent.build-identity.json",
+                "Label_Match/KMTechActiveWorkProbe.integrated.build-identity.json",
                 "Label_Match/config/app_settings.json",
                 "Label_Match/_internal/config/app_settings.json",
                 "Label_Match/release-identity.json",

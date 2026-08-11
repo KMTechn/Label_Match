@@ -253,6 +253,9 @@ def test_internal_release_archive_script_verifies_membership_bytes_and_paths(tmp
     package = tmp_path / "dist" / "Label_Match"
     required = (
         "Label_Match.exe",
+        "KMTechActiveWorkProbe.exe",
+        "KMTechActiveWorkProbe.independent.build-identity.json",
+        "KMTechActiveWorkProbe.integrated.build-identity.json",
         "config/app_settings.json",
         "_internal/config/app_settings.json",
             "release-identity.json",
