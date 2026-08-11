@@ -14,7 +14,7 @@ def test_factory_contract_startup_accepts_synced_lock_and_bundle():
     lock = app.verify_factory_contract_startup()
 
     assert lock["app_id"] == "label_match"
-    assert lock["contract_bundle_version"] == "1.0.2"
+    assert lock["contract_bundle_version"] == "1.0.3"
     assert lock["contract_bundle_sha256"] == CONTRACT_BUNDLE_SHA256
 
 
