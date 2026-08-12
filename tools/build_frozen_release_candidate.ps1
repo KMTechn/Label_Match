@@ -303,6 +303,17 @@ if ($tagCommit -cne $headCommit -or $mirrorTagCommit -cne $headCommit) {
     throw "The FINAL intended tag must peel to exact HEAD and local bare mirror main."
 }
 
+# The packaged staged-installer gate executes the committed installer, whose
+# contract requires an elevated Windows session. Check this after authenticating
+# the isolated source topology, but before creating output or doing build work.
+$windowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$windowsPrincipal = [Security.Principal.WindowsPrincipal]::new($windowsIdentity)
+if (-not $windowsPrincipal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)) {
+    throw "Frozen release candidate qualification requires an elevated Windows administrator session."
+}
+
 $pythonFacts = & $resolvedPython -I -c `
     "import json,platform,sys; print(json.dumps({'version': platform.python_version(), 'system': platform.system(), 'machine': platform.machine(), 'bits': platform.architecture()[0]}))" |
     ConvertFrom-Json

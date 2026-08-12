@@ -61,6 +61,18 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     assert '[IO.FileMode]::CreateNew' in source
     assert '$ExpectedPythonVersion = "3.12.10"' in source
     assert '$ExpectedPyInstallerVersion = "6.20.0"' in source
+
+
+def test_script_fails_before_output_or_build_when_not_elevated():
+    source = _source()
+
+    elevation = source.index("WindowsBuiltInRole]::Administrator")
+    output_create = source.index("[IO.Directory]::CreateDirectory($resolvedOutputRoot)")
+    venv_create = source.index("-I -m venv $venvRoot")
+    first_pyinstaller = source.index("& $venvPython -I -m PyInstaller @mainArguments")
+
+    assert elevation < output_create < venv_create < first_pyinstaller
+    assert "Frozen release candidate qualification requires an elevated" in source
     assert "--no-index" in source
     assert "--find-links $resolvedWheelhouse" in source
     assert "--only-binary=:all:" in source
