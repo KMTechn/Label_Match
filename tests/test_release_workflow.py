@@ -1,151 +1,155 @@
-import base64
-import importlib.util
-import json
-import os
 import re
-import shutil
-import subprocess
-import sys
-import textwrap
-import zipfile
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 
 
-def test_release_requirements_are_exact_hash_locked_for_windows_cp312():
-    lines = [
-        line.strip()
-        for line in Path("requirements-release.txt").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-
-    assert len(lines) == 44
-    assert all("==" in line for line in lines)
-    assert all(" --hash=sha256:" in line for line in lines)
-    assert all(line.count("--hash=sha256:") == 1 for line in lines)
-    locked_names = {line.split("==", 1)[0].lower() for line in lines}
-    assert {
-        "blinker",
-        "click",
-        "flask",
-        "google-auth",
-        "itsdangerous",
-        "jinja2",
-        "jsonschema",
-        "jsonschema-specifications",
-        "markupsafe",
-        "pyasn1",
-        "pyasn1-modules",
-        "referencing",
-        "rpds-py",
-        "rsa",
-        "typing-extensions",
-        "tzdata",
-        "werkzeug",
-    }.issubset(locked_names)
-    assert any(line.startswith("pyinstaller==6.20.0 ") for line in lines)
-    assert any(line.startswith("pytest==9.1.1 ") for line in lines)
-    assert any(line.startswith("pywin32==311 ") for line in lines)
-    assert any(line.startswith("qrcode==8.2 ") for line in lines)
+def _workflow() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_release_workflow_packages_direct_sync_relay_tools():
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+def test_tag_workflow_is_verification_only_and_read_only():
+    workflow = _workflow()
 
-    assert 'python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --help-timeout-seconds 15 --probe-count 3' in workflow
-    assert "--verify-existing" not in workflow
-    assert 'pyinstaller --name "direct_sync_relay_runner"' not in workflow.lower()
-    assert 'pyinstaller --name "direct_sync_relay_install_pack"' not in workflow.lower()
-    assert 'pyinstaller --name "register_label_match_worker_pc"' not in workflow.lower()
-    release_requirements = Path("requirements-release.txt").read_text(encoding="utf-8")
-    assert "pyinstaller==6.20.0" in release_requirements
-    assert "pytest==" in release_requirements
-    assert "tools/verify_release_identity.py" in workflow
-    identity_block = workflow[
-        workflow.index("- name: Validate release identity") : workflow.index("- name: Resolve private update feed publish mode")
-    ]
-    assert '--expected-tag "$env:LABEL_MATCH_RELEASE_TAG"' in identity_block
-    assert '--expected-sha "$env:GITHUB_SHA"' in identity_block
+    assert "Verify Frozen GitHub Release for Label_Match" in workflow
+    assert 'tags:\n      - "v*"' in workflow
+    assert "contents: read" in workflow
+    assert "actions: read" in workflow
+    assert "contents: write" not in workflow
+    assert "workflow_dispatch:" not in workflow
     assert "repository_dispatch:" not in workflow
-    assert "push:" in workflow
-    assert 'tags:' in workflow
-    assert '- "v*"' in workflow
-    assert "LABEL_MATCH_RELEASE_TAG: ${{ github.ref_name }}" in workflow
-    assert "requirements-release.txt" in workflow
-    assert "--require-hashes --no-deps" in workflow
-    assert "python-version: '3.12.10'" in workflow
-    assert "runs-on: windows-latest" in workflow
-    assert "self-hosted" not in workflow
-    assert "label-match-production-signing" not in workflow
-    assert "python -I -S tools/verify_release_identity.py" in workflow
-    assert "LABEL_MATCH_RELEASE_TAG_SIGNER_FINGERPRINT" not in workflow
-    assert "python -I -m venv" in workflow
-    assert "PYTHONNOUSERSITE" in workflow
-    assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" in workflow
-    assert "Clean release virtual environment" in workflow
-    assert workflow.count('$PSNativeCommandUseErrorActionPreference = $true') == 3
+    assert "PyInstaller" not in workflow
+    assert "build_release_archive" not in workflow
+    assert "Build and verify internal release archive" not in workflow
+    assert "Generate release SHA256 checksum" not in workflow
+    assert "Create Release and Upload Asset" not in workflow
+    assert "softprops/action-gh-release" not in workflow
+    assert "Generate private update manifest" not in workflow
+    assert "Sign private update manifest" not in workflow
+    assert "Promote private update feed" not in workflow
+    assert "gh release create" not in workflow
+    assert "gh release upload" not in workflow
+
+
+def test_tag_workflow_keeps_exact_source_gate_and_reports_hosted_ci_non_blockingly():
+    workflow = _workflow()
+
     assert "fetch-depth: 0" in workflow
     assert "persist-credentials: false" in workflow
-    assert "LABEL_MATCH_ENROLLMENT_TOKEN" not in workflow
-    assert "Normal installs use PRODUCER_SELF_ENROLL_ALLOWED_IPS" in workflow
-    assert "test_live_submission_retry_hides_raw_server_error" not in workflow
-    assert "test_display2_1366_scale100" not in workflow
-
-    include_step = workflow.index("- name: Include direct-sync relay tools")
-    identity_step = workflow.index("- name: Validate release identity")
-    test_step = workflow.index("- name: Verify staged installer without system Python")
-    helper_build_step = workflow.index("- name: Build direct-sync CLI tools")
-    zip_step = workflow.index("- name: Build and verify internal release archive")
-    packaging_block = workflow[include_step:zip_step]
-
-    assert identity_step < helper_build_step < include_step < test_step < zip_step
-    assert "New-Item -ItemType Directory -Force -Path dist/Label_Match/tools" in packaging_block
-    assert "Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match" in packaging_block
-    assert "Copy-Item direct_sync_push.py,direct_sync_runtime.py,producer_runtime_client.py,direct_sync_operator.py -Destination dist/Label_Match" in packaging_block
-    assert "python -I dist/Label_Match/tools/direct_sync_relay_runner.py --help" in packaging_block
-    assert "python -I dist/Label_Match/tools/direct_sync_relay_operator.py --help" in packaging_block
-    assert '"producer_runtime_client.py"' in workflow
-    assert '"Label_Match/producer_runtime_client.py"' in workflow
-    assert (
-        "Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,"
-        "tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,"
-        "tools/register_label_match_worker_pc.py,tools/install_logistics_runtime_profile.py,"
-        "tools/check_logistics_runtime_profile.py "
-        "-Destination dist/Label_Match/tools"
-    ) in packaging_block
-    assert 'python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Install"' in workflow
-    assert 'python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Check"' in workflow
-    assert 'python -m PyInstaller --paths . --name "Label_Match_Protected_Admin_Install" --onefile --console' in workflow
-    assert "tools/install_protected_admin.py" in workflow
-    assert "Copy-Item logistics_runtime_profile.py -Destination dist/Label_Match/logistics_runtime_profile.py" in packaging_block
-    assert "CENTRAL_LOGISTICS_PC_ROLLOUT.md" in packaging_block
-    assert "PROVISION_PROTECTED_ADMIN_ACL.ps1" in packaging_block
-    assert "PROTECTED_ADMIN_PROVISIONING.md" in packaging_block
-    assert "Label_Match_Protected_Admin_Install.exe --help" in packaging_block
-    assert "Label_Match_Protected_Admin_Install.exe --dry-run" in packaging_block
-    assert "PROVISION_PROTECTED_ADMIN_ACL.ps1 -DryRun" in packaging_block
-    assert "Copy-Item dist/direct_sync_relay_runner.exe" not in packaging_block
-    assert 'Copy-Item "$env:RUNNER_TEMP\\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json' in packaging_block
-    assert "tools/register_label_match_worker_pc.py" in packaging_block
-    assert "direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe" in workflow
-    assert "Label_Match/tools/release_cli_tools_manifest.json" in workflow
-    assert "Label_Match/config/app_settings.json" in workflow
-    assert "Label_Match/_internal/config/app_settings.json" in workflow
-    assert "Label_Match/KMTech_Logistics_Profile_Install.exe" in workflow
-    assert "Label_Match/KMTech_Logistics_Profile_Check.exe" in workflow
-    assert "Label_Match/Label_Match_Protected_Admin_Install.exe" in workflow
-    assert "Label_Match/PROVISION_PROTECTED_ADMIN_ACL.ps1" in workflow
-    assert "Label_Match/PROTECTED_ADMIN_PROVISIONING.md" in workflow
-    assert "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md" in workflow
-    assert "Label_Match/tools/release_cli_tools_post_sign_manifest.json" not in workflow
-    assert "release_trust" in workflow
-    assert "internal_unsigned" in workflow
+    assert "tools/verify_release_identity.py" in workflow
+    assert '--expected-tag "$env:LABEL_MATCH_RELEASE_TAG"' in workflow
+    assert '--expected-sha "$env:GITHUB_SHA"' in workflow
+    assert '--reviewed-ref "refs/remotes/origin/main"' in workflow
+    assert "Record exact-SHA Hosted CI status without making it a release gate" in workflow
+    assert "actions/workflows/ci.yml/runs" in workflow
+    assert "hosted_ci=PASS_NON_GATING" in workflow
+    assert "hosted_ci=WAIVED_NOT_TESTED" in workflow
+    assert "exact release SHA must have exactly one" not in workflow
+    assert "run_attempt -ne 1" not in workflow
+    assert "tools/verify_release_tag_attestation.py" in workflow
+    assert "label-match-canonical-tag-identity.json" in workflow
+    assert "label-match-canonical-annotated-tag-v1" in workflow
+    assert "$localTagType -cne \"tag\"" in workflow
+    assert "$localTagCommit -cne $releaseCommit" in workflow
+    assert "$reviewedMain -cne $releaseCommit" in workflow
+    assert "$tagIdentity.tag_object -cne $localTagObject" in workflow
+    assert '$tagIdentity.message -cne "Release $env:LABEL_MATCH_RELEASE_TAG"' in workflow
+    assert "Qualified-ZIP-SHA256" not in workflow
 
 
-def test_full_ci_runs_regression_once_and_keeps_physical_display2_separate():
-    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-    release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+def test_tag_workflow_boundedly_waits_for_exact_external_prerelease():
+    workflow = _workflow()
+
+    assert "Wait boundedly for externally published frozen prerelease" in workflow
+    assert "$attemptLimit = 180" in workflow
+    assert "Start-Sleep -Seconds 10" in workflow
+    assert "within 1800 seconds" in workflow
+    assert "$candidateRelease.draft -eq $false" in workflow
+    assert "$candidateRelease.prerelease -eq $true" in workflow
+    assert "$candidateRelease.immutable -eq $true" in workflow
+    assert "$assetsReady" in workflow
+    assert "$_.digest -cnotmatch '^sha256:[0-9a-f]{64}$'" in workflow
+    assert 'releases/tags/$env:LABEL_MATCH_RELEASE_TAG' in workflow
+    assert workflow.count('X-GitHub-Api-Version: 2026-03-10') == 2
+    assert 'repos/$env:GITHUB_REPOSITORY/immutable-releases' not in workflow
+    assert "$release.immutable -ne $true" in workflow
+    assert "$release.draft -ne $false" in workflow
+    assert "$release.prerelease -ne $true" in workflow
+    assert "$release.immutable -ne $true" in workflow
+    assert 'git ls-remote origin "refs/heads/main"' in workflow
+    assert "$remoteMainCommit -cne $releaseCommit" in workflow
+    assert '$release.target_commitish -cne "main"' in workflow
+    assert "$release.target_commitish -cne $releaseCommit" in workflow
+    assert '"Commit: $releaseCommit"' in workflow
+    assert '"Tree: $releaseTree"' in workflow
+    assert "'^Artifact-SHA256: ([0-9a-f]{64})$'" in workflow
+    assert "'^Artifact-Size: ([1-9][0-9]*)$'" in workflow
+    assert "'^Main-EXE-SHA256: ([0-9a-f]{64})$'" in workflow
+    assert '"Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION"' in workflow
+    assert "release title or exact identity notes are not canonical" in workflow
+    assert "release must contain exactly the frozen ZIP and checksum" in workflow
+    assert "$actualAssets.Count -ne 2" in workflow
+    assert '$asset.state -cne "uploaded"' in workflow
+    assert "$zipAsset[0].size -ne $artifactSize" in workflow
+    assert '$zipAsset[0].digest -cne "sha256:$artifactSha256"' in workflow
+
+
+def test_tag_workflow_downloads_only_zip_and_checksum_to_fresh_temp():
+    workflow = _workflow()
+
+    assert 'gh release download "$env:LABEL_MATCH_RELEASE_TAG"' in workflow
+    assert '--pattern "$zipName"' in workflow
+    assert '--pattern "$checksumName"' in workflow
+    assert 'label-match-frozen-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT' in workflow
+    assert "Fresh frozen-asset path already exists" in workflow
+    assert "$downloaded.Count -ne 2" in workflow
+    assert "Clean downloaded verification inputs" in workflow
+    assert "Refusing to clean frozen assets outside RUNNER_TEMP" in workflow
+
+
+def test_tag_workflow_invokes_independent_standard_library_verifier():
+    workflow = _workflow()
+
+    assert "python -I -S tools/verify_frozen_release_assets.py" in workflow
+    assert "--archive (Join-Path $env:FROZEN_ASSET_ROOT $env:FROZEN_ZIP_NAME)" in workflow
+    assert "--checksum (Join-Path $env:FROZEN_ASSET_ROOT $env:FROZEN_CHECKSUM_NAME)" in workflow
+    assert '--expected-commit "$releaseCommit"' in workflow
+    assert '--expected-tree "$releaseTree"' in workflow
+    assert '--expected-tag-object "$($tagIdentity.tag_object)"' in workflow
+    assert '--expected-source-epoch "$sourceEpoch"' in workflow
+    assert '--expected-archive-sha256 "$env:EXPECTED_ARCHIVE_SHA256"' in workflow
+    assert '--expected-archive-size "$env:EXPECTED_ARCHIVE_SIZE"' in workflow
+    assert '--expected-main-exe-sha256 "$env:EXPECTED_MAIN_EXE_SHA256"' in workflow
+    assert "--report \"$env:RUNNER_TEMP\\label-match-frozen-release-verification.json\"" in workflow
+    assert "external_phase1_receipt_parity=REQUIRED_NOT_TESTED" in workflow
+    assert "--qualification-receipt" not in workflow
+
+
+def test_final_remote_metadata_recheck_is_fail_closed():
+    workflow = _workflow()
+
+    assert "Recheck immutable remote metadata after byte verification" in workflow
+    assert "release or asset IDs/sizes/digests changed during verification" in workflow
+    assert 'git ls-remote origin "refs/tags/$env:LABEL_MATCH_RELEASE_TAG"' in workflow
+    assert 'git ls-remote origin "refs/tags/$env:LABEL_MATCH_RELEASE_TAG^{}"' in workflow
+    assert 'git ls-remote origin "refs/heads/main"' in workflow
+    assert "$tagObject -cne $tagIdentity.tag_object" in workflow
+    assert "$peeledCommit -cne $releaseCommit" in workflow
+    assert "$mainCommit -cne $releaseCommit" in workflow
+
+
+def test_every_external_action_is_pinned_to_a_full_commit():
+    uses = re.findall(r"(?m)^\s+uses:\s+([^\s#]+)", _workflow())
+
+    assert uses
+    assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)
+
+
+def test_local_gate_remains_authoritative_with_hosted_and_physical_evidence_separate():
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    release = _workflow()
 
     assert "pull_request:" not in ci
     assert "workflow_dispatch:" not in ci
@@ -153,680 +157,7 @@ def test_full_ci_runs_regression_once_and_keeps_physical_display2_separate():
     assert ci.count("python -m pytest") == 2
     assert "if: steps.ui_scope.outputs.required == 'true'" in ci
     assert "test_live_submission_retry_hides_raw_server_error" in ci
-    assert ci.count("test_display2_1366_scale100") == 1
-    assert "py_compile" not in ci
-    assert "Run full regression" not in release
-    assert "Require successful exact-SHA main Full CI" in release
-    assert "actions/workflows/ci.yml/runs" in release
-    assert "-f status=completed" in release
-    assert "-f status=success" not in release
-    assert "if ($matches.Count -ne 1)" in release
-    assert "$run.run_attempt -ne 1" in release
-    assert '$run.conclusion -cne "success"' in release
-    assert not Path(".github/CODEOWNERS").exists()
-
-
-def test_release_workflow_generates_private_update_manifest():
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    uses_values = re.findall(r"(?m)^\s+uses:\s+([^\s#]+)", workflow)
-
-    assert uses_values
-    assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses_values)
-    assert "softprops/action-gh-release@v2" not in workflow
-    assert "- name: Generate private update manifest" in workflow
-    assert "- name: Generate release SHA256 checksum" in workflow
-    assert "Get-FileHash -Algorithm SHA256" in workflow
-    assert "kmtech-private-update-manifest-v1" in workflow
-    assert "app_id = \"Label_Match\"" in workflow
-    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL" in workflow
-    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must use HTTPS." in workflow
-    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include userinfo." in workflow
-    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include fragments." in workflow
-    assert "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not contain query strings." in workflow
-    assert "not GitHub release storage" in workflow
-    assert ".githubusercontent.com" in workflow
-    assert "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE" in workflow
-    assert "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE must be an integer from 0 to 100." in workflow
-    assert "PRIVATE_UPDATE_ALLOW_PC_IDS" in workflow
-    assert "PRIVATE_UPDATE_DENY_PC_IDS" in workflow
-    assert "ConvertTo-CanonicalPcIds" in workflow
-    assert "^[a-z0-9][a-z0-9._-]{0,63}$" in workflow
-    assert "must not overlap" in workflow
-    assert "$artifactUrl = \"$baseUrl/$zipPath\"" in workflow
-    assert "\"$hash  $zipPath\" | Set-Content -Encoding utf8NoBOM \"$zipPath.sha256\"" in workflow
-    assert "releases/download" not in workflow
-    assert "percentage = $rolloutPercentage" in workflow
-    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json" in workflow
-    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip" in workflow
-    assert "- name: Sign private update manifest" in workflow
-    assert "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY" in workflow
-    assert "- name: Promote private update feed after GitHub Release" in workflow
-    assert "COMPANY_UPDATE_UPLOAD_TOKEN" in workflow
-    assert "COMPANY_UPDATE_UPLOAD_ORIGIN_IP" in workflow
-    assert "--resolve" in workflow
-    assert "PRIVATE_UPDATE_APP_SLUG: label_match" in workflow
-    assert "curl.exe" in workflow
-    assert "curl.exe --config -" in workflow
-    assert '"-H", "Authorization: Bearer' not in workflow
-    assert "- name: Attach install update settings" in workflow
-    assert "dist/Label_Match/config/app_settings.json" in workflow
-    assert "PRIVATE_UPDATE_MANIFEST_URL" in workflow
-    assert "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY" in workflow
-    assert 'provider = "private_manifest"' in workflow
-    assert 'provider = "github"' in workflow
-    assert "PRIVATE_UPDATE_MANIFEST_URL and PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be set together." in workflow
-    assert "WINDOWS_CODE_SIGNING_PFX_BASE64" not in workflow
-    assert "WINDOWS_CODE_SIGNING_PFX_PASSWORD" not in workflow
-    assert "WINDOWS_CODE_SIGNING_CERT_THUMBPRINT" not in workflow
-    assert "WINDOWS_CODE_SIGNING_TIMESTAMP_URL" not in workflow
-    assert "tools/sign_release_executables.ps1" not in workflow
-    assert "Label_Match/authenticode-manifest.json" not in workflow
-    assert "tools/verify_staged_release_installer.py" in workflow
-    assert "tests/test_staged_release_installer.py" in workflow
-    assert "zipfile.ZipFile" in workflow
-    assert "archive.testzip()" in workflow
-    assert "archive membership differs from staged package" in workflow
-    assert "unsafe archive path" in workflow
-    assert "case-insensitive package path collision" in workflow
-    assert "archive-verification.json" in workflow
-    assert "Compress-Archive" not in workflow
-
-    manifest_step = workflow.index("- name: Generate private update manifest")
-    release_step = workflow.index("- name: Create Release and Upload Asset")
-    attach_step = workflow.index("- name: Attach install update settings")
-    installer_step = workflow.index("- name: Verify staged installer without system Python")
-    zip_step = workflow.index("- name: Build and verify internal release archive")
-    upload_block = workflow[release_step:]
-
-    assert attach_step < installer_step < zip_step
-    assert manifest_step < release_step
-    assert "files: |" in upload_block
-    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip" in upload_block
-    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip.sha256" in upload_block
-    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.archive-verification.json" in upload_block
-    assert "Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json" not in upload_block
-    assert "tag_name: ${{ env.LABEL_MATCH_RELEASE_TAG }}" in upload_block
-
-
-def test_internal_release_archive_script_verifies_membership_bytes_and_paths(tmp_path):
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    step_start = workflow.index("- name: Build and verify internal release archive")
-    step_end = workflow.index("\n      - name:", step_start + 1)
-    step = workflow[step_start:step_end]
-    embedded = textwrap.dedent(step.split("$script = @'", 1)[1].split("'@", 1)[0]).strip()
-
-    package = tmp_path / "dist" / "Label_Match"
-    required = (
-        "Label_Match.exe",
-        "KMTechActiveWorkProbe.exe",
-        "KMTechActiveWorkProbe.independent.build-identity.json",
-        "KMTechActiveWorkProbe.integrated.build-identity.json",
-        "config/app_settings.json",
-        "_internal/config/app_settings.json",
-            "release-identity.json",
-            "build-identity.json",
-            "build-compatibility.json",
-            "build-manifest.json",
-            "contract.lock.json",
-            "INSTALL_THIS_PC.ps1",
-        "install_label_match_direct_sync.ps1",
-        "direct_sync_push.py",
-        "direct_sync_runtime.py",
-        "producer_runtime_client.py",
-        "direct_sync_operator.py",
-        "staged-installer-verification.json",
-        "tools/release_cli_tools_manifest.json",
-        "tools/direct_sync_relay_runner.exe",
-        "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-        "tools/register_label_match_worker_pc.exe",
-        "KMTech_Logistics_Profile_Install.exe",
-        "KMTech_Logistics_Profile_Check.exe",
-        "Label_Match_Protected_Admin_Install.exe",
-        "PROVISION_PROTECTED_ADMIN_ACL.ps1",
-        "PROTECTED_ADMIN_PROVISIONING.md",
-        "CENTRAL_LOGISTICS_PC_ROLLOUT.md",
-        "logistics_runtime_profile.py",
-        "tools/install_logistics_runtime_profile.py",
-        "tools/check_logistics_runtime_profile.py",
-    )
-    for index, relative in enumerate(required, start=1):
-        target = package / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(f"fixture-{index}".encode())
-    archive = tmp_path / "Label_Match-v2.0.36.zip"
-    report = tmp_path / "Label_Match-v2.0.36.archive-verification.json"
-    env = os.environ.copy()
-    env.update(
-        {
-            "LABEL_MATCH_PACKAGE_ROOT": str(package),
-            "LABEL_MATCH_ARCHIVE_PATH": str(archive),
-            "LABEL_MATCH_ARCHIVE_REPORT": str(report),
-            "LABEL_MATCH_SOURCE_EPOCH": "1700000000",
-        }
-    )
-
-    completed = subprocess.run(
-        [sys.executable, "-c", embedded],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    result = json.loads(report.read_text(encoding="utf-8"))
-    assert result["status"] == "PASS"
-    assert result["release_trust"] == "internal_unsigned"
-    assert result["crc_verified"] is True
-    assert result["byte_parity"] is True
-    with zipfile.ZipFile(archive) as built:
-        assert built.testzip() is None
-        assert set(built.namelist()) == {f"Label_Match/{name}" for name in required}
-
-
-def test_release_workflow_requires_explicit_private_feed_publish_opt_in():
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    explicit_opt_in = "${{ steps.private_feed.outputs.enabled == 'true' }}"
-
-    assert "PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ vars.ENABLE_PRIVATE_UPDATE_FEED_PUBLISH }}" in workflow
-    assert "id: private_feed" in workflow
-    assert "ENABLE_PRIVATE_UPDATE_FEED_PUBLISH must be exactly 'true', 'false', or unset." in workflow
-    assert '$enabled = if ($privateFeedMode -ceq "true") { "true" } else { "false" }' in workflow
-    assert '"enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append' in workflow
-    assert "PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ steps.private_feed.outputs.enabled }}" in workflow
-    assert '$publishPrivateFeed = $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE -ceq "true"' in workflow
-    assert 'foreach ($name in @("PRIVATE_UPDATE_ARTIFACT_BASE_URL", "COMPANY_UPDATE_UPLOAD_URL"))' in workflow
-    assert 'throw "$name is required when ENABLE_PRIVATE_UPDATE_FEED_PUBLISH is true."' in workflow
-    assert workflow.count(f"if: {explicit_opt_in}") == 2
-    assert "if: steps.private_feed.outputs.enabled == 'true'" in workflow
-    assert "if: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL != '' }}" not in workflow
-
-    attach_block = workflow[
-        workflow.index("- name: Attach install update settings"):
-        workflow.index("- name: Verify staged installer without system Python")
-    ]
-    manifest_block = workflow[
-        workflow.index("- name: Generate private update manifest"):
-        workflow.index("- name: Sign private update manifest")
-    ]
-    sign_block = workflow[
-        workflow.index("- name: Sign private update manifest"):
-        workflow.index("- name: Create Release and Upload Asset")
-    ]
-    publish_block = workflow[
-        workflow.index("- name: Promote private update feed after GitHub Release"):
-    ]
-
-    assert 'provider = "github"' in attach_block
-    assert 'provider = "private_manifest"' in attach_block
-    assert f"if: {explicit_opt_in}" in manifest_block
-    assert f"if: {explicit_opt_in}" in sign_block
-    assert "if: steps.private_feed.outputs.enabled == 'true'" in publish_block
-    assert workflow.index("- name: Create Release and Upload Asset") < workflow.index(
-        "- name: Promote private update feed after GitHub Release"
-    )
-    assert "canary_release.outputs" not in manifest_block
-    assert "canary_release.outputs" not in sign_block
-    assert "canary_release.outputs" not in publish_block
-
-    assert "id: canary_release" not in workflow
-    assert "PRIVATE_UPDATE_CANARY_PRERELEASE" not in workflow
-    release_block = workflow[
-        workflow.index("- name: Create Release and Upload Asset") :
-    ]
-    assert "prerelease: true" in release_block
-    assert "prerelease: false" not in release_block
-    assert "make_latest: false" in release_block
-    assert "make_latest: legacy" not in release_block
-
-
-def test_private_feed_pc_id_lists_are_canonical_deduplicated_and_fail_closed():
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    start = workflow.index("function ConvertTo-CanonicalPcIds {")
-    end = workflow.index('$artifactUrl = "$baseUrl/$zipPath"', start)
-    parser_script = textwrap.dedent(workflow[start:end]) + """
-[ordered]@{
-  allow = @($allowPcIds)
-  deny = @($denyPcIds)
-} | ConvertTo-Json -Compress
-"""
-    powershell = next(
-        (
-            executable
-            for name in ("pwsh", "powershell", "powershell.exe")
-            if (executable := shutil.which(name))
-        ),
-        None,
-    )
-    assert powershell is not None
-
-    def run_parser(allow, deny):
-        env = os.environ.copy()
-        env["PRIVATE_UPDATE_ALLOW_PC_IDS"] = allow
-        env["PRIVATE_UPDATE_DENY_PC_IDS"] = deny
-        encoded = base64.b64encode(parser_script.encode("utf-16le")).decode("ascii")
-        return subprocess.run(
-            [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-            check=False,
-        )
-
-    accepted = run_parser(" TEST1, test1\nLINE-A_01 ", " BLOCKED-1,blocked-1 ")
-    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-    parsed = json.loads(accepted.stdout.strip())
-    assert parsed == {"allow": ["test1", "line-a_01"], "deny": ["blocked-1"]}
-
-    invalid = run_parser("test1,bad token", "")
-    assert invalid.returncode != 0
-    assert "invalid PC id token" in invalid.stderr
-
-    overlap = run_parser("TEST1", "test1")
-    assert overlap.returncode != 0
-    assert "must not overlap" in overlap.stderr
-
-
-def test_tag_release_has_no_stable_or_latest_bypass():
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    release_start = workflow.index("- name: Create Release and Upload Asset")
-    release_end = workflow.index(
-        "- name: Promote private update feed after GitHub Release",
-        release_start,
-    )
-    release_block = workflow[release_start:release_end]
-
-    assert "prerelease: true" in release_block
-    assert "make_latest: false" in release_block
-    assert "PRIVATE_UPDATE_CANARY_PRERELEASE" not in workflow
-    assert "steps.canary_release.outputs" not in workflow
-    assert "prerelease: false" not in release_block
-    assert "make_latest: legacy" not in release_block
-
-
-def test_private_feed_rollout_gate_accepts_only_exact_zero(tmp_path):
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    start = workflow.index("- name: Enforce private feed TEST1 rollout boundary")
-    end = workflow.index("\n      - name:", start + 1)
-    step = workflow[start:end]
-    script = textwrap.dedent(step.split("        run: |\n", 1)[1]).strip()
-
-    assert "if: steps.private_feed.outputs.enabled == 'true'" in step
-    assert "ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}" in step
-    assert '$env:ROLLOUT_PERCENTAGE -cne "0"' in script
-
-    powershell = next(
-        (
-            executable
-            for name in ("pwsh", "powershell", "powershell.exe")
-            if (executable := shutil.which(name))
-        ),
-        None,
-    )
-    assert powershell is not None
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-
-    def run_gate(value):
-        env = os.environ.copy()
-        if value is None:
-            env.pop("ROLLOUT_PERCENTAGE", None)
-        else:
-            env["ROLLOUT_PERCENTAGE"] = value
-        return subprocess.run(
-            [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-            check=False,
-        )
-
-    accepted = run_gate("0")
-    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-    for value in (None, "", "00", "1", "100", " 0 "):
-        rejected = run_gate(value)
-        assert rejected.returncode != 0
-        assert "must use PRIVATE_UPDATE_ROLLOUT_PERCENTAGE=0" in rejected.stderr
-
-
-def test_release_workflow_self_verifies_private_manifest_signature_before_publish(tmp_path):
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    sign_step = workflow.index("- name: Sign private update manifest")
-    publish_step = workflow.index("- name: Promote private update feed after GitHub Release")
-    sign_block = workflow[sign_step:publish_step]
-    next_step = workflow.index("\n      - name:", sign_step + 1)
-    sign_step_block = workflow[sign_step:next_step]
-
-    assert sign_step < publish_step
-    assert sign_step < workflow.index("- name: Create Release and Upload Asset") < publish_step
-    assert (
-        "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: "
-        "${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}"
-    ) in sign_block
-    verify_expression = (
-        "Ed25519PublicKey.from_public_bytes(public_key).verify(signature, canonical)"
-    )
-    write_expression = (
-        'manifest_path.with_name(manifest_path.name + ".sig").write_bytes(signature)'
-    )
-    assert verify_expression in sign_block
-    assert write_expression in sign_block
-    assert sign_block.index(verify_expression) < sign_block.index(write_expression)
-    assert "signature does not match" in sign_block
-    assert "if ($LASTEXITCODE -ne 0)" in sign_block
-    assert 'throw "Private update manifest signature self-test failed."' in sign_block
-    assert "[string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)" in sign_block
-    assert 'throw "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY variable is required."' in sign_block
-    assert "if ($sig.Length -ne 64)" in sign_block
-    assert 'throw "Private update manifest signature must be 64 bytes."' in sign_block
-    embedded_script = textwrap.dedent(
-        sign_block.split("$script = @'", 1)[1].split("'@", 1)[0]
-    ).strip()
-    powershell_script = textwrap.dedent(
-        sign_step_block.split("        run: |\n", 1)[1]
-    ).strip()
-
-    manifest = {
-        "schema_version": "kmtech-private-update-manifest-v1",
-        "version": "v-test-한글",
-        "artifact": {
-            "name": "라벨-✓.zip",
-            "sha256": "a" * 64,
-            "metadata": {"labels": ["정상", "검증"], "enabled": True},
-        },
-    }
-    manifest_path = tmp_path / "Label_Match-v-test.manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    signing_key = Ed25519PrivateKey.generate()
-    private_key_hex = signing_key.private_bytes_raw().hex()
-    public_key_hex = signing_key.public_key().public_bytes_raw().hex()
-
-    env = os.environ.copy()
-    env["PRIVATE_UPDATE_MANIFEST_PATH"] = str(manifest_path)
-    env["PRIVATE_UPDATE_MANIFEST_SIGNING_KEY"] = private_key_hex
-    env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = public_key_hex
-    env["GITHUB_ENV"] = str(tmp_path / "github-env.txt")
-    matching = subprocess.run(
-        [sys.executable, "-c", embedded_script],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
-        check=False,
-    )
-    matching_output = matching.stdout + matching.stderr
-    assert matching.returncode == 0, matching_output
-    assert private_key_hex not in matching_output
-    assert public_key_hex not in matching_output
-    generated_signature = manifest_path.with_name(manifest_path.name + ".sig").read_bytes()
-    assert len(generated_signature) == 64
-    parsed_manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-
-    module_path = Path(__file__).resolve().parents[1] / "Label_Match.py"
-    spec = importlib.util.spec_from_file_location("label_match_release_workflow_test", module_path)
-    assert spec is not None and spec.loader is not None
-    label_match_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(label_match_module)
-    label_match_module._verify_update_manifest_signature(
-        parsed_manifest,
-        generated_signature,
-        public_key_hex,
-    )
-    known_good_signature = generated_signature
-    mutated_manifest = dict(manifest)
-    mutated_manifest["version"] = "v-test-변경"
-    manifest_path.write_text(
-        json.dumps(mutated_manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    cases = (
-        (
-            Ed25519PrivateKey.generate().public_key().public_bytes_raw().hex(),
-            "signature does not match",
-        ),
-        ("not-hex", "must be hex"),
-        ("00" * 31, "must decode to 32 bytes"),
-    )
-    for configured_public_key, expected_error in cases:
-        env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = configured_public_key
-        rejected = subprocess.run(
-            [sys.executable, "-c", embedded_script],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-            check=False,
-        )
-        rejected_output = rejected.stdout + rejected.stderr
-        assert rejected.returncode != 0
-        assert expected_error in rejected_output
-        assert private_key_hex not in rejected_output
-        assert configured_public_key not in rejected_output
-        assert manifest_path.with_name(manifest_path.name + ".sig").read_bytes() == known_good_signature
-
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    powershell = next(
-        (
-            executable
-            for name in ("pwsh", "powershell", "powershell.exe")
-            if (executable := shutil.which(name))
-        ),
-        None,
-    )
-    if powershell:
-        encoded_command = base64.b64encode(
-            powershell_script.encode("utf-16le")
-        ).decode("ascii")
-        command = [
-            powershell,
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-            encoded_command,
-        ]
-        env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = public_key_hex
-        wrapper_matching = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-            check=False,
-        )
-        wrapper_matching_output = wrapper_matching.stdout + wrapper_matching.stderr
-        assert wrapper_matching.returncode == 0, wrapper_matching_output
-        assert private_key_hex not in wrapper_matching_output
-        assert public_key_hex not in wrapper_matching_output
-        wrapper_signature = manifest_path.with_name(manifest_path.name + ".sig").read_bytes()
-        label_match_module._verify_update_manifest_signature(
-            parsed_manifest,
-            wrapper_signature,
-            public_key_hex,
-        )
-        wrapper_good_signature = wrapper_signature
-        manifest_path.write_text(
-            json.dumps(mutated_manifest, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-        for configured_public_key, expected_error in cases:
-            env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = configured_public_key
-            wrapper_rejected = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=30,
-                check=False,
-            )
-            wrapper_output = wrapper_rejected.stdout + wrapper_rejected.stderr
-            assert wrapper_rejected.returncode != 0
-            assert expected_error in wrapper_output
-            assert "self-test failed" in wrapper_output
-            assert private_key_hex not in wrapper_output
-            assert configured_public_key not in wrapper_output
-            assert (
-                manifest_path.with_name(manifest_path.name + ".sig").read_bytes()
-                == wrapper_good_signature
-            )
-
-        for missing_value in (None, ""):
-            missing_env = env.copy()
-            if missing_value is None:
-                missing_env.pop("PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY", None)
-            else:
-                missing_env["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"] = missing_value
-            wrapper_missing = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                env=missing_env,
-                timeout=30,
-                check=False,
-            )
-            missing_output = wrapper_missing.stdout + wrapper_missing.stderr
-            assert wrapper_missing.returncode != 0
-            assert "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY variable is required" in missing_output
-            assert private_key_hex not in missing_output
-
-
-def test_staged_release_relay_files_are_importable_and_archived(tmp_path):
-    source_root = Path.cwd()
-    staged_root = tmp_path / "dist" / "Label_Match"
-    staged_tools = staged_root / "tools"
-    staged_tools.mkdir(parents=True)
-
-    shutil.copy2(source_root / "install_label_match_direct_sync.ps1", staged_root / "install_label_match_direct_sync.ps1")
-    for filename in [
-        "direct_sync_push.py",
-        "direct_sync_runtime.py",
-        "producer_runtime_client.py",
-        "direct_sync_operator.py",
-    ]:
-        shutil.copy2(source_root / filename, staged_root / filename)
-    for filename in [
-        "direct_sync_relay_runner.py",
-        "direct_sync_relay_operator.py",
-        "direct_sync_relay_install_pack.py",
-        "direct_sync_phase_g_label_match_runtime_report.py",
-        "register_label_match_worker_pc.py",
-        "install_logistics_runtime_profile.py",
-        "check_logistics_runtime_profile.py",
-    ]:
-        shutil.copy2(source_root / "tools" / filename, staged_tools / filename)
-    shutil.copy2(source_root / "logistics_runtime_profile.py", staged_root / "logistics_runtime_profile.py")
-    shutil.copy2(source_root / "docs" / "LOGISTICS_RUNTIME_PROFILE.md", staged_root / "CENTRAL_LOGISTICS_PC_ROLLOUT.md")
-    shutil.copy2(source_root / "tools" / "provision_protected_admin_acl.ps1", staged_root / "PROVISION_PROTECTED_ADMIN_ACL.ps1")
-    shutil.copy2(source_root / "docs" / "PROTECTED_ADMIN_PROVISIONING.md", staged_root / "PROTECTED_ADMIN_PROVISIONING.md")
-    for filename in [
-        "KMTech_Logistics_Profile_Install.exe",
-        "KMTech_Logistics_Profile_Check.exe",
-        "Label_Match_Protected_Admin_Install.exe",
-    ]:
-        (staged_root / filename).write_bytes(b"fixture exe")
-    for filename in ["direct_sync_relay_runner.exe", "register_label_match_worker_pc.exe"]:
-        (staged_tools / filename).write_bytes(b"fixture exe")
-    install_payload = staged_tools / "direct_sync_relay_install_pack"
-    install_payload.mkdir()
-    (install_payload / "direct_sync_relay_install_pack.exe").write_bytes(b"fixture exe")
-    (staged_tools / "release_cli_tools_manifest.json").write_text("{}\n", encoding="utf-8")
-
-    completed = subprocess.run(
-        [sys.executable, "-I", str(staged_tools / "direct_sync_relay_runner.py"), "--help"],
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-    )
-
-    assert completed.returncode == 0
-    assert "Label_Match direct-sync relay runner" in completed.stdout
-
-    operator_completed = subprocess.run(
-        [sys.executable, "-I", str(staged_tools / "direct_sync_relay_operator.py"), "--help"],
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-    )
-    assert operator_completed.returncode == 0
-    assert "Label_Match direct-sync relay operator control" in operator_completed.stdout
-
-    zip_path = tmp_path / "Label_Match-test.zip"
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        for path in staged_root.rglob("*"):
-            if path.is_file():
-                archive.write(path, path.relative_to(tmp_path / "dist").as_posix())
-
-    with zipfile.ZipFile(zip_path) as archive:
-        names = set(archive.namelist())
-    assert {
-        "Label_Match/direct_sync_push.py",
-        "Label_Match/direct_sync_runtime.py",
-        "Label_Match/producer_runtime_client.py",
-        "Label_Match/direct_sync_operator.py",
-        "Label_Match/install_label_match_direct_sync.ps1",
-        "Label_Match/tools/direct_sync_relay_runner.py",
-        "Label_Match/tools/direct_sync_relay_operator.py",
-        "Label_Match/tools/direct_sync_relay_install_pack.py",
-        "Label_Match/tools/direct_sync_phase_g_label_match_runtime_report.py",
-        "Label_Match/tools/register_label_match_worker_pc.py",
-        "Label_Match/tools/install_logistics_runtime_profile.py",
-        "Label_Match/tools/check_logistics_runtime_profile.py",
-        "Label_Match/logistics_runtime_profile.py",
-        "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md",
-        "Label_Match/KMTech_Logistics_Profile_Install.exe",
-        "Label_Match/KMTech_Logistics_Profile_Check.exe",
-        "Label_Match/Label_Match_Protected_Admin_Install.exe",
-        "Label_Match/PROVISION_PROTECTED_ADMIN_ACL.ps1",
-        "Label_Match/PROTECTED_ADMIN_PROVISIONING.md",
-        "Label_Match/tools/direct_sync_relay_runner.exe",
-        "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-        "Label_Match/tools/register_label_match_worker_pc.exe",
-        "Label_Match/tools/release_cli_tools_manifest.json",
-    }.issubset(names)
-
-
-def test_one_step_installer_uses_bundled_tools_ip_allowlist_and_programdata_paths():
-    script = Path("install_label_match_direct_sync.ps1").read_text(encoding="utf-8")
-
-    assert '"direct_sync_relay_install_pack\\direct_sync_relay_install_pack.exe"' in script
-    assert "direct_sync_relay_runner.exe" in script
-    assert "direct_sync_relay_runner.py" in script
-    assert "register_label_match_worker_pc.exe" in script
-    assert "EnrollmentTokenFile" in script
-    assert "enrollment_token.txt" not in script
-    assert "Test-Path -LiteralPath $tokenFile" not in script
-    assert "Get-MachineStableSuffix" in script
-    assert "label-match-{0}-{1}" in script
-    assert '"--source-host-id", $sourceHostId' in script
-    assert "C:\\ProgramData\\KMTech\\DirectSync\\$sourceHostId" not in script
-    assert "direct-sync-relay-$sourceHostId" not in script
-    assert "C:\\ProgramData\\KMTech\\DirectSync\\label_match" in script
-    assert "direct-sync-relay-label-match" in script
-    assert "C:\\KMTech\\Apps\\Label_Match\\current" in script
-    assert "bin\\run_direct-sync-relay-label-match.vbs" in script
-    assert "queue\\direct_sync_relay.sqlite3" in script
-    assert "field_layout_contract" in script
-    assert "AllowNoncanonicalLayoutForTest" in script
-    assert "KMTECH_FACTORY_INSTALL_TEST_MODE" in script
-    assert "C:\\ProgramData\\KMTech\\Label_Match\\data" in script
-    assert "custom_save_path" in script
-    assert "--self-enroll" in script
-    assert "--python-exe" in script
-    assert '--runner-exe", $runnerExe' in script
-    assert "--registration-exe" in script
-    assert "--app-settings-path" in script
-    assert '"_internal"' in script
-    assert "--confirm-production-install" not in script
+    assert "test_display2_1366_scale100" in ci
+    assert "Record exact-SHA Hosted CI status without making it a release gate" in release
+    assert "hosted_ci=WAIVED_NOT_TESTED" in release
+    assert "TEST1" not in release

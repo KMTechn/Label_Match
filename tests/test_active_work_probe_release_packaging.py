@@ -1,23 +1,22 @@
 import ast
-import re
+import hashlib
+import json
 from pathlib import Path
+
+import pytest
+
+from tools import build_release_archive as archive_builder
+from tools import verify_frozen_release_assets as frozen_verifier
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "release.yml"
 WRAPPER_PATH = ROOT / "tools" / "active_work_probe.py"
 PROBE_FILES = (
     "KMTechActiveWorkProbe.exe",
     "KMTechActiveWorkProbe.independent.build-identity.json",
     "KMTechActiveWorkProbe.integrated.build-identity.json",
 )
-ALL_APPS = "Inspection_worker,Rework_worker,Defect_Inspection,Container_Audit,Label_Match"
-
-
-def _step(workflow: str, name: str) -> str:
-    start = workflow.index(f"- name: {name}")
-    end = workflow.find("\n      - name:", start + 1)
-    return workflow[start:] if end < 0 else workflow[start:end]
+ALL_APPS = ["Inspection_worker", "Rework_worker", "Defect_Inspection", "Container_Audit", "Label_Match"]
 
 
 def test_active_work_probe_wrapper_is_only_the_canonical_cli_entrypoint():
@@ -33,81 +32,55 @@ def test_active_work_probe_wrapper_is_only_the_canonical_cli_entrypoint():
     assert "copy" not in source.lower()
 
 
-def test_release_builds_onefile_probe_and_proves_both_identity_scopes():
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    block = _step(workflow, "Build and verify active-work probe")
-
-    assert '--name "KMTechActiveWorkProbe"' in block
-    assert "--onefile `" in block
-    assert "--console `" in block
-    assert '--distpath dist/Label_Match `' in block
-    assert "--workpath build/active_work_probe_pyinstaller `" in block
-    assert "--specpath build/active_work_probe_pyinstaller `" in block
-    bundle_path_assignment = (
-        '$contractBundlePath = (Resolve-Path -LiteralPath '
-        '"kmtech_factory_contracts/bundle").Path'
+def test_frozen_release_verifier_proves_both_probe_identity_scopes(tmp_path):
+    executable = tmp_path / "KMTechActiveWorkProbe.exe"
+    executable.write_bytes(b"probe")
+    probe_sha = hashlib.sha256(b"probe").hexdigest()
+    expected_commit = "1" * 40
+    identities = (
+        (PROBE_FILES[1], "independent", ["Label_Match"]),
+        (PROBE_FILES[2], "integrated", ALL_APPS),
     )
-    assert bundle_path_assignment in block
-    assert block.index(bundle_path_assignment) < block.index("python -m PyInstaller `")
-    assert '--add-data "$contractBundlePath;kmtech_factory_contracts/bundle" `' in block
-    assert '--add-data "kmtech_factory_contracts/bundle;kmtech_factory_contracts/bundle" `' not in block
-    assert "--collect-submodules kmtech_factory_contracts.active_work_probe `" in block
-    assert "tools/active_work_probe.py" in block
+    for filename, mode, supported_apps in identities:
+        payload = {
+            "schema_version": archive_builder.PROBE_SCHEMA,
+            "probe_name": archive_builder.PROBE_NAME,
+            "probe_version": archive_builder.PROBE_VERSION,
+            "probe_artifact_sha256": probe_sha,
+            "probe_source_commit": expected_commit,
+            "workflow_mode": mode,
+            "supported_apps": supported_apps,
+        }
+        (tmp_path / filename).write_bytes(
+            (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+        )
 
-    assert block.count("python -m kmtech_factory_contracts.active_work_probe `") == 2
-    assert block.count("& $probeArtifactPath `") == 2
-    assert block.count("-Mode build-identity `") == 4
-    assert block.count("-WorkflowMode independent `") == 2
-    assert block.count("-WorkflowMode integrated `") == 2
-    assert block.count('-SupportedApps "Label_Match" `') == 2
-    assert f'$allProbeApps = "{ALL_APPS}"' in block
-    assert "$packageRoot = (Resolve-Path -LiteralPath \"dist/Label_Match\").Path" in block
-    assert block.count("[IO.Path]::GetFullPath") >= 5
-    assert "-OutputPath $independentIdentityPath `" in block
-    assert "-OutputPath $integratedIdentityPath `" in block
-    assert block.index("python -m kmtech_factory_contracts.active_work_probe `") < block.index(
-        "& $probeArtifactPath --help"
-    ) < block.index("& $probeArtifactPath `")
+    loaded_validator = frozen_verifier._load_release_archive_validator()
+    assert loaded_validator._validate_probe_identities(
+        tmp_path, expected_commit=expected_commit
+    ) == probe_sha
 
-    for field in (
-        "schema_version",
-        "probe_source_commit",
-        "workflow_mode",
-        "probe_name",
-        "probe_version",
-        "probe_artifact_sha256",
-        "supported_apps",
+    integrated_path = tmp_path / PROBE_FILES[2]
+    integrated = json.loads(integrated_path.read_bytes())
+    integrated["supported_apps"] = ["Label_Match"]
+    integrated_path.write_bytes(
+        (json.dumps(integrated, sort_keys=True) + "\n").encode("utf-8")
+    )
+    with pytest.raises(
+        loaded_validator.ReleaseArchiveError,
+        match="active-work probe identity mismatch",
     ):
-        assert f"identity.{field}" in block
-    assert '$probeName = "KMTechActiveWorkProbe"' in block
-    assert '$probeVersion = "v1.0.3.4"' in block
-    assert "Get-FileHash -LiteralPath $probeArtifactPath -Algorithm SHA256" in block
-    assert "[System.Linq.Enumerable]::SequenceEqual" in block
-    assert "Fresh probe comparison directory already exists" in block
-    assert "[IO.File]::Delete($smokeIdentityPath)" in block
-    assert "[IO.Directory]::Delete($comparisonRoot, $false)" in block
-    assert "Probe comparison cleanup failed" in block
+        loaded_validator._validate_probe_identities(
+            tmp_path, expected_commit=expected_commit
+        )
 
 
-def test_probe_artifacts_are_in_manifest_inventory_and_exact_release_zip_contract():
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    manifest = _step(workflow, "Seal and verify exact factory package manifest")
-    archive = _step(workflow, "Build and verify internal release archive")
-    required_match = re.search(r"required = \{(?P<body>.*?)\n\s*\}", archive, re.DOTALL)
-    assert required_match is not None
-    required = set(re.findall(r'"([^"]+)"', required_match.group("body")))
+def test_probe_artifacts_are_required_by_frozen_archive_contract():
+    loaded_validator = frozen_verifier._load_release_archive_validator()
 
-    for name in PROBE_FILES:
-        assert f"--expected-file {name}" in manifest
-        assert name in required
-        assert f'"Label_Match/{name}"' in workflow
-
-    assert workflow.index("- name: Build and verify active-work probe") < workflow.index(
-        "- name: Seal and verify exact factory package manifest"
-    ) < workflow.index("- name: Build and verify internal release archive")
-    assert 'expected = {f"Label_Match/{name}" for name in relative}' in archive
-    assert "archive membership differs from staged package" in archive
-    assert "archive byte parity failed" in archive
+    assert set(PROBE_FILES) <= frozen_verifier.REQUIRED_MEMBERS
+    assert set(PROBE_FILES) <= loaded_validator.REQUIRED_PACKAGE_MEMBERS
+    assert callable(loaded_validator.validate_release_evidence)
 
 
 def test_probe_does_not_expand_the_existing_direct_sync_tool_set():

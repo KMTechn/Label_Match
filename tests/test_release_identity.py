@@ -31,22 +31,13 @@ def test_read_literal_app_version_requires_one_strict_literal(tmp_path):
         identity.read_literal_app_version(source)
 
 
-@pytest.mark.parametrize(
-    ("tag_type", "annotated"),
-    [("commit", False), ("tag", True)],
-)
-def test_verify_release_identity_accepts_internal_lightweight_or_annotated_tag(
-    tmp_path,
-    monkeypatch,
-    tag_type,
-    annotated,
-):
+def test_verify_release_identity_accepts_annotated_tag(tmp_path, monkeypatch):
     (tmp_path / "Label_Match.py").write_text('APP_VERSION = "v2.0.36"\n', encoding="utf-8")
     commit = "a" * 40
     tree = "b" * 40
     replies = {
         ("rev-parse", "HEAD"): commit,
-        ("cat-file", "-t", "refs/tags/v2.0.36"): tag_type,
+        ("cat-file", "-t", "refs/tags/v2.0.36"): "tag",
         ("rev-parse", "refs/tags/v2.0.36^{commit}"): commit,
         ("rev-parse", "--verify", "refs/remotes/origin/main"): commit,
         ("status", "--porcelain=v1", "--untracked-files=all"): "",
@@ -69,14 +60,24 @@ def test_verify_release_identity_accepts_internal_lightweight_or_annotated_tag(
         "tree": tree,
         "clean_checkout": True,
         "release_trust": "internal_unsigned",
-        "tag_object_type": tag_type,
-        "annotated_tag": annotated,
+        "tag_object_type": "tag",
+        "annotated_tag": True,
         "tag_signature_verified": False,
         "reviewed_ref": "refs/remotes/origin/main",
         "reviewed_ref_commit": commit,
         "reviewed_main_ancestor": True,
         "reviewed_ref_exact": True,
     }
+
+
+def test_verify_release_identity_rejects_local_main_as_reviewed_ref(tmp_path):
+    with pytest.raises(identity.ReleaseIdentityError, match="mirror-tracking origin/main"):
+        identity.verify_release_identity(
+            tmp_path,
+            expected_tag="v2.0.36",
+            expected_sha="a" * 40,
+            reviewed_ref="refs/heads/main",
+        )
 
 
 def test_verify_release_identity_rejects_app_version_mismatch(tmp_path, monkeypatch):
@@ -120,7 +121,7 @@ def test_verify_release_identity_rejects_mismatches(
     (tmp_path / "Label_Match.py").write_text('APP_VERSION = "v2.0.36"\n', encoding="utf-8")
     replies = {
         ("rev-parse", "HEAD"): "a" * 40,
-        ("cat-file", "-t", "refs/tags/v2.0.36"): "commit",
+        ("cat-file", "-t", "refs/tags/v2.0.36"): "tag",
         ("rev-parse", "refs/tags/v2.0.36^{commit}"): "a" * 40,
         ("rev-parse", "--verify", "refs/remotes/origin/main"): "a" * 40,
         ("status", "--porcelain=v1", "--untracked-files=all"): "",
@@ -138,7 +139,8 @@ def test_verify_release_identity_rejects_mismatches(
         )
 
 
-def test_verify_release_identity_rejects_non_tag_object(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tag_type", ["commit", "blob"])
+def test_verify_release_identity_rejects_non_annotated_tag(tmp_path, monkeypatch, tag_type):
     (tmp_path / "Label_Match.py").write_text('APP_VERSION = "v2.0.36"\n', encoding="utf-8")
     commit = "a" * 40
     monkeypatch.setattr(
@@ -146,11 +148,11 @@ def test_verify_release_identity_rejects_non_tag_object(tmp_path, monkeypatch):
         "_git",
         lambda _root, *args: {
             ("rev-parse", "HEAD"): commit,
-            ("cat-file", "-t", "refs/tags/v2.0.36"): "blob",
+            ("cat-file", "-t", "refs/tags/v2.0.36"): tag_type,
         }[args],
     )
 
-    with pytest.raises(identity.ReleaseIdentityError, match="lightweight or annotated"):
+    with pytest.raises(identity.ReleaseIdentityError, match="must be annotated"):
         identity.verify_release_identity(
             tmp_path,
             expected_tag="v2.0.36",
@@ -163,7 +165,7 @@ def test_verify_release_identity_rejects_commit_that_is_not_exact_main(tmp_path,
     commit = "a" * 40
     replies = {
         ("rev-parse", "HEAD"): commit,
-        ("cat-file", "-t", "refs/tags/v2.0.36"): "commit",
+        ("cat-file", "-t", "refs/tags/v2.0.36"): "tag",
         ("rev-parse", "refs/tags/v2.0.36^{commit}"): commit,
         ("rev-parse", "--verify", "refs/remotes/origin/main"): "b" * 40,
     }

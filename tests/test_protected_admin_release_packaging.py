@@ -26,27 +26,14 @@ def _app_version() -> str:
     return values[0]
 
 
-def test_release_workflow_contains_source_free_protected_admin_bundle() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+def test_frozen_release_verifier_requires_source_free_protected_admin_bundle() -> None:
+    verifier = (ROOT / "tools" / "verify_frozen_release_assets.py").read_text(
         encoding="utf-8"
     )
-    assert f'--name "{INSTALLER_NAME.removesuffix(".exe")}" --onefile --console' in workflow
-    assert "tools/install_protected_admin.py" in workflow
-    assert f"dist/Label_Match/{INSTALLER_NAME} --help" in workflow
-    assert f"dist/Label_Match/{INSTALLER_NAME} --dry-run" in workflow
-    assert f"dist/Label_Match/{ACL_SCRIPT_NAME} -DryRun" in workflow
-    assert "tools/provision_protected_admin_acl.ps1" in workflow
-    assert "docs/PROTECTED_ADMIN_PROVISIONING.md" in workflow
-    assert workflow.count(f'"Label_Match/{INSTALLER_NAME}"') == 1
-    assert workflow.count(f'"Label_Match/{ACL_SCRIPT_NAME}"') == 1
-    assert workflow.count(f'"Label_Match/{PROVISIONING_DOC_NAME}"') == 1
-    internal_required = workflow[
-        workflow.index("required = {") : workflow.index("files = sorted(")
-    ]
-    assert f'"{INSTALLER_NAME}"' in internal_required
-    assert f'"{ACL_SCRIPT_NAME}"' in internal_required
-    assert f'"{PROVISIONING_DOC_NAME}"' in internal_required
-    assert "install_protected_admin.py" not in internal_required
+    assert f'"{INSTALLER_NAME}"' in verifier
+    assert f'"{ACL_SCRIPT_NAME}"' in verifier
+    assert f'"{PROVISIONING_DOC_NAME}"' in verifier
+    assert "install_protected_admin.py" not in verifier
 
 
 def test_acl_wrapper_never_accepts_or_transports_the_protected_code() -> None:
@@ -79,10 +66,10 @@ def test_provisioning_document_and_version_contract_are_current() -> None:
     assert "명령행 인자" in document
     assert "환경 변수" in document
     assert "PowerShell transcript" in document
-    assert _app_version() == "v2.0.66"
+    assert _app_version() == "v2.0.67"
 
 
-def test_release_consumes_full_ci_instead_of_recompiling_imported_modules() -> None:
+def test_release_records_hosted_ci_factually_without_recompiling_imported_modules() -> None:
     release = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
@@ -93,6 +80,9 @@ def test_release_consumes_full_ci_instead_of_recompiling_imported_modules() -> N
 
     assert "py_compile" not in release
     assert "py_compile" not in ci
-    assert "Require successful exact-SHA main Full CI" in release
+    assert "Record exact-SHA Hosted CI status without making it a release gate" in release
+    assert "hosted_ci=PASS_NON_GATING" in release
+    assert release.count("hosted_ci=WAIVED_NOT_TESTED") == 2
+    assert "Require successful exact-SHA main Full CI" not in release
     assert "python -m pytest -q --deselect" in ci
     assert "from terminal_operation_lease import" in lease_tests

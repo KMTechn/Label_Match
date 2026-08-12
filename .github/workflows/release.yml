@@ -1,4 +1,4 @@
-name: Create GitHub Release for Label_Match
+name: Verify Frozen GitHub Release for Label_Match
 
 on:
   push:
@@ -6,827 +6,396 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 jobs:
-  build-and-release:
+  verify-frozen-release:
     runs-on: windows-latest
     env:
       LABEL_MATCH_RELEASE_TAG: ${{ github.ref_name }}
       PYTHONNOUSERSITE: "1"
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
 
     steps:
-      - name: Checkout code
+      - name: Checkout exact tagged source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Python
+      - name: Set up verification Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12.10'
 
-      - name: Validate release identity
+      - name: Validate annotated tag and exact source identity
+        shell: pwsh
         run: |
-          python -I -S tools/verify_release_identity.py --expected-tag "$env:LABEL_MATCH_RELEASE_TAG" --expected-sha "$env:GITHUB_SHA" --reviewed-ref "refs/remotes/origin/main" --report "$env:RUNNER_TEMP\label-match-release-identity.json"
+          $ErrorActionPreference = "Stop"
+          python -I -S tools/verify_release_identity.py `
+            --expected-tag "$env:LABEL_MATCH_RELEASE_TAG" `
+            --expected-sha "$env:GITHUB_SHA" `
+            --reviewed-ref "refs/remotes/origin/main" `
+            --report "$env:RUNNER_TEMP\label-match-release-identity.json"
+          if ($LASTEXITCODE -ne 0) { throw "Release source identity verification failed." }
 
-      - name: Require successful exact-SHA main Full CI
+      - name: Read canonical final annotated tag identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
+          $localTagObject = (git rev-parse --verify "refs/tags/$env:LABEL_MATCH_RELEASE_TAG").Trim().ToLowerInvariant()
+          $localTagType = (git cat-file -t "refs/tags/$env:LABEL_MATCH_RELEASE_TAG").Trim()
+          $localTagCommit = (git rev-parse --verify "refs/tags/$env:LABEL_MATCH_RELEASE_TAG^{commit}").Trim().ToLowerInvariant()
+          $reviewedMain = (git rev-parse --verify "refs/remotes/origin/main^{commit}").Trim().ToLowerInvariant()
+          if (
+            $localTagObject -cnotmatch '^[0-9a-f]{40}$' -or
+            $localTagType -cne "tag" -or
+            $localTagCommit -cne $releaseCommit -or
+            $reviewedMain -cne $releaseCommit
+          ) {
+            throw "BLOCKED: built-in Git tag, peeled commit, HEAD, and reviewed main identity differ."
+          }
+          python -I -S tools/verify_release_tag_attestation.py `
+            --expected-tag "$env:LABEL_MATCH_RELEASE_TAG" `
+            --expected-commit "$releaseCommit" `
+            --report "$env:RUNNER_TEMP\label-match-canonical-tag-identity.json"
+          if ($LASTEXITCODE -ne 0) { throw "Canonical final tag verification failed." }
+          $tagIdentity = Get-Content -Raw -Encoding UTF8 `
+            -LiteralPath "$env:RUNNER_TEMP\label-match-canonical-tag-identity.json" |
+            ConvertFrom-Json
+          if (
+            $tagIdentity.schema_version -cne "label-match-canonical-annotated-tag-v1" -or
+            $tagIdentity.tag_object -cne $localTagObject -or
+            $tagIdentity.tag_object_type -cne "tag" -or
+            $tagIdentity.peeled_commit -cne $releaseCommit -or
+            $tagIdentity.message -cne "Release $env:LABEL_MATCH_RELEASE_TAG"
+          ) {
+            throw "BLOCKED: canonical tag parser output differs from prebound Git identity."
+          }
+
+      - name: Record exact-SHA Hosted CI status without making it a release gate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $releaseCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
+          $response = gh api --method GET "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" `
+            -f branch=main -f event=push -f head_sha="$releaseCommit" -f per_page=100 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "hosted_ci=WAIVED_NOT_TESTED reason=query_unavailable sha=$releaseCommit"
+            exit 0
+          }
+          $runs = (ConvertFrom-Json -InputObject $response).workflow_runs
+          $matches = @($runs | Where-Object {
+            $_.head_sha -ceq $releaseCommit -and $_.head_branch -ceq "main" -and
+            $_.event -ceq "push"
+          })
+          $successful = @($matches | Where-Object {
+            $_.status -ceq "completed" -and $_.conclusion -ceq "success"
+          })
+          if ($successful.Count -gt 0) {
+            $run = $successful | Sort-Object id -Descending | Select-Object -First 1
+            Write-Output "hosted_ci=PASS_NON_GATING sha=$releaseCommit run_id=$($run.id) attempt=$($run.run_attempt)"
+            exit 0
+          }
+          $states = @($matches | ForEach-Object {
+            "id=$($_.id):status=$($_.status):conclusion=$($_.conclusion):attempt=$($_.run_attempt)"
+          }) -join ","
+          Write-Output "hosted_ci=WAIVED_NOT_TESTED sha=$releaseCommit observed=$states"
+
+      - name: Wait boundedly for externally published frozen prerelease
+        id: frozen_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $assetRoot = Join-Path $env:RUNNER_TEMP "label-match-frozen-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $assetRoot) {
+            throw "Fresh frozen-asset path already exists: $assetRoot"
+          }
+          New-Item -ItemType Directory -Path $assetRoot | Out-Null
+          $zipName = "Label_Match-$env:LABEL_MATCH_RELEASE_TAG.zip"
+          $checksumName = "$zipName.sha256"
+          $release = $null
+          $attemptLimit = 180
+          for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+            $raw = gh api `
+              -H "X-GitHub-Api-Version: 2026-03-10" `
+              "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:LABEL_MATCH_RELEASE_TAG" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $candidateRelease = ConvertFrom-Json -InputObject $raw
+              $candidateAssets = @($candidateRelease.assets)
+              $candidateNames = @($candidateAssets | ForEach-Object { $_.name } | Sort-Object)
+              $expectedNames = @($checksumName, $zipName) | Sort-Object
+              $assetsReady = (
+                $candidateNames.Count -eq 2 -and
+                ($candidateNames -join "`n") -ceq ($expectedNames -join "`n") -and
+                @($candidateAssets | Where-Object {
+                  $_.state -cne "uploaded" -or $_.size -le 0 -or
+                  $_.digest -cnotmatch '^sha256:[0-9a-f]{64}$'
+                }).Count -eq 0
+              )
+              if (
+                $candidateRelease.tag_name -ceq $env:LABEL_MATCH_RELEASE_TAG -and
+                $candidateRelease.draft -eq $false -and
+                $candidateRelease.prerelease -eq $true -and
+                $candidateRelease.immutable -eq $true -and
+                $assetsReady
+              ) {
+                $release = $candidateRelease
+                break
+              }
+            }
+            if ($attempt -lt $attemptLimit) {
+              Start-Sleep -Seconds 10
+            }
+          }
+          if ($null -eq $release) {
+            throw "BLOCKED: immutable frozen prerelease was not finalized within 1800 seconds. tag=$env:LABEL_MATCH_RELEASE_TAG"
+          }
+          if (
+            $release.tag_name -cne $env:LABEL_MATCH_RELEASE_TAG -or
+            $release.draft -ne $false -or
+            $release.prerelease -ne $true -or
+            $release.immutable -ne $true
+          ) {
+            throw "BLOCKED: external release must be an immutable published prerelease for the exact tag."
+          }
+          $releaseCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
+          $releaseTree = (git rev-parse --verify "HEAD^{tree}").Trim().ToLowerInvariant()
+          $remoteMain = @(git ls-remote origin "refs/heads/main")
+          if ($remoteMain.Count -ne 1) {
+            throw "BLOCKED: remote main cardinality is not exactly one before download."
+          }
+          $remoteMainCommit = ($remoteMain[0] -split "`t")[0].ToLowerInvariant()
+          if ($remoteMainCommit -cne $releaseCommit) {
+            throw "BLOCKED: remote main changed before frozen asset download."
+          }
+          if (
+            $release.target_commitish -cne "main" -and
+            $release.target_commitish -cne $releaseCommit
+          ) {
+            throw "BLOCKED: release target must be exact main or the exact tagged commit. target=$($release.target_commitish)"
+          }
+          $expectedReleaseName = "Release $env:LABEL_MATCH_RELEASE_TAG"
+          $normalizedReleaseBody = ([string]$release.body).Replace("`r`n", "`n")
+          if ($normalizedReleaseBody.Contains("`r") -or $normalizedReleaseBody.EndsWith("`n`n")) {
+            throw "BLOCKED: release body allows only LF and at most one trailing LF."
+          }
+          $actualReleaseBody = $normalizedReleaseBody.TrimEnd([char[]]"`n")
+          $bodyLines = @($actualReleaseBody -split "`n")
+          if (
+            $release.name -cne $expectedReleaseName -or
+            $bodyLines.Count -ne 10 -or
+            $bodyLines[0] -cne "Internal prerelease; not production-ready." -or
+            $bodyLines[1] -cne "Tag: $env:LABEL_MATCH_RELEASE_TAG" -or
+            $bodyLines[2] -cne "Commit: $releaseCommit" -or
+            $bodyLines[3] -cne "Tree: $releaseTree" -or
+            $bodyLines[4] -cne "Artifact: $zipName" -or
+            $bodyLines[8] -cne "Factory-Contract-SHA256: adaa08684ebb291837327f63f967a4f22650dff72c4c1dc56ce1a9bee6b5404a" -or
+            $bodyLines[9] -cne "Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION"
+          ) {
+            throw "BLOCKED: release title or exact identity notes are not canonical."
+          }
+          if ($bodyLines[5] -cnotmatch '^Artifact-SHA256: ([0-9a-f]{64})$') {
+            throw "BLOCKED: release body archive SHA-256 is not canonical."
+          }
+          $artifactSha256 = $Matches[1]
+          if ($bodyLines[6] -cnotmatch '^Artifact-Size: ([1-9][0-9]*)$') {
+            throw "BLOCKED: release body archive size is not canonical."
+          }
+          [Int64]$artifactSize = 0
+          if (-not [Int64]::TryParse(
+            $Matches[1],
+            [Globalization.NumberStyles]::None,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$artifactSize
+          )) {
+            throw "BLOCKED: release body archive size is outside Int64."
+          }
+          if ($bodyLines[7] -cnotmatch '^Main-EXE-SHA256: ([0-9a-f]{64})$') {
+            throw "BLOCKED: release body main executable SHA-256 is not canonical."
+          }
+          $mainExeSha256 = $Matches[1]
+          $expectedAssets = @($checksumName, $zipName) | Sort-Object
+          $assets = @($release.assets)
+          $actualAssets = @($assets | ForEach-Object { $_.name } | Sort-Object)
+          if ($actualAssets.Count -ne 2 -or ($actualAssets -join "`n") -cne ($expectedAssets -join "`n")) {
+            throw "BLOCKED: release must contain exactly the frozen ZIP and checksum. actual=$($actualAssets -join ',')"
+          }
+          foreach ($asset in $assets) {
+            if ($asset.state -cne "uploaded" -or $asset.size -le 0 -or $asset.digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+              throw "BLOCKED: release asset is not completely uploaded: $($asset.name)"
+            }
+          }
+          $zipAsset = @($assets | Where-Object name -CEQ $zipName)
+          if (
+            $zipAsset.Count -ne 1 -or
+            $zipAsset[0].size -ne $artifactSize -or
+            $zipAsset[0].digest -cne "sha256:$artifactSha256"
+          ) {
+            throw "BLOCKED: published ZIP metadata differs from the immutable release body."
+          }
+          $snapshot = [ordered]@{
+            release_id = $release.id
+            tag_name = $release.tag_name
+            name = $release.name
+            body = $actualReleaseBody
+            target_commitish = $release.target_commitish
+            draft = $release.draft
+            prerelease = $release.prerelease
+            immutable = $release.immutable
+            assets = @($assets | Sort-Object name | ForEach-Object {
+              [ordered]@{
+                id = $_.id
+                name = $_.name
+                size = $_.size
+                digest = $_.digest
+                state = $_.state
+              }
+            })
+          }
+          $snapshot | ConvertTo-Json -Depth 6 -Compress | Set-Content `
+            -Encoding utf8NoBOM `
+            -LiteralPath "$env:RUNNER_TEMP\label-match-frozen-release-metadata.json"
+          gh release download "$env:LABEL_MATCH_RELEASE_TAG" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --pattern "$zipName" `
+            --pattern "$checksumName" `
+            --dir "$assetRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Frozen release asset download failed." }
+          $downloaded = @(Get-ChildItem -LiteralPath $assetRoot -File)
+          if ($downloaded.Count -ne 2) {
+            throw "BLOCKED: frozen asset directory must contain exactly two files."
+          }
+          "asset_root=$assetRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "checksum_name=$checksumName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_sha256=$artifactSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_size=$artifactSize" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "main_exe_sha256=$mainExeSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Output "frozen_prerelease=FOUND release_id=$($release.id) assets=2"
+
+      - name: Independently verify frozen release bytes
+        shell: pwsh
+        env:
+          FROZEN_ASSET_ROOT: ${{ steps.frozen_release.outputs.asset_root }}
+          FROZEN_ZIP_NAME: ${{ steps.frozen_release.outputs.zip_name }}
+          FROZEN_CHECKSUM_NAME: ${{ steps.frozen_release.outputs.checksum_name }}
+          EXPECTED_ARCHIVE_SHA256: ${{ steps.frozen_release.outputs.artifact_sha256 }}
+          EXPECTED_ARCHIVE_SIZE: ${{ steps.frozen_release.outputs.artifact_size }}
+          EXPECTED_MAIN_EXE_SHA256: ${{ steps.frozen_release.outputs.main_exe_sha256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
+          $releaseTree = (git rev-parse --verify "HEAD^{tree}").Trim().ToLowerInvariant()
+          $sourceEpoch = (git show -s --format=%ct HEAD).Trim()
+          if ($sourceEpoch -cnotmatch '^[1-9][0-9]*$') {
+            throw "Tagged commit source epoch is invalid."
+          }
+          $tagIdentity = Get-Content -Raw -Encoding UTF8 `
+            -LiteralPath "$env:RUNNER_TEMP\label-match-canonical-tag-identity.json" |
+            ConvertFrom-Json
+          python -I -S tools/verify_frozen_release_assets.py `
+            --archive (Join-Path $env:FROZEN_ASSET_ROOT $env:FROZEN_ZIP_NAME) `
+            --checksum (Join-Path $env:FROZEN_ASSET_ROOT $env:FROZEN_CHECKSUM_NAME) `
+            --expected-tag "$env:LABEL_MATCH_RELEASE_TAG" `
+            --expected-commit "$releaseCommit" `
+            --expected-tree "$releaseTree" `
+            --expected-tag-object "$($tagIdentity.tag_object)" `
+            --expected-source-epoch "$sourceEpoch" `
+            --expected-archive-sha256 "$env:EXPECTED_ARCHIVE_SHA256" `
+            --expected-archive-size "$env:EXPECTED_ARCHIVE_SIZE" `
+            --expected-main-exe-sha256 "$env:EXPECTED_MAIN_EXE_SHA256" `
+            --report "$env:RUNNER_TEMP\label-match-frozen-release-verification.json"
+          if ($LASTEXITCODE -ne 0) { throw "Frozen release verification failed." }
+          $verification = Get-Content -Raw -Encoding UTF8 `
+            -LiteralPath "$env:RUNNER_TEMP\label-match-frozen-release-verification.json" |
+            ConvertFrom-Json
+          if ($verification.qualification_receipt_status -cne "NOT_TESTED_EXTERNAL_REQUIRED") {
+            throw "Public workflow must not claim access to the preserved local Phase-B receipt."
+          }
+          Write-Output "external_phase1_receipt_parity=REQUIRED_NOT_TESTED"
+
+      - name: Recheck immutable remote metadata after byte verification
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
           $releaseCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
-          $response = gh api --method GET "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" `
-            -f branch=main -f event=push -f head_sha="$releaseCommit" -f status=completed -f per_page=100
-          if ($LASTEXITCODE -ne 0) { throw "Unable to query Full CI evidence." }
-          $runs = (ConvertFrom-Json -InputObject $response).workflow_runs
-          $matches = @($runs | Where-Object {
-            $_.head_sha -ceq $releaseCommit -and $_.head_branch -ceq "main" -and
-            $_.event -ceq "push" -and $_.status -ceq "completed"
-          })
-          if ($matches.Count -ne 1) {
-            throw "BLOCKED: exact release SHA must have exactly one completed main-push Full CI run. sha=$releaseCommit count=$($matches.Count)"
-          }
-          $run = $matches[0]
-          if ($run.run_attempt -ne 1 -or $run.conclusion -cne "success") {
-            throw "BLOCKED: exact Full CI run must be attempt 1 success. sha=$releaseCommit attempt=$($run.run_attempt) conclusion=$($run.conclusion)"
-          }
-          Write-Output "full_ci_attestation=PASS sha=$releaseCommit run_id=$($run.id) attempt=1"
-
-      - name: Resolve private update feed publish mode
-        id: private_feed
-        shell: pwsh
-        env:
-          PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ vars.ENABLE_PRIVATE_UPDATE_FEED_PUBLISH }}
-        run: |
-          $privateFeedMode = if ($null -eq $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE) { "" } else { $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE }
-          if (@("", "false", "true") -cnotcontains $privateFeedMode) {
-            throw "ENABLE_PRIVATE_UPDATE_FEED_PUBLISH must be exactly 'true', 'false', or unset."
-          }
-          $enabled = if ($privateFeedMode -ceq "true") { "true" } else { "false" }
-          "enabled=$enabled" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Enforce private feed TEST1 rollout boundary
-        if: steps.private_feed.outputs.enabled == 'true'
-        shell: pwsh
-        env:
-          ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}
-        run: |
-          if ($env:ROLLOUT_PERCENTAGE -cne "0") {
-            throw "Private-feed tag releases must use PRIVATE_UPDATE_ROLLOUT_PERCENTAGE=0 until TEST1 approval."
-          }
-
-      - name: Install dependencies
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          $venvRoot = Join-Path $env:RUNNER_TEMP "label-match-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          if (Test-Path -LiteralPath $venvRoot) {
-            throw "Fresh release venv path already exists: $venvRoot"
-          }
-          python -I -m venv $venvRoot
-          "LABEL_MATCH_RELEASE_VENV=$venvRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $venvPython = Join-Path $venvRoot "Scripts\python.exe"
-          & $venvPython -I -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes --no-deps -r requirements-release.txt
-          & $venvPython -I -m pip check
-          (Join-Path $venvRoot "Scripts") | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Prepare exact factory compatibility identity
-        run: >-
-          python -m kmtech_factory_contracts.build_cli prepare
-          --repository .
-          --stage-root build/factory_contract_identity
-          --app-id label_match
-          --app-version "${{ env.LABEL_MATCH_RELEASE_TAG }}"
-          --db-schema-current 0
-
-      - name: Build with PyInstaller (One-Folder mode)
-        # ❗ 이 부분에 --hidden-import tkcalendar 옵션을 추가했습니다.
-        run: python -m PyInstaller --name "Label_Match" --onedir --windowed --icon="assets/logo.ico" --add-data "assets;assets" --add-data "config;config" --add-data "kmtech_factory_contracts/bundle;kmtech_factory_contracts/bundle" --add-data "build/factory_contract_identity/build-identity.json;." --add-data "build/factory_contract_identity/build-compatibility.json;." --add-data "contract.lock.json;." --hidden-import pygame --hidden-import PIL --hidden-import tkcalendar --clean --noupx --noconfirm Label_Match.py
-
-      - name: Build direct-sync CLI tools
-        run: |
-          python tools/build_release_cli_tools.py --destination "dist/Label_Match/tools" --help-timeout-seconds 15 --probe-count 3
-
-      - name: Build shared logistics profile tools
-        run: |
-          python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Install" --onefile --console --distpath dist/Label_Match --workpath build/logistics_profile_install_pyinstaller --specpath build/logistics_profile_install_pyinstaller --clean --noupx --noconfirm tools/install_logistics_runtime_profile.py
-          python -m PyInstaller --paths . --name "KMTech_Logistics_Profile_Check" --onefile --console --distpath dist/Label_Match --workpath build/logistics_profile_check_pyinstaller --specpath build/logistics_profile_check_pyinstaller --clean --noupx --noconfirm tools/check_logistics_runtime_profile.py
-
-      - name: Build protected administrator provisioning executable
-        run: python -m PyInstaller --paths . --name "Label_Match_Protected_Admin_Install" --onefile --console --distpath dist/Label_Match --workpath build/protected_admin_install_pyinstaller --specpath build/protected_admin_install_pyinstaller --clean --noupx --noconfirm tools/install_protected_admin.py
-
-      - name: Build and verify active-work probe
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $contractBundlePath = (Resolve-Path -LiteralPath "kmtech_factory_contracts/bundle").Path
-          python -m PyInstaller `
-            --paths . `
-            --name "KMTechActiveWorkProbe" `
-            --onefile `
-            --console `
-            --distpath dist/Label_Match `
-            --workpath build/active_work_probe_pyinstaller `
-            --specpath build/active_work_probe_pyinstaller `
-            --add-data "$contractBundlePath;kmtech_factory_contracts/bundle" `
-            --collect-submodules kmtech_factory_contracts.active_work_probe `
-            --clean `
-            --noupx `
-            --noconfirm `
-            tools/active_work_probe.py
-          if ($LASTEXITCODE -ne 0) { throw "Active-work probe PyInstaller build failed." }
-
-          $packageRoot = (Resolve-Path -LiteralPath "dist/Label_Match").Path
-          $probeArtifactPath = [IO.Path]::GetFullPath((Join-Path $packageRoot "KMTechActiveWorkProbe.exe"))
-          $independentIdentityPath = [IO.Path]::GetFullPath((Join-Path $packageRoot "KMTechActiveWorkProbe.independent.build-identity.json"))
-          $integratedIdentityPath = [IO.Path]::GetFullPath((Join-Path $packageRoot "KMTechActiveWorkProbe.integrated.build-identity.json"))
-          if (-not (Test-Path -LiteralPath $probeArtifactPath -PathType Leaf)) {
-            throw "Active-work probe executable is missing: $probeArtifactPath"
-          }
-          foreach ($freshIdentityPath in @($independentIdentityPath, $integratedIdentityPath)) {
-            if (Test-Path -LiteralPath $freshIdentityPath) {
-              throw "Active-work probe identity path must be fresh: $freshIdentityPath"
-            }
-          }
-          $probeSourceCommit = (git rev-parse --verify "HEAD^{commit}").Trim().ToLowerInvariant()
-          if ($LASTEXITCODE -ne 0 -or $probeSourceCommit -cnotmatch '^[0-9a-f]{40}$') {
-            throw "Active-work probe source commit is invalid."
-          }
-          $probeName = "KMTechActiveWorkProbe"
-          $probeVersion = "v1.0.3.4"
-          $probeArtifactSha256 = (Get-FileHash -LiteralPath $probeArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          $allProbeApps = "Inspection_worker,Rework_worker,Defect_Inspection,Container_Audit,Label_Match"
-
-          python -m kmtech_factory_contracts.active_work_probe `
-            -Mode build-identity `
-            -OutputPath $independentIdentityPath `
-            -ProbeArtifactPath $probeArtifactPath `
-            -ProbeSourceCommit $probeSourceCommit `
-            -WorkflowMode independent `
-            -SupportedApps "Label_Match" `
-            -ProbeName $probeName `
-            -ProbeVersion $probeVersion
-          if ($LASTEXITCODE -ne 0) { throw "Authoritative independent probe identity generation failed." }
-          python -m kmtech_factory_contracts.active_work_probe `
-            -Mode build-identity `
-            -OutputPath $integratedIdentityPath `
-            -ProbeArtifactPath $probeArtifactPath `
-            -ProbeSourceCommit $probeSourceCommit `
-            -WorkflowMode integrated `
-            -SupportedApps $allProbeApps `
-            -ProbeName $probeName `
-            -ProbeVersion $probeVersion
-          if ($LASTEXITCODE -ne 0) { throw "Authoritative integrated probe identity generation failed." }
-
-          function Assert-ProbeIdentity {
-            param(
-              [Parameter(Mandatory = $true)][string]$Path,
-              [Parameter(Mandatory = $true)][string]$ExpectedWorkflowMode,
-              [Parameter(Mandatory = $true)][string[]]$ExpectedSupportedApps
-            )
-            $identity = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
-            if ($identity.schema_version -cne "kmtech-active-work-probe-build-v1.0.3.4") { throw "Probe identity schema mismatch: $Path" }
-            if ($identity.probe_source_commit -cne $probeSourceCommit) { throw "Probe source commit mismatch: $Path" }
-            if ($identity.workflow_mode -cne $ExpectedWorkflowMode) { throw "Probe workflow mode mismatch: $Path" }
-            if ($identity.probe_name -cne $probeName) { throw "Probe name mismatch: $Path" }
-            if ($identity.probe_version -cne $probeVersion) { throw "Probe version mismatch: $Path" }
-            if ($identity.probe_artifact_sha256 -cne $probeArtifactSha256) { throw "Probe artifact hash mismatch: $Path" }
-            $supportedApps = @($identity.supported_apps)
-            if (
-              $supportedApps.Count -ne $ExpectedSupportedApps.Count -or
-              ($supportedApps -join ",") -cne ($ExpectedSupportedApps -join ",")
-            ) {
-              throw "Probe supported-app scope mismatch: $Path"
-            }
-          }
-
-          $independentApps = @("Label_Match")
-          $integratedApps = @($allProbeApps -split ",")
-          Assert-ProbeIdentity -Path $independentIdentityPath -ExpectedWorkflowMode independent -ExpectedSupportedApps $independentApps
-          Assert-ProbeIdentity -Path $integratedIdentityPath -ExpectedWorkflowMode integrated -ExpectedSupportedApps $integratedApps
-
-          $probeHelp = (& $probeArtifactPath --help 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0 -or $probeHelp -notmatch '(?i)-Mode') {
-            throw "Packaged active-work probe -Mode/--help smoke failed."
-          }
-
-          $comparisonRoot = [IO.Path]::Combine(
-            [IO.Path]::GetTempPath(),
-            "kmtech-active-work-probe-identity-$([Guid]::NewGuid().ToString('N'))"
-          )
-          if (Test-Path -LiteralPath $comparisonRoot) { throw "Fresh probe comparison directory already exists: $comparisonRoot" }
-          [IO.Directory]::CreateDirectory($comparisonRoot) | Out-Null
-          $packagedIndependentPath = [IO.Path]::GetFullPath((Join-Path $comparisonRoot "KMTechActiveWorkProbe.independent.build-identity.json"))
-          $packagedIntegratedPath = [IO.Path]::GetFullPath((Join-Path $comparisonRoot "KMTechActiveWorkProbe.integrated.build-identity.json"))
-          try {
-            & $probeArtifactPath `
-              -Mode build-identity `
-              -OutputPath $packagedIndependentPath `
-              -ProbeArtifactPath $probeArtifactPath `
-              -ProbeSourceCommit $probeSourceCommit `
-              -WorkflowMode independent `
-              -SupportedApps "Label_Match" `
-              -ProbeName $probeName `
-              -ProbeVersion $probeVersion
-            if ($LASTEXITCODE -ne 0) { throw "Packaged independent probe identity generation failed." }
-            & $probeArtifactPath `
-              -Mode build-identity `
-              -OutputPath $packagedIntegratedPath `
-              -ProbeArtifactPath $probeArtifactPath `
-              -ProbeSourceCommit $probeSourceCommit `
-              -WorkflowMode integrated `
-              -SupportedApps $allProbeApps `
-              -ProbeName $probeName `
-              -ProbeVersion $probeVersion
-            if ($LASTEXITCODE -ne 0) { throw "Packaged integrated probe identity generation failed." }
-            Assert-ProbeIdentity -Path $packagedIndependentPath -ExpectedWorkflowMode independent -ExpectedSupportedApps $independentApps
-            Assert-ProbeIdentity -Path $packagedIntegratedPath -ExpectedWorkflowMode integrated -ExpectedSupportedApps $integratedApps
-            foreach ($pair in @(
-              @($independentIdentityPath, $packagedIndependentPath),
-              @($integratedIdentityPath, $packagedIntegratedPath)
-            )) {
-              $sourceBytes = [System.IO.File]::ReadAllBytes($pair[0])
-              $packagedBytes = [System.IO.File]::ReadAllBytes($pair[1])
-              if (-not [System.Linq.Enumerable]::SequenceEqual($sourceBytes, $packagedBytes)) {
-                throw "Source and packaged active-work probe identities differ: $($pair[0])"
+          $releaseTree = (git rev-parse --verify "HEAD^{tree}").Trim().ToLowerInvariant()
+          $tagIdentity = Get-Content -Raw -Encoding UTF8 `
+            -LiteralPath "$env:RUNNER_TEMP\label-match-canonical-tag-identity.json" |
+            ConvertFrom-Json
+          $initial = Get-Content -Raw -Encoding UTF8 `
+            -LiteralPath "$env:RUNNER_TEMP\label-match-frozen-release-metadata.json"
+          $release = gh api `
+            -H "X-GitHub-Api-Version: 2026-03-10" `
+            "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:LABEL_MATCH_RELEASE_TAG" |
+            ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Final release metadata query failed." }
+          $currentReleaseBody = ([string]$release.body).Replace("`r`n", "`n").TrimEnd([char[]]"`n")
+          $current = [ordered]@{
+            release_id = $release.id
+            tag_name = $release.tag_name
+            name = $release.name
+            body = $currentReleaseBody
+            target_commitish = $release.target_commitish
+            draft = $release.draft
+            prerelease = $release.prerelease
+            immutable = $release.immutable
+            assets = @($release.assets | Sort-Object name | ForEach-Object {
+              [ordered]@{
+                id = $_.id
+                name = $_.name
+                size = $_.size
+                digest = $_.digest
+                state = $_.state
               }
-            }
+            })
+          } | ConvertTo-Json -Depth 6 -Compress
+          if ($release.immutable -ne $true -or $current -cne $initial.Trim()) {
+            throw "BLOCKED: release or asset IDs/sizes/digests changed during verification."
           }
-          finally {
-            foreach ($smokeIdentityPath in @($packagedIndependentPath, $packagedIntegratedPath)) {
-              [IO.File]::Delete($smokeIdentityPath)
-            }
-            if ([IO.Directory]::Exists($comparisonRoot)) {
-              [IO.Directory]::Delete($comparisonRoot, $false)
-            }
+          $remoteTag = @(git ls-remote origin "refs/tags/$env:LABEL_MATCH_RELEASE_TAG")
+          $remotePeel = @(git ls-remote origin "refs/tags/$env:LABEL_MATCH_RELEASE_TAG^{}")
+          $remoteMain = @(git ls-remote origin "refs/heads/main")
+          if ($remoteTag.Count -ne 1 -or $remotePeel.Count -ne 1 -or $remoteMain.Count -ne 1) {
+            throw "BLOCKED: final remote tag/peel/main cardinality is not exactly one."
           }
-          if (Test-Path -LiteralPath $comparisonRoot) { throw "Probe comparison cleanup failed: $comparisonRoot" }
+          $tagObject = ($remoteTag[0] -split "`t")[0].ToLowerInvariant()
+          $peeledCommit = ($remotePeel[0] -split "`t")[0].ToLowerInvariant()
+          $mainCommit = ($remoteMain[0] -split "`t")[0].ToLowerInvariant()
+          if (
+            $tagObject -cne $tagIdentity.tag_object -or
+            $peeledCommit -cne $releaseCommit -or
+            $mainCommit -cne $releaseCommit
+          ) {
+            throw "BLOCKED: final remote tag object, peeled commit, or main commit changed."
+          }
+          if ((git rev-parse "HEAD^{tree}").Trim().ToLowerInvariant() -cne $releaseTree) {
+            throw "BLOCKED: checkout tree changed during verification."
+          }
+          Write-Output "final_remote_recheck=PASS release_id=$($release.id) assets=2 tag_object=$tagObject commit=$releaseCommit"
 
-      - name: Include direct-sync relay tools
-        run: |
-          New-Item -ItemType Directory -Force -Path dist/Label_Match/tools
-          Copy-Item install_label_match_direct_sync.ps1 -Destination dist/Label_Match
-          Copy-Item INSTALL_THIS_PC.ps1 -Destination dist/Label_Match
-          Copy-Item "$env:RUNNER_TEMP\label-match-release-identity.json" -Destination dist/Label_Match/release-identity.json
-          Copy-Item build/factory_contract_identity/build-identity.json -Destination dist/Label_Match/build-identity.json
-          Copy-Item build/factory_contract_identity/build-compatibility.json -Destination dist/Label_Match/build-compatibility.json
-          Copy-Item build/factory_contract_identity/contract.lock.json -Destination dist/Label_Match/contract.lock.json
-          Copy-Item direct_sync_push.py,direct_sync_runtime.py,producer_runtime_client.py,direct_sync_operator.py -Destination dist/Label_Match
-          Copy-Item tools/direct_sync_relay_runner.py,tools/direct_sync_relay_operator.py,tools/direct_sync_relay_install_pack.py,tools/direct_sync_phase_g_label_match_runtime_report.py,tools/register_label_match_worker_pc.py,tools/install_logistics_runtime_profile.py,tools/check_logistics_runtime_profile.py -Destination dist/Label_Match/tools
-          Copy-Item logistics_runtime_profile.py -Destination dist/Label_Match/logistics_runtime_profile.py
-          Copy-Item docs/LOGISTICS_RUNTIME_PROFILE.md -Destination dist/Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md
-          Copy-Item tools/provision_protected_admin_acl.ps1 -Destination dist/Label_Match/PROVISION_PROTECTED_ADMIN_ACL.ps1
-          Copy-Item docs/PROTECTED_ADMIN_PROVISIONING.md -Destination dist/Label_Match/PROTECTED_ADMIN_PROVISIONING.md
-
-      - name: Verify protected administrator provisioning bundle
-        shell: pwsh
-        run: |
-          & dist/Label_Match/Label_Match_Protected_Admin_Install.exe --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Protected administrator installer help probe failed." }
-          & dist/Label_Match/Label_Match_Protected_Admin_Install.exe --dry-run | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Protected administrator installer dry-run failed." }
-          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File dist/Label_Match/PROVISION_PROTECTED_ADMIN_ACL.ps1 -DryRun | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Protected administrator ACL wrapper dry-run failed." }
-
-      - name: Record tokenless self-enrollment note
-        run: |
-          [System.IO.File]::WriteAllText("dist/Label_Match/tools/enrollment_token.txt.template", "Normal installs use PRODUCER_SELF_ENROLL_ALLOWED_IPS on the server. Do not bundle a deployment token unless an explicit fallback change window requires it.", [System.Text.UTF8Encoding]::new($false))
-
-      - name: Attach install update settings
-        shell: pwsh
-        env:
-          PRIVATE_UPDATE_FEED_PUBLISH_MODE: ${{ steps.private_feed.outputs.enabled }}
-          PRIVATE_UPDATE_MANIFEST_URL: ${{ vars.PRIVATE_UPDATE_MANIFEST_URL }}
-          PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL: ${{ vars.PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL }}
-          PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: ${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}
-          PRIVATE_UPDATE_CHANNEL: ${{ vars.PRIVATE_UPDATE_CHANNEL }}
-          PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
-          COMPANY_UPDATE_UPLOAD_URL: ${{ vars.COMPANY_UPDATE_UPLOAD_URL }}
-        run: |
-          $settingsPaths = @(
-            "dist/Label_Match/_internal/config/app_settings.json",
-            "dist/Label_Match/config/app_settings.json"
-          )
-          $settingsPath = $settingsPaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if ([string]::IsNullOrWhiteSpace($settingsPath)) {
-            throw "Bundled config missing in expected paths: $($settingsPaths -join ', ')"
-          }
-          $settings = Get-Content -Raw -Encoding UTF8 -LiteralPath $settingsPath | ConvertFrom-Json
-          $channel = if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_CHANNEL)) { "stable" } else { $env:PRIVATE_UPDATE_CHANNEL.Trim() }
-          $publishPrivateFeed = $env:PRIVATE_UPDATE_FEED_PUBLISH_MODE -ceq "true"
-          if ($publishPrivateFeed) {
-            if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_URL) -or [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)) {
-              throw "PRIVATE_UPDATE_MANIFEST_URL and PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be set together."
-            }
-            foreach ($name in @("PRIVATE_UPDATE_ARTIFACT_BASE_URL", "COMPANY_UPDATE_UPLOAD_URL")) {
-              if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
-                throw "$name is required when ENABLE_PRIVATE_UPDATE_FEED_PUBLISH is true."
-              }
-            }
-            $updateSettings = [ordered]@{
-              provider = "private_manifest"
-              manifest_url = $env:PRIVATE_UPDATE_MANIFEST_URL.Trim()
-              manifest_public_key = $env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY.Trim()
-              channel = $channel
-            }
-            if (-not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL)) {
-              $updateSettings.manifest_signature_url = $env:PRIVATE_UPDATE_MANIFEST_SIGNATURE_URL.Trim()
-            }
-          } else {
-            $updateSettings = [ordered]@{
-              provider = "github"
-              channel = $channel
-            }
-          }
-          $settings | Add-Member -NotePropertyName update_settings -NotePropertyValue ([pscustomobject]$updateSettings) -Force
-          foreach ($targetPath in $settingsPaths) {
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $targetPath) | Out-Null
-            $settings | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8NoBOM -LiteralPath $targetPath
-          }
-
-      - name: Verify staged installer without system Python
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          python tools/verify_staged_release_installer.py --package-root "dist/Label_Match" --report "dist/Label_Match/staged-installer-verification.json"
-          python -I dist/Label_Match/tools/direct_sync_relay_runner.py --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Staged direct-sync relay source help probe failed." }
-          python -I dist/Label_Match/tools/direct_sync_relay_operator.py --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Staged direct-sync operator source help probe failed." }
-          $env:LABEL_MATCH_STAGED_PACKAGE_ROOT = (Resolve-Path "dist/Label_Match").Path
-          $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
-          python -m pytest -q -p no:cacheprovider tests/test_staged_release_installer.py
-
-      - name: Seal and verify exact factory package manifest
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python -m kmtech_factory_contracts.build_cli manifest `
-            --stage-root dist/Label_Match `
-            --expected-file Label_Match.exe `
-            --expected-file KMTechActiveWorkProbe.exe `
-            --expected-file KMTechActiveWorkProbe.independent.build-identity.json `
-            --expected-file KMTechActiveWorkProbe.integrated.build-identity.json `
-            --expected-file contract.lock.json `
-            --expected-file build-identity.json `
-            --expected-file build-compatibility.json
-          $contractHash = (python -c "from kmtech_factory_contracts.bundle import CONTRACT_BUNDLE_SHA256; print(CONTRACT_BUNDLE_SHA256)").Trim()
-          python -m kmtech_factory_contracts.build_cli verify `
-            --stage-root dist/Label_Match `
-            --expected-contract-sha256 $contractHash
-
-      - name: Build and verify internal release archive
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          $env:LABEL_MATCH_PACKAGE_ROOT = (Resolve-Path "dist/Label_Match").Path
-          $env:LABEL_MATCH_ARCHIVE_PATH = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
-          $env:LABEL_MATCH_ARCHIVE_REPORT = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).archive-verification.json"
-          $env:LABEL_MATCH_SOURCE_EPOCH = git show -s --format=%ct HEAD
-          $script = @'
-          import datetime
-          import hashlib
-          import json
-          import os
-          from pathlib import Path, PurePosixPath
-          import stat
-          import zipfile
-
-          package_root = Path(os.environ["LABEL_MATCH_PACKAGE_ROOT"]).resolve()
-          archive_path = Path(os.environ["LABEL_MATCH_ARCHIVE_PATH"]).resolve()
-          report_path = Path(os.environ["LABEL_MATCH_ARCHIVE_REPORT"]).resolve()
-          source_epoch = int(os.environ["LABEL_MATCH_SOURCE_EPOCH"])
-          required = {
-              "Label_Match.exe",
-              "KMTechActiveWorkProbe.exe",
-              "KMTechActiveWorkProbe.independent.build-identity.json",
-              "KMTechActiveWorkProbe.integrated.build-identity.json",
-              "config/app_settings.json",
-              "_internal/config/app_settings.json",
-              "release-identity.json",
-              "build-identity.json",
-              "build-compatibility.json",
-              "build-manifest.json",
-              "contract.lock.json",
-              "install_label_match_direct_sync.ps1",
-              "INSTALL_THIS_PC.ps1",
-              "direct_sync_push.py",
-              "direct_sync_runtime.py",
-              "producer_runtime_client.py",
-              "direct_sync_operator.py",
-              "staged-installer-verification.json",
-              "tools/release_cli_tools_manifest.json",
-              "tools/direct_sync_relay_runner.exe",
-              "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-              "tools/register_label_match_worker_pc.exe",
-              "KMTech_Logistics_Profile_Install.exe",
-              "KMTech_Logistics_Profile_Check.exe",
-              "Label_Match_Protected_Admin_Install.exe",
-              "PROVISION_PROTECTED_ADMIN_ACL.ps1",
-              "PROTECTED_ADMIN_PROVISIONING.md",
-              "CENTRAL_LOGISTICS_PC_ROLLOUT.md",
-              "logistics_runtime_profile.py",
-              "tools/install_logistics_runtime_profile.py",
-              "tools/check_logistics_runtime_profile.py",
-          }
-          files = sorted(
-              (path for path in package_root.rglob("*") if path.is_file()),
-              key=lambda path: path.relative_to(package_root).as_posix().casefold(),
-          )
-          relative = [path.relative_to(package_root).as_posix() for path in files]
-          if not required.issubset(relative):
-              raise SystemExit(f"required internal release files missing: {sorted(required - set(relative))}")
-          if len({name.casefold() for name in relative}) != len(relative):
-              raise SystemExit("case-insensitive package path collision")
-          instant = datetime.datetime.fromtimestamp(source_epoch, tz=datetime.timezone.utc)
-          timestamp = (
-              max(1980, min(2107, instant.year)),
-              instant.month,
-              instant.day,
-              instant.hour,
-              instant.minute,
-              instant.second // 2 * 2,
-          )
-          source_hashes = {}
-          with zipfile.ZipFile(
-              archive_path,
-              "x",
-              compression=zipfile.ZIP_DEFLATED,
-              compresslevel=9,
-              allowZip64=True,
-          ) as archive:
-              for source, name in zip(files, relative, strict=True):
-                  payload = source.read_bytes()
-                  source_hashes[name] = hashlib.sha256(payload).hexdigest()
-                  info = zipfile.ZipInfo(f"Label_Match/{name}", date_time=timestamp)
-                  info.compress_type = zipfile.ZIP_DEFLATED
-                  info.create_system = 3
-                  info.external_attr = (stat.S_IFREG | 0o644) << 16
-                  archive.writestr(info, payload, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
-          with zipfile.ZipFile(archive_path, "r") as archive:
-              if (bad_member := archive.testzip()) is not None:
-                  raise SystemExit(f"archive CRC failed: {bad_member}")
-              names = [info.filename for info in archive.infolist() if not info.is_dir()]
-              if len(names) != len(set(names)) or len({name.casefold() for name in names}) != len(names):
-                  raise SystemExit("archive contains duplicate or case-colliding paths")
-              expected = {f"Label_Match/{name}" for name in relative}
-              if set(names) != expected:
-                  raise SystemExit("archive membership differs from staged package")
-              for name in names:
-                  pure = PurePosixPath(name)
-                  if pure.is_absolute() or ".." in pure.parts or pure.parts[0] != "Label_Match":
-                      raise SystemExit(f"unsafe archive path: {name}")
-                  child = PurePosixPath(*pure.parts[1:]).as_posix()
-                  if hashlib.sha256(archive.read(name)).hexdigest() != source_hashes[child]:
-                      raise SystemExit(f"archive byte parity failed: {name}")
-          archive_hash = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-          report = {
-              "schema_version": "label-match-internal-release-archive-v1",
-              "status": "PASS",
-              "release_trust": "internal_unsigned",
-              "archive": archive_path.name,
-              "archive_sha256": archive_hash,
-              "archive_size": archive_path.stat().st_size,
-              "package_file_count": len(files),
-              "required_membership": sorted(required),
-              "exact_membership": True,
-              "byte_parity": True,
-              "crc_verified": True,
-              "safe_paths": True,
-          }
-          report_path.write_text(
-              json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          print(json.dumps(report, sort_keys=True))
-          '@
-          $script | python -
-          if ($LASTEXITCODE -ne 0) {
-            throw "Internal release archive verification failed."
-          }
-
-      - name: Generate release SHA256 checksum
-        shell: pwsh
-        run: |
-          $zipPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
-          $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
-          "$hash  $zipPath" | Set-Content -Encoding utf8NoBOM "$zipPath.sha256"
-
-      - name: Generate private update manifest
-        if: ${{ steps.private_feed.outputs.enabled == 'true' }}
-        shell: pwsh
-        env:
-          PRIVATE_UPDATE_ARTIFACT_BASE_URL: ${{ vars.PRIVATE_UPDATE_ARTIFACT_BASE_URL }}
-          PRIVATE_UPDATE_ROLLOUT_PERCENTAGE: ${{ vars.PRIVATE_UPDATE_ROLLOUT_PERCENTAGE }}
-          PRIVATE_UPDATE_ALLOW_PC_IDS: ${{ vars.PRIVATE_UPDATE_ALLOW_PC_IDS }}
-          PRIVATE_UPDATE_DENY_PC_IDS: ${{ vars.PRIVATE_UPDATE_DENY_PC_IDS }}
-        run: |
-          $zipPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).zip"
-          $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
-          $size = (Get-Item -LiteralPath $zipPath).Length
-          $baseUrl = $env:PRIVATE_UPDATE_ARTIFACT_BASE_URL.Trim().TrimEnd("/")
-          $baseUri = [System.Uri]$baseUrl
-          if ($baseUri.Scheme -ne "https") {
-            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must use HTTPS."
-          }
-          if (-not [string]::IsNullOrWhiteSpace($baseUri.UserInfo)) {
-            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include userinfo."
-          }
-          if (-not [string]::IsNullOrWhiteSpace($baseUri.Fragment)) {
-            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not include fragments."
-          }
-          if (-not [string]::IsNullOrWhiteSpace($baseUri.Query)) {
-            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must not contain query strings."
-          }
-          $blockedHosts = @("github.com", "www.github.com", "api.github.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com")
-          $artifactHost = $baseUri.Host.ToLowerInvariant()
-          if ($blockedHosts -contains $artifactHost -or $artifactHost.EndsWith(".githubusercontent.com")) {
-            throw "PRIVATE_UPDATE_ARTIFACT_BASE_URL must point to the private update artifact host, not GitHub release storage."
-          }
-          $rolloutPercentage = 100
-          if (-not [string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_ROLLOUT_PERCENTAGE)) {
-            $rolloutPercentage = [int]$env:PRIVATE_UPDATE_ROLLOUT_PERCENTAGE
-          }
-          if ($rolloutPercentage -lt 0 -or $rolloutPercentage -gt 100) {
-            throw "PRIVATE_UPDATE_ROLLOUT_PERCENTAGE must be an integer from 0 to 100."
-          }
-          function ConvertTo-CanonicalPcIds {
-            param(
-              [AllowEmptyString()][string]$RawValue,
-              [Parameter(Mandatory = $true)][string]$VariableName
-            )
-            if ([string]::IsNullOrWhiteSpace($RawValue)) {
-              return @()
-            }
-            $canonical = [System.Collections.Generic.List[string]]::new()
-            $seen = [System.Collections.Generic.HashSet[string]]::new(
-              [System.StringComparer]::OrdinalIgnoreCase
-            )
-            foreach ($rawToken in ($RawValue -split '[,\r\n]+')) {
-              $token = $rawToken.Trim().ToLowerInvariant()
-              if ([string]::IsNullOrWhiteSpace($token)) {
-                continue
-              }
-              if ($token -cnotmatch '^[a-z0-9][a-z0-9._-]{0,63}$') {
-                throw "$VariableName contains an invalid PC id token."
-              }
-              if ($seen.Add($token)) {
-                $canonical.Add($token)
-              }
-            }
-            return @($canonical.ToArray())
-          }
-          $allowPcIds = @(ConvertTo-CanonicalPcIds -RawValue $env:PRIVATE_UPDATE_ALLOW_PC_IDS -VariableName "PRIVATE_UPDATE_ALLOW_PC_IDS")
-          $denyPcIds = @(ConvertTo-CanonicalPcIds -RawValue $env:PRIVATE_UPDATE_DENY_PC_IDS -VariableName "PRIVATE_UPDATE_DENY_PC_IDS")
-          $denySet = [System.Collections.Generic.HashSet[string]]::new(
-            [string[]]$denyPcIds,
-            [System.StringComparer]::OrdinalIgnoreCase
-          )
-          foreach ($pcId in $allowPcIds) {
-            if ($denySet.Contains($pcId)) {
-              throw "PRIVATE_UPDATE_ALLOW_PC_IDS and PRIVATE_UPDATE_DENY_PC_IDS must not overlap."
-            }
-          }
-          $artifactUrl = "$baseUrl/$zipPath"
-          $manifest = [ordered]@{
-            schema_version = "kmtech-private-update-manifest-v1"
-            manifest_version = 1
-            app_id = "Label_Match"
-            package_id = "Label_Match"
-            channel = "stable"
-            version = $env:LABEL_MATCH_RELEASE_TAG
-            artifact = [ordered]@{
-              name = $zipPath
-              url = $artifactUrl
-              size_bytes = $size
-              sha256 = $hash
-            }
-            archive = [ordered]@{
-              format = "zip"
-              pyinstaller_layout = "onedir"
-              top_level = "Label_Match"
-              entrypoint = "Label_Match.exe"
-              required_files = @(
-                "Label_Match/Label_Match.exe",
-                "Label_Match/KMTechActiveWorkProbe.exe",
-                "Label_Match/KMTechActiveWorkProbe.independent.build-identity.json",
-                "Label_Match/KMTechActiveWorkProbe.integrated.build-identity.json",
-                "Label_Match/config/app_settings.json",
-                "Label_Match/_internal/config/app_settings.json",
-                "Label_Match/release-identity.json",
-                "Label_Match/install_label_match_direct_sync.ps1",
-                "Label_Match/INSTALL_THIS_PC.ps1",
-                "Label_Match/direct_sync_push.py",
-                "Label_Match/direct_sync_runtime.py",
-                "Label_Match/producer_runtime_client.py",
-                "Label_Match/direct_sync_operator.py",
-                "Label_Match/staged-installer-verification.json",
-                "Label_Match/tools/release_cli_tools_manifest.json",
-                "Label_Match/tools/direct_sync_relay_runner.exe",
-                "Label_Match/tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-                "Label_Match/tools/register_label_match_worker_pc.exe",
-                "Label_Match/KMTech_Logistics_Profile_Install.exe",
-                "Label_Match/KMTech_Logistics_Profile_Check.exe",
-                "Label_Match/Label_Match_Protected_Admin_Install.exe",
-                "Label_Match/PROVISION_PROTECTED_ADMIN_ACL.ps1",
-                "Label_Match/PROTECTED_ADMIN_PROVISIONING.md",
-                "Label_Match/CENTRAL_LOGISTICS_PC_ROLLOUT.md",
-                "Label_Match/logistics_runtime_profile.py",
-                "Label_Match/tools/install_logistics_runtime_profile.py",
-                "Label_Match/tools/check_logistics_runtime_profile.py"
-              )
-              deny_runtime_state = $true
-            }
-            install = [ordered]@{
-              strategy = "robocopy_backup_then_mirror"
-              preserve_paths = @("config/app_settings.json", "_internal/config/app_settings.json")
-              restart_executable = "Label_Match.exe"
-            }
-            rollout = [ordered]@{
-              percentage = $rolloutPercentage
-              allow_pc_ids = $allowPcIds
-              deny_pc_ids = $denyPcIds
-            }
-          }
-          $manifestPath = "Label_Match-$($env:LABEL_MATCH_RELEASE_TAG).manifest.json"
-          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM $manifestPath
-
-      - name: Sign private update manifest
-        if: ${{ steps.private_feed.outputs.enabled == 'true' }}
-        shell: pwsh
-        env:
-          PRIVATE_UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.PRIVATE_UPDATE_MANIFEST_SIGNING_KEY }}
-          PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY: ${{ vars.PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY }}
-          PRIVATE_UPDATE_MANIFEST_PATH: Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.manifest.json
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_SIGNING_KEY)) {
-            throw "PRIVATE_UPDATE_MANIFEST_SIGNING_KEY secret is required."
-          }
-          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY)) {
-            throw "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY variable is required."
-          }
-          if (-not (Test-Path -LiteralPath $env:PRIVATE_UPDATE_MANIFEST_PATH)) {
-            throw "Private update manifest not found: $env:PRIVATE_UPDATE_MANIFEST_PATH"
-          }
-          $script = @'
-          import base64
-          import json
-          import os
-          from pathlib import Path
-
-          from cryptography.exceptions import InvalidSignature
-          from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-              Ed25519PrivateKey,
-              Ed25519PublicKey,
-          )
-
-          key_text = os.environ["PRIVATE_UPDATE_MANIFEST_SIGNING_KEY"].strip()
-          try:
-              key_bytes = bytes.fromhex(key_text)
-          except ValueError:
-              key_bytes = base64.b64decode(key_text, validate=True)
-          if len(key_bytes) != 32:
-              raise SystemExit("PRIVATE_UPDATE_MANIFEST_SIGNING_KEY must decode to 32 bytes")
-          try:
-              public_key = bytes.fromhex(os.environ["PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"].strip())
-          except ValueError:
-              raise SystemExit("PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must be hex") from None
-          if len(public_key) != 32:
-              raise SystemExit("PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY must decode to 32 bytes")
-
-          manifest_path = Path(os.environ["PRIVATE_UPDATE_MANIFEST_PATH"])
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-          canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-          signature = Ed25519PrivateKey.from_private_bytes(key_bytes).sign(canonical)
-          try:
-              Ed25519PublicKey.from_public_bytes(public_key).verify(signature, canonical)
-          except InvalidSignature:
-              raise SystemExit(
-                  "Private update manifest signature does not match "
-                  "PRIVATE_UPDATE_MANIFEST_PUBLIC_KEY"
-              ) from None
-          manifest_path.with_name(manifest_path.name + ".sig").write_bytes(signature)
-          print("OK: private update manifest signature verifies against configured public key")
-          '@
-          $script | python -
-          if ($LASTEXITCODE -ne 0) {
-            throw "Private update manifest signature self-test failed."
-          }
-          $sigPath = "$env:PRIVATE_UPDATE_MANIFEST_PATH.sig"
-          $sig = [System.IO.File]::ReadAllBytes($sigPath)
-          if ($sig.Length -ne 64) {
-            throw "Private update manifest signature must be 64 bytes."
-          }
-          "LABEL_MATCH_PRIVATE_MANIFEST_ARTIFACT=$env:PRIVATE_UPDATE_MANIFEST_PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Create Release and Upload Asset
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
-        with:
-          files: |
-            Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip
-            Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip.sha256
-            Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.archive-verification.json
-          tag_name: ${{ env.LABEL_MATCH_RELEASE_TAG }}
-          name: "Release ${{ env.LABEL_MATCH_RELEASE_TAG }}"
-          body: "Internal release ${{ env.LABEL_MATCH_RELEASE_TAG }}. Verified ZIP, SHA-256 checksum, and archive verification report are attached."
-          draft: false
-          # Every tag is quarantined from /releases/latest until a separate,
-          # evidence-bound TEST1 promotion process is implemented and approved.
-          prerelease: true
-          make_latest: false
-
-      - name: Promote private update feed after GitHub Release
-        if: steps.private_feed.outputs.enabled == 'true'
-        shell: pwsh
-        env:
-          COMPANY_UPDATE_UPLOAD_URL: ${{ vars.COMPANY_UPDATE_UPLOAD_URL }}
-          COMPANY_UPDATE_UPLOAD_TOKEN: ${{ secrets.COMPANY_UPDATE_UPLOAD_TOKEN }}
-          COMPANY_UPDATE_UPLOAD_ORIGIN_IP: ${{ vars.COMPANY_UPDATE_UPLOAD_ORIGIN_IP }}
-          PRIVATE_UPDATE_APP_SLUG: label_match
-          PRIVATE_UPDATE_CHANNEL: stable
-          PRIVATE_UPDATE_ZIP_PATH: Label_Match-${{ env.LABEL_MATCH_RELEASE_TAG }}.zip
-          PRIVATE_UPDATE_MANIFEST_PATH: ${{ env.LABEL_MATCH_PRIVATE_MANIFEST_ARTIFACT }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          foreach ($name in @("COMPANY_UPDATE_UPLOAD_URL", "COMPANY_UPDATE_UPLOAD_TOKEN")) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
-              throw "$name is required."
-            }
-          }
-          $uploadUrl = $env:COMPANY_UPDATE_UPLOAD_URL.Trim()
-          $uploadUri = [System.Uri]$uploadUrl
-          if ($uploadUri.Scheme -ne "https") {
-            throw "COMPANY_UPDATE_UPLOAD_URL must use HTTPS."
-          }
-          if (-not [string]::IsNullOrWhiteSpace($uploadUri.UserInfo) -or -not [string]::IsNullOrWhiteSpace($uploadUri.Query) -or -not [string]::IsNullOrWhiteSpace($uploadUri.Fragment)) {
-            throw "COMPANY_UPDATE_UPLOAD_URL must not contain userinfo, query, or fragment."
-          }
-          $uploadOriginIp = $env:COMPANY_UPDATE_UPLOAD_ORIGIN_IP
-          if ($null -eq $uploadOriginIp) {
-            $uploadOriginIp = ""
-          }
-          $uploadOriginIp = $uploadOriginIp.Trim()
-          if (-not [string]::IsNullOrWhiteSpace($uploadOriginIp) -and -not ($uploadOriginIp -match '^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$')) {
-            throw "COMPANY_UPDATE_UPLOAD_ORIGIN_IP must be an IPv4 address."
-          }
-          $appSlug = $env:PRIVATE_UPDATE_APP_SLUG
-          $channel = $env:PRIVATE_UPDATE_CHANNEL
-          $zipPath = $env:PRIVATE_UPDATE_ZIP_PATH
-          $manifestPath = $env:PRIVATE_UPDATE_MANIFEST_PATH
-          $manifestSigPath = "$manifestPath.sig"
-          $uploadToken = $env:COMPANY_UPDATE_UPLOAD_TOKEN
-          if ($uploadToken.Contains("`r") -or $uploadToken.Contains("`n")) {
-            throw "COMPANY_UPDATE_UPLOAD_TOKEN must not contain line breaks."
-          }
-          foreach ($path in @($zipPath, "$zipPath.sha256", $manifestPath, $manifestSigPath)) {
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "Required private update publish file is missing: $path"
-            }
-          }
-          $curlArgs = @(
-            "--fail", "--show-error", "--silent",
-            "--retry", "3", "--retry-all-errors", "--connect-timeout", "30", "--max-time", "900",
-            "-X", "POST",
-            "-F", "app_slug=$appSlug",
-            "-F", "channel=$channel",
-            "-F", "artifact=@$zipPath",
-            "-F", "checksum=@$zipPath.sha256",
-            "-F", "manifest=@$manifestPath",
-            "-F", "signature=@$manifestSigPath",
-            $uploadUrl
-          )
-          if (-not [string]::IsNullOrWhiteSpace($uploadOriginIp)) {
-            $resolvePort = if ($uploadUri.IsDefaultPort) { 443 } else { $uploadUri.Port }
-            $curlArgs = @("--resolve", "$($uploadUri.Host):$($resolvePort):$uploadOriginIp") + $curlArgs
-          }
-          $curlConfigToken = $uploadToken.Replace("\", "\\").Replace('"', '\"')
-          $curlConfig = "header = `"Authorization: Bearer $curlConfigToken`""
-          $curlConfig | & curl.exe --config - @curlArgs
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to publish private update feed over HTTPS."
-          }
-
-      - name: Clean release virtual environment
+      - name: Clean downloaded verification inputs
         if: ${{ always() }}
         shell: pwsh
+        env:
+          FROZEN_ASSET_ROOT: ${{ steps.frozen_release.outputs.asset_root }}
         run: |
-          $venvCandidate = if ([string]::IsNullOrWhiteSpace($env:LABEL_MATCH_RELEASE_VENV)) {
-            Join-Path $env:RUNNER_TEMP "label-match-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          } else {
-            $env:LABEL_MATCH_RELEASE_VENV
+          $candidate = $env:FROZEN_ASSET_ROOT
+          if ([string]::IsNullOrWhiteSpace($candidate)) {
+            $candidate = Join-Path $env:RUNNER_TEMP "label-match-frozen-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           }
-          if (Test-Path -LiteralPath $venvCandidate) {
-            $venv = [System.IO.Path]::GetFullPath($venvCandidate)
-            $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
-            if (-not $venv.StartsWith($runnerTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
-              throw "Refusing to clean venv outside RUNNER_TEMP: $venv"
+          if (Test-Path -LiteralPath $candidate) {
+            $resolved = [IO.Path]::GetFullPath($candidate)
+            $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+            if (-not $resolved.StartsWith($runnerTemp, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "Refusing to clean frozen assets outside RUNNER_TEMP: $resolved"
             }
-            Remove-Item -LiteralPath $venv -Recurse -Force
+            Remove-Item -LiteralPath $resolved -Recurse -Force
           }

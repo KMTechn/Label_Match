@@ -56,18 +56,13 @@ def test_main_fails_before_runtime_when_factory_contract_gate_fails(monkeypatch)
     assert caught.value is failure
 
 
-def test_authoritative_pyinstaller_build_includes_factory_contract_data():
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+def test_frozen_release_verifier_requires_factory_contract_data():
+    verifier = (ROOT / "tools" / "verify_frozen_release_assets.py").read_text(
         encoding="utf-8"
     )
 
-    assert (
-        '--add-data "kmtech_factory_contracts/bundle;kmtech_factory_contracts/bundle"'
-        in workflow
-    )
-    assert '--add-data "contract.lock.json;."' in workflow
-    assert "kmtech_factory_contracts.build_cli prepare" in workflow
-    assert '--add-data "build/factory_contract_identity/build-identity.json;."' in workflow
-    assert '--add-data "build/factory_contract_identity/build-compatibility.json;."' in workflow
-    assert "kmtech_factory_contracts.build_cli manifest" in workflow
-    assert "kmtech_factory_contracts.build_cli verify" in workflow
+    assert '"build-identity.json"' in verifier
+    assert '"build-compatibility.json"' in verifier
+    assert '"build-manifest.json"' in verifier
+    assert '"contract.lock.json"' in verifier
+    assert CONTRACT_BUNDLE_SHA256 in verifier

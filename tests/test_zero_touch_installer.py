@@ -3,6 +3,7 @@ import subprocess
 
 import pytest
 from tools import install_logistics_runtime_profile as machine_profiles
+from tools import verify_frozen_release_assets as frozen_verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,14 +84,13 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
 
 
-def test_release_contains_common_package_entrypoint():
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
-        encoding="utf-8"
-    )
+def test_frozen_release_exact_manifest_preserves_common_package_entrypoint():
+    loaded_validator = frozen_verifier._load_release_archive_validator()
 
-    assert "Copy-Item INSTALL_THIS_PC.ps1 -Destination dist/Label_Match" in workflow
-    assert '"INSTALL_THIS_PC.ps1"' in workflow
-    assert '"Label_Match/INSTALL_THIS_PC.ps1"' in workflow
+    assert "INSTALL_THIS_PC.ps1" in frozen_verifier.REQUIRED_MEMBERS
+    assert "INSTALL_THIS_PC.ps1" in loaded_validator.REQUIRED_PACKAGE_MEMBERS
+    assert callable(loaded_validator.validate_release_evidence)
+    assert (ROOT / "INSTALL_THIS_PC.ps1").is_file()
 
 
 def test_enrollment_bundle_installs_dpapi_profile_and_rejects_scope_mismatch(monkeypatch, tmp_path):
