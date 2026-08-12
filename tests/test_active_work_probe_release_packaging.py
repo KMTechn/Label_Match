@@ -41,7 +41,16 @@ def test_release_builds_onefile_probe_and_proves_both_identity_scopes():
     assert "--onefile `" in block
     assert "--console `" in block
     assert '--distpath dist/Label_Match `' in block
-    assert '--add-data "kmtech_factory_contracts/bundle;kmtech_factory_contracts/bundle" `' in block
+    assert "--workpath build/active_work_probe_pyinstaller `" in block
+    assert "--specpath build/active_work_probe_pyinstaller `" in block
+    bundle_path_assignment = (
+        '$contractBundlePath = (Resolve-Path -LiteralPath '
+        '"kmtech_factory_contracts/bundle").Path'
+    )
+    assert bundle_path_assignment in block
+    assert block.index(bundle_path_assignment) < block.index("python -m PyInstaller `")
+    assert '--add-data "$contractBundlePath;kmtech_factory_contracts/bundle" `' in block
+    assert '--add-data "kmtech_factory_contracts/bundle;kmtech_factory_contracts/bundle" `' not in block
     assert "--collect-submodules kmtech_factory_contracts.active_work_probe `" in block
     assert "tools/active_work_probe.py" in block
 
