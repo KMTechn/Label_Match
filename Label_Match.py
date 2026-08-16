@@ -5481,22 +5481,20 @@ class Label_Match(tk.Tk):
         self._workflow_notice = None
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
-        key = str(row.get("idempotency_key") or "").strip()
         local_committed = bool(
             int(row.get("local_completion_committed") or 0)
         )
-        log_exists = _label_match_local_completion_event_exists(
-            self.__dict__.get("data_manager"),
-            current.get("id"),
-        )
-        if local_committed or log_exists:
-            if not local_committed:
-                outbox.mark_local_completion_committed(key)
+        if local_committed:
             return self._finish_recovered_package_completion()
-        if status in {"PENDING", "SENDING", "ACKED", "CONFLICT"}:
+        if status in {"PENDING", "SENDING", "ACKED"}:
             # The append-only command intent already exists.  Finish the local
-            # event first; central delivery/review remains independent.
+            # event and lease-aware marker transaction before interpreting the
+            # row as locally committed.  _finalize_set deduplicates a CSV row
+            # that was fsynced before a crash.
             return bool(self._finalize_set(self.Results.PASS))
+        if status == "CONFLICT":
+            # A pre-write command conflict is review state, not local success.
+            return self._set_active_package_submission_notice(row)
         return False
 
     def _finish_recovered_package_completion(self):
@@ -5521,7 +5519,15 @@ class Label_Match(tk.Tk):
         )
         if not needs_source_refresh:
             # PHS2 acceptance already captured strict source evidence. F3 can
-            # now durably record that frozen intent and the local completion.
+            # only claim completion after the current-set recovery authority
+            # has been durably refreshed with every accepted scan.
+            if not self._save_current_set_state():
+                return self._publish_durable_commit_block(
+                    PackageLogisticsError(
+                        "current packaging state could not be saved; "
+                        "central packaging was not submitted"
+                    )
+                )
             return self._enqueue_central_package_submission()
 
         # F4 atomically changes the server membership and deliberately clears
@@ -7310,9 +7316,24 @@ class Label_Match(tk.Tk):
                         self.data_manager, recovered.get("id")
                     )
                 ):
-                    package_outbox.mark_local_completion_committed(
-                        str(row.get("idempotency_key") or "")
-                    )
+                    lease_id = str(
+                        recovered.get("operation_lease_id") or ""
+                    ).strip()
+                    if lease_id:
+                        package_outbox.mark_local_completion_committed(
+                            str(row.get("idempotency_key") or ""),
+                            operation_lease_id=lease_id,
+                            operation_completed_at=str(
+                                recovered.get(
+                                    "operation_lease_completed_at"
+                                )
+                                or ""
+                            ),
+                        )
+                    else:
+                        package_outbox.mark_local_completion_committed(
+                            str(row.get("idempotency_key") or "")
+                        )
                     continue
                 recoverable.append((row, recovered))
 
@@ -7325,7 +7346,22 @@ class Label_Match(tk.Tk):
                     ),
                     "current_set_info": recovered,
                 }
-                self.data_manager.save_current_state(state_data)
+                if not self.data_manager.save_current_state(state_data):
+                    notice = WorkflowNotice(
+                        title="중앙 포장 복구 잠금",
+                        message=(
+                            "복구할 현재 포장 상태를 안전하게 저장하지 못했습니다. "
+                            "새 포장을 시작하지 말고 관리자에게 저장 상태 확인을 요청하세요."
+                        ),
+                        kind="submission_blocked",
+                        tone="danger",
+                    )
+                    self._workflow_blocking_notice = notice
+                    self._workflow_notice = notice
+                    self._workflow_notice_action = None
+                    self._workflow_notice_action_text = "확인"
+                    self._render_operator_workbench()
+                    return
             elif recoverable or invalid:
                 detail = (
                     "복구 가능한 미완료 명령이 여러 건입니다."
@@ -8269,41 +8305,54 @@ class Label_Match(tk.Tk):
                 ).strip()
             except ValueError:
                 scanned_label_id = ""
-        self.current_set_info.update(evidence.state_fields())
-        self.current_set_info["central_inherit_all"] = True
-        self.current_set_info["package_source_snapshot"] = dict(
-            snapshot or {}
-        )
-        self.current_set_info["resolved_transfer_bundle_id"] = str(
-            (snapshot or {}).get("bundle_id") or ""
-        ).strip()
-        if isinstance(sealed, dict):
-            self.current_set_info["sealed_transfer"] = dict(sealed)
-        self._update_on_success_scan(
-            evidence.canonical_input_tag_qr,
-            evidence.item_id,
-        )
-        if operation_lease:
+
+        def prepare_durable_acceptance(current_set):
+            current_set.update(evidence.state_fields())
+            current_set["central_inherit_all"] = True
+            current_set["package_source_snapshot"] = dict(
+                snapshot or {}
+            )
+            current_set["resolved_transfer_bundle_id"] = str(
+                (snapshot or {}).get("bundle_id") or ""
+            ).strip()
+            if isinstance(sealed, dict):
+                current_set["sealed_transfer"] = dict(sealed)
+            if not operation_lease:
+                return
             lease_id = str(operation_lease.get("lease_id") or "").strip()
             lease_store = self.__dict__.get("package_operation_lease_store")
             if not lease_id or lease_store is None:
                 raise PackageLogisticsError(
                     "verified operation lease disappeared before acceptance"
                 )
+            get_lease = getattr(lease_store, "get", None)
+            if callable(get_lease):
+                lease_row = get_lease(lease_id=lease_id)
+                bound_set_id = str(
+                    (lease_row or {}).get("set_id") or ""
+                ).strip()
+                if bound_set_id:
+                    current_set["id"] = bound_set_id
             lease_store.attach_set(
                 lease_id,
-                str(self.current_set_info.get("id") or ""),
+                str(current_set.get("id") or ""),
             )
-            self.current_set_info["operation_lease_id"] = lease_id
-            self.current_set_info["operation_lease_fence"] = int(
+            current_set["operation_lease_id"] = lease_id
+            current_set["operation_lease_fence"] = int(
                 operation_lease.get("fence") or 0
             )
-            self.current_set_info["operation_lease_snapshot_hash"] = str(
+            current_set["operation_lease_snapshot_hash"] = str(
                 operation_lease.get("snapshot_hash") or ""
             )
-            self.current_set_info["operation_lease_expires_at"] = str(
+            current_set["operation_lease_expires_at"] = str(
                 operation_lease.get("expires_at") or ""
             )
+
+        self._update_on_success_scan(
+            evidence.canonical_input_tag_qr,
+            evidence.item_id,
+            prepare_durable_state=prepare_durable_acceptance,
+        )
         self._workflow_last_normal_override = (
             evidence.active_label_qr_payload
         )
@@ -8343,7 +8392,6 @@ class Label_Match(tk.Tk):
                     }
                 }
             )
-        self._save_current_set_state()
         self._render_operator_workbench()
         self._focus_scan_entry_if_available()
         return True
@@ -10907,15 +10955,52 @@ class Label_Match(tk.Tk):
             print(f"생산 날짜 추출 오류: {e}")
             return None
 
-    def _update_on_success_scan(self, raw, parsed):
-        if len(self.current_set_info['raw']) == 0:
+    def _update_on_success_scan(
+        self,
+        raw,
+        parsed,
+        *,
+        prepare_durable_state=None,
+    ):
+        durable_acceptance = callable(prepare_durable_state)
+        active_current_set = self.current_set_info
+        previous_current_set = (
+            copy.deepcopy(active_current_set)
+            if durable_acceptance
+            else None
+        )
+        first_scan = len(self.current_set_info['raw']) == 0
+        try:
+            if first_scan:
+                if not durable_acceptance:
+                    self._clear_workflow_completion()
+                    self._workflow_recovered = False
+                    self.current_set_info['id'] = str(time.time_ns())
+                    self.current_set_info['start_time'] = datetime.now()
+                else:
+                    if not self.current_set_info.get('id'):
+                        self.current_set_info['id'] = str(time.time_ns())
+                    if not self.current_set_info.get('start_time'):
+                        self.current_set_info['start_time'] = datetime.now()
+
+            self.current_set_info['raw'].append(raw)
+            self.current_set_info['parsed'].append(parsed)
+            if durable_acceptance:
+                prepare_durable_state(self.current_set_info)
+                if not self._save_current_set_state():
+                    raise PackageLogisticsError(
+                        "PHS2 was accepted, but current packaging state could not be saved"
+                    )
+        except Exception:
+            if durable_acceptance:
+                active_current_set.clear()
+                active_current_set.update(previous_current_set)
+                self.current_set_info = active_current_set
+            raise
+
+        if durable_acceptance and first_scan:
             self._clear_workflow_completion()
             self._workflow_recovered = False
-            self.current_set_info['id'] = str(time.time_ns())
-            self.current_set_info['start_time'] = datetime.now()
-
-        self.current_set_info['raw'].append(raw)
-        self.current_set_info['parsed'].append(parsed)
 
         num_scans = len(self.current_set_info['parsed'])
         workflow_total = self._workflow_total_scan_count()
@@ -10966,7 +11051,8 @@ class Label_Match(tk.Tk):
                 ),
             },
         )
-        self._save_current_set_state()
+        if not durable_acceptance:
+            self._save_current_set_state()
         self._render_operator_workbench()
         if num_scans == workflow_total and not self._central_inherit_all_active():
             self._finalize_set(self.Results.PASS)

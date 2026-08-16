@@ -640,10 +640,23 @@ def test_package_outbox_never_claims_before_durable_local_completion(tmp_path):
     draft = _draft_for_set("LOCAL-FIRST-CLAIM")
     queued = outbox.enqueue(draft)
 
+    # PENDING is the delivery state on both sides of the local commit boundary.
+    # PREPARED is therefore documentation shorthand for this existing field
+    # combination, not a persisted status value.
     assert queued["local_completion_committed"] == 0
+    assert queued["status"] == "PENDING"
     assert outbox.claim_next() is None
+    with sqlite3.connect(tmp_path / "local-first-claim.sqlite3") as conn:
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='package_command_outbox'"
+        ).fetchone()[0]
+    assert "PREPARED" not in table_sql
 
     outbox.mark_local_completion_committed(queued["idempotency_key"])
+    committed = outbox.get_by_set_id(draft.set_id)
+    assert committed["status"] == "PENDING"
+    assert committed["local_completion_committed"] == 1
     claimed = outbox.claim_next()
 
     assert claimed["idempotency_key"] == queued["idempotency_key"]
@@ -2629,6 +2642,32 @@ def test_inherit_receipt_must_echo_the_immutable_source_evidence():
     with pytest.raises(PackageLogisticsError, match="source evidence"):
         PackageOutboxProcessor._validate_receipt(
             draft, source_id, receipt, command=command
+        )
+
+
+def test_producer_ingest_accepted_receipt_is_not_a_package_logistics_receipt():
+    draft = _draft()
+    producer_receipt = {
+        "request_id": "producer-ingest-request",
+        "client_batch_id": "relay-label-1",
+        "server_source_file_id": (
+            "label-host/label_match/label_match_events/legacy_csv/file.csv"
+        ),
+        "committed": True,
+        "status": "accepted",
+        "retryable": False,
+        "next_retry_after": None,
+        "totals": {
+            "inserted": 1,
+            "replayed": 0,
+            "quarantined": 0,
+            "errors": 0,
+        },
+    }
+
+    with pytest.raises(PackageLogisticsError):
+        PackageOutboxProcessor._validate_receipt(
+            draft, TRANSFER, producer_receipt
         )
 
 

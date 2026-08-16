@@ -1,5 +1,6 @@
 import ast
 import base64
+import copy
 import csv
 import importlib.util
 import json
@@ -1588,6 +1589,7 @@ def test_finalize_set_preserves_label_trace_without_input_tag_id():
 
 def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     module = load_label_match_module()
+    marker_calls = []
 
     class FlushFailingDataManager:
         def __init__(self):
@@ -1617,6 +1619,8 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
         "phase": "A",
         "item_name_override": None,
         "production_date": "2026-06-22",
+        "central_inherit_all": True,
+        "package_source_snapshot": {"bundle_id": "bundle-durable"},
     }
     app.items_data = {"MASTER": {"Item Name": "Product", "Spec": "Spec"}}
     app.scan_count = defaultdict(lambda: defaultdict(int))
@@ -1624,6 +1628,15 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     app.set_details_map = {}
     app.history_row_details_map = {}
     app.data_manager = FlushFailingDataManager()
+    app.package_outbox = type(
+        "Outbox",
+        (),
+        {
+            "mark_local_completion_committed": staticmethod(
+                lambda *_args, **_kwargs: marker_calls.append(True)
+            )
+        },
+    )()
     app.history_tree = _FailingHistoryTree()
     app.save_status_label = _FakeLabel()
     app.is_running_simulation = False
@@ -1634,6 +1647,14 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     app._update_summary_tree = lambda: (_ for _ in ()).throw(AssertionError("summary should not update"))
     app._reset_current_set = lambda **kwargs: (_ for _ in ()).throw(AssertionError("current set should not reset"))
     app.after = lambda delay, callback: None
+    app._queue_authoritative_package = lambda **_kwargs: {
+        "status": "PENDING",
+        "idempotency_key": "durable-package-key",
+        "membership_mode": "INHERIT_ALL",
+    }
+    app._start_package_outbox_drain = lambda: (_ for _ in ()).throw(
+        AssertionError("upload claim must not start before CSV fsync")
+    )
     durable_blocks = []
     app._publish_durable_commit_block = (
         lambda error, **_kwargs: durable_blocks.append(str(error)) or False
@@ -1647,6 +1668,7 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     assert app.global_scanned_set == set()
     assert app.history_row_details_map == {}
     assert played == []
+    assert marker_calls == []
     assert durable_blocks == ["flush failed"]
 
 
@@ -4110,6 +4132,97 @@ def test_active_package_submission_recovers_local_completion_without_waiting_for
     ]
 
 
+def test_flushed_csv_recovery_reuses_lease_aware_finalize_path(monkeypatch):
+    module = load_label_match_module()
+    row = {
+        "status": "PENDING",
+        "idempotency_key": "package-key",
+        "local_completion_committed": 0,
+    }
+
+    class Outbox:
+        @staticmethod
+        def get_by_set_id(_set_id):
+            return dict(row)
+
+        @staticmethod
+        def mark_local_completion_committed(*_args, **_kwargs):
+            raise AssertionError(
+                "CSV crash recovery must reuse the lease-aware finalize path"
+            )
+
+    app = object.__new__(module.Label_Match)
+    app.Results = module.Label_Match.Results
+    app.current_set_info = {
+        "id": "phs2-csv-fsynced",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "central_inherit_all": True,
+        "operation_lease_id": "LEASE-CSV-1",
+        "operation_lease_completed_at": "2026-08-16T00:00:00Z",
+    }
+    app.package_outbox = Outbox()
+    app.data_manager = object()
+    finalized = []
+    app._finalize_set = lambda *args, **kwargs: (
+        finalized.append((args, kwargs)) or True
+    )
+    app._finish_recovered_package_completion = lambda: (_ for _ in ()).throw(
+        AssertionError("marker=0 is not LOCAL_COMMITTED")
+    )
+    monkeypatch.setattr(
+        module,
+        "_label_match_local_completion_event_exists",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert module.Label_Match._reconcile_active_package_submission(app) is True
+    assert finalized == [((module.Label_Match.Results.PASS,), {})]
+
+
+def test_uncommitted_prewrite_conflict_never_becomes_local_success(monkeypatch):
+    module = load_label_match_module()
+    row = {
+        "status": "CONFLICT",
+        "last_error_code": "PHS_WORK_GROUP_COMMAND_CONFLICT",
+        "idempotency_key": "package-conflict-key",
+        "set_id": "set-conflict",
+        "command_json": '{"command_type":"CREATE_PACKAGE"}',
+        "receipt_json": None,
+        "local_completion_committed": 0,
+    }
+
+    class Outbox:
+        @staticmethod
+        def get_by_set_id(_set_id):
+            return dict(row)
+
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "id": "set-conflict",
+        "central_inherit_all": True,
+    }
+    app.package_outbox = Outbox()
+    app.data_manager = object()
+    notices = []
+    app._set_active_package_submission_notice = lambda value: (
+        notices.append(value) or False
+    )
+    app._finalize_set = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("marker=0 conflict must not be finalized as PASS")
+    )
+    monkeypatch.setattr(
+        module,
+        "_label_match_local_completion_event_exists",
+        lambda *_args, **_kwargs: False,
+    )
+
+    assert (
+        module.Label_Match._reconcile_active_package_submission(app) is False
+    )
+    assert notices == [row]
+
+
 def test_exact_prewrite_package_conflict_is_the_only_recoverable_conflict():
     module = load_label_match_module()
     row = {
@@ -4410,6 +4523,140 @@ def test_central_package_preflight_state_must_be_durable_before_enqueue():
     assert app.current_set_info["resolved_transfer_bundle_id"] == "TRANSFER-1"
 
 
+def test_orphan_package_recovery_requires_durable_current_set_authority(
+    monkeypatch,
+):
+    module = load_label_match_module()
+    row = {
+        "status": "PENDING",
+        "idempotency_key": "orphan-package-key",
+        "updated_at": "2026-08-16T00:00:00Z",
+        "draft_json": json.dumps(
+            {
+                "membership_mode": "INHERIT_ALL",
+                "source_input_tag_id": "ITG-ORPHAN",
+                "source_input_tag_label_id": "LBL-ORPHAN",
+                "source_input_tag_hash_prefix": "0123456789abcdef",
+            }
+        ),
+    }
+    actions = []
+
+    class Manager:
+        @staticmethod
+        def load_current_state():
+            actions.append("load")
+            return None
+
+        @staticmethod
+        def save_current_state(_state):
+            actions.append("save-failed")
+            return False
+
+    class Outbox:
+        @staticmethod
+        def list_local_completion_pending(*, limit):
+            assert limit == 21
+            return [dict(row)]
+
+        @staticmethod
+        def mark_local_completion_committed(*_args, **_kwargs):
+            actions.append("mark-local")
+
+    recovered = {
+        "id": "set-orphan",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "central_inherit_all": True,
+    }
+    monkeypatch.setattr(
+        module,
+        "_label_match_recover_central_state_from_package_row",
+        lambda _row: dict(recovered),
+    )
+    app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
+    app.data_manager = Manager()
+    app.package_outbox = Outbox()
+    rendered = []
+    app._render_operator_workbench = lambda: rendered.append(True)
+
+    assert module.Label_Match._load_current_set_state(app) is None
+    assert actions == ["load", "save-failed"]
+    assert rendered == [True]
+    assert app._workflow_blocking_notice.kind == "submission_blocked"
+    assert "mark-local" not in actions
+
+
+def test_orphan_acked_csv_recovery_commits_operation_lease_with_marker(
+    monkeypatch,
+):
+    module = load_label_match_module()
+    row = {
+        "status": "ACKED",
+        "idempotency_key": "orphan-acked-key",
+        "updated_at": "2026-08-16T00:00:00Z",
+        "draft_json": json.dumps(
+            {
+                "membership_mode": "INHERIT_ALL",
+                "source_input_tag_id": "ITG-ACKED",
+                "source_input_tag_label_id": "LBL-ACKED",
+                "source_input_tag_hash_prefix": "0123456789abcdef",
+            }
+        ),
+    }
+    marker_calls = []
+
+    class Manager:
+        @staticmethod
+        def load_current_state():
+            return None
+
+    class Outbox:
+        @staticmethod
+        def list_local_completion_pending(*, limit):
+            assert limit == 21
+            return [dict(row)]
+
+        @staticmethod
+        def mark_local_completion_committed(key, **kwargs):
+            marker_calls.append((key, kwargs))
+
+    recovered = {
+        "id": "set-acked",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM"],
+        "central_inherit_all": True,
+        "operation_lease_id": "LEASE-ACKED-1",
+        "operation_lease_completed_at": "2026-08-16T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        module,
+        "_label_match_recover_central_state_from_package_row",
+        lambda _row: dict(recovered),
+    )
+    monkeypatch.setattr(
+        module,
+        "_label_match_local_completion_event_exists",
+        lambda *_args, **_kwargs: True,
+    )
+    app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
+    app.data_manager = Manager()
+    app.package_outbox = Outbox()
+
+    assert module.Label_Match._load_current_set_state(app) is None
+    assert marker_calls == [
+        (
+            "orphan-acked-key",
+            {
+                "operation_lease_id": "LEASE-ACKED-1",
+                "operation_completed_at": "2026-08-16T00:00:00Z",
+            },
+        )
+    ]
+
+
 def test_f3_after_f4_refreshes_cleared_source_snapshot_before_enqueue():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
@@ -4475,12 +4722,259 @@ def test_f3_keeps_existing_source_snapshot_without_extra_refresh():
             "existing snapshot must not be refreshed"
         )
     )
+    app._save_current_set_state = lambda: True
     app._enqueue_central_package_submission = lambda: True
 
     assert app._begin_central_package_submission() is True
 
 
-def test_acked_package_with_flushed_local_event_recovers_without_duplicate_log(tmp_path):
+def test_f3_requires_durable_current_set_authority_before_enqueue():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "id": "phs2-current-state-failure",
+        "raw": ["PHS2"],
+        "parsed": ["ITEM-1"],
+        "central_inherit_all": True,
+        "package_source_snapshot": {"bundle_id": "TRANSFER-1"},
+    }
+    app._central_package_preflight_in_progress = False
+    app._central_inherit_all_active = lambda: True
+    actions = []
+    app._save_current_set_state = lambda: actions.append("save-failed") or False
+    app._enqueue_central_package_submission = lambda: (_ for _ in ()).throw(
+        AssertionError("durable outbox intent must wait for current-set authority")
+    )
+    app._publish_durable_commit_block = lambda error: (
+        actions.append(f"blocked:{error}") or False
+    )
+
+    assert app._begin_central_package_submission() is False
+    assert actions[0] == "save-failed"
+    assert actions[1].startswith("blocked:current packaging state could not be saved")
+
+
+class _PHS2AcceptanceEvidence:
+    replaced_scan = False
+    canonical_input_tag_qr = "PHS2-CANONICAL"
+    physical_scanned_qr_payload = "PHS2-SCANNED"
+    active_label_qr_payload = "PHS2-ACTIVE"
+    active_label_id = "LBL-ACTIVE"
+    active_label_business_date = "2026-08-16"
+    active_label_worker_code = "worker"
+    active_label_resolution = "CURRENT_ACTIVE"
+    item_id = "ITEM-1"
+    member_count = 1
+    membership_hash = "a" * 64
+
+    @staticmethod
+    def state_fields():
+        return {
+            "active_label_id": "LBL-ACTIVE",
+            "active_label_qr_payload": "PHS2-ACTIVE",
+            "active_label_resolution": "CURRENT_ACTIVE",
+        }
+
+
+def _phs2_acceptance_test_app(module, *, save_succeeds):
+    actions = []
+
+    class Manager:
+        def __init__(self):
+            self.events = []
+            self.save_calls = []
+            self.durable_state = None
+            self.save_succeeds = save_succeeds
+
+        def save_current_state(self, state):
+            saved = copy.deepcopy(state)
+            self.save_calls.append(saved)
+            actions.append(("save", saved))
+            if self.save_succeeds:
+                self.durable_state = saved
+            return self.save_succeeds
+
+        def log_event(self, event_type, details):
+            self.events.append((event_type, copy.deepcopy(details)))
+            actions.append(("event", event_type))
+
+    class LeaseStore:
+        def __init__(self):
+            self.bound_set_id = None
+
+        def get(self, *, lease_id):
+            actions.append(("lease-get", lease_id))
+            return {"lease_id": lease_id, "set_id": self.bound_set_id}
+
+        def attach_set(self, lease_id, set_id):
+            if self.bound_set_id not in {None, set_id}:
+                raise AssertionError("prefetched lease changed packaging set")
+            self.bound_set_id = set_id
+            actions.append(("lease-attach", lease_id, set_id))
+            return {"lease_id": lease_id, "set_id": set_id}
+
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "start_time": None,
+        "central_inherit_all": False,
+    }
+    app.initialized_successfully = True
+    app.history_view_updates_active_state = True
+    app.is_running_simulation = True
+    app.progress_bar = _FakeProgressBar()
+    app.data_manager = Manager()
+    app.package_operation_lease_store = LeaseStore()
+    app._workflow_recovered = True
+    app._workflow_last_normal_override = "BEFORE"
+    app.update_big_display = lambda *_args: actions.append(("ui", "display"))
+    app._update_status_label = lambda: actions.append(("ui", "status"))
+    app._update_history_tree_in_progress = lambda: actions.append(
+        ("ui", "history")
+    )
+    app._render_operator_workbench = lambda: actions.append(
+        ("ui", "workbench")
+    )
+    app._focus_scan_entry_if_available = lambda: actions.append(
+        ("ui", "focus")
+    )
+    app._finalize_set = lambda *_args, **_kwargs: pytest.fail(
+        "central PHS2 acceptance must not auto-finalize"
+    )
+    return app, actions
+
+
+def test_phs2_acceptance_only_save_failure_rolls_back_without_success_publish():
+    module = load_label_match_module()
+    app, actions = _phs2_acceptance_test_app(
+        module,
+        save_succeeds=False,
+    )
+    original_identity = app.current_set_info
+    original = copy.deepcopy(app.current_set_info)
+
+    with pytest.raises(
+        module.PackageLogisticsError,
+        match="current packaging state could not be saved",
+    ):
+        app._accept_resolved_central_phs2_scan(
+            _PHS2AcceptanceEvidence(),
+            {"bundle_id": "TRANSFER-1"},
+            {"SID": "SEAL-1"},
+            {
+                "lease_id": "LEASE-1",
+                "fence": 3,
+                "snapshot_hash": "b" * 64,
+                "expires_at": "2026-08-16T01:00:00Z",
+            },
+        )
+
+    assert len(app.data_manager.save_calls) == 1
+    staged = app.data_manager.save_calls[0]["current_set_info"]
+    assert staged["raw"] == ["PHS2-CANONICAL"]
+    assert staged["parsed"] == ["ITEM-1"]
+    assert staged["active_label_id"] == "LBL-ACTIVE"
+    assert staged["resolved_transfer_bundle_id"] == "TRANSFER-1"
+    assert staged["sealed_transfer"] == {"SID": "SEAL-1"}
+    assert staged["operation_lease_id"] == "LEASE-1"
+    assert staged["operation_lease_fence"] == 3
+    assert staged["id"]
+    assert app.data_manager.durable_state is None
+    assert app.current_set_info is original_identity
+    assert app.current_set_info == original
+    assert app._workflow_recovered is True
+    assert app._workflow_last_normal_override == "BEFORE"
+    assert app.data_manager.events == []
+    assert [action[0] for action in actions] == [
+        "lease-get",
+        "lease-attach",
+        "save",
+    ]
+
+
+def test_phs2_acceptance_success_saves_complete_authority_once_before_publish():
+    module = load_label_match_module()
+    app, actions = _phs2_acceptance_test_app(
+        module,
+        save_succeeds=True,
+    )
+
+    assert app._accept_resolved_central_phs2_scan(
+        _PHS2AcceptanceEvidence(),
+        {"bundle_id": "TRANSFER-1"},
+        {"SID": "SEAL-1"},
+        {
+            "lease_id": "LEASE-1",
+            "fence": 3,
+            "snapshot_hash": "b" * 64,
+            "expires_at": "2026-08-16T01:00:00Z",
+        },
+    ) is True
+
+    assert len(app.data_manager.save_calls) == 1
+    durable = app.data_manager.durable_state["current_set_info"]
+    assert durable["raw"] == ["PHS2-CANONICAL"]
+    assert durable["parsed"] == ["ITEM-1"]
+    assert durable["active_label_id"] == "LBL-ACTIVE"
+    assert durable["operation_lease_id"] == "LEASE-1"
+    assert durable["id"] == app.current_set_info["id"]
+    assert [event for event, _details in app.data_manager.events] == [
+        module.Label_Match.Events.SCAN_OK,
+        "PHS_LABEL_ACTIVE_RESOLVED",
+    ]
+    save_position = next(
+        index for index, action in enumerate(actions) if action[0] == "save"
+    )
+    published_positions = [
+        index
+        for index, action in enumerate(actions)
+        if action[0] in {"event", "ui"}
+    ]
+    assert published_positions
+    assert all(save_position < position for position in published_positions)
+    assert app._workflow_recovered is False
+    assert app._workflow_last_normal_override == "PHS2-ACTIVE"
+
+
+def test_phs2_acceptance_retry_reuses_prefetched_lease_set_after_save_failure():
+    module = load_label_match_module()
+    app, _actions = _phs2_acceptance_test_app(
+        module,
+        save_succeeds=False,
+    )
+    lease = {
+        "lease_id": "LEASE-RETRY",
+        "fence": 4,
+        "snapshot_hash": "c" * 64,
+        "expires_at": "2026-08-16T01:00:00Z",
+    }
+
+    with pytest.raises(module.PackageLogisticsError):
+        app._accept_resolved_central_phs2_scan(
+            _PHS2AcceptanceEvidence(),
+            {"bundle_id": "TRANSFER-RETRY"},
+            None,
+            lease,
+        )
+    first_set_id = app.package_operation_lease_store.bound_set_id
+    assert first_set_id
+
+    app.data_manager.save_succeeds = True
+    assert app._accept_resolved_central_phs2_scan(
+        _PHS2AcceptanceEvidence(),
+        {"bundle_id": "TRANSFER-RETRY"},
+        None,
+        lease,
+    ) is True
+
+    assert len(app.data_manager.save_calls) == 2
+    assert app.data_manager.durable_state["current_set_info"]["id"] == first_set_id
+    assert app.current_set_info["id"] == first_set_id
+
+
+def test_acked_package_with_flushed_local_event_reuses_deduplicating_finalize(tmp_path):
     module = load_label_match_module()
     set_id = "phs2-crash-window"
     log_path = tmp_path / "포장실작업이벤트로그_PC1_20260722.csv"
@@ -4500,8 +4994,6 @@ def test_acked_package_with_flushed_local_event_recovers_without_duplicate_log(t
         unique_id = "PC1"
 
     class Outbox:
-        marked = []
-
         @staticmethod
         def get_by_set_id(_set_id):
             return {
@@ -4510,8 +5002,9 @@ def test_acked_package_with_flushed_local_event_recovers_without_duplicate_log(t
                 "local_completion_committed": 0,
             }
 
-        def mark_local_completion_committed(self, key):
-            self.marked.append(key)
+        @staticmethod
+        def mark_local_completion_committed(*_args, **_kwargs):
+            raise AssertionError("recovery must preserve lease-aware marker handling")
 
     app = object.__new__(module.Label_Match)
     app.Results = module.Label_Match.Results
@@ -4523,13 +5016,19 @@ def test_acked_package_with_flushed_local_event_recovers_without_duplicate_log(t
     }
     app.package_outbox = Outbox()
     app.data_manager = Manager()
-    app._finish_recovered_package_completion = lambda: "recovered"
-    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("must not append a second TRAY_COMPLETE")
-    )
+    finalized = []
 
-    assert module.Label_Match._reconcile_active_package_submission(app) == "recovered"
-    assert app.package_outbox.marked == ["package-key"]
+    def finalize(result):
+        assert module._label_match_local_completion_event_exists(
+            app.data_manager, set_id
+        )
+        finalized.append(result)
+        return True
+
+    app._finalize_set = finalize
+
+    assert module.Label_Match._reconcile_active_package_submission(app) is True
+    assert finalized == [app.Results.PASS]
 
 
 def test_cancellation_review_notice_is_visible_but_does_not_block_scanning():
