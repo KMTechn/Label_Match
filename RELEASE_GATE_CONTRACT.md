@@ -1,5 +1,21 @@
 # Label_Match release gate contract
 
+## Factory Contract adoption status
+
+`RETIRE_CANONICAL_ADOPTION_LAYER` is the governing compatibility decision. The
+never-merged Factory Contract 1.1.0 canonical-adoption candidate is rejected:
+its ADR-0002 synchronized-adoption proposal and ADR-0003 executable-plan
+authorization proposal are `HISTORICAL_REJECTED`. None of that candidate's
+generation pointers, cohorts, receipts, coordinators, owner plans, or
+contract-change blocking ceremony is a release prerequisite or authority.
+
+The existing Factory Contract 1.0.3 bundle and `contract.lock.json` remain
+enforced, including schemas required for wire and package compatibility.
+Package, installer, runtime/active-work, and exact tag/artifact verification
+also remain enforced. Uses of “canonical” below mean deterministic encoding or
+exact business, Git, or artifact identity; they do not revive synchronized
+canonical adoption.
+
 | Gate | Accident prevented | Unique signal | Timing | Failure decision |
 | --- | --- | --- | --- | --- |
 | quick-check | Changed-area contract breakage | Focused pytest node; release identity tool only for version/release changes | During development, before final candidate freeze | Fix the affected area; do not advance the candidate |
