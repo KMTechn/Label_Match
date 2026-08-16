@@ -412,6 +412,30 @@ def test_build_plan_uses_label_match_stream_and_csv_rows(tmp_path):
     assert plan.metadata["row_count"] == 1
     assert plan.metadata["first_row_number"] == 2
     assert plan.metadata["last_row_number"] == 2
+    assert {
+        "contract_version",
+        "producer_install_id",
+        "client_batch_id",
+        "idempotency_key",
+        "source_host_id",
+        "producer_role",
+        "manifest_hash",
+        "stream_name",
+        "source_system",
+        "source_transport",
+        "relative_path",
+        "batch_kind",
+        "content_sha256",
+        "byte_length",
+    }.issubset(plan.metadata)
+    assert plan.metadata["batch_kind"] == "whole_file"
+    assert {
+        "correlation_id",
+        "producer_id",
+        "payload_sha256",
+        "occurred_at_utc",
+        "payload_mode",
+    }.isdisjoint(plan.metadata)
 
 
 def test_signed_headers_match_server_contract(tmp_path):
@@ -654,6 +678,267 @@ def test_relay_enqueue_dedupes_same_completed_file_and_blocks_changed_content(tm
     assert len(list(spool_dir.iterdir())) == 1
 
 
+def test_relay_enqueue_blocks_active_manifest_fingerprint_change(tmp_path):
+    manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    spool_dir = tmp_path / "spool"
+
+    first = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+    manifest["pc_identity"]["pc_id"] = "LABEL-PC02"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        DirectSyncPushError, match="wire metadata fingerprint conflict"
+    ):
+        enqueue_source_file_for_relay(
+            db_path=db_path,
+            spool_dir=spool_dir,
+            source_file_path=csv_path,
+            producer_manifest_path=manifest_path,
+            credentials=credentials,
+            dedupe_existing=True,
+        )
+
+    assert relay_queue_status(db_path)["counts"] == {RELAY_STATUS_PENDING: 1}
+    assert list(spool_dir.iterdir()) == [Path(first.spooled_file_path)]
+    assert Path(first.spooled_file_path).read_bytes() == csv_path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "contract_version",
+        "idempotency_key",
+        "manifest_hash",
+        "batch_kind",
+        "row_count",
+        "first_row_number",
+        "last_row_number",
+        "content_sha256",
+        "byte_length",
+    ),
+)
+def test_relay_enqueue_blocks_changed_immutable_fingerprint_field(
+    tmp_path, field
+):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    spool_dir = tmp_path / "spool"
+    first = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        stored = json.loads(
+            conn.execute(
+                "SELECT metadata_json FROM direct_sync_relay_batches WHERE relay_id=?",
+                (first.relay_id,),
+            ).fetchone()[0]
+        )
+        original = stored.get(field)
+        stored[field] = original + 1 if type(original) is int else "changed"
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET metadata_json=? WHERE relay_id=?",
+            (json.dumps(stored, sort_keys=True), first.relay_id),
+        )
+        conn.commit()
+
+    with pytest.raises(
+        DirectSyncPushError, match="wire metadata fingerprint conflict"
+    ):
+        enqueue_source_file_for_relay(
+            db_path=db_path,
+            spool_dir=spool_dir,
+            source_file_path=csv_path,
+            producer_manifest_path=manifest_path,
+            credentials=credentials,
+            dedupe_existing=True,
+        )
+
+    assert "client_batch_id" not in direct_sync_push_module.RELAY_SOURCE_FINGERPRINT_FIELDS
+    assert set(direct_sync_push_module.RUNTIME_METADATA_FIELDS).isdisjoint(
+        direct_sync_push_module.RELAY_SOURCE_FINGERPRINT_FIELDS
+    )
+    assert relay_queue_status(db_path)["counts"] == {RELAY_STATUS_PENDING: 1}
+    assert list(spool_dir.iterdir()) == [Path(first.spooled_file_path)]
+
+
+@pytest.mark.parametrize(
+    ("column", "replacement"),
+    [
+        ("producer_id", "changed-producer"),
+        ("key_id", "changed-key"),
+        (
+            "endpoint_url",
+            "https://changed.example.invalid/api/producer-ingest/v1/source-file",
+        ),
+    ],
+)
+def test_relay_enqueue_blocks_changed_hmac_or_endpoint_binding(
+    tmp_path, column, replacement
+):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    spool_dir = tmp_path / "spool"
+    first = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE direct_sync_relay_batches SET {column}=? WHERE relay_id=?",
+            (replacement, first.relay_id),
+        )
+        conn.commit()
+
+    with pytest.raises(
+        DirectSyncPushError, match="wire metadata fingerprint conflict"
+    ):
+        enqueue_source_file_for_relay(
+            db_path=db_path,
+            spool_dir=spool_dir,
+            source_file_path=csv_path,
+            producer_manifest_path=manifest_path,
+            credentials=credentials,
+            dedupe_existing=True,
+        )
+
+    assert relay_queue_status(db_path)["counts"] == {RELAY_STATUS_PENDING: 1}
+    assert list(spool_dir.iterdir()) == [Path(first.spooled_file_path)]
+
+
+def test_relay_enqueue_preserves_attempt_runtime_snapshot_during_spool_repair(
+    tmp_path,
+):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    spool_dir = tmp_path / "spool"
+    first = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+    Path(first.spooled_file_path).unlink()
+    runtime_snapshot = {
+        "runtime_instance_id": "runtime-attempt-1",
+        "runtime_public_jwk": {"kty": "EC", "kid": "runtime-attempt-1"},
+        "runtime_fence": 7,
+        "runtime_request_token": "r" * 43,
+        "runtime_request_sequence": 2,
+    }
+    with sqlite3.connect(db_path) as conn:
+        stored = json.loads(
+            conn.execute(
+                "SELECT metadata_json FROM direct_sync_relay_batches WHERE relay_id=?",
+                (first.relay_id,),
+            ).fetchone()[0]
+        )
+        stored.update(runtime_snapshot)
+        conn.execute(
+            """
+            UPDATE direct_sync_relay_batches
+            SET metadata_json=?, runtime_fencing_policy=?
+            WHERE relay_id=?
+            """,
+            (
+                json.dumps(stored, sort_keys=True),
+                "legacy_exact_replay",
+                first.relay_id,
+            ),
+        )
+        conn.commit()
+
+    repaired = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+
+    assert repaired.relay_id == first.relay_id
+    assert repaired.deduped_existing is True
+    assert {
+        field: repaired.metadata[field]
+        for field in direct_sync_push_module.RUNTIME_METADATA_FIELDS
+    } == runtime_snapshot
+    assert repaired.runtime_fencing_policy == "legacy_exact_replay"
+    assert Path(repaired.spooled_file_path).read_bytes() == csv_path.read_bytes()
+    assert relay_queue_status(db_path)["counts"] == {RELAY_STATUS_PENDING: 1}
+
+
+def test_relay_enqueue_allows_install_and_host_identity_rotation_as_new_row(
+    tmp_path,
+):
+    manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    spool_dir = tmp_path / "spool"
+    first = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+    manifest["pc_identity"]["source_host_id"] = "label-host-2"
+    manifest["pc_identity"]["producer_install_id"] = "install-label-2"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+
+    second = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+
+    assert second.relay_id != first.relay_id
+    assert second.deduped_existing is False
+    assert first.metadata["source_host_id"] == "label-host-1"
+    assert second.metadata["source_host_id"] == "label-host-2"
+    assert first.metadata["producer_install_id"] == "install-label-1"
+    assert second.metadata["producer_install_id"] == "install-label-2"
+    assert relay_queue_status(db_path)["counts"] == {RELAY_STATUS_PENDING: 2}
+    assert len(list(spool_dir.iterdir())) == 2
+
+
 def test_relay_enqueue_repairs_missing_pending_spool_on_dedupe(tmp_path):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
@@ -685,6 +970,83 @@ def test_relay_enqueue_repairs_missing_pending_spool_on_dedupe(tmp_path):
     assert Path(repaired.spooled_file_path).read_bytes() == csv_path.read_bytes()
     assert relay_queue_status(db_path)["counts"][RELAY_STATUS_PENDING] == 1
     assert len(list(spool_dir.iterdir())) == 1
+
+
+def test_relay_ambiguous_commit_returns_exact_row_and_preserves_spool(
+    tmp_path, monkeypatch
+):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    spool_dir = tmp_path / "spool"
+    original_connect = direct_sync_push_module._connect_relay_db
+    direct_sync_push_module.init_relay_queue_schema(db_path)
+    monkeypatch.setattr(
+        direct_sync_push_module,
+        "init_relay_queue_schema",
+        lambda _db_path: None,
+    )
+    monkeypatch.setattr(
+        direct_sync_push_module,
+        "reset_stale_relay_leases",
+        lambda *, db_path: 0,
+    )
+    wrapped_enqueue_connection = False
+
+    class CommitResultLostConnection:
+        def __init__(self, connection):
+            self._connection = connection
+            self._lost = False
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def commit(self):
+            self._connection.commit()
+            if not self._lost:
+                self._lost = True
+                raise sqlite3.OperationalError("commit result unavailable")
+
+    def uncertain_connect(path):
+        nonlocal wrapped_enqueue_connection
+        assert wrapped_enqueue_connection is False
+        wrapped_enqueue_connection = True
+        connection = original_connect(path)
+        return CommitResultLostConnection(connection)
+
+    monkeypatch.setattr(
+        direct_sync_push_module, "_connect_relay_db", uncertain_connect
+    )
+
+    row = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=spool_dir,
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+        dedupe_existing=True,
+    )
+    assert wrapped_enqueue_connection is True
+    assert Path(row.spooled_file_path).read_bytes() == csv_path.read_bytes()
+    assert len(list(spool_dir.iterdir())) == 1
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        stored = conn.execute(
+            "SELECT * FROM direct_sync_relay_batches WHERE relay_id=?",
+            (row.relay_id,),
+        ).fetchone()
+    assert stored is not None
+    assert stored["status"] == RELAY_STATUS_PENDING
+    assert stored["spooled_file_path"] == row.spooled_file_path
+    stored_metadata = json.loads(stored["metadata_json"])
+    assert {
+        field: stored_metadata[field]
+        for field in direct_sync_push_module.RELAY_SOURCE_FINGERPRINT_FIELDS
+    } == {
+        field: row.metadata[field]
+        for field in direct_sync_push_module.RELAY_SOURCE_FINGERPRINT_FIELDS
+    }
 
 
 def test_relay_enqueue_keeps_legacy_duplicate_behavior_without_dedupe(tmp_path):
@@ -1034,6 +1396,63 @@ def test_drain_non_2xx_committed_response_requires_operator_review_without_retry
     assert current["next_attempt_at"] is None
     assert current["last_error_code"] == "producer_committed_status_mismatch"
     assert json.loads(current["receipt_json"])["request_id"] == "request-claimed-committed"
+
+
+def test_logistics_committed_receipt_never_advances_producer_ack_or_retention(
+    tmp_path,
+):
+    manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    row = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    server_source_file_id = (
+        f"{manifest['pc_identity']['source_host_id']}/"
+        f"label_match/label_match_events/{row.relative_path}"
+    )
+    result = drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=FakeSession(
+            FakeResponse(
+                200,
+                {
+                    "receipt_id": "package-logistics-receipt",
+                    "command_type": "CREATE_PACKAGE",
+                    "client_batch_id": row.relay_id,
+                    "server_source_file_id": server_source_file_id,
+                    "committed": True,
+                    "status": "COMMITTED",
+                    "retryable": False,
+                    "next_retry_after": None,
+                    "totals": {
+                        "inserted": 1,
+                        "replayed": 0,
+                        "quarantined": 0,
+                        "errors": 0,
+                    },
+                },
+            )
+        ),
+        status_dir=tmp_path / "status",
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.error_code == "producer_receipt_invalid"
+    assert relay_queue_status(db_path)["counts"].get(RELAY_STATUS_ACKED, 0) == 0
+    assert (
+        relay_queue_status(db_path)["counts"][RELAY_STATUS_OPERATOR_REVIEW]
+        == 1
+    )
+    assert acked_relay_retention_candidates(db_path) == ()
+    assert Path(row.spooled_file_path).is_file()
 
 
 def test_drain_uses_enqueued_metadata_snapshot_after_manifest_changes(tmp_path):

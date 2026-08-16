@@ -9,8 +9,11 @@ import pytest
 
 from direct_sync_push import (
     RELAY_STATUS_ACKED,
+    RELAY_STATUS_FAILED_PERMANENT,
+    RELAY_STATUS_LEASED,
     RELAY_STATUS_OPERATOR_REVIEW,
     RELAY_STATUS_PENDING,
+    claim_next_relay_batch,
     relay_queue_status,
 )
 import tools.direct_sync_relay_runner as runner
@@ -199,6 +202,175 @@ def test_runner_scan_source_dir_enqueues_matching_csv_idempotently(tmp_path, cap
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
     output = capsys.readouterr().out
     assert "direct_sync_scan_status=scan_no_new_rows" in output
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_runner_repairs_invalid_active_spool_instead_of_skipping_source_range(
+    tmp_path, capsys, monkeypatch, damage
+):
+    disable_scan_drain(monkeypatch)
+    sync_dir = tmp_path / "sync"
+    csv_path = write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+
+    assert main(args) == 1
+    capsys.readouterr()
+    first = relay_rows(tmp_path / "relay.sqlite3")[0]
+    spool_path = Path(first["spooled_file_path"])
+    if damage == "missing":
+        spool_path.unlink()
+    else:
+        spool_path.write_bytes(b"x" * spool_path.stat().st_size)
+
+    assert main(args) == 1
+    output = capsys.readouterr().out
+
+    assert "direct_sync_scan_status=enqueued" in output
+    rows = relay_rows(tmp_path / "relay.sqlite3")
+    assert len(rows) == 1
+    assert rows[0]["relay_id"] == first["relay_id"]
+    assert rows[0]["status"] == RELAY_STATUS_PENDING
+    assert Path(rows[0]["spooled_file_path"]).read_bytes() == csv_path.read_bytes()
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_runner_repairs_expired_leased_invalid_spool_and_retries_same_relay(
+    tmp_path, capsys, monkeypatch, damage
+):
+    disable_scan_drain(monkeypatch)
+    sync_dir = tmp_path / "sync"
+    write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+    db_path = tmp_path / "relay.sqlite3"
+
+    assert main(args) == 1
+    capsys.readouterr()
+    first = relay_rows(db_path)[0]
+    relay_id = first["relay_id"]
+    spool_path = Path(first["spooled_file_path"])
+    expected_spool = spool_path.read_bytes()
+    claimed = claim_next_relay_batch(
+        db_path=db_path,
+        worker_id="expired-worker",
+        lease_seconds=300,
+        now="2999-01-01T00:00:00Z",
+    )
+    assert claimed is not None
+    assert claimed.relay_id == relay_id
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET lease_expires_at = ? WHERE relay_id = ?",
+            ("2000-01-01T00:00:00Z", relay_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    if damage == "missing":
+        spool_path.unlink()
+    else:
+        damaged = b"x" * len(expected_spool)
+        if damaged == expected_spool:
+            damaged = b"y" * len(expected_spool)
+        spool_path.write_bytes(damaged)
+
+    drain_calls = []
+
+    def fake_ack_relay(config, **kwargs):
+        drain_calls.append((config, kwargs))
+        rows = relay_rows(db_path)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["relay_id"] == relay_id
+        assert row["status"] == RELAY_STATUS_PENDING
+        assert row["lease_owner"] is None
+        assert row["lease_expires_at"] is None
+        assert Path(row["spooled_file_path"]).read_bytes() == expected_spool
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE direct_sync_relay_batches SET status = ? WHERE relay_id = ?",
+                (RELAY_STATUS_ACKED, relay_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "status": "acked",
+            "last_result": {
+                "relay_id": relay_id,
+                "status": "acked",
+                "committed": True,
+                "retryable": False,
+            },
+        }
+
+    monkeypatch.setattr(runner, "run_relay_once", fake_ack_relay)
+
+    assert main(args) == 0
+    capsys.readouterr()
+
+    rows = relay_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["relay_id"] == relay_id
+    assert rows[0]["status"] == RELAY_STATUS_ACKED
+    assert Path(rows[0]["spooled_file_path"]).read_bytes() == expected_spool
+    assert len(drain_calls) == 1
+    assert drain_calls[0][1]["target_relay_id"] == relay_id
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_runner_leaves_live_leased_invalid_spool_untouched(
+    tmp_path, capsys, monkeypatch, damage
+):
+    drain_calls = disable_scan_drain(monkeypatch)
+    sync_dir = tmp_path / "sync"
+    write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+    db_path = tmp_path / "relay.sqlite3"
+
+    assert main(args) == 1
+    capsys.readouterr()
+    first = relay_rows(db_path)[0]
+    relay_id = first["relay_id"]
+    spool_path = Path(first["spooled_file_path"])
+    expected_spool = spool_path.read_bytes()
+    claimed = claim_next_relay_batch(
+        db_path=db_path,
+        worker_id="live-worker",
+        lease_seconds=300,
+        now="2999-01-01T00:00:00Z",
+    )
+    assert claimed is not None
+    assert claimed.relay_id == relay_id
+    leased = relay_rows(db_path)[0]
+    assert leased["status"] == RELAY_STATUS_LEASED
+    if damage == "missing":
+        spool_path.unlink()
+        damaged = None
+    else:
+        damaged = b"x" * len(expected_spool)
+        if damaged == expected_spool:
+            damaged = b"y" * len(expected_spool)
+        spool_path.write_bytes(damaged)
+
+    assert main(args) == 1
+    capsys.readouterr()
+
+    rows = relay_rows(db_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["relay_id"] == relay_id
+    assert row["status"] == RELAY_STATUS_LEASED
+    assert row["lease_owner"] == leased["lease_owner"]
+    assert row["lease_expires_at"] == leased["lease_expires_at"]
+    assert row["attempt_count"] == leased["attempt_count"]
+    if damage == "missing":
+        assert not spool_path.exists()
+    else:
+        assert spool_path.read_bytes() == damaged
+    assert len(drain_calls) == 2
+    assert drain_calls[-1][1]["target_relay_id"] == relay_id
 
 
 def test_runner_scan_real_data_manager_output_ack_then_second_scan_has_no_new_rows(tmp_path, capsys, monkeypatch):
@@ -475,7 +647,9 @@ def test_runner_targets_current_delta_when_older_pending_row_exists(tmp_path, ca
     ]
 
 
-def test_runner_scan_source_records_watermark_after_committed_operator_review(tmp_path, capsys, monkeypatch):
+def test_runner_scan_source_does_not_record_watermark_for_operator_review(
+    tmp_path, capsys, monkeypatch
+):
     sync_dir = tmp_path / "sync"
     csv_path = write_label_csv(sync_dir)
     args = runner_args(tmp_path, scan_dir=sync_dir)
@@ -514,22 +688,21 @@ def test_runner_scan_source_records_watermark_after_committed_operator_review(tm
     assert main(args) == 1
     capsys.readouterr()
 
-    state = source_scan_state(tmp_path / "relay.sqlite3", csv_path)
-    assert state is not None
-    assert state["sent_byte_count"] == csv_path.stat().st_size
-    assert state["sent_prefix_sha256"] == runner._file_prefix_sha256(csv_path, csv_path.stat().st_size)
+    assert source_scan_state(tmp_path / "relay.sqlite3", csv_path) is None
 
-    assert main(args) == 0
+    assert main(args) == 2
     output = capsys.readouterr().out
-    assert "direct_sync_scan_status=scan_no_new_rows" in output
+    assert "direct_sync_relay_status=existing_terminal_blocked" in output
+    assert "direct_sync_scan_enqueued_count=0" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
+    assert len(relay_rows(tmp_path / "relay.sqlite3")) == 1
     status = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
-    assert status["status"] == "operator_review"
-    assert status["scan_status"] == "scan_no_new_rows"
-    assert status["scan_no_new_count"] == 1
+    assert status["status"] == "existing_terminal_blocked"
+    assert status["scan_status"] == "existing_terminal_blocked"
+    assert source_scan_state(tmp_path / "relay.sqlite3", csv_path) is None
 
 
-def test_runner_scan_source_recovers_checkpoint_from_committed_operator_review_row(
+def test_runner_scan_source_blocks_after_operator_review_prefix_without_reenqueue(
     tmp_path,
     capsys,
     monkeypatch,
@@ -542,6 +715,7 @@ def test_runner_scan_source_recovers_checkpoint_from_committed_operator_review_r
     assert main(args) == 1
     capsys.readouterr()
     first_row = relay_rows(tmp_path / "relay.sqlite3")[0]
+    first_spool_bytes = Path(first_row["spooled_file_path"]).read_bytes()
     receipt = {
         "client_batch_id": first_row["relay_id"],
         "status": "accepted",
@@ -567,16 +741,170 @@ def test_runner_scan_source_recovers_checkpoint_from_committed_operator_review_r
     with csv_path.open("a", encoding="utf-8") as file:
         file.write("2026-06-22T00:01:00,worker,LABEL_MATCHED,\"{ \"\"product_barcode\"\": \"\"BC-2\"\" }\"\n")
 
-    assert main(args) == 1
+    assert main(args) == 2
     output = capsys.readouterr().out
-    assert "direct_sync_scan_status=enqueued" in output
+    assert "direct_sync_relay_status=existing_terminal_blocked" in output
+    assert "direct_sync_scan_status=existing_terminal_blocked" in output
+    assert "direct_sync_scan_enqueued_count=0" in output
+    assert "direct_sync_scan_attempted_count=1" in output
+    assert "direct_sync_scan_terminal_blocked_count=1" in output
+    assert f"direct_sync_scan_failed_source_file={csv_path}" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
-    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_PENDING] == 1
     rows = relay_rows(tmp_path / "relay.sqlite3")
-    second_payload = Path(rows[1]["spooled_file_path"]).read_text(encoding="utf-8")
-    assert "BC-2" in second_payload
-    assert "BC-1" not in second_payload
-    assert "/bytes-0-" not in rows[1]["relative_path"].replace("\\", "/")
+    assert len(rows) == 1
+    assert rows[0]["relay_id"] == first_row["relay_id"]
+    assert Path(rows[0]["spooled_file_path"]).read_bytes() == first_spool_bytes
+    assert source_scan_state(tmp_path / "relay.sqlite3", csv_path) is None
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [RELAY_STATUS_OPERATOR_REVIEW, RELAY_STATUS_FAILED_PERMANENT],
+)
+def test_runner_scan_source_terminal_prefix_wins_over_same_start_pending(
+    tmp_path,
+    capsys,
+    monkeypatch,
+    terminal_status,
+):
+    drain_calls = disable_scan_drain(monkeypatch)
+    sync_dir = tmp_path / "sync"
+    csv_path = write_label_csv(sync_dir)
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+    db_path = tmp_path / "relay.sqlite3"
+
+    assert main(args) == 1
+    capsys.readouterr()
+    first_row = dict(relay_rows(db_path)[0])
+    first_spool_path = Path(first_row["spooled_file_path"])
+    first_spool_bytes = first_spool_path.read_bytes()
+    pending_copy = dict(first_row)
+    pending_copy["relay_id"] = f"{first_row['relay_id']}-pending-copy"
+    columns = tuple(pending_copy)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET status = ? WHERE relay_id = ?",
+            (terminal_status, first_row["relay_id"]),
+        )
+        conn.execute(
+            f"INSERT INTO direct_sync_relay_batches ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(pending_copy[column] for column in columns),
+        )
+        conn.commit()
+    drain_calls.clear()
+
+    assert main(args) == 2
+    output = capsys.readouterr().out
+
+    assert "direct_sync_relay_status=existing_terminal_blocked" in output
+    assert "direct_sync_scan_status=existing_terminal_blocked" in output
+    assert "direct_sync_scan_enqueued_count=0" in output
+    assert "direct_sync_scan_terminal_blocked_count=1" in output
+    rows = relay_rows(db_path)
+    assert len(rows) == 2
+    assert {row["status"] for row in rows} == {
+        terminal_status,
+        RELAY_STATUS_PENDING,
+    }
+    assert first_spool_path.read_bytes() == first_spool_bytes
+    assert source_scan_state(db_path, csv_path) is None
+    assert drain_calls == []
+
+
+def test_runner_mixed_scan_acks_healthy_source_but_preserves_terminal_block_status(
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    disable_scan_drain(monkeypatch)
+    sync_dir = tmp_path / "sync"
+    blocked_csv = write_label_csv(
+        sync_dir,
+        name="포장실작업이벤트로그_blocked_20260622.csv",
+        barcode="BC-BLOCKED",
+    )
+    args = runner_args(tmp_path, scan_dir=sync_dir)
+    db_path = tmp_path / "relay.sqlite3"
+
+    assert main(args) == 1
+    capsys.readouterr()
+    blocked_row = relay_rows(db_path)[0]
+    blocked_spool_path = Path(blocked_row["spooled_file_path"])
+    blocked_spool_bytes = blocked_spool_path.read_bytes()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET status = ? WHERE relay_id = ?",
+            (RELAY_STATUS_OPERATOR_REVIEW, blocked_row["relay_id"]),
+        )
+        conn.commit()
+
+    healthy_csv = write_label_csv(
+        sync_dir,
+        name="포장실작업이벤트로그_healthy_20260622.csv",
+        barcode="BC-HEALTHY",
+    )
+    targeted = []
+
+    def fake_targeted_ack(config, **kwargs):
+        relay_id = str(kwargs.get("target_relay_id") or "")
+        targeted.append(relay_id)
+        assert relay_id
+        with sqlite3.connect(config.db_path) as conn:
+            conn.execute(
+                "UPDATE direct_sync_relay_batches SET status = ? WHERE relay_id = ?",
+                (RELAY_STATUS_ACKED, relay_id),
+            )
+            conn.commit()
+        return {
+            "status": "acked",
+            "last_result": {
+                "relay_id": relay_id,
+                "status": "acked",
+                "committed": True,
+                "retryable": False,
+            },
+        }
+
+    monkeypatch.setattr(runner, "run_relay_once", fake_targeted_ack)
+
+    assert main(args) == 2
+    output = capsys.readouterr().out
+
+    assert "direct_sync_relay_status=acked" in output
+    assert "direct_sync_scan_status=existing_terminal_blocked" in output
+    assert "direct_sync_scan_enqueued_count=1" in output
+    assert "direct_sync_scan_terminal_blocked_count=1" in output
+    assert "direct_sync_targeted_ack_count=1" in output
+    assert f"direct_sync_scan_failed_source_file={blocked_csv}" in output
+    assert len(targeted) == 1
+    runtime = json.loads(
+        (tmp_path / "runtime" / "status.json").read_text(encoding="utf-8")
+    )
+    assert runtime["status"] == "acked"
+    assert runtime["scan_status"] == "existing_terminal_blocked"
+    assert runtime["scan_terminal_blocked_count"] == 1
+    assert runtime["scan_terminal_blocked_source_files"] == [
+        str(blocked_csv)
+    ]
+    assert runtime["scan_failed_source_file"] == str(blocked_csv)
+    rows_by_source = {
+        Path(row["source_file_path"]).parent.name: row
+        for row in relay_rows(db_path)
+    }
+    assert (
+        rows_by_source[runner._source_delta_key(blocked_csv)]["status"]
+        == RELAY_STATUS_OPERATOR_REVIEW
+    )
+    assert (
+        rows_by_source[runner._source_delta_key(healthy_csv)]["status"]
+        == RELAY_STATUS_ACKED
+    )
+    assert blocked_spool_path.read_bytes() == blocked_spool_bytes
+    assert source_scan_state(db_path, blocked_csv) is None
+    healthy_state = source_scan_state(db_path, healthy_csv)
+    assert healthy_state is not None
+    assert healthy_state["sent_byte_count"] == healthy_csv.stat().st_size
 
 
 def test_runner_scan_source_dir_runs_relay_drain_after_scan(tmp_path, capsys, monkeypatch):

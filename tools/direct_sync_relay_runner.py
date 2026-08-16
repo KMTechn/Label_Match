@@ -22,7 +22,12 @@ from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_sourc
 ALLOWED_SOURCE_PREFIX = "포장실작업이벤트로그_"
 ALLOWED_SOURCE_SUFFIX = ".csv"
 DELTA_PROGRESS_STATUSES = {"pending", "leased", "retry_wait", "acked"}
+TERMINAL_DELTA_BLOCK_STATUSES = {"failed_permanent", "operator_review"}
 SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+class ExistingTerminalDeltaBlocked(Exception):
+    pass
 
 
 def _validate_source_glob(pattern: str) -> str:
@@ -162,15 +167,20 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
     source_delta_key = _source_delta_key(source_file)
     rows = conn.execute(
         """
-        SELECT source_file_path, relative_path, content_sha256, status, receipt_json
+        SELECT source_file_path, spooled_file_path, relative_path,
+               content_sha256, byte_length, status
         FROM direct_sync_relay_batches
         WHERE relative_path LIKE 'legacy_csv_deltas/%'
         """
     ).fetchall()
     matching_ranges: dict[int, int] = {}
+    blocked_ranges: dict[int, int] = {}
     for row in rows:
         status = str(row["status"] or "")
-        if status not in DELTA_PROGRESS_STATUSES and not _operator_review_committed(row):
+        if (
+            status not in DELTA_PROGRESS_STATUSES
+            and status not in TERMINAL_DELTA_BLOCK_STATUSES
+        ):
             continue
         source_path = Path(str(row["source_file_path"] or ""))
         if source_path.parent.name != source_delta_key:
@@ -181,11 +191,23 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
         start_byte, end_byte = parsed_range
         delta_hash = _delta_content_sha256_for_range(source_file, start_byte, end_byte)
         if delta_hash and delta_hash == str(row["content_sha256"] or ""):
-            matching_ranges[start_byte] = max(matching_ranges.get(start_byte, 0), end_byte)
+            if (
+                status in DELTA_PROGRESS_STATUSES
+                and _delta_relay_row_has_usable_spool(row)
+            ):
+                matching_ranges[start_byte] = max(
+                    matching_ranges.get(start_byte, 0), end_byte
+                )
+            elif status in TERMINAL_DELTA_BLOCK_STATUSES:
+                blocked_ranges[start_byte] = max(
+                    blocked_ranges.get(start_byte, 0), end_byte
+                )
     best_end_byte = 0
-    while best_end_byte in matching_ranges:
-        next_end_byte = matching_ranges[best_end_byte]
-        if next_end_byte <= best_end_byte:
+    while True:
+        if best_end_byte in blocked_ranges:
+            raise ExistingTerminalDeltaBlocked(str(source_file))
+        next_end_byte = matching_ranges.get(best_end_byte)
+        if next_end_byte is None or next_end_byte <= best_end_byte:
             break
         best_end_byte = next_end_byte
     if best_end_byte <= 0:
@@ -193,25 +215,24 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
     return best_end_byte, _file_prefix_sha256(source_file, best_end_byte)
 
 
-def _operator_review_committed(row: sqlite3.Row) -> bool:
-    if str(row["status"] or "") != "operator_review":
-        return False
+def _delta_relay_row_has_usable_spool(row: sqlite3.Row) -> bool:
+    status = str(row["status"] or "")
+    if status not in {"pending", "leased", "retry_wait"}:
+        return True
     try:
-        receipt = json.loads(str(row["receipt_json"] or "{}"))
-    except (TypeError, ValueError):
+        expected_byte_length = int(row["byte_length"])
+        spool_path = Path(str(row["spooled_file_path"] or ""))
+        if spool_path.stat().st_size != expected_byte_length:
+            return False
+        return _file_prefix_sha256(
+            spool_path, expected_byte_length
+        ) == str(row["content_sha256"] or "")
+    except (OSError, TypeError, ValueError):
         return False
-    return receipt.get("committed") is True and receipt.get("retryable") is False
 
 
 def _last_result_advances_source_progress(last_result: dict) -> bool:
-    status = str(last_result.get("status") or "")
-    if status == "acked":
-        return True
-    return (
-        status == "operator_review"
-        and last_result.get("committed") is True
-        and last_result.get("retryable") is False
-    )
+    return str(last_result.get("status") or "") == "acked"
 
 
 def _record_source_sent_byte_count(db_path: str | Path, source_file: Path, sent_byte_count: int) -> None:
@@ -520,6 +541,7 @@ def main(argv: list[str] | None = None) -> int:
             attempted_count = 0
             no_new_count = 0
             preflight_status = None
+            terminal_blocked_sources: list[str] = []
             pending_delta_progress: dict[str, tuple[Path, int]] = {}
             source_files, deferred_count = _scan_source_files(
                 args.scan_source_dir,
@@ -537,7 +559,12 @@ def main(argv: list[str] | None = None) -> int:
                 ):
                     deferred_count += 1
                     continue
-                delta = _build_delta_source_file(config, source_file)
+                try:
+                    delta = _build_delta_source_file(config, source_file)
+                except ExistingTerminalDeltaBlocked:
+                    attempted_count += 1
+                    terminal_blocked_sources.append(str(source_file))
+                    continue
                 if delta is None:
                     no_new_count += 1
                     continue
@@ -565,6 +592,15 @@ def main(argv: list[str] | None = None) -> int:
                 statuses[-1]
                 if statuses
                 else {
+                    "status": "existing_terminal_blocked",
+                    "scan_failed_source_file": terminal_blocked_sources[0],
+                    "last_result": {
+                        "status": "existing_terminal_blocked",
+                        "error_code": "existing_terminal_delta_blocked",
+                    },
+                }
+                if terminal_blocked_sources
+                else {
                     "status": (
                         "scan_deferred_sources"
                         if deferred_count
@@ -578,7 +614,22 @@ def main(argv: list[str] | None = None) -> int:
             status["scan_attempted_count"] = attempted_count
             status["scan_deferred_count"] = deferred_count
             status["scan_no_new_count"] = no_new_count
-            status["scan_status"] = status["status"]
+            status["scan_terminal_blocked_count"] = len(
+                terminal_blocked_sources
+            )
+            if terminal_blocked_sources:
+                status["scan_terminal_blocked_source_files"] = (
+                    terminal_blocked_sources
+                )
+            status["scan_status"] = (
+                "existing_terminal_blocked"
+                if terminal_blocked_sources
+                else status["status"]
+            )
+            if terminal_blocked_sources:
+                status["scan_failed_source_file"] = (
+                    terminal_blocked_sources[0]
+                )
             recovery = (
                 status.get("queue_backpressure", {}).get("recovery", {})
                 if isinstance(status.get("queue_backpressure"), dict)
@@ -591,6 +642,7 @@ def main(argv: list[str] | None = None) -> int:
             if not age_recovery_already_attempted and status["status"] not in {
                 "paused_by_operator",
                 "blocked_disk_pressure",
+                "existing_terminal_blocked",
                 "enqueue_error",
                 "runtime_error",
             }:
@@ -622,6 +674,16 @@ def main(argv: list[str] | None = None) -> int:
                 relay_status["scan_attempted_count"] = attempted_count
                 relay_status["scan_deferred_count"] = deferred_count
                 relay_status["scan_no_new_count"] = no_new_count
+                relay_status["scan_terminal_blocked_count"] = len(
+                    terminal_blocked_sources
+                )
+                if terminal_blocked_sources:
+                    relay_status["scan_terminal_blocked_source_files"] = (
+                        terminal_blocked_sources
+                    )
+                    relay_status["scan_failed_source_file"] = (
+                        terminal_blocked_sources[0]
+                    )
                 if targeted_drain_results:
                     relay_status["targeted_drain_results"] = targeted_drain_results
                 status = relay_status
@@ -642,6 +704,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"direct_sync_scan_deferred_count={status['scan_deferred_count']}")
     if "scan_no_new_count" in status:
         print(f"direct_sync_scan_no_new_count={status['scan_no_new_count']}")
+    if "scan_terminal_blocked_count" in status:
+        print(
+            "direct_sync_scan_terminal_blocked_count="
+            f"{status['scan_terminal_blocked_count']}"
+        )
     if status.get("scan_failed_source_file"):
         print(f"direct_sync_scan_failed_source_file={status['scan_failed_source_file']}")
     targeted_drain_results = status.get("targeted_drain_results") or []
@@ -655,9 +722,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"direct_sync_targeted_ack_count={targeted_ack_count}")
         print(f"direct_sync_targeted_attempt_count={len(targeted_drain_results)}")
         targeted_ack_incomplete = targeted_ack_count != len(targeted_drain_results)
-    if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure"} or status.get("scan_status") in {
+    if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure", "existing_terminal_blocked"} or status.get("scan_status") in {
         "blocked_disk_pressure",
         "blocked_queue_backpressure",
+        "existing_terminal_blocked",
     }:
         return 2
     if status["status"] in {"enqueue_error", "runtime_error"}:
