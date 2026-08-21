@@ -27,7 +27,7 @@ IDENTITY_SPEC.loader.exec_module(identity_verifier)
 
 BUILDER_PATH = MODULE_PATH.with_name("build_frozen_release_candidate.ps1")
 
-TAG = "v2.0.67"
+TAG = "v2.0.74"
 COMMIT = "1" * 40
 TREE = "2" * 40
 
@@ -275,7 +275,21 @@ def _package(tmp_path: Path) -> Path:
             },
         )
 
+    predecessor_inventory = archive_builder._inventory(
+        root, excluded={"build-manifest.json"}, casefold=False
+    )
+    _write_json(
+        root / "build-manifest.json",
+        {
+            "build_manifest_schema_version": 1,
+            "payload_inventory": predecessor_inventory,
+            "payload_inventory_sha256": archive_builder._canonical_sha256(
+                predecessor_inventory
+            ),
+        },
+    )
     staged_inventory = archive_builder._inventory(root)
+    public_entrypoint = root / "INSTALL_THIS_PC.ps1"
     installer = root / "install_label_match_direct_sync.ps1"
     install_helper = (
         root
@@ -288,9 +302,67 @@ def _package(tmp_path: Path) -> Path:
     staged_report = {
         "schema_version": archive_builder.STAGED_INSTALLER_SCHEMA,
         "status": "PASS",
-        "installer_status": "DRY_RUN",
+        "proof_classification": "STATIC_ISOLATED_DRY_RUN",
+        "dynamic_qualification": "NOT_TESTED",
+        "public_entrypoint": {
+            "path": "INSTALL_THIS_PC.ps1",
+            "sha256": archive_builder._sha256(public_entrypoint),
+        },
+        "manifest_contract": {
+            "path": "build-manifest.json",
+            "sha256": archive_builder._sha256(root / "build-manifest.json"),
+            "payload_file_count": len(predecessor_inventory),
+            "payload_inventory_sha256": archive_builder._canonical_sha256(
+                predecessor_inventory
+            ),
+            "hashes_and_sizes_verified": True,
+            "safe_paths_verified": True,
+            "case_collisions_absent": True,
+            "unexpected_files_absent": True,
+            "reparse_points_absent": True,
+            "preseal_isolated_manifest": True,
+        },
+        "staging_contract": {
+            "ordinary_extracted_root": True,
+            "canonical_production_root_declared": r"C:\KMTech\Apps\Label_Match\current",
+            "direct_children_staged": True,
+            "nested_label_match_directory_absent": True,
+            "candidate_byte_parity_verified": True,
+            "unknown_target_fail_closed_declared": True,
+            "directory_ancestry_tracked": True,
+        },
+        "launcher_contract": {
+            "count": 1,
+            "scope": "all_users",
+            "canonical_path": r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\KMTech\Label Match.lnk",
+            "target_relative": "Label_Match.exe",
+            "working_directory_is_install_root": True,
+            "icon_is_target": True,
+            "install_verify_remove_lifecycle_declared": True,
+        },
+        "removal_contract": {
+            "uninstall_mode": "DATA_PRESERVING_UNINSTALL",
+            "uninstall_preserves_business_data": True,
+            "rollback_mode": "EXACT_FRESH_TARGET_ROLLBACK",
+            "rollback_requires_external_evidence": True,
+            "rollback_requires_absent_prestate": True,
+            "task_operations": ["stop", "delete", "absence"],
+            "task_results_are_typed": True,
+            "bounded_external_evidence": True,
+            "maximum_evidence_files": 10000,
+            "maximum_evidence_bytes": 2147483648,
+            "fresh_evidence_root_required": True,
+            "reparse_points_rejected": True,
+            "directory_ancestry_tracked": True,
+            "typed_task_reports_bound_to_phase_and_identity": True,
+            "public_wrapper_finalizes_rollback_report": True,
+            "final_evidence_bytes_reverified": True,
+            "final_receipt_binds_evidence_hashes": True,
+            "app_inventory_contract": "label-match-app-immutable-inventory-v1",
+            "mutable_app_relative_paths": ["_internal/config/app_settings.json"],
+            "immutable_app_drift_rejected": True,
+        },
         "field_layout_contract_verified": True,
-        "staged_dry_run_is_plan_only": True,
         "system_python_required": False,
         "installer": {
             "path": "install_label_match_direct_sync.ps1",
@@ -318,6 +390,8 @@ def _package(tmp_path: Path) -> Path:
         "original_package_unchanged": True,
         "app_settings_path": "_internal/config/app_settings.json",
         "app_save_path_matches_relay_scan_source": True,
+        "output_bound_bytes": 64 * 1024,
+        "timeout_seconds": 120,
         "stdout_bytes": 100,
         "stderr_bytes": 0,
     }
@@ -391,6 +465,14 @@ def test_build_release_archive_is_deterministic_unsigned_and_byte_exact(tmp_path
     assert first_report["cli_tool_count"] == 3
     assert first_report["install_onedir_runtime_file_count"] == 1
     assert first_report["staged_installer_verified"] is True
+    assert first_report["ordinary_extracted_root_staging_verified"] is True
+    assert first_report["manifest_bound_self_staging_verified"] is True
+    assert first_report["all_users_launcher_lifecycle_verified"] is True
+    assert first_report["data_preserving_uninstall_contract_verified"] is True
+    assert first_report["exact_fresh_target_rollback_contract_verified"] is True
+    assert first_report["typed_task_stop_delete_absence_verified"] is True
+    assert first_report["bounded_external_evidence_contract_verified"] is True
+    assert first_report["dynamic_install_qualification"] == "NOT_TESTED"
     assert first_report["factory_manifest_verified"] is True
     assert first_report["archive_sha256"] == second_report["archive_sha256"]
     assert first.read_bytes() == second.read_bytes()
@@ -510,6 +592,39 @@ def test_archive_rejects_staged_installer_probe_or_factory_current_drift(tmp_pat
         archive_builder.build_release_archive(
             package, tmp_path / "current.zip", source_epoch=1_700_000_000
         )
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("schema_version",), "label-match-staged-installer-verification-v1", "staged installer"),
+        (("launcher_contract", "scope"), "current_user", "launcher contract"),
+        (("removal_contract", "task_operations"), ["delete", "absence"], "removal contract"),
+        (("removal_contract", "rollback_requires_absent_prestate"), False, "removal contract"),
+    ],
+)
+def test_archive_rejects_abbreviated_staging_launcher_or_rollback_contract(
+    tmp_path, path, value, message
+):
+    package = _package(tmp_path)
+    staged_path = package / "staged-installer-verification.json"
+    staged = json.loads(staged_path.read_text(encoding="utf-8"))
+    target = staged
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    _write_json(staged_path, staged)
+
+    with pytest.raises(archive_builder.ReleaseArchiveError, match=message):
+        archive_builder.build_release_archive(
+            package, tmp_path / "invalid-staged.zip", source_epoch=1_700_000_000
+        )
+
+
+@pytest.mark.parametrize("path", ["C:/escape", "file:stream", "../escape", "a\\b"])
+def test_archive_rejects_windows_unsafe_relative_paths(path):
+    with pytest.raises(archive_builder.ReleaseArchiveError, match="canonical POSIX"):
+        archive_builder._safe_relative(path, label="fixture")
 
 
 def test_build_release_archive_never_overwrites_existing_archive(tmp_path):

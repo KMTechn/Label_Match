@@ -657,6 +657,52 @@ def test_acl_apply_then_readback_accepts_only_exact_allow_list(
     assert calls == ["apply", "readback"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell authority is Windows-only")
+def test_powershell_acl_child_rejects_poisoned_ps7_module_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        powershell_executable,
+        module_root,
+        security_manifest,
+        windows_root,
+    ) = installer._trusted_windows_powershell_authority()
+    poisoned_module_root = tmp_path / "hostile-powershell-7-modules"
+    poisoned_module_root.mkdir()
+    monkeypatch.setenv("PSModulePath", str(poisoned_module_root))
+    captured: dict[str, object] = {}
+
+    def fake_run(arguments, **kwargs):
+        captured["arguments"] = arguments
+        captured["environment"] = kwargs["env"]
+        return subprocess.CompletedProcess(arguments, 0, "trusted-readback\n", "")
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    output = installer._run_powershell(
+        "$acl = Get-Acl -LiteralPath $env:KMTECH_PROTECTED_ACL_TARGET",
+        path=tmp_path / "profile.json",
+    )
+
+    assert output == "trusted-readback"
+    arguments = captured["arguments"]
+    environment = captured["environment"]
+    assert arguments[0] == str(powershell_executable)
+    assert environment["SystemRoot"] == str(windows_root)
+    assert environment["WINDIR"] == str(windows_root)
+    assert environment["PSModulePath"] == str(module_root)
+    assert str(poisoned_module_root) not in environment["PSModulePath"]
+    assert environment["KMTECH_PROTECTED_POWERSHELL_SECURITY_MANIFEST"] == str(
+        security_manifest
+    )
+    assert environment["KMTECH_PROTECTED_POWERSHELL_MODULE_ROOT"] == str(
+        module_root
+    )
+    assert "$env:PSModulePath = $trustedModuleRoot" in arguments[-1]
+    assert "Import-Module -Name $securityManifest" in arguments[-1]
+    assert "Get-Command -Name Get-Acl -CommandType Cmdlet" in arguments[-1]
+
+
 @pytest.mark.parametrize(
     "principal",
     [
@@ -990,7 +1036,16 @@ def _is_elevated_windows_process() -> bool:
     os.environ.get("GITHUB_ACTIONS", "").lower() == "true",
     reason="GitHub Actions is not the trusted Windows ACL integration target",
 )
-def test_windows_temp_file_acl_readback_is_exact(tmp_path: Path) -> None:
+def test_windows_temp_file_acl_readback_is_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    poisoned_module_root = tmp_path / "hostile-powershell-7-modules"
+    poisoned_module_root.mkdir()
+    poisoned_module_path = os.pathsep.join(
+        filter(None, (str(poisoned_module_root), os.environ.get("PSModulePath", "")))
+    )
+    monkeypatch.setenv("PSModulePath", poisoned_module_path)
     identity = subprocess.run(
         ["whoami.exe"],
         check=True,
@@ -1009,6 +1064,7 @@ def test_windows_temp_file_acl_readback_is_exact(tmp_path: Path) -> None:
     target.write_bytes(b"")
     installer._harden_profile_file(target, reader)
     assert target.read_bytes() == b""
+    assert os.environ["PSModulePath"] == poisoned_module_path
 
 
 @pytest.mark.skipif(

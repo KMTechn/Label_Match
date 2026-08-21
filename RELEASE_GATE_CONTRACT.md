@@ -38,11 +38,243 @@ python -m pytest -q tests/test_label_operator_workbench.py::test_live_submission
 Release-only packaged installer verification remains:
 
 ```powershell
-python tools/verify_staged_release_installer.py --package-root dist/Label_Match --report dist/Label_Match/staged-installer-verification.json
-python -m pytest -q -p no:cacheprovider tests/test_staged_release_installer.py
+$verifyRoot = "E:\KMTech\label-match-release-installer-<UTC-RUN-ID>"
+$env:TEMP = Join-Path $verifyRoot "tmp"
+$env:TMP = $env:TEMP
+$env:PYTHONDONTWRITEBYTECODE = "1"
+New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+$packageRoot = (Resolve-Path -LiteralPath "dist/Label_Match").Path
+$env:LABEL_MATCH_STAGED_PACKAGE_ROOT = $packageRoot
+$env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
+python tools/verify_staged_release_installer.py --package-root $packageRoot --report (Join-Path $packageRoot "staged-installer-verification.json")
+python -m pytest -q -p no:cacheprovider --basetemp (Join-Path $verifyRoot "pytest-staged") tests/test_staged_release_installer.py
 ```
 
-### Frozen-byte publication sequence (v2.0.67 and later)
+Both packaged-installer commands are isolated dry-run gates. They require no
+elevation, invoke no UAC flow, and perform no Task Scheduler mutation; the
+sealed-package pytest runs only after `build-manifest.json` is created.
+
+The versioned public install contract is `INSTALL_THIS_PC.ps1` from the ordinary
+extracted `Label_Match/` root. The ZIP keeps that top-level directory. Before
+any installer effect, the entrypoint verifies every manifest-declared path,
+size, and SHA-256, rejects traversal, drive/ADS/backslash paths, case collisions,
+reparse points, missing files, and extras, then verifies a same-volume candidate
+before its atomic rename to `C:\KMTech\Apps\Label_Match\current`. An unknown
+target is a conflict; it is never mirror-deleted or overlaid.
+
+One discoverability resource is owned: the all-users Start Menu link at
+`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\KMTech\Label Match.lnk`.
+Its target and icon are the installed `Label_Match.exe`, and its working
+directory is the canonical app root. Install must reopen and verify those exact
+properties. No Desktop link, MSI, setup EXE, or flattened ZIP is part of this
+contract.
+
+`-Uninstall` is `DATA_PRESERVING_UNINSTALL`: it removes only summary-owned app,
+launcher, task wrapper, relay identity/credential, and machine-profile files,
+while explicitly preserving Label business data plus queue/spool/status/log and
+receipt evidence. It never claims pre-install parity. `-Rollback
+-EvidenceArchiveRoot <ABSOLUTE-EXTERNAL-PATH>` is the separate
+`EXACT_FRESH_TARGET_ROLLBACK` path; every active resource must record an absent
+prestate, business evidence is copied within the fixed 10,000-file/2-GiB bounds
+and hash-verified into a fresh absent, non-reparse external root, and the final
+receipt is outside every removed/restored path. The install summary binds the
+exact app, DirectSync, data, machine-profile, launcher, and task identities;
+the app identity uses `label-match-app-immutable-inventory-v1`, requires the
+regular non-reparse runtime leaf `_internal/config/app_settings.json`, and
+allows only that file's normal settings bytes to change. Every other app file,
+including `config/app_settings.json`, remains in the immutable count and
+SHA-256 inventory, so any addition, removal, or byte drift outside that sole
+mutable path is fatal;
+created parent-directory ancestry is recorded and restored without removing a
+pre-existing empty directory. Task evidence is typed and ordered `stop`,
+`delete`, `absence`; every phase report is fresh and bound to the requested
+phase, mode, task name, and owned action before mutation. Drift, foreign
+ownership, a live GUI, failed evidence parity, a reused evidence destination,
+or any missing postcondition is a nonzero result. The nested rollback report
+does not claim parity while app-root removal is pending; only the public wrapper
+may finalize that external report and exact receipt after all owned roots and
+recorded parent directories are proven restored.
+Immediately before the final receipt, the public wrapper re-reads the bounded
+inventory and re-hashes every archived payload file. The receipt binds both the
+evidence-inventory SHA-256 and the finalized rollback-resource-report SHA-256;
+a missing, added, reparse-backed, resized, or changed archived file is fatal.
+
+The staged v2 report proves this contract with an isolated manifest-bound public
+entrypoint dry run and is classified `STATIC_ISOLATED_DRY_RUN`; it must state
+`dynamic_qualification=NOT_TESTED`. It does not replace a fresh Windows target,
+ordinary-operator launcher, live task, data-preserving uninstall, or exact
+rollback qualification run.
+
+### Frozen-byte publication sequence (v2.0.74 current candidate)
+
+The initial elevated v2.0.67 infrastructure cohort at
+`E:\KMTech\label-v2067-daa3-phase83-elevated-20260812` failed before
+producing a qualified archive. A later, separate exact-SHA cohort at
+`E:\KMTech\l67e2` produced the preserved v2.0.67 ZIP/checksum and Phase
+8.3/9 PASS receipts for annotated tag object
+`1368827125097961cdb7faa8bac421ebb926edf7`, commit
+`daa3fd47103ea2ebf915fce60ebe5f9b5d014164`, and tree
+`1a9a4cc7e8edb8783551f9960ce66122962f1c29`. That later evidence does not
+erase the earlier one-shot failure. Treat every v2.0.67 tag, artifact, and
+receipt as immutable quarantined history: do not publish, delete, recreate,
+retarget, reuse, or promote it. The successor selected after that history was
+v2.0.68.
+
+On 2026-08-18 the sole local v2.0.68 annotated tag object
+`0a3e522c783d64138e18050e83698b5151e7921c`, for commit
+`99d94583d563237fe411376ee3a5372fef0b33f0` and tree
+`2c9847cb55165206143d585c94e7ae5eb17236ed`, failed canonical tag attestation.
+Its raw message was the exact 15-byte text `Release v2.0.68` without the required
+final LF (SHA-256
+`78200303ea8ad2867435761b484867a76429bf7eeb4897ade0647cc8fbe0e762`). The
+failure occurred before mirror tag push, UAC, build, scheduled-task mutation, or
+output creation. Preserve that local tag object and preparation as immutable
+quarantined history: do not delete, recreate, retarget, push, reuse, or promote
+it. The successor selected after that failure was v2.0.69.
+
+On 2026-08-18 the sole v2.0.69 annotated tag object
+`ea236828420ac03f01b496df9fc27b1bdfe31d57`, for commit
+`c187e1f45b2a98f604cf96a06fe9bcea09ddc603` and tree
+`93982f7dc2dbfa5e91999a908100c2ecb71b0317`, passed the exact canonical
+16-byte `Release v2.0.69\n` message attestation (SHA-256
+`f6ac482dd61f5f9ac1b56f4687d4d2214a71e9d0838aeebda3ad53679d38d403`)
+and was pushed as the identical object to the isolated local bare mirror. Its
+single elevated builder invocation then failed at the first fresh-copy
+`direct_sync_relay_runner.exe --help` probe with Windows return code
+`4294967295` (`0xffffffff`, signed `-1`). The quarantined partial output is
+`E:\KMTech\Label_Match\v2.0.69-frozen-candidate-c187e1f-20260818`; it has no
+ZIP, checksum, archive-verification report, or Phase 1 qualification receipt,
+and the staged public uninstall/scheduled-task gate was never reached. The
+bounded failure receipt is
+`E:\KMTech\Label_Match\v2.0.69-one-shot-c187e1f-20260818\one-shot-failure-summary.json`
+(SHA-256
+`51e308c3a213fe54865aebc00c5260e3c329ed39940578e3fc1025d3a5688b1c`).
+Preserve its work-clone tag, mirror tag, logs, and partial output as immutable
+quarantined history: do not rerun, relaunch, delete, recreate, retarget, reuse,
+or promote them. The successor selected after that failure was v2.0.70.
+
+On 2026-08-18 the clean v2.0.70 source candidate was commit
+`2737ce4de2b426bf15cbdde0cd0b92486fd6e036`, tree
+`889cd3a6dff0f49e170099b8595ee5bb51ff84f6`, with sole parent
+`c187e1f45b2a98f604cf96a06fe9bcea09ddc603`. Its exact-SHA offline CI passed
+with bounded receipt SHA-256
+`eee5de3b5a6e460842aca60b90c40fa9e94d508bc92dc304375cedd9e10ce9e2`, and
+its one untagged native CLI pretag gate passed with receipt SHA-256
+`7475a18984c8cda606d72ae97fa05fc14370ec403f234246e3826b0cf2956926`
+and manifest SHA-256
+`95b2b91ebd67972c42f954bcf9de9da376c20f095de2700dce7842a9eb3961ed`.
+After independent preburn GO, the CreateNew message file was correctly frozen as
+the exact 16-byte `Release v2.0.70\n` message (SHA-256
+`fda39b188da8bbf35e0599b7bcb4fecf19d093636c1116f6d9ea047714a6ced4`).
+The ad-hoc PowerShell wrapper was then rejected by the parser at the expression
+`(git show-ref --verify --quiet refs/tags/v2.0.70; $LASTEXITCODE -eq 0)` before
+its first statement or any Git invocation. Therefore v2.0.70 has no work-clone
+or mirror tag, no output, no UAC launch, no build invocation, and no scheduled
+task mutation. Its bounded failure receipt is
+`E:\KMTech\Label_Match\v2.0.70-one-shot-2737ce4-20260818\pretag-wrapper-failure-summary.json`
+(SHA-256
+`95b03e2d8ecc693762f7f3925d315ff24058665d861b2a1fec7b18558d87dffa`).
+Preserve all v2.0.70 preparation and failure evidence as immutable quarantined
+history: do not retry the wrapper, create its tag, or reuse its candidate. The
+successor selected after that failure was v2.0.71.
+
+On 2026-08-18 the clean v2.0.71 source candidate was commit
+`778614b6d0286a9a90f4159847f4012258b1d15f`, tree
+`a3dfb4db1cf3e27fd6a1dd3cff64e8e036364b97`, with sole parent
+`2737ce4de2b426bf15cbdde0cd0b92486fd6e036`. Its exact-SHA offline CI passed
+with receipt SHA-256
+`6d02ffc7e198408b0c1c2af671f1f4dbeb0e0306bf37f04ad5f3e7d79b874cb7`, and
+its one untagged native CLI pretag gate passed with receipt SHA-256
+`f7adddfac41355eca6ffe2a74ffa0d6c02afa4cb676afcc719a2faa44d1b6632`
+and manifest SHA-256
+`558492a0b17f7fa7b26ac671537e82774f062e32ebbb9057212e2bb50540a926`.
+The versioned tag authority then created the exact canonical 16-byte
+`Release v2.0.71\n` annotated tag object
+`9236c952621c6528d2888c8f36db183c89151f0e` (message SHA-256
+`af69dbb9b8a42902a4f3c7d5157ba74716305ca2089088d3527b30260b363bd0`)
+and pushed that identical object only to the isolated local mirror. Its PASS
+tag-burn receipt SHA-256 is
+`023b356816bdb6a677b5b85530cf2b1697c8f709d6ab5e41d1f28f745ee81ef3`.
+The sole elevated builder invocation then failed at the first fresh-copy
+`direct_sync_relay_runner.exe --help` probe. The onefile bootloader returned
+signed `-1`/unsigned `0xffffffff` while opening the exact 68-character member
+`cryptography-49.0.0.dist-info\sboms\cryptography-rust.cyclonedx.json` below
+the probe TEMP. The builder had fixed TEMP under its 73-character output work
+path; the deterministic probe/TEMP/`_MEIxxxxxx` structure projected the target
+to 261 characters while this host had `LongPathsEnabled=0`. The failed EXE was
+not preserved; its recorded size was 15,880,900 bytes and its SHA-256 was
+`46593f8c4250721c1e8da557edd5d61204c54b97962bf9eb5d92147429555e6f`.
+The elevated runner receipt SHA-256 is
+`6e85bea7f919b29e1bd156212d1bb9b6b5c4f233f45608c5a486577c4c5a61ac`,
+and the launch-result receipt SHA-256 is
+`e303cc5bef618a13e9ea743de7aab323d49e25c8473d4fbd3379d628f356c06f`.
+The quarantined partial output is
+`E:\KMTech\Label_Match\v2.0.71-frozen-candidate-778614b-20260818`; it has no
+ZIP, checksum, archive-verification report, qualification receipt, or release
+notes, and the staged public uninstall/scheduled-task gate was never reached.
+Preserve the v2.0.71 work/mirror tag, receipts, logs, and partial output as
+immutable quarantined history: do not rerun, relaunch, delete, recreate,
+retarget, reuse, or promote them. The successor selected after that failure was
+v2.0.72.
+
+On 2026-08-18 the clean v2.0.72 source candidate was commit
+`03513faf6523a500ba4eefbc65503567dcbb6c49`, tree
+`0727047c0a3bcd919110b01a11641d23183834b6`, with sole parent
+`778614b6d0286a9a90f4159847f4012258b1d15f`. Its exact-SHA offline CI passed
+with receipt SHA-256
+`cb0bb50e0308fb585c540aaa86716739f42eb2c48c8c21785f274e77c98b7768`, and
+its one untagged native CLI pretag gate passed with receipt SHA-256
+`5097c702faa122bece8379d9376e8351d0a97a1def71a66401fcf30931f94403`.
+The versioned tag authority created the exact canonical 16-byte
+`Release v2.0.72\n` annotated tag object
+`3f22d88a5c99a61c550d385a7226f211b6731434` (message SHA-256
+`85004b0d6b037337be06fd5346bfd0e86a837122a9dd2a95545cd3fc113e44f1`)
+and pushed that identical object only to the isolated local mirror. Its PASS
+tag-burn receipt SHA-256 is
+`38acff06dbd03c4a8fba5906034a54c6f7d46c4cebf08ab46f611bfb6974a94f`.
+The sole elevated builder invocation then stopped at the staged installer gate
+with verifier exit 2 and the bounded denial
+`staged_installer=DENY reason=typed scheduled-task probe failed`; the task-create
+step was never reached and scheduled-task mutation count remained zero. The
+v2.0.72 verifier discarded the probe's exact return code, stdout, stderr,
+exception-chain type, HRESULT, and stage, so the preserved evidence cannot
+distinguish a wrapped `0x80070002` missing-task result from an otherwise exact
+success accompanied by bounded diagnostic stderr. The elevated builder receipt
+SHA-256 is
+`08ed2bece1840318fb571117b0d9414b2d3318c726838a4816dc23d18c16c0dc`,
+and the launch-result receipt SHA-256 is
+`8ecc39e3477f3df11f92391439c2bc1d09a292dab1894f3cd0cacc3fad9ae708`.
+The quarantined partial output is
+`E:\KMTech\Label_Match\v2.0.72-frozen-candidate-03513fa-20260818`; it has no
+ZIP, checksum, archive-verification report, qualification receipt, or release
+notes. The short extraction root `E:\KMTech\x72release03513fa` was removed with
+an absence proof. Preserve the v2.0.72 work/mirror tag, receipts, logs, partial
+output, and diagnostic evidence as immutable quarantined history: do not rerun,
+relaunch, delete, recreate, retarget, reuse, or promote them. The successor selected after that failure was
+v2.0.73.
+
+On 2026-08-18 the sole v2.0.73 annotated tag object
+`8afcb61bc6a25fb5c4e9a1aaa515c133d3e39110`, for commit
+`ab361544f48c246968a665f102169ea989774bc3` and tree
+`bdd4d41042814bf45b80516cc1d12a81fd1e49c8`, was created with the exact
+16-byte `Release v2.0.73\n` message (SHA-256
+`b1595789be58e66cd5dac8eeebc74abb9c3fe89b3df5862330f4e1bd361727ca`)
+and pushed only to the isolated local mirror. The PASS tag-burn receipt
+SHA-256 is
+`d0b76157ae6b0977b8fba11c7aeaf6d49b633d77e8eab0ec08976d15d2c81ea3`,
+and the one-shot builder claim SHA-256 is
+`7775d373b38084454186dca6636e0a7df56d5db622de6a1a8800df1b3ba4bbd9`.
+The sole builder invocation completed PASS with exit code 0; its runner receipt
+file SHA-256 is
+`79138044c64c30f256ac3e2144116202a0ae20f705fafb532954fec25e63f547`,
+records invocation count 1 and `retry_allowed=false`, and produced the frozen
+121,426,081-byte ZIP with SHA-256
+`1d60ebce9960a4a9313f17da02fb5ef01d9a53b0e38a6ae9bde2642d5af2bce3`.
+The preserved PASS Phase-B qualification receipt SHA-256 is
+`297d6debf923f922195224ed809d838247ddf650cd9eb52f3a0234e2019b3aa6`.
+Those exact bytes remain immutable quarantined history; do not rerun, rebuild,
+recreate, retarget, reuse, or promote them as this changed source. The active
+successor is v2.0.74.
 
 The governing order is Phase B/8.3, then Phase C/9, then Phase D/10. GitHub
 Actions is not a release gate and cannot replace the local exact-SHA gates.
@@ -57,23 +289,42 @@ Actions is not a release gate and cannot replace the local exact-SHA gates.
    the exact candidate commit. A GitHub/HTTPS origin is not accepted here.
 3. Create the one final intended annotated tag object in that isolated local
    mirror environment before release identity generation or build, and prepare
-   the work clone with that identical tag object. Its complete
-   canonical message is the single line below (with the normal final LF):
+   the work clone with that identical tag object. The only authorized creation
+   path is the repository's fail-closed, exactly-once burner:
+
+```powershell
+python -I .\tools\burn_local_release_tag_once.py `
+  --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
+  --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
+  --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
+  --tag v2.0.74 `
+  --expected-commit <EXACT-CANDIDATE-COMMIT> `
+  --expected-tree <EXACT-CANDIDATE-TREE>
+```
+
+   The evidence root must be fresh and external to the work clone and mirror.
+   The burner has one invocation authority: regardless of PASS or failure, do not retry it,
+   recreate or move the tag, or reuse its evidence root. Its
+   complete canonical message is the single line below (with the normal final
+   LF):
 
 ```text
-Release v2.0.67
+Release v2.0.74
 ```
+
+   Those 16 canonical bytes have SHA-256
+   `dc59cc5e094b4a9d15b987031dad77303586ce71f4beb84ad4fac07d16b99f3b`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.67`, report type
+   bare mirror must expose that exact object as `refs/tags/v2.0.74`, report type
    `tag`, and peel it to the candidate commit. Run the builder from the release
    work-clone root with fresh output and the offline wheelhouse:
 
 ```powershell
 pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.67 `
+  -Tag v2.0.74 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
   -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR>
@@ -113,16 +364,16 @@ pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.67`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.74`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.67
+Tag: v2.0.74
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.67.zip
+Artifact: Label_Match-v2.0.74.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -133,7 +384,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.67 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.74 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires
@@ -188,9 +439,10 @@ seal a package, create or recompress a ZIP, generate a checksum, create/edit a
 release, upload assets, or promote the private feed. The verifier fails closed
 on checksum, CRC, unsafe/duplicate/case-colliding paths, membership differing
 from the embedded sealed manifest, payload byte mismatch, wrong
-commit/tree/version, contract bundle drift, abbreviated or malformed staged
-installer/CLI/probe evidence, missing CLI source members, missing onedir runtime
-payload, or a failed staged-installer claim. It safe-extracts to a temporary
+commit/tree/version, contract bundle drift, abbreviated or malformed staged-v2
+self-staging/launcher/uninstall/rollback/task evidence, missing CLI source
+members, missing onedir runtime payload, unsafe Windows manifest paths, reparse
+points, unbounded installer output, or a failed staged-installer claim. It safe-extracts to a temporary
 directory and calls the exact resolved sibling
 `build_release_archive.validate_release_evidence` implementation, so build-time
 and post-download evidence validation cannot silently diverge.

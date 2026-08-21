@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
@@ -35,6 +36,7 @@ LOCAL_TEST_TASK_ENV_NAMES = (
     "REQUESTS_CA_BUNDLE",
     "SSL_CERT_FILE",
 )
+COMMAND_OUTPUT_LIMIT = 16 * 1024
 
 
 def _default_app_root() -> str:
@@ -163,7 +165,7 @@ def _task_principal_args(args: argparse.Namespace, *, redact_password: bool) -> 
     user = str(getattr(args, "task_run_user", "") or "").strip()
     password_env = str(getattr(args, "task_run_password_env", "") or "").strip()
     password_file = str(getattr(args, "task_run_password_file", "") or "").strip()
-    uninstall = bool(getattr(args, "uninstall", False))
+    uninstall = bool(getattr(args, "uninstall", False)) or bool(getattr(args, "rollback", False))
     allow_interactive = bool(getattr(args, "allow_interactive_task_for_local_test", False))
     report = {
         "status": "PASS",
@@ -227,6 +229,87 @@ def _scheduled_task_create_command(
         *[str(part) for part in task_principal_args],
         "/F",
     ]
+
+
+def _scheduled_task_probe_command(task_name: str) -> list[str]:
+    script = "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$taskName = {_ps_single_quote(task_name)}",
+            "$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
+            "if ($tasks.Count -eq 0) {",
+            "  [ordered]@{ operation = 'probe'; state = 'ABSENT'; task_name = $taskName } | ConvertTo-Json -Compress -Depth 8",
+            "  exit 0",
+            "}",
+            "if ($tasks.Count -ne 1) { throw 'scheduled task name is ambiguous' }",
+            "$task = $tasks[0]",
+            "$actions = @($task.Actions | ForEach-Object { [ordered]@{ execute = [string]$_.Execute; arguments = [string]$_.Arguments } })",
+            "[ordered]@{ operation = 'probe'; state = 'PRESENT'; task_name = $task.TaskName; task_path = $task.TaskPath; runtime_state = [string]$task.State; actions = $actions } | ConvertTo-Json -Compress -Depth 8",
+            "",
+        ]
+    )
+    return _encoded_powershell_command(script)
+
+
+def _scheduled_task_stop_command(
+    task_name: str, expected_action_parts: Sequence[str]
+) -> list[str]:
+    expected_execute = str(expected_action_parts[0])
+    expected_arguments = _quote_cmd([str(part) for part in expected_action_parts[1:]])
+    script = "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$taskName = {_ps_single_quote(task_name)}",
+            f"$expectedExecute = {_ps_single_quote(expected_execute)}",
+            f"$expectedArguments = {_ps_single_quote(expected_arguments)}",
+            "$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
+            "if ($tasks.Count -eq 0) { [ordered]@{ operation = 'stop'; status = 'ABSENT'; task_name = $taskName } | ConvertTo-Json -Compress; exit 0 }",
+            "if ($tasks.Count -ne 1) { throw 'scheduled task name is ambiguous' }",
+            "$task = $tasks[0]",
+            "$actions = @($task.Actions)",
+            "if ($actions.Count -ne 1 -or [string]$actions[0].Execute -ine $expectedExecute -or [string]$actions[0].Arguments -cne $expectedArguments) { throw 'scheduled task action is foreign or ambiguous' }",
+            "if ([string]$task.State -ne 'Running') { [ordered]@{ operation = 'stop'; status = 'ALREADY_STOPPED'; task_name = $taskName } | ConvertTo-Json -Compress; exit 0 }",
+            "Stop-ScheduledTask -InputObject $task -ErrorAction Stop",
+            "for ($attempt = 0; $attempt -lt 50; $attempt += 1) {",
+            "  $remaining = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
+            "  if ($remaining.Count -eq 0) { [ordered]@{ operation = 'stop'; status = 'ABSENT'; task_name = $taskName } | ConvertTo-Json -Compress; exit 0 }",
+            "  if ($remaining.Count -ne 1) { throw 'scheduled task name became ambiguous during stop' }",
+            "  $remainingActions = @($remaining[0].Actions)",
+            "  if ($remainingActions.Count -ne 1 -or [string]$remainingActions[0].Execute -ine $expectedExecute -or [string]$remainingActions[0].Arguments -cne $expectedArguments) { throw 'scheduled task action changed during stop' }",
+            "  $state = [string]$remaining[0].State",
+            "  if ($state -ne 'Running') { [ordered]@{ operation = 'stop'; status = 'STOPPED'; task_name = $taskName; final_state = $state } | ConvertTo-Json -Compress; exit 0 }",
+            "  Start-Sleep -Milliseconds 100",
+            "}",
+            "throw 'scheduled task remained running after bounded stop wait'",
+            "",
+        ]
+    )
+    return _encoded_powershell_command(script)
+
+
+def _scheduled_task_delete_command(
+    task_name: str, expected_action_parts: Sequence[str]
+) -> list[str]:
+    expected_execute = str(expected_action_parts[0])
+    expected_arguments = _quote_cmd([str(part) for part in expected_action_parts[1:]])
+    script = "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$taskName = {_ps_single_quote(task_name)}",
+            f"$expectedExecute = {_ps_single_quote(expected_execute)}",
+            f"$expectedArguments = {_ps_single_quote(expected_arguments)}",
+            "$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
+            "if ($tasks.Count -eq 0) { [ordered]@{ operation = 'delete'; status = 'ABSENT'; task_name = $taskName } | ConvertTo-Json -Compress; exit 0 }",
+            "if ($tasks.Count -ne 1) { throw 'scheduled task name is ambiguous' }",
+            "$task = $tasks[0]",
+            "$actions = @($task.Actions)",
+            "if ($actions.Count -ne 1 -or [string]$actions[0].Execute -ine $expectedExecute -or [string]$actions[0].Arguments -cne $expectedArguments) { throw 'scheduled task action is foreign or ambiguous' }",
+            "Unregister-ScheduledTask -InputObject $task -Confirm:$false -ErrorAction Stop",
+            "[ordered]@{ operation = 'delete'; status = 'DELETED'; task_name = $taskName } | ConvertTo-Json -Compress",
+            "",
+        ]
+    )
+    return _encoded_powershell_command(script)
 
 
 def _encoded_powershell_command(script: str) -> list[str]:
@@ -332,6 +415,54 @@ def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
         "runtime_status_path": str(root / "status" / "direct_sync_relay_status.json"),
         "log_path": str(root / "logs" / "direct_sync_relay.jsonl"),
         "operator_pause_path": str(root / "control" / "pause.json"),
+    }
+
+
+def _owned_direct_sync_change_plan(
+    program_data_root: str | os.PathLike[str],
+    task_name: str,
+    scan_source_dir: str | os.PathLike[str],
+) -> dict[str, object]:
+    root = Path(program_data_root).expanduser().resolve()
+    if root.parent == root:
+        raise ValueError("program_data_root must not be a filesystem root")
+    runtime = _runtime_paths(root)
+    wrapper = _task_wrapper_path(root, task_name)
+    launcher = _task_launcher_path(root, task_name)
+    identity_files = [root / "producer_manifest.json", root / "credential.json"]
+    preserved_runtime = [
+        runtime["db_path"],
+        f'{runtime["db_path"]}-shm',
+        f'{runtime["db_path"]}-wal',
+        runtime["spool_dir"],
+        runtime["upload_status_dir"],
+        runtime["runtime_status_path"],
+        runtime["log_path"],
+        runtime["operator_pause_path"],
+        str(root / "status"),
+    ]
+    return {
+        "safe_uninstall": {
+            "requires_task_absence_proven": True,
+            "remove_only_if_install_summary_proves_created_and_hash_matches": [
+                str(wrapper),
+                str(launcher),
+                *[str(path) for path in identity_files],
+            ],
+            "preserve_business_evidence": preserved_runtime,
+            "external_preserve": [str(Path(scan_source_dir).expanduser().resolve())],
+            "remove_program_data_root": False,
+        },
+        "exact_fresh_target_rollback": {
+            "requires_task_absence_proven": True,
+            "requires_install_prestate": "absent",
+            "preserve_before_remove": [
+                *preserved_runtime,
+                str(Path(scan_source_dir).expanduser().resolve()),
+            ],
+            "remove_program_data_root_only_if_install_summary_proves_created": str(root),
+            "final_receipt_must_be_external": True,
+        },
     }
 
 
@@ -468,7 +599,9 @@ def _runtime_path_boundary_report(program_data_root: str | os.PathLike[str], pat
 def _task_runtime_acl_plan(args: argparse.Namespace) -> dict:
     user = str(getattr(args, "task_run_user", "") or "").strip()
     root = Path(args.program_data_root).expanduser().resolve()
-    enabled = bool(user) and not bool(getattr(args, "uninstall", False))
+    enabled = bool(user) and not (
+        bool(getattr(args, "uninstall", False)) or bool(getattr(args, "rollback", False))
+    )
     status = "PASS"
     blocked_reason = ""
     if enabled and root.parent == root:
@@ -488,7 +621,9 @@ def _task_runtime_acl_plan(args: argparse.Namespace) -> dict:
 def _app_runtime_acl_plan(args: argparse.Namespace) -> dict:
     user = str(getattr(args, "app_run_user", "") or "").strip()
     raw_data_root = str(getattr(args, "scan_source_dir", "") or "").strip()
-    enabled = bool(user) and not bool(getattr(args, "uninstall", False))
+    enabled = bool(user) and not (
+        bool(getattr(args, "uninstall", False)) or bool(getattr(args, "rollback", False))
+    )
     status = "PASS"
     blocked_reason = ""
     data_root = Path(raw_data_root).expanduser()
@@ -555,8 +690,8 @@ def _apply_task_runtime_acl(plan: dict) -> dict:
             "returncode": result.get("returncode"),
             "stdout_omitted": bool(result.get("stdout")),
             "stderr_omitted": bool(result.get("stderr")),
-            "stdout_bytes": len(str(result.get("stdout") or "").encode("utf-8", errors="replace")),
-            "stderr_bytes": len(str(result.get("stderr") or "").encode("utf-8", errors="replace")),
+            "stdout_bytes": int(result.get("stdout_bytes") or 0),
+            "stderr_bytes": int(result.get("stderr_bytes") or 0),
         })
     ok = all(int(result.get("returncode") or 0) == 0 for result in command_results)
     return {
@@ -908,7 +1043,9 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     local_test_task_environment = _local_test_task_environment(args)
     self_enroll = bool(getattr(args, "self_enroll", False))
     uninstall = bool(getattr(args, "uninstall", False))
-    run_install_preflight = run_preflight and not uninstall and not (self_enroll and not bool(getattr(args, "apply", False)))
+    rollback = bool(getattr(args, "rollback", False))
+    removal = uninstall or rollback
+    run_install_preflight = run_preflight and not removal and not (self_enroll and not bool(getattr(args, "apply", False)))
     runner_parts = [
         str(runner_exe) if runner_exe is not None else python_exe,
     ]
@@ -945,10 +1082,10 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     task_launcher = _task_launcher_path(args.program_data_root, args.task_name)
     task_action_parts = _task_wrapper_command(task_launcher)
     task_action = _quote_cmd(task_action_parts)
-    if uninstall:
+    if removal:
         task_principal = {
             "status": "SKIPPED",
-            "mode": "uninstall",
+            "mode": "rollback" if rollback else "uninstall",
             "run_user": "",
             "password_source": "",
             "password_supplied": False,
@@ -964,12 +1101,20 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             task_action=task_action,
             task_principal_args=task_principal_args,
         )
-    delete_command = ["schtasks.exe", "/Delete", "/TN", args.task_name, "/F"]
+    probe_command = _scheduled_task_probe_command(args.task_name)
+    stop_command = _scheduled_task_stop_command(args.task_name, task_action_parts)
+    delete_command = _scheduled_task_delete_command(args.task_name, task_action_parts)
     return {
-        "report_version": "label-match-direct-sync-install-pack-v1",
+        "report_version": "label-match-direct-sync-install-pack-v2",
         "status": "DRY_RUN" if not args.apply else "APPLY_REQUESTED",
         "apply": bool(args.apply),
         "uninstall": bool(args.uninstall),
+        "rollback": rollback,
+        "operation_mode": (
+            "exact_rollback_task_phase"
+            if rollback
+            else ("safe_uninstall" if uninstall else "install")
+        ),
         "task_name": args.task_name,
         "field_layout_contract": field_layout_contract,
         "program_data_root": str(Path(args.program_data_root).expanduser().resolve()),
@@ -1008,7 +1153,15 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "local_test_task_environment_persisted": bool(local_test_task_environment),
         "task_principal": task_principal,
         "scheduled_task_create_command": create_command,
+        "scheduled_task_probe_command": probe_command,
+        "scheduled_task_stop_command": stop_command,
         "scheduled_task_delete_command": delete_command,
+        "scheduled_task_absence_command": probe_command,
+        "owned_direct_sync_change_plan": _owned_direct_sync_change_plan(
+            args.program_data_root,
+            args.task_name,
+            str(source_scan.get("scan_source_dir") or ""),
+        ),
         "install_preflight": (
             _install_preflight(
                 app_root,
@@ -1070,12 +1223,219 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     }
 
 
+def _bounded_output(value: str, *, limit: int = COMMAND_OUTPUT_LIMIT) -> tuple[str, bool, int]:
+    raw = str(value or "")
+    encoded = raw.encode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return raw, False, len(encoded)
+    bounded = encoded[:limit].decode("utf-8", errors="ignore")
+    return bounded, True, len(encoded)
+
+
+def _read_bounded_command_stream(stream) -> tuple[str, bool, int]:
+    stream.flush()
+    stream.seek(0, os.SEEK_END)
+    total_bytes = stream.tell()
+    stream.seek(0)
+    bounded = stream.read(COMMAND_OUTPUT_LIMIT)
+    return bounded.decode("utf-8", errors="replace"), total_bytes > COMMAND_OUTPUT_LIMIT, total_bytes
+
+
 def _run_command(command: Sequence[str]) -> dict:
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    with tempfile.TemporaryFile(mode="w+b") as stdout_stream, tempfile.TemporaryFile(
+        mode="w+b"
+    ) as stderr_stream:
+        timed_out = False
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                stdout=stdout_stream,
+                stderr=stderr_stream,
+                text=False,
+                timeout=30,
+            )
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = 124
+        stdout, stdout_truncated, stdout_bytes = _read_bounded_command_stream(stdout_stream)
+        stderr, stderr_truncated, stderr_bytes = _read_bounded_command_stream(stderr_stream)
+        return {
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "timed_out": timed_out,
+        }
+
+
+def _typed_json_result(result: dict, *, operation: str) -> dict:
+    if int(result.get("returncode", 1)) != 0:
+        return {
+            "status": "FAILED",
+            "operation": operation,
+            "error": "command failed",
+            "command_result": result,
+        }
+    try:
+        payload = json.loads(str(result.get("stdout") or "").strip())
+    except (TypeError, ValueError):
+        return {
+            "status": "FAILED",
+            "operation": operation,
+            "error": "typed command output was not valid JSON",
+            "command_result": result,
+        }
+    if not isinstance(payload, dict) or payload.get("operation") != operation:
+        return {
+            "status": "FAILED",
+            "operation": operation,
+            "error": "typed command output did not identify the expected operation",
+            "command_result": result,
+        }
+    return payload
+
+
+def _normalize_task_executable(value: object) -> str:
+    text = str(value or "").strip().strip('"')
+    return os.path.normcase(text)
+
+
+def _classify_task_probe(result: dict, expected_action_parts: Sequence[str]) -> dict:
+    payload = _typed_json_result(result, operation="probe")
+    if payload.get("status") == "FAILED":
+        return payload
+    state = str(payload.get("state") or "")
+    if state == "ABSENT":
+        return {"status": "ABSENT", "ownership": "NOT_APPLICABLE", "evidence": payload}
+    actions = payload.get("actions")
+    expected_arguments = _quote_cmd([str(part) for part in expected_action_parts[1:]])
+    owned = (
+        state == "PRESENT"
+        and str(payload.get("task_path") or "") == "\\"
+        and isinstance(actions, list)
+        and len(actions) == 1
+        and isinstance(actions[0], dict)
+        and _normalize_task_executable(actions[0].get("execute"))
+        == _normalize_task_executable(expected_action_parts[0])
+        and str(actions[0].get("arguments") or "").strip() == expected_arguments
+    )
     return {
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "status": "PRESENT" if owned else "CONFLICT",
+        "ownership": "OWNED" if owned else "FOREIGN_OR_AMBIGUOUS",
+        "evidence": payload,
+    }
+
+
+def _stop_scheduled_task_typed(task_name: str, expected_action_parts: Sequence[str]) -> dict:
+    lifecycle: dict[str, object] = {
+        "status": "FAILED",
+        "task_name": task_name,
+        "phase": "stop",
+        "operations": [],
+        "absence_proven": False,
+    }
+    probe = _classify_task_probe(
+        _run_command(_scheduled_task_probe_command(task_name)), expected_action_parts
+    )
+    lifecycle["initial_probe"] = probe
+    if probe["status"] == "ABSENT":
+        lifecycle.update({"status": "PASS", "absence_proven": True, "idempotent_absence": True})
+        return lifecycle
+    if probe["status"] != "PRESENT":
+        lifecycle["blocked_reason"] = "scheduled task ownership was not proven"
+        return lifecycle
+
+    stop = _typed_json_result(
+        _run_command(_scheduled_task_stop_command(task_name, expected_action_parts)),
+        operation="stop",
+    )
+    lifecycle["operations"].append(stop)
+    if stop.get("status") not in {"STOPPED", "ALREADY_STOPPED", "ABSENT"}:
+        lifecycle["blocked_reason"] = "scheduled task stop failed"
+        return lifecycle
+
+    lifecycle.update(
+        {
+            "status": "PASS",
+            "absence_proven": stop.get("status") == "ABSENT",
+            "idempotent_absence": stop.get("status") == "ABSENT",
+            "stopped_or_absent": True,
+        }
+    )
+    return lifecycle
+
+
+def _delete_scheduled_task_typed(task_name: str, expected_action_parts: Sequence[str]) -> dict:
+    lifecycle: dict[str, object] = {
+        "status": "FAILED",
+        "task_name": task_name,
+        "phase": "delete",
+        "operations": [],
+        "absence_proven": False,
+    }
+    probe = _classify_task_probe(
+        _run_command(_scheduled_task_probe_command(task_name)), expected_action_parts
+    )
+    lifecycle["initial_probe"] = probe
+    if probe["status"] == "ABSENT":
+        lifecycle.update({"status": "PASS", "absence_proven": True, "idempotent_absence": True})
+        return lifecycle
+    if probe["status"] != "PRESENT":
+        lifecycle["blocked_reason"] = "scheduled task ownership was not proven"
+        return lifecycle
+    if str(probe.get("evidence", {}).get("runtime_state") or "").casefold() == "running":
+        lifecycle["blocked_reason"] = "scheduled task is still running; stop phase must pass first"
+        return lifecycle
+
+    delete = _typed_json_result(
+        _run_command(_scheduled_task_delete_command(task_name, expected_action_parts)),
+        operation="delete",
+    )
+    lifecycle["operations"].append(delete)
+    if delete.get("status") not in {"DELETED", "ABSENT"}:
+        lifecycle["blocked_reason"] = "scheduled task delete failed"
+        return lifecycle
+
+    final_probe = _classify_task_probe(
+        _run_command(_scheduled_task_probe_command(task_name)), expected_action_parts
+    )
+    lifecycle["final_probe"] = final_probe
+    if final_probe["status"] != "ABSENT":
+        lifecycle["blocked_reason"] = "scheduled task absence was not proven"
+        return lifecycle
+    lifecycle.update({"status": "PASS", "absence_proven": True, "idempotent_absence": False})
+    return lifecycle
+
+
+def _remove_scheduled_task_typed(task_name: str, expected_action_parts: Sequence[str]) -> dict:
+    stop = _stop_scheduled_task_typed(task_name, expected_action_parts)
+    if stop.get("status") != "PASS" or stop.get("absence_proven") is True:
+        return {
+            **stop,
+            "phase": "full",
+            "stop": stop,
+            "delete": None,
+        }
+    delete = _delete_scheduled_task_typed(task_name, expected_action_parts)
+    return {
+        "status": delete.get("status"),
+        "task_name": task_name,
+        "phase": "full",
+        "stop": stop,
+        "delete": delete,
+        "operations": [*stop.get("operations", []), *delete.get("operations", [])],
+        "absence_proven": bool(delete.get("absence_proven")),
+        "idempotent_absence": False,
+        **(
+            {"blocked_reason": delete.get("blocked_reason", "scheduled task deletion failed")}
+            if delete.get("status") != "PASS"
+            else {}
+        ),
     }
 
 
@@ -1160,10 +1520,10 @@ def _run_self_enrollment_registration(args: argparse.Namespace) -> dict:
     result = _run_command(command)
     stdout = str(result.pop("stdout", "") or "")
     stderr = str(result.pop("stderr", "") or "")
-    result["stdout_omitted"] = bool(stdout)
-    result["stderr_omitted"] = bool(stderr)
-    result["stdout_bytes"] = len(stdout.encode("utf-8", errors="replace"))
-    result["stderr_bytes"] = len(stderr.encode("utf-8", errors="replace"))
+    result["stdout_omitted"] = bool(stdout) or int(result.get("stdout_bytes") or 0) > 0
+    result["stderr_omitted"] = bool(stderr) or int(result.get("stderr_bytes") or 0) > 0
+    result.setdefault("stdout_bytes", len(stdout.encode("utf-8", errors="replace")))
+    result.setdefault("stderr_bytes", len(stderr.encode("utf-8", errors="replace")))
     result["command_redacted"] = _redact_registration_command(command)
     report_path = Path(
         getattr(args, "registration_report_path", "")
@@ -1228,6 +1588,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report-path", required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
+    parser.add_argument("--rollback", action="store_true")
+    parser.add_argument(
+        "--task-removal-phase",
+        choices=("full", "stop", "delete"),
+        default="full",
+    )
     parser.add_argument("--confirm-production-install", action="store_true")
     parser.add_argument("--task-run-user", default="")
     parser.add_argument("--app-run-user", default="")
@@ -1236,10 +1602,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-interactive-task-for-local-test", action="store_true")
     parser.add_argument("--allow-noncanonical-layout-for-test", action="store_true")
     args = parser.parse_args(argv)
+    removal = bool(args.uninstall or args.rollback)
 
-    if not args.self_enroll and (not args.producer_manifest_path or not args.credential_path) and not args.uninstall:
+    if args.uninstall and args.rollback:
         plan = {
-            "report_version": "label-match-direct-sync-install-pack-v1",
+            "report_version": "label-match-direct-sync-install-pack-v2",
+            "status": "BLOCKED",
+            "blocked_reason": "--uninstall and --rollback are mutually exclusive",
+        }
+        _write_json(Path(args.report_path), plan)
+        print(f"install_pack_report={Path(args.report_path).resolve()}")
+        return 2
+
+    if not args.self_enroll and (not args.producer_manifest_path or not args.credential_path) and not removal:
+        plan = {
+            "report_version": "label-match-direct-sync-install-pack-v2",
             "status": "BLOCKED",
             "blocked_reason": "--producer-manifest-path and --credential-path are required unless --self-enroll is used",
             "self_enrollment": {"enabled": False},
@@ -1250,7 +1627,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.self_enroll and args.apply and str(getattr(args, "enrollment_token", "") or "").strip():
         plan = {
-            "report_version": "label-match-direct-sync-install-pack-v1",
+            "report_version": "label-match-direct-sync-install-pack-v2",
             "status": "BLOCKED",
             "blocked_reason": "direct --enrollment-token is disabled for apply; use env/file token delivery",
             "self_enrollment": {"enabled": True},
@@ -1269,7 +1646,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if (
         args.apply
-        and not args.uninstall
+        and not removal
         and not task_principal_plan["field_layout_contract"]["production_layout_matches"]
         and not task_principal_plan["field_layout_contract"]["local_test_override_enabled"]
     ):
@@ -1283,7 +1660,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2
 
-    if args.self_enroll and args.apply and not args.uninstall:
+    if args.self_enroll and args.apply and not removal:
         registration_result = _run_self_enrollment_registration(args)
         if registration_result["returncode"] != 0:
             plan = build_install_plan(args, run_preflight=False)
@@ -1295,7 +1672,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     plan = build_install_plan(args, run_preflight=True)
-    if args.self_enroll and args.apply and not args.uninstall:
+    if args.self_enroll and args.apply and not removal:
         plan["self_enrollment_registration"] = registration_result
     if plan["runtime_path_boundary"]["status"] != "PASS":
         plan["status"] = "BLOCKED"
@@ -1303,7 +1680,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(Path(args.report_path), plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2
-    if not args.uninstall and plan["install_preflight"]["status"] not in {"PASS", "NOT_RUN"}:
+    if not removal and plan["install_preflight"]["status"] not in {"PASS", "NOT_RUN"}:
         plan["status"] = "BLOCKED"
         plan["blocked_reason"] = f"install preflight failed: {plan['install_preflight']['blocked_reason']}"
         _write_json(Path(args.report_path), plan)
@@ -1315,13 +1692,13 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(Path(args.report_path), plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2
-    if not args.uninstall and plan["task_runtime_acl"]["status"] != "PASS":
+    if not removal and plan["task_runtime_acl"]["status"] != "PASS":
         plan["status"] = "BLOCKED"
         plan["blocked_reason"] = plan["task_runtime_acl"]["blocked_reason"]
         _write_json(Path(args.report_path), plan)
         print(f"install_pack_report={Path(args.report_path).resolve()}")
         return 2
-    if not args.uninstall and plan["app_runtime_acl"]["status"] != "PASS":
+    if not removal and plan["app_runtime_acl"]["status"] != "PASS":
         plan["status"] = "BLOCKED"
         plan["blocked_reason"] = plan["app_runtime_acl"]["blocked_reason"]
         _write_json(Path(args.report_path), plan)
@@ -1329,8 +1706,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.apply:
-        if args.uninstall:
-            command = plan["scheduled_task_delete_command"]
+        if removal:
+            removal_handlers = {
+                "full": _remove_scheduled_task_typed,
+                "stop": _stop_scheduled_task_typed,
+                "delete": _delete_scheduled_task_typed,
+            }
+            plan["scheduled_task_lifecycle"] = removal_handlers[args.task_removal_phase](
+                args.task_name, plan["task_launcher"]["command"]
+            )
+            plan["task_removal_phase"] = args.task_removal_phase
+            plan["status"] = plan["scheduled_task_lifecycle"]["status"]
+            if plan["status"] != "PASS":
+                plan["blocked_reason"] = plan["scheduled_task_lifecycle"].get(
+                    "blocked_reason", "scheduled task removal failed"
+                )
+            _write_json(Path(args.report_path), plan)
+            print(f"install_pack_report={Path(args.report_path).resolve()}")
+            return 0 if plan["status"] == "PASS" else 1
         else:
             actual_principal_args, actual_principal = _task_principal_args(args, redact_password=True)
             if actual_principal["status"] != "PASS":
@@ -1354,7 +1747,7 @@ def main(argv: list[str] | None = None) -> int:
                     task_action=plan["scheduled_task_create_command"][plan["scheduled_task_create_command"].index("/TR") + 1],
                     task_principal_args=actual_principal_args,
                 )
-        if not args.uninstall:
+        if not removal:
             plan["directory_create_result"] = _create_install_directories(plan["directories_to_create"])
             if plan["directory_create_result"]["status"] != "PASS":
                 plan["status"] = "FAIL"

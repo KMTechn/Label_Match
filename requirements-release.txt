@@ -1,5 +1,5 @@
 # Hash-locked release and test toolchain for CPython 3.12 on Windows x64.
-# Generated 2026-08-01 from requirements.txt plus the cross-repository
+# Regenerated 2026-08-21 from requirements.txt plus the cross-repository
 # live-server test closure, pytest, and PyInstaller 6.20.0.
 # This is the complete transitive wheel closure for win_amd64/cp312; do not
 # reuse it for another Python version, ABI, operating system, or architecture.
@@ -19,6 +19,13 @@ jsonschema==4.25.1 --hash=sha256:3fba0169e345c7175110351d456342c364814cfcf3b964b
 pyinstaller==6.20.0 --hash=sha256:d588844e890ee80c4365867f98146636e1849bbca8e4284bbf0c809aff0f161a
 pytest==9.1.1 --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
 pywin32==311 --hash=sha256:b8c095edad5c211ff31c05223658e71bf7116daa0ecf3ad85f3201ea3190d067
+
+# pandas closure reached by the sibling WorkerAnalysisGUI-web live-server tests.
+pandas==2.3.2 --hash=sha256:8c13b81a9347eb8c7548f53fd9a4f08d4dfe996836543f805c987bafa03317ae
+numpy==2.3.3 --hash=sha256:497d7cad08e7092dba36e3d296fe4c97708c93daf26643a1ae4b03f6294d30eb
+python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+pytz==2026.2 --hash=sha256:04156e608bee23d3792fd45c94ae47fae1036688e75032eea2e3bf0323d1f126
+six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
 
 # Exact transitive dependencies selected by pip for the target above.
 altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597

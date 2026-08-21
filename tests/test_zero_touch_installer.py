@@ -1,4 +1,7 @@
+import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -46,19 +49,42 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     )
 
     assert "#Requires -RunAsAdministrator" not in alias
-    assert "Invoke-SelfElevated $MyInvocation.MyCommand.Path $PSBoundParameters $args" in alias
+    assert "Invoke-SelfElevated $MyInvocation.MyCommand.Path $PSBoundParameters" in alias
+    assert "$isRollback = $Rollback.IsPresent" in alias
+    assert "Test-ArgumentSwitch" not in alias
     assert "WindowsBuiltInRole]::Administrator" in alias
     assert "-Verb RunAs" in alias
     assert "-Wait -PassThru" in alias
     _assert_powershell_ast(ROOT / "INSTALL_THIS_PC.ps1")
     assert "install_label_match_direct_sync.ps1" in alias
-    assert "@args" in alias
+    assert '$nestedParameters["ManagedInstallRoot"] = $installRoot' in alias
+    assert 'if ($entry.Key -in @("InstallRootForTest", "RollbackReceiptRootForTest"))' in alias
+    assert '$nestedParameters["PublicWrapperExitCode"] = [ref]$nestedExitCode' in alias
+    assert "& $installer @nestedParameters" in alias
+    assert 'throw "Nested installer did not return its typed exit code to the public wrapper."' in alias
+    assert "$exitCode = [int]$nestedExitCode" in alias
     assert "tokenless self-enrollment" in alias
+    assert "#Requires -RunAsAdministrator" not in installer
+    assert "[System.Management.Automation.PSReference]$PublicWrapperExitCode" in installer
+    assert installer.count("if ($null -ne $PublicWrapperExitCode)") == 3
+    assert installer.count("$PublicWrapperExitCode.Value =") == 3
+    normalized_installer = "\n".join(line.strip() for line in installer.splitlines())
+    for exit_value in ("2", "0", "[int]$exitCode"):
+        assert (
+            "if ($null -ne $PublicWrapperExitCode) {\n"
+            f"$PublicWrapperExitCode.Value = {exit_value}\n"
+            "return\n"
+            "}\n"
+            f"exit {exit_value.replace('[int]', '')}"
+        ) in normalized_installer
+    assert "Administrator privileges are required for installation or removal" in installer
     assert "Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop" in installer
     assert '$taskStartStatus = "FAILED"' in installer
     assert "Remove-NewMachineProfilesFromRegistrationReport" in installer
     assert "created_paths" in installer
-    assert "Unregister-ScheduledTask -TaskName $TaskName" in installer
+    assert '"--task-removal-phase", "full"' in installer
+    assert '"--task-removal-phase", $Phase' in installer
+    assert "scheduled_task_lifecycle" in (ROOT / "tools/direct_sync_relay_install_pack.py").read_text(encoding="utf-8")
     assert '[string]$AppRunUser = "*S-1-5-32-545"' in installer
     assert "Read-Host" not in installer
     assert "Producer enrollment token" not in installer
@@ -81,7 +107,145 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert "AllowNoncanonicalLayoutForTest" in installer
     assert "--allow-noncanonical-layout-for-test" in installer
     assert "KMTECH_FACTORY_INSTALL_TEST_MODE" in installer
+    assert "Assert-PackageRoot" in alias
+    assert "Copy-ManifestBoundPackage" in alias
+    assert "manifest_hashes_and_sizes_verified" in alias
+    assert "safe_relative_paths_verified" in alias
+    assert "candidate_byte_parity_verified" in alias
+    assert '"KMTech\\Label Match.lnk"' in installer
+    assert 'scope = "all_users"' in installer
+    assert "Ensure-AllUsersLauncher" in installer
+    assert "DATA_PRESERVING_UNINSTALL" in installer
+    assert "EXACT_FRESH_TARGET_ROLLBACK" in installer
+    assert "Copy-BoundedRollbackEvidence" in installer
+    assert "Rollback EvidenceArchiveRoot must be a fresh absent path" in installer
+    assert "Assert-NoReparsePath" in installer
+    assert "created_directory_paths" in installer
+    assert "created_install_parent_paths" in alias
+    assert "Candidate manifest changed after source validation" in alias
+    assert "report is stale, mismatched, or not PASS" in installer
+    assert "Install ownership summary does not bind the exact removal resource set" in installer
+    assert '$resourceReport.pre_install_parity_claimed = $false' in installer
+    assert '$rollbackResourceReport.pre_install_parity_claimed = $true' in alias
+    assert "Existing all-users launcher drifted from the owned install summary" in installer
+    assert "Nested removal resource report is stale, mismatched, or incomplete" in alias
+    ancestry_guard = "EvidenceArchiveRoot overlaps an installer-created directory ancestry path"
+    assert ancestry_guard in alias
+    assert alias.index(ancestry_guard) < alias.index("& $installer @nestedParameters")
+    assert alias.count("Confirm-BoundedRollbackEvidence") >= 3
+    assert "evidence_inventory_sha256 = $finalEvidenceVerification.inventory_sha256" in alias
+    assert "resource_report_sha256 = $finalResourceReportSha256" in alias
+    assert "Rollback evidence file hash changed after preservation" in alias
+    assert "Add-Member -NotePropertyName inventory_sha256" in alias
+    assert "Add-Member -NotePropertyName archived_bytes_reverified_by_public_wrapper" in alias
+    assert 'task_removal_order = @("stop", "delete", "absence")' in installer
+    for source in (alias, installer):
+        assert '"_internal/config/app_settings.json"' in source
+        assert '"label-match-app-immutable-inventory-v1"' in source
+        assert "Get-ImmutableAppInventoryIdentity" in source
+        assert "mutable_relative_paths" in source
+        assert "immutable_inventory_sha256" in source
+    assert "UNINSTALLED_DATA_PRESERVED" in alias
+    assert "exact_fresh_target_parity" in alias
     _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
+
+
+def test_mutable_runtime_settings_do_not_mask_immutable_app_drift(tmp_path):
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is unavailable")
+    app_root = tmp_path / "installed-app"
+    mutable_settings = app_root / "_internal/config/app_settings.json"
+    root_settings = app_root / "config/app_settings.json"
+    mutable_settings.parent.mkdir(parents=True)
+    root_settings.parent.mkdir(parents=True)
+    mutable_settings.write_text("{\"worker\":\"before\"}\n", encoding="utf-8")
+    root_settings.write_text("{\"provider\":\"github\"}\n", encoding="utf-8")
+    (app_root / "Label_Match.exe").write_bytes(b"owned-executable")
+    command = r"""
+$ErrorActionPreference = "Stop"
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+  $env:LABEL_MATCH_PUBLIC_INSTALLER,
+  [ref]$tokens,
+  [ref]$errors
+)
+if ($errors.Count) { throw "public installer AST is invalid" }
+$wanted = @(
+  "Test-PathInside",
+  "Get-RelativeFilePath",
+  "Get-Sha256HexFromText",
+  "Get-ImmutableAppInventoryIdentity"
+)
+foreach ($name in $wanted) {
+  $node = $ast.FindAll({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $candidate.Name -ceq $name
+  }, $true) | Select-Object -First 1
+  if ($null -eq $node) { throw "missing function: $name" }
+  Invoke-Expression $node.Extent.Text
+}
+$allowlist = @("_internal/config/app_settings.json")
+$root = $env:LABEL_MATCH_INVENTORY_ROOT
+$before = Get-ImmutableAppInventoryIdentity $root $allowlist
+[IO.File]::WriteAllText(
+  (Join-Path $root "_internal\config\app_settings.json"),
+  '{"worker":"after"}',
+  [Text.UTF8Encoding]::new($false)
+)
+$afterMutable = Get-ImmutableAppInventoryIdentity $root $allowlist
+[IO.File]::WriteAllText(
+  (Join-Path $root "config\app_settings.json"),
+  '{"provider":"changed"}',
+  [Text.UTF8Encoding]::new($false)
+)
+$afterRootConfig = Get-ImmutableAppInventoryIdentity $root $allowlist
+[IO.File]::WriteAllText(
+  (Join-Path $root "unexpected.bin"),
+  'unexpected',
+  [Text.UTF8Encoding]::new($false)
+)
+$afterExtra = Get-ImmutableAppInventoryIdentity $root $allowlist
+Remove-Item -LiteralPath (Join-Path $root "_internal\config\app_settings.json") -Force
+$missingRejected = $false
+try { Get-ImmutableAppInventoryIdentity $root $allowlist | Out-Null }
+catch { $missingRejected = $true }
+[ordered]@{
+  mutable_same = (
+    $before.immutable_file_count -eq $afterMutable.immutable_file_count -and
+    $before.immutable_sha256 -ceq $afterMutable.immutable_sha256
+  )
+  root_config_changed = $before.immutable_sha256 -cne $afterRootConfig.immutable_sha256
+  extra_changed = (
+    $afterRootConfig.immutable_file_count -ne $afterExtra.immutable_file_count -and
+    $afterRootConfig.immutable_sha256 -cne $afterExtra.immutable_sha256
+  )
+  missing_mutable_rejected = $missingRejected
+} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "LABEL_MATCH_PUBLIC_INSTALLER": str(ROOT / "INSTALL_THIS_PC.ps1"),
+            "LABEL_MATCH_INVENTORY_ROOT": str(app_root),
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result == {
+        "mutable_same": True,
+        "root_config_changed": True,
+        "extra_changed": True,
+        "missing_mutable_rejected": True,
+    }
 
 
 def test_frozen_release_exact_manifest_preserves_common_package_entrypoint():

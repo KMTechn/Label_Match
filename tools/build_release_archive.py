@@ -16,7 +16,7 @@ import zipfile
 
 RELEASE_IDENTITY_SCHEMA = "label-match-release-identity-v3"
 CLI_TOOLS_SCHEMA = "label-match-release-cli-tools-v1"
-STAGED_INSTALLER_SCHEMA = "label-match-staged-installer-verification-v1"
+STAGED_INSTALLER_SCHEMA = "label-match-staged-installer-verification-v2"
 CONTRACT_BUNDLE_SHA256 = "adaa08684ebb291837327f63f967a4f22650dff72c4c1dc56ce1a9bee6b5404a"
 PYTHON_VERSION = "3.12.10"
 PYINSTALLER_VERSION = "6.20.0"
@@ -254,12 +254,24 @@ def _safe_relative(value: object, *, label: str) -> str:
     if (
         not path
         or "\\" in path
+        or ":" in path
+        or path.endswith("/")
         or pure.is_absolute()
         or any(part in {"", ".", ".."} for part in pure.parts)
         or pure.as_posix() != path
     ):
         raise ReleaseArchiveError(f"{label} path is not a canonical POSIX relative path: {path!r}")
     return path
+
+
+def _assert_no_reparse_points(root: Path) -> None:
+    for path in root.rglob("*"):
+        try:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        except OSError as exc:
+            raise ReleaseArchiveError(f"package path could not be inspected: {path}") from exc
+        if path.is_symlink() or bool(attributes & 0x400):
+            raise ReleaseArchiveError(f"package contains a reparse point: {path}")
 
 
 def _normalize_inventory(
@@ -530,9 +542,14 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
     if set(report) != {
         "schema_version",
         "status",
-        "installer_status",
+        "proof_classification",
+        "dynamic_qualification",
+        "public_entrypoint",
+        "manifest_contract",
+        "staging_contract",
+        "launcher_contract",
+        "removal_contract",
         "field_layout_contract_verified",
-        "staged_dry_run_is_plan_only",
         "system_python_required",
         "installer",
         "install_helper",
@@ -544,6 +561,8 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         "original_package_unchanged",
         "app_settings_path",
         "app_save_path_matches_relay_scan_source",
+        "output_bound_bytes",
+        "timeout_seconds",
         "stdout_bytes",
         "stderr_bytes",
     }:
@@ -551,17 +570,107 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
     if (
         report.get("schema_version") != STAGED_INSTALLER_SCHEMA
         or report.get("status") != "PASS"
-        or report.get("installer_status") != "DRY_RUN"
+        or report.get("proof_classification") != "STATIC_ISOLATED_DRY_RUN"
+        or report.get("dynamic_qualification") != "NOT_TESTED"
         or report.get("field_layout_contract_verified") is not True
-        or report.get("staged_dry_run_is_plan_only") is not True
         or report.get("system_python_required") is not False
         or report.get("original_package_unchanged") is not True
         or report.get("app_settings_path") != "_internal/config/app_settings.json"
         or report.get("app_save_path_matches_relay_scan_source") is not True
     ):
         raise ReleaseArchiveError("staged installer did not prove the current package")
-    _required_int(report, "stdout_bytes", label="staged installer", minimum=1)
+    output_bound = _required_int(
+        report, "output_bound_bytes", label="staged installer", exact=64 * 1024
+    )
+    _required_int(report, "timeout_seconds", label="staged installer", exact=120)
+    stdout_bytes = _required_int(report, "stdout_bytes", label="staged installer", minimum=1)
+    if stdout_bytes > output_bound:
+        raise ReleaseArchiveError("staged installer stdout exceeded its declared bound")
     _required_int(report, "stderr_bytes", label="staged installer", exact=0)
+
+    manifest_contract = report.get("manifest_contract")
+    if (
+        not isinstance(manifest_contract, dict)
+        or set(manifest_contract)
+        != {
+            "path",
+            "sha256",
+            "payload_file_count",
+            "payload_inventory_sha256",
+            "hashes_and_sizes_verified",
+            "safe_paths_verified",
+            "case_collisions_absent",
+            "unexpected_files_absent",
+            "reparse_points_absent",
+            "preseal_isolated_manifest",
+        }
+        or manifest_contract.get("path") != "build-manifest.json"
+        or any(
+            manifest_contract.get(field) is not True
+            for field in (
+                "hashes_and_sizes_verified",
+                "safe_paths_verified",
+                "case_collisions_absent",
+                "unexpected_files_absent",
+                "reparse_points_absent",
+                "preseal_isolated_manifest",
+            )
+        )
+        or not isinstance(manifest_contract.get("sha256"), str)
+        or SHA256_RE.fullmatch(str(manifest_contract.get("sha256"))) is None
+        or not isinstance(manifest_contract.get("payload_inventory_sha256"), str)
+        or SHA256_RE.fullmatch(str(manifest_contract.get("payload_inventory_sha256"))) is None
+    ):
+        raise ReleaseArchiveError("staged installer manifest contract is invalid")
+
+    expected_staging = {
+        "ordinary_extracted_root": True,
+        "canonical_production_root_declared": "C:\\KMTech\\Apps\\Label_Match\\current",
+        "direct_children_staged": True,
+        "nested_label_match_directory_absent": True,
+        "candidate_byte_parity_verified": True,
+        "unknown_target_fail_closed_declared": True,
+        "directory_ancestry_tracked": True,
+    }
+    if report.get("staging_contract") != expected_staging:
+        raise ReleaseArchiveError("staged installer ordinary-root contract is invalid")
+    expected_launcher = {
+        "count": 1,
+        "scope": "all_users",
+        "canonical_path": (
+            "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\KMTech\\Label Match.lnk"
+        ),
+        "target_relative": "Label_Match.exe",
+        "working_directory_is_install_root": True,
+        "icon_is_target": True,
+        "install_verify_remove_lifecycle_declared": True,
+    }
+    if report.get("launcher_contract") != expected_launcher:
+        raise ReleaseArchiveError("staged installer all-users launcher contract is invalid")
+    expected_removal = {
+        "uninstall_mode": "DATA_PRESERVING_UNINSTALL",
+        "uninstall_preserves_business_data": True,
+        "rollback_mode": "EXACT_FRESH_TARGET_ROLLBACK",
+        "rollback_requires_external_evidence": True,
+        "rollback_requires_absent_prestate": True,
+        "task_operations": ["stop", "delete", "absence"],
+        "task_results_are_typed": True,
+        "bounded_external_evidence": True,
+        "maximum_evidence_files": 10000,
+        "maximum_evidence_bytes": 2147483648,
+        "fresh_evidence_root_required": True,
+        "reparse_points_rejected": True,
+        "directory_ancestry_tracked": True,
+        "typed_task_reports_bound_to_phase_and_identity": True,
+        "public_wrapper_finalizes_rollback_report": True,
+        "final_evidence_bytes_reverified": True,
+        "final_receipt_binds_evidence_hashes": True,
+        "app_inventory_contract": "label-match-app-immutable-inventory-v1",
+        "mutable_app_relative_paths": ["_internal/config/app_settings.json"],
+        "immutable_app_drift_rejected": True,
+    }
+    if report.get("removal_contract") != expected_removal:
+        raise ReleaseArchiveError("staged installer removal contract is invalid")
     inventory = _normalize_inventory(
         report.get("original_package_inventory"), label="staged installer original package"
     )
@@ -575,6 +684,7 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         raise ReleaseArchiveError("staged installer package file count mismatch")
 
     bindings = {
+        "public_entrypoint": ("INSTALL_THIS_PC.ps1", False),
         "installer": ("install_label_match_direct_sync.ps1", False),
         "install_helper": (
             "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
@@ -593,6 +703,31 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
             raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
         if selected_required and entry.get("selected") is not True:
             raise ReleaseArchiveError(f"staged installer {name} was not selected")
+    payload_inventory = [
+        item for item in inventory if item["path"] != "build-manifest.json"
+    ]
+    payload_inventory = sorted(payload_inventory, key=lambda item: str(item["path"]))
+    preseal_manifest_bytes = (
+        json.dumps(
+            {
+                "build_manifest_schema_version": 1,
+                "payload_inventory": payload_inventory,
+                "payload_inventory_sha256": _canonical_sha256(payload_inventory),
+            },
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    if (
+        len(payload_inventory) != manifest_contract["payload_file_count"]
+        or _canonical_sha256(payload_inventory)
+        != manifest_contract["payload_inventory_sha256"]
+        or hashlib.sha256(preseal_manifest_bytes).hexdigest()
+        != manifest_contract["sha256"]
+    ):
+        raise ReleaseArchiveError("staged installer preseal manifest binding is invalid")
     return {"report": report, "inventory": inventory}
 
 
@@ -754,7 +889,9 @@ def _validate_factory_manifest(
     if current_inventory != inventory:
         raise ReleaseArchiveError("current package differs from the factory build manifest")
 
-    staged_inventory = staged["inventory"]
+    staged_inventory = [
+        item for item in staged["inventory"] if item["path"] != "build-manifest.json"
+    ]
     manifest_before_staged_report = [
         item for item in inventory if item["path"] != "staged-installer-verification.json"
     ]
@@ -778,6 +915,7 @@ def validate_release_evidence(
     expected_tag: str | None,
     source_epoch: int,
 ) -> dict[str, object]:
+    _assert_no_reparse_points(package_root)
     identity = _validate_release_identity(package_root, expected_tag=expected_tag)
     cli = _validate_cli_tools_manifest(package_root, identity=identity)
     staged = _validate_staged_installer(package_root)
@@ -811,6 +949,14 @@ def validate_release_evidence(
         "payload_inventory_sha256": factory["payload_inventory_sha256"],
         "active_work_probe_sha256": probe_sha,
         "staged_installer_verified": True,
+        "ordinary_extracted_root_staging_verified": True,
+        "manifest_bound_self_staging_verified": True,
+        "all_users_launcher_lifecycle_verified": True,
+        "data_preserving_uninstall_contract_verified": True,
+        "exact_fresh_target_rollback_contract_verified": True,
+        "typed_task_stop_delete_absence_verified": True,
+        "bounded_external_evidence_contract_verified": True,
+        "dynamic_install_qualification": "NOT_TESTED",
         "factory_manifest_verified": True,
         **cli,
     }

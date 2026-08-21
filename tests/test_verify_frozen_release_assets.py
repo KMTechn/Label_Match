@@ -13,7 +13,7 @@ import pytest
 from tools import verify_frozen_release_assets as verifier
 
 
-TAG = "v2.0.67"
+TAG = "v2.0.74"
 COMMIT = "1" * 40
 TREE = "2" * 40
 TAG_OBJECT = "4" * 40
@@ -154,20 +154,43 @@ def _refresh_staged_inventory(
     name = "staged-installer-verification.json"
     info, payload = entries[name]
     staged = json.loads(payload)
-    inventory = [
+    payload_inventory = [
         {
             "path": relative,
             "size": len(member_payload),
             "sha256": hashlib.sha256(member_payload).hexdigest(),
         }
-        for relative, (_member_info, member_payload) in sorted(
-            entries.items(), key=lambda item: (item[0].casefold(), item[0])
-        )
+        for relative, (_member_info, member_payload) in sorted(entries.items())
         if relative not in {name, "build-manifest.json"}
     ]
+    predecessor_manifest = _json_bytes(
+        {
+            "build_manifest_schema_version": 1,
+            "payload_inventory": payload_inventory,
+            "payload_inventory_sha256": _canonical_sha256(payload_inventory),
+        }
+    )
+    inventory = sorted(
+        [
+            *payload_inventory,
+            {
+                "path": "build-manifest.json",
+                "size": len(predecessor_manifest),
+                "sha256": hashlib.sha256(predecessor_manifest).hexdigest(),
+            },
+        ],
+        key=lambda item: (str(item["path"]).casefold(), str(item["path"])),
+    )
     staged["original_package_file_count"] = len(inventory)
     staged["original_package_inventory"] = inventory
     staged["original_package_inventory_sha256"] = _canonical_sha256(inventory)
+    staged["manifest_contract"]["sha256"] = hashlib.sha256(
+        predecessor_manifest
+    ).hexdigest()
+    staged["manifest_contract"]["payload_file_count"] = len(payload_inventory)
+    staged["manifest_contract"]["payload_inventory_sha256"] = _canonical_sha256(
+        payload_inventory
+    )
     entries[name] = (info, _json_bytes(staged))
 
 
@@ -309,6 +332,23 @@ def test_abbreviated_staged_installer_report_cannot_pass(tmp_path):
     _rewrite_archive(fixture, entries)
 
     with pytest.raises(verifier.FrozenReleaseError, match="staged installer evidence fields"):
+        _verify(fixture)
+
+
+def test_forged_launcher_scope_cannot_pass_after_archive_reseal(tmp_path):
+    fixture = _fixture(tmp_path)
+    archive = fixture["archive"]
+    assert isinstance(archive, Path)
+    entries = _read_archive(archive)
+    name = "staged-installer-verification.json"
+    info, payload = entries[name]
+    staged = json.loads(payload)
+    staged["launcher_contract"]["scope"] = "current_user"
+    entries[name] = (info, _json_bytes(staged))
+    _refresh_build_manifest(entries)
+    _rewrite_archive(fixture, entries)
+
+    with pytest.raises(verifier.FrozenReleaseError, match="launcher contract"):
         _verify(fixture)
 
 

@@ -48,6 +48,41 @@ _UPN_RE = re.compile(
 )
 _SID_RE = re.compile(r"^S-1-[0-9]+(?:-[0-9]+)+$")
 _READ_AND_EXECUTE_WITH_SYNCHRONIZE = 1_179_817
+_WINDOWS_POWERSHELL_SECURITY_BOOTSTRAP = r"""
+$trustedModuleRoot = [System.IO.Path]::GetFullPath(
+    $env:KMTECH_PROTECTED_POWERSHELL_MODULE_ROOT
+).TrimEnd('\')
+if (-not [System.IO.Directory]::Exists($trustedModuleRoot)) {
+    throw 'trusted in-box Windows PowerShell module root is missing'
+}
+$env:PSModulePath = $trustedModuleRoot
+$securityManifest = [System.IO.Path]::GetFullPath(
+    $env:KMTECH_PROTECTED_POWERSHELL_SECURITY_MANIFEST
+)
+if (-not [System.IO.File]::Exists($securityManifest)) {
+    throw 'trusted in-box Microsoft.PowerShell.Security manifest is missing'
+}
+Import-Module -Name $securityManifest -Force -ErrorAction Stop
+$securityModules = @(Get-Module -Name Microsoft.PowerShell.Security)
+if ($securityModules.Count -ne 1) {
+    throw 'trusted in-box Microsoft.PowerShell.Security module is ambiguous'
+}
+$actualManifest = [System.IO.Path]::GetFullPath($securityModules[0].Path)
+if (-not [string]::Equals(
+    $actualManifest,
+    $securityManifest,
+    [System.StringComparison]::OrdinalIgnoreCase
+)) {
+    throw 'Microsoft.PowerShell.Security resolved outside the trusted in-box module root'
+}
+$aclCommands = @(Get-Command -Name Get-Acl -CommandType Cmdlet -ErrorAction Stop)
+if (
+    $aclCommands.Count -ne 1 -or
+    $aclCommands[0].ModuleName -cne 'Microsoft.PowerShell.Security'
+) {
+    throw 'Get-Acl does not resolve to the trusted in-box security module'
+}
+"""
 _BROAD_READER_NAMES = frozenset(
     {
         "anonymous logon",
@@ -201,6 +236,60 @@ def _validate_reader_principal(reader_principal: object) -> str:
     return principal
 
 
+def _trusted_windows_powershell_authority() -> tuple[Path, Path, Path, Path]:
+    if os.name != "nt":
+        raise ProtectedAdminProfileError(
+            "trusted Windows PowerShell authority is available only on Windows"
+        )
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(32_768)
+        length = int(
+            ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+        )
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise ProtectedAdminProfileError(
+            "trusted Windows system directory could not be resolved"
+        ) from exc
+    if length <= 0 or length >= len(buffer):
+        raise ProtectedAdminProfileError(
+            "trusted Windows system directory could not be resolved"
+        )
+    system_directory = Path(buffer.value)
+    if (
+        not system_directory.is_absolute()
+        or system_directory.name.casefold() != "system32"
+        or not system_directory.is_dir()
+    ):
+        raise ProtectedAdminProfileError(
+            "trusted Windows system directory is invalid"
+        )
+    windows_root = system_directory.parent
+    powershell_home = system_directory / "WindowsPowerShell" / "v1.0"
+    powershell_executable = powershell_home / "powershell.exe"
+    module_root = powershell_home / "Modules"
+    security_manifest = (
+        module_root
+        / "Microsoft.PowerShell.Security"
+        / "Microsoft.PowerShell.Security.psd1"
+    )
+    if (
+        not powershell_executable.is_file()
+        or not module_root.is_dir()
+        or not security_manifest.is_file()
+    ):
+        raise ProtectedAdminProfileError(
+            "trusted in-box Windows PowerShell security authority is missing"
+        )
+    return (
+        powershell_executable,
+        module_root,
+        security_manifest,
+        windows_root,
+    )
+
+
 def _run_powershell(
     script: str,
     *,
@@ -212,20 +301,34 @@ def _run_powershell(
         raise ProtectedAdminProfileError(
             "protected administrator ACL hardening is available only on Windows"
         )
+    (
+        powershell_executable,
+        module_root,
+        security_manifest,
+        windows_root,
+    ) = _trusted_windows_powershell_authority()
     environment = os.environ.copy()
+    environment["SystemRoot"] = str(windows_root)
+    environment["WINDIR"] = str(windows_root)
+    environment["PSModulePath"] = str(module_root)
     environment["KMTECH_PROTECTED_ACL_TARGET"] = str(path)
     environment["KMTECH_PROTECTED_ACL_READER"] = reader_principal
     environment["KMTECH_PROTECTED_ACL_DIRECTORY"] = "1" if is_directory else "0"
+    environment["KMTECH_PROTECTED_POWERSHELL_SECURITY_MANIFEST"] = str(
+        security_manifest
+    )
+    environment["KMTECH_PROTECTED_POWERSHELL_MODULE_ROOT"] = str(module_root)
+    trusted_script = _WINDOWS_POWERSHELL_SECURITY_BOOTSTRAP + "\n" + script
     try:
         completed = subprocess.run(
             [
-                "powershell.exe",
+                str(powershell_executable),
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                script,
+                trusted_script,
             ],
             check=False,
             capture_output=True,

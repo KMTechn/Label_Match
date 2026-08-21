@@ -13,6 +13,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "build_frozen_release_candidate.ps1"
 CONTRACT_PATH = ROOT / "RELEASE_GATE_CONTRACT.md"
+TAG_BURNER_PATH = ROOT / "tools" / "burn_local_release_tag_once.py"
+REQUIREMENTS_PATH = ROOT / "requirements-release.txt"
+
+PANDAS_LIVE_SERVER_CLOSURE = {
+    "numpy": "numpy==2.3.3 --hash=sha256:497d7cad08e7092dba36e3d296fe4c97708c93daf26643a1ae4b03f6294d30eb",
+    "pandas": "pandas==2.3.2 --hash=sha256:8c13b81a9347eb8c7548f53fd9a4f08d4dfe996836543f805c987bafa03317ae",
+    "python-dateutil": "python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+    "pytz": "pytz==2026.2 --hash=sha256:04156e608bee23d3792fd45c94ae47fae1036688e75032eea2e3bf0323d1f126",
+    "six": "six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+    "tzdata": "tzdata==2026.3 --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931",
+}
 
 
 def _source() -> str:
@@ -51,7 +62,7 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     source = _source()
 
     assert "[string]$OutputRoot" in source
-    assert '[string]$Tag = "v2.0.67"' in source
+    assert '[string]$Tag = "v2.0.74"' in source
     assert "[string]$PythonPath" in source
     assert "[string]$Wheelhouse" in source
     assert "[string]$MirrorRoot" in source
@@ -61,24 +72,57 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     assert '[IO.FileMode]::CreateNew' in source
     assert '$ExpectedPythonVersion = "3.12.10"' in source
     assert '$ExpectedPyInstallerVersion = "6.20.0"' in source
-
-
-def test_script_fails_before_output_or_build_when_not_elevated():
-    source = _source()
-
-    elevation = source.index("WindowsBuiltInRole]::Administrator")
-    output_create = source.index("[IO.Directory]::CreateDirectory($resolvedOutputRoot)")
-    venv_create = source.index("-I -m venv $venvRoot")
-    first_pyinstaller = source.index("& $venvPython -I -m PyInstaller @mainArguments")
-
-    assert elevation < output_create < venv_create < first_pyinstaller
-    assert "Frozen release candidate qualification requires an elevated" in source
     assert "--no-index" in source
     assert "--find-links $resolvedWheelhouse" in source
     assert "--only-binary=:all:" in source
     assert "--require-hashes" in source
     assert "--no-deps" in source
     assert "$env:PIP_NO_INDEX = \"1\"" in source
+
+
+def test_hash_locked_requirements_include_exact_live_server_pandas_closure():
+    requirement_lines = [
+        line.strip()
+        for line in REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    for project_name, exact_line in PANDAS_LIVE_SERVER_CLOSURE.items():
+        matching_lines = [
+            line
+            for line in requirement_lines
+            if line.partition("==")[0].lower() == project_name
+        ]
+        assert matching_lines == [exact_line]
+
+
+def test_contract_requires_exactly_once_local_tag_burner_before_builder():
+    contract = CONTRACT_PATH.read_text(encoding="utf-8")
+
+    burner_command = "python -I .\\tools\\burn_local_release_tag_once.py"
+    builder_command = "pwsh -NoProfile -File .\\tools\\build_frozen_release_candidate.ps1"
+    assert TAG_BURNER_PATH.is_file()
+    assert burner_command in contract
+    assert contract.index(burner_command) < contract.index(builder_command)
+    assert "--tag v2.0.74" in contract
+    assert "--expected-commit <EXACT-CANDIDATE-COMMIT>" in contract
+    assert "--expected-tree <EXACT-CANDIDATE-TREE>" in contract
+    assert "do not retry it" in contract
+    assert "dc59cc5e094b4a9d15b987031dad77303586ce71f4beb84ad4fac07d16b99f3b" in contract
+
+
+def test_script_runs_only_the_static_staged_installer_gate_without_elevation():
+    source = _source()
+
+    assert "WindowsBuiltInRole]::Administrator" not in source
+    assert "Frozen release candidate qualification requires an elevated" not in source
+    verifier = source.index("verify_staged_release_installer.py")
+    manifest = source.index("kmtech_factory_contracts.build_cli manifest")
+    sealed_test = source.index('"tests\\test_staged_release_installer.py"')
+    archive = source.index("build_release_archive.py")
+    assert verifier < manifest < sealed_test < archive
+    assert 'LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"' in source
+    assert "Run sealed staged installer release gate" in source
 
 
 def test_script_enforces_clean_work_clone_and_exact_local_bare_mirror_topology():
@@ -181,7 +225,7 @@ def test_script_rejects_a_clean_clone_whose_origin_is_not_the_supplied_mirror(
             "-OutputRoot",
             str(output_root),
             "-Tag",
-            "v2.0.67",
+            "v2.0.74",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",

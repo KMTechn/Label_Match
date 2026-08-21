@@ -4,7 +4,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.67",
+    [string]$Tag = "v2.0.74",
 
     [string]$PythonPath = "",
 
@@ -301,17 +301,6 @@ $mirrorTagCommit = (Get-GitValueAt -Repository $mirrorRoot -Arguments @(
 )).ToLowerInvariant()
 if ($tagCommit -cne $headCommit -or $mirrorTagCommit -cne $headCommit) {
     throw "The FINAL intended tag must peel to exact HEAD and local bare mirror main."
-}
-
-# The packaged staged-installer gate executes the committed installer, whose
-# contract requires an elevated Windows session. Check this after authenticating
-# the isolated source topology, but before creating output or doing build work.
-$windowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$windowsPrincipal = [Security.Principal.WindowsPrincipal]::new($windowsIdentity)
-if (-not $windowsPrincipal.IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator
-)) {
-    throw "Frozen release candidate qualification requires an elevated Windows administrator session."
 }
 
 $pythonFacts = & $resolvedPython -I -c `
@@ -658,12 +647,6 @@ Assert-LastExitCode "Staged relay source help probe"
 Assert-LastExitCode "Staged relay operator source help probe"
 $env:LABEL_MATCH_STAGED_PACKAGE_ROOT = $packageRoot
 $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
-& $venvPython -m pytest `
-    -q `
-    -p no:cacheprovider `
-    (Join-Path $repoRoot "tests\test_staged_release_installer.py")
-Assert-LastExitCode "Run staged installer release gate"
-
 & $venvPython -m kmtech_factory_contracts.build_cli manifest `
     --stage-root $packageRoot `
     --expected-file Label_Match.exe `
@@ -679,6 +662,11 @@ Assert-LastExitCode "Seal exact factory package manifest"
     --stage-root $packageRoot `
     --expected-contract-sha256 $FactoryContractSha256
 Assert-LastExitCode "Verify exact current factory package"
+& $venvPython -m pytest `
+    -q `
+    -p no:cacheprovider `
+    (Join-Path $repoRoot "tests\test_staged_release_installer.py")
+Assert-LastExitCode "Run sealed staged installer release gate"
 
 $archiveName = "Label_Match-$Tag.zip"
 $archivePath = Join-Path $resolvedOutputRoot $archiveName

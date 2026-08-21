@@ -990,11 +990,16 @@ def test_install_pack_blocks_invalid_task_password_sources(tmp_path, monkeypatch
 def test_install_pack_uninstall_skips_task_password_validation(tmp_path, monkeypatch):
     module = load_install_pack_module()
     report_path = tmp_path / "install-pack-uninstall.json"
-    commands = []
     monkeypatch.setattr(
         module,
-        "_run_command",
-        lambda command: commands.append(command) or {"returncode": 0, "stdout": "", "stderr": ""},
+        "_remove_scheduled_task_typed",
+        lambda task_name, expected_action: {
+            "status": "PASS",
+            "task_name": task_name,
+            "phase": "full",
+            "absence_proven": True,
+            "idempotent_absence": True,
+        },
     )
 
     result = module.main(
@@ -1013,7 +1018,249 @@ def test_install_pack_uninstall_skips_task_password_validation(tmp_path, monkeyp
     assert report["status"] == "PASS"
     assert report["task_principal"]["status"] == "SKIPPED"
     assert report["scheduled_task_create_command"] == []
-    assert commands == [["schtasks.exe", "/Delete", "/TN", "direct-sync-relay-label-match", "/F"]]
+    assert report["scheduled_task_lifecycle"]["absence_proven"] is True
+    assert report["operation_mode"] == "safe_uninstall"
+    cleanup = report["owned_direct_sync_change_plan"]["safe_uninstall"]
+    assert cleanup["remove_program_data_root"] is False
+    assert str(tmp_path.resolve()) not in cleanup["remove_only_if_install_summary_proves_created_and_hash_matches"]
+
+
+def _typed_command_result(payload, returncode=0):
+    return {
+        "returncode": returncode,
+        "stdout": json.dumps(payload),
+        "stderr": "",
+        "stdout_bytes": 0,
+        "stderr_bytes": 0,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+    }
+
+
+def test_typed_task_removal_stops_deletes_and_proves_absence(monkeypatch):
+    module = load_install_pack_module()
+    expected_action = ["wscript.exe", "//B", "//NoLogo", r"C:\owned\relay.vbs"]
+    arguments = module._quote_cmd(expected_action[1:])
+    results = iter(
+        [
+            _typed_command_result(
+                {
+                    "operation": "probe",
+                    "state": "PRESENT",
+                    "task_name": module.DEFAULT_TASK_NAME,
+                    "task_path": "\\",
+                    "runtime_state": "Running",
+                    "actions": [{"execute": "wscript.exe", "arguments": arguments}],
+                }
+            ),
+            _typed_command_result(
+                {"operation": "stop", "status": "STOPPED", "task_name": module.DEFAULT_TASK_NAME}
+            ),
+            _typed_command_result(
+                {
+                    "operation": "probe",
+                    "state": "PRESENT",
+                    "task_name": module.DEFAULT_TASK_NAME,
+                    "task_path": "\\",
+                    "runtime_state": "Ready",
+                    "actions": [{"execute": "wscript.exe", "arguments": arguments}],
+                }
+            ),
+            _typed_command_result(
+                {"operation": "delete", "status": "DELETED", "task_name": module.DEFAULT_TASK_NAME}
+            ),
+            _typed_command_result(
+                {"operation": "probe", "state": "ABSENT", "task_name": module.DEFAULT_TASK_NAME}
+            ),
+        ]
+    )
+    monkeypatch.setattr(module, "_run_command", lambda _command: next(results))
+
+    lifecycle = module._remove_scheduled_task_typed(module.DEFAULT_TASK_NAME, expected_action)
+
+    assert lifecycle["status"] == "PASS"
+    assert lifecycle["stop"]["stopped_or_absent"] is True
+    assert lifecycle["delete"]["absence_proven"] is True
+    assert lifecycle["absence_proven"] is True
+
+
+def test_scheduled_task_commands_fail_closed_and_revalidate_owned_action():
+    module = load_install_pack_module()
+    expected_action = ["wscript.exe", "//B", "//NoLogo", r"C:\owned\relay.vbs"]
+
+    probe_script = decode_encoded_powershell_command(
+        module._scheduled_task_probe_command(module.DEFAULT_TASK_NAME)
+    )
+    stop_script = decode_encoded_powershell_command(
+        module._scheduled_task_stop_command(module.DEFAULT_TASK_NAME, expected_action)
+    )
+    delete_script = decode_encoded_powershell_command(
+        module._scheduled_task_delete_command(module.DEFAULT_TASK_NAME, expected_action)
+    )
+
+    assert "-ErrorAction Stop" in probe_script
+    assert "SilentlyContinue" not in probe_script + stop_script + delete_script
+    assert "TaskPath -eq '\\'" in probe_script
+    for mutation_script in (stop_script, delete_script):
+        assert "$expectedExecute = 'wscript.exe'" in mutation_script
+        assert "$expectedArguments" in mutation_script
+        assert "task action is foreign or ambiguous" in mutation_script
+        assert "Get-ScheduledTask -ErrorAction Stop" in mutation_script
+
+
+def test_typed_task_removal_does_not_treat_query_failure_as_absence(monkeypatch):
+    module = load_install_pack_module()
+    calls = []
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: calls.append(command)
+        or _typed_command_result({}, returncode=1),
+    )
+
+    lifecycle = module._remove_scheduled_task_typed(
+        module.DEFAULT_TASK_NAME, ["wscript.exe", "//B", "owned.vbs"]
+    )
+
+    assert lifecycle["status"] == "FAILED"
+    assert lifecycle["absence_proven"] is False
+    assert lifecycle["initial_probe"]["status"] == "FAILED"
+    assert len(calls) == 1
+
+
+def test_typed_task_removal_requires_successful_final_absence_probe(monkeypatch):
+    module = load_install_pack_module()
+    expected_action = ["wscript.exe", "//B", "owned.vbs"]
+    arguments = module._quote_cmd(expected_action[1:])
+    present = {
+        "operation": "probe",
+        "state": "PRESENT",
+        "task_name": module.DEFAULT_TASK_NAME,
+        "task_path": "\\",
+        "runtime_state": "Ready",
+        "actions": [{"execute": "wscript.exe", "arguments": arguments}],
+    }
+    results = iter(
+        [
+            _typed_command_result(present),
+            _typed_command_result(
+                {"operation": "stop", "status": "ALREADY_STOPPED", "task_name": module.DEFAULT_TASK_NAME}
+            ),
+            _typed_command_result(present),
+            _typed_command_result(
+                {"operation": "delete", "status": "DELETED", "task_name": module.DEFAULT_TASK_NAME}
+            ),
+            _typed_command_result({}, returncode=1),
+        ]
+    )
+    monkeypatch.setattr(module, "_run_command", lambda _command: next(results))
+
+    lifecycle = module._remove_scheduled_task_typed(
+        module.DEFAULT_TASK_NAME, expected_action
+    )
+
+    assert lifecycle["status"] == "FAILED"
+    assert lifecycle["absence_proven"] is False
+    assert "absence" in lifecycle["delete"]["blocked_reason"]
+
+
+def test_typed_task_removal_accepts_proven_initial_absence(monkeypatch):
+    module = load_install_pack_module()
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda _command: _typed_command_result(
+            {"operation": "probe", "state": "ABSENT", "task_name": module.DEFAULT_TASK_NAME}
+        ),
+    )
+
+    lifecycle = module._remove_scheduled_task_typed(
+        module.DEFAULT_TASK_NAME, ["wscript.exe", "//B", "owned.vbs"]
+    )
+
+    assert lifecycle["status"] == "PASS"
+    assert lifecycle["absence_proven"] is True
+    assert lifecycle["idempotent_absence"] is True
+
+
+def test_typed_task_removal_blocks_foreign_same_named_task_without_cleanup(monkeypatch):
+    module = load_install_pack_module()
+    calls = []
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda command: calls.append(command)
+        or _typed_command_result(
+            {
+                "operation": "probe",
+                "state": "PRESENT",
+                "task_name": module.DEFAULT_TASK_NAME,
+                "task_path": "\\",
+                "runtime_state": "Ready",
+                "actions": [{"execute": "cmd.exe", "arguments": "/c foreign"}],
+            }
+        ),
+    )
+
+    lifecycle = module._remove_scheduled_task_typed(
+        module.DEFAULT_TASK_NAME, ["wscript.exe", "//B", "owned.vbs"]
+    )
+
+    assert lifecycle["status"] == "FAILED"
+    assert "ownership" in lifecycle["blocked_reason"]
+    assert len(calls) == 1
+
+
+def test_owned_direct_sync_plan_never_classifies_scan_data_as_cleanup(tmp_path):
+    module = load_install_pack_module()
+    direct_sync = tmp_path / "direct-sync"
+    scan_data = tmp_path / "label-data"
+
+    plan = module._owned_direct_sync_change_plan(
+        direct_sync, module.DEFAULT_TASK_NAME, scan_data
+    )
+
+    safe = plan["safe_uninstall"]
+    assert safe["requires_task_absence_proven"] is True
+    assert safe["external_preserve"] == [str(scan_data.resolve())]
+    assert str(scan_data.resolve()) not in safe[
+        "remove_only_if_install_summary_proves_created_and_hash_matches"
+    ]
+    assert str(scan_data.resolve()) in plan["exact_fresh_target_rollback"][
+        "preserve_before_remove"
+    ]
+    assert plan["exact_fresh_target_rollback"]["requires_task_absence_proven"] is True
+
+
+def test_owned_direct_sync_plan_rejects_filesystem_root():
+    module = load_install_pack_module()
+    filesystem_root = Path(Path.cwd().anchor)
+
+    with pytest.raises(ValueError, match="filesystem root"):
+        module._owned_direct_sync_change_plan(
+            filesystem_root, module.DEFAULT_TASK_NAME, filesystem_root
+        )
+
+
+def test_run_command_bounds_output_without_losing_total_byte_counts():
+    module = load_install_pack_module()
+    byte_count = module.COMMAND_OUTPUT_LIMIT + 257
+
+    result = module._run_command(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; sys.stdout.write('o' * {byte_count}); sys.stderr.write('e' * {byte_count})",
+        ]
+    )
+
+    assert result["returncode"] == 0
+    assert result["stdout_bytes"] == byte_count
+    assert result["stderr_bytes"] == byte_count
+    assert result["stdout_truncated"] is True
+    assert result["stderr_truncated"] is True
+    assert len(result["stdout"].encode("utf-8")) <= module.COMMAND_OUTPUT_LIMIT
+    assert len(result["stderr"].encode("utf-8")) <= module.COMMAND_OUTPUT_LIMIT
 
 
 def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_path, monkeypatch):
