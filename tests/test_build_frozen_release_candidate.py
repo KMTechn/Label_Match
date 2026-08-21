@@ -30,6 +30,49 @@ def _source() -> str:
     return SCRIPT_PATH.read_text(encoding="utf-8")
 
 
+def _create_subst_alias(target: Path) -> tuple[str, str]:
+    if os.name != "nt":
+        pytest.skip("SUBST path identity is Windows-specific")
+    subst = shutil.which("subst.exe") or shutil.which("subst")
+    if not subst:
+        pytest.skip("subst.exe is unavailable")
+    for letter in "STUVWXYZQPNMLKJIHGF":
+        drive = f"{letter}:"
+        if Path(f"{drive}\\").exists():
+            continue
+        completed = subprocess.run(
+            [subst, drive, str(target)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode == 0:
+            return subst, drive
+    pytest.skip("No unused DOS drive letter was available for SUBST")
+
+
+def _remove_subst_alias(subst: str, drive: str) -> None:
+    completed = subprocess.run(
+        [subst, drive, "/D"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not Path(f"{drive}\\").exists()
+
+
+def _path_identity_prelude() -> str:
+    source = _source()
+    start = source.index("function Test-FullyQualifiedLocalDosPath")
+    end = source.index("function Write-NewUtf8File")
+    return source[start:end]
+
+
 def test_script_has_valid_powershell_ast():
     powershell = shutil.which("pwsh") or shutil.which("powershell")
     if not powershell:
@@ -62,13 +105,18 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     source = _source()
 
     assert "[string]$OutputRoot" in source
-    assert '[string]$Tag = "v2.0.74"' in source
+    assert '[string]$Tag = "v2.0.75"' in source
     assert "[string]$PythonPath" in source
     assert "[string]$Wheelhouse" in source
     assert "[string]$MirrorRoot" in source
-    assert "MirrorRoot must be an existing prepared local bare mirror" in source
     assert "OutputRoot must be a dedicated directory outside the release work clone and local bare mirror" in source
     assert "OutputRoot must be fresh and must not already exist" in source
+    assert "LabelMatchReleasePathIdentityV1" in source
+    assert "GetFileInformationByHandleEx" in source
+    assert "QueryDosDeviceW" in source
+    assert "Get-ProspectiveCanonicalDirectoryPath" in source
+    assert 'schema_version = "label-match-release-path-identity-v1"' in source
+    assert "filesystem_reparse_points_allowed = $false" in source
     assert '[IO.FileMode]::CreateNew' in source
     assert '$ExpectedPythonVersion = "3.12.10"' in source
     assert '$ExpectedPyInstallerVersion = "6.20.0"' in source
@@ -104,11 +152,11 @@ def test_contract_requires_exactly_once_local_tag_burner_before_builder():
     assert TAG_BURNER_PATH.is_file()
     assert burner_command in contract
     assert contract.index(burner_command) < contract.index(builder_command)
-    assert "--tag v2.0.74" in contract
+    assert "--tag v2.0.75" in contract
     assert "--expected-commit <EXACT-CANDIDATE-COMMIT>" in contract
     assert "--expected-tree <EXACT-CANDIDATE-TREE>" in contract
     assert "do not retry it" in contract
-    assert "dc59cc5e094b4a9d15b987031dad77303586ce71f4beb84ad4fac07d16b99f3b" in contract
+    assert "b7ec6cb414742449672bf41a3c16af8f4f756d8057cf94c6942423a5a630b7f0" in contract
 
 
 def test_script_runs_only_the_static_staged_installer_gate_without_elevation():
@@ -135,6 +183,11 @@ def test_script_enforces_clean_work_clone_and_exact_local_bare_mirror_topology()
     assert "Get-NormalizedLocalOriginPath" in source
     assert "Prepared clone origin must be an absolute local path or file URI" in source
     assert "Prepared release work clone origin must be the exact supplied local bare mirror" in source
+    assert '"rev-parse", "--show-toplevel"' in source
+    assert '"rev-parse", "--show-prefix"' in source
+    assert "Assert-SameReleaseDirectoryIdentity" in source
+    assert "Get-ReleaseDirectoryIdentity $localOriginPath" in source
+    assert "Get-ReleaseDirectoryIdentity $postBuildOriginPath" in source
     assert '"symbolic-ref", "--quiet", "HEAD"' in source
     assert '"HEAD^{commit}"' in source
     assert '"refs/heads/main^{commit}"' in source
@@ -225,7 +278,7 @@ def test_script_rejects_a_clean_clone_whose_origin_is_not_the_supplied_mirror(
             "-OutputRoot",
             str(output_root),
             "-Tag",
-            "v2.0.74",
+            "v2.0.75",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",
@@ -245,6 +298,365 @@ def test_script_rejects_a_clean_clone_whose_origin_is_not_the_supplied_mirror(
         "Prepared release work clone origin must be the exact supplied local bare mirror"
         in completed.stdout + completed.stderr
     )
+    assert not output_root.exists()
+
+
+def test_script_accepts_subst_worktree_and_mirror_identity_until_python_gate(tmp_path):
+    if os.name != "nt":
+        pytest.skip("SUBST path identity is Windows-specific")
+    powershell = shutil.which("pwsh")
+    git = shutil.which("git")
+    if not powershell or not git:
+        pytest.skip("PowerShell 7 and Git are required")
+
+    release_root = tmp_path / "release"
+    work_clone = release_root / "work"
+    mirror = release_root / "mirror.git"
+    wheelhouse = tmp_path / "wheelhouse"
+    fake_python = tmp_path / "fake-python.cmd"
+    temp_root = tmp_path / "temp"
+    work_clone.mkdir(parents=True)
+    wheelhouse.mkdir()
+    temp_root.mkdir()
+    fake_python.write_bytes(
+        b'@echo {"version":"0.0.0","system":"Windows","machine":"AMD64","bits":"64bit"}\r\n'
+    )
+
+    def run_git(*arguments: str, cwd: Path | None = None) -> None:
+        completed = subprocess.run(
+            [git, *arguments],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    run_git("init", "--initial-branch=main", str(work_clone))
+    copied_script = work_clone / "tools" / SCRIPT_PATH.name
+    copied_script.parent.mkdir()
+    shutil.copy2(SCRIPT_PATH, copied_script)
+    run_git("add", "tools", cwd=work_clone)
+    run_git(
+        "-c",
+        "user.name=Label Match Test",
+        "-c",
+        "user.email=label-match-test@example.invalid",
+        "commit",
+        "-m",
+        "Add builder fixture",
+        cwd=work_clone,
+    )
+    run_git("init", "--bare", str(mirror))
+    run_git("remote", "add", "origin", str(mirror.resolve()), cwd=work_clone)
+    run_git("push", "-u", "origin", "main", cwd=work_clone)
+    run_git(
+        "-c",
+        "user.name=Label Match Test",
+        "-c",
+        "user.email=label-match-test@example.invalid",
+        "tag",
+        "-a",
+        "v9.9.9",
+        "-m",
+        "Release v9.9.9",
+        cwd=work_clone,
+    )
+    run_git("push", "origin", "refs/tags/v9.9.9", cwd=work_clone)
+    run_git(
+        "fetch",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+        cwd=work_clone,
+    )
+
+    subst, drive = _create_subst_alias(release_root)
+    try:
+        alias_script = Path(f"{drive}\\work\\tools\\{SCRIPT_PATH.name}")
+        alias_mirror = Path(f"{drive}\\mirror.git")
+        alias_output = Path(f"{drive}\\candidate-output")
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                str(alias_script),
+                "-OutputRoot",
+                str(alias_output),
+                "-Tag",
+                "v9.9.9",
+                "-PythonPath",
+                str(fake_python),
+                "-Wheelhouse",
+                str(wheelhouse),
+                "-MirrorRoot",
+                str(alias_mirror),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "TEMP": str(temp_root), "TMP": str(temp_root)},
+        )
+
+        combined = completed.stdout + completed.stderr
+        assert completed.returncode != 0
+        assert "Release Python must be exact Windows x64 CPython 3.12.10" in combined
+        assert "exact isolated release work clone root" not in combined
+        assert "exact supplied local bare mirror" not in combined
+        assert not (release_root / "candidate-output").exists()
+    finally:
+        _remove_subst_alias(subst, drive)
+
+
+def test_path_identity_rejects_different_directory_and_reparse_alias(tmp_path):
+    if os.name != "nt":
+        pytest.skip("Win32 directory identity is Windows-specific")
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    cmd = shutil.which("cmd.exe") or shutil.which("cmd")
+    if not powershell or not cmd:
+        pytest.skip("PowerShell and cmd.exe are required")
+
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    junction = tmp_path / "junction"
+    temp_root = tmp_path / "temp"
+    left.mkdir()
+    right.mkdir()
+    temp_root.mkdir()
+    linked = subprocess.run(
+        [cmd, "/d", "/c", "mklink", "/J", str(junction), str(left)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert linked.returncode == 0, linked.stderr
+
+    mismatch_probe = tmp_path / "different-identity.ps1"
+    mismatch_probe.write_text(
+        _path_identity_prelude()
+        + "\n$left = Get-ReleaseDirectoryIdentity $env:LEFT_PATH 'left path'\n"
+        + "$right = Get-ReleaseDirectoryIdentity $env:RIGHT_PATH 'right path'\n"
+        + "Assert-SameReleaseDirectoryIdentity $left $right 'DIFFERENT_DIRECTORY_REJECTED'\n",
+        encoding="utf-8",
+    )
+    mismatch = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-File", str(mismatch_probe)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={
+            **os.environ,
+            "LEFT_PATH": str(left),
+            "RIGHT_PATH": str(right),
+            "TEMP": str(temp_root),
+            "TMP": str(temp_root),
+        },
+    )
+    assert mismatch.returncode != 0
+    assert "DIFFERENT_DIRECTORY_REJECTED" in mismatch.stdout + mismatch.stderr
+
+    reparse_probe = tmp_path / "reparse-identity.ps1"
+    reparse_probe.write_text(
+        _path_identity_prelude()
+        + "\n[void](Get-ReleaseDirectoryIdentity $env:REPARSE_PATH 'reparse path')\n",
+        encoding="utf-8",
+    )
+    reparse = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-File", str(reparse_probe)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={
+            **os.environ,
+            "REPARSE_PATH": str(junction),
+            "TEMP": str(temp_root),
+            "TMP": str(temp_root),
+        },
+    )
+    assert reparse.returncode != 0
+    assert "crosses a filesystem reparse point" in reparse.stdout + reparse.stderr
+    junction.rmdir()
+    assert left.is_dir()
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    (r"relative\path", r"C:drive-relative", r"\\server\share", r"\\?\C:\device"),
+)
+def test_path_identity_rejects_nonlocal_or_nonqualified_paths(tmp_path, bad_path):
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if not powershell:
+        pytest.skip("PowerShell is required")
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    probe = tmp_path / "invalid-path.ps1"
+    probe.write_text(
+        _path_identity_prelude()
+        + "\n[void](ConvertTo-NormalizedDirectoryPath $env:BAD_PATH 'bad path')\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-File", str(probe)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={
+            **os.environ,
+            "BAD_PATH": bad_path,
+            "TEMP": str(temp_root),
+            "TMP": str(temp_root),
+        },
+    )
+    assert completed.returncode != 0
+    assert "must be a fully qualified local directory path" in (
+        completed.stdout + completed.stderr
+    )
+
+
+def test_script_rejects_alias_output_that_physically_enters_worktree(tmp_path):
+    if os.name != "nt":
+        pytest.skip("SUBST path identity is Windows-specific")
+    powershell = shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell 7 is required")
+
+    work_clone = tmp_path / "work"
+    mirror = tmp_path / "mirror.git"
+    wheelhouse = tmp_path / "wheelhouse"
+    temp_root = tmp_path / "temp"
+    copied_script = work_clone / "tools" / SCRIPT_PATH.name
+    copied_script.parent.mkdir(parents=True)
+    shutil.copy2(SCRIPT_PATH, copied_script)
+    mirror.mkdir()
+    wheelhouse.mkdir()
+    temp_root.mkdir()
+
+    subst, drive = _create_subst_alias(work_clone)
+    try:
+        alias_output = Path(f"{drive}\\ignored\\candidate")
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                str(copied_script),
+                "-OutputRoot",
+                str(alias_output),
+                "-Tag",
+                "v9.9.9",
+                "-PythonPath",
+                sys.executable,
+                "-Wheelhouse",
+                str(wheelhouse),
+                "-MirrorRoot",
+                str(mirror),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "TEMP": str(temp_root), "TMP": str(temp_root)},
+        )
+
+        assert completed.returncode != 0
+        assert "OutputRoot must be a dedicated directory outside" in (
+            completed.stdout + completed.stderr
+        )
+        assert not (work_clone / "ignored" / "candidate").exists()
+    finally:
+        _remove_subst_alias(subst, drive)
+
+
+def test_script_rejects_changed_tracked_bytes_before_output_creation(tmp_path):
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    git = shutil.which("git")
+    if not powershell or not git:
+        pytest.skip("PowerShell and Git are required")
+
+    work_clone = tmp_path / "work"
+    mirror = tmp_path / "mirror.git"
+    wheelhouse = tmp_path / "wheelhouse"
+    output_root = tmp_path / "candidate-output"
+    temp_root = tmp_path / "temp"
+    work_clone.mkdir()
+    wheelhouse.mkdir()
+    temp_root.mkdir()
+
+    def run_git(*arguments: str, cwd: Path | None = None) -> None:
+        completed = subprocess.run(
+            [git, *arguments],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    run_git("init", "--initial-branch=main", str(work_clone))
+    copied_script = work_clone / "tools" / SCRIPT_PATH.name
+    copied_script.parent.mkdir()
+    shutil.copy2(SCRIPT_PATH, copied_script)
+    sentinel = work_clone / "tracked-sentinel.txt"
+    sentinel.write_text("reviewed bytes\n", encoding="utf-8")
+    run_git("add", "tools", "tracked-sentinel.txt", cwd=work_clone)
+    run_git(
+        "-c",
+        "user.name=Label Match Test",
+        "-c",
+        "user.email=label-match-test@example.invalid",
+        "commit",
+        "-m",
+        "Add clean builder fixture",
+        cwd=work_clone,
+    )
+    run_git("init", "--bare", str(mirror))
+    sentinel.write_text("changed bytes\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(copied_script),
+            "-OutputRoot",
+            str(output_root),
+            "-Tag",
+            "v9.9.9",
+            "-PythonPath",
+            sys.executable,
+            "-Wheelhouse",
+            str(wheelhouse),
+            "-MirrorRoot",
+            str(mirror),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "TEMP": str(temp_root), "TMP": str(temp_root)},
+    )
+
+    assert completed.returncode != 0
+    assert "must be clean before the one-shot build" in completed.stdout + completed.stderr
     assert not output_root.exists()
 
 
@@ -308,6 +720,8 @@ def test_script_emits_preserved_pre_push_receipt_without_tag_recreation_cycle():
         assert suffix in source
     assert 'canonical_tag_message = "Release $Tag"' in source
     assert 'schema_version = "label-match-pre-push-qualification-v2"' in source
+    assert 'schema_version = "label-match-release-path-identity-v1"' in source
+    assert "revalidated_after_build = $true" in source
     assert 'phase = "phase_b_pre_push_frozen_candidate"' in source
     assert "tag_recorded_before_release_identity_and_build = $true" in source
     assert "tag_object = $finalTagObject" in source

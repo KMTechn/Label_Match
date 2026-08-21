@@ -105,7 +105,7 @@ entrypoint dry run and is classified `STATIC_ISOLATED_DRY_RUN`; it must state
 ordinary-operator launcher, live task, data-preserving uninstall, or exact
 rollback qualification run.
 
-### Frozen-byte publication sequence (v2.0.74 current candidate)
+### Frozen-byte publication sequence (v2.0.75 current candidate)
 
 The initial elevated v2.0.67 infrastructure cohort at
 `E:\KMTech\label-v2067-daa3-phase83-elevated-20260812` failed before
@@ -273,8 +273,31 @@ records invocation count 1 and `retry_allowed=false`, and produced the frozen
 The preserved PASS Phase-B qualification receipt SHA-256 is
 `297d6debf923f922195224ed809d838247ddf650cd9eb52f3a0234e2019b3aa6`.
 Those exact bytes remain immutable quarantined history; do not rerun, rebuild,
-recreate, retarget, reuse, or promote them as this changed source. The active
-successor is v2.0.74.
+recreate, retarget, reuse, or promote them as this changed source. The successor
+selected after that release was v2.0.74.
+
+On 2026-08-21 the sole v2.0.74 annotated tag object
+`5ec3134554948ce127c5255830fde73b2f84f490`, for commit
+`800d37bd38807c364335d47d3ce94f7af9d8c4a6` and tree
+`9c1059301f0b87e877b6066037031a880c80ce41`, was created with the exact
+16-byte `Release v2.0.74\n` message (SHA-256
+`dc59cc5e094b4a9d15b987031dad77303586ce71f4beb84ad4fac07d16b99f3b`)
+and pushed only to its isolated local mirror. The PASS exactly-once tag-burn
+receipt SHA-256 is
+`8d3c00d1cf031ac5cc4dacac9f3773b23c4776b4bb47457d65e732d56b679b06`.
+The sole builder invocation recorded invocation count 1 and
+`retry_allowed=false`, then exited 1 before OutputRoot creation because the
+approved short `R:\release\work` spelling and Git's canonical physical
+`E:\KMTech\label-match-v2074-successor-20260821\release\work` spelling were
+compared as text instead of as one directory identity. The builder log SHA-256
+is `4870ec4c74ffcd00e89e01da40a4f19153464cd008acd3d0509b95517df9138b`
+and the failure receipt SHA-256 is
+`bca4e78cc36fdbc58704a8826ce751a63a388c851a7f57845c5ea93e4b8e004d`.
+No ZIP, checksum, archive report, or Phase-B receipt was produced. Preserve
+`E:\KMTech\label-match-v2074-successor-20260821`, its work clone, mirror, tag,
+receipts, and logs as immutable quarantined history: do not retry, rebuild,
+delete, recreate, retarget, reuse, or promote them. The active successor is
+v2.0.75.
 
 The governing order is Phase B/8.3, then Phase C/9, then Phase D/10. GitHub
 Actions is not a release gate and cannot replace the local exact-SHA gates.
@@ -287,6 +310,14 @@ Actions is not a release gate and cannot replace the local exact-SHA gates.
    out, and work-clone `HEAD`, `refs/heads/main`,
    `refs/remotes/origin/main`, plus mirror `refs/heads/main` must all resolve to
    the exact candidate commit. A GitHub/HTTPS origin is not accepted here.
+   All builder paths must be fully qualified local DOS-drive paths with no
+   filesystem reparse component. A single short `SUBST` spelling is allowed
+   only when its backing path resolves to a local disk and Win32 directory
+   handles prove the same volume serial number and 128-bit file ID as the
+   canonical physical path. The builder retains the short operational spelling
+   for build tools, rejects different identities and nested/remote aliases,
+   proves prospective fresh-output containment through its nearest existing
+   parent, and reopens every protected directory identity after the build.
 3. Create the one final intended annotated tag object in that isolated local
    mirror environment before release identity generation or build, and prepare
    the work clone with that identical tag object. The only authorized creation
@@ -297,7 +328,7 @@ python -I .\tools\burn_local_release_tag_once.py `
   --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
   --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
   --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
-  --tag v2.0.74 `
+  --tag v2.0.75 `
   --expected-commit <EXACT-CANDIDATE-COMMIT> `
   --expected-tree <EXACT-CANDIDATE-TREE>
 ```
@@ -309,22 +340,22 @@ python -I .\tools\burn_local_release_tag_once.py `
    LF):
 
 ```text
-Release v2.0.74
+Release v2.0.75
 ```
 
    Those 16 canonical bytes have SHA-256
-   `dc59cc5e094b4a9d15b987031dad77303586ce71f4beb84ad4fac07d16b99f3b`.
+   `b7ec6cb414742449672bf41a3c16af8f4f756d8057cf94c6942423a5a630b7f0`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.74`, report type
+   bare mirror must expose that exact object as `refs/tags/v2.0.75`, report type
    `tag`, and peel it to the candidate commit. Run the builder from the release
    work-clone root with fresh output and the offline wheelhouse:
 
 ```powershell
 pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.74 `
+  -Tag v2.0.75 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
   -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR>
@@ -364,16 +395,16 @@ pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.74`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.75`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.74
+Tag: v2.0.75
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.74.zip
+Artifact: Label_Match-v2.0.75.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -384,7 +415,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.74 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.75 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires

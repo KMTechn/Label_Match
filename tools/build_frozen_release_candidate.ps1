@@ -4,7 +4,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.74",
+    [string]$Tag = "v2.0.75",
 
     [string]$PythonPath = "",
 
@@ -48,15 +48,400 @@ function Get-GitValueAt {
     return (([string[]]$value) -join "`n").Trim()
 }
 
+function Test-FullyQualifiedLocalDosPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (
+        -not [string]::IsNullOrWhiteSpace($Path) -and
+        $Path -cmatch '^[A-Za-z]:[\\/]'
+    )
+}
+
 function Get-NormalizedLocalOriginPath {
     param([Parameter(Mandatory = $true)][string]$RemoteUrl)
     if ($RemoteUrl.StartsWith("file://", [StringComparison]::OrdinalIgnoreCase)) {
-        return [IO.Path]::GetFullPath(([Uri]$RemoteUrl).LocalPath).TrimEnd([char[]]"\/")
+        $localPath = ([Uri]$RemoteUrl).LocalPath
+        if (-not (Test-FullyQualifiedLocalDosPath $localPath)) {
+            throw "Prepared clone origin file URI must resolve to a fully qualified local path."
+        }
+        return [IO.Path]::GetFullPath($localPath).TrimEnd([char[]]"\/")
     }
-    if (-not [IO.Path]::IsPathRooted($RemoteUrl)) {
+    if (-not (Test-FullyQualifiedLocalDosPath $RemoteUrl)) {
         throw "Prepared clone origin must be an absolute local path or file URI."
     }
     return [IO.Path]::GetFullPath($RemoteUrl).TrimEnd([char[]]"\/")
+}
+
+if (-not ("LabelMatchReleasePathIdentityV1" -as [type])) {
+    Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class LabelMatchDirectoryIdentityV1
+{
+    public string FinalPath { get; private set; }
+    public ulong VolumeSerialNumber { get; private set; }
+    public string FileId { get; private set; }
+
+    public LabelMatchDirectoryIdentityV1(string finalPath, ulong volumeSerialNumber, string fileId)
+    {
+        FinalPath = finalPath;
+        VolumeSerialNumber = volumeSerialNumber;
+        FileId = fileId;
+    }
+}
+
+public static class LabelMatchReleasePathIdentityV1
+{
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint FILE_SHARE_DELETE = 0x00000004;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    private const int FILE_ID_INFO_CLASS = 18;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILE_ID_128
+    {
+        public ulong Low;
+        public ulong High;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILE_ID_INFO
+    {
+        public ulong VolumeSerialNumber;
+        public FILE_ID_128 FileId;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle file,
+        int fileInformationClass,
+        out FILE_ID_INFO fileInformation,
+        uint bufferSize
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(
+        SafeFileHandle file,
+        StringBuilder filePath,
+        uint filePathLength,
+        uint flags
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint QueryDosDeviceW(
+        string deviceName,
+        StringBuilder targetPath,
+        int maximumLength
+    );
+
+    private static string GetFinalPath(SafeFileHandle handle)
+    {
+        int capacity = 1024;
+        while (capacity <= 32768)
+        {
+            StringBuilder buffer = new StringBuilder(capacity);
+            uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFinalPathNameByHandleW failed.");
+            }
+            if (length < buffer.Capacity)
+            {
+                string value = buffer.ToString();
+                if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+                {
+                    return @"\\" + value.Substring(8);
+                }
+                if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                {
+                    return value.Substring(4);
+                }
+                throw new InvalidOperationException("Directory handle did not return a canonical DOS or UNC path.");
+            }
+            capacity = checked((int)length + 1);
+        }
+        throw new InvalidOperationException("Canonical directory path exceeded the supported bound.");
+    }
+
+    public static LabelMatchDirectoryIdentityV1 OpenDirectory(string path)
+    {
+        using (SafeFileHandle handle = CreateFileW(
+            path,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            IntPtr.Zero
+        ))
+        {
+            if (handle.IsInvalid)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to open release directory identity.");
+            }
+            FILE_ID_INFO identity;
+            if (!GetFileInformationByHandleEx(
+                handle,
+                FILE_ID_INFO_CLASS,
+                out identity,
+                (uint)Marshal.SizeOf(typeof(FILE_ID_INFO))
+            ))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandleEx(FileIdInfo) failed.");
+            }
+            string fileId = identity.FileId.High.ToString("x16") + identity.FileId.Low.ToString("x16");
+            return new LabelMatchDirectoryIdentityV1(
+                GetFinalPath(handle),
+                identity.VolumeSerialNumber,
+                fileId
+            );
+        }
+    }
+
+    public static string QueryDosDeviceTarget(string deviceName)
+    {
+        StringBuilder buffer = new StringBuilder(32768);
+        uint length = QueryDosDeviceW(deviceName, buffer, buffer.Capacity);
+        if (length == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryDosDeviceW failed.");
+        }
+        return buffer.ToString();
+    }
+}
+'@
+}
+
+function ConvertTo-NormalizedDirectoryPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if (-not (Test-FullyQualifiedLocalDosPath $Path)) {
+        throw "$Label must be a fully qualified local directory path."
+    }
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if ($fullPath.Substring(2).Contains(':')) {
+        throw "$Label must not use an alternate data stream."
+    }
+    $root = [IO.Path]::GetPathRoot($fullPath)
+    if ($root -cnotmatch '^[A-Za-z]:\\$') {
+        throw "$Label must use a local DOS drive path."
+    }
+    $trimmed = $fullPath.TrimEnd([char[]]"\/")
+    if ($trimmed.Length -eq 2 -and $trimmed[1] -eq ':') {
+        return $root
+    }
+    return $trimmed
+}
+
+function Assert-NoReparseFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $fullPath = ConvertTo-NormalizedDirectoryPath $Path $Label
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "$Label must be an existing file: $fullPath"
+    }
+    $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label must not be a filesystem reparse point: $fullPath"
+    }
+    [void](Assert-NoReparseDirectoryPath ([IO.Path]::GetDirectoryName($fullPath)) "$Label parent path")
+    return $fullPath
+}
+
+function Assert-NoReparseDirectoryPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $fullPath = ConvertTo-NormalizedDirectoryPath $Path $Label
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+        throw "$Label must be an existing directory: $fullPath"
+    }
+    $cursor = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    while ($null -ne $cursor) {
+        if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label crosses a filesystem reparse point: $($cursor.FullName)"
+        }
+        $cursor = $cursor.Parent
+    }
+    return $fullPath
+}
+
+function Get-SubstBackingDirectoryPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $fullPath = ConvertTo-NormalizedDirectoryPath $Path $Label
+    $root = [IO.Path]::GetPathRoot($fullPath)
+    $deviceName = $root.Substring(0, 2)
+    $deviceTarget = [LabelMatchReleasePathIdentityV1]::QueryDosDeviceTarget($deviceName)
+    if ($deviceTarget.StartsWith('\??\', [StringComparison]::OrdinalIgnoreCase)) {
+        $backingRoot = $deviceTarget.Substring(4)
+        if (-not (Test-FullyQualifiedLocalDosPath $backingRoot)) {
+            throw "$Label uses an unsupported DOS-device alias."
+        }
+        $backingDrive = [IO.Path]::GetPathRoot($backingRoot)
+        if ($backingDrive -cnotmatch '^[A-Za-z]:\\$') {
+            throw "$Label SUBST alias must target a local DOS drive path."
+        }
+        $backingDevice = [LabelMatchReleasePathIdentityV1]::QueryDosDeviceTarget($backingDrive.Substring(0, 2))
+        if ($backingDevice.StartsWith('\??\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Label uses a nested DOS-device alias, which is not allowed."
+        }
+        if (-not $backingDevice.StartsWith('\Device\HarddiskVolume', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Label SUBST alias must resolve to a local disk volume."
+        }
+        $suffix = $fullPath.Substring($root.Length)
+        return ConvertTo-NormalizedDirectoryPath (Join-Path $backingRoot $suffix) "$Label SUBST backing path"
+    }
+    if (-not $deviceTarget.StartsWith('\Device\HarddiskVolume', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label must resolve to a local disk volume."
+    }
+    return $null
+}
+
+function Get-ReleaseDirectoryIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $fullPath = Assert-NoReparseDirectoryPath $Path $Label
+    $nativeIdentity = [LabelMatchReleasePathIdentityV1]::OpenDirectory($fullPath)
+    $canonicalPath = ConvertTo-NormalizedDirectoryPath $nativeIdentity.FinalPath "$Label canonical path"
+    [void](Assert-NoReparseDirectoryPath $canonicalPath "$Label canonical path")
+
+    $backingPath = Get-SubstBackingDirectoryPath $fullPath $Label
+    if ($null -ne $backingPath) {
+        [void](Assert-NoReparseDirectoryPath $backingPath "$Label SUBST backing path")
+        $backingIdentity = [LabelMatchReleasePathIdentityV1]::OpenDirectory($backingPath)
+        if (
+            $backingIdentity.VolumeSerialNumber -ne $nativeIdentity.VolumeSerialNumber -or
+            $backingIdentity.FileId -cne $nativeIdentity.FileId
+        ) {
+            throw "$Label SUBST mapping changed during directory identity verification."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        path = $fullPath
+        canonical_path = $canonicalPath
+        volume_serial_number = [UInt64]$nativeIdentity.VolumeSerialNumber
+        file_id = [string]$nativeIdentity.FileId
+        subst_backing_path = $backingPath
+    }
+}
+
+function Test-SameReleaseDirectoryIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Left,
+        [Parameter(Mandatory = $true)]$Right
+    )
+    return (
+        [UInt64]$Left.volume_serial_number -eq [UInt64]$Right.volume_serial_number -and
+        [string]$Left.file_id -ceq [string]$Right.file_id
+    )
+}
+
+function Assert-SameReleaseDirectoryIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Left,
+        [Parameter(Mandatory = $true)]$Right,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+    if (-not (Test-SameReleaseDirectoryIdentity $Left $Right)) {
+        throw $Message
+    }
+}
+
+function Test-CanonicalPathSameOrInside {
+    param(
+        [Parameter(Mandatory = $true)][string]$Candidate,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+    $candidatePath = ConvertTo-NormalizedDirectoryPath $Candidate "candidate canonical path"
+    $rootPath = ConvertTo-NormalizedDirectoryPath $Root "root canonical path"
+    if ($candidatePath.Equals($rootPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    $rootPrefix = $rootPath.TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
+    return $candidatePath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-CanonicalDirectoryOverlap {
+    param(
+        [Parameter(Mandatory = $true)][string]$Left,
+        [Parameter(Mandatory = $true)][string]$Right
+    )
+    return (
+        (Test-CanonicalPathSameOrInside $Left $Right) -or
+        (Test-CanonicalPathSameOrInside $Right $Left)
+    )
+}
+
+function Get-ProspectiveCanonicalDirectoryPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $fullPath = ConvertTo-NormalizedDirectoryPath $Path $Label
+    $missingNames = [Collections.Generic.List[string]]::new()
+    $cursor = $fullPath
+    while (-not (Test-Path -LiteralPath $cursor)) {
+        $name = [IO.Path]::GetFileName($cursor)
+        if (
+            [string]::IsNullOrWhiteSpace($name) -or
+            $name -in @('.', '..') -or
+            $name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+            $name.TrimEnd([char[]]' .') -cne $name
+        ) {
+            throw "$Label contains an unsafe missing directory name."
+        }
+        $missingNames.Insert(0, $name)
+        $parent = [IO.Path]::GetDirectoryName($cursor)
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $cursor) {
+            throw "$Label has no existing local directory ancestor."
+        }
+        $cursor = $parent
+    }
+    $ancestorIdentity = Get-ReleaseDirectoryIdentity $cursor "$Label nearest existing ancestor"
+    $canonicalPath = [string]$ancestorIdentity.canonical_path
+    foreach ($name in $missingNames) {
+        $canonicalPath = Join-Path $canonicalPath $name
+    }
+    return ConvertTo-NormalizedDirectoryPath $canonicalPath "$Label prospective canonical path"
+}
+
+function ConvertTo-ReleaseDirectoryIdentityRecord {
+    param([Parameter(Mandatory = $true)]$Identity)
+    return [ordered]@{
+        operational_path = [string]$Identity.path
+        canonical_path = [string]$Identity.canonical_path
+        volume_serial_number_hex = ('{0:x16}' -f [UInt64]$Identity.volume_serial_number)
+        file_id = [string]$Identity.file_id
+        subst_backing_path = $Identity.subst_backing_path
+    }
 }
 
 function Write-NewUtf8File {
@@ -160,46 +545,44 @@ function Invoke-OneFileBuild {
     Assert-LastExitCode "PyInstaller build for $Name"
 }
 
-$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..")).TrimEnd([char[]]"\/")
-$mirrorRoot = [IO.Path]::GetFullPath($MirrorRoot).TrimEnd([char[]]"\/")
+$repoRoot = ConvertTo-NormalizedDirectoryPath (Join-Path $PSScriptRoot "..") "release work clone"
+$mirrorRoot = ConvertTo-NormalizedDirectoryPath $MirrorRoot "MirrorRoot"
 $originalLocation = (Get-Location).Path
-$repoPrefix = $repoRoot + [IO.Path]::DirectorySeparatorChar
-$mirrorPrefix = $mirrorRoot + [IO.Path]::DirectorySeparatorChar
-$resolvedOutputRoot = [IO.Path]::GetFullPath($OutputRoot).TrimEnd([char[]]"\/")
-$resolvedOutputPrefix = $resolvedOutputRoot + [IO.Path]::DirectorySeparatorChar
-$outputDriveRoot = [IO.Path]::GetPathRoot($resolvedOutputRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
-if (-not (Test-Path -LiteralPath $mirrorRoot -PathType Container)) {
-    throw "MirrorRoot must be an existing prepared local bare mirror."
-}
-if ($repoRoot.Equals($mirrorRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "The release work clone and local bare mirror must be isolated paths."
-}
-if (
-    $resolvedOutputRoot -ceq "" -or
-    $resolvedOutputRoot.Equals($outputDriveRoot, [StringComparison]::OrdinalIgnoreCase) -or
-    $resolvedOutputRoot.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
-    $resolvedOutputRoot.Equals($mirrorRoot, [StringComparison]::OrdinalIgnoreCase) -or
-    $resolvedOutputPrefix.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-    $resolvedOutputPrefix.StartsWith($mirrorPrefix, [StringComparison]::OrdinalIgnoreCase)
-) {
+$resolvedOutputRoot = ConvertTo-NormalizedDirectoryPath $OutputRoot "OutputRoot"
+$resolvedWheelhouse = ConvertTo-NormalizedDirectoryPath $Wheelhouse "Wheelhouse"
+$outputDriveRoot = [IO.Path]::GetPathRoot($resolvedOutputRoot)
+if ($resolvedOutputRoot.Equals($outputDriveRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "OutputRoot must be a dedicated directory outside the release work clone and local bare mirror: $resolvedOutputRoot"
 }
 if (Test-Path -LiteralPath $resolvedOutputRoot) {
     throw "OutputRoot must be fresh and must not already exist: $resolvedOutputRoot"
 }
-$resolvedWheelhouse = [IO.Path]::GetFullPath($Wheelhouse)
-if (-not (Test-Path -LiteralPath $resolvedWheelhouse -PathType Container)) {
-    throw "The offline wheelhouse is missing: $resolvedWheelhouse"
+$repoIdentity = Get-ReleaseDirectoryIdentity $repoRoot "release work clone"
+$mirrorIdentity = Get-ReleaseDirectoryIdentity $mirrorRoot "MirrorRoot"
+$wheelhouseIdentity = Get-ReleaseDirectoryIdentity $resolvedWheelhouse "Wheelhouse"
+if (
+    (Test-SameReleaseDirectoryIdentity $repoIdentity $mirrorIdentity) -or
+    (Test-CanonicalDirectoryOverlap $repoIdentity.canonical_path $mirrorIdentity.canonical_path)
+) {
+    throw "The release work clone and local bare mirror must be isolated directories."
+}
+foreach ($protectedIdentity in @($repoIdentity, $mirrorIdentity)) {
+    if (Test-CanonicalDirectoryOverlap $wheelhouseIdentity.canonical_path $protectedIdentity.canonical_path) {
+        throw "Wheelhouse must be a dedicated directory outside the release work clone and local bare mirror."
+    }
+}
+$prospectiveOutputCanonicalPath = Get-ProspectiveCanonicalDirectoryPath $resolvedOutputRoot "OutputRoot"
+foreach ($protectedIdentity in @($repoIdentity, $mirrorIdentity, $wheelhouseIdentity)) {
+    if (Test-CanonicalDirectoryOverlap $prospectiveOutputCanonicalPath $protectedIdentity.canonical_path) {
+        throw "OutputRoot must be a dedicated directory outside the release work clone, local bare mirror, and Wheelhouse: $resolvedOutputRoot"
+    }
 }
 if ([string]::IsNullOrWhiteSpace($PythonPath)) {
     $pythonCommand = Get-Command python.exe -CommandType Application -ErrorAction Stop
-    $resolvedPython = [IO.Path]::GetFullPath($pythonCommand.Source)
+    $resolvedPython = Assert-NoReparseFilePath $pythonCommand.Source "PythonPath"
 }
 else {
-    $resolvedPython = [IO.Path]::GetFullPath($PythonPath)
-}
-if (-not (Test-Path -LiteralPath $resolvedPython -PathType Leaf)) {
-    throw "PythonPath is not an executable file: $resolvedPython"
+    $resolvedPython = Assert-NoReparseFilePath $PythonPath "PythonPath"
 }
 Set-Location -LiteralPath $repoRoot
 try {
@@ -213,11 +596,17 @@ $workCloneIsBare = Get-GitValueAt -Repository $repoRoot -Arguments @(
 if ($insideWorkTree -cne "true" -or $workCloneIsBare -cne "false") {
     throw "The builder must run from a non-bare isolated release work clone."
 }
-$worktreeTop = [IO.Path]::GetFullPath(
-    (Get-GitValueAt -Repository $repoRoot -Arguments @("rev-parse", "--show-toplevel"))
-).TrimEnd([char[]]"\/")
-if ($worktreeTop -cne $repoRoot) {
-    throw "The builder script must belong to the isolated release work clone root."
+$worktreeTop = ConvertTo-NormalizedDirectoryPath (
+    Get-GitValueAt -Repository $repoRoot -Arguments @("rev-parse", "--show-toplevel")
+) "Git worktree top"
+$worktreeIdentity = Get-ReleaseDirectoryIdentity $worktreeTop "Git worktree top"
+Assert-SameReleaseDirectoryIdentity `
+    $repoIdentity `
+    $worktreeIdentity `
+    "The builder script must belong to the exact isolated release work clone root."
+$worktreePrefix = Get-GitValueAt -Repository $repoRoot -Arguments @("rev-parse", "--show-prefix")
+if (-not [string]::IsNullOrEmpty($worktreePrefix)) {
+    throw "The builder script must run at the isolated release work clone root."
 }
 if (
     (Get-GitValueAt -Repository $mirrorRoot -Arguments @(
@@ -242,7 +631,8 @@ $originUrl = Get-GitValueAt -Repository $repoRoot -Arguments @(
     "remote", "get-url", "origin"
 )
 $localOriginPath = Get-NormalizedLocalOriginPath -RemoteUrl $originUrl
-if ($localOriginPath -cne $mirrorRoot) {
+$originIdentity = Get-ReleaseDirectoryIdentity $localOriginPath "prepared clone origin"
+if (-not (Test-SameReleaseDirectoryIdentity $originIdentity $mirrorIdentity)) {
     throw "Prepared release work clone origin must be the exact supplied local bare mirror."
 }
 $headCommit = (Get-GitValueAt -Repository $repoRoot -Arguments @(
@@ -328,6 +718,21 @@ $builtAtUtc = [DateTimeOffset]::FromUnixTimeSeconds($sourceEpoch).UtcDateTime.To
 )
 
 [IO.Directory]::CreateDirectory($resolvedOutputRoot) | Out-Null
+$outputIdentity = Get-ReleaseDirectoryIdentity $resolvedOutputRoot "created OutputRoot"
+if (-not $outputIdentity.canonical_path.Equals(
+    $prospectiveOutputCanonicalPath,
+    [StringComparison]::OrdinalIgnoreCase
+)) {
+    throw "Created OutputRoot does not match its fail-closed prospective directory identity."
+}
+foreach ($protectedIdentity in @($repoIdentity, $mirrorIdentity, $wheelhouseIdentity)) {
+    if (
+        (Test-SameReleaseDirectoryIdentity $outputIdentity $protectedIdentity) -or
+        (Test-CanonicalDirectoryOverlap $outputIdentity.canonical_path $protectedIdentity.canonical_path)
+    ) {
+        throw "Created OutputRoot overlaps a protected release input directory."
+    }
+}
 $tagIdentityPath = Join-Path $resolvedOutputRoot "Label_Match-$Tag.final-tag-identity.json"
 & $resolvedPython -I -S (Join-Path $repoRoot "tools\verify_release_tag_attestation.py") `
     --repo-root $repoRoot `
@@ -705,6 +1110,26 @@ if (
 ) {
     throw "Frozen ZIP/checksum bytes changed after archive qualification."
 }
+$postBuildRepoIdentity = Get-ReleaseDirectoryIdentity $repoRoot "post-build release work clone"
+$postBuildMirrorIdentity = Get-ReleaseDirectoryIdentity $mirrorRoot "post-build MirrorRoot"
+$postBuildWheelhouseIdentity = Get-ReleaseDirectoryIdentity $resolvedWheelhouse "post-build Wheelhouse"
+$postBuildOutputIdentity = Get-ReleaseDirectoryIdentity $resolvedOutputRoot "post-build OutputRoot"
+Assert-SameReleaseDirectoryIdentity $repoIdentity $postBuildRepoIdentity "Release work clone directory identity changed during qualification."
+Assert-SameReleaseDirectoryIdentity $mirrorIdentity $postBuildMirrorIdentity "MirrorRoot directory identity changed during qualification."
+Assert-SameReleaseDirectoryIdentity $wheelhouseIdentity $postBuildWheelhouseIdentity "Wheelhouse directory identity changed during qualification."
+Assert-SameReleaseDirectoryIdentity $outputIdentity $postBuildOutputIdentity "OutputRoot directory identity changed during qualification."
+$postBuildWorktreeTop = ConvertTo-NormalizedDirectoryPath (
+    Get-GitValueAt -Repository $repoRoot -Arguments @("rev-parse", "--show-toplevel")
+) "post-build Git worktree top"
+$postBuildWorktreeIdentity = Get-ReleaseDirectoryIdentity $postBuildWorktreeTop "post-build Git worktree top"
+Assert-SameReleaseDirectoryIdentity `
+    $postBuildRepoIdentity `
+    $postBuildWorktreeIdentity `
+    "Git worktree top directory identity changed during qualification."
+$postBuildWorktreePrefix = Get-GitValueAt -Repository $repoRoot -Arguments @("rev-parse", "--show-prefix")
+if (-not [string]::IsNullOrEmpty($postBuildWorktreePrefix)) {
+    throw "Git worktree prefix changed during qualification."
+}
 $postBuildHead = (Get-GitValueAt -Repository $repoRoot -Arguments @(
     "rev-parse", "--verify", "HEAD^{commit}"
 )).ToLowerInvariant()
@@ -726,6 +1151,11 @@ $postBuildMirrorMain = (Get-GitValueAt -Repository $mirrorRoot -Arguments @(
 $postBuildOriginPath = Get-NormalizedLocalOriginPath -RemoteUrl (
     Get-GitValueAt -Repository $repoRoot -Arguments @("remote", "get-url", "origin")
 )
+$postBuildOriginIdentity = Get-ReleaseDirectoryIdentity $postBuildOriginPath "post-build prepared clone origin"
+Assert-SameReleaseDirectoryIdentity `
+    $postBuildMirrorIdentity `
+    $postBuildOriginIdentity `
+    "Prepared clone origin directory identity changed during qualification."
 $postBuildTagObject = (Get-GitValueAt -Repository $repoRoot -Arguments @(
     "rev-parse", "--verify", $tagRef
 )).ToLowerInvariant()
@@ -754,7 +1184,6 @@ if (
     $postBuildLocalMain -cne $headCommit -or
     $postBuildOriginMain -cne $headCommit -or
     $postBuildMirrorMain -cne $headCommit -or
-    $postBuildOriginPath -cne $mirrorRoot -or
     $postBuildTagObject -cne $finalTagObject -or
     $postBuildTagType -cne "tag" -or
     $postBuildTagCommit -cne $headCommit -or
@@ -801,6 +1230,19 @@ $qualification = [ordered]@{
     python_version = $ExpectedPythonVersion
     pyinstaller_version = $ExpectedPyInstallerVersion
     source_epoch = $sourceEpoch
+    path_identity = [ordered]@{
+        schema_version = "label-match-release-path-identity-v1"
+        work_clone = ConvertTo-ReleaseDirectoryIdentityRecord $repoIdentity
+        git_worktree_top = ConvertTo-ReleaseDirectoryIdentityRecord $worktreeIdentity
+        local_bare_mirror = ConvertTo-ReleaseDirectoryIdentityRecord $mirrorIdentity
+        clone_origin = ConvertTo-ReleaseDirectoryIdentityRecord $originIdentity
+        wheelhouse = ConvertTo-ReleaseDirectoryIdentityRecord $wheelhouseIdentity
+        output_root = ConvertTo-ReleaseDirectoryIdentityRecord $outputIdentity
+        prospective_output_canonical_path = $prospectiveOutputCanonicalPath
+        subst_alias_allowed = $true
+        filesystem_reparse_points_allowed = $false
+        revalidated_after_build = $true
+    }
     archive = $archiveName
     archive_sha256 = $archiveReport.archive_sha256
     archive_size = $archiveReport.archive_size
