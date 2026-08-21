@@ -9,6 +9,7 @@ import pytest
 
 STAGED_ROOT_ENV = "LABEL_MATCH_STAGED_PACKAGE_ROOT"
 REQUIRE_STAGED_TEST_ENV = "LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _staged_package_root() -> Path:
@@ -35,6 +36,106 @@ def _normalized(path: str | os.PathLike[str]) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
+def _assert_isolated_file_hash_authority(
+    powershell: Path, script_path: Path, probe_root: Path
+) -> None:
+    source = script_path.read_text(encoding="utf-8")
+    assert "get-filehash" not in source.casefold()
+    probe_root.mkdir(parents=True)
+    payload_path = probe_root / "hash-fixture.bin"
+    payload_path.write_bytes(b"abc")
+    missing_path = probe_root / "missing.bin"
+    isolated_modules = probe_root / "isolated-modules"
+    isolated_modules.mkdir()
+    command = r'''
+$ErrorActionPreference = "Stop"
+$PSModuleAutoLoadingPreference = "None"
+if (
+    $PSVersionTable.PSEdition -cne "Desktop" -or
+    $PSVersionTable.PSVersion.Major -ne 5 -or
+    $PSVersionTable.PSVersion.Minor -ne 1
+) { throw "The isolated hash regression requires Windows PowerShell Desktop 5.1." }
+$commandWasUnavailable = $false
+try { $unexpected = Get-FileHash -LiteralPath $env:LABEL_MATCH_HASH_FIXTURE -Algorithm SHA256 }
+catch [System.Management.Automation.CommandNotFoundException] { $commandWasUnavailable = $true }
+if (-not $commandWasUnavailable) { throw "Get-FileHash unexpectedly resolved in the isolated regression." }
+
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $env:LABEL_MATCH_INSTALLER_SCRIPT,
+    [ref]$tokens,
+    [ref]$errors
+)
+if ($errors.Count) { throw "Installer PowerShell AST is invalid." }
+$functionAst = $null
+foreach ($candidate in $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq "Get-FileSha256"
+}, $true)) {
+    $functionAst = $candidate
+    break
+}
+if ($null -eq $functionAst) { throw "Get-FileSha256 is missing." }
+. ([scriptblock]::Create($functionAst.Extent.Text))
+
+$actual = Get-FileSha256 $env:LABEL_MATCH_HASH_FIXTURE
+if ($actual -cne $env:LABEL_MATCH_EXPECTED_SHA256) { throw "Module-independent SHA-256 mismatch." }
+$missingRejected = $false
+try { $unexpected = Get-FileSha256 $env:LABEL_MATCH_MISSING_HASH_FIXTURE }
+catch { $missingRejected = $true }
+if (-not $missingRejected) { throw "Missing file did not fail closed." }
+[Console]::Out.Write("PASS")
+'''
+    environment = {
+        **os.environ,
+        "PATH": "",
+        "PSModulePath": str(isolated_modules),
+        "LABEL_MATCH_INSTALLER_SCRIPT": str(script_path),
+        "LABEL_MATCH_HASH_FIXTURE": str(payload_path),
+        "LABEL_MATCH_MISSING_HASH_FIXTURE": str(missing_path),
+        "LABEL_MATCH_EXPECTED_SHA256": (
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        ),
+    }
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "PASS"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hashing is Windows-only")
+@pytest.mark.parametrize(
+    "script_name", ("INSTALL_THIS_PC.ps1", "install_label_match_direct_sync.ps1")
+)
+def test_installer_file_hash_authority_does_not_require_module_autoload(tmp_path, script_name):
+    powershell = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    if not powershell.is_file():
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    _assert_isolated_file_hash_authority(
+        powershell, ROOT / script_name, tmp_path / Path(script_name).stem
+    )
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Label_Match release installers are Windows-only")
 def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp_path):
     staged_root = _staged_package_root()
@@ -52,6 +153,17 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
     )
     missing = [str(path) for path in required_paths if not path.is_file()]
     assert not missing, f"staged installer inputs are missing: {missing}"
+    windows_powershell = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    assert windows_powershell.is_file(), "Windows PowerShell 5.1 is required for the staged gate"
+    for staged_script in required_paths[:2]:
+        _assert_isolated_file_hash_authority(
+            windows_powershell,
+            staged_script,
+            tmp_path / "staged-hash-authority" / staged_script.stem,
+        )
 
     extracted_root = tmp_path / "ordinary-extraction" / "Label_Match"
     shutil.copytree(staged_root, extracted_root)

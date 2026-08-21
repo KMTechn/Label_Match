@@ -195,6 +195,35 @@ function Get-Sha256HexFromText([string]$Text) {
     }
 }
 
+function Get-FileSha256([string]$Path) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $stream = [System.IO.File]::Open(
+        $fullPath,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::Read
+    )
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        if ($null -eq $sha) {
+            throw "Unable to create SHA-256 authority."
+        }
+        try {
+            $digest = $sha.ComputeHash($stream)
+            if ($null -eq $digest -or $digest.Length -ne 32) {
+                throw "SHA-256 authority returned a malformed digest."
+            }
+            return ([System.BitConverter]::ToString($digest)).Replace("-", "").ToLowerInvariant()
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Get-ImmutableAppInventoryIdentity([string]$Root, [string[]]$MutableRelativePaths) {
     $rootFull = [System.IO.Path]::GetFullPath($Root)
     if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) {
@@ -225,7 +254,7 @@ function Get-ImmutableAppInventoryIdentity([string]$Root, [string[]]$MutableRela
                 [ordered]@{
                     path = $relative
                     size = [long]$_.Length
-                    sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                    sha256 = Get-FileSha256 $_.FullName
                 }
             }
         } | Sort-Object @{ Expression = { $_.path.ToLowerInvariant() } }, @{ Expression = { $_.path } }
@@ -330,7 +359,7 @@ function Confirm-BoundedRollbackEvidence([string]$EvidenceRoot, $EvidenceRecord,
         if ([long](Get-Item -LiteralPath $target).Length -ne [long]$entry.size) {
             throw "Rollback evidence file size changed after preservation."
         }
-        if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) {
+        if ((Get-FileSha256 $target) -cne [string]$entry.sha256) {
             throw "Rollback evidence file hash changed after preservation."
         }
         $computedBytes += [long]$entry.size
@@ -353,7 +382,7 @@ function Confirm-BoundedRollbackEvidence([string]$EvidenceRoot, $EvidenceRecord,
     return [ordered]@{
         status = "PASS"
         inventory_path = $inventoryPath
-        inventory_sha256 = (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        inventory_sha256 = Get-FileSha256 $inventoryPath
         file_count = $files.Count
         total_bytes = $computedBytes
         archived_bytes_reverified = $true
@@ -413,7 +442,7 @@ function Assert-PackageRoot([string]$Root) {
         if (-not (Test-PathInside $targetFull $rootFull)) { throw "Manifest-declared file escapes package root: $relative" }
         $item = Get-Item -LiteralPath $targetFull
         if ([long]$item.Length -ne [long]$entry.size) { throw "Manifest size mismatch: $relative" }
-        $actualHash = (Get-FileHash -LiteralPath $targetFull -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = Get-FileSha256 $targetFull
         if ($actualHash -cne [string]$entry.sha256) { throw "Manifest hash mismatch: $relative" }
     }
     $actual = @(
@@ -567,7 +596,7 @@ if (-not ($isDryRun -and $testMode)) {
 $sourceRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $MyInvocation.MyCommand.Path))
 Assert-NoReparsePath $sourceRoot "release package root"
 $manifest = Assert-PackageRoot $sourceRoot
-$sourceManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $sourceRoot "build-manifest.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+$sourceManifestSha256 = Get-FileSha256 (Join-Path $sourceRoot "build-manifest.json")
 $summaryPath = Join-Path $programDataRoot "status\label_match_one_step_install_summary.json"
 $publicReportPath = Join-Path $receiptRoot "label_match_public_install_report.json"
 $installPrestate = "absent"
@@ -621,7 +650,7 @@ if (-not ($isUninstall -or $isRollback)) {
         try {
             Copy-ManifestBoundPackage $sourceRoot $candidate $manifest
             [void](Assert-PackageRoot $candidate)
-            $candidateManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $candidate "build-manifest.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+            $candidateManifestSha256 = Get-FileSha256 (Join-Path $candidate "build-manifest.json")
             if ($candidateManifestSha256 -cne $sourceManifestSha256) {
                 throw "Candidate manifest changed after source validation; refusing staging rename."
             }
@@ -840,7 +869,7 @@ if ($isUninstall -or $isRollback) {
     ) {
         throw "Nested uninstall report does not preserve business evidence."
     }
-    $nestedRemovalResourceReportSha256 = (Get-FileHash -LiteralPath $nestedRemovalResourceReportPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $nestedRemovalResourceReportSha256 = Get-FileSha256 $nestedRemovalResourceReportPath
 }
 
 if ($isUninstall -or $isRollback) {
@@ -887,7 +916,7 @@ if ($isUninstall -or $isRollback) {
         }
         Assert-NoReparsePath $evidenceArchiveRoot "rollback evidence root"
         $rollbackResourceReportPath = $nestedRemovalResourceReportPath
-        if ((Get-FileHash -LiteralPath $rollbackResourceReportPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nestedRemovalResourceReportSha256) {
+        if ((Get-FileSha256 $rollbackResourceReportPath) -cne $nestedRemovalResourceReportSha256) {
             throw "Rollback resource report changed after nested verification."
         }
         $rollbackResourceReport = $nestedRemovalResourceReport
@@ -915,7 +944,7 @@ if ($isUninstall -or $isRollback) {
         if ($finalEvidenceVerification.inventory_sha256 -cne $preFinalEvidenceVerification.inventory_sha256) {
             throw "Rollback evidence inventory changed during public finalization."
         }
-        $finalResourceReportSha256 = (Get-FileHash -LiteralPath $rollbackResourceReportPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $finalResourceReportSha256 = Get-FileSha256 $rollbackResourceReportPath
         $receiptPath = Join-Path $evidenceArchiveRoot "label_match_rollback_receipt.json"
         Write-Utf8JsonFile $receiptPath ([ordered]@{
             receipt_version = "label-match-exact-rollback-v1"
@@ -936,7 +965,7 @@ if ($isUninstall -or $isRollback) {
     }
     else {
         $uninstallReportPath = $nestedRemovalResourceReportPath
-        if ((Get-FileHash -LiteralPath $uninstallReportPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nestedRemovalResourceReportSha256) {
+        if ((Get-FileSha256 $uninstallReportPath) -cne $nestedRemovalResourceReportSha256) {
             throw "Uninstall resource report changed after nested verification."
         }
         $uninstallReport = $nestedRemovalResourceReport

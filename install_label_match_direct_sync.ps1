@@ -93,7 +93,32 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
 }
 
 function Get-FileSha256([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $stream = [System.IO.File]::Open(
+        $fullPath,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::Read
+    )
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        if ($null -eq $sha) {
+            throw "Unable to create SHA-256 authority."
+        }
+        try {
+            $digest = $sha.ComputeHash($stream)
+            if ($null -eq $digest -or $digest.Length -ne 32) {
+                throw "SHA-256 authority returned a malformed digest."
+            }
+            return ([System.BitConverter]::ToString($digest)).Replace("-", "").ToLowerInvariant()
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
 }
 
 function Get-RelativeFilePath([string]$Root, [string]$Path) {

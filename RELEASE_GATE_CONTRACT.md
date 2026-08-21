@@ -101,11 +101,16 @@ a missing, added, reparse-backed, resized, or changed archived file is fatal.
 
 The staged v2 report proves this contract with an isolated manifest-bound public
 entrypoint dry run and is classified `STATIC_ISOLATED_DRY_RUN`; it must state
-`dynamic_qualification=NOT_TESTED`. It does not replace a fresh Windows target,
-ordinary-operator launcher, live task, data-preserving uninstall, or exact
-rollback qualification run.
+`dynamic_qualification=NOT_TESTED`. Both packaged installer scripts compute file
+digests with their identical `Get-FileSha256` authority: a read-only file stream,
+.NET SHA-256, exact 32-byte digest validation, and lowercase invariant hex. They
+must not invoke ambient `Get-FileHash` or resolve an executable from `PATH`; the
+focused Windows regression disables module autoload and removes both module and
+executable lookup paths while proving known bytes and missing-file failure. This
+static gate does not replace a fresh Windows target, ordinary-operator launcher,
+live task, data-preserving uninstall, or exact rollback qualification run.
 
-### Frozen-byte publication sequence (v2.0.75 current candidate)
+### Frozen-byte publication sequence (v2.0.76 current candidate)
 
 The initial elevated v2.0.67 infrastructure cohort at
 `E:\KMTech\label-v2067-daa3-phase83-elevated-20260812` failed before
@@ -296,14 +301,57 @@ and the failure receipt SHA-256 is
 No ZIP, checksum, archive report, or Phase-B receipt was produced. Preserve
 `E:\KMTech\label-match-v2074-successor-20260821`, its work clone, mirror, tag,
 receipts, and logs as immutable quarantined history: do not retry, rebuild,
-delete, recreate, retarget, reuse, or promote them. The active successor is
-v2.0.75.
+delete, recreate, retarget, reuse, or promote them. The successor selected after
+that failure was v2.0.75.
+
+On 2026-08-21 the sole v2.0.75 annotated tag object
+`ebbfa7d1570f1b734db98e4b3208ada98b6eadb5`, for commit
+`7458ed8258bd909b756e4a22976333e59f60a10f` and tree
+`5c9983e65f4f77252f6f3d585285a555b6cb328b`, was created with the exact
+16-byte `Release v2.0.75\n` message (SHA-256
+`b7ec6cb414742449672bf41a3c16af8f4f756d8057cf94c6942423a5a630b7f0`)
+and pushed only to its isolated local mirror. Its PASS exactly-once tag-burn
+receipt SHA-256 is
+`e87edae928bd9827efacda777a44bf56fd360b026367f70fbff4c561a170f6b6`.
+The builder claim SHA-256 is
+`6bea016b2eabffb634f1bab0c6fbe9e8da4a529d85e4971270b2955ef70241e7`
+and records invocation count 1 with `retry_allowed=false`. The sole official
+builder invocation exited 1 at its staged-installer verifier: the verifier
+exited 2 after the public installer exited 1 because `Get-FileHash` was not
+available at `INSTALL_THIS_PC.ps1:416`. The builder-runner receipt SHA-256 is
+`477ff394459b594497a2099dffe0d244646fc55e5f06bf35c8b72658dd47bb71`
+and the bounded builder log SHA-256 is
+`db87fc7a53cad0e64503cd7e85dd70f6c26e7eeca165d279ded39f89a4d7e8bf`.
+That frozen run classified the deeper module-resolution mechanism `UNPROVEN`;
+the v2.0.76 successor later reproduced the cause as Windows PowerShell 5.1
+inheriting a PowerShell 7 Utility module ahead of its compatible system module.
+The quarantined partial output `E:\KMTech\l75r\candidate` contains 19,342 files
+totalling 595,722,228 bytes and an early tag-identity report with SHA-256
+`e4b66b0abe6b05ab15ef8126235aee6e0c0ea755c14cfe73200a77a816f228d3`.
+No ZIP, checksum, archive report, Phase-1 receipt, or release notes were produced.
+The final containment receipt SHA-256 is
+`33400b900c0d21e218533eeb84e9db283a630c4db4d6528601b9ebf0b63c3a32`.
+Preserve `E:\KMTech\label-match-v2075-successor-20260821`, its work clone,
+mirror, tag, receipts, log, and partial output as immutable quarantined history:
+do not retry, rebuild, delete, recreate, retarget, reuse, or promote them. The
+active successor is v2.0.76.
 
 The governing order is Phase B/8.3, then Phase C/9, then Phase D/10. GitHub
 Actions is not a release gate and cannot replace the local exact-SHA gates.
 
-1. Run the required exact-SHA local CI in an isolated environment. If Hosted CI
-   was not used, record `WAIVED_NOT_TESTED`; never turn absence into `PASS`.
+1. Run the required exact-SHA local CI in an isolated environment. Its focused
+   native hash gate must run before mirror or tag preparation:
+
+```powershell
+python -m pytest -q -p no:cacheprovider `
+  tests/test_staged_release_installer.py -k file_hash_authority `
+  --basetemp <FRESH-EXTERNAL-E-BASETEMP>
+```
+
+   This source gate must prove both package-bound scripts without `Get-FileHash`
+   available; the later staged-package gate repeats the same primitive proof
+   against both exact packaged copies. If Hosted CI was not used, record
+   `WAIVED_NOT_TESTED`; never turn absence into `PASS`.
 2. Prepare an existing isolated local bare mirror and a separate clean,
    non-bare release work clone. The work clone's `origin` URL must be the exact
    absolute path (or `file://` URI) of that mirror, local `main` must be checked
@@ -328,7 +376,7 @@ python -I .\tools\burn_local_release_tag_once.py `
   --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
   --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
   --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
-  --tag v2.0.75 `
+  --tag v2.0.76 `
   --expected-commit <EXACT-CANDIDATE-COMMIT> `
   --expected-tree <EXACT-CANDIDATE-TREE>
 ```
@@ -340,22 +388,22 @@ python -I .\tools\burn_local_release_tag_once.py `
    LF):
 
 ```text
-Release v2.0.75
+Release v2.0.76
 ```
 
    Those 16 canonical bytes have SHA-256
-   `b7ec6cb414742449672bf41a3c16af8f4f756d8057cf94c6942423a5a630b7f0`.
+   `00b8f0960c91ed1ad69435befaf2ae9d8ad4136f043f9d3d9e2fb5587735fe18`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.75`, report type
+   bare mirror must expose that exact object as `refs/tags/v2.0.76`, report type
    `tag`, and peel it to the candidate commit. Run the builder from the release
    work-clone root with fresh output and the offline wheelhouse:
 
 ```powershell
 pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.75 `
+  -Tag v2.0.76 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
   -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR>
@@ -395,16 +443,16 @@ pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.75`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.76`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.75
+Tag: v2.0.76
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.75.zip
+Artifact: Label_Match-v2.0.76.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -415,7 +463,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.75 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.76 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires

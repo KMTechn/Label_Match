@@ -26,6 +26,12 @@ def _assert_powershell_ast(path: Path) -> None:
     )
 
 
+def _powershell_function(source: str, name: str) -> str:
+    start = source.index(f"function {name}")
+    end = source.index("\n}\n", start)
+    return source[start : end + 2]
+
+
 def _machine_bundle():
     return {
         "key_id": "label-producer-key-1",
@@ -48,6 +54,9 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
         encoding="utf-8"
     )
 
+    assert _powershell_function(alias, "Get-FileSha256") == _powershell_function(
+        installer, "Get-FileSha256"
+    )
     assert "#Requires -RunAsAdministrator" not in alias
     assert "Invoke-SelfElevated $MyInvocation.MyCommand.Path $PSBoundParameters" in alias
     assert "$isRollback = $Rollback.IsPresent" in alias
@@ -140,6 +149,10 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert "Add-Member -NotePropertyName archived_bytes_reverified_by_public_wrapper" in alias
     assert 'task_removal_order = @("stop", "delete", "absence")' in installer
     for source in (alias, installer):
+        assert "get-filehash" not in source.casefold()
+        assert "function Get-FileSha256" in source
+        assert "[System.IO.FileShare]::Read" in source
+        assert 'throw "SHA-256 authority returned a malformed digest."' in source
         assert '"_internal/config/app_settings.json"' in source
         assert '"label-match-app-immutable-inventory-v1"' in source
         assert "Get-ImmutableAppInventoryIdentity" in source
@@ -177,6 +190,7 @@ $wanted = @(
   "Test-PathInside",
   "Get-RelativeFilePath",
   "Get-Sha256HexFromText",
+  "Get-FileSha256",
   "Get-ImmutableAppInventoryIdentity"
 )
 foreach ($name in $wanted) {
