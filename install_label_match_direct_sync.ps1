@@ -143,9 +143,11 @@ function Get-ImmutableAppInventoryIdentity([string]$Root, [string[]]$MutableRela
     }
     $mutablePath = Join-Path $rootFull $MutableRelativePaths[0].Replace('/', '\')
     $mutableFull = [System.IO.Path]::GetFullPath($mutablePath)
+    $mutableInsideRoot = Test-PathInside $mutableFull $rootFull
+    $mutableFileExists = Test-Path -LiteralPath $mutableFull -PathType Leaf
     if (
-        -not (Test-PathInside $mutableFull $rootFull) -or
-        -not (Test-Path -LiteralPath $mutableFull -PathType Leaf)
+        -not $mutableInsideRoot -or
+        -not $mutableFileExists
     ) {
         throw "Mutable runtime settings file is missing or escapes the installed app root."
     }
@@ -628,7 +630,10 @@ function Resolve-PythonExe() {
         $candidates += $python.Source
     }
     foreach ($candidate in $candidates) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        if (Test-Path -LiteralPath $candidate) {
             return [System.IO.Path]::GetFullPath($candidate)
         }
     }
@@ -872,13 +877,15 @@ if ($Uninstall.IsPresent -or $Rollback.IsPresent) {
     }
 
     $launcherResource = $installSummary.resources.launcher
-    if ([string]$launcherResource.disposition -ceq "created" -and (Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf)) {
-        $properties = Get-ShortcutProperties $allUsersLauncherPath
-        if (
-            -not (Test-ShortcutContract $properties $expectedAppExecutable $managedAppRoot) -or
-            (Get-FileSha256 $allUsersLauncherPath) -cne [string]$launcherResource.sha256
-        ) {
-            throw "Owned all-users launcher drifted; refusing removal."
+    if ([string]$launcherResource.disposition -ceq "created") {
+        if (Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf) {
+            $properties = Get-ShortcutProperties $allUsersLauncherPath
+            if (
+                -not (Test-ShortcutContract $properties $expectedAppExecutable $managedAppRoot) -or
+                (Get-FileSha256 $allUsersLauncherPath) -cne [string]$launcherResource.sha256
+            ) {
+                throw "Owned all-users launcher drifted; refusing removal."
+            }
         }
     }
     $launcherDisposition = Remove-OwnedFile $allUsersLauncherPath $launcherResource "all-users launcher"
@@ -1061,19 +1068,22 @@ elseif (-not $DryRun.IsPresent -and $InstallPrestate -ceq "exact_reused") {
         throw "Existing scheduled task drifted from the owned install summary."
     }
     foreach ($resource in @($priorSummary.resources.direct_sync_owned_files) + @($priorSummary.resources.machine_profile_files)) {
-        if (
-            -not [string]::IsNullOrWhiteSpace([string]$resource.sha256) -and
-            (
-                -not (Test-Path -LiteralPath ([string]$resource.path) -PathType Leaf) -or
-                (Get-FileSha256 ([string]$resource.path)) -cne [string]$resource.sha256
-            )
-        ) {
-            throw "Existing installer-owned file drifted from the install summary: $($resource.path)"
+        if (-not [string]::IsNullOrWhiteSpace([string]$resource.sha256)) {
+            $resourceFileExists = Test-Path -LiteralPath ([string]$resource.path) -PathType Leaf
+            if (-not $resourceFileExists) {
+                throw "Existing installer-owned file drifted from the install summary: $($resource.path)"
+            }
+            if ((Get-FileSha256 ([string]$resource.path)) -cne [string]$resource.sha256) {
+                throw "Existing installer-owned file drifted from the install summary: $($resource.path)"
+            }
         }
     }
     $priorLauncher = $priorSummary.resources.launcher
+    $priorLauncherExists = Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf
+    if (-not $priorLauncherExists) {
+        throw "Existing all-users launcher drifted from the owned install summary."
+    }
     if (
-        -not (Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf) -or
         [string]::IsNullOrWhiteSpace([string]$priorLauncher.sha256) -or
         (Get-FileSha256 $allUsersLauncherPath) -cne [string]$priorLauncher.sha256 -or
         -not (Test-ShortcutContract (Get-ShortcutProperties $allUsersLauncherPath) $expectedAppExecutable $managedAppRoot)
@@ -1085,11 +1095,10 @@ elseif (-not $DryRun.IsPresent -and $InstallPrestate -ceq "exact_reused") {
         $priorSummary.resources.data_root,
         $priorSummary.resources.machine_profile_root
     )) {
-        if (
-            [string]$rootResource.disposition -ceq "reused" -and
-            -not (Test-Path -LiteralPath ([string]$rootResource.path) -PathType Container)
-        ) {
-            throw "Existing reused resource root disappeared after the owned install."
+        if ([string]$rootResource.disposition -ceq "reused") {
+            if (-not (Test-Path -LiteralPath ([string]$rootResource.path) -PathType Container)) {
+                throw "Existing reused resource root disappeared after the owned install."
+            }
         }
     }
 }
@@ -1216,8 +1225,10 @@ if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
         if ($AllowNoncanonicalLayoutForTest.IsPresent) { $cleanupArguments += "--allow-noncanonical-layout-for-test" }
         $cleanupOutput = & $installPackCommand[0] @cleanupArguments
         if ($LASTEXITCODE -ne 0) { $taskStartError += "; typed task cleanup failed" }
-        if (-not $resourcePrestate.launcher -and (Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf)) {
-            Remove-Item -LiteralPath $allUsersLauncherPath -Force -ErrorAction Stop
+        if (-not $resourcePrestate.launcher) {
+            if (Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf) {
+                Remove-Item -LiteralPath $allUsersLauncherPath -Force -ErrorAction Stop
+            }
         }
         try {
             Remove-NewMachineProfilesFromRegistrationReport $registrationReportPath $LogisticsProfilePath
@@ -1257,8 +1268,10 @@ if ($exitCode -ne 0 -and -not $DryRun.IsPresent -and $taskStartStatus -cne "FAIL
         [ordered]@{ path = $producerManifestPath; existed = [bool]$resourcePrestate.producer_manifest },
         [ordered]@{ path = $credentialPath; existed = [bool]$resourcePrestate.credential }
     )) {
-        if (-not $candidate.existed -and (Test-Path -LiteralPath $candidate.path -PathType Leaf)) {
-            Remove-Item -LiteralPath $candidate.path -Force -ErrorAction Stop
+        if (-not $candidate.existed) {
+            if (Test-Path -LiteralPath $candidate.path -PathType Leaf) {
+                Remove-Item -LiteralPath $candidate.path -Force -ErrorAction Stop
+            }
         }
     }
 }

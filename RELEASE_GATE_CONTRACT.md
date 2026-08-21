@@ -108,9 +108,16 @@ must not invoke ambient `Get-FileHash` or resolve an executable from `PATH`; the
 focused Windows regression disables module autoload and removes both module and
 executable lookup paths while proving known bytes and missing-file failure. This
 static gate does not replace a fresh Windows target, ordinary-operator launcher,
-live task, data-preserving uninstall, or exact rollback qualification run.
+live task, data-preserving uninstall, or exact rollback qualification run. The
+checked-in one-shot release runner also parses itself, the official builder, and
+both public installer scripts with the PowerShell AST before launch. It rejects
+both a Boolean token parsed as a `Test-Path` command parameter and every
+`Test-Path` command nested in an `-and`/`-or` binary expression; the Windows
+PowerShell 5.1 preflight regression proves clean acceptance, injected ambiguous
+syntax rejection, and independent stdout/stderr freshness checks without
+starting the builder.
 
-### Frozen-byte publication sequence (v2.0.76 current candidate)
+### Frozen-byte publication sequence (v2.0.77 current candidate)
 
 The initial elevated v2.0.67 infrastructure cohort at
 `E:\KMTech\label-v2067-daa3-phase83-elevated-20260812` failed before
@@ -334,7 +341,29 @@ The final containment receipt SHA-256 is
 Preserve `E:\KMTech\label-match-v2075-successor-20260821`, its work clone,
 mirror, tag, receipts, log, and partial output as immutable quarantined history:
 do not retry, rebuild, delete, recreate, retarget, reuse, or promote them. The
-active successor is v2.0.76.
+successor selected after that failure was v2.0.76.
+
+On 2026-08-21 the sole v2.0.76 annotated tag object
+`23adf0a86a8bdadea91b6e988f1a2c237188322a`, for commit
+`2504cb6efd66adbfc604685c8075987d086b0f44` and tree
+`fbe5661f7c0195aa8edd1ef7957d6f52f73ceec2`, was created with the exact
+16-byte `Release v2.0.76\n` message (SHA-256
+`00b8f0960c91ed1ad69435befaf2ae9d8ad4136f043f9d3d9e2fb5587735fe18`)
+and pushed only to its isolated local mirror. Its builder claim SHA-256 is
+`e3a9d3f2629c5c68bfea36cb27b0f17fc4524b398395626c1f46cefccf85fd36`
+and records one claimed invocation with `retry_allowed=false`. The sole outer
+runner attempt then exited 1 before `Start-Process`: Windows PowerShell parsed
+`Test-Path $stdout -or Test-Path $stderr` as one command and bound `-or` as an
+invalid `Test-Path` parameter. The official builder process invocation count is
+zero, and no candidate directory, ZIP, checksum, archive report, qualification
+receipt, release notes, or builder log exists. The runner receipt SHA-256 is
+`f674c0f76ee917ed7ec7ef4573e2d4c7a3336146f389a26df39a383f73b41f4b`,
+and the final containment receipt SHA-256 is
+`4b0bff3071f6c4756263fa61d5808bcf2237d5efae908dccca0cdefc58a25754`.
+Preserve `E:\KMTech\label-match-v2076-successor-20260821`, its work clone,
+mirror, tag, claims, and evidence as immutable quarantined history: do not
+retry, rebuild, delete, recreate, retarget, reuse, or promote them. The active
+successor is v2.0.77.
 
 The governing order is Phase B/8.3, then Phase C/9, then Phase D/10. GitHub
 Actions is not a release gate and cannot replace the local exact-SHA gates.
@@ -376,7 +405,7 @@ python -I .\tools\burn_local_release_tag_once.py `
   --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
   --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
   --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
-  --tag v2.0.76 `
+  --tag v2.0.77 `
   --expected-commit <EXACT-CANDIDATE-COMMIT> `
   --expected-tree <EXACT-CANDIDATE-TREE>
 ```
@@ -388,28 +417,36 @@ python -I .\tools\burn_local_release_tag_once.py `
    LF):
 
 ```text
-Release v2.0.76
+Release v2.0.77
 ```
 
    Those 16 canonical bytes have SHA-256
-   `00b8f0960c91ed1ad69435befaf2ae9d8ad4136f043f9d3d9e2fb5587735fe18`.
+   `4faa824250844acdc5fd87f039a4c09ba71af7ddfe917cbb7b4cd79a8c2f0c4e`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.76`, report type
-   `tag`, and peel it to the candidate commit. Run the builder from the release
-   work-clone root with fresh output and the offline wheelhouse:
+   bare mirror must expose that exact object as `refs/tags/v2.0.77`, report type
+   `tag`, and peel it to the candidate commit. Run the checked-in one-shot runner
+   from the release work-clone root with fresh output, log paths, and the offline
+   wheelhouse:
 
 ```powershell
-pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\run_frozen_release_candidate_once.ps1 `
+  -PowerShellPath <EXACT-POWERSHELL-7-PWSH.EXE> `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.76 `
+  -Tag v2.0.77 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
-  -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR>
+  -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR> `
+  -StdoutPath <FRESH-EXTERNAL-BUILDER-STDOUT-LOG> `
+  -StderrPath <FRESH-EXTERNAL-BUILDER-STDERR-LOG>
 ```
 
-   The builder creates no refs and performs no fetch, push, tag mutation, or
+   The runner performs the Windows PowerShell 5.1-compatible AST and independent
+   path-freshness prelaunch checks, then starts
+   `tools\build_frozen_release_candidate.ps1` exactly once and returns its exit
+   code; any runner or builder outcome consumes that attempt and must not be
+   retried. The builder creates no refs and performs no fetch, push, tag mutation, or
    network operation. Its required `refs/remotes/origin/main` is only the
    prepared tracking ref for the supplied local bare mirror; it does not require
    or claim live GitHub `origin/main`, Hosted CI, or repository immutability at
@@ -443,16 +480,16 @@ pwsh -NoProfile -File .\tools\build_frozen_release_candidate.ps1 `
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.76`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.77`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.76
+Tag: v2.0.77
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.76.zip
+Artifact: Label_Match-v2.0.77.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -463,7 +500,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.76 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.77 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires

@@ -12,6 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "build_frozen_release_candidate.ps1"
+RUNNER_PATH = ROOT / "tools" / "run_frozen_release_candidate_once.ps1"
 CONTRACT_PATH = ROOT / "RELEASE_GATE_CONTRACT.md"
 TAG_BURNER_PATH = ROOT / "tools" / "burn_local_release_tag_once.py"
 REQUIREMENTS_PATH = ROOT / "requirements-release.txt"
@@ -105,7 +106,7 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     source = _source()
 
     assert "[string]$OutputRoot" in source
-    assert '[string]$Tag = "v2.0.76"' in source
+    assert '[string]$Tag = "v2.0.77"' in source
     assert "[string]$PythonPath" in source
     assert "[string]$Wheelhouse" in source
     assert "[string]$MirrorRoot" in source
@@ -148,15 +149,20 @@ def test_contract_requires_exactly_once_local_tag_burner_before_builder():
     contract = CONTRACT_PATH.read_text(encoding="utf-8")
 
     burner_command = "python -I .\\tools\\burn_local_release_tag_once.py"
-    builder_command = "pwsh -NoProfile -File .\\tools\\build_frozen_release_candidate.ps1"
+    runner_command = (
+        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        "-File .\\tools\\run_frozen_release_candidate_once.ps1"
+    )
     assert TAG_BURNER_PATH.is_file()
+    assert RUNNER_PATH.is_file()
     assert burner_command in contract
-    assert contract.index(burner_command) < contract.index(builder_command)
-    assert "--tag v2.0.76" in contract
+    assert runner_command in contract
+    assert contract.index(burner_command) < contract.index(runner_command)
+    assert "--tag v2.0.77" in contract
     assert "--expected-commit <EXACT-CANDIDATE-COMMIT>" in contract
     assert "--expected-tree <EXACT-CANDIDATE-TREE>" in contract
     assert "do not retry it" in contract
-    assert "00b8f0960c91ed1ad69435befaf2ae9d8ad4136f043f9d3d9e2fb5587735fe18" in contract
+    assert "4faa824250844acdc5fd87f039a4c09ba71af7ddfe917cbb7b4cd79a8c2f0c4e" in contract
 
 
 def test_script_runs_only_the_static_staged_installer_gate_without_elevation():
@@ -278,7 +284,7 @@ def test_script_rejects_a_clean_clone_whose_origin_is_not_the_supplied_mirror(
             "-OutputRoot",
             str(output_root),
             "-Tag",
-            "v2.0.76",
+            "v2.0.77",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",
@@ -761,7 +767,11 @@ def test_release_contract_prepares_and_invokes_the_governing_mirror_topology():
     assert "`refs/remotes/origin/main`" in contract
     assert "mirror `refs/heads/main`" in contract
     assert "A GitHub/HTTPS origin is not accepted here" in contract
-    assert ".\\tools\\build_frozen_release_candidate.ps1" in contract
+    assert ".\\tools\\run_frozen_release_candidate_once.ps1" in contract
+    assert "`tools\\build_frozen_release_candidate.ps1` exactly once" in contract
+    assert "-PowerShellPath <EXACT-POWERSHELL-7-PWSH.EXE>" in contract
     assert "-MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR>" in contract
+    assert "-StdoutPath <FRESH-EXTERNAL-BUILDER-STDOUT-LOG>" in contract
+    assert "-StderrPath <FRESH-EXTERNAL-BUILDER-STDERR-LOG>" in contract
     assert "performs no fetch, push, tag mutation, or" in contract
     assert "never\n   retarget the release work clone's local `origin`" in contract

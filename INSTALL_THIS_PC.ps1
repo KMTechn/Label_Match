@@ -237,9 +237,11 @@ function Get-ImmutableAppInventoryIdentity([string]$Root, [string[]]$MutableRela
     }
     $mutablePath = Join-Path $rootFull $MutableRelativePaths[0].Replace('/', '\')
     $mutableFull = [System.IO.Path]::GetFullPath($mutablePath)
+    $mutableInsideRoot = Test-PathInside $mutableFull $rootFull
+    $mutableFileExists = Test-Path -LiteralPath $mutableFull -PathType Leaf
     if (
-        -not (Test-PathInside $mutableFull $rootFull) -or
-        -not (Test-Path -LiteralPath $mutableFull -PathType Leaf)
+        -not $mutableInsideRoot -or
+        -not $mutableFileExists
     ) {
         throw "Mutable runtime settings file is missing or escapes the installed app root."
     }
@@ -304,10 +306,13 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
 function Confirm-BoundedRollbackEvidence([string]$EvidenceRoot, $EvidenceRecord, [string]$ResourceReportPath) {
     $rootFull = [System.IO.Path]::GetFullPath($EvidenceRoot)
     $inventoryPath = Join-Path $rootFull "evidence-inventory.json"
+    $inventoryExists = Test-Path -LiteralPath $inventoryPath -PathType Leaf
+    $inventoryPathMatches = Test-SamePath ([string]$EvidenceRecord.inventory_path) $inventoryPath
+    $resourceReportPathMatches = Test-SamePath $ResourceReportPath (Join-Path $rootFull "label_match_rollback_resources.json")
     if (
-        -not (Test-Path -LiteralPath $inventoryPath -PathType Leaf) -or
-        -not (Test-SamePath ([string]$EvidenceRecord.inventory_path) $inventoryPath) -or
-        -not (Test-SamePath $ResourceReportPath (Join-Path $rootFull "label_match_rollback_resources.json"))
+        -not $inventoryExists -or
+        -not $inventoryPathMatches -or
+        -not $resourceReportPathMatches
     ) {
         throw "Rollback evidence metadata paths are not exact."
     }
@@ -353,7 +358,9 @@ function Confirm-BoundedRollbackEvidence([string]$EvidenceRoot, $EvidenceRecord,
             throw "Rollback evidence inventory metadata is invalid."
         }
         $target = Join-Path $rootFull $relative.Replace('/', '\')
-        if (-not (Test-PathInside $target $rootFull) -or -not (Test-Path -LiteralPath $target -PathType Leaf)) {
+        $targetInsideRoot = Test-PathInside $target $rootFull
+        $targetFileExists = Test-Path -LiteralPath $target -PathType Leaf
+        if (-not $targetInsideRoot -or -not $targetFileExists) {
             throw "Rollback evidence inventory file is missing or escaped its root."
         }
         if ([long](Get-Item -LiteralPath $target).Length -ne [long]$entry.size) {
@@ -805,8 +812,10 @@ if ($exitCode -ne 0) {
         $publicReport.nested_exit_code = $exitCode
         Write-Utf8JsonFile $publicReportPath $publicReport
     }
-    if ($targetCreated -and (Test-Path -LiteralPath $installRoot -PathType Container)) {
-        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if ($targetCreated) {
+        if (Test-Path -LiteralPath $installRoot -PathType Container) {
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     exit $exitCode
 }
@@ -889,7 +898,10 @@ if ($isUninstall -or $isRollback) {
 
     if ($isRollback) {
         $ownedPublicReport = $priorPublicReport
-        if ($null -eq $ownedPublicReport -or -not (Test-Path -LiteralPath $publicReportPath -PathType Leaf)) {
+        if ($null -eq $ownedPublicReport) {
+            throw "Public install receipt ownership is not proven."
+        }
+        if (-not (Test-Path -LiteralPath $publicReportPath -PathType Leaf)) {
             throw "Public install receipt ownership is not proven."
         }
         Remove-Item -LiteralPath $publicReportPath -Force -ErrorAction Stop
