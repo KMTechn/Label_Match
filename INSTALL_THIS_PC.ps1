@@ -1102,8 +1102,10 @@ else {
         $publicReport.nested_exit_code = 1
         $publicReport["failure"] = $_.Exception.Message
         Write-Utf8JsonFile $publicReportPath $publicReport
-        if ($targetCreated -and (Test-Path -LiteralPath $installRoot -PathType Container)) {
-            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+        if ($targetCreated) {
+            if (Test-Path -LiteralPath $installRoot -PathType Container) {
+                Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
         exit 1
     }
