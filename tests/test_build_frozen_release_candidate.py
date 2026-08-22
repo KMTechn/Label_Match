@@ -106,7 +106,7 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     source = _source()
 
     assert "[string]$OutputRoot" in source
-    assert '[string]$Tag = "v2.0.77"' in source
+    assert '[string]$Tag = "v2.0.78"' in source
     assert "[string]$PythonPath" in source
     assert "[string]$Wheelhouse" in source
     assert "[string]$MirrorRoot" in source
@@ -158,11 +158,11 @@ def test_contract_requires_exactly_once_local_tag_burner_before_builder():
     assert burner_command in contract
     assert runner_command in contract
     assert contract.index(burner_command) < contract.index(runner_command)
-    assert "--tag v2.0.77" in contract
+    assert "--tag v2.0.78" in contract
     assert "--expected-commit <EXACT-CANDIDATE-COMMIT>" in contract
     assert "--expected-tree <EXACT-CANDIDATE-TREE>" in contract
     assert "do not retry it" in contract
-    assert "4faa824250844acdc5fd87f039a4c09ba71af7ddfe917cbb7b4cd79a8c2f0c4e" in contract
+    assert "c92181c0d7e8c86e04e93cac069fdf8b74aa0cd4f3717b5b8af94fed22f04108" in contract
 
 
 def test_script_runs_only_the_static_staged_installer_gate_without_elevation():
@@ -284,7 +284,7 @@ def test_script_rejects_a_clean_clone_whose_origin_is_not_the_supplied_mirror(
             "-OutputRoot",
             str(output_root),
             "-Tag",
-            "v2.0.77",
+            "v2.0.78",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",

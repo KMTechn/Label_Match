@@ -3512,7 +3512,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.77"
+APP_VERSION = "v2.0.78"
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"

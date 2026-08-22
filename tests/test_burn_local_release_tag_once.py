@@ -14,8 +14,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "burn_local_release_tag_once.py"
-TAG = "v2.0.77"
-MESSAGE = b"Release v2.0.77\n"
+TAG = "v2.0.78"
+MESSAGE = b"Release v2.0.78\n"
 MESSAGE_SHA256 = "4faa824250844acdc5fd87f039a4c09ba71af7ddfe917cbb7b4cd79a8c2f0c4e"
 
 

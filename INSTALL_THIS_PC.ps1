@@ -515,31 +515,64 @@ function Copy-ManifestBoundPackage([string]$SourceRoot, [string]$CandidateRoot, 
     }
 }
 
-function Assert-OwnedInstalledTarget([string]$InstallRoot, [string]$SummaryPath, [string]$SourceManifestSha256) {
+function Assert-OwnedInstalledTarget(
+    [string]$InstallRoot,
+    [string]$SummaryPath,
+    [string]$SourceManifestSha256,
+    [string]$ExpectedStatus = "PASS"
+) {
+    if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
+        throw "Installed target is missing: $InstallRoot"
+    }
     if (-not (Test-Path -LiteralPath $SummaryPath -PathType Leaf)) {
         throw "Installed target ownership summary is missing: $SummaryPath"
     }
     $summary = Read-JsonFile $SummaryPath "install ownership summary"
     if (
         $summary.installer_report_version -cne "label-match-direct-sync-one-step-install-v2" -or
-        $summary.status -cne "PASS" -or
+        $summary.status -cne $ExpectedStatus -or
         [string]$summary.source_manifest_sha256 -cne $SourceManifestSha256 -or
         -not (Test-SamePath ([string]$summary.resources.app_root.path) $InstallRoot)
     ) {
         throw "Installed target is not owned by the exact source manifest and install summary."
     }
     Assert-AppInventorySummaryContract $summary.resources.app_root
-    if (Test-Path -LiteralPath $InstallRoot -PathType Container) {
-        Assert-NoReparseTree $InstallRoot "installed app root"
-        $identity = Get-ImmutableAppInventoryIdentity $InstallRoot $MutableAppRelativePaths
-        if (
-            [string]$summary.resources.app_root.immutable_inventory_sha256 -cne $identity.immutable_sha256 -or
-            [int]$summary.resources.app_root.immutable_file_count -ne $identity.immutable_file_count
-        ) {
-            throw "Installed immutable app bytes drifted from the owned install summary."
-        }
+    Assert-NoReparseTree $InstallRoot "installed app root"
+    $identity = Get-ImmutableAppInventoryIdentity $InstallRoot $MutableAppRelativePaths
+    if (
+        [string]$summary.resources.app_root.immutable_inventory_sha256 -cne $identity.immutable_sha256 -or
+        [int]$summary.resources.app_root.immutable_file_count -ne $identity.immutable_file_count
+    ) {
+        throw "Installed immutable app bytes drifted from the owned install summary."
     }
     return $summary
+}
+
+function Assert-ManifestBoundInstalledExecutable([string]$InstallRoot, $Manifest) {
+    $executableEntries = @(
+        @($Manifest.payload_inventory) |
+            Where-Object { [string]$_.path -ceq "Label_Match.exe" }
+    )
+    if ($executableEntries.Count -ne 1) {
+        throw "Build manifest must bind exactly one canonical Label_Match.exe."
+    }
+    $entry = $executableEntries[0]
+    $executablePath = Join-Path $InstallRoot "Label_Match.exe"
+    if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+        throw "Canonical installed executable is missing: $executablePath"
+    }
+    Assert-NoReparsePath $executablePath "canonical installed executable"
+    $item = Get-Item -LiteralPath $executablePath -Force -ErrorAction Stop
+    $actualSha256 = Get-FileSha256 $executablePath
+    if ([long]$item.Length -ne [long]$entry.size -or $actualSha256 -cne [string]$entry.sha256) {
+        throw "Canonical installed executable does not match the source manifest."
+    }
+    return [ordered]@{
+        path = [System.IO.Path]::GetFullPath($executablePath)
+        size = [long]$item.Length
+        sha256 = $actualSha256
+        source_manifest_path = "Label_Match.exe"
+    }
 }
 
 $isDryRun = $DryRun.IsPresent
@@ -815,15 +848,25 @@ $nestedParameters["ManagedInstallRoot"] = $installRoot
 $nestedParameters["SourceManifestSha256"] = $sourceManifestSha256
 $nestedParameters["InstallPrestate"] = $installPrestate
 $nestedExitCode = $null
-$nestedParameters["PublicWrapperExitCode"] = [ref]$nestedExitCode
+$verifiedInstallSummary = $null
+$verifiedInstalledExecutable = $null
 
 # Preserve the established tokenless self-enrollment path after manifest-bound staging.
 try {
-    & $installer @nestedParameters
+    # A [ref] inside a splatted hashtable is dereferenced by PowerShell before
+    # parameter binding. Pass it explicitly so the nested script returns here
+    # instead of seeing $null and terminating the public wrapper with `exit`.
+    & $installer @nestedParameters -PublicWrapperExitCode ([ref]$nestedExitCode)
     if ($null -eq $nestedExitCode) {
         throw "Nested installer did not return its typed exit code to the public wrapper."
     }
     $exitCode = [int]$nestedExitCode
+    if ($exitCode -eq 0 -and -not ($isUninstall -or $isRollback)) {
+        $expectedSummaryStatus = if ($isDryRun) { "DRY_RUN" } else { "PASS" }
+        $verifiedInstallSummary = Assert-OwnedInstalledTarget `
+            $installRoot $summaryPath $sourceManifestSha256 $expectedSummaryStatus
+        $verifiedInstalledExecutable = Assert-ManifestBoundInstalledExecutable $installRoot $manifest
+    }
 }
 catch {
     $exitCode = 1
@@ -1021,10 +1064,48 @@ if ($isUninstall -or $isRollback) {
     }
 }
 else {
-    $publicReport.status = if ($isDryRun) { "DRY_RUN_STAGED" } else { "PASS" }
-    $publicReport.nested_exit_code = 0
-    $publicReport.install_summary = $summaryPath
-    Write-Utf8JsonFile $publicReportPath $publicReport
-    Write-Output "INSTALLED manifest=$sourceManifestSha256"
+    try {
+        if ($null -eq $verifiedInstallSummary -or $null -eq $verifiedInstalledExecutable) {
+            throw "Successful nested install lacks verified executable and ownership postconditions."
+        }
+        $publicReport.status = if ($isDryRun) { "DRY_RUN_STAGED" } else { "PASS" }
+        $publicReport.nested_exit_code = 0
+        $publicReport.install_summary = [ordered]@{
+            path = [System.IO.Path]::GetFullPath($summaryPath)
+            sha256 = Get-FileSha256 $summaryPath
+            status = [string]$verifiedInstallSummary.status
+            source_manifest_sha256 = [string]$verifiedInstallSummary.source_manifest_sha256
+        }
+        $publicReport.installed_executable = $verifiedInstalledExecutable
+        Write-Utf8JsonFile $publicReportPath $publicReport
+
+        $ownedPublicReport = Read-JsonFile $publicReportPath "public install report"
+        $expectedPublicStatus = if ($isDryRun) { "DRY_RUN_STAGED" } else { "PASS" }
+        if (
+            $ownedPublicReport.report_version -cne "label-match-public-install-v2" -or
+            $ownedPublicReport.status -cne $expectedPublicStatus -or
+            [string]$ownedPublicReport.source_manifest_sha256 -cne $sourceManifestSha256 -or
+            [string]$ownedPublicReport.install_summary.sha256 -cne (Get-FileSha256 $summaryPath) -or
+            [string]$ownedPublicReport.installed_executable.sha256 -cne [string]$verifiedInstalledExecutable.sha256 -or
+            [long]$ownedPublicReport.installed_executable.size -ne [long]$verifiedInstalledExecutable.size -or
+            -not (Test-SamePath ([string]$ownedPublicReport.install_summary.path) $summaryPath) -or
+            -not (Test-SamePath ([string]$ownedPublicReport.installed_executable.path) (Join-Path $installRoot "Label_Match.exe"))
+        ) {
+            throw "Public install receipt does not bind the verified install summary and executable."
+        }
+        [void](Assert-OwnedInstalledTarget $installRoot $summaryPath $sourceManifestSha256 $expectedSummaryStatus)
+        [void](Assert-ManifestBoundInstalledExecutable $installRoot $manifest)
+        Write-Output "INSTALLED manifest=$sourceManifestSha256"
+    }
+    catch {
+        $publicReport.status = "FAILED"
+        $publicReport.nested_exit_code = 1
+        $publicReport["failure"] = $_.Exception.Message
+        Write-Utf8JsonFile $publicReportPath $publicReport
+        if ($targetCreated -and (Test-Path -LiteralPath $installRoot -PathType Container)) {
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        exit 1
+    }
 }
 exit 0

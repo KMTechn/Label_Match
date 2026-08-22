@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -64,14 +65,21 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert "WindowsBuiltInRole]::Administrator" in alias
     assert "-Verb RunAs" in alias
     assert "-Wait -PassThru" in alias
+    assert "exit $process.ExitCode" in alias
     _assert_powershell_ast(ROOT / "INSTALL_THIS_PC.ps1")
     assert "install_label_match_direct_sync.ps1" in alias
     assert '$nestedParameters["ManagedInstallRoot"] = $installRoot' in alias
     assert 'if ($entry.Key -in @("InstallRootForTest", "RollbackReceiptRootForTest"))' in alias
-    assert '$nestedParameters["PublicWrapperExitCode"] = [ref]$nestedExitCode' in alias
-    assert "& $installer @nestedParameters" in alias
+    assert '$nestedParameters["PublicWrapperExitCode"]' not in alias
+    assert (
+        "& $installer @nestedParameters "
+        "-PublicWrapperExitCode ([ref]$nestedExitCode)"
+    ) in alias
     assert 'throw "Nested installer did not return its typed exit code to the public wrapper."' in alias
     assert "$exitCode = [int]$nestedExitCode" in alias
+    assert "Assert-ManifestBoundInstalledExecutable $installRoot $manifest" in alias
+    assert "Successful nested install lacks verified executable" in alias
+    assert 'status = "FAILED"' in alias
     assert "tokenless self-enrollment" in alias
     assert "#Requires -RunAsAdministrator" not in installer
     assert "[System.Management.Automation.PSReference]$PublicWrapperExitCode" in installer
@@ -161,6 +169,249 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert "UNINSTALLED_DATA_PRESERVED" in alias
     assert "exact_fresh_target_parity" in alias
     _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
+
+
+_NESTED_INSTALLER_STUB = r'''param(
+    [switch]$DryRun,
+    [switch]$Uninstall,
+    [switch]$Rollback,
+    [string]$EvidenceArchiveRoot = "",
+    [switch]$AllowNoncanonicalLayoutForTest,
+    [string]$ManagedInstallRoot = "",
+    [string]$SourceManifestSha256 = "",
+    [string]$InstallPrestate = "absent",
+    [string]$CommonProgramsRootForTest = "",
+    [string]$ServerBaseUrl = "https://worker.kmtecherp.com",
+    [string]$SourceHostId = "",
+    [string]$ProgramDataRoot = "",
+    [string]$ScanSourceDir = "",
+    [string]$EnrollmentTokenFile = "",
+    [string]$ExistingProducerManifestPath = "",
+    [string]$ExistingCredentialPath = "",
+    [string]$TaskName = "",
+    [string]$LogisticsProfilePath = "",
+    [string]$TaskRunUser = "",
+    [string]$AppRunUser = "",
+    [string]$TaskRunPasswordEnv = "",
+    [string]$TaskRunPasswordFile = "",
+    [switch]$AllowInteractiveTaskForLocalTest,
+    [System.Management.Automation.PSReference]$PublicWrapperExitCode = $null
+)
+$ErrorActionPreference = "Stop"
+if ($env:LABEL_MATCH_INSTALL_STUB_MODE -ceq "nested_failure") {
+    if ($null -eq $PublicWrapperExitCode) { exit 9 }
+    $PublicWrapperExitCode.Value = 9
+    return
+}
+if ($env:LABEL_MATCH_INSTALL_STUB_MODE -ceq "missing_executable") {
+    Remove-Item -LiteralPath (Join-Path $ManagedInstallRoot "Label_Match.exe") -Force
+}
+$summaryStatus = "DRY_RUN"
+if ($env:LABEL_MATCH_INSTALL_STUB_MODE -ceq "production_success") {
+    # The outer invocation remains a safe isolated DryRun through elevation and
+    # staging; switch only its post-child branch to exercise PASS finalization.
+    Set-Variable -Scope 1 -Name isDryRun -Value $false
+    $summaryStatus = "PASS"
+}
+$entries = @(
+    Get-ChildItem -LiteralPath $ManagedInstallRoot -Force -File -Recurse |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($ManagedInstallRoot.TrimEnd('\').Length + 1).Replace('\', '/')
+            if ($relative -cne "_internal/config/app_settings.json") {
+                [ordered]@{
+                    path = $relative
+                    size = [long]$_.Length
+                    sha256 = ([BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash([IO.File]::OpenRead($_.FullName)))).Replace('-', '').ToLowerInvariant()
+                }
+            }
+        } | Sort-Object @{ Expression = { $_.path.ToLowerInvariant() } }, @{ Expression = { $_.path } }
+)
+$builder = New-Object Text.StringBuilder
+foreach ($entry in $entries) {
+    [void]$builder.Append($entry.path).Append("`t").Append($entry.size).Append("`t").Append($entry.sha256).Append("`n")
+}
+$sha = [Security.Cryptography.SHA256]::Create()
+try {
+    $identity = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($builder.ToString())))).Replace('-', '').ToLowerInvariant()
+}
+finally { $sha.Dispose() }
+$summaryPath = Join-Path $ProgramDataRoot "status\label_match_one_step_install_summary.json"
+New-Item -ItemType Directory -Path (Split-Path -Parent $summaryPath) -Force | Out-Null
+[ordered]@{
+    installer_report_version = "label-match-direct-sync-one-step-install-v2"
+    status = $summaryStatus
+    source_manifest_sha256 = $SourceManifestSha256
+    resources = [ordered]@{
+        app_root = [ordered]@{
+            path = [IO.Path]::GetFullPath($ManagedInstallRoot)
+            inventory_contract = "label-match-app-immutable-inventory-v1"
+            mutable_relative_paths = @("_internal/config/app_settings.json")
+            immutable_file_count = $entries.Count
+            immutable_inventory_sha256 = $identity
+        }
+    }
+} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+if ($null -eq $PublicWrapperExitCode) { exit 0 }
+$PublicWrapperExitCode.Value = 0
+return
+'''
+
+
+def _write_public_installer_fixture(root: Path) -> None:
+    root.mkdir()
+    shutil.copy2(ROOT / "INSTALL_THIS_PC.ps1", root / "INSTALL_THIS_PC.ps1")
+    (root / "install_label_match_direct_sync.ps1").write_text(
+        _NESTED_INSTALLER_STUB, encoding="utf-8"
+    )
+    (root / "Label_Match.exe").write_bytes(b"manifest-bound-executable")
+    (root / "_internal/config").mkdir(parents=True)
+    (root / "_internal/config/app_settings.json").write_text("{}\n", encoding="utf-8")
+    (root / "tools/direct_sync_relay_install_pack").mkdir(parents=True)
+    (root / "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe").write_bytes(b"pack")
+    (root / "tools/direct_sync_relay_runner.exe").write_bytes(b"runner")
+    (root / "tools/register_label_match_worker_pc.exe").write_bytes(b"register")
+    inventory = []
+    for path in sorted(
+        (item for item in root.rglob("*") if item.is_file()),
+        key=lambda item: (item.relative_to(root).as_posix().casefold(), item.relative_to(root).as_posix()),
+    ):
+        relative = path.relative_to(root).as_posix()
+        inventory.append(
+            {
+                "path": relative,
+                "size": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    (root / "build-manifest.json").write_text(
+        json.dumps(
+            {"build_manifest_schema_version": 1, "payload_inventory": inventory},
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _run_public_installer_fixture(tmp_path: Path, mode: str):
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is unavailable")
+    package = tmp_path / f"ordinary-extraction-{mode}"
+    _write_public_installer_fixture(package)
+    if mode == "staging_failure":
+        (package / "Label_Match.exe").write_bytes(b"changed-after-manifest")
+    roots = {name: tmp_path / f"{mode}-{name}" for name in ("app", "programs", "receipts", "data", "scan", "profiles")}
+    command = [
+        powershell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(package / "INSTALL_THIS_PC.ps1"),
+        "-DryRun",
+        "-AllowNoncanonicalLayoutForTest",
+        "-InstallRootForTest",
+        str(roots["app"]),
+        "-CommonProgramsRootForTest",
+        str(roots["programs"]),
+        "-RollbackReceiptRootForTest",
+        str(roots["receipts"]),
+        "-ProgramDataRoot",
+        str(roots["data"]),
+        "-ScanSourceDir",
+        str(roots["scan"]),
+        "-LogisticsProfilePath",
+        str(roots["profiles"] / "runtime-profile.json"),
+    ]
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "KMTECH_FACTORY_INSTALL_TEST_MODE": "1",
+            "LABEL_MATCH_INSTALL_STUB_MODE": mode,
+        },
+    )
+    return completed, roots
+
+
+def test_public_installer_cannot_false_succeed_after_ordinary_extraction(tmp_path):
+    completed, roots = _run_public_installer_fixture(tmp_path, "missing_executable")
+
+    assert completed.returncode != 0
+    assert not (roots["app"] / "Label_Match.exe").exists()
+    receipt = json.loads(
+        (roots["receipts"] / "label_match_public_install_report.json").read_text(encoding="utf-8-sig")
+    )
+    assert receipt["status"] == "FAILED"
+    assert "canonical installed executable is missing" in receipt["failure"].lower()
+
+
+def test_public_installer_success_binds_executable_summary_and_receipt(tmp_path):
+    completed, roots = _run_public_installer_fixture(tmp_path, "production_success")
+
+    assert completed.returncode == 0, completed.stderr
+    executable = roots["app"] / "Label_Match.exe"
+    assert executable.read_bytes() == b"manifest-bound-executable"
+    receipt = json.loads(
+        (roots["receipts"] / "label_match_public_install_report.json").read_text(encoding="utf-8-sig")
+    )
+    assert receipt["status"] == "PASS"
+    assert receipt["installed_executable"]["sha256"] == hashlib.sha256(executable.read_bytes()).hexdigest()
+    assert receipt["install_summary"]["status"] == "PASS"
+    assert receipt["install_summary"]["source_manifest_sha256"] == receipt["source_manifest_sha256"]
+
+
+def test_public_installer_nested_failure_is_nonzero_without_success_receipt(tmp_path):
+    completed, roots = _run_public_installer_fixture(tmp_path, "nested_failure")
+
+    assert completed.returncode == 9
+    assert not roots["app"].exists()
+    receipt = json.loads(
+        (roots["receipts"] / "label_match_public_install_report.json").read_text(encoding="utf-8-sig")
+    )
+    assert receipt["status"] == "FAILED"
+    assert receipt["nested_exit_code"] == 9
+
+
+def test_public_installer_staging_failure_is_nonzero_without_success_receipt(tmp_path):
+    completed, roots = _run_public_installer_fixture(tmp_path, "staging_failure")
+
+    assert completed.returncode != 0
+    assert not roots["app"].exists()
+    assert not (roots["receipts"] / "label_match_public_install_report.json").exists()
+    assert "manifest" in completed.stderr.lower()
+
+
+def test_production_pass_and_removal_ownership_remain_postcondition_guarded():
+    public_installer = (ROOT / "INSTALL_THIS_PC.ps1").read_text(encoding="utf-8")
+
+    nested_call = public_installer.index(
+        "& $installer @nestedParameters -PublicWrapperExitCode ([ref]$nestedExitCode)"
+    )
+    postcondition = public_installer.index(
+        "Assert-ManifestBoundInstalledExecutable $installRoot $manifest",
+        nested_call,
+    )
+    pass_receipt = public_installer.index(
+        '$publicReport.status = if ($isDryRun) { "DRY_RUN_STAGED" } else { "PASS" }',
+        postcondition,
+    )
+    assert nested_call < postcondition < pass_receipt
+    assert (
+        "[void](Assert-OwnedInstalledTarget $installRoot $summaryPath "
+        "$sourceManifestSha256 $expectedSummaryStatus)"
+    ) in public_installer
+    assert (
+        '$priorPublicReport.status -cne "PASS"' in public_installer
+        and "Assert-OwnedInstalledTarget $installRoot $summaryPath $sourceManifestSha256" in public_installer
+    )
+    assert 'throw "Removal requires an owned successful public install receipt."' in public_installer
 
 
 def test_nonproduction_server_and_identity_override_is_public_and_documented():
