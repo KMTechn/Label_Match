@@ -12,6 +12,7 @@ param(
     [string]$CommonProgramsRootForTest = "",
     [string]$RollbackReceiptRootForTest = "",
     [string]$ServerBaseUrl = "https://worker.kmtecherp.com",
+    [string]$SourceHostId = "",
     [string]$ProgramDataRoot = "",
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
     [string]$EnrollmentTokenFile = "",
@@ -75,7 +76,15 @@ function Get-MachineStableSuffix() {
 }
 
 $safePcId = Get-SafeToken $env:COMPUTERNAME "worker-pc"
-$sourceHostId = ("label-match-{0}-{1}" -f $safePcId, (Get-MachineStableSuffix)).ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($SourceHostId)) {
+    $resolvedSourceHostId = ("label-match-{0}-{1}" -f $safePcId, (Get-MachineStableSuffix)).ToLowerInvariant()
+}
+else {
+    $resolvedSourceHostId = (Get-SafeToken $SourceHostId "").ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($resolvedSourceHostId)) {
+        throw "SourceHostId override must contain at least one safe identity character."
+    }
+}
 if ([string]::IsNullOrWhiteSpace($ProgramDataRoot)) {
     $ProgramDataRoot = "C:\ProgramData\KMTech\DirectSync\label_match"
 }
@@ -748,7 +757,7 @@ if (-not $DryRun.IsPresent -and -not ($Uninstall.IsPresent -or $Rollback.IsPrese
         status = "BLOCKED"
         blocked_reason = $blockedPlan.blocked_reason
         exit_code = 2
-        source_host_id = $sourceHostId
+        source_host_id = $resolvedSourceHostId
         field_layout_contract = $fieldLayoutContract
     })
     if ($null -ne $PublicWrapperExitCode) {
@@ -1116,7 +1125,7 @@ $arguments += @(
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
     "--scan-source-dir", $ScanSourceDir,
-    "--source-host-id", $sourceHostId,
+    "--source-host-id", $resolvedSourceHostId,
     "--app-run-user", $AppRunUser,
     "--task-name", $TaskName,
     "--report-path", $reportPath,
@@ -1345,7 +1354,7 @@ $summary = [ordered]@{
     }
     app_run_user = $AppRunUser
     app_runtime_acl = if ($null -ne $installReport) { $installReport.app_runtime_acl } else { $null }
-    source_host_id = if ($null -ne $registrationSummary) { $registrationSummary.source_host_id } else { $sourceHostId }
+    source_host_id = if ($null -ne $registrationSummary) { $registrationSummary.source_host_id } else { $resolvedSourceHostId }
     producer_install_id = if ($null -ne $registrationSummary) { $registrationSummary.producer_install_id } else { $null }
     producer_id = if ($null -ne $registrationSummary) { $registrationSummary.producer_id } else { $null }
     key_id = if ($null -ne $registrationSummary) { $registrationSummary.key_id } else { $null }

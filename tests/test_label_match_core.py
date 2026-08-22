@@ -479,6 +479,10 @@ def test_direct_sync_bootstrap_context_uses_fixed_runtime_resources_and_per_pc_s
     module = load_label_match_module()
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
     monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "Label Match Pack 01")
+    monkeypatch.setenv(
+        module.LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV,
+        "https://non-production.example.invalid",
+    )
 
     context = module._label_match_direct_sync_context(
         str(tmp_path / "scan-data"),
@@ -486,6 +490,7 @@ def test_direct_sync_bootstrap_context_uses_fixed_runtime_resources_and_per_pc_s
     )
 
     assert context["source_host_id"] == "label-match-pack-01"
+    assert context["server_base_url"] == "https://non-production.example.invalid"
     assert context["program_data_root"] == str(
         tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
     )
@@ -522,7 +527,7 @@ def test_direct_sync_default_contract_matches_one_step_installer(tmp_path, monke
 
     assert '$safePcId = Get-SafeToken $env:COMPUTERNAME "worker-pc"' in installer
     assert (
-        '$sourceHostId = ("label-match-{0}-{1}" -f $safePcId, '
+        '$resolvedSourceHostId = ("label-match-{0}-{1}" -f $safePcId, '
         '(Get-MachineStableSuffix)).ToLowerInvariant()'
     ) in installer
     assert '$ProgramDataRoot = "C:\\ProgramData\\KMTech\\DirectSync\\label_match"' in installer

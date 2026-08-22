@@ -1,3 +1,31 @@
+<#
+.SYNOPSIS
+Installs, removes, or rolls back the Label_Match release package.
+
+.DESCRIPTION
+The production server and machine-derived source identity remain the defaults.
+For isolated non-production qualification, provide both ServerBaseUrl and
+SourceHostId during installation, then set the matching process-scoped launch
+environment variables before every launch or restart. Do not set these values
+machine-wide.
+
+.PARAMETER ServerBaseUrl
+HTTPS base URL used for Direct Sync enrollment and upload.
+
+.PARAMETER SourceHostId
+Optional source identity override. Leave empty for the machine-derived default.
+
+.EXAMPLE
+$nonProductionServerBaseUrl = "<NON_PRODUCTION_SERVER_BASE_URL>"
+$nonProductionSourceHostId = "<NON_PRODUCTION_SOURCE_HOST_ID>"
+& .\INSTALL_THIS_PC.ps1 `
+    -ServerBaseUrl $nonProductionServerBaseUrl `
+    -SourceHostId $nonProductionSourceHostId
+
+$env:LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL = $nonProductionServerBaseUrl
+$env:LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID = $nonProductionSourceHostId
+& "C:\KMTech\Apps\Label_Match\current\Label_Match.exe"
+#>
 param(
     [switch]$DryRun,
     [switch]$Uninstall,
@@ -8,6 +36,7 @@ param(
     [string]$CommonProgramsRootForTest = "",
     [string]$RollbackReceiptRootForTest = "",
     [string]$ServerBaseUrl = "https://worker.kmtecherp.com",
+    [string]$SourceHostId = "",
     [string]$ProgramDataRoot = "",
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
     [string]$EnrollmentTokenFile = "",

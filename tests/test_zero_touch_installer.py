@@ -101,7 +101,7 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert "ExistingCredentialPath" in installer
     assert '"--producer-manifest-path", $ExistingProducerManifestPath' in installer
     assert '"--credential-path", $ExistingCredentialPath' in installer
-    assert '"--source-host-id", $sourceHostId' in installer
+    assert '"--source-host-id", $resolvedSourceHostId' in installer
     assert (
         'C:\\ProgramData\\KMTech\\Logistics\\profiles\\Label_Match'
         '\\runtime-profile.json'
@@ -160,6 +160,28 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
         assert "immutable_inventory_sha256" in source
     assert "UNINSTALLED_DATA_PRESERVED" in alias
     assert "exact_fresh_target_parity" in alias
+    _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
+
+
+def test_nonproduction_server_and_identity_override_is_public_and_documented():
+    public_installer = (ROOT / "INSTALL_THIS_PC.ps1").read_text(encoding="utf-8")
+    nested_installer = (ROOT / "install_label_match_direct_sync.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (public_installer, nested_installer):
+        assert '[string]$ServerBaseUrl = "https://worker.kmtecherp.com"' in source
+        assert '[string]$SourceHostId = ""' in source
+
+    assert "$nestedParameters[$entry.Key] = $entry.Value" in public_installer
+    assert "Get-SafeToken $SourceHostId \"\"" in nested_installer
+    assert '"--server-base-url", $ServerBaseUrl' in nested_installer
+    assert '"--source-host-id", $resolvedSourceHostId' in nested_installer
+    assert "<NON_PRODUCTION_SERVER_BASE_URL>" in public_installer
+    assert "<NON_PRODUCTION_SOURCE_HOST_ID>" in public_installer
+    assert "LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL" in public_installer
+    assert "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID" in public_installer
+    _assert_powershell_ast(ROOT / "INSTALL_THIS_PC.ps1")
     _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
 
 
