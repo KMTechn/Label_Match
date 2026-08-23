@@ -33,10 +33,7 @@ $targets = @(
     "Label_Match.exe",
     "Label_Match_Protected_Admin_Install.exe",
     "KMTech_Logistics_Profile_Install.exe",
-    "KMTech_Logistics_Profile_Check.exe",
-    "tools\direct_sync_relay_runner.exe",
-    "tools\direct_sync_relay_install_pack\direct_sync_relay_install_pack.exe",
-    "tools\register_label_match_worker_pc.exe"
+    "KMTech_Logistics_Profile_Check.exe"
 )
 foreach ($relativePath in $targets) {
     $target = Join-Path $package $relativePath

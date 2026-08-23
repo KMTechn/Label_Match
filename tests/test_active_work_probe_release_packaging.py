@@ -83,8 +83,9 @@ def test_probe_artifacts_are_required_by_frozen_archive_contract():
     assert callable(loaded_validator.validate_release_evidence)
 
 
-def test_probe_does_not_expand_the_existing_direct_sync_tool_set():
-    builder = (ROOT / "tools" / "build_release_cli_tools.py").read_text(encoding="utf-8")
+def test_probe_remains_separate_from_embedded_python_materialization():
+    builder = (ROOT / "tools" / "build_embedded_python_library.py").read_text(encoding="utf-8")
 
     assert "KMTechActiveWorkProbe" not in builder
     assert "active_work_probe.py" not in builder
+    assert not (ROOT / "tools" / "build_release_cli_tools.py").exists()

@@ -56,7 +56,7 @@ def _write_manifest(root: Path) -> None:
 
 def _package(tmp_path: Path) -> Path:
     root = tmp_path / "Label_Match"
-    (root / "tools/direct_sync_relay_install_pack/_internal").mkdir(parents=True)
+    (root / "tools").mkdir(parents=True)
     (root / "config").mkdir(parents=True)
     (root / "_internal/config").mkdir(parents=True)
     (root / "INSTALL_THIS_PC.ps1").write_text("# public fixture\n", encoding="utf-8")
@@ -64,10 +64,12 @@ def _package(tmp_path: Path) -> Path:
     (root / "Label_Match.exe").write_bytes(b"app")
     (root / "config/app_settings.json").write_text("{}\n", encoding="utf-8")
     (root / "_internal/config/app_settings.json").write_text("{}\n", encoding="utf-8")
-    (root / "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe").write_bytes(b"install")
-    (root / "tools/direct_sync_relay_install_pack/_internal/python312.dll").write_bytes(b"runtime")
-    (root / "tools/direct_sync_relay_runner.exe").write_bytes(b"runner")
-    (root / "tools/register_label_match_worker_pc.exe").write_bytes(b"register")
+    (root / "_internal/python312.dll").write_bytes(b"runtime")
+    (root / "_internal/base_library.zip").write_bytes(b"library")
+    (root / "tools/invoke_embedded_python.ps1").write_text("# host\n", encoding="utf-8")
+    (root / "tools/direct_sync_relay_install_pack.py").write_text("# install\n", encoding="utf-8")
+    (root / "tools/direct_sync_relay_runner.py").write_text("# runner\n", encoding="utf-8")
+    (root / "tools/register_label_match_worker_pc.py").write_text("# register\n", encoding="utf-8")
     _write_manifest(root)
     return root
 
@@ -85,8 +87,7 @@ def _fake_run_with_reports(command, **kwargs):
     common_programs = Path(command[command.index("-CommonProgramsRootForTest") + 1])
     receipt_root = Path(command[command.index("-RollbackReceiptRootForTest") + 1])
     shutil.copytree(extracted_root, install_root)
-    runner = install_root / "tools/direct_sync_relay_runner.exe"
-    registration = install_root / "tools/register_label_match_worker_pc.exe"
+    runner = install_root / "tools/direct_sync_relay_runner.py"
     settings = install_root / "_internal/config/app_settings.json"
     settings.write_text(json.dumps({"custom_save_path": str(scan_source)}), encoding="utf-8")
     manifest_sha = verifier._sha256(extracted_root / "build-manifest.json")
@@ -151,12 +152,13 @@ def _fake_run_with_reports(command, **kwargs):
             "expected_state_db_path": verifier.CANONICAL_STATE_DB_PATH,
             "local_test_override_enabled": True,
         },
-        "runner_exe": str(runner),
+        "runner_exe": "",
+        "runner_command_mode": "in_process_source",
         "runner_command": [str(runner), "--help"],
         "app_settings_path": str(settings),
         "self_enrollment": {
-            "registration_command_mode": "bundled_executable",
-            "registration_executable": str(registration),
+            "registration_command_mode": "in_process_source",
+            "registration_executable": "",
         },
     }
     status = program_data / "status"
@@ -168,6 +170,7 @@ def _fake_run_with_reports(command, **kwargs):
         json.dumps(
             {
                 "installer_report_version": "label-match-direct-sync-one-step-install-v2",
+                "installer_execution_mode": "in_process_embedded_python",
                 "lifecycle_contract": {
                     "task_removal_order": ["stop", "delete", "absence"],
                     "fresh_evidence_root_required": True,
@@ -233,7 +236,7 @@ def test_verify_staged_installer_proves_public_staging_and_lifecycle_contract(tm
 
 
 @pytest.mark.skipif(verifier.os.name != "nt", reason="Windows-only staged installer verifier")
-def test_verify_staged_installer_rejects_python_runner_fallback(tmp_path, monkeypatch):
+def test_verify_staged_installer_rejects_external_python_runner_fallback(tmp_path, monkeypatch):
     package = _package(tmp_path)
     monkeypatch.setattr(
         verifier.shutil,
@@ -252,7 +255,7 @@ def test_verify_staged_installer_rejects_python_runner_fallback(tmp_path, monkey
         return completed
 
     monkeypatch.setattr(verifier.subprocess, "run", fake_python_report)
-    with pytest.raises(verifier.StagedInstallerVerificationError, match="bundled runtime"):
+    with pytest.raises(verifier.StagedInstallerVerificationError, match="in-process runtime"):
         verifier.verify_staged_installer(package)
 
 

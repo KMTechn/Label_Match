@@ -622,31 +622,26 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
     )
     calls = []
 
-    class Completed:
-        returncode = 0
-        stdout = "install ok"
-        stderr = ""
-
     monkeypatch.setattr(module, "_label_match_direct_sync_ready", lambda _context: False)
-    monkeypatch.setattr(module, "_label_match_direct_sync_tool_command", lambda _context: [str(tmp_path / "install-pack.exe")])
-    monkeypatch.setattr(
-        module,
-        "_label_match_optional_tool_exe",
-        lambda _context, filename: str(tmp_path / filename),
-    )
+    monkeypatch.setattr(module, "_label_match_direct_sync_tool_command", lambda _context: [str(tmp_path / "install-pack.py")])
     monkeypatch.setattr(module, "_label_match_run_direct_sync_task", lambda _context: {"status": "PASS"})
 
-    def fake_run(args, **kwargs):
-        calls.append((args, kwargs))
-        return Completed()
+    def fake_run(script_path, arguments, **kwargs):
+        calls.append((script_path, arguments, kwargs))
+        return {
+            "returncode": 0,
+            "stdout": "install ok",
+            "stderr": "",
+            "execution_boundary": "in_process",
+        }
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "_label_match_run_in_process_tool", fake_run)
 
     module._label_match_auto_bootstrap_direct_sync(context)
 
     assert calls
-    command = calls[0][0]
-    assert command[0].endswith("install-pack.exe")
+    assert calls[0][0].endswith("install-pack.py")
+    command = calls[0][1]
     assert "--self-enroll" in command
     assert command[command.index("--server-base-url") + 1] == module.LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
     assert command[command.index("--program-data-root") + 1] == context["program_data_root"]
@@ -654,8 +649,8 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
     assert command[command.index("--scan-source-dir") + 1] == context["scan_source_dir"]
     assert command[command.index("--source-host-id") + 1] == context["source_host_id"]
     assert command[command.index("--app-settings-path") + 1] == context["app_settings_path"]
-    assert command[command.index("--runner-exe") + 1].endswith("direct_sync_relay_runner.exe")
-    assert command[command.index("--registration-exe") + 1].endswith("register_label_match_worker_pc.exe")
+    assert "--runner-exe" not in command
+    assert "--registration-exe" not in command
     if allow_interactive_task_for_local_test:
         assert "--task-run-user" not in command
     else:
@@ -665,6 +660,7 @@ def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
     assert ("--allow-interactive-task-for-local-test" in command) is allow_interactive_task_for_local_test
     report = json.loads(Path(context["bootstrap_status_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "PASS"
+    assert report["execution_boundary"] == "in_process"
     assert report["run_task_result"] == {"status": "PASS"}
 
 
@@ -763,10 +759,11 @@ def test_session_direct_sync_reports_runner_backpressure_exit_as_fail(tmp_path, 
     observed = {}
 
     monkeypatch.setattr(module, "_label_match_session_sync_trigger_enabled", lambda: True)
-    monkeypatch.setattr(module, "_label_match_direct_sync_runner_command", lambda *args, **kwargs: ["runner.exe"])
+    monkeypatch.setattr(module, "_label_match_direct_sync_runner_command", lambda *args, **kwargs: ["runner.py", "--once"])
 
-    def fake_run(command, **kwargs):
-        observed["command"] = command
+    def fake_run(script_path, arguments, **kwargs):
+        observed["script_path"] = script_path
+        observed["arguments"] = arguments
         observed.update(kwargs)
         return {
             "returncode": 2,
@@ -777,7 +774,7 @@ def test_session_direct_sync_reports_runner_backpressure_exit_as_fail(tmp_path, 
             "elapsed_seconds": 0.01,
         }
 
-    monkeypatch.setattr(module, "_label_match_run_bounded_subprocess", fake_run)
+    monkeypatch.setattr(module, "_label_match_run_in_process_tool", fake_run)
     monkeypatch.setattr(
         module,
         "_label_match_current_delta_ack_report",
@@ -857,51 +854,35 @@ def test_current_delta_ack_report_rejects_missing_stale_and_wrong_target(tmp_pat
     assert accepted["targeted_drain_results"][0]["current_target_verified"] is True
 
 
-def test_bounded_subprocess_timeout_terminates_tree_and_normalizes_byte_output(monkeypatch):
+def test_in_process_tool_execution_never_spawns_a_child(tmp_path, monkeypatch):
     module = load_label_match_module()
-
-    class FakeProcess:
-        pid = 4321
-        returncode = None
-        stdout = None
-        stderr = None
-
-        def __init__(self):
-            self.communicate_count = 0
-
-        def communicate(self, timeout):
-            self.communicate_count += 1
-            if self.communicate_count == 1:
-                raise module.subprocess.TimeoutExpired(
-                    "runner.exe",
-                    timeout,
-                    output=b"partial-output",
-                    stderr=b"partial-error",
-                )
-            return b"final-output", b"final-error"
-
-    process = FakeProcess()
-    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: process)
-
-    def terminate_tree(current, **kwargs):
-        assert current is process
-        assert kwargs["deadline_monotonic"] >= module.time.monotonic()
-        current.returncode = -9
-        return {"attempted": True, "tree_terminated": True, "method": "test"}
-
-    monkeypatch.setattr(module, "_label_match_terminate_process_tree", terminate_tree)
-
-    result = module._label_match_run_bounded_subprocess(
-        ["runner.exe"],
-        timeout_seconds=0.1,
-        env={},
+    script = tmp_path / "in_process_tool.py"
+    script.write_text(
+        "import os\n"
+        "def main(argv=None):\n"
+        "    print('args=' + ','.join(argv or []))\n"
+        "    print('mode=' + os.environ['IN_PROCESS_TEST'])\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("child process spawned")),
     )
 
-    assert result["timed_out"] is True
-    assert result["returncode"] == -9
-    assert result["stdout"] == "final-output"
-    assert result["stderr"] == "final-error"
-    assert result["process_tree_termination"]["tree_terminated"] is True
+    result = module._label_match_run_in_process_tool(
+        str(script),
+        ["one", "two"],
+        timeout_seconds=1,
+        env_overrides={"IN_PROCESS_TEST": "yes"},
+    )
+
+    assert result["returncode"] == 0
+    assert result["execution_boundary"] == "in_process"
+    assert "args=one,two" in result["stdout"]
+    assert "mode=yes" in result["stdout"]
+    assert "IN_PROCESS_TEST" not in module.os.environ
 
 
 def test_session_direct_sync_writes_reason_specific_and_latest_reports(tmp_path):

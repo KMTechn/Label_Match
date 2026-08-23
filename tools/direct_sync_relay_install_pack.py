@@ -6,15 +6,23 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 DEFAULT_TASK_NAME = "direct-sync-relay-label-match"
@@ -95,7 +103,9 @@ def _task_wrapper_content(
     *,
     environment: dict[str, str] | None = None,
 ) -> str:
-    python_exe = str(runner_parts[0])
+    runner_script = Path(str(runner_parts[0])).resolve()
+    app_root = runner_script.parents[1]
+    embedded_python_host = app_root / "tools" / "invoke_embedded_python.ps1"
     runner_args = [str(part) for part in runner_parts[1:]]
     lines = [
         "$ErrorActionPreference = 'Stop'",
@@ -109,8 +119,12 @@ def _task_wrapper_content(
     lines.extend(
         [
             ")",
-            f"& {_ps_single_quote(python_exe)} @arguments",
-            "exit $LASTEXITCODE",
+            f". {_ps_single_quote(embedded_python_host)}",
+            "$exitCode = Invoke-KMTechEmbeddedPython "
+            f"-AppRoot {_ps_single_quote(app_root)} "
+            f"-ScriptPath {_ps_single_quote(runner_script)} "
+            "-Arguments $arguments",
+            "exit [int]$exitCode",
             "",
         ]
     )
@@ -757,9 +771,7 @@ def _app_save_path_scan_dir_check(
 
 def _install_preflight(
     app_root: Path,
-    python_exe: str,
     runner_script: Path,
-    runner_exe: Path | None,
     producer_manifest_path: Path,
     credential_path: Path,
     relay_scan_source_dir: str,
@@ -778,19 +790,19 @@ def _install_preflight(
         if not exists:
             failures.append(f"{name} missing")
 
-    python_path = Path(python_exe)
-    if runner_exe is not None:
-        add_file_check("runner_exe", runner_exe)
-    else:
-        add_file_check("python_exe", python_path)
-        add_file_check("runner_script", runner_script)
-        for module_name in [
-            "producer_runtime_client.py",
-            "direct_sync_push.py",
-            "direct_sync_runtime.py",
-            "direct_sync_operator.py",
-        ]:
-            add_file_check(module_name, app_root / module_name)
+    add_file_check("embedded_python_host", app_root / "tools" / "invoke_embedded_python.ps1")
+    embedded_runtime_root = app_root / "_internal"
+    if embedded_runtime_root.is_dir():
+        add_file_check("embedded_python_dll", embedded_runtime_root / "python312.dll")
+        add_file_check("embedded_python_base_library", embedded_runtime_root / "base_library.zip")
+    add_file_check("runner_script", runner_script)
+    for module_name in [
+        "producer_runtime_client.py",
+        "direct_sync_push.py",
+        "direct_sync_runtime.py",
+        "direct_sync_operator.py",
+    ]:
+        add_file_check(module_name, app_root / module_name)
     add_file_check("producer_manifest_path", producer_manifest_path)
     add_file_check("credential_path", credential_path)
     save_path_check, save_path_failure = _app_save_path_scan_dir_check(
@@ -874,71 +886,26 @@ def _install_preflight(
             })
             failures.append("manifest Label_Match contract preflight failed")
 
-    if runner_exe is not None and runner_exe.is_file():
+    if runner_script.is_file():
         try:
-            completed = subprocess.run(
-                [str(runner_exe), "--help"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            checks.append({
-                "name": "runner_exe_help",
-                "status": "PASS" if completed.returncode == 0 else "FAIL",
-                "returncode": str(completed.returncode),
-                "stderr": completed.stderr[-500:],
-            })
-            if completed.returncode != 0:
-                failures.append("runner executable preflight failed")
-        except Exception as exc:
-            checks.append({
-                "name": "runner_exe_help",
-                "status": "FAIL",
-                "error": str(exc),
-            })
-            failures.append("runner executable preflight failed")
+            from tools.direct_sync_relay_runner import main as runner_main
 
-    if runner_exe is None and python_path.is_file():
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(app_root) + os.pathsep + env.get("PYTHONPATH", "")
-        probe = (
-            "import json, pathlib, sys; "
-            "sys.exit(3) if sys.version_info < (3, 10) else None; "
-            "import requests; "
-            "import producer_runtime_client, direct_sync_push, direct_sync_runtime, direct_sync_operator; "
-            f"manifest=json.loads(pathlib.Path({str(producer_manifest_path)!r}).read_text(encoding='utf-8-sig')); "
-            "identity=manifest.get('pc_identity') if isinstance(manifest, dict) else {}; "
-            "sys.exit(4) if not isinstance(identity, dict) or not str(identity.get('producer_install_id') or '').strip() or not str(identity.get('source_host_id') or '').strip() else None; "
-            "streams=manifest.get('streams') if isinstance(manifest, dict) else []; "
-            "stream=next((item for item in streams if isinstance(item, dict) and item.get('stream_name') == direct_sync_push.DEFAULT_STREAM_NAME), None); "
-            "sys.exit(5) if not isinstance(stream, dict) or stream.get('source_system') != direct_sync_push.DEFAULT_SOURCE_SYSTEM or stream.get('source_transport') != direct_sync_push.DEFAULT_SOURCE_TRANSPORT else None; "
-            f"direct_sync_runtime.load_credentials_from_json({str(credential_path)!r})"
-        )
-        try:
-            completed = subprocess.run(
-                [str(python_path), "-c", probe],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                env=env,
-            )
+            completed = _run_in_process_main(runner_main, ["--help"])
             checks.append({
-                "name": "python_imports",
-                "status": "PASS" if completed.returncode == 0 else "FAIL",
-                "returncode": str(completed.returncode),
-                "stderr": completed.stderr[-500:],
+                "name": "runner_in_process_help",
+                "status": "PASS" if completed["returncode"] == 0 else "FAIL",
+                "returncode": str(completed["returncode"]),
+                "stderr": str(completed["stderr"])[-500:],
             })
-            if completed.returncode != 0:
-                failures.append("python import/version preflight failed")
+            if completed["returncode"] != 0:
+                failures.append("in-process runner preflight failed")
         except Exception as exc:
             checks.append({
-                "name": "python_imports",
+                "name": "runner_in_process_help",
                 "status": "FAIL",
                 "error": str(exc),
             })
-            failures.append("python import/version preflight failed")
+            failures.append("in-process runner preflight failed")
 
     return {
         "status": "PASS" if not failures else "FAIL",
@@ -1024,10 +991,7 @@ def _backpressure_config(args: argparse.Namespace) -> dict:
 
 def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) -> dict:
     app_root = Path(args.app_root).resolve()
-    python_exe = str(Path(args.python_exe).resolve())
     runner_script = app_root / "tools" / "direct_sync_relay_runner.py"
-    runner_exe_text = str(getattr(args, "runner_exe", "") or "").strip()
-    runner_exe = Path(runner_exe_text).resolve() if runner_exe_text else None
     producer_manifest_path = Path(
         getattr(args, "producer_manifest_path", "") or _default_manifest_path(args.program_data_root)
     ).resolve()
@@ -1046,11 +1010,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     rollback = bool(getattr(args, "rollback", False))
     removal = uninstall or rollback
     run_install_preflight = run_preflight and not removal and not (self_enroll and not bool(getattr(args, "apply", False)))
-    runner_parts = [
-        str(runner_exe) if runner_exe is not None else python_exe,
-    ]
-    if runner_exe is None:
-        runner_parts.append(str(runner_script))
+    runner_parts = [str(runner_script)]
     runner_parts.extend([
         "--db-path",
         paths["db_path"],
@@ -1134,7 +1094,8 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "source_scan_baseline_command": _source_scan_baseline_command(runner_parts, source_scan),
         "backpressure": backpressure,
         "runner_script": str(runner_script),
-        "runner_exe": str(runner_exe) if runner_exe is not None else "",
+        "runner_exe": "",
+        "runner_command_mode": "in_process_source",
         "runner_command": runner_parts,
         "task_wrapper": {
             "enabled": True,
@@ -1165,9 +1126,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "install_preflight": (
             _install_preflight(
                 app_root,
-                python_exe,
                 runner_script,
-                runner_exe,
                 producer_manifest_path,
                 credential_path,
                 str(source_scan.get("scan_source_dir") or ""),
@@ -1187,16 +1146,8 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
                 getattr(args, "logistics_profile_path", "") or ""
             ).strip(),
             "registration_script": str(app_root / "tools" / "register_label_match_worker_pc.py"),
-            "registration_executable": (
-                str(Path(str(getattr(args, "registration_exe", "") or "")).resolve())
-                if str(getattr(args, "registration_exe", "") or "").strip()
-                else ""
-            ),
-            "registration_command_mode": (
-                "bundled_executable"
-                if str(getattr(args, "registration_exe", "") or "").strip()
-                else "python_script"
-            ),
+            "registration_executable": "",
+            "registration_command_mode": "in_process_source",
             "registration_report_path": str(
                 Path(
                     getattr(args, "registration_report_path", "")
@@ -1239,6 +1190,48 @@ def _read_bounded_command_stream(stream) -> tuple[str, bool, int]:
     stream.seek(0)
     bounded = stream.read(COMMAND_OUTPUT_LIMIT)
     return bounded.decode("utf-8", errors="replace"), total_bytes > COMMAND_OUTPUT_LIMIT, total_bytes
+
+
+def _bounded_captured_text(value: str) -> tuple[str, bool, int]:
+    encoded = value.encode("utf-8", errors="replace")
+    return (
+        encoded[:COMMAND_OUTPUT_LIMIT].decode("utf-8", errors="replace"),
+        len(encoded) > COMMAND_OUTPUT_LIMIT,
+        len(encoded),
+    )
+
+
+def _run_in_process_main(entrypoint, arguments: Sequence[str]) -> dict:
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+        try:
+            raw_returncode = entrypoint([str(part) for part in arguments])
+            returncode = int(raw_returncode or 0)
+        except SystemExit as exc:
+            if exc.code is None:
+                returncode = 0
+            elif isinstance(exc.code, int):
+                returncode = exc.code
+            else:
+                print(str(exc.code), file=sys.stderr)
+                returncode = 1
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            returncode = 1
+    stdout, stdout_truncated, stdout_bytes = _bounded_captured_text(stdout_buffer.getvalue())
+    stderr, stderr_truncated, stderr_bytes = _bounded_captured_text(stderr_buffer.getvalue())
+    return {
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_bytes": stdout_bytes,
+        "stderr_bytes": stderr_bytes,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "timed_out": False,
+        "in_process": True,
+    }
 
 
 def _run_command(command: Sequence[str]) -> dict:
@@ -1440,16 +1433,8 @@ def _remove_scheduled_task_typed(task_name: str, expected_action_parts: Sequence
 
 
 def _self_enrollment_registration_command(args: argparse.Namespace) -> list[str]:
-    app_root = Path(args.app_root).resolve()
     program_data_root = Path(args.program_data_root).expanduser().resolve()
-    registration_exe_text = str(getattr(args, "registration_exe", "") or "").strip()
-    if registration_exe_text:
-        command = [str(Path(registration_exe_text).resolve())]
-    else:
-        command = [
-            str(Path(args.python_exe).resolve()),
-            str(app_root / "tools" / "register_label_match_worker_pc.py"),
-        ]
+    command: list[str] = []
     enrollment_token_env = str(getattr(args, "enrollment_token_env", "") or "")
     command.extend([
         "--apply",
@@ -1517,7 +1502,9 @@ def _redact_registration_command(command: Sequence[str]) -> list[str]:
 
 def _run_self_enrollment_registration(args: argparse.Namespace) -> dict:
     command = _self_enrollment_registration_command(args)
-    result = _run_command(command)
+    from tools.register_label_match_worker_pc import main as registration_main
+
+    result = _run_in_process_main(registration_main, command)
     stdout = str(result.pop("stdout", "") or "")
     stderr = str(result.pop("stderr", "") or "")
     result["stdout_omitted"] = bool(stdout) or int(result.get("stdout_bytes") or 0) > 0
@@ -1553,9 +1540,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Label_Match direct-sync relay scheduled-task install pack")
     parser.add_argument("--app-root", default=_default_app_root())
     parser.add_argument("--app-settings-path", default="")
-    parser.add_argument("--python-exe", default=sys.executable)
-    parser.add_argument("--runner-exe", default="")
-    parser.add_argument("--registration-exe", default="")
     parser.add_argument("--program-data-root", default=DEFAULT_PROGRAM_DATA_ROOT)
     parser.add_argument("--producer-manifest-path", default="")
     parser.add_argument("--credential-path", default="")
@@ -1772,7 +1756,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             baseline_command = plan.get("source_scan_baseline_command") or []
             if baseline_command:
-                plan["source_scan_baseline_result"] = _run_command(baseline_command)
+                from tools.direct_sync_relay_runner import main as runner_main
+
+                plan["source_scan_baseline_result"] = _run_in_process_main(
+                    runner_main,
+                    baseline_command[1:],
+                )
                 if int(plan["source_scan_baseline_result"].get("returncode") or 0) != 0:
                     plan["status"] = "FAIL"
                     plan["blocked_reason"] = "source scan baseline failed"

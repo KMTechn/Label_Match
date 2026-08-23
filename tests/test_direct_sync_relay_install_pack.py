@@ -513,11 +513,14 @@ def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monk
     assert module.DEFAULT_ENROLLMENT_TOKEN_ENV == "PRODUCER_SELF_ENROLL_TOKEN"
     monkeypatch.setattr(
         module,
-        "_run_command",
-        lambda command: {
+        "_run_in_process_main",
+        lambda entrypoint, arguments: {
             "returncode": 0,
             "stdout": "registration stdout may contain token material",
             "stderr": "registration stderr may contain token material",
+            "stdout_bytes": 46,
+            "stderr_bytes": 46,
+            "in_process": True,
         },
     )
     args = argparse.Namespace(
@@ -620,7 +623,8 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
     assert report["task_launcher"]["script_encoding"] == "ascii"
     assert report["task_launcher_write_result"]["encoding"] == "ascii"
     assert not launcher_path.read_bytes().startswith(b"\xef\xbb\xbf")
-    assert any("--baseline-existing-source-files" in command for command in commands)
+    assert report["source_scan_baseline_result"]["in_process"] is True
+    assert "--baseline-existing-source-files" in report["source_scan_baseline_command"]
     task_command = find_command(commands, "schtasks.exe")
     assert "wscript.exe" == task_command[task_command.index("/TR") + 1].split()[0]
 
@@ -1346,7 +1350,8 @@ def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_pa
     assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert registration_commands
-    assert any("--baseline-existing-source-files" in command for command in task_commands)
+    assert report["source_scan_baseline_result"]["in_process"] is True
+    assert "--baseline-existing-source-files" in report["source_scan_baseline_command"]
     assert find_command(task_commands, "schtasks.exe")
     assert report["task_wrapper_write_result"]["status"] == "PASS"
     assert Path(report["task_wrapper"]["path"]).is_file()
@@ -1363,10 +1368,8 @@ def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_pa
 def test_install_pack_uses_windows_quoting_for_scheduled_task_action(tmp_path):
     module = load_install_pack_module()
     app_root = tmp_path / "App Root With Spaces"
-    python_exe = tmp_path / "Python Runtime" / "python.exe"
     args = argparse.Namespace(
         app_root=str(app_root),
-        python_exe=str(python_exe),
         program_data_root=str(tmp_path / "Program Data" / "KMTech" / "DirectSync" / "label match"),
         producer_manifest_path=str(tmp_path / "Producer Manifest.json"),
         credential_path=str(tmp_path / "Credential File.json"),
@@ -1394,7 +1397,7 @@ def test_install_pack_uses_windows_quoting_for_scheduled_task_action(tmp_path):
     assert str(plan["task_launcher"]["path"]) in task_action
     wrapper_content = module._task_wrapper_content(plan["runner_command"])
     launcher_content = module._task_launcher_content(plan["task_wrapper"]["path"])
-    assert str(python_exe.resolve()) in wrapper_content
+    assert str((app_root / "tools" / "invoke_embedded_python.ps1").resolve()) in wrapper_content
     assert str((app_root / "tools" / "direct_sync_relay_runner.py").resolve()) in wrapper_content
     assert "포장실 *.csv" in wrapper_content
     assert "powershell.exe" in launcher_content
@@ -1402,7 +1405,7 @@ def test_install_pack_uses_windows_quoting_for_scheduled_task_action(tmp_path):
     assert str(plan["task_wrapper"]["path"]) in launcher_content
 
 
-def test_install_pack_can_schedule_bundled_runner_exe_without_python_script_command(tmp_path):
+def test_install_pack_ignores_retired_runner_exe_and_schedules_in_process_source(tmp_path):
     module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     runner_exe = tmp_path / "tools" / "direct_sync_relay_runner.exe"
@@ -1441,11 +1444,13 @@ def test_install_pack_can_schedule_bundled_runner_exe_without_python_script_comm
     plan = module.build_install_plan(args)
     wrapper_content = module._task_wrapper_content(plan["runner_command"])
 
-    assert plan["runner_command"][0] == str(runner_exe.resolve())
-    assert "direct_sync_relay_runner.py" not in plan["runner_command"]
-    assert str(runner_exe.resolve()) in wrapper_content
+    expected_runner = (tmp_path / "App Root" / "tools" / "direct_sync_relay_runner.py").resolve()
+    assert plan["runner_command"][0] == str(expected_runner)
+    assert str(expected_runner) in wrapper_content
+    assert str(runner_exe.resolve()) not in wrapper_content
     assert "missing-python.exe" not in wrapper_content
-    assert plan["runner_exe"] == str(runner_exe.resolve())
+    assert plan["runner_exe"] == ""
+    assert plan["runner_command_mode"] == "in_process_source"
 
 
 def test_install_pack_blocks_missing_release_runtime_preflight(tmp_path):
@@ -1667,7 +1672,8 @@ def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypa
     assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "PASS"
-    assert any("--baseline-existing-source-files" in command for command in commands)
+    assert report["source_scan_baseline_result"]["in_process"] is True
+    assert "--baseline-existing-source-files" in report["source_scan_baseline_command"]
     assert find_command(commands, "schtasks.exe")
     assert report["production_apply_guard"]["requires_confirm_production_install"] is False
 

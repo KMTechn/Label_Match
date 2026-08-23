@@ -15,7 +15,6 @@ import zipfile
 
 
 RELEASE_IDENTITY_SCHEMA = "label-match-release-identity-v3"
-CLI_TOOLS_SCHEMA = "label-match-release-cli-tools-v1"
 STAGED_INSTALLER_SCHEMA = "label-match-staged-installer-verification-v2"
 CONTRACT_BUNDLE_SHA256 = "adaa08684ebb291837327f63f967a4f22650dff72c4c1dc56ce1a9bee6b5404a"
 PYTHON_VERSION = "3.12.10"
@@ -27,30 +26,6 @@ SEMVER_TAG_RE = re.compile(r"^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$")
 GIT_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
-CLI_TOOL_SPECS = (
-    (
-        "direct_sync_relay_runner",
-        "tools/direct_sync_relay_runner.py",
-        "onefile",
-    ),
-    (
-        "direct_sync_relay_install_pack",
-        "tools/direct_sync_relay_install_pack.py",
-        "onedir",
-    ),
-    (
-        "register_label_match_worker_pc",
-        "tools/register_label_match_worker_pc.py",
-        "onefile",
-    ),
-)
-CLI_PROBE_POLICY = {
-    "probe_count": 3,
-    "help_timeout_seconds": 15.0,
-    "fresh_copy_per_probe": True,
-    "isolated_environment_per_probe": True,
-    "residual_process_policy": "fail_closed_new_exact_executable_path_with_baseline",
-}
 ALL_PROBE_APPS = [
     "Inspection_worker",
     "Rework_worker",
@@ -124,6 +99,8 @@ REQUIRED_PACKAGE_MEMBERS = {
     "KMTech_Logistics_Profile_Install.exe",
     "config/app_settings.json",
     "_internal/config/app_settings.json",
+    "_internal/python312.dll",
+    "_internal/base_library.zip",
     "direct_sync_operator.py",
     "direct_sync_push.py",
     "direct_sync_runtime.py",
@@ -131,11 +108,17 @@ REQUIRED_PACKAGE_MEMBERS = {
     "logistics_runtime_profile.py",
     "producer_runtime_client.py",
     "tools/check_logistics_runtime_profile.py",
-    "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-    "tools/direct_sync_relay_runner.exe",
+    "tools/direct_sync_relay_install_pack.py",
+    "tools/direct_sync_relay_runner.py",
+    "tools/invoke_embedded_python.ps1",
     "tools/install_logistics_runtime_profile.py",
+    "tools/register_label_match_worker_pc.py",
+}
+RETIRED_HELPER_EXECUTABLES = {
+    "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+    "tools/direct_sync_relay_install_pack.exe",
+    "tools/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
-    "tools/release_cli_tools_manifest.json",
 }
 
 
@@ -555,6 +538,8 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         "install_helper",
         "runner",
         "registration",
+        "embedded_python_host",
+        "retired_helper_executables_absent",
         "original_package_file_count",
         "original_package_inventory",
         "original_package_inventory_sha256",
@@ -574,6 +559,7 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         or report.get("dynamic_qualification") != "NOT_TESTED"
         or report.get("field_layout_contract_verified") is not True
         or report.get("system_python_required") is not False
+        or report.get("retired_helper_executables_absent") is not True
         or report.get("original_package_unchanged") is not True
         or report.get("app_settings_path") != "_internal/config/app_settings.json"
         or report.get("app_save_path_matches_relay_scan_source") is not True
@@ -683,26 +669,39 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
     ) != len(inventory):
         raise ReleaseArchiveError("staged installer package file count mismatch")
 
-    bindings = {
-        "public_entrypoint": ("INSTALL_THIS_PC.ps1", False),
-        "installer": ("install_label_match_direct_sync.ps1", False),
-        "install_helper": (
-            "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-            False,
-        ),
-        "runner": ("tools/direct_sync_relay_runner.exe", True),
-        "registration": ("tools/register_label_match_worker_pc.exe", True),
+    simple_bindings = {
+        "public_entrypoint": "INSTALL_THIS_PC.ps1",
+        "installer": "install_label_match_direct_sync.ps1",
+        "embedded_python_host": "tools/invoke_embedded_python.ps1",
     }
-    for name, (relative, selected_required) in bindings.items():
+    for name, relative in simple_bindings.items():
         entry = report.get(name)
-        expected_keys = {"path", "sha256", "selected"} if selected_required else {"path", "sha256"}
-        if not isinstance(entry, dict) or set(entry) != expected_keys or entry.get("path") != relative:
+        if not isinstance(entry, dict) or set(entry) != {"path", "sha256"} or entry.get("path") != relative:
             raise ReleaseArchiveError(f"staged installer {name} binding is invalid")
         target = package_root / PurePosixPath(relative)
         if not target.is_file() or entry.get("sha256") != _sha256(target):
             raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
-        if selected_required and entry.get("selected") is not True:
-            raise ReleaseArchiveError(f"staged installer {name} was not selected")
+    in_process_bindings = {
+        "install_helper": ("tools/direct_sync_relay_install_pack.py", False),
+        "runner": ("tools/direct_sync_relay_runner.py", True),
+        "registration": ("tools/register_label_match_worker_pc.py", True),
+    }
+    for name, (relative, selected_required) in in_process_bindings.items():
+        entry = report.get(name)
+        expected_keys = {"path", "sha256", "execution_boundary"}
+        if selected_required:
+            expected_keys.add("selected")
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != expected_keys
+            or entry.get("path") != relative
+            or entry.get("execution_boundary") != "in_process"
+            or (selected_required and entry.get("selected") is not True)
+        ):
+            raise ReleaseArchiveError(f"staged installer {name} binding is invalid")
+        target = package_root / PurePosixPath(relative)
+        if not target.is_file() or entry.get("sha256") != _sha256(target):
+            raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
     payload_inventory = [
         item for item in inventory if item["path"] != "build-manifest.json"
     ]
@@ -917,7 +916,6 @@ def validate_release_evidence(
 ) -> dict[str, object]:
     _assert_no_reparse_points(package_root)
     identity = _validate_release_identity(package_root, expected_tag=expected_tag)
-    cli = _validate_cli_tools_manifest(package_root, identity=identity)
     staged = _validate_staged_installer(package_root)
     probe_sha = _validate_probe_identities(
         package_root, expected_commit=identity["commit"]
@@ -934,6 +932,9 @@ def validate_release_evidence(
     missing = sorted(REQUIRED_PACKAGE_MEMBERS - package_paths)
     if missing:
         raise ReleaseArchiveError(f"required release package members are missing: {missing}")
+    retired_present = sorted(RETIRED_HELPER_EXECUTABLES & package_paths)
+    if retired_present:
+        raise ReleaseArchiveError(f"retired helper executables remain packaged: {retired_present}")
     return {
         "tag": identity["tag"],
         "commit": identity["commit"],
@@ -958,7 +959,7 @@ def validate_release_evidence(
         "bounded_external_evidence_contract_verified": True,
         "dynamic_install_qualification": "NOT_TESTED",
         "factory_manifest_verified": True,
-        **cli,
+        "retired_helper_executables_absent": True,
     }
 
 

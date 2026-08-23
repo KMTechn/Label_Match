@@ -13,7 +13,7 @@ import pytest
 from tools import verify_frozen_release_assets as verifier
 
 
-TAG = "v2.0.78"
+TAG = "v2.0.79"
 COMMIT = "1" * 40
 TREE = "2" * 40
 TAG_OBJECT = "4" * 40
@@ -243,8 +243,7 @@ def test_verifier_accepts_exact_frozen_archive_and_shared_evidence_contract(tmp_
     assert result["embedded_identities_verified"] is True
     assert result["staged_installer_verified"] is True
     assert result["factory_manifest_verified"] is True
-    assert result["cli_tool_count"] == 3
-    assert result["install_onedir_runtime_file_count"] == 1
+    assert result["retired_helper_executables_absent"] is True
     assert result["qualification_receipt_status"] == "NOT_TESTED_EXTERNAL_REQUIRED"
 
 
@@ -352,45 +351,35 @@ def test_forged_launcher_scope_cannot_pass_after_archive_reseal(tmp_path):
         _verify(fixture)
 
 
-def test_abbreviated_cli_help_evidence_cannot_pass(tmp_path):
+def test_abbreviated_in_process_binding_evidence_cannot_pass(tmp_path):
     fixture = _fixture(tmp_path)
     archive = fixture["archive"]
     assert isinstance(archive, Path)
     entries = _read_archive(archive)
-    name = "tools/release_cli_tools_manifest.json"
+    name = "staged-installer-verification.json"
     info, payload = entries[name]
-    cli = json.loads(payload)
-    cli["tools"][0]["help_runs"][0].pop("elapsed_ms")
-    cli["tools"][0]["help_runs"][0].pop("stdout_bytes")
-    entries[name] = (info, _json_bytes(cli))
-    _refresh_staged_inventory(entries)
+    staged = json.loads(payload)
+    staged["runner"].pop("execution_boundary")
+    entries[name] = (info, _json_bytes(staged))
     _refresh_build_manifest(entries)
     _rewrite_archive(fixture, entries)
 
-    with pytest.raises(verifier.FrozenReleaseError, match="CLI help evidence is not exact"):
+    with pytest.raises(verifier.FrozenReleaseError, match="runner binding is invalid"):
         _verify(fixture)
 
 
-def test_cli_onedir_without_runtime_payload_cannot_pass(tmp_path):
+def test_embedded_host_without_runtime_payload_cannot_pass(tmp_path):
     fixture = _fixture(tmp_path)
     archive = fixture["archive"]
     assert isinstance(archive, Path)
     entries = _read_archive(archive)
-    runtime = "tools/direct_sync_relay_install_pack/_internal/python312.dll"
+    runtime = "_internal/python312.dll"
     entries.pop(runtime)
-    name = "tools/release_cli_tools_manifest.json"
-    info, payload = entries[name]
-    cli = json.loads(payload)
-    install_pack = cli["tools"][1]
-    install_pack["payload_inventory"] = [
-        row for row in install_pack["payload_inventory"] if row["path"] != "_internal/python312.dll"
-    ]
-    entries[name] = (info, _json_bytes(cli))
     _refresh_staged_inventory(entries)
     _refresh_build_manifest(entries)
     _rewrite_archive(fixture, entries)
 
-    with pytest.raises(verifier.FrozenReleaseError, match="onedir runtime is missing"):
+    with pytest.raises(verifier.FrozenReleaseError, match="required release package members"):
         _verify(fixture)
 
 
@@ -412,7 +401,7 @@ def test_probe_identity_with_abbreviated_fields_cannot_pass(tmp_path):
         _verify(fixture)
 
 
-def test_cli_manifest_cannot_claim_a_missing_source_member(tmp_path):
+def test_staged_binding_cannot_claim_a_missing_in_process_source(tmp_path):
     fixture = _fixture(tmp_path)
     archive = fixture["archive"]
     assert isinstance(archive, Path)
@@ -422,5 +411,5 @@ def test_cli_manifest_cannot_claim_a_missing_source_member(tmp_path):
     _refresh_build_manifest(entries)
     _rewrite_archive(fixture, entries)
 
-    with pytest.raises(verifier.FrozenReleaseError, match="source/order/mode mismatch"):
+    with pytest.raises(verifier.FrozenReleaseError, match="runner hash mismatch"):
         _verify(fixture)

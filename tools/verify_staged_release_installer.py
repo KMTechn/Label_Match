@@ -40,7 +40,16 @@ REQUIRED_PUBLIC_MEMBERS = {
     "install_label_match_direct_sync.ps1",
     "Label_Match.exe",
     "build-manifest.json",
+    "_internal/python312.dll",
+    "_internal/base_library.zip",
+    "tools/invoke_embedded_python.ps1",
+    "tools/direct_sync_relay_install_pack.py",
+    "tools/direct_sync_relay_runner.py",
+    "tools/register_label_match_worker_pc.py",
+}
+RETIRED_HELPER_EXECUTABLES = {
     "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+    "tools/direct_sync_relay_install_pack.exe",
     "tools/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
 }
@@ -234,6 +243,12 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
         raise StagedInstallerVerificationError("PowerShell is required")
 
     original_inventory = _inventory(package_root)
+    original_paths = {str(item["path"]) for item in original_inventory}
+    retired_present = sorted(RETIRED_HELPER_EXECUTABLES & original_paths)
+    if retired_present:
+        raise StagedInstallerVerificationError(
+            f"retired helper executables remain packaged: {retired_present}"
+        )
     with tempfile.TemporaryDirectory(prefix="label-match-staged-installer-") as temp_dir:
         root = Path(temp_dir)
         extracted_root = root / "ordinary-extraction" / "Label_Match"
@@ -404,26 +419,24 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
         if not _same_path(str(settings.get("custom_save_path") or ""), scan_source):
             raise StagedInstallerVerificationError("staged app save path differs from relay scan source")
 
-        runner = install_root / "tools" / "direct_sync_relay_runner.exe"
-        registration = install_root / "tools" / "register_label_match_worker_pc.exe"
-        install_helper = (
-            install_root
-            / "tools"
-            / "direct_sync_relay_install_pack"
-            / "direct_sync_relay_install_pack.exe"
-        )
+        runner = install_root / "tools" / "direct_sync_relay_runner.py"
+        registration = install_root / "tools" / "register_label_match_worker_pc.py"
+        install_helper = install_root / "tools" / "direct_sync_relay_install_pack.py"
+        embedded_python_host = install_root / "tools" / "invoke_embedded_python.ps1"
         runner_command = install_report.get("runner_command")
         self_enrollment = install_report.get("self_enrollment")
         if (
             not isinstance(runner_command, list)
             or not runner_command
             or not _same_path(runner_command[0], runner)
-            or not _same_path(str(install_report.get("runner_exe") or ""), runner)
+            or install_report.get("runner_exe") != ""
+            or install_report.get("runner_command_mode") != "in_process_source"
             or not isinstance(self_enrollment, dict)
-            or self_enrollment.get("registration_command_mode") != "bundled_executable"
-            or not _same_path(str(self_enrollment.get("registration_executable") or ""), registration)
+            or self_enrollment.get("registration_command_mode") != "in_process_source"
+            or self_enrollment.get("registration_executable") != ""
+            or summary.get("installer_execution_mode") != "in_process_embedded_python"
         ):
-            raise StagedInstallerVerificationError("bundled runtime selection is not proven")
+            raise StagedInstallerVerificationError("in-process runtime selection is not proven")
         if summary.get("installer_report_version") != "label-match-direct-sync-one-step-install-v2":
             raise StagedInstallerVerificationError("one-step install summary schema is not v2")
         lifecycle = summary.get("lifecycle_contract")
@@ -486,11 +499,14 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
             "public_entrypoint": {"path": "INSTALL_THIS_PC.ps1", "sha256": _sha256(public_entrypoint)},
             "installer": {"path": "install_label_match_direct_sync.ps1", "sha256": _sha256(installer)},
             "install_helper": {
-                "path": "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+                "path": "tools/direct_sync_relay_install_pack.py",
                 "sha256": _sha256(install_helper),
+                "execution_boundary": "in_process",
             },
-            "runner": {"path": "tools/direct_sync_relay_runner.exe", "sha256": _sha256(runner), "selected": True},
-            "registration": {"path": "tools/register_label_match_worker_pc.exe", "sha256": _sha256(registration), "selected": True},
+            "runner": {"path": "tools/direct_sync_relay_runner.py", "sha256": _sha256(runner), "selected": True, "execution_boundary": "in_process"},
+            "registration": {"path": "tools/register_label_match_worker_pc.py", "sha256": _sha256(registration), "selected": True, "execution_boundary": "in_process"},
+            "embedded_python_host": {"path": "tools/invoke_embedded_python.ps1", "sha256": _sha256(embedded_python_host)},
+            "retired_helper_executables_absent": True,
             "manifest_contract": manifest_contract,
             "staging_contract": {
                 "ordinary_extracted_root": True,

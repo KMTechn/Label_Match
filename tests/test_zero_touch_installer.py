@@ -266,10 +266,13 @@ def _write_public_installer_fixture(root: Path) -> None:
     (root / "Label_Match.exe").write_bytes(b"manifest-bound-executable")
     (root / "_internal/config").mkdir(parents=True)
     (root / "_internal/config/app_settings.json").write_text("{}\n", encoding="utf-8")
-    (root / "tools/direct_sync_relay_install_pack").mkdir(parents=True)
-    (root / "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe").write_bytes(b"pack")
-    (root / "tools/direct_sync_relay_runner.exe").write_bytes(b"runner")
-    (root / "tools/register_label_match_worker_pc.exe").write_bytes(b"register")
+    (root / "_internal/python312.dll").write_bytes(b"embedded-runtime")
+    (root / "_internal/base_library.zip").write_bytes(b"embedded-library")
+    (root / "tools").mkdir(parents=True)
+    (root / "tools/invoke_embedded_python.ps1").write_text("# in-process host\n", encoding="utf-8")
+    (root / "tools/direct_sync_relay_install_pack.py").write_text("# install pack\n", encoding="utf-8")
+    (root / "tools/direct_sync_relay_runner.py").write_text("# runner\n", encoding="utf-8")
+    (root / "tools/register_label_match_worker_pc.py").write_text("# registration\n", encoding="utf-8")
     inventory = []
     for path in sorted(
         (item for item in root.rglob("*") if item.is_file()),

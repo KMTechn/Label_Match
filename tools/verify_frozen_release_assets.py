@@ -68,6 +68,8 @@ REQUIRED_MEMBERS = {
     "KMTech_Logistics_Profile_Install.exe",
     "config/app_settings.json",
     "_internal/config/app_settings.json",
+    "_internal/python312.dll",
+    "_internal/base_library.zip",
     "direct_sync_operator.py",
     "direct_sync_push.py",
     "direct_sync_runtime.py",
@@ -75,11 +77,17 @@ REQUIRED_MEMBERS = {
     "logistics_runtime_profile.py",
     "producer_runtime_client.py",
     "tools/check_logistics_runtime_profile.py",
-    "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-    "tools/direct_sync_relay_runner.exe",
+    "tools/direct_sync_relay_install_pack.py",
+    "tools/direct_sync_relay_runner.py",
+    "tools/invoke_embedded_python.ps1",
     "tools/install_logistics_runtime_profile.py",
+    "tools/register_label_match_worker_pc.py",
+}
+RETIRED_HELPER_EXECUTABLES = {
+    "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+    "tools/direct_sync_relay_install_pack.exe",
+    "tools/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
-    "tools/release_cli_tools_manifest.json",
 }
 
 
@@ -686,6 +694,14 @@ def verify_frozen_release_assets(
                 and pure.parts[0] == TOP_LEVEL,
                 f"unsafe archive path: {name}",
             )
+        retired_members = {
+            f"{TOP_LEVEL}/{relative}" for relative in RETIRED_HELPER_EXECUTABLES
+        }
+        retired_present = sorted(retired_members & set(names))
+        _require(
+            not retired_present,
+            f"retired helper executables remain packaged: {retired_present}",
+        )
 
         by_name = {info.filename: info for info in infos}
         validator = _load_release_archive_validator()
@@ -763,9 +779,8 @@ def verify_frozen_release_assets(
         "embedded_identities_verified": True,
         "staged_installer_verified": True,
         "factory_manifest_verified": True,
-        "cli_tool_count": evidence["cli_tool_count"],
-        "install_onedir_runtime_file_count": evidence[
-            "install_onedir_runtime_file_count"
+        "retired_helper_executables_absent": evidence[
+            "retired_helper_executables_absent"
         ],
         "qualification_receipt_status": (
             "PASS" if receipt is not None else "NOT_TESTED_EXTERNAL_REQUIRED"

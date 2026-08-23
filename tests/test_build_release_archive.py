@@ -27,7 +27,7 @@ IDENTITY_SPEC.loader.exec_module(identity_verifier)
 
 BUILDER_PATH = MODULE_PATH.with_name("build_frozen_release_candidate.ps1")
 
-TAG = "v2.0.78"
+TAG = "v2.0.79"
 COMMIT = "1" * 40
 TREE = "2" * 40
 
@@ -148,6 +148,8 @@ def _package(tmp_path: Path) -> Path:
         "KMTech_Logistics_Profile_Install.exe": b"profile install",
         "config/app_settings.json": b'{"update_settings":{"provider":"github","channel":"stable"}}\n',
         "_internal/config/app_settings.json": b'{"update_settings":{"provider":"github","channel":"stable"}}\n',
+        "_internal/python312.dll": b"embedded runtime",
+        "_internal/base_library.zip": b"embedded library",
         "direct_sync_operator.py": b"# operator\n",
         "direct_sync_push.py": b"# push\n",
         "direct_sync_runtime.py": b"# runtime\n",
@@ -156,29 +158,15 @@ def _package(tmp_path: Path) -> Path:
         "producer_runtime_client.py": b"# producer\n",
         "tools/check_logistics_runtime_profile.py": b"# check profile\n",
         "tools/install_logistics_runtime_profile.py": b"# install profile\n",
+        "tools/invoke_embedded_python.ps1": b"# embedded host\n",
+        "tools/direct_sync_relay_install_pack.py": b"# install source\n",
+        "tools/direct_sync_relay_runner.py": b"# runner source\n",
+        "tools/register_label_match_worker_pc.py": b"# registration source\n",
         "tools/direct_sync_relay_operator.py": b"# relay operator\n",
         "tools/direct_sync_phase_g_label_match_runtime_report.py": b"# runtime report\n",
     }
     for relative, payload in required_payloads.items():
         _write(root / relative, payload)
-
-    tool_reports = []
-    for name, source, mode in archive_builder.CLI_TOOL_SPECS:
-        _write(root / source, f"# {name} source\n")
-        tool_reports.append(_tool_report(root, name, source, mode))
-    cli_manifest = {
-        "schema_version": archive_builder.CLI_TOOLS_SCHEMA,
-        "status": "PASS",
-        "artifact_phase": "unsigned_pre_sign",
-        "commit": COMMIT,
-        "tree": TREE,
-        "app_version": TAG,
-        "python_version": archive_builder.PYTHON_VERSION,
-        "pyinstaller_version": archive_builder.PYINSTALLER_VERSION,
-        "probe_policy": archive_builder.CLI_PROBE_POLICY,
-        "tools": tool_reports,
-    }
-    _write_json(tools / "release_cli_tools_manifest.json", cli_manifest)
 
     release_identity = {
         "schema_version": archive_builder.RELEASE_IDENTITY_SCHEMA,
@@ -291,14 +279,10 @@ def _package(tmp_path: Path) -> Path:
     staged_inventory = archive_builder._inventory(root)
     public_entrypoint = root / "INSTALL_THIS_PC.ps1"
     installer = root / "install_label_match_direct_sync.ps1"
-    install_helper = (
-        root
-        / "tools"
-        / "direct_sync_relay_install_pack"
-        / "direct_sync_relay_install_pack.exe"
-    )
-    runner = root / "tools" / "direct_sync_relay_runner.exe"
-    registration = root / "tools" / "register_label_match_worker_pc.exe"
+    install_helper = root / "tools" / "direct_sync_relay_install_pack.py"
+    runner = root / "tools" / "direct_sync_relay_runner.py"
+    registration = root / "tools" / "register_label_match_worker_pc.py"
+    embedded_python_host = root / "tools" / "invoke_embedded_python.ps1"
     staged_report = {
         "schema_version": archive_builder.STAGED_INSTALLER_SCHEMA,
         "status": "PASS",
@@ -369,19 +353,27 @@ def _package(tmp_path: Path) -> Path:
             "sha256": archive_builder._sha256(installer),
         },
         "install_helper": {
-            "path": "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+            "path": "tools/direct_sync_relay_install_pack.py",
             "sha256": archive_builder._sha256(install_helper),
+            "execution_boundary": "in_process",
         },
         "runner": {
-            "path": "tools/direct_sync_relay_runner.exe",
+            "path": "tools/direct_sync_relay_runner.py",
             "sha256": archive_builder._sha256(runner),
             "selected": True,
+            "execution_boundary": "in_process",
         },
         "registration": {
-            "path": "tools/register_label_match_worker_pc.exe",
+            "path": "tools/register_label_match_worker_pc.py",
             "sha256": archive_builder._sha256(registration),
             "selected": True,
+            "execution_boundary": "in_process",
         },
+        "embedded_python_host": {
+            "path": "tools/invoke_embedded_python.ps1",
+            "sha256": archive_builder._sha256(embedded_python_host),
+        },
+        "retired_helper_executables_absent": True,
         "original_package_file_count": len(staged_inventory),
         "original_package_inventory": staged_inventory,
         "original_package_inventory_sha256": archive_builder._inventory_digest(
@@ -462,8 +454,7 @@ def test_build_release_archive_is_deterministic_unsigned_and_byte_exact(tmp_path
     assert first_report["authenticode_required"] is False
     assert first_report["python_version"] == "3.12.10"
     assert first_report["pyinstaller_version"] == "6.20.0"
-    assert first_report["cli_tool_count"] == 3
-    assert first_report["install_onedir_runtime_file_count"] == 1
+    assert first_report["retired_helper_executables_absent"] is True
     assert first_report["staged_installer_verified"] is True
     assert first_report["ordinary_extracted_root_staging_verified"] is True
     assert first_report["manifest_bound_self_staging_verified"] is True
@@ -480,7 +471,8 @@ def test_build_release_archive_is_deterministic_unsigned_and_byte_exact(tmp_path
         assert archive.testzip() is None
         names = set(archive.namelist())
     assert "Label_Match/build-manifest.json" in names
-    assert "Label_Match/tools/release_cli_tools_manifest.json" in names
+    assert "Label_Match/tools/invoke_embedded_python.ps1" in names
+    assert not any(name.endswith("direct_sync_relay_runner.exe") for name in names)
     assert len(names) == first_report["package_file_count"]
 
 
@@ -506,63 +498,17 @@ def test_archive_rejects_noncanonical_unsigned_v3_identity(tmp_path, field, valu
         )
 
 
-@pytest.mark.parametrize(
-    ("path", "value"),
-    [
-        (("artifact_phase",), "signed_post_sign"),
-        (("python_version",), "3.12.11"),
-        (("pyinstaller_version",), "6.19.0"),
-        (("tools", 0, "source"), "tools/wrong.py"),
-        (("tools", 0, "help_runs", 1, "residual_process_count"), 1),
-        (("tools", 0, "archive_verification", "viewer_stderr_bytes"), 1),
-    ],
-)
-def test_archive_rejects_cli_source_toolchain_help_or_carchive_drift(
-    tmp_path, path, value
-):
-    package = _package(tmp_path)
-    manifest_path = package / "tools" / "release_cli_tools_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    target = manifest
-    for key in path[:-1]:
-        target = target[key]
-    target[path[-1]] = value
-    _write_json(manifest_path, manifest)
-
-    with pytest.raises(archive_builder.ReleaseArchiveError, match="release CLI"):
-        archive_builder.build_release_archive(
-            package, tmp_path / "bad-cli.zip", source_epoch=1_700_000_000
-        )
-
-
-def test_archive_rejects_cli_payload_membership_or_bytes(tmp_path):
-    package = _package(tmp_path)
-    runtime = (
-        package
-        / "tools"
-        / "direct_sync_relay_install_pack"
-        / "_internal"
-        / "python312.dll"
+def test_archive_contract_retires_packaged_direct_sync_helper_executables():
+    assert archive_builder.RETIRED_HELPER_EXECUTABLES == {
+        "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+        "tools/direct_sync_relay_install_pack.exe",
+        "tools/direct_sync_relay_runner.exe",
+        "tools/register_label_match_worker_pc.exe",
+    }
+    assert not (
+        archive_builder.RETIRED_HELPER_EXECUTABLES
+        & archive_builder.REQUIRED_PACKAGE_MEMBERS
     )
-    runtime.write_bytes(b"changed")
-    with pytest.raises(archive_builder.ReleaseArchiveError, match="payload byte mismatch"):
-        archive_builder.build_release_archive(
-            package, tmp_path / "changed.zip", source_epoch=1_700_000_000
-        )
-
-    package = _package(tmp_path / "extra")
-    _write(
-        package
-        / "tools"
-        / "direct_sync_relay_install_pack"
-        / "_internal"
-        / "rogue.dll",
-        b"rogue",
-    )
-    with pytest.raises(archive_builder.ReleaseArchiveError, match="payload membership mismatch"):
-        archive_builder.build_release_archive(
-            package, tmp_path / "extra.zip", source_epoch=1_700_000_000
-        )
 
 
 def test_archive_rejects_staged_installer_probe_or_factory_current_drift(tmp_path):
@@ -571,7 +517,7 @@ def test_archive_rejects_staged_installer_probe_or_factory_current_drift(tmp_pat
     staged = json.loads(staged_path.read_text(encoding="utf-8"))
     staged["runner"]["selected"] = False
     _write_json(staged_path, staged)
-    with pytest.raises(archive_builder.ReleaseArchiveError, match="runner was not selected"):
+    with pytest.raises(archive_builder.ReleaseArchiveError, match="runner binding is invalid"):
         archive_builder.build_release_archive(
             package, tmp_path / "staged.zip", source_epoch=1_700_000_000
         )

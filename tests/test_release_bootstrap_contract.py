@@ -13,29 +13,31 @@ sys.modules[SPEC.name] = module
 SPEC.loader.exec_module(module)
 
 
-def test_install_helper_resolver_prefers_nested_onedir_then_legacy_flat(tmp_path):
+def test_install_helper_resolver_uses_only_in_process_source(tmp_path):
     tools = tmp_path / "tools"
     nested = tools / "direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe"
     legacy = tools / "direct_sync_relay_install_pack.exe"
     nested.parent.mkdir(parents=True)
     nested.write_bytes(b"nested")
     legacy.write_bytes(b"legacy")
+    script = tools / "direct_sync_relay_install_pack.py"
+    script.write_text("# fixture\n", encoding="utf-8")
     context = {"app_root": str(tmp_path)}
 
-    assert module._label_match_direct_sync_tool_command(context) == [str(nested)]
+    assert module._label_match_direct_sync_tool_command(context) == [str(script)]
 
     nested.unlink()
-    assert module._label_match_direct_sync_tool_command(context) == [str(legacy)]
+    assert module._label_match_direct_sync_tool_command(context) == [str(script)]
 
 
-def test_install_helper_resolver_uses_python_script_only_after_bundled_exes(tmp_path, monkeypatch):
+def test_install_helper_resolver_requires_the_in_process_source(tmp_path):
     tools = tmp_path / "tools"
     tools.mkdir()
     script = tools / "direct_sync_relay_install_pack.py"
     script.write_text("# fixture\n", encoding="utf-8")
     context = {"app_root": str(tmp_path)}
-    monkeypatch.delattr(module.sys, "frozen", raising=False)
-
     command = module._label_match_direct_sync_tool_command(context)
 
-    assert command == [module.sys.executable, str(script)]
+    assert command == [str(script)]
+    script.unlink()
+    assert module._label_match_direct_sync_tool_command(context) == []

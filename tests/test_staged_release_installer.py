@@ -147,9 +147,12 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
         staged_root / "INSTALL_THIS_PC.ps1",
         staged_root / "install_label_match_direct_sync.ps1",
         staged_root / "build-manifest.json",
-        staged_root / "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-        staged_root / "tools/direct_sync_relay_runner.exe",
-        staged_root / "tools/register_label_match_worker_pc.exe",
+        staged_root / "_internal/python312.dll",
+        staged_root / "_internal/base_library.zip",
+        staged_root / "tools/invoke_embedded_python.ps1",
+        staged_root / "tools/direct_sync_relay_install_pack.py",
+        staged_root / "tools/direct_sync_relay_runner.py",
+        staged_root / "tools/register_label_match_worker_pc.py",
     )
     missing = [str(path) for path in required_paths if not path.is_file()]
     assert not missing, f"staged installer inputs are missing: {missing}"
@@ -244,8 +247,19 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
     assert public_report["removal_contract"]["immutable_app_drift_rejected"] is True
     assert install_report["status"] == "DRY_RUN"
     assert install_report["field_layout_contract"]["local_test_override_enabled"] is True
-    assert _normalized(install_report["runner_exe"]) == _normalized(
-        install_root / "tools/direct_sync_relay_runner.exe"
+    assert install_report["runner_exe"] == ""
+    assert install_report["runner_command_mode"] == "in_process_source"
+    assert _normalized(install_report["runner_command"][0]) == _normalized(
+        install_root / "tools/direct_sync_relay_runner.py"
+    )
+    assert summary["installer_execution_mode"] == "in_process_embedded_python"
+    assert not any(
+        (install_root / relative).exists()
+        for relative in (
+            "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+            "tools/direct_sync_relay_runner.exe",
+            "tools/register_label_match_worker_pc.exe",
+        )
     )
     assert summary["installer_report_version"] == "label-match-direct-sync-one-step-install-v2"
     assert summary["status"] == "DRY_RUN"

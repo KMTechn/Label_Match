@@ -4,7 +4,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.78",
+    [string]$Tag = "v2.0.79",
 
     [string]$PythonPath = "",
 
@@ -845,11 +845,11 @@ if (-not (Test-Path -LiteralPath $packageRoot -PathType Container)) {
     throw "PyInstaller package root is missing: $packageRoot"
 }
 
-& $venvPython -I (Join-Path $repoRoot "tools\build_release_cli_tools.py") `
-    --destination (Join-Path $packageRoot "tools") `
-    --help-timeout-seconds 15 `
-    --probe-count 3
-Assert-LastExitCode "Build exact unsigned release CLI tools"
+$mainAnalysisToc = Join-Path $mainWorkRoot "Label_Match\Analysis-00.toc"
+& $venvPython -I (Join-Path $repoRoot "tools\build_embedded_python_library.py") `
+    --analysis-toc $mainAnalysisToc `
+    --runtime-root (Join-Path $packageRoot "_internal")
+Assert-LastExitCode "Materialize the in-process embedded Python library"
 
 Invoke-OneFileBuild `
     -VenvPython $venvPython `
@@ -971,6 +971,7 @@ $copies = [ordered]@{
     (Join-Path $repoRoot "logistics_runtime_profile.py") = (Join-Path $packageRoot "logistics_runtime_profile.py")
     (Join-Path $repoRoot "docs\LOGISTICS_RUNTIME_PROFILE.md") = (Join-Path $packageRoot "CENTRAL_LOGISTICS_PC_ROLLOUT.md")
     (Join-Path $repoRoot "tools\provision_protected_admin_acl.ps1") = (Join-Path $packageRoot "PROVISION_PROTECTED_ADMIN_ACL.ps1")
+    (Join-Path $repoRoot "tools\invoke_embedded_python.ps1") = (Join-Path $packageRoot "tools\invoke_embedded_python.ps1")
     (Join-Path $repoRoot "docs\PROTECTED_ADMIN_PROVISIONING.md") = (Join-Path $packageRoot "PROTECTED_ADMIN_PROVISIONING.md")
 }
 foreach ($entry in $copies.GetEnumerator()) {

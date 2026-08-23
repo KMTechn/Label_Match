@@ -122,7 +122,9 @@ from tkinter import ttk, messagebox, TclError, simpledialog
 _label_match_startup_trace("after_tkinter_import")
 from collections import defaultdict
 import csv
+import contextlib
 import io
+import importlib.util
 import threading
 import time
 import hashlib
@@ -794,160 +796,76 @@ def _label_match_subprocess_creationflags():
     return 0
 
 
-def _label_match_terminate_process_tree(process, *, deadline_monotonic=None):
-    if deadline_monotonic is None:
-        deadline_monotonic = time.monotonic() + LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS
-
-    def remaining_seconds():
-        return max(0.0, deadline_monotonic - time.monotonic())
-
-    report = {"attempted": True, "tree_terminated": False, "method": ""}
-    if process.poll() is not None:
-        report.update({"tree_terminated": True, "method": "already_exited"})
-        return report
-    if os.name == "nt":
-        try:
-            remaining = remaining_seconds()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired("taskkill.exe", 0)
-            completed = subprocess.run(
-                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=remaining,
-                creationflags=_label_match_subprocess_creationflags(),
-            )
-            report.update({
-                "method": "taskkill_tree",
-                "taskkill_returncode": completed.returncode,
-            })
-        except Exception as exc:
-            report.update({"method": "taskkill_tree_failed", "error_type": exc.__class__.__name__})
-    if process.poll() is None:
-        try:
-            process.kill()
-            if not report["method"]:
-                report["method"] = "process_kill"
-        except Exception as exc:
-            report.setdefault("error_type", exc.__class__.__name__)
-    remaining = remaining_seconds()
-    if remaining > 0:
-        try:
-            process.wait(timeout=remaining)
-        except Exception:
-            pass
-    report["tree_terminated"] = process.poll() is not None
-    return report
+def _label_match_load_in_process_tool(script_path):
+    resolved = os.path.abspath(script_path)
+    module_name = f"_label_match_in_process_{Path(resolved).stem}"
+    module = sys.modules.get(module_name)
+    if module is None or os.path.abspath(getattr(module, "__file__", "")) != resolved:
+        spec = importlib.util.spec_from_file_location(module_name, resolved)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"unable to load in-process tool: {resolved}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    entrypoint = getattr(module, "main", None)
+    if not callable(entrypoint):
+        raise AttributeError(f"in-process tool has no callable main: {resolved}")
+    return entrypoint
 
 
-def _label_match_run_bounded_subprocess(command, *, timeout_seconds, env):
-    def output_text(value):
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return str(value or "")
-
+def _label_match_run_in_process_tool(script_path, arguments, *, timeout_seconds, env_overrides=None):
     started = time.monotonic()
-    creationflags = _label_match_subprocess_creationflags()
-    if os.name == "nt":
-        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-        creationflags=creationflags,
-    )
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    prior_environment = {}
+    for name, value in (env_overrides or {}).items():
+        prior_environment[name] = os.environ.get(name)
+        os.environ[name] = str(value)
     try:
-        stdout, stderr = process.communicate(timeout=max(0.1, float(timeout_seconds)))
+        entrypoint = _label_match_load_in_process_tool(script_path)
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            try:
+                raw_returncode = entrypoint([str(part) for part in arguments])
+                returncode = int(raw_returncode or 0)
+            except SystemExit as exc:
+                if exc.code is None:
+                    returncode = 0
+                elif isinstance(exc.code, int):
+                    returncode = exc.code
+                else:
+                    print(str(exc.code), file=sys.stderr)
+                    returncode = 1
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
+                returncode = 1
+        elapsed = time.monotonic() - started
         return {
-            "returncode": int(process.returncode or 0),
-            "stdout": stdout or "",
-            "stderr": stderr or "",
-            "timed_out": False,
-            "process_tree_termination": {"attempted": False, "tree_terminated": True, "method": "not_required"},
-            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "returncode": returncode,
+            "stdout": stdout_buffer.getvalue(),
+            "stderr": stderr_buffer.getvalue(),
+            "timed_out": elapsed > max(0.1, float(timeout_seconds)),
+            "execution_boundary": "in_process",
+            "process_tree_termination": {
+                "attempted": False,
+                "tree_terminated": True,
+                "method": "not_applicable_in_process",
+            },
+            "elapsed_seconds": round(elapsed, 3),
         }
-    except subprocess.TimeoutExpired as exc:
-        termination_deadline = time.monotonic() + LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS
-        termination = _label_match_terminate_process_tree(
-            process,
-            deadline_monotonic=termination_deadline,
-        )
-        stdout = output_text(exc.stdout)
-        stderr = output_text(exc.stderr)
-        remaining = max(0.0, termination_deadline - time.monotonic())
-        try:
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(command, 0)
-            final_stdout, final_stderr = process.communicate(timeout=remaining)
-            stdout = output_text(final_stdout) or stdout
-            stderr = output_text(final_stderr) or stderr
-        except Exception:
-            for stream in (process.stdout, process.stderr):
-                try:
-                    if stream is not None:
-                        stream.close()
-                except Exception:
-                    pass
-        return {
-            "returncode": int(process.returncode if process.returncode is not None else -1),
-            "stdout": stdout or "",
-            "stderr": stderr or "",
-            "timed_out": True,
-            "process_tree_termination": termination,
-            "elapsed_seconds": round(time.monotonic() - started, 3),
-        }
+    finally:
+        for name, prior in prior_environment.items():
+            if prior is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = prior
 
 
 def _label_match_direct_sync_tool_command(context):
     tools_dir = os.path.join(context["app_root"], "tools")
-    install_pack_exe_candidates = [
-        os.path.join(
-            tools_dir,
-            "direct_sync_relay_install_pack",
-            "direct_sync_relay_install_pack.exe",
-        ),
-        os.path.join(tools_dir, "direct_sync_relay_install_pack.exe"),
-    ]
     install_pack_script = os.path.join(tools_dir, "direct_sync_relay_install_pack.py")
-    for install_pack_exe in install_pack_exe_candidates:
-        if os.path.isfile(install_pack_exe):
-            return [install_pack_exe]
     if os.path.isfile(install_pack_script):
-        python_exe = "" if getattr(sys, "frozen", False) else sys.executable
-        if not python_exe:
-            python_exe = shutil.which("python") or shutil.which("py") or ""
-        if python_exe:
-            return [python_exe, install_pack_script]
+        return [install_pack_script]
     return []
-
-
-def _label_match_python_exe_for_runner():
-    candidates = [
-        os.environ.get("KMTECH_PYTHON_EXE", ""),
-    ]
-    if not getattr(sys, "frozen", False):
-        candidates.append(sys.executable)
-    if os.name == "nt":
-        candidates.extend([
-            r"C:\Program Files\Python312\python.exe",
-            r"C:\Program Files\Python314\python.exe",
-        ])
-    candidates.extend([
-        shutil.which("python") or "",
-        shutil.which("py") or "",
-    ])
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
-            return os.path.abspath(candidate)
-    return ""
-
-
-def _label_match_optional_tool_exe(context, filename):
-    path = os.path.join(context["app_root"], "tools", filename)
-    return path if os.path.isfile(path) else ""
 
 
 def _label_match_registration_verified(context):
@@ -1119,17 +1037,10 @@ def _label_match_direct_sync_runner_command(context, *, min_source_file_age_seco
     if context.get("scan_source_binding_error"):
         raise ValueError("bound direct-sync source is unavailable")
     tools_dir = os.path.join(context["app_root"], "tools")
-    runner_exe = os.path.join(tools_dir, "direct_sync_relay_runner.exe")
     runner_script = os.path.join(tools_dir, "direct_sync_relay_runner.py")
-    if os.path.isfile(runner_exe):
-        command = [runner_exe]
-    elif os.path.isfile(runner_script):
-        python_exe = _label_match_python_exe_for_runner()
-        if not python_exe:
-            return []
-        command = [python_exe, runner_script]
-    else:
+    if not os.path.isfile(runner_script):
         return []
+    command = [runner_script]
 
     source_glob = "*.csv"
     scan_source_file = str(context.get("scan_source_file") or "").strip()
@@ -1235,8 +1146,6 @@ def _label_match_run_session_direct_sync_once(
         }
     if not command:
         return {"status": "SKIPPED", "reason": "direct-sync relay runner is missing"}
-    env = os.environ.copy()
-    env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
     runtime_status_path = context.get("runtime_status_path", "")
     try:
         runtime_status_mtime_before_ns = os.stat(runtime_status_path).st_mtime_ns
@@ -1257,10 +1166,11 @@ def _label_match_run_session_direct_sync_once(
             "error_code": "session_sync_deadline_exhausted",
         }
     try:
-        completed = _label_match_run_bounded_subprocess(
-            command,
+        completed = _label_match_run_in_process_tool(
+            command[0],
+            command[1:],
             timeout_seconds=timeout_seconds,
-            env=env,
+            env_overrides={LABEL_MATCH_SAVE_DIR_ENV: context["scan_source_dir"]},
         )
         ack_report = _label_match_current_delta_ack_report(
             context,
@@ -1410,18 +1320,15 @@ def _label_match_auto_bootstrap_direct_sync(context):
             {**base_report, "status": "BLOCKED", "blocked_reason": "direct-sync install pack tool is missing"},
         )
         return
-    runner_exe = _label_match_optional_tool_exe(context, "direct_sync_relay_runner.exe")
-    registration_exe = _label_match_optional_tool_exe(context, "register_label_match_worker_pc.exe")
-    python_exe = ""
-    if not runner_exe or not registration_exe:
-        python_exe = _label_match_python_exe_for_runner()
-    if (not runner_exe or not registration_exe) and not python_exe:
+    runner_script = os.path.join(context["app_root"], "tools", "direct_sync_relay_runner.py")
+    registration_script = os.path.join(context["app_root"], "tools", "register_label_match_worker_pc.py")
+    if not os.path.isfile(runner_script) or not os.path.isfile(registration_script):
         _label_match_write_json(
             context["bootstrap_status_path"],
             {
                 **base_report,
                 "status": "BLOCKED",
-                "blocked_reason": "bundled direct-sync executables are incomplete and python.exe fallback is unavailable",
+                "blocked_reason": "in-process direct-sync sources are incomplete",
             },
         )
         return
@@ -1457,7 +1364,7 @@ def _label_match_auto_bootstrap_direct_sync(context):
         )
         return
 
-    args = command + [
+    args = [
         "--self-enroll",
         "--app-root",
         context["app_root"],
@@ -1475,14 +1382,8 @@ def _label_match_auto_bootstrap_direct_sync(context):
         context["install_report_path"],
         "--apply",
     ]
-    if python_exe:
-        args.extend(["--python-exe", python_exe])
-    if runner_exe:
-        args.extend(["--runner-exe", runner_exe])
     if context["app_settings_path"]:
         args.extend(["--app-settings-path", context["app_settings_path"]])
-    if registration_exe:
-        args.extend(["--registration-exe", registration_exe])
     if task_run_user:
         args.extend(["--task-run-user", task_run_user])
     if task_run_password_env:
@@ -1494,32 +1395,27 @@ def _label_match_auto_bootstrap_direct_sync(context):
     if allow_noncanonical_layout_for_test:
         args.append("--allow-noncanonical-layout-for-test")
 
-    env = os.environ.copy()
-    env[LABEL_MATCH_SAVE_DIR_ENV] = context["scan_source_dir"]
     try:
         timeout_seconds = max(30, int(os.environ.get(LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV, "180") or "180"))
     except ValueError:
         timeout_seconds = 180
     try:
-        completed = subprocess.run(
+        completed = _label_match_run_in_process_tool(
+            command[0],
             args,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=env,
-            creationflags=_label_match_subprocess_creationflags(),
+            timeout_seconds=timeout_seconds,
+            env_overrides={LABEL_MATCH_SAVE_DIR_ENV: context["scan_source_dir"]},
         )
-        run_task_result = _label_match_run_direct_sync_task(context) if completed.returncode == 0 else None
+        run_task_result = _label_match_run_direct_sync_task(context) if completed["returncode"] == 0 else None
         _label_match_write_json(
             context["bootstrap_status_path"],
             {
                 **base_report,
-                "status": "PASS" if completed.returncode == 0 else "BLOCKED",
-                "returncode": completed.returncode,
+                "status": "PASS" if completed["returncode"] == 0 else "BLOCKED",
+                "execution_boundary": completed["execution_boundary"],
                 "install_report_path": context["install_report_path"],
-                "stdout_tail": completed.stdout[-2000:],
-                "stderr_tail": completed.stderr[-2000:],
+                "stdout_tail": completed["stdout"][-2000:],
+                "stderr_tail": completed["stderr"][-2000:],
                 "run_task_result": run_task_result,
             },
         )
@@ -3512,7 +3408,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.78"
+APP_VERSION = "v2.0.79"
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"

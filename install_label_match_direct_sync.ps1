@@ -617,38 +617,6 @@ function Set-LabelMatchSavePath([string]$AppRoot, [string]$TargetSaveDir) {
     return $settingsPath
 }
 
-function Resolve-ToolCommand([string]$ExePath, [string]$PythonScriptPath) {
-    if (Test-Path -LiteralPath $ExePath) {
-        return @($ExePath)
-    }
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $python) {
-        throw "Bundled tool executable is missing and Python is not installed. Missing: $ExePath"
-    }
-    return @($python.Source, $PythonScriptPath)
-}
-
-function Resolve-PythonExe() {
-    $candidates = @(
-        $env:KMTECH_PYTHON_EXE,
-        "C:\Program Files\Python312\python.exe",
-        "C:\Program Files\Python314\python.exe"
-    )
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) {
-        $candidates += $python.Source
-    }
-    foreach ($candidate in $candidates) {
-        if ([string]::IsNullOrWhiteSpace($candidate)) {
-            continue
-        }
-        if (Test-Path -LiteralPath $candidate) {
-            return [System.IO.Path]::GetFullPath($candidate)
-        }
-    }
-    throw "Python is required for the Label_Match direct-sync relay runner, but python.exe was not found."
-}
-
 $appRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $MyInvocation.MyCommand.Path))
 $managedAppRoot = if ([string]::IsNullOrWhiteSpace($ManagedInstallRoot)) {
     $appRoot
@@ -657,19 +625,22 @@ else {
     [System.IO.Path]::GetFullPath($ManagedInstallRoot)
 }
 $toolsDir = Join-Path $appRoot "tools"
-$installPackCommand = @(
-    Resolve-ToolCommand `
-        -ExePath (Join-Path $toolsDir "direct_sync_relay_install_pack\direct_sync_relay_install_pack.exe") `
-        -PythonScriptPath (Join-Path $toolsDir "direct_sync_relay_install_pack.py")
-)
-$runnerExe = Join-Path $toolsDir "direct_sync_relay_runner.exe"
+$embeddedPythonHost = Join-Path $toolsDir "invoke_embedded_python.ps1"
+$installPackScript = Join-Path $toolsDir "direct_sync_relay_install_pack.py"
 $runnerScript = Join-Path $toolsDir "direct_sync_relay_runner.py"
-$registrationExe = Join-Path $toolsDir "register_label_match_worker_pc.exe"
-$runnerExeAvailable = Test-Path -LiteralPath $runnerExe -PathType Leaf
-$registrationExeAvailable = Test-Path -LiteralPath $registrationExe -PathType Leaf
-$pythonExe = ""
-if (-not $runnerExeAvailable -or -not $registrationExeAvailable) {
-    $pythonExe = Resolve-PythonExe
+$registrationScript = Join-Path $toolsDir "register_label_match_worker_pc.py"
+foreach ($requiredSource in @($embeddedPythonHost, $installPackScript, $runnerScript, $registrationScript)) {
+    if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) {
+        throw "In-process installer source is missing. Missing: $requiredSource"
+    }
+}
+. $embeddedPythonHost
+
+function Invoke-InstallPackInProcess([string[]]$Arguments) {
+    return [int](Invoke-KMTechEmbeddedPython `
+        -AppRoot $appRoot `
+        -ScriptPath $installPackScript `
+        -Arguments $Arguments)
 }
 $reportDir = Join-Path $ProgramDataRoot "status"
 $reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"
@@ -819,9 +790,7 @@ if ($Uninstall.IsPresent -or $Rollback.IsPresent) {
         if (Test-Path -LiteralPath $PhaseReportPath) {
             throw "Typed scheduled-task $Phase report path must be absent before execution."
         }
-        $phaseArguments = @()
-        if ($installPackCommand.Count -gt 1) { $phaseArguments += $installPackCommand[1] }
-        $phaseArguments += @(
+        $phaseArguments = @(
             "--app-root", $managedAppRoot,
             "--program-data-root", $ProgramDataRoot,
             "--scan-source-dir", $ScanSourceDir,
@@ -833,8 +802,8 @@ if ($Uninstall.IsPresent -or $Rollback.IsPresent) {
         $phaseArguments += if ($Rollback.IsPresent) { "--rollback" } else { "--uninstall" }
         if ($AllowNoncanonicalLayoutForTest.IsPresent) { $phaseArguments += "--allow-noncanonical-layout-for-test" }
         $phaseStartedUtc = [DateTime]::UtcNow
-        $phaseOutput = & $installPackCommand[0] @phaseArguments
-        if ($LASTEXITCODE -ne 0) { throw "Typed scheduled-task $Phase phase failed." }
+        $phaseExitCode = Invoke-InstallPackInProcess -Arguments $phaseArguments
+        if ($phaseExitCode -ne 0) { throw "Typed scheduled-task $Phase phase failed." }
         if (-not (Test-Path -LiteralPath $PhaseReportPath -PathType Leaf)) {
             throw "Typed scheduled-task $Phase phase did not create its report."
         }
@@ -1116,11 +1085,7 @@ New-Item -ItemType Directory -Path $ScanSourceDir -Force | Out-Null
 New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
 $settingsPath = Set-LabelMatchSavePath -AppRoot $managedAppRoot -TargetSaveDir $ScanSourceDir
 
-$arguments = @()
-if ($installPackCommand.Count -gt 1) {
-    $arguments += $installPackCommand[1]
-}
-$arguments += @(
+$arguments = @(
     "--app-root", $managedAppRoot,
     "--server-base-url", $ServerBaseUrl,
     "--program-data-root", $ProgramDataRoot,
@@ -1144,18 +1109,6 @@ else {
         "--logistics-profile-path", $LogisticsProfilePath
     )
 }
-if (-not [string]::IsNullOrWhiteSpace($pythonExe)) {
-    $arguments += @("--python-exe", $pythonExe)
-}
-if ($runnerExeAvailable) {
-    $arguments += @("--runner-exe", $runnerExe)
-}
-elseif (-not (Test-Path -LiteralPath $runnerScript -PathType Leaf)) {
-    throw "Python relay runner script is missing. Missing: $runnerScript"
-}
-if ($registrationExeAvailable) {
-    $arguments += @("--registration-exe", $registrationExe)
-}
 if (-not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)) {
     $arguments += @("--enrollment-token-file", $EnrollmentTokenFile)
 }
@@ -1178,8 +1131,7 @@ if (-not $DryRun.IsPresent) {
     $arguments += @("--apply")
 }
 
-$installPackOutput = & $installPackCommand[0] @arguments
-$exitCode = $LASTEXITCODE
+$exitCode = Invoke-InstallPackInProcess -Arguments $arguments
 
 $installReport = $null
 if (Test-Path -LiteralPath $reportPath) {
@@ -1219,9 +1171,7 @@ if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
         $taskStartError = $_.Exception.Message
         $exitCode = 1
         $cleanupReportPath = Join-Path $reportDir "label_match_failed_install_task_cleanup.json"
-        $cleanupArguments = @()
-        if ($installPackCommand.Count -gt 1) { $cleanupArguments += $installPackCommand[1] }
-        $cleanupArguments += @(
+        $cleanupArguments = @(
             "--app-root", $managedAppRoot,
             "--program-data-root", $ProgramDataRoot,
             "--scan-source-dir", $ScanSourceDir,
@@ -1232,8 +1182,8 @@ if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
             "--uninstall"
         )
         if ($AllowNoncanonicalLayoutForTest.IsPresent) { $cleanupArguments += "--allow-noncanonical-layout-for-test" }
-        $cleanupOutput = & $installPackCommand[0] @cleanupArguments
-        if ($LASTEXITCODE -ne 0) { $taskStartError += "; typed task cleanup failed" }
+        $cleanupExitCode = Invoke-InstallPackInProcess -Arguments $cleanupArguments
+        if ($cleanupExitCode -ne 0) { $taskStartError += "; typed task cleanup failed" }
         if (-not $resourcePrestate.launcher) {
             if (Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf) {
                 Remove-Item -LiteralPath $allUsersLauncherPath -Force -ErrorAction Stop
@@ -1250,9 +1200,7 @@ if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
 
 if ($exitCode -ne 0 -and -not $DryRun.IsPresent -and $taskStartStatus -cne "FAILED") {
     $cleanupReportPath = Join-Path $reportDir "label_match_failed_install_task_cleanup.json"
-    $cleanupArguments = @()
-    if ($installPackCommand.Count -gt 1) { $cleanupArguments += $installPackCommand[1] }
-    $cleanupArguments += @(
+    $cleanupArguments = @(
         "--app-root", $managedAppRoot,
         "--program-data-root", $ProgramDataRoot,
         "--scan-source-dir", $ScanSourceDir,
@@ -1263,8 +1211,8 @@ if ($exitCode -ne 0 -and -not $DryRun.IsPresent -and $taskStartStatus -cne "FAIL
         "--uninstall"
     )
     if ($AllowNoncanonicalLayoutForTest.IsPresent) { $cleanupArguments += "--allow-noncanonical-layout-for-test" }
-    $cleanupOutput = & $installPackCommand[0] @cleanupArguments
-    if ($LASTEXITCODE -ne 0) { $taskStartError = "typed task cleanup failed after installer failure" }
+    $cleanupExitCode = Invoke-InstallPackInProcess -Arguments $cleanupArguments
+    if ($cleanupExitCode -ne 0) { $taskStartError = "typed task cleanup failed after installer failure" }
     try {
         Remove-NewMachineProfilesFromRegistrationReport $registrationReportPath $LogisticsProfilePath
     }
@@ -1342,10 +1290,10 @@ $summary = [ordered]@{
     install_pack_report_path = [System.IO.Path]::GetFullPath($reportPath)
     enrollment_token_file_present = -not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)
     existing_identity_reused = $reuseExistingIdentity
-    bundled_runner_exe_present = Test-Path -LiteralPath $runnerExe
+    installer_execution_mode = "in_process_embedded_python"
+    embedded_python_host_present = Test-Path -LiteralPath $embeddedPythonHost
     python_runner_script_present = Test-Path -LiteralPath $runnerScript
-    python_exe = $pythonExe
-    bundled_registration_exe_present = Test-Path -LiteralPath $registrationExe
+    python_registration_script_present = Test-Path -LiteralPath $registrationScript
     task_name = $TaskName
     field_layout_contract = if ($null -ne $installReport -and $null -ne $installReport.field_layout_contract) { $installReport.field_layout_contract } else { $fieldLayoutContract }
     scheduled_task_start = [ordered]@{
