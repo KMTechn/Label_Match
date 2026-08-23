@@ -103,9 +103,7 @@ def _task_wrapper_content(
     *,
     environment: dict[str, str] | None = None,
 ) -> str:
-    runner_script = Path(str(runner_parts[0])).resolve()
-    app_root = runner_script.parents[1]
-    embedded_python_host = app_root / "tools" / "invoke_embedded_python.ps1"
+    runner_executable = str(runner_parts[0])
     runner_args = [str(part) for part in runner_parts[1:]]
     lines = [
         "$ErrorActionPreference = 'Stop'",
@@ -119,12 +117,8 @@ def _task_wrapper_content(
     lines.extend(
         [
             ")",
-            f". {_ps_single_quote(embedded_python_host)}",
-            "$exitCode = Invoke-KMTechEmbeddedPython "
-            f"-AppRoot {_ps_single_quote(app_root)} "
-            f"-ScriptPath {_ps_single_quote(runner_script)} "
-            "-Arguments $arguments",
-            "exit [int]$exitCode",
+            f"& {_ps_single_quote(runner_executable)} @arguments",
+            "exit $LASTEXITCODE",
             "",
         ]
     )
@@ -772,6 +766,7 @@ def _app_save_path_scan_dir_check(
 def _install_preflight(
     app_root: Path,
     runner_script: Path,
+    runner_exe: Path,
     producer_manifest_path: Path,
     credential_path: Path,
     relay_scan_source_dir: str,
@@ -796,6 +791,7 @@ def _install_preflight(
         add_file_check("embedded_python_dll", embedded_runtime_root / "python312.dll")
         add_file_check("embedded_python_base_library", embedded_runtime_root / "base_library.zip")
     add_file_check("runner_script", runner_script)
+    add_file_check("scheduled_runner_executable", runner_exe)
     for module_name in [
         "producer_runtime_client.py",
         "direct_sync_push.py",
@@ -992,6 +988,12 @@ def _backpressure_config(args: argparse.Namespace) -> dict:
 def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) -> dict:
     app_root = Path(args.app_root).resolve()
     runner_script = app_root / "tools" / "direct_sync_relay_runner.py"
+    runner_exe_text = str(getattr(args, "runner_exe", "") or "").strip()
+    runner_exe = (
+        Path(runner_exe_text).resolve()
+        if runner_exe_text
+        else app_root / "tools" / "direct_sync_relay_runner.exe"
+    )
     producer_manifest_path = Path(
         getattr(args, "producer_manifest_path", "") or _default_manifest_path(args.program_data_root)
     ).resolve()
@@ -1010,8 +1012,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     rollback = bool(getattr(args, "rollback", False))
     removal = uninstall or rollback
     run_install_preflight = run_preflight and not removal and not (self_enroll and not bool(getattr(args, "apply", False)))
-    runner_parts = [str(runner_script)]
-    runner_parts.extend([
+    runner_arguments = [
         "--db-path",
         paths["db_path"],
         "--spool-dir",
@@ -1036,8 +1037,11 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         str(backpressure["max_active_queue_count"]),
         "--max-active-queue-age-seconds",
         str(backpressure["max_active_queue_age_seconds"]),
-    ])
+    ]
+    runner_parts = [str(runner_exe), *runner_arguments]
+    baseline_runner_parts = [str(runner_script), *runner_arguments]
     _append_source_scan_args(runner_parts, source_scan)
+    _append_source_scan_args(baseline_runner_parts, source_scan)
     task_wrapper = _task_wrapper_path(args.program_data_root, args.task_name)
     task_launcher = _task_launcher_path(args.program_data_root, args.task_name)
     task_action_parts = _task_wrapper_command(task_launcher)
@@ -1091,11 +1095,13 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "directories_to_create": _directories_to_create(args.program_data_root, paths, source_scan),
         "runtime_path_boundary": runtime_path_boundary,
         "source_scan": source_scan,
-        "source_scan_baseline_command": _source_scan_baseline_command(runner_parts, source_scan),
+        "source_scan_baseline_command": _source_scan_baseline_command(
+            baseline_runner_parts, source_scan
+        ),
         "backpressure": backpressure,
         "runner_script": str(runner_script),
-        "runner_exe": "",
-        "runner_command_mode": "in_process_source",
+        "runner_exe": str(runner_exe),
+        "runner_command_mode": "bundled_executable",
         "runner_command": runner_parts,
         "task_wrapper": {
             "enabled": True,
@@ -1127,6 +1133,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
             _install_preflight(
                 app_root,
                 runner_script,
+                runner_exe,
                 producer_manifest_path,
                 credential_path,
                 str(source_scan.get("scan_source_dir") or ""),
@@ -1540,6 +1547,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Label_Match direct-sync relay scheduled-task install pack")
     parser.add_argument("--app-root", default=_default_app_root())
     parser.add_argument("--app-settings-path", default="")
+    parser.add_argument("--runner-exe", default="")
     parser.add_argument("--program-data-root", default=DEFAULT_PROGRAM_DATA_ROOT)
     parser.add_argument("--producer-manifest-path", default="")
     parser.add_argument("--credential-path", default="")

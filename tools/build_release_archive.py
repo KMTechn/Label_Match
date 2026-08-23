@@ -109,6 +109,7 @@ REQUIRED_PACKAGE_MEMBERS = {
     "producer_runtime_client.py",
     "tools/check_logistics_runtime_profile.py",
     "tools/direct_sync_relay_install_pack.py",
+    "tools/direct_sync_relay_runner.exe",
     "tools/direct_sync_relay_runner.py",
     "tools/invoke_embedded_python.ps1",
     "tools/install_logistics_runtime_profile.py",
@@ -117,7 +118,6 @@ REQUIRED_PACKAGE_MEMBERS = {
 RETIRED_HELPER_EXECUTABLES = {
     "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
     "tools/direct_sync_relay_install_pack.exe",
-    "tools/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
 }
 
@@ -683,7 +683,6 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
             raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
     in_process_bindings = {
         "install_helper": ("tools/direct_sync_relay_install_pack.py", False),
-        "runner": ("tools/direct_sync_relay_runner.py", True),
         "registration": ("tools/register_label_match_worker_pc.py", True),
     }
     for name, (relative, selected_required) in in_process_bindings.items():
@@ -702,6 +701,19 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         target = package_root / PurePosixPath(relative)
         if not target.is_file() or entry.get("sha256") != _sha256(target):
             raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
+    runner = report.get("runner")
+    runner_relative = "tools/direct_sync_relay_runner.exe"
+    if (
+        not isinstance(runner, dict)
+        or set(runner) != {"path", "sha256", "selected", "execution_boundary"}
+        or runner.get("path") != runner_relative
+        or runner.get("selected") is not True
+        or runner.get("execution_boundary") != "scheduled_task"
+    ):
+        raise ReleaseArchiveError("staged installer runner binding is invalid")
+    runner_target = package_root / PurePosixPath(runner_relative)
+    if not runner_target.is_file() or runner.get("sha256") != _sha256(runner_target):
+        raise ReleaseArchiveError("staged installer runner hash mismatch")
     payload_inventory = [
         item for item in inventory if item["path"] != "build-manifest.json"
     ]

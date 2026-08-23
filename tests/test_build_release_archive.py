@@ -27,7 +27,7 @@ IDENTITY_SPEC.loader.exec_module(identity_verifier)
 
 BUILDER_PATH = MODULE_PATH.with_name("build_frozen_release_candidate.ps1")
 
-TAG = "v2.0.79"
+TAG = "v2.0.80"
 COMMIT = "1" * 40
 TREE = "2" * 40
 
@@ -160,6 +160,7 @@ def _package(tmp_path: Path) -> Path:
         "tools/install_logistics_runtime_profile.py": b"# install profile\n",
         "tools/invoke_embedded_python.ps1": b"# embedded host\n",
         "tools/direct_sync_relay_install_pack.py": b"# install source\n",
+        "tools/direct_sync_relay_runner.exe": b"packaged runner",
         "tools/direct_sync_relay_runner.py": b"# runner source\n",
         "tools/register_label_match_worker_pc.py": b"# registration source\n",
         "tools/direct_sync_relay_operator.py": b"# relay operator\n",
@@ -280,7 +281,7 @@ def _package(tmp_path: Path) -> Path:
     public_entrypoint = root / "INSTALL_THIS_PC.ps1"
     installer = root / "install_label_match_direct_sync.ps1"
     install_helper = root / "tools" / "direct_sync_relay_install_pack.py"
-    runner = root / "tools" / "direct_sync_relay_runner.py"
+    runner = root / "tools" / "direct_sync_relay_runner.exe"
     registration = root / "tools" / "register_label_match_worker_pc.py"
     embedded_python_host = root / "tools" / "invoke_embedded_python.ps1"
     staged_report = {
@@ -358,10 +359,10 @@ def _package(tmp_path: Path) -> Path:
             "execution_boundary": "in_process",
         },
         "runner": {
-            "path": "tools/direct_sync_relay_runner.py",
+            "path": "tools/direct_sync_relay_runner.exe",
             "sha256": archive_builder._sha256(runner),
             "selected": True,
-            "execution_boundary": "in_process",
+            "execution_boundary": "scheduled_task",
         },
         "registration": {
             "path": "tools/register_label_match_worker_pc.py",
@@ -472,7 +473,8 @@ def test_build_release_archive_is_deterministic_unsigned_and_byte_exact(tmp_path
         names = set(archive.namelist())
     assert "Label_Match/build-manifest.json" in names
     assert "Label_Match/tools/invoke_embedded_python.ps1" in names
-    assert not any(name.endswith("direct_sync_relay_runner.exe") for name in names)
+    assert "Label_Match/tools/direct_sync_relay_runner.exe" in names
+    assert not any(name.endswith("register_label_match_worker_pc.exe") for name in names)
     assert len(names) == first_report["package_file_count"]
 
 
@@ -498,13 +500,13 @@ def test_archive_rejects_noncanonical_unsigned_v3_identity(tmp_path, field, valu
         )
 
 
-def test_archive_contract_retires_packaged_direct_sync_helper_executables():
+def test_archive_contract_restores_runner_and_retires_only_a_helpers():
     assert archive_builder.RETIRED_HELPER_EXECUTABLES == {
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "tools/direct_sync_relay_install_pack.exe",
-        "tools/direct_sync_relay_runner.exe",
         "tools/register_label_match_worker_pc.exe",
     }
+    assert "tools/direct_sync_relay_runner.exe" in archive_builder.REQUIRED_PACKAGE_MEMBERS
     assert not (
         archive_builder.RETIRED_HELPER_EXECUTABLES
         & archive_builder.REQUIRED_PACKAGE_MEMBERS

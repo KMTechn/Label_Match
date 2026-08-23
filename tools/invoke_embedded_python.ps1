@@ -1,5 +1,3 @@
-Set-StrictMode -Version Latest
-
 if (-not ("KMTech.LabelMatchEmbeddedPythonHost" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -113,6 +111,8 @@ function Invoke-KMTechEmbeddedPython {
 
         [string[]]$Arguments = @()
     )
+
+    Set-StrictMode -Version Latest
 
     $resolvedAppRoot = [System.IO.Path]::GetFullPath($AppRoot).TrimEnd('\')
     $resolvedScriptPath = [System.IO.Path]::GetFullPath($ScriptPath)

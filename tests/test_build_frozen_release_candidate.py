@@ -106,7 +106,7 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     source = _source()
 
     assert "[string]$OutputRoot" in source
-    assert '[string]$Tag = "v2.0.79"' in source
+    assert '[string]$Tag = "v2.0.80"' in source
     assert "[string]$PythonPath" in source
     assert "[string]$Wheelhouse" in source
     assert "[string]$MirrorRoot" in source
@@ -158,11 +158,11 @@ def test_contract_requires_exactly_once_local_tag_burner_before_builder():
     assert burner_command in contract
     assert runner_command in contract
     assert contract.index(burner_command) < contract.index(runner_command)
-    assert "--tag v2.0.79" in contract
+    assert "--tag v2.0.80" in contract
     assert "--expected-commit <EXACT-CANDIDATE-COMMIT>" in contract
     assert "--expected-tree <EXACT-CANDIDATE-TREE>" in contract
     assert "do not retry it" in contract
-    assert "0b21b5008c045f3f0848c6b36e3bbbe40bd4573caa4383827df1e7bd07658c7d" in contract
+    assert "759b2ce9451f841de291c4e21ceeb4ccff315ad5de19a2861a02f30f02fe7f74" in contract
 
 
 def test_script_runs_only_the_static_staged_installer_gate_without_elevation():
@@ -284,7 +284,7 @@ def test_script_rejects_a_clean_clone_whose_origin_is_not_the_supplied_mirror(
             "-OutputRoot",
             str(output_root),
             "-Tag",
-            "v2.0.79",
+            "v2.0.80",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",
@@ -679,6 +679,10 @@ def test_script_moves_authoritative_build_and_package_gates_outside_repo():
     assert '"--noupx"' in source
     assert "build_embedded_python_library.py" in source
     assert "build_release_cli_tools.py" not in source
+    assert '-Name "direct_sync_relay_runner"' in source
+    assert r'-Source (Join-Path $repoRoot "tools\direct_sync_relay_runner.py")' in source
+    assert r'tools\direct_sync_relay_runner.exe") --help' in source
+    assert "--expected-file tools/direct_sync_relay_runner.exe" in source
     for executable in (
         "KMTech_Logistics_Profile_Install",
         "KMTech_Logistics_Profile_Check",

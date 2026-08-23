@@ -44,13 +44,13 @@ REQUIRED_PUBLIC_MEMBERS = {
     "_internal/base_library.zip",
     "tools/invoke_embedded_python.ps1",
     "tools/direct_sync_relay_install_pack.py",
+    "tools/direct_sync_relay_runner.exe",
     "tools/direct_sync_relay_runner.py",
     "tools/register_label_match_worker_pc.py",
 }
 RETIRED_HELPER_EXECUTABLES = {
     "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
     "tools/direct_sync_relay_install_pack.exe",
-    "tools/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
 }
 
@@ -419,18 +419,23 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
         if not _same_path(str(settings.get("custom_save_path") or ""), scan_source):
             raise StagedInstallerVerificationError("staged app save path differs from relay scan source")
 
-        runner = install_root / "tools" / "direct_sync_relay_runner.py"
+        runner = install_root / "tools" / "direct_sync_relay_runner.exe"
+        runner_source = install_root / "tools" / "direct_sync_relay_runner.py"
         registration = install_root / "tools" / "register_label_match_worker_pc.py"
         install_helper = install_root / "tools" / "direct_sync_relay_install_pack.py"
         embedded_python_host = install_root / "tools" / "invoke_embedded_python.ps1"
         runner_command = install_report.get("runner_command")
+        baseline_command = install_report.get("source_scan_baseline_command")
         self_enrollment = install_report.get("self_enrollment")
         if (
             not isinstance(runner_command, list)
             or not runner_command
             or not _same_path(runner_command[0], runner)
-            or install_report.get("runner_exe") != ""
-            or install_report.get("runner_command_mode") != "in_process_source"
+            or not _same_path(str(install_report.get("runner_exe") or ""), runner)
+            or install_report.get("runner_command_mode") != "bundled_executable"
+            or not isinstance(baseline_command, list)
+            or not baseline_command
+            or not _same_path(baseline_command[0], runner_source)
             or not isinstance(self_enrollment, dict)
             or self_enrollment.get("registration_command_mode") != "in_process_source"
             or self_enrollment.get("registration_executable") != ""
@@ -503,7 +508,7 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
                 "sha256": _sha256(install_helper),
                 "execution_boundary": "in_process",
             },
-            "runner": {"path": "tools/direct_sync_relay_runner.py", "sha256": _sha256(runner), "selected": True, "execution_boundary": "in_process"},
+            "runner": {"path": "tools/direct_sync_relay_runner.exe", "sha256": _sha256(runner), "selected": True, "execution_boundary": "scheduled_task"},
             "registration": {"path": "tools/register_label_match_worker_pc.py", "sha256": _sha256(registration), "selected": True, "execution_boundary": "in_process"},
             "embedded_python_host": {"path": "tools/invoke_embedded_python.ps1", "sha256": _sha256(embedded_python_host)},
             "retired_helper_executables_absent": True,

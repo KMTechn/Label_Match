@@ -4,7 +4,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.79",
+    [string]$Tag = "v2.0.80",
 
     [string]$PythonPath = "",
 
@@ -854,6 +854,14 @@ Assert-LastExitCode "Materialize the in-process embedded Python library"
 Invoke-OneFileBuild `
     -VenvPython $venvPython `
     -RepositoryRoot $repoRoot `
+    -PackageRoot (Join-Path $packageRoot "tools") `
+    -WorkRoot $workRoot `
+    -Name "direct_sync_relay_runner" `
+    -Source (Join-Path $repoRoot "tools\direct_sync_relay_runner.py")
+
+Invoke-OneFileBuild `
+    -VenvPython $venvPython `
+    -RepositoryRoot $repoRoot `
     -PackageRoot $packageRoot `
     -WorkRoot $workRoot `
     -Name "KMTech_Logistics_Profile_Install" `
@@ -1047,8 +1055,8 @@ $stagedInstallerReport = Join-Path $packageRoot "staged-installer-verification.j
     --package-root $packageRoot `
     --report $stagedInstallerReport
 Assert-LastExitCode "Verify staged installer without system Python"
-& $venvPython (Join-Path $packageRoot "tools\direct_sync_relay_runner.py") --help | Out-Null
-Assert-LastExitCode "Staged relay source help probe"
+& (Join-Path $packageRoot "tools\direct_sync_relay_runner.exe") --help | Out-Null
+Assert-LastExitCode "Staged packaged relay runner help probe"
 & $venvPython (Join-Path $packageRoot "tools\direct_sync_relay_operator.py") --help | Out-Null
 Assert-LastExitCode "Staged relay operator source help probe"
 $env:LABEL_MATCH_STAGED_PACKAGE_ROOT = $packageRoot
@@ -1062,6 +1070,7 @@ $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
     --expected-file contract.lock.json `
     --expected-file build-identity.json `
     --expected-file build-compatibility.json `
+    --expected-file tools/direct_sync_relay_runner.exe `
     --built-at-utc $builtAtUtc
 Assert-LastExitCode "Seal exact factory package manifest"
 & $venvPython -m kmtech_factory_contracts.build_cli verify `

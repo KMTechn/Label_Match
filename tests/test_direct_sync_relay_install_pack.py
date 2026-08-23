@@ -1397,15 +1397,16 @@ def test_install_pack_uses_windows_quoting_for_scheduled_task_action(tmp_path):
     assert str(plan["task_launcher"]["path"]) in task_action
     wrapper_content = module._task_wrapper_content(plan["runner_command"])
     launcher_content = module._task_launcher_content(plan["task_wrapper"]["path"])
-    assert str((app_root / "tools" / "invoke_embedded_python.ps1").resolve()) in wrapper_content
-    assert str((app_root / "tools" / "direct_sync_relay_runner.py").resolve()) in wrapper_content
+    assert str((app_root / "tools" / "direct_sync_relay_runner.exe").resolve()) in wrapper_content
+    assert "invoke_embedded_python.ps1" not in wrapper_content
+    assert "direct_sync_relay_runner.py" not in wrapper_content
     assert "포장실 *.csv" in wrapper_content
     assert "powershell.exe" in launcher_content
     assert "-ExecutionPolicy Bypass" in launcher_content
     assert str(plan["task_wrapper"]["path"]) in launcher_content
 
 
-def test_install_pack_ignores_retired_runner_exe_and_schedules_in_process_source(tmp_path):
+def test_install_pack_restores_only_scheduled_runner_exe_boundary(tmp_path):
     module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     runner_exe = tmp_path / "tools" / "direct_sync_relay_runner.exe"
@@ -1443,14 +1444,47 @@ def test_install_pack_ignores_retired_runner_exe_and_schedules_in_process_source
 
     plan = module.build_install_plan(args)
     wrapper_content = module._task_wrapper_content(plan["runner_command"])
+    create_command = plan["scheduled_task_create_command"]
 
-    expected_runner = (tmp_path / "App Root" / "tools" / "direct_sync_relay_runner.py").resolve()
-    assert plan["runner_command"][0] == str(expected_runner)
-    assert str(expected_runner) in wrapper_content
-    assert str(runner_exe.resolve()) not in wrapper_content
+    expected_runner_source = (
+        tmp_path / "App Root" / "tools" / "direct_sync_relay_runner.py"
+    ).resolve()
+    assert plan["runner_command"][0] == str(runner_exe.resolve())
+    assert str(runner_exe.resolve()) in wrapper_content
+    assert str(expected_runner_source) not in wrapper_content
     assert "missing-python.exe" not in wrapper_content
-    assert plan["runner_exe"] == ""
-    assert plan["runner_command_mode"] == "in_process_source"
+    assert plan["runner_exe"] == str(runner_exe.resolve())
+    assert plan["runner_command_mode"] == "bundled_executable"
+    assert plan["source_scan_baseline_command"][0] == str(expected_runner_source)
+    assert plan["self_enrollment"]["registration_command_mode"] == "in_process_source"
+    assert plan["self_enrollment"]["registration_executable"] == ""
+    assert create_command[:8] == [
+        "schtasks.exe",
+        "/Create",
+        "/TN",
+        "direct-sync-relay-label-match",
+        "/SC",
+        "MINUTE",
+        "/MO",
+        "1",
+    ]
+    assert create_command[create_command.index("/RU") + 1] == "SYSTEM"
+    assert create_command[-1] == "/F"
+    assert plan["task_wrapper"]["script_encoding"] == "utf-8-sig"
+    assert plan["task_launcher"]["script_encoding"] == "ascii"
+    expected_wrapper = ["$ErrorActionPreference = 'Stop'", "$arguments = @("]
+    expected_wrapper.extend(
+        f"    {module._ps_single_quote(part)}" for part in plan["runner_command"][1:]
+    )
+    expected_wrapper.extend(
+        [
+            ")",
+            f"& {module._ps_single_quote(runner_exe.resolve())} @arguments",
+            "exit $LASTEXITCODE",
+            "",
+        ]
+    )
+    assert wrapper_content == "\n".join(expected_wrapper)
 
 
 def test_install_pack_blocks_missing_release_runtime_preflight(tmp_path):

@@ -68,6 +68,7 @@ def _package(tmp_path: Path) -> Path:
     (root / "_internal/base_library.zip").write_bytes(b"library")
     (root / "tools/invoke_embedded_python.ps1").write_text("# host\n", encoding="utf-8")
     (root / "tools/direct_sync_relay_install_pack.py").write_text("# install\n", encoding="utf-8")
+    (root / "tools/direct_sync_relay_runner.exe").write_bytes(b"runner executable")
     (root / "tools/direct_sync_relay_runner.py").write_text("# runner\n", encoding="utf-8")
     (root / "tools/register_label_match_worker_pc.py").write_text("# register\n", encoding="utf-8")
     _write_manifest(root)
@@ -87,7 +88,8 @@ def _fake_run_with_reports(command, **kwargs):
     common_programs = Path(command[command.index("-CommonProgramsRootForTest") + 1])
     receipt_root = Path(command[command.index("-RollbackReceiptRootForTest") + 1])
     shutil.copytree(extracted_root, install_root)
-    runner = install_root / "tools/direct_sync_relay_runner.py"
+    runner = install_root / "tools/direct_sync_relay_runner.exe"
+    runner_source = install_root / "tools/direct_sync_relay_runner.py"
     settings = install_root / "_internal/config/app_settings.json"
     settings.write_text(json.dumps({"custom_save_path": str(scan_source)}), encoding="utf-8")
     manifest_sha = verifier._sha256(extracted_root / "build-manifest.json")
@@ -152,9 +154,13 @@ def _fake_run_with_reports(command, **kwargs):
             "expected_state_db_path": verifier.CANONICAL_STATE_DB_PATH,
             "local_test_override_enabled": True,
         },
-        "runner_exe": "",
-        "runner_command_mode": "in_process_source",
+        "runner_exe": str(runner),
+        "runner_command_mode": "bundled_executable",
         "runner_command": [str(runner), "--help"],
+        "source_scan_baseline_command": [
+            str(runner_source),
+            "--baseline-existing-source-files",
+        ],
         "app_settings_path": str(settings),
         "self_enrollment": {
             "registration_command_mode": "in_process_source",
@@ -257,6 +263,67 @@ def test_verify_staged_installer_rejects_external_python_runner_fallback(tmp_pat
     monkeypatch.setattr(verifier.subprocess, "run", fake_python_report)
     with pytest.raises(verifier.StagedInstallerVerificationError, match="in-process runtime"):
         verifier.verify_staged_installer(package)
+
+
+@pytest.mark.skipif(verifier.os.name != "nt", reason="Windows-only staged installer verifier")
+def test_verify_staged_installer_rejects_public_install_failure(tmp_path, monkeypatch):
+    package = _package(tmp_path)
+    monkeypatch.setattr(
+        verifier.shutil,
+        "which",
+        lambda _name: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    )
+
+    def fake_install_failure(_command, **kwargs):
+        kwargs["stderr"].write(b"nested install failure\n")
+        kwargs["stderr"].flush()
+        failed = _Completed()
+        failed.returncode = 1
+        return failed
+
+    monkeypatch.setattr(verifier.subprocess, "run", fake_install_failure)
+    with pytest.raises(
+        verifier.StagedInstallerVerificationError,
+        match="public installer dry run failed with exit 1: nested install failure",
+    ):
+        verifier.verify_staged_installer(package)
+
+
+@pytest.mark.skipif(verifier.os.name != "nt", reason="Windows-only staged installer verifier")
+@pytest.mark.parametrize("relative", sorted(verifier.RETIRED_HELPER_EXECUTABLES))
+def test_verify_staged_installer_rejects_each_retired_helper_member(
+    tmp_path, monkeypatch, relative
+):
+    package = _package(tmp_path)
+    retired = package / relative
+    retired.parent.mkdir(parents=True, exist_ok=True)
+    retired.write_bytes(b"retired helper")
+    monkeypatch.setattr(
+        verifier.shutil,
+        "which",
+        lambda _name: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    )
+    monkeypatch.setattr(
+        verifier.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("retired helper reached public execution"),
+    )
+
+    with pytest.raises(
+        verifier.StagedInstallerVerificationError,
+        match="retired helper executables remain packaged",
+    ):
+        verifier.verify_staged_installer(package)
+
+
+def test_staged_contract_restores_runner_but_retires_install_registration_helpers():
+    assert "tools/direct_sync_relay_runner.exe" in verifier.REQUIRED_PUBLIC_MEMBERS
+    assert "tools/direct_sync_relay_runner.exe" not in verifier.RETIRED_HELPER_EXECUTABLES
+    assert verifier.RETIRED_HELPER_EXECUTABLES == {
+        "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
+        "tools/direct_sync_relay_install_pack.exe",
+        "tools/register_label_match_worker_pc.exe",
+    }
 
 
 @pytest.mark.parametrize("unsafe", ["../escape", "C:/escape", "file:stream", "a\\b"])

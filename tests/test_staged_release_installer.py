@@ -36,6 +36,37 @@ def _normalized(path: str | os.PathLike[str]) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
+def _staged_install_failure_detail(
+    completed: subprocess.CompletedProcess,
+    *,
+    receipt_root: Path,
+    program_data_root: Path,
+) -> str:
+    evidence: dict[str, object] = {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout[-2048:],
+        "stderr": completed.stderr[-2048:],
+    }
+    for label, path in (
+        ("public_report", receipt_root / "label_match_public_install_report.json"),
+        (
+            "nested_install_report",
+            program_data_root / "status/label_match_direct_sync_install.json",
+        ),
+        (
+            "nested_summary",
+            program_data_root / "status/label_match_one_step_install_summary.json",
+        ),
+    ):
+        retained: dict[str, object] = {"path": str(path), "retained": path.is_file()}
+        if path.is_file():
+            retained["content_tail"] = path.read_text(
+                encoding="utf-8-sig", errors="replace"
+            )[-4096:]
+        evidence[label] = retained
+    return json.dumps(evidence, ensure_ascii=True, sort_keys=True)
+
+
 def _assert_isolated_file_hash_authority(
     powershell: Path, script_path: Path, probe_root: Path
 ) -> None:
@@ -136,6 +167,55 @@ def test_installer_file_hash_authority_does_not_require_module_autoload(tmp_path
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hosting is Windows-only")
+def test_embedded_python_host_keeps_strict_mode_inside_its_function(tmp_path):
+    powershell = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    if not powershell.is_file():
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    temp_root = tmp_path / "powershell-temp"
+    temp_root.mkdir()
+    command = r'''
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Off
+. $env:LABEL_MATCH_EMBEDDED_HOST
+$functionBody = (Get-Command Invoke-KMTechEmbeddedPython -CommandType Function).ScriptBlock.ToString()
+if ($functionBody -notmatch 'Set-StrictMode -Version Latest') {
+    throw "Embedded host function no longer enables strict mode."
+}
+$optional = ([pscustomobject]@{}).self_enrollment_registration
+if ($null -ne $optional) { throw "Missing optional property did not remain null." }
+[Console]::Out.Write("PASS")
+'''
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            **os.environ,
+            "LABEL_MATCH_EMBEDDED_HOST": str(ROOT / "tools/invoke_embedded_python.ps1"),
+            "TEMP": str(temp_root),
+            "TMP": str(temp_root),
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "PASS"
+    assert completed.stderr == ""
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Label_Match release installers are Windows-only")
 def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp_path):
     staged_root = _staged_package_root()
@@ -151,6 +231,7 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
         staged_root / "_internal/base_library.zip",
         staged_root / "tools/invoke_embedded_python.ps1",
         staged_root / "tools/direct_sync_relay_install_pack.py",
+        staged_root / "tools/direct_sync_relay_runner.exe",
         staged_root / "tools/direct_sync_relay_runner.py",
         staged_root / "tools/register_label_match_worker_pc.py",
     )
@@ -208,7 +289,11 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
         timeout=120,
         env=environment,
     )
-    assert completed.returncode == 0, (completed.stderr or completed.stdout)[:2048]
+    assert completed.returncode == 0, _staged_install_failure_detail(
+        completed,
+        receipt_root=receipt_root,
+        program_data_root=program_data_root,
+    )
     assert len(completed.stdout.encode("utf-8", errors="replace")) <= 64 * 1024
     assert completed.stderr == ""
     assert install_root.is_dir()
@@ -247,9 +332,14 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
     assert public_report["removal_contract"]["immutable_app_drift_rejected"] is True
     assert install_report["status"] == "DRY_RUN"
     assert install_report["field_layout_contract"]["local_test_override_enabled"] is True
-    assert install_report["runner_exe"] == ""
-    assert install_report["runner_command_mode"] == "in_process_source"
+    assert _normalized(install_report["runner_exe"]) == _normalized(
+        install_root / "tools/direct_sync_relay_runner.exe"
+    )
+    assert install_report["runner_command_mode"] == "bundled_executable"
     assert _normalized(install_report["runner_command"][0]) == _normalized(
+        install_root / "tools/direct_sync_relay_runner.exe"
+    )
+    assert _normalized(install_report["source_scan_baseline_command"][0]) == _normalized(
         install_root / "tools/direct_sync_relay_runner.py"
     )
     assert summary["installer_execution_mode"] == "in_process_embedded_python"
@@ -257,12 +347,13 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
         (install_root / relative).exists()
         for relative in (
             "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-            "tools/direct_sync_relay_runner.exe",
+            "tools/direct_sync_relay_install_pack.exe",
             "tools/register_label_match_worker_pc.exe",
         )
     )
     assert summary["installer_report_version"] == "label-match-direct-sync-one-step-install-v2"
     assert summary["status"] == "DRY_RUN"
+    assert summary["registration_blocked_reason"] is None
     assert summary["lifecycle_contract"]["task_removal_order"] == ["stop", "delete", "absence"]
     assert summary["resources"]["app_root"]["inventory_contract"] == (
         "label-match-app-immutable-inventory-v1"

@@ -628,11 +628,15 @@ $toolsDir = Join-Path $appRoot "tools"
 $embeddedPythonHost = Join-Path $toolsDir "invoke_embedded_python.ps1"
 $installPackScript = Join-Path $toolsDir "direct_sync_relay_install_pack.py"
 $runnerScript = Join-Path $toolsDir "direct_sync_relay_runner.py"
+$runnerExe = Join-Path $toolsDir "direct_sync_relay_runner.exe"
 $registrationScript = Join-Path $toolsDir "register_label_match_worker_pc.py"
 foreach ($requiredSource in @($embeddedPythonHost, $installPackScript, $runnerScript, $registrationScript)) {
     if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) {
         throw "In-process installer source is missing. Missing: $requiredSource"
     }
+}
+if (-not (Test-Path -LiteralPath $runnerExe -PathType Leaf)) {
+    throw "Packaged scheduled relay runner is missing. Missing: $runnerExe"
 }
 . $embeddedPythonHost
 
@@ -1094,7 +1098,8 @@ $arguments = @(
     "--app-run-user", $AppRunUser,
     "--task-name", $TaskName,
     "--report-path", $reportPath,
-    "--app-settings-path", $settingsPath
+    "--app-settings-path", $settingsPath,
+    "--runner-exe", $runnerExe
 )
 if ($reuseExistingIdentity) {
     $arguments += @(

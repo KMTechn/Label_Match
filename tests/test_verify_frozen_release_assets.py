@@ -13,7 +13,7 @@ import pytest
 from tools import verify_frozen_release_assets as verifier
 
 
-TAG = "v2.0.79"
+TAG = "v2.0.80"
 COMMIT = "1" * 40
 TREE = "2" * 40
 TAG_OBJECT = "4" * 40
@@ -401,12 +401,12 @@ def test_probe_identity_with_abbreviated_fields_cannot_pass(tmp_path):
         _verify(fixture)
 
 
-def test_staged_binding_cannot_claim_a_missing_in_process_source(tmp_path):
+def test_staged_binding_cannot_claim_a_missing_scheduled_runner(tmp_path):
     fixture = _fixture(tmp_path)
     archive = fixture["archive"]
     assert isinstance(archive, Path)
     entries = _read_archive(archive)
-    entries.pop("tools/direct_sync_relay_runner.py")
+    entries.pop("tools/direct_sync_relay_runner.exe")
     _refresh_staged_inventory(entries)
     _refresh_build_manifest(entries)
     _rewrite_archive(fixture, entries)
