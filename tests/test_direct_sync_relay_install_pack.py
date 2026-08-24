@@ -170,7 +170,8 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
     )
     assert report["install_preflight"]["status"] == "PASS"
     assert report["task_name"] == "direct-sync-relay-label-match"
-    assert "direct_sync_relay_runner.py" in " ".join(report["runner_command"])
+    assert report["runner_command_mode"] == "bundled_executable"
+    assert Path(report["runner_command"][0]) == Path(report["runner_exe"])
     assert "--scan-source-dir" in report["runner_command"]
     assert str(scan_source_dir.resolve()) in report["runner_command"]
     assert "포장실작업이벤트로그_*.csv" in report["runner_command"]

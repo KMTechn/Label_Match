@@ -1186,7 +1186,8 @@ def _install_pack_dry_run_report(tmp_root: Path) -> dict:
     ok = (
         plan["status"] == "DRY_RUN"
         and plan["scheduled_task_create_command"][0] == "schtasks.exe"
-        and "direct_sync_relay_runner.py" in " ".join(plan["runner_command"])
+        and plan["runner_command_mode"] == "bundled_executable"
+        and Path(plan["runner_command"][0]) == Path(plan["runner_exe"])
         and "--scan-source-dir" in plan["runner_command"]
         and "--operator-pause-path" in plan["runner_command"]
         and "--max-active-queue-count" in plan["runner_command"]
