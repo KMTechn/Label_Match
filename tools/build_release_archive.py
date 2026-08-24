@@ -41,6 +41,7 @@ FACTORY_EXPECTED_FILES = {
     "contract.lock.json",
     "build-identity.json",
     "build-compatibility.json",
+    "tools/direct_sync_relay_runner.exe",
 }
 EXPECTED_CONTRACT_LOCK = {
     "app_id": "label_match",
