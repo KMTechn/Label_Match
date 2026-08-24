@@ -17,9 +17,21 @@
 - 이벤트는 로컬 저장소와 direct-sync spool을 거쳐 서버로 올라간다.
 - 포장 데이터는 서버 projection에서 원본 PHS2, 현재 제품 멤버십, F4 교체 이력과 포장 ACK를 맞추는 핵심 입력이다.
 
+## 완료 상태와 receipt 경계
+
+- `package_command_outbox.status`는 중앙 전달 상태이고 `local_completion_committed`는 로컬 완료 권위다. DB row가 `PENDING`이어도 marker가 `0`이면 `LOCAL_COMMITTED`가 아니다.
+- 문서와 테스트에서 쓰는 `PREPARED`는 `PENDING + local_completion_committed=0` 조합을 설명하는 파생 용어일 뿐이다. DB status 값, enum, 별도 state로 저장하지 않는다.
+- F3는 current-set recovery 파일을 먼저 원자 저장한 뒤 outbox intent를 만든다. 이후 `TRAY_COMPLETE` CSV row의 `flush + fsync`, marker와 operation lease의 같은 transaction 순서가 끝나야 로컬 완료다. 중앙 claim은 `PENDING + marker=1`만 선택한다.
+- marker가 `0`이면 outbox status가 무엇이든 로컬 완료로 해석하지 않는다. 특히 pre-write `CONFLICT`는 기존 관리자 확인 경로이며 PASS로 자동 완료하지 않는다. marker가 `1`인 `CONFLICT`만 “로컬 완료는 유지되고 중앙 충돌은 검토 중”이라는 두 축의 조합이다.
+- Package logistics receipt의 `status=COMMITTED`는 포장 명령 ledger 결과다. Producer ingest receipt의 `status=accepted, committed=true`는 source-file 수신 결과다. 어느 한쪽도 다른 쪽의 ACK 증거로 사용하지 않는다.
+- Relay의 `pending/leased/retry_wait` 범위는 exact spool path/hash/byte가 확인될 때만 중복 enqueue를 피하기 위한 in-flight 증거다. 검증된 producer `accepted` receipt로 row가 `acked`가 된 뒤에만 명시적 진척도를 기록한다. Active spool이 없거나 손상되면 source range를 다시 평가해 기존 dedupe repair로 보낸다.
+- `operator_review`와 `failed_permanent`가 이미 소유한 동일 prefix는 row와 spool을 보존한 채 이후 scan을 차단한다. accepted되지 않은 prefix를 bytes-0 delta로 다시 포장하지 않는다.
+
 ## 꼭 유지할 사항
 
 - Spool 파일은 서버 receipt 확정 전까지 재전송 가능한 원천 payload다.
+- Enqueue commit 결과가 불확실하면 새 read connection으로 같은 relay row를 확인한다. 일치하는 row가 있거나 DB 결과 자체가 불확실하면 spool을 보존하고, row가 없다는 것이 확인될 때만 생성 중 spool을 정리한다.
+- Dedupe는 path/hash/length만 비교하지 않는다. 같은 install/host source identity에서는 `client_batch_id`를 제외한 immutable source-file fingerprint와 기존 producer/key/endpoint binding이 모두 같아야 같은 row를 재사용한다. Manifest fingerprint 불일치는 기존 row/spool을 보존한 채 conflict로 닫고, install/host identity rotation은 별도 row로 기록한다. Runtime lease/token/fencing은 기존 relay id의 attempt-state이므로 fingerprint에서 제외하고 그대로 보존한다.
 - Missing/unreadable spooled file은 `operator_review`로 쌓아두지 않고 `failed_permanent`로 닫는다. 로컬 파일 손실은 재시도로 복구되지 않는다.
 - Relay id 기반 deterministic retry jitter를 유지한다.
 - 서버 `Retry-After`가 유효하면 producer가 보존해야 한다. `0`도 유효한 즉시 재시도 값이다.
@@ -32,6 +44,12 @@
 ## 미룬 작업
 
 - terminal acked spool/status retention은 receipt 재시도 안전성 검증 전까지 자동 cleanup 대상으로 보지 않는다.
+
+## Session 14 candidate fixture 확인
+
+- Session 14의 not-pinned Label golden payload header는 `timestamp,event_type,worker_name,detail`이고 실제 `DataManager` emitter는 `timestamp,worker_name,event,details`다. 따라서 fixture와 emitter의 byte/column-name 동일성은 성립하지 않는다.
+- 두 형식 모두 기존 server decoder의 Label 경로에서 accepted되는 것은 별도 focused test로 확인한다. 이는 decoder 호환 증거이지 fixture가 실제 emitter bytes라는 뜻은 아니다.
+- 이 확인으로 Factory Contract bundle, lock, consumer pin을 변경하지 않는다.
 
 ## 현재 리포트/가드레일
 
