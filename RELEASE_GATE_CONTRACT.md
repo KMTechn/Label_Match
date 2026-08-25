@@ -117,7 +117,7 @@ PowerShell 5.1 preflight regression proves clean acceptance, injected ambiguous
 syntax rejection, and independent stdout/stderr freshness checks without
 starting the builder.
 
-### Frozen-byte publication sequence (v2.0.80 current candidate)
+### Frozen-byte publication sequence (v2.0.82 current candidate)
 
 The initial elevated v2.0.67 infrastructure cohort at
 `E:\KMTech\label-v2067-daa3-phase83-elevated-20260812` failed before
@@ -378,6 +378,31 @@ packaged `direct_sync_relay_runner.exe` remains the unchanged SYSTEM scheduled
 relay action; only the retired install-pack and registration helper executables
 remain forbidden package members.
 
+The v2.0.80 annotated tag object
+`b93d0097f23308b406111c17d2193f4b8b80381f` remains immutable at commit
+`fe98c2a69d206e7e714ef0fa7ca268d54d50c7b1` and tree
+`ea7469a5ae0af8dea2bce46e1b09ce4849074af6`. Its first official build stopped
+at the staged-installer gate because an external task root produced a
+260-character destination. The authorized short-path successor build cleared
+that gate 4/4, then stopped before archive creation because the factory build
+manifest sealed `tools/direct_sync_relay_runner.exe` while
+`FACTORY_EXPECTED_FILES` omitted it. Preserve both attempts and the v2.0.80 tag
+as immutable quarantined history.
+
+The v2.0.81 annotated tag object
+`1375dd564f2754f1f1ca82a489121ec40bded28b` remains immutable at commit
+`7f976b5eedbceef829fd9692b1eb80194f44e7ff` and tree
+`3ede781ff496311bfaa0c0808394d3686ea14a4c`. Its official builder created
+internally qualified frozen bytes, but the independent verifier rejected the
+preserved qualification receipt because its exact key contract omitted the
+builder-emitted `path_identity`. The required post-build group also failed
+0/12 because stale source/package runner-context assertions and fixtures still
+expected the Python runner shape or omitted the bundled executable. Preserve
+the v2.0.81 tag, bytes, and evidence as immutable quarantined history. v2.0.82
+is the required direct-child release candidate from reviewed X03 commit
+`ead43dfd4bfcca094adb86db3b51f2c0edf1a07b`, which preserves X02 and the
+stacked runner-context corrections while adding the exact receipt key.
+
 The governing order is Phase B/8.3, then Phase C/9, then Phase D/10. GitHub
 Actions is not a release gate and cannot replace the local exact-SHA gates.
 
@@ -418,7 +443,7 @@ python -I .\tools\burn_local_release_tag_once.py `
   --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
   --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
   --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
-  --tag v2.0.80 `
+  --tag v2.0.82 `
   --expected-commit <EXACT-CANDIDATE-COMMIT> `
   --expected-tree <EXACT-CANDIDATE-TREE>
 ```
@@ -430,15 +455,15 @@ python -I .\tools\burn_local_release_tag_once.py `
    LF):
 
 ```text
-Release v2.0.80
+Release v2.0.82
 ```
 
    Those 16 canonical bytes have SHA-256
-   `759b2ce9451f841de291c4e21ceeb4ccff315ad5de19a2861a02f30f02fe7f74`.
+   `36092f4a6a5fd537792956bfa1e4b6e2052c7b03c95af2daa6eb31cdc615194d`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.80`, report type
+   bare mirror must expose that exact object as `refs/tags/v2.0.82`, report type
    `tag`, and peel it to the candidate commit. Run the checked-in one-shot runner
    from the release work-clone root with fresh output, log paths, and the offline
    wheelhouse:
@@ -447,7 +472,7 @@ Release v2.0.80
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\run_frozen_release_candidate_once.ps1 `
   -PowerShellPath <EXACT-POWERSHELL-7-PWSH.EXE> `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.80 `
+  -Tag v2.0.82 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
   -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR> `
@@ -493,16 +518,16 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.80`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.82`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.80
+Tag: v2.0.82
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.80.zip
+Artifact: Label_Match-v2.0.82.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -513,7 +538,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.80 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.82 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires

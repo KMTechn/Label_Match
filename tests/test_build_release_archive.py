@@ -27,7 +27,7 @@ IDENTITY_SPEC.loader.exec_module(identity_verifier)
 
 BUILDER_PATH = MODULE_PATH.with_name("build_frozen_release_candidate.ps1")
 
-TAG = "v2.0.80"
+TAG = "v2.0.82"
 COMMIT = "1" * 40
 TREE = "2" * 40
 
