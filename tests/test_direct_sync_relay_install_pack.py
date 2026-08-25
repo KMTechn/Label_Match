@@ -91,6 +91,25 @@ def make_raw_secret_credential(tmp_path, *, secret="install-pack-secret"):
     return credential_path
 
 
+def make_packaged_app_root(tmp_path):
+    app_root = tmp_path / "packaged-app-root"
+    for relative_path in [
+        "tools/invoke_embedded_python.ps1",
+        "tools/direct_sync_relay_runner.py",
+        "direct_sync_push.py",
+        "direct_sync_runtime.py",
+        "producer_runtime_client.py",
+        "direct_sync_operator.py",
+    ]:
+        path = app_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# packaged app-root fixture\n", encoding="utf-8")
+    (app_root / "tools" / "direct_sync_relay_runner.exe").write_bytes(
+        b"packaged runner fixture\n"
+    )
+    return app_root
+
+
 def test_canonical_field_layout_contract_matches_release_resources():
     module = load_install_pack_module()
     contract = module._field_layout_contract(
@@ -121,6 +140,7 @@ def test_frozen_install_pack_defaults_to_canonical_install_root(monkeypatch):
 
 
 def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
+    app_root = make_packaged_app_root(tmp_path)
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack.json"
     scan_source_dir = tmp_path / "sync"
@@ -130,6 +150,8 @@ def test_install_pack_dry_run_writes_redacted_scheduled_task_plan(tmp_path):
         [
             sys.executable,
             "tools/direct_sync_relay_install_pack.py",
+            "--app-root",
+            str(app_root),
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
@@ -289,6 +311,7 @@ def test_install_pack_blocks_app_save_path_that_does_not_match_relay_scan_dir(tm
 
 def test_install_pack_preflight_can_use_explicit_app_settings_path(tmp_path):
     module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
     active_settings_path = tmp_path / "active-config" / "app_settings.json"
@@ -298,7 +321,7 @@ def test_install_pack_preflight_can_use_explicit_app_settings_path(tmp_path):
         encoding="utf-8",
     )
     args = argparse.Namespace(
-        app_root=str(Path(__file__).resolve().parents[1]),
+        app_root=str(app_root),
         app_settings_path=str(active_settings_path),
         python_exe=sys.executable,
         program_data_root=str(tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"),
@@ -573,6 +596,7 @@ def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monk
 
 def test_install_pack_apply_creates_runtime_and_source_directories_before_schtasks(tmp_path, monkeypatch):
     module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack-apply.json"
     program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
@@ -587,6 +611,8 @@ def test_install_pack_apply_creates_runtime_and_source_directories_before_schtas
 
     result = module.main(
         [
+            "--app-root",
+            str(app_root),
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
@@ -671,6 +697,7 @@ def test_local_test_task_environment_rejects_proxy_credentials(monkeypatch):
 
 def test_install_pack_apply_supports_stored_password_task_without_leaking_password(tmp_path, monkeypatch):
     module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack-task-user.json"
     program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
@@ -686,6 +713,8 @@ def test_install_pack_apply_supports_stored_password_task_without_leaking_passwo
 
     result = module.main(
         [
+            "--app-root",
+            str(app_root),
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
@@ -811,6 +840,7 @@ def test_app_runtime_acl_rejects_filesystem_root():
 
 def test_install_pack_apply_supports_password_file_without_leaking_password(tmp_path, monkeypatch):
     module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack-task-password-file.json"
     password_file = tmp_path / "task-password.txt"
@@ -827,6 +857,8 @@ def test_install_pack_apply_supports_password_file_without_leaking_password(tmp_
 
     result = module.main(
         [
+            "--app-root",
+            str(app_root),
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
@@ -894,6 +926,7 @@ def test_install_pack_blocks_task_user_without_password_source(tmp_path):
 
 def test_install_pack_apply_defaults_to_system_task_without_password(tmp_path, monkeypatch):
     module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack-system-task.json"
     program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
@@ -909,6 +942,8 @@ def test_install_pack_apply_defaults_to_system_task_without_password(tmp_path, m
 
     result = module.main(
         [
+            "--app-root",
+            str(app_root),
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
@@ -1270,6 +1305,7 @@ def test_run_command_bounds_output_without_losing_total_byte_counts():
 
 def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_path, monkeypatch):
     module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
     report_path = tmp_path / "install-pack-self-enroll-apply.json"
     program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
     scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
@@ -1333,6 +1369,8 @@ def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_pa
     result = module.main(
         [
             "--self-enroll",
+            "--app-root",
+            str(app_root),
             "--server-base-url",
             "https://worker.example.invalid",
             "--program-data-root",
@@ -1674,6 +1712,7 @@ def test_install_pack_blocks_manifest_wrong_source_system_or_transport(tmp_path)
 
 def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypatch):
     module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
     report_path = tmp_path / "install-pack-apply-no-confirm.json"
     program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
@@ -1688,6 +1727,8 @@ def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypa
 
     result = module.main(
         [
+            "--app-root",
+            str(app_root),
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
