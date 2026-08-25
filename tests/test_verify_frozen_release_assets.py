@@ -54,6 +54,7 @@ def _qualification_receipt(path: Path, fixture: dict[str, object]) -> Path:
         "python_version": "3.12.10",
         "pyinstaller_version": "6.20.0",
         "source_epoch": SOURCE_EPOCH,
+        "path_identity": {"schema_version": "label-match-release-path-identity-v1"},
         "archive": archive.name,
         "archive_sha256": fixture["archive_sha256"],
         "archive_size": fixture["archive_size"],

@@ -423,6 +423,7 @@ QUALIFICATION_RECEIPT_KEYS = {
     "python_version",
     "pyinstaller_version",
     "source_epoch",
+    "path_identity",
     "archive",
     "archive_sha256",
     "archive_size",
