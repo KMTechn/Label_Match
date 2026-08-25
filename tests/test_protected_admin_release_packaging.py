@@ -66,7 +66,7 @@ def test_provisioning_document_and_version_contract_are_current() -> None:
     assert "명령행 인자" in document
     assert "환경 변수" in document
     assert "PowerShell transcript" in document
-    assert _app_version() == "v2.0.82"
+    assert _app_version() == "v2.0.83"
 
 
 def test_release_records_hosted_ci_factually_without_recompiling_imported_modules() -> None:
