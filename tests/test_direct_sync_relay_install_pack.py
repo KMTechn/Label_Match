@@ -1303,6 +1303,116 @@ def test_run_command_bounds_output_without_losing_total_byte_counts():
     assert len(result["stderr"].encode("utf-8")) <= module.COMMAND_OUTPUT_LIMIT
 
 
+def test_run_command_preserves_nonzero_child_exit_without_secret_arguments():
+    module = load_install_pack_module()
+    secret_argument = "seq184-child-argument-secret"
+    secret_output = "seq184-child-output-secret"
+
+    result = module._run_command(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print(sys.argv[1]); raise SystemExit(23)",
+            secret_output,
+            "--token",
+            secret_argument,
+        ]
+    )
+    reportable = module._reportable_child_result(result)
+
+    diagnostic = result["failure_diagnostic"]
+    assert result["returncode"] == 23
+    assert diagnostic["command_identity"] == Path(sys.executable).name
+    assert diagnostic["child_exit_code"] == 23
+    assert diagnostic["failure_code"] == "CHILD_NONZERO_EXIT"
+    assert secret_argument not in json.dumps(result)
+    assert secret_output not in json.dumps(reportable)
+    assert reportable["stdout_omitted"] is True
+
+
+def test_run_command_preserves_process_start_exception_without_secret_inputs(monkeypatch):
+    module = load_install_pack_module()
+    secret_argument = "seq184-process-argument-secret"
+    secret_environment = "seq184-process-environment-secret"
+    monkeypatch.setenv("SEQ184_PROCESS_SECRET", secret_environment)
+
+    def fail_to_start(*_args, **_kwargs):
+        raise FileNotFoundError(
+            "synthetic process start failure "
+            + secret_argument
+            + " enrollment_token=seq184-exception-secret"
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fail_to_start)
+
+    result = module._run_command(
+        [r"C:\missing\diagnostic-child.exe", "--password", secret_argument]
+    )
+
+    diagnostic = result["failure_diagnostic"]
+    serialized = json.dumps(result)
+    assert result["returncode"] == 1
+    assert diagnostic["command_identity"] == "diagnostic-child.exe"
+    assert diagnostic["child_exit_code"] is None
+    assert diagnostic["failure_code"] == "CHILD_PROCESS_START_FAILED"
+    assert diagnostic["inner_exception_type"] == "FileNotFoundError"
+    assert diagnostic["inner_exception_message"].endswith(
+        "enrollment_token=[redacted]"
+    )
+    assert len(diagnostic["inner_exception_message"]) <= module.DIAGNOSTIC_TEXT_LIMIT
+    assert secret_argument not in serialized
+    assert secret_environment not in serialized
+    assert "seq184-exception-secret" not in serialized
+
+
+def test_import_exception_is_bounded_and_promoted_to_install_report(tmp_path, monkeypatch):
+    module = load_install_pack_module()
+    app_root = make_packaged_app_root(tmp_path)
+    report_path = tmp_path / "import-failure-report.json"
+    program_data_root = tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
+    scan_source_dir = tmp_path / "ProgramData" / "KMTech" / "Label_Match" / "data"
+    secret_environment = "seq184-import-environment-secret"
+    monkeypatch.setenv("SEQ184_IMPORT_SECRET", secret_environment)
+
+    def fail_import(_module_name):
+        raise ImportError(
+            "synthetic import failure secret=seq184-import-secret " + ("x" * 800)
+        )
+
+    monkeypatch.setattr(module.importlib, "import_module", fail_import)
+    result = module.main(
+        [
+            "--self-enroll",
+            "--app-root",
+            str(app_root),
+            "--server-base-url",
+            "https://worker.example.invalid",
+            "--program-data-root",
+            str(program_data_root),
+            "--scan-source-dir",
+            str(scan_source_dir),
+            "--report-path",
+            str(report_path),
+            "--apply",
+            "--allow-noncanonical-layout-for-test",
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    diagnostic = report["failure_diagnostic"]
+    serialized = json.dumps(report)
+    assert result == 2
+    assert report["status"] == "BLOCKED"
+    assert report["self_enrollment_registration"]["returncode"] == 1
+    assert diagnostic["command_identity"] == "tools.register_label_match_worker_pc.main"
+    assert diagnostic["child_exit_code"] is None
+    assert diagnostic["failure_code"] == "CHILD_IMPORT_FAILED"
+    assert diagnostic["inner_exception_type"] == "ImportError"
+    assert len(diagnostic["inner_exception_message"]) <= module.DIAGNOSTIC_TEXT_LIMIT
+    assert "seq184-import-secret" not in serialized
+    assert secret_environment not in serialized
+
+
 def test_install_pack_apply_self_enroll_runs_registration_before_schtasks(tmp_path, monkeypatch):
     module = load_install_pack_module()
     app_root = make_packaged_app_root(tmp_path)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import importlib
 import io
 import json
 import os
@@ -45,6 +46,121 @@ LOCAL_TEST_TASK_ENV_NAMES = (
     "SSL_CERT_FILE",
 )
 COMMAND_OUTPUT_LIMIT = 16 * 1024
+DIAGNOSTIC_TEXT_LIMIT = 512
+CHILD_FAILURE_CODES = frozenset(
+    {
+        "CHILD_EXCEPTION",
+        "CHILD_IMPORT_FAILED",
+        "CHILD_NONZERO_EXIT",
+        "CHILD_PROCESS_START_FAILED",
+        "CHILD_PROCESS_TIMEOUT",
+    }
+)
+SENSITIVE_DIAGNOSTIC_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9_-]*(?:token|password|secret|authorization|cookie|api[_-]?key)"
+    r"[A-Za-z0-9_-]*)\b"
+    r"(\s*[:=]\s*)([^\s,;]+)"
+)
+BEARER_DIAGNOSTIC_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+
+
+def _bounded_diagnostic_text(
+    value: object, *, redact_values: Sequence[object] = ()
+) -> str:
+    text = str(value or "")[: DIAGNOSTIC_TEXT_LIMIT * 8]
+    for raw_value in sorted(
+        {str(item) for item in redact_values if str(item)}, key=len, reverse=True
+    ):
+        text = text.replace(raw_value, "[redacted]")
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+    text = SENSITIVE_DIAGNOSTIC_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[redacted]", text
+    )
+    text = BEARER_DIAGNOSTIC_RE.sub("Bearer [redacted]", text)
+    text = " ".join(text.split())
+    return text[:DIAGNOSTIC_TEXT_LIMIT]
+
+
+def _bounded_command_identity(command: Sequence[str] | str, fallback: str = "child_process") -> str:
+    if isinstance(command, str):
+        candidate = command
+    else:
+        candidate = str(command[0]) if command else ""
+    leaf = re.split(r"[\\/]", candidate.strip().strip('"'))[-1]
+    bounded = re.sub(r"[^A-Za-z0-9._:-]+", "_", leaf).strip("._:-")[:96]
+    return bounded or fallback
+
+
+def _child_failure_diagnostic(
+    *,
+    command_identity: str,
+    child_exit_code: int | None,
+    failure_code: str,
+    exception: BaseException | None = None,
+    redact_values: Sequence[object] = (),
+) -> dict:
+    code = failure_code if failure_code in CHILD_FAILURE_CODES else "CHILD_EXCEPTION"
+    diagnostic: dict[str, object] = {
+        "diagnostic_version": "label-match-child-failure-v1",
+        "command_identity": _bounded_command_identity(command_identity),
+        "child_exit_code": child_exit_code,
+        "failure_code": code,
+    }
+    if exception is not None:
+        diagnostic["inner_exception_type"] = _bounded_diagnostic_text(
+            exception.__class__.__name__
+        )
+        message = _bounded_diagnostic_text(exception, redact_values=redact_values)
+        if message:
+            diagnostic["inner_exception_message"] = message
+    return diagnostic
+
+
+def _normalize_failure_diagnostic(candidate: object) -> dict | None:
+    if not isinstance(candidate, dict):
+        return None
+    failure_code = str(candidate.get("failure_code") or "")
+    if failure_code not in CHILD_FAILURE_CODES:
+        failure_code = "CHILD_EXCEPTION"
+    raw_exit_code = candidate.get("child_exit_code")
+    child_exit_code = (
+        raw_exit_code
+        if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool)
+        else None
+    )
+    diagnostic = _child_failure_diagnostic(
+        command_identity=str(candidate.get("command_identity") or "child_process"),
+        child_exit_code=child_exit_code,
+        failure_code=failure_code,
+    )
+    exception_type = _bounded_diagnostic_text(candidate.get("inner_exception_type"))
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", exception_type):
+        diagnostic["inner_exception_type"] = exception_type
+    exception_message = _bounded_diagnostic_text(candidate.get("inner_exception_message"))
+    if exception_message:
+        diagnostic["inner_exception_message"] = exception_message
+    return diagnostic
+
+
+def _first_failure_diagnostic(value: object, *, depth: int = 0) -> dict | None:
+    if depth > 8:
+        return None
+    if isinstance(value, dict):
+        candidate = value.get("failure_diagnostic")
+        if isinstance(candidate, dict):
+            return _normalize_failure_diagnostic(candidate)
+        for key, nested in value.items():
+            if key == "failure_diagnostic":
+                continue
+            found = _first_failure_diagnostic(nested, depth=depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for nested in value[:100]:
+            found = _first_failure_diagnostic(nested, depth=depth + 1)
+            if found is not None:
+                return found
+    return None
 
 
 def _default_app_root() -> str:
@@ -410,6 +526,12 @@ def _write_task_launcher(launcher_path: str | os.PathLike[str], wrapper_path: st
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    if payload.get("status") not in {"PASS", "DRY_RUN", "APPLY_REQUESTED"}:
+        diagnostic = _normalize_failure_diagnostic(payload.get("failure_diagnostic"))
+        if diagnostic is None:
+            diagnostic = _first_failure_diagnostic(payload)
+        if diagnostic is not None:
+            payload["failure_diagnostic"] = diagnostic
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -693,14 +815,17 @@ def _apply_task_runtime_acl(plan: dict) -> dict:
         if recursive_existing:
             command.append("/T")
         result = _run_command(command)
-        command_results.append({
+        command_result = {
             "command": command,
             "returncode": result.get("returncode"),
             "stdout_omitted": bool(result.get("stdout")),
             "stderr_omitted": bool(result.get("stderr")),
             "stdout_bytes": int(result.get("stdout_bytes") or 0),
             "stderr_bytes": int(result.get("stderr_bytes") or 0),
-        })
+        }
+        if isinstance(result.get("failure_diagnostic"), dict):
+            command_result["failure_diagnostic"] = result["failure_diagnostic"]
+        command_results.append(command_result)
     ok = all(int(result.get("returncode") or 0) == 0 for result in command_results)
     return {
         "status": "PASS" if ok else "FAIL",
@@ -883,24 +1008,20 @@ def _install_preflight(
             failures.append("manifest Label_Match contract preflight failed")
 
     if runner_script.is_file():
-        try:
-            from tools.direct_sync_relay_runner import main as runner_main
-
-            completed = _run_in_process_main(runner_main, ["--help"])
-            checks.append({
-                "name": "runner_in_process_help",
-                "status": "PASS" if completed["returncode"] == 0 else "FAIL",
-                "returncode": str(completed["returncode"]),
-                "stderr": str(completed["stderr"])[-500:],
-            })
-            if completed["returncode"] != 0:
-                failures.append("in-process runner preflight failed")
-        except Exception as exc:
-            checks.append({
-                "name": "runner_in_process_help",
-                "status": "FAIL",
-                "error": str(exc),
-            })
+        completed = _run_imported_main("tools.direct_sync_relay_runner", ["--help"])
+        runner_check = {
+            "name": "runner_in_process_help",
+            "status": "PASS" if completed["returncode"] == 0 else "FAIL",
+            "returncode": str(completed["returncode"]),
+            "stdout_omitted": bool(completed.get("stdout")),
+            "stderr_omitted": bool(completed.get("stderr")),
+            "stdout_bytes": int(completed.get("stdout_bytes") or 0),
+            "stderr_bytes": int(completed.get("stderr_bytes") or 0),
+        }
+        if isinstance(completed.get("failure_diagnostic"), dict):
+            runner_check["failure_diagnostic"] = completed["failure_diagnostic"]
+        checks.append(runner_check)
+        if completed["returncode"] != 0:
             failures.append("in-process runner preflight failed")
 
     return {
@@ -1208,9 +1329,29 @@ def _bounded_captured_text(value: str) -> tuple[str, bool, int]:
     )
 
 
+def _reportable_child_result(result: dict) -> dict:
+    reportable = dict(result)
+    stdout = str(reportable.pop("stdout", "") or "")
+    stderr = str(reportable.pop("stderr", "") or "")
+    reportable["stdout_omitted"] = bool(stdout) or int(reportable.get("stdout_bytes") or 0) > 0
+    reportable["stderr_omitted"] = bool(stderr) or int(reportable.get("stderr_bytes") or 0) > 0
+    reportable.setdefault("stdout_bytes", len(stdout.encode("utf-8", errors="replace")))
+    reportable.setdefault("stderr_bytes", len(stderr.encode("utf-8", errors="replace")))
+    diagnostic = _normalize_failure_diagnostic(reportable.get("failure_diagnostic"))
+    if diagnostic is not None:
+        reportable["failure_diagnostic"] = diagnostic
+    return reportable
+
+
 def _run_in_process_main(entrypoint, arguments: Sequence[str]) -> dict:
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
+    command_identity = _bounded_command_identity(
+        f"{getattr(entrypoint, '__module__', '')}.{getattr(entrypoint, '__name__', 'main')}",
+        "in_process_main",
+    )
+    failure_code = ""
+    inner_exception: BaseException | None = None
     with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
         try:
             raw_returncode = entrypoint([str(part) for part in arguments])
@@ -1223,12 +1364,16 @@ def _run_in_process_main(entrypoint, arguments: Sequence[str]) -> dict:
             else:
                 print(str(exc.code), file=sys.stderr)
                 returncode = 1
-        except Exception:
+            if returncode != 0:
+                failure_code = "CHILD_NONZERO_EXIT"
+        except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             returncode = 1
+            failure_code = "CHILD_EXCEPTION"
+            inner_exception = exc
     stdout, stdout_truncated, stdout_bytes = _bounded_captured_text(stdout_buffer.getvalue())
     stderr, stderr_truncated, stderr_bytes = _bounded_captured_text(stderr_buffer.getvalue())
-    return {
+    result = {
         "returncode": returncode,
         "stdout": stdout,
         "stderr": stderr,
@@ -1238,14 +1383,56 @@ def _run_in_process_main(entrypoint, arguments: Sequence[str]) -> dict:
         "stderr_truncated": stderr_truncated,
         "timed_out": False,
         "in_process": True,
+        "command_identity": command_identity,
     }
+    if returncode != 0:
+        result["failure_diagnostic"] = _child_failure_diagnostic(
+            command_identity=command_identity,
+            child_exit_code=returncode,
+            failure_code=failure_code or "CHILD_NONZERO_EXIT",
+            exception=inner_exception,
+            redact_values=arguments,
+        )
+    return result
+
+
+def _run_imported_main(module_name: str, arguments: Sequence[str]) -> dict:
+    command_identity = _bounded_command_identity(f"{module_name}.main", "imported_main")
+    try:
+        module = importlib.import_module(module_name)
+        entrypoint = getattr(module, "main")
+    except Exception as exc:
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "",
+            "stdout_bytes": 0,
+            "stderr_bytes": 0,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+            "timed_out": False,
+            "in_process": True,
+            "command_identity": command_identity,
+            "failure_diagnostic": _child_failure_diagnostic(
+                command_identity=command_identity,
+                child_exit_code=None,
+                failure_code="CHILD_IMPORT_FAILED",
+                exception=exc,
+                redact_values=arguments,
+            ),
+        }
+    return _run_in_process_main(entrypoint, arguments)
 
 
 def _run_command(command: Sequence[str]) -> dict:
+    command_identity = _bounded_command_identity(command)
     with tempfile.TemporaryFile(mode="w+b") as stdout_stream, tempfile.TemporaryFile(
         mode="w+b"
     ) as stderr_stream:
         timed_out = False
+        failure_code = ""
+        inner_exception: BaseException | None = None
+        child_exit_code: int | None
         try:
             completed = subprocess.run(
                 command,
@@ -1256,12 +1443,22 @@ def _run_command(command: Sequence[str]) -> dict:
                 timeout=30,
             )
             returncode = completed.returncode
+            child_exit_code = returncode
+            if returncode != 0:
+                failure_code = "CHILD_NONZERO_EXIT"
         except subprocess.TimeoutExpired:
             timed_out = True
             returncode = 124
+            child_exit_code = None
+            failure_code = "CHILD_PROCESS_TIMEOUT"
+        except Exception as exc:
+            returncode = 1
+            child_exit_code = None
+            failure_code = "CHILD_PROCESS_START_FAILED"
+            inner_exception = exc
         stdout, stdout_truncated, stdout_bytes = _read_bounded_command_stream(stdout_stream)
         stderr, stderr_truncated, stderr_bytes = _read_bounded_command_stream(stderr_stream)
-        return {
+        result = {
             "returncode": returncode,
             "stdout": stdout,
             "stderr": stderr,
@@ -1270,7 +1467,17 @@ def _run_command(command: Sequence[str]) -> dict:
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
             "timed_out": timed_out,
+            "command_identity": command_identity,
         }
+        if returncode != 0:
+            result["failure_diagnostic"] = _child_failure_diagnostic(
+                command_identity=command_identity,
+                child_exit_code=child_exit_code,
+                failure_code=failure_code or "CHILD_NONZERO_EXIT",
+                exception=inner_exception,
+                redact_values=command[1:],
+            )
+        return result
 
 
 def _typed_json_result(result: dict, *, operation: str) -> dict:
@@ -1279,7 +1486,7 @@ def _typed_json_result(result: dict, *, operation: str) -> dict:
             "status": "FAILED",
             "operation": operation,
             "error": "command failed",
-            "command_result": result,
+            "command_result": _reportable_child_result(result),
         }
     try:
         payload = json.loads(str(result.get("stdout") or "").strip())
@@ -1288,14 +1495,14 @@ def _typed_json_result(result: dict, *, operation: str) -> dict:
             "status": "FAILED",
             "operation": operation,
             "error": "typed command output was not valid JSON",
-            "command_result": result,
+            "command_result": _reportable_child_result(result),
         }
     if not isinstance(payload, dict) or payload.get("operation") != operation:
         return {
             "status": "FAILED",
             "operation": operation,
             "error": "typed command output did not identify the expected operation",
-            "command_result": result,
+            "command_result": _reportable_child_result(result),
         }
     return payload
 
@@ -1509,9 +1716,7 @@ def _redact_registration_command(command: Sequence[str]) -> list[str]:
 
 def _run_self_enrollment_registration(args: argparse.Namespace) -> dict:
     command = _self_enrollment_registration_command(args)
-    from tools.register_label_match_worker_pc import main as registration_main
-
-    result = _run_in_process_main(registration_main, command)
+    result = _run_imported_main("tools.register_label_match_worker_pc", command)
     stdout = str(result.pop("stdout", "") or "")
     stderr = str(result.pop("stderr", "") or "")
     result["stdout_omitted"] = bool(stdout) or int(result.get("stdout_bytes") or 0) > 0
@@ -1764,13 +1969,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             baseline_command = plan.get("source_scan_baseline_command") or []
             if baseline_command:
-                from tools.direct_sync_relay_runner import main as runner_main
-
-                plan["source_scan_baseline_result"] = _run_in_process_main(
-                    runner_main,
-                    baseline_command[1:],
+                baseline_result = _run_imported_main(
+                    "tools.direct_sync_relay_runner", baseline_command[1:]
                 )
-                if int(plan["source_scan_baseline_result"].get("returncode") or 0) != 0:
+                plan["source_scan_baseline_result"] = _reportable_child_result(
+                    baseline_result
+                )
+                if int(baseline_result.get("returncode") or 0) != 0:
                     plan["status"] = "FAIL"
                     plan["blocked_reason"] = "source scan baseline failed"
                     _write_json(Path(args.report_path), plan)
@@ -1795,8 +2000,9 @@ def main(argv: list[str] | None = None) -> int:
                 _write_json(Path(args.report_path), plan)
                 print(f"install_pack_report={Path(args.report_path).resolve()}")
                 return 1
-        plan["command_result"] = _run_command(command)
-        plan["status"] = "PASS" if plan["command_result"]["returncode"] == 0 else "FAIL"
+        command_result = _run_command(command)
+        plan["command_result"] = _reportable_child_result(command_result)
+        plan["status"] = "PASS" if command_result["returncode"] == 0 else "FAIL"
 
     _write_json(Path(args.report_path), plan)
     print(f"install_pack_report={Path(args.report_path).resolve()}")

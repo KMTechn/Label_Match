@@ -71,10 +71,9 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert '$nestedParameters["ManagedInstallRoot"] = $installRoot' in alias
     assert 'if ($entry.Key -in @("InstallRootForTest", "RollbackReceiptRootForTest"))' in alias
     assert '$nestedParameters["PublicWrapperExitCode"]' not in alias
-    assert (
-        "& $installer @nestedParameters "
-        "-PublicWrapperExitCode ([ref]$nestedExitCode)"
-    ) in alias
+    assert '$nestedParameters["PublicWrapperFailureDiagnostic"]' not in alias
+    assert "-PublicWrapperExitCode ([ref]$nestedExitCode)" in alias
+    assert "-PublicWrapperFailureDiagnostic ([ref]$nestedFailureDiagnostic)" in alias
     assert 'throw "Nested installer did not return its typed exit code to the public wrapper."' in alias
     assert "$exitCode = [int]$nestedExitCode" in alias
     assert "Assert-ManifestBoundInstalledExecutable $installRoot $manifest" in alias
@@ -83,10 +82,11 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     assert "tokenless self-enrollment" in alias
     assert "#Requires -RunAsAdministrator" not in installer
     assert "[System.Management.Automation.PSReference]$PublicWrapperExitCode" in installer
+    assert "[System.Management.Automation.PSReference]$PublicWrapperFailureDiagnostic" in installer
     assert installer.count("if ($null -ne $PublicWrapperExitCode)") == 3
     assert installer.count("$PublicWrapperExitCode.Value =") == 3
     normalized_installer = "\n".join(line.strip() for line in installer.splitlines())
-    for exit_value in ("2", "0", "[int]$exitCode"):
+    for exit_value in ("2", "0"):
         assert (
             "if ($null -ne $PublicWrapperExitCode) {\n"
             f"$PublicWrapperExitCode.Value = {exit_value}\n"
@@ -94,6 +94,13 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
             "}\n"
             f"exit {exit_value.replace('[int]', '')}"
         ) in normalized_installer
+    assert "$PublicWrapperFailureDiagnostic.Value = $failureDiagnostic" in normalized_installer
+    assert (
+        "$PublicWrapperExitCode.Value = [int]$exitCode\n"
+        "return\n"
+        "}\n"
+        "exit $exitCode"
+    ) in normalized_installer
     assert "Administrator privileges are required for installation or removal" in installer
     assert "Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop" in installer
     assert '$taskStartStatus = "FAILED"' in installer
@@ -247,11 +254,21 @@ _NESTED_INSTALLER_STUB = r'''param(
     [string]$TaskRunPasswordEnv = "",
     [string]$TaskRunPasswordFile = "",
     [switch]$AllowInteractiveTaskForLocalTest,
-    [System.Management.Automation.PSReference]$PublicWrapperExitCode = $null
+    [System.Management.Automation.PSReference]$PublicWrapperExitCode = $null,
+    [System.Management.Automation.PSReference]$PublicWrapperFailureDiagnostic = $null
 )
 $ErrorActionPreference = "Stop"
 if ($env:LABEL_MATCH_INSTALL_STUB_MODE -ceq "nested_failure") {
     if ($null -eq $PublicWrapperExitCode) { exit 9 }
+    $PublicWrapperFailureDiagnostic.Value = [ordered]@{
+        diagnostic_version = "label-match-child-failure-v1"
+        command_identity = "tools.register_label_match_worker_pc.main"
+        child_exit_code = $null
+        failure_code = "CHILD_IMPORT_FAILED"
+        inner_exception_type = "ImportError"
+        inner_exception_message = "synthetic import failure token=seq184-public-secret " + ("x" * 800)
+        raw_output = "seq184-raw-output-secret"
+    }
     $PublicWrapperExitCode.Value = 9
     return
 }
@@ -433,6 +450,19 @@ def test_public_installer_nested_failure_is_nonzero_without_success_receipt(tmp_
     )
     assert receipt["status"] == "FAILED"
     assert receipt["nested_exit_code"] == 9
+    diagnostic = receipt["failure_diagnostic"]
+    assert diagnostic["diagnostic_version"] == "label-match-child-failure-v1"
+    assert diagnostic["command_identity"] == "tools.register_label_match_worker_pc.main"
+    assert diagnostic["child_exit_code"] is None
+    assert diagnostic["failure_code"] == "CHILD_IMPORT_FAILED"
+    assert diagnostic["inner_exception_type"] == "ImportError"
+    assert diagnostic["inner_exception_message"].startswith(
+        "synthetic import failure token=[redacted]"
+    )
+    assert len(diagnostic["inner_exception_message"]) <= 512
+    serialized = json.dumps(receipt)
+    assert "seq184-public-secret" not in serialized
+    assert "seq184-raw-output-secret" not in serialized
 
 
 def test_public_installer_staging_failure_is_nonzero_without_success_receipt(tmp_path):
@@ -448,7 +478,7 @@ def test_production_pass_and_removal_ownership_remain_postcondition_guarded():
     public_installer = (ROOT / "INSTALL_THIS_PC.ps1").read_text(encoding="utf-8")
 
     nested_call = public_installer.index(
-        "& $installer @nestedParameters -PublicWrapperExitCode ([ref]$nestedExitCode)"
+        "-PublicWrapperExitCode ([ref]$nestedExitCode)"
     )
     postcondition = public_installer.index(
         "Assert-ManifestBoundInstalledExecutable $installRoot $manifest",

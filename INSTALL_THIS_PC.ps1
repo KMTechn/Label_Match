@@ -340,6 +340,142 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
     [System.IO.File]::WriteAllText($Path, $json + [System.Environment]::NewLine, $utf8NoBom)
 }
 
+$AllowedInstallerFailureCodes = @(
+    "CHILD_EXCEPTION",
+    "CHILD_IMPORT_FAILED",
+    "CHILD_NONZERO_EXIT",
+    "CHILD_PROCESS_START_FAILED",
+    "CHILD_PROCESS_TIMEOUT",
+    "NESTED_INSTALLER_EXCEPTION",
+    "NESTED_INSTALLER_NONZERO_EXIT",
+    "PUBLIC_POSTCONDITION_FAILED",
+    "SCHEDULED_TASK_START_FAILED"
+)
+
+function ConvertTo-BoundedDiagnosticText {
+    param(
+        [AllowNull()][object]$Value,
+        [int]$MaximumLength = 512
+    )
+    $text = [string]$Value
+    $text = [regex]::Replace($text, '[\x00-\x1F\x7F]+', ' ')
+    $text = [regex]::Replace(
+        $text,
+        '(?i)\b([A-Za-z0-9_-]*(?:token|password|secret|authorization|cookie|api[_-]?key)[A-Za-z0-9_-]*)\b(\s*[:=]\s*)([^\s,;]+)',
+        '$1$2[redacted]'
+    )
+    $text = [regex]::Replace($text, '(?i)\bbearer\s+[^\s,;]+', 'Bearer [redacted]')
+    $text = [regex]::Replace($text.Trim(), '\s+', ' ')
+    if ($text.Length -gt $MaximumLength) {
+        return $text.Substring(0, $MaximumLength)
+    }
+    return $text
+}
+
+function Test-DiagnosticProperty([AllowNull()][object]$Value, [string]$Name) {
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [System.Collections.IDictionary]) { return $Value.Contains($Name) }
+    return $null -ne $Value.PSObject.Properties[$Name]
+}
+
+function Get-DiagnosticProperty([AllowNull()][object]$Value, [string]$Name) {
+    if (-not (Test-DiagnosticProperty $Value $Name)) { return $null }
+    if ($Value -is [System.Collections.IDictionary]) { return $Value[$Name] }
+    return $Value.PSObject.Properties[$Name].Value
+}
+
+function New-InstallerFailureDiagnostic {
+    param(
+        [string]$CommandIdentity,
+        [AllowNull()][object]$ChildExitCode,
+        [string]$FailureCode,
+        [AllowNull()][System.Exception]$Exception = $null
+    )
+    $identity = ConvertTo-BoundedDiagnosticText $CommandIdentity 96
+    if ($identity -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$') {
+        $identity = "child_process"
+    }
+    $code = if ($FailureCode -cin $AllowedInstallerFailureCodes) {
+        $FailureCode
+    }
+    else {
+        "CHILD_EXCEPTION"
+    }
+    $typedExitCode = $null
+    if ($null -ne $ChildExitCode) {
+        $parsedExitCode = 0
+        if ([int]::TryParse([string]$ChildExitCode, [ref]$parsedExitCode)) {
+            $typedExitCode = $parsedExitCode
+        }
+    }
+    $diagnostic = [ordered]@{
+        diagnostic_version = "label-match-child-failure-v1"
+        command_identity = $identity
+        child_exit_code = $typedExitCode
+        failure_code = $code
+    }
+    if ($null -ne $Exception) {
+        $inner = $Exception
+        $innerDepth = 0
+        while (
+            $innerDepth -lt 8 -and
+            $null -ne $inner.InnerException -and
+            -not [object]::ReferenceEquals($inner, $inner.InnerException)
+        ) {
+            $inner = $inner.InnerException
+            $innerDepth += 1
+        }
+        $diagnostic["inner_exception_type"] = ConvertTo-BoundedDiagnosticText ($inner.GetType().Name) 128
+        $message = ConvertTo-BoundedDiagnosticText $inner.Message 512
+        if (-not [string]::IsNullOrWhiteSpace($message)) {
+            $diagnostic["inner_exception_message"] = $message
+        }
+    }
+    return $diagnostic
+}
+
+function ConvertTo-InstallerFailureDiagnostic {
+    param(
+        [AllowNull()][object]$Candidate,
+        [string]$FallbackCommandIdentity,
+        [AllowNull()][object]$FallbackChildExitCode,
+        [string]$FallbackFailureCode
+    )
+    $commandIdentity = $FallbackCommandIdentity
+    if (Test-DiagnosticProperty $Candidate "command_identity") {
+        $candidateIdentity = ConvertTo-BoundedDiagnosticText (Get-DiagnosticProperty $Candidate "command_identity") 96
+        if ($candidateIdentity -cmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$') {
+            $commandIdentity = $candidateIdentity
+        }
+    }
+    $childExitCode = $FallbackChildExitCode
+    if (Test-DiagnosticProperty $Candidate "child_exit_code") {
+        $childExitCode = Get-DiagnosticProperty $Candidate "child_exit_code"
+    }
+    $failureCode = $FallbackFailureCode
+    if (Test-DiagnosticProperty $Candidate "failure_code") {
+        $candidateFailureCode = [string](Get-DiagnosticProperty $Candidate "failure_code")
+        if ($candidateFailureCode -cin $AllowedInstallerFailureCodes) {
+            $failureCode = $candidateFailureCode
+        }
+    }
+    $diagnostic = New-InstallerFailureDiagnostic `
+        $commandIdentity $childExitCode $failureCode
+    if (Test-DiagnosticProperty $Candidate "inner_exception_type") {
+        $exceptionType = ConvertTo-BoundedDiagnosticText (Get-DiagnosticProperty $Candidate "inner_exception_type") 128
+        if ($exceptionType -cmatch '^[A-Za-z_][A-Za-z0-9_.]{0,127}$') {
+            $diagnostic["inner_exception_type"] = $exceptionType
+        }
+    }
+    if (Test-DiagnosticProperty $Candidate "inner_exception_message") {
+        $exceptionMessage = ConvertTo-BoundedDiagnosticText (Get-DiagnosticProperty $Candidate "inner_exception_message") 512
+        if (-not [string]::IsNullOrWhiteSpace($exceptionMessage)) {
+            $diagnostic["inner_exception_message"] = $exceptionMessage
+        }
+    }
+    return $diagnostic
+}
+
 function Confirm-BoundedRollbackEvidence([string]$EvidenceRoot, $EvidenceRecord, [string]$ResourceReportPath) {
     $rootFull = [System.IO.Path]::GetFullPath($EvidenceRoot)
     $inventoryPath = Join-Path $rootFull "evidence-inventory.json"
@@ -958,15 +1094,18 @@ $nestedParameters["ManagedInstallRoot"] = $installRoot
 $nestedParameters["SourceManifestSha256"] = $sourceManifestSha256
 $nestedParameters["InstallPrestate"] = $installPrestate
 $nestedExitCode = $null
+$nestedFailureDiagnostic = $null
 $verifiedInstallSummary = $null
 $verifiedInstalledExecutable = $null
 
 # Preserve the established tokenless self-enrollment path after manifest-bound staging.
 try {
     # A [ref] inside a splatted hashtable is dereferenced by PowerShell before
-    # parameter binding. Pass it explicitly so the nested script returns here
-    # instead of seeing $null and terminating the public wrapper with `exit`.
-    & $installer @nestedParameters -PublicWrapperExitCode ([ref]$nestedExitCode)
+    # parameter binding. Pass both result references explicitly so the nested
+    # script returns its exit and bounded diagnostic to this public wrapper.
+    & $installer @nestedParameters `
+        -PublicWrapperExitCode ([ref]$nestedExitCode) `
+        -PublicWrapperFailureDiagnostic ([ref]$nestedFailureDiagnostic)
     if ($null -eq $nestedExitCode) {
         throw "Nested installer did not return its typed exit code to the public wrapper."
     }
@@ -980,10 +1119,21 @@ try {
 }
 catch {
     $exitCode = 1
+    $nestedFailureDiagnostic = New-InstallerFailureDiagnostic `
+        "install_label_match_direct_sync.ps1" `
+        $null `
+        "NESTED_INSTALLER_EXCEPTION" `
+        $_.Exception
     if (-not ($isUninstall -or $isRollback)) {
         $publicReport.status = "FAILED"
         $publicReport.nested_exit_code = $exitCode
-        $publicReport["failure"] = $_.Exception.Message
+        $publicReport["failure_diagnostic"] = $nestedFailureDiagnostic
+        $publicReport["failure"] = if ($nestedFailureDiagnostic.Contains("inner_exception_message")) {
+            $nestedFailureDiagnostic["inner_exception_message"]
+        }
+        else {
+            "Nested installer invocation failed."
+        }
         Write-Utf8JsonFile $publicReportPath $publicReport
     }
 }
@@ -992,6 +1142,11 @@ if ($exitCode -ne 0) {
     if (-not ($isUninstall -or $isRollback)) {
         $publicReport.status = "FAILED"
         $publicReport.nested_exit_code = $exitCode
+        $publicReport["failure_diagnostic"] = ConvertTo-InstallerFailureDiagnostic `
+            $nestedFailureDiagnostic `
+            "install_label_match_direct_sync.ps1" `
+            $exitCode `
+            "NESTED_INSTALLER_NONZERO_EXIT"
         Write-Utf8JsonFile $publicReportPath $publicReport
     }
     if ($targetCreated) {
@@ -1208,9 +1363,20 @@ else {
         Write-Output "INSTALLED manifest=$sourceManifestSha256"
     }
     catch {
+        $postconditionDiagnostic = New-InstallerFailureDiagnostic `
+            "INSTALL_THIS_PC.ps1" `
+            $null `
+            "PUBLIC_POSTCONDITION_FAILED" `
+            $_.Exception
         $publicReport.status = "FAILED"
         $publicReport.nested_exit_code = 1
-        $publicReport["failure"] = $_.Exception.Message
+        $publicReport["failure_diagnostic"] = $postconditionDiagnostic
+        $publicReport["failure"] = if ($postconditionDiagnostic.Contains("inner_exception_message")) {
+            $postconditionDiagnostic["inner_exception_message"]
+        }
+        else {
+            "Public install postcondition failed."
+        }
         Write-Utf8JsonFile $publicReportPath $publicReport
         if ($targetCreated) {
             if (Test-Path -LiteralPath $installRoot -PathType Container) {

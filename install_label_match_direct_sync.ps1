@@ -25,7 +25,8 @@ param(
     [string]$TaskRunPasswordEnv = "",
     [string]$TaskRunPasswordFile = "",
     [switch]$AllowInteractiveTaskForLocalTest,
-    [System.Management.Automation.PSReference]$PublicWrapperExitCode = $null
+    [System.Management.Automation.PSReference]$PublicWrapperExitCode = $null,
+    [System.Management.Automation.PSReference]$PublicWrapperFailureDiagnostic = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -640,11 +641,16 @@ if (-not (Test-Path -LiteralPath $runnerExe -PathType Leaf)) {
 }
 . $embeddedPythonHost
 
-function Invoke-InstallPackInProcess([string[]]$Arguments) {
+function Invoke-InstallPackInProcess {
+    param(
+        [string[]]$Arguments,
+        [System.Management.Automation.PSReference]$FailureDiagnostic = $null
+    )
     return [int](Invoke-KMTechEmbeddedPython `
         -AppRoot $appRoot `
         -ScriptPath $installPackScript `
-        -Arguments $Arguments)
+        -Arguments $Arguments `
+        -FailureDiagnostic $FailureDiagnostic)
 }
 $reportDir = Join-Path $ProgramDataRoot "status"
 $reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"
@@ -1136,7 +1142,11 @@ if (-not $DryRun.IsPresent) {
     $arguments += @("--apply")
 }
 
-$exitCode = Invoke-InstallPackInProcess -Arguments $arguments
+$failureDiagnostic = $null
+$embeddedFailureDiagnostic = $null
+$exitCode = Invoke-InstallPackInProcess `
+    -Arguments $arguments `
+    -FailureDiagnostic ([ref]$embeddedFailureDiagnostic)
 
 $installReport = $null
 if (Test-Path -LiteralPath $reportPath) {
@@ -1150,6 +1160,26 @@ if (Test-Path -LiteralPath $reportPath) {
 $registrationSummary = $null
 if ($null -ne $installReport -and $null -ne $installReport.self_enrollment_registration) {
     $registrationSummary = $installReport.self_enrollment_registration.registration_report_summary
+}
+if ($exitCode -ne 0) {
+    $installPackDiagnostic = $null
+    if (
+        $null -ne $embeddedFailureDiagnostic -and
+        (Test-DiagnosticProperty $embeddedFailureDiagnostic "inner_exception_type")
+    ) {
+        $installPackDiagnostic = $embeddedFailureDiagnostic
+    }
+    elseif ($null -ne $installReport -and (Test-DiagnosticProperty $installReport "failure_diagnostic")) {
+        $installPackDiagnostic = Get-DiagnosticProperty $installReport "failure_diagnostic"
+    }
+    elseif ($null -ne $embeddedFailureDiagnostic) {
+        $installPackDiagnostic = $embeddedFailureDiagnostic
+    }
+    $failureDiagnostic = ConvertTo-InstallerFailureDiagnostic `
+        $installPackDiagnostic `
+        "direct_sync_relay_install_pack.py" `
+        $exitCode `
+        "CHILD_NONZERO_EXIT"
 }
 
 $taskStartStatus = "NOT_RUN"
@@ -1175,6 +1205,11 @@ if ($exitCode -eq 0 -and -not $DryRun.IsPresent) {
         $taskStartStatus = "FAILED"
         $taskStartError = $_.Exception.Message
         $exitCode = 1
+        $failureDiagnostic = New-InstallerFailureDiagnostic `
+            "Start-ScheduledTask" `
+            $null `
+            "SCHEDULED_TASK_START_FAILED" `
+            $_.Exception
         $cleanupReportPath = Join-Path $reportDir "label_match_failed_install_task_cleanup.json"
         $cleanupArguments = @(
             "--app-root", $managedAppRoot,
@@ -1296,6 +1331,7 @@ $summary = [ordered]@{
     enrollment_token_file_present = -not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)
     existing_identity_reused = $reuseExistingIdentity
     installer_execution_mode = "in_process_embedded_python"
+    failure_diagnostic = $failureDiagnostic
     embedded_python_host_present = Test-Path -LiteralPath $embeddedPythonHost
     python_runner_script_present = Test-Path -LiteralPath $runnerScript
     python_registration_script_present = Test-Path -LiteralPath $registrationScript
@@ -1382,6 +1418,9 @@ $summaryPath = Join-Path $reportDir "label_match_one_step_install_summary.json"
 Write-Utf8JsonFile $summaryPath $summary
 
 if ($null -ne $PublicWrapperExitCode) {
+    if ($null -ne $PublicWrapperFailureDiagnostic) {
+        $PublicWrapperFailureDiagnostic.Value = $failureDiagnostic
+    }
     $PublicWrapperExitCode.Value = [int]$exitCode
     return
 }

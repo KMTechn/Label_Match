@@ -1,7 +1,9 @@
+import base64
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -214,6 +216,51 @@ if ($null -ne $optional) { throw "Missing optional property did not remain null.
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "PASS"
     assert completed.stderr == ""
+
+
+def test_embedded_python_bootstrap_exports_bounded_nonsecret_import_diagnostic(
+    tmp_path, monkeypatch
+):
+    host_source = (ROOT / "tools/invoke_embedded_python.ps1").read_text(encoding="utf-8")
+    bootstrap = host_source.split("$bootstrap = @'\n", 1)[1].split("\n'@", 1)[0]
+    failing_script = tmp_path / "diagnostic_import_failure.py"
+    failing_script.write_text(
+        "import sys\n"
+        "raise ImportError('synthetic import failure ' + sys.argv[-1] "
+        "+ ' enrollment_token=seq184-bootstrap-secret ' + 'x' * 800)\n",
+        encoding="utf-8",
+    )
+    secret_argument = "seq184-bootstrap-argument-secret"
+    secret_environment = "seq184-bootstrap-environment-secret"
+    request = {"script": str(failing_script), "argv": ["--token", secret_argument]}
+    monkeypatch.setenv(
+        "KMTECH_LABEL_MATCH_EMBEDDED_REQUEST_B64",
+        base64.b64encode(json.dumps(request).encode("utf-8")).decode("ascii"),
+    )
+    monkeypatch.delenv("KMTECH_LABEL_MATCH_EMBEDDED_EXIT_CODE", raising=False)
+    monkeypatch.delenv("KMTECH_LABEL_MATCH_EMBEDDED_DIAGNOSTIC_B64", raising=False)
+    monkeypatch.setenv("SEQ184_BOOTSTRAP_SECRET", secret_environment)
+    prior_argv = sys.argv[:]
+    try:
+        exec(compile(bootstrap, "<embedded-bootstrap>", "exec"), {})
+    finally:
+        sys.argv = prior_argv
+
+    diagnostic = json.loads(
+        base64.b64decode(
+            os.environ["KMTECH_LABEL_MATCH_EMBEDDED_DIAGNOSTIC_B64"]
+        ).decode("utf-8")
+    )
+    serialized = json.dumps(diagnostic)
+    assert os.environ["KMTECH_LABEL_MATCH_EMBEDDED_EXIT_CODE"] == "1"
+    assert diagnostic["command_identity"] == failing_script.name
+    assert diagnostic["child_exit_code"] is None
+    assert diagnostic["failure_code"] == "CHILD_EXCEPTION"
+    assert diagnostic["inner_exception_type"] == "ImportError"
+    assert len(diagnostic["inner_exception_message"]) <= 512
+    assert "seq184-bootstrap-secret" not in serialized
+    assert secret_argument not in serialized
+    assert secret_environment not in serialized
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Label_Match release installers are Windows-only")
