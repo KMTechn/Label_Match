@@ -53,7 +53,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$CanonicalInstallRoot = "C:\KMTech\Apps\Label_Match\current"
+$AppId = "Label_Match"
+$AppExecutableName = "Label_Match.exe"
+$OwnedScheduledTaskName = "direct-sync-relay-label-match"
+$AllUsersShortcutName = "Label Match.lnk"
+$CanonicalInstallRoot = "C:\KMTech\Apps\$AppId\current"
 $DefaultProgramDataRoot = "C:\ProgramData\KMTech\DirectSync\label_match"
 $TestModeEnvironmentName = "KMTECH_FACTORY_INSTALL_TEST_MODE"
 $RequiredPackageMembers = @(
@@ -578,6 +582,97 @@ function Assert-ManifestBoundInstalledExecutable([string]$InstallRoot, $Manifest
     }
 }
 
+function Get-OwnedAppProcesses([string]$InstallRoot, [string]$ExecutableName) {
+    $expectedExecutablePath = [System.IO.Path]::GetFullPath((Join-Path $InstallRoot $ExecutableName))
+    $escapedExecutableName = $ExecutableName.Replace("'", "''")
+    return @(
+        Get-CimInstance -ClassName Win32_Process -Filter ("Name = '{0}'" -f $escapedExecutableName) -ErrorAction Stop |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_.ExecutablePath) -and
+                (Test-SamePath ([string]$_.ExecutablePath) $expectedExecutablePath)
+            }
+    )
+}
+
+function Get-OwnedScheduledTasks([string]$ScheduledTaskName) {
+    return @(
+        Get-ScheduledTask -ErrorAction Stop |
+            Where-Object {
+                [string]$_.TaskPath -ceq '\' -and
+                [string]$_.TaskName -ceq $ScheduledTaskName
+            }
+    )
+}
+
+function Invoke-CommonUninstall(
+    [string]$InstallRoot,
+    [string]$ExecutableName,
+    [string]$ScheduledTaskName,
+    [string]$AllUsersShortcutPath,
+    [string[]]$PreservedDataRoots
+) {
+    $preservedPathStates = @{}
+    foreach ($preservedDataRoot in @($PreservedDataRoots | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace([string]$preservedDataRoot)) { continue }
+        $preservedFullPath = [System.IO.Path]::GetFullPath([string]$preservedDataRoot)
+        if (
+            (Test-SamePath $InstallRoot $preservedFullPath) -or
+            (Test-PathInside $InstallRoot $preservedFullPath) -or
+            (Test-PathInside $preservedFullPath $InstallRoot)
+        ) {
+            throw "Uninstall payload root overlaps a preserved data root: $preservedFullPath"
+        }
+        $preservedPathStates[$preservedFullPath] = Test-Path -LiteralPath $preservedFullPath
+    }
+
+    $ownedTasks = @(Get-OwnedScheduledTasks $ScheduledTaskName)
+    foreach ($ownedTask in $ownedTasks) {
+        if ([string]$ownedTask.State -in @("Running", "Queued")) {
+            Stop-ScheduledTask -InputObject $ownedTask -ErrorAction Stop
+        }
+        Unregister-ScheduledTask -InputObject $ownedTask -Confirm:$false -ErrorAction Stop
+    }
+
+    $ownedProcesses = @(Get-OwnedAppProcesses $InstallRoot $ExecutableName)
+    foreach ($ownedProcess in $ownedProcesses) {
+        Stop-Process -Id ([int]$ownedProcess.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($ownedProcess in $ownedProcesses) {
+        Wait-Process -Id ([int]$ownedProcess.ProcessId) -Timeout 10 -ErrorAction SilentlyContinue
+    }
+
+    if (Test-Path -LiteralPath $AllUsersShortcutPath) {
+        Remove-Item -LiteralPath $AllUsersShortcutPath -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $InstallRoot) {
+        if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
+            throw "Installed app payload root is not a directory: $InstallRoot"
+        }
+        Assert-NoReparseTree $InstallRoot "installed app payload root"
+        Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop
+    }
+
+    if (@(Get-OwnedAppProcesses $InstallRoot $ExecutableName).Count -ne 0) {
+        throw "Owned app process remains after uninstall."
+    }
+    if (@(Get-OwnedScheduledTasks $ScheduledTaskName).Count -ne 0) {
+        throw "Owned scheduled task remains after uninstall."
+    }
+    if (Test-Path -LiteralPath $AllUsersShortcutPath) {
+        throw "Owned all-users shortcut remains after uninstall."
+    }
+    if (Test-Path -LiteralPath $InstallRoot) {
+        throw "Replaceable app payload remains after uninstall."
+    }
+    foreach ($preservedFullPath in $preservedPathStates.Keys) {
+        if ($preservedPathStates[$preservedFullPath] -and -not (Test-Path -LiteralPath $preservedFullPath)) {
+            throw "Preserved data root was removed during uninstall: $preservedFullPath"
+        }
+    }
+
+    Write-Output "uninstall_status=PASS_DATA_PRESERVED"
+}
+
 $isDryRun = $DryRun.IsPresent
 $isUninstall = $Uninstall.IsPresent
 $isRollback = $Rollback.IsPresent
@@ -609,6 +704,17 @@ $commonProgramsRoot = [System.IO.Path]::GetFullPath($commonProgramsRoot)
 $receiptRoot = [System.IO.Path]::GetFullPath($receiptRoot)
 $logisticsProfileFullPath = [System.IO.Path]::GetFullPath($LogisticsProfilePath)
 $logisticsProfileRoot = Split-Path -Parent $logisticsProfileFullPath
+if ($isUninstall) {
+    Invoke-SelfElevated $MyInvocation.MyCommand.Path $PSBoundParameters
+    $preservedDataRoots = @($programDataRoot, $scanSourceDir, $logisticsProfileRoot, $receiptRoot)
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:LOCALAPPDATA)) {
+        $preservedDataRoots += [System.IO.Path]::GetFullPath([string]$env:LOCALAPPDATA)
+    }
+    $allUsersShortcutPath = Join-Path $commonProgramsRoot ("KMTech\" + $AllUsersShortcutName)
+    Invoke-CommonUninstall `
+        $installRoot $AppExecutableName $OwnedScheduledTaskName $allUsersShortcutPath $preservedDataRoots
+    exit 0
+}
 $managedRoots = @($installRoot, $programDataRoot, $scanSourceDir, $logisticsProfileRoot)
 for ($leftIndex = 0; $leftIndex -lt $managedRoots.Count; $leftIndex += 1) {
     for ($rightIndex = $leftIndex + 1; $rightIndex -lt $managedRoots.Count; $rightIndex += 1) {

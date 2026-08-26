@@ -171,6 +171,58 @@ def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
     _assert_powershell_ast(ROOT / "install_label_match_direct_sync.ps1")
 
 
+def test_public_uninstall_matches_common_source_contract():
+    source = (ROOT / "INSTALL_THIS_PC.ps1").read_text(encoding="utf-8")
+    _assert_powershell_ast(ROOT / "INSTALL_THIS_PC.ps1")
+
+    for declaration in (
+        '$AppId = "Label_Match"',
+        '$AppExecutableName = "Label_Match.exe"',
+        '$OwnedScheduledTaskName = "direct-sync-relay-label-match"',
+        '$AllUsersShortcutName = "Label Match.lnk"',
+    ):
+        assert declaration in source
+
+    process_lookup_start = source.index("function Get-OwnedAppProcesses")
+    process_lookup_end = source.index("function Get-OwnedScheduledTasks", process_lookup_start)
+    process_lookup = source[process_lookup_start:process_lookup_end]
+    assert "Get-CimInstance -ClassName Win32_Process" in process_lookup
+    assert "Test-SamePath ([string]$_.ExecutablePath) $expectedExecutablePath" in process_lookup
+
+    common_start = source.index("function Invoke-CommonUninstall")
+    common_end = source.index("\n$isDryRun =", common_start)
+    common = source[common_start:common_end]
+    assert "Stop-Process -Id ([int]$ownedProcess.ProcessId)" in common
+    assert "Stop-ScheduledTask -InputObject $ownedTask" in common
+    assert "Unregister-ScheduledTask -InputObject $ownedTask" in common
+    assert "Remove-Item -LiteralPath $AllUsersShortcutPath -Force -ErrorAction Stop" in common
+    assert "Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop" in common
+    assert [
+        line.strip() for line in common.splitlines() if "Remove-Item" in line
+    ] == [
+        "Remove-Item -LiteralPath $AllUsersShortcutPath -Force -ErrorAction Stop",
+        "Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop",
+    ]
+    assert common.count("Get-OwnedAppProcesses $InstallRoot $ExecutableName") == 2
+    assert common.count("Get-OwnedScheduledTasks $ScheduledTaskName") == 2
+    assert 'throw "Owned all-users shortcut remains after uninstall."' in common
+    assert 'throw "Replaceable app payload remains after uninstall."' in common
+    assert 'throw "Preserved data root was removed during uninstall:' in common
+    assert common.rstrip().endswith(
+        'Write-Output "uninstall_status=PASS_DATA_PRESERVED"\n}'
+    )
+
+    public_branch_start = source.index("\nif ($isUninstall) {", source.index("$isUninstall ="))
+    source_validation_start = source.index("\n$sourceRoot =", public_branch_start)
+    public_branch = source[public_branch_start:source_validation_start]
+    assert "Invoke-CommonUninstall" in public_branch
+    assert "$programDataRoot, $scanSourceDir, $logisticsProfileRoot, $receiptRoot" in public_branch
+    assert "$env:LOCALAPPDATA" in public_branch
+    assert "exit 0" in public_branch
+    assert "Assert-PackageRoot" not in public_branch
+    assert "public install receipt" not in public_branch.lower()
+
+
 _NESTED_INSTALLER_STUB = r'''param(
     [switch]$DryRun,
     [switch]$Uninstall,
