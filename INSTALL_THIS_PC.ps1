@@ -802,7 +802,8 @@ function Invoke-CommonUninstall(
         throw "Replaceable app payload remains after uninstall."
     }
     foreach ($preservedFullPath in $preservedPathStates.Keys) {
-        if ($preservedPathStates[$preservedFullPath] -and -not (Test-Path -LiteralPath $preservedFullPath)) {
+        $preservedPathStillExists = Test-Path -LiteralPath $preservedFullPath
+        if ($preservedPathStates[$preservedFullPath] -and -not $preservedPathStillExists) {
             throw "Preserved data root was removed during uninstall: $preservedFullPath"
         }
     }
