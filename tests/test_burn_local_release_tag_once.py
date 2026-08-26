@@ -14,9 +14,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "burn_local_release_tag_once.py"
-TAG = "v2.0.83"
-MESSAGE = b"Release v2.0.83\n"
-MESSAGE_SHA256 = "5fb3334edd0c88cfb42a07a0f88fc5451d198ffb75baf3d83886600513aa7ae9"
+TAG = "v2.0.84"
+MESSAGE = b"Release v2.0.84\n"
+MESSAGE_SHA256 = "330374f00d61c0410d8af110a6ed824cbd28773f46fb47a2843f59efbd97fc02"
 
 
 def _git(
