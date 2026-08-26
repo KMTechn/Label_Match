@@ -67,12 +67,15 @@ class FakeResponse:
         return None
 
 
-def _profile():
-    return SimpleNamespace(
-        bearer_token=SECRET_MARKER,
-        source_host_id=SOURCE_HOST_ID,
-        device_id=DEVICE_ID,
-    )
+def _profile(**overrides):
+    values = {
+        "base_url": "https://worker.kmtecherp.com",
+        "bearer_token": SECRET_MARKER,
+        "source_host_id": SOURCE_HOST_ID,
+        "device_id": DEVICE_ID,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 @pytest.fixture(autouse=True)
@@ -133,6 +136,133 @@ def test_refresh_uses_provisioned_logistics_profile_headers(
             },
         )
     ]
+
+
+def test_runtime_profile_origin_drives_default_catalog_route(monkeypatch, tmp_path):
+    bundle = tmp_path / "bundle.csv"
+    cache = tmp_path / "cache" / "Item.csv"
+    bundle.write_bytes(CATALOG)
+    profile_origin = "https://server5.autoloop.test:18456"
+    calls = []
+
+    monkeypatch.setattr(
+        logistics_runtime_profile,
+        "load_logistics_runtime_profile",
+        lambda required=None: _profile(base_url=profile_origin),
+    )
+
+    def fake_get(url, timeout, allow_redirects, headers):
+        calls.append((url, timeout, allow_redirects, headers))
+        return FakeResponse(CATALOG)
+
+    assert refresh_item_catalog(bundle, cache_path=cache, get=fake_get) == cache
+    assert calls == [
+        (
+            profile_origin + sync.CATALOG_PATH,
+            2.0,
+            False,
+            {
+                "Authorization": f"Bearer {SECRET_MARKER}",
+                "X-Logistics-Source-Host-Id": SOURCE_HOST_ID,
+                "X-Logistics-Device-Id": DEVICE_ID,
+                "X-Logistics-Program": "Label_Match",
+            },
+        )
+    ]
+
+
+def test_runtime_profile_rejects_foreign_url_without_transport(monkeypatch, tmp_path):
+    bundle = tmp_path / "bundle.csv"
+    bundle.write_bytes(CATALOG)
+    calls = []
+
+    monkeypatch.setattr(
+        logistics_runtime_profile,
+        "load_logistics_runtime_profile",
+        lambda required=None: _profile(
+            base_url="https://server5.autoloop.test:18456"
+        ),
+    )
+
+    with pytest.raises(
+        sync.ItemCatalogSyncError,
+        match="central item catalog URL is not trusted",
+    ):
+        refresh_item_catalog(
+            bundle,
+            cache_path=tmp_path / "cache.csv",
+            url="https://foreign.example.invalid" + sync.CATALOG_PATH,
+            get=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_production_profile_origin_still_allows_exact_catalog_route(
+    monkeypatch, tmp_path
+):
+    bundle = tmp_path / "bundle.csv"
+    cache = tmp_path / "cache" / "Item.csv"
+    bundle.write_bytes(CATALOG)
+    calls = []
+
+    monkeypatch.setattr(
+        logistics_runtime_profile,
+        "load_logistics_runtime_profile",
+        lambda required=None: _profile(),
+    )
+
+    assert refresh_item_catalog(
+        bundle,
+        cache_path=cache,
+        url=PRODUCTION_CATALOG_URL,
+        get=lambda *args, **kwargs: calls.append((args, kwargs))
+        or FakeResponse(CATALOG),
+    ) == cache
+    assert calls == [
+        (
+            (PRODUCTION_CATALOG_URL,),
+            {
+                "timeout": 2.0,
+                "allow_redirects": False,
+                "headers": {
+                    "Authorization": f"Bearer {SECRET_MARKER}",
+                    "X-Logistics-Source-Host-Id": SOURCE_HOST_ID,
+                    "X-Logistics-Device-Id": DEVICE_ID,
+                    "X-Logistics-Program": "Label_Match",
+                },
+            },
+        )
+    ]
+
+
+def test_runtime_profile_rejects_near_match_url_without_transport(
+    monkeypatch, tmp_path
+):
+    bundle = tmp_path / "bundle.csv"
+    bundle.write_bytes(CATALOG)
+    calls = []
+
+    monkeypatch.setattr(
+        logistics_runtime_profile,
+        "load_logistics_runtime_profile",
+        lambda required=None: _profile(
+            base_url="https://server5.autoloop.test:18456"
+        ),
+    )
+
+    with pytest.raises(
+        sync.ItemCatalogSyncError,
+        match="central item catalog URL is not trusted",
+    ):
+        refresh_item_catalog(
+            bundle,
+            cache_path=tmp_path / "cache.csv",
+            url="https://server5.autoloop.test:18457" + sync.CATALOG_PATH,
+            get=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+    assert calls == []
 
 
 @pytest.mark.parametrize("url", UNTRUSTED_AUTHENTICATED_URLS)

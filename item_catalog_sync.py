@@ -116,6 +116,7 @@ def _load_item_catalog_logistics_profile() -> Any | None:
             str(profile.bearer_token or "").strip(),
             str(profile.source_host_id or "").strip(),
             str(profile.device_id or "").strip(),
+            str(profile.base_url or "").strip(),
         )
     ):
         raise ItemCatalogSyncError("central item catalog profile is incomplete")
@@ -138,6 +139,15 @@ def _is_trusted_authenticated_catalog_url(url: str) -> bool:
         )
     except ValueError:
         return False
+
+
+def _profile_bound_catalog_urls(base_url: str) -> frozenset[str]:
+    origin = str(base_url or "").rstrip("/")
+    approved = {origin + CATALOG_PATH}
+    parsed = urlsplit(origin)
+    if parsed.scheme == "https" and parsed.port is None and parsed.hostname:
+        approved.add(f"https://{parsed.netloc}:443{CATALOG_PATH}")
+    return frozenset(approved)
 
 
 def validate_catalog_bytes(payload: bytes) -> None:
@@ -459,9 +469,16 @@ def refresh_item_catalog(
         _REQUIRED_VERIFIED_CATALOG_SNAPSHOT_PATHS.update(
             {_catalog_snapshot_key(cache), _catalog_snapshot_key(last_good)}
         )
-    effective_url = url or resolve_catalog_url()
-    if central_enrolled and not _is_trusted_authenticated_catalog_url(effective_url):
-        raise ItemCatalogSyncError("central item catalog URL is not trusted")
+    profile_catalog_url = (
+        str(profile.base_url).rstrip("/") + CATALOG_PATH
+        if profile is not None
+        else ""
+    )
+    effective_url = url or profile_catalog_url or resolve_catalog_url()
+    if central_enrolled:
+        assert profile is not None
+        if effective_url not in _profile_bound_catalog_urls(str(profile.base_url)):
+            raise ItemCatalogSyncError("central item catalog URL is not trusted")
     try:
         request_kwargs: dict[str, object] = {
             "timeout": timeout_seconds,
