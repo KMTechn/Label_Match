@@ -106,7 +106,7 @@ def test_script_requires_fresh_external_output_and_exact_offline_toolchain():
     source = _source()
 
     assert "[string]$OutputRoot" in source
-    assert '[string]$Tag = "v2.0.87"' in source
+    assert '[string]$Tag = "v2.0.88"' in source
     assert "[string]$PythonPath" in source
     assert "[string]$Wheelhouse" in source
     assert "[string]$MirrorRoot" in source
@@ -158,11 +158,11 @@ def test_contract_requires_exactly_once_local_tag_burner_before_builder():
     assert burner_command in contract
     assert runner_command in contract
     assert contract.index(burner_command) < contract.index(runner_command)
-    assert "--tag v2.0.87" in contract
+    assert "--tag v2.0.88" in contract
     assert "--expected-commit <EXACT-CANDIDATE-COMMIT>" in contract
     assert "--expected-tree <EXACT-CANDIDATE-TREE>" in contract
     assert "do not retry it" in contract
-    assert "bb842910e3827e01c97a3ca5bdb4fe9409feb4ae9f745d0a04dfc874a60beddc" in contract
+    assert "42fe859ca2af324c0d54725b814982142205da141b66107e04a94bb8ecb5e3b0" in contract
 
 
 def test_script_runs_only_the_static_staged_installer_gate_without_elevation():
@@ -284,7 +284,7 @@ def test_script_rejects_a_clean_clone_whose_origin_is_not_the_supplied_mirror(
             "-OutputRoot",
             str(output_root),
             "-Tag",
-            "v2.0.87",
+            "v2.0.88",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",
@@ -680,12 +680,15 @@ def test_script_moves_authoritative_build_and_package_gates_outside_repo():
     assert "build_embedded_python_library.py" in source
     assert "build_release_cli_tools.py" not in source
     assert "--basetemp $pytestBaseTempRoot" in source
-    assert '-Name "direct_sync_relay_runner"' in source
-    assert r'-Source (Join-Path $repoRoot "tools\direct_sync_relay_runner.py")' in source
-    assert r'tools\direct_sync_relay_runner\direct_sync_relay_runner.exe") --help' in source
-    assert "--expected-file tools/direct_sync_relay_runner/direct_sync_relay_runner.exe" in source
+    assert '-Name "direct_sync_relay_runner"' not in source
+    assert r'Label_Match.exe") --label-match-direct-sync-relay --help' in source
+    assert r'Label_Match.exe") --label-match-user-relay --help' in source
+    assert "--expected-file tools/direct_sync_relay_runner/direct_sync_relay_runner.exe" not in source
+    assert "install_label_match_direct_sync.ps1" not in source
+    assert '"direct_sync_relay_install_pack.py"' not in source
+    assert '"tools\\invoke_embedded_python.ps1"' not in source
     assert "function Invoke-OneDirBuild" in source
-    assert source.count("Invoke-OneDirBuild `") == 1
+    assert source.count("Invoke-OneDirBuild `") == 0
     for executable in (
         "KMTech_Logistics_Profile_Install",
         "KMTech_Logistics_Profile_Check",

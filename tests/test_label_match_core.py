@@ -475,10 +475,13 @@ def test_worker_history_is_recent_first_and_deduplicated():
     assert app.app_settings["worker_history"][0]["name"] == "작업자B"
 
 
-def test_direct_sync_bootstrap_context_uses_fixed_runtime_resources_and_per_pc_source_identity(tmp_path, monkeypatch):
+def test_direct_sync_context_uses_current_user_root_and_per_pc_source_identity(tmp_path, monkeypatch):
     module = load_label_match_module()
-    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
-    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "Label Match Pack 01")
+    current_user_root = tmp_path / "LocalAppData" / "KMTech" / "DirectSync" / "label_match"
+    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_ROOT_ENV, str(current_user_root))
+    monkeypatch.setenv("COMPUTERNAME", "Label Match Pack 01")
+    monkeypatch.setattr(module, "_label_match_machine_identity", lambda: "machine-guid-01")
+    monkeypatch.delenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, raising=False)
     monkeypatch.setenv(
         module.LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV,
         "https://non-production.example.invalid",
@@ -489,89 +492,27 @@ def test_direct_sync_bootstrap_context_uses_fixed_runtime_resources_and_per_pc_s
         str(tmp_path / "config" / "app_settings.json"),
     )
 
-    assert context["source_host_id"] == "label-match-pack-01"
+    assert context["source_host_id"].startswith("label-match-label-match-pack-01-")
     assert context["server_base_url"] == "https://non-production.example.invalid"
-    assert context["program_data_root"] == str(
-        tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
-    )
-    assert context["task_name"] == "direct-sync-relay-label-match"
+    assert context["program_data_root"] == str(current_user_root)
     assert context["scan_source_dir"] == str(tmp_path / "scan-data")
     assert context["bootstrap_status_path"].endswith("label_match_direct_sync_auto_bootstrap.json")
 
 
-def test_direct_sync_default_contract_matches_one_step_installer(tmp_path, monkeypatch):
-    from tools import direct_sync_relay_install_pack as install_pack
+def test_current_user_onboarding_registration_derives_identity_without_override():
+    import inspect
+    import current_user_onboarding
 
-    module = load_label_match_module()
-    computer_name = "PACK LINE_01"
-    machine_identity = "fixture-machine-guid-01"
-    program_data = tmp_path / "ProgramData"
-    monkeypatch.setenv("COMPUTERNAME", computer_name)
-    monkeypatch.setenv("ProgramData", str(program_data))
-    monkeypatch.setattr(module, "_label_match_machine_identity", lambda: machine_identity)
-    for name in (
-        module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV,
-        module.LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV,
-        module.LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV,
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-    suffix = module.hashlib.sha256(machine_identity.encode("utf-8")).hexdigest()[:12]
-    source_host_id = f"label-match-pack-line_01-{suffix}"
-    expected_root = program_data / "KMTech" / "DirectSync" / "label_match"
-    expected_status = expected_root / "status"
-    context = module._label_match_direct_sync_context(str(tmp_path / "scan-data"))
-    installer = (
-        Path(__file__).resolve().parents[1] / "install_label_match_direct_sync.ps1"
-    ).read_text(encoding="utf-8")
-
-    assert '$safePcId = Get-SafeToken $env:COMPUTERNAME "worker-pc"' in installer
-    assert (
-        '$resolvedSourceHostId = ("label-match-{0}-{1}" -f $safePcId, '
-        '(Get-MachineStableSuffix)).ToLowerInvariant()'
-    ) in installer
-    assert '$ProgramDataRoot = "C:\\ProgramData\\KMTech\\DirectSync\\label_match"' in installer
-    assert '$TaskName = "direct-sync-relay-label-match"' in installer
-    assert '$reportDir = Join-Path $ProgramDataRoot "status"' in installer
-    assert '$reportPath = Join-Path $reportDir "label_match_direct_sync_install.json"' in installer
-    assert (
-        '$registrationReportPath = Join-Path $reportDir '
-        '"label_match_worker_pc_registration.json"'
-    ) in installer
-    assert '"--program-data-root", $ProgramDataRoot' in installer
-    assert '"--task-name", $TaskName' in installer
-
-    assert context["source_host_id"] == source_host_id
-    assert context["program_data_root"] == str(expected_root)
-    assert context["task_name"] == "direct-sync-relay-label-match"
-    assert context["status_dir"] == str(expected_status)
-    assert context["manifest_path"] == str(expected_root / "producer_manifest.json")
-    assert context["credential_path"] == str(expected_root / "credential.json")
-    assert context["install_report_path"] == str(
-        expected_status / "label_match_direct_sync_install.json"
-    )
-    assert context["registration_report_path"] == str(
-        expected_status / "label_match_worker_pc_registration.json"
-    )
-    assert context["runtime_status_path"] == str(
-        expected_status / "direct_sync_relay_status.json"
-    )
-    assert context["manifest_path"] == install_pack._default_manifest_path(
-        context["program_data_root"]
-    )
-    assert context["credential_path"] == install_pack._default_credential_path(
-        context["program_data_root"]
-    )
-    assert context["registration_report_path"] == (
-        install_pack._default_registration_report_path(context["program_data_root"])
-    )
-    assert context["runtime_status_path"] == install_pack._runtime_paths(
-        context["program_data_root"]
-    )["runtime_status_path"]
+    source = inspect.getsource(current_user_onboarding._registration_runner)
+    assert '"--credential-scope"' in source
+    assert '"current_user"' in source
+    assert '"--identity-path"' in source
+    assert '"--source-host-id"' not in source
+    assert "SourceHostId" not in source
 
 
-def test_direct_sync_install_readiness_requires_field_layout_attestation(tmp_path, monkeypatch):
-    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+def test_retired_direct_sync_install_report_never_grants_readiness(tmp_path, monkeypatch):
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(tmp_path / "direct-sync"))
     module = load_label_match_module()
     context = module._label_match_direct_sync_context(str(tmp_path / "scan-data"))
     report_path = Path(context["install_report_path"])
@@ -588,83 +529,37 @@ def test_direct_sync_install_readiness_requires_field_layout_attestation(tmp_pat
     }
     report_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    assert module._label_match_install_report_ready(context)
-    payload["field_layout_contract"]["production_layout_matches"] = False
-    report_path.write_text(json.dumps(payload), encoding="utf-8")
     assert not module._label_match_install_report_ready(context)
 
 
-@pytest.mark.parametrize("allow_interactive_task_for_local_test", [False, True])
-def test_direct_sync_auto_bootstrap_runs_self_enroll_install_pack(
-    tmp_path,
-    monkeypatch,
-    allow_interactive_task_for_local_test,
+def test_retired_auto_bootstrap_never_calls_install_pack_or_system_task(
+    tmp_path, monkeypatch
 ):
     module = load_label_match_module()
-    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-02")
-    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
-    if allow_interactive_task_for_local_test:
-        monkeypatch.setenv(
-            module.LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
-            "1",
-        )
-    else:
-        monkeypatch.delenv(
-            module.LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
-            raising=False,
-        )
-        monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_TASK_RUN_USER_ENV, r"TEST1\kmtech-remote-admin")
-        monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_ENV_ENV, "TASK_PASSWORD_FOR_TEST")
-        monkeypatch.setenv("TASK_PASSWORD_FOR_TEST", "not-forwarded-on-command-line")
+    monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_ROOT_ENV, str(tmp_path / "direct-sync"))
     context = module._label_match_direct_sync_context(
         str(tmp_path / "scan-data"),
         str(tmp_path / "active-config" / "app_settings.json"),
     )
     calls = []
 
-    monkeypatch.setattr(module, "_label_match_direct_sync_ready", lambda _context: False)
-    monkeypatch.setattr(module, "_label_match_direct_sync_tool_command", lambda _context: [str(tmp_path / "install-pack.py")])
-    monkeypatch.setattr(module, "_label_match_run_direct_sync_task", lambda _context: {"status": "PASS"})
-
-    def fake_run(script_path, arguments, **kwargs):
-        calls.append((script_path, arguments, kwargs))
-        return {
-            "returncode": 0,
-            "stdout": "install ok",
-            "stderr": "",
-            "execution_boundary": "in_process",
-        }
-
-    monkeypatch.setattr(module, "_label_match_run_in_process_tool", fake_run)
+    monkeypatch.setattr(
+        module,
+        "_label_match_run_in_process_tool",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
 
     module._label_match_auto_bootstrap_direct_sync(context)
 
-    assert calls
-    assert calls[0][0].endswith("install-pack.py")
-    command = calls[0][1]
-    assert "--self-enroll" in command
-    assert command[command.index("--server-base-url") + 1] == module.LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
-    assert command[command.index("--program-data-root") + 1] == context["program_data_root"]
-    assert "--python-exe" not in command
-    assert command[command.index("--scan-source-dir") + 1] == context["scan_source_dir"]
-    assert command[command.index("--source-host-id") + 1] == context["source_host_id"]
-    assert command[command.index("--app-settings-path") + 1] == context["app_settings_path"]
-    assert "--runner-exe" not in command
-    assert "--registration-exe" not in command
-    if allow_interactive_task_for_local_test:
-        assert "--task-run-user" not in command
-    else:
-        assert command[command.index("--task-run-user") + 1] == r"TEST1\kmtech-remote-admin"
-        assert command[command.index("--task-run-password-env") + 1] == "TASK_PASSWORD_FOR_TEST"
-        assert "not-forwarded-on-command-line" not in command
-    assert ("--allow-interactive-task-for-local-test" in command) is allow_interactive_task_for_local_test
+    assert calls == []
     report = json.loads(Path(context["bootstrap_status_path"]).read_text(encoding="utf-8"))
-    assert report["status"] == "PASS"
-    assert report["execution_boundary"] == "in_process"
-    assert report["run_task_result"] == {"status": "PASS"}
+    assert report["status"] == "RETIRED"
+    assert report["state_scope"] == "current_user"
+    assert report["system_scheduled_task_required"] is False
+    assert "task_name" not in report
 
 
-def test_direct_sync_ready_requires_current_install_report_with_baseline(tmp_path, monkeypatch):
+def test_direct_sync_ready_requires_current_user_runtime_status_not_task_report(tmp_path, monkeypatch):
     module = load_label_match_module()
     monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-02")
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
@@ -677,41 +572,14 @@ def test_direct_sync_ready_requires_current_install_report_with_baseline(tmp_pat
         json.dumps({"server_registration_verified": True}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(module, "_label_match_existing_direct_sync_task_name", lambda _context: context["task_name"])
     monkeypatch.setattr(module, "_label_match_recent_runtime_status", lambda _context: False)
 
     assert module._label_match_direct_sync_ready(context) is False
 
-    Path(context["install_report_path"]).write_text(
-        json.dumps(
-            {
-                "status": "PASS",
-                "program_data_root": context["program_data_root"],
-                "task_name": context["task_name"],
-                "field_layout_contract": {
-                    "production_layout_matches": False,
-                    "local_test_override_enabled": True,
-                },
-                "source_scan": {
-                    "enabled": True,
-                    "scan_source_dir": context["scan_source_dir"],
-                },
-                "source_scan_baseline_result": {
-                    "returncode": 0,
-                    "status": "PASS",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
+    monkeypatch.setattr(module, "_label_match_recent_runtime_status", lambda _context: True)
     assert module._label_match_direct_sync_ready(context) is True
-
-    payload = json.loads(Path(context["install_report_path"]).read_text(encoding="utf-8"))
-    payload["source_scan"]["scan_source_dir"] = str(tmp_path / "old-user" / "data")
-    Path(context["install_report_path"]).write_text(json.dumps(payload), encoding="utf-8")
-
-    assert module._label_match_direct_sync_ready(context) is False
+    assert module._label_match_existing_direct_sync_task_name(context) == ""
+    assert module._label_match_run_direct_sync_task(context)["status"] == "RETIRED"
 
 
 def test_session_direct_sync_runner_uses_zero_source_file_age(tmp_path, monkeypatch):

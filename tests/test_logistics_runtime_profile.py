@@ -10,6 +10,7 @@ import pytest
 
 import Label_Match as label_module
 import logistics_runtime_profile as runtime_module
+import tools.install_logistics_runtime_profile as profile_installer_module
 from logistics_runtime_profile import (
     LogisticsRuntimeConfigurationError,
     TEST1_ISOLATED_LEGACY_OVERRIDE_ENV,
@@ -762,3 +763,48 @@ def test_installer_requires_reader_principal_before_any_write(tmp_path):
         )
 
     assert not target.parent.exists()
+
+
+def test_current_user_profile_install_uses_current_user_dpapi_without_machine_acl(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    token = "current-user-secret"
+    machine_acl_calls = []
+    monkeypatch.setattr(
+        profile_installer_module,
+        "_secure_profile_directory",
+        lambda *_args: machine_acl_calls.append(True),
+    )
+    monkeypatch.setattr(
+        profile_installer_module,
+        "protect_current_user_secret",
+        lambda value: b"user-dpapi:" + value.encode("utf-8"),
+    )
+    monkeypatch.setattr(
+        profile_installer_module,
+        "unprotect_current_user_secret",
+        lambda value: value.removeprefix(b"user-dpapi:").decode("utf-8"),
+    )
+
+    report = install_runtime_profile(
+        profile_path=target,
+        base_url="https://logistics.example.invalid:18456",
+        authority_scope="scope-user",
+        authority_epoch=7,
+        authority_plane="AUTHORITATIVE",
+        plane_epoch=3,
+        device_id="label-pc-user",
+        source_host_id="label-host-user",
+        bearer_token=token,
+        credential_scope="current_user",
+    )
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    assert report["status"] == "installed"
+    assert report["credential_scope"] == "current_user"
+    assert payload["credential_scope"] == "current_user"
+    assert payload["authority_plane"] == "AUTHORITATIVE"
+    assert secret_path.read_bytes() == b"user-dpapi:" + token.encode("utf-8")
+    assert machine_acl_calls == []

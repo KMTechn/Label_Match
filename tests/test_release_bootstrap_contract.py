@@ -13,7 +13,7 @@ sys.modules[SPEC.name] = module
 SPEC.loader.exec_module(module)
 
 
-def test_install_helper_resolver_uses_only_in_process_source(tmp_path):
+def test_retired_install_helper_is_unreachable_even_when_legacy_files_exist(tmp_path):
     tools = tmp_path / "tools"
     nested = tools / "direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe"
     legacy = tools / "direct_sync_relay_install_pack.exe"
@@ -24,13 +24,13 @@ def test_install_helper_resolver_uses_only_in_process_source(tmp_path):
     script.write_text("# fixture\n", encoding="utf-8")
     context = {"app_root": str(tmp_path)}
 
-    assert module._label_match_direct_sync_tool_command(context) == [str(script)]
+    assert module._label_match_direct_sync_tool_command(context) == []
 
     nested.unlink()
-    assert module._label_match_direct_sync_tool_command(context) == [str(script)]
+    assert module._label_match_direct_sync_tool_command(context) == []
 
 
-def test_install_helper_resolver_requires_the_in_process_source(tmp_path):
+def test_retired_install_helper_resolver_always_returns_empty(tmp_path):
     tools = tmp_path / "tools"
     tools.mkdir()
     script = tools / "direct_sync_relay_install_pack.py"
@@ -38,6 +38,6 @@ def test_install_helper_resolver_requires_the_in_process_source(tmp_path):
     context = {"app_root": str(tmp_path)}
     command = module._label_match_direct_sync_tool_command(context)
 
-    assert command == [str(script)]
+    assert command == []
     script.unlink()
     assert module._label_match_direct_sync_tool_command(context) == []

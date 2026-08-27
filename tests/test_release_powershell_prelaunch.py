@@ -15,7 +15,6 @@ RELEASE_SURFACES = (
     RUNNER_RELATIVE_PATH,
     Path("tools/build_frozen_release_candidate.ps1"),
     Path("INSTALL_THIS_PC.ps1"),
-    Path("install_label_match_direct_sync.ps1"),
 )
 
 
@@ -92,7 +91,7 @@ def _run_preflight(powershell: Path, fixture: dict[str, Path]) -> subprocess.Com
             "-OutputRoot",
             str(fixture["output"]),
             "-Tag",
-            "v2.0.87",
+            "v2.0.88",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",
@@ -138,7 +137,7 @@ def test_windows_powershell_51_preflight_scans_exact_clean_surfaces_without_laun
     completed = _run_preflight(powershell, fixture)
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "release_runner_prelaunch=PASS surfaces=4"
+    assert completed.stdout == "release_runner_prelaunch=PASS surfaces=3"
     assert completed.stderr == ""
     _assert_child_was_not_launched(fixture)
     assert not fixture["stdout"].exists()

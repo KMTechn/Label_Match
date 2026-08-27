@@ -161,6 +161,51 @@ def protect_machine_secret(value: str) -> bytes:
         kernel32.LocalFree(encrypted.pbData)
 
 
+def protect_current_user_secret(value: str) -> bytes:
+    """Protect one profile token for the signed-in Windows user."""
+
+    if os.name != "nt":
+        raise LogisticsRuntimeConfigurationError(
+            "DPAPI current-user profile can only be installed on Windows"
+        )
+    token = str(value or "").strip()
+    if (
+        not token
+        or len(token) > 16_384
+        or any(character.isspace() for character in token)
+    ):
+        raise LogisticsRuntimeConfigurationError("bearer token is empty or invalid")
+    raw = token.encode("utf-8")
+    clear, clear_buffer = _blob(raw)
+    entropy, entropy_buffer = _blob(DPAPI_ENTROPY)
+    encrypted = _DataBlob()
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    if not crypt32.CryptProtectData(
+        ctypes.byref(clear),
+        None,
+        ctypes.byref(entropy),
+        None,
+        None,
+        0x1,
+        ctypes.byref(encrypted),
+    ):
+        del clear_buffer, entropy_buffer
+        raise LogisticsRuntimeConfigurationError(
+            "DPAPI bearer token could not be protected"
+        )
+    try:
+        return ctypes.string_at(encrypted.pbData, encrypted.cbData)
+    finally:
+        kernel32.LocalFree(encrypted.pbData)
+
+
+def unprotect_current_user_secret(value: bytes) -> str:
+    """Read a DPAPI token protected for the signed-in Windows user."""
+
+    return unprotect_machine_secret(value)
+
+
 def _parse_bool(value: Any, *, field_name: str) -> bool:
     normalized = str(value or "").strip().lower()
     if normalized in {"", "0", "false", "no", "off"}:
@@ -733,6 +778,8 @@ __all__ = [
     "logistics_runtime_required",
     "profile_from_values",
     "protect_bearer_token",
+    "protect_current_user_secret",
     "protect_machine_secret",
+    "unprotect_current_user_secret",
     "unprotect_machine_secret",
 ]

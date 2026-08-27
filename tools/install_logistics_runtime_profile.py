@@ -28,6 +28,8 @@ from logistics_runtime_profile import (  # noqa: E402
     load_logistics_runtime_profile,
     profile_from_values,
     protect_bearer_token,
+    protect_current_user_secret,
+    unprotect_current_user_secret,
 )
 
 
@@ -172,7 +174,11 @@ def install_runtime_profile(
     replace: bool = False,
     reader_principal: str = "",
     tls_ca_bundle_path: str | os.PathLike[str] | None = None,
+    credential_scope: str = "machine",
 ) -> dict[str, Any]:
+    selected_scope = str(credential_scope or "").strip().lower()
+    if selected_scope not in {"machine", "current_user"}:
+        raise ValueError("credential_scope must be machine or current_user")
     target = assert_path_has_no_reparse_components(
         profile_path, label="runtime profile"
     )
@@ -191,6 +197,8 @@ def install_runtime_profile(
         "bearer_token_ref": DEFAULT_TOKEN_REF,
         "timeout_seconds": timeout_seconds,
     }
+    if selected_scope == "current_user":
+        values["credential_scope"] = "current_user"
     if tls_ca_bundle is not None:
         values["tls_ca_bundle_path"] = str(tls_ca_bundle[0])
     validated = _profile_candidate_from_install_values(
@@ -201,6 +209,7 @@ def install_runtime_profile(
     )
     summary = validated.redacted_summary()
     summary["status"] = "dry-run" if dry_run else "installed"
+    summary["credential_scope"] = selected_scope
     if dry_run:
         return summary
     if target.exists() and not replace:
@@ -209,8 +218,14 @@ def install_runtime_profile(
         )
     if tls_ca_bundle is not None and tls_ca_bundle[0].exists() and not replace:
         raise FileExistsError("orphan machine logistics TLS CA bundle already exists")
-    _secure_profile_directory(target.parent, reader_principal)
-    protected = protect_bearer_token(bearer_token)
+    if selected_scope == "machine":
+        _secure_profile_directory(target.parent, reader_principal)
+        protected = protect_bearer_token(bearer_token)
+        decryptor = None
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        protected = protect_current_user_secret(bearer_token)
+        decryptor = unprotect_current_user_secret
     secret_relative = DEFAULT_TOKEN_REF.split(":", 1)[1].replace("/", os.sep)
     secret_path = (target.parent / secret_relative).resolve()
     secret_path.relative_to(target.parent.resolve())
@@ -228,7 +243,11 @@ def install_runtime_profile(
             ),
         )
         created.append(target)
-        readback = load_logistics_runtime_profile(required=True, profile_path=target)
+        readback = load_logistics_runtime_profile(
+            required=True,
+            profile_path=target,
+            decryptor=decryptor,
+        )
         if readback is None or readback != validated:
             raise RuntimeError("runtime profile exact readback failed")
         if tls_ca_bundle is not None and tls_ca_bundle[0].read_bytes() != tls_ca_bundle[1]:
@@ -254,6 +273,7 @@ def ensure_runtime_profile_from_enrollment_bundle(
     reader_principal: str = "*S-1-5-32-545",
     profile_path: str | os.PathLike[str] | None = None,
     tls_ca_bundle_path: str | os.PathLike[str] | None = None,
+    credential_scope: str = "machine",
 ) -> dict[str, Any] | None:
     bundle = response_payload.get("machine_credential_bundle")
     if bundle is None:
@@ -332,6 +352,11 @@ def ensure_runtime_profile_from_enrollment_bundle(
     tls_ca_bundle = _resolve_tls_ca_bundle(tls_ca_bundle_path, target)
     values = dict(profile)
     values["bearer_token_ref"] = DEFAULT_TOKEN_REF
+    selected_scope = str(credential_scope or "").strip().lower()
+    if selected_scope not in {"machine", "current_user"}:
+        raise ValueError("credential_scope must be machine or current_user")
+    if selected_scope == "current_user":
+        values["credential_scope"] = "current_user"
     if tls_ca_bundle is not None:
         values["tls_ca_bundle_path"] = str(tls_ca_bundle[0])
     candidate = _profile_candidate_from_install_values(
@@ -341,7 +366,15 @@ def ensure_runtime_profile_from_enrollment_bundle(
         tls_ca_bundle=tls_ca_bundle,
     )
     if target.exists():
-        existing = load_logistics_runtime_profile(required=True, profile_path=target)
+        existing = load_logistics_runtime_profile(
+            required=True,
+            profile_path=target,
+            decryptor=(
+                unprotect_current_user_secret
+                if selected_scope == "current_user"
+                else None
+            ),
+        )
         if existing != candidate:
             raise FileExistsError("existing machine logistics profile conflicts with enrollment")
         if tls_ca_bundle is not None:
@@ -356,7 +389,14 @@ def ensure_runtime_profile_from_enrollment_bundle(
                     "existing machine logistics TLS CA bundle conflicts with enrollment"
                 )
         summary = existing.redacted_summary()
-        summary.update({"status": "reused", "profile_path": str(target), "created_paths": []})
+        summary.update(
+            {
+                "status": "reused",
+                "profile_path": str(target),
+                "created_paths": [],
+                "credential_scope": selected_scope,
+            }
+        )
         return summary
     secret_path = target.parent / DEFAULT_TOKEN_REF.split(":", 1)[1].replace("/", os.sep)
     if secret_path.exists():
@@ -377,6 +417,7 @@ def ensure_runtime_profile_from_enrollment_bundle(
         timeout_seconds=float(profile["timeout_seconds"]),
         reader_principal=reader_principal,
         tls_ca_bundle_path=tls_ca_bundle_path,
+        credential_scope=selected_scope,
     )
 
 
@@ -397,6 +438,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--reader-principal", help="Windows account allowed to read the DPAPI blob")
     parser.add_argument("--tls-ca-bundle-path", default="")
+    parser.add_argument(
+        "--credential-scope",
+        choices=("machine", "current_user"),
+        default="machine",
+    )
     return parser
 
 
@@ -423,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
             replace=args.replace,
             reader_principal=args.reader_principal or "",
             tls_ca_bundle_path=args.tls_ca_bundle_path,
+            credential_scope=args.credential_scope,
         )
     except Exception as exc:
         print(f"BLOCKED: {exc.__class__.__name__}: {exc}", file=sys.stderr)

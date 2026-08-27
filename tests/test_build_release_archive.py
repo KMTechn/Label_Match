@@ -27,7 +27,7 @@ IDENTITY_SPEC.loader.exec_module(identity_verifier)
 
 BUILDER_PATH = MODULE_PATH.with_name("build_frozen_release_candidate.ps1")
 
-TAG = "v2.0.87"
+TAG = "v2.0.88"
 COMMIT = "1" * 40
 TREE = "2" * 40
 
@@ -153,19 +153,13 @@ def _package(tmp_path: Path) -> Path:
         "direct_sync_operator.py": b"# operator\n",
         "direct_sync_push.py": b"# push\n",
         "direct_sync_runtime.py": b"# runtime\n",
-        "install_label_match_direct_sync.ps1": b"# direct sync installer\n",
         "logistics_runtime_profile.py": b"# profile\n",
         "producer_runtime_client.py": b"# producer\n",
         "tools/check_logistics_runtime_profile.py": b"# check profile\n",
         "tools/install_logistics_runtime_profile.py": b"# install profile\n",
-        "tools/invoke_embedded_python.ps1": b"# embedded host\n",
-        "tools/direct_sync_relay_install_pack.py": b"# install source\n",
-        "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe": b"packaged runner",
-        "tools/direct_sync_relay_runner/_internal/python312.dll": b"runner runtime",
         "tools/direct_sync_relay_runner.py": b"# runner source\n",
         "tools/register_label_match_worker_pc.py": b"# registration source\n",
         "tools/direct_sync_relay_operator.py": b"# relay operator\n",
-        "tools/direct_sync_phase_g_label_match_runtime_report.py": b"# runtime report\n",
     }
     for relative, payload in required_payloads.items():
         _write(root / relative, payload)
@@ -278,13 +272,10 @@ def _package(tmp_path: Path) -> Path:
             ),
         },
     )
-    staged_inventory = archive_builder._inventory(root)
+    staged_inventory = archive_builder._inventory(
+        root, excluded={"build-manifest.json"}
+    )
     public_entrypoint = root / "INSTALL_THIS_PC.ps1"
-    installer = root / "install_label_match_direct_sync.ps1"
-    install_helper = root / "tools" / "direct_sync_relay_install_pack.py"
-    runner = root / "tools" / "direct_sync_relay_runner" / "direct_sync_relay_runner.exe"
-    registration = root / "tools" / "register_label_match_worker_pc.py"
-    embedded_python_host = root / "tools" / "invoke_embedded_python.ps1"
     staged_report = {
         "schema_version": archive_builder.STAGED_INSTALLER_SCHEMA,
         "status": "PASS",
@@ -294,6 +285,39 @@ def _package(tmp_path: Path) -> Path:
             "path": "INSTALL_THIS_PC.ps1",
             "sha256": archive_builder._sha256(public_entrypoint),
         },
+        "runtime_host": {
+            "path": "Label_Match.exe",
+            "sha256": archive_builder._sha256(root / "Label_Match.exe"),
+            "package_layout": "onedir",
+            "relay_execution_boundary": "product_host",
+            "current_user_relay_mode": "--label-match-user-relay",
+            "direct_sync_relay_mode": "--label-match-direct-sync-relay",
+        },
+        "bootstrap_contract": {
+            "canonical_code_root": r"C:\KMTech\Apps\Label_Match\current",
+            "elevation_points": ["code_placement"],
+            "identity_profile_created": False,
+            "state_scope": "current_user_first_run",
+            "exact_inventory_readback": True,
+            "onedir_required": True,
+        },
+        "state_contract": {
+            "identity_scope": "current_user_per_pc",
+            "profile_scope": "current_user",
+            "credential_scope": "current_user_dpapi",
+            "ledger_scope": "current_user",
+            "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
+            "relay_persistence": "HKCU_RUN",
+            "relay_port_contract": 18456,
+            "source_host_override_required": False,
+        },
+        "legacy_authority_contract": {
+            "system_scheduled_task_supported": False,
+            "task_creation_tokens_absent": True,
+            "legacy_owned_task_cleanup_only": True,
+            "forbidden_package_members_absent": True,
+            "forbidden_members": sorted(archive_builder.RETIRED_HELPER_EXECUTABLES),
+        },
         "manifest_contract": {
             "path": "build-manifest.json",
             "sha256": archive_builder._sha256(root / "build-manifest.json"),
@@ -301,89 +325,15 @@ def _package(tmp_path: Path) -> Path:
             "payload_inventory_sha256": archive_builder._canonical_sha256(
                 predecessor_inventory
             ),
-            "hashes_and_sizes_verified": True,
-            "safe_paths_verified": True,
-            "case_collisions_absent": True,
-            "unexpected_files_absent": True,
-            "reparse_points_absent": True,
             "preseal_isolated_manifest": True,
         },
-        "staging_contract": {
-            "ordinary_extracted_root": True,
-            "canonical_production_root_declared": r"C:\KMTech\Apps\Label_Match\current",
-            "direct_children_staged": True,
-            "nested_label_match_directory_absent": True,
-            "candidate_byte_parity_verified": True,
-            "unknown_target_fail_closed_declared": True,
-            "directory_ancestry_tracked": True,
-        },
-        "launcher_contract": {
-            "count": 1,
-            "scope": "all_users",
-            "canonical_path": r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\KMTech\Label Match.lnk",
-            "target_relative": "Label_Match.exe",
-            "working_directory_is_install_root": True,
-            "icon_is_target": True,
-            "install_verify_remove_lifecycle_declared": True,
-        },
-        "removal_contract": {
-            "uninstall_mode": "DATA_PRESERVING_UNINSTALL",
-            "uninstall_preserves_business_data": True,
-            "rollback_mode": "EXACT_FRESH_TARGET_ROLLBACK",
-            "rollback_requires_external_evidence": True,
-            "rollback_requires_absent_prestate": True,
-            "task_operations": ["stop", "delete", "absence"],
-            "task_results_are_typed": True,
-            "bounded_external_evidence": True,
-            "maximum_evidence_files": 10000,
-            "maximum_evidence_bytes": 2147483648,
-            "fresh_evidence_root_required": True,
-            "reparse_points_rejected": True,
-            "directory_ancestry_tracked": True,
-            "typed_task_reports_bound_to_phase_and_identity": True,
-            "public_wrapper_finalizes_rollback_report": True,
-            "final_evidence_bytes_reverified": True,
-            "final_receipt_binds_evidence_hashes": True,
-            "app_inventory_contract": "label-match-app-immutable-inventory-v1",
-            "mutable_app_relative_paths": ["_internal/config/app_settings.json"],
-            "immutable_app_drift_rejected": True,
-        },
-        "field_layout_contract_verified": True,
         "system_python_required": False,
-        "installer": {
-            "path": "install_label_match_direct_sync.ps1",
-            "sha256": archive_builder._sha256(installer),
-        },
-        "install_helper": {
-            "path": "tools/direct_sync_relay_install_pack.py",
-            "sha256": archive_builder._sha256(install_helper),
-            "execution_boundary": "in_process",
-        },
-        "runner": {
-            "path": "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
-            "sha256": archive_builder._sha256(runner),
-            "selected": True,
-            "execution_boundary": "scheduled_task",
-        },
-        "registration": {
-            "path": "tools/register_label_match_worker_pc.py",
-            "sha256": archive_builder._sha256(registration),
-            "selected": True,
-            "execution_boundary": "in_process",
-        },
-        "embedded_python_host": {
-            "path": "tools/invoke_embedded_python.ps1",
-            "sha256": archive_builder._sha256(embedded_python_host),
-        },
-        "retired_helper_executables_absent": True,
         "original_package_file_count": len(staged_inventory),
         "original_package_inventory": staged_inventory,
         "original_package_inventory_sha256": archive_builder._inventory_digest(
             staged_inventory
         ),
         "original_package_unchanged": True,
-        "app_settings_path": "_internal/config/app_settings.json",
-        "app_save_path_matches_relay_scan_source": True,
         "output_bound_bytes": 64 * 1024,
         "timeout_seconds": 120,
         "stdout_bytes": 100,
@@ -458,13 +408,12 @@ def test_build_release_archive_is_deterministic_unsigned_and_byte_exact(tmp_path
     assert first_report["pyinstaller_version"] == "6.20.0"
     assert first_report["retired_helper_executables_absent"] is True
     assert first_report["staged_installer_verified"] is True
-    assert first_report["ordinary_extracted_root_staging_verified"] is True
-    assert first_report["manifest_bound_self_staging_verified"] is True
-    assert first_report["all_users_launcher_lifecycle_verified"] is True
-    assert first_report["data_preserving_uninstall_contract_verified"] is True
-    assert first_report["exact_fresh_target_rollback_contract_verified"] is True
-    assert first_report["typed_task_stop_delete_absence_verified"] is True
-    assert first_report["bounded_external_evidence_contract_verified"] is True
+    assert first_report["code_only_bootstrap_verified"] is True
+    assert first_report["onedir_product_host_verified"] is True
+    assert first_report["current_user_state_contract_verified"] is True
+    assert first_report["hkcu_relay_contract_verified"] is True
+    assert first_report["system_task_authority_absent"] is True
+    assert first_report["authoritative_snapshot_lease_preserved"] is True
     assert first_report["dynamic_install_qualification"] == "NOT_TESTED"
     assert first_report["factory_manifest_verified"] is True
     assert first_report["archive_sha256"] == second_report["archive_sha256"]
@@ -473,9 +422,10 @@ def test_build_release_archive_is_deterministic_unsigned_and_byte_exact(tmp_path
         assert archive.testzip() is None
         names = set(archive.namelist())
     assert "Label_Match/build-manifest.json" in names
-    assert "Label_Match/tools/invoke_embedded_python.ps1" in names
-    assert "Label_Match/tools/direct_sync_relay_runner/direct_sync_relay_runner.exe" in names
-    assert "Label_Match/tools/direct_sync_relay_runner/_internal/python312.dll" in names
+    assert "Label_Match/tools/direct_sync_relay_runner.py" in names
+    assert "Label_Match/install_label_match_direct_sync.ps1" not in names
+    assert "Label_Match/tools/direct_sync_relay_install_pack.py" not in names
+    assert "Label_Match/tools/direct_sync_relay_runner/direct_sync_relay_runner.exe" not in names
     assert not any(name.endswith("register_label_match_worker_pc.exe") for name in names)
     assert len(names) == first_report["package_file_count"]
 
@@ -502,16 +452,17 @@ def test_archive_rejects_noncanonical_unsigned_v3_identity(tmp_path, field, valu
         )
 
 
-def test_archive_contract_restores_runner_and_retires_only_a_helpers():
+def test_archive_contract_retires_active_system_task_authority():
     assert archive_builder.RETIRED_HELPER_EXECUTABLES == {
+        "install_label_match_direct_sync.ps1",
+        "tools/direct_sync_relay_install_pack.py",
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "tools/direct_sync_relay_install_pack.exe",
+        "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
         "tools/register_label_match_worker_pc.exe",
+        "tools/invoke_embedded_python.ps1",
     }
-    assert (
-        "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
-        in archive_builder.REQUIRED_PACKAGE_MEMBERS
-    )
+    assert "tools/direct_sync_relay_runner.py" in archive_builder.REQUIRED_PACKAGE_MEMBERS
     assert not (
         archive_builder.RETIRED_HELPER_EXECUTABLES
         & archive_builder.REQUIRED_PACKAGE_MEMBERS
@@ -522,9 +473,9 @@ def test_archive_rejects_staged_installer_probe_or_factory_current_drift(tmp_pat
     package = _package(tmp_path / "staged")
     staged_path = package / "staged-installer-verification.json"
     staged = json.loads(staged_path.read_text(encoding="utf-8"))
-    staged["runner"]["selected"] = False
+    staged["runtime_host"]["relay_execution_boundary"] = "scheduled_task"
     _write_json(staged_path, staged)
-    with pytest.raises(archive_builder.ReleaseArchiveError, match="runner binding is invalid"):
+    with pytest.raises(archive_builder.ReleaseArchiveError, match="product-host binding"):
         archive_builder.build_release_archive(
             package, tmp_path / "staged.zip", source_epoch=1_700_000_000
         )
@@ -550,13 +501,13 @@ def test_archive_rejects_staged_installer_probe_or_factory_current_drift(tmp_pat
 @pytest.mark.parametrize(
     ("path", "value", "message"),
     [
-        (("schema_version",), "label-match-staged-installer-verification-v1", "staged installer"),
-        (("launcher_contract", "scope"), "current_user", "launcher contract"),
-        (("removal_contract", "task_operations"), ["delete", "absence"], "removal contract"),
-        (("removal_contract", "rollback_requires_absent_prestate"), False, "removal contract"),
+        (("schema_version",), "label-match-staged-installer-verification-v2", "staged installer"),
+        (("bootstrap_contract", "onedir_required"), False, "bootstrap contract"),
+        (("state_contract", "source_host_override_required"), True, "state contract"),
+        (("legacy_authority_contract", "system_scheduled_task_supported"), True, "task-authority contract"),
     ],
 )
-def test_archive_rejects_abbreviated_staging_launcher_or_rollback_contract(
+def test_archive_rejects_abbreviated_current_topology_contract(
     tmp_path, path, value, message
 ):
     package = _package(tmp_path)

@@ -47,6 +47,37 @@ def test_label_match_registration_dry_run_derives_per_pc_identity_without_secret
     assert "secret" not in report.get("secret_ref", "")
 
 
+def test_fresh_guests_derive_distinct_per_pc_identity_without_source_host_override(
+    tmp_path,
+):
+    module = load_registration_module()
+    reports = []
+    for index, machine_guid in enumerate(("fresh-machine-one", "fresh-machine-two")):
+        report_path = tmp_path / f"fresh-{index}.json"
+        assert module.main(
+            [
+                "--dry-run",
+                "--server-base-url",
+                "https://worker.example.invalid",
+                "--pc-id",
+                "PACKING-GUEST",
+                "--machine-guid",
+                machine_guid,
+                "--sync-dir",
+                str(tmp_path / f"label-{index}"),
+                "--data-dir",
+                str(tmp_path / f"relay-{index}"),
+                "--report-path",
+                str(report_path),
+            ]
+        ) == 0
+        reports.append(json.loads(report_path.read_text(encoding="utf-8-sig")))
+
+    assert reports[0]["source_host_id"] != reports[1]["source_host_id"]
+    assert all(item["manual_pc_approval_required"] is False for item in reports)
+    assert all(item["source_host_id"].startswith("label-match-packing-guest-") for item in reports)
+
+
 def test_label_match_registration_manifest_includes_runtime_event_contract(tmp_path):
     module = load_registration_module()
     args = type(
@@ -238,6 +269,81 @@ def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_to
     assert report["token_source"] == "ip_allowlist"
     assert report["manual_pc_approval_required"] is False
     assert report["raw_secret_written"] is False
+
+
+def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    data_dir = tmp_path / "DirectSync" / "label_match"
+    args = type(
+        "Args",
+        (),
+        {
+            "credential_scope": "current_user",
+            "data_dir": str(data_dir),
+            "endpoint_url": "",
+            "enrollment_timeout_seconds": 30,
+            "enrollment_token": "",
+            "enrollment_token_env": "",
+            "enrollment_token_file": "",
+            "enrollment_url": "",
+            "key_id": "",
+            "logistics_profile_path": str(tmp_path / "profile.json"),
+            "machine_guid": "current-user-guid",
+            "pc_id": "PACKING-USER",
+            "producer_id": "",
+            "producer_install_id": "",
+            "require_machine_credential_bundle": True,
+            "secret_ref_target": "",
+            "server_base_url": "https://worker.example.invalid",
+            "source_host_id": "",
+            "sync_dir": str(tmp_path / "Label_Match" / "data"),
+            "tls_ca_bundle_path": "",
+            "dry_run": False,
+        },
+    )()
+    manifest, credential, report = module.build_payloads(args)
+    secret = "server-issued-secret"
+    observed = {}
+
+    monkeypatch.setattr(
+        module,
+        "_enroll",
+        lambda *_args, **_kwargs: {
+            "status": "enrolled",
+            "producer_id": credential["producer_id"],
+            "key_id": credential["key_id"],
+            "secret": secret,
+            "secret_fingerprint_sha256": module._fingerprint(secret),
+            "machine_credential_bundle": {"present": True},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "ensure_runtime_profile_from_enrollment_bundle",
+        lambda _payload, **kwargs: observed.update(profile=kwargs)
+        or {"status": "installed", "created_paths": []},
+    )
+    monkeypatch.setattr(
+        module,
+        "_write_dpapi_secret",
+        lambda data_dir, target, secret_text, *, credential_scope: observed.update(
+            secret_scope=credential_scope
+        )
+        or Path(data_dir)
+        / "secrets"
+        / f"{target}.dpapi",
+    )
+    monkeypatch.setattr(module, "_verify_dpapi_secret", lambda *_args: True)
+
+    applied = module.apply_registration(args, manifest, credential, report)
+
+    assert credential["dpapi_scope"] == "current_user"
+    assert observed["secret_scope"] == "current_user"
+    assert observed["profile"]["credential_scope"] == "current_user"
+    assert applied["credential_scope"] == "current_user"
+    assert applied["server_registration_verified"] is True
 
 
 def test_label_match_registration_does_not_auto_load_adjacent_token_file(tmp_path, monkeypatch):

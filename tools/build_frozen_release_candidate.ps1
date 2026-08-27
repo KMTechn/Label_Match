@@ -4,7 +4,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.87",
+    [string]$Tag = "v2.0.88",
 
     [string]$PythonPath = "",
 
@@ -881,14 +881,6 @@ $mainAnalysisToc = Join-Path $mainWorkRoot "Label_Match\Analysis-00.toc"
     --runtime-root (Join-Path $packageRoot "_internal")
 Assert-LastExitCode "Materialize the in-process embedded Python library"
 
-Invoke-OneDirBuild `
-    -VenvPython $venvPython `
-    -RepositoryRoot $repoRoot `
-    -PackageRoot (Join-Path $packageRoot "tools") `
-    -WorkRoot $workRoot `
-    -Name "direct_sync_relay_runner" `
-    -Source (Join-Path $repoRoot "tools\direct_sync_relay_runner.py")
-
 Invoke-OneFileBuild `
     -VenvPython $venvPython `
     -RepositoryRoot $repoRoot `
@@ -996,7 +988,6 @@ foreach ($pair in @(
 }
 
 $copies = [ordered]@{
-    (Join-Path $repoRoot "install_label_match_direct_sync.ps1") = (Join-Path $packageRoot "install_label_match_direct_sync.ps1")
     (Join-Path $repoRoot "INSTALL_THIS_PC.ps1") = (Join-Path $packageRoot "INSTALL_THIS_PC.ps1")
     $releaseIdentityPath = (Join-Path $packageRoot "release-identity.json")
     (Join-Path $factoryIdentityRoot "build-identity.json") = (Join-Path $packageRoot "build-identity.json")
@@ -1009,7 +1000,6 @@ $copies = [ordered]@{
     (Join-Path $repoRoot "logistics_runtime_profile.py") = (Join-Path $packageRoot "logistics_runtime_profile.py")
     (Join-Path $repoRoot "docs\LOGISTICS_RUNTIME_PROFILE.md") = (Join-Path $packageRoot "CENTRAL_LOGISTICS_PC_ROLLOUT.md")
     (Join-Path $repoRoot "tools\provision_protected_admin_acl.ps1") = (Join-Path $packageRoot "PROVISION_PROTECTED_ADMIN_ACL.ps1")
-    (Join-Path $repoRoot "tools\invoke_embedded_python.ps1") = (Join-Path $packageRoot "tools\invoke_embedded_python.ps1")
     (Join-Path $repoRoot "docs\PROTECTED_ADMIN_PROVISIONING.md") = (Join-Path $packageRoot "PROTECTED_ADMIN_PROVISIONING.md")
 }
 foreach ($entry in $copies.GetEnumerator()) {
@@ -1018,8 +1008,6 @@ foreach ($entry in $copies.GetEnumerator()) {
 foreach ($toolName in @(
     "direct_sync_relay_runner.py",
     "direct_sync_relay_operator.py",
-    "direct_sync_relay_install_pack.py",
-    "direct_sync_phase_g_label_match_runtime_report.py",
     "register_label_match_worker_pc.py",
     "install_logistics_runtime_profile.py",
     "check_logistics_runtime_profile.py"
@@ -1085,8 +1073,10 @@ $stagedInstallerReport = Join-Path $packageRoot "staged-installer-verification.j
     --package-root $packageRoot `
     --report $stagedInstallerReport
 Assert-LastExitCode "Verify staged installer without system Python"
-& (Join-Path $packageRoot "tools\direct_sync_relay_runner\direct_sync_relay_runner.exe") --help | Out-Null
-Assert-LastExitCode "Staged packaged relay runner help probe"
+& (Join-Path $packageRoot "Label_Match.exe") --label-match-direct-sync-relay --help | Out-Null
+Assert-LastExitCode "Staged onedir product-host relay help probe"
+& (Join-Path $packageRoot "Label_Match.exe") --label-match-user-relay --help | Out-Null
+Assert-LastExitCode "Staged onedir current-user relay help probe"
 & $venvPython (Join-Path $packageRoot "tools\direct_sync_relay_operator.py") --help | Out-Null
 Assert-LastExitCode "Staged relay operator source help probe"
 $env:LABEL_MATCH_STAGED_PACKAGE_ROOT = $packageRoot
@@ -1100,7 +1090,6 @@ $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
     --expected-file contract.lock.json `
     --expected-file build-identity.json `
     --expected-file build-compatibility.json `
-    --expected-file tools/direct_sync_relay_runner/direct_sync_relay_runner.exe `
     --built-at-utc $builtAtUtc
 Assert-LastExitCode "Seal exact factory package manifest"
 & $venvPython -m kmtech_factory_contracts.build_cli verify `

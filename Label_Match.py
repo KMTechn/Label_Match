@@ -19,6 +19,19 @@ from protected_admin import (
     sanitize_persistent_value,
 )
 from label_match_single_instance import resolve_data_scope, run_guarded_entrypoint
+from current_user_onboarding import (
+    CurrentUserOnboardingError,
+    LABEL_MATCH_SETTINGS_PATH_ENV,
+    ONBOARDING_EXIT_CODE,
+    onboard_current_user,
+)
+from label_match_product_host import dispatch_product_mode
+
+
+if __name__ == "__main__":
+    _early_product_mode_result = dispatch_product_mode(sys.argv[1:])
+    if _early_product_mode_result is not None:
+        raise SystemExit(_early_product_mode_result)
 
 
 _LABEL_MATCH_SENSITIVE_TRACE_KEYS = frozenset({
@@ -217,6 +230,10 @@ LABEL_MATCH_DURABLE_EVENT_TYPES = {
 }
 LABEL_MATCH_SAVE_DIR_ENV = "LABEL_MATCH_SAVE_DIR"
 LABEL_MATCH_DEFAULT_SAVE_SUBDIR = ("KMTech", "Label_Match", "data")
+LABEL_MATCH_ENABLE_FIRST_RUN_ONBOARDING_ENV = (
+    "LABEL_MATCH_ENABLE_FIRST_RUN_ONBOARDING"
+)
+LABEL_MATCH_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_ROOT"
 LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP"
 LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV = "LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL"
 LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV = "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID"
@@ -298,6 +315,22 @@ def _default_label_match_save_path():
         return env_save_dir
     program_data_root = os.environ.get("ProgramData", r"C:\ProgramData")
     return os.path.join(program_data_root, *LABEL_MATCH_DEFAULT_SAVE_SUBDIR)
+
+
+def _default_label_match_settings_path():
+    explicit = os.environ.get(LABEL_MATCH_SETTINGS_PATH_ENV, "").strip()
+    if explicit:
+        return os.path.abspath(explicit)
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        return os.path.join(
+            local_app_data,
+            "KMTech",
+            "Label_Match",
+            "config",
+            "app_settings.json",
+        )
+    return resource_path(os.path.join("config", "app_settings.json"))
 
 
 def _label_match_runtime_app_root():
@@ -699,7 +732,12 @@ def _label_match_reveal_capture_startup(
 
 def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
     source_host_id = _label_match_direct_sync_source_host_id()
-    program_data_root = os.environ.get(LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV, "").strip()
+    program_data_root = (
+        os.environ.get(LABEL_MATCH_DIRECT_SYNC_ROOT_ENV, "").strip()
+        or os.environ.get(
+            LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV, ""
+        ).strip()
+    )
     if not program_data_root:
         program_data_root = os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
@@ -861,10 +899,9 @@ def _label_match_run_in_process_tool(script_path, arguments, *, timeout_seconds,
 
 
 def _label_match_direct_sync_tool_command(context):
-    tools_dir = os.path.join(context["app_root"], "tools")
-    install_pack_script = os.path.join(tools_dir, "direct_sync_relay_install_pack.py")
-    if os.path.isfile(install_pack_script):
-        return [install_pack_script]
+    # The former install-pack entry point created a SYSTEM scheduled task.  It
+    # is deliberately unreachable in the current-user topology; first-run
+    # enrollment and relay persistence are owned by current_user_onboarding.
     return []
 
 
@@ -891,65 +928,8 @@ def _label_match_recent_runtime_status(context, max_age_seconds=7 * 24 * 60 * 60
 
 
 def _label_match_existing_direct_sync_task_name(context):
-    if os.name != "nt":
-        return ""
-    powershell = os.path.join(
-        os.environ.get("SystemRoot", r"C:\Windows"),
-        "System32",
-        "WindowsPowerShell",
-        "v1.0",
-        "powershell.exe",
-    )
-    target_root = context["program_data_root"].replace("/", "\\").lower()
-    source_host_id = context["source_host_id"].lower()
-    ps_script = (
-        "$items = @(Get-ScheduledTask -TaskName 'direct-sync-relay*' -ErrorAction SilentlyContinue | "
-        "ForEach-Object { $taskName = $_.TaskName; foreach ($action in $_.Actions) { "
-        "[PSCustomObject]@{ TaskName = $taskName; Execute = $action.Execute; Arguments = $action.Arguments } } }); "
-        "@($items) | ConvertTo-Json -Compress"
-    )
-    if os.path.isfile(powershell):
-        try:
-            completed = subprocess.run(
-                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=8,
-                creationflags=_label_match_subprocess_creationflags(),
-            )
-            if completed.returncode == 0 and completed.stdout.strip():
-                payload = json.loads(completed.stdout)
-                rows = payload if isinstance(payload, list) else [payload]
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    task_name = str(row.get("TaskName") or "")
-                    text = " ".join(
-                        str(row.get(key) or "")
-                        for key in ("TaskName", "Execute", "Arguments")
-                    ).replace("/", "\\").lower()
-                    if (
-                        task_name == context["task_name"]
-                        or source_host_id in text
-                        or target_root in text
-                    ):
-                        return task_name
-        except Exception as exc:
-            print(f"direct-sync scheduled task query failed: {exc}")
-    try:
-        completed = subprocess.run(
-            ["schtasks.exe", "/Query", "/TN", context["task_name"]],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=8,
-            creationflags=_label_match_subprocess_creationflags(),
-        )
-        if completed.returncode == 0:
-            return context["task_name"]
-    except Exception:
-        pass
+    # Retained as a compatibility seam for older tests/callers.  Scheduled
+    # task authority is unsupported and is never queried or started.
     return ""
 
 
@@ -958,67 +938,18 @@ def _label_match_direct_sync_ready(context):
         return False
     if not _label_match_registration_verified(context):
         return False
-    if not _label_match_install_report_ready(context):
-        return False
-    return bool(
-        _label_match_existing_direct_sync_task_name(context)
-        or _label_match_recent_runtime_status(context)
-    )
+    return _label_match_recent_runtime_status(context)
 
 
 def _label_match_install_report_ready(context):
-    report = _label_match_json_file(context["install_report_path"])
-    if report.get("status") != "PASS":
-        return False
-    field_layout = report.get("field_layout_contract") or {}
-    if not (
-        field_layout.get("production_layout_matches") is True
-        or field_layout.get("local_test_override_enabled") is True
-    ):
-        return False
-    try:
-        report_root = os.path.abspath(str(report.get("program_data_root") or ""))
-        expected_root = os.path.abspath(context["program_data_root"])
-        if os.path.normcase(report_root) != os.path.normcase(expected_root):
-            return False
-        if str(report.get("task_name") or "") != context["task_name"]:
-            return False
-        source_scan = report.get("source_scan") or {}
-        report_scan_dir = os.path.abspath(str(source_scan.get("scan_source_dir") or ""))
-        expected_scan_dir = os.path.abspath(context["scan_source_dir"])
-        if os.path.normcase(report_scan_dir) != os.path.normcase(expected_scan_dir):
-            return False
-        if source_scan.get("enabled") is not False:
-            baseline = report.get("source_scan_baseline_result") or {}
-            if not baseline:
-                return False
-            if int(baseline.get("returncode") or 0) != 0:
-                return False
-    except Exception:
-        return False
-    return True
+    return False
 
 
 def _label_match_run_direct_sync_task(context):
-    if os.name != "nt":
-        return {"status": "SKIPPED", "reason": "scheduled tasks are Windows-only"}
-    try:
-        completed = subprocess.run(
-            ["schtasks.exe", "/Run", "/TN", context["task_name"]],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            creationflags=_label_match_subprocess_creationflags(),
-        )
-        return {
-            "status": "PASS" if completed.returncode == 0 else "FAIL",
-            "returncode": completed.returncode,
-            "stdout": completed.stdout[-1000:],
-            "stderr": completed.stderr[-1000:],
-        }
-    except Exception as exc:
-        return {"status": "FAIL", "error": str(exc)}
+    return {
+        "status": "RETIRED",
+        "reason": "SYSTEM scheduled-task relay authority is unsupported",
+    }
 
 
 def _label_match_direct_sync_runtime_paths(context):
@@ -1298,132 +1229,20 @@ def _label_match_auto_bootstrap_direct_sync(context):
         "app_version": APP_VERSION,
         "started_at": started_at,
         "source_host_id": context["source_host_id"],
-        "task_name": context["task_name"],
         "program_data_root": context["program_data_root"],
         "scan_source_dir": context["scan_source_dir"],
         "server_base_url": context["server_base_url"],
+        "state_scope": "current_user",
+        "system_scheduled_task_required": False,
     }
-    if not _label_match_direct_sync_bootstrap_enabled():
-        _label_match_write_json(context["bootstrap_status_path"], {**base_report, "status": "DISABLED"})
-        return
-    if os.name != "nt":
-        _label_match_write_json(context["bootstrap_status_path"], {**base_report, "status": "SKIPPED", "reason": "windows_only"})
-        return
-    if _label_match_direct_sync_ready(context):
-        _label_match_write_json(context["bootstrap_status_path"], {**base_report, "status": "READY"})
-        return
-
-    command = _label_match_direct_sync_tool_command(context)
-    if not command:
-        _label_match_write_json(
-            context["bootstrap_status_path"],
-            {**base_report, "status": "BLOCKED", "blocked_reason": "direct-sync install pack tool is missing"},
-        )
-        return
-    runner_script = os.path.join(context["app_root"], "tools", "direct_sync_relay_runner.py")
-    registration_script = os.path.join(context["app_root"], "tools", "register_label_match_worker_pc.py")
-    if not os.path.isfile(runner_script) or not os.path.isfile(registration_script):
-        _label_match_write_json(
-            context["bootstrap_status_path"],
-            {
-                **base_report,
-                "status": "BLOCKED",
-                "blocked_reason": "in-process direct-sync sources are incomplete",
-            },
-        )
-        return
-    allow_interactive_task_for_local_test = os.environ.get(
-        LABEL_MATCH_DIRECT_SYNC_ALLOW_INTERACTIVE_TASK_FOR_LOCAL_TEST_ENV,
-        "",
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    allow_noncanonical_layout_for_test = os.environ.get(
-        LABEL_MATCH_DIRECT_SYNC_ALLOW_NONCANONICAL_LAYOUT_FOR_TEST_ENV,
-        "",
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    task_run_user = os.environ.get(LABEL_MATCH_DIRECT_SYNC_TASK_RUN_USER_ENV, "").strip()
-    task_run_password_env = os.environ.get(
-        LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_ENV_ENV,
-        "",
-    ).strip()
-    task_run_password_file = os.environ.get(
-        LABEL_MATCH_DIRECT_SYNC_TASK_RUN_PASSWORD_FILE_ENV,
-        "",
-    ).strip()
-    password_source_count = int(bool(task_run_password_env)) + int(bool(task_run_password_file))
-    if not allow_interactive_task_for_local_test and (not task_run_user or password_source_count != 1):
-        _label_match_write_json(
-            context["bootstrap_status_path"],
-            {
-                **base_report,
-                "status": "BLOCKED",
-                "blocked_reason": (
-                    "production direct-sync bootstrap requires a task run user and exactly one "
-                    "password env-name or password-file setting"
-                ),
-            },
-        )
-        return
-
-    args = [
-        "--self-enroll",
-        "--app-root",
-        context["app_root"],
-        "--server-base-url",
-        context["server_base_url"],
-        "--program-data-root",
-        context["program_data_root"],
-        "--scan-source-dir",
-        context["scan_source_dir"],
-        "--source-host-id",
-        context["source_host_id"],
-        "--task-name",
-        context["task_name"],
-        "--report-path",
-        context["install_report_path"],
-        "--apply",
-    ]
-    if context["app_settings_path"]:
-        args.extend(["--app-settings-path", context["app_settings_path"]])
-    if task_run_user:
-        args.extend(["--task-run-user", task_run_user])
-    if task_run_password_env:
-        args.extend(["--task-run-password-env", task_run_password_env])
-    if task_run_password_file:
-        args.extend(["--task-run-password-file", task_run_password_file])
-    if allow_interactive_task_for_local_test:
-        args.append("--allow-interactive-task-for-local-test")
-    if allow_noncanonical_layout_for_test:
-        args.append("--allow-noncanonical-layout-for-test")
-
-    try:
-        timeout_seconds = max(30, int(os.environ.get(LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_TIMEOUT_ENV, "180") or "180"))
-    except ValueError:
-        timeout_seconds = 180
-    try:
-        completed = _label_match_run_in_process_tool(
-            command[0],
-            args,
-            timeout_seconds=timeout_seconds,
-            env_overrides={LABEL_MATCH_SAVE_DIR_ENV: context["scan_source_dir"]},
-        )
-        run_task_result = _label_match_run_direct_sync_task(context) if completed["returncode"] == 0 else None
-        _label_match_write_json(
-            context["bootstrap_status_path"],
-            {
-                **base_report,
-                "status": "PASS" if completed["returncode"] == 0 else "BLOCKED",
-                "execution_boundary": completed["execution_boundary"],
-                "install_report_path": context["install_report_path"],
-                "stdout_tail": completed["stdout"][-2000:],
-                "stderr_tail": completed["stderr"][-2000:],
-                "run_task_result": run_task_result,
-            },
-        )
-    except Exception as exc:
-        _label_match_write_json(
-            context["bootstrap_status_path"],
-            {**base_report, "status": "BLOCKED", "blocked_reason": str(exc)},
-        )
+    _label_match_write_json(
+        context["bootstrap_status_path"],
+        {
+            **base_report,
+            "status": "RETIRED",
+            "reason": "current-user first-run onboarding owns relay persistence",
+        },
+    )
 
 
 def _csv_formula_safe_cell(value):
@@ -3408,7 +3227,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.87"
+APP_VERSION = "v2.0.88"
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -5852,14 +5671,11 @@ class Label_Match(tk.Tk):
     def _start_direct_sync_auto_bootstrap(self):
         context = _label_match_direct_sync_context(self.save_directory, self.app_settings_path)
         self.direct_sync_bootstrap_context = context
-        self._direct_sync_auto_bootstrap_thread = threading.Thread(
-            target=_label_match_auto_bootstrap_direct_sync,
-            args=(context,),
-            name="label-match-direct-sync-bootstrap",
-            daemon=True,
-        )
-        self._direct_sync_auto_bootstrap_thread.start()
-        return self._direct_sync_auto_bootstrap_thread
+        # Identity/profile creation and persistent retry now belong to the
+        # synchronous current-user onboarding boundary.  Application startup
+        # only binds the already-proven context used for transaction wakes.
+        self._direct_sync_auto_bootstrap_thread = None
+        return None
 
     def show_loading_overlay(self):
         self.loading_overlay.grid(row=0, column=0, rowspan=3, sticky='nsew')
@@ -5896,9 +5712,17 @@ class Label_Match(tk.Tk):
 
     def _setup_paths(self):
         self.base_path = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
-        self.config_directory = resource_path("config")
+        self.app_settings_path = _default_label_match_settings_path()
+        self.config_directory = os.path.dirname(self.app_settings_path)
         os.makedirs(self.config_directory, exist_ok=True)
-        self.app_settings_path = os.path.join(self.config_directory, self.FILES.SETTINGS)
+        if not os.path.isfile(self.app_settings_path):
+            template_path = resource_path(os.path.join("config", self.FILES.SETTINGS))
+            if (
+                os.path.isfile(template_path)
+                and os.path.normcase(os.path.abspath(template_path))
+                != os.path.normcase(os.path.abspath(self.app_settings_path))
+            ):
+                shutil.copyfile(template_path, self.app_settings_path)
 
     def _update_save_directory(self):
         self.save_directory = self.custom_save_path
@@ -16933,6 +16757,32 @@ ITEM_CATALOG_STARTUP_ERROR_MESSAGE = (
     "계속 실패하면 IT 담당자에게 문의하세요."
 )
 
+FIRST_RUN_ONBOARDING_ERROR_TITLE = "현재 사용자 초기 설정 실패"
+FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
+    "이 PC의 사용자별 물류 설정을 완료하지 못해 프로그램 시작을 중단했습니다.\n\n"
+    "네트워크 연결을 확인한 뒤 다시 실행하세요. 계속 실패하면 보고서 경로를 "
+    "IT 담당자에게 전달하세요."
+)
+
+
+def _first_run_onboarding_enabled():
+    if getattr(sys, "frozen", False) and os.name == "nt":
+        return True
+    value = os.environ.get(
+        LABEL_MATCH_ENABLE_FIRST_RUN_ONBOARDING_ENV, ""
+    ).strip().lower()
+    return value in {"1", "true", "yes", "on", "enabled"}
+
+
+def _show_first_run_onboarding_error(failure):
+    try:
+        messagebox.showerror(
+            FIRST_RUN_ONBOARDING_ERROR_TITLE,
+            f"{FIRST_RUN_ONBOARDING_ERROR_MESSAGE}\n보고서: {failure.report_path}",
+        )
+    except Exception:
+        _label_match_startup_trace("current_user_onboarding_dialog_unavailable")
+
 
 def _show_item_catalog_startup_error():
     try:
@@ -16956,11 +16806,37 @@ def _run_label_match_application():
     return 0
 
 
-def main():
+def main(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    hosted_result = dispatch_product_mode(arguments)
+    if hosted_result is not None:
+        return hosted_result
     verify_factory_contract_startup()
     _label_match_startup_trace("main_enter")
     try:
-        settings_path = resource_path(os.path.join("config", Label_Match.FILES.SETTINGS))
+        if _first_run_onboarding_enabled():
+            app_root = _label_match_runtime_app_root()
+            try:
+                onboard_current_user(
+                    app_root,
+                    server_base_url=os.environ.get(
+                        LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV,
+                        LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
+                    ).strip()
+                    or LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
+                    require_bootstrap_integrity=bool(
+                        getattr(sys, "frozen", False)
+                    ),
+                )
+            except CurrentUserOnboardingError as exc:
+                _label_match_startup_trace(
+                    "current_user_onboarding_blocked",
+                    status=exc.status,
+                    report_path=str(exc.report_path),
+                )
+                _show_first_run_onboarding_error(exc)
+                return ONBOARDING_EXIT_CODE
+        settings_path = _default_label_match_settings_path()
         data_scope = resolve_data_scope(settings_path=settings_path)
         return run_guarded_entrypoint(
             _run_label_match_application,

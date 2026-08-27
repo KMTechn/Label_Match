@@ -13,7 +13,7 @@ import pytest
 from tools import verify_frozen_release_assets as verifier
 
 
-TAG = "v2.0.87"
+TAG = "v2.0.88"
 COMMIT = "1" * 40
 TREE = "2" * 40
 TAG_OBJECT = "4" * 40
@@ -172,14 +172,7 @@ def _refresh_staged_inventory(
         }
     )
     inventory = sorted(
-        [
-            *payload_inventory,
-            {
-                "path": "build-manifest.json",
-                "size": len(predecessor_manifest),
-                "sha256": hashlib.sha256(predecessor_manifest).hexdigest(),
-            },
-        ],
+        payload_inventory,
         key=lambda item: (str(item["path"]).casefold(), str(item["path"])),
     )
     staged["original_package_file_count"] = len(inventory)
@@ -335,7 +328,7 @@ def test_abbreviated_staged_installer_report_cannot_pass(tmp_path):
         _verify(fixture)
 
 
-def test_forged_launcher_scope_cannot_pass_after_archive_reseal(tmp_path):
+def test_forged_source_host_override_requirement_cannot_pass_after_reseal(tmp_path):
     fixture = _fixture(tmp_path)
     archive = fixture["archive"]
     assert isinstance(archive, Path)
@@ -343,16 +336,16 @@ def test_forged_launcher_scope_cannot_pass_after_archive_reseal(tmp_path):
     name = "staged-installer-verification.json"
     info, payload = entries[name]
     staged = json.loads(payload)
-    staged["launcher_contract"]["scope"] = "current_user"
+    staged["state_contract"]["source_host_override_required"] = True
     entries[name] = (info, _json_bytes(staged))
     _refresh_build_manifest(entries)
     _rewrite_archive(fixture, entries)
 
-    with pytest.raises(verifier.FrozenReleaseError, match="launcher contract"):
+    with pytest.raises(verifier.FrozenReleaseError, match="state contract"):
         _verify(fixture)
 
 
-def test_abbreviated_in_process_binding_evidence_cannot_pass(tmp_path):
+def test_abbreviated_product_host_binding_evidence_cannot_pass(tmp_path):
     fixture = _fixture(tmp_path)
     archive = fixture["archive"]
     assert isinstance(archive, Path)
@@ -360,12 +353,12 @@ def test_abbreviated_in_process_binding_evidence_cannot_pass(tmp_path):
     name = "staged-installer-verification.json"
     info, payload = entries[name]
     staged = json.loads(payload)
-    staged["runner"].pop("execution_boundary")
+    staged["runtime_host"].pop("relay_execution_boundary")
     entries[name] = (info, _json_bytes(staged))
     _refresh_build_manifest(entries)
     _rewrite_archive(fixture, entries)
 
-    with pytest.raises(verifier.FrozenReleaseError, match="runner binding is invalid"):
+    with pytest.raises(verifier.FrozenReleaseError, match="product-host binding"):
         _verify(fixture)
 
 
@@ -402,15 +395,26 @@ def test_probe_identity_with_abbreviated_fields_cannot_pass(tmp_path):
         _verify(fixture)
 
 
-def test_staged_binding_cannot_claim_a_missing_scheduled_runner(tmp_path):
+def test_archive_cannot_reintroduce_separate_scheduled_runner(tmp_path):
     fixture = _fixture(tmp_path)
     archive = fixture["archive"]
     assert isinstance(archive, Path)
     entries = _read_archive(archive)
-    entries.pop("tools/direct_sync_relay_runner/direct_sync_relay_runner.exe")
+    source_info, _source_payload = entries["tools/direct_sync_relay_runner.py"]
+    retired_info = zipfile.ZipInfo(
+        "Label_Match/tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
+        date_time=source_info.date_time,
+    )
+    retired_info.compress_type = source_info.compress_type
+    retired_info.external_attr = source_info.external_attr
+    retired_info.create_system = source_info.create_system
+    entries["tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"] = (
+        retired_info,
+        b"retired scheduled runner",
+    )
     _refresh_staged_inventory(entries)
     _refresh_build_manifest(entries)
     _rewrite_archive(fixture, entries)
 
-    with pytest.raises(verifier.FrozenReleaseError, match="runner hash mismatch"):
+    with pytest.raises(verifier.FrozenReleaseError, match="retired helper"):
         _verify(fixture)

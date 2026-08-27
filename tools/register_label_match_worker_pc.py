@@ -50,6 +50,7 @@ DEFAULT_RECEIPT_FILENAME = "producer_self_enrollment_receipt.json"
 DEFAULT_REPORT_FILENAME = "label_match_worker_pc_registration.json"
 ENROLLMENT_CONTRACT_VERSION = "producer-self-enrollment-v1"
 CRYPTPROTECT_LOCAL_MACHINE = 0x4
+CRYPTPROTECT_UI_FORBIDDEN = 0x1
 LABEL_MATCH_APP = "LabelMatch"
 SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
 RAW_EVENT_NAMES = [
@@ -362,7 +363,32 @@ def _dpapi_protect_machine(secret: str) -> bytes:
         None,
         None,
         None,
-        CRYPTPROTECT_LOCAL_MACHINE,
+        CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN,
+        byref(output_blob),
+    ):
+        raise DirectSyncPushError("dpapi secret bootstrap failed")
+    try:
+        return ctypes.string_at(output_blob.pbData, output_blob.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(ctypes.c_void_p(output_blob.pbData))
+
+
+def _dpapi_protect_current_user(secret: str) -> bytes:
+    if sys.platform != "win32":
+        raise DirectSyncPushError("dpapi secret bootstrap requires Windows")
+    from ctypes import byref
+
+    secret_bytes = secret.encode("utf-8")
+    input_buffer = ctypes.create_string_buffer(secret_bytes, len(secret_bytes))
+    input_blob = _DataBlob(len(secret_bytes), ctypes.cast(input_buffer, ctypes.c_void_p))
+    output_blob = _DataBlob()
+    if not ctypes.windll.crypt32.CryptProtectData(
+        byref(input_blob),
+        None,
+        None,
+        None,
+        None,
+        CRYPTPROTECT_UI_FORBIDDEN,
         byref(output_blob),
     ):
         raise DirectSyncPushError("dpapi secret bootstrap failed")
@@ -392,10 +418,23 @@ def _secret_path(data_dir: str | os.PathLike[str], secret_ref_target: str) -> Pa
     return Path(data_dir).expanduser().resolve() / "secrets" / f"{secret_ref_target}.dpapi"
 
 
-def _write_dpapi_secret(data_dir: str | os.PathLike[str], secret_ref_target: str, secret: str) -> Path:
+def _write_dpapi_secret(
+    data_dir: str | os.PathLike[str],
+    secret_ref_target: str,
+    secret: str,
+    *,
+    credential_scope: str = "machine",
+) -> Path:
     target = _secret_path(data_dir, secret_ref_target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(_dpapi_protect_machine(secret))
+    selected_scope = str(credential_scope or "").strip().lower()
+    if selected_scope == "current_user":
+        protected = _dpapi_protect_current_user(secret)
+    elif selected_scope == "machine":
+        protected = _dpapi_protect_machine(secret)
+    else:
+        raise DirectSyncPushError("credential_scope must be machine or current_user")
+    target.write_bytes(protected)
     return target
 
 
@@ -445,6 +484,9 @@ def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, 
         "producer_id": identity["producer_id"],
         "secret_data_dir": data_dir,
         "secret_ref": secret_ref,
+        "dpapi_scope": str(
+            getattr(args, "credential_scope", "machine") or "machine"
+        ),
     }
     report = {
         "report_version": "label-match-worker-pc-registration-v1",
@@ -503,12 +545,28 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
             getattr(args, "tls_ca_bundle_path", "") or ""
         ).strip()
         or None,
+        credential_scope=str(
+            getattr(args, "credential_scope", "machine") or "machine"
+        ),
     )
     if machine_profile is None and bool(getattr(args, "require_machine_credential_bundle", False)):
         raise DirectSyncPushError("self-enroll response missing machine credential bundle")
     secret_target = str(credential["secret_ref"]).split(":", 1)[1]
     try:
-        secret_path = _write_dpapi_secret(credential["secret_data_dir"], secret_target, secret)
+        selected_scope = str(
+            getattr(args, "credential_scope", "machine") or "machine"
+        )
+        if selected_scope == "current_user":
+            secret_path = _write_dpapi_secret(
+                credential["secret_data_dir"],
+                secret_target,
+                secret,
+                credential_scope=selected_scope,
+            )
+        else:
+            secret_path = _write_dpapi_secret(
+                credential["secret_data_dir"], secret_target, secret
+            )
         if not _verify_dpapi_secret(credential["secret_data_dir"], secret_target, secret):
             raise DirectSyncPushError("dpapi secret verify failed")
     except Exception:
@@ -528,6 +586,7 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
             "server_registration_verified": True,
             "token_source": token_source,
             "protected_secret_path": str(secret_path),
+            "credential_scope": selected_scope,
             "machine_profiles": {"logistics": machine_profile} if machine_profile else {},
         }
     )
@@ -551,6 +610,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enrollment-token-env", default=DEFAULT_ENROLLMENT_TOKEN_ENV)
     parser.add_argument("--enrollment-timeout-seconds", type=int, default=30)
     parser.add_argument("--require-machine-credential-bundle", action="store_true")
+    parser.add_argument(
+        "--credential-scope",
+        choices=("machine", "current_user"),
+        default="machine",
+    )
     parser.add_argument("--logistics-profile-path", default="")
     parser.add_argument("--tls-ca-bundle-path", default="")
     parser.add_argument("--pc-id", default="")
@@ -562,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--machine-guid", default="")
     parser.add_argument("--sync-dir", default=DEFAULT_LABEL_MATCH_DATA_ROOT)
     parser.add_argument("--data-dir", default=DEFAULT_DIRECT_SYNC_ROOT)
+    parser.add_argument("--identity-path", default="")
     parser.add_argument("--manifest-path", default="")
     parser.add_argument("--credential-path", default="")
     parser.add_argument("--receipt-path", default="")
@@ -593,6 +658,16 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path = Path(args.manifest_path).expanduser() if args.manifest_path else data_dir / DEFAULT_MANIFEST_FILENAME
             credential_path = Path(args.credential_path).expanduser() if args.credential_path else data_dir / DEFAULT_CREDENTIAL_FILENAME
             receipt_path = Path(args.receipt_path).expanduser() if args.receipt_path else data_dir / "evidence" / DEFAULT_RECEIPT_FILENAME
+            identity_path = Path(args.identity_path).expanduser() if args.identity_path else data_dir / "producer_identity.json"
+            pc_identity = manifest["pc_identity"]
+            identity = {
+                "schema_version": "label-match-producer-identity-v1",
+                "producer_id": str(credential["producer_id"]),
+                "source_host_id": str(pc_identity["source_host_id"]),
+                "producer_install_id": str(pc_identity["producer_install_id"]),
+                "pc_id": str(pc_identity["pc_id"]),
+            }
+            _write_json(identity_path, identity)
             _write_json(manifest_path, manifest)
             _write_json(credential_path, credential)
             client_receipt = report.get("client_receipt")
@@ -601,14 +676,30 @@ def main(argv: list[str] | None = None) -> int:
             report.update(
                 {
                     "credential_path": str(credential_path.resolve()),
+                    "identity_path": str(identity_path.resolve()),
                     "manifest_path": str(manifest_path.resolve()),
                     "receipt_path": str(receipt_path.resolve()),
+                    "manifest_hash_verified": (
+                        manifest_hash(manifest) == str(report["manifest_hash"])
+                    ),
+                    "persisted_manifest_hash_verified": (
+                        manifest_hash(
+                            json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+                        )
+                        == str(report["manifest_hash"])
+                    ),
                 }
             )
+            if (
+                report["manifest_hash_verified"] is not True
+                or report["persisted_manifest_hash_verified"] is not True
+            ):
+                raise DirectSyncPushError("persisted manifest hash readback failed")
         else:
             report.update(
                 {
                     "credential_path": str((data_dir / DEFAULT_CREDENTIAL_FILENAME).resolve()),
+                    "identity_path": str((data_dir / "producer_identity.json").resolve()),
                     "manifest_path": str((data_dir / DEFAULT_MANIFEST_FILENAME).resolve()),
                     "receipt_path": str((data_dir / "evidence" / DEFAULT_RECEIPT_FILENAME).resolve()),
                     "server_registration_verified": False,

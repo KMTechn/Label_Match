@@ -3412,10 +3412,13 @@ def test_external_pycache_prefix_poison_is_ignored_and_restored(
     poisoned_cache_path = Path(
         importlib.util.cache_from_source(str(app_path))
     )
-    poisoned_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    filesystem_cache_path = poisoned_cache_path
+    if os.name == "nt" and len(str(poisoned_cache_path)) >= 240:
+        filesystem_cache_path = Path("\\\\?\\" + str(poisoned_cache_path))
+    filesystem_cache_path.parent.mkdir(parents=True, exist_ok=True)
     py_compile.compile(
         str(app_path),
-        cfile=str(poisoned_cache_path),
+        cfile=str(filesystem_cache_path),
         doraise=True,
         invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
     )
@@ -3436,7 +3439,7 @@ def test_external_pycache_prefix_poison_is_ignored_and_restored(
             check=True,
             capture_output=True,
         )
-    assert poisoned_cache_path.is_file()
+    assert filesystem_cache_path.is_file()
     assert capture.verify_no_bytecode_artifacts(source)["status"] == "PASS"
 
     prefix_before = sys.pycache_prefix

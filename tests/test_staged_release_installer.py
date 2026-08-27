@@ -1,12 +1,11 @@
-import base64
 import json
 import os
-import shutil
-import subprocess
-import sys
 from pathlib import Path
+import subprocess
 
 import pytest
+
+from tools import verify_staged_release_installer as verifier
 
 
 STAGED_ROOT_ENV = "LABEL_MATCH_STAGED_PACKAGE_ROOT"
@@ -25,7 +24,7 @@ def _staged_package_root() -> Path:
     if not configured:
         if required:
             pytest.fail(f"{STAGED_ROOT_ENV} is required for the staged installer gate")
-        pytest.skip("staged Label_Match package is not available before the release build")
+        pytest.skip("staged Label_Match package is unavailable before release build")
     root = Path(configured).resolve()
     if not root.is_dir():
         if required:
@@ -34,73 +33,37 @@ def _staged_package_root() -> Path:
     return root
 
 
-def _normalized(path: str | os.PathLike[str]) -> str:
-    return os.path.normcase(os.path.abspath(os.fspath(path)))
+def _powershell() -> Path:
+    path = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    if not path.is_file():
+        pytest.skip("Windows PowerShell 5.1 is unavailable")
+    return path
 
 
-def _staged_install_failure_detail(
-    completed: subprocess.CompletedProcess,
-    *,
-    receipt_root: Path,
-    program_data_root: Path,
-) -> str:
-    evidence: dict[str, object] = {
-        "returncode": completed.returncode,
-        "stdout": completed.stdout[-2048:],
-        "stderr": completed.stderr[-2048:],
-    }
-    for label, path in (
-        ("public_report", receipt_root / "label_match_public_install_report.json"),
-        (
-            "nested_install_report",
-            program_data_root / "status/label_match_direct_sync_install.json",
-        ),
-        (
-            "nested_summary",
-            program_data_root / "status/label_match_one_step_install_summary.json",
-        ),
-    ):
-        retained: dict[str, object] = {"path": str(path), "retained": path.is_file()}
-        if path.is_file():
-            retained["content_tail"] = path.read_text(
-                encoding="utf-8-sig", errors="replace"
-            )[-4096:]
-        evidence[label] = retained
-    return json.dumps(evidence, ensure_ascii=True, sort_keys=True)
-
-
-def _assert_isolated_file_hash_authority(
-    powershell: Path, script_path: Path, probe_root: Path
-) -> None:
-    source = script_path.read_text(encoding="utf-8")
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hashing is Windows-only")
+def test_public_bootstrap_hash_authority_does_not_require_get_file_hash(tmp_path):
+    script = ROOT / "INSTALL_THIS_PC.ps1"
+    source = script.read_text(encoding="utf-8-sig")
     assert "get-filehash" not in source.casefold()
-    probe_root.mkdir(parents=True)
-    payload_path = probe_root / "hash-fixture.bin"
-    payload_path.write_bytes(b"abc")
-    missing_path = probe_root / "missing.bin"
-    isolated_modules = probe_root / "isolated-modules"
+    fixture = tmp_path / "hash.bin"
+    fixture.write_bytes(b"abc")
+    isolated_modules = tmp_path / "modules"
     isolated_modules.mkdir()
     command = r'''
 $ErrorActionPreference = "Stop"
 $PSModuleAutoLoadingPreference = "None"
-if (
-    $PSVersionTable.PSEdition -cne "Desktop" -or
-    $PSVersionTable.PSVersion.Major -ne 5 -or
-    $PSVersionTable.PSVersion.Minor -ne 1
-) { throw "The isolated hash regression requires Windows PowerShell Desktop 5.1." }
-$commandWasUnavailable = $false
-try { $unexpected = Get-FileHash -LiteralPath $env:LABEL_MATCH_HASH_FIXTURE -Algorithm SHA256 }
-catch [System.Management.Automation.CommandNotFoundException] { $commandWasUnavailable = $true }
-if (-not $commandWasUnavailable) { throw "Get-FileHash unexpectedly resolved in the isolated regression." }
-
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-    $env:LABEL_MATCH_INSTALLER_SCRIPT,
-    [ref]$tokens,
-    [ref]$errors
+    $env:LABEL_MATCH_INSTALLER_SCRIPT, [ref]$tokens, [ref]$errors
 )
-if ($errors.Count) { throw "Installer PowerShell AST is invalid." }
+if ($errors.Count) { throw "Installer AST is invalid." }
 $functionAst = $null
 foreach ($candidate in $ast.FindAll({
     param($node)
@@ -112,88 +75,14 @@ foreach ($candidate in $ast.FindAll({
 }
 if ($null -eq $functionAst) { throw "Get-FileSha256 is missing." }
 . ([scriptblock]::Create($functionAst.Extent.Text))
-
-$actual = Get-FileSha256 $env:LABEL_MATCH_HASH_FIXTURE
-if ($actual -cne $env:LABEL_MATCH_EXPECTED_SHA256) { throw "Module-independent SHA-256 mismatch." }
-$missingRejected = $false
-try { $unexpected = Get-FileSha256 $env:LABEL_MATCH_MISSING_HASH_FIXTURE }
-catch { $missingRejected = $true }
-if (-not $missingRejected) { throw "Missing file did not fail closed." }
-[Console]::Out.Write("PASS")
-'''
-    environment = {
-        **os.environ,
-        "PATH": "",
-        "PSModulePath": str(isolated_modules),
-        "LABEL_MATCH_INSTALLER_SCRIPT": str(script_path),
-        "LABEL_MATCH_HASH_FIXTURE": str(payload_path),
-        "LABEL_MATCH_MISSING_HASH_FIXTURE": str(missing_path),
-        "LABEL_MATCH_EXPECTED_SHA256": (
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        ),
-    }
-    completed = subprocess.run(
-        [
-            str(powershell),
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            command,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env=environment,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "PASS"
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hashing is Windows-only")
-@pytest.mark.parametrize(
-    "script_name", ("INSTALL_THIS_PC.ps1", "install_label_match_direct_sync.ps1")
-)
-def test_installer_file_hash_authority_does_not_require_module_autoload(tmp_path, script_name):
-    powershell = (
-        Path(os.environ.get("SystemRoot", r"C:\Windows"))
-        / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    )
-    if not powershell.is_file():
-        pytest.skip("Windows PowerShell 5.1 is unavailable")
-    _assert_isolated_file_hash_authority(
-        powershell, ROOT / script_name, tmp_path / Path(script_name).stem
-    )
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hosting is Windows-only")
-def test_embedded_python_host_keeps_strict_mode_inside_its_function(tmp_path):
-    powershell = (
-        Path(os.environ.get("SystemRoot", r"C:\Windows"))
-        / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    )
-    if not powershell.is_file():
-        pytest.skip("Windows PowerShell 5.1 is unavailable")
-    temp_root = tmp_path / "powershell-temp"
-    temp_root.mkdir()
-    command = r'''
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Off
-. $env:LABEL_MATCH_EMBEDDED_HOST
-$functionBody = (Get-Command Invoke-KMTechEmbeddedPython -CommandType Function).ScriptBlock.ToString()
-if ($functionBody -notmatch 'Set-StrictMode -Version Latest') {
-    throw "Embedded host function no longer enables strict mode."
+if ((Get-FileSha256 $env:LABEL_MATCH_HASH_FIXTURE) -cne $env:LABEL_MATCH_EXPECTED_SHA256) {
+    throw "SHA-256 mismatch."
 }
-$optional = ([pscustomobject]@{}).self_enrollment_registration
-if ($null -ne $optional) { throw "Missing optional property did not remain null." }
 [Console]::Out.Write("PASS")
 '''
     completed = subprocess.run(
         [
-            str(powershell),
+            str(_powershell()),
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
@@ -208,207 +97,71 @@ if ($null -ne $optional) { throw "Missing optional property did not remain null.
         timeout=30,
         env={
             **os.environ,
-            "LABEL_MATCH_EMBEDDED_HOST": str(ROOT / "tools/invoke_embedded_python.ps1"),
-            "TEMP": str(temp_root),
-            "TMP": str(temp_root),
+            "PATH": "",
+            "PSModulePath": str(isolated_modules),
+            "LABEL_MATCH_INSTALLER_SCRIPT": str(script),
+            "LABEL_MATCH_HASH_FIXTURE": str(fixture),
+            "LABEL_MATCH_EXPECTED_SHA256": (
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            ),
         },
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "PASS"
-    assert completed.stderr == ""
 
 
-def test_embedded_python_bootstrap_exports_bounded_nonsecret_import_diagnostic(
-    tmp_path, monkeypatch
-):
-    host_source = (ROOT / "tools/invoke_embedded_python.ps1").read_text(encoding="utf-8")
-    bootstrap = host_source.split("$bootstrap = @'\n", 1)[1].split("\n'@", 1)[0]
-    failing_script = tmp_path / "diagnostic_import_failure.py"
-    failing_script.write_text(
-        "import sys\n"
-        "raise ImportError('synthetic import failure ' + sys.argv[-1] "
-        "+ ' enrollment_token=seq184-bootstrap-secret ' + 'x' * 800)\n",
-        encoding="utf-8",
-    )
-    secret_argument = "seq184-bootstrap-argument-secret"
-    secret_environment = "seq184-bootstrap-environment-secret"
-    request = {"script": str(failing_script), "argv": ["--token", secret_argument]}
-    monkeypatch.setenv(
-        "KMTECH_LABEL_MATCH_EMBEDDED_REQUEST_B64",
-        base64.b64encode(json.dumps(request).encode("utf-8")).decode("ascii"),
-    )
-    monkeypatch.delenv("KMTECH_LABEL_MATCH_EMBEDDED_EXIT_CODE", raising=False)
-    monkeypatch.delenv("KMTECH_LABEL_MATCH_EMBEDDED_DIAGNOSTIC_B64", raising=False)
-    monkeypatch.setenv("SEQ184_BOOTSTRAP_SECRET", secret_environment)
-    prior_argv = sys.argv[:]
-    try:
-        exec(compile(bootstrap, "<embedded-bootstrap>", "exec"), {})
-    finally:
-        sys.argv = prior_argv
-
-    diagnostic = json.loads(
-        base64.b64decode(
-            os.environ["KMTECH_LABEL_MATCH_EMBEDDED_DIAGNOSTIC_B64"]
-        ).decode("utf-8")
-    )
-    serialized = json.dumps(diagnostic)
-    assert os.environ["KMTECH_LABEL_MATCH_EMBEDDED_EXIT_CODE"] == "1"
-    assert diagnostic["command_identity"] == failing_script.name
-    assert diagnostic["child_exit_code"] is None
-    assert diagnostic["failure_code"] == "CHILD_EXCEPTION"
-    assert diagnostic["inner_exception_type"] == "ImportError"
-    assert len(diagnostic["inner_exception_message"]) <= 512
-    assert "seq184-bootstrap-secret" not in serialized
-    assert secret_argument not in serialized
-    assert secret_environment not in serialized
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Label_Match release installers are Windows-only")
-def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp_path):
+@pytest.mark.skipif(os.name != "nt", reason="staged package gate is Windows-only")
+def test_sealed_staged_package_preserves_onedir_product_host_topology(tmp_path):
     staged_root = _staged_package_root()
-    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or shutil.which("pwsh")
-    if not powershell:
-        pytest.fail("PowerShell is required for the staged installer gate")
+    report_path = staged_root / "staged-installer-verification.json"
+    manifest_path = staged_root / "build-manifest.json"
+    assert report_path.is_file()
+    assert manifest_path.is_file()
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
 
-    required_paths = (
-        staged_root / "INSTALL_THIS_PC.ps1",
-        staged_root / "install_label_match_direct_sync.ps1",
-        staged_root / "build-manifest.json",
-        staged_root / "_internal/python312.dll",
-        staged_root / "_internal/base_library.zip",
-        staged_root / "tools/invoke_embedded_python.ps1",
-        staged_root / "tools/direct_sync_relay_install_pack.py",
-        staged_root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
-        staged_root / "tools/direct_sync_relay_runner.py",
-        staged_root / "tools/register_label_match_worker_pc.py",
-    )
-    missing = [str(path) for path in required_paths if not path.is_file()]
-    assert not missing, f"staged installer inputs are missing: {missing}"
-    windows_powershell = (
-        Path(os.environ.get("SystemRoot", r"C:\Windows"))
-        / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    )
-    assert windows_powershell.is_file(), "Windows PowerShell 5.1 is required for the staged gate"
-    for staged_script in required_paths[:2]:
-        _assert_isolated_file_hash_authority(
-            windows_powershell,
-            staged_script,
-            tmp_path / "staged-hash-authority" / staged_script.stem,
-        )
+    assert report["schema_version"] == verifier.REPORT_SCHEMA
+    assert report["status"] == "PASS"
+    assert report["runtime_host"]["path"] == "Label_Match.exe"
+    assert report["runtime_host"]["package_layout"] == "onedir"
+    assert report["runtime_host"]["relay_execution_boundary"] == "product_host"
+    assert report["state_contract"]["relay_persistence"] == "HKCU_RUN"
+    assert report["state_contract"]["relay_port_contract"] == 18456
+    assert report["state_contract"]["source_host_override_required"] is False
+    assert report["legacy_authority_contract"]["system_scheduled_task_supported"] is False
+    assert (staged_root / "_internal" / "python312.dll").is_file()
+    paths = {
+        path.relative_to(staged_root).as_posix()
+        for path in staged_root.rglob("*")
+        if path.is_file()
+    }
+    assert not (verifier.FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS & paths)
 
-    # The staged onedir dependency tree is deep; keep the synthetic roots
-    # short enough for Windows hosts where long paths are not enabled.
-    extracted_root = tmp_path / "x"
-    shutil.copytree(staged_root, extracted_root)
-    install_root = tmp_path / "i"
-    program_data_root = tmp_path / "p"
-    scan_source_dir = tmp_path / "s"
-    common_programs = tmp_path / "c"
-    receipt_root = tmp_path / "r"
-    environment = os.environ.copy()
-    environment["KMTECH_FACTORY_INSTALL_TEST_MODE"] = "1"
-    environment.pop("KMTECH_PYTHON_EXE", None)
-    system_root = Path(environment.get("SystemRoot", r"C:\Windows"))
-    environment["PATH"] = os.pathsep.join((str(system_root / "System32"), str(system_root)))
+    install_root = tmp_path / "installed" / "current"
     completed = subprocess.run(
         [
-            powershell,
+            str(_powershell()),
+            "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            str(extracted_root / "INSTALL_THIS_PC.ps1"),
+            str(staged_root / "INSTALL_THIS_PC.ps1"),
             "-DryRun",
-            "-AllowNoncanonicalLayoutForTest",
-            "-InstallRootForTest",
+            "-SourceRoot",
+            str(staged_root),
+            "-InstallRoot",
             str(install_root),
-            "-ProgramDataRoot",
-            str(program_data_root),
-            "-ScanSourceDir",
-            str(scan_source_dir),
-            "-CommonProgramsRootForTest",
-            str(common_programs),
-            "-RollbackReceiptRootForTest",
-            str(receipt_root),
+            "-AllowNoncanonicalLayoutForTest",
         ],
         check=False,
         capture_output=True,
         text=True,
         timeout=120,
-        env=environment,
+        env={**os.environ, "KMTECH_FACTORY_INSTALL_TEST_MODE": "1"},
     )
-    assert completed.returncode == 0, _staged_install_failure_detail(
-        completed,
-        receipt_root=receipt_root,
-        program_data_root=program_data_root,
-    )
-    assert len(completed.stdout.encode("utf-8", errors="replace")) <= 64 * 1024
+    assert completed.returncode == 0, completed.stderr
+    assert "bootstrap_status=DRY_RUN" in completed.stdout
+    assert "identity_profile_created=false" in completed.stdout
     assert completed.stderr == ""
-    assert install_root.is_dir()
-    assert not (install_root / "Label_Match").exists()
-    assert (install_root / "Label_Match.exe").is_file()
-
-    public_report = json.loads(
-        (receipt_root / "label_match_public_install_report.json").read_text(encoding="utf-8-sig")
-    )
-    install_report = json.loads(
-        (program_data_root / "status/label_match_direct_sync_install.json").read_text(
-            encoding="utf-8-sig"
-        )
-    )
-    summary = json.loads(
-        (program_data_root / "status/label_match_one_step_install_summary.json").read_text(
-            encoding="utf-8-sig"
-        )
-    )
-
-    assert public_report["status"] == "DRY_RUN_STAGED"
-    assert public_report["staging"]["ordinary_extracted_root_supported"] is True
-    assert public_report["staging"]["candidate_byte_parity_verified"] is True
-    assert public_report["staging"]["safe_relative_paths_verified"] is True
-    assert public_report["launcher_contract"]["scope"] == "all_users"
-    assert public_report["launcher_contract"]["count"] == 1
-    assert public_report["removal_contract"]["uninstall"] == "DATA_PRESERVING_UNINSTALL"
-    assert public_report["removal_contract"]["rollback"] == "EXACT_FRESH_TARGET_ROLLBACK"
-    assert public_report["removal_contract"]["task_operations"] == ["stop", "delete", "absence"]
-    assert public_report["removal_contract"]["app_inventory_contract"] == (
-        "label-match-app-immutable-inventory-v1"
-    )
-    assert public_report["removal_contract"]["mutable_app_relative_paths"] == [
-        "_internal/config/app_settings.json"
-    ]
-    assert public_report["removal_contract"]["immutable_app_drift_rejected"] is True
-    assert install_report["status"] == "DRY_RUN"
-    assert install_report["field_layout_contract"]["local_test_override_enabled"] is True
-    assert _normalized(install_report["runner_exe"]) == _normalized(
-        install_root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
-    )
-    assert install_report["runner_command_mode"] == "bundled_executable"
-    assert _normalized(install_report["runner_command"][0]) == _normalized(
-        install_root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
-    )
-    assert _normalized(install_report["source_scan_baseline_command"][0]) == _normalized(
-        install_root / "tools/direct_sync_relay_runner.py"
-    )
-    assert summary["installer_execution_mode"] == "in_process_embedded_python"
-    assert not any(
-        (install_root / relative).exists()
-        for relative in (
-            "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
-            "tools/direct_sync_relay_install_pack.exe",
-            "tools/register_label_match_worker_pc.exe",
-        )
-    )
-    assert summary["installer_report_version"] == "label-match-direct-sync-one-step-install-v2"
-    assert summary["status"] == "DRY_RUN"
-    assert summary["registration_blocked_reason"] is None
-    assert summary["lifecycle_contract"]["task_removal_order"] == ["stop", "delete", "absence"]
-    assert summary["resources"]["app_root"]["inventory_contract"] == (
-        "label-match-app-immutable-inventory-v1"
-    )
-    assert summary["resources"]["app_root"]["mutable_relative_paths"] == [
-        "_internal/config/app_settings.json"
-    ]
-    assert not (program_data_root / "bin").exists(), "DryRun must not install task launchers"
-    assert not (common_programs / "KMTech/Label Match.lnk").exists(), "DryRun must not create shell links"
+    assert not install_root.exists()

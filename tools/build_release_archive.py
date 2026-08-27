@@ -15,7 +15,7 @@ import zipfile
 
 
 RELEASE_IDENTITY_SCHEMA = "label-match-release-identity-v3"
-STAGED_INSTALLER_SCHEMA = "label-match-staged-installer-verification-v2"
+STAGED_INSTALLER_SCHEMA = "label-match-staged-installer-verification-v3"
 CONTRACT_BUNDLE_SHA256 = "adaa08684ebb291837327f63f967a4f22650dff72c4c1dc56ce1a9bee6b5404a"
 PYTHON_VERSION = "3.12.10"
 PYINSTALLER_VERSION = "6.20.0"
@@ -41,7 +41,6 @@ FACTORY_EXPECTED_FILES = {
     "contract.lock.json",
     "build-identity.json",
     "build-compatibility.json",
-    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
 }
 EXPECTED_CONTRACT_LOCK = {
     "app_id": "label_match",
@@ -105,21 +104,21 @@ REQUIRED_PACKAGE_MEMBERS = {
     "direct_sync_operator.py",
     "direct_sync_push.py",
     "direct_sync_runtime.py",
-    "install_label_match_direct_sync.ps1",
     "logistics_runtime_profile.py",
     "producer_runtime_client.py",
     "tools/check_logistics_runtime_profile.py",
-    "tools/direct_sync_relay_install_pack.py",
-    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/direct_sync_relay_runner.py",
-    "tools/invoke_embedded_python.ps1",
     "tools/install_logistics_runtime_profile.py",
     "tools/register_label_match_worker_pc.py",
 }
 RETIRED_HELPER_EXECUTABLES = {
+    "install_label_match_direct_sync.ps1",
+    "tools/direct_sync_relay_install_pack.py",
     "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
     "tools/direct_sync_relay_install_pack.exe",
+    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
+    "tools/invoke_embedded_python.ps1",
 }
 
 
@@ -529,24 +528,16 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         "proof_classification",
         "dynamic_qualification",
         "public_entrypoint",
+        "runtime_host",
+        "bootstrap_contract",
+        "state_contract",
+        "legacy_authority_contract",
         "manifest_contract",
-        "staging_contract",
-        "launcher_contract",
-        "removal_contract",
-        "field_layout_contract_verified",
         "system_python_required",
-        "installer",
-        "install_helper",
-        "runner",
-        "registration",
-        "embedded_python_host",
-        "retired_helper_executables_absent",
         "original_package_file_count",
         "original_package_inventory",
         "original_package_inventory_sha256",
         "original_package_unchanged",
-        "app_settings_path",
-        "app_save_path_matches_relay_scan_source",
         "output_bound_bytes",
         "timeout_seconds",
         "stdout_bytes",
@@ -558,12 +549,8 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         or report.get("status") != "PASS"
         or report.get("proof_classification") != "STATIC_ISOLATED_DRY_RUN"
         or report.get("dynamic_qualification") != "NOT_TESTED"
-        or report.get("field_layout_contract_verified") is not True
         or report.get("system_python_required") is not False
-        or report.get("retired_helper_executables_absent") is not True
         or report.get("original_package_unchanged") is not True
-        or report.get("app_settings_path") != "_internal/config/app_settings.json"
-        or report.get("app_save_path_matches_relay_scan_source") is not True
     ):
         raise ReleaseArchiveError("staged installer did not prove the current package")
     output_bound = _required_int(
@@ -584,25 +571,10 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
             "sha256",
             "payload_file_count",
             "payload_inventory_sha256",
-            "hashes_and_sizes_verified",
-            "safe_paths_verified",
-            "case_collisions_absent",
-            "unexpected_files_absent",
-            "reparse_points_absent",
             "preseal_isolated_manifest",
         }
         or manifest_contract.get("path") != "build-manifest.json"
-        or any(
-            manifest_contract.get(field) is not True
-            for field in (
-                "hashes_and_sizes_verified",
-                "safe_paths_verified",
-                "case_collisions_absent",
-                "unexpected_files_absent",
-                "reparse_points_absent",
-                "preseal_isolated_manifest",
-            )
-        )
+        or manifest_contract.get("preseal_isolated_manifest") is not True
         or not isinstance(manifest_contract.get("sha256"), str)
         or SHA256_RE.fullmatch(str(manifest_contract.get("sha256"))) is None
         or not isinstance(manifest_contract.get("payload_inventory_sha256"), str)
@@ -610,54 +582,39 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
     ):
         raise ReleaseArchiveError("staged installer manifest contract is invalid")
 
-    expected_staging = {
-        "ordinary_extracted_root": True,
-        "canonical_production_root_declared": "C:\\KMTech\\Apps\\Label_Match\\current",
-        "direct_children_staged": True,
-        "nested_label_match_directory_absent": True,
-        "candidate_byte_parity_verified": True,
-        "unknown_target_fail_closed_declared": True,
-        "directory_ancestry_tracked": True,
+    expected_bootstrap = {
+        "canonical_code_root": "C:\\KMTech\\Apps\\Label_Match\\current",
+        "elevation_points": ["code_placement"],
+        "identity_profile_created": False,
+        "state_scope": "current_user_first_run",
+        "exact_inventory_readback": True,
+        "onedir_required": True,
     }
-    if report.get("staging_contract") != expected_staging:
-        raise ReleaseArchiveError("staged installer ordinary-root contract is invalid")
-    expected_launcher = {
-        "count": 1,
-        "scope": "all_users",
-        "canonical_path": (
-            "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\KMTech\\Label Match.lnk"
-        ),
-        "target_relative": "Label_Match.exe",
-        "working_directory_is_install_root": True,
-        "icon_is_target": True,
-        "install_verify_remove_lifecycle_declared": True,
+    if report.get("bootstrap_contract") != expected_bootstrap:
+        raise ReleaseArchiveError("staged code-only bootstrap contract is invalid")
+    expected_state = {
+        "identity_scope": "current_user_per_pc",
+        "profile_scope": "current_user",
+        "credential_scope": "current_user_dpapi",
+        "ledger_scope": "current_user",
+        "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
+        "relay_persistence": "HKCU_RUN",
+        "relay_port_contract": 18456,
+        "source_host_override_required": False,
     }
-    if report.get("launcher_contract") != expected_launcher:
-        raise ReleaseArchiveError("staged installer all-users launcher contract is invalid")
-    expected_removal = {
-        "uninstall_mode": "DATA_PRESERVING_UNINSTALL",
-        "uninstall_preserves_business_data": True,
-        "rollback_mode": "EXACT_FRESH_TARGET_ROLLBACK",
-        "rollback_requires_external_evidence": True,
-        "rollback_requires_absent_prestate": True,
-        "task_operations": ["stop", "delete", "absence"],
-        "task_results_are_typed": True,
-        "bounded_external_evidence": True,
-        "maximum_evidence_files": 10000,
-        "maximum_evidence_bytes": 2147483648,
-        "fresh_evidence_root_required": True,
-        "reparse_points_rejected": True,
-        "directory_ancestry_tracked": True,
-        "typed_task_reports_bound_to_phase_and_identity": True,
-        "public_wrapper_finalizes_rollback_report": True,
-        "final_evidence_bytes_reverified": True,
-        "final_receipt_binds_evidence_hashes": True,
-        "app_inventory_contract": "label-match-app-immutable-inventory-v1",
-        "mutable_app_relative_paths": ["_internal/config/app_settings.json"],
-        "immutable_app_drift_rejected": True,
-    }
-    if report.get("removal_contract") != expected_removal:
-        raise ReleaseArchiveError("staged installer removal contract is invalid")
+    if report.get("state_contract") != expected_state:
+        raise ReleaseArchiveError("staged current-user state contract is invalid")
+    legacy_authority = report.get("legacy_authority_contract")
+    if (
+        not isinstance(legacy_authority, dict)
+        or legacy_authority.get("system_scheduled_task_supported") is not False
+        or legacy_authority.get("task_creation_tokens_absent") is not True
+        or legacy_authority.get("legacy_owned_task_cleanup_only") is not True
+        or legacy_authority.get("forbidden_package_members_absent") is not True
+        or sorted(legacy_authority.get("forbidden_members") or [])
+        != sorted(RETIRED_HELPER_EXECUTABLES)
+    ):
+        raise ReleaseArchiveError("staged retired task-authority contract is invalid")
     inventory = _normalize_inventory(
         report.get("original_package_inventory"), label="staged installer original package"
     )
@@ -670,51 +627,28 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
     ) != len(inventory):
         raise ReleaseArchiveError("staged installer package file count mismatch")
 
-    simple_bindings = {
-        "public_entrypoint": "INSTALL_THIS_PC.ps1",
-        "installer": "install_label_match_direct_sync.ps1",
-        "embedded_python_host": "tools/invoke_embedded_python.ps1",
-    }
-    for name, relative in simple_bindings.items():
-        entry = report.get(name)
-        if not isinstance(entry, dict) or set(entry) != {"path", "sha256"} or entry.get("path") != relative:
-            raise ReleaseArchiveError(f"staged installer {name} binding is invalid")
-        target = package_root / PurePosixPath(relative)
-        if not target.is_file() or entry.get("sha256") != _sha256(target):
-            raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
-    in_process_bindings = {
-        "install_helper": ("tools/direct_sync_relay_install_pack.py", False),
-        "registration": ("tools/register_label_match_worker_pc.py", True),
-    }
-    for name, (relative, selected_required) in in_process_bindings.items():
-        entry = report.get(name)
-        expected_keys = {"path", "sha256", "execution_boundary"}
-        if selected_required:
-            expected_keys.add("selected")
-        if (
-            not isinstance(entry, dict)
-            or set(entry) != expected_keys
-            or entry.get("path") != relative
-            or entry.get("execution_boundary") != "in_process"
-            or (selected_required and entry.get("selected") is not True)
-        ):
-            raise ReleaseArchiveError(f"staged installer {name} binding is invalid")
-        target = package_root / PurePosixPath(relative)
-        if not target.is_file() or entry.get("sha256") != _sha256(target):
-            raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
-    runner = report.get("runner")
-    runner_relative = "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
+    public_entrypoint = report.get("public_entrypoint")
     if (
-        not isinstance(runner, dict)
-        or set(runner) != {"path", "sha256", "selected", "execution_boundary"}
-        or runner.get("path") != runner_relative
-        or runner.get("selected") is not True
-        or runner.get("execution_boundary") != "scheduled_task"
+        not isinstance(public_entrypoint, dict)
+        or set(public_entrypoint) != {"path", "sha256"}
+        or public_entrypoint.get("path") != "INSTALL_THIS_PC.ps1"
+        or public_entrypoint.get("sha256")
+        != _sha256(package_root / "INSTALL_THIS_PC.ps1")
     ):
-        raise ReleaseArchiveError("staged installer runner binding is invalid")
-    runner_target = package_root / PurePosixPath(runner_relative)
-    if not runner_target.is_file() or runner.get("sha256") != _sha256(runner_target):
-        raise ReleaseArchiveError("staged installer runner hash mismatch")
+        raise ReleaseArchiveError("staged public bootstrap binding is invalid")
+    runtime_host = report.get("runtime_host")
+    if (
+        not isinstance(runtime_host, dict)
+        or runtime_host.get("path") != "Label_Match.exe"
+        or runtime_host.get("sha256") != _sha256(package_root / "Label_Match.exe")
+        or runtime_host.get("package_layout") != "onedir"
+        or runtime_host.get("relay_execution_boundary") != "product_host"
+        or runtime_host.get("current_user_relay_mode")
+        != "--label-match-user-relay"
+        or runtime_host.get("direct_sync_relay_mode")
+        != "--label-match-direct-sync-relay"
+    ):
+        raise ReleaseArchiveError("staged onedir product-host binding is invalid")
     payload_inventory = [
         item for item in inventory if item["path"] != "build-manifest.json"
     ]
@@ -963,13 +897,12 @@ def validate_release_evidence(
         "payload_inventory_sha256": factory["payload_inventory_sha256"],
         "active_work_probe_sha256": probe_sha,
         "staged_installer_verified": True,
-        "ordinary_extracted_root_staging_verified": True,
-        "manifest_bound_self_staging_verified": True,
-        "all_users_launcher_lifecycle_verified": True,
-        "data_preserving_uninstall_contract_verified": True,
-        "exact_fresh_target_rollback_contract_verified": True,
-        "typed_task_stop_delete_absence_verified": True,
-        "bounded_external_evidence_contract_verified": True,
+        "code_only_bootstrap_verified": True,
+        "onedir_product_host_verified": True,
+        "current_user_state_contract_verified": True,
+        "hkcu_relay_contract_verified": True,
+        "system_task_authority_absent": True,
+        "authoritative_snapshot_lease_preserved": True,
         "dynamic_install_qualification": "NOT_TESTED",
         "factory_manifest_verified": True,
         "retired_helper_executables_absent": True,

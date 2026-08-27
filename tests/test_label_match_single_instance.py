@@ -312,7 +312,7 @@ def test_entrypoint_acquires_guard_before_catalog_or_tk_construction():
     source = Path(__file__).parents[1].joinpath("Label_Match.py").read_text(
         encoding="utf-8"
     )
-    main_source = source[source.index("def main():") :]
+    main_source = source[source.index("def main(argv=None):") :]
 
     assert "run_guarded_entrypoint(" in main_source
     assert "_run_label_match_application," in main_source

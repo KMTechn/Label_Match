@@ -73,21 +73,21 @@ REQUIRED_MEMBERS = {
     "direct_sync_operator.py",
     "direct_sync_push.py",
     "direct_sync_runtime.py",
-    "install_label_match_direct_sync.ps1",
     "logistics_runtime_profile.py",
     "producer_runtime_client.py",
     "tools/check_logistics_runtime_profile.py",
-    "tools/direct_sync_relay_install_pack.py",
-    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/direct_sync_relay_runner.py",
-    "tools/invoke_embedded_python.ps1",
     "tools/install_logistics_runtime_profile.py",
     "tools/register_label_match_worker_pc.py",
 }
 RETIRED_HELPER_EXECUTABLES = {
+    "install_label_match_direct_sync.ps1",
+    "tools/direct_sync_relay_install_pack.py",
     "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
     "tools/direct_sync_relay_install_pack.exe",
+    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
+    "tools/invoke_embedded_python.ps1",
 }
 
 

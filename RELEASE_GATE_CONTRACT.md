@@ -54,70 +54,57 @@ Both packaged-installer commands are isolated dry-run gates. They require no
 elevation, invoke no UAC flow, and perform no Task Scheduler mutation; the
 sealed-package pytest runs only after `build-manifest.json` is created.
 
-The versioned public install contract is `INSTALL_THIS_PC.ps1` from the ordinary
-extracted `Label_Match/` root. The ZIP keeps that top-level directory. Before
-any installer effect, the entrypoint verifies every manifest-declared path,
-size, and SHA-256, rejects traversal, drive/ADS/backslash paths, case collisions,
-reparse points, missing files, and extras, then verifies a same-volume candidate
-before its atomic rename to `C:\KMTech\Apps\Label_Match\current`. An unknown
-target is a conflict; it is never mirror-deleted or overlaid.
+The versioned public install contract is the single `INSTALL_THIS_PC.ps1` in
+the ordinary extracted `Label_Match/` root. It has one elevation point and owns
+only hardened code placement at
+`C:\KMTech\Apps\Label_Match\current`. It preserves the existing PyInstaller
+onedir layout, requires `_internal`, records an exact SHA-256 inventory in
+`bootstrap-integrity.json`, stages atomically, and fails closed on unknown or
+damaged target bytes. It creates no identity, credential, runtime profile,
+ledger, relay state, or scheduled task. The only task operation retained is
+bounded cleanup of the specifically owned historical Label relay task.
 
-One discoverability resource is owned: the all-users Start Menu link at
-`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\KMTech\Label Match.lnk`.
-Its target and icon are the installed `Label_Match.exe`, and its working
-directory is the canonical app root. Install must reopen and verify those exact
-properties. No Desktop link, MSI, setup EXE, or flattened ZIP is part of this
-contract.
+The first ordinary-user launch owns all mutable state. Identity and DirectSync
+state live under `%LOCALAPPDATA%\KMTech\DirectSync\label_match`; Label business
+data and the shared outbox/operation-lease ledger live under
+`%LOCALAPPDATA%\KMTech\Label_Match\data`; settings live under the adjacent
+current-user config root; and the logistics profile/secret live under
+`%LOCALAPPDATA%\KMTech\Logistics\profiles\Label_Match`. Enrollment derives the
+per-PC source identity from local machine identity and never requires a
+`-SourceHostId` harness argument. Both producer and logistics secrets use
+current-user DPAPI. The logistics profile remains AUTHORITATIVE, and the
+existing `package_logistics_outbox.sqlite3` retains both PackageOutbox and
+`OperationLeaseStore`, preserving the AUTHORITATIVE snapshot-lease behavior.
 
-`-Uninstall` is `DATA_PRESERVING_UNINSTALL`: it removes only summary-owned app,
-launcher, task wrapper, relay identity/credential, and machine-profile files,
-while explicitly preserving Label business data plus queue/spool/status/log and
-receipt evidence. It never claims pre-install parity. `-Rollback
--EvidenceArchiveRoot <ABSOLUTE-EXTERNAL-PATH>` is the separate
-`EXACT_FRESH_TARGET_ROLLBACK` path; every active resource must record an absent
-prestate, business evidence is copied within the fixed 10,000-file/2-GiB bounds
-and hash-verified into a fresh absent, non-reparse external root, and the final
-receipt is outside every removed/restored path. The install summary binds the
-exact app, DirectSync, data, machine-profile, launcher, and task identities;
-the app identity uses `label-match-app-immutable-inventory-v1`, requires the
-regular non-reparse runtime leaf `_internal/config/app_settings.json`, and
-allows only that file's normal settings bytes to change. Every other app file,
-including `config/app_settings.json`, remains in the immutable count and
-SHA-256 inventory, so any addition, removal, or byte drift outside that sole
-mutable path is fatal;
-created parent-directory ancestry is recorded and restored without removing a
-pre-existing empty directory. Task evidence is typed and ordered `stop`,
-`delete`, `absence`; every phase report is fresh and bound to the requested
-phase, mode, task name, and owned action before mutation. Drift, foreign
-ownership, a live GUI, failed evidence parity, a reused evidence destination,
-or any missing postcondition is a nonzero result. The nested rollback report
-does not claim parity while app-root removal is pending; only the public wrapper
-may finalize that external report and exact receipt after all owned roots and
-recorded parent directories are proven restored.
-Immediately before the final receipt, the public wrapper re-reads the bounded
-inventory and re-hashes every archived payload file. The receipt binds both the
-evidence-inventory SHA-256 and the finalized rollback-resource-report SHA-256;
-a missing, added, reparse-backed, resized, or changed archived file is fatal.
+Persistent relay authority is the exact HKCU Run value
+`KMTech.LabelMatch.Relay`. It invokes the same hardened onedir
+`Label_Match.exe --label-match-user-relay`; each cycle reuses that product host
+through `--label-match-direct-sync-relay`, the existing DirectSync runner, and
+the existing Label route/port contract on `:18456`. The relay is a logged-in
+current-user process with a 30-second retry loop. No supported SYSTEM or
+AtStartup task topology exists. The release must not package or call
+`install_label_match_direct_sync.ps1`, the install-pack helper, its embedded
+PowerShell host, a separate runner executable, or a registration executable.
 
-The staged v2 report proves this contract with an isolated manifest-bound public
-entrypoint dry run and is classified `STATIC_ISOLATED_DRY_RUN`; it must state
-`dynamic_qualification=NOT_TESTED`. Both packaged installer scripts compute file
-digests with their identical `Get-FileSha256` authority: a read-only file stream,
-.NET SHA-256, exact 32-byte digest validation, and lowercase invariant hex. They
-must not invoke ambient `Get-FileHash` or resolve an executable from `PATH`; the
-focused Windows regression disables module autoload and removes both module and
-executable lookup paths while proving known bytes and missing-file failure. This
-static gate does not replace a fresh Windows target, ordinary-operator launcher,
-live task, data-preserving uninstall, or exact rollback qualification run. The
-checked-in one-shot release runner also parses itself, the official builder, and
-both public installer scripts with the PowerShell AST before launch. It rejects
-both a Boolean token parsed as a `Test-Path` command parameter and every
-`Test-Path` command nested in an `-and`/`-or` binary expression; the Windows
-PowerShell 5.1 preflight regression proves clean acceptance, injected ambiguous
-syntax rejection, and independent stdout/stderr freshness checks without
-starting the builder.
+Current-user removal is explicitly two-stage. Run
+`Label_Match.exe --remove-current-user-setup` as that user to remove the exact
+HKCU persistence value, request relay stop, and prove the single-instance lock
+is absent while preserving identity, profile, settings, ledger, queue, spool,
+status, logs, and receipts. Then run `INSTALL_THIS_PC.ps1 -Uninstall` elevated
+to remove hardened code; production code removal refuses while HKCU relay
+persistence is still present.
 
-### Frozen-byte publication sequence (v2.0.87 current candidate)
+The staged v3 report proves this topology with an isolated code-only dry run and
+is classified `STATIC_ISOLATED_DRY_RUN` with
+`dynamic_qualification=NOT_TESTED`. It binds the public bootstrap, the onedir
+product host modes, current-user state/relay scope, `:18456`, absence of active
+SYSTEM-task package members, and the preseal package inventory. This static gate
+does not replace fresh-target install, first-run enrollment, visible operation,
+restart/persistence, removal, and exact rollback qualification. The checked-in
+one-shot runner parses itself, the official builder, and the sole public
+bootstrap with the PowerShell AST before launch.
+
+### Frozen-byte publication sequence (v2.0.88 current candidate)
 
 The initial elevated v2.0.67 infrastructure cohort at
 `E:\KMTech\label-v2067-daa3-phase83-elevated-20260812` failed before
@@ -414,7 +401,7 @@ v2.0.85 annotated tag object
 `fa4387d6f75602e8393313119311da1c95b1726a` remains immutable at commit
 `02625f47474430f83a1fd8bd10721a2d7b8fada4` and tree
 `6ab0d1b034c385a08314e2475e382abc09eb1511`; its frozen candidate must not be
-rebuilt or retagged. v2.0.87 is the required successor candidate and retains
+rebuilt or retagged. v2.0.88 is the required successor candidate and retains
 the authoritative v2.0.83-aligned bounded diagnostic behavior introduced at
 commit `b4b0630c35120ad9e240cd36bdb45bf4f380d06d`.
 
@@ -458,7 +445,7 @@ python -I .\tools\burn_local_release_tag_once.py `
   --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
   --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
   --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
-  --tag v2.0.87 `
+  --tag v2.0.88 `
   --expected-commit <EXACT-CANDIDATE-COMMIT> `
   --expected-tree <EXACT-CANDIDATE-TREE>
 ```
@@ -470,15 +457,15 @@ python -I .\tools\burn_local_release_tag_once.py `
    LF):
 
 ```text
-Release v2.0.87
+Release v2.0.88
 ```
 
    Those 16 canonical bytes have SHA-256
-   `bb842910e3827e01c97a3ca5bdb4fe9409feb4ae9f745d0a04dfc874a60beddc`.
+   `42fe859ca2af324c0d54725b814982142205da141b66107e04a94bb8ecb5e3b0`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.87`, report type
+   bare mirror must expose that exact object as `refs/tags/v2.0.88`, report type
    `tag`, and peel it to the candidate commit. Run the checked-in one-shot runner
    from the release work-clone root with fresh output, log paths, and the offline
    wheelhouse:
@@ -487,7 +474,7 @@ Release v2.0.87
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\run_frozen_release_candidate_once.ps1 `
   -PowerShellPath <EXACT-POWERSHELL-7-PWSH.EXE> `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.87 `
+  -Tag v2.0.88 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
   -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR> `
@@ -533,16 +520,16 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.87`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.88`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.87
+Tag: v2.0.88
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.87.zip
+Artifact: Label_Match-v2.0.88.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -553,7 +540,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.87 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.88 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires

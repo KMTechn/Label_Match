@@ -7,7 +7,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.87",
+    [string]$Tag = "v2.0.88",
 
     [Parameter(Mandatory = $true)]
     [string]$PythonPath,
@@ -166,8 +166,7 @@ $builderPath = Join-Path $PSScriptRoot "build_frozen_release_candidate.ps1"
 $releaseSurfacePaths = @(
     $PSCommandPath,
     $builderPath,
-    (Join-Path $sourceRoot "INSTALL_THIS_PC.ps1"),
-    (Join-Path $sourceRoot "install_label_match_direct_sync.ps1")
+    (Join-Path $sourceRoot "INSTALL_THIS_PC.ps1")
 )
 foreach ($surfacePath in $releaseSurfacePaths) {
     $surfaceFullPath = Get-ExistingFilePath $surfacePath "release PowerShell surface"
