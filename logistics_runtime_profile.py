@@ -36,6 +36,7 @@ DEFAULT_PROFILE_RELATIVE_PATH = (
 )
 LEGACY_PROFILE_RELATIVE_PATH = Path("KMTech") / "Logistics" / "runtime-profile.json"
 SUPPORTED_LEDGER_PLANES = frozenset({"AUTHORITATIVE", "SHADOW_CANDIDATE"})
+MAX_TLS_CA_BUNDLE_BYTES = 128 * 1024
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_SECRET_BYTES = 64 * 1024
 _TEST1_RUNS_ROOT = Path(r"C:\KMTech\Test1\Runs")
@@ -70,6 +71,7 @@ class LogisticsRuntimeProfile:
     timeout_seconds: float = 10.0
     profile_path: str = ""
     required: bool = False
+    tls_ca_bundle_path: str = field(default="", repr=False)
 
     def redacted_summary(self) -> dict[str, Any]:
         return {
@@ -86,6 +88,7 @@ class LogisticsRuntimeProfile:
             "profile_path": self.profile_path,
             "bearer_token_present": bool(self.bearer_token),
             "required": self.required,
+            "tls_private_ca_configured": bool(self.tls_ca_bundle_path),
         }
 
 
@@ -529,6 +532,41 @@ def _resolve_secret_path(profile_path: Path, reference: Any) -> Path:
     return resolved
 
 
+def _resolve_tls_ca_bundle_path(profile_path: Path, reference: Any) -> str:
+    value = str(reference or "").strip()
+    if not value:
+        return ""
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise LogisticsRuntimeConfigurationError(
+            "tls_ca_bundle_path must be an absolute path"
+        )
+    root = assert_path_has_no_reparse_components(
+        profile_path.parent, label="runtime profile directory"
+    ).resolve()
+    unresolved = assert_path_has_no_reparse_components(
+        candidate, label="TLS CA bundle"
+    )
+    resolved = unresolved.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "tls_ca_bundle_path must stay inside the profile directory"
+        ) from exc
+    if not resolved.is_file():
+        raise LogisticsRuntimeConfigurationError("TLS CA bundle is unavailable")
+    try:
+        size = resolved.stat().st_size
+    except OSError as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "TLS CA bundle could not be inspected"
+        ) from exc
+    if size <= 0 or size > MAX_TLS_CA_BUNDLE_BYTES:
+        raise LogisticsRuntimeConfigurationError("TLS CA bundle size is invalid")
+    return str(resolved)
+
+
 def load_logistics_runtime_profile(
     required: bool | None = None,
     profile_path: str | os.PathLike[str] | None = None,
@@ -608,6 +646,9 @@ def load_logistics_runtime_profile(
         timeout_seconds=timeout,
         profile_path=str(path.resolve()),
         required=required_value,
+        tls_ca_bundle_path=_resolve_tls_ca_bundle_path(
+            path, profile.get("tls_ca_bundle_path")
+        ),
     )
 
 
@@ -658,6 +699,9 @@ def profile_from_values(
             ).resolve()
         ),
         required=bool(required),
+        tls_ca_bundle_path=_resolve_tls_ca_bundle_path(
+            Path(profile_path), values.get("tls_ca_bundle_path")
+        ),
     )
 
 

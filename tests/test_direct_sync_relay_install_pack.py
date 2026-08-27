@@ -563,6 +563,7 @@ def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monk
         logistics_profile_path=str(
             tmp_path / "profiles" / "Label_Match" / "runtime-profile.json"
         ),
+        tls_ca_bundle_path=str(tmp_path / "stage" / "private-ca.cert.pem"),
         enrollment_token_env=module.DEFAULT_ENROLLMENT_TOKEN_ENV,
         enrollment_timeout_seconds=30,
         scan_source_dir=str(tmp_path / "scan-source"),
@@ -589,6 +590,10 @@ def test_self_enrollment_registration_omits_raw_stdout_and_stderr(tmp_path, monk
     )
     assert result["command_redacted"][profile_flag_index + 1] == str(
         tmp_path / "profiles" / "Label_Match" / "runtime-profile.json"
+    )
+    ca_flag_index = result["command_redacted"].index("--tls-ca-bundle-path")
+    assert result["command_redacted"][ca_flag_index + 1] == str(
+        tmp_path / "stage" / "private-ca.cert.pem"
     )
     token_env_index = result["command_redacted"].index("--enrollment-token-env")
     assert result["command_redacted"][token_env_index + 1] == "PRODUCER_SELF_ENROLL_TOKEN"

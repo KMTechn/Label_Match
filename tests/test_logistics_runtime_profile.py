@@ -198,6 +198,55 @@ def test_machine_profile_and_required_probe_are_secure(tmp_path, monkeypatch):
     assert "machine-secret" not in repr(client.config)
 
 
+def test_machine_profile_defaults_to_no_explicit_tls_ca_bundle(tmp_path, monkeypatch):
+    path = _profile(tmp_path)
+    _env(monkeypatch, path)
+
+    resolved = load_logistics_runtime_profile(
+        decryptor=lambda _value: "machine-secret"
+    )
+
+    assert resolved is not None
+    assert resolved.tls_ca_bundle_path == ""
+    assert resolved.redacted_summary()["tls_private_ca_configured"] is False
+
+
+def test_machine_profile_resolves_durable_tls_ca_bundle(tmp_path, monkeypatch):
+    profile_root = tmp_path / "machine"
+    ca_bundle = profile_root / "tls" / "ca-bundle.pem"
+    ca_bundle.parent.mkdir(parents=True)
+    ca_bundle.write_bytes(b"private-ca-fixture")
+    path = _profile(tmp_path, tls_ca_bundle_path=str(ca_bundle.resolve()))
+    _env(monkeypatch, path)
+
+    resolved = load_logistics_runtime_profile(
+        decryptor=lambda _value: "machine-secret"
+    )
+
+    assert resolved is not None
+    assert resolved.tls_ca_bundle_path == str(ca_bundle.resolve())
+    assert resolved.redacted_summary()["tls_private_ca_configured"] is True
+
+
+@pytest.mark.parametrize("location", ["outside", "missing"])
+def test_machine_profile_tls_ca_bundle_fails_closed_outside_owned_profile(
+    tmp_path, monkeypatch, location
+):
+    if location == "outside":
+        ca_bundle = tmp_path / "outside-ca.pem"
+        ca_bundle.write_bytes(b"outside-private-ca-fixture")
+    else:
+        ca_bundle = tmp_path / "machine" / "tls" / "missing-ca.pem"
+    path = _profile(tmp_path, tls_ca_bundle_path=str(ca_bundle.resolve()))
+    _env(monkeypatch, path)
+
+    with pytest.raises(
+        LogisticsRuntimeConfigurationError,
+        match=("inside the profile directory" if location == "outside" else "unavailable"),
+    ):
+        load_logistics_runtime_profile(decryptor=lambda _value: "machine-secret")
+
+
 def test_required_profile_separates_authority_mode_from_selected_ledger_plane(
     tmp_path, monkeypatch
 ):

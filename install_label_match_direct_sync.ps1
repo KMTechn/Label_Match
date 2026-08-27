@@ -13,6 +13,7 @@ param(
     [string]$RollbackReceiptRootForTest = "",
     [string]$ServerBaseUrl = "https://worker.kmtecherp.com",
     [string]$SourceHostId = "",
+    [string]$TlsCaBundlePath = "",
     [string]$ProgramDataRoot = "",
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
     [string]$EnrollmentTokenFile = "",
@@ -265,16 +266,22 @@ function Read-RequiredInstallSummary(
             throw "Install ownership summary contains an out-of-root DirectSync removal path."
         }
     }
-    $allowedMachineProfileFiles = @(
+    $requiredMachineProfileFiles = @(
         [System.IO.Path]::GetFullPath($ExpectedLogisticsProfilePath),
         [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $ExpectedLogisticsProfilePath) "secrets\bearer-token.dpapi"))
+    )
+    $allowedMachineProfileFiles = @(
+        $requiredMachineProfileFiles +
+        [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $ExpectedLogisticsProfilePath) "tls\ca-bundle.pem"))
     )
     $machineProfileResources = @($summary.resources.machine_profile_files)
     $machineProfileResourcePaths = @($machineProfileResources | ForEach-Object { [System.IO.Path]::GetFullPath([string]$_.path) })
     if (
-        $machineProfileResources.Count -ne 2 -or
-        @($machineProfileResourcePaths | Select-Object -Unique).Count -ne 2 -or
-        @($machineProfileResourcePaths | Where-Object { $allowedMachineProfileFiles -notcontains $_ }).Count -ne 0
+        $machineProfileResources.Count -lt 2 -or
+        $machineProfileResources.Count -gt 3 -or
+        @($machineProfileResourcePaths | Select-Object -Unique).Count -ne $machineProfileResources.Count -or
+        @($machineProfileResourcePaths | Where-Object { $allowedMachineProfileFiles -notcontains $_ }).Count -ne 0 -or
+        @($requiredMachineProfileFiles | Where-Object { $machineProfileResourcePaths -notcontains $_ }).Count -ne 0
     ) {
         throw "Install ownership summary machine-profile file inventory is not exact."
     }
@@ -535,7 +542,8 @@ function Remove-NewMachineProfilesFromRegistrationReport(
     $profileRoot = Split-Path -Parent $profilePath
     $allowed = @(
         $profilePath,
-        [System.IO.Path]::GetFullPath((Join-Path $profileRoot "secrets\bearer-token.dpapi"))
+        [System.IO.Path]::GetFullPath((Join-Path $profileRoot "secrets\bearer-token.dpapi")),
+        [System.IO.Path]::GetFullPath((Join-Path $profileRoot "tls\ca-bundle.pem"))
     )
     foreach ($property in $payload.machine_profiles.PSObject.Properties) {
         $profile = $property.Value
@@ -1012,6 +1020,7 @@ $logisticsProfileRootExistedBefore = Test-Path -LiteralPath $logisticsProfileRoo
 $machineProfileCreatedDirectories = @(Get-MissingDirectoryChain $logisticsProfileRoot)
 $launcherParentCreatedDirectories = @(Get-MissingDirectoryChain (Split-Path -Parent $allUsersLauncherPath))
 $machineSecretPath = Join-Path $logisticsProfileRoot "secrets\bearer-token.dpapi"
+$machineTlsCaBundlePath = Join-Path $logisticsProfileRoot "tls\ca-bundle.pem"
 $resourcePrestate = [ordered]@{
     task_wrapper = Test-Path -LiteralPath $taskWrapperPath -PathType Leaf
     task_launcher = Test-Path -LiteralPath $taskLauncherPath -PathType Leaf
@@ -1020,6 +1029,9 @@ $resourcePrestate = [ordered]@{
     logistics_profile = Test-Path -LiteralPath $LogisticsProfilePath -PathType Leaf
     machine_secret = Test-Path -LiteralPath $machineSecretPath -PathType Leaf
     launcher = Test-Path -LiteralPath $allUsersLauncherPath -PathType Leaf
+}
+if (-not [string]::IsNullOrWhiteSpace($TlsCaBundlePath)) {
+    $resourcePrestate["machine_tls_ca_bundle"] = Test-Path -LiteralPath $machineTlsCaBundlePath -PathType Leaf
 }
 if (-not $DryRun.IsPresent -and $InstallPrestate -ceq "absent") {
     foreach ($property in $resourcePrestate.GetEnumerator()) {
@@ -1119,6 +1131,9 @@ else {
         "--require-machine-credential-bundle",
         "--logistics-profile-path", $LogisticsProfilePath
     )
+    if (-not [string]::IsNullOrWhiteSpace($TlsCaBundlePath)) {
+        $arguments += @("--tls-ca-bundle-path", $TlsCaBundlePath)
+    }
 }
 if (-not [string]::IsNullOrWhiteSpace($EnrollmentTokenFile)) {
     $arguments += @("--enrollment-token-file", $EnrollmentTokenFile)
@@ -1284,6 +1299,10 @@ $machineProfileFiles = @(
     Get-FileResourceRecord $LogisticsProfilePath ([bool]$resourcePrestate.logistics_profile)
     Get-FileResourceRecord $machineSecretPath ([bool]$resourcePrestate.machine_secret)
 )
+if (-not [string]::IsNullOrWhiteSpace($TlsCaBundlePath)) {
+    $machineProfileFiles += Get-FileResourceRecord `
+        $machineTlsCaBundlePath ([bool]$resourcePrestate.machine_tls_ca_bundle)
+}
 if ($InstallPrestate -ceq "exact_reused" -and $null -ne $priorSummary) {
     $launcherRecord.prestate = [string]$priorSummary.resources.launcher.prestate
     $launcherRecord.disposition = [string]$priorSummary.resources.launcher.disposition

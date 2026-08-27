@@ -37,6 +37,7 @@ param(
     [string]$RollbackReceiptRootForTest = "",
     [string]$ServerBaseUrl = "https://worker.kmtecherp.com",
     [string]$SourceHostId = "",
+    [string]$TlsCaBundlePath = "",
     [string]$ProgramDataRoot = "",
     [string]$ScanSourceDir = "C:\ProgramData\KMTech\Label_Match\data",
     [string]$EnrollmentTokenFile = "",

@@ -1,11 +1,16 @@
 import json
 import hashlib
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import shutil
 import subprocess
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from tools import install_logistics_runtime_profile as machine_profiles
 from tools import verify_frozen_release_assets as frozen_verifier
 
@@ -47,6 +52,138 @@ def _machine_bundle():
             "profiles": {"logistics": {"contract_version": "km-logistics-runtime-profile-v1", "base_url": "https://worker.kmtecherp.com", "authority_scope": "PROD-SCOPE", "authority_epoch": 7, "authority_plane": "AUTHORITATIVE", "ledger_plane": "SHADOW_CANDIDATE", "plane_epoch": 3, "device_id": "LABEL-PC-1", "source_host_id": "label-host-1", "timeout_seconds": 10}},
         }
     }
+
+
+def _private_ca_pem() -> bytes:
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Label Match Test Private CA")]
+    )
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(private_key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM)
+
+
+def _patch_profile_install_for_test(monkeypatch, token: str) -> None:
+    real_load = machine_profiles.load_logistics_runtime_profile
+    monkeypatch.setattr(
+        machine_profiles,
+        "_secure_profile_directory",
+        lambda path, _reader: path.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(
+        machine_profiles,
+        "protect_bearer_token",
+        lambda _token: b"protected-token-fixture",
+    )
+    monkeypatch.setattr(
+        machine_profiles,
+        "load_logistics_runtime_profile",
+        lambda *args, **kwargs: real_load(
+            *args, decryptor=lambda _value: token, **kwargs
+        ),
+    )
+
+
+def test_runtime_profile_installer_copies_opt_in_tls_ca_into_owned_directory(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "stage" / "private-ca.cert.pem"
+    source.parent.mkdir()
+    source.write_bytes(_private_ca_pem())
+    profile = tmp_path / "profiles" / "Label_Match" / "runtime-profile.json"
+    token = "machine-logistics-token"
+    _patch_profile_install_for_test(monkeypatch, token)
+
+    result = machine_profiles.install_runtime_profile(
+        profile_path=profile,
+        base_url="https://worker.kmtecherp.com",
+        authority_scope="PROD-SCOPE",
+        authority_epoch=7,
+        authority_plane="AUTHORITATIVE",
+        ledger_plane="SHADOW_CANDIDATE",
+        plane_epoch=3,
+        device_id="LABEL-PC-1",
+        source_host_id="label-host-1",
+        bearer_token=token,
+        reader_principal="fixture-reader",
+        tls_ca_bundle_path=source,
+    )
+
+    durable_ca = profile.parent / "tls" / "ca-bundle.pem"
+    persisted = json.loads(profile.read_text(encoding="utf-8"))
+    assert durable_ca.read_bytes() == source.read_bytes()
+    assert persisted["tls_ca_bundle_path"] == str(durable_ca.resolve())
+    assert result["tls_private_ca_configured"] is True
+    assert str(durable_ca.resolve()) in result["created_paths"]
+
+
+def test_runtime_profile_installer_omits_unconfigured_tls_ca_bundle(
+    monkeypatch, tmp_path
+):
+    profile = tmp_path / "profiles" / "Label_Match" / "runtime-profile.json"
+    token = "machine-logistics-token"
+    _patch_profile_install_for_test(monkeypatch, token)
+
+    result = machine_profiles.install_runtime_profile(
+        profile_path=profile,
+        base_url="https://worker.kmtecherp.com",
+        authority_scope="PROD-SCOPE",
+        authority_epoch=7,
+        authority_plane="AUTHORITATIVE",
+        ledger_plane="SHADOW_CANDIDATE",
+        plane_epoch=3,
+        device_id="LABEL-PC-1",
+        source_host_id="label-host-1",
+        bearer_token=token,
+        reader_principal="fixture-reader",
+    )
+
+    persisted = json.loads(profile.read_text(encoding="utf-8"))
+    assert "tls_ca_bundle_path" not in persisted
+    assert result["tls_private_ca_configured"] is False
+    assert not (profile.parent / "tls").exists()
+
+
+def test_package_installer_wires_only_opt_in_tls_ca_without_disabling_verification():
+    public_installer = (ROOT / "INSTALL_THIS_PC.ps1").read_text(encoding="utf-8")
+    nested_installer = (ROOT / "install_label_match_direct_sync.ps1").read_text(
+        encoding="utf-8"
+    )
+    install_pack = (ROOT / "tools/direct_sync_relay_install_pack.py").read_text(
+        encoding="utf-8"
+    )
+    registration = (ROOT / "tools/register_label_match_worker_pc.py").read_text(
+        encoding="utf-8"
+    )
+    profile_installer = (ROOT / "tools/install_logistics_runtime_profile.py").read_text(
+        encoding="utf-8"
+    )
+    catalog = (ROOT / "item_catalog_sync.py").read_text(encoding="utf-8")
+
+    assert '[string]$TlsCaBundlePath = ""' in public_installer
+    assert '[string]$TlsCaBundlePath = ""' in nested_installer
+    assert '"--tls-ca-bundle-path", $TlsCaBundlePath' in nested_installer
+    assert '("--tls-ca-bundle-path", "tls_ca_bundle_path")' in install_pack
+    assert 'parser.add_argument("--tls-ca-bundle-path", default="")' in registration
+    assert 'profile_target.parent / "tls" / "ca-bundle.pem"' in profile_installer
+    assert 'values["tls_ca_bundle_path"] = str(tls_ca_bundle[0])' in profile_installer
+    assert 'request_kwargs["verify"] = tls_ca_bundle_path' in catalog
+    product_wiring = "\n".join(
+        (public_installer, nested_installer, install_pack, registration, profile_installer, catalog)
+    )
+    assert "verify=False" not in product_wiring
+    assert "CERT_NONE" not in product_wiring
 
 
 def test_common_package_entrypoint_forwards_to_proven_one_step_installer():
@@ -632,15 +769,19 @@ def test_frozen_release_exact_manifest_preserves_common_package_entrypoint():
 
 def test_enrollment_bundle_installs_dpapi_profile_and_rejects_scope_mismatch(monkeypatch, tmp_path):
     observed = {}
+    ca_source = tmp_path / "private-ca.cert.pem"
+    ca_source.write_bytes(_private_ca_pem())
     monkeypatch.setattr(machine_profiles, "install_runtime_profile", lambda **kwargs: observed.update(kwargs) or {"status": "installed", "created_paths": []})
     result = machine_profiles.ensure_runtime_profile_from_enrollment_bundle(
         _machine_bundle(), expected_app="LabelMatch", expected_program="Label_Match",
         expected_source_host_id="label-host-1", expected_device_id="LABEL-PC-1",
         profile_path=tmp_path / "runtime-profile.json",
+        tls_ca_bundle_path=ca_source,
     )
     assert result["status"] == "installed"
     assert observed["ledger_plane"] == "SHADOW_CANDIDATE"
     assert observed["bearer_token"] == "kmta1.label-secret"
+    assert observed["tls_ca_bundle_path"] == ca_source
     invalid = _machine_bundle()
     invalid["machine_credential_bundle"]["bindings"]["authority_scope_id"] = "OTHER"
     with pytest.raises(ValueError, match="profile identity mismatch"):

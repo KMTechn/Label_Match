@@ -491,6 +491,11 @@ def refresh_item_catalog(
                 "X-Logistics-Device-Id": profile.device_id,
                 "X-Logistics-Program": LOGISTICS_PROGRAM,
             }
+            tls_ca_bundle_path = str(
+                getattr(profile, "tls_ca_bundle_path", "") or ""
+            ).strip()
+            if tls_ca_bundle_path:
+                request_kwargs["verify"] = tls_ca_bundle_path
         transport = get or (_hardened_get if central_enrolled else requests.get)
         response = transport(effective_url, **request_kwargs)
         status_code = getattr(response, "status_code", None)
