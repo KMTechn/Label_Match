@@ -7,7 +7,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.85",
+    [string]$Tag = "v2.0.86",
 
     [Parameter(Mandatory = $true)]
     [string]$PythonPath,

@@ -92,7 +92,7 @@ def _run_preflight(powershell: Path, fixture: dict[str, Path]) -> subprocess.Com
             "-OutputRoot",
             str(fixture["output"]),
             "-Tag",
-            "v2.0.85",
+            "v2.0.86",
             "-PythonPath",
             sys.executable,
             "-Wheelhouse",
