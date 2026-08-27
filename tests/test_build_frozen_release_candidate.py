@@ -679,6 +679,7 @@ def test_script_moves_authoritative_build_and_package_gates_outside_repo():
     assert '"--noupx"' in source
     assert "build_embedded_python_library.py" in source
     assert "build_release_cli_tools.py" not in source
+    assert "--basetemp $pytestBaseTempRoot" in source
     assert '-Name "direct_sync_relay_runner"' in source
     assert r'-Source (Join-Path $repoRoot "tools\direct_sync_relay_runner.py")' in source
     assert r'tools\direct_sync_relay_runner\direct_sync_relay_runner.exe") --help' in source

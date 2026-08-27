@@ -791,6 +791,7 @@ $distRoot = Join-Path $resolvedOutputRoot "dist"
 # metadata, so the shorter path is required on Windows without long paths.
 $taskTempRoot = Join-Path (Split-Path -Parent $resolvedOutputRoot) "t"
 $pyInstallerConfigRoot = Join-Path $workRoot "pyinstaller-config"
+$pytestBaseTempRoot = Join-Path "E:\KMTech" ("lm-p-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 [IO.Directory]::CreateDirectory($taskTempRoot) | Out-Null
 [IO.Directory]::CreateDirectory($pyInstallerConfigRoot) | Out-Null
 $env:TEMP = $taskTempRoot
@@ -1109,6 +1110,7 @@ Assert-LastExitCode "Verify exact current factory package"
 & $venvPython -m pytest `
     -q `
     -p no:cacheprovider `
+    --basetemp $pytestBaseTempRoot `
     (Join-Path $repoRoot "tests\test_staged_release_installer.py")
 Assert-LastExitCode "Run sealed staged installer release gate"
 
