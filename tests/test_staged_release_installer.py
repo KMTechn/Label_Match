@@ -296,13 +296,15 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
             tmp_path / "staged-hash-authority" / staged_script.stem,
         )
 
-    extracted_root = tmp_path / "ordinary-extraction" / "Label_Match"
+    # The staged onedir dependency tree is deep; keep the synthetic roots
+    # short enough for Windows hosts where long paths are not enabled.
+    extracted_root = tmp_path / "x"
     shutil.copytree(staged_root, extracted_root)
-    install_root = tmp_path / "installed" / "current"
-    program_data_root = tmp_path / "runtime" / "direct-sync"
-    scan_source_dir = tmp_path / "runtime" / "scan-data"
-    common_programs = tmp_path / "common-programs"
-    receipt_root = tmp_path / "installer-receipts"
+    install_root = tmp_path / "i"
+    program_data_root = tmp_path / "p"
+    scan_source_dir = tmp_path / "s"
+    common_programs = tmp_path / "c"
+    receipt_root = tmp_path / "r"
     environment = os.environ.copy()
     environment["KMTECH_FACTORY_INSTALL_TEST_MODE"] = "1"
     environment.pop("KMTECH_PYTHON_EXE", None)
