@@ -62,12 +62,20 @@ def _release_fixture(root: Path) -> Path:
 def test_bootstrap_is_minimal_code_only_onedir_contract():
     text = INSTALLER.read_text(encoding="utf-8")
 
-    assert len(text.splitlines()) <= 400
+    assert len(text.splitlines()) <= 500
     assert "label-match-bootstrap-integrity-v1" in text
     assert "identity_profile_created=false" in text
     assert "elevation_points=1:code_placement" in text
     assert "package_layout = 'onedir'" in text
     assert "Set-HardenedCodeAcl" in text
+    assert "Assert-HardenedCodeAcl" in text
+    assert "'/setowner', '*S-1-5-32-544'" in text
+    assert "'/reset', '/L'" in text
+    assert "acl_readback_status=UNKNOWN" in text
+    reuse_index = text.index("$bootstrapStatus = 'REUSED'")
+    final_acl_index = text.index("Set-HardenedCodeAcl $installRootFull -Recursive")
+    success_index = text.index('Write-Output "bootstrap_status=$bootstrapStatus"')
+    assert reuse_index < final_acl_index < success_index
     assert "Register-ScheduledTask" not in text
     assert "New-ScheduledTask" not in text
     assert "Start-ScheduledTask" not in text
@@ -132,6 +140,8 @@ def test_bootstrap_places_exact_onedir_bytes_records_integrity_and_reuses(tmp_pa
     assert second.returncode == 0, second.stderr
     assert "bootstrap_status=PASS" in first.stdout
     assert "bootstrap_status=REUSED" in second.stdout
+    assert "acl_readback_status=NOT_TESTED" in first.stdout
+    assert "acl_readback_status=NOT_TESTED" in second.stdout
     record = json.loads((install / "bootstrap-integrity.json").read_text(encoding="utf-8"))
     assert record["schema_version"] == "label-match-bootstrap-integrity-v1"
     assert record["status"] == "PASS"

@@ -4,7 +4,8 @@ param(
     [switch]$Uninstall,
     [string]$SourceRoot = "",
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
-    [switch]$AllowNoncanonicalLayoutForTest
+    [switch]$AllowNoncanonicalLayoutForTest,
+    [switch]$ApplyHardenedAclForTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -152,15 +153,107 @@ function Assert-RequiredRelease([string]$Root) {
     }
 }
 
-function Set-HardenedCodeAcl([string]$Path) {
-    & icacls.exe $Path `
-        '/inheritance:r' `
-        '/grant:r' `
-        '*S-1-5-18:(OI)(CI)F' `
-        '*S-1-5-32-544:(OI)(CI)F' `
-        '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Hardened code ACL installation failed: $Path"
+function ConvertTo-NormalizedAclRights([int64]$Rights) {
+    $synchronize = [int64][System.Security.AccessControl.FileSystemRights]::Synchronize
+    return $Rights -band (-bnot $synchronize)
+}
+
+function Assert-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
+    Assert-NoReparsePoint $Path "Hardened code ACL readback"
+    $expected = @{
+        'S-1-5-18' = [int64][System.Security.AccessControl.FileSystemRights]::FullControl
+        'S-1-5-32-544' = [int64][System.Security.AccessControl.FileSystemRights]::FullControl
+        'S-1-5-32-545' = [int64][System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+    }
+    $targets = @((Get-Item -LiteralPath $Path -Force -ErrorAction Stop))
+    if ($Recursive.IsPresent) {
+        $targets += @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)
+    }
+    $expectedRootInheritance = [int](
+        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    )
+    foreach ($target in $targets) {
+        $isRoot = Test-SamePath $target.FullName $Path
+        $acl = Get-Acl -LiteralPath $target.FullName -ErrorAction Stop
+        $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+        if ([string]$owner.Value -cne 'S-1-5-32-544') {
+            throw "Hardened code ACL owner is not BUILTIN\Administrators: $($target.FullName)"
+        }
+        if ($isRoot -and -not $acl.AreAccessRulesProtected) {
+            throw "Hardened code root still inherits access rules: $($target.FullName)"
+        }
+        if (-not $isRoot -and $acl.AreAccessRulesProtected) {
+            throw "Hardened code descendant does not inherit the root DACL: $($target.FullName)"
+        }
+        $actual = @{}
+        foreach ($rule in @($acl.GetAccessRules(
+            $true,
+            $true,
+            [System.Security.Principal.SecurityIdentifier]
+        ))) {
+            $sid = [string]$rule.IdentityReference.Value
+            if (
+                [string]$rule.AccessControlType -cne 'Allow' -or
+                -not $expected.ContainsKey($sid) -or
+                ($isRoot -and $rule.IsInherited) -or
+                (-not $isRoot -and -not $rule.IsInherited)
+            ) {
+                throw "Hardened code DACL contains an unexpected ACE for $sid on $($target.FullName)"
+            }
+            if (
+                $isRoot -and (
+                    [int]$rule.InheritanceFlags -ne $expectedRootInheritance -or
+                    [string]$rule.PropagationFlags -cne 'None'
+                )
+            ) {
+                throw "Hardened code root inheritance flags differ for $sid."
+            }
+            if (-not $actual.ContainsKey($sid)) { $actual[$sid] = [int64]0 }
+            $actual[$sid] = [int64]$actual[$sid] -bor [int64]$rule.FileSystemRights
+        }
+        if ($actual.Count -ne $expected.Count) {
+            throw "Hardened code DACL principal count differs: $($target.FullName)"
+        }
+        foreach ($sid in $expected.Keys) {
+            if (
+                -not $actual.ContainsKey($sid) -or
+                (ConvertTo-NormalizedAclRights ([int64]$actual[$sid])) -ne
+                (ConvertTo-NormalizedAclRights ([int64]$expected[$sid]))
+            ) {
+                throw "Hardened code DACL rights differ for $sid on $($target.FullName)"
+            }
+        }
+    }
+}
+
+function Set-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
+    try {
+        Assert-NoReparsePoint $Path "Hardened code ACL target"
+        $icacls = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'
+        $ownerArgs = @($Path, '/setowner', '*S-1-5-32-544', '/L')
+        $resetArgs = @($Path, '/reset', '/L')
+        if ($Recursive.IsPresent) {
+            $ownerArgs += '/T'
+            $resetArgs += '/T'
+        }
+        & $icacls @ownerArgs | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Hardened code owner assignment failed: $Path" }
+        & $icacls @resetArgs | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Hardened code DACL reset failed: $Path" }
+        & $icacls $Path `
+            '/inheritance:r' `
+            '/grant:r' `
+            '*S-1-5-18:(OI)(CI)F' `
+            '*S-1-5-32-544:(OI)(CI)F' `
+            '*S-1-5-32-545:(OI)(CI)RX' `
+            '/L' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Hardened code DACL installation failed: $Path" }
+        Assert-HardenedCodeAcl $Path -Recursive:$Recursive.IsPresent
+    }
+    catch {
+        Write-Output "acl_readback_status=UNKNOWN"
+        throw
     }
 }
 
@@ -210,6 +303,11 @@ $testOverride = (
     $AllowNoncanonicalLayoutForTest.IsPresent -and
     [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
 )
+if ($ApplyHardenedAclForTest.IsPresent -and -not $testOverride) {
+    throw "ApplyHardenedAclForTest requires the guarded noncanonical test layout."
+}
+$applyHardenedAcl = (-not $testOverride -or $ApplyHardenedAclForTest.IsPresent)
+$aclReadbackStatus = if ($applyHardenedAcl) { 'UNKNOWN' } else { 'NOT_TESTED' }
 $installRootFull = Get-StrictFullPath $InstallRoot "InstallRoot"
 if (-not (Test-SamePath $installRootFull $ExpectedInstallRoot) -and -not $testOverride) {
     throw "InstallRoot must be the hardened Label_Match code root."
@@ -282,7 +380,7 @@ if ($DryRun.IsPresent) {
 $applicationParent = Split-Path -Parent $installRootFull
 $stagingRoot = Join-Path $applicationParent ('.current.bootstrap.' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $applicationParent -Force | Out-Null
-if (-not $testOverride) {
+if ($applyHardenedAcl) {
     Set-HardenedCodeAcl $applicationParent
 }
 New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
@@ -316,8 +414,8 @@ try {
         package_layout = 'onedir'
     }
     Write-Utf8Json (Join-Path $stagingRoot $IntegrityFileName) $record
-    if (-not $testOverride) {
-        Set-HardenedCodeAcl $stagingRoot
+    if ($applyHardenedAcl) {
+        Set-HardenedCodeAcl $stagingRoot -Recursive
     }
     if (Test-Path -LiteralPath $installRootFull) {
         $existingRecordPath = Join-Path $installRootFull $IntegrityFileName
@@ -340,15 +438,25 @@ try {
             throw "A different or damaged hardened code placement exists; remove it explicitly before replacement."
         }
         Remove-Item -LiteralPath $stagingRoot -Recurse -Force
-        Write-Output "bootstrap_status=REUSED"
+        $bootstrapStatus = 'REUSED'
     }
     else {
         Move-Item -LiteralPath $stagingRoot -Destination $installRootFull
-        $installedAggregate = Get-InventoryAggregate @(Get-CodeInventory $installRootFull)
-        if ($installedAggregate -cne $sourceAggregate) {
-            throw "Installed code integrity readback failed."
-        }
-        Write-Output "bootstrap_status=PASS"
+        $bootstrapStatus = 'PASS'
+    }
+    if ($applyHardenedAcl) {
+        Set-HardenedCodeAcl $installRootFull -Recursive
+        $aclReadbackStatus = 'PASS'
+    }
+    $installedAggregate = Get-InventoryAggregate @(Get-CodeInventory $installRootFull)
+    if ($installedAggregate -cne $sourceAggregate) {
+        throw "Installed code integrity readback failed."
+    }
+    Write-Output "bootstrap_status=$bootstrapStatus"
+    Write-Output "acl_readback_status=$aclReadbackStatus"
+    if ($aclReadbackStatus -ceq 'PASS') {
+        Write-Output "acl_owner_sid=S-1-5-32-544"
+        Write-Output "dacl_normalized=true"
     }
     Write-Output "code_root=$installRootFull"
     Write-Output "integrity_record=$(Join-Path $installRootFull $IntegrityFileName)"
