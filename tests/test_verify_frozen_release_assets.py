@@ -13,7 +13,7 @@ import pytest
 from tools import verify_frozen_release_assets as verifier
 
 
-TAG = "v2.0.88"
+TAG = "v2.0.89"
 COMMIT = "1" * 40
 TREE = "2" * 40
 TAG_OBJECT = "4" * 40
