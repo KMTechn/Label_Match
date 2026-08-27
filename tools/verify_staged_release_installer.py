@@ -249,9 +249,11 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
         raise StagedInstallerVerificationError(
             f"retired helper executables remain packaged: {retired_present}"
         )
-    with tempfile.TemporaryDirectory(prefix="label-match-staged-installer-") as temp_dir:
+    # Keep the extraction prefix short enough for deeply nested onedir
+    # dependency metadata on Windows hosts without long-path support.
+    with tempfile.TemporaryDirectory(prefix="lm-") as temp_dir:
         root = Path(temp_dir)
-        extracted_root = root / "ordinary-extraction" / "Label_Match"
+        extracted_root = root / "x"
         shutil.copytree(package_root, extracted_root)
         _write_preseal_manifest(extracted_root)
         manifest_contract = _validate_manifest_payload(extracted_root)
