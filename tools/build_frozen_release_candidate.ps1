@@ -786,7 +786,10 @@ $workRoot = Join-Path $resolvedOutputRoot "work"
 $distRoot = Join-Path $resolvedOutputRoot "dist"
 [IO.Directory]::CreateDirectory($workRoot) | Out-Null
 [IO.Directory]::CreateDirectory($distRoot) | Out-Null
-$taskTempRoot = Join-Path $workRoot "temp"
+# Keep the task temp root beside (not inside) the candidate. The installer
+# appends a same-volume candidate GUID while copying deeply nested onedir
+# metadata, so the shorter path is required on Windows without long paths.
+$taskTempRoot = Join-Path (Split-Path -Parent $resolvedOutputRoot) "t"
 $pyInstallerConfigRoot = Join-Path $workRoot "pyinstaller-config"
 [IO.Directory]::CreateDirectory($taskTempRoot) | Out-Null
 [IO.Directory]::CreateDirectory($pyInstallerConfigRoot) | Out-Null

@@ -257,13 +257,13 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
         shutil.copytree(package_root, extracted_root)
         _write_preseal_manifest(extracted_root)
         manifest_contract = _validate_manifest_payload(extracted_root)
-        install_root = root / "installed" / "current"
-        program_data = root / "runtime" / "direct-sync"
-        scan_source = root / "runtime" / "label-data"
-        common_programs = root / "common-programs"
-        receipt_root = root / "installer-receipts"
-        stdout_path = root / "stdout.txt"
-        stderr_path = root / "stderr.txt"
+        install_root = root / "i"
+        program_data = root / "p"
+        scan_source = root / "s"
+        common_programs = root / "c"
+        receipt_root = root / "r"
+        stdout_path = root / "o.txt"
+        stderr_path = root / "e.txt"
         env = dict(os.environ)
         env["KMTECH_FACTORY_INSTALL_TEST_MODE"] = "1"
         env["PATH"] = str(Path(powershell).resolve().parent)
