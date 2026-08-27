@@ -1113,7 +1113,7 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     runner_exe = (
         Path(runner_exe_text).resolve()
         if runner_exe_text
-        else app_root / "tools" / "direct_sync_relay_runner.exe"
+        else app_root / "tools" / "direct_sync_relay_runner" / "direct_sync_relay_runner.exe"
     )
     producer_manifest_path = Path(
         getattr(args, "producer_manifest_path", "") or _default_manifest_path(args.program_data_root)

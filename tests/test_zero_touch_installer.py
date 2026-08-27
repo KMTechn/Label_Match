@@ -478,7 +478,10 @@ def _write_public_installer_fixture(root: Path) -> None:
     (root / "tools/invoke_embedded_python.ps1").write_text("# in-process host\n", encoding="utf-8")
     (root / "tools/direct_sync_relay_install_pack.py").write_text("# install pack\n", encoding="utf-8")
     (root / "tools/direct_sync_relay_runner.py").write_text("# runner\n", encoding="utf-8")
-    (root / "tools/direct_sync_relay_runner.exe").write_bytes(b"packaged runner executable")
+    (root / "tools/direct_sync_relay_runner").mkdir()
+    (root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe").write_bytes(
+        b"packaged runner executable"
+    )
     (root / "tools/register_label_match_worker_pc.py").write_text("# registration\n", encoding="utf-8")
     inventory = []
     for path in sorted(

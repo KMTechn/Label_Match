@@ -4,7 +4,7 @@ param(
     [string]$OutputRoot,
 
     [ValidatePattern('^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$')]
-    [string]$Tag = "v2.0.86",
+    [string]$Tag = "v2.0.87",
 
     [string]$PythonPath = "",
 
@@ -545,6 +545,32 @@ function Invoke-OneFileBuild {
     Assert-LastExitCode "PyInstaller build for $Name"
 }
 
+function Invoke-OneDirBuild {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvPython,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][string]$WorkRoot,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Source
+    )
+    $toolWork = Join-Path $WorkRoot "${Name}_pyinstaller"
+    & $VenvPython -I -m PyInstaller `
+        --paths $RepositoryRoot `
+        --name $Name `
+        --onedir `
+        --console `
+        --contents-directory _internal `
+        --distpath $PackageRoot `
+        --workpath $toolWork `
+        --specpath $toolWork `
+        --clean `
+        --noupx `
+        --noconfirm `
+        $Source
+    Assert-LastExitCode "PyInstaller onedir build for $Name"
+}
+
 $repoRoot = ConvertTo-NormalizedDirectoryPath (Join-Path $PSScriptRoot "..") "release work clone"
 $mirrorRoot = ConvertTo-NormalizedDirectoryPath $MirrorRoot "MirrorRoot"
 $originalLocation = (Get-Location).Path
@@ -851,7 +877,7 @@ $mainAnalysisToc = Join-Path $mainWorkRoot "Label_Match\Analysis-00.toc"
     --runtime-root (Join-Path $packageRoot "_internal")
 Assert-LastExitCode "Materialize the in-process embedded Python library"
 
-Invoke-OneFileBuild `
+Invoke-OneDirBuild `
     -VenvPython $venvPython `
     -RepositoryRoot $repoRoot `
     -PackageRoot (Join-Path $packageRoot "tools") `
@@ -1055,7 +1081,7 @@ $stagedInstallerReport = Join-Path $packageRoot "staged-installer-verification.j
     --package-root $packageRoot `
     --report $stagedInstallerReport
 Assert-LastExitCode "Verify staged installer without system Python"
-& (Join-Path $packageRoot "tools\direct_sync_relay_runner.exe") --help | Out-Null
+& (Join-Path $packageRoot "tools\direct_sync_relay_runner\direct_sync_relay_runner.exe") --help | Out-Null
 Assert-LastExitCode "Staged packaged relay runner help probe"
 & $venvPython (Join-Path $packageRoot "tools\direct_sync_relay_operator.py") --help | Out-Null
 Assert-LastExitCode "Staged relay operator source help probe"
@@ -1070,7 +1096,7 @@ $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
     --expected-file contract.lock.json `
     --expected-file build-identity.json `
     --expected-file build-compatibility.json `
-    --expected-file tools/direct_sync_relay_runner.exe `
+    --expected-file tools/direct_sync_relay_runner/direct_sync_relay_runner.exe `
     --built-at-utc $builtAtUtc
 Assert-LastExitCode "Seal exact factory package manifest"
 & $venvPython -m kmtech_factory_contracts.build_cli verify `

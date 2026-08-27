@@ -68,7 +68,10 @@ def _package(tmp_path: Path) -> Path:
     (root / "_internal/base_library.zip").write_bytes(b"library")
     (root / "tools/invoke_embedded_python.ps1").write_text("# host\n", encoding="utf-8")
     (root / "tools/direct_sync_relay_install_pack.py").write_text("# install\n", encoding="utf-8")
-    (root / "tools/direct_sync_relay_runner.exe").write_bytes(b"runner executable")
+    (root / "tools/direct_sync_relay_runner").mkdir()
+    (root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe").write_bytes(
+        b"runner executable"
+    )
     (root / "tools/direct_sync_relay_runner.py").write_text("# runner\n", encoding="utf-8")
     (root / "tools/register_label_match_worker_pc.py").write_text("# register\n", encoding="utf-8")
     _write_manifest(root)
@@ -88,7 +91,7 @@ def _fake_run_with_reports(command, **kwargs):
     common_programs = Path(command[command.index("-CommonProgramsRootForTest") + 1])
     receipt_root = Path(command[command.index("-RollbackReceiptRootForTest") + 1])
     shutil.copytree(extracted_root, install_root)
-    runner = install_root / "tools/direct_sync_relay_runner.exe"
+    runner = install_root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
     runner_source = install_root / "tools/direct_sync_relay_runner.py"
     settings = install_root / "_internal/config/app_settings.json"
     settings.write_text(json.dumps({"custom_save_path": str(scan_source)}), encoding="utf-8")
@@ -317,8 +320,9 @@ def test_verify_staged_installer_rejects_each_retired_helper_member(
 
 
 def test_staged_contract_restores_runner_but_retires_install_registration_helpers():
-    assert "tools/direct_sync_relay_runner.exe" in verifier.REQUIRED_PUBLIC_MEMBERS
-    assert "tools/direct_sync_relay_runner.exe" not in verifier.RETIRED_HELPER_EXECUTABLES
+    runner_member = "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
+    assert runner_member in verifier.REQUIRED_PUBLIC_MEMBERS
+    assert runner_member not in verifier.RETIRED_HELPER_EXECUTABLES
     assert verifier.RETIRED_HELPER_EXECUTABLES == {
         "tools/direct_sync_relay_install_pack/direct_sync_relay_install_pack.exe",
         "tools/direct_sync_relay_install_pack.exe",

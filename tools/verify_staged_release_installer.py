@@ -44,7 +44,7 @@ REQUIRED_PUBLIC_MEMBERS = {
     "_internal/base_library.zip",
     "tools/invoke_embedded_python.ps1",
     "tools/direct_sync_relay_install_pack.py",
-    "tools/direct_sync_relay_runner.exe",
+    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/direct_sync_relay_runner.py",
     "tools/register_label_match_worker_pc.py",
 }
@@ -419,7 +419,12 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
         if not _same_path(str(settings.get("custom_save_path") or ""), scan_source):
             raise StagedInstallerVerificationError("staged app save path differs from relay scan source")
 
-        runner = install_root / "tools" / "direct_sync_relay_runner.exe"
+        runner = (
+            install_root
+            / "tools"
+            / "direct_sync_relay_runner"
+            / "direct_sync_relay_runner.exe"
+        )
         runner_source = install_root / "tools" / "direct_sync_relay_runner.py"
         registration = install_root / "tools" / "register_label_match_worker_pc.py"
         install_helper = install_root / "tools" / "direct_sync_relay_install_pack.py"
@@ -508,7 +513,7 @@ def verify_staged_installer(package_root: Path) -> dict[str, object]:
                 "sha256": _sha256(install_helper),
                 "execution_boundary": "in_process",
             },
-            "runner": {"path": "tools/direct_sync_relay_runner.exe", "sha256": _sha256(runner), "selected": True, "execution_boundary": "scheduled_task"},
+            "runner": {"path": "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe", "sha256": _sha256(runner), "selected": True, "execution_boundary": "scheduled_task"},
             "registration": {"path": "tools/register_label_match_worker_pc.py", "sha256": _sha256(registration), "selected": True, "execution_boundary": "in_process"},
             "embedded_python_host": {"path": "tools/invoke_embedded_python.ps1", "sha256": _sha256(embedded_python_host)},
             "retired_helper_executables_absent": True,

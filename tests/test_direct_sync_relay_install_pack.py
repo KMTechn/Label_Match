@@ -104,7 +104,9 @@ def make_packaged_app_root(tmp_path):
         path = app_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# packaged app-root fixture\n", encoding="utf-8")
-    (app_root / "tools" / "direct_sync_relay_runner.exe").write_bytes(
+    runner_root = app_root / "tools" / "direct_sync_relay_runner"
+    runner_root.mkdir()
+    (runner_root / "direct_sync_relay_runner.exe").write_bytes(
         b"packaged runner fixture\n"
     )
     return app_root
@@ -1551,7 +1553,9 @@ def test_install_pack_uses_windows_quoting_for_scheduled_task_action(tmp_path):
     assert str(plan["task_launcher"]["path"]) in task_action
     wrapper_content = module._task_wrapper_content(plan["runner_command"])
     launcher_content = module._task_launcher_content(plan["task_wrapper"]["path"])
-    assert str((app_root / "tools" / "direct_sync_relay_runner.exe").resolve()) in wrapper_content
+    assert str(
+        (app_root / "tools" / "direct_sync_relay_runner" / "direct_sync_relay_runner.exe").resolve()
+    ) in wrapper_content
     assert "invoke_embedded_python.ps1" not in wrapper_content
     assert "direct_sync_relay_runner.py" not in wrapper_content
     assert "포장실 *.csv" in wrapper_content
@@ -1563,7 +1567,9 @@ def test_install_pack_uses_windows_quoting_for_scheduled_task_action(tmp_path):
 def test_install_pack_restores_only_scheduled_runner_exe_boundary(tmp_path):
     module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
-    runner_exe = tmp_path / "tools" / "direct_sync_relay_runner.exe"
+    runner_exe = (
+        tmp_path / "tools" / "direct_sync_relay_runner" / "direct_sync_relay_runner.exe"
+    )
     runner_exe.parent.mkdir(parents=True)
     runner_exe.write_text("fixture exe", encoding="utf-8")
     args = argparse.Namespace(

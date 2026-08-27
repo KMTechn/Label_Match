@@ -637,7 +637,7 @@ $toolsDir = Join-Path $appRoot "tools"
 $embeddedPythonHost = Join-Path $toolsDir "invoke_embedded_python.ps1"
 $installPackScript = Join-Path $toolsDir "direct_sync_relay_install_pack.py"
 $runnerScript = Join-Path $toolsDir "direct_sync_relay_runner.py"
-$runnerExe = Join-Path $toolsDir "direct_sync_relay_runner.exe"
+$runnerExe = Join-Path $toolsDir "direct_sync_relay_runner\direct_sync_relay_runner.exe"
 $registrationScript = Join-Path $toolsDir "register_label_match_worker_pc.py"
 foreach ($requiredSource in @($embeddedPythonHost, $installPackScript, $runnerScript, $registrationScript)) {
     if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) {

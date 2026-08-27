@@ -41,7 +41,7 @@ FACTORY_EXPECTED_FILES = {
     "contract.lock.json",
     "build-identity.json",
     "build-compatibility.json",
-    "tools/direct_sync_relay_runner.exe",
+    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
 }
 EXPECTED_CONTRACT_LOCK = {
     "app_id": "label_match",
@@ -110,7 +110,7 @@ REQUIRED_PACKAGE_MEMBERS = {
     "producer_runtime_client.py",
     "tools/check_logistics_runtime_profile.py",
     "tools/direct_sync_relay_install_pack.py",
-    "tools/direct_sync_relay_runner.exe",
+    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/direct_sync_relay_runner.py",
     "tools/invoke_embedded_python.ps1",
     "tools/install_logistics_runtime_profile.py",
@@ -703,7 +703,7 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
         if not target.is_file() or entry.get("sha256") != _sha256(target):
             raise ReleaseArchiveError(f"staged installer {name} hash mismatch")
     runner = report.get("runner")
-    runner_relative = "tools/direct_sync_relay_runner.exe"
+    runner_relative = "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
     if (
         not isinstance(runner, dict)
         or set(runner) != {"path", "sha256", "selected", "execution_boundary"}

@@ -71,7 +71,7 @@ $RequiredPackageMembers = @(
     "tools/invoke_embedded_python.ps1",
     "tools/direct_sync_relay_install_pack.py",
     "tools/direct_sync_relay_runner.py",
-    "tools/direct_sync_relay_runner.exe",
+    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.py"
 )
 $MutableAppRelativePaths = @("_internal/config/app_settings.json")

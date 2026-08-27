@@ -278,7 +278,7 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
         staged_root / "_internal/base_library.zip",
         staged_root / "tools/invoke_embedded_python.ps1",
         staged_root / "tools/direct_sync_relay_install_pack.py",
-        staged_root / "tools/direct_sync_relay_runner.exe",
+        staged_root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
         staged_root / "tools/direct_sync_relay_runner.py",
         staged_root / "tools/register_label_match_worker_pc.py",
     )
@@ -380,11 +380,11 @@ def test_staged_release_public_entrypoint_self_stages_manifest_bound_payload(tmp
     assert install_report["status"] == "DRY_RUN"
     assert install_report["field_layout_contract"]["local_test_override_enabled"] is True
     assert _normalized(install_report["runner_exe"]) == _normalized(
-        install_root / "tools/direct_sync_relay_runner.exe"
+        install_root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
     )
     assert install_report["runner_command_mode"] == "bundled_executable"
     assert _normalized(install_report["runner_command"][0]) == _normalized(
-        install_root / "tools/direct_sync_relay_runner.exe"
+        install_root / "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe"
     )
     assert _normalized(install_report["source_scan_baseline_command"][0]) == _normalized(
         install_root / "tools/direct_sync_relay_runner.py"

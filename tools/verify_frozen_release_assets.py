@@ -78,7 +78,7 @@ REQUIRED_MEMBERS = {
     "producer_runtime_client.py",
     "tools/check_logistics_runtime_profile.py",
     "tools/direct_sync_relay_install_pack.py",
-    "tools/direct_sync_relay_runner.exe",
+    "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/direct_sync_relay_runner.py",
     "tools/invoke_embedded_python.ps1",
     "tools/install_logistics_runtime_profile.py",
@@ -307,7 +307,7 @@ def _validate_cli_tools_manifest(
     }
     _require(payload.get("probe_policy") == expected_policy, "release CLI probe policy mismatch")
     expected_specs = [
-        ("direct_sync_relay_runner", "tools/direct_sync_relay_runner.py", "onefile"),
+        ("direct_sync_relay_runner", "tools/direct_sync_relay_runner.py", "onedir"),
         ("direct_sync_relay_install_pack", "tools/direct_sync_relay_install_pack.py", "onedir"),
         ("register_label_match_worker_pc", "tools/register_label_match_worker_pc.py", "onefile"),
     ]
