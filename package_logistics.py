@@ -33,6 +33,10 @@ from logistics_runtime_profile import (
     load_logistics_runtime_profile,
     logistics_runtime_required,
 )
+from deferred_intent_capture import (
+    DEFERRED_INTENT_SCHEMA_SQL,
+    supersede_for_legacy_outbox,
+)
 
 
 OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v10"
@@ -877,6 +881,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             value TEXT NOT NULL
         );
         """
+        + DEFERRED_INTENT_SCHEMA_SQL
     )
     command_columns = {
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
@@ -1039,7 +1044,12 @@ class PackageOutbox:
             _initialize_outbox_schema(conn)
             conn.commit()
 
-    def enqueue(self, draft: PackageCommandDraft) -> dict[str, Any]:
+    def enqueue(
+        self,
+        draft: PackageCommandDraft,
+        *,
+        captured_intent_id: str = "",
+    ) -> dict[str, Any]:
         key = f"label-package-{stable_id('cmd', draft.set_id, draft.package_bundle_id)}"
         fingerprint = draft.fingerprint()
         now = utc_now()
@@ -1053,6 +1063,17 @@ class PackageOutbox:
                 if existing["command_fingerprint"] != fingerprint:
                     conn.rollback()
                     raise PackageLogisticsError("packaging set was already queued with different data")
+                if str(captured_intent_id or "").strip():
+                    supersede_for_legacy_outbox(
+                        conn,
+                        intent_id=captured_intent_id,
+                        local_work_identity=draft.set_id,
+                        downstream_outbox_ref=(
+                            "package_command_outbox:"
+                            + str(existing["idempotency_key"])
+                        ),
+                        occurred_at=now,
+                    )
                 conn.commit()
                 return dict(existing)
             conn.execute(
@@ -1073,8 +1094,54 @@ class PackageOutbox:
             row = conn.execute(
                 "SELECT * FROM package_command_outbox WHERE idempotency_key=?", (key,)
             ).fetchone()
+            if str(captured_intent_id or "").strip():
+                supersede_for_legacy_outbox(
+                    conn,
+                    intent_id=captured_intent_id,
+                    local_work_identity=draft.set_id,
+                    downstream_outbox_ref=f"package_command_outbox:{key}",
+                    occurred_at=now,
+                )
             conn.commit()
             return dict(row)
+
+    def link_captured_intent_to_existing(
+        self,
+        *,
+        captured_intent_id: str,
+        set_id: str,
+        idempotency_key: str,
+    ) -> None:
+        """Repair an interrupted exact handoff without creating another row."""
+
+        intent_id = str(captured_intent_id or "").strip()
+        normalized_set_id = str(set_id or "").strip()
+        key = str(idempotency_key or "").strip()
+        if not all((intent_id, normalized_set_id, key)):
+            raise PackageLogisticsError(
+                "captured intent legacy handoff identity is incomplete"
+            )
+        now = utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """SELECT idempotency_key,set_id
+                     FROM package_command_outbox
+                    WHERE idempotency_key=? AND set_id=?""",
+                (key, normalized_set_id),
+            ).fetchone()
+            if existing is None:
+                raise PackageLogisticsError(
+                    "exact package outbox row is unavailable for captured intent handoff"
+                )
+            supersede_for_legacy_outbox(
+                conn,
+                intent_id=intent_id,
+                local_work_identity=normalized_set_id,
+                downstream_outbox_ref=f"package_command_outbox:{key}",
+                occurred_at=now,
+            )
+            conn.commit()
 
     @staticmethod
     def _replacement_waiting_event_payload(

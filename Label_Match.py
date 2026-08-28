@@ -32,6 +32,14 @@ from current_user_onboarding import (
     LEGACY_DIRECT_SYNC_ROOT_ENV,
     ONBOARDING_EXIT_CODE,
     onboard_current_user,
+    resolve_current_user_onboarding_paths,
+)
+from direct_sync_push import manifest_hash as direct_sync_manifest_hash
+from deferred_intent_capture import (
+    DeferredCaptureResult,
+    DeferredIntentBinding,
+    DeferredIntentCaptureError,
+    DeferredIntentCaptureStore,
 )
 from label_match_product_host import dispatch_product_mode
 
@@ -847,6 +855,80 @@ def _label_match_json_file(path):
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _label_match_deferred_intent_binding(client, *, environ=None):
+    """Resolve the already-enrolled, secret-free local capture binding.
+
+    This deliberately reads neither the protected credential nor the runtime
+    profile.  Authority scope comes from the client configuration that startup
+    has already authenticated and loaded.
+    """
+
+    config = getattr(client, "config", None)
+    if config is None:
+        raise DeferredIntentCaptureError(
+            "CAPTURE_BINDING_UNAVAILABLE",
+            "the authenticated Label client binding is unavailable",
+        )
+    paths = resolve_current_user_onboarding_paths(
+        _label_match_runtime_app_root(),
+        environ=environ,
+    )
+    identity = _label_match_json_file(str(paths.identity_path))
+    manifest = _label_match_json_file(str(paths.producer_manifest_path))
+    registration = _label_match_json_file(str(paths.registration_report_path))
+    producer_id = str(identity.get("producer_id") or "").strip()
+    producer_install_id = str(
+        identity.get("producer_install_id") or ""
+    ).strip()
+    source_host_id = str(identity.get("source_host_id") or "").strip()
+    expected_manifest_hash = str(
+        registration.get("manifest_hash") or ""
+    ).strip().lower()
+    pc_identity = manifest.get("pc_identity")
+    if not isinstance(pc_identity, dict):
+        raise DeferredIntentCaptureError(
+            "CAPTURE_BINDING_INVALID",
+            "the enrolled producer manifest has no PC identity",
+        )
+    registration_producer_id = str(
+        registration.get("producer_id") or producer_id
+    ).strip()
+    if (
+        not all(
+            (
+                producer_id,
+                producer_install_id,
+                source_host_id,
+                expected_manifest_hash,
+            )
+        )
+        or registration_producer_id != producer_id
+        or str(pc_identity.get("source_host_id") or "").strip()
+        != source_host_id
+        or str(pc_identity.get("producer_install_id") or "").strip()
+        != producer_install_id
+        or direct_sync_manifest_hash(manifest) != expected_manifest_hash
+        or registration.get("server_registration_verified") is not True
+        or registration.get("manifest_hash_verified") is not True
+        or registration.get("persisted_manifest_hash_verified") is not True
+        or str(getattr(config, "source_host_id", "") or "").strip()
+        != source_host_id
+    ):
+        raise DeferredIntentCaptureError(
+            "CAPTURE_BINDING_INVALID",
+            "the enrolled producer identity and manifest binding differ",
+        )
+    return DeferredIntentBinding(
+        producer_id=producer_id,
+        producer_install_id=producer_install_id,
+        source_host_id=source_host_id,
+        manifest_hash=expected_manifest_hash,
+        authority_scope_id=str(
+            getattr(config, "authority_scope_id", "") or ""
+        ).strip(),
+    ).validated()
 
 
 def _label_match_write_json(path, payload, *, raise_on_error=False):
@@ -5003,6 +5085,25 @@ class Label_Match(tk.Tk):
         )
         self.package_logistics_client = startup_package_logistics_client
         self._logistics_authoritative_required = startup_logistics_required
+        self.deferred_intent_capture = None
+        self._deferred_intent_capture_error = ""
+        if self.package_logistics_client is not None:
+            try:
+                self.deferred_intent_capture = DeferredIntentCaptureStore(
+                    package_outbox_path,
+                    _label_match_deferred_intent_binding(
+                        self.package_logistics_client
+                    ),
+                    initialize_schema=False,
+                )
+            except Exception as exc:
+                self._deferred_intent_capture_error = str(
+                    getattr(exc, "code", exc.__class__.__name__)
+                )
+                print(
+                    "Label deferred-intent capture initialization diagnostic: "
+                    f"{self._deferred_intent_capture_error}"
+                )
         self.sealed_transfer_exchange_store = SealedTransferExchangeStore(
             package_outbox_path
         )
@@ -8090,6 +8191,112 @@ class Label_Match(tk.Tk):
             expected_snapshot=expected_snapshot,
         )
 
+    def _show_deferred_capture_pending(
+        self,
+        result,
+        *,
+        central_check_pending=False,
+    ):
+        intent_id = str(getattr(result, "intent_id", "") or "").strip()
+        pending_count = int(getattr(result, "pending_count", 0) or 0)
+        oldest_age = int(getattr(result, "oldest_age_seconds", 0) or 0)
+        headline = "저장됨-검증대기"
+        if central_check_pending:
+            headline += " · 중앙 확인 중"
+        if "big_display_label" in self.__dict__:
+            self.update_big_display(headline, "primary")
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            status_label.config(
+                text=(
+                    f"저장됨-검증대기 | intent {intent_id} | "
+                    f"대기 {pending_count}건 | 최장 {oldest_age}초"
+                ),
+                style="Status.TLabel",
+            )
+        self._deferred_capture_ui = {
+            "status": "저장됨-검증대기",
+            "intent_id": intent_id,
+            "pending_count": pending_count,
+            "oldest_age_seconds": oldest_age,
+            "central_check_pending": bool(central_check_pending),
+            "operator_complete_signal": False,
+        }
+
+    def _deferred_capture_pending_notice(self):
+        state = self.__dict__.get("_deferred_capture_ui") or {}
+        if state.get("status") != "저장됨-검증대기":
+            return None
+        intent_id = str(state.get("intent_id") or "").strip()
+        pending_count = int(state.get("pending_count") or 0)
+        oldest_age = int(state.get("oldest_age_seconds") or 0)
+        next_step = (
+            "중앙 연결을 확인하고 있습니다."
+            if state.get("central_check_pending")
+            else "중앙 연결 복구 후 검증됩니다."
+        )
+        return WorkflowNotice(
+            title="저장됨-검증대기",
+            message=(
+                f"intent {intent_id}\n"
+                f"대기 {pending_count}건 · 최장 {oldest_age}초\n"
+                f"{next_step}"
+            ),
+            kind="deferred_capture_pending",
+            tone="warning",
+        )
+
+    def _deferred_capture_failure_notice(self):
+        state = self.__dict__.get("_deferred_capture_ui") or {}
+        if state.get("status") != "저장 실패—다시 스캔 필요":
+            return None
+        return WorkflowNotice(
+            title="저장 실패—다시 스캔 필요",
+            message=(
+                "보호 저장이 완료되지 않았습니다.\n"
+                "같은 현품표를 다시 스캔하세요."
+            ),
+            kind="deferred_capture_failure",
+            tone="danger",
+        )
+
+    def _show_deferred_capture_failure(self, error):
+        code = str(getattr(error, "code", "CAPTURE_DURABILITY_FAILED"))
+        if "big_display_label" in self.__dict__:
+            self.update_big_display("저장 실패—다시 스캔 필요", "red")
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            status_label.config(
+                text="저장 실패—다시 스캔 필요",
+                style="Error.TLabel",
+            )
+        self._deferred_capture_ui = {
+            "status": "저장 실패—다시 스캔 필요",
+            "error_code": code,
+            "operator_complete_signal": False,
+        }
+
+    def _capture_central_phs2_scan(self, physical_qr_payload, item_code):
+        store = self.__dict__.get("deferred_intent_capture")
+        if store is None:
+            raise DeferredIntentCaptureError(
+                self.__dict__.get("_deferred_intent_capture_error")
+                or "CAPTURE_STORE_UNAVAILABLE",
+                "durable Label deferred-intent capture is unavailable",
+            )
+        set_id = str(self._ensure_current_set_id() or "").strip()
+        result = store.capture_label_package_source(
+            local_work_identity=set_id,
+            physical_qr_payload=physical_qr_payload,
+            item_code=item_code,
+        )
+        self.current_set_info["deferred_intent_id"] = result.intent_id
+        self._show_deferred_capture_pending(
+            result,
+            central_check_pending=True,
+        )
+        return result
+
     def _resolve_central_phs2_scan_overlay(
         self,
         physical_qr_payload,
@@ -8245,6 +8452,7 @@ class Label_Match(tk.Tk):
                     }
                 }
             )
+        self._deferred_capture_ui = None
         self._render_operator_workbench()
         self._focus_scan_entry_if_available()
         return True
@@ -8258,29 +8466,49 @@ class Label_Match(tk.Tk):
             "_phs_label_scan_lookup_in_progress", False
         ):
             return False
+        try:
+            capture_result = self._capture_central_phs2_scan(
+                physical_qr_payload,
+                item_code,
+            )
+        except Exception as exc:
+            print(
+                "PHS2 deferred-intent capture technical diagnostic: "
+                f"{getattr(exc, 'code', exc.__class__.__name__)}"
+            )
+            self._show_deferred_capture_failure(exc)
+            return True
         if self.run_tests:
-            evidence, snapshot, sealed, operation_lease = (
-                self._resolve_central_phs2_scan_overlay(
-                    physical_qr_payload,
-                    item_code,
+            try:
+                evidence, snapshot, sealed, operation_lease = (
+                    self._resolve_central_phs2_scan_overlay(
+                        physical_qr_payload,
+                        item_code,
+                    )
                 )
-            )
-            return self._accept_resolved_central_phs2_scan(
-                evidence,
-                snapshot,
-                sealed,
-                operation_lease,
-            )
+                return self._accept_resolved_central_phs2_scan(
+                    evidence,
+                    snapshot,
+                    sealed,
+                    operation_lease,
+                )
+            except Exception as exc:
+                print(
+                    "PHS2 package-source verification technical diagnostic: "
+                    f"{exc}"
+                )
+                self._show_deferred_capture_pending(capture_result)
+                return True
         captured_raw = tuple(
             self.current_set_info.get("raw") or ()
         )
         result_queue = queue.Queue(maxsize=1)
         self._phs_label_scan_lookup_in_progress = True
-        self.update_big_display(
-            "현재 사용 현품표와 포장 자료 확인 중",
-            "primary",
-        )
         self._render_operator_workbench()
+        self._show_deferred_capture_pending(
+            capture_result,
+            central_check_pending=True,
+        )
 
         def worker():
             try:
@@ -8310,15 +8538,8 @@ class Label_Match(tk.Tk):
                 return
             if not ok:
                 print(f"PHS2 포장 권한 확인 기술 진단: {value}")
-                self._handle_input_error(
-                    physical_qr_payload,
-                    title="[현재 사용 현품표 확인 실패]",
-                    reason=(
-                        "현품표 또는 중앙 포장 자료를 확인하지 못했습니다.\n\n"
-                        "→ 네트워크와 포장 상태를 확인한 뒤 다시 스캔하세요."
-                    ),
-                )
                 self._render_operator_workbench()
+                self._show_deferred_capture_pending(capture_result)
                 return
             evidence, snapshot, sealed, operation_lease = value
             try:
@@ -8330,15 +8551,8 @@ class Label_Match(tk.Tk):
                 )
             except Exception as exc:
                 print(f"PHS2 로컬 반영 기술 진단: {exc}")
-                self._handle_input_error(
-                    physical_qr_payload,
-                    title="[PHS2 로컬 반영 실패]",
-                    reason=(
-                        "현재 현품표와 포장 권한을 안전하게 저장하지 못했습니다.\n\n"
-                        "→ 현재 실물을 유지하고 다시 스캔하세요. 계속 실패하면 "
-                        "관리자에게 확인을 요청하세요."
-                    ),
-                )
+                self._render_operator_workbench()
+                self._show_deferred_capture_pending(capture_result)
 
         threading.Thread(
             target=worker,
@@ -10825,8 +11039,10 @@ class Label_Match(tk.Tk):
                 if not durable_acceptance:
                     self._clear_workflow_completion()
                     self._workflow_recovered = False
-                    self.current_set_info['id'] = str(time.time_ns())
-                    self.current_set_info['start_time'] = datetime.now()
+                    if not self.current_set_info.get('id'):
+                        self.current_set_info['id'] = str(time.time_ns())
+                    if not self.current_set_info.get('start_time'):
+                        self.current_set_info['start_time'] = datetime.now()
                 else:
                     if not self.current_set_info.get('id'):
                         self.current_set_info['id'] = str(time.time_ns())
@@ -10976,6 +11192,17 @@ class Label_Match(tk.Tk):
             str(current.get("id") or "")
         )
         if existing_row is not None:
+            captured_intent_id = str(
+                current.get("deferred_intent_id") or ""
+            ).strip()
+            if captured_intent_id:
+                outbox.link_captured_intent_to_existing(
+                    captured_intent_id=captured_intent_id,
+                    set_id=str(current.get("id") or ""),
+                    idempotency_key=str(
+                        existing_row.get("idempotency_key") or ""
+                    ),
+                )
             return _label_match_existing_package_row_metadata(
                 existing_row,
                 current,
@@ -11101,7 +11328,12 @@ class Label_Match(tk.Tk):
                 }
             )
             draft = PackageCommandDraft.from_dict(draft_data)
-        row = outbox.enqueue(draft)
+        row = outbox.enqueue(
+            draft,
+            captured_intent_id=str(
+                current.get("deferred_intent_id") or ""
+            ).strip(),
+        )
         return {
             "status": str(row.get("status") or "PENDING"),
             "idempotency_key": row["idempotency_key"],
@@ -12014,6 +12246,7 @@ class Label_Match(tk.Tk):
             'phs_label_guidance': '',
             'package_source_snapshot': None,
             'resolved_transfer_bundle_id': '',
+            'deferred_intent_id': '',
             'package_submission_idempotency_key': '',
             'package_submission_status': '',
             'operation_lease_id': '',
@@ -14586,6 +14819,10 @@ class Label_Match(tk.Tk):
         )
         view = present_workflow(snapshot)
         self._last_workflow_view = view
+        deferred_capture_notice = (
+            self._deferred_capture_pending_notice()
+            or self._deferred_capture_failure_notice()
+        )
 
         view_mode_label = self.__dict__.get("view_mode_label")
         if view_mode_label is not None:
@@ -14597,7 +14834,13 @@ class Label_Match(tk.Tk):
         headline = self.__dict__.get("big_display_label")
         if headline is not None:
             try:
-                headline.configure(text=self._workflow_headline_text(view))
+                headline.configure(
+                    text=(
+                        deferred_capture_notice.title
+                        if deferred_capture_notice is not None
+                        else self._workflow_headline_text(view)
+                    )
+                )
             except (TclError, AttributeError):
                 pass
         progress = self.__dict__.get("progress_bar")
@@ -14769,14 +15012,17 @@ class Label_Match(tk.Tk):
         # The central list and its selected-row detail retain the complete last
         # normal scan.  Repeating that raw value in the fixed notice row both
         # duplicates information and can force a short-screen height overflow.
-        display_notice = view.notice or self.__dict__.get(
+        display_notice = deferred_capture_notice or view.notice or self.__dict__.get(
             "_package_create_review_notice"
         ) or self.__dict__.get(
             "_package_cancellation_review_notice"
         ) or self.__dict__.get(
             "_phs_label_guidance_notice"
         )
-        self._set_workflow_notice_ui(display_notice, view.next_action)
+        self._set_workflow_notice_ui(
+            display_notice,
+            "" if deferred_capture_notice is not None else view.next_action,
+        )
         last_scan_label = self.__dict__.get("operator_last_scan_label")
         if last_scan_label is None:
             last_scan_label = self.__dict__.get("status_label")
