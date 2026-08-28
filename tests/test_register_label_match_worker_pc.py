@@ -276,6 +276,8 @@ def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
 ):
     module = load_registration_module()
     data_dir = tmp_path / "DirectSync" / "label_match"
+    tls_ca_bundle_path = tmp_path / "private-ca.cert.pem"
+    tls_ca_bundle_path.write_bytes(b"private-ca-fixture")
     args = type(
         "Args",
         (),
@@ -299,7 +301,7 @@ def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
             "server_base_url": "https://worker.example.invalid",
             "source_host_id": "",
             "sync_dir": str(tmp_path / "Label_Match" / "data"),
-            "tls_ca_bundle_path": "",
+            "tls_ca_bundle_path": str(tls_ca_bundle_path),
             "dry_run": False,
         },
     )()
@@ -342,6 +344,7 @@ def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
     assert credential["dpapi_scope"] == "current_user"
     assert observed["secret_scope"] == "current_user"
     assert observed["profile"]["credential_scope"] == "current_user"
+    assert observed["profile"]["tls_ca_bundle_path"] == str(tls_ca_bundle_path)
     assert applied["credential_scope"] == "current_user"
     assert applied["server_registration_verified"] is True
 

@@ -4,9 +4,14 @@ import json
 import os
 from pathlib import Path
 import stat
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 import Label_Match as label_module
 import logistics_runtime_profile as runtime_module
@@ -22,6 +27,7 @@ from logistics_runtime_profile import (
 from package_logistics import PackageLogisticsError, package_client_from_env
 from tools.install_logistics_runtime_profile import (
     install_runtime_profile,
+    install_tls_ca_bundle_for_existing_profile,
     main as install_main,
 )
 from tools.check_logistics_runtime_profile import main as readiness_main
@@ -78,6 +84,26 @@ def _profile(tmp_path, *, profile_path=None, **changes):
 def _env(monkeypatch, profile_path):
     monkeypatch.setenv("KM_LOGISTICS_REQUIRED", "1")
     monkeypatch.setenv("KM_LOGISTICS_PROFILE_PATH", str(profile_path))
+
+
+def _private_ca_pem() -> bytes:
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Label Match Test Private CA")]
+    )
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(private_key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM)
 
 
 def test_default_profile_path_is_program_scoped(tmp_path):
@@ -765,6 +791,39 @@ def test_installer_requires_reader_principal_before_any_write(tmp_path):
     assert not target.parent.exists()
 
 
+def test_installer_rejects_invalid_tls_ca_before_any_profile_write(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "not-created" / "profile.json"
+    invalid_ca = tmp_path / "invalid-ca.pem"
+    invalid_ca.write_bytes(b"not-a-pem-certificate")
+    monkeypatch.setattr(
+        profile_installer_module,
+        "protect_current_user_secret",
+        lambda value: b"protected:" + value.encode("utf-8"),
+    )
+
+    with pytest.raises(
+        LogisticsRuntimeConfigurationError,
+        match="only PEM certificates",
+    ):
+        install_runtime_profile(
+            profile_path=target,
+            base_url="https://logistics.example.invalid",
+            authority_scope="scope-current-user",
+            authority_epoch=7,
+            authority_plane="AUTHORITATIVE",
+            plane_epoch=3,
+            device_id="label-pc-user",
+            source_host_id="label-host-user",
+            bearer_token="secret",
+            tls_ca_bundle_path=invalid_ca,
+            credential_scope="current_user",
+        )
+
+    assert not target.parent.exists()
+
+
 def test_current_user_profile_install_uses_current_user_dpapi_without_machine_acl(
     tmp_path, monkeypatch
 ):
@@ -808,3 +867,50 @@ def test_current_user_profile_install_uses_current_user_dpapi_without_machine_ac
     assert payload["authority_plane"] == "AUTHORITATIVE"
     assert secret_path.read_bytes() == b"user-dpapi:" + token.encode("utf-8")
     assert machine_acl_calls == []
+
+
+def test_existing_current_user_profile_can_add_ca_without_rotating_secret(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    token = "current-user-secret"
+    monkeypatch.setattr(
+        profile_installer_module,
+        "protect_current_user_secret",
+        lambda value: b"user-dpapi:" + value.encode("utf-8"),
+    )
+    monkeypatch.setattr(
+        profile_installer_module,
+        "unprotect_current_user_secret",
+        lambda value: value.removeprefix(b"user-dpapi:").decode("utf-8"),
+    )
+    install_runtime_profile(
+        profile_path=target,
+        base_url="https://logistics.example.invalid:18456",
+        authority_scope="scope-user",
+        authority_epoch=7,
+        authority_plane="AUTHORITATIVE",
+        plane_epoch=3,
+        device_id="label-pc-user",
+        source_host_id="label-host-user",
+        bearer_token=token,
+        credential_scope="current_user",
+    )
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    secret_before = secret_path.read_bytes()
+    ca_source = tmp_path / "private-ca.cert.pem"
+    ca_payload = _private_ca_pem()
+    ca_source.write_bytes(ca_payload)
+
+    report = install_tls_ca_bundle_for_existing_profile(
+        profile_path=target,
+        tls_ca_bundle_path=ca_source,
+        credential_scope="current_user",
+    )
+
+    ca_target = target.parent / "tls" / "ca-bundle.pem"
+    profile = json.loads(target.read_text(encoding="utf-8"))
+    assert report["status"] == "upgraded"
+    assert profile["tls_ca_bundle_path"] == str(ca_target.resolve())
+    assert ca_target.read_bytes() == ca_payload
+    assert secret_path.read_bytes() == secret_before

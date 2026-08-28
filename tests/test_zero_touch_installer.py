@@ -1,11 +1,16 @@
 import hashlib
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 import subprocess
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +62,26 @@ def _release_fixture(root: Path) -> Path:
     )
     (release / "_internal" / "python312.dll").write_bytes(b"reachable-runtime")
     return release
+
+
+def _private_ca_pem() -> bytes:
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Label Match Test Private CA")]
+    )
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(private_key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM)
 
 
 def test_bootstrap_is_minimal_code_only_onedir_contract():
@@ -165,6 +190,33 @@ def test_bootstrap_places_exact_onedir_bytes_records_integrity_and_reuses(tmp_pa
     assert "different or damaged hardened code placement" in (
         damaged.stderr + damaged.stdout
     )
+
+
+def test_bootstrap_copies_opt_in_tls_ca_for_current_user_onboarding(tmp_path):
+    source = _release_fixture(tmp_path)
+    install = tmp_path / "apps" / "current"
+    local_app_data = tmp_path / "operator" / "LocalAppData"
+    ca_source = tmp_path / "operator stage" / "private-ca.cert.pem"
+    ca_source.parent.mkdir(parents=True)
+    ca_payload = _private_ca_pem()
+    ca_source.write_bytes(ca_payload)
+
+    completed = _run_installer(
+        source,
+        install,
+        "-TlsCaBundlePath",
+        str(ca_source),
+        "-OperatorLocalAppDataRoot",
+        str(local_app_data),
+    )
+
+    expected = (
+        local_app_data / "KMTech" / "Bootstrap" / "Label_Match" / "ca-bundle.pem"
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert "tls_ca_bootstrap_status=PASS" in completed.stdout
+    assert f"tls_ca_bootstrap_path={expected}" in completed.stdout
+    assert expected.read_bytes() == ca_payload
 
 
 def test_bootstrap_inverse_removes_only_code_and_preserves_user_state(tmp_path):

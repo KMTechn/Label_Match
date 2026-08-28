@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import item_catalog_sync as catalog_sync
 from label_match_single_instance import (
     ActivationResult,
     ERROR_ALREADY_EXISTS,
@@ -338,8 +339,17 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
         app_module,
         "prepare_startup_item_catalog",
         lambda: (_ for _ in ()).throw(
-            app_module.ItemCatalogSyncError(sensitive_marker)
+            app_module.ItemCatalogSyncError(
+                sensitive_marker,
+                cause_code=catalog_sync.REQUEST_FAILED_NO_CACHE,
+            )
         ),
+    )
+    diagnostic_calls = []
+    monkeypatch.setattr(
+        app_module,
+        "write_item_catalog_failure_diagnostic",
+        lambda path, error: diagnostic_calls.append((path, error.cause_code)),
     )
 
     class NoTkLabelMatch:
@@ -369,4 +379,90 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     assert sensitive_marker not in dialogs[0][0]
     assert sensitive_marker not in dialogs[0][1]
     assert sensitive_marker not in repr(traces)
-    assert ("item_catalog_startup_blocked", {"exit_code": 3}) in traces
+    assert diagnostic_calls[0][1] == catalog_sync.REQUEST_FAILED_NO_CACHE
+    assert (
+        "item_catalog_startup_blocked",
+        {
+            "exit_code": 3,
+            "cause_code": catalog_sync.REQUEST_FAILED_NO_CACHE,
+        },
+    ) in traces
+
+
+def test_main_warns_and_continues_with_verified_catalog_cache(
+    monkeypatch, tmp_path
+):
+    import Label_Match as app_module
+
+    calls = []
+    dialogs = []
+    cache_path = tmp_path / "Item.csv"
+    diagnostic_path = tmp_path / "status" / "item_catalog_startup_diagnostic.json"
+    monkeypatch.setattr(app_module, "resolve_data_scope", lambda **_kwargs: str(tmp_path))
+    monkeypatch.setattr(
+        app_module,
+        "run_guarded_entrypoint",
+        lambda start, *, data_scope: start(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "prepare_startup_item_catalog",
+        lambda: calls.append("catalog") or str(cache_path),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_catalog_attempt_context",
+        lambda: {
+            "catalog_source": "VERIFIED_CACHE",
+            "cache_used": True,
+            "cache_last_modified_utc": "2026-08-28T00:21:44+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_item_catalog_diagnostic_path",
+        lambda: diagnostic_path,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "write_item_catalog_startup_diagnostic",
+        lambda path: calls.append(("diagnostic", Path(path))),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda title, message: dialogs.append((title, message)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_label_match_startup_trace",
+        lambda stage, **details: calls.append((stage, details)),
+    )
+
+    class FakeLabelMatch:
+        FILES = app_module.Label_Match.FILES
+
+        def __init__(self):
+            calls.append("client-created")
+
+        def title(self):
+            return "Label Match"
+
+        def state(self):
+            return "normal"
+
+        def mainloop(self):
+            calls.append("mainloop")
+
+    monkeypatch.setattr(app_module, "Label_Match", FakeLabelMatch)
+
+    assert app_module.main([]) == 0
+    assert calls[0] == ("main_enter", {})
+    assert calls[1] == "catalog"
+    assert calls[2] == ("diagnostic", diagnostic_path)
+    assert "client-created" in calls
+    assert "mainloop" in calls
+    assert len(dialogs) == 1
+    assert dialogs[0][0] == app_module.ITEM_CATALOG_CACHE_WARNING_TITLE
+    assert "2026-08-28" in dialogs[0][1]
+    assert "UNKNOWN" not in dialogs[0][1]

@@ -469,6 +469,103 @@ def test_authenticated_request_failure_does_not_log_exception_message(
     assert "transport failed" not in caplog.text
     assert SECRET_MARKER not in str(raised.value)
     assert raised.value.__cause__ is None
+    assert raised.value.cause_code == sync.REQUEST_FAILED_NO_CACHE
+    assert raised.value.diagnostic_context["request_sent"] is True
+    assert raised.value.diagnostic_context["http_status_code"] is None
+    assert raised.value.diagnostic_context["exception_type"] == "OSError"
+
+
+def test_enrolled_catalog_reports_legacy_root_cache_but_never_trusts_it(
+    monkeypatch, tmp_path
+):
+    local_app_data = tmp_path / "LocalAppData"
+    legacy_cache = local_app_data / "KMTech" / "ItemCatalog" / "Item.csv"
+    legacy_cache.parent.mkdir(parents=True)
+    legacy_cache.write_bytes(CATALOG)
+    bundle = tmp_path / "bundle.csv"
+    bundle.write_bytes(CATALOG)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setattr(
+        logistics_runtime_profile,
+        "load_logistics_runtime_profile",
+        lambda required=None: _profile(),
+    )
+
+    with pytest.raises(sync.ItemCatalogSyncError) as raised:
+        refresh_item_catalog(
+            bundle,
+            get=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("catalog transport failed")
+            ),
+        )
+
+    expected_cache = (
+        local_app_data
+        / "KMTech"
+        / "ItemCatalog"
+        / "Label_Match"
+        / "Item.csv"
+    )
+    context = raised.value.diagnostic_context
+    assert raised.value.cause_code == sync.REQUEST_FAILED_NO_CACHE
+    assert context["cache_path"] == str(expected_cache)
+    assert context["legacy_cache_present"] is True
+    assert context["cache_catalog_present"] is False
+    assert context["cache_authority_present"] is False
+    assert context["cache_state"] == "ABSENT"
+
+
+def test_catalog_failure_diagnostic_is_bounded_and_contains_no_secrets(
+    monkeypatch, tmp_path
+):
+    bundle = tmp_path / "bundle.csv"
+    bundle.write_bytes(CATALOG)
+    source_host_id = "source-host-secret-6b5ffbe0"
+    device_id = "device-id-secret-e90547f4"
+    bearer_token = "bearer-secret-e30cf16f"
+    monkeypatch.setattr(
+        logistics_runtime_profile,
+        "load_logistics_runtime_profile",
+        lambda required=None: _profile(
+            bearer_token=bearer_token,
+            source_host_id=source_host_id,
+            device_id=device_id,
+        ),
+    )
+
+    class RejectedResponse:
+        status_code = 503
+        reason = "Service Unavailable"
+        content = CATALOG
+
+        def raise_for_status(self):
+            raise OSError(
+                f"hidden {bearer_token} {source_host_id} {device_id}"
+            )
+
+    with pytest.raises(sync.ItemCatalogSyncError) as raised:
+        refresh_item_catalog(
+            bundle,
+            cache_path=tmp_path / "cache.csv",
+            get=lambda *_args, **_kwargs: RejectedResponse(),
+        )
+
+    raised.value.diagnostic_context["unexpected_secret"] = bearer_token
+    diagnostic_path = tmp_path / "item_catalog_startup_diagnostic.json"
+    sync.write_item_catalog_failure_diagnostic(diagnostic_path, raised.value)
+    diagnostic_text = diagnostic_path.read_text(encoding="utf-8")
+    diagnostic = json.loads(diagnostic_text)
+
+    assert diagnostic["schema"] == sync.CATALOG_DIAGNOSTIC_SCHEMA
+    assert diagnostic["cause_code"] == sync.REQUEST_FAILED_NO_CACHE
+    assert diagnostic["request_sent"] is True
+    assert diagnostic["http_status_code"] == 503
+    assert diagnostic["http_reason_phrase"] == "Service Unavailable"
+    assert diagnostic["cache_state"] == "ABSENT"
+    assert diagnostic["exception_type"] == "OSError"
+    assert diagnostic_path.stat().st_size <= 8192
+    for secret in (bearer_token, source_host_id, device_id, "Authorization", "Bearer"):
+        assert secret not in diagnostic_text
 
 
 def test_redirect_response_is_rejected_and_uses_last_good_cache(
@@ -567,6 +664,20 @@ def test_central_refresh_success_and_offline_last_good(monkeypatch, tmp_path):
         get=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
     ) == cache
     assert cache.read_bytes() == CATALOG
+    context = sync.get_catalog_attempt_context()
+    assert context["catalog_source"] == "VERIFIED_CACHE"
+    assert context["cache_state"] == "VALID_AUTHENTICATED"
+    assert context["cache_used"] is True
+    assert context["cache_last_modified_utc"] != "UNKNOWN"
+
+    diagnostic_path = tmp_path / "status" / "item_catalog_startup_diagnostic.json"
+    sync.write_item_catalog_startup_diagnostic(diagnostic_path)
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "DEGRADED_CACHE"
+    assert diagnostic["cause_code"] is None
+    assert diagnostic["catalog_source"] == "VERIFIED_CACHE"
+    assert diagnostic["cache_used"] is True
+    assert diagnostic["cache_last_modified_utc"] != "UNKNOWN"
 
 
 def test_pre_enrollment_cache_is_not_accepted_after_enrollment(monkeypatch, tmp_path):
@@ -859,8 +970,33 @@ def test_async_startup_load_uses_verified_snapshot_after_cache_tamper(
     with pytest.raises(
         app_module.ItemCatalogSyncError,
         match="snapshot is unavailable",
-    ):
+    ) as raised:
         app_module.prepare_startup_item_catalog()
+    assert raised.value.cause_code == sync.SNAPSHOT_UNAVAILABLE_AFTER_VERIFY
+
+
+def test_verified_snapshot_parse_failure_reports_cause_and_exception(
+    monkeypatch, tmp_path
+):
+    import Label_Match as app_module
+
+    cache = tmp_path / "cache" / "Item.csv"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(CATALOG)
+    key = sync._catalog_snapshot_key(cache)
+    sync._REQUIRED_VERIFIED_CATALOG_SNAPSHOT_PATHS.add(key)
+    sync._remember_verified_catalog_snapshot(cache, b"\xff")
+    monkeypatch.setenv(sync.ACTIVE_PATH_ENV, str(cache))
+    app = app_module.Label_Match.__new__(app_module.Label_Match)
+    try:
+        with pytest.raises(app_module.ItemCatalogSyncError) as raised:
+            app._load_items_data()
+    finally:
+        sync._REQUIRED_VERIFIED_CATALOG_SNAPSHOT_PATHS.discard(key)
+        sync._forget_verified_catalog_snapshot(cache)
+
+    assert raised.value.cause_code == sync.SNAPSHOT_PARSE_FAILED
+    assert raised.value.diagnostic_context["exception_type"] == "UnicodeDecodeError"
 
 
 def test_invalid_response_keeps_bundle_and_url_contract(tmp_path):

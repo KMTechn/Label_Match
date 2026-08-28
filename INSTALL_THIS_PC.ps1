@@ -4,6 +4,8 @@ param(
     [switch]$Uninstall,
     [string]$SourceRoot = "",
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
+    [string]$TlsCaBundlePath = "",
+    [string]$OperatorLocalAppDataRoot = "",
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ApplyHardenedAclForTest
 )
@@ -69,11 +71,23 @@ function Get-FileSha256([string]$Path) {
     }
 }
 
+function Install-CurrentUserTlsCaBootstrap([string]$SourcePath, [string]$LocalAppDataRoot) {
+    if ([string]::IsNullOrWhiteSpace($SourcePath)) { return $null }
+    $source = Get-StrictFullPath $SourcePath "TLS CA bundle source"; Assert-NoReparsePoint $source "TLS CA bundle source"
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "TLS CA bundle source is unavailable." }
+    $sourceLength = (Get-Item -LiteralPath $source -Force).Length
+    if ($sourceLength -le 0 -or $sourceLength -gt 131072) { throw "TLS CA bundle source size is invalid." }
+    $userRoot = Get-StrictFullPath $LocalAppDataRoot "operator LOCALAPPDATA root"; $target = Join-Path $userRoot "KMTech\Bootstrap\Label_Match\ca-bundle.pem"
+    $targetParent = Split-Path -Parent $target; New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
+    Assert-NoReparsePoint $targetParent "TLS CA bootstrap directory"
+    Copy-Item -LiteralPath $source -Destination $target -Force; Assert-NoReparsePoint $target "TLS CA bootstrap target"
+    if ((Get-FileSha256 $target) -cne (Get-FileSha256 $source)) { throw "TLS CA bootstrap exact readback failed." }
+    return $target
+}
 function ConvertTo-ProcessArgument([string]$Value) {
     if ($Value -notmatch '[\s"]') { return $Value }
     return '"' + $Value.Replace('\', '\').Replace('"', '\"') + '"'
 }
-
 function Invoke-SelfElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -303,6 +317,11 @@ $testOverride = (
     $AllowNoncanonicalLayoutForTest.IsPresent -and
     [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
 )
+if ([string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "The invoking operator LOCALAPPDATA is unavailable." }
+    $OperatorLocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA)
+    $BootstrapBoundParameters["OperatorLocalAppDataRoot"] = $OperatorLocalAppDataRoot
+}
 if ($ApplyHardenedAclForTest.IsPresent -and -not $testOverride) {
     throw "ApplyHardenedAclForTest requires the guarded noncanonical test layout."
 }
@@ -349,7 +368,6 @@ if ($Uninstall.IsPresent) {
     Write-Output "current_user_setup_removal_command=Label_Match.exe --remove-current-user-setup"
     exit 0
 }
-
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $SourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
@@ -373,10 +391,10 @@ if ($DryRun.IsPresent) {
     Write-Output "file_count=$($sourceInventory.Count)"
     Write-Output "aggregate_sha256=$sourceAggregate"
     Write-Output "identity_profile_created=false"
+    Write-Output "tls_ca_bootstrap_configured=$(-not [string]::IsNullOrWhiteSpace($TlsCaBundlePath))"
     Write-Output "elevation_points=1:code_placement"
     exit 0
 }
-
 $applicationParent = Split-Path -Parent $installRootFull
 $stagingRoot = Join-Path $applicationParent ('.current.bootstrap.' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $applicationParent -Force | Out-Null
@@ -460,6 +478,9 @@ try {
     }
     Write-Output "code_root=$installRootFull"
     Write-Output "integrity_record=$(Join-Path $installRootFull $IntegrityFileName)"
+    $tlsCaBootstrap = Install-CurrentUserTlsCaBootstrap $TlsCaBundlePath $OperatorLocalAppDataRoot
+    if ($null -eq $tlsCaBootstrap) { Write-Output "tls_ca_bootstrap_status=ABSENT" }
+    else { Write-Output "tls_ca_bootstrap_status=PASS"; Write-Output "tls_ca_bootstrap_path=$tlsCaBootstrap" }
     Write-Output "file_count=$($sourceInventory.Count)"
     Write-Output "aggregate_sha256=$sourceAggregate"
     Write-Output "identity_profile_created=false"

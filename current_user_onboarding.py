@@ -34,6 +34,7 @@ DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
 REMOVAL_REPORT_VERSION = "label-match-current-user-removal-v1"
 BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v1"
+ENROLLMENT_TLS_CA_BUNDLE_PATH_ENV = "LABEL_MATCH_ENROLLMENT_TLS_CA_BUNDLE_PATH"
 ONBOARDING_EXIT_CODE = 4
 LABEL_MATCH_DATA_ROOT_ENV = "LABEL_MATCH_SAVE_DIR"
 LABEL_MATCH_SETTINGS_PATH_ENV = "LABEL_MATCH_SETTINGS_PATH"
@@ -75,6 +76,7 @@ class CurrentUserOnboardingPaths:
     removal_report_path: Path
     logistics_profile_path: Path
     logistics_secret_path: Path
+    bootstrap_tls_ca_bundle_path: Path
     ledger_path: Path
     bootstrap_integrity_path: Path
 
@@ -159,6 +161,15 @@ def resolve_current_user_onboarding_paths(
         logistics_profile_path = (
             data_root.parent / "logistics-profile" / "runtime-profile.json"
         )
+    bootstrap_tls_ca_bundle_path = (
+        _resolved(local_app_data)
+        / "KMTech"
+        / "Bootstrap"
+        / "Label_Match"
+        / "ca-bundle.pem"
+        if local_app_data
+        else data_root.parent / "Bootstrap" / "Label_Match" / "ca-bundle.pem"
+    )
 
     for candidate in (
         data_root,
@@ -203,6 +214,7 @@ def resolve_current_user_onboarding_paths(
         logistics_secret_path=(
             logistics_profile_path.parent / "secrets" / "bearer-token.dpapi"
         ),
+        bootstrap_tls_ca_bundle_path=bootstrap_tls_ca_bundle_path,
         ledger_path=data_root / "package_logistics_outbox.sqlite3",
         bootstrap_integrity_path=selected_app_root / "bootstrap-integrity.json",
     )
@@ -437,44 +449,61 @@ def inspect_current_user_state(
         "producer_install_id": required_identity["producer_install_id"],
         "manifest_hash": expected_manifest_hash,
         "authority_plane": "AUTHORITATIVE",
+        "tls_private_ca_configured": bool(
+            getattr(resolved_profile, "tls_ca_bundle_path", "")
+        ),
     }
+
+
+def _configured_tls_ca_bundle_source(
+    paths: CurrentUserOnboardingPaths,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    values = os.environ if environ is None else environ
+    explicit = str(values.get(ENROLLMENT_TLS_CA_BUNDLE_PATH_ENV) or "").strip()
+    if explicit:
+        return explicit
+    if paths.bootstrap_tls_ca_bundle_path.is_file():
+        return str(paths.bootstrap_tls_ca_bundle_path)
+    return ""
 
 
 def _registration_runner(
     paths: CurrentUserOnboardingPaths,
     *,
     server_base_url: str,
+    environ: Mapping[str, str] | None = None,
 ) -> int:
     from tools import register_label_match_worker_pc
 
-    return int(
-        register_label_match_worker_pc.main(
-            [
-                "--apply",
-                "--server-base-url",
-                server_base_url,
-                "--data-dir",
-                str(paths.direct_sync_root),
-                "--sync-dir",
-                str(paths.data_root),
-                "--require-machine-credential-bundle",
-                "--credential-scope",
-                "current_user",
-                "--logistics-profile-path",
-                str(paths.logistics_profile_path),
-                "--identity-path",
-                str(paths.identity_path),
-                "--manifest-path",
-                str(paths.producer_manifest_path),
-                "--credential-path",
-                str(paths.credential_path),
-                "--receipt-path",
-                str(paths.registration_receipt_path),
-                "--report-path",
-                str(paths.registration_report_path),
-            ]
-        )
-    )
+    arguments = [
+        "--apply",
+        "--server-base-url",
+        server_base_url,
+        "--data-dir",
+        str(paths.direct_sync_root),
+        "--sync-dir",
+        str(paths.data_root),
+        "--require-machine-credential-bundle",
+        "--credential-scope",
+        "current_user",
+        "--logistics-profile-path",
+        str(paths.logistics_profile_path),
+        "--identity-path",
+        str(paths.identity_path),
+        "--manifest-path",
+        str(paths.producer_manifest_path),
+        "--credential-path",
+        str(paths.credential_path),
+        "--receipt-path",
+        str(paths.registration_receipt_path),
+        "--report-path",
+        str(paths.registration_report_path),
+    ]
+    tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
+    if tls_ca_source:
+        arguments.extend(["--tls-ca-bundle-path", tls_ca_source])
+    return int(register_label_match_worker_pc.main(arguments))
 
 
 def _create_ledger(path: Path) -> None:
@@ -532,6 +561,7 @@ def onboard_current_user(
     relay_launcher: Callable[[str | os.PathLike[str]], Mapping[str, Any]] = start_user_relay_process,
 ) -> dict[str, Any]:
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     for directory in (
         paths.data_root,
         paths.settings_path.parent,
@@ -562,6 +592,7 @@ def onboard_current_user(
         "direct_sync_root": str(paths.direct_sync_root),
         "logistics_profile_path": str(paths.logistics_profile_path),
         "ledger_path": str(paths.ledger_path),
+        "tls_ca_bundle_source_configured": bool(tls_ca_source),
         "server_registration_verified": False,
         "failure": "",
     }
@@ -576,6 +607,23 @@ def onboard_current_user(
             credential_loader=credential_loader,
         )
         report["initial_state"] = state
+        if state["status"] == "READY" and tls_ca_source:
+            from tools.install_logistics_runtime_profile import (
+                install_tls_ca_bundle_for_existing_profile,
+            )
+
+            report["tls_ca_bundle_upgrade"] = (
+                install_tls_ca_bundle_for_existing_profile(
+                    profile_path=paths.logistics_profile_path,
+                    tls_ca_bundle_path=tls_ca_source,
+                    credential_scope="current_user",
+                )
+            )
+            state = inspect_current_user_state(
+                paths,
+                profile_loader=profile_loader,
+                credential_loader=credential_loader,
+            )
         if state["status"] == "RECOVERY_REQUIRED":
             raise ValueError(str(state.get("reason") or "partial current-user state"))
         if state["status"] in {"ABSENT", "ABSENT_RETRYABLE"}:
@@ -583,6 +631,7 @@ def onboard_current_user(
                 return_code = _registration_runner(
                     paths,
                     server_base_url=server_base_url,
+                    environ=environ,
                 )
             else:
                 return_code = registration_runner(paths)
@@ -608,6 +657,10 @@ def onboard_current_user(
             report["action"] = "CREATED"
         else:
             report["action"] = "REUSED"
+        if tls_ca_source and not state.get("tls_private_ca_configured"):
+            raise ValueError(
+                "configured TLS CA bundle was not persisted in the logistics profile"
+            )
 
         ledger_factory(paths.ledger_path)
         if not paths.ledger_path.is_file():

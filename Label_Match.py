@@ -22,6 +22,7 @@ from label_match_single_instance import resolve_data_scope, run_guarded_entrypoi
 from current_user_onboarding import (
     CurrentUserOnboardingError,
     LABEL_MATCH_SETTINGS_PATH_ENV,
+    LEGACY_DIRECT_SYNC_ROOT_ENV,
     ONBOARDING_EXIT_CODE,
     onboard_current_user,
 )
@@ -151,9 +152,14 @@ import requests
 from item_catalog_sync import (
     ACTIVE_PATH_ENV,
     ItemCatalogSyncError,
+    SNAPSHOT_PARSE_FAILED,
+    SNAPSHOT_UNAVAILABLE_AFTER_VERIFY,
+    get_catalog_attempt_context,
     get_verified_catalog_snapshot,
     refresh_item_catalog,
     requires_verified_catalog_snapshot,
+    write_item_catalog_failure_diagnostic,
+    write_item_catalog_startup_diagnostic,
 )
 _label_match_startup_trace("after_requests_import")
 import zipfile
@@ -6465,7 +6471,8 @@ class Label_Match(tk.Tk):
         if requires_verified_catalog_snapshot(items_path):
             if verified_payload is None:
                 raise ItemCatalogSyncError(
-                    "central item catalog snapshot is unavailable after verification"
+                    "central item catalog snapshot is unavailable after verification",
+                    cause_code=SNAPSHOT_UNAVAILABLE_AFTER_VERIFY,
                 )
             try:
                 return {
@@ -6476,7 +6483,12 @@ class Label_Match(tk.Tk):
                 }
             except (KeyError, UnicodeError, csv.Error) as exc:
                 raise ItemCatalogSyncError(
-                    "central item catalog snapshot could not be parsed"
+                    "central item catalog snapshot could not be parsed",
+                    cause_code=SNAPSHOT_PARSE_FAILED,
+                    diagnostic_context={
+                        **get_catalog_attempt_context(),
+                        "exception_type": type(exc).__name__,
+                    },
                 ) from exc
         if not os.path.exists(items_path):
             os.makedirs(os.path.dirname(items_path), exist_ok=True)
@@ -16743,7 +16755,8 @@ def prepare_startup_item_catalog():
         and get_verified_catalog_snapshot(active_path) is None
     ):
         raise ItemCatalogSyncError(
-            "central item catalog snapshot is unavailable after verification"
+            "central item catalog snapshot is unavailable after verification",
+            cause_code=SNAPSHOT_UNAVAILABLE_AFTER_VERIFY,
         )
     os.environ[ACTIVE_PATH_ENV] = str(active_path)
     return str(active_path)
@@ -16756,6 +16769,13 @@ ITEM_CATALOG_STARTUP_ERROR_MESSAGE = (
     "네트워크 연결과 이 PC의 중앙 물류 설정을 확인한 뒤 다시 실행하세요. "
     "계속 실패하면 IT 담당자에게 문의하세요."
 )
+ITEM_CATALOG_CACHE_WARNING_TITLE = "검증된 품목 캐시 사용"
+ITEM_CATALOG_CACHE_WARNING_MESSAGE = (
+    "중앙 품목 목록을 새로 받지 못해 무결성이 검증된 로컬 캐시로 시작합니다.\n\n"
+    "캐시 기준 시각: {cache_time}\n"
+    "네트워크가 복구되면 다음 실행에서 중앙 목록을 다시 확인합니다."
+)
+ITEM_CATALOG_DIAGNOSTIC_FILENAME = "item_catalog_startup_diagnostic.json"
 
 FIRST_RUN_ONBOARDING_ERROR_TITLE = "현재 사용자 초기 설정 실패"
 FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
@@ -16784,20 +16804,79 @@ def _show_first_run_onboarding_error(failure):
         _label_match_startup_trace("current_user_onboarding_dialog_unavailable")
 
 
-def _show_item_catalog_startup_error():
+def _show_item_catalog_startup_error(cause_code):
     try:
         messagebox.showerror(
             ITEM_CATALOG_STARTUP_ERROR_TITLE,
-            ITEM_CATALOG_STARTUP_ERROR_MESSAGE,
+            f"{ITEM_CATALOG_STARTUP_ERROR_MESSAGE}\n오류 코드: {cause_code}",
         )
     except Exception:  # The fail-closed exit must survive Tk initialization failures.
         _label_match_startup_trace("item_catalog_startup_dialog_unavailable")
 
 
+def _item_catalog_cache_time_for_display(value):
+    text = str(value or "").strip()
+    if not text or text == "UNKNOWN":
+        return "UNKNOWN"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return "UNKNOWN"
+    if parsed.tzinfo is None:
+        return "UNKNOWN"
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _show_item_catalog_cache_warning(context):
+    cache_time = _item_catalog_cache_time_for_display(
+        context.get("cache_last_modified_utc")
+    )
+    try:
+        messagebox.showwarning(
+            ITEM_CATALOG_CACHE_WARNING_TITLE,
+            ITEM_CATALOG_CACHE_WARNING_MESSAGE.format(cache_time=cache_time),
+        )
+    except Exception:
+        _label_match_startup_trace("item_catalog_cache_warning_dialog_unavailable")
+
+
+def _item_catalog_diagnostic_path():
+    direct_sync_root = str(
+        os.environ.get(LABEL_MATCH_DIRECT_SYNC_ROOT_ENV)
+        or os.environ.get(LEGACY_DIRECT_SYNC_ROOT_ENV)
+        or ""
+    ).strip()
+    if direct_sync_root:
+        root = Path(direct_sync_root)
+    else:
+        local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
+        root = (
+            Path(local_app_data) / "KMTech" / "DirectSync" / "label_match"
+            if local_app_data
+            else Path.home() / ".kmtech" / "KMTech" / "DirectSync" / "label_match"
+        )
+    return root / "status" / ITEM_CATALOG_DIAGNOSTIC_FILENAME
+
+
 def _run_label_match_application():
     """Start the stateful application after single-instance ownership."""
 
-    prepare_startup_item_catalog()
+    active_catalog_path = prepare_startup_item_catalog()
+    if active_catalog_path is not None:
+        catalog_context = get_catalog_attempt_context()
+        try:
+            write_item_catalog_startup_diagnostic(
+                _item_catalog_diagnostic_path()
+            )
+        except Exception:
+            _label_match_startup_trace(
+                "item_catalog_startup_diagnostic_unavailable"
+            )
+        if (
+            catalog_context.get("cache_used")
+            and catalog_context.get("catalog_source") == "VERIFIED_CACHE"
+        ):
+            _show_item_catalog_cache_warning(catalog_context)
     app = Label_Match()
     _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
     _label_match_startup_trace("mainloop_enter")
@@ -16842,12 +16921,22 @@ def main(argv=None):
             _run_label_match_application,
             data_scope=data_scope,
         )
-    except ItemCatalogSyncError:
+    except ItemCatalogSyncError as exc:
+        try:
+            write_item_catalog_failure_diagnostic(
+                _item_catalog_diagnostic_path(),
+                exc,
+            )
+        except Exception:
+            _label_match_startup_trace(
+                "item_catalog_failure_diagnostic_unavailable"
+            )
         _label_match_startup_trace(
             "item_catalog_startup_blocked",
             exit_code=ITEM_CATALOG_STARTUP_EXIT_CODE,
+            cause_code=exc.cause_code,
         )
-        _show_item_catalog_startup_error()
+        _show_item_catalog_startup_error(exc.cause_code)
         return ITEM_CATALOG_STARTUP_EXIT_CODE
     except Exception as exc:
         _label_match_startup_trace(
