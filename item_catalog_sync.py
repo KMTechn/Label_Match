@@ -613,6 +613,38 @@ def _cache_authority_record(
     }
 
 
+def _same_catalog_cache_authority(stored_url: object, current_url: object) -> bool:
+    """Allow a verified cache to survive an enrolled endpoint port change.
+
+    The catalog remains bound to HTTPS, host, and the one catalog path. The
+    port is deliberately excluded because an enrolled endpoint can move ports
+    (or be pointed at a closed same-host port during a network-outage drill)
+    without changing the authority that issued the HMAC-protected snapshot.
+    """
+
+    try:
+        stored = urlsplit(str(stored_url or ""))
+        current = urlsplit(str(current_url or ""))
+        # Accessing ``port`` also rejects malformed or out-of-range values.
+        stored.port
+        current.port
+    except ValueError:
+        return False
+    for parsed in (stored, current):
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.netloc.endswith(":")
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path != CATALOG_PATH
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+    return stored.hostname.lower() == current.hostname.lower()
+
+
 def _write_authenticated_cache(
     cache: Path,
     payload: bytes,
@@ -695,16 +727,21 @@ def _is_valid_authenticated_payload(
         source_host_id=source_host_id,
         device_id=device_id,
     )
+    stored_url = unsigned_authority.pop("url", None)
+    expected_url = expected.pop("url")
     if (
         unsigned_authority != expected
+        or not _same_catalog_cache_authority(stored_url, expected_url)
         or not isinstance(supplied_hmac, str)
         or len(supplied_hmac) != 64
         or any(char not in "0123456789abcdef" for char in supplied_hmac)
     ):
         return False
+    signed_authority = dict(unsigned_authority)
+    signed_authority["url"] = stored_url
     expected_hmac = _cache_authority_hmac(
         payload,
-        expected,
+        signed_authority,
         bearer_token=bearer_token,
     )
     return hmac.compare_digest(supplied_hmac, expected_hmac)
