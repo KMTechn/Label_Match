@@ -41,7 +41,9 @@ from deferred_intent_capture import (
     DeferredIntentCaptureError,
     DeferredIntentCaptureStore,
 )
+from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
 from label_match_product_host import dispatch_product_mode
+from storage_policy import label_match_local_events_dir
 
 
 if __name__ == "__main__":
@@ -4546,6 +4548,9 @@ class DataManager:
         authenticated_admin=False,
     ):
         self.save_directory = save_dir
+        self.local_event_directory = str(
+            label_match_local_events_dir(save_dir)
+        )
         self.process_name = redact_protected_admin_code(process_name)
         self.worker_name = str(worker_name or "").strip()
         self.worker_role = (
@@ -4568,9 +4573,18 @@ class DataManager:
         return os.path.join(self.save_directory, filename)
     def _get_log_filepath_for_item(self, log_item):
         try:
-            return self._get_log_filepath(datetime.fromisoformat(str(log_item[0])))
+            target_date = datetime.fromisoformat(str(log_item[0]))
         except Exception:
-            return self._get_log_filepath()
+            target_date = datetime.now()
+        contract_path = self._get_log_filepath(target_date)
+        if str(log_item[2] or "") in LOCAL_ONLY_EVENT_TYPES:
+            return str(
+                local_only_event_log_path(
+                    contract_path,
+                    local_events_dir=self.local_event_directory,
+                )
+            )
+        return contract_path
     def _log_writer_thread(self):
         while True:
             log_item = None
