@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import traceback
+from collections.abc import Mapping
 from datetime import datetime, date, timezone
 from pathlib import Path
 
@@ -8124,6 +8125,7 @@ class Label_Match(tk.Tk):
             "lease_id": claims["lease_id"],
             "fence": claims["fence"],
             "snapshot_hash": claims["snapshot_hash"],
+            "issued_at": claims["issued_at"],
             "expires_at": claims["expires_at"],
             "status": str(row.get("status") or "PREFETCHED"),
         }
@@ -8168,13 +8170,17 @@ class Label_Match(tk.Tk):
         physical_qr,
         *,
         expected_snapshot,
+        issue_idempotency_key="",
+        expected_issue_request_hash="",
+        reuse_allowed=True,
     ):
-        reusable = self._load_reusable_operation_lease(
-            physical_qr,
-            expected_snapshot=expected_snapshot,
-        )
-        if reusable is not None:
-            return reusable
+        if reuse_allowed:
+            reusable = self._load_reusable_operation_lease(
+                physical_qr,
+                expected_snapshot=expected_snapshot,
+            )
+            if reusable is not None:
+                return reusable
         client = self.__dict__.get("package_logistics_client")
         issue_lease = getattr(client, "issue_operation_lease", None)
         lease_store = self.__dict__.get("package_operation_lease_store")
@@ -8189,8 +8195,25 @@ class Label_Match(tk.Tk):
         scope, fingerprint = self._operation_lease_request_context(
             physical_qr, expected_scope
         )
-        attempt = lease_store.reserve_issue_attempt(fingerprint)
-        issue_key = str(attempt.get("issue_idempotency_key") or "")
+        issue_key = str(issue_idempotency_key or "").strip()
+        if not issue_key:
+            attempt = lease_store.reserve_issue_attempt(fingerprint)
+            issue_key = str(attempt.get("issue_idempotency_key") or "")
+        expected_request_hash = str(expected_issue_request_hash or "").strip()
+        if expected_request_hash:
+            actual_request_hash = hashlib.sha256(
+                operation_lease_canonical_json_bytes(
+                    {
+                        "authority_scope_id": scope,
+                        "operation": PACKAGE_OPERATION_LEASE_OPERATION,
+                        "scan_payload": str(physical_qr or "").strip(),
+                    }
+                )
+            ).hexdigest()
+            if actual_request_hash != expected_request_hash:
+                raise PackageLogisticsError(
+                    "deferred operation lease request hash differs before dispatch"
+                )
         try:
             artifact = issue_lease(
                 authority_scope_id=scope,
@@ -8222,10 +8245,28 @@ class Label_Match(tk.Tk):
                 current, "__context__", None
             )
 
-    def _classify_deferred_validation_error(self, error, *, step_id):
+    def _classify_deferred_validation_error(
+        self,
+        error,
+        *,
+        step_id,
+        dispatch_record=None,
+    ):
         """Map remote validation failures to the frozen seven-outcome axis."""
 
         observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        selected_step = str(step_id or "").strip()
+        dispatch = (
+            dict(dispatch_record)
+            if isinstance(dispatch_record, Mapping)
+            else {}
+        )
+        mutating_dispatch = bool(
+            selected_step == "label-operation-lease"
+            and dispatch.get("idempotency_key")
+            and dispatch.get("request_hash")
+            and dispatch.get("recorded_at")
+        )
         chain = tuple(self._deferred_validation_exception_chain(error))
         api_error = next(
             (item for item in chain if isinstance(item, PackageApiError)),
@@ -8236,10 +8277,13 @@ class Label_Match(tk.Tk):
         )
         scope = str(getattr(config, "authority_scope_id", "") or "").strip()
         if (
-            api_error is not None
+            mutating_dispatch
+            and selected_step == "label-operation-lease"
+            and api_error is not None
             and int(api_error.status_code) == 403
             and str(api_error.code).upper()
             == "OPERATION_LEASE_AUTHORIZATION_PENDING"
+            and api_error.committed is False
         ):
             code = "OPERATION_LEASE_AUTHORIZATION_PENDING"
             return {
@@ -8251,14 +8295,12 @@ class Label_Match(tk.Tk):
                     "dependency": {
                         "kind": "OPERATION_GRANT",
                         "identity": f"CREATE_PACKAGE@{scope}",
-                        "display_identity": (
-                            f"CREATE_PACKAGE grant · {scope} · 승인 대기"
-                        ),
                         "authority_scope_id": scope,
                         "operation": "CREATE_PACKAGE",
                         "status": "PENDING",
                     },
                     "http_status": 403,
+                    "committed": False,
                     "error_code": code,
                     "observed_at": observed_at,
                 },
@@ -8268,6 +8310,60 @@ class Label_Match(tk.Tk):
             (item for item in chain if isinstance(item, PackageTransportError)),
             None,
         )
+        if mutating_dispatch and (
+            transport_error is not None
+            or (api_error is not None and api_error.committed is None)
+        ):
+            code = (
+                str(api_error.code or "OPERATION_LEASE_COMMIT_UNKNOWN").upper()
+                if api_error is not None
+                else "OPERATION_LEASE_COMMIT_UNKNOWN"
+            )
+            return {
+                "outcome": "UNKNOWN_COMMIT",
+                "reason_code": code,
+                "retry_after_seconds": None,
+                "evidence": {
+                    "contract_version": "label-validation-evidence-v1",
+                    "step_id": selected_step,
+                    "step_effect": "IDEMPOTENT_MUTATION",
+                    "idempotency_key": str(dispatch["idempotency_key"]),
+                    "request_hash": str(dispatch["request_hash"]),
+                    "step_attempt_no": int(
+                        dispatch.get("step_attempt_no") or 0
+                    ),
+                    "fence": int(dispatch.get("fence") or 0),
+                    "dispatch_recorded_at": str(dispatch["recorded_at"]),
+                    "commit_state": "UNKNOWN",
+                    "http_status": (
+                        int(api_error.status_code) if api_error is not None else 0
+                    ),
+                    "error_code": code,
+                    "observed_at": observed_at,
+                },
+            }
+        if (
+            mutating_dispatch
+            and api_error is not None
+            and api_error.committed is True
+        ):
+            code = "VALIDATION_MUTATION_COMMITTED_WITHOUT_EXACT_RESULT"
+            return {
+                "outcome": "CONFLICT",
+                "reason_code": code,
+                "retry_after_seconds": None,
+                "evidence": {
+                    "contract_version": "label-validation-evidence-v1",
+                    "step_id": selected_step,
+                    "step_effect": "IDEMPOTENT_MUTATION",
+                    "idempotency_key": str(dispatch["idempotency_key"]),
+                    "request_hash": str(dispatch["request_hash"]),
+                    "committed": True,
+                    "http_status": int(api_error.status_code),
+                    "error_code": str(api_error.code or code).upper(),
+                    "observed_at": observed_at,
+                },
+            }
         if transport_error is not None or (
             api_error is not None
             and (
@@ -8288,7 +8384,7 @@ class Label_Match(tk.Tk):
                 ),
                 "evidence": {
                     "contract_version": "label-validation-evidence-v1",
-                    "step_id": str(step_id),
+                    "step_id": selected_step,
                     "transport": "UNAVAILABLE",
                     "http_status": (
                         int(api_error.status_code) if api_error is not None else 0
@@ -8305,7 +8401,7 @@ class Label_Match(tk.Tk):
                 "retry_after_seconds": None,
                 "evidence": {
                     "contract_version": "label-validation-evidence-v1",
-                    "step_id": str(step_id),
+                    "step_id": selected_step,
                     "http_status": int(api_error.status_code),
                     "error_code": code,
                     "observed_at": observed_at,
@@ -8321,7 +8417,7 @@ class Label_Match(tk.Tk):
             "retry_after_seconds": None,
             "evidence": {
                 "contract_version": "label-validation-evidence-v1",
-                "step_id": str(step_id),
+                "step_id": selected_step,
                 "http_status": (
                     int(api_error.status_code) if api_error is not None else 0
                 ),
@@ -8331,14 +8427,61 @@ class Label_Match(tk.Tk):
         }
 
     @staticmethod
-    def _deferred_package_source_evidence(physical_qr, evidence, snapshot):
+    def _deferred_package_source_evidence(
+        physical_qr,
+        local_work_identity,
+        evidence,
+        snapshot,
+    ):
+        source = dict(snapshot or {})
+        bundle_id = str(source.get("bundle_id") or "").strip()
+        if not bundle_id:
+            group_id = str(
+                (source.get("phs_work_group") or {}).get("group_id") or ""
+            ).strip()
+            bundle_id = f"phs-work-group:{group_id}" if group_id else ""
+        package_bundle_id = str(
+            source.get("package_bundle_id") or bundle_id
+        ).strip()
+        versions = source.get("entity_versions")
+        if not isinstance(versions, dict) or not versions:
+            entity_version = int(source.get("entity_version") or 0)
+            versions = (
+                {f"bundle:{bundle_id}": entity_version}
+                if bundle_id and entity_version > 0
+                else {}
+            )
+        topology_hash = str(source.get("topology_hash") or "").strip().lower()
+        if not topology_hash:
+            topology_hash = hashlib.sha256(
+                operation_lease_canonical_json_bytes(
+                    {
+                        "bundle_id": bundle_id,
+                        "entity_versions": versions,
+                        "member_count": int(
+                            getattr(evidence, "member_count", 0) or 0
+                        ),
+                        "membership_hash": str(
+                            getattr(evidence, "membership_hash", "") or ""
+                        ).lower(),
+                    }
+                )
+            ).hexdigest()
         return {
             "contract_version": "label-validation-evidence-v1",
             "authority_scope_id": str(
-                (snapshot or {}).get("authority_scope_id") or ""
+                source.get("authority_scope_id") or ""
             ),
-            "bundle_id": str((snapshot or {}).get("bundle_id") or ""),
-            "bundle_version": int((snapshot or {}).get("bundle_version") or 0),
+            "authority_epoch": int(source.get("authority_epoch") or 0),
+            "ledger_plane": str(source.get("ledger_plane") or "").upper(),
+            "plane_epoch": int(source.get("plane_epoch") or 0),
+            "source_resolution_basis": str(
+                source.get("source_resolution_basis") or "SINGLE_TRANSFER"
+            ),
+            "bundle_id": bundle_id,
+            "package_bundle_id": package_bundle_id,
+            "entity_versions": dict(versions),
+            "topology_hash": topology_hash,
             "item_code": str(getattr(evidence, "item_id", "") or ""),
             "active_label_id": str(
                 getattr(evidence, "active_label_id", "") or ""
@@ -8350,18 +8493,30 @@ class Label_Match(tk.Tk):
             "physical_qr_sha256": hashlib.sha256(
                 str(physical_qr or "").encode("utf-8")
             ).hexdigest(),
+            "local_work_identity": str(local_work_identity or "").strip(),
             "observed_at": datetime.now(timezone.utc).isoformat().replace(
                 "+00:00", "Z"
             ),
         }
 
     @staticmethod
-    def _deferred_operation_lease_evidence(operation_lease, snapshot):
+    def _deferred_operation_lease_evidence(
+        physical_qr,
+        operation_lease,
+        snapshot,
+    ):
         return {
             "contract_version": "label-validation-evidence-v1",
             "authority_scope_id": str(
                 (snapshot or {}).get("authority_scope_id") or ""
             ),
+            "authority_epoch": int(
+                (snapshot or {}).get("authority_epoch") or 0
+            ),
+            "ledger_plane": str(
+                (snapshot or {}).get("ledger_plane") or ""
+            ).upper(),
+            "plane_epoch": int((snapshot or {}).get("plane_epoch") or 0),
             "operation": "CREATE_PACKAGE",
             "lease_id": str((operation_lease or {}).get("lease_id") or ""),
             "fence": int((operation_lease or {}).get("fence") or 0),
@@ -8369,6 +8524,15 @@ class Label_Match(tk.Tk):
                 (operation_lease or {}).get("snapshot_hash") or ""
             ).lower(),
             "status": str((operation_lease or {}).get("status") or ""),
+            "physical_qr_sha256": hashlib.sha256(
+                str(physical_qr or "").encode("utf-8")
+            ).hexdigest(),
+            "issued_at": str(
+                (operation_lease or {}).get("issued_at") or ""
+            ),
+            "expires_at": str(
+                (operation_lease or {}).get("expires_at") or ""
+            ),
             "observed_at": datetime.now(timezone.utc).isoformat().replace(
                 "+00:00", "Z"
             ),
@@ -8410,6 +8574,7 @@ class Label_Match(tk.Tk):
         physical_qr = str(payload.get("physical_qr_payload") or "")
         item_code = str(payload.get("item_code") or "")
         current_step = "label-package-source"
+        dispatch_record = None
         try:
             evidence, snapshot, sealed, operation_lease = (
                 self._resolve_central_phs2_scan_overlay(physical_qr, item_code)
@@ -8418,19 +8583,33 @@ class Label_Match(tk.Tk):
                 claim,
                 step_id=current_step,
                 evidence=self._deferred_package_source_evidence(
-                    physical_qr, evidence, snapshot
+                    physical_qr,
+                    payload.get("local_work_identity"),
+                    evidence,
+                    snapshot,
                 ),
             )
             current_step = "label-operation-lease"
             if not operation_lease:
+                dispatch_record = store.record_validation_mutation_attempt(
+                    claim,
+                    step_id=current_step,
+                )
                 evidence, snapshot, sealed, operation_lease = (
                     self._acquire_operation_lease(
                         physical_qr,
                         expected_snapshot=snapshot,
+                        issue_idempotency_key=dispatch_record[
+                            "idempotency_key"
+                        ],
+                        expected_issue_request_hash=dispatch_record[
+                            "request_hash"
+                        ],
+                        reuse_allowed=False,
                     )
                 )
             lease_evidence = self._deferred_operation_lease_evidence(
-                operation_lease, snapshot
+                physical_qr, operation_lease, snapshot
             )
             return store.finish_validation(
                 claim,
@@ -8447,6 +8626,7 @@ class Label_Match(tk.Tk):
             classified = self._classify_deferred_validation_error(
                 exc,
                 step_id=current_step,
+                dispatch_record=dispatch_record,
             )
             return store.finish_validation(
                 claim,

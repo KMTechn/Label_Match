@@ -970,12 +970,26 @@ def _claim_and_plan(store, intent_id, *, worker="validator-1", now="2026-08-29T0
 
 
 def _source_evidence():
+    bundle_id = "TRANSFER-LABEL-MEASURED"
     return {
+        "contract_version": "label-validation-evidence-v1",
         "authority_scope_id": "SCOPE-LABEL-MEASURED",
-        "bundle_id": "TRANSFER-LABEL-MEASURED",
-        "bundle_version": 7,
+        "authority_epoch": 1,
+        "ledger_plane": "SHADOW_CANDIDATE",
+        "plane_epoch": 1,
+        "source_resolution_basis": "SINGLE_TRANSFER",
+        "bundle_id": bundle_id,
+        "package_bundle_id": bundle_id,
+        "entity_versions": {f"bundle:{bundle_id}": 7},
+        "topology_hash": "a" * 64,
         "item_code": "ITEM-LABEL-1",
-        "physical_qr_sha256": "b" * 64,
+        "active_label_id": "LBL-MEASURED",
+        "membership_hash": "d" * 64,
+        "member_count": 4,
+        "physical_qr_sha256": hashlib.sha256(
+            b"PHS2-MEASURED"
+        ).hexdigest(),
+        "local_work_identity": "1787940225728641500",
         "observed_at": "2026-08-29T01:00:01Z",
     }
 
@@ -995,15 +1009,31 @@ def test_validation_claim_integrity_plan_and_required_absent_are_fenced(tmp_path
         "dependency": {
             "kind": "OPERATION_GRANT",
             "identity": "CREATE_PACKAGE@SCOPE-LABEL-MEASURED",
-            "display_identity": "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기",
             "authority_scope_id": "SCOPE-LABEL-MEASURED",
             "operation": "CREATE_PACKAGE",
             "status": "PENDING",
         },
         "http_status": 403,
+        "committed": False,
         "error_code": "OPERATION_LEASE_AUTHORIZATION_PENDING",
         "observed_at": "2026-08-29T01:00:02Z",
     }
+    mutation = store.record_validation_mutation_attempt(
+        claim,
+        step_id="label-operation-lease",
+        now="2026-08-29T01:00:01Z",
+    )
+    assert mutation["idempotency_key"].startswith("lease-issue-")
+    assert len(mutation["request_hash"]) == 64
+    assert mutation["request_hash"] == hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "authority_scope_id": "SCOPE-LABEL-MEASURED",
+                "operation": "CREATE_PACKAGE",
+                "scan_payload": "PHS2-MEASURED",
+            }
+        )
+    ).hexdigest()
     result = store.finish_validation(
         claim,
         step_id="label-operation-lease",
@@ -1052,6 +1082,7 @@ def test_validation_claim_integrity_plan_and_required_absent_are_fenced(tmp_path
             "T3_LOCAL_INTEGRITY",
             "T5_VALIDATE_PLAN",
             "T5_VALIDATE_PLAN",
+            "T5A_RECORD_MUTATION_ATTEMPT",
             "T7_CLASSIFY_ABSENCE",
             "T9_WAIT_DEPENDENCY",
         ]
@@ -1159,13 +1190,24 @@ def test_valid_freeze_requires_all_ordered_steps_and_has_no_command(tmp_path):
         outcome="VALID",
         reason_code="ORDERED_VALIDATION_VALID",
         evidence={
-            "lease_id": "lease-measured",
-            "snapshot_hash": "c" * 64,
+            "contract_version": "label-validation-evidence-v1",
+            "authority_epoch": 1,
             "authority_scope_id": "SCOPE-LABEL-MEASURED",
+            "ledger_plane": "SHADOW_CANDIDATE",
+            "plane_epoch": 1,
             "operation": "CREATE_PACKAGE",
+            "lease_id": "lease-measured",
+            "fence": 1,
+            "snapshot_hash": "c" * 64,
+            "status": "PREFETCHED",
+            "physical_qr_sha256": hashlib.sha256(
+                b"PHS2-MEASURED"
+            ).hexdigest(),
+            "issued_at": "2026-08-29T01:00:00Z",
+            "expires_at": "2026-08-29T01:05:02Z",
             "observed_at": "2026-08-29T01:00:02Z",
         },
-        issued_at="2026-08-29T01:00:02Z",
+        issued_at="2026-08-29T01:00:00Z",
         expires_at="2026-08-29T01:05:02Z",
         now="2026-08-29T01:00:02Z",
     )
@@ -1178,7 +1220,68 @@ def test_valid_freeze_requires_all_ordered_steps_and_has_no_command(tmp_path):
     assert row["receipt_json"] is None
 
 
-def test_validation_evidence_rejects_secret_fields(tmp_path):
+def test_valid_freeze_rejects_incomplete_authority_evidence(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    incomplete = _source_evidence()
+    incomplete.pop("authority_epoch")
+    store.record_validation_step_valid(
+        claim,
+        step_id="label-package-source",
+        evidence=incomplete,
+        now="2026-08-29T01:00:01Z",
+    )
+    with pytest.raises(DeferredIntentCaptureError) as blocked:
+        store.finish_validation(
+            claim,
+            step_id="label-operation-lease",
+            outcome="VALID",
+            reason_code="ORDERED_VALIDATION_VALID",
+            evidence={
+                "contract_version": "label-validation-evidence-v1",
+                "authority_epoch": 1,
+                "authority_scope_id": "SCOPE-LABEL-MEASURED",
+                "ledger_plane": "SHADOW_CANDIDATE",
+                "plane_epoch": 1,
+                "operation": "CREATE_PACKAGE",
+                "lease_id": "lease-measured",
+                "fence": 1,
+                "snapshot_hash": "c" * 64,
+                "status": "PREFETCHED",
+                "physical_qr_sha256": hashlib.sha256(
+                    b"PHS2-MEASURED"
+                ).hexdigest(),
+                "issued_at": "2026-08-29T01:00:00Z",
+                "expires_at": "2026-08-29T01:05:02Z",
+                "observed_at": "2026-08-29T01:00:02Z",
+            },
+            issued_at="2026-08-29T01:00:00Z",
+            expires_at="2026-08-29T01:05:02Z",
+            now="2026-08-29T01:00:02Z",
+        )
+    assert blocked.value.code == "VALIDATION_EVIDENCE_INCOMPLETE"
+    assert _row(db_path, captured.intent_id)["state"] == "VALIDATING"
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"token": "must-not-persist"},
+        {"nested": {"access_token": "must-not-persist"}},
+        {"nested": {"password": "must-not-persist"}},
+        {"innocent_name": "Bearer must-not-persist"},
+        {
+            "innocent_name": (
+                "eyJhbGciOiJFUzI1NiJ9."
+                + "a" * 40
+                + "."
+                + "b" * 86
+            )
+        },
+    ],
+)
+def test_validation_evidence_rejects_secret_fields(tmp_path, evidence):
     _db_path, _outbox, store = _store(tmp_path)
     captured = _capture(store)
     claim = _claim_and_plan(store, captured.intent_id)
@@ -1188,7 +1291,7 @@ def test_validation_evidence_rejects_secret_fields(tmp_path):
             step_id="label-package-source",
             outcome="RETRYABLE_UNAVAILABLE",
             reason_code="TRANSPORT",
-            evidence={"token": "must-not-persist"},
+            evidence=evidence,
         )
     assert blocked.value.code == "VALIDATION_EVIDENCE_SECRET_FORBIDDEN"
 
@@ -1199,7 +1302,6 @@ def test_validation_evidence_rejects_secret_fields(tmp_path):
         ("ABSENT_MATERIALIZABLE", "VALIDATING"),
         ("INVALID", "BLOCKED_INVALID"),
         ("CONFLICT", "OPERATOR_REVIEW"),
-        ("UNKNOWN_COMMIT", "RECONCILE_PENDING_VALIDATION"),
     ],
 )
 def test_remaining_typed_validation_outcomes_have_only_frozen_destinations(
@@ -1221,6 +1323,152 @@ def test_remaining_typed_validation_outcomes_have_only_frozen_destinations(
         now="2026-08-29T01:00:02Z",
     )
     assert result.state == expected_state
+
+
+def test_mutating_validation_unknown_commit_requires_t5a_and_reconcile(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    dispatch = store.record_validation_mutation_attempt(
+        claim,
+        step_id="label-operation-lease",
+        now="2026-08-29T01:00:01Z",
+    )
+    result = store.finish_validation(
+        claim,
+        step_id="label-operation-lease",
+        outcome="UNKNOWN_COMMIT",
+        reason_code="OPERATION_LEASE_COMMIT_UNKNOWN",
+        evidence={
+            "contract_version": "label-validation-evidence-v1",
+            "step_id": "label-operation-lease",
+            "step_effect": "IDEMPOTENT_MUTATION",
+            "idempotency_key": dispatch["idempotency_key"],
+            "request_hash": dispatch["request_hash"],
+            "step_attempt_no": dispatch["step_attempt_no"],
+            "fence": dispatch["fence"],
+            "dispatch_recorded_at": dispatch["recorded_at"],
+            "commit_state": "UNKNOWN",
+            "http_status": 0,
+            "error_code": "OPERATION_LEASE_COMMIT_UNKNOWN",
+            "observed_at": "2026-08-29T01:00:02Z",
+        },
+        now="2026-08-29T01:00:02Z",
+    )
+    assert result.state == "RECONCILE_PENDING_VALIDATION"
+    assert _row(db_path, captured.intent_id)["next_attempt_at"] is None
+    assert store.next_validation_candidate(now="2026-08-29T02:00:00Z") is None
+
+
+def test_expired_claim_after_t5a_never_retries_mutation(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    store.record_validation_mutation_attempt(
+        claim,
+        step_id="label-operation-lease",
+        claim_seconds=1,
+        now="2026-08-29T01:00:01Z",
+    )
+    assert store.claim_validation(
+        captured.intent_id,
+        worker_id="validator-after-crash",
+        now="2026-08-29T01:00:03Z",
+    ) is None
+    row = _row(db_path, captured.intent_id)
+    assert row["state"] == "RECONCILE_PENDING_VALIDATION"
+    assert row["next_attempt_at"] is None
+    assert row["validation_generation"] == claim.validation_generation
+    with sqlite3.connect(db_path) as conn:
+        step = conn.execute(
+            """SELECT step_effect,status,idempotency_key,request_hash,
+                      attempt_count
+                 FROM deferred_intent_validation_steps
+                WHERE intent_id=? AND step_id='label-operation-lease'
+                LIMIT 1""",
+            (captured.intent_id,),
+        ).fetchone()
+        assert step[0] == "IDEMPOTENT_MUTATION"
+        assert step[1] == "REQUEST_RECORDED"
+        assert str(step[2]).startswith("lease-issue-")
+        assert len(str(step[3])) == 64
+        assert step[4] == 1
+        assert conn.execute(
+            """SELECT transition_code
+                 FROM deferred_intent_transition_audit
+                WHERE intent_id=? ORDER BY audit_seq DESC LIMIT 1""",
+            (captured.intent_id,),
+        ).fetchone()[0] == "T6A_VALIDATION_UNKNOWN"
+
+
+def test_mutating_transport_is_unknown_but_read_only_transport_retries():
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.package_logistics_client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-LABEL-MEASURED")
+    )
+    error = PackageTransportError("connection reset after dispatch")
+    dispatch = {
+        "idempotency_key": "lease-issue-" + "a" * 64,
+        "request_hash": "b" * 64,
+        "step_attempt_no": 1,
+        "fence": 2,
+        "recorded_at": "2026-08-29T01:00:01Z",
+    }
+    mutating = app._classify_deferred_validation_error(
+        error,
+        step_id="label-operation-lease",
+        dispatch_record=dispatch,
+    )
+    read_only = app._classify_deferred_validation_error(
+        error,
+        step_id="label-package-source",
+    )
+    assert mutating["outcome"] == "UNKNOWN_COMMIT"
+    assert mutating["retry_after_seconds"] is None
+    assert mutating["evidence"]["request_hash"] == "b" * 64
+    assert read_only["outcome"] == "RETRYABLE_UNAVAILABLE"
+
+
+def test_pending_grant_requires_exact_mutating_step_and_definite_noncommit():
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.package_logistics_client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-LABEL-MEASURED")
+    )
+    dispatch = {
+        "idempotency_key": "lease-issue-" + "a" * 64,
+        "request_hash": "b" * 64,
+        "step_attempt_no": 1,
+        "fence": 2,
+        "recorded_at": "2026-08-29T01:00:01Z",
+    }
+    definite = PackageApiError(
+        403,
+        "OPERATION_LEASE_AUTHORIZATION_PENDING",
+        "pending",
+        retryable=False,
+        committed=False,
+    )
+    uncertain = PackageApiError(
+        403,
+        "OPERATION_LEASE_AUTHORIZATION_PENDING",
+        "pending",
+        retryable=False,
+        committed=None,
+    )
+    assert app._classify_deferred_validation_error(
+        definite,
+        step_id="label-operation-lease",
+        dispatch_record=dispatch,
+    )["outcome"] == "REQUIRED_ABSENT"
+    assert app._classify_deferred_validation_error(
+        definite,
+        step_id="label-package-source",
+    )["outcome"] == "INVALID"
+    assert app._classify_deferred_validation_error(
+        uncertain,
+        step_id="label-operation-lease",
+        dispatch_record=dispatch,
+    )["outcome"] == "UNKNOWN_COMMIT"
 
 
 def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
@@ -1252,7 +1500,10 @@ def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
     snapshot = {
         "authority_scope_id": "SCOPE-LABEL-MEASURED",
         "bundle_id": "TRANSFER-LABEL-MEASURED",
-        "bundle_version": 7,
+        "entity_version": 7,
+        "authority_epoch": 1,
+        "ledger_plane": "SHADOW_CANDIDATE",
+        "plane_epoch": 1,
     }
 
     def resolve(*_args):
