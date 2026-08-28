@@ -2,6 +2,12 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
+
+TEST_MACHINE_GUID = "00112233-4455-6677-8899-aabbccddeeff"
+TEST_USER_SID = "S-1-5-21-100-200-300-1001"
+
 
 def load_registration_module():
     module_path = Path(__file__).resolve().parents[1] / "tools" / "register_label_match_worker_pc.py"
@@ -11,8 +17,19 @@ def load_registration_module():
     return module
 
 
-def test_label_match_registration_dry_run_derives_per_pc_identity_without_secret(tmp_path):
+def generated_install_id(module, *, user_sid=TEST_USER_SID, app_id=None):
+    return module.derive_path_independent_install_id(
+        machine_guid=TEST_MACHINE_GUID,
+        user_sid=user_sid,
+        app_id=app_id or module.INSTALL_IDENTITY_APP_ID,
+    )
+
+
+def test_label_match_registration_dry_run_derives_per_pc_identity_without_secret(
+    tmp_path, monkeypatch
+):
     module = load_registration_module()
+    monkeypatch.setattr(module, "_current_user_sid", lambda: TEST_USER_SID)
     report_path = tmp_path / "registration-dry-run.json"
     result = module.main(
         [
@@ -22,7 +39,7 @@ def test_label_match_registration_dry_run_derives_per_pc_identity_without_secret
             "--pc-id",
             "PACKING-PC-01",
             "--machine-guid",
-            "machine-guid-one",
+            TEST_MACHINE_GUID,
             "--sync-dir",
             str(tmp_path / "Label_Match" / "data"),
             "--data-dir",
@@ -43,16 +60,21 @@ def test_label_match_registration_dry_run_derives_per_pc_identity_without_secret
     assert report["endpoint_url"] == "https://worker.example.invalid/api/producer-ingest/v1/source-file"
     assert report["server_registration_verified"] is False
     assert report["secret_bootstrap_verified"] is False
-    assert "machine-guid-one" not in report_text
+    assert TEST_MACHINE_GUID not in report_text
     assert "secret" not in report.get("secret_ref", "")
 
 
 def test_fresh_guests_derive_distinct_per_pc_identity_without_source_host_override(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     module = load_registration_module()
+    monkeypatch.setattr(module, "_current_user_sid", lambda: TEST_USER_SID)
     reports = []
-    for index, machine_guid in enumerate(("fresh-machine-one", "fresh-machine-two")):
+    machine_guids = (
+        TEST_MACHINE_GUID,
+        "11112233-4455-6677-8899-aabbccddeeff",
+    )
+    for index, machine_guid in enumerate(machine_guids):
         report_path = tmp_path / f"fresh-{index}.json"
         assert module.main(
             [
@@ -78,6 +100,171 @@ def test_fresh_guests_derive_distinct_per_pc_identity_without_source_host_overri
     assert all(item["source_host_id"].startswith("label-match-packing-guest-") for item in reports)
 
 
+def test_path_independent_install_identity_fixed_vector_and_collision_boundaries():
+    module = load_registration_module()
+    install_id = generated_install_id(module)
+
+    assert install_id == "label-match-install-0fb8a3d24086e8b02e19d4861e95df92"
+    assert (
+        module.derive_path_independent_install_id(
+            machine_guid="{00112233-4455-6677-8899-AABBCCDDEEFF}",
+            user_sid=TEST_USER_SID.lower(),
+            app_id=module.INSTALL_IDENTITY_APP_ID.upper(),
+        )
+        == install_id
+    )
+    assert (
+        generated_install_id(
+            module,
+            user_sid="S-1-5-21-100-200-300-1002",
+        )
+        != install_id
+    )
+    assert generated_install_id(module, app_id="defect_inspection") != install_id
+
+
+def test_generated_install_id_ignores_application_and_state_paths(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    monkeypatch.setattr(module, "_current_user_sid", lambda: TEST_USER_SID)
+    ids = []
+    for name in ("a", "b"):
+        report_path = tmp_path / "reports" / f"path-{name}.json"
+        assert module.main(
+            [
+                "--dry-run",
+                "--server-base-url",
+                "https://worker.example.invalid",
+                "--pc-id",
+                "PATH-PROBE",
+                "--machine-guid",
+                TEST_MACHINE_GUID,
+                "--sync-dir",
+                str(tmp_path / f"release-{name}" / "data"),
+                "--data-dir",
+                str(tmp_path / f"state-{name}"),
+                "--report-path",
+                str(report_path),
+            ]
+        ) == 0
+        report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+        assert (
+            report["producer_install_id_derivation"]
+            == module.INSTALL_IDENTITY_DERIVATION_VERSION
+        )
+        ids.append(report["producer_install_id"])
+
+    assert ids == [generated_install_id(module), generated_install_id(module)]
+
+
+def test_existing_identity_file_precedes_machine_and_user_lookups(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    identity_path = tmp_path / "state" / module.PRODUCER_IDENTITY_FILENAME
+    identity_path.parent.mkdir(parents=True)
+    pinned = {
+        "schema_version": module.PRODUCER_IDENTITY_SCHEMA_VERSION,
+        "producer_id": "legacy-label-producer",
+        "source_host_id": "legacy-label-host",
+        "producer_install_id": "legacy-label-install-id",
+        "pc_id": "LEGACY-LABEL-PC",
+    }
+    identity_path.write_text(json.dumps(pinned) + "\n", encoding="utf-8")
+    report_path = tmp_path / "reports" / "identity-reuse.json"
+    monkeypatch.setattr(
+        module,
+        "_current_machine_guid",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("persisted identity must bypass machine lookup")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_current_user_sid",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("persisted identity must bypass user lookup")
+        ),
+    )
+
+    assert module.main(
+        [
+            "--dry-run",
+            "--server-base-url",
+            "https://worker.example.invalid",
+            "--data-dir",
+            str(identity_path.parent),
+            "--report-path",
+            str(report_path),
+        ]
+    ) == 0
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+
+    assert report["producer_identity_source"] == "identity_file"
+    assert report["producer_install_id_derivation"] == "identity_file"
+    assert report["producer_install_id"] == pinned["producer_install_id"]
+    assert report["source_host_id"] == pinned["source_host_id"]
+    assert report["producer_id"] == pinned["producer_id"]
+
+
+def test_cli_install_id_precedes_existing_identity_file(tmp_path, monkeypatch):
+    module = load_registration_module()
+    identity_path = tmp_path / "state" / module.PRODUCER_IDENTITY_FILENAME
+    identity_path.parent.mkdir(parents=True)
+    pinned = {
+        "schema_version": module.PRODUCER_IDENTITY_SCHEMA_VERSION,
+        "producer_id": "legacy-label-producer",
+        "source_host_id": "legacy-label-host",
+        "producer_install_id": "legacy-label-install-id",
+    }
+    identity_path.write_text(json.dumps(pinned) + "\n", encoding="utf-8")
+    report_path = tmp_path / "reports" / "cli-identity.json"
+    monkeypatch.setattr(
+        module,
+        "_current_machine_guid",
+        lambda: (_ for _ in ()).throw(AssertionError("machine lookup not expected")),
+    )
+    monkeypatch.setattr(
+        module,
+        "_current_user_sid",
+        lambda: (_ for _ in ()).throw(AssertionError("user lookup not expected")),
+    )
+
+    assert module.main(
+        [
+            "--dry-run",
+            "--server-base-url",
+            "https://worker.example.invalid",
+            "--data-dir",
+            str(identity_path.parent),
+            "--producer-install-id",
+            "cli-label-install-id",
+            "--report-path",
+            str(report_path),
+        ]
+    ) == 0
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+
+    assert report["producer_identity_source"] == "cli"
+    assert report["producer_install_id_derivation"] == "cli"
+    assert report["producer_install_id"] == "cli-label-install-id"
+
+
+def test_identity_file_rejects_duplicate_keys(tmp_path):
+    module = load_registration_module()
+    identity_path = tmp_path / module.PRODUCER_IDENTITY_FILENAME
+    identity_path.write_text(
+        '{"schema_version":"label-match-producer-identity-v1",'
+        '"producer_id":"first","producer_id":"second",'
+        '"source_host_id":"host","producer_install_id":"install"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.DirectSyncPushError, match="duplicate key"):
+        module._load_producer_identity_file(identity_path)
+
+
 def test_label_match_registration_manifest_includes_runtime_event_contract(tmp_path):
     module = load_registration_module()
     args = type(
@@ -87,7 +274,7 @@ def test_label_match_registration_manifest_includes_runtime_event_contract(tmp_p
             "data_dir": str(tmp_path / "DirectSync" / "label_match"),
             "endpoint_url": "",
             "key_id": "",
-            "machine_guid": "machine-guid-contract",
+            "machine_guid": TEST_MACHINE_GUID,
             "pc_id": "PACKING-PC-CONTRACT",
             "producer_id": "",
             "producer_install_id": "",
@@ -209,7 +396,7 @@ def test_label_match_registration_apply_writes_manifest_credential_and_receipt_w
             "--pc-id",
             "PACKING-PC-02",
             "--machine-guid",
-            "machine-guid-two",
+            "22222222-4455-6677-8899-aabbccddeeff",
             "--sync-dir",
             str(sync_dir),
             "--data-dir",
@@ -336,7 +523,7 @@ def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
             "enrollment_url": "",
             "key_id": "",
             "logistics_profile_path": str(tmp_path / "profile.json"),
-            "machine_guid": "current-user-guid",
+            "machine_guid": TEST_MACHINE_GUID,
             "pc_id": "PACKING-USER",
             "producer_id": "",
             "producer_install_id": "",
