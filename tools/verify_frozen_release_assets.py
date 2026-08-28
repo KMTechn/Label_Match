@@ -738,6 +738,10 @@ def verify_frozen_release_assets(
                 and evidence.get("tree") == expected_tree,
                 "exact build-time validator source identity differs",
             )
+            _require(
+                evidence.get("bootstrap_integrity_verified") is True,
+                "release archive bootstrap integrity record is missing or unverified",
+            )
 
         manifest_name = f"{TOP_LEVEL}/build-manifest.json"
         _require(manifest_name in by_name, "archive is missing the sealed build manifest")

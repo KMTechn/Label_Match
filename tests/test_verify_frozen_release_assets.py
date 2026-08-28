@@ -261,6 +261,21 @@ def test_verifier_accepts_exact_frozen_archive_and_shared_evidence_contract(tmp_
     assert result["qualification_receipt_status"] == "NOT_TESTED_EXTERNAL_REQUIRED"
 
 
+def test_verifier_rejects_archive_without_bootstrap_integrity_record(tmp_path):
+    fixture = _fixture(tmp_path)
+    archive = fixture["archive"]
+    assert isinstance(archive, Path)
+    entries = _read_archive(archive)
+    entries.pop("bootstrap-integrity.json")
+    _rewrite_archive(fixture, entries)
+
+    with pytest.raises(
+        verifier.FrozenReleaseError,
+        match="bootstrap integrity record is missing or unverified",
+    ):
+        _verify(fixture)
+
+
 def test_verifier_compares_downloaded_bytes_to_preserved_phase1_receipt(tmp_path):
     fixture = _fixture(tmp_path)
 
