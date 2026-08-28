@@ -1264,6 +1264,78 @@ def test_valid_freeze_rejects_incomplete_authority_evidence(tmp_path):
     assert _row(db_path, captured.intent_id)["state"] == "VALIDATING"
 
 
+def test_deferred_lease_verification_does_not_persist_signed_capability(
+    monkeypatch,
+):
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.package_logistics_client = SimpleNamespace(config=SimpleNamespace())
+    persisted = []
+    app.package_operation_lease_store = SimpleNamespace(
+        save_prefetched=lambda **kwargs: persisted.append(kwargs)
+    )
+    claims = {
+        "lease_id": "lease-secret-free",
+        "issued_at": "2026-08-29T01:00:00Z",
+        "expires_at": "2026-08-29T01:05:00Z",
+        "fence": 1,
+        "snapshot_hash": "c" * 64,
+    }
+    app.package_operation_lease_keyring = SimpleNamespace(
+        bootstrap_authenticated=lambda *_args, **_kwargs: None,
+        verify=lambda *_args, **_kwargs: dict(claims),
+    )
+    snapshot = {
+        "authority_scope_id": "SCOPE-LABEL-MEASURED",
+        "authority_epoch": 1,
+        "ledger_plane": "SHADOW_CANDIDATE",
+        "plane_epoch": 1,
+        "bundle_id": "TRANSFER-LABEL-MEASURED",
+        "entity_version": 7,
+    }
+    app._central_phs2_response_parts = lambda *_args: (
+        SimpleNamespace(),
+        dict(snapshot),
+        None,
+    )
+    monkeypatch.setattr(
+        label_module,
+        "_label_match_operation_lease_binding",
+        lambda *_args: {"binding": "verified-by-test-keyring"},
+    )
+    monkeypatch.setattr(
+        label_module,
+        "normalize_issue_artifact",
+        lambda _artifact: {
+            "lease_id": claims["lease_id"],
+            "kid": "kid-1",
+            "expires_at": claims["expires_at"],
+            "fence": claims["fence"],
+            "snapshot_hash": claims["snapshot_hash"],
+            "token": "signed-capability-must-remain-memory-only",
+            "operation_snapshot": dict(snapshot),
+            "keyring": {"keys": [{"kid": "kid-1"}]},
+        },
+    )
+    _source, _snapshot, _sealed, lease = app._verify_operation_lease_artifact(
+        physical_qr="PHS2-MEASURED",
+        artifact={"server": "response"},
+        issue_idempotency_key="lease-issue-" + "a" * 64,
+        authenticated_online=True,
+        persist_artifact=False,
+        expected_snapshot=snapshot,
+    )
+    assert persisted == []
+    assert lease == {
+        "lease_id": "lease-secret-free",
+        "fence": 1,
+        "snapshot_hash": "c" * 64,
+        "issued_at": "2026-08-29T01:00:00Z",
+        "expires_at": "2026-08-29T01:05:00Z",
+        "status": "PREFETCHED",
+    }
+    assert "signed-capability" not in json.dumps(lease, sort_keys=True)
+
+
 @pytest.mark.parametrize(
     "evidence",
     [
@@ -1370,6 +1442,9 @@ def test_expired_claim_after_t5a_never_retries_mutation(tmp_path):
         claim_seconds=1,
         now="2026-08-29T01:00:01Z",
     )
+    assert store.next_validation_candidate(
+        now="2026-08-29T01:00:03Z"
+    ) == captured.intent_id
     assert store.claim_validation(
         captured.intent_id,
         worker_id="validator-after-crash",
@@ -1419,6 +1494,13 @@ def test_mutating_transport_is_unknown_but_read_only_transport_retries():
         step_id="label-operation-lease",
         dispatch_record=dispatch,
     )
+    response_failure = RuntimeError("local public-key pin write failed")
+    response_failure.deferred_mutation_response_received = True
+    post_response = app._classify_deferred_validation_error(
+        response_failure,
+        step_id="label-operation-lease",
+        dispatch_record=dispatch,
+    )
     read_only = app._classify_deferred_validation_error(
         error,
         step_id="label-package-source",
@@ -1426,6 +1508,8 @@ def test_mutating_transport_is_unknown_but_read_only_transport_retries():
     assert mutating["outcome"] == "UNKNOWN_COMMIT"
     assert mutating["retry_after_seconds"] is None
     assert mutating["evidence"]["request_hash"] == "b" * 64
+    assert post_response["outcome"] == "UNKNOWN_COMMIT"
+    assert post_response["reason_code"] == "OPERATION_LEASE_RESULT_NOT_DURABLE"
     assert read_only["outcome"] == "RETRYABLE_UNAVAILABLE"
 
 
@@ -1512,6 +1596,12 @@ def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
 
     def pending_lease(*_args, **_kwargs):
         calls.append("operation_lease")
+        assert _kwargs["reuse_allowed"] is False
+        assert _kwargs["persist_artifact"] is False
+        assert str(_kwargs["issue_idempotency_key"]).startswith(
+            "lease-issue-"
+        )
+        assert len(str(_kwargs["expected_issue_request_hash"])) == 64
         try:
             raise PackageApiError(
                 403,

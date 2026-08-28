@@ -2612,7 +2612,7 @@ class DeferredIntentCaptureStore:
             conn.close()
 
     def next_validation_candidate(self, *, now: str | None = None) -> str | None:
-        """Return the oldest eligible FIFO validation row; dependency waits stay idle."""
+        """Return the oldest eligible or expired-claim FIFO validation row."""
 
         observed_at = str(now or utc_now())
         conn = self._connect()
@@ -2620,11 +2620,19 @@ class DeferredIntentCaptureStore:
             row = conn.execute(
                 """SELECT candidate.intent_id
                      FROM deferred_intents AS candidate
-                    WHERE candidate.state IN (
+                    WHERE (
+                          candidate.state IN (
                               'CAPTURED_UNVERIFIED','RETRY_WAIT_VALIDATION'
                           )
+                          OR (
+                              candidate.state='VALIDATING'
+                              AND candidate.claim_expires_at IS NOT NULL
+                              AND candidate.claim_expires_at<=?
+                          )
+                      )
                       AND (
-                          candidate.next_attempt_at IS NULL
+                          candidate.state<>'RETRY_WAIT_VALIDATION'
+                          OR candidate.next_attempt_at IS NULL
                           OR candidate.next_attempt_at<=?
                       )
                       AND NOT EXISTS (
@@ -2641,7 +2649,7 @@ class DeferredIntentCaptureStore:
                              )
                       )
                     ORDER BY candidate.created_at,candidate.intent_id LIMIT 1""",
-                (observed_at,),
+                (observed_at, observed_at),
             ).fetchone()
             return str(row[0]) if row else None
         finally:

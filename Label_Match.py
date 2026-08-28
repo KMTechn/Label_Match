@@ -8029,6 +8029,7 @@ class Label_Match(tk.Tk):
         artifact,
         issue_idempotency_key,
         authenticated_online,
+        persist_artifact=True,
         existing_row=None,
         expected_snapshot=None,
     ):
@@ -8074,13 +8075,19 @@ class Label_Match(tk.Tk):
                 "lease artifact metadata differs from its signature",
             )
         if existing_row is None:
-            durable_artifact = dict(normalized)
-            durable_artifact["claims"] = claims
-            row = lease_store.save_prefetched(
-                artifact=durable_artifact,
-                binding=binding,
-                issue_idempotency_key=issue_idempotency_key,
-            )
+            if persist_artifact:
+                durable_artifact = dict(normalized)
+                durable_artifact["claims"] = claims
+                row = lease_store.save_prefetched(
+                    artifact=durable_artifact,
+                    binding=binding,
+                    issue_idempotency_key=issue_idempotency_key,
+                )
+            else:
+                # Deferred validation stores only secret-free hashes and exact
+                # identities.  The signed capability remains memory-only until
+                # a future promotion design provides protected-at-rest storage.
+                row = {"status": "PREFETCHED"}
         else:
             row = dict(existing_row)
             try:
@@ -8173,6 +8180,7 @@ class Label_Match(tk.Tk):
         issue_idempotency_key="",
         expected_issue_request_hash="",
         reuse_allowed=True,
+        persist_artifact=True,
     ):
         if reuse_allowed:
             reusable = self._load_reusable_operation_lease(
@@ -8226,13 +8234,25 @@ class Label_Match(tk.Tk):
                 "OPERATION_LEASE_ISSUE_FAILED",
                 str(exc),
             ) from exc
-        return self._verify_operation_lease_artifact(
-            physical_qr=physical_qr,
-            artifact=artifact,
-            issue_idempotency_key=issue_key,
-            authenticated_online=True,
-            expected_snapshot=expected_snapshot,
-        )
+        try:
+            return self._verify_operation_lease_artifact(
+                physical_qr=physical_qr,
+                artifact=artifact,
+                issue_idempotency_key=issue_key,
+                authenticated_online=True,
+                persist_artifact=persist_artifact,
+                expected_snapshot=expected_snapshot,
+            )
+        except (OperationLeaseError, PackageLogisticsError):
+            raise
+        except Exception as exc:
+            if expected_issue_request_hash:
+                failure = PackageLogisticsError(
+                    "operation lease response could not be durably verified"
+                )
+                failure.deferred_mutation_response_received = True
+                raise failure from exc
+            raise
 
     @staticmethod
     def _deferred_validation_exception_chain(error):
@@ -8310,13 +8330,28 @@ class Label_Match(tk.Tk):
             (item for item in chain if isinstance(item, PackageTransportError)),
             None,
         )
+        response_not_durable = next(
+            (
+                item
+                for item in chain
+                if getattr(
+                    item,
+                    "deferred_mutation_response_received",
+                    False,
+                )
+            ),
+            None,
+        )
         if mutating_dispatch and (
             transport_error is not None
             or (api_error is not None and api_error.committed is None)
+            or response_not_durable is not None
         ):
             code = (
                 str(api_error.code or "OPERATION_LEASE_COMMIT_UNKNOWN").upper()
                 if api_error is not None
+                else "OPERATION_LEASE_RESULT_NOT_DURABLE"
+                if response_not_durable is not None
                 else "OPERATION_LEASE_COMMIT_UNKNOWN"
             )
             return {
@@ -8606,6 +8641,7 @@ class Label_Match(tk.Tk):
                             "request_hash"
                         ],
                         reuse_allowed=False,
+                        persist_artifact=False,
                     )
                 )
             lease_evidence = self._deferred_operation_lease_evidence(
