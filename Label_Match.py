@@ -6,6 +6,11 @@ from datetime import datetime, date, timezone
 from pathlib import Path
 
 from kmtech_zero_pe import RasterCanvas
+from kmtech_zero_pe.release_signature import (
+    manifest_signature_version,
+    validate_public_key_config,
+    verify_release_signature,
+)
 
 from kmtech_factory_contracts import load_and_verify_contract_lock
 from protected_admin import (
@@ -3279,6 +3284,9 @@ UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
 UPDATE_MANIFEST_SIGNATURE_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_SIGNATURE_URL"
 UPDATE_MANIFEST_PUBLIC_KEY_ENV = "LABEL_MATCH_UPDATE_MANIFEST_PUBLIC_KEY"
+UPDATE_PACKAGED_KEY_CONFIG_FILENAME = "update-manifest-key-config.json"
+UPDATE_PACKAGED_KEY_CONFIG_SCHEMA = "label-match-update-key-config-v1"
+UPDATE_PACKAGED_KEY_CONFIG_MAX_BYTES = 16 * 1024
 UPDATE_CHANNEL_ENV = "LABEL_MATCH_UPDATE_CHANNEL"
 UPDATE_PROVIDER_GITHUB = "github"
 UPDATE_PROVIDER_PRIVATE_MANIFEST = "private_manifest"
@@ -3395,12 +3403,52 @@ def _get_update_manifest_signature_url(manifest_url):
 
 def _get_update_manifest_public_key():
     settings = _load_update_settings()
-    key = (
-        os.environ.get(UPDATE_MANIFEST_PUBLIC_KEY_ENV)
-        or settings.get("manifest_public_key")
-        or UPDATE_BOOTSTRAP_MANIFEST_PUBLIC_KEY
-    )
-    return str(key).strip()
+    configured = os.environ.get(UPDATE_MANIFEST_PUBLIC_KEY_ENV)
+    if configured is None:
+        configured = settings.get("manifest_public_key")
+    if configured:
+        if isinstance(configured, dict):
+            return json.dumps(
+                configured,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+        return str(configured).strip()
+    packaged = _load_packaged_update_manifest_public_key()
+    return packaged or UPDATE_BOOTSTRAP_MANIFEST_PUBLIC_KEY
+
+
+def _load_packaged_update_manifest_public_key():
+    """Read the public-only key bundle injected by the portable build."""
+
+    path = Path(__file__).resolve().with_name(UPDATE_PACKAGED_KEY_CONFIG_FILENAME)
+    if not path.exists():
+        return ""
+    try:
+        if not path.is_file() or path.stat().st_size > UPDATE_PACKAGED_KEY_CONFIG_MAX_BYTES:
+            raise ValueError("Packaged update key config is missing, non-regular, or oversized")
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Packaged update key config is unreadable") from exc
+    if not isinstance(document, dict) or set(document) != {"schema", "manifest_public_key"}:
+        raise ValueError("Packaged update key config fields are invalid")
+    if document.get("schema") != UPDATE_PACKAGED_KEY_CONFIG_SCHEMA:
+        raise ValueError("Packaged update key config schema is invalid")
+    configured = document.get("manifest_public_key")
+    if isinstance(configured, dict):
+        normalized = json.dumps(
+            configured,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+    elif isinstance(configured, str):
+        normalized = configured.strip()
+    else:
+        raise ValueError("Packaged update public key config is invalid")
+    validate_public_key_config(normalized)
+    return normalized
 
 
 def _is_sha256(value):
@@ -3642,21 +3690,13 @@ def _canonical_manifest_bytes(manifest):
 
 def _verify_update_manifest_signature(manifest, signature, public_key_hex):
     try:
-        from cryptography.exceptions import InvalidSignature
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    except ImportError as exc:
-        raise ValueError("cryptography is required to verify update manifest signatures") from exc
-    try:
-        public_key = bytes.fromhex(str(public_key_hex).strip())
-    except ValueError as exc:
-        raise ValueError("Update manifest public key must be 64 hex characters") from exc
-    if len(public_key) != 32:
-        raise ValueError("Update manifest public key must be 32 bytes")
-    if len(signature) != 64:
-        raise ValueError("Update manifest signature must be 64 bytes")
-    try:
-        Ed25519PublicKey.from_public_bytes(public_key).verify(signature, _canonical_manifest_bytes(manifest))
-    except InvalidSignature as exc:
+        verify_release_signature(
+            _canonical_manifest_bytes(manifest),
+            bytes(signature),
+            public_key_hex,
+            manifest_signature_version(manifest),
+        )
+    except (TypeError, ValueError) as exc:
         raise ValueError("Update manifest signature verification failed") from exc
 
 

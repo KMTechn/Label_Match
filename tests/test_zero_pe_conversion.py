@@ -6,10 +6,17 @@ from pathlib import Path
 
 from kmtech_zero_pe import RasterImage
 from phs_label_workflow import PHSLabelRenderer
+from tools import build_portable_release_candidate as portable_builder
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REMOVED_ROOTS = {"PIL", "pygame", "charset_normalizer"}
+FORBIDDEN_ROOTS = {
+    "PIL",
+    "cffi",
+    "charset_normalizer",
+    "cryptography",
+    "pygame",
+}
 
 
 def _sha256(relative_path: str) -> str:
@@ -46,25 +53,13 @@ def test_shared_zero_pe_vendor_files_are_byte_pinned() -> None:
     assert _sha256("kmtech_zero_pe/raster.py") == (
         "1296fc461e349cc02c1379b09096559203d2ec22cdc27c780958a05006d97c48"
     )
+    assert _sha256("kmtech_zero_pe/release_signature.py") == (
+        "ac21e2bca45899cd1161d89d4d2b6261ccb624bef745f88f5357c402e151cf1e"
+    )
 
 
-def test_removed_native_package_imports_are_absent_from_production() -> None:
-    assert _production_imports(REMOVED_ROOTS) == []
-
-
-def test_cryptography_surface_is_preserved_for_the_followup_lane() -> None:
-    assert _production_imports({"cryptography"}) == [
-        ("Label_Match.py", "cryptography.exceptions"),
-        ("Label_Match.py", "cryptography.hazmat.primitives.asymmetric.ed25519"),
-        ("producer_runtime_client.py", "cryptography.hazmat.primitives.asymmetric"),
-        ("terminal_operation_lease.py", "cryptography.exceptions"),
-        ("terminal_operation_lease.py", "cryptography.hazmat.primitives"),
-        ("terminal_operation_lease.py", "cryptography.hazmat.primitives.asymmetric"),
-        (
-            "terminal_operation_lease.py",
-            "cryptography.hazmat.primitives.asymmetric.utils",
-        ),
-    ]
+def test_native_package_imports_are_absent_from_production() -> None:
+    assert _production_imports(FORBIDDEN_ROOTS) == []
 
 
 def test_low_difficulty_native_dependencies_are_absent_from_runtime_requirements() -> None:
@@ -80,10 +75,25 @@ def test_low_difficulty_native_dependencies_are_absent_from_runtime_requirements
         .splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
-    assert all(not line.startswith("pygame") for line in requirements)
-    assert all(not line.startswith("pygame") for line in release)
-    assert all(not line.startswith("pillow") for line in requirements)
+    for forbidden in ("cffi", "cryptography", "pygame", "pillow"):
+        assert all(not line.startswith(forbidden) for line in requirements)
     assert any(line.startswith("charset-normalizer==3.4.9") for line in release)
+
+
+def test_portable_builder_requires_an_empty_native_application_closure() -> None:
+    assert portable_builder.EXPECTED_PYTHON == (3, 12, 10)
+    assert portable_builder.ALLOWED_APP_NATIVE_NAMES == set()
+    for forbidden in ("cffi", "cryptography", "pillow", "pygame", "pycparser"):
+        assert forbidden not in portable_builder.THIRD_PARTY
+
+
+def test_portable_launcher_uses_pythonw_source_entrypoint() -> None:
+    launcher = (ROOT / "portable" / "launch-label-match.cmd").read_text(
+        encoding="utf-8"
+    )
+    assert "runtime\\pythonw.exe" in launcher
+    assert "app\\main.py" in launcher
+    assert "--focus" not in launcher
 
 
 def test_frozen_builder_forces_source_only_charset_and_excludes_removed_packages() -> None:

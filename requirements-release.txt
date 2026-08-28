@@ -5,12 +5,14 @@
 # reuse it for another Python version, ABI, operating system, or architecture.
 
 # Application dependencies.
-cryptography==49.0.0 --hash=sha256:e5dfc1e64de5677cec922ffa8da89c546d0415bf6efdf081842e5d44c84e1f0e
 qrcode==8.2 --hash=sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f
 requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
 tkcalendar==1.6.1 --hash=sha256:9d3a80816a7b32d64fab696fa3d2a007fb23c87953267d5e343a38ff4cd7c15c
 
 # Release and test entry points.
+# cryptography is test-only for differential signature vectors and is not
+# copied into the source-only portable runtime.
+cryptography==49.0.0 --hash=sha256:e5dfc1e64de5677cec922ffa8da89c546d0415bf6efdf081842e5d44c84e1f0e
 # Pillow remains build/test-only for historical golden-image comparisons and
 # the frozen Label runtime explicitly excludes PIL from its analysis.
 # The JSON Schema/rpds closure below is likewise retained for build-time

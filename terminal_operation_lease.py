@@ -20,10 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from kmtech_zero_pe import (
+    jwk_thumbprint as _cng_jwk_thumbprint,
+    normalize_public_jwk,
+    verify_es256 as _cng_verify_es256,
+)
 
 
 PROGRAM = "Label_Match"
@@ -43,11 +44,6 @@ MAX_KEYS = 8
 MAX_EXPECTED_VERSIONS = 128
 MAX_LEASE_SECONDS = 24 * 60 * 60
 
-_P256_BYTES = 32
-_P256_ORDER = int(
-    "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551",
-    16,
-)
 _B64_RE = re.compile(r"[A-Za-z0-9_-]+")
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
 _UTC_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -103,9 +99,6 @@ KEYRING_KEYS = frozenset(
 KEYRING_ENTRY_KEYS = frozenset(
     {"kid", "status", "public_jwk", "thumbprint"}
 )
-PUBLIC_JWK_KEYS = frozenset({"kty", "crv", "x", "y"})
-
-
 class OperationLeaseError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -323,29 +316,22 @@ def _b64decode(value: str, *, field: str, maximum: int) -> bytes:
 
 
 def _jwk(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != PUBLIC_JWK_KEYS:
+    if not isinstance(value, dict):
         raise _error("OPERATION_LEASE_KEYRING_INVALID", "public JWK is invalid")
-    result = {key: value.get(key) for key in ("kty", "crv", "x", "y")}
-    if result["kty"] != "EC" or result["crv"] != "P-256":
-        raise _error("OPERATION_LEASE_KEYRING_INVALID", "public JWK is not P-256")
-    if any(not isinstance(item, str) for item in result.values()):
-        raise _error("OPERATION_LEASE_KEYRING_INVALID", "public JWK is invalid")
-    x = _b64decode(result["x"], field="jwk.x", maximum=64)
-    y = _b64decode(result["y"], field="jwk.y", maximum=64)
-    if len(x) != 32 or len(y) != 32:
-        raise _error("OPERATION_LEASE_KEYRING_INVALID", "public JWK is invalid")
-    try:
-        ec.EllipticCurvePublicNumbers(
-            int.from_bytes(x, "big"), int.from_bytes(y, "big"), ec.SECP256R1()
-        ).public_key()
-    except ValueError as exc:
-        raise _error("OPERATION_LEASE_KEYRING_INVALID", "public JWK is invalid") from exc
-    return {key: str(result[key]) for key in ("kty", "crv", "x", "y")}
+    return normalize_public_jwk(
+        value,
+        error_factory=_error,
+        error_code="OPERATION_LEASE_KEYRING_INVALID",
+    )
 
 
 def jwk_thumbprint(value: Any) -> str:
-    digest = hashlib.sha256(canonical_json_bytes(_jwk(value))).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    normalized = _jwk(value)
+    return _cng_jwk_thumbprint(
+        normalized,
+        error_factory=_error,
+        error_code="OPERATION_LEASE_KEYRING_INVALID",
+    )
 
 
 def normalize_keyring(value: Any) -> dict[str, Any]:
@@ -494,18 +480,16 @@ class PinnedOperationLeaseKeyring:
         signature = _b64decode(parts[2], field="lease signature", maximum=128)
         if len(signature) != 64:
             raise _error("OPERATION_LEASE_SIGNATURE_INVALID", "lease signature is invalid")
-        r = int.from_bytes(signature[:32], "big")
-        s = int.from_bytes(signature[32:], "big")
-        if not 1 <= r < _P256_ORDER or not 1 <= s <= _P256_ORDER // 2:
-            raise _error("OPERATION_LEASE_SIGNATURE_INVALID", "lease signature is not low-S")
         jwk = entry["public_jwk"]
-        x = _b64decode(jwk["x"], field="jwk.x", maximum=64)
-        y = _b64decode(jwk["y"], field="jwk.y", maximum=64)
-        public_key = ec.EllipticCurvePublicNumbers(int.from_bytes(x, "big"), int.from_bytes(y, "big"), ec.SECP256R1()).public_key()
-        try:
-            public_key.verify(encode_dss_signature(r, s), f"{parts[0]}.{parts[1]}".encode("ascii"), ec.ECDSA(hashes.SHA256()))
-        except InvalidSignature as exc:
-            raise _error("OPERATION_LEASE_SIGNATURE_INVALID", "lease signature is invalid") from exc
+        _cng_verify_es256(
+            f"{parts[0]}.{parts[1]}".encode("ascii"),
+            signature,
+            jwk,
+            error_factory=_error,
+            key_error_code="OPERATION_LEASE_KEYRING_INVALID",
+            signature_error_code="OPERATION_LEASE_SIGNATURE_INVALID",
+            require_low_s=True,
+        )
         instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         if instant < parse_utc(payload["issued_at"], field="issued_at"):
             raise _error("OPERATION_LEASE_NOT_YET_VALID", "lease is not yet valid")

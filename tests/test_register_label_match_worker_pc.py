@@ -685,6 +685,7 @@ def test_vendored_zero_pe_sources_match_pinned_hash_manifest():
         "kmtech_zero_pe/gdi_print.py",
         "kmtech_zero_pe/possession_key.py",
         "kmtech_zero_pe/raster.py",
+        "kmtech_zero_pe/release_signature.py",
     }
     for relative_path, expected_sha256 in manifest["files"].items():
         assert hashlib.sha256((root / relative_path).read_bytes()).hexdigest() == expected_sha256

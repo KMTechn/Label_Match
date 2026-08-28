@@ -9,6 +9,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from kmtech_zero_pe import P256KeyPair
+
 
 def load_label_match_module():
     module_path = Path(__file__).resolve().parents[1] / "Label_Match.py"
@@ -87,6 +89,76 @@ def signed_manifest_payload(manifest):
         format=serialization.PublicFormat.Raw,
     ).hex()
     return public_hex, signature
+
+
+def signed_es256_manifest_payload(manifest):
+    manifest["signature_version"] = "es256-v1"
+    payload = json.dumps(
+        manifest,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    with P256KeyPair.generate() as private:
+        return private.public_jwk, private.sign_es256(payload)
+
+
+def test_manifest_signature_dispatch_accepts_es256_and_legacy_bridge():
+    module = load_label_match_module()
+    legacy_manifest = valid_manifest()
+    legacy_public_hex, legacy_signature = signed_manifest_payload(legacy_manifest)
+    module._verify_update_manifest_signature(
+        legacy_manifest,
+        legacy_signature,
+        legacy_public_hex,
+    )
+
+    es256_manifest = valid_manifest()
+    es256_jwk, es256_signature = signed_es256_manifest_payload(es256_manifest)
+    transition_bundle = json.dumps(
+        {
+            "ed25519-v1": legacy_public_hex,
+            "es256-v1": es256_jwk,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    module._verify_update_manifest_signature(
+        es256_manifest,
+        es256_signature,
+        transition_bundle,
+    )
+
+    with pytest.raises(ValueError, match="signature verification failed"):
+        module._verify_update_manifest_signature(
+            dict(es256_manifest, app_id="tampered"),
+            es256_signature,
+            transition_bundle,
+        )
+
+
+def test_packaged_build_key_config_accepts_es256_jwk(monkeypatch, tmp_path):
+    module = load_label_match_module()
+    with P256KeyPair.generate() as private:
+        public_jwk = private.public_jwk
+    key_path = tmp_path / module.UPDATE_PACKAGED_KEY_CONFIG_FILENAME
+    key_path.write_text(
+        json.dumps(
+            {
+                "schema": module.UPDATE_PACKAGED_KEY_CONFIG_SCHEMA,
+                "manifest_public_key": public_jwk,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "__file__", str(tmp_path / "Label_Match.py"))
+    monkeypatch.setattr(module, "_load_update_settings", lambda: {})
+    monkeypatch.delenv(module.UPDATE_MANIFEST_PUBLIC_KEY_ENV, raising=False)
+
+    configured = json.loads(module._get_update_manifest_public_key())
+
+    assert configured == public_jwk
 
 
 def test_update_provider_off_does_not_call_network(monkeypatch):
