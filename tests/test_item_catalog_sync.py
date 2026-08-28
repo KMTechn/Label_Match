@@ -999,6 +999,18 @@ def test_verified_snapshot_parse_failure_reports_cause_and_exception(
     assert raised.value.diagnostic_context["exception_type"] == "UnicodeDecodeError"
 
 
+def test_missing_catalog_never_creates_sample_in_code_path(monkeypatch, tmp_path):
+    import Label_Match as app_module
+
+    missing = tmp_path / "readonly-code" / "assets" / "Item.csv"
+    monkeypatch.setenv(sync.ACTIVE_PATH_ENV, str(missing))
+    app = app_module.Label_Match.__new__(app_module.Label_Match)
+    app.run_tests = True
+
+    assert app._load_items_data() == {}
+    assert not missing.exists()
+
+
 def test_invalid_response_keeps_bundle_and_url_contract(tmp_path):
     bundle = tmp_path / "bundle.csv"
     cache = tmp_path / "cache.csv"

@@ -113,7 +113,7 @@ def test_update_provider_defaults_to_off_without_network(monkeypatch):
     assert module.check_for_updates() == (None, None)
 
 
-def test_frozen_release_bootstraps_signed_private_manifest_without_saved_settings(monkeypatch):
+def test_frozen_release_disables_in_process_code_root_updater(monkeypatch):
     module = load_label_match_module()
     for name in (
         module.UPDATE_PROVIDER_ENV,
@@ -125,7 +125,8 @@ def test_frozen_release_bootstraps_signed_private_manifest_without_saved_setting
     monkeypatch.setattr(module.sys, "frozen", True, raising=False)
     monkeypatch.setattr(module, "_load_update_settings", lambda: {})
 
-    assert module._get_update_provider() == "private_manifest"
+    assert module._can_apply_updates() is False
+    assert module._get_update_provider() == "off"
     assert module._get_update_manifest_url() == module.UPDATE_BOOTSTRAP_MANIFEST_URL
     assert (
         module._get_update_manifest_signature_url(module.UPDATE_BOOTSTRAP_MANIFEST_URL)

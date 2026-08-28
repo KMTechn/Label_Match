@@ -1,16 +1,18 @@
-import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+
+from current_user_onboarding import verify_bootstrap_integrity
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +26,12 @@ def _powershell() -> str:
     return executable
 
 
-def _run_installer(source_root: Path, install_root: Path, *extra: str):
+def _run_installer(
+    source_root: Path,
+    install_root: Path,
+    *extra: str,
+    timeout: int = 60,
+):
     environment = dict(os.environ)
     environment["KMTECH_FACTORY_INSTALL_TEST_MODE"] = "1"
     return subprocess.run(
@@ -47,7 +54,7 @@ def _run_installer(source_root: Path, install_root: Path, *extra: str):
         check=False,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=timeout,
         env=environment,
     )
 
@@ -88,7 +95,8 @@ def test_bootstrap_is_minimal_code_only_onedir_contract():
     text = INSTALLER.read_text(encoding="utf-8")
 
     assert len(text.splitlines()) <= 500
-    assert "label-match-bootstrap-integrity-v1" in text
+    assert "label-match-bootstrap-integrity-v2" in text
+    assert "sha256-file-hash-size-utf8-path-v1" in text
     assert "identity_profile_created=false" in text
     assert "elevation_points=1:code_placement" in text
     assert "package_layout = 'onedir'" in text
@@ -168,28 +176,103 @@ def test_bootstrap_places_exact_onedir_bytes_records_integrity_and_reuses(tmp_pa
     assert "acl_readback_status=NOT_TESTED" in first.stdout
     assert "acl_readback_status=NOT_TESTED" in second.stdout
     record = json.loads((install / "bootstrap-integrity.json").read_text(encoding="utf-8"))
-    assert record["schema_version"] == "label-match-bootstrap-integrity-v1"
+    assert record["schema_version"] == "label-match-bootstrap-integrity-v2"
     assert record["status"] == "PASS"
     assert record["identity_profile_created"] is False
     assert record["state_scope"] == "current_user_first_run"
     assert record["package_layout"] == "onedir"
-    by_path = {entry["path"]: entry for entry in record["files"]}
-    assert set(by_path) == {
+    assert record["inventory_algorithm"] == "sha256-file-hash-size-utf8-path-v1"
+    assert record["file_count"] == 3
+    assert "files" not in record
+    assert len(record["root_sha256"]) == 64
+    assert (install / "bootstrap-integrity.json").stat().st_size < 1024
+    verified = verify_bootstrap_integrity(
+        SimpleNamespace(
+            app_root=install.resolve(),
+            bootstrap_integrity_path=install / "bootstrap-integrity.json",
+        ),
+        required=True,
+    )
+    assert verified["root_sha256"] == record["root_sha256"]
+    for relative_path in (
         "Label_Match.exe",
         "contract.lock.json",
         "_internal/python312.dll",
-    }
-    for relative_path, item in by_path.items():
-        payload = (install / relative_path).read_bytes()
-        assert item["size"] == len(payload)
-        assert item["sha256"] == hashlib.sha256(payload).hexdigest()
-        assert payload == (source / relative_path).read_bytes()
+    ):
+        assert (install / relative_path).read_bytes() == (source / relative_path).read_bytes()
     (install / "_internal" / "python312.dll").write_bytes(b"tampered")
     damaged = _run_installer(source, install)
     assert damaged.returncode != 0
     assert "different or damaged hardened code placement" in (
         damaged.stderr + damaged.stdout
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("schema_version", "label-match-bootstrap-integrity-v1"),
+        ("status", "FAILED"),
+        ("package_layout", "onefile"),
+        ("inventory_algorithm", "other"),
+        ("file_count", "3"),
+        ("code_root", r"C:\wrong-root"),
+        ("files", []),
+    ],
+)
+def test_bootstrap_reuse_rejects_invalid_integrity_metadata(
+    tmp_path, field, invalid_value
+):
+    source = _release_fixture(tmp_path)
+    install = tmp_path / "apps" / "current"
+    first = _run_installer(source, install)
+    assert first.returncode == 0, first.stderr or first.stdout
+    record_path = install / "bootstrap-integrity.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record[field] = invalid_value
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    reused = _run_installer(source, install)
+
+    assert reused.returncode != 0
+    assert "different or damaged hardened code placement" in (
+        reused.stderr + reused.stdout
+    )
+
+
+def test_bootstrap_reuse_rejects_oversized_integrity_record(tmp_path):
+    source = _release_fixture(tmp_path)
+    install = tmp_path / "apps" / "current"
+    first = _run_installer(source, install)
+    assert first.returncode == 0, first.stderr or first.stdout
+    (install / "bootstrap-integrity.json").write_bytes(b" " * (1024 * 1024 + 1))
+
+    reused = _run_installer(source, install)
+
+    assert reused.returncode != 0
+    assert "different or damaged hardened code placement" in (
+        reused.stderr + reused.stdout
+    )
+
+
+def test_bootstrap_record_stays_bounded_for_4354_file_onedir(tmp_path):
+    source = _release_fixture(tmp_path)
+    runtime = source / "_internal" / "runtime"
+    runtime.mkdir()
+    for index in range(4351):
+        (runtime / f"member-{index:04d}.bin").write_bytes(
+            f"runtime-member-{index}".encode("ascii")
+        )
+    install = tmp_path / "apps" / "current"
+
+    completed = _run_installer(source, install, timeout=180)
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    record_path = install / "bootstrap-integrity.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["file_count"] == 4354
+    assert "files" not in record
+    assert record_path.stat().st_size < 1024
 
 
 def test_bootstrap_copies_opt_in_tls_ca_for_current_user_onboarding(tmp_path):

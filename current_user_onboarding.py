@@ -33,7 +33,10 @@ from user_relay import (
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
 REMOVAL_REPORT_VERSION = "label-match-current-user-removal-v1"
-BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v1"
+BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v2"
+BOOTSTRAP_INVENTORY_ALGORITHM = "sha256-file-hash-size-utf8-path-v1"
+BOOTSTRAP_ROOT_HASH_DOMAIN = b"label-match-code-root-v1\n"
+ONBOARDING_JSON_MAX_BYTES = 1024 * 1024
 ENROLLMENT_TLS_CA_BUNDLE_PATH_ENV = "LABEL_MATCH_ENROLLMENT_TLS_CA_BUNDLE_PATH"
 ONBOARDING_EXIT_CODE = 4
 LABEL_MATCH_DATA_ROOT_ENV = "LABEL_MATCH_SAVE_DIR"
@@ -236,14 +239,15 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _read_json(path: Path, purpose: str) -> dict[str, Any]:
     try:
-        size = path.stat().st_size
+        with path.open("rb") as handle:
+            raw = handle.read(ONBOARDING_JSON_MAX_BYTES + 1)
     except OSError as exc:
         raise ValueError(f"{purpose} is absent") from exc
-    if size <= 0 or size > 1024 * 1024:
+    if not raw or len(raw) > ONBOARDING_JSON_MAX_BYTES:
         raise ValueError(f"{purpose} size is invalid")
     try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        value = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{purpose} is not valid UTF-8 JSON") from exc
     if not isinstance(value, dict):
         raise ValueError(f"{purpose} must be a JSON object")
@@ -256,6 +260,67 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0))
+    except OSError as exc:
+        raise ValueError(f"bootstrap code path cannot be inspected: {path}") from exc
+    return path.is_symlink() or bool(attributes & 0x400)
+
+
+def _calculate_code_root_hash(
+    app_root: Path,
+    *,
+    integrity_record_name: str,
+) -> tuple[int, str, bool]:
+    """Hash the exact code file set without serializing the per-file inventory."""
+
+    canonical_entries: list[bytes] = []
+    main_executable_present = False
+    try:
+        candidates = app_root.rglob("*")
+        for candidate in candidates:
+            if _is_reparse_point(candidate):
+                raise ValueError(f"bootstrap code path is redirected: {candidate}")
+            if not candidate.is_file():
+                continue
+            relative_path = candidate.relative_to(app_root).as_posix()
+            if relative_path.casefold() == integrity_record_name.casefold():
+                continue
+            try:
+                before = candidate.stat()
+                content_hash = _file_sha256(candidate)
+                after = candidate.stat()
+            except OSError as exc:
+                raise ValueError(
+                    f"bootstrap code file cannot be inspected: {relative_path}"
+                ) from exc
+            if (
+                before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+            ):
+                raise ValueError(
+                    f"bootstrap code file changed during verification: {relative_path}"
+                )
+            canonical_entries.append(
+                (
+                    f"{content_hash} {after.st_size} "
+                    f"{relative_path.encode('utf-8').hex()}\n"
+                ).encode("ascii")
+            )
+            if relative_path.casefold() == "label_match.exe":
+                main_executable_present = True
+    except OSError as exc:
+        raise ValueError("bootstrap code inventory cannot be enumerated") from exc
+
+    canonical_entries.sort()
+    digest = hashlib.sha256()
+    digest.update(BOOTSTRAP_ROOT_HASH_DOMAIN)
+    for entry in canonical_entries:
+        digest.update(entry)
+    return len(canonical_entries), digest.hexdigest(), main_executable_present
 
 
 def verify_bootstrap_integrity(
@@ -274,71 +339,25 @@ def verify_bootstrap_integrity(
         raise ValueError("bootstrap integrity record lost the onedir package layout")
     if _resolved(str(record.get("code_root") or "")) != paths.app_root:
         raise ValueError("bootstrap integrity record code root is invalid")
-    files = record.get("files")
+    if record.get("inventory_algorithm") != BOOTSTRAP_INVENTORY_ALGORITHM:
+        raise ValueError("bootstrap integrity record algorithm is invalid")
+    file_count = record.get("file_count")
+    if type(file_count) is not int or file_count <= 0:
+        raise ValueError("bootstrap integrity record file count is invalid")
+    expected_root_hash = str(record.get("root_sha256") or "").strip().lower()
     if (
-        not isinstance(files, list)
-        or not files
-        or record.get("file_count") != len(files)
+        len(expected_root_hash) != 64
+        or any(character not in "0123456789abcdef" for character in expected_root_hash)
+        or "files" in record
     ):
-        raise ValueError("bootstrap integrity record file inventory is invalid")
-    normalized: list[tuple[str, int, str]] = []
-    declared_paths: set[str] = set()
-    for item in files:
-        if not isinstance(item, Mapping):
-            raise ValueError("bootstrap integrity inventory entry is invalid")
-        relative_text = str(item.get("path") or "").replace("\\", "/")
-        parts = relative_text.split("/")
-        if (
-            not relative_text
-            or relative_text.startswith("/")
-            or any(part in {"", ".", ".."} for part in parts)
-            or ":" in parts[0]
-        ):
-            raise ValueError("bootstrap integrity inventory path is unsafe")
-        folded = relative_text.casefold()
-        if folded in declared_paths:
-            raise ValueError("bootstrap integrity inventory path is duplicated")
-        declared_paths.add(folded)
-        try:
-            expected_size = int(item.get("size"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("bootstrap integrity inventory size is invalid") from exc
-        expected_hash = str(item.get("sha256") or "").strip().lower()
-        if expected_size < 0 or len(expected_hash) != 64:
-            raise ValueError("bootstrap integrity inventory metadata is invalid")
-        target = paths.app_root.joinpath(*parts)
-        if target.is_symlink() or not target.is_file():
-            raise ValueError(
-                f"bootstrap code file is absent or redirected: {relative_text}"
-            )
-        if target.stat().st_size != expected_size or _file_sha256(target) != expected_hash:
-            raise ValueError(f"bootstrap code file integrity failed: {relative_text}")
-        normalized.append((expected_hash, expected_size, relative_text))
-    actual_paths = set()
-    for candidate in paths.app_root.rglob("*"):
-        if not candidate.is_file():
-            continue
-        relative = candidate.relative_to(paths.app_root).as_posix().casefold()
-        if relative == paths.bootstrap_integrity_path.name.casefold():
-            continue
-        actual_paths.add(relative)
-    if actual_paths != declared_paths:
-        raise ValueError("bootstrap code inventory exact readback failed")
-    aggregate_payload = "".join(
-        f"{sha256} {size} {relative_path}\n"
-        for sha256, size, relative_path in normalized
-    ).encode("utf-8")
-    aggregate = hashlib.sha256(aggregate_payload).hexdigest()
-    if aggregate != str(record.get("aggregate_sha256") or "").strip().lower():
-        raise ValueError("bootstrap integrity aggregate is invalid")
-    main_entries = [
-        item
-        for item in files
-        if isinstance(item, Mapping)
-        and str(item.get("path") or "").replace("\\", "/").casefold()
-        == "label_match.exe"
-    ]
-    if len(main_entries) != 1:
+        raise ValueError("bootstrap integrity record root hash is invalid")
+    actual_count, actual_root_hash, main_executable_present = _calculate_code_root_hash(
+        paths.app_root,
+        integrity_record_name=paths.bootstrap_integrity_path.name,
+    )
+    if actual_count != file_count or actual_root_hash != expected_root_hash:
+        raise ValueError("bootstrap code root integrity failed")
+    if not main_executable_present:
         raise ValueError("bootstrap integrity record does not identify Label_Match.exe")
     if not (paths.app_root / "Label_Match.exe").is_file():
         raise ValueError("hardened Label_Match executable is absent")
@@ -348,8 +367,9 @@ def verify_bootstrap_integrity(
         "status": "PASS",
         "record_path": str(paths.bootstrap_integrity_path),
         "code_root": str(paths.app_root),
-        "file_count": len(files),
-        "aggregate_sha256": aggregate,
+        "file_count": actual_count,
+        "root_sha256": actual_root_hash,
+        "inventory_algorithm": BOOTSTRAP_INVENTORY_ALGORITHM,
         "package_layout": "onedir",
     }
 

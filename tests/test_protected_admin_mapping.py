@@ -22,7 +22,6 @@ from protected_admin import (
     PROTECTED_ADMIN_ROLE,
     ProtectedAdminProfileError,
     build_protected_admin_profile,
-    default_protected_admin_profile_path,
     is_protected_admin_code,
     load_protected_admin_profile,
     persistent_operator_name,
@@ -506,6 +505,38 @@ def test_startup_trace_marks_credential_field_but_keeps_business_number(
     trace_text = "\n".join(path.read_text(encoding="utf-8") for path in trace_files)
     assert SYNTHETIC_ADMIN_CODE not in trace_text
     assert OTHER_SIX_DIGIT_VALUE in trace_text
+
+
+def test_startup_trace_rejects_relative_environment_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_label_match(monkeypatch, tmp_path)
+    code_root = tmp_path / "readonly-code"
+    code_root.mkdir()
+    monkeypatch.setattr(module.sys, "executable", str(code_root / "Label_Match.exe"))
+    monkeypatch.setattr(module.sys, "argv", ["Label_Match.exe"])
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ProgramData", "relative-program-data")
+    monkeypatch.setenv("LOCALAPPDATA", "relative-local-app-data")
+    monkeypatch.setenv("TEMP", "relative-temp")
+    monkeypatch.chdir(code_root)
+
+    module._label_match_startup_trace("readonly-root-test")
+
+    assert list(code_root.iterdir()) == []
+
+
+def test_settings_path_has_no_packaged_code_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_label_match(monkeypatch, tmp_path)
+    monkeypatch.delenv("LABEL_MATCH_SETTINGS_PATH", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    with pytest.raises(RuntimeError, match="LOCALAPPDATA"):
+        module._default_label_match_settings_path()
 
 
 def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_once(

@@ -82,16 +82,20 @@ def _label_match_startup_trace(stage, **details):
         "pytest" in str(argument or "").lower() for argument in sys.argv
     )
     if automated_test:
-        candidate_roots = [
-            os.path.join(os.environ.get("TEMP", ""), "KMTech-startup-trace"),
+        root_specs = [
+            (os.environ.get("TEMP", ""), ("KMTech-startup-trace",)),
         ]
     else:
-        candidate_roots = [
-            os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "KMTech", "startup-trace"),
-            os.path.join(os.environ.get("LOCALAPPDATA", ""), "KMTech", "startup-trace"),
-            os.path.join(os.environ.get("TEMP", ""), "KMTech-startup-trace"),
-            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "startup-trace"),
+        root_specs = [
+            (os.environ.get("ProgramData") or r"C:\ProgramData", ("KMTech", "startup-trace")),
+            (os.environ.get("LOCALAPPDATA", ""), ("KMTech", "startup-trace")),
+            (os.environ.get("TEMP", ""), ("KMTech-startup-trace",)),
         ]
+    candidate_roots = [
+        os.path.join(root, *parts)
+        for root, parts in root_specs
+        if root and os.path.isabs(root)
+    ]
     for root in candidate_roots:
         if not root:
             continue
@@ -336,7 +340,7 @@ def _default_label_match_settings_path():
             "config",
             "app_settings.json",
         )
-    return resource_path(os.path.join("config", "app_settings.json"))
+    raise RuntimeError("LOCALAPPDATA is required for writable Label_Match settings")
 
 
 def _label_match_runtime_app_root():
@@ -3368,7 +3372,9 @@ def _is_sha256(value):
 
 
 def _can_apply_updates():
-    return bool(getattr(sys, "frozen", False))
+    # The packaged code root is immutable. Updates require the separately
+    # elevated installer to replace code and regenerate its integrity record.
+    return False
 
 
 def _assert_https_update_url(url, *, require_zip=False):
@@ -6490,15 +6496,6 @@ class Label_Match(tk.Tk):
                         "exception_type": type(exc).__name__,
                     },
                 ) from exc
-        if not os.path.exists(items_path):
-            os.makedirs(os.path.dirname(items_path), exist_ok=True)
-            with open(items_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Item Code', 'Item Name', 'Spec'])
-                writer.writerow(['VALID-MASTER1', '테스트제품A', 'SPEC-A'])
-                writer.writerow(['VALID-MASTER2', '테스트제품B', 'SPEC-B'])
-                writer.writerow(['CLC-001', '고객사-제품1', 'C-SPEC-1'])
-
         try:
             with open(items_path, 'r', encoding='utf-8-sig') as f:
                 return {row['Item Code']: row for row in csv.DictReader(f)}

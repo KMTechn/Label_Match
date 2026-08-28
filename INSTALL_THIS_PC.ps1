@@ -9,18 +9,17 @@ param(
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ApplyHardenedAclForTest
 )
-
 $ErrorActionPreference = "Stop"
 $ExpectedInstallRoot = "C:\KMTech\Apps\Label_Match\current"
 $IntegrityFileName = "bootstrap-integrity.json"
-$IntegritySchema = "label-match-bootstrap-integrity-v1"
+$IntegritySchema = "label-match-bootstrap-integrity-v2"; $IntegrityAlgorithm = "sha256-file-hash-size-utf8-path-v1"; $IntegrityMaxBytes = 1MB
+$IntegrityRequiredFields = @('schema_version', 'status', 'code_root', 'file_count', 'inventory_algorithm', 'root_sha256', 'package_layout')
 $LegacyRelayTaskName = "direct-sync-relay-label-match"
 $BootstrapScriptPath = $MyInvocation.MyCommand.Path
 $BootstrapBoundParameters = @{}
 foreach ($boundName in $PSBoundParameters.Keys) {
     $BootstrapBoundParameters[$boundName] = $PSBoundParameters[$boundName]
 }
-
 function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
         throw "$Purpose must be an absolute path."
@@ -34,7 +33,6 @@ function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     }
     return $full
 }
-
 function Test-SamePath([string]$Left, [string]$Right) {
     try {
         $leftFull = Get-StrictFullPath $Left "left path"
@@ -45,7 +43,6 @@ function Test-SamePath([string]$Left, [string]$Right) {
         return $false
     }
 }
-
 function Assert-NoReparsePoint([string]$Path, [string]$Purpose) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
     $items = @((Get-Item -LiteralPath $Path -Force))
@@ -58,7 +55,6 @@ function Assert-NoReparsePoint([string]$Path, [string]$Purpose) {
         }
     }
 }
-
 function Get-FileSha256([string]$Path) {
     $stream = [IO.File]::OpenRead($Path)
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -70,7 +66,6 @@ function Get-FileSha256([string]$Path) {
         $stream.Dispose()
     }
 }
-
 function Install-CurrentUserTlsCaBootstrap([string]$SourcePath, [string]$LocalAppDataRoot) {
     if ([string]::IsNullOrWhiteSpace($SourcePath)) { return $null }
     $source = Get-StrictFullPath $SourcePath "TLS CA bundle source"; Assert-NoReparsePoint $source "TLS CA bundle source"
@@ -109,7 +104,6 @@ function Invoke-SelfElevated {
     $process = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $argumentLine -Wait -PassThru
     exit $process.ExitCode
 }
-
 function Get-RelativeCodePath([string]$Root, [string]$Path) {
     $rootFull = (Get-StrictFullPath $Root "inventory root") + '\'
     $pathFull = [IO.Path]::GetFullPath($Path)
@@ -118,27 +112,27 @@ function Get-RelativeCodePath([string]$Root, [string]$Path) {
     }
     return $pathFull.Substring($rootFull.Length).Replace('\', '/')
 }
-
 function Get-CodeInventory([string]$Root) {
     $rootFull = Get-StrictFullPath $Root "code root"
-    $result = @()
-    foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -File -Force -Recurse | Sort-Object FullName)) {
+    $result = @(foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -File -Force -Recurse | Sort-Object FullName)) {
         $relative = Get-RelativeCodePath $rootFull $file.FullName
         if ($relative.Equals($IntegrityFileName, [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }
-        $result += [pscustomobject][ordered]@{
+        [pscustomobject][ordered]@{
             path = $relative
             size = [int64]$file.Length
             sha256 = Get-FileSha256 $file.FullName
         }
-    }
+    })
     return $result
 }
-
 function Get-InventoryAggregate([object[]]$Inventory) {
-    $lines = @($Inventory | ForEach-Object { "$($_.sha256) $($_.size) $($_.path)" })
-    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($lines -join "`n") + "`n")
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    $lines = [string[]]@($Inventory | ForEach-Object {
+        "$($_.sha256) $($_.size) $(([BitConverter]::ToString($utf8.GetBytes([string]$_.path))).Replace('-', '').ToLowerInvariant())"
+    })
+    [Array]::Sort($lines, [StringComparer]::Ordinal); $bytes = $utf8.GetBytes("label-match-code-root-v1`n" + (($lines -join "`n") + "`n"))
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
@@ -147,14 +141,12 @@ function Get-InventoryAggregate([object[]]$Inventory) {
         $sha.Dispose()
     }
 }
-
 function Write-Utf8Json([string]$Path, $Payload) {
     $temporary = "$Path.tmp.$PID"
-    $json = $Payload | ConvertTo-Json -Depth 8
+    $json = $Payload | ConvertTo-Json -Depth 8 -Compress
     [IO.File]::WriteAllText($temporary, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
-
 function Assert-RequiredRelease([string]$Root) {
     foreach ($name in @('Label_Match.exe', 'contract.lock.json')) {
         $path = Join-Path $Root $name
@@ -166,12 +158,10 @@ function Assert-RequiredRelease([string]$Root) {
         throw "Frozen release must preserve the Label_Match onedir _internal payload."
     }
 }
-
 function ConvertTo-NormalizedAclRights([int64]$Rights) {
     $synchronize = [int64][System.Security.AccessControl.FileSystemRights]::Synchronize
     return $Rights -band (-bnot $synchronize)
 }
-
 function Assert-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
     Assert-NoReparsePoint $Path "Hardened code ACL readback"
     $expected = @{
@@ -240,7 +230,6 @@ function Assert-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
         }
     }
 }
-
 function Set-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
     try {
         Assert-NoReparsePoint $Path "Hardened code ACL target"
@@ -270,7 +259,6 @@ function Set-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
         throw
     }
 }
-
 function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
     $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
     if ($null -eq $task) { return }
@@ -389,7 +377,7 @@ if ($DryRun.IsPresent) {
     Write-Output "bootstrap_status=DRY_RUN"
     Write-Output "code_root=$installRootFull"
     Write-Output "file_count=$($sourceInventory.Count)"
-    Write-Output "aggregate_sha256=$sourceAggregate"
+    Write-Output "root_sha256=$sourceAggregate"
     Write-Output "identity_profile_created=false"
     Write-Output "tls_ca_bootstrap_configured=$(-not [string]::IsNullOrWhiteSpace($TlsCaBundlePath))"
     Write-Output "elevation_points=1:code_placement"
@@ -425,8 +413,8 @@ try {
         code_root = $installRootFull
         installed_at = (Get-Date).ToUniversalTime().ToString('o')
         file_count = $stagedInventory.Count
-        aggregate_sha256 = $stagedAggregate
-        files = $stagedInventory
+        inventory_algorithm = $IntegrityAlgorithm
+        root_sha256 = $stagedAggregate
         identity_profile_created = $false
         state_scope = 'current_user_first_run'
         package_layout = 'onedir'
@@ -437,20 +425,32 @@ try {
     }
     if (Test-Path -LiteralPath $installRootFull) {
         $existingRecordPath = Join-Path $installRootFull $IntegrityFileName
-        $existingAggregate = ''
-        $existingCodeAggregate = ''
+        $existingRecord = $null; $existingCodeAggregate = ''
         if (Test-Path -LiteralPath $existingRecordPath -PathType Leaf) {
             try {
-                $existingAggregate = [string]((Get-Content -LiteralPath $existingRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json).aggregate_sha256)
+                $existingRecordLength = (Get-Item -LiteralPath $existingRecordPath).Length
+                if ($existingRecordLength -le 0 -or $existingRecordLength -gt $IntegrityMaxBytes) { throw "Existing integrity record size is invalid." }
+                $existingRecord = Get-Content -LiteralPath $existingRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 $existingCodeAggregate = Get-InventoryAggregate @(Get-CodeInventory $installRootFull)
             }
             catch {
-                $existingAggregate = ''
-                $existingCodeAggregate = ''
+                $existingRecord = $null; $existingCodeAggregate = ''
             }
         }
+        $existingFieldNames = @($existingRecord.PSObject.Properties.Name)
+        $missingFields = @($IntegrityRequiredFields | Where-Object { $existingFieldNames -cnotcontains $_ })
+        $existingMetadataMatches = (
+            ($existingRecord -is [pscustomobject]) -and $missingFields.Count -eq 0 -and
+            $existingFieldNames -cnotcontains 'files' -and $existingRecord.schema_version -ceq $IntegritySchema -and
+            $existingRecord.status -ceq 'PASS' -and $existingRecord.package_layout -ceq 'onedir' -and
+            (Test-SamePath ([string]$existingRecord.code_root) $installRootFull) -and
+            $existingRecord.inventory_algorithm -ceq $IntegrityAlgorithm -and
+            (($existingRecord.file_count -is [int]) -or ($existingRecord.file_count -is [long])) -and
+            [long]$existingRecord.file_count -eq $sourceInventory.Count -and
+            $existingRecord.root_sha256 -ceq $sourceAggregate
+        )
         if (
-            $existingAggregate -cne $sourceAggregate -or
+            -not $existingMetadataMatches -or
             $existingCodeAggregate -cne $sourceAggregate
         ) {
             throw "A different or damaged hardened code placement exists; remove it explicitly before replacement."
@@ -482,7 +482,7 @@ try {
     if ($null -eq $tlsCaBootstrap) { Write-Output "tls_ca_bootstrap_status=ABSENT" }
     else { Write-Output "tls_ca_bootstrap_status=PASS"; Write-Output "tls_ca_bootstrap_path=$tlsCaBootstrap" }
     Write-Output "file_count=$($sourceInventory.Count)"
-    Write-Output "aggregate_sha256=$sourceAggregate"
+    Write-Output "root_sha256=$sourceAggregate"
     Write-Output "identity_profile_created=false"
     Write-Output "elevation_points=1:code_placement"
     Write-Output "system_task_status=ABSENT"

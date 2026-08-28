@@ -151,9 +151,13 @@ def test_state_absent_partial_and_ready_are_distinguished(tmp_path):
     assert ready["authority_plane"] == "AUTHORITATIVE"
 
 
-def test_first_run_creates_state_and_second_run_reuses_identity(tmp_path):
+def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_path):
     app_root = tmp_path / "hardened-app"
-    app_root.mkdir()
+    internal = app_root / "_internal"
+    internal.mkdir(parents=True)
+    (app_root / "Label_Match.exe").write_bytes(b"main")
+    (internal / "python312.dll").write_bytes(b"runtime")
+    _write_bootstrap_root_record(app_root)
     environment = _environment(tmp_path)
     paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
     registration_calls = []
@@ -165,7 +169,7 @@ def test_first_run_creates_state_and_second_run_reuses_identity(tmp_path):
 
     kwargs = {
         "environ": environment,
-        "require_bootstrap_integrity": False,
+        "require_bootstrap_integrity": True,
         "registration_runner": register,
         "profile_loader": _profile_loader,
         "credential_loader": _credential_loader,
@@ -173,18 +177,42 @@ def test_first_run_creates_state_and_second_run_reuses_identity(tmp_path):
         "autostart_installer": _autostart,
         "relay_launcher": _relay_start,
     }
-    first = onboard_current_user(app_root, **kwargs)
-    identity_before = paths.identity_path.read_bytes()
-    second = onboard_current_user(app_root, **kwargs)
+    code_files = [path for path in app_root.rglob("*") if path.is_file()]
+    code_directories = [internal, app_root]
+    code_before = {
+        path.relative_to(app_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in code_files
+    }
+    for path in code_files:
+        path.chmod(0o444)
+    for path in code_directories:
+        path.chmod(0o555)
+    try:
+        first = onboard_current_user(app_root, **kwargs)
+        identity_before = paths.identity_path.read_bytes()
+        second = onboard_current_user(app_root, **kwargs)
+        code_after = {
+            path.relative_to(app_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in app_root.rglob("*")
+            if path.is_file()
+        }
+    finally:
+        for path in reversed(code_directories):
+            path.chmod(0o777)
+        for path in code_files:
+            path.chmod(0o666)
 
     assert first["action"] == "CREATED"
     assert second["action"] == "REUSED"
+    assert first["bootstrap_integrity"]["status"] == "PASS"
+    assert second["bootstrap_integrity"]["status"] == "PASS"
     assert len(registration_calls) == 1
     assert paths.identity_path.read_bytes() == identity_before
     assert paths.ledger_path.is_file()
     assert first["operation_lease_store"] == "AUTHORITATIVE_SNAPSHOT_PRESERVED"
     assert first["system_scheduled_task_required"] is False
     assert environment["LABEL_MATCH_DIRECT_SYNC_ROOT"] == str(paths.direct_sync_root)
+    assert code_after == code_before
 
 
 def test_registration_runner_derives_identity_without_source_host_override(
@@ -322,7 +350,41 @@ def test_missing_registration_result_is_unknown_not_success(tmp_path):
     assert report["status"] == "UNKNOWN"
 
 
-def test_bootstrap_integrity_requires_exact_onedir_inventory(tmp_path):
+def _write_bootstrap_root_record(app_root: Path) -> Path:
+    canonical_entries = []
+    file_count = 0
+    for path in app_root.rglob("*"):
+        if not path.is_file() or path.name == "bootstrap-integrity.json":
+            continue
+        payload = path.read_bytes()
+        relative_path = path.relative_to(app_root).as_posix()
+        canonical_entries.append(
+            (
+                f"{hashlib.sha256(payload).hexdigest()} {len(payload)} "
+                f"{relative_path.encode('utf-8').hex()}\n"
+            ).encode("ascii")
+        )
+        file_count += 1
+    digest = hashlib.sha256(b"label-match-code-root-v1\n")
+    for entry in sorted(canonical_entries):
+        digest.update(entry)
+    record_path = app_root / "bootstrap-integrity.json"
+    _write_json(
+        record_path,
+        {
+            "schema_version": "label-match-bootstrap-integrity-v2",
+            "status": "PASS",
+            "code_root": str(app_root.resolve()),
+            "file_count": file_count,
+            "inventory_algorithm": "sha256-file-hash-size-utf8-path-v1",
+            "root_sha256": digest.hexdigest(),
+            "package_layout": "onedir",
+        },
+    )
+    return record_path
+
+
+def test_bootstrap_integrity_requires_exact_onedir_root_hash(tmp_path):
     app_root = tmp_path / "hardened-app"
     internal = app_root / "_internal"
     internal.mkdir(parents=True)
@@ -330,40 +392,44 @@ def test_bootstrap_integrity_requires_exact_onedir_inventory(tmp_path):
     runtime = internal / "python312.dll"
     executable.write_bytes(b"main")
     runtime.write_bytes(b"runtime")
-    entries = []
-    for path in (executable, runtime):
-        payload = path.read_bytes()
-        entries.append(
-            {
-                "path": path.relative_to(app_root).as_posix(),
-                "size": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
-    aggregate = hashlib.sha256(
-        "".join(
-            f"{item['sha256']} {item['size']} {item['path']}\n" for item in entries
-        ).encode("utf-8")
-    ).hexdigest()
-    _write_json(
-        app_root / "bootstrap-integrity.json",
-        {
-            "schema_version": "label-match-bootstrap-integrity-v1",
-            "status": "PASS",
-            "code_root": str(app_root.resolve()),
-            "file_count": len(entries),
-            "aggregate_sha256": aggregate,
-            "files": entries,
-            "package_layout": "onedir",
-        },
-    )
+    record_path = _write_bootstrap_root_record(app_root)
     paths = resolve_current_user_onboarding_paths(
         app_root, environ=_environment(tmp_path)
     )
 
-    assert verify_bootstrap_integrity(paths, required=True)["status"] == "PASS"
+    result = verify_bootstrap_integrity(paths, required=True)
+
+    assert result["status"] == "PASS"
+    assert result["file_count"] == 2
+    assert result["root_sha256"] == json.loads(
+        record_path.read_text(encoding="utf-8")
+    )["root_sha256"]
     runtime.write_bytes(b"tampered")
-    with pytest.raises(ValueError, match="integrity failed"):
+    with pytest.raises(ValueError, match="code root integrity failed"):
+        verify_bootstrap_integrity(paths, required=True)
+
+
+@pytest.mark.parametrize("mutation", ["add", "remove", "rename"])
+def test_bootstrap_integrity_root_detects_file_set_changes(tmp_path, mutation):
+    app_root = tmp_path / "hardened-app"
+    internal = app_root / "_internal"
+    internal.mkdir(parents=True)
+    (app_root / "Label_Match.exe").write_bytes(b"main")
+    runtime = internal / "python312.dll"
+    runtime.write_bytes(b"runtime")
+    _write_bootstrap_root_record(app_root)
+    paths = resolve_current_user_onboarding_paths(
+        app_root, environ=_environment(tmp_path)
+    )
+
+    if mutation == "add":
+        (internal / "added.dll").write_bytes(b"added")
+    elif mutation == "remove":
+        runtime.unlink()
+    else:
+        runtime.rename(internal / "renamed.dll")
+
+    with pytest.raises(ValueError, match="code root integrity failed"):
         verify_bootstrap_integrity(paths, required=True)
 
 
