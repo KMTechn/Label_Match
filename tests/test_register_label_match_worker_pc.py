@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 
@@ -23,6 +24,77 @@ def generated_install_id(module, *, user_sid=TEST_USER_SID, app_id=None):
         user_sid=user_sid,
         app_id=app_id or module.INSTALL_IDENTITY_APP_ID,
     )
+
+
+TEST_POSSESSION_JWK = {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "y": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+}
+TEST_POSSESSION_FINGERPRINT = "test-possession-fingerprint"
+
+
+def fake_possession_descriptor(*, created=True):
+    return {
+        "contract_version": "producer-machine-possession-key-v1",
+        "provider_name": "Microsoft Software Key Storage Provider",
+        "key_name": "KMTech.DirectSync.Possession.v1",
+        "scope": "current_user",
+        "unique_name": "test-unique-name",
+        "created": created,
+        "public_jwk": dict(TEST_POSSESSION_JWK),
+        "fingerprint": TEST_POSSESSION_FINGERPRINT,
+        "machine_key": False,
+        "export_policy": 0,
+        "key_usage": 2,
+    }
+
+
+def fake_v2_enrollment_response(module, payload, secret):
+    identity = payload["manifest"]["pc_identity"]
+    active_manifest_hashes = [module.manifest_hash(payload["manifest"])]
+    response = {
+        "contract_version": module.ENROLLMENT_CONTRACT_VERSION,
+        "status": "enrolled",
+        "identity_action": "CREATED",
+        "authorization_state": {"status": "OPERATION_PENDING"},
+        "credential_epoch": 1,
+        "producer_id": payload["producer_id"],
+        "key_id": payload["key_id"],
+        "secret": secret,
+        "secret_fingerprint_sha256": module._fingerprint(secret),
+        "endpoint_url": payload["endpoint_url"],
+        "source_host_id": identity["source_host_id"],
+        "producer_install_id": identity["producer_install_id"],
+        "active_manifest_hashes": active_manifest_hashes,
+        "possession_key": {
+            "contract_version": "producer-machine-possession-key-v1",
+            "fingerprint": TEST_POSSESSION_FINGERPRINT,
+        },
+        "server_binding": {
+            "producer_manifest_path": "/srv/producers/label/producer_manifest.json",
+            "registry_path": "/srv/producers/label/source_registry.json",
+        },
+    }
+    response["client_receipt"] = {
+        "receipt_schema_version": "producer-self-enrollment-client-receipt-v1",
+        "contract_version": module.ENROLLMENT_CONTRACT_VERSION,
+        "status": "enrolled",
+        "identity_action": "CREATED",
+        "authorization_state": response["authorization_state"],
+        "credential_epoch": 1,
+        "producer_id": payload["producer_id"],
+        "key_id": payload["key_id"],
+        "secret_fingerprint_sha256": module._fingerprint(secret),
+        "endpoint_url": payload["endpoint_url"],
+        "source_host_id": identity["source_host_id"],
+        "producer_install_id": identity["producer_install_id"],
+        "active_manifest_hashes": active_manifest_hashes,
+        "possession_key_fingerprint": TEST_POSSESSION_FINGERPRINT,
+        "server_binding": dict(response["server_binding"]),
+    }
+    return response
 
 
 def test_label_match_registration_dry_run_derives_per_pc_identity_without_secret(
@@ -363,26 +435,17 @@ def test_label_match_registration_apply_writes_manifest_credential_and_receipt_w
     ):
         assert enrollment_token == "install-token"
         assert payload["contract_version"] == module.ENROLLMENT_CONTRACT_VERSION
+        assert enrollment_url.endswith("/api/producer-ingest/v2/enroll")
+        assert payload["possession_public_jwk"] == TEST_POSSESSION_JWK
         assert payload["manifest"]["streams"][0]["stream_name"] == "label_match_events"
-        return {
-            "status": "enrolled",
-            "producer_id": payload["producer_id"],
-            "key_id": payload["key_id"],
-            "secret": secret,
-            "secret_fingerprint_sha256": module._fingerprint(secret),
-            "client_receipt": {
-                "receipt_schema_version": "producer-self-enrollment-client-receipt-v1",
-                "status": "enrolled",
-                "producer_id": payload["producer_id"],
-                "key_id": payload["key_id"],
-            },
-            "server_binding": {
-                "producer_manifest_path": "/srv/producers/label/producer_manifest.json",
-                "registry_path": "/srv/producers/label/source_registry.json",
-            },
-        }
+        return fake_v2_enrollment_response(module, payload, secret)
 
     monkeypatch.setattr(module, "_enroll", fake_enroll)
+    monkeypatch.setattr(
+        module,
+        "_prepare_possession_key",
+        lambda _report: fake_possession_descriptor(),
+    )
     monkeypatch.setattr(module, "_write_dpapi_secret", lambda data_dir, target, secret_text: Path(data_dir) / "secrets" / f"{target}.dpapi")
     monkeypatch.setattr(module, "_verify_dpapi_secret", lambda data_dir, target, secret_text: secret_text == secret)
 
@@ -435,6 +498,9 @@ def test_label_match_registration_apply_writes_manifest_credential_and_receipt_w
     assert report["status"] == "SELF_ENROLLMENT_REGISTERED"
     assert report["server_registration_verified"] is True
     assert report["secret_bootstrap_verified"] is True
+    assert report["possession_binding_verified"] is True
+    assert report["possession_key_scope"] == "current_user"
+    assert report["v2_client_receipt_verified"] is True
     assert report["manual_pc_approval_required"] is False
     assert "server-issued-secret" not in combined_text
     assert "install-token" not in combined_text
@@ -456,25 +522,14 @@ def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_to
         tls_ca_bundle_path="",
     ):
         assert enrollment_token == ""
-        return {
-            "status": "enrolled",
-            "producer_id": payload["producer_id"],
-            "key_id": payload["key_id"],
-            "secret": secret,
-            "secret_fingerprint_sha256": module._fingerprint(secret),
-            "client_receipt": {
-                "receipt_schema_version": "producer-self-enrollment-client-receipt-v1",
-                "status": "enrolled",
-                "producer_id": payload["producer_id"],
-                "key_id": payload["key_id"],
-            },
-            "server_binding": {
-                "producer_manifest_path": "/srv/producers/label/producer_manifest.json",
-                "registry_path": "/srv/producers/label/source_registry.json",
-            },
-        }
+        return fake_v2_enrollment_response(module, payload, secret)
 
     monkeypatch.setattr(module, "_enroll", fake_enroll)
+    monkeypatch.setattr(
+        module,
+        "_prepare_possession_key",
+        lambda _report: fake_possession_descriptor(),
+    )
     monkeypatch.setattr(module, "_write_dpapi_secret", lambda data_dir, target, secret_text: Path(data_dir) / "secrets" / f"{target}.dpapi")
     monkeypatch.setattr(module, "_verify_dpapi_secret", lambda data_dir, target, secret_text: secret_text == secret)
 
@@ -540,17 +595,20 @@ def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
     secret = "server-issued-secret"
     observed = {}
 
+    def fake_enroll(payload, **_kwargs):
+        response = fake_v2_enrollment_response(module, payload, secret)
+        response["machine_credential_bundle"] = {"present": True}
+        return response
+
     monkeypatch.setattr(
         module,
         "_enroll",
-        lambda *_args, **_kwargs: {
-            "status": "enrolled",
-            "producer_id": credential["producer_id"],
-            "key_id": credential["key_id"],
-            "secret": secret,
-            "secret_fingerprint_sha256": module._fingerprint(secret),
-            "machine_credential_bundle": {"present": True},
-        },
+        fake_enroll,
+    )
+    monkeypatch.setattr(
+        module,
+        "_prepare_possession_key",
+        lambda _report: fake_possession_descriptor(),
     )
     monkeypatch.setattr(
         module,
@@ -601,7 +659,7 @@ def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path):
 
     result = module._enroll(
         {"contract_version": module.ENROLLMENT_CONTRACT_VERSION},
-        enrollment_url="https://worker.example.invalid/api/producer-ingest/v1/enroll",
+        enrollment_url="https://worker.example.invalid/api/producer-ingest/v2/enroll",
         enrollment_token="",
         timeout_seconds=30,
         tls_ca_bundle_path=str(ca_bundle),
@@ -609,6 +667,231 @@ def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path):
 
     assert result["status"] == "enrolled"
     assert observed["kwargs"]["verify"] == str(ca_bundle)
+
+
+def test_vendored_possession_key_sources_match_pinned_hash_manifest():
+    root = Path(__file__).resolve().parents[1]
+    manifest = json.loads(
+        (root / "kmtech_zero_pe.vendor.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["source_commit"] == "67db9569bcf7f1eacebeed664f00b4c51e48ff54"
+    assert set(manifest["files"]) == {
+        "kmtech_zero_pe/__init__.py",
+        "kmtech_zero_pe/cng_p256.py",
+        "kmtech_zero_pe/possession_key.py",
+    }
+    for relative_path, expected_sha256 in manifest["files"].items():
+        assert hashlib.sha256((root / relative_path).read_bytes()).hexdigest() == expected_sha256
+
+
+def test_new_identity_provisions_only_current_user_possession_key(monkeypatch):
+    module = load_registration_module()
+    calls = []
+
+    class Descriptor:
+        def as_dict(self):
+            return fake_possession_descriptor()
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def descriptor(self):
+            return Descriptor()
+
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "provision_initial",
+        staticmethod(lambda **kwargs: calls.append(("provision", kwargs)) or Key()),
+    )
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "open_existing",
+        staticmethod(
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("new identity must use provision_initial")
+            )
+        ),
+    )
+
+    descriptor = module._prepare_possession_key(
+        {"producer_identity_source": "generated"}
+    )
+
+    assert descriptor["scope"] == "current_user"
+    assert calls == [("provision", {"scope": module.SCOPE_CURRENT_USER})]
+
+
+def test_existing_identity_opens_key_without_provisioning(monkeypatch):
+    module = load_registration_module()
+    calls = []
+
+    class Descriptor:
+        def as_dict(self):
+            return fake_possession_descriptor(created=False)
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def descriptor(self):
+            return Descriptor()
+
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "provision_initial",
+        staticmethod(
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("existing identity must never provision a key")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "open_existing",
+        staticmethod(lambda **kwargs: calls.append(("open", kwargs)) or Key()),
+    )
+
+    descriptor = module._prepare_possession_key(
+        {"producer_identity_source": "identity_file"}
+    )
+
+    assert descriptor["created"] is False
+    assert calls == [("open", {"scope": module.SCOPE_CURRENT_USER})]
+
+
+def test_existing_legacy_identity_missing_key_reports_admin_recovery_without_mutation(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    data_dir = tmp_path / "state"
+    data_dir.mkdir()
+    identity_path = data_dir / module.PRODUCER_IDENTITY_FILENAME
+    identity_payload = {
+        "schema_version": module.PRODUCER_IDENTITY_SCHEMA_VERSION,
+        "producer_id": "legacy-label-producer",
+        "source_host_id": "legacy-label-host",
+        "producer_install_id": "legacy-label-install-id",
+        "pc_id": "LEGACY-LABEL-PC",
+    }
+    identity_path.write_text(json.dumps(identity_payload) + "\n", encoding="utf-8")
+    identity_before = identity_path.read_bytes()
+    report_path = data_dir / "status" / "registration.json"
+
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "provision_initial",
+        staticmethod(
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("legacy identity must never provision a replacement key")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "open_existing",
+        staticmethod(
+            lambda **_kwargs: (_ for _ in ()).throw(
+                module.AdminRecoveryRequired(
+                    "KMTech.DirectSync.Possession.v1",
+                    "Microsoft Software Key Storage Provider",
+                    "current_user",
+                    "possession key is missing or cannot be opened",
+                    status=0x80090016,
+                )
+            )
+        ),
+    )
+
+    result = module.main(
+        [
+            "--apply",
+            "--server-base-url",
+            "https://worker.example.invalid",
+            "--data-dir",
+            str(data_dir),
+            "--sync-dir",
+            str(tmp_path / "label-data"),
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert result == 2
+    assert identity_path.read_bytes() == identity_before
+    assert report["status"] == module.ADMIN_RECOVERY_ACTION
+    assert report["recovery_origin"] == "local_possession_key"
+    assert report["automatic_key_replacement_performed"] is False
+    assert report["existing_identity_preserved"] is True
+    assert report["possession_key_state"]["scope"] == "current_user"
+    assert not (data_dir / module.DEFAULT_MANIFEST_FILENAME).exists()
+    assert not (data_dir / module.DEFAULT_CREDENTIAL_FILENAME).exists()
+
+
+def test_server_legacy_rejection_is_reported_without_local_identity_commit(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    data_dir = tmp_path / "state"
+    report_path = data_dir / "status" / "registration.json"
+    monkeypatch.setattr(module, "_current_user_sid", lambda: TEST_USER_SID)
+    monkeypatch.setattr(
+        module,
+        "_prepare_possession_key",
+        lambda _report: fake_possession_descriptor(),
+    )
+
+    class Response:
+        status_code = 409
+
+        @staticmethod
+        def json():
+            return {
+                "error": {
+                    "code": "admin_recovery_required",
+                    "message": "Existing producer identity has no possession-key binding",
+                }
+            }
+
+    monkeypatch.setattr(module.requests, "post", lambda *_args, **_kwargs: Response())
+
+    result = module.main(
+        [
+            "--apply",
+            "--server-base-url",
+            "https://worker.example.invalid",
+            "--enrollment-token-env",
+            "",
+            "--machine-guid",
+            TEST_MACHINE_GUID,
+            "--data-dir",
+            str(data_dir),
+            "--sync-dir",
+            str(tmp_path / "label-data"),
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert result == 2
+    assert report["status"] == module.ADMIN_RECOVERY_ACTION
+    assert report["server_http_status"] == 409
+    assert report["server_error_code"] == "admin_recovery_required"
+    assert report["recovery_origin"] == "server_legacy_identity"
+    assert report["automatic_legacy_upgrade_performed"] is False
+    assert report["existing_identity_preserved"] is True
+    assert not (data_dir / module.PRODUCER_IDENTITY_FILENAME).exists()
+    assert not (data_dir / module.DEFAULT_MANIFEST_FILENAME).exists()
+    assert not (data_dir / module.DEFAULT_CREDENTIAL_FILENAME).exists()
 
 
 def test_label_match_registration_does_not_auto_load_adjacent_token_file(tmp_path, monkeypatch):

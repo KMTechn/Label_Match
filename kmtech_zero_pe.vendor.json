@@ -1,0 +1,10 @@
+{
+  "files": {
+    "kmtech_zero_pe/__init__.py": "9b53fe7481609d85c4a686db53b847d3c6a38060051535fea157a5ee7c5d0f55",
+    "kmtech_zero_pe/cng_p256.py": "bd792c05e9f9c288469c92ecbdcdc088cc21dcfd7760c82ddcaa89ea48fc770b",
+    "kmtech_zero_pe/possession_key.py": "818355683e2c893b4b2afd368c08012f15b1fd18e60db5bdbddbfb254b2f3e73"
+  },
+  "schema_version": "kmtech-zero-pe-vendor-v1",
+  "source_commit": "67db9569bcf7f1eacebeed664f00b4c51e48ff54",
+  "source_name": "seq275-possession-key-adapter"
+}

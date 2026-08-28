@@ -25,6 +25,13 @@ if str(ROOT) not in sys.path:
 
 import requests  # noqa: E402
 
+from kmtech_zero_pe import (  # noqa: E402
+    ADMIN_RECOVERY_ACTION,
+    AdminRecoveryRequired,
+    POSSESSION_KEY_CONTRACT_VERSION,
+    PersistentPossessionKey,
+    SCOPE_CURRENT_USER,
+)
 from kmtech_factory_contracts.bundle import (  # noqa: E402
     load_contract_document,
     verify_bundled_contracts,
@@ -53,7 +60,9 @@ DEFAULT_CREDENTIAL_FILENAME = "credential.json"
 DEFAULT_MANIFEST_FILENAME = "producer_manifest.json"
 DEFAULT_RECEIPT_FILENAME = "producer_self_enrollment_receipt.json"
 DEFAULT_REPORT_FILENAME = "label_match_worker_pc_registration.json"
-ENROLLMENT_CONTRACT_VERSION = "producer-self-enrollment-v1"
+ENROLLMENT_CONTRACT_VERSION = "producer-self-enrollment-v2"
+ENROLLMENT_PATH = "/api/producer-ingest/v2/enroll"
+POSSESSION_KEY_SCOPE = SCOPE_CURRENT_USER
 CRYPTPROTECT_LOCAL_MACHINE = 0x4
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 LABEL_MATCH_APP = "LabelMatch"
@@ -69,6 +78,29 @@ PRODUCER_IDENTITY_MAX_BYTES = 64 * 1024
 INSTALL_IDENTITY_DERIVATION_VERSION = "label-match-install-identity-v1"
 INSTALL_IDENTITY_APP_ID = "label_match"
 INSTALL_IDENTITY_HASH_HEX_LENGTH = 32
+
+
+class ProducerEnrollmentHTTPError(DirectSyncPushError):
+    """A structured server rejection from the enrollment endpoint."""
+
+    def __init__(self, status_code: int, error_code: str, message: str) -> None:
+        self.status_code = int(status_code)
+        self.error_code = str(error_code or status_code)
+        self.server_message = str(message or "").strip()
+        detail = f" ({self.server_message})" if self.server_message else ""
+        super().__init__(f"self-enroll failed: {self.error_code}{detail}")
+
+
+class PossessionKeyRecoveryRequired(DirectSyncPushError):
+    """An existing producer identity cannot silently receive a replacement key."""
+
+    def __init__(self, identity_source: str, key_state: Mapping[str, Any]) -> None:
+        self.identity_source = str(identity_source or "unknown")
+        self.key_state = dict(key_state)
+        super().__init__(
+            "existing producer identity requires audited administrator recovery; "
+            "automatic possession-key replacement is forbidden"
+        )
 
 
 def _canonical_raw_event_names() -> list[str]:
@@ -299,7 +331,7 @@ def _health_url_from_endpoint(endpoint_url: str) -> str:
 
 def _enrollment_url_from_endpoint(endpoint_url: str) -> str:
     parsed = urlparse(endpoint_url)
-    return f"{parsed.scheme}://{parsed.netloc}/api/producer-ingest/v1/enroll"
+    return f"{parsed.scheme}://{parsed.netloc}{ENROLLMENT_PATH}"
 
 
 def _build_stream(source_host_id: str) -> dict[str, Any]:
@@ -603,6 +635,38 @@ def _token_from_sources(args: argparse.Namespace) -> tuple[str, str]:
     return candidates[0]
 
 
+def _prepare_possession_key(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Open the pinned current-user key, creating it only for a new identity."""
+
+    identity_source = str(report.get("producer_identity_source") or "").strip()
+    try:
+        if identity_source == "generated":
+            key = PersistentPossessionKey.provision_initial(
+                scope=POSSESSION_KEY_SCOPE
+            )
+        else:
+            key = PersistentPossessionKey.open_existing(
+                scope=POSSESSION_KEY_SCOPE
+            )
+    except AdminRecoveryRequired as exc:
+        raise PossessionKeyRecoveryRequired(
+            identity_source,
+            exc.public_state(),
+        ) from exc
+    with key:
+        descriptor = key.descriptor().as_dict()
+    if descriptor.get("scope") != POSSESSION_KEY_SCOPE:
+        raise DirectSyncPushError("possession key scope is not current_user")
+    if descriptor.get("machine_key") is not False:
+        raise DirectSyncPushError("possession key unexpectedly uses local_machine scope")
+    if descriptor.get("contract_version") != POSSESSION_KEY_CONTRACT_VERSION:
+        raise DirectSyncPushError("possession key contract version is invalid")
+    public_jwk = descriptor.get("public_jwk")
+    if not isinstance(public_jwk, dict):
+        raise DirectSyncPushError("possession key public JWK is unavailable")
+    return descriptor
+
+
 def _enroll(
     payload: Mapping[str, Any],
     *,
@@ -629,11 +693,77 @@ def _enroll(
         error = response_payload.get("error") if isinstance(response_payload, dict) else {}
         code = str(error.get("code") or response.status_code) if isinstance(error, dict) else str(response.status_code)
         message = str(error.get("message") or "").strip() if isinstance(error, dict) else ""
-        detail = f" ({message})" if message else ""
-        raise DirectSyncPushError(f"self-enroll failed: {code}{detail}")
+        raise ProducerEnrollmentHTTPError(response.status_code, code, message)
     if not isinstance(response_payload, dict):
         raise DirectSyncPushError("self-enroll response must be a JSON object")
     return response_payload
+
+
+def _validate_v2_enrollment_response(
+    response_payload: Mapping[str, Any],
+    *,
+    expected_fingerprint: str,
+    expected_producer_id: str,
+    expected_install_id: str,
+    expected_source_host_id: str,
+    expected_endpoint_url: str,
+    expected_manifest_hash: str,
+) -> dict[str, Any]:
+    """Reconcile the v2 response and durable client receipt before persistence."""
+
+    if response_payload.get("contract_version") != ENROLLMENT_CONTRACT_VERSION:
+        raise DirectSyncPushError("self-enroll response contract version mismatch")
+    if response_payload.get("status") != "enrolled":
+        raise DirectSyncPushError("v2 initial enrollment did not create a new identity")
+    if response_payload.get("identity_action") != "CREATED":
+        raise DirectSyncPushError("v2 initial enrollment identity action mismatch")
+    if response_payload.get("credential_epoch") != 1:
+        raise DirectSyncPushError("v2 initial enrollment credential epoch mismatch")
+    possession_key = response_payload.get("possession_key")
+    if not isinstance(possession_key, dict):
+        raise DirectSyncPushError("v2 response missing possession key binding")
+    if possession_key.get("contract_version") != POSSESSION_KEY_CONTRACT_VERSION:
+        raise DirectSyncPushError("v2 response possession key contract mismatch")
+    if possession_key.get("fingerprint") != expected_fingerprint:
+        raise DirectSyncPushError("v2 response possession key fingerprint mismatch")
+
+    expected_values = {
+        "producer_id": expected_producer_id,
+        "producer_install_id": expected_install_id,
+        "source_host_id": expected_source_host_id,
+        "endpoint_url": expected_endpoint_url,
+    }
+    for field, expected in expected_values.items():
+        if response_payload.get(field) != expected:
+            raise DirectSyncPushError(f"v2 response {field} mismatch")
+    if response_payload.get("active_manifest_hashes") != [expected_manifest_hash]:
+        raise DirectSyncPushError("v2 response active manifest hash mismatch")
+
+    receipt = response_payload.get("client_receipt")
+    if not isinstance(receipt, dict):
+        raise DirectSyncPushError("v2 response missing client receipt")
+    receipt_values = {
+        "contract_version": ENROLLMENT_CONTRACT_VERSION,
+        "status": "enrolled",
+        "identity_action": "CREATED",
+        "credential_epoch": 1,
+        "possession_key_fingerprint": expected_fingerprint,
+        **expected_values,
+    }
+    for field, expected in receipt_values.items():
+        if receipt.get(field) != expected:
+            raise DirectSyncPushError(f"v2 client receipt {field} mismatch")
+    if receipt.get("active_manifest_hashes") != [expected_manifest_hash]:
+        raise DirectSyncPushError("v2 client receipt active manifest hash mismatch")
+    for field in (
+        "authorization_state",
+        "key_id",
+        "secret_fingerprint_sha256",
+        "server_binding",
+    ):
+        if receipt.get(field) != response_payload.get(field):
+            raise DirectSyncPushError(f"v2 client receipt {field} mismatch")
+    return dict(receipt)
 
 
 class _DataBlob(ctypes.Structure):
@@ -811,12 +941,29 @@ def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, 
 def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], credential: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
     token_source, token = _token_from_sources(args)
     enrollment_url = str(report["enrollment_url"])
+    possession_key = _prepare_possession_key(report)
+    possession_fingerprint = str(possession_key["fingerprint"])
+    report.update(
+        {
+            "enrollment_contract_version": ENROLLMENT_CONTRACT_VERSION,
+            "possession_key_contract_version": str(
+                possession_key["contract_version"]
+            ),
+            "possession_key_created": bool(possession_key["created"]),
+            "possession_key_fingerprint": possession_fingerprint,
+            "possession_key_scope": str(possession_key["scope"]),
+            "possession_key_provisioning_allowed": (
+                report.get("producer_identity_source") == "generated"
+            ),
+        }
+    )
     enrollment_payload = {
         "contract_version": ENROLLMENT_CONTRACT_VERSION,
         "endpoint_url": credential["endpoint_url"],
         "key_id": credential["key_id"],
         "manifest": manifest,
         "manifest_hash": manifest_hash(manifest),
+        "possession_public_jwk": dict(possession_key["public_jwk"]),
         "producer_id": credential["producer_id"],
     }
     response_payload = _enroll(
@@ -827,6 +974,15 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
         tls_ca_bundle_path=str(
             getattr(args, "tls_ca_bundle_path", "") or ""
         ).strip(),
+    )
+    _validate_v2_enrollment_response(
+        response_payload,
+        expected_fingerprint=possession_fingerprint,
+        expected_producer_id=str(credential["producer_id"]),
+        expected_install_id=str(report["producer_install_id"]),
+        expected_source_host_id=str(report["source_host_id"]),
+        expected_endpoint_url=str(credential["endpoint_url"]),
+        expected_manifest_hash=str(report["manifest_hash"]),
     )
     secret = _secret_from_response(response_payload)
     expected_fingerprint = str(response_payload.get("secret_fingerprint_sha256") or "")
@@ -888,6 +1044,11 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
             "token_source": token_source,
             "protected_secret_path": str(secret_path),
             "credential_scope": selected_scope,
+            "identity_action": response_payload.get("identity_action"),
+            "authorization_state": response_payload.get("authorization_state"),
+            "credential_epoch": response_payload.get("credential_epoch"),
+            "possession_binding_verified": True,
+            "v2_client_receipt_verified": True,
             "machine_profiles": {"logistics": machine_profile} if machine_profile else {},
         }
     )
@@ -937,6 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = Path(args.data_dir or DEFAULT_DIRECT_SYNC_ROOT).expanduser().resolve()
     report_path = Path(args.report_path).expanduser() if args.report_path else data_dir / "status" / DEFAULT_REPORT_FILENAME
     report_context: dict[str, Any] = {}
+    report: dict[str, Any] = {}
     try:
         manifest, credential, report = build_payloads(args)
         report_context = {
@@ -944,6 +1106,10 @@ def main(argv: list[str] | None = None) -> int:
             "key_id": report.get("key_id"),
             "manual_pc_approval_required": report.get("manual_pc_approval_required"),
             "producer_id": report.get("producer_id"),
+            "producer_identity_loaded_from": report.get(
+                "producer_identity_loaded_from"
+            ),
+            "producer_identity_source": report.get("producer_identity_source"),
             "producer_install_id": report.get("producer_install_id"),
             "source_host_id": report.get("source_host_id"),
         }
@@ -1022,6 +1188,52 @@ def main(argv: list[str] | None = None) -> int:
             "secret_material_persisted": False,
         }
         blocked.update({key: value for key, value in report_context.items() if value is not None})
+        for key in (
+            "enrollment_contract_version",
+            "possession_key_contract_version",
+            "possession_key_created",
+            "possession_key_fingerprint",
+            "possession_key_provisioning_allowed",
+            "possession_key_scope",
+        ):
+            if key in report:
+                blocked[key] = report[key]
+        if isinstance(exc, PossessionKeyRecoveryRequired):
+            blocked.update(
+                {
+                    "status": ADMIN_RECOVERY_ACTION,
+                    "recovery_action": ADMIN_RECOVERY_ACTION,
+                    "recovery_origin": "local_possession_key",
+                    "possession_key_state": dict(exc.key_state),
+                    "automatic_key_replacement_performed": False,
+                    "existing_identity_preserved": True,
+                }
+            )
+        elif isinstance(exc, ProducerEnrollmentHTTPError):
+            blocked.update(
+                {
+                    "server_error_code": exc.error_code,
+                    "server_http_status": exc.status_code,
+                }
+            )
+            if exc.error_code == "admin_recovery_required":
+                blocked.update(
+                    {
+                        "status": ADMIN_RECOVERY_ACTION,
+                        "recovery_action": ADMIN_RECOVERY_ACTION,
+                        "recovery_origin": "server_legacy_identity",
+                        "automatic_legacy_upgrade_performed": False,
+                        "existing_identity_preserved": True,
+                    }
+                )
+            elif exc.error_code == "reattach_proof_required":
+                blocked.update(
+                    {
+                        "status": "POSSESSION_PROOF_REATTACH_REQUIRED",
+                        "recovery_action": "POSSESSION_PROOF_REATTACH_REQUIRED",
+                        "automatic_credential_replay_performed": False,
+                    }
+                )
         blocked["report_path"] = str(report_path.resolve())
         _write_json(report_path, blocked)
         print(f"registration_report={report_path.resolve()}")
