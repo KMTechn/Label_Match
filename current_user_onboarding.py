@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 from typing import Any, Callable, Mapping, MutableMapping
 import uuid
@@ -330,6 +331,19 @@ def verify_bootstrap_integrity(
 ) -> dict[str, Any]:
     if not required:
         return {"status": "NOT_TESTED", "reason": "source-mode onboarding"}
+    try:
+        record_stat = paths.bootstrap_integrity_path.lstat()
+    except FileNotFoundError:
+        return {
+            "status": "ABSENT",
+            "reason": "bootstrap integrity record is absent",
+            "warning": True,
+            "record_path": str(paths.bootstrap_integrity_path),
+        }
+    except OSError as exc:
+        raise ValueError("bootstrap integrity record cannot be inspected") from exc
+    if not stat.S_ISREG(record_stat.st_mode):
+        raise ValueError("bootstrap integrity record is not a regular file")
     record = _read_json(paths.bootstrap_integrity_path, "bootstrap integrity record")
     if record.get("schema_version") != BOOTSTRAP_INTEGRITY_VERSION:
         raise ValueError("bootstrap integrity record schema is invalid")
@@ -337,7 +351,13 @@ def verify_bootstrap_integrity(
         raise ValueError("bootstrap integrity record is not PASS")
     if record.get("package_layout") != "onedir":
         raise ValueError("bootstrap integrity record lost the onedir package layout")
-    if _resolved(str(record.get("code_root") or "")) != paths.app_root:
+    code_root_value = str(record.get("code_root") or "").strip()
+    record_code_root = (
+        _resolved(paths.bootstrap_integrity_path.parent)
+        if code_root_value == "."
+        else _resolved(code_root_value)
+    )
+    if record_code_root != paths.app_root:
         raise ValueError("bootstrap integrity record code root is invalid")
     if record.get("inventory_algorithm") != BOOTSTRAP_INVENTORY_ALGORITHM:
         raise ValueError("bootstrap integrity record algorithm is invalid")

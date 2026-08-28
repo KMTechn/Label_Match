@@ -358,6 +358,9 @@ def test_install_pack_preflight_can_use_explicit_app_settings_path(tmp_path):
 def test_install_pack_defaults_to_label_match_durable_source_dir(tmp_path):
     module = load_install_pack_module()
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    ca_bundle = tmp_path / "profile" / "tls" / "ca-bundle.pem"
+    ca_bundle.parent.mkdir(parents=True)
+    ca_bundle.write_bytes(b"private-ca-fixture")
     args = argparse.Namespace(
         app_root=str(Path(__file__).resolve().parents[1]),
         python_exe=sys.executable,
@@ -376,6 +379,7 @@ def test_install_pack_defaults_to_label_match_durable_source_dir(tmp_path):
         apply=False,
         uninstall=False,
         confirm_production_install=False,
+        tls_ca_bundle_path=str(ca_bundle),
     )
 
     plan = module.build_install_plan(args)
@@ -386,6 +390,62 @@ def test_install_pack_defaults_to_label_match_durable_source_dir(tmp_path):
     assert "--scan-source-dir" in plan["runner_command"]
     assert str(Path(module.DEFAULT_LABEL_MATCH_DATA_ROOT).resolve()) in plan["runner_command"]
     assert module.DEFAULT_SOURCE_GLOB in plan["runner_command"]
+    assert plan["runner_command"][
+        plan["runner_command"].index("--tls-ca-bundle-path") + 1
+    ] == str(ca_bundle)
+    assert plan["source_scan_baseline_command"][
+        plan["source_scan_baseline_command"].index("--tls-ca-bundle-path") + 1
+    ] == str(ca_bundle)
+
+
+def test_install_pack_runner_prefers_persisted_profile_ca_over_staging_source(tmp_path):
+    module = load_install_pack_module()
+    manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    profile_path = tmp_path / "profile" / "runtime-profile.json"
+    persisted_ca = profile_path.parent / "tls" / "ca-bundle.pem"
+    persisted_ca.parent.mkdir(parents=True)
+    persisted_ca.write_bytes(b"persisted-private-ca-fixture")
+    profile_path.write_text(
+        json.dumps({"tls_ca_bundle_path": str(persisted_ca)}),
+        encoding="utf-8",
+    )
+    staging_ca = tmp_path / "stage" / "private-ca.pem"
+    staging_ca.parent.mkdir(parents=True)
+    staging_ca.write_bytes(b"staging-private-ca-fixture")
+    args = argparse.Namespace(
+        app_root=str(Path(__file__).resolve().parents[1]),
+        python_exe=sys.executable,
+        program_data_root=str(
+            tmp_path / "ProgramData" / "KMTech" / "DirectSync" / "label_match"
+        ),
+        producer_manifest_path=str(manifest_path),
+        credential_path=str(credential_path),
+        task_name="direct-sync-relay-label-match",
+        minute_interval=1,
+        min_free_bytes=123,
+        scan_source_dir=module.DEFAULT_LABEL_MATCH_DATA_ROOT,
+        source_glob=None,
+        max_enqueue_files=100,
+        min_source_file_age_seconds=60,
+        max_active_queue_count=1000,
+        max_active_queue_age_seconds=24 * 60 * 60,
+        apply=False,
+        uninstall=False,
+        confirm_production_install=False,
+        logistics_profile_path=str(profile_path),
+        tls_ca_bundle_path=str(staging_ca),
+    )
+
+    plan = module.build_install_plan(args)
+
+    for command in (
+        plan["runner_command"],
+        plan["source_scan_baseline_command"],
+    ):
+        assert command[command.index("--tls-ca-bundle-path") + 1] == str(
+            persisted_ca
+        )
+        assert str(staging_ca) not in command
 
 
 def test_install_pack_self_enroll_dry_run_does_not_require_existing_manifest_or_credential(tmp_path):

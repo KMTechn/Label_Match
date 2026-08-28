@@ -104,11 +104,11 @@ restart/persistence, removal, and exact rollback qualification. The checked-in
 one-shot runner parses itself, the official builder, and the sole public
 bootstrap with the PowerShell AST before launch.
 
-### Frozen-byte publication sequence (v2.0.90 current candidate)
+### Frozen-byte publication sequence (v2.0.91 current candidate)
 
 The v2.0.89 tag and frozen ZIP remain immutable and are invalid for the current
 source because they predate the catalog startup fallback and compressed
-bootstrap-integrity fixes. v2.0.90 is the create-once successor for packaging
+bootstrap-integrity fixes. v2.0.91 is the create-once successor for packaging
 both corrections; v2.0.89 is never rebuilt, retargeted, or reused.
 
 The initial elevated v2.0.67 infrastructure cohort at
@@ -406,7 +406,7 @@ v2.0.85 annotated tag object
 `fa4387d6f75602e8393313119311da1c95b1726a` remains immutable at commit
 `02625f47474430f83a1fd8bd10721a2d7b8fada4` and tree
 `6ab0d1b034c385a08314e2475e382abc09eb1511`; its frozen candidate must not be
-rebuilt or retagged. v2.0.90 is the required successor candidate and retains
+rebuilt or retagged. v2.0.91 is the required successor candidate and retains
 the authoritative v2.0.83-aligned bounded diagnostic behavior introduced at
 commit `b4b0630c35120ad9e240cd36bdb45bf4f380d06d`.
 
@@ -450,7 +450,7 @@ python -I .\tools\burn_local_release_tag_once.py `
   --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
   --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
   --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
-  --tag v2.0.90 `
+  --tag v2.0.91 `
   --expected-commit <EXACT-CANDIDATE-COMMIT> `
   --expected-tree <EXACT-CANDIDATE-TREE>
 ```
@@ -462,15 +462,15 @@ python -I .\tools\burn_local_release_tag_once.py `
    LF):
 
 ```text
-Release v2.0.90
+Release v2.0.91
 ```
 
    Those 16 canonical bytes have SHA-256
-   `8fa3d06865eef5ab3a9d8fc5fcff5da2f0fde5b43d1af441cd0b8c325adfdbc9`.
+   `93eae487ca3b0e02e78bd37132a7ecdefb29e1a9e760754fdf4a06eb58215f10`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.90`, report type
+   bare mirror must expose that exact object as `refs/tags/v2.0.91`, report type
    `tag`, and peel it to the candidate commit. Run the checked-in one-shot runner
    from the release work-clone root with fresh output, log paths, and the offline
    wheelhouse:
@@ -479,7 +479,7 @@ Release v2.0.90
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\run_frozen_release_candidate_once.ps1 `
   -PowerShellPath <EXACT-POWERSHELL-7-PWSH.EXE> `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.90 `
+  -Tag v2.0.91 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
   -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR> `
@@ -525,16 +525,16 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.90`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.91`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.90
+Tag: v2.0.91
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.90.zip
+Artifact: Label_Match-v2.0.91.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -545,7 +545,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.90 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.91 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires

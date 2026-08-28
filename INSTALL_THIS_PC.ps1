@@ -147,6 +147,8 @@ function Write-Utf8Json([string]$Path, $Payload) {
     [IO.File]::WriteAllText($temporary, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
+function Assert-SourceIntegrityRecord([string]$Root, [object[]]$Inventory, [string]$Aggregate) {
+    $path = Join-Path $Root $IntegrityFileName; if (-not (Test-Path -LiteralPath $path)) { Write-Warning "Bootstrap integrity record is absent; continuing without source verification."; return }; if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Packaged bootstrap integrity record is not a regular file." }; try { $length = (Get-Item -LiteralPath $path).Length; if ($length -le 0 -or $length -gt $IntegrityMaxBytes) { throw "size" }; $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { throw "Packaged bootstrap integrity record cannot be read." }; $fieldNames = @($record.PSObject.Properties.Name); $missing = @($IntegrityRequiredFields | Where-Object { $fieldNames -cnotcontains $_ }); $rootMatches = ($record.code_root -ceq '.') -or (Test-SamePath ([string]$record.code_root) $Root); $valid = (($record -is [pscustomobject]) -and $missing.Count -eq 0 -and $fieldNames -cnotcontains 'files' -and $record.schema_version -ceq $IntegritySchema -and $record.status -ceq 'PASS' -and $record.package_layout -ceq 'onedir' -and $rootMatches -and $record.inventory_algorithm -ceq $IntegrityAlgorithm -and (($record.file_count -is [int]) -or ($record.file_count -is [long])) -and [long]$record.file_count -eq $Inventory.Count -and $record.root_sha256 -ceq $Aggregate); if (-not $valid) { throw "Packaged bootstrap integrity record does not match the source code root." }; Write-Output "source_integrity_status=PASS" }
 function Assert-RequiredRelease([string]$Root) {
     foreach ($name in @('Label_Match.exe', 'contract.lock.json')) {
         $path = Join-Path $Root $name
@@ -283,7 +285,6 @@ function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
         throw "Legacy scheduled task removal readback failed: $Name"
     }
 }
-
 function Test-CurrentUserRelayPersistencePresent {
     $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
     try {
@@ -300,7 +301,6 @@ function Test-CurrentUserRelayPersistencePresent {
         return $false
     }
 }
-
 $testOverride = (
     $AllowNoncanonicalLayoutForTest.IsPresent -and
     [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
@@ -372,7 +372,7 @@ $sourceInventory = @(Get-CodeInventory $sourceRootFull)
 if ($sourceInventory.Count -eq 0) {
     throw "Frozen release code inventory is empty."
 }
-$sourceAggregate = Get-InventoryAggregate $sourceInventory
+$sourceAggregate = Get-InventoryAggregate $sourceInventory; Assert-SourceIntegrityRecord $sourceRootFull $sourceInventory $sourceAggregate
 if ($DryRun.IsPresent) {
     Write-Output "bootstrap_status=DRY_RUN"
     Write-Output "code_root=$installRootFull"

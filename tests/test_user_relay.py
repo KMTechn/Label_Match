@@ -31,11 +31,15 @@ def test_session_relay_command_reuses_product_host_and_explicit_user_roots(tmp_p
     (app_root / "Label_Match.exe").write_bytes(b"exe")
     relay_root = tmp_path / "user" / "direct-sync"
     data_root = tmp_path / "user" / "label-data"
+    ca_bundle = tmp_path / "user" / "profile" / "tls" / "ca-bundle.pem"
+    ca_bundle.parent.mkdir(parents=True)
+    ca_bundle.write_bytes(b"private-ca-fixture")
 
     command = user_relay.build_session_direct_sync_command(
         app_root=app_root,
         direct_sync_root=relay_root,
         scan_source_dir=data_root,
+        tls_ca_bundle_path=ca_bundle,
     )
 
     assert command[:2] == [
@@ -47,6 +51,7 @@ def test_session_relay_command_reuses_product_host_and_explicit_user_roots(tmp_p
     assert "포장실작업이벤트로그_*.csv" in command
     assert "direct-sync-relay-label-match-current-user" in command
     assert "--source-host-id" not in command
+    assert command[command.index("--tls-ca-bundle-path") + 1] == str(ca_bundle)
 
 
 def test_persistent_loop_maps_missing_cycle_value_to_unknown(tmp_path):

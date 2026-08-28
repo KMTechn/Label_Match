@@ -584,6 +584,7 @@ class OutlineClient:
         token: str,
         *,
         trusted_upload_origins: Iterable[str] = (),
+        tls_ca_bundle_path: str = "",
     ) -> None:
         if not token:
             raise RuntimeError("OUTLINE_API_TOKEN is required for publish mode")
@@ -592,6 +593,9 @@ class OutlineClient:
             self.base_origin,
             trusted_upload_origins,
         )
+        self.tls_ca_bundle_path = str(tls_ca_bundle_path or "").strip()
+        if self.tls_ca_bundle_path and not Path(self.tls_ca_bundle_path).is_file():
+            raise ValueError("Outline TLS CA bundle is unavailable")
         self.api_session = requests.Session()
         self.upload_session = requests.Session()
         self.headers = {
@@ -604,14 +608,17 @@ class OutlineClient:
     def api(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not re.fullmatch(r"[a-z][a-z0-9.]*", method):
             raise ValueError(f"invalid Outline API method: {method!r}")
-        response = self.api_session.post(
-            f"{self.base_url}/api/{method}",
-            headers=self.headers,
-            json=payload,
-            auth=_NoAuth(),
-            allow_redirects=False,
-            timeout=60,
-        )
+        api_url = f"{self.base_url}/api/{method}"
+        request_kwargs: dict[str, Any] = {
+            "headers": self.headers,
+            "json": payload,
+            "auth": _NoAuth(),
+            "allow_redirects": False,
+            "timeout": 60,
+        }
+        if self.tls_ca_bundle_path:
+            request_kwargs["verify"] = self.tls_ca_bundle_path
+        response = self.api_session.post(api_url, **request_kwargs)
         if not 200 <= response.status_code < 300:
             raise RuntimeError(f"{method} HTTP {response.status_code}: {response.text[:500]}")
         data = response.json()
@@ -636,18 +643,29 @@ class OutlineClient:
             self.trusted_upload_origins,
         )
         attachment_url = _validate_attachment_url(str(created["attachment"]["url"]))
+        upload_kwargs: dict[str, Any] = {
+            "headers": {
+                "Accept": "application/json,*/*",
+                "User-Agent": USER_AGENT,
+            },
+            "auth": _NoAuth(),
+            "data": created.get("form") or {},
+            "allow_redirects": False,
+            "timeout": 180,
+        }
+        if (
+            self.tls_ca_bundle_path
+            and _canonical_origin(urlsplit(upload_url), label="attachment upload URL")
+            == self.base_origin
+        ):
+            upload_kwargs["verify"] = self.tls_ca_bundle_path
         with path.open("rb") as image_file:
+            upload_kwargs["files"] = {
+                "file": (path.name, image_file, content_type)
+            }
             uploaded = self.upload_session.post(
                 upload_url,
-                headers={
-                    "Accept": "application/json,*/*",
-                    "User-Agent": USER_AGENT,
-                },
-                auth=_NoAuth(),
-                data=created.get("form") or {},
-                files={"file": (path.name, image_file, content_type)},
-                allow_redirects=False,
-                timeout=180,
+                **upload_kwargs,
             )
         if not 200 <= uploaded.status_code < 300:
             raise RuntimeError(f"upload failed {path.name}: HTTP {uploaded.status_code}: {uploaded.text[:500]}")
@@ -677,6 +695,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Exact HTTPS object-storage origin allowed for attachment bytes; repeat as needed",
     )
     parser.add_argument("--report-path", default="")
+    parser.add_argument(
+        "--tls-ca-bundle-path",
+        default="",
+        help="Explicit private CA bundle for the approved Outline HTTPS origin",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate local manual and prepared payload without network writes")
     args = parser.parse_args(argv)
 
@@ -708,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
             outline_url,
             token,
             trusted_upload_origins=args.trusted_upload_origin,
+            tls_ca_bundle_path=args.tls_ca_bundle_path,
         )
         unique_links = list(dict.fromkeys(_manual_image_paths(source_text)))
         attachment_urls = {

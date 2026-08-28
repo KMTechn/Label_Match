@@ -740,7 +740,12 @@ def _label_match_reveal_capture_startup(
     }
 
 
-def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
+def _label_match_direct_sync_context(
+    scan_source_dir,
+    app_settings_path="",
+    *,
+    tls_ca_bundle_path="",
+):
     source_host_id = _label_match_direct_sync_source_host_id()
     program_data_root = (
         os.environ.get(LABEL_MATCH_DIRECT_SYNC_ROOT_ENV, "").strip()
@@ -779,7 +784,14 @@ def _label_match_direct_sync_context(scan_source_dir, app_settings_path=""):
         "manifest_path": os.path.join(program_data_root, "producer_manifest.json"),
         "credential_path": os.path.join(program_data_root, "credential.json"),
         "runtime_status_path": os.path.join(status_dir, "direct_sync_relay_status.json"),
+        "tls_ca_bundle_path": str(tls_ca_bundle_path or "").strip(),
     }
+
+
+def _label_match_client_tls_ca_bundle_path(client):
+    return str(
+        getattr(getattr(client, "config", None), "tls_ca_bundle_path", "") or ""
+    ).strip()
 
 
 def _label_match_bind_current_log_source(context, data_manager):
@@ -1025,6 +1037,9 @@ def _label_match_direct_sync_runner_command(context, *, min_source_file_age_seco
         "--min-source-file-age-seconds",
         str(max(0, int(min_source_file_age_seconds or 0))),
     ])
+    tls_ca_bundle_path = str(context.get("tls_ca_bundle_path") or "").strip()
+    if tls_ca_bundle_path:
+        command.extend(["--tls-ca-bundle-path", tls_ca_bundle_path])
     return command
 
 
@@ -3237,7 +3252,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.90"
+APP_VERSION = "v2.0.91"
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -3652,7 +3667,12 @@ def _manifest_artifact(manifest):
     return {}
 
 
-def _update_candidate_from_manifest(manifest, expected_channel):
+def _update_candidate_from_manifest(
+    manifest,
+    expected_channel,
+    *,
+    tls_ca_bundle_path="",
+):
     policy = _validate_private_update_manifest_policy(manifest, expected_channel)
     if policy is None:
         return None
@@ -3670,10 +3690,11 @@ def _update_candidate_from_manifest(manifest, expected_channel):
         "archive": policy["archive"],
         "install": policy["install"],
         "provider": UPDATE_PROVIDER_PRIVATE_MANIFEST,
+        "tls_ca_bundle_path": str(tls_ca_bundle_path or "").strip(),
     }
 
 
-def _check_private_manifest_for_updates():
+def _check_private_manifest_for_updates(*, tls_ca_bundle_path=""):
     manifest_url = _get_update_manifest_url()
     if not manifest_url:
         print("private_manifest updater is enabled, but no manifest URL is configured.")
@@ -3684,17 +3705,25 @@ def _check_private_manifest_for_updates():
     _assert_https_update_url(manifest_url)
     if _is_github_hosted_update_url(manifest_url):
         raise ValueError("private_manifest updater manifest URL must not point to GitHub-hosted update storage")
-    response = requests.get(manifest_url, timeout=5)
+    request_kwargs = {"timeout": 5}
+    selected_ca = str(tls_ca_bundle_path or "").strip()
+    if selected_ca:
+        request_kwargs["verify"] = selected_ca
+    response = requests.get(manifest_url, **request_kwargs)
     response.raise_for_status()
     manifest = response.json()
     signature_url = _get_update_manifest_signature_url(manifest_url)
     _assert_https_update_url(signature_url)
     if _is_github_hosted_update_url(signature_url):
         raise ValueError("private_manifest updater signature URL must not point to GitHub-hosted update storage")
-    signature_response = requests.get(signature_url, timeout=5)
+    signature_response = requests.get(signature_url, **request_kwargs)
     signature_response.raise_for_status()
     _verify_update_manifest_signature(manifest, signature_response.content, public_key_hex)
-    return _update_candidate_from_manifest(manifest, _get_update_channel())
+    return _update_candidate_from_manifest(
+        manifest,
+        _get_update_channel(),
+        tls_ca_bundle_path=selected_ca,
+    )
 
 
 def _find_github_release_asset_pair(assets, latest_version):
@@ -3774,13 +3803,20 @@ def _check_github_release_for_updates():
     }
 
 
-def _check_update_candidate():
+def _check_update_candidate(*, tls_ca_bundle_path=""):
     provider = _get_update_provider()
     try:
         if provider in {"", UPDATE_PROVIDER_OFF, "disabled", "none"}:
             return None
         if provider == UPDATE_PROVIDER_PRIVATE_MANIFEST:
-            return _check_private_manifest_for_updates()
+            selected_ca = str(tls_ca_bundle_path or "").strip()
+            return (
+                _check_private_manifest_for_updates(
+                    tls_ca_bundle_path=selected_ca
+                )
+                if selected_ca
+                else _check_private_manifest_for_updates()
+            )
         if provider == UPDATE_PROVIDER_GITHUB:
             return _check_github_release_for_updates()
         print(f"지원하지 않는 업데이트 provider입니다: {provider}")
@@ -3792,9 +3828,14 @@ def _check_update_candidate():
         print(f"업데이트 manifest 확인 중 오류 발생: {e}")
         return None
 
-def check_for_updates():
+def check_for_updates(*, tls_ca_bundle_path=""):
     """Return (download_url, version) when an update is available."""
-    candidate = _check_update_candidate()
+    selected_ca = str(tls_ca_bundle_path or "").strip()
+    candidate = (
+        _check_update_candidate(tls_ca_bundle_path=selected_ca)
+        if selected_ca
+        else _check_update_candidate()
+    )
     if not candidate:
         return None, None
     return candidate["url"], candidate["version"]
@@ -4154,6 +4195,7 @@ def download_and_apply_update(
     expected_sha256=None,
     archive_policy=None,
     install_policy=None,
+    tls_ca_bundle_path="",
 ):
     """검증된 ZIP을 같은 볼륨에 준비하고 원자적 updater를 실행합니다."""
     workspace = None
@@ -4178,7 +4220,11 @@ def download_and_apply_update(
                 f"strategy={policy['strategy']}\n"
             )
 
-        response = requests.get(url, stream=True, timeout=120)
+        request_kwargs = {"stream": True, "timeout": 120}
+        selected_ca = str(tls_ca_bundle_path or "").strip()
+        if selected_ca and not _is_github_hosted_update_url(url):
+            request_kwargs["verify"] = selected_ca
+        response = requests.get(url, **request_kwargs)
         response.raise_for_status()
         with open(zip_path, "wb") as target:
             for chunk in response.iter_content(chunk_size=8192):
@@ -4249,10 +4295,15 @@ def download_and_apply_update(
             root_alert.destroy()
         sys.exit(1)
 
-def threaded_update_check():
+def threaded_update_check(*, tls_ca_bundle_path=""):
     """백그라운드에서 업데이트를 확인하고 필요한 경우 UI에 프롬프트를 표시합니다."""
     print("백그라운드 업데이트 확인 시작...")
-    candidate = _check_update_candidate()
+    selected_ca = str(tls_ca_bundle_path or "").strip()
+    candidate = (
+        _check_update_candidate(tls_ca_bundle_path=selected_ca)
+        if selected_ca
+        else _check_update_candidate()
+    )
     if candidate:
         if not _can_apply_updates():
             print(f"업데이트 {candidate['version']} 확인됨. 소스 실행 모드에서는 자동 업데이트 적용을 건너뜁니다.")
@@ -4273,12 +4324,17 @@ def threaded_update_check():
         if messagebox.askyesno("업데이트 발견", f"새로운 버전({new_version})이 있습니다.\n지금 업데이트하시겠습니까? (현재 버전: {APP_VERSION})", parent=root_alert):
             if owns_alert_root:
                 root_alert.destroy()
-            download_and_apply_update(
-                download_url,
-                expected_sha256=candidate.get("sha256"),
-                archive_policy=candidate.get("archive"),
-                install_policy=candidate.get("install"),
-            )
+            apply_kwargs = {
+                "expected_sha256": candidate.get("sha256"),
+                "archive_policy": candidate.get("archive"),
+                "install_policy": candidate.get("install"),
+            }
+            candidate_ca = str(
+                candidate.get("tls_ca_bundle_path", "") or ""
+            ).strip()
+            if candidate_ca:
+                apply_kwargs["tls_ca_bundle_path"] = candidate_ca
+            download_and_apply_update(download_url, **apply_kwargs)
         else:
             print("사용자가 업데이트를 거부했습니다.")
             if owns_alert_root:
@@ -5623,7 +5679,14 @@ class Label_Match(tk.Tk):
         result_queue = queue.Queue(maxsize=1)
 
         def worker():
-            candidate = _check_update_candidate()
+            selected_ca = _label_match_client_tls_ca_bundle_path(
+                self.__dict__.get("package_logistics_client")
+            )
+            candidate = (
+                _check_update_candidate(tls_ca_bundle_path=selected_ca)
+                if selected_ca
+                else _check_update_candidate()
+            )
             try:
                 result_queue.put_nowait(candidate)
             except queue.Full:
@@ -5670,18 +5733,29 @@ class Label_Match(tk.Tk):
             parent=self,
         )
         if should_apply and not self.__dict__.get("_tk_shutdown_requested", False):
-            download_and_apply_update(
-                candidate["url"],
-                expected_sha256=candidate.get("sha256"),
-                archive_policy=candidate.get("archive"),
-                install_policy=candidate.get("install"),
-            )
+            apply_kwargs = {
+                "expected_sha256": candidate.get("sha256"),
+                "archive_policy": candidate.get("archive"),
+                "install_policy": candidate.get("install"),
+            }
+            candidate_ca = str(
+                candidate.get("tls_ca_bundle_path", "") or ""
+            ).strip()
+            if candidate_ca:
+                apply_kwargs["tls_ca_bundle_path"] = candidate_ca
+            download_and_apply_update(candidate["url"], **apply_kwargs)
         elif not should_apply:
             print("사용자가 업데이트를 거부했습니다.")
         return candidate
 
     def _start_direct_sync_auto_bootstrap(self):
-        context = _label_match_direct_sync_context(self.save_directory, self.app_settings_path)
+        context = _label_match_direct_sync_context(
+            self.save_directory,
+            self.app_settings_path,
+            tls_ca_bundle_path=_label_match_client_tls_ca_bundle_path(
+                self.package_logistics_client
+            ),
+        )
         self.direct_sync_bootstrap_context = context
         # Identity/profile creation and persistent retry now belong to the
         # synchronous current-user onboarding boundary.  Application startup
@@ -6588,6 +6662,9 @@ class Label_Match(tk.Tk):
                 context = self.__dict__.get("direct_sync_bootstrap_context") or _label_match_direct_sync_context(
                     self.save_directory,
                     getattr(self, "app_settings_path", ""),
+                    tls_ca_bundle_path=_label_match_client_tls_ca_bundle_path(
+                        self.__dict__.get("package_logistics_client")
+                    ),
                 )
                 result = self._record_app_close_failure(
                     context,
@@ -6822,6 +6899,9 @@ class Label_Match(tk.Tk):
                 context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
                     self.save_directory,
                     getattr(self, "app_settings_path", ""),
+                    tls_ca_bundle_path=_label_match_client_tls_ca_bundle_path(
+                        self.__dict__.get("package_logistics_client")
+                    ),
                 )
                 context = _label_match_bind_current_log_source(context, self.data_manager)
                 self.direct_sync_bootstrap_context = context
@@ -11393,6 +11473,9 @@ class Label_Match(tk.Tk):
             context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
                 self.save_directory,
                 getattr(self, "app_settings_path", ""),
+                tls_ca_bundle_path=_label_match_client_tls_ca_bundle_path(
+                    self.__dict__.get("package_logistics_client")
+                ),
             )
             context = _label_match_bind_current_log_source(context, self.data_manager)
             self.direct_sync_bootstrap_context = context
@@ -16780,6 +16863,11 @@ FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
     "네트워크 연결을 확인한 뒤 다시 실행하세요. 계속 실패하면 보고서 경로를 "
     "IT 담당자에게 전달하세요."
 )
+BOOTSTRAP_INTEGRITY_ABSENT_WARNING_TITLE = "배포 무결성 기록 없음"
+BOOTSTRAP_INTEGRITY_ABSENT_WARNING_MESSAGE = (
+    "배포 무결성 기록이 없어 파일 변조 여부를 확인하지 못했습니다.\n\n"
+    "프로그램은 계속 시작하지만 공식 배포 ZIP을 다시 내려받는 것을 권장합니다."
+)
 
 
 def _first_run_onboarding_enabled():
@@ -16799,6 +16887,16 @@ def _show_first_run_onboarding_error(failure):
         )
     except Exception:
         _label_match_startup_trace("current_user_onboarding_dialog_unavailable")
+
+
+def _show_bootstrap_integrity_absent_warning():
+    try:
+        messagebox.showwarning(
+            BOOTSTRAP_INTEGRITY_ABSENT_WARNING_TITLE,
+            BOOTSTRAP_INTEGRITY_ABSENT_WARNING_MESSAGE,
+        )
+    except Exception:
+        _label_match_startup_trace("bootstrap_integrity_warning_dialog_unavailable")
 
 
 def _show_item_catalog_startup_error(cause_code):
@@ -16893,7 +16991,7 @@ def main(argv=None):
         if _first_run_onboarding_enabled():
             app_root = _label_match_runtime_app_root()
             try:
-                onboard_current_user(
+                onboarding_report = onboard_current_user(
                     app_root,
                     server_base_url=os.environ.get(
                         LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV,
@@ -16904,6 +17002,14 @@ def main(argv=None):
                         getattr(sys, "frozen", False)
                     ),
                 )
+                if (
+                    (onboarding_report.get("bootstrap_integrity") or {}).get(
+                        "status"
+                    )
+                    == "ABSENT"
+                ):
+                    _label_match_startup_trace("bootstrap_integrity_absent")
+                    _show_bootstrap_integrity_absent_warning()
             except CurrentUserOnboardingError as exc:
                 _label_match_startup_trace(
                     "current_user_onboarding_blocked",

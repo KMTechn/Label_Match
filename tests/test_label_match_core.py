@@ -586,7 +586,11 @@ def test_session_direct_sync_runner_uses_zero_source_file_age(tmp_path, monkeypa
     module = load_label_match_module()
     monkeypatch.setenv(module.LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV, "label-match-pack-03")
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
-    context = module._label_match_direct_sync_context(str(tmp_path / "scan-data"))
+    ca_bundle = tmp_path / "profile" / "tls" / "ca-bundle.pem"
+    context = module._label_match_direct_sync_context(
+        str(tmp_path / "scan-data"),
+        tls_ca_bundle_path=str(ca_bundle),
+    )
 
     command = module._label_match_direct_sync_runner_command(context, min_source_file_age_seconds=0)
 
@@ -601,6 +605,7 @@ def test_session_direct_sync_runner_uses_zero_source_file_age(tmp_path, monkeypa
     assert command[command.index("--min-source-file-age-seconds") + 1] == "0"
     assert "--source-glob" in command
     assert command[command.index("--source-glob") + 1] == "*.csv"
+    assert command[command.index("--tls-ca-bundle-path") + 1] == str(ca_bundle)
 
 
 def test_session_direct_sync_runner_binds_scan_to_current_log_file(tmp_path, monkeypatch):

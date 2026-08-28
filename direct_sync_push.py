@@ -651,6 +651,7 @@ def restore_raw_artifact_to_file(
     session: Any = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     overwrite: bool = False,
+    tls_ca_bundle_path: str = "",
 ) -> RawArtifactRestoreResult:
     restore_metadata = restore_metadata_from_upload_metadata(metadata)
     expected_digest = str(restore_metadata["content_sha256"])
@@ -672,7 +673,16 @@ def restore_raw_artifact_to_file(
         session = requests.Session()
     temp_path = destination.with_name(f"{destination.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     try:
-        response = session.get(restore_url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+        request_kwargs: dict[str, Any] = {
+            "headers": headers,
+            "timeout": timeout,
+            "stream": True,
+            "allow_redirects": False,
+        }
+        selected_ca = str(tls_ca_bundle_path or "").strip()
+        if selected_ca:
+            request_kwargs["verify"] = selected_ca
+        response = session.get(restore_url, **request_kwargs)
     except Exception as exc:
         return _restore_error_result(
             status_code=0,
@@ -1125,6 +1135,7 @@ def upload_source_file(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     status_dir: str | os.PathLike[str] = "",
     before_post: Callable[[], None] | None = None,
+    tls_ca_bundle_path: str = "",
 ) -> UploadResult:
     if session is None:
         import requests
@@ -1135,14 +1146,23 @@ def upload_source_file(
         with Path(plan.source_file_path).open("rb") as handle:
             if before_post is not None:
                 before_post()
-            response = session.post(
-                credentials.endpoint_url,
-                data={"metadata": canonical_json(plan.metadata)},
-                files={"file": (Path(plan.source_file_path).name, handle, "application/octet-stream")},
-                headers=headers,
-                timeout=timeout,
-                allow_redirects=False,
-            )
+            request_kwargs: dict[str, Any] = {
+                "data": {"metadata": canonical_json(plan.metadata)},
+                "files": {
+                    "file": (
+                        Path(plan.source_file_path).name,
+                        handle,
+                        "application/octet-stream",
+                    )
+                },
+                "headers": headers,
+                "timeout": timeout,
+                "allow_redirects": False,
+            }
+            selected_ca = str(tls_ca_bundle_path or "").strip()
+            if selected_ca:
+                request_kwargs["verify"] = selected_ca
+            response = session.post(credentials.endpoint_url, **request_kwargs)
     except RelayLeaseLostBeforeSourcePost:
         raise
     except Exception as exc:
@@ -2300,6 +2320,7 @@ def drain_one_relay_batch(
     retry_base_seconds: int = DEFAULT_RETRY_SECONDS,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     target_relay_id: str = "",
+    tls_ca_bundle_path: str = "",
 ) -> UploadResult | None:
     now = utc_now_text()
     row = claim_next_relay_batch(
@@ -2405,6 +2426,7 @@ def drain_one_relay_batch(
         runtime_fencing_policy=row.runtime_fencing_policy,
         session=session,
         timeout=timeout,
+        tls_ca_bundle_path=tls_ca_bundle_path,
     )
     if runtime_preparation.metadata is None:
         result = UploadResult(
@@ -2474,6 +2496,7 @@ def drain_one_relay_batch(
             timeout=timeout,
             status_dir=status_dir,
             before_post=before_post,
+            tls_ca_bundle_path=tls_ca_bundle_path,
         )
     except RelayLeaseLostBeforeSourcePost:
         return _relay_status_update_conflict(row)

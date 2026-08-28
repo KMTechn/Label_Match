@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -27,7 +28,7 @@ IDENTITY_SPEC.loader.exec_module(identity_verifier)
 
 BUILDER_PATH = MODULE_PATH.with_name("build_frozen_release_candidate.ps1")
 
-TAG = "v2.0.90"
+TAG = "v2.0.91"
 COMMIT = "1" * 40
 TREE = "2" * 40
 
@@ -421,13 +422,32 @@ def test_build_release_archive_is_deterministic_unsigned_and_byte_exact(tmp_path
     with zipfile.ZipFile(first) as archive:
         assert archive.testzip() is None
         names = set(archive.namelist())
+        bootstrap_bytes = archive.read("Label_Match/bootstrap-integrity.json")
+        bootstrap = json.loads(bootstrap_bytes.decode("utf-8"))
     assert "Label_Match/build-manifest.json" in names
+    assert "Label_Match/bootstrap-integrity.json" in names
+    assert first_report["bootstrap_integrity_verified"] is True
     assert "Label_Match/tools/direct_sync_relay_runner.py" in names
     assert "Label_Match/install_label_match_direct_sync.ps1" not in names
     assert "Label_Match/tools/direct_sync_relay_install_pack.py" not in names
     assert "Label_Match/tools/direct_sync_relay_runner/direct_sync_relay_runner.exe" not in names
     assert not any(name.endswith("register_label_match_worker_pc.exe") for name in names)
     assert len(names) == first_report["package_file_count"]
+    assert not (package / "bootstrap-integrity.json").exists()
+    assert bootstrap["schema_version"] == "label-match-bootstrap-integrity-v2"
+    assert bootstrap["status"] == "PASS"
+    assert bootstrap["code_root"] == "."
+    assert bootstrap["inventory_algorithm"] == "sha256-file-hash-size-utf8-path-v1"
+    assert bootstrap["package_layout"] == "onedir"
+    assert "files" not in bootstrap
+    inventory = archive_builder._inventory(package)
+    assert bootstrap["file_count"] == len(inventory)
+    assert bootstrap["root_sha256"] == archive_builder._bootstrap_root_sha256(
+        inventory
+    )
+    assert hashlib.sha256(bootstrap_bytes).hexdigest() == first_report[
+        "bootstrap_integrity_sha256"
+    ]
 
 
 @pytest.mark.parametrize(

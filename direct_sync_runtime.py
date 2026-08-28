@@ -73,6 +73,7 @@ class DirectSyncRuntimeConfig:
     operator_pause_path: str | os.PathLike[str] = ""
     max_active_queue_count: int = 0
     max_active_queue_age_seconds: int = 0
+    tls_ca_bundle_path: str | os.PathLike[str] = ""
 
 
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
@@ -893,6 +894,7 @@ def run_relay_once(
             session=session,
             timeout=config.timeout_seconds,
             now=cycle_now,
+            tls_ca_bundle_path=str(config.tls_ca_bundle_path or ""),
         )
         runtime_lease = dict(runtime_preparation.receipt or {})
         if runtime_preparation.error_code:
@@ -906,6 +908,7 @@ def run_relay_once(
             retry_base_seconds=config.retry_base_seconds,
             timeout=config.timeout_seconds,
             target_relay_id=target_relay_id,
+            tls_ca_bundle_path=str(config.tls_ca_bundle_path or ""),
         )
     except (DirectSyncPushError, sqlite3.DatabaseError) as exc:
         queue = _safe_relay_queue_status(config.db_path)

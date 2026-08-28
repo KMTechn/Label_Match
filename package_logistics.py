@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import ssl
 import threading
 from typing import Any, Callable, Iterable, Iterator, Mapping
 import unicodedata
@@ -2319,6 +2320,7 @@ class PackageClientConfig:
     ledger_plane: str = ""
     plane_epoch: int = 0
     authoritative_required: bool = False
+    tls_ca_bundle_path: str = field(default="", repr=False)
 
     def validate(self) -> None:
         parsed = urlsplit(self.base_url)
@@ -2341,6 +2343,9 @@ class PackageClientConfig:
             raise PackageLogisticsError("machine package logistics URL must not use loopback")
         if not all((self.token, self.source_host_id, self.device_id)):
             raise PackageLogisticsError("package logistics machine identity/configuration is incomplete")
+        selected_ca = str(self.tls_ca_bundle_path or "").strip()
+        if selected_ca and not Path(selected_ca).is_file():
+            raise PackageLogisticsError("package logistics TLS CA bundle is unavailable")
         selected_ledger_plane = str(
             self.ledger_plane or self.authority_plane or ""
         ).upper()
@@ -2374,10 +2379,25 @@ def _read_http_body(response: Any) -> str:
         ) from exc
 
 
-def _default_transport(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float):
+def _default_transport(
+    method: str,
+    url: str,
+    headers: Mapping[str, str],
+    body: bytes | None,
+    timeout: float,
+    *,
+    tls_ca_bundle_path: str = "",
+):
     request = Request(url, data=body, headers=dict(headers), method=method)
+    selected_ca = str(tls_ca_bundle_path or "").strip()
     try:
-        with urlopen(request, timeout=timeout) as response:
+        context = (
+            ssl.create_default_context(cafile=selected_ca) if selected_ca else None
+        )
+        open_kwargs: dict[str, Any] = {"timeout": timeout}
+        if context is not None:
+            open_kwargs["context"] = context
+        with urlopen(request, **open_kwargs) as response:
             raw = _read_http_body(response)
     except HTTPError as exc:
         raw = _read_http_body(exc)
@@ -2429,7 +2449,16 @@ class PackageLogisticsClient:
     def __init__(self, config: PackageClientConfig, *, transport: Transport | None = None):
         config.validate()
         self.config = config
-        self._transport = transport or _default_transport
+        self._transport = transport or (
+            lambda method, url, headers, body, timeout: _default_transport(
+                method,
+                url,
+                headers,
+                body,
+                timeout,
+                tls_ca_bundle_path=config.tls_ca_bundle_path,
+            )
+        )
 
     def _assert_authority(
         self,
@@ -5685,6 +5714,7 @@ def package_client_from_env(
             ledger_plane=profile.ledger_plane,
             plane_epoch=profile.plane_epoch,
             authoritative_required=required,
+            tls_ca_bundle_path=profile.tls_ca_bundle_path,
         )
     else:
         base_url = str(
@@ -5726,6 +5756,9 @@ def package_client_from_env(
             source_host_id=host,
             device_id=str(values.get("LABEL_MATCH_LOGISTICS_DEVICE_ID") or host).strip(),
             timeout_seconds=timeout,
+            tls_ca_bundle_path=str(
+                values.get("LABEL_MATCH_LOGISTICS_TLS_CA_BUNDLE_PATH") or ""
+            ).strip(),
         )
     try:
         client = PackageLogisticsClient(config, transport=transport)

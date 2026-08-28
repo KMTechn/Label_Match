@@ -409,6 +409,54 @@ def test_bootstrap_integrity_requires_exact_onedir_root_hash(tmp_path):
         verify_bootstrap_integrity(paths, required=True)
 
 
+def test_bootstrap_integrity_absent_warns_and_continues(tmp_path):
+    app_root = tmp_path / "hardened-app"
+    (app_root / "_internal").mkdir(parents=True)
+    (app_root / "Label_Match.exe").write_bytes(b"main")
+    paths = resolve_current_user_onboarding_paths(
+        app_root, environ=_environment(tmp_path)
+    )
+
+    result = verify_bootstrap_integrity(paths, required=True)
+
+    assert result["status"] == "ABSENT"
+    assert result["warning"] is True
+    assert result["record_path"] == str(app_root / "bootstrap-integrity.json")
+
+
+def test_bootstrap_integrity_non_file_record_fails_closed(tmp_path):
+    app_root = tmp_path / "hardened-app"
+    (app_root / "_internal").mkdir(parents=True)
+    (app_root / "Label_Match.exe").write_bytes(b"main")
+    (app_root / "bootstrap-integrity.json").mkdir()
+    paths = resolve_current_user_onboarding_paths(
+        app_root, environ=_environment(tmp_path)
+    )
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        verify_bootstrap_integrity(paths, required=True)
+
+
+def test_bootstrap_integrity_accepts_packaged_relative_code_root(tmp_path):
+    app_root = tmp_path / "Downloads" / "Label_Match"
+    internal = app_root / "_internal"
+    internal.mkdir(parents=True)
+    (app_root / "Label_Match.exe").write_bytes(b"main")
+    (internal / "python312.dll").write_bytes(b"runtime")
+    record_path = _write_bootstrap_root_record(app_root)
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["code_root"] = "."
+    _write_json(record_path, record)
+    paths = resolve_current_user_onboarding_paths(
+        app_root, environ=_environment(tmp_path)
+    )
+
+    result = verify_bootstrap_integrity(paths, required=True)
+
+    assert result["status"] == "PASS"
+    assert result["code_root"] == str(app_root.resolve())
+
+
 @pytest.mark.parametrize("mutation", ["add", "remove", "rename"])
 def test_bootstrap_integrity_root_detects_file_set_changes(tmp_path, mutation):
     app_root = tmp_path / "hardened-app"

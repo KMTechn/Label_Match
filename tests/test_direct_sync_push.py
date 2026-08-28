@@ -110,7 +110,17 @@ class FakeSession:
         self.response = response
         self.calls = []
 
-    def post(self, url, *, data, files, headers, timeout, allow_redirects=False):
+    def post(
+        self,
+        url,
+        *,
+        data,
+        files,
+        headers,
+        timeout,
+        allow_redirects=False,
+        verify=True,
+    ):
         file_name, file_handle, content_type = files["file"]
         self.calls.append(
             {
@@ -122,6 +132,7 @@ class FakeSession:
                 "file_name": file_name,
                 "file_bytes": file_handle.read(),
                 "content_type": content_type,
+                "verify": verify,
             }
         )
         return self.response
@@ -147,7 +158,16 @@ class FakeRestoreSession:
         self.response = response
         self.calls = []
 
-    def get(self, url, *, headers, timeout, stream=False, allow_redirects=False):
+    def get(
+        self,
+        url,
+        *,
+        headers,
+        timeout,
+        stream=False,
+        allow_redirects=False,
+        verify=True,
+    ):
         self.calls.append(
             {
                 "url": url,
@@ -155,6 +175,7 @@ class FakeRestoreSession:
                 "timeout": timeout,
                 "stream": stream,
                 "allow_redirects": allow_redirects,
+                "verify": verify,
             }
         )
         return self.response
@@ -245,12 +266,15 @@ def test_restore_raw_artifact_downloads_verified_payload(tmp_path):
             },
         )
     )
+    ca_bundle = tmp_path / "private-ca.pem"
+    ca_bundle.write_bytes(b"private-ca-fixture")
 
     result = restore_raw_artifact_to_file(
         credentials=credentials,
         metadata=plan.metadata,
         destination_path=destination,
         session=session,
+        tls_ca_bundle_path=str(ca_bundle),
     )
 
     assert result.success is True
@@ -263,6 +287,7 @@ def test_restore_raw_artifact_downloads_verified_payload(tmp_path):
     assert json.loads(session.calls[0]["headers"]["X-Producer-Restore-Metadata"]) == (
         restore_metadata_from_upload_metadata(plan.metadata)
     )
+    assert session.calls[0]["verify"] == str(ca_bundle)
 
 
 def test_restore_raw_artifact_falls_back_when_hardlink_is_unavailable(tmp_path, monkeypatch):
@@ -503,8 +528,16 @@ def test_upload_writes_status_without_storing_secret(tmp_path):
             },
         )
     )
+    ca_bundle = tmp_path / "private-ca.pem"
+    ca_bundle.write_bytes(b"private-ca-fixture")
 
-    result = upload_source_file(plan, credentials, session=session, status_dir=tmp_path / "status")
+    result = upload_source_file(
+        plan,
+        credentials,
+        session=session,
+        status_dir=tmp_path / "status",
+        tls_ca_bundle_path=str(ca_bundle),
+    )
 
     assert result.success is True
     assert result.committed is True
@@ -513,6 +546,7 @@ def test_upload_writes_status_without_storing_secret(tmp_path):
     assert session.calls[0]["headers"]["User-Agent"] == DEFAULT_PRODUCER_USER_AGENT
     assert session.calls[0]["metadata"] == canonical_json(plan.metadata)
     assert session.calls[0]["file_bytes"] == csv_path.read_bytes()
+    assert session.calls[0]["verify"] == str(ca_bundle)
     status_text = Path(result.status_path).read_text(encoding="utf-8")
     assert "label-secret" not in status_text
     assert "X-Producer-Signature" not in status_text

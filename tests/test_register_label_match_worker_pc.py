@@ -104,26 +104,42 @@ def test_label_match_registration_manifest_includes_runtime_event_contract(tmp_p
     raw_event_names = manifest["streams"][0]["raw_event_names"]
 
     assert raw_event_names == [
-        "APP_START",
         "APP_CLOSE",
-        "LABEL_MATCHED",
-        "PACKAGING_WAITING_OBSERVED",
-        "SHIPPING_WAITING_OBSERVED",
-        "SCAN_ATTEMPT",
-        "SCAN_OK",
-        "TRAY_COMPLETE",
-        "POST_REVIEW_REQUIRED",
-        "PHS_REPLACEMENT_WAITING_MARKED",
-        "SET_DELETED",
-        "SET_RESTORED",
-        "SET_CANCELLED",
-        "TRAY_COMPLETION_CANCELLED",
-        "UI_ERROR",
+        "APP_START",
+        "BASE64_DECODED",
         "ERROR_INPUT",
         "ERROR_MISMATCH",
-        "BASE64_DECODED",
+        "LABEL_MATCHED",
+        "PACKAGING_WAITING_OBSERVED",
+        "PHS_REPLACEMENT_WAITING_MARKED",
+        "POST_REVIEW_REQUIRED",
+        "SCAN_ATTEMPT",
+        "SCAN_OK",
+        "SET_CANCELLED",
+        "SET_DELETED",
+        "SET_RESTORED",
+        "SHIPPING_WAITING_OBSERVED",
+        "TRAY_COMPLETE",
+        "TRAY_COMPLETION_CANCELLED",
+        "UI_ERROR",
     ]
     assert raw_event_names == module.RAW_EVENT_NAMES
+    catalog_path = (
+        Path(__file__).resolve().parents[1]
+        / "kmtech_factory_contracts"
+        / "bundle"
+        / "v1"
+        / "catalogs"
+        / "canonical-stream-catalog.json"
+    )
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    label_stream = next(
+        row
+        for row in catalog["streams"]
+        if row["app_id"] == "label_match"
+        and row["stream_id"] == "label_match_events"
+    )
+    assert raw_event_names == label_stream["raw_event_names"]
 
 
 def test_label_match_registration_apply_writes_manifest_credential_and_receipt_without_raw_secret(
@@ -136,7 +152,14 @@ def test_label_match_registration_apply_writes_manifest_credential_and_receipt_w
     report_path = data_dir / "status" / "registration.json"
     secret = "server-issued-secret"
 
-    def fake_enroll(payload, *, enrollment_url, enrollment_token, timeout_seconds):
+    def fake_enroll(
+        payload,
+        *,
+        enrollment_url,
+        enrollment_token,
+        timeout_seconds,
+        tls_ca_bundle_path="",
+    ):
         assert enrollment_token == "install-token"
         assert payload["contract_version"] == module.ENROLLMENT_CONTRACT_VERSION
         assert payload["manifest"]["streams"][0]["stream_name"] == "label_match_events"
@@ -223,7 +246,14 @@ def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_to
     report_path = data_dir / "status" / "registration.json"
     secret = "server-issued-secret"
 
-    def fake_enroll(payload, *, enrollment_url, enrollment_token, timeout_seconds):
+    def fake_enroll(
+        payload,
+        *,
+        enrollment_url,
+        enrollment_token,
+        timeout_seconds,
+        tls_ca_bundle_path="",
+    ):
         assert enrollment_token == ""
         return {
             "status": "enrolled",
@@ -347,6 +377,37 @@ def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
     assert observed["profile"]["tls_ca_bundle_path"] == str(tls_ca_bundle_path)
     assert applied["credential_scope"] == "current_user"
     assert applied["server_registration_verified"] is True
+
+
+def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path):
+    module = load_registration_module()
+    ca_bundle = tmp_path / "private-ca.pem"
+    ca_bundle.write_bytes(b"private-ca-fixture")
+    observed = {}
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"status": "enrolled"}
+
+    monkeypatch.setattr(
+        module.requests,
+        "post",
+        lambda url, **kwargs: observed.update(url=url, kwargs=kwargs) or Response(),
+    )
+
+    result = module._enroll(
+        {"contract_version": module.ENROLLMENT_CONTRACT_VERSION},
+        enrollment_url="https://worker.example.invalid/api/producer-ingest/v1/enroll",
+        enrollment_token="",
+        timeout_seconds=30,
+        tls_ca_bundle_path=str(ca_bundle),
+    )
+
+    assert result["status"] == "enrolled"
+    assert observed["kwargs"]["verify"] == str(ca_bundle)
 
 
 def test_label_match_registration_does_not_auto_load_adjacent_token_file(tmp_path, monkeypatch):

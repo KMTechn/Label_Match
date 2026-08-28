@@ -99,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     restore_parser.add_argument("--relay-id", required=True)
     restore_parser.add_argument("--spool-root", required=True)
     restore_parser.add_argument("--credential-path", required=True)
+    restore_parser.add_argument("--tls-ca-bundle-path", default="")
     restore_parser.add_argument("--operator-id", required=True)
     restore_parser.add_argument("--reason", required=True)
     restore_parser.add_argument("--audit-log-path", default="")
@@ -139,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                     operator_id=args.operator_id,
                     reason=args.reason,
                     audit_log_path=args.audit_log_path,
+                    tls_ca_bundle_path=args.tls_ca_bundle_path,
                 ),
                 args.report_path,
             )

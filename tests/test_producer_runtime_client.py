@@ -36,8 +36,10 @@ class _LeaseSession:
     def __init__(self, *, failures: int = 0):
         self.failures = failures
         self.calls = []
+        self.request_kwargs = []
 
     def post(self, url, **kwargs):
+        self.request_kwargs.append(dict(kwargs))
         body = json.loads(bytes(kwargs["data"]).decode("utf-8"))
         self.calls.append((url, body, dict(kwargs["headers"])))
         if len(self.calls) <= self.failures:
@@ -63,6 +65,24 @@ class _LeaseSession:
             },
             {},
         )
+
+
+def test_runtime_authority_uses_explicit_private_ca_bundle(tmp_path):
+    session = _LeaseSession()
+    ca_bundle = tmp_path / "private-ca.pem"
+    ca_bundle.write_bytes(b"private-ca-fixture")
+
+    result = runtime_client.ensure_runtime_authority(
+        db_path=tmp_path / "relay.sqlite3",
+        credentials=_credentials(),
+        producer_install_id="install-test",
+        session=session,
+        now="2026-08-06T00:00:00Z",
+        tls_ca_bundle_path=str(ca_bundle),
+    )
+
+    assert result.error_code == ""
+    assert session.request_kwargs[0]["verify"] == str(ca_bundle)
 
 
 class _RelaySession(_LeaseSession):

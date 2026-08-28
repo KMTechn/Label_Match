@@ -100,10 +100,11 @@ def build_session_direct_sync_command(
     app_root: str | os.PathLike[str],
     direct_sync_root: str | os.PathLike[str],
     scan_source_dir: str | os.PathLike[str],
+    tls_ca_bundle_path: str | os.PathLike[str] = "",
 ) -> list[str]:
     root = Path(direct_sync_root).expanduser().resolve()
     source = Path(scan_source_dir).expanduser().resolve()
-    return [
+    command = [
         *_application_command(app_root),
         DIRECT_SYNC_RELAY_MODE,
         "--db-path",
@@ -139,6 +140,10 @@ def build_session_direct_sync_command(
         "--min-source-file-age-seconds",
         "0",
     ]
+    selected_ca = str(tls_ca_bundle_path or "").strip()
+    if selected_ca:
+        command.extend(["--tls-ca-bundle-path", selected_ca])
+    return command
 
 
 def _run_command(command: list[str], timeout_seconds: int) -> dict[str, Any]:
@@ -172,12 +177,14 @@ def run_session_direct_sync_once(
     scan_source_dir: str | os.PathLike[str],
     reason: str,
     timeout_seconds: int = 45,
+    tls_ca_bundle_path: str | os.PathLike[str] = "",
 ) -> dict[str, Any]:
     try:
         command = build_session_direct_sync_command(
             app_root=app_root,
             direct_sync_root=direct_sync_root,
             scan_source_dir=scan_source_dir,
+            tls_ca_bundle_path=tls_ca_bundle_path,
         )
     except UserRelayError as exc:
         return {"status": "FAIL", "reason": str(exc)}
@@ -389,12 +396,14 @@ def _runtime_cycle(
     app_root: Path,
     direct_sync_root: Path,
     scan_source_dir: Path,
+    tls_ca_bundle_path: str = "",
 ) -> dict[str, Any]:
     process_result = run_session_direct_sync_once(
         app_root=app_root,
         direct_sync_root=direct_sync_root,
         scan_source_dir=scan_source_dir,
         reason="PERSISTENT_USER_RELAY",
+        tls_ca_bundle_path=tls_ca_bundle_path,
     )
     runtime_status = _read_json(
         direct_sync_root / "status" / "direct_sync_relay_status.json"
@@ -488,9 +497,20 @@ def main(argv: list[str] | None = None) -> int:
         apply_current_user_runtime_environment,
         resolve_current_user_onboarding_paths,
     )
+    from logistics_runtime_profile import (
+        load_logistics_runtime_profile,
+        unprotect_current_user_secret,
+    )
 
     paths = resolve_current_user_onboarding_paths(app_root)
     apply_current_user_runtime_environment(paths)
+    profile = load_logistics_runtime_profile(
+        required=True,
+        profile_path=paths.logistics_profile_path,
+        decryptor=unprotect_current_user_secret,
+    )
+    if profile is None:
+        raise UserRelayError("the current-user logistics profile is unavailable")
     direct_sync_root = (
         Path(args.direct_sync_root).expanduser().resolve()
         if args.direct_sync_root
@@ -523,6 +543,7 @@ def main(argv: list[str] | None = None) -> int:
                 app_root=app_root,
                 direct_sync_root=direct_sync_root,
                 scan_source_dir=scan_source_dir,
+                tls_ca_bundle_path=profile.tls_ca_bundle_path,
             ),
             status_path=user_relay_status_path(direct_sync_root),
             interval_seconds=args.interval_seconds,

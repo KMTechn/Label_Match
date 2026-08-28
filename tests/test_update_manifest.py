@@ -187,6 +187,38 @@ def test_private_manifest_provider_returns_update_candidate(monkeypatch):
     }
 
 
+def test_private_manifest_transport_uses_explicit_profile_ca(monkeypatch, tmp_path):
+    module = load_label_match_module()
+    manifest = valid_manifest()
+    public_hex, signature = signed_manifest_payload(manifest)
+    ca_bundle = tmp_path / "profile" / "tls" / "ca-bundle.pem"
+    ca_bundle.parent.mkdir(parents=True)
+    ca_bundle.write_bytes(b"private-ca-fixture")
+    calls = []
+    monkeypatch.setenv(module.UPDATE_PROVIDER_ENV, module.UPDATE_PROVIDER_PRIVATE_MANIFEST)
+    monkeypatch.setenv(
+        module.UPDATE_MANIFEST_URL_ENV,
+        "https://updates.example/label_match/latest.json",
+    )
+    monkeypatch.setenv(module.UPDATE_MANIFEST_PUBLIC_KEY_ENV, public_hex)
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith(".sig"):
+            return FakeResponse(content=signature)
+        return FakeResponse(manifest)
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
+
+    candidate = module._check_update_candidate(
+        tls_ca_bundle_path=str(ca_bundle)
+    )
+
+    assert candidate["tls_ca_bundle_path"] == str(ca_bundle)
+    assert len(calls) == 2
+    assert all(kwargs["verify"] == str(ca_bundle) for _url, kwargs in calls)
+
+
 def test_private_manifest_rollout_blocks_and_allowlists_current_pc(monkeypatch):
     module = load_label_match_module()
     manifest = valid_manifest()

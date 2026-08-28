@@ -267,6 +267,7 @@ def restore_relay_spool_from_server(
     reason: str,
     audit_log_path: str | os.PathLike[str] = "",
     session: Any = None,
+    tls_ca_bundle_path: str = "",
 ) -> dict[str, Any]:
     relay = _require_text(relay_id, field_name="relay_id", max_length=128)
     operator = _require_text(operator_id, field_name="operator_id", max_length=128)
@@ -371,6 +372,7 @@ def restore_relay_spool_from_server(
             metadata=metadata,
             destination_path=spool_path,
             session=session,
+            tls_ca_bundle_path=tls_ca_bundle_path,
         )
     except DirectSyncPushError:
         return blocked("relay_restore_input_invalid")

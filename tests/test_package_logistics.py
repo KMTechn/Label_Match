@@ -2506,6 +2506,50 @@ def test_default_transport_preserves_explicit_client_identity(monkeypatch):
     assert captured["timeout"] == 8.0
 
 
+def test_default_transport_uses_profile_private_ca_context(monkeypatch, tmp_path):
+    captured = {}
+    ca_bundle = tmp_path / "profile" / "tls" / "ca-bundle.pem"
+    ca_bundle.parent.mkdir(parents=True)
+    ca_bundle.write_bytes(b"private-ca-fixture")
+    sentinel_context = object()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True, "data": _projection()}).encode("utf-8")
+
+    monkeypatch.setattr(
+        package_module.ssl,
+        "create_default_context",
+        lambda *, cafile: captured.update(cafile=cafile) or sentinel_context,
+    )
+
+    def fake_urlopen(request, **kwargs):
+        captured["open_kwargs"] = kwargs
+        return Response()
+
+    monkeypatch.setattr(package_module, "urlopen", fake_urlopen)
+    client = PackageLogisticsClient(
+        PackageClientConfig(
+            "https://logistics.test",
+            "token",
+            SCOPE,
+            "host",
+            "device",
+            tls_ca_bundle_path=str(ca_bundle),
+        )
+    )
+
+    assert client.get_bundle(TRANSFER)["bundle_id"] == TRANSFER
+    assert captured["cafile"] == str(ca_bundle)
+    assert captured["open_kwargs"]["context"] is sentinel_context
+
+
 def test_minimal_itg_only_identity_resolves_without_raw_external_label():
     def transport(method, url, headers, body, timeout):
         if "/bundles/resolve?" in url:

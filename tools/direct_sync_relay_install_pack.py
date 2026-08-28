@@ -1159,6 +1159,30 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
         "--max-active-queue-age-seconds",
         str(backpressure["max_active_queue_age_seconds"]),
     ]
+    runner_tls_ca_bundle_path = str(
+        getattr(args, "tls_ca_bundle_path", "") or ""
+    ).strip()
+    logistics_profile_path = str(
+        getattr(args, "logistics_profile_path", "") or ""
+    ).strip()
+    if logistics_profile_path:
+        try:
+            profile_payload = json.loads(
+                Path(logistics_profile_path).read_text(encoding="utf-8-sig")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            profile_payload = {}
+        persisted_ca = (
+            str(profile_payload.get("tls_ca_bundle_path") or "").strip()
+            if isinstance(profile_payload, dict)
+            else ""
+        )
+        if persisted_ca:
+            runner_tls_ca_bundle_path = persisted_ca
+    if runner_tls_ca_bundle_path:
+        runner_arguments.extend(
+            ["--tls-ca-bundle-path", runner_tls_ca_bundle_path]
+        )
     runner_parts = [str(runner_exe), *runner_arguments]
     baseline_runner_parts = [str(runner_script), *runner_arguments]
     _append_source_scan_args(runner_parts, source_scan)

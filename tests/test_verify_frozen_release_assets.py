@@ -13,7 +13,7 @@ import pytest
 from tools import verify_frozen_release_assets as verifier
 
 
-TAG = "v2.0.90"
+TAG = "v2.0.91"
 COMMIT = "1" * 40
 TREE = "2" * 40
 TAG_OBJECT = "4" * 40
@@ -162,7 +162,8 @@ def _refresh_staged_inventory(
             "sha256": hashlib.sha256(member_payload).hexdigest(),
         }
         for relative, (_member_info, member_payload) in sorted(entries.items())
-        if relative not in {name, "build-manifest.json"}
+        if relative
+        not in {name, "build-manifest.json", "bootstrap-integrity.json"}
     ]
     predecessor_manifest = _json_bytes(
         {
@@ -201,7 +202,7 @@ def _refresh_build_manifest(
             "sha256": hashlib.sha256(member_payload).hexdigest(),
         }
         for relative, (_member_info, member_payload) in sorted(entries.items())
-        if relative != name
+        if relative not in {name, "bootstrap-integrity.json"}
     ]
     manifest["payload_inventory"] = inventory
     manifest["payload_inventory_sha256"] = _canonical_sha256(inventory)
@@ -216,6 +217,25 @@ def _rewrite_archive(
     checksum = fixture["checksum"]
     assert isinstance(archive, Path)
     assert isinstance(checksum, Path)
+    bootstrap_name = "bootstrap-integrity.json"
+    if bootstrap_name in entries:
+        bootstrap_info, _old_payload = entries[bootstrap_name]
+        inventory = [
+            {
+                "path": relative,
+                "size": len(member_payload),
+                "sha256": hashlib.sha256(member_payload).hexdigest(),
+            }
+            for relative, (_member_info, member_payload) in sorted(entries.items())
+            if relative != bootstrap_name
+        ]
+        _record, bootstrap_payload = (
+            build_fixture.archive_builder._bootstrap_integrity_payload(
+                inventory,
+                source_epoch=SOURCE_EPOCH,
+            )
+        )
+        entries[bootstrap_name] = (bootstrap_info, bootstrap_payload)
     archive.unlink()
     with zipfile.ZipFile(archive, "x") as output:
         for _relative, (info, payload) in entries.items():

@@ -25,6 +25,10 @@ PROBE_VERSION = "v1.0.3.4"
 SEMVER_TAG_RE = re.compile(r"^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$")
 GIT_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+BOOTSTRAP_INTEGRITY_FILENAME = "bootstrap-integrity.json"
+BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v2"
+BOOTSTRAP_INVENTORY_ALGORITHM = "sha256-file-hash-size-utf8-path-v1"
+BOOTSTRAP_ROOT_HASH_DOMAIN = b"label-match-code-root-v1\n"
 
 ALL_PROBE_APPS = [
     "Inspection_worker",
@@ -170,6 +174,75 @@ def _inventory_digest(inventory: list[dict[str, object]]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _bootstrap_root_sha256(inventory: list[dict[str, object]]) -> str:
+    """Match INSTALL_THIS_PC.ps1's compact code-root aggregate."""
+
+    entries = [
+        (
+            f"{item['sha256']} {item['size']} "
+            f"{str(item['path']).encode('utf-8').hex()}\n"
+        ).encode("ascii")
+        for item in inventory
+    ]
+    digest = hashlib.sha256()
+    digest.update(BOOTSTRAP_ROOT_HASH_DOMAIN)
+    for entry in sorted(entries):
+        digest.update(entry)
+    return digest.hexdigest()
+
+
+def _bootstrap_integrity_payload(
+    inventory: list[dict[str, object]], *, source_epoch: int
+) -> tuple[dict[str, object], bytes]:
+    if not inventory:
+        raise ReleaseArchiveError("bootstrap integrity inventory is empty")
+    payload: dict[str, object] = {
+        "schema_version": BOOTSTRAP_INTEGRITY_VERSION,
+        "status": "PASS",
+        # A packaged archive is relocatable. The verifier resolves this
+        # conventional relative root against the record's own directory.
+        "code_root": ".",
+        "installed_at": datetime.fromtimestamp(
+            int(source_epoch), tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "file_count": len(inventory),
+        "inventory_algorithm": BOOTSTRAP_INVENTORY_ALGORITHM,
+        "root_sha256": _bootstrap_root_sha256(inventory),
+        "identity_profile_created": False,
+        "state_scope": "current_user_first_run",
+        "package_layout": "onedir",
+    }
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    return payload, encoded
+
+
+def _validate_packaged_bootstrap_integrity(
+    package_root: Path,
+    *,
+    source_epoch: int,
+) -> dict[str, object]:
+    record_path = package_root / BOOTSTRAP_INTEGRITY_FILENAME
+    record = _json(record_path, "bootstrap integrity record")
+    inventory = _inventory(
+        package_root,
+        excluded={BOOTSTRAP_INTEGRITY_FILENAME},
+    )
+    expected, _encoded = _bootstrap_integrity_payload(
+        inventory, source_epoch=source_epoch
+    )
+    if record != expected:
+        raise ReleaseArchiveError(
+            "bootstrap integrity record differs from the exact packaged code root"
+        )
+    return {
+        "bootstrap_integrity_verified": True,
+        "bootstrap_integrity_file_count": len(inventory),
+        "bootstrap_integrity_root_sha256": expected["root_sha256"],
+    }
 
 
 def _canonical_sha256(value: object) -> str:
@@ -830,7 +903,9 @@ def _validate_factory_manifest(
     if _canonical_sha256(inventory) != manifest.get("payload_inventory_sha256"):
         raise ReleaseArchiveError("factory build manifest inventory digest mismatch")
     current_inventory = _inventory(
-        package_root, excluded={"build-manifest.json"}, casefold=False
+        package_root,
+        excluded={"build-manifest.json", BOOTSTRAP_INTEGRITY_FILENAME},
+        casefold=False,
     )
     if current_inventory != inventory:
         raise ReleaseArchiveError("current package differs from the factory build manifest")
@@ -882,6 +957,18 @@ def validate_release_evidence(
     retired_present = sorted(RETIRED_HELPER_EXECUTABLES & package_paths)
     if retired_present:
         raise ReleaseArchiveError(f"retired helper executables remain packaged: {retired_present}")
+    bootstrap = (
+        _validate_packaged_bootstrap_integrity(
+            package_root,
+            source_epoch=source_epoch,
+        )
+        if (package_root / BOOTSTRAP_INTEGRITY_FILENAME).is_file()
+        else {
+            "bootstrap_integrity_verified": False,
+            "bootstrap_integrity_file_count": 0,
+            "bootstrap_integrity_root_sha256": "",
+        }
+    )
     return {
         "tag": identity["tag"],
         "commit": identity["commit"],
@@ -906,6 +993,7 @@ def validate_release_evidence(
         "dynamic_install_qualification": "NOT_TESTED",
         "factory_manifest_verified": True,
         "retired_helper_executables_absent": True,
+        **bootstrap,
     }
 
 
@@ -945,6 +1033,25 @@ def build_release_archive(
         package_root, expected_tag=expected_tag, source_epoch=source_epoch
     )
     package_inventory = _inventory(package_root)
+    if any(
+        str(item["path"]).casefold() == BOOTSTRAP_INTEGRITY_FILENAME.casefold()
+        for item in package_inventory
+    ):
+        raise ReleaseArchiveError(
+            "staged package must not pre-contain the packaging integrity record"
+        )
+    bootstrap_record, bootstrap_bytes = _bootstrap_integrity_payload(
+        package_inventory,
+        source_epoch=source_epoch,
+    )
+    archive_inventory = [
+        *package_inventory,
+        {
+            "path": BOOTSTRAP_INTEGRITY_FILENAME,
+            "size": len(bootstrap_bytes),
+            "sha256": hashlib.sha256(bootstrap_bytes).hexdigest(),
+        },
+    ]
     folded: set[str] = set()
     for item in package_inventory:
         relative = _safe_relative(item["path"], label="package")
@@ -974,6 +1081,14 @@ def build_release_archive(
                 with source.open("rb") as input_handle, archive.open(info, "w") as output_handle:
                     for chunk in iter(lambda: input_handle.read(1024 * 1024), b""):
                         output_handle.write(chunk)
+            bootstrap_info = zipfile.ZipInfo(
+                f"{top_level}/{BOOTSTRAP_INTEGRITY_FILENAME}",
+                date_time=timestamp,
+            )
+            bootstrap_info.compress_type = zipfile.ZIP_DEFLATED
+            bootstrap_info.create_system = 3
+            bootstrap_info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(bootstrap_info, bootstrap_bytes)
 
         with zipfile.ZipFile(archive_path, "r") as archive:
             bad_member = archive.testzip()
@@ -985,10 +1100,10 @@ def build_release_archive(
             names = [info.filename for info in infos]
             if len(names) != len(set(names)) or len({name.casefold() for name in names}) != len(names):
                 raise ReleaseArchiveError("archive contains duplicate or case-colliding paths")
-            expected_names = {f"{top_level}/{item['path']}" for item in package_inventory}
+            expected_names = {f"{top_level}/{item['path']}" for item in archive_inventory}
             if set(names) != expected_names:
                 raise ReleaseArchiveError("archive file membership differs from the staged package")
-            by_path = {str(item["path"]): item for item in package_inventory}
+            by_path = {str(item["path"]): item for item in archive_inventory}
             for info in infos:
                 pure = PurePosixPath(info.filename)
                 if pure.is_absolute() or ".." in pure.parts or pure.parts[0] != top_level:
@@ -1014,6 +1129,7 @@ def build_release_archive(
     return {
         "schema_version": "label-match-release-archive-verification-v1",
         "status": "PASS",
+        **evidence,
         "archive": archive_path.name,
         "archive_sha256": _sha256(archive_path),
         "archive_size": archive_path.stat().st_size,
@@ -1021,13 +1137,18 @@ def build_release_archive(
         "source_epoch": int(source_epoch),
         "normalized_zip_timestamp_utc": "%04d-%02d-%02dT%02d:%02d:%02dZ" % timestamp,
         "top_level": top_level,
-        "package_file_count": len(package_inventory),
-        "package_total_bytes": sum(int(item["size"]) for item in package_inventory),
+        "package_file_count": len(archive_inventory),
+        "package_total_bytes": sum(int(item["size"]) for item in archive_inventory),
+        "bootstrap_integrity_path": BOOTSTRAP_INTEGRITY_FILENAME,
+        "bootstrap_integrity_sha256": hashlib.sha256(bootstrap_bytes).hexdigest(),
+        "bootstrap_integrity_file_count": bootstrap_record["file_count"],
+        "bootstrap_integrity_root_sha256": bootstrap_record["root_sha256"],
+        "bootstrap_integrity_embedded": True,
+        "bootstrap_integrity_verified": True,
         "exact_membership": True,
         "byte_parity": True,
         "crc_verified": True,
         "deterministic_metadata": True,
-        **evidence,
     }
 
 

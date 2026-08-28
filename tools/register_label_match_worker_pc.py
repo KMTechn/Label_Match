@@ -25,6 +25,11 @@ if str(ROOT) not in sys.path:
 
 import requests  # noqa: E402
 
+from kmtech_factory_contracts.bundle import (  # noqa: E402
+    load_contract_document,
+    verify_bundled_contracts,
+)
+
 from direct_sync_push import (  # noqa: E402
     DEFAULT_ENDPOINT_PATH,
     DEFAULT_PRODUCER_ROLE,
@@ -53,26 +58,34 @@ CRYPTPROTECT_LOCAL_MACHINE = 0x4
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 LABEL_MATCH_APP = "LabelMatch"
 SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
-RAW_EVENT_NAMES = [
-    "APP_START",
-    "APP_CLOSE",
-    "LABEL_MATCHED",
-    "PACKAGING_WAITING_OBSERVED",
-    "SHIPPING_WAITING_OBSERVED",
-    "SCAN_ATTEMPT",
-    "SCAN_OK",
-    "TRAY_COMPLETE",
-    "POST_REVIEW_REQUIRED",
-    "PHS_REPLACEMENT_WAITING_MARKED",
-    "SET_DELETED",
-    "SET_RESTORED",
-    "SET_CANCELLED",
-    "TRAY_COMPLETION_CANCELLED",
-    "UI_ERROR",
-    "ERROR_INPUT",
-    "ERROR_MISMATCH",
-    "BASE64_DECODED",
-]
+
+
+def _canonical_raw_event_names() -> list[str]:
+    verify_bundled_contracts()
+    catalog = load_contract_document("catalogs/canonical-stream-catalog.json")
+    matches = [
+        row
+        for row in catalog.get("streams", [])
+        if isinstance(row, dict)
+        and row.get("app_id") == "label_match"
+        and row.get("stream_id") == DEFAULT_STREAM_NAME
+        and row.get("source_system") == DEFAULT_SOURCE_SYSTEM
+        and row.get("source_transport") == DEFAULT_SOURCE_TRANSPORT
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("canonical Label_Match stream catalog row is unavailable")
+    values = matches[0].get("raw_event_names")
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(value, str) and value for value in values)
+        or len(set(values)) != len(values)
+    ):
+        raise RuntimeError("canonical Label_Match raw-event catalog is invalid")
+    return list(values)
+
+
+RAW_EVENT_NAMES = _canonical_raw_event_names()
 
 
 def _utc_now_text() -> str:
@@ -323,14 +336,24 @@ def _token_from_sources(args: argparse.Namespace) -> tuple[str, str]:
     return candidates[0]
 
 
-def _enroll(payload: Mapping[str, Any], *, enrollment_url: str, enrollment_token: str, timeout_seconds: int) -> dict[str, Any]:
+def _enroll(
+    payload: Mapping[str, Any],
+    *,
+    enrollment_url: str,
+    enrollment_token: str,
+    timeout_seconds: int,
+    tls_ca_bundle_path: str = "",
+) -> dict[str, Any]:
     headers = {"X-Producer-Enrollment-Token": enrollment_token} if enrollment_token else {}
-    response = requests.post(
-        enrollment_url,
-        json=dict(payload),
-        headers=headers,
-        timeout=max(1, int(timeout_seconds)),
-    )
+    request_kwargs: dict[str, Any] = {
+        "json": dict(payload),
+        "headers": headers,
+        "timeout": max(1, int(timeout_seconds)),
+    }
+    selected_ca = str(tls_ca_bundle_path or "").strip()
+    if selected_ca:
+        request_kwargs["verify"] = selected_ca
+    response = requests.post(enrollment_url, **request_kwargs)
     try:
         response_payload = response.json()
     except ValueError as exc:
@@ -338,7 +361,9 @@ def _enroll(payload: Mapping[str, Any], *, enrollment_url: str, enrollment_token
     if response.status_code >= 400:
         error = response_payload.get("error") if isinstance(response_payload, dict) else {}
         code = str(error.get("code") or response.status_code) if isinstance(error, dict) else str(response.status_code)
-        raise DirectSyncPushError(f"self-enroll failed: {code}")
+        message = str(error.get("message") or "").strip() if isinstance(error, dict) else ""
+        detail = f" ({message})" if message else ""
+        raise DirectSyncPushError(f"self-enroll failed: {code}{detail}")
     if not isinstance(response_payload, dict):
         raise DirectSyncPushError("self-enroll response must be a JSON object")
     return response_payload
@@ -526,6 +551,9 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
         enrollment_url=enrollment_url,
         enrollment_token=token,
         timeout_seconds=args.enrollment_timeout_seconds,
+        tls_ca_bundle_path=str(
+            getattr(args, "tls_ca_bundle_path", "") or ""
+        ).strip(),
     )
     secret = _secret_from_response(response_payload)
     expected_fingerprint = str(response_payload.get("secret_fingerprint_sha256") or "")

@@ -427,6 +427,7 @@ def _build_config(args: argparse.Namespace) -> DirectSyncRuntimeConfig:
         operator_pause_path=args.operator_pause_path,
         max_active_queue_count=args.max_active_queue_count,
         max_active_queue_age_seconds=args.max_active_queue_age_seconds,
+        tls_ca_bundle_path=str(getattr(args, "tls_ca_bundle_path", "") or ""),
     )
 
 
@@ -498,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-free-bytes", type=int, default=0)
     parser.add_argument("--retry-base-seconds", type=int, default=60)
     parser.add_argument("--timeout-seconds", type=int, default=30)
+    parser.add_argument("--tls-ca-bundle-path", default="")
     parser.add_argument("--operator-pause-path", default="")
     parser.add_argument("--max-active-queue-count", type=int, default=1000)
     parser.add_argument("--max-active-queue-age-seconds", type=int, default=24 * 60 * 60)

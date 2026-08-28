@@ -322,6 +322,51 @@ def test_entrypoint_acquires_guard_before_catalog_or_tk_construction():
     )[0]
 
 
+def test_main_warns_and_continues_when_bootstrap_integrity_record_is_absent(
+    monkeypatch,
+):
+    import Label_Match as app_module
+
+    warnings = []
+    traces = []
+    monkeypatch.setattr(app_module, "verify_factory_contract_startup", lambda: None)
+    monkeypatch.setattr(app_module, "_first_run_onboarding_enabled", lambda: True)
+    monkeypatch.setattr(app_module, "_label_match_runtime_app_root", lambda: Path.cwd())
+    monkeypatch.setattr(
+        app_module,
+        "onboard_current_user",
+        lambda *_args, **_kwargs: {
+            "status": "READY",
+            "bootstrap_integrity": {"status": "ABSENT", "warning": True},
+        },
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda title, message: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_label_match_startup_trace",
+        lambda stage, **details: traces.append((stage, details)),
+    )
+    monkeypatch.setattr(app_module, "resolve_data_scope", lambda **_kwargs: r"C:\data")
+    monkeypatch.setattr(
+        app_module,
+        "run_guarded_entrypoint",
+        lambda _start, *, data_scope: 0,
+    )
+
+    assert app_module.main([]) == 0
+    assert warnings == [
+        (
+            app_module.BOOTSTRAP_INTEGRITY_ABSENT_WARNING_TITLE,
+            app_module.BOOTSTRAP_INTEGRITY_ABSENT_WARNING_MESSAGE,
+        )
+    ]
+    assert ("bootstrap_integrity_absent", {}) in traces
+
+
 def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     import Label_Match as app_module
 

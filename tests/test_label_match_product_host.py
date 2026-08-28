@@ -41,6 +41,88 @@ def test_relay_mode_reuses_main_onedir_process_and_forwards_arguments(monkeypatc
     assert observed == [["--db-path", "queue.sqlite3"]]
 
 
+def test_frozen_hosted_relay_fails_closed_before_runtime_on_integrity_error(
+    monkeypatch,
+):
+    observed = []
+    monkeypatch.setattr(
+        product_host,
+        "_verify_frozen_host_integrity",
+        lambda: (_ for _ in ()).throw(ValueError("tampered")),
+    )
+    monkeypatch.setattr(
+        direct_sync_relay_runner,
+        "main",
+        lambda arguments: observed.append(list(arguments)) or 0,
+    )
+
+    result = product_host.dispatch_product_mode(
+        [product_host.DIRECT_SYNC_RELAY_MODE]
+    )
+
+    assert result == product_host.HOSTED_RELAY_FAILURE_EXIT_CODE
+    assert observed == []
+
+
+def test_frozen_hosted_relay_warns_and_continues_when_record_is_absent(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setattr(
+        product_host,
+        "_verify_frozen_host_integrity",
+        lambda: {"status": "ABSENT"},
+    )
+    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments: 0)
+
+    assert (
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE])
+        == 0
+    )
+    assert "integrity record is absent" in capsys.readouterr().err
+    warning_path = (
+        tmp_path
+        / "LocalAppData"
+        / "KMTech"
+        / "DirectSync"
+        / "label_match"
+        / "status"
+        / product_host.BOOTSTRAP_INTEGRITY_WARNING_FILENAME
+    )
+    warning = json.loads(warning_path.read_text(encoding="utf-8"))
+    assert warning["warning_code"] == "bootstrap_integrity_absent"
+
+
+def test_windowed_host_persists_absent_integrity_warning_without_stderr(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setattr(
+        product_host,
+        "_verify_frozen_host_integrity",
+        lambda: {"status": "ABSENT"},
+    )
+    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments: 0)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    assert (
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE])
+        == 0
+    )
+
+    warning_path = (
+        tmp_path
+        / "LocalAppData"
+        / "KMTech"
+        / "DirectSync"
+        / "label_match"
+        / "status"
+        / product_host.BOOTSTRAP_INTEGRITY_WARNING_FILENAME
+    )
+    assert json.loads(warning_path.read_text(encoding="utf-8"))["status"] == "warning"
+    assert sys.stderr is None
+
+
 def test_windowed_host_supplies_and_restores_output_streams(monkeypatch):
     observed = []
 

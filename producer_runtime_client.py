@@ -403,6 +403,7 @@ def _post_lease_request(
     credentials: Any,
     session: Any,
     timeout: int,
+    tls_ca_bundle_path: str = "",
 ) -> tuple[Dict[str, Any] | None, RuntimePreparation | None]:
     if session is None:
         import requests
@@ -430,12 +431,18 @@ def _post_lease_request(
         "X-Producer-Signature": signature,
     }
     try:
+        request_kwargs: Dict[str, Any] = {
+            "data": body,
+            "headers": headers,
+            "timeout": timeout,
+            "allow_redirects": False,
+        }
+        selected_ca = str(tls_ca_bundle_path or "").strip()
+        if selected_ca:
+            request_kwargs["verify"] = selected_ca
         response = session.post(
             _runtime_endpoint(str(credentials.endpoint_url)),
-            data=body,
-            headers=headers,
-            timeout=timeout,
-            allow_redirects=False,
+            **request_kwargs,
         )
     except Exception as exc:
         return None, RuntimePreparation(
@@ -643,6 +650,7 @@ def ensure_runtime_authority(
     now: str = "",
     ttl_seconds: int = _DEFAULT_TTL_SECONDS,
     renewal_margin_seconds: int = 120,
+    tls_ca_bundle_path: str = "",
 ) -> RuntimePreparation:
     """Issue or renew install-scoped liveness without consuming row authority."""
 
@@ -793,6 +801,7 @@ def ensure_runtime_authority(
             credentials=credentials,
             session=session,
             timeout=timeout,
+            tls_ca_bundle_path=tls_ca_bundle_path,
         )
         if request_error is not None:
             if request_error.operator_review:
@@ -897,6 +906,7 @@ def prepare_runtime_metadata(
     timeout: int = 30,
     now: str = "",
     ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+    tls_ca_bundle_path: str = "",
 ) -> RuntimePreparation:
     """Return an immutable runtime metadata snapshot for one claimed row."""
 
@@ -1114,6 +1124,7 @@ def prepare_runtime_metadata(
             credentials=credentials,
             session=session,
             timeout=timeout,
+            tls_ca_bundle_path=tls_ca_bundle_path,
         )
         if request_error is not None:
             if request_error.operator_review:

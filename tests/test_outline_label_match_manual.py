@@ -253,6 +253,50 @@ def test_upload_uses_separate_no_auth_session_and_disables_redirects(tmp_path):
     assert isinstance(upload_kwargs["auth"], publisher._NoAuth)
 
 
+def test_private_ca_is_forwarded_only_to_same_origin_outline_calls(tmp_path):
+    image_path = tmp_path / "manual.png"
+    Image.new("RGB", (2, 2), "white").save(image_path)
+    ca_bundle = tmp_path / "private-ca.pem"
+    ca_bundle.write_text("fixture", encoding="ascii")
+    client = publisher.OutlineClient(
+        "https://wiki.kmtecherp.com",
+        "secret-token",
+        trusted_upload_origins=["https://bucket.example"],
+        tls_ca_bundle_path=str(ca_bundle),
+    )
+    client.api_session = _FakeSession(
+        _FakeResponse(
+            200,
+            _created_attachment("https://bucket.example/object?sig=abc"),
+        )
+    )
+    client.upload_session = _FakeSession(_FakeResponse(201))
+
+    client.upload_image("doc-1", image_path)
+
+    assert client.api_session.calls[0][1]["verify"] == str(ca_bundle)
+    assert "verify" not in client.upload_session.calls[0][1]
+
+
+def test_private_ca_is_forwarded_to_same_origin_outline_upload(tmp_path):
+    image_path = tmp_path / "manual.png"
+    Image.new("RGB", (2, 2), "white").save(image_path)
+    ca_bundle = tmp_path / "private-ca.pem"
+    ca_bundle.write_text("fixture", encoding="ascii")
+    client = publisher.OutlineClient(
+        "https://wiki.kmtecherp.com",
+        "secret-token",
+        tls_ca_bundle_path=str(ca_bundle),
+    )
+    client.api_session = _FakeSession(_FakeResponse(200, _created_attachment()))
+    client.upload_session = _FakeSession(_FakeResponse(204))
+
+    client.upload_image("doc-1", image_path)
+
+    assert client.api_session.calls[0][1]["verify"] == str(ca_bundle)
+    assert client.upload_session.calls[0][1]["verify"] == str(ca_bundle)
+
+
 def test_exact_allowlisted_cross_origin_upload_never_receives_outline_token(tmp_path):
     image_path = tmp_path / "manual.png"
     Image.new("RGB", (2, 2), "white").save(image_path)

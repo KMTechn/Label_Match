@@ -26,6 +26,67 @@ PRODUCT_MODES = frozenset(
     }
 )
 HOSTED_RELAY_FAILURE_EXIT_CODE = 1
+BOOTSTRAP_INTEGRITY_WARNING_FILENAME = "bootstrap_integrity_warning.json"
+
+
+def _verify_frozen_host_integrity() -> dict[str, object]:
+    if not getattr(sys, "frozen", False):
+        return {"status": "NOT_TESTED", "reason": "source mode"}
+    from current_user_onboarding import (
+        resolve_current_user_onboarding_paths,
+        verify_bootstrap_integrity,
+    )
+
+    app_root = Path(sys.executable).resolve().parent
+    return verify_bootstrap_integrity(
+        resolve_current_user_onboarding_paths(app_root),
+        required=True,
+    )
+
+
+def _record_bootstrap_integrity_absent(
+    arguments: Sequence[str], mode: str
+) -> None:
+    captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    payload: dict[str, object] = {
+        "status": "warning",
+        "app": "Label_Match",
+        "mode": mode,
+        "warning_code": "bootstrap_integrity_absent",
+        "warning_message": (
+            "hosted relay continued without a bootstrap integrity record"
+        ),
+        "updated_at": captured_at,
+    }
+    try:
+        from current_user_onboarding import resolve_current_user_onboarding_paths
+
+        app_root = (
+            Path(sys.executable).resolve().parent
+            if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parent
+        )
+        warning_path = (
+            resolve_current_user_onboarding_paths(app_root).status_dir
+            / BOOTSTRAP_INTEGRITY_WARNING_FILENAME
+        )
+        _write_json_atomic(warning_path, payload)
+    except Exception:
+        pass
+    log_path = _option_value(arguments, "--log-path")
+    if log_path:
+        try:
+            _append_jsonl(
+                Path(log_path),
+                {
+                    "event": "bootstrap_integrity_absent",
+                    "app": "Label_Match",
+                    "mode": mode,
+                    "generated_at": captured_at,
+                },
+            )
+        except Exception:
+            pass
 
 
 def _option_value(arguments: Sequence[str], option: str) -> str:
@@ -135,6 +196,19 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
     mode = arguments.pop(0)
 
     with _usable_output_streams():
+        if mode in {DIRECT_SYNC_RELAY_MODE, USER_RELAY_MODE}:
+            try:
+                integrity = _verify_frozen_host_integrity()
+                if integrity.get("status") == "ABSENT":
+                    _record_bootstrap_integrity_absent(arguments, mode)
+                    print(
+                        "warning: bootstrap integrity record is absent; "
+                        "hosted relay is continuing without file verification",
+                        file=sys.stderr,
+                    )
+            except Exception as exc:
+                _record_hosted_relay_failure([mode, *arguments], exc)
+                return HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == DIRECT_SYNC_RELAY_MODE:
             try:
                 from tools import direct_sync_relay_runner

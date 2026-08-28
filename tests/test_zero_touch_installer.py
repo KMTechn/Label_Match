@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,6 +70,42 @@ def _release_fixture(root: Path) -> Path:
     )
     (release / "_internal" / "python312.dll").write_bytes(b"reachable-runtime")
     return release
+
+
+def _seal_release_fixture(release: Path) -> Path:
+    inventory = []
+    for path in sorted(item for item in release.rglob("*") if item.is_file()):
+        relative = path.relative_to(release).as_posix()
+        if relative.casefold() == "bootstrap-integrity.json":
+            continue
+        payload = path.read_bytes()
+        inventory.append((relative, len(payload), hashlib.sha256(payload).hexdigest()))
+    entries = sorted(
+        f"{digest} {size} {relative.encode('utf-8').hex()}\n".encode("ascii")
+        for relative, size, digest in inventory
+    )
+    root_hash = hashlib.sha256(b"label-match-code-root-v1\n" + b"".join(entries)).hexdigest()
+    record_path = release / "bootstrap-integrity.json"
+    record_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "label-match-bootstrap-integrity-v2",
+                "status": "PASS",
+                "code_root": ".",
+                "installed_at": "2026-08-28T00:00:00Z",
+                "file_count": len(inventory),
+                "inventory_algorithm": "sha256-file-hash-size-utf8-path-v1",
+                "root_sha256": root_hash,
+                "identity_profile_created": False,
+                "state_scope": "current_user_first_run",
+                "package_layout": "onedir",
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return record_path
 
 
 def _private_ca_pem() -> bytes:
@@ -206,6 +243,21 @@ def test_bootstrap_places_exact_onedir_bytes_records_integrity_and_reuses(tmp_pa
     assert "different or damaged hardened code placement" in (
         damaged.stderr + damaged.stdout
     )
+
+
+def test_bootstrap_validates_packaged_record_before_resealing_install(tmp_path):
+    source = _release_fixture(tmp_path)
+    _seal_release_fixture(source)
+    first = _run_installer(source, tmp_path / "apps" / "first")
+
+    assert first.returncode == 0, first.stderr or first.stdout
+    assert "source_integrity_status=PASS" in first.stdout
+
+    (source / "_internal" / "python312.dll").write_bytes(b"tampered-source")
+    blocked = _run_installer(source, tmp_path / "apps" / "tampered")
+
+    assert blocked.returncode != 0
+    assert "source code root" in (blocked.stderr + blocked.stdout)
 
 
 @pytest.mark.parametrize(
