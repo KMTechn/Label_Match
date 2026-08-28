@@ -13430,8 +13430,20 @@ class Label_Match(tk.Tk):
             if root_height <= 100:
                 root_height = int(self.winfo_screenheight())
             profile_name, profile = self._select_ui_profile(root_width, root_height)
+            profile_changed = profile_name != self.__dict__.get("ui_profile_name")
             self.ui_profile_name = profile_name
             self.ui_profile = profile
+            if (
+                settle
+                and profile_changed
+                and getattr(self, "initialized_successfully", False)
+            ):
+                # A direct evidence/test settle cancels the normal delayed
+                # Configure callback.  Apply the profile's fonts now so the
+                # same compact size cannot inherit a wide-profile font based
+                # only on callback timing.
+                self._update_ui_scaling()
+                return
             outer_padding = int(profile["outer_padding"])
             # On short auxiliary displays the former 64 px header pushed the
             # center notebook through the card's bottom padding.  The title,
