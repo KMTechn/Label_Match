@@ -140,6 +140,20 @@ def test_label_match_registration_manifest_includes_runtime_event_contract(tmp_p
         and row["stream_id"] == "label_match_events"
     )
     assert raw_event_names == label_stream["raw_event_names"]
+    data_root = (tmp_path / "DirectSync" / "label_match").resolve()
+    sync_root = (tmp_path / "Label_Match" / "data").resolve()
+    assert manifest["paths"] == {
+        "data_dir": data_root.as_posix(),
+        "evidence_dir": (data_root / "evidence").as_posix(),
+        "rollback_dir": (data_root / "rollback").as_posix(),
+    }
+    assert manifest["sync"]["sync_dir"] == sync_root.as_posix()
+    assert manifest["sync"]["queue"]["queue_dir"] == (
+        data_root / "relay_queue"
+    ).as_posix()
+    assert manifest["sync"]["queue"]["client_state_db"] == (
+        data_root / "relay_state.sqlite3"
+    ).as_posix()
 
 
 def test_label_match_registration_apply_writes_manifest_credential_and_receipt_without_raw_secret(
@@ -227,7 +241,7 @@ def test_label_match_registration_apply_writes_manifest_credential_and_receipt_w
 
     assert manifest["identity_registry"]["status"] == "self_enrolled"
     assert manifest["sync"]["sync_transport"] == "http_push"
-    assert manifest["sync"]["sync_dir"] == str(sync_dir.resolve())
+    assert manifest["sync"]["sync_dir"] == sync_dir.resolve().as_posix()
     assert credential["secret_ref"].startswith("dpapi:")
     assert credential["secret_data_dir"] == str(data_dir.resolve())
     assert "secret" not in credential

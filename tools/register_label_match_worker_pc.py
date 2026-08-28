@@ -226,6 +226,8 @@ def _build_manifest(
 ) -> dict[str, Any]:
     data_root = Path(data_dir).expanduser().resolve()
     sync_root = Path(sync_dir).expanduser().resolve()
+    data_root_text = data_root.as_posix()
+    sync_root_text = sync_root.as_posix()
     return {
         "apps": [LABEL_MATCH_APP],
         "hmac_gate": {
@@ -247,9 +249,9 @@ def _build_manifest(
             "status": identity_registry_status,
         },
         "paths": {
-            "data_dir": str(data_root),
-            "evidence_dir": str(data_root / "evidence"),
-            "rollback_dir": str(data_root / "rollback"),
+            "data_dir": data_root_text,
+            "evidence_dir": (data_root / "evidence").as_posix(),
+            "rollback_dir": (data_root / "rollback").as_posix(),
         },
         "pc_identity": {
             "pc_id": pc_id,
@@ -283,13 +285,13 @@ def _build_manifest(
             },
             "queue": {
                 "allowed_streams": [DEFAULT_STREAM_NAME],
-                "client_state_db": str(data_root / "relay_state.sqlite3"),
-                "queue_dir": str(data_root / "relay_queue"),
+                "client_state_db": (data_root / "relay_state.sqlite3").as_posix(),
+                "queue_dir": (data_root / "relay_queue").as_posix(),
                 "status": "operator_supplied_uncontacted",
             },
             "server_ingest_target": endpoint_url,
             "status": "operator_supplied_uncontacted",
-            "sync_dir": str(sync_root),
+            "sync_dir": sync_root_text,
             "sync_transport": "http_push",
         },
     }
