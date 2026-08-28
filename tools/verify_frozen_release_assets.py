@@ -422,6 +422,7 @@ QUALIFICATION_RECEIPT_KEYS = {
     "tag_signature_verified",
     "python_version",
     "pyinstaller_version",
+    "native_free_low_risk",
     "source_epoch",
     "path_identity",
     "archive",
@@ -500,6 +501,25 @@ def _validate_qualification_receipt(
         and receipt.get("tag_mutated") is False
         and receipt.get("external_post_download_parity_required") is True,
         "preserved qualification receipt identity or gate claims differ",
+    )
+    native_free = receipt.get("native_free_low_risk")
+    _require(
+        isinstance(native_free, dict)
+        and set(native_free)
+        == {
+            "pygame_paths",
+            "pillow_paths",
+            "charset_normalizer_native_paths",
+            "charset_normalizer_mode",
+            "audio_backend",
+        }
+        and native_free.get("pygame_paths") == []
+        and native_free.get("pillow_paths") == []
+        and native_free.get("charset_normalizer_native_paths") == []
+        and native_free.get("charset_normalizer_mode")
+        == "pure-python-source-override"
+        and native_free.get("audio_backend") == "stdlib-winsound",
+        "preserved qualification receipt native-free gate differs",
     )
     _require(
         SHA256_RE.fullmatch(str(receipt.get("tag_identity_report_sha256") or ""))

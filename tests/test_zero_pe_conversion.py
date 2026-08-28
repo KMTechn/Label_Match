@@ -80,11 +80,25 @@ def test_low_difficulty_native_dependencies_are_absent_from_runtime_requirements
         .splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
-    for forbidden in ("pygame", "charset-normalizer"):
-        assert all(not line.startswith(forbidden) for line in requirements)
-        assert all(not line.startswith(forbidden) for line in release)
-    assert any(line.startswith("chardet") for line in requirements)
-    assert any(line.startswith("chardet==5.2.0") for line in release)
+    assert all(not line.startswith("pygame") for line in requirements)
+    assert all(not line.startswith("pygame") for line in release)
+    assert all(not line.startswith("pillow") for line in requirements)
+    assert any(line.startswith("charset-normalizer==3.4.9") for line in release)
+
+
+def test_frozen_builder_forces_source_only_charset_and_excludes_removed_packages() -> None:
+    source = (ROOT / "tools" / "build_frozen_release_candidate.ps1").read_text(
+        encoding="utf-8"
+    )
+    hook = (ROOT / "tools" / "pyinstaller_hooks" / "hook-charset_normalizer.py")
+    assert "Initialize-NativeFreeOverrides" in source
+    assert "Assert-LowRiskNativeFreePackage" in source
+    assert '"--additional-hooks-dir", $nativeFreeOverrides.hook_root' in source
+    assert '"--exclude-module", "pygame"' in source
+    assert '"--exclude-module", "charset_normalizer.md__mypyc"' in source
+    assert '"--hidden-import", "pygame"' not in source
+    assert '"--hidden-import", "PIL"' not in source
+    assert hook.read_text(encoding="utf-8").count("hiddenimports: list[str] = []") == 1
 
 
 def test_gdi_phs_label_retains_legacy_pixel_dimensions(tmp_path: Path) -> None:

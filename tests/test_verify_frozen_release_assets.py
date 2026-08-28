@@ -53,6 +53,13 @@ def _qualification_receipt(path: Path, fixture: dict[str, object]) -> Path:
         "tag_signature_verified": False,
         "python_version": "3.12.10",
         "pyinstaller_version": "6.20.0",
+        "native_free_low_risk": {
+            "pygame_paths": [],
+            "pillow_paths": [],
+            "charset_normalizer_native_paths": [],
+            "charset_normalizer_mode": "pure-python-source-override",
+            "audio_backend": "stdlib-winsound",
+        },
         "source_epoch": SOURCE_EPOCH,
         "path_identity": {"schema_version": "label-match-release-path-identity-v1"},
         "archive": archive.name,

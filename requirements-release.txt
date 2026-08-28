@@ -35,9 +35,7 @@ babel==2.18.0 --hash=sha256:e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae908
 blinker==1.9.0 --hash=sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc
 certifi==2026.6.17 --hash=sha256:2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db
 cffi==2.1.0 --hash=sha256:c97f080ea627e2863524c5af3836e2270b5f5dfff1f104392b959f8df0c5d384
-# Requests supports chardet as its pure-Python detector; this avoids both
-# charset-normalizer mypyc accelerators and loading the forbidden package root.
-chardet==5.2.0 --hash=sha256:e1cf59446890a00105fe7b7912492ea04b6e6f06d4b742b2c788469e34c82970
+charset-normalizer==3.4.9 --hash=sha256:4b3dac63058cc36820b0dd072f89898604e2d39686fe05321729d00d8ac185a0
 click==8.4.2 --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
 colorama==0.4.6 --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
 idna==3.18 --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2

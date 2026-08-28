@@ -520,6 +520,88 @@ function Assert-ProbeIdentity {
     }
 }
 
+function Initialize-NativeFreeOverrides {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvRoot,
+        [Parameter(Mandatory = $true)][string]$WorkRoot,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+    $sourceRoot = Join-Path $VenvRoot "Lib\site-packages\charset_normalizer"
+    if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
+        throw "Installed charset-normalizer package root is unavailable: $sourceRoot"
+    }
+    $overrideRoot = Join-Path $WorkRoot "pure-python-overrides"
+    $targetRoot = Join-Path $overrideRoot "charset_normalizer"
+    if (Test-Path -LiteralPath $targetRoot) {
+        throw "Pure-Python charset-normalizer override already exists: $targetRoot"
+    }
+    [IO.Directory]::CreateDirectory($targetRoot) | Out-Null
+    foreach ($source in @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Sort-Object FullName)) {
+        if ($source.Extension -cne ".py" -and $source.Name -cne "py.typed") { continue }
+        $relative = $source.FullName.Substring($sourceRoot.Length + 1)
+        $target = Join-Path $targetRoot $relative
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $target)) | Out-Null
+        Copy-Item -LiteralPath $source.FullName -Destination $target
+    }
+    foreach ($required in @("__init__.py", "api.py", "cd.py", "md.py")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $targetRoot $required) -PathType Leaf)) {
+            throw "Pure-Python charset-normalizer override is incomplete: $required"
+        }
+    }
+    $nativeOverrideFiles = @(
+        Get-ChildItem -LiteralPath $overrideRoot -Recurse -File |
+            Where-Object { $_.Extension -in @(".dll", ".exe", ".pyd") }
+    )
+    if ($nativeOverrideFiles.Count -ne 0) {
+        throw "Pure-Python charset-normalizer override contains native files."
+    }
+    $hookRoot = Join-Path $RepositoryRoot "tools\pyinstaller_hooks"
+    if (-not (Test-Path -LiteralPath (Join-Path $hookRoot "hook-charset_normalizer.py") -PathType Leaf)) {
+        throw "Native-free PyInstaller hook is missing: $hookRoot"
+    }
+    return [pscustomobject][ordered]@{
+        override_root = $overrideRoot
+        charset_normalizer_root = $targetRoot
+        hook_root = $hookRoot
+    }
+}
+
+function Assert-LowRiskNativeFreePackage {
+    param([Parameter(Mandatory = $true)][string]$PackageRoot)
+    $pygamePaths = @()
+    $pillowPaths = @()
+    $charsetNativePaths = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Sort-Object FullName)) {
+        $relative = $file.FullName.Substring($PackageRoot.Length + 1).Replace("\", "/")
+        $parts = @($relative.Split("/") | ForEach-Object { $_.ToLowerInvariant() })
+        if (@($parts | Where-Object { $_ -eq "pygame" -or $_.StartsWith("pygame.") }).Count -gt 0) {
+            $pygamePaths += $relative
+        }
+        if ($parts -contains "pil") {
+            $pillowPaths += $relative
+        }
+        if (
+            $parts -contains "charset_normalizer" -and
+            $file.Extension.ToLowerInvariant() -in @(".dll", ".exe", ".pyd")
+        ) {
+            $charsetNativePaths += $relative
+        }
+    }
+    if ($pygamePaths.Count -ne 0 -or $pillowPaths.Count -ne 0 -or $charsetNativePaths.Count -ne 0) {
+        throw (
+            "Low-risk native dependency removal failed: pygame={0}; PIL={1}; charset_native={2}" -f
+            ($pygamePaths -join ","), ($pillowPaths -join ","), ($charsetNativePaths -join ",")
+        )
+    }
+    return [pscustomobject][ordered]@{
+        pygame_paths = $pygamePaths
+        pillow_paths = $pillowPaths
+        charset_normalizer_native_paths = $charsetNativePaths
+        charset_normalizer_mode = "pure-python-source-override"
+        audio_backend = "stdlib-winsound"
+    }
+}
+
 function Invoke-OneFileBuild {
     param(
         [Parameter(Mandatory = $true)][string]$VenvPython,
@@ -527,10 +609,12 @@ function Invoke-OneFileBuild {
         [Parameter(Mandatory = $true)][string]$PackageRoot,
         [Parameter(Mandatory = $true)][string]$WorkRoot,
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$Source
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string[]]$NativeFreeArguments
     )
     $toolWork = Join-Path $WorkRoot "${Name}_pyinstaller"
     & $VenvPython -I -m PyInstaller `
+        @NativeFreeArguments `
         --paths $RepositoryRoot `
         --name $Name `
         --onefile `
@@ -552,10 +636,12 @@ function Invoke-OneDirBuild {
         [Parameter(Mandatory = $true)][string]$PackageRoot,
         [Parameter(Mandatory = $true)][string]$WorkRoot,
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$Source
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string[]]$NativeFreeArguments
     )
     $toolWork = Join-Path $WorkRoot "${Name}_pyinstaller"
     & $VenvPython -I -m PyInstaller `
+        @NativeFreeArguments `
         --paths $RepositoryRoot `
         --name $Name `
         --onedir `
@@ -826,6 +912,16 @@ Assert-LastExitCode "Inspect release toolchain"
 if ($toolchain.Trim() -cne "$ExpectedPythonVersion|$ExpectedPyInstallerVersion") {
     throw "Hash-locked venv toolchain mismatch: $toolchain"
 }
+$nativeFreeOverrides = Initialize-NativeFreeOverrides `
+    -VenvRoot $venvRoot `
+    -WorkRoot $workRoot `
+    -RepositoryRoot $repoRoot
+$nativeFreePyInstallerArguments = @(
+    "--paths", $nativeFreeOverrides.override_root,
+    "--additional-hooks-dir", $nativeFreeOverrides.hook_root,
+    "--exclude-module", "pygame",
+    "--exclude-module", "charset_normalizer.md__mypyc"
+)
 
 $releaseIdentityPath = Join-Path $workRoot "release-identity.json"
 & $venvPython -I -S (Join-Path $repoRoot "tools\verify_release_identity.py") `
@@ -846,7 +942,7 @@ $factoryIdentityRoot = Join-Path $workRoot "factory_contract_identity"
 Assert-LastExitCode "Prepare exact factory compatibility identity"
 
 $mainWorkRoot = Join-Path $workRoot "label_match_pyinstaller"
-$mainArguments = @(
+$mainArguments = @($nativeFreePyInstallerArguments) + @(
     "--name", "Label_Match",
     "--onedir",
     "--windowed",
@@ -857,8 +953,6 @@ $mainArguments = @(
     "--add-data", "$(Join-Path $factoryIdentityRoot 'build-identity.json');.",
     "--add-data", "$(Join-Path $factoryIdentityRoot 'build-compatibility.json');.",
     "--add-data", "$(Join-Path $repoRoot 'contract.lock.json');.",
-    "--hidden-import", "pygame",
-    "--hidden-import", "PIL",
     "--hidden-import", "tkcalendar",
     "--distpath", $distRoot,
     "--workpath", $mainWorkRoot,
@@ -887,25 +981,29 @@ Invoke-OneFileBuild `
     -PackageRoot $packageRoot `
     -WorkRoot $workRoot `
     -Name "KMTech_Logistics_Profile_Install" `
-    -Source (Join-Path $repoRoot "tools\install_logistics_runtime_profile.py")
+    -Source (Join-Path $repoRoot "tools\install_logistics_runtime_profile.py") `
+    -NativeFreeArguments $nativeFreePyInstallerArguments
 Invoke-OneFileBuild `
     -VenvPython $venvPython `
     -RepositoryRoot $repoRoot `
     -PackageRoot $packageRoot `
     -WorkRoot $workRoot `
     -Name "KMTech_Logistics_Profile_Check" `
-    -Source (Join-Path $repoRoot "tools\check_logistics_runtime_profile.py")
+    -Source (Join-Path $repoRoot "tools\check_logistics_runtime_profile.py") `
+    -NativeFreeArguments $nativeFreePyInstallerArguments
 Invoke-OneFileBuild `
     -VenvPython $venvPython `
     -RepositoryRoot $repoRoot `
     -PackageRoot $packageRoot `
     -WorkRoot $workRoot `
     -Name "Label_Match_Protected_Admin_Install" `
-    -Source (Join-Path $repoRoot "tools\install_protected_admin.py")
+    -Source (Join-Path $repoRoot "tools\install_protected_admin.py") `
+    -NativeFreeArguments $nativeFreePyInstallerArguments
 
 $probeWorkRoot = Join-Path $workRoot "active_work_probe_pyinstaller"
 $contractBundlePath = Join-Path $repoRoot "kmtech_factory_contracts\bundle"
 & $venvPython -I -m PyInstaller `
+    @nativeFreePyInstallerArguments `
     --paths $repoRoot `
     --name $ProbeName `
     --onefile `
@@ -920,6 +1018,7 @@ $contractBundlePath = Join-Path $repoRoot "kmtech_factory_contracts\bundle"
     --noconfirm `
     (Join-Path $repoRoot "tools\active_work_probe.py")
 Assert-LastExitCode "Build active-work probe"
+$nativeFreeLowRisk = Assert-LowRiskNativeFreePackage -PackageRoot $packageRoot
 
 $probeArtifactPath = Join-Path $packageRoot "$ProbeName.exe"
 $independentIdentityPath = Join-Path $packageRoot "$ProbeName.independent.build-identity.json"
@@ -1259,6 +1358,7 @@ $qualification = [ordered]@{
     tag_signature_verified = $false
     python_version = $ExpectedPythonVersion
     pyinstaller_version = $ExpectedPyInstallerVersion
+    native_free_low_risk = $nativeFreeLowRisk
     source_epoch = $sourceEpoch
     path_identity = [ordered]@{
         schema_version = "label-match-release-path-identity-v1"

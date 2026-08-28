@@ -1,5 +1,4 @@
 qrcode
 requests
-chardet
 tkcalendar
 cryptography
