@@ -12,7 +12,9 @@ tkcalendar==1.6.1 --hash=sha256:9d3a80816a7b32d64fab696fa3d2a007fb23c87953267d5e
 
 # Release and test entry points.
 # Pillow remains build/test-only for historical golden-image comparisons and
-# is never copied by the portable release builder.
+# the frozen Label runtime explicitly excludes PIL from its analysis.
+# The JSON Schema/rpds closure below is likewise retained for build-time
+# corrective-contract validation; the Label runtime never imports rpds.
 pillow==12.3.0 --hash=sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09
 flask==3.1.2 --hash=sha256:ca1d8112ec8a6158cc29ea4858963350011b5c846a414cdb7a954aa9e967d03c
 google-auth==2.48.0 --hash=sha256:2e2a537873d449434252a9632c28bfc268b0adb1e53f9fb62afc5333a975903f
