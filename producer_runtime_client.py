@@ -26,11 +26,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Mapping
 from urllib.parse import urlparse, urlunparse
 
-from kmtech_zero_pe import (
-    generate_public_jwk,
-    jwk_thumbprint as _cng_jwk_thumbprint,
-    normalize_public_jwk,
-)
+from cryptography.hazmat.primitives.asymmetric import ec
 
 
 CONTRACT_VERSION = "producer-runtime-lease.v1"
@@ -149,12 +145,35 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _base64url_uint(value: int) -> str:
+    raw = value.to_bytes(32, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
 def _jwk_thumbprint(public_jwk: Mapping[str, Any]) -> str:
-    return _cng_jwk_thumbprint(public_jwk)
+    canonical = canonical_json(
+        {
+            "crv": public_jwk["crv"],
+            "kty": public_jwk["kty"],
+            "x": public_jwk["x"],
+            "y": public_jwk["y"],
+        }
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(hashlib.sha256(canonical).digest()).rstrip(b"=").decode("ascii")
 
 
 def new_runtime_identity() -> tuple[str, Dict[str, str]]:
-    return f"runtime-{uuid.uuid4().hex}", generate_public_jwk()
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    numbers = private_key.public_key().public_numbers()
+    return (
+        f"runtime-{uuid.uuid4().hex}",
+        {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": _base64url_uint(numbers.x),
+            "y": _base64url_uint(numbers.y),
+        },
+    )
 
 
 def _scope_values(credentials: Any, producer_install_id: str) -> Dict[str, str]:
@@ -250,7 +269,15 @@ def _metadata_shape_error(metadata: Mapping[str, Any]) -> str:
         if len(raw) != 32:
             return "runtime_public_jwk is invalid"
     try:
-        normalize_public_jwk(jwk)
+        x_text = str(jwk["x"])
+        y_text = str(jwk["y"])
+        x_value = int.from_bytes(
+            base64.urlsafe_b64decode(x_text + "=" * (-len(x_text) % 4)), "big"
+        )
+        y_value = int.from_bytes(
+            base64.urlsafe_b64decode(y_text + "=" * (-len(y_text) % 4)), "big"
+        )
+        ec.EllipticCurvePublicNumbers(x_value, y_value, ec.SECP256R1()).public_key()
     except (TypeError, ValueError):
         return "runtime_public_jwk is invalid"
     fence = metadata.get("runtime_fence")
