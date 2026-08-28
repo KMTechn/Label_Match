@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 
-ACTIVE_RELEASE_TAG = "v2.0.91"
+ACTIVE_RELEASE_TAG = "v2.0.92"
 SCHEMA_VERSION = "label-match-local-tag-burn-v1"
 OID_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_CAPTURE_BYTES = 64 * 1024
