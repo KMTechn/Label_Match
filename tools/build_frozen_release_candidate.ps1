@@ -1293,6 +1293,47 @@ Write-NewUtf8File `
     -Path $qualificationPath `
     -Text (($qualification | ConvertTo-Json -Depth 8) + "`n")
 
+$prepublishVerificationPath = Join-Path $resolvedOutputRoot "Label_Match-$Tag.prepublish-verification.json"
+& $venvPython -I -S (Join-Path $repoRoot "tools\verify_frozen_release_assets.py") `
+    --archive $archivePath `
+    --checksum $checksumPath `
+    --qualification-receipt $qualificationPath `
+    --expected-tag $Tag `
+    --expected-commit $headCommit `
+    --expected-tree $headTree `
+    --expected-tag-object $finalTagObject `
+    --expected-source-epoch $sourceEpoch `
+    --expected-archive-sha256 $archiveReport.archive_sha256 `
+    --expected-archive-size $archiveReport.archive_size `
+    --expected-main-exe-sha256 $archiveReport.main_exe_sha256 `
+    --report $prepublishVerificationPath
+Assert-LastExitCode "Run app-owned prepublish frozen release verifier"
+$prepublishVerification = Get-Content -Raw -Encoding UTF8 `
+    -LiteralPath $prepublishVerificationPath | ConvertFrom-Json
+if (
+    $prepublishVerification.status -cne "PASS" -or
+    $prepublishVerification.bootstrap_integrity.status -cne "PASS" -or
+    $prepublishVerification.exact_membership -ne $true -or
+    $prepublishVerification.qualification_receipt_status -cne "PASS" -or
+    $prepublishVerification.archive_sha256 -cne $archiveReport.archive_sha256
+) {
+    throw "App-owned prepublish verifier report does not prove the complete release gate."
+}
+Write-Output (
+    "prepublish_verifier_gate=PASS report=$prepublishVerificationPath " +
+    "bootstrap_integrity=PASS exact_membership=PASS"
+)
+& tools\prepublish_release_gate.ps1 `
+    -Mode VerifyLocal `
+    -Tag $Tag `
+    -ExpectedCommit $headCommit `
+    -ZipName $archiveName `
+    -ChecksumName ([IO.Path]::GetFileName($checksumPath)) `
+    -RecordMember "Label_Match/bootstrap-integrity.json" `
+    -WorkRoot $resolvedOutputRoot `
+    -StatePath (Join-Path $resolvedOutputRoot "unused-prepublish-state.json") `
+    -VerifierReportPath $prepublishVerificationPath
+
 Write-Output "frozen_candidate=PASS tag=$Tag commit=$headCommit"
 Write-Output "archive=$archivePath"
 Write-Output "checksum=$checksumPath"

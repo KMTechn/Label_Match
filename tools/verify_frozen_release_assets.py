@@ -784,6 +784,10 @@ def verify_frozen_release_assets(
         "embedded_identities_verified": True,
         "staged_installer_verified": True,
         "factory_manifest_verified": True,
+        "bootstrap_integrity": {
+            "status": "PASS",
+            "verified": True,
+        },
         "retired_helper_executables_absent": evidence[
             "retired_helper_executables_absent"
         ],
