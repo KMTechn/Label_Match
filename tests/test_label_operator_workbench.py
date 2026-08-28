@@ -1019,12 +1019,15 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
         )
         _wait_until_ready(app)
         _apply_scale(app, 1.4)
+        hosted_origin = (int(app.winfo_x()), int(app.winfo_y()))
 
         def configure_hosted_size(size):
             width, height = map(int, size)
             app.state("normal")
             app.resizable(True, True)
-            app.geometry(f"{width}x{height}+0+0")
+            app.geometry(
+                f"{width}x{height}{hosted_origin[0]:+d}{hosted_origin[1]:+d}"
+            )
             app.update_idletasks()
             pump_tk(app, 160)
             settle_responsive_layout(app)
