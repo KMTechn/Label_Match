@@ -11,7 +11,7 @@ attestation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(attestation)
 
 
-TAG = "v2.0.93"
+TAG = "v2.0.94"
 COMMIT = "1" * 40
 TAG_OBJECT = "2" * 40
 

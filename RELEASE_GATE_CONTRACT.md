@@ -104,14 +104,17 @@ restart/persistence, removal, and exact rollback qualification. The checked-in
 one-shot runner parses itself, the official builder, and the sole public
 bootstrap with the PowerShell AST before launch.
 
-### Frozen-byte publication sequence (v2.0.93 current candidate)
+### Frozen-byte publication sequence (v2.0.94 current candidate)
 
 The v2.0.89 and v2.0.92 tags and frozen ZIPs remain immutable and are invalid
 for the current source. v2.0.89 predates the catalog startup fallback and
 compressed bootstrap-integrity fixes. v2.0.92 packaged those corrections but
 its Windows-native manifest paths fail the server's canonical contract with
-`MANIFEST_CONTRACT_NOT_CLOSED`. v2.0.93 is the create-once successor with
-canonical manifest paths; neither predecessor is rebuilt, retargeted, or reused.
+`MANIFEST_CONTRACT_NOT_CLOSED`. The sole v2.0.93 burner invocation was denied
+before tag creation because its evidence directory was not fresh, so that
+attempt remains consumed and is never retried. v2.0.94 is the create-once
+successor with canonical manifest paths; no predecessor is rebuilt, retargeted,
+or reused.
 
 The initial elevated v2.0.67 infrastructure cohort at
 `E:\KMTech\label-v2067-daa3-phase83-elevated-20260812` failed before
@@ -413,7 +416,9 @@ rebuilt or retagged. The v2.0.92 annotated tag object
 `3bed281b8b008009b2ee5d3a8a6170c6f73053a6` and tree
 `fb4483442c151997596a48a140e986aedc716369`; its frozen candidate fails live
 enrollment because six Windows-native manifest paths do not match the server's
-canonical slash-normalized contract. v2.0.93 is the required successor
+canonical slash-normalized contract. The sole v2.0.93 burner invocation stopped
+at `evidence_root_not_fresh` before creating a tag; preserve its preparation
+directory and never retry that version. v2.0.94 is the required successor
 candidate and retains the authoritative v2.0.83-aligned bounded diagnostic
 behavior introduced at commit `b4b0630c35120ad9e240cd36bdb45bf4f380d06d`.
 
@@ -457,7 +462,7 @@ python -I .\tools\burn_local_release_tag_once.py `
   --repo-root <ABSOLUTE-RELEASE-WORK-CLONE> `
   --mirror-root <ABSOLUTE-LOCAL-BARE-MIRROR> `
   --evidence-root <FRESH-ABSOLUTE-TAG-BURN-EVIDENCE-DIRECTORY> `
-  --tag v2.0.93 `
+  --tag v2.0.94 `
   --expected-commit <EXACT-CANDIDATE-COMMIT> `
   --expected-tree <EXACT-CANDIDATE-TREE>
 ```
@@ -469,15 +474,15 @@ python -I .\tools\burn_local_release_tag_once.py `
    LF):
 
 ```text
-Release v2.0.93
+Release v2.0.94
 ```
 
    Those 16 canonical bytes have SHA-256
-   `aacee04fb2e635266be7ae61f892d06459edfa0fc54010aeb82ad9e50809ca61`.
+   `7dda2dcfbbacdf10c24c8d45cd3475ce77e3e591f5c0685fa2a5f99c9401f031`.
 
    Record its object ID, object type `tag`, and peeled commit before invoking
    `verify_release_identity.py` or any build command. Both the work clone and
-   bare mirror must expose that exact object as `refs/tags/v2.0.93`, report type
+   bare mirror must expose that exact object as `refs/tags/v2.0.94`, report type
    `tag`, and peel it to the candidate commit. Run the checked-in one-shot runner
    from the release work-clone root with fresh output, log paths, and the offline
    wheelhouse:
@@ -486,7 +491,7 @@ Release v2.0.93
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\run_frozen_release_candidate_once.ps1 `
   -PowerShellPath <EXACT-POWERSHELL-7-PWSH.EXE> `
   -OutputRoot <FRESH-ABSOLUTE-CANDIDATE-DIRECTORY> `
-  -Tag v2.0.93 `
+  -Tag v2.0.94 `
   -PythonPath <EXACT-WINDOWS-X64-CPYTHON-3.12.10> `
   -Wheelhouse <ABSOLUTE-OFFLINE-WHEELHOUSE> `
   -MirrorRoot <ABSOLUTE-LOCAL-BARE-MIRROR> `
@@ -532,16 +537,16 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\tools\
    exact release/body/two-asset snapshot, downloads the pair, and validates it
    without building or mutating anything.
 
-The prerelease title must be exactly `Release v2.0.93`. Its body must be exactly
+The prerelease title must be exactly `Release v2.0.94`. Its body must be exactly
 the following LF-normalized identity record (a single trailing newline is
 allowed):
 
 ```text
 Internal prerelease; not production-ready.
-Tag: v2.0.93
+Tag: v2.0.94
 Commit: <40 lowercase hex>
 Tree: <40 lowercase hex>
-Artifact: Label_Match-v2.0.93.zip
+Artifact: Label_Match-v2.0.94.zip
 Artifact-SHA256: <64 lowercase hex>
 Artifact-Size: <positive decimal bytes>
 Main-EXE-SHA256: <64 lowercase hex>
@@ -552,7 +557,7 @@ Status: QUARANTINED_PENDING_FACTORY_QUALIFICATION
 Repository immutable releases are an external pre-tag gate. Query
 `GET /repos/KMTechn/Label_Match/immutable-releases` with GitHub API version
 `2026-03-10` and require `enabled=true` before the tag is pushed. As of the
-2026-08-12 read-only preflight it is `false`; do not publish v2.0.93 until an
+2026-08-12 read-only preflight it is `false`; do not publish v2.0.94 until an
 authorized repository administrator enables it. The workflow rechecks both the
 `release.immutable=true` field and the exact release/asset snapshot before and
 after byte verification. The repository-policy endpoint itself requires
