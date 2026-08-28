@@ -40,6 +40,8 @@ from deferred_intent_capture import (
     DeferredIntentBinding,
     DeferredIntentCaptureError,
     DeferredIntentCaptureStore,
+    DeferredValidationClaim,
+    DeferredValidationResult,
 )
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
 from label_match_product_host import dispatch_product_mode
@@ -197,9 +199,11 @@ from package_logistics import (
     PackageCancellationOutbox,
     PackageCancellationOutboxProcessor,
     PackageCommandDraft,
+    PackageApiError,
     PackageLogisticsError,
     PackageOutbox,
     PackageOutboxProcessor,
+    PackageTransportError,
     canonical_barcodes,
     package_client_from_env,
 )
@@ -5814,6 +5818,8 @@ class Label_Match(tk.Tk):
                 )
             self.after(200, self._update_ui_scaling)
             self._update_clock()
+            if not self.run_tests:
+                self._schedule_deferred_validation_worker(1000)
             _label_match_startup_trace("initial_load_ui_ready", title=self.title())
             if not self.run_tests:
                 self._start_direct_sync_auto_bootstrap()
@@ -8205,6 +8211,336 @@ class Label_Match(tk.Tk):
             expected_snapshot=expected_snapshot,
         )
 
+    @staticmethod
+    def _deferred_validation_exception_chain(error):
+        seen = set()
+        current = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            yield current
+            current = getattr(current, "__cause__", None) or getattr(
+                current, "__context__", None
+            )
+
+    def _classify_deferred_validation_error(self, error, *, step_id):
+        """Map remote validation failures to the frozen seven-outcome axis."""
+
+        observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        chain = tuple(self._deferred_validation_exception_chain(error))
+        api_error = next(
+            (item for item in chain if isinstance(item, PackageApiError)),
+            None,
+        )
+        config = getattr(
+            self.__dict__.get("package_logistics_client"), "config", None
+        )
+        scope = str(getattr(config, "authority_scope_id", "") or "").strip()
+        if (
+            api_error is not None
+            and int(api_error.status_code) == 403
+            and str(api_error.code).upper()
+            == "OPERATION_LEASE_AUTHORIZATION_PENDING"
+        ):
+            code = "OPERATION_LEASE_AUTHORIZATION_PENDING"
+            return {
+                "outcome": "REQUIRED_ABSENT",
+                "reason_code": code,
+                "retry_after_seconds": None,
+                "evidence": {
+                    "contract_version": "label-validation-evidence-v1",
+                    "dependency": {
+                        "kind": "OPERATION_GRANT",
+                        "identity": f"CREATE_PACKAGE@{scope}",
+                        "display_identity": (
+                            f"CREATE_PACKAGE grant · {scope} · 승인 대기"
+                        ),
+                        "authority_scope_id": scope,
+                        "operation": "CREATE_PACKAGE",
+                        "status": "PENDING",
+                    },
+                    "http_status": 403,
+                    "error_code": code,
+                    "observed_at": observed_at,
+                },
+            }
+
+        transport_error = next(
+            (item for item in chain if isinstance(item, PackageTransportError)),
+            None,
+        )
+        if transport_error is not None or (
+            api_error is not None
+            and (
+                api_error.retryable is True
+                or int(api_error.status_code) in {408, 425, 429, 500, 502, 503, 504}
+            )
+        ):
+            code = (
+                str(api_error.code or "PACKAGE_API_UNAVAILABLE").upper()
+                if api_error is not None
+                else "PACKAGE_TRANSPORT_UNAVAILABLE"
+            )
+            return {
+                "outcome": "RETRYABLE_UNAVAILABLE",
+                "reason_code": code,
+                "retry_after_seconds": (
+                    api_error.retry_after_seconds if api_error is not None else None
+                ),
+                "evidence": {
+                    "contract_version": "label-validation-evidence-v1",
+                    "step_id": str(step_id),
+                    "transport": "UNAVAILABLE",
+                    "http_status": (
+                        int(api_error.status_code) if api_error is not None else 0
+                    ),
+                    "error_code": code,
+                    "observed_at": observed_at,
+                },
+            }
+        if api_error is not None and int(api_error.status_code) in {409, 412}:
+            code = str(api_error.code or "VALIDATION_CONFLICT").upper()
+            return {
+                "outcome": "CONFLICT",
+                "reason_code": code,
+                "retry_after_seconds": None,
+                "evidence": {
+                    "contract_version": "label-validation-evidence-v1",
+                    "step_id": str(step_id),
+                    "http_status": int(api_error.status_code),
+                    "error_code": code,
+                    "observed_at": observed_at,
+                },
+            }
+        code = str(
+            getattr(api_error or error, "code", "VALIDATION_RESPONSE_INVALID")
+            or "VALIDATION_RESPONSE_INVALID"
+        ).upper()
+        return {
+            "outcome": "INVALID",
+            "reason_code": code,
+            "retry_after_seconds": None,
+            "evidence": {
+                "contract_version": "label-validation-evidence-v1",
+                "step_id": str(step_id),
+                "http_status": (
+                    int(api_error.status_code) if api_error is not None else 0
+                ),
+                "error_code": code,
+                "observed_at": observed_at,
+            },
+        }
+
+    @staticmethod
+    def _deferred_package_source_evidence(physical_qr, evidence, snapshot):
+        return {
+            "contract_version": "label-validation-evidence-v1",
+            "authority_scope_id": str(
+                (snapshot or {}).get("authority_scope_id") or ""
+            ),
+            "bundle_id": str((snapshot or {}).get("bundle_id") or ""),
+            "bundle_version": int((snapshot or {}).get("bundle_version") or 0),
+            "item_code": str(getattr(evidence, "item_id", "") or ""),
+            "active_label_id": str(
+                getattr(evidence, "active_label_id", "") or ""
+            ),
+            "membership_hash": str(
+                getattr(evidence, "membership_hash", "") or ""
+            ).lower(),
+            "member_count": int(getattr(evidence, "member_count", 0) or 0),
+            "physical_qr_sha256": hashlib.sha256(
+                str(physical_qr or "").encode("utf-8")
+            ).hexdigest(),
+            "observed_at": datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            ),
+        }
+
+    @staticmethod
+    def _deferred_operation_lease_evidence(operation_lease, snapshot):
+        return {
+            "contract_version": "label-validation-evidence-v1",
+            "authority_scope_id": str(
+                (snapshot or {}).get("authority_scope_id") or ""
+            ),
+            "operation": "CREATE_PACKAGE",
+            "lease_id": str((operation_lease or {}).get("lease_id") or ""),
+            "fence": int((operation_lease or {}).get("fence") or 0),
+            "snapshot_hash": str(
+                (operation_lease or {}).get("snapshot_hash") or ""
+            ).lower(),
+            "status": str((operation_lease or {}).get("status") or ""),
+            "observed_at": datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            ),
+        }
+
+    def _prepare_deferred_intent_validation(self, intent_id):
+        store = self.__dict__.get("deferred_intent_capture")
+        if store is None:
+            raise DeferredIntentCaptureError(
+                "VALIDATION_STORE_UNAVAILABLE",
+                "durable Label validation is unavailable",
+            )
+        worker_id = f"label-validator-{os.getpid()}-{uuid.uuid4().hex}"
+        claim = store.claim_validation(
+            str(intent_id or "").strip(),
+            worker_id=worker_id,
+        )
+        if claim is None:
+            return store.validation_status(str(intent_id or "").strip())
+        checked = store.verify_local_integrity(claim)
+        if isinstance(checked, DeferredValidationResult):
+            return checked
+        store.plan_label_validation(checked)
+        return checked
+
+    def _prepare_deferred_label_validation(self, capture_result):
+        return self._prepare_deferred_intent_validation(
+            str(getattr(capture_result, "intent_id", "") or "")
+        )
+
+    def _execute_deferred_label_validation(self, claim):
+        store = self.__dict__.get("deferred_intent_capture")
+        if store is None or not isinstance(claim, DeferredValidationClaim):
+            raise DeferredIntentCaptureError(
+                "VALIDATION_STORE_UNAVAILABLE",
+                "durable Label validation is unavailable",
+            )
+        payload = dict(claim.payload)
+        physical_qr = str(payload.get("physical_qr_payload") or "")
+        item_code = str(payload.get("item_code") or "")
+        current_step = "label-package-source"
+        try:
+            evidence, snapshot, sealed, operation_lease = (
+                self._resolve_central_phs2_scan_overlay(physical_qr, item_code)
+            )
+            store.record_validation_step_valid(
+                claim,
+                step_id=current_step,
+                evidence=self._deferred_package_source_evidence(
+                    physical_qr, evidence, snapshot
+                ),
+            )
+            current_step = "label-operation-lease"
+            if not operation_lease:
+                evidence, snapshot, sealed, operation_lease = (
+                    self._acquire_operation_lease(
+                        physical_qr,
+                        expected_snapshot=snapshot,
+                    )
+                )
+            lease_evidence = self._deferred_operation_lease_evidence(
+                operation_lease, snapshot
+            )
+            return store.finish_validation(
+                claim,
+                step_id=current_step,
+                outcome="VALID",
+                reason_code="ORDERED_LABEL_VALIDATION_VALID",
+                evidence=lease_evidence,
+                expires_at=str((operation_lease or {}).get("expires_at") or "")
+                or None,
+            )
+        except DeferredIntentCaptureError:
+            raise
+        except Exception as exc:
+            classified = self._classify_deferred_validation_error(
+                exc,
+                step_id=current_step,
+            )
+            return store.finish_validation(
+                claim,
+                step_id=current_step,
+                outcome=classified["outcome"],
+                reason_code=classified["reason_code"],
+                evidence=classified["evidence"],
+                retry_after_seconds=classified["retry_after_seconds"],
+            )
+
+    def _schedule_deferred_validation_worker(self, delay_ms=1000):
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return
+        prior = self.__dict__.get("_deferred_validation_after_id")
+        if prior is not None:
+            return
+
+        def run_once():
+            self._deferred_validation_after_id = None
+            self._run_deferred_validation_worker_once()
+
+        self._deferred_validation_after_id = self.after(int(delay_ms), run_once)
+
+    def _run_deferred_validation_worker_once(self):
+        """Drain one eligible validation row; dependency waits are never selected."""
+
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return
+        if self.__dict__.get("_deferred_validation_worker_in_progress", False):
+            self._schedule_deferred_validation_worker(1000)
+            return
+        store = self.__dict__.get("deferred_intent_capture")
+        if store is None:
+            return
+        try:
+            intent_id = store.next_validation_candidate()
+            if not intent_id:
+                self._schedule_deferred_validation_worker(5000)
+                return
+            validation_work = self._prepare_deferred_intent_validation(intent_id)
+        except Exception as exc:
+            print(
+                "Deferred validation scheduler technical diagnostic: "
+                f"{getattr(exc, 'code', exc.__class__.__name__)}"
+            )
+            self._schedule_deferred_validation_worker(5000)
+            return
+        if isinstance(validation_work, DeferredValidationResult):
+            self._show_deferred_validation_result(validation_work)
+            self._render_operator_workbench()
+            self._schedule_deferred_validation_worker(5000)
+            return
+        if not isinstance(validation_work, DeferredValidationClaim):
+            self._schedule_deferred_validation_worker(5000)
+            return
+
+        result_queue = queue.Queue(maxsize=1)
+        self._deferred_validation_worker_in_progress = True
+
+        def worker():
+            try:
+                result_queue.put(
+                    (True, self._execute_deferred_label_validation(validation_work))
+                )
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        def poll():
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                if not self.__dict__.get("_tk_shutdown_requested", False):
+                    self.after(100, poll)
+                return
+            self._deferred_validation_worker_in_progress = False
+            if ok:
+                self._show_deferred_validation_result(value)
+            else:
+                print(
+                    "Deferred validation worker technical diagnostic: "
+                    f"{getattr(value, 'code', value.__class__.__name__)}"
+                )
+                durable = store.validation_status(validation_work.intent_id)
+                self._show_deferred_validation_result(durable)
+            self._render_operator_workbench()
+            self._schedule_deferred_validation_worker(5000)
+
+        threading.Thread(
+            target=worker,
+            name="label-match-deferred-validator",
+            daemon=True,
+        ).start()
+        self.after(100, poll)
+
     def _show_deferred_capture_pending(
         self,
         result,
@@ -8237,8 +8573,116 @@ class Label_Match(tk.Tk):
             "operator_complete_signal": False,
         }
 
+    def _show_deferred_validation_result(self, result):
+        if result is None:
+            return
+        state = str(getattr(result, "state", "") or "")
+        if state in {
+            "CAPTURED_UNVERIFIED",
+            "VALIDATING",
+            "RETRY_WAIT_VALIDATION",
+        }:
+            self._show_deferred_capture_pending(result)
+            return
+        intent_id = str(getattr(result, "intent_id", "") or "").strip()
+        pending_count = int(getattr(result, "pending_count", 0) or 0)
+        oldest_age = int(getattr(result, "oldest_age_seconds", 0) or 0)
+        reason_code = str(getattr(result, "reason_code", "") or "")
+        if state == "WAITING_DEPENDENCY":
+            headline = "저장됨-선행조건대기"
+            dependency_identity = str(
+                getattr(result, "dependency_identity", "") or ""
+            ).strip()
+            checked_at = str(getattr(result, "observed_at", "") or "").strip()
+            if "big_display_label" in self.__dict__:
+                self.update_big_display(headline, "primary")
+            status_label = self.__dict__.get("status_label")
+            if status_label is not None:
+                status_label.config(
+                    text=(
+                        f"{headline} | {dependency_identity} | "
+                        f"마지막 확인 {checked_at}"
+                    ),
+                    style="Status.TLabel",
+                )
+            self._deferred_capture_ui = {
+                "status": headline,
+                "intent_id": intent_id,
+                "pending_count": pending_count,
+                "oldest_age_seconds": oldest_age,
+                "dependency_kind": str(
+                    getattr(result, "dependency_kind", "") or ""
+                ),
+                "dependency_identity": dependency_identity,
+                "last_checked_at": checked_at,
+                "reason_code": reason_code,
+                "next_attempt_at": None,
+                "automatic_retry": False,
+                "operator_complete_signal": False,
+            }
+            return
+        if state == "VALIDATED":
+            headline = "검증완료-전송대기"
+            style = "Status.TLabel"
+            tone = "primary"
+        elif state in {"BLOCKED_INVALID", "OPERATOR_REVIEW"}:
+            headline = "관리자확인"
+            style = "Error.TLabel"
+            tone = "red"
+        elif state == "RECONCILE_PENDING_VALIDATION":
+            headline = "결과확인중"
+            style = "Status.TLabel"
+            tone = "primary"
+        else:
+            headline = "저장됨-검증대기"
+            style = "Status.TLabel"
+            tone = "primary"
+        if "big_display_label" in self.__dict__:
+            self.update_big_display(headline, tone)
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            status_label.config(
+                text=f"{headline} | intent {intent_id} | {reason_code}",
+                style=style,
+            )
+        self._deferred_capture_ui = {
+            "status": headline,
+            "intent_id": intent_id,
+            "pending_count": pending_count,
+            "oldest_age_seconds": oldest_age,
+            "reason_code": reason_code,
+            "next_attempt_at": getattr(result, "next_attempt_at", None),
+            "operator_complete_signal": False,
+        }
+
     def _deferred_capture_pending_notice(self):
         state = self.__dict__.get("_deferred_capture_ui") or {}
+        if state.get("status") == "저장됨-선행조건대기":
+            dependency = str(state.get("dependency_identity") or "").strip()
+            checked_at = str(state.get("last_checked_at") or "").strip()
+            return WorkflowNotice(
+                title="저장됨-선행조건대기",
+                message=(
+                    f"intent {str(state.get('intent_id') or '').strip()}\n"
+                    f"대기 항목: {dependency}\n"
+                    f"마지막 확인: {checked_at}\n"
+                    "승인이 완료될 때까지 자동 재시도하지 않습니다."
+                ),
+                kind="deferred_dependency_wait",
+                tone="warning",
+            )
+        if state.get("status") in {"관리자확인", "결과확인중", "검증완료-전송대기"}:
+            return WorkflowNotice(
+                title=str(state.get("status")),
+                message=(
+                    f"intent {str(state.get('intent_id') or '').strip()}\n"
+                    f"상태 코드: {str(state.get('reason_code') or '').strip()}"
+                ),
+                kind="deferred_validation_state",
+                tone=(
+                    "danger" if state.get("status") == "관리자확인" else "warning"
+                ),
+            )
         if state.get("status") != "저장됨-검증대기":
             return None
         intent_id = str(state.get("intent_id") or "").strip()
@@ -8492,26 +8936,46 @@ class Label_Match(tk.Tk):
             )
             self._show_deferred_capture_failure(exc)
             return True
+        try:
+            validation_work = self._prepare_deferred_label_validation(
+                capture_result
+            )
+        except Exception as exc:
+            print(
+                "PHS2 deferred validation preparation technical diagnostic: "
+                f"{getattr(exc, 'code', exc.__class__.__name__)}"
+            )
+            durable = self.deferred_intent_capture.validation_status(
+                capture_result.intent_id
+            )
+            if durable is not None:
+                self._show_deferred_validation_result(durable)
+            else:
+                self._show_deferred_capture_pending(capture_result)
+            return True
+        if isinstance(validation_work, DeferredValidationResult):
+            self._show_deferred_validation_result(validation_work)
+            self._render_operator_workbench()
+            return True
+        if not isinstance(validation_work, DeferredValidationClaim):
+            self._show_deferred_capture_pending(capture_result)
+            self._render_operator_workbench()
+            return True
         if self.run_tests:
             try:
-                evidence, snapshot, sealed, operation_lease = (
-                    self._resolve_central_phs2_scan_overlay(
-                        physical_qr_payload,
-                        item_code,
-                    )
-                )
-                return self._accept_resolved_central_phs2_scan(
-                    evidence,
-                    snapshot,
-                    sealed,
-                    operation_lease,
-                )
+                result = self._execute_deferred_label_validation(validation_work)
+                self._show_deferred_validation_result(result)
+                self._render_operator_workbench()
+                return True
             except Exception as exc:
                 print(
-                    "PHS2 package-source verification technical diagnostic: "
-                    f"{exc}"
+                    "PHS2 deferred validation technical diagnostic: "
+                    f"{getattr(exc, 'code', exc.__class__.__name__)}"
                 )
-                self._show_deferred_capture_pending(capture_result)
+                durable = self.deferred_intent_capture.validation_status(
+                    capture_result.intent_id
+                )
+                self._show_deferred_validation_result(durable)
                 return True
         captured_raw = tuple(
             self.current_set_info.get("raw") or ()
@@ -8529,9 +8993,8 @@ class Label_Match(tk.Tk):
                 result_queue.put(
                     (
                         True,
-                        self._resolve_central_phs2_scan_overlay(
-                            physical_qr_payload,
-                            item_code,
+                        self._execute_deferred_label_validation(
+                            validation_work
                         ),
                     )
                 )
@@ -8551,22 +9014,18 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
                 return
             if not ok:
-                print(f"PHS2 포장 권한 확인 기술 진단: {value}")
-                self._render_operator_workbench()
-                self._show_deferred_capture_pending(capture_result)
-                return
-            evidence, snapshot, sealed, operation_lease = value
-            try:
-                self._accept_resolved_central_phs2_scan(
-                    evidence,
-                    snapshot,
-                    sealed,
-                    operation_lease,
+                print(
+                    "PHS2 deferred validation technical diagnostic: "
+                    f"{getattr(value, 'code', value.__class__.__name__)}"
                 )
-            except Exception as exc:
-                print(f"PHS2 로컬 반영 기술 진단: {exc}")
+                durable = self.deferred_intent_capture.validation_status(
+                    capture_result.intent_id
+                )
+                self._show_deferred_validation_result(durable)
                 self._render_operator_workbench()
-                self._show_deferred_capture_pending(capture_result)
+                return
+            self._show_deferred_validation_result(value)
+            self._render_operator_workbench()
 
         threading.Thread(
             target=worker,

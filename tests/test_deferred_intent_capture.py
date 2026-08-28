@@ -18,10 +18,18 @@ from deferred_intent_capture import (
     DeferredIntentBinding,
     DeferredIntentCaptureError,
     DeferredIntentCaptureStore,
+    DeferredValidationClaim,
+    DeferredValidationResult,
     append_transition_audit,
     canonical_json_bytes,
 )
-from package_logistics import PackageCommandDraft, PackageOutbox
+from package_logistics import (
+    PackageApiError,
+    PackageCommandDraft,
+    PackageOutbox,
+    PackageTransportError,
+)
+from terminal_operation_lease import OperationLeaseError
 
 
 CONTRACT_PATH = Path(
@@ -886,7 +894,7 @@ def test_label_closed_port_flow_captures_before_remote_and_shows_pending(tmp_pat
 
     def closed_port(*_args, **_kwargs):
         ordering.append("remote_call")
-        raise label_module.PackageLogisticsError("TCP connection refused 18458")
+        raise PackageTransportError("TCP connection refused 18458")
 
     store.capture_label_package_source = capture_first
     app._resolve_central_phs2_scan_overlay = closed_port
@@ -905,8 +913,9 @@ def test_label_closed_port_flow_captures_before_remote_and_shows_pending(tmp_pat
     assert app.current_set_info["raw"] == []
     assert app.current_set_info["parsed"] == []
     durable = _row(db_path, app.current_set_info["deferred_intent_id"])
-    assert durable["state"] == "CAPTURED_UNVERIFIED"
+    assert durable["state"] == "RETRY_WAIT_VALIDATION"
     assert durable["local_work_identity"] == app.current_set_info["id"]
+    assert durable["next_attempt_at"] is not None
 
 
 def test_label_capture_failure_stops_before_remote_and_reports_rescan(tmp_path):
@@ -945,3 +954,391 @@ def test_label_capture_failure_stops_before_remote_and_reports_rescan(tmp_path):
     assert failure_notice.title == "저장 실패—다시 스캔 필요"
     assert failure_notice.tone == "danger"
     assert "같은 현품표를 다시 스캔하세요." in failure_notice.message
+
+
+def _claim_and_plan(store, intent_id, *, worker="validator-1", now="2026-08-29T01:00:00Z"):
+    claim = store.claim_validation(intent_id, worker_id=worker, now=now)
+    assert isinstance(claim, DeferredValidationClaim)
+    verified = store.verify_local_integrity(claim, now=now)
+    assert isinstance(verified, DeferredValidationClaim)
+    plan = store.plan_label_validation(verified, now=now)
+    assert [step["step_id"] for step in plan] == [
+        "label-package-source",
+        "label-operation-lease",
+    ]
+    return verified
+
+
+def _source_evidence():
+    return {
+        "authority_scope_id": "SCOPE-LABEL-MEASURED",
+        "bundle_id": "TRANSFER-LABEL-MEASURED",
+        "bundle_version": 7,
+        "item_code": "ITEM-LABEL-1",
+        "physical_qr_sha256": "b" * 64,
+        "observed_at": "2026-08-29T01:00:01Z",
+    }
+
+
+def test_validation_claim_integrity_plan_and_required_absent_are_fenced(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    store.record_validation_step_valid(
+        claim,
+        step_id="label-package-source",
+        evidence=_source_evidence(),
+        now="2026-08-29T01:00:01Z",
+    )
+    dependency = {
+        "contract_version": "label-validation-evidence-v1",
+        "dependency": {
+            "kind": "OPERATION_GRANT",
+            "identity": "CREATE_PACKAGE@SCOPE-LABEL-MEASURED",
+            "display_identity": "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기",
+            "authority_scope_id": "SCOPE-LABEL-MEASURED",
+            "operation": "CREATE_PACKAGE",
+            "status": "PENDING",
+        },
+        "http_status": 403,
+        "error_code": "OPERATION_LEASE_AUTHORIZATION_PENDING",
+        "observed_at": "2026-08-29T01:00:02Z",
+    }
+    result = store.finish_validation(
+        claim,
+        step_id="label-operation-lease",
+        outcome="REQUIRED_ABSENT",
+        reason_code="OPERATION_LEASE_AUTHORIZATION_PENDING",
+        evidence=dependency,
+        now="2026-08-29T01:00:02Z",
+    )
+    assert isinstance(result, DeferredValidationResult)
+    assert result.intent_id == captured.intent_id
+    assert result.state == "WAITING_DEPENDENCY"
+    assert result.outcome == "REQUIRED_ABSENT"
+    assert result.reason_code == "OPERATION_LEASE_AUTHORIZATION_PENDING"
+    assert result.observed_at == "2026-08-29T01:00:02Z"
+    assert result.dependency_kind == "OPERATION_GRANT"
+    assert result.dependency_identity == (
+        "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기"
+    )
+    assert result.pending_count == 1
+    assert result.oldest_age_seconds >= 0
+    row = _row(db_path, captured.intent_id)
+    assert row["next_attempt_at"] is None
+    assert row["claim_owner"] is None
+    assert row["claim_expires_at"] is None
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        steps = conn.execute(
+            """SELECT step_id,status,validation_outcome
+                 FROM deferred_intent_validation_steps
+                WHERE intent_id=? ORDER BY step_ordinal""",
+            (captured.intent_id,),
+        ).fetchall()
+        assert [tuple(step) for step in steps] == [
+            ("label-package-source", "VERIFIED", "VALID"),
+            ("label-operation-lease", "WAITING_DEPENDENCY", "REQUIRED_ABSENT"),
+        ]
+        audits = conn.execute(
+            """SELECT transition_code,validation_outcome,worker_id,fence
+                 FROM deferred_intent_transition_audit
+                WHERE intent_id=? ORDER BY audit_seq""",
+            (captured.intent_id,),
+        ).fetchall()
+        assert [audit[0] for audit in audits] == [
+            "T1_CAPTURE",
+            "T2_CLAIM_VALIDATION",
+            "T3_LOCAL_INTEGRITY",
+            "T5_VALIDATE_PLAN",
+            "T5_VALIDATE_PLAN",
+            "T7_CLASSIFY_ABSENCE",
+            "T9_WAIT_DEPENDENCY",
+        ]
+        assert audits[-1][1:] == ("REQUIRED_ABSENT", "validator-1", 1)
+        with pytest.raises(sqlite3.IntegrityError, match="forbidden deferred intent state edge"):
+            conn.execute(
+                "UPDATE deferred_intents SET state='ACKED' WHERE intent_id=?",
+                (captured.intent_id,),
+            )
+    assert store.next_validation_candidate(now="2026-08-29T02:00:00Z") is None
+
+
+def test_transport_retry_is_scheduled_and_distinct_from_dependency_wait(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    result = store.finish_validation(
+        claim,
+        step_id="label-package-source",
+        outcome="RETRYABLE_UNAVAILABLE",
+        reason_code="PACKAGE_TRANSPORT_UNAVAILABLE",
+        evidence={
+            "transport": "UNAVAILABLE",
+            "observed_at": "2026-08-29T01:00:03Z",
+        },
+        now="2026-08-29T01:00:03Z",
+    )
+    assert result.state == "RETRY_WAIT_VALIDATION"
+    assert result.next_attempt_at == "2026-08-29T01:00:08Z"
+    assert _row(db_path, captured.intent_id)["next_attempt_at"] == result.next_attempt_at
+
+
+def test_local_integrity_failure_blocks_before_remote_plan(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = store.claim_validation(
+        captured.intent_id,
+        worker_id="validator-local-invalid",
+        now="2026-08-29T01:00:00Z",
+    )
+    assert isinstance(claim, DeferredValidationClaim)
+    store._unprotect_bytes = lambda _value: (_ for _ in ()).throw(ValueError("DPAPI"))
+    result = store.verify_local_integrity(claim, now="2026-08-29T01:00:01Z")
+    assert isinstance(result, DeferredValidationResult)
+    assert result.state == "BLOCKED_INVALID"
+    assert result.reason_code == "LOCAL_DPAPI_INVALID"
+    with sqlite3.connect(db_path) as conn:
+        assert _count(conn, "deferred_intent_validation_steps") == 0
+        assert conn.execute(
+            """SELECT transition_code FROM deferred_intent_transition_audit
+                 WHERE intent_id=? ORDER BY audit_seq DESC LIMIT 1""",
+            (captured.intent_id,),
+        ).fetchone()[0] == "T4_LOCAL_INVALID"
+
+
+def test_validation_fifo_and_stale_fence_reject_parallel_claims(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    first = _capture(store, set_id="SET-FIFO-1")
+    second = _capture(store, set_id="SET-FIFO-2")
+    assert store.claim_validation(
+        second.intent_id,
+        worker_id="validator-second",
+        now="2026-08-29T01:00:00Z",
+    ) is None
+    first_claim = store.claim_validation(
+        first.intent_id,
+        worker_id="validator-first",
+        now="2026-08-29T01:00:00Z",
+    )
+    assert isinstance(first_claim, DeferredValidationClaim)
+    assert store.claim_validation(
+        first.intent_id,
+        worker_id="validator-racer",
+        now="2026-08-29T01:00:01Z",
+    ) is None
+    expired = store.claim_validation(
+        first.intent_id,
+        worker_id="validator-recovery",
+        now="2026-08-29T01:06:00Z",
+    )
+    assert isinstance(expired, DeferredValidationClaim)
+    assert expired.fence == first_claim.fence + 1
+    with pytest.raises(DeferredIntentCaptureError) as stale:
+        store.verify_local_integrity(
+            first_claim,
+            now="2026-08-29T01:06:01Z",
+        )
+    assert stale.value.code == "VALIDATION_CLAIM_LOST"
+    assert _row(db_path, second.intent_id)["state"] == "CAPTURED_UNVERIFIED"
+
+
+def test_valid_freeze_requires_all_ordered_steps_and_has_no_command(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    store.record_validation_step_valid(
+        claim,
+        step_id="label-package-source",
+        evidence=_source_evidence(),
+        now="2026-08-29T01:00:01Z",
+    )
+    result = store.finish_validation(
+        claim,
+        step_id="label-operation-lease",
+        outcome="VALID",
+        reason_code="ORDERED_VALIDATION_VALID",
+        evidence={
+            "lease_id": "lease-measured",
+            "snapshot_hash": "c" * 64,
+            "authority_scope_id": "SCOPE-LABEL-MEASURED",
+            "operation": "CREATE_PACKAGE",
+            "observed_at": "2026-08-29T01:00:02Z",
+        },
+        issued_at="2026-08-29T01:00:02Z",
+        expires_at="2026-08-29T01:05:02Z",
+        now="2026-08-29T01:00:02Z",
+    )
+    assert result.state == "VALIDATED"
+    row = _row(db_path, captured.intent_id)
+    assert row["validation_snapshot_hash"] is not None
+    assert row["validation_expires_at"] == "2026-08-29T01:05:02Z"
+    assert row["command_json"] is None
+    assert row["downstream_outbox_ref"] is None
+    assert row["receipt_json"] is None
+
+
+def test_validation_evidence_rejects_secret_fields(tmp_path):
+    _db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    with pytest.raises(DeferredIntentCaptureError) as blocked:
+        store.finish_validation(
+            claim,
+            step_id="label-package-source",
+            outcome="RETRYABLE_UNAVAILABLE",
+            reason_code="TRANSPORT",
+            evidence={"token": "must-not-persist"},
+        )
+    assert blocked.value.code == "VALIDATION_EVIDENCE_SECRET_FORBIDDEN"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_state"),
+    [
+        ("ABSENT_MATERIALIZABLE", "VALIDATING"),
+        ("INVALID", "BLOCKED_INVALID"),
+        ("CONFLICT", "OPERATOR_REVIEW"),
+        ("UNKNOWN_COMMIT", "RECONCILE_PENDING_VALIDATION"),
+    ],
+)
+def test_remaining_typed_validation_outcomes_have_only_frozen_destinations(
+    tmp_path, outcome, expected_state
+):
+    _db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = _claim_and_plan(store, captured.intent_id)
+    result = store.finish_validation(
+        claim,
+        step_id="label-package-source",
+        outcome=outcome,
+        reason_code=f"MEASURED_{outcome}",
+        evidence={
+            "step_id": "label-package-source",
+            "classification": outcome,
+            "observed_at": "2026-08-29T01:00:02Z",
+        },
+        now="2026-08-29T01:00:02Z",
+    )
+    assert result.state == expected_state
+
+
+def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
+    tmp_path,
+):
+    db_path, _outbox, store = _store(tmp_path)
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "start_time": None,
+        "error_count": 0,
+        "has_error_or_reset": False,
+    }
+    app.deferred_intent_capture = store
+    app._deferred_intent_capture_error = ""
+    app.package_logistics_client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-LABEL-MEASURED")
+    )
+    app.run_tests = True
+    calls = []
+    evidence = SimpleNamespace(
+        item_id="ITEM-LABEL-1",
+        active_label_id="LBL-MEASURED",
+        membership_hash="d" * 64,
+        member_count=4,
+    )
+    snapshot = {
+        "authority_scope_id": "SCOPE-LABEL-MEASURED",
+        "bundle_id": "TRANSFER-LABEL-MEASURED",
+        "bundle_version": 7,
+    }
+
+    def resolve(*_args):
+        calls.append("package_source")
+        return evidence, snapshot, None, None
+
+    def pending_lease(*_args, **_kwargs):
+        calls.append("operation_lease")
+        try:
+            raise PackageApiError(
+                403,
+                "OPERATION_LEASE_AUTHORIZATION_PENDING",
+                "grant approval is pending",
+                retryable=False,
+                committed=False,
+            )
+        except PackageApiError as api_error:
+            raise OperationLeaseError(
+                "OPERATION_LEASE_ISSUE_FAILED",
+                str(api_error),
+            ) from api_error
+
+    app._resolve_central_phs2_scan_overlay = resolve
+    app._acquire_operation_lease = pending_lease
+    app._accept_resolved_central_phs2_scan = lambda *_args: pytest.fail(
+        "validator must not promote or apply the scan"
+    )
+    assert app._begin_central_phs2_scan_overlay(
+        "PHS2-ONLINE-PENDING-GRANT", "ITEM-LABEL-1"
+    ) is True
+    intent_id = app.current_set_info["deferred_intent_id"]
+    row = _row(db_path, intent_id)
+    assert calls == ["package_source", "operation_lease"]
+    assert row["state"] == "WAITING_DEPENDENCY"
+    assert row["next_attempt_at"] is None
+    assert row["command_json"] is None
+    assert row["receipt_json"] is None
+    assert row["downstream_outbox_ref"] is None
+    assert app.current_set_info["raw"] == []
+    assert app.current_set_info["parsed"] == []
+    assert app._deferred_capture_ui["status"] == "저장됨-선행조건대기"
+    assert app._deferred_capture_ui["automatic_retry"] is False
+    assert (
+        app._deferred_capture_ui["dependency_identity"]
+        == "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기"
+    )
+    assert app._deferred_capture_ui["last_checked_at"]
+    notice = app._deferred_capture_pending_notice()
+    assert notice.title == "저장됨-선행조건대기"
+    assert "마지막 확인:" in notice.message
+    assert "자동 재시도하지 않습니다" in notice.message
+    with sqlite3.connect(db_path) as conn:
+        assert _count(conn, "package_command_outbox") == 0
+
+
+def test_gui_local_integrity_invalid_calls_no_remote(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "start_time": None,
+        "error_count": 0,
+        "has_error_or_reset": False,
+    }
+    app.deferred_intent_capture = store
+    app._deferred_intent_capture_error = ""
+    app.run_tests = True
+    remote_calls = []
+    original_capture = store.capture_label_package_source
+
+    def capture_then_break_seal(**kwargs):
+        result = original_capture(**kwargs)
+        store.seal_key_path.write_bytes(_protect(b"z" * 32))
+        return result
+
+    store.capture_label_package_source = capture_then_break_seal
+    app._resolve_central_phs2_scan_overlay = lambda *_args: remote_calls.append(
+        "remote"
+    )
+    assert app._begin_central_phs2_scan_overlay(
+        "PHS2-LOCAL-SEAL-INVALID", "ITEM-LABEL-1"
+    ) is True
+    row = _row(db_path, app.current_set_info["deferred_intent_id"])
+    assert row["state"] == "BLOCKED_INVALID"
+    assert row["last_reason_code"] == "LOCAL_SEAL_INVALID"
+    assert remote_calls == []
+    assert app._deferred_capture_ui["status"] == "관리자확인"

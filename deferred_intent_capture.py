@@ -1,15 +1,15 @@
-"""Capture-only implementation of ``kmtech.deferred-intent.v1``.
+"""Durable capture and validation slice of ``kmtech.deferred-intent.v1``.
 
-This module deliberately has no validator, materializer, promoter, or submit
-worker.  It only installs the final v1 storage contract, durably captures one
-encrypted operator intent, and supports the exact legacy-outbox handoff that
-prevents a future engine from submitting the same work twice.
+The module installs the final v1 storage contract, captures encrypted Label
+operator intent before remote work, and runs only the fenced validation phase.
+It deliberately contains no materializer, promoter, submitter, or domain-table
+trigger.  The exact legacy-outbox handoff remains for already-owned work.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
 import hmac
@@ -38,6 +38,33 @@ LABEL_PARTITION_KEY = "label-package-source"
 DEFAULT_MAX_PENDING_INTENTS = 10_000
 MAX_CAPTURE_PAYLOAD_BYTES = 64 * 1024
 SEAL_KEY_FILENAME = "deferred-intent-seal-key.current-user.dpapi"
+DEFAULT_VALIDATION_CLAIM_SECONDS = 300
+DEFAULT_VALIDATION_RETRY_SECONDS = 5
+MAX_VALIDATION_RETRY_SECONDS = 30 * 60
+
+VALIDATION_OUTCOMES = frozenset(
+    {
+        "VALID",
+        "RETRYABLE_UNAVAILABLE",
+        "REQUIRED_ABSENT",
+        "ABSENT_MATERIALIZABLE",
+        "INVALID",
+        "CONFLICT",
+        "UNKNOWN_COMMIT",
+    }
+)
+LABEL_VALIDATION_STEPS = (
+    (
+        "label-package-source",
+        "PACKAGE_SOURCE",
+        "label-package-source-resolution-v1",
+    ),
+    (
+        "label-operation-lease",
+        "OPERATION_LEASE",
+        "terminal-operation-lease-v1",
+    ),
+)
 
 _HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
 _TERMINAL_STATES = frozenset({"COMPLETED", "CANCELLED", "SUPERSEDED"})
@@ -94,6 +121,31 @@ class DeferredCaptureResult:
     pending_count: int
     oldest_age_seconds: int
     created_at: str
+
+
+@dataclass(frozen=True)
+class DeferredValidationClaim:
+    intent_id: str
+    worker_id: str
+    fence: int
+    validation_generation: int
+    validation_attempt_count: int
+    claim_expires_at: str
+    payload: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class DeferredValidationResult:
+    intent_id: str
+    state: str
+    outcome: str
+    reason_code: str
+    observed_at: str
+    next_attempt_at: str | None = None
+    dependency_kind: str = ""
+    dependency_identity: str = ""
+    pending_count: int = 0
+    oldest_age_seconds: int = 0
 
 
 def _validate_jcs_subset(value: Any, *, path: str = "$") -> None:
@@ -153,6 +205,19 @@ def canonical_sha256(value: Any) -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _utc_after(now: str, seconds: float) -> str:
+    return (_parse_utc(now) + timedelta(seconds=float(seconds))).isoformat().replace(
+        "+00:00", "Z"
+    )
 
 
 DEFERRED_INTENT_SCHEMA_SQL = r"""
@@ -455,6 +520,11 @@ def _audit_values(
     occurred_at: str,
     evidence_hash: str | None = None,
     prev_audit_hash: str | None = None,
+    validation_outcome: str | None = None,
+    reconciliation_outcome: str | None = None,
+    attempt_no: int = 0,
+    worker_id: str | None = None,
+    fence: int = 0,
 ) -> dict[str, Any]:
     return {
         "intent_id": intent_id,
@@ -463,11 +533,11 @@ def _audit_values(
         "to_state": to_state,
         "transition_code": transition_code,
         "reason_code": reason_code,
-        "validation_outcome": None,
-        "reconciliation_outcome": None,
-        "attempt_no": 0,
-        "worker_id": None,
-        "fence": 0,
+        "validation_outcome": validation_outcome,
+        "reconciliation_outcome": reconciliation_outcome,
+        "attempt_no": int(attempt_no),
+        "worker_id": worker_id,
+        "fence": int(fence),
         "occurred_at": occurred_at,
         "evidence_hash": evidence_hash,
         "prev_audit_hash": prev_audit_hash,
@@ -484,6 +554,11 @@ def append_transition_audit(
     reason_code: str,
     occurred_at: str,
     evidence_hash: str | None = None,
+    validation_outcome: str | None = None,
+    reconciliation_outcome: str | None = None,
+    attempt_no: int = 0,
+    worker_id: str | None = None,
+    fence: int = 0,
 ) -> str:
     prior = conn.execute(
         """SELECT audit_seq,audit_hash
@@ -503,6 +578,11 @@ def append_transition_audit(
         occurred_at=occurred_at,
         evidence_hash=evidence_hash,
         prev_audit_hash=prev_hash,
+        validation_outcome=validation_outcome,
+        reconciliation_outcome=reconciliation_outcome,
+        attempt_no=attempt_no,
+        worker_id=worker_id,
+        fence=fence,
     )
     audit_hash = canonical_sha256(values)
     conn.execute(
@@ -1025,6 +1105,1051 @@ class DeferredIntentCaptureStore:
                 if conn is not None:
                     conn.close()
 
+    def _load_existing_seal_key(self) -> bytes:
+        try:
+            protected = self.seal_key_path.read_bytes()
+            key = self._unprotect_bytes(protected)
+        except Exception as exc:
+            raise DeferredIntentCaptureError(
+                "LOCAL_SEAL_KEY_INVALID",
+                "the deferred intent seal key is unavailable",
+            ) from exc
+        if len(key) != 32:
+            raise DeferredIntentCaptureError(
+                "LOCAL_SEAL_KEY_INVALID",
+                "the deferred intent seal key length is invalid",
+            )
+        return key
+
+    @staticmethod
+    def _claimed_row(
+        conn: sqlite3.Connection,
+        claim: DeferredValidationClaim,
+    ) -> sqlite3.Row:
+        row = conn.execute(
+            """SELECT * FROM deferred_intents
+                 WHERE intent_id=? AND state='VALIDATING'
+                   AND fence=? AND claim_owner=? LIMIT 1""",
+            (claim.intent_id, claim.fence, claim.worker_id),
+        ).fetchone()
+        if row is None:
+            raise DeferredIntentCaptureError(
+                "VALIDATION_CLAIM_LOST",
+                "the deferred validation fence is no longer owned",
+            )
+        return row
+
+    @staticmethod
+    def _validation_retry_delay(attempt_no: int) -> float:
+        exponent = max(0, min(int(attempt_no) - 1, 12))
+        return float(
+            min(
+                MAX_VALIDATION_RETRY_SECONDS,
+                DEFAULT_VALIDATION_RETRY_SECONDS * (2**exponent),
+            )
+        )
+
+    def claim_validation(
+        self,
+        intent_id: str,
+        *,
+        worker_id: str,
+        claim_seconds: int = DEFAULT_VALIDATION_CLAIM_SECONDS,
+        now: str | None = None,
+        allow_waiting_dependency: bool = False,
+    ) -> DeferredValidationClaim | None:
+        """Claim one exact eligible FIFO intent and allocate a fresh fence."""
+
+        selected_id = str(intent_id or "").strip()
+        selected_worker = str(worker_id or "").strip()
+        duration = int(claim_seconds)
+        observed_at = str(now or utc_now())
+        if not selected_id or not selected_worker or duration < 1:
+            raise DeferredIntentCaptureError(
+                "VALIDATION_CLAIM_INVALID",
+                "deferred validation claim identity is incomplete",
+            )
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM deferred_intents WHERE intent_id=? LIMIT 1",
+                    (selected_id,),
+                ).fetchone()
+                if row is None:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_INTENT_MISSING",
+                        "the captured intent is unavailable for validation",
+                    )
+                current = dict(row)
+
+                if current["state"] == "VALIDATING":
+                    expires_at = str(current.get("claim_expires_at") or "")
+                    if not expires_at or _parse_utc(expires_at) > _parse_utc(observed_at):
+                        conn.rollback()
+                        return None
+                    expired_owner = str(current.get("claim_owner") or "")
+                    expired_fence = int(current.get("fence") or 0)
+                    cursor = conn.execute(
+                        """UPDATE deferred_intents
+                              SET state='RETRY_WAIT_VALIDATION',claim_owner=NULL,
+                                  claim_expires_at=NULL,next_attempt_at=?,
+                                  last_reason_code='VALIDATION_CLAIM_EXPIRED',
+                                  last_error_code='VALIDATION_CLAIM_EXPIRED',
+                                  row_version=row_version+1,updated_at=?
+                            WHERE intent_id=? AND state='VALIDATING'
+                              AND fence=? AND claim_owner=?""",
+                        (
+                            observed_at,
+                            observed_at,
+                            selected_id,
+                            expired_fence,
+                            expired_owner,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise DeferredIntentCaptureError(
+                            "VALIDATION_CLAIM_LOST",
+                            "the expired validation claim changed concurrently",
+                        )
+                    append_transition_audit(
+                        conn,
+                        intent_id=selected_id,
+                        from_state="VALIDATING",
+                        to_state="RETRY_WAIT_VALIDATION",
+                        transition_code="T6_VALIDATION_RETRY",
+                        reason_code="VALIDATION_CLAIM_EXPIRED",
+                        validation_outcome="RETRYABLE_UNAVAILABLE",
+                        attempt_no=int(current.get("validation_attempt_count") or 0),
+                        worker_id=expired_owner,
+                        fence=expired_fence,
+                        occurred_at=observed_at,
+                    )
+                    current["state"] = "RETRY_WAIT_VALIDATION"
+                    current["next_attempt_at"] = observed_at
+
+                eligible = {"CAPTURED_UNVERIFIED", "RETRY_WAIT_VALIDATION"}
+                if allow_waiting_dependency:
+                    eligible.add("WAITING_DEPENDENCY")
+                if current["state"] not in eligible:
+                    conn.rollback()
+                    return None
+                next_attempt = str(current.get("next_attempt_at") or "")
+                if next_attempt and _parse_utc(next_attempt) > _parse_utc(observed_at):
+                    conn.rollback()
+                    return None
+
+                predecessor = conn.execute(
+                    """SELECT intent_id,state,partition_seq
+                         FROM deferred_intents
+                        WHERE app_id=? AND producer_install_id=?
+                          AND authority_scope_id=? AND partition_key=?
+                          AND partition_seq<?
+                          AND state NOT IN ('COMPLETED','CANCELLED','SUPERSEDED')
+                        ORDER BY partition_seq LIMIT 1""",
+                    (
+                        current["app_id"],
+                        current["producer_install_id"],
+                        current["authority_scope_id"],
+                        current["partition_key"],
+                        current["partition_seq"],
+                    ),
+                ).fetchone()
+                if predecessor is not None:
+                    conn.rollback()
+                    return None
+
+                source_state = str(current["state"])
+                next_fence = int(current.get("fence") or 0) + 1
+                generation = int(current.get("validation_generation") or 0) + 1
+                attempt_no = int(current.get("validation_attempt_count") or 0) + 1
+                claim_expires_at = _utc_after(observed_at, duration)
+                cursor = conn.execute(
+                    """UPDATE deferred_intents
+                          SET state='VALIDATING',validation_generation=?,
+                              validation_attempt_count=?,claim_owner=?,
+                              claim_expires_at=?,fence=?,next_attempt_at=NULL,
+                              last_reason_code='VALIDATION_CLAIMED',
+                              last_error_code=NULL,row_version=row_version+1,
+                              updated_at=?
+                        WHERE intent_id=? AND state=? AND fence=?""",
+                    (
+                        generation,
+                        attempt_no,
+                        selected_worker,
+                        claim_expires_at,
+                        next_fence,
+                        observed_at,
+                        selected_id,
+                        source_state,
+                        int(current.get("fence") or 0),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_CLAIM_LOST",
+                        "the validation claim changed concurrently",
+                    )
+                append_transition_audit(
+                    conn,
+                    intent_id=selected_id,
+                    from_state=source_state,
+                    to_state="VALIDATING",
+                    transition_code="T2_CLAIM_VALIDATION",
+                    reason_code="FIFO_VALIDATION_CLAIMED",
+                    attempt_no=attempt_no,
+                    worker_id=selected_worker,
+                    fence=next_fence,
+                    occurred_at=observed_at,
+                )
+                conn.commit()
+                return DeferredValidationClaim(
+                    intent_id=selected_id,
+                    worker_id=selected_worker,
+                    fence=next_fence,
+                    validation_generation=generation,
+                    validation_attempt_count=attempt_no,
+                    claim_expires_at=claim_expires_at,
+                    payload={},
+                )
+            except DeferredIntentCaptureError:
+                conn.rollback()
+                raise
+            except (TypeError, ValueError, sqlite3.Error) as exc:
+                conn.rollback()
+                raise DeferredIntentCaptureError(
+                    "VALIDATION_CLAIM_FAILED",
+                    "the deferred validation claim could not be committed",
+                ) from exc
+            finally:
+                conn.close()
+
+    def verify_local_integrity(
+        self,
+        claim: DeferredValidationClaim,
+        *,
+        now: str | None = None,
+    ) -> DeferredValidationClaim | DeferredValidationResult:
+        """Run DPAPI, seal, schema, identity, manifest, and scope before HTTP."""
+
+        observed_at = str(now or utc_now())
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = self._claimed_row(conn, claim)
+                current = dict(row)
+                if _parse_utc(str(current["claim_expires_at"])) <= _parse_utc(
+                    observed_at
+                ):
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_CLAIM_LOST",
+                        "the validation claim expired before local integrity",
+                    )
+                expected_constants = {
+                    "contract_version": CONTRACT_VERSION,
+                    "app_id": LABEL_APP_ID,
+                    "intent_kind": LABEL_INTENT_KIND,
+                    "capture_schema_version": CAPTURE_SCHEMA_VERSION,
+                    "capture_c14n_version": CAPTURE_C14N_VERSION,
+                    "payload_protection": PAYLOAD_PROTECTION,
+                    "seal_key_ref": self.seal_key_ref,
+                }
+                if any(current.get(key) != value for key, value in expected_constants.items()):
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_SCHEMA_INVALID",
+                        "the captured intent schema binding is invalid",
+                    )
+                expected_binding = self.binding
+                stored_binding = DeferredIntentBinding(
+                    producer_id=str(current["producer_id"]),
+                    producer_install_id=str(current["producer_install_id"]),
+                    source_host_id=str(current["source_host_id"]),
+                    manifest_hash=str(current["manifest_hash"]),
+                    authority_scope_id=str(current["authority_scope_id"]),
+                ).validated()
+                if stored_binding != expected_binding:
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_BINDING_INVALID",
+                        "the current producer, install, host, manifest, or scope differs",
+                    )
+                try:
+                    payload_bytes = self._unprotect_bytes(
+                        bytes(current["payload_ciphertext"])
+                    )
+                    payload = json.loads(payload_bytes.decode("utf-8"))
+                except Exception as exc:
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_DPAPI_INVALID",
+                        "the captured intent cannot be decrypted and decoded",
+                    ) from exc
+                if not isinstance(payload, dict) or set(payload) != {
+                    "app_id",
+                    "capture_schema_version",
+                    "intent_kind",
+                    "item_code",
+                    "local_work_identity",
+                    "physical_qr_payload",
+                }:
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_PAYLOAD_SCHEMA_INVALID",
+                        "the captured Label payload schema is invalid",
+                    )
+                if (
+                    payload.get("app_id") != LABEL_APP_ID
+                    or payload.get("intent_kind") != LABEL_INTENT_KIND
+                    or payload.get("capture_schema_version") != CAPTURE_SCHEMA_VERSION
+                    or not all(
+                        str(payload.get(key) or "").strip()
+                        for key in (
+                            "item_code",
+                            "local_work_identity",
+                            "physical_qr_payload",
+                        )
+                    )
+                ):
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_PAYLOAD_SCHEMA_INVALID",
+                        "the captured Label payload values are invalid",
+                    )
+                canonical_payload = canonical_json_bytes(payload)
+                payload_hash = hashlib.sha256(canonical_payload).hexdigest()
+                if (
+                    payload_bytes != canonical_payload
+                    or payload_hash != str(current["payload_hash"])
+                ):
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_PAYLOAD_HASH_INVALID",
+                        "the captured Label payload hash is invalid",
+                    )
+                identity = self._capture_identity(
+                    expected_binding,
+                    local_work_identity=str(payload["local_work_identity"]),
+                    partition_key=str(current["partition_key"]),
+                )
+                capture_key = canonical_sha256(identity)
+                intent_id = "di_" + canonical_sha256(
+                    {**identity, "payload_hash": payload_hash}
+                )
+                if (
+                    str(payload["local_work_identity"])
+                    != str(current["local_work_identity"])
+                    or capture_key != str(current["capture_key"])
+                    or intent_id != str(current["intent_id"])
+                ):
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_IDENTITY_INVALID",
+                        "the captured Label identity is invalid",
+                    )
+                seal_binding = self._seal_binding(
+                    expected_binding,
+                    capture_key=capture_key,
+                    intent_id=intent_id,
+                    payload_hash=payload_hash,
+                    partition_seq=int(current["partition_seq"]),
+                )
+                binding_bytes = canonical_json_bytes(seal_binding)
+                binding_hash = hashlib.sha256(binding_bytes).hexdigest()
+                seal_key = self._load_existing_seal_key()
+                expected_seal = hmac.new(
+                    seal_key, binding_bytes, hashlib.sha256
+                ).digest()
+                if (
+                    binding_hash != str(current["binding_hash"])
+                    or not hmac.compare_digest(
+                        expected_seal, bytes(current["authenticated_seal"])
+                    )
+                ):
+                    raise DeferredIntentCaptureError(
+                        "LOCAL_SEAL_INVALID",
+                        "the captured Label authenticated seal is invalid",
+                    )
+                evidence_hash = canonical_sha256(
+                    {
+                        "contract_version": CONTRACT_VERSION,
+                        "gate": "LOCAL_INTEGRITY",
+                        "binding_hash": binding_hash,
+                        "payload_hash": payload_hash,
+                        "observed_at": observed_at,
+                    }
+                )
+                cursor = conn.execute(
+                    """UPDATE deferred_intents
+                          SET last_reason_code='LOCAL_INTEGRITY_VALID',
+                              last_error_code=NULL,row_version=row_version+1,
+                              updated_at=?
+                        WHERE intent_id=? AND state='VALIDATING'
+                          AND fence=? AND claim_owner=?""",
+                    (observed_at, claim.intent_id, claim.fence, claim.worker_id),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_CLAIM_LOST",
+                        "the local integrity fence was lost",
+                    )
+                append_transition_audit(
+                    conn,
+                    intent_id=claim.intent_id,
+                    from_state="VALIDATING",
+                    to_state="VALIDATING",
+                    transition_code="T3_LOCAL_INTEGRITY",
+                    reason_code="LOCAL_INTEGRITY_VALID",
+                    validation_outcome="VALID",
+                    attempt_no=claim.validation_attempt_count,
+                    worker_id=claim.worker_id,
+                    fence=claim.fence,
+                    occurred_at=observed_at,
+                    evidence_hash=evidence_hash,
+                )
+                conn.commit()
+                return DeferredValidationClaim(
+                    intent_id=claim.intent_id,
+                    worker_id=claim.worker_id,
+                    fence=claim.fence,
+                    validation_generation=claim.validation_generation,
+                    validation_attempt_count=claim.validation_attempt_count,
+                    claim_expires_at=claim.claim_expires_at,
+                    payload=dict(payload),
+                )
+            except DeferredIntentCaptureError as exc:
+                if exc.code == "VALIDATION_CLAIM_LOST":
+                    conn.rollback()
+                    raise
+                reason_code = str(exc.code or "LOCAL_INTEGRITY_INVALID")
+                evidence_hash = canonical_sha256(
+                    {
+                        "contract_version": CONTRACT_VERSION,
+                        "gate": "LOCAL_INTEGRITY",
+                        "reason_code": reason_code,
+                        "observed_at": observed_at,
+                    }
+                )
+                cursor = conn.execute(
+                    """UPDATE deferred_intents
+                          SET state='BLOCKED_INVALID',claim_owner=NULL,
+                              claim_expires_at=NULL,next_attempt_at=NULL,
+                              last_reason_code=?,last_error_code=?,
+                              row_version=row_version+1,updated_at=?
+                        WHERE intent_id=? AND state='VALIDATING'
+                          AND fence=? AND claim_owner=?""",
+                    (
+                        reason_code,
+                        reason_code,
+                        observed_at,
+                        claim.intent_id,
+                        claim.fence,
+                        claim.worker_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_CLAIM_LOST",
+                        "the invalid local integrity fence was lost",
+                    ) from exc
+                append_transition_audit(
+                    conn,
+                    intent_id=claim.intent_id,
+                    from_state="VALIDATING",
+                    to_state="BLOCKED_INVALID",
+                    transition_code="T4_LOCAL_INVALID",
+                    reason_code=reason_code,
+                    validation_outcome="INVALID",
+                    attempt_no=claim.validation_attempt_count,
+                    worker_id=claim.worker_id,
+                    fence=claim.fence,
+                    occurred_at=observed_at,
+                    evidence_hash=evidence_hash,
+                )
+                pending, age = self._pending_summary(conn, observed_at)
+                conn.commit()
+                return DeferredValidationResult(
+                    intent_id=claim.intent_id,
+                    state="BLOCKED_INVALID",
+                    outcome="INVALID",
+                    reason_code=reason_code,
+                    observed_at=observed_at,
+                    pending_count=pending,
+                    oldest_age_seconds=age,
+                )
+            except Exception as exc:
+                conn.rollback()
+                raise DeferredIntentCaptureError(
+                    "LOCAL_INTEGRITY_GATE_FAILED",
+                    "the local integrity gate could not be committed",
+                ) from exc
+            finally:
+                conn.close()
+
+    def plan_label_validation(
+        self,
+        claim: DeferredValidationClaim,
+        *,
+        now: str | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Persist the ordered, read-only Label validation plan."""
+
+        observed_at = str(now or utc_now())
+        payload = dict(claim.payload)
+        physical_hash = hashlib.sha256(
+            str(payload.get("physical_qr_payload") or "").encode("utf-8")
+        ).hexdigest()
+        requests = (
+            {
+                "authority_scope_id": self.binding.authority_scope_id,
+                "item_code": str(payload.get("item_code") or ""),
+                "local_work_identity": str(
+                    payload.get("local_work_identity") or ""
+                ),
+                "physical_qr_sha256": physical_hash,
+            },
+            {
+                "authority_scope_id": self.binding.authority_scope_id,
+                "operation": "CREATE_PACKAGE",
+                "physical_qr_sha256": physical_hash,
+            },
+        )
+        if not all(requests[0].values()) or not all(requests[1].values()):
+            raise DeferredIntentCaptureError(
+                "VALIDATION_PLAN_INVALID",
+                "the Label validation plan identity is incomplete",
+            )
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._claimed_row(conn, claim)
+                planned: list[dict[str, Any]] = []
+                for ordinal, (definition, request) in enumerate(
+                    zip(LABEL_VALIDATION_STEPS, requests), start=1
+                ):
+                    step_id, step_kind, validator_contract = definition
+                    request_json = canonical_json_bytes(request).decode("utf-8")
+                    request_hash = hashlib.sha256(
+                        request_json.encode("utf-8")
+                    ).hexdigest()
+                    conn.execute(
+                        """INSERT INTO deferred_intent_validation_steps(
+                               intent_id,validation_generation,step_ordinal,
+                               step_id,step_kind,step_effect,validator_contract,
+                               validator_version,status,idempotency_key,
+                               request_json,request_hash,attempt_count,fence,
+                               created_at,updated_at
+                           ) VALUES (?,?,?,?,?,'READ_ONLY',?,'1','PLANNED',NULL,
+                                     ?,?,0,?,?,?)""",
+                        (
+                            claim.intent_id,
+                            claim.validation_generation,
+                            ordinal,
+                            step_id,
+                            step_kind,
+                            validator_contract,
+                            request_json,
+                            request_hash,
+                            claim.fence,
+                            observed_at,
+                            observed_at,
+                        ),
+                    )
+                    planned.append(
+                        {
+                            "step_id": step_id,
+                            "step_kind": step_kind,
+                            "request_hash": request_hash,
+                        }
+                    )
+                plan_hash = canonical_sha256(planned)
+                cursor = conn.execute(
+                    """UPDATE deferred_intents
+                          SET last_reason_code='LABEL_VALIDATION_PLAN_PERSISTED',
+                              row_version=row_version+1,updated_at=?
+                        WHERE intent_id=? AND state='VALIDATING'
+                          AND fence=? AND claim_owner=?""",
+                    (observed_at, claim.intent_id, claim.fence, claim.worker_id),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_CLAIM_LOST",
+                        "the Label validation plan fence was lost",
+                    )
+                append_transition_audit(
+                    conn,
+                    intent_id=claim.intent_id,
+                    from_state="VALIDATING",
+                    to_state="VALIDATING",
+                    transition_code="T5_VALIDATE_PLAN",
+                    reason_code="LABEL_VALIDATION_PLAN_PERSISTED",
+                    attempt_no=claim.validation_attempt_count,
+                    worker_id=claim.worker_id,
+                    fence=claim.fence,
+                    occurred_at=observed_at,
+                    evidence_hash=plan_hash,
+                )
+                conn.commit()
+                return tuple(planned)
+            except DeferredIntentCaptureError:
+                conn.rollback()
+                raise
+            except sqlite3.Error as exc:
+                conn.rollback()
+                raise DeferredIntentCaptureError(
+                    "VALIDATION_PLAN_PERSIST_FAILED",
+                    "the Label validation plan could not be persisted",
+                ) from exc
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _canonical_validation_evidence(evidence: Mapping[str, Any]) -> tuple[str, str]:
+        value = dict(evidence or {})
+        forbidden = {
+            "token",
+            "bearer_token",
+            "secret",
+            "credential",
+            "authorization",
+            "physical_qr_payload",
+            "scan_payload",
+        }
+
+        def check(item: Any) -> None:
+            if isinstance(item, Mapping):
+                for key, child in item.items():
+                    if str(key).strip().lower() in forbidden:
+                        raise DeferredIntentCaptureError(
+                            "VALIDATION_EVIDENCE_SECRET_FORBIDDEN",
+                            "validation evidence contains a protected field",
+                        )
+                    check(child)
+            elif isinstance(item, (list, tuple)):
+                for child in item:
+                    check(child)
+
+        check(value)
+        encoded = canonical_json_bytes(value)
+        return encoded.decode("utf-8"), hashlib.sha256(encoded).hexdigest()
+
+    def record_validation_step_valid(
+        self,
+        claim: DeferredValidationClaim,
+        *,
+        step_id: str,
+        evidence: Mapping[str, Any],
+        issued_at: str | None = None,
+        expires_at: str | None = None,
+        now: str | None = None,
+    ) -> None:
+        """Fence and persist one exact read-only step result."""
+
+        observed_at = str(now or utc_now())
+        selected_step = str(step_id or "").strip()
+        evidence_json, evidence_hash = self._canonical_validation_evidence(evidence)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._claimed_row(conn, claim)
+                cursor = conn.execute(
+                    """UPDATE deferred_intent_validation_steps
+                          SET status='VERIFIED',validation_outcome='VALID',
+                              evidence_json=?,evidence_hash=?,issued_at=?,
+                              expires_at=?,attempt_count=attempt_count+1,
+                              last_error_code=NULL,updated_at=?
+                        WHERE intent_id=? AND validation_generation=?
+                          AND step_id=? AND fence=?
+                          AND status IN ('PLANNED','CLAIMED','RETRY_WAIT')""",
+                    (
+                        evidence_json,
+                        evidence_hash,
+                        str(issued_at or observed_at),
+                        str(expires_at or "") or None,
+                        observed_at,
+                        claim.intent_id,
+                        claim.validation_generation,
+                        selected_step,
+                        claim.fence,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_STEP_FENCE_LOST",
+                        "the validation step is no longer claimable",
+                    )
+                cursor = conn.execute(
+                    """UPDATE deferred_intents
+                          SET row_version=row_version+1,updated_at=?
+                        WHERE intent_id=? AND state='VALIDATING'
+                          AND fence=? AND claim_owner=?""",
+                    (observed_at, claim.intent_id, claim.fence, claim.worker_id),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_CLAIM_LOST",
+                        "the validation step fence was lost",
+                    )
+                append_transition_audit(
+                    conn,
+                    intent_id=claim.intent_id,
+                    from_state="VALIDATING",
+                    to_state="VALIDATING",
+                    transition_code="T5_VALIDATE_PLAN",
+                    reason_code=f"{selected_step.upper()}_VERIFIED",
+                    validation_outcome="VALID",
+                    attempt_no=claim.validation_attempt_count,
+                    worker_id=claim.worker_id,
+                    fence=claim.fence,
+                    occurred_at=observed_at,
+                    evidence_hash=evidence_hash,
+                )
+                conn.commit()
+            except DeferredIntentCaptureError:
+                conn.rollback()
+                raise
+            except sqlite3.Error as exc:
+                conn.rollback()
+                raise DeferredIntentCaptureError(
+                    "VALIDATION_STEP_PERSIST_FAILED",
+                    "the validation step evidence could not be persisted",
+                ) from exc
+            finally:
+                conn.close()
+
+    def finish_validation(
+        self,
+        claim: DeferredValidationClaim,
+        *,
+        step_id: str,
+        outcome: str,
+        reason_code: str,
+        evidence: Mapping[str, Any],
+        issued_at: str | None = None,
+        expires_at: str | None = None,
+        retry_after_seconds: float | None = None,
+        now: str | None = None,
+    ) -> DeferredValidationResult:
+        """Classify one of the seven outcomes and persist its sole destination."""
+
+        observed_at = str(now or utc_now())
+        selected_step = str(step_id or "").strip()
+        selected_outcome = str(outcome or "").strip().upper()
+        selected_reason = str(reason_code or "VALIDATION_RESULT").strip().upper()
+        if selected_outcome not in VALIDATION_OUTCOMES or not selected_step:
+            raise DeferredIntentCaptureError(
+                "VALIDATION_OUTCOME_INVALID",
+                "the typed validation outcome is invalid",
+            )
+        evidence_json, evidence_hash = self._canonical_validation_evidence(evidence)
+        destination = {
+            "VALID": "VALIDATED",
+            "RETRYABLE_UNAVAILABLE": "RETRY_WAIT_VALIDATION",
+            "REQUIRED_ABSENT": "WAITING_DEPENDENCY",
+            "ABSENT_MATERIALIZABLE": "VALIDATING",
+            "INVALID": "BLOCKED_INVALID",
+            "CONFLICT": "OPERATOR_REVIEW",
+            "UNKNOWN_COMMIT": "RECONCILE_PENDING_VALIDATION",
+        }[selected_outcome]
+        step_status = {
+            "VALID": "VERIFIED",
+            "RETRYABLE_UNAVAILABLE": "RETRY_WAIT",
+            "REQUIRED_ABSENT": "WAITING_DEPENDENCY",
+            "ABSENT_MATERIALIZABLE": "MATERIALIZATION_REQUIRED",
+            "INVALID": "BLOCKED_INVALID",
+            "CONFLICT": "OPERATOR_REVIEW",
+            "UNKNOWN_COMMIT": "RECONCILE_PENDING",
+        }[selected_outcome]
+        transition_code = {
+            "VALID": "T11_FREEZE_VALIDATION",
+            "RETRYABLE_UNAVAILABLE": "T6_VALIDATION_RETRY",
+            "REQUIRED_ABSENT": "T9_WAIT_DEPENDENCY",
+            "ABSENT_MATERIALIZABLE": "T7_CLASSIFY_ABSENCE",
+            "INVALID": "T10_REJECT_OR_REVIEW",
+            "CONFLICT": "T10_REJECT_OR_REVIEW",
+            "UNKNOWN_COMMIT": "T6A_VALIDATION_UNKNOWN",
+        }[selected_outcome]
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                intent = dict(self._claimed_row(conn, claim))
+                cursor = conn.execute(
+                    """UPDATE deferred_intent_validation_steps
+                          SET status=?,validation_outcome=?,evidence_json=?,
+                              evidence_hash=?,issued_at=?,expires_at=?,
+                              attempt_count=attempt_count+1,last_error_code=?,
+                              updated_at=?
+                        WHERE intent_id=? AND validation_generation=?
+                          AND step_id=? AND fence=?
+                          AND status IN ('PLANNED','CLAIMED','RETRY_WAIT')""",
+                    (
+                        step_status,
+                        selected_outcome,
+                        evidence_json,
+                        evidence_hash,
+                        str(issued_at or observed_at),
+                        str(expires_at or "") or None,
+                        None if selected_outcome == "VALID" else selected_reason,
+                        observed_at,
+                        claim.intent_id,
+                        claim.validation_generation,
+                        selected_step,
+                        claim.fence,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_STEP_FENCE_LOST",
+                        "the validation result step is no longer claimable",
+                    )
+
+                snapshot_hash = None
+                validation_expires_at = None
+                if selected_outcome == "VALID":
+                    remaining = int(
+                        conn.execute(
+                            """SELECT COUNT(*)
+                                 FROM deferred_intent_validation_steps
+                                WHERE intent_id=? AND validation_generation=?
+                                  AND status<>'VERIFIED'""",
+                            (claim.intent_id, claim.validation_generation),
+                        ).fetchone()[0]
+                    )
+                    if remaining:
+                        raise DeferredIntentCaptureError(
+                            "VALIDATION_PLAN_INCOMPLETE",
+                            "ordered validation steps are not all verified",
+                        )
+                    step_rows = conn.execute(
+                        """SELECT step_ordinal,step_id,step_kind,validator_contract,
+                                  validator_version,evidence_hash,issued_at,expires_at
+                             FROM deferred_intent_validation_steps
+                            WHERE intent_id=? AND validation_generation=?
+                            ORDER BY step_ordinal""",
+                        (claim.intent_id, claim.validation_generation),
+                    ).fetchall()
+                    aggregate = [dict(row) for row in step_rows]
+                    snapshot_hash = canonical_sha256(
+                        {
+                            "contract_version": CONTRACT_VERSION,
+                            "intent_id": claim.intent_id,
+                            "validation_generation": claim.validation_generation,
+                            "steps": aggregate,
+                        }
+                    )
+                    expiries = [
+                        str(row["expires_at"])
+                        for row in step_rows
+                        if row["expires_at"]
+                    ]
+                    validation_expires_at = min(expiries) if expiries else None
+
+                next_attempt_at = None
+                if selected_outcome == "RETRYABLE_UNAVAILABLE":
+                    if retry_after_seconds is None:
+                        retry_delay = self._validation_retry_delay(
+                            int(intent.get("validation_attempt_count") or 0)
+                        )
+                    else:
+                        retry_delay = max(
+                            0.0,
+                            min(
+                                MAX_VALIDATION_RETRY_SECONDS,
+                                float(retry_after_seconds),
+                            ),
+                        )
+                    next_attempt_at = _utc_after(observed_at, retry_delay)
+
+                keep_claim = selected_outcome == "ABSENT_MATERIALIZABLE"
+                cursor = conn.execute(
+                    """UPDATE deferred_intents
+                          SET state=?,validation_snapshot_hash=?,
+                              validation_expires_at=?,next_attempt_at=?,
+                              claim_owner=?,claim_expires_at=?,
+                              last_reason_code=?,last_error_code=?,
+                              row_version=row_version+1,updated_at=?
+                        WHERE intent_id=? AND state='VALIDATING'
+                          AND fence=? AND claim_owner=?""",
+                    (
+                        destination,
+                        snapshot_hash,
+                        validation_expires_at,
+                        next_attempt_at,
+                        claim.worker_id if keep_claim else None,
+                        claim.claim_expires_at if keep_claim else None,
+                        selected_reason,
+                        None if selected_outcome == "VALID" else selected_reason,
+                        observed_at,
+                        claim.intent_id,
+                        claim.fence,
+                        claim.worker_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_CLAIM_LOST",
+                        "the typed validation result fence was lost",
+                    )
+                if selected_outcome == "REQUIRED_ABSENT":
+                    append_transition_audit(
+                        conn,
+                        intent_id=claim.intent_id,
+                        from_state="VALIDATING",
+                        to_state="VALIDATING",
+                        transition_code="T7_CLASSIFY_ABSENCE",
+                        reason_code=selected_reason,
+                        validation_outcome=selected_outcome,
+                        attempt_no=claim.validation_attempt_count,
+                        worker_id=claim.worker_id,
+                        fence=claim.fence,
+                        occurred_at=observed_at,
+                        evidence_hash=evidence_hash,
+                    )
+                append_transition_audit(
+                    conn,
+                    intent_id=claim.intent_id,
+                    from_state="VALIDATING",
+                    to_state=destination,
+                    transition_code=transition_code,
+                    reason_code=selected_reason,
+                    validation_outcome=selected_outcome,
+                    attempt_no=claim.validation_attempt_count,
+                    worker_id=claim.worker_id,
+                    fence=claim.fence,
+                    occurred_at=observed_at,
+                    evidence_hash=(snapshot_hash or evidence_hash),
+                )
+                pending, age = self._pending_summary(conn, observed_at)
+                conn.commit()
+                dependency = evidence.get("dependency")
+                if not isinstance(dependency, Mapping):
+                    dependency = {}
+                return DeferredValidationResult(
+                    intent_id=claim.intent_id,
+                    state=destination,
+                    outcome=selected_outcome,
+                    reason_code=selected_reason,
+                    observed_at=observed_at,
+                    next_attempt_at=next_attempt_at,
+                    dependency_kind=str(dependency.get("kind") or ""),
+                    dependency_identity=str(
+                        dependency.get("display_identity")
+                        or dependency.get("identity")
+                        or ""
+                    ),
+                    pending_count=pending,
+                    oldest_age_seconds=age,
+                )
+            except DeferredIntentCaptureError:
+                conn.rollback()
+                raise
+            except (TypeError, ValueError, sqlite3.Error) as exc:
+                conn.rollback()
+                raise DeferredIntentCaptureError(
+                    "VALIDATION_RESULT_PERSIST_FAILED",
+                    "the typed validation result could not be persisted",
+                ) from exc
+            finally:
+                conn.close()
+
+    def validation_status(
+        self,
+        intent_id: str,
+        *,
+        now: str | None = None,
+    ) -> DeferredValidationResult | None:
+        """Return secret-free durable operator state for one intent."""
+
+        selected_id = str(intent_id or "").strip()
+        observed_at = str(now or utc_now())
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """SELECT intent_id,state,last_reason_code,next_attempt_at
+                     FROM deferred_intents WHERE intent_id=? LIMIT 1""",
+                (selected_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            evidence_row = conn.execute(
+                """SELECT validation_outcome,evidence_json,updated_at
+                     FROM deferred_intent_validation_steps
+                    WHERE intent_id=? AND evidence_json IS NOT NULL
+                    ORDER BY validation_generation DESC,step_ordinal DESC LIMIT 1""",
+                (selected_id,),
+            ).fetchone()
+            evidence: Mapping[str, Any] = {}
+            outcome = ""
+            checked_at = observed_at
+            if evidence_row is not None:
+                try:
+                    decoded = json.loads(str(evidence_row["evidence_json"]))
+                    if isinstance(decoded, Mapping):
+                        evidence = decoded
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    evidence = {}
+                outcome = str(evidence_row["validation_outcome"] or "")
+                checked_at = str(evidence_row["updated_at"] or observed_at)
+            dependency = evidence.get("dependency")
+            if not isinstance(dependency, Mapping):
+                dependency = {}
+            pending, age = self._pending_summary(conn, observed_at)
+            return DeferredValidationResult(
+                intent_id=selected_id,
+                state=str(row["state"]),
+                outcome=outcome,
+                reason_code=str(row["last_reason_code"] or ""),
+                observed_at=checked_at,
+                next_attempt_at=(str(row["next_attempt_at"]) if row["next_attempt_at"] else None),
+                dependency_kind=str(dependency.get("kind") or ""),
+                dependency_identity=str(
+                    dependency.get("display_identity")
+                    or dependency.get("identity")
+                    or ""
+                ),
+                pending_count=pending,
+                oldest_age_seconds=age,
+            )
+        finally:
+            conn.close()
+
+    def next_validation_candidate(self, *, now: str | None = None) -> str | None:
+        """Return the oldest eligible FIFO validation row; dependency waits stay idle."""
+
+        observed_at = str(now or utc_now())
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """SELECT candidate.intent_id
+                     FROM deferred_intents AS candidate
+                    WHERE candidate.state IN (
+                              'CAPTURED_UNVERIFIED','RETRY_WAIT_VALIDATION'
+                          )
+                      AND (
+                          candidate.next_attempt_at IS NULL
+                          OR candidate.next_attempt_at<=?
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM deferred_intents AS predecessor
+                           WHERE predecessor.app_id=candidate.app_id
+                             AND predecessor.producer_install_id=
+                                 candidate.producer_install_id
+                             AND predecessor.authority_scope_id=
+                                 candidate.authority_scope_id
+                             AND predecessor.partition_key=candidate.partition_key
+                             AND predecessor.partition_seq<candidate.partition_seq
+                             AND predecessor.state NOT IN (
+                                 'COMPLETED','CANCELLED','SUPERSEDED'
+                             )
+                      )
+                    ORDER BY candidate.created_at,candidate.intent_id LIMIT 1""",
+                (observed_at,),
+            ).fetchone()
+            return str(row[0]) if row else None
+        finally:
+            conn.close()
+
     def get(self, intent_id: str) -> dict[str, Any] | None:
         conn = self._connect()
         try:
@@ -1046,10 +2171,14 @@ __all__ = [
     "DeferredIntentBinding",
     "DeferredIntentCaptureError",
     "DeferredIntentCaptureStore",
+    "DeferredValidationClaim",
+    "DeferredValidationResult",
     "LABEL_APP_ID",
     "LABEL_INTENT_KIND",
     "LABEL_PARTITION_KEY",
+    "LABEL_VALIDATION_STEPS",
     "PAYLOAD_PROTECTION",
+    "VALIDATION_OUTCOMES",
     "append_transition_audit",
     "canonical_json_bytes",
     "canonical_sha256",
