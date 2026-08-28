@@ -669,7 +669,7 @@ def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path):
     assert observed["kwargs"]["verify"] == str(ca_bundle)
 
 
-def test_vendored_possession_key_sources_match_pinned_hash_manifest():
+def test_vendored_zero_pe_sources_match_pinned_hash_manifest():
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads(
         (root / "kmtech_zero_pe.vendor.json").read_text(encoding="utf-8")
@@ -679,7 +679,9 @@ def test_vendored_possession_key_sources_match_pinned_hash_manifest():
     assert set(manifest["files"]) == {
         "kmtech_zero_pe/__init__.py",
         "kmtech_zero_pe/cng_p256.py",
+        "kmtech_zero_pe/gdi_print.py",
         "kmtech_zero_pe/possession_key.py",
+        "kmtech_zero_pe/raster.py",
     }
     for relative_path, expected_sha256 in manifest["files"].items():
         assert hashlib.sha256((root / relative_path).read_bytes()).hexdigest() == expected_sha256

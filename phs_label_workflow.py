@@ -11,18 +11,25 @@ only the server-owned topology returned for a scanned physical label.
 
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import json
 import os
 import re
 import tempfile
 import threading
-from ctypes import wintypes
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
+
+from kmtech_zero_pe import (
+    FontSpec,
+    GdiPrinter,
+    MarginsMM,
+    PaperSpec,
+    PrintSpec,
+    RasterCanvas,
+)
 
 
 PHS_LABEL_EXCHANGE_JOURNAL_VERSION = "label-match-phs-label-exchange-v1"
@@ -688,51 +695,14 @@ class PhysicalPrintEvidence:
 
 
 class WindowsGDIPhysicalLabelPrinter:
-    """Submit a rendered PNG to the Windows default printer."""
+    """Submit one label with the shared, job-local DEVMODE contract."""
 
-    _HORZRES = 8
-    _VERTRES = 10
-
-    class _DOCINFOW(ctypes.Structure):
-        _fields_ = (
-            ("cbSize", ctypes.c_int),
-            ("lpszDocName", wintypes.LPCWSTR),
-            ("lpszOutput", wintypes.LPCWSTR),
-            ("lpszDatatype", wintypes.LPCWSTR),
-            ("fwType", wintypes.DWORD),
-        )
-
-    @staticmethod
-    def _default_printer_name() -> str:
-        if os.name != "nt":
-            raise PHSPhysicalPrintError(
-                "실물 현품표 출력은 Windows 프린터에서만 지원됩니다."
-            )
-        winspool = ctypes.WinDLL("winspool.drv", use_last_error=True)
-        get_default = winspool.GetDefaultPrinterW
-        get_default.argtypes = (
-            wintypes.LPWSTR,
-            ctypes.POINTER(wintypes.DWORD),
-        )
-        get_default.restype = wintypes.BOOL
-        size = wintypes.DWORD(0)
-        get_default(None, ctypes.byref(size))
-        if size.value < 2:
-            raise PHSPhysicalPrintError(
-                "Windows 기본 프린터가 설정되지 않았습니다."
-            )
-        buffer = ctypes.create_unicode_buffer(size.value)
-        if not get_default(buffer, ctypes.byref(size)):
-            raise PHSPhysicalPrintError(
-                "Windows 기본 프린터를 확인하지 못했습니다"
-                f"({ctypes.get_last_error()})."
-            )
-        name = str(buffer.value or "").strip()
-        if not name:
-            raise PHSPhysicalPrintError(
-                "Windows 기본 프린터 이름이 비어 있습니다."
-            )
-        return name
+    _PAPER = PaperSpec(
+        orientation="landscape",
+        paper_size_code=9,
+        driver_scale_percent=100,
+    )
+    _MARGINS = MarginsMM(left=12.0, top=12.0, right=12.0, bottom=12.0)
 
     def print_png(
         self,
@@ -745,126 +715,31 @@ class WindowsGDIPhysicalLabelPrinter:
             raise PHSPhysicalPrintError(
                 "출력할 현품표 PNG 파일이 없습니다."
             )
-        printer_name = self._default_printer_name()
         try:
-            from PIL import Image, ImageWin
+            printer = GdiPrinter()
+            receipt = printer.print_png(
+                path,
+                PrintSpec(
+                    document_name=str(document_name or path.stem)[:240],
+                    paper=self._PAPER,
+                    margins_mm=self._MARGINS,
+                    content_scale_percent=100,
+                ),
+            )
         except Exception as exc:
             raise PHSPhysicalPrintError(
-                "실물 현품표 출력에 필요한 Pillow GDI 모듈을 사용할 수 없습니다."
+                f"Windows GDI 실물 현품표 출력을 완료하지 못했습니다: {exc}"
             ) from exc
-
-        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
-        create_dc = gdi32.CreateDCW
-        create_dc.argtypes = (
-            wintypes.LPCWSTR,
-            wintypes.LPCWSTR,
-            wintypes.LPCWSTR,
-            ctypes.c_void_p,
-        )
-        create_dc.restype = wintypes.HDC
-        delete_dc = gdi32.DeleteDC
-        delete_dc.argtypes = (wintypes.HDC,)
-        delete_dc.restype = wintypes.BOOL
-        start_doc = gdi32.StartDocW
-        start_doc.argtypes = (
-            wintypes.HDC,
-            ctypes.POINTER(self._DOCINFOW),
-        )
-        start_doc.restype = ctypes.c_int
-        end_doc = gdi32.EndDoc
-        end_doc.argtypes = (wintypes.HDC,)
-        end_doc.restype = ctypes.c_int
-        abort_doc = gdi32.AbortDoc
-        abort_doc.argtypes = (wintypes.HDC,)
-        abort_doc.restype = ctypes.c_int
-        start_page = gdi32.StartPage
-        start_page.argtypes = (wintypes.HDC,)
-        start_page.restype = ctypes.c_int
-        end_page = gdi32.EndPage
-        end_page.argtypes = (wintypes.HDC,)
-        end_page.restype = ctypes.c_int
-        get_caps = gdi32.GetDeviceCaps
-        get_caps.argtypes = (wintypes.HDC, ctypes.c_int)
-        get_caps.restype = ctypes.c_int
-
-        hdc = create_dc("WINSPOOL", printer_name, None, None)
-        if not hdc:
+        if not receipt.default_printer_unchanged or not receipt.default_devmode_unchanged:
             raise PHSPhysicalPrintError(
-                f"프린터 DC를 열지 못했습니다({ctypes.get_last_error()})."
+                "현품표 출력 뒤 기본 프린터 설정이 달라졌습니다."
             )
-        job_started = False
-        try:
-            doc_name = str(document_name or path.stem)[:240]
-            doc_info = self._DOCINFOW(
-                ctypes.sizeof(self._DOCINFOW),
-                doc_name,
-                None,
-                None,
-                0,
-            )
-            job_id = int(start_doc(hdc, ctypes.byref(doc_info)))
-            if job_id <= 0:
-                raise PHSPhysicalPrintError(
-                    "프린터 작업을 시작하지 못했습니다"
-                    f"({ctypes.get_last_error()})."
-                )
-            job_started = True
-            if start_page(hdc) <= 0:
-                raise PHSPhysicalPrintError(
-                    "프린터 페이지를 시작하지 못했습니다"
-                    f"({ctypes.get_last_error()})."
-                )
-            with Image.open(path) as source:
-                image = source.convert("RGB")
-                page_width = int(get_caps(hdc, self._HORZRES))
-                page_height = int(get_caps(hdc, self._VERTRES))
-                if page_width <= 0 or page_height <= 0:
-                    raise PHSPhysicalPrintError(
-                        "프린터 출력 영역을 확인하지 못했습니다."
-                    )
-                scale = min(
-                    page_width / max(1, image.width),
-                    page_height / max(1, image.height),
-                )
-                output_width = max(1, int(round(image.width * scale)))
-                output_height = max(
-                    1, int(round(image.height * scale))
-                )
-                left = max(0, (page_width - output_width) // 2)
-                top = max(0, (page_height - output_height) // 2)
-                ImageWin.Dib(image).draw(
-                    hdc,
-                    (
-                        left,
-                        top,
-                        left + output_width,
-                        top + output_height,
-                    ),
-                )
-            if end_page(hdc) <= 0:
-                raise PHSPhysicalPrintError(
-                    "프린터 페이지를 완료하지 못했습니다"
-                    f"({ctypes.get_last_error()})."
-                )
-            if end_doc(hdc) <= 0:
-                raise PHSPhysicalPrintError(
-                    "프린터 작업을 완료하지 못했습니다"
-                    f"({ctypes.get_last_error()})."
-                )
-            job_started = False
-            return PhysicalPrintEvidence(
-                printer_name=printer_name,
-                spool_job_id=job_id,
-                document_name=doc_name,
-                submitted_at=_utc_now(),
-            )
-        finally:
-            if job_started:
-                try:
-                    abort_doc(hdc)
-                except Exception:
-                    pass
-            delete_dc(hdc)
+        return PhysicalPrintEvidence(
+            printer_name=receipt.printer_name,
+            spool_job_id=receipt.job_id,
+            document_name=receipt.document_name,
+            submitted_at=_utc_now(),
+        )
 
 
 @dataclass(frozen=True)
@@ -878,44 +753,14 @@ class PHSLabelRenderer:
         self.output_root = Path(output_root)
 
     @staticmethod
-    def _font(size: int, *, bold: bool = False):
-        from PIL import ImageFont
-
-        candidates = (
-            (
-                r"C:\Windows\Fonts\malgunbd.ttf",
-                r"C:\Windows\Fonts\malgun.ttf",
-            )
-            if bold
-            else (
-                r"C:\Windows\Fonts\malgun.ttf",
-                r"C:\Windows\Fonts\malgunbd.ttf",
-            )
-        )
-        for candidate in candidates:
-            try:
-                return ImageFont.truetype(candidate, size=size)
-            except OSError:
-                continue
-        try:
-            return ImageFont.truetype(
-                "DejaVuSans.ttf", size=size
-            )
-        except OSError:
-            return ImageFont.load_default()
+    def _font(size: int, *, bold: bool = False) -> FontSpec:
+        return FontSpec(size, family="Malgun Gothic", bold=bold)
 
     def render(
         self,
         current_set: Mapping[str, Any],
         target: Mapping[str, Any],
     ) -> RenderedPHSLabel:
-        try:
-            import qrcode
-            from PIL import Image, ImageDraw
-        except Exception as exc:
-            raise PHSPhysicalPrintError(
-                "현품표 PNG 생성에 필요한 qrcode/Pillow 모듈이 없습니다."
-            ) from exc
         label_id = str(target.get("label_id") or "").strip()
         qr_payload = str(target.get("qr_payload") or "").strip()
         business_date = str(
@@ -939,19 +784,6 @@ class PHSLabelRenderer:
         folder.mkdir(parents=True, exist_ok=True)
         output_path = folder / f"{safe_label}.png"
 
-        qr = qrcode.QRCode(
-            version=None,
-            error_correction=qrcode.constants.ERROR_CORRECT_M,
-            box_size=10,
-            border=4,
-        )
-        qr.add_data(qr_payload)
-        qr.make(fit=True)
-        qr_image = qr.make_image(
-            fill_color="black", back_color="white"
-        ).convert("RGB")
-        qr_image.thumbnail((440, 440))
-
         parsed = list(current_set.get("parsed") or [])
         item_code = str(
             target.get("item_id")
@@ -968,69 +800,40 @@ class PHSLabelRenderer:
             or source.get("member_count")
             or 0
         )
-        canvas = Image.new("RGB", (1100, 600), "white")
-        draw = ImageDraw.Draw(canvas)
-        draw.rectangle((8, 8, 1091, 591), outline="black", width=5)
-        canvas.paste(qr_image, (40, 80))
-        draw.text(
-            (530, 55),
-            "PHS 현품표",
-            fill="black",
-            font=self._font(48, bold=True),
-        )
-        draw.text(
-            (530, 145),
-            f"작업일  {business_date}",
-            fill="black",
-            font=self._font(38, bold=True),
-        )
-        draw.text(
-            (530, 215),
-            f"작업코드  {worker_code}",
-            fill="black",
-            font=self._font(34, bold=True),
-        )
-        draw.text(
-            (530, 290),
-            f"품목  {item_code}",
-            fill="black",
-            font=self._font(29),
-        )
-        if item_name:
-            draw.text(
-                (530, 345),
-                item_name[:28],
-                fill="black",
-                font=self._font(27),
-            )
-        draw.text(
-            (530, 410),
-            f"수량  {quantity} Pcs",
-            fill="black",
-            font=self._font(31, bold=True),
-        )
-        draw.text(
-            (530, 490),
-            f"Label  {label_id[:38]}",
-            fill="black",
-            font=self._font(18),
-        )
-
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f"{output_path.stem}.",
-            suffix=".png",
-            dir=str(folder),
-        )
-        os.close(descriptor)
         try:
-            canvas.save(temporary, format="PNG", optimize=True)
-            os.replace(temporary, output_path)
-        finally:
-            try:
-                if os.path.exists(temporary):
-                    os.remove(temporary)
-            except OSError:
-                pass
+            with RasterCanvas(1100, 600, background=(255, 255, 255)) as canvas:
+                canvas.rectangle((8, 8, 1092, 592), outline=(0, 0, 0), width=5)
+                canvas.qr(qr_payload, (40, 80, 480, 520), error_correction="M", border=4)
+                canvas.text((530, 55), "PHS 현품표", font=self._font(48, bold=True))
+                canvas.text(
+                    (530, 145),
+                    f"작업일  {business_date}",
+                    font=self._font(38, bold=True),
+                )
+                canvas.text(
+                    (530, 215),
+                    f"작업코드  {worker_code}",
+                    font=self._font(34, bold=True),
+                )
+                canvas.text((530, 290), f"품목  {item_code}", font=self._font(29))
+                if item_name:
+                    canvas.text((530, 345), item_name[:28], font=self._font(27))
+                canvas.text(
+                    (530, 410),
+                    f"수량  {quantity} Pcs",
+                    font=self._font(31, bold=True),
+                )
+                canvas.text(
+                    (530, 490),
+                    f"Label  {label_id[:38]}",
+                    font=self._font(18),
+                )
+                image = canvas.snapshot()
+            image.save_png(output_path, dpi=(300, 300))
+        except Exception as exc:
+            raise PHSPhysicalPrintError(
+                f"현품표 GDI PNG 생성에 실패했습니다: {exc}"
+            ) from exc
         digest = hashlib.sha256(
             output_path.read_bytes()
         ).hexdigest()

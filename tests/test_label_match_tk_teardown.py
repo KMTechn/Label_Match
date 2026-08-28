@@ -30,8 +30,6 @@ def _isolated_env(data_root):
             "LABEL_MATCH_SESSION_SYNC_TRIGGER": "off",
             "LABEL_MATCH_UPDATE_PROVIDER": "off",
             "KMTECH_TEST_SILENT_AUDIO": "1",
-            "SDL_AUDIODRIVER": "dummy",
-            "PYGAME_HIDE_SUPPORT_PROMPT": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
@@ -51,7 +49,16 @@ def test_direct_destroy_joins_writer_and_tk_workers_in_fresh_process(tmp_path):
             "test_direct_destroy_joins_writer_and_tk_workers_in_fresh_process"
         )
         result = subprocess.run(
-            [sys.executable, "-B", "-m", "pytest", "-q", node_id],
+            [
+                sys.executable,
+                "-B",
+                "-m",
+                "pytest",
+                "-q",
+                node_id,
+                "--basetemp",
+                os.fspath(tmp_path / "child-pytest-temp"),
+            ],
             cwd=os.fspath(Path(__file__).resolve().parents[1]),
             env=_isolated_env(tmp_path / "child-data"),
             capture_output=True,
@@ -133,7 +140,16 @@ def test_active_audio_siren_and_simulation_workers_never_outlive_tcl(
         env = _isolated_env(tmp_path / "active-child-data")
         env[ACTIVE_WORKER_CHILD_GUARD] = "1"
         result = subprocess.run(
-            [sys.executable, "-B", "-m", "pytest", "-q", node_id],
+            [
+                sys.executable,
+                "-B",
+                "-m",
+                "pytest",
+                "-q",
+                node_id,
+                "--basetemp",
+                os.fspath(tmp_path / "active-child-pytest-temp"),
+            ],
             cwd=os.fspath(Path(__file__).resolve().parents[1]),
             env=env,
             capture_output=True,
@@ -170,16 +186,20 @@ def test_active_audio_siren_and_simulation_workers_never_outlive_tcl(
     audio_started = threading.Event()
     audio_release = threading.Event()
 
-    class FakeMixer:
-        def init(self):
-            audio_started.set()
-            audio_release.wait(30)
+    class FakeWinsound:
+        SND_FILENAME = 0x00020000
+        SND_ASYNC = 0x0001
+        SND_NODEFAULT = 0x0002
+        SND_LOOP = 0x0008
 
-        def quit(self):
+        def PlaySound(self, sound, flags):
+            if sound is None and not audio_started.is_set():
+                audio_started.set()
+                audio_release.wait(30)
             return None
 
-    fake_pygame = types.SimpleNamespace(mixer=FakeMixer())
-    monkeypatch.setitem(sys.modules, "pygame", fake_pygame)
+    fake_winsound = FakeWinsound()
+    monkeypatch.setitem(sys.modules, "winsound", fake_winsound)
     monkeypatch.setattr(module, "_label_match_automated_test_mode", lambda: False)
     monkeypatch.setattr(module, "_label_match_audio_enabled", lambda: True)
 

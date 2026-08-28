@@ -5,6 +5,8 @@ import traceback
 from datetime import datetime, date, timezone
 from pathlib import Path
 
+from kmtech_zero_pe import RasterCanvas
+
 from kmtech_factory_contracts import load_and_verify_contract_lock
 from protected_admin import (
     PROTECTED_ADMIN_DISPLAY_NAME,
@@ -402,6 +404,25 @@ def _label_match_audio_enabled():
         return False
     value = os.environ.get(LABEL_MATCH_AUDIO_ENABLED_ENV, "on").strip().lower()
     return value not in {"0", "false", "no", "off", "disabled"}
+
+
+class _WindowsWaveSound:
+    """Keep the application's small sound-object surface on stdlib winsound."""
+
+    def __init__(self, path, winsound_module):
+        self.path = os.fspath(path)
+        self._winsound = winsound_module
+
+    def play(self, *, loops=0):
+        flags = self._winsound.SND_FILENAME | self._winsound.SND_ASYNC
+        flags |= getattr(self._winsound, "SND_NODEFAULT", 0)
+        if int(loops) < 0:
+            flags |= self._winsound.SND_LOOP
+        self._winsound.PlaySound(self.path, flags)
+        return True
+
+    def stop(self):
+        self._winsound.PlaySound(None, 0)
 
 
 def _label_match_automated_test_mode():
@@ -4884,7 +4905,7 @@ class Label_Match(tk.Tk):
         self.audio_error = ""
         self.audio_init_finished = False
         self.audio_init_started = False
-        self.pygame_module = None
+        self.audio_module = None
         
         self.is_running_simulation = False
         self.simulation_scenarios = []
@@ -5486,33 +5507,21 @@ class Label_Match(tk.Tk):
         def initialize_audio():
             error_message = ""
             ready = False
-            pygame_module = None
+            audio_module = None
             try:
-                import pygame
+                import winsound
 
-                pygame.mixer.init()
-                pygame_module = pygame
-                if stop_event.is_set():
-                    pygame.mixer.quit()
-                    return
+                audio_module = winsound
+                winsound.PlaySound(None, 0)
                 ready = True
             except Exception as exc:
                 error_message = str(exc)
             if stop_event.is_set():
-                if pygame_module is not None:
-                    try:
-                        pygame_module.mixer.quit()
-                    except Exception:
-                        pass
                 return
             try:
-                result_queue.put_nowait((pygame_module, ready, error_message))
+                result_queue.put_nowait((audio_module, ready, error_message))
             except queue.Full:
-                if pygame_module is not None:
-                    try:
-                        pygame_module.mixer.quit()
-                    except Exception:
-                        pass
+                pass
 
         self._audio_init_thread = threading.Thread(
             target=initialize_audio,
@@ -5527,7 +5536,7 @@ class Label_Match(tk.Tk):
         if self.__dict__.get("_tk_shutdown_requested", False):
             return None
         try:
-            pygame_module, ready, error_message = (
+            audio_module, ready, error_message = (
                 self._audio_init_result_queue.get_nowait()
             )
         except queue.Empty:
@@ -5539,7 +5548,7 @@ class Label_Match(tk.Tk):
                 return thread
             self.audio_init_finished = True
             return None
-        self.pygame_module = pygame_module
+        self.audio_module = audio_module
         self.audio_ready = bool(ready)
         self.audio_error = str(error_message or "")
         self.audio_init_finished = True
@@ -5778,10 +5787,10 @@ class Label_Match(tk.Tk):
         if not self.audio_ready:
             return {}
         sound_objects = {}
-        pygame_module = self.pygame_module
-        if pygame_module is None:
+        audio_module = self.audio_module
+        if audio_module is None:
             try:
-                import pygame as pygame_module
+                import winsound as audio_module
             except Exception as e:
                 print(f"사운드 모듈 로드 오류: {e}")
                 return {}
@@ -5789,7 +5798,7 @@ class Label_Match(tk.Tk):
             sound_path = resource_path(os.path.join("assets", filename))
             if os.path.exists(sound_path):
                 try:
-                    sound_objects[key] = pygame_module.mixer.Sound(sound_path)
+                    sound_objects[key] = _WindowsWaveSound(sound_path, audio_module)
                 except Exception as e:
                     print(f"사운드 로드 오류 ({filename}): {e}")
             else:
@@ -6813,18 +6822,13 @@ class Label_Match(tk.Tk):
             if audio_result_queue is not None:
                 while True:
                     try:
-                        queued_pygame, _ready, _error = audio_result_queue.get_nowait()
+                        _queued_audio, _ready, _error = audio_result_queue.get_nowait()
                     except queue.Empty:
                         break
-                    if queued_pygame is not None:
-                        try:
-                            queued_pygame.mixer.quit()
-                        except Exception:
-                            pass
-            pygame_module = state.get("pygame_module")
-            if pygame_module is not None:
+            audio_module = state.get("audio_module")
+            if audio_module is not None:
                 try:
-                    pygame_module.mixer.quit()
+                    audio_module.PlaySound(None, 0)
                 except Exception:
                     pass
             try:
@@ -8818,18 +8822,15 @@ class Label_Match(tk.Tk):
         qr_holder = ttk.Label(frame)
         qr_holder.pack(pady=8)
         try:
-            import qrcode
-            from PIL import ImageTk
-
-            qr_code = qrcode.QRCode(
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=4,
-                border=4,
-            )
-            qr_code.add_data(attempt.new_seal_qr_payload)
-            qr_code.make(fit=True)
-            image = qr_code.make_image(fill_color="black", back_color="white")
-            photo = ImageTk.PhotoImage(image)
+            with RasterCanvas(256, 256, background=(255, 255, 255)) as canvas:
+                canvas.qr(
+                    attempt.new_seal_qr_payload,
+                    (0, 0, 256, 256),
+                    error_correction="L",
+                    border=4,
+                )
+                image = canvas.snapshot()
+            photo = image.to_tk_photo_image(master=popup)
             qr_holder.configure(image=photo)
             popup._sealed_qr_photo = photo
         except Exception as exc:
@@ -16549,7 +16550,7 @@ class Label_Match(tk.Tk):
             try:
                 sound.play()
             except Exception as e:
-                print(f"pygame 사운드 재생 오류: {e}")
+                print(f"winsound 사운드 재생 오류: {e}")
         else:
             if sound_key in self.sounds:
                 print(f"경고: 사운드 키 '{sound_key}'가 존재하지만, 로드되지 않았습니다. 파일 경로를 확인하세요.")

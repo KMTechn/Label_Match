@@ -1,10 +1,12 @@
 {
   "files": {
-    "kmtech_zero_pe/__init__.py": "9b53fe7481609d85c4a686db53b847d3c6a38060051535fea157a5ee7c5d0f55",
+    "kmtech_zero_pe/__init__.py": "939f12affe19c74a01de89b053fc40aca5f5efa3f8d81ec8fc18892451e89d5e",
     "kmtech_zero_pe/cng_p256.py": "bd792c05e9f9c288469c92ecbdcdc088cc21dcfd7760c82ddcaa89ea48fc770b",
-    "kmtech_zero_pe/possession_key.py": "818355683e2c893b4b2afd368c08012f15b1fd18e60db5bdbddbfb254b2f3e73"
+    "kmtech_zero_pe/gdi_print.py": "48453e70a4bdd2008c2e4565bf647a852f319322458f9dc5a094a064274faece",
+    "kmtech_zero_pe/possession_key.py": "818355683e2c893b4b2afd368c08012f15b1fd18e60db5bdbddbfb254b2f3e73",
+    "kmtech_zero_pe/raster.py": "1296fc461e349cc02c1379b09096559203d2ec22cdc27c780958a05006d97c48"
   },
   "schema_version": "kmtech-zero-pe-vendor-v1",
   "source_commit": "67db9569bcf7f1eacebeed664f00b4c51e48ff54",
-  "source_name": "seq275-possession-key-adapter"
+  "source_name": "seq259-zero-pe-contract+seq275-possession-key-adapter"
 }

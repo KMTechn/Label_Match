@@ -1,6 +1,5 @@
-Pillow
 qrcode
-pygame
 requests
+chardet
 tkcalendar
 cryptography

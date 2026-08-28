@@ -41,6 +41,15 @@ from .possession_key import (
     SCOPE_LOCAL_MACHINE,
     validated_reattach_proof,
 )
+from .gdi_print import (
+    GdiPrinter,
+    MarginsMM,
+    PaperSpec,
+    PrinterError,
+    PrintReceipt,
+    PrintSpec,
+)
+from .raster import FontSpec, GdiRenderError, RasterCanvas, RasterError, RasterImage
 
 
 CONTRACT_VERSION = "kmtech-zero-pe-contract-v1+possession-ncrypt-v1"
@@ -54,6 +63,9 @@ __all__ = [
     "DEFAULT_KEY_NAME",
     "DEFAULT_KEY_SCOPE",
     "ExportPolicyViolation",
+    "FontSpec",
+    "GdiPrinter",
+    "GdiRenderError",
     "JwsErrorCodes",
     "KeyDescriptor",
     "KeyPolicyError",
@@ -66,8 +78,12 @@ __all__ = [
     "P256KeyError",
     "P256KeyPair",
     "P256SignatureError",
+    "PaperSpec",
     "POSSESSION_KEY_CONTRACT_VERSION",
     "PersistentPossessionKey",
+    "PrinterError",
+    "PrintReceipt",
+    "PrintSpec",
     "REATTACH_AUDIENCE",
     "REATTACH_CANONICAL_KEY_ORDER",
     "REATTACH_PROOF_CONTRACT_VERSION",
@@ -75,6 +91,9 @@ __all__ = [
     "ReattachProofError",
     "SCOPE_CURRENT_USER",
     "SCOPE_LOCAL_MACHINE",
+    "RasterCanvas",
+    "RasterError",
+    "RasterImage",
     "b64url_decode",
     "b64url_encode",
     "canonical_json_bytes",
