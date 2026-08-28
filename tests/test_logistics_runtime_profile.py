@@ -106,6 +106,105 @@ def _private_ca_pem() -> bytes:
     return certificate.public_bytes(serialization.Encoding.PEM)
 
 
+def _machine_enrollment_response(timeout_seconds):
+    return {
+        "key_id": "producer-key-01",
+        "secret": "producer-secret-01",
+        "machine_credential_bundle": {
+            "contract_version": "producer-self-enrollment-machine-credentials-v1",
+            "bindings": {
+                "app": "label_match",
+                "program": "Label_Match",
+                "source_host_id": "label-host-01",
+                "device_id": "label-pc-01",
+                "authority_scope_id": "scope-machine",
+            },
+            "credentials": {
+                "producer_ingest": {
+                    "audience": "producer-ingest-hmac-v1",
+                    "auth_scheme": "hmac-sha256",
+                    "key_id": "producer-key-01",
+                    "secret": "producer-secret-01",
+                },
+                "logistics": {
+                    "audience": "worker-analysis-logistics-v1",
+                    "auth_scheme": "bearer",
+                    "token_header": "X-Logistics-API-Token",
+                    "token": "logistics-token-01",
+                },
+            },
+            "profiles": {
+                "logistics": {
+                    "contract_version": "km-logistics-runtime-profile-v1",
+                    "base_url": "https://logistics.example.invalid",
+                    "authority_scope": "scope-machine",
+                    "authority_epoch": 7,
+                    "authority_plane": "AUTHORITATIVE",
+                    "ledger_plane": "AUTHORITATIVE",
+                    "plane_epoch": 3,
+                    "device_id": "label-pc-01",
+                    "source_host_id": "label-host-01",
+                    "timeout_seconds": timeout_seconds,
+                }
+            },
+        },
+    }
+
+
+def test_profile_rotation_semantic_comparison_normalizes_only_json_numbers():
+    equal = profile_installer_module._semantic_json_equal
+
+    assert equal({"timeout_seconds": 10.0}, {"timeout_seconds": 10}) is True
+    assert equal({"timeout_seconds": 10}, {"timeout_seconds": 10.5}) is False
+    assert equal({"timeout_seconds": 10}, {"timeout_seconds": "10"}) is False
+    assert equal({"timeout_seconds": 1}, {"timeout_seconds": True}) is False
+    assert equal({"timeout_seconds": 0}, {"timeout_seconds": None}) is False
+
+
+def test_enrollment_profile_reuses_float_timeout_for_equivalent_integer(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    monkeypatch.setattr(
+        profile_installer_module,
+        "protect_current_user_secret",
+        lambda value: b"user-dpapi:" + value.encode("utf-8"),
+    )
+    monkeypatch.setattr(
+        profile_installer_module,
+        "unprotect_current_user_secret",
+        lambda value: value.removeprefix(b"user-dpapi:").decode("utf-8"),
+    )
+    arguments = {
+        "expected_app": "label_match",
+        "expected_program": "Label_Match",
+        "expected_source_host_id": "label-host-01",
+        "expected_device_id": "label-pc-01",
+        "profile_path": target,
+        "credential_scope": "current_user",
+    }
+
+    installed = profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10.0), **arguments
+    )
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    secret_before = secret_path.read_bytes()
+    reused = profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10), **arguments
+    )
+
+    assert installed["status"] == "installed"
+    assert reused["status"] == "reused"
+    assert json.loads(target.read_text(encoding="utf-8"))["timeout_seconds"] == 10.0
+    assert secret_path.read_bytes() == secret_before
+
+    for conflicting in (10.5, "10", True):
+        with pytest.raises(FileExistsError, match="conflicts with enrollment"):
+            profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+                _machine_enrollment_response(conflicting), **arguments
+            )
+
+
 def test_default_profile_path_is_program_scoped(tmp_path):
     assert default_logistics_profile_path({"PROGRAMDATA": str(tmp_path)}) == (
         tmp_path

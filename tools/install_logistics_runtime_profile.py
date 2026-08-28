@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace as dataclass_replace
+from decimal import Decimal
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -80,6 +82,57 @@ class _ResolvedTlsCaBundle:
     source_path: Path
     target_path: Path
     content: bytes
+
+
+def _semantic_json_value(value: Any) -> tuple[Any, ...]:
+    """Normalize number spelling while preserving every JSON value type."""
+
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return ("boolean", value)
+    if isinstance(value, int):
+        return ("number", Decimal(value))
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("profile comparison requires finite JSON numbers")
+        return ("number", Decimal(str(value)))
+    if isinstance(value, str):
+        return ("string", value)
+    if isinstance(value, Mapping):
+        return (
+            "object",
+            tuple(
+                (str(key), _semantic_json_value(item))
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            ),
+        )
+    if isinstance(value, (list, tuple)):
+        return ("array", tuple(_semantic_json_value(item) for item in value))
+    raise TypeError(
+        "profile comparison value is not JSON-compatible: "
+        f"{type(value).__name__}"
+    )
+
+
+def _semantic_json_equal(left: Any, right: Any) -> bool:
+    return _semantic_json_value(left) == _semantic_json_value(right)
+
+
+def _read_existing_profile_values_for_comparison(path: Path) -> dict[str, Any]:
+    """Read the already-validated profile again without erasing JSON types."""
+
+    try:
+        value = json.loads(path.read_bytes().decode("utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "existing machine logistics profile cannot be compared"
+        ) from exc
+    if not isinstance(value, dict):
+        raise LogisticsRuntimeConfigurationError(
+            "existing machine logistics profile comparison requires an object"
+        )
+    return value
 
 
 def _validate_tls_ca_bundle_pem(content: bytes) -> None:
@@ -538,6 +591,11 @@ def ensure_runtime_profile_from_enrollment_bundle(
                 else None
             ),
         )
+        existing_values = _read_existing_profile_values_for_comparison(target)
+        if not _semantic_json_equal(existing_values, values):
+            raise FileExistsError(
+                "existing machine logistics profile conflicts with enrollment"
+            )
         if existing != candidate:
             raise FileExistsError("existing machine logistics profile conflicts with enrollment")
         if tls_ca_bundle is not None:
