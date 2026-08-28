@@ -919,6 +919,7 @@ $nativeFreeOverrides = Initialize-NativeFreeOverrides `
 $nativeFreePyInstallerArguments = @(
     "--paths", $nativeFreeOverrides.override_root,
     "--additional-hooks-dir", $nativeFreeOverrides.hook_root,
+    "--exclude-module", "PIL",
     "--exclude-module", "pygame",
     "--exclude-module", "charset_normalizer.md__mypyc"
 )

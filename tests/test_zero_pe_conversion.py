@@ -94,6 +94,7 @@ def test_frozen_builder_forces_source_only_charset_and_excludes_removed_packages
     assert "Initialize-NativeFreeOverrides" in source
     assert "Assert-LowRiskNativeFreePackage" in source
     assert '"--additional-hooks-dir", $nativeFreeOverrides.hook_root' in source
+    assert '"--exclude-module", "PIL"' in source
     assert '"--exclude-module", "pygame"' in source
     assert '"--exclude-module", "charset_normalizer.md__mypyc"' in source
     assert '"--hidden-import", "pygame"' not in source
