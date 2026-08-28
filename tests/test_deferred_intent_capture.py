@@ -4,8 +4,11 @@ import hashlib
 import hmac
 import json
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +18,15 @@ from deferred_intent_capture import (
     CAPTURE_C14N_VERSION,
     CAPTURE_SCHEMA_VERSION,
     CONTRACT_VERSION,
+    DEFERRED_ALERT_THRESHOLDS,
+    DEFERRED_INTENT_STATES,
+    DEFERRED_OPERATOR_STATUS_GROUPS,
+    DEFERRED_OPERATOR_STATE_LABELS,
+    LEGACY_CONTRACT_VERSION,
+    LEGACY_PAYLOAD_PROTECTION,
+    PAYLOAD_PROTECTION,
+    QUARANTINE_EXCLUSION_PREDICATE_SQL,
+    QUARANTINE_PREDICATE_SQL,
     DeferredIntentBinding,
     DeferredIntentCaptureError,
     DeferredIntentCaptureStore,
@@ -22,6 +34,11 @@ from deferred_intent_capture import (
     DeferredValidationResult,
     append_transition_audit,
     canonical_json_bytes,
+    canonical_sha256,
+    common_reader_v2_entropy,
+    ensure_deferred_intent_schema_compatibility,
+    operator_safe_reason_code,
+    payload_protection_entropy,
 )
 from package_logistics import (
     PackageApiError,
@@ -38,8 +55,8 @@ CONTRACT_PATH = Path(
 VECTORS_PATH = Path(
     r"E:\KMTech\autoloop-20260824\seq292-intent-contract\golden-vectors.json"
 )
-CONTRACT_SHA256 = "cbb9f75ab42fdeaebe10e78e7d27656663c6b72bd42c8c05b39304ce9f904bcf"
-VECTORS_SHA256 = "c74de654e457cea8b771b3833b20d9e7513352398a55cdfe5d425c1b2ffc2971"
+CONTRACT_SHA256 = "557bc72dfb44dba859a5cb18a606a933f6259573fed9cf6df7044a9ba4b09074"
+VECTORS_SHA256 = "047e572ef07cbbec64b7b735b5bd9e5fdfefeafefe7db24908f81cd7a34a2507"
 
 
 def _binding() -> DeferredIntentBinding:
@@ -63,6 +80,18 @@ def _unprotect(ciphertext: bytes) -> bytes:
     return bytes(item ^ 0xA5 for item in value[2:])
 
 
+def _protect_v2(cleartext: bytes, entropy: bytes) -> bytes:
+    return b"T2" + bytes(entropy) + bytes(value ^ 0x5A for value in cleartext)
+
+
+def _unprotect_v2(ciphertext: bytes, entropy: bytes) -> bytes:
+    value = bytes(ciphertext)
+    expected_prefix = b"T2" + bytes(entropy)
+    if not value.startswith(expected_prefix):
+        raise ValueError("invalid test v2 protection envelope or entropy")
+    return bytes(item ^ 0x5A for item in value[len(expected_prefix) :])
+
+
 def _store(tmp_path: Path, *, max_pending_intents: int = 10_000):
     db_path = tmp_path / "package_logistics_outbox.sqlite3"
     outbox = PackageOutbox(db_path)
@@ -71,6 +100,8 @@ def _store(tmp_path: Path, *, max_pending_intents: int = 10_000):
         _binding(),
         protect_bytes=_protect,
         unprotect_bytes=_unprotect,
+        protect_payload_bytes=_protect_v2,
+        unprotect_payload_bytes=_unprotect_v2,
         max_pending_intents=max_pending_intents,
         initialize_schema=False,
     )
@@ -82,6 +113,17 @@ def _capture(store, *, set_id="1787940225728641500", scan="PHS2-MEASURED"):
         local_work_identity=set_id,
         physical_qr_payload=scan,
         item_code="ITEM-LABEL-1",
+    )
+
+
+def _payload_entropy_for_row(row) -> bytes:
+    return payload_protection_entropy(
+        app_id=row["app_id"],
+        authority_scope_id=row["authority_scope_id"],
+        capture_key=row["capture_key"],
+        contract_version=row["contract_version"],
+        intent_kind=row["intent_kind"],
+        producer_install_id=row["producer_install_id"],
     )
 
 
@@ -110,6 +152,248 @@ def _row(db_path: Path, intent_id: str):
 
 def _count(conn, table: str) -> int:
     return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def _insert_status_fixture(
+    conn,
+    *,
+    index,
+    state,
+    partition_key="P-STATUS",
+    partition_seq=1,
+    created_at="2026-08-28T00:00:00Z",
+    updated_at=None,
+    reason_code=None,
+    next_attempt_at=None,
+    downstream_outbox_ref=None,
+):
+    digest = hashlib.sha256(f"fixture:{index}".encode("ascii")).hexdigest()
+    command_states = {
+        "READY_TO_SUBMIT",
+        "SUBMITTING",
+        "RETRY_WAIT_SUBMIT",
+        "RECONCILE_PENDING_SUBMIT",
+        "ACKED",
+        "LOCAL_EFFECT_PENDING",
+        "COMPLETED",
+    }
+    receipt_states = {"ACKED", "LOCAL_EFFECT_PENDING", "COMPLETED"}
+    command = state in command_states
+    receipt = state in receipt_states
+    local_effect_state = (
+        "APPLIED"
+        if state == "COMPLETED"
+        else "PENDING"
+        if state == "LOCAL_EFFECT_PENDING"
+        else "NONE"
+    )
+    intent_id = "di_" + digest
+    conn.execute(
+        """INSERT INTO deferred_intents(
+               intent_id,contract_version,app_id,intent_kind,state,
+               producer_id,producer_install_id,source_host_id,manifest_hash,
+               authority_scope_id,partition_key,partition_seq,local_work_identity,
+               capture_key,capture_schema_version,capture_c14n_version,
+               payload_protection,payload_ciphertext,payload_hash,binding_hash,
+               authenticated_seal,seal_key_ref,command_json,command_hash,
+               command_bound_snapshot_hash,server_idempotency_key,receipt_json,
+               receipt_hash,downstream_outbox_ref,local_effect_state,next_attempt_at,
+               last_reason_code,last_error_code,created_at,updated_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            intent_id,
+            CONTRACT_VERSION,
+            "label",
+            "LABEL_PACKAGE_SOURCE",
+            state,
+            _binding().producer_id,
+            _binding().producer_install_id,
+            _binding().source_host_id,
+            _binding().manifest_hash,
+            _binding().authority_scope_id,
+            partition_key,
+            partition_seq,
+            f"set-{index}",
+            hashlib.sha256(f"capture:{index}".encode("ascii")).hexdigest(),
+            CAPTURE_SCHEMA_VERSION,
+            CAPTURE_C14N_VERSION,
+            PAYLOAD_PROTECTION,
+            b"encrypted-fixture",
+            hashlib.sha256(f"payload:{index}".encode("ascii")).hexdigest(),
+            hashlib.sha256(f"binding:{index}".encode("ascii")).hexdigest(),
+            b"authenticated-fixture",
+            "file:deferred-intent-seal-key.current-user.dpapi#WIN_DPAPI_CURRENT_USER_V1",
+            "{}" if command else None,
+            hashlib.sha256(f"command:{index}".encode("ascii")).hexdigest()
+            if command
+            else None,
+            hashlib.sha256(f"snapshot:{index}".encode("ascii")).hexdigest()
+            if command
+            else None,
+            f"submit-{digest}" if command else None,
+            "{}" if receipt else None,
+            hashlib.sha256(f"receipt:{index}".encode("ascii")).hexdigest()
+            if receipt
+            else None,
+            downstream_outbox_ref,
+            local_effect_state,
+            next_attempt_at,
+            reason_code,
+            reason_code,
+            created_at,
+            updated_at or created_at,
+        ),
+    )
+    return intent_id
+
+
+def _legacy_v1_schema_sql() -> str:
+    from deferred_intent_capture import DEFERRED_INTENT_SCHEMA_SQL
+
+    value = DEFERRED_INTENT_SCHEMA_SQL
+    value = value.replace(
+        "contract_version TEXT NOT NULL CHECK (contract_version IN (\n"
+        "        'kmtech.deferred-intent.v1','kmtech.deferred-intent.v1.1'\n"
+        "    )),",
+        "contract_version TEXT NOT NULL CHECK (contract_version = 'kmtech.deferred-intent.v1'),",
+    )
+    value = value.replace(
+        "payload_protection TEXT NOT NULL CHECK (payload_protection IN (\n"
+        "        'WIN_DPAPI_CURRENT_USER_V1','WIN_DPAPI_CURRENT_USER_V2'\n"
+        "    )),",
+        "payload_protection TEXT NOT NULL CHECK (payload_protection = 'WIN_DPAPI_CURRENT_USER_V1'),",
+    )
+    value = value.replace(
+        "    CHECK (\n"
+        "        (contract_version='kmtech.deferred-intent.v1' AND\n"
+        "         payload_protection='WIN_DPAPI_CURRENT_USER_V1') OR\n"
+        "        (contract_version='kmtech.deferred-intent.v1.1' AND\n"
+        "         payload_protection='WIN_DPAPI_CURRENT_USER_V2')\n"
+        "    ),\n",
+        "",
+    )
+    value = value.replace(
+        "        'T1_CAPTURE','T1D_DUPLICATE_SUPPRESSED',\n",
+        "        'T1_CAPTURE',\n",
+    )
+    assert "WIN_DPAPI_CURRENT_USER_V2" not in value
+    assert "T1D_DUPLICATE_SUPPRESSED" not in value
+    return value
+
+
+def _seed_legacy_label_intent(
+    conn: sqlite3.Connection,
+    *,
+    work_id: str = "1787940225728641500",
+    scan: str = "PHS2-MEASURED",
+    partition_seq: int = 1,
+    seal_key: bytes = b"k" * 32,
+):
+    binding = _binding()
+    payload = {
+        "app_id": "label",
+        "capture_schema_version": CAPTURE_SCHEMA_VERSION,
+        "intent_kind": "LABEL_PACKAGE_SOURCE",
+        "item_code": "ITEM-LABEL-1",
+        "local_work_identity": work_id,
+        "physical_qr_payload": scan,
+    }
+    payload_bytes = canonical_json_bytes(payload)
+    payload_hash = hashlib.sha256(payload_bytes).hexdigest()
+    identity = DeferredIntentCaptureStore._capture_identity(
+        binding,
+        local_work_identity=work_id,
+        partition_key="label-package-source",
+        contract_version=LEGACY_CONTRACT_VERSION,
+    )
+    capture_key = canonical_sha256(identity)
+    intent_id = "di_" + canonical_sha256({**identity, "payload_hash": payload_hash})
+    seal_binding = DeferredIntentCaptureStore._seal_binding(
+        binding,
+        capture_key=capture_key,
+        intent_id=intent_id,
+        payload_hash=payload_hash,
+        partition_seq=partition_seq,
+        contract_version=LEGACY_CONTRACT_VERSION,
+    )
+    seal_bytes = canonical_json_bytes(seal_binding)
+    now = "2026-08-29T00:00:00Z"
+    conn.execute(
+        """INSERT INTO deferred_intents(
+               intent_id,contract_version,app_id,intent_kind,state,
+               producer_id,producer_install_id,source_host_id,manifest_hash,
+               authority_scope_id,partition_key,partition_seq,local_work_identity,
+               capture_key,capture_schema_version,capture_c14n_version,
+               payload_protection,payload_ciphertext,payload_hash,binding_hash,
+               authenticated_seal,seal_key_ref,validation_generation,
+               created_at,updated_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            intent_id,
+            LEGACY_CONTRACT_VERSION,
+            "label",
+            "LABEL_PACKAGE_SOURCE",
+            "CAPTURED_UNVERIFIED",
+            binding.producer_id,
+            binding.producer_install_id,
+            binding.source_host_id,
+            binding.manifest_hash,
+            binding.authority_scope_id,
+            "label-package-source",
+            partition_seq,
+            work_id,
+            capture_key,
+            CAPTURE_SCHEMA_VERSION,
+            CAPTURE_C14N_VERSION,
+            LEGACY_PAYLOAD_PROTECTION,
+            _protect(payload_bytes),
+            payload_hash,
+            hashlib.sha256(seal_bytes).hexdigest(),
+            hmac.new(seal_key, seal_bytes, hashlib.sha256).digest(),
+            "file:deferred-intent-seal-key.current-user.dpapi#WIN_DPAPI_CURRENT_USER_V1",
+            1,
+            now,
+            now,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO deferred_intent_validation_steps(
+               intent_id,validation_generation,step_ordinal,step_id,step_kind,
+               step_effect,validator_contract,validator_version,status,
+               attempt_count,fence,created_at,updated_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            intent_id,
+            1,
+            1,
+            "legacy-fixture-step",
+            "PACKAGE_SOURCE",
+            "READ_ONLY",
+            "legacy-label-validator-v1",
+            "legacy-fixture",
+            "PLANNED",
+            0,
+            0,
+            now,
+            now,
+        ),
+    )
+    append_transition_audit(
+        conn,
+        intent_id=intent_id,
+        from_state=None,
+        to_state="CAPTURED_UNVERIFIED",
+        transition_code="T1_CAPTURE",
+        reason_code="CAPTURE_COMMITTED_BEFORE_REMOTE",
+        occurred_at=now,
+        evidence_hash=payload_hash,
+    )
+    return {
+        "intent_id": intent_id,
+        "capture_key": capture_key,
+        "payload_bytes": payload_bytes,
+        "payload_hash": payload_hash,
+    }
 
 
 def test_label_binding_reads_only_secret_free_enrollment_artifacts(tmp_path):
@@ -182,7 +466,7 @@ def test_frozen_contract_and_35_golden_vectors_are_exact():
     vectors = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
     assert vectors["contract_version"] == CONTRACT_VERSION
     assert len(vectors["states"]) == 17
-    assert len(vectors["transition_codes"]) == 26
+    assert len(vectors["transition_codes"]) == 27
     assert len(vectors["cases"]) == 35
     assert {
         "MEASURED_LABEL_CLOSED_PORT_CAPTURE_PRESERVES_SCAN",
@@ -396,6 +680,14 @@ def _execute_frozen_vector(case, vectors):
                 else None
             ),
             "capture_schema_version": CAPTURE_SCHEMA_VERSION,
+            "payload_protection": PAYLOAD_PROTECTION,
+            "transition_code": (
+                "T1D_DUPLICATE_SUPPRESSED"
+                if operation == "capture_duplicate"
+                else "T1_CAPTURE"
+                if operation == "capture_commit"
+                else None
+            ),
             "command_hash_unchanged": True,
             "command_present": command_present,
             "contract_version": CONTRACT_VERSION,
@@ -552,13 +844,18 @@ def test_measured_closed_port_capture_is_durable_encrypted_and_no_effect(tmp_pat
     assert row["contract_version"] == CONTRACT_VERSION
     assert row["capture_schema_version"] == 1
     assert row["capture_c14n_version"] == CAPTURE_C14N_VERSION
-    assert row["payload_protection"] == "WIN_DPAPI_CURRENT_USER_V1"
+    assert row["payload_protection"] == PAYLOAD_PROTECTION
     assert row["validation_snapshot_hash"] is None
     assert row["command_json"] is None
     assert row["receipt_json"] is None
     assert row["downstream_outbox_ref"] is None
     assert b"PHS2-MEASURED" not in bytes(row["payload_ciphertext"])
-    payload = json.loads(_unprotect(bytes(row["payload_ciphertext"])))
+    payload = json.loads(
+        _unprotect_v2(
+            bytes(row["payload_ciphertext"]),
+            _payload_entropy_for_row(row),
+        )
+    )
     assert payload["physical_qr_payload"] == "PHS2-MEASURED"
     assert hashlib.sha256(canonical_json_bytes(payload)).hexdigest() == row["payload_hash"]
     with sqlite3.connect(db_path) as conn:
@@ -618,9 +915,160 @@ def test_real_current_user_dpapi_roundtrip_contains_no_plaintext_row(tmp_path):
     row = _row(db_path, result.intent_id)
     ciphertext = bytes(row["payload_ciphertext"])
     assert b"PHS2-REAL-DPAPI" not in ciphertext
-    decoded = json.loads(store._dpapi_unprotect_bytes(ciphertext))
+    entropy = _payload_entropy_for_row(row)
+    decoded = json.loads(store._dpapi_unprotect_payload_v2(ciphertext, entropy))
     assert decoded["physical_qr_payload"] == "PHS2-REAL-DPAPI"
     assert len(store._dpapi_unprotect_bytes(store.seal_key_path.read_bytes())) == 32
+
+
+def test_v2_entropy_is_exact_and_common_reader_refuses_v1_before_decoder(tmp_path):
+    _db_path, _outbox, store = _store(tmp_path)
+    row = {
+        "contract_version": CONTRACT_VERSION,
+        "app_id": "label",
+        "intent_kind": "LABEL_PACKAGE_SOURCE",
+        "producer_install_id": "install-label-measured",
+        "authority_scope_id": "SCOPE-LABEL-MEASURED",
+        "capture_key": "c" * 64,
+        "payload_protection": PAYLOAD_PROTECTION,
+        "payload_ciphertext": b"ciphertext",
+    }
+    expected_context = {
+        "app_id": "label",
+        "authority_scope_id": "SCOPE-LABEL-MEASURED",
+        "capture_key": "c" * 64,
+        "contract_version": CONTRACT_VERSION,
+        "intent_kind": "LABEL_PACKAGE_SOURCE",
+        "producer_install_id": "install-label-measured",
+        "purpose": "kmtech.deferred-intent.payload-protection.v2",
+    }
+    expected_entropy = hashlib.sha256(
+        canonical_json_bytes(expected_context)
+    ).digest()
+    assert payload_protection_entropy(
+        **{
+            key: row[key]
+            for key in (
+                "app_id",
+                "authority_scope_id",
+                "capture_key",
+                "contract_version",
+                "intent_kind",
+                "producer_install_id",
+            )
+        }
+    ) == expected_entropy
+    assert common_reader_v2_entropy(row) == expected_entropy
+    calls = []
+    store._unprotect_payload_bytes = lambda ciphertext, entropy: (
+        calls.append((bytes(ciphertext), bytes(entropy))) or b"raw"
+    )
+    assert store.unprotect_payload_for_common_reader(row) == b"raw"
+    assert calls == [(b"ciphertext", expected_entropy)]
+
+    legacy = dict(
+        row,
+        contract_version=LEGACY_CONTRACT_VERSION,
+        payload_protection=LEGACY_PAYLOAD_PROTECTION,
+    )
+    with pytest.raises(DeferredIntentCaptureError) as ambiguous:
+        common_reader_v2_entropy(legacy)
+    assert ambiguous.value.code == "AMBIGUOUS_PAYLOAD_PROTECTION_V1"
+    assert calls == [(b"ciphertext", expected_entropy)]
+    with pytest.raises(DeferredIntentCaptureError) as owned_missing:
+        store.read_owned_payload_bytes("di_" + "0" * 64)
+    assert owned_missing.value.code == "DEFERRED_INTENT_NOT_FOUND"
+
+
+def test_v1_schema_migration_preserves_all_three_tables_and_label_decoder(tmp_path):
+    db_path = tmp_path / "legacy-label-v1.sqlite3"
+    seal_key_path = tmp_path / "deferred-intent-seal-key.current-user.dpapi"
+    seal_key_path.write_bytes(_protect(b"k" * 32))
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_legacy_v1_schema_sql())
+        legacy = _seed_legacy_label_intent(conn)
+        conn.commit()
+        before = {
+            table: conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
+            for table in (
+                "deferred_intents",
+                "deferred_intent_validation_steps",
+                "deferred_intent_transition_audit",
+            )
+        }
+        assert ensure_deferred_intent_schema_compatibility(conn) is True
+        after = {
+            table: conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
+            for table in before
+        }
+        assert after == before
+        assert ensure_deferred_intent_schema_compatibility(conn) is False
+
+    store = DeferredIntentCaptureStore(
+        db_path,
+        _binding(),
+        protect_bytes=_protect,
+        unprotect_bytes=_unprotect,
+        protect_payload_bytes=_protect_v2,
+        unprotect_payload_bytes=_unprotect_v2,
+        initialize_schema=True,
+    )
+    duplicate = _capture(store)
+    assert duplicate.intent_id == legacy["intent_id"]
+    assert duplicate.duplicate is True
+    row = _row(db_path, legacy["intent_id"])
+    assert row["contract_version"] == LEGACY_CONTRACT_VERSION
+    assert row["payload_protection"] == LEGACY_PAYLOAD_PROTECTION
+    assert bytes(row["payload_ciphertext"]) == _protect(legacy["payload_bytes"])
+    assert store.read_owned_payload_bytes(legacy["intent_id"]) == legacy["payload_bytes"]
+    claim = store.claim_validation(
+        legacy["intent_id"],
+        worker_id="legacy-label-reader",
+        now="2026-08-29T01:00:00Z",
+    )
+    verified = store.verify_local_integrity(claim, now="2026-08-29T01:00:01Z")
+    assert isinstance(verified, DeferredValidationClaim)
+    assert verified.payload["physical_qr_payload"] == "PHS2-MEASURED"
+
+
+def test_schema_migration_refuses_partial_install_and_active_transaction(tmp_path):
+    partial_path = tmp_path / "partial.sqlite3"
+    with sqlite3.connect(partial_path) as conn:
+        conn.execute("CREATE TABLE deferred_intents(intent_id TEXT PRIMARY KEY)")
+        with pytest.raises(DeferredIntentCaptureError) as partial:
+            ensure_deferred_intent_schema_compatibility(conn)
+        assert partial.value.code == "DEFERRED_SCHEMA_MIGRATION_UNSAFE"
+
+    db_path = tmp_path / "active-transaction.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_legacy_v1_schema_sql())
+        conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(DeferredIntentCaptureError) as active:
+            ensure_deferred_intent_schema_compatibility(conn)
+        assert active.value.code == "DEFERRED_SCHEMA_MIGRATION_TRANSACTION_ACTIVE"
+        conn.rollback()
+
+
+def test_duplicate_requires_unverified_state_and_rejects_dual_version_identity(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    current = _capture(store, set_id="SET-INELIGIBLE")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE deferred_intents SET state='BLOCKED_INVALID' WHERE intent_id=?",
+            (current.intent_id,),
+        )
+    with pytest.raises(DeferredIntentCaptureError) as ineligible:
+        _capture(store, set_id="SET-INELIGIBLE")
+    assert ineligible.value.code == "DUPLICATE_CAPTURE_STATE_INVALID"
+
+    dual_path, _dual_outbox, dual_store = _store(tmp_path / "dual")
+    _capture(dual_store)
+    with sqlite3.connect(dual_path) as conn:
+        _seed_legacy_label_intent(conn, partition_seq=2)
+        conn.commit()
+    with pytest.raises(DeferredIntentCaptureError) as ambiguous:
+        _capture(dual_store)
+    assert ambiguous.value.code == "CAPTURE_VERSION_IDENTITY_AMBIGUOUS"
 
 
 def test_duplicate_same_payload_converges_and_audit_chain_is_bound(tmp_path):
@@ -632,14 +1080,16 @@ def test_duplicate_same_payload_converges_and_audit_chain_is_bound(tmp_path):
     with sqlite3.connect(db_path) as conn:
         assert _count(conn, "deferred_intents") == 1
         audits = conn.execute(
-            """SELECT audit_seq,reason_code,prev_audit_hash,audit_hash
-                 FROM deferred_intent_transition_audit
-                WHERE intent_id=? ORDER BY audit_seq""",
+            """SELECT audit_seq,transition_code,reason_code,prev_audit_hash,audit_hash
+                  FROM deferred_intent_transition_audit
+                 WHERE intent_id=? ORDER BY audit_seq""",
             (first.intent_id,),
         ).fetchall()
         assert [row[0] for row in audits] == [1, 2]
-        assert audits[1][1] == "DUPLICATE_CAPTURE_SUPPRESSED"
-        assert audits[1][2] == audits[0][3]
+        assert audits[0][1] == "T1_CAPTURE"
+        assert audits[1][1] == "T1D_DUPLICATE_SUPPRESSED"
+        assert audits[1][2] == "DUPLICATE_CAPTURE_SUPPRESSED"
+        assert audits[1][3] == audits[0][4]
 
 
 def test_duplicate_identity_different_payload_blocks_without_ciphertext_rewrite(tmp_path):
@@ -1124,7 +1574,9 @@ def test_local_integrity_failure_blocks_before_remote_plan(tmp_path):
         now="2026-08-29T01:00:00Z",
     )
     assert isinstance(claim, DeferredValidationClaim)
-    store._unprotect_bytes = lambda _value: (_ for _ in ()).throw(ValueError("DPAPI"))
+    store._unprotect_payload_bytes = lambda _value, _entropy: (
+        _ for _ in ()
+    ).throw(ValueError("DPAPI"))
     result = store.verify_local_integrity(claim, now="2026-08-29T01:00:01Z")
     assert isinstance(result, DeferredValidationResult)
     assert result.state == "BLOCKED_INVALID"
@@ -1683,3 +2135,528 @@ def test_gui_local_integrity_invalid_calls_no_remote(tmp_path):
     assert row["last_reason_code"] == "LOCAL_SEAL_INVALID"
     assert remote_calls == []
     assert app._deferred_capture_ui["status"] == "관리자확인"
+
+
+def _finish_waiting_dependency(store, intent_id):
+    claim = _claim_and_plan(store, intent_id)
+    store.record_validation_step_valid(
+        claim,
+        step_id="label-package-source",
+        evidence=_source_evidence(),
+        now="2026-08-29T01:00:01Z",
+    )
+    store.record_validation_mutation_attempt(
+        claim,
+        step_id="label-operation-lease",
+        now="2026-08-29T01:00:01Z",
+    )
+    return store.finish_validation(
+        claim,
+        step_id="label-operation-lease",
+        outcome="REQUIRED_ABSENT",
+        reason_code="OPERATION_LEASE_AUTHORIZATION_PENDING",
+        evidence={
+            "contract_version": "label-validation-evidence-v1",
+            "dependency": {
+                "kind": "OPERATION_GRANT",
+                "identity": "CREATE_PACKAGE@SCOPE-LABEL-MEASURED",
+                "authority_scope_id": "SCOPE-LABEL-MEASURED",
+                "operation": "CREATE_PACKAGE",
+                "status": "PENDING",
+            },
+            "http_status": 403,
+            "committed": False,
+            "error_code": "OPERATION_LEASE_AUTHORIZATION_PENDING",
+            "observed_at": "2026-08-29T01:00:02Z",
+        },
+        now="2026-08-29T01:00:02Z",
+    )
+
+
+def test_status_readback_exposes_all_states_age_dependency_and_blocked_partition(
+    tmp_path,
+):
+    _db_path, _outbox, store = _store(tmp_path)
+    first = _capture(store)
+    second = _capture(
+        store,
+        set_id="1787940225728641501",
+        scan="PHS2-MEASURED-SECOND",
+    )
+    _finish_waiting_dependency(store, first.intent_id)
+    first_row = store.get(first.intent_id)
+    base = max(
+        datetime.fromisoformat(first_row["created_at"].replace("Z", "+00:00")),
+        datetime.fromisoformat(first_row["updated_at"].replace("Z", "+00:00")),
+    )
+    first_now = (base + timedelta(seconds=313)).isoformat().replace("+00:00", "Z")
+    later_now = (base + timedelta(seconds=613)).isoformat().replace("+00:00", "Z")
+    first_read = store.status_readback(now=first_now)
+    later_read = store.status_readback(now=later_now)
+
+    assert tuple(state for state, _count_value in first_read.state_counts) == (
+        DEFERRED_INTENT_STATES
+    )
+    assert dict(first_read.state_counts)["WAITING_DEPENDENCY"] == 1
+    assert dict(first_read.state_counts)["CAPTURED_UNVERIFIED"] == 1
+    assert first_read.total_count == 2
+    assert first_read.nonterminal_count == 2
+    assert later_read.oldest_age_seconds - first_read.oldest_age_seconds == 300
+    assert first_read.dependency_identity == (
+        "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기"
+    )
+    assert first_read.dependency_checked_at == "2026-08-29T01:00:02Z"
+    assert first_read.last_reason_code == "OPERATION_LEASE_AUTHORIZATION_PENDING"
+    assert first_read.retry_schedule == ()
+    assert first_read.blocked_partitions[0].partition_key == "label-package-source"
+    assert first_read.blocked_partitions[0].head_intent_id == first.intent_id
+    assert first_read.blocked_partitions[0].blocked_count == 1
+    assert first_read.downstream_outbox_refs == ()
+    assert first_read.quarantine == ()
+    assert first_read.quarantine_count == 0
+    assert first_read.auto_prune_enabled is False
+    assert second.intent_id != first.intent_id
+
+
+def test_operator_groups_are_exact_six_and_ui_preserves_exact_statuses(
+    tmp_path,
+):
+    _db_path, _outbox, store = _store(tmp_path)
+    first = _capture(store)
+    _capture(
+        store,
+        set_id="1787940225728641502",
+        scan="PHS2-TOP-SECRET-SHOULD-NOT-RENDER",
+    )
+    _finish_waiting_dependency(store, first.intent_id)
+    readback = store.status_readback(now="2026-08-29T02:00:00Z")
+
+    assert [group.operator_status for group in readback.operator_groups] == [
+        "저장됨-검증대기",
+        "dependency대기",
+        "전송대기",
+        "결과확인중",
+        "관리자확인",
+        "완료",
+    ]
+    grouped_states = {
+        state
+        for _key, _label, states in DEFERRED_OPERATOR_STATUS_GROUPS
+        for state in states
+    }
+    assert grouped_states == set(DEFERRED_INTENT_STATES) - {
+        "ACKED",
+        "LOCAL_EFFECT_PENDING",
+        "CANCELLED",
+        "SUPERSEDED",
+    }
+    assert {state for state, _label in DEFERRED_OPERATOR_STATE_LABELS} == set(
+        DEFERRED_INTENT_STATES
+    )
+
+    class FakeTree:
+        def __init__(self):
+            self.rows = {
+                f"deferred-{key}": (label, 0, "-")
+                for key, label, _states in DEFERRED_OPERATOR_STATUS_GROUPS
+            }
+            self.selected = ""
+
+        def exists(self, iid):
+            return iid in self.rows
+
+        def item(self, iid, *, values):
+            self.rows[iid] = tuple(values)
+
+        def insert(self, _parent, _where, *, iid, values):
+            self.rows[iid] = tuple(values)
+
+        def selection_set(self, iid):
+            self.selected = iid
+
+        def focus(self, _iid):
+            return None
+
+        def see(self, _iid):
+            return None
+
+    class FakeLabel:
+        def __init__(self):
+            self.values = {}
+
+        def configure(self, **kwargs):
+            self.values.update(kwargs)
+
+    class FakeNotebook:
+        def __init__(self):
+            self.selected = None
+
+        def select(self, value):
+            self.selected = value
+
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.deferred_observability_tree = FakeTree()
+    app.deferred_observability_detail_label = FakeLabel()
+    app.deferred_observability_alert_label = FakeLabel()
+    app.operator_notebook = FakeNotebook()
+    app.deferred_observability_tab = object()
+    app._deferred_observability_auto_selected = False
+    app._render_deferred_observability(readback)
+
+    assert len(app.deferred_observability_tree.rows) == 6
+    assert app.deferred_observability_tree.selected == "deferred-dependency_wait"
+    assert app.operator_notebook.selected is app.deferred_observability_tab
+    rendered = " ".join(
+        str(value)
+        for row in app.deferred_observability_tree.rows.values()
+        for value in row
+    ) + " " + str(app.deferred_observability_detail_label.values)
+    assert "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기" in rendered
+    assert "저장됨-선행조건대기" in rendered
+    assert "PHS2-TOP-SECRET-SHOULD-NOT-RENDER" not in rendered
+    assert "payload_ciphertext" not in rendered
+    assert "authenticated_seal" not in rendered
+
+
+def test_operator_reason_code_is_semantically_allowlisted():
+    assert operator_safe_reason_code("OPERATION_LEASE_AUTHORIZATION_PENDING") == (
+        "OPERATION_LEASE_AUTHORIZATION_PENDING"
+    )
+    token_shaped = "GHP_SUPERSECRETTOKENVALUE1234567890"
+    assert operator_safe_reason_code(token_shaped) == "REASON_CODE_REDACTED"
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app._show_deferred_validation_result(
+        DeferredValidationResult(
+            intent_id="di_" + "a" * 64,
+            state="OPERATOR_REVIEW",
+            outcome="",
+            reason_code=token_shaped,
+            observed_at="2026-08-29T02:00:00Z",
+        )
+    )
+    assert token_shaped not in str(app._deferred_capture_ui)
+    assert app._deferred_capture_ui["reason_code"] == "REASON_CODE_REDACTED"
+
+
+def test_gui_status_readback_is_backgrounded_and_coalesced(tmp_path):
+    _db_path, _outbox, store = _store(tmp_path)
+    _capture(store)
+    expected = store.status_readback(now="2026-08-29T02:00:00Z")
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowStore:
+        calls = 0
+
+        def status_readback(self, **_kwargs):
+            self.calls += 1
+            started.set()
+            assert release.wait(2)
+            return expected
+
+    callbacks = []
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.deferred_intent_capture = SlowStore()
+    app._deferred_observability_status = None
+    app._deferred_observability_review_baseline = None
+    app._deferred_observability_read_in_progress = False
+    app._deferred_observability_read_queue = label_module.queue.Queue(maxsize=1)
+    app._deferred_observability_poll_after_id = None
+    app.after = lambda _delay, callback: callbacks.append(callback) or "after-id"
+
+    began = time.perf_counter()
+    assert app._refresh_deferred_observability() is None
+    assert time.perf_counter() - began < 0.1
+    assert started.wait(1)
+    assert app._refresh_deferred_observability() is None
+    assert app.deferred_intent_capture.calls == 1
+    release.set()
+    deadline = time.monotonic() + 2
+    while app._deferred_observability_read_queue.empty():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert app._poll_deferred_observability_readback() is expected
+    assert app._deferred_observability_status is expected
+    assert app._deferred_observability_read_in_progress is False
+    assert callbacks
+
+
+def test_retention_guards_and_quarantine_predicate_are_separate(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    _claim_and_plan(store, captured.intent_id)
+    with sqlite3.connect(db_path) as conn:
+        completed_id = _insert_status_fixture(
+            conn,
+            index="completed",
+            state="COMPLETED",
+            partition_key="P-COMPLETED",
+            downstream_outbox_ref="package_command_outbox:completed-1",
+        )
+        quarantine_id = _insert_status_fixture(
+            conn,
+            index="quarantine",
+            state="BLOCKED_INVALID",
+            partition_key="P-QUARANTINE",
+            reason_code="LOCAL_PAYLOAD_SCHEMA_INVALID",
+        )
+        submit_id = _insert_status_fixture(
+            conn,
+            index="submit",
+            state="READY_TO_SUBMIT",
+            partition_key="P-SUBMIT",
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError, match="retention proof"):
+            conn.execute(
+                "DELETE FROM deferred_intents WHERE intent_id=?",
+                (completed_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="validation evidence"):
+            conn.execute(
+                "DELETE FROM deferred_intent_validation_steps WHERE intent_id=?",
+                (captured.intent_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                "DELETE FROM deferred_intent_transition_audit WHERE intent_id=?",
+                (captured.intent_id,),
+            )
+        non_quarantine = {
+            row[0]
+            for row in conn.execute(
+                "SELECT intent_id FROM deferred_intents WHERE "
+                f"{QUARANTINE_EXCLUSION_PREDICATE_SQL}"
+            )
+        }
+        quarantine_candidates = {
+            row[0]
+            for row in conn.execute(
+                f"SELECT intent_id FROM deferred_intents WHERE {QUARANTINE_PREDICATE_SQL}"
+            )
+        }
+    assert quarantine_candidates == {quarantine_id}
+    assert submit_id in non_quarantine
+    assert quarantine_id not in non_quarantine
+    assert non_quarantine.isdisjoint(quarantine_candidates)
+    readback = store.status_readback(now="2026-08-29T02:00:00Z")
+    record = next(item for item in readback.quarantine if item.intent_id == quarantine_id)
+    assert record.reason_code == "LOCAL_PAYLOAD_SCHEMA_INVALID"
+    assert len(record.payload_hash) == 64
+    assert readback.quarantine_count == 1
+    assert readback.downstream_outbox_refs == (
+        "package_command_outbox:completed-1",
+    )
+    assert readback.auto_prune_enabled is False
+
+
+def test_quarantine_total_is_not_truncated_with_bounded_detail(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        for index in range(25):
+            _insert_status_fixture(
+                conn,
+                index=f"quarantine-total-{index}",
+                state="BLOCKED_INVALID",
+                partition_key=f"P-QUARANTINE-{index}",
+                reason_code="LOCAL_PAYLOAD_SCHEMA_INVALID",
+            )
+        conn.commit()
+    readback = store.status_readback(now="2026-08-29T02:00:00Z", limit=5)
+    assert readback.quarantine_count == 25
+    assert len(readback.quarantine) == 5
+
+
+def test_status_readback_begins_one_coherent_snapshot(tmp_path):
+    _db_path, _outbox, store = _store(tmp_path)
+    _capture(store)
+    connect = store._connect
+    statements = []
+
+    class RecordingConnection:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def execute(self, sql, parameters=()):
+            statements.append(str(sql).strip())
+            result = self.inner.execute(sql, parameters)
+            if "GROUP BY state" in str(sql):
+                assert self.inner.in_transaction is True
+            return result
+
+        def close(self):
+            self.inner.close()
+
+    store._connect = lambda: RecordingConnection(connect())
+    readback = store.status_readback(now="2026-08-29T02:00:00Z")
+    assert readback.total_count == 1
+    assert statements[0] == "PRAGMA query_only=ON"
+    assert statements[1] == "BEGIN"
+
+
+def test_observability_alert_thresholds_are_deterministic_and_grounded(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_status_fixture(
+            conn,
+            index="retry-head",
+            state="RETRY_WAIT_VALIDATION",
+            partition_key="P-FIFO",
+            partition_seq=1,
+            created_at="2026-08-29T01:00:00Z",
+            next_attempt_at="2026-08-29T01:30:00Z",
+            reason_code="PACKAGE_TRANSPORT_UNAVAILABLE",
+        )
+        _insert_status_fixture(
+            conn,
+            index="retry-follower",
+            state="CAPTURED_UNVERIFIED",
+            partition_key="P-FIFO",
+            partition_seq=2,
+            created_at="2026-08-29T01:05:00Z",
+        )
+        _insert_status_fixture(
+            conn,
+            index="dependency",
+            state="WAITING_DEPENDENCY",
+            partition_key="P-DEPENDENCY",
+            created_at="2026-08-27T01:00:00Z",
+            reason_code="OPERATION_LEASE_AUTHORIZATION_PENDING",
+        )
+        _insert_status_fixture(
+            conn,
+            index="review",
+            state="OPERATOR_REVIEW",
+            partition_key="P-REVIEW",
+            reason_code="VALIDATION_CONFLICT",
+        )
+        for index in range(2):
+            _insert_status_fixture(
+                conn,
+                index=f"seal-{index}",
+                state="BLOCKED_INVALID",
+                partition_key=f"P-SEAL-{index}",
+                reason_code="LOCAL_SEAL_INVALID",
+            )
+        conn.commit()
+    readback = store.status_readback(
+        now="2026-08-29T02:00:00Z",
+        previous_operator_review_count=0,
+    )
+    assert dict(readback.alert_thresholds) == {
+        "oldest_retry_wait_seconds": 30 * 60,
+        "waiting_dependency_seconds": 24 * 60 * 60,
+        "operator_review_increase": 1,
+        "repeated_seal_failure_count": 2,
+        "partition_starvation_seconds": 30 * 60,
+    }
+    assert {alert.code for alert in readback.alerts} == {
+        "OLDEST_RETRY_WAIT_SLA_EXCEEDED",
+        "WAITING_DEPENDENCY_SLA_EXCEEDED",
+        "OPERATOR_REVIEW_INCREASE",
+        "REPEATED_SEAL_FAILURE",
+        "PARTITION_STARVATION",
+    }
+
+
+def test_alert_ages_start_when_the_relevant_condition_begins(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_status_fixture(
+            conn,
+            index="old-new-retry",
+            state="RETRY_WAIT_VALIDATION",
+            partition_key="P-RECENT-BLOCK",
+            partition_seq=1,
+            created_at="2026-08-01T00:00:00Z",
+            updated_at="2026-08-29T01:50:00Z",
+            next_attempt_at="2026-08-29T02:20:00Z",
+            reason_code="PACKAGE_TRANSPORT_UNAVAILABLE",
+        )
+        _insert_status_fixture(
+            conn,
+            index="old-new-follower",
+            state="CAPTURED_UNVERIFIED",
+            partition_key="P-RECENT-BLOCK",
+            partition_seq=2,
+            created_at="2026-08-01T00:05:00Z",
+            updated_at="2026-08-29T01:50:00Z",
+        )
+        _insert_status_fixture(
+            conn,
+            index="old-new-dependency",
+            state="WAITING_DEPENDENCY",
+            partition_key="P-RECENT-DEPENDENCY",
+            created_at="2026-08-01T00:00:00Z",
+            updated_at="2026-08-29T01:30:00Z",
+            reason_code="OPERATION_LEASE_AUTHORIZATION_PENDING",
+        )
+        conn.commit()
+    readback = store.status_readback(now="2026-08-29T02:00:00Z")
+    assert readback.oldest_age_seconds > 24 * 60 * 60
+    assert readback.alerts == ()
+
+
+def test_status_readback_remains_bounded_with_ten_thousand_intents(tmp_path):
+    db_path, _outbox, store = _store(tmp_path, max_pending_intents=20_000)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for index in range(10_000):
+            _insert_status_fixture(
+                conn,
+                index=f"perf-{index}",
+                state="CAPTURED_UNVERIFIED",
+                partition_key=f"P-{index // 100:03d}",
+                partition_seq=(index % 100) + 1,
+                created_at="2026-08-29T01:00:00Z",
+            )
+        conn.commit()
+    started = time.perf_counter()
+    readback = store.status_readback(
+        now="2026-08-29T02:00:00Z",
+        limit=20,
+    )
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    assert dict(readback.state_counts)["CAPTURED_UNVERIFIED"] == 10_000
+    assert readback.nonterminal_count == 10_000
+    assert len(readback.blocked_partitions) == 20
+    assert readback.retry_schedule == ()
+    assert readback.quarantine == ()
+    assert readback.quarantine_count == 0
+    assert readback.read_duration_ms <= elapsed_ms
+    assert elapsed_ms < 1000
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_status", "complete"),
+    [
+        ("READY_TO_SUBMIT", "검증완료-전송대기", False),
+        ("RETRY_WAIT_SUBMIT", "검증완료-전송대기", False),
+        ("RECONCILE_PENDING_VALIDATION", "결과확인중", False),
+        ("RECONCILE_PENDING_SUBMIT", "결과확인중", False),
+        ("BLOCKED_INVALID", "관리자확인", False),
+        ("OPERATOR_REVIEW", "관리자확인", False),
+        ("ACKED", "서버확정-로컬반영대기", False),
+        ("LOCAL_EFFECT_PENDING", "서버확정-로컬반영대기", False),
+        ("COMPLETED", "완료", True),
+        ("CANCELLED", "종결-미완료", False),
+        ("SUPERSEDED", "종결-미완료", False),
+    ],
+)
+def test_per_intent_operator_status_contract_is_complete(
+    state,
+    expected_status,
+    complete,
+):
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app._show_deferred_validation_result(
+        DeferredValidationResult(
+            intent_id="di_" + "a" * 64,
+            state=state,
+            outcome="",
+            reason_code="MEASURED_REASON",
+            observed_at="2026-08-29T02:00:00Z",
+        )
+    )
+    assert app._deferred_capture_ui["status"] == expected_status
+    assert app._deferred_capture_ui["operator_complete_signal"] is complete

@@ -35,6 +35,7 @@ from logistics_runtime_profile import (
 )
 from deferred_intent_capture import (
     DEFERRED_INTENT_SCHEMA_SQL,
+    ensure_deferred_intent_schema_compatibility,
     supersede_for_legacy_outbox,
 )
 
@@ -776,6 +777,7 @@ def _post_review_conflict_origin(error: Exception) -> str:
 def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
     """Atomically install the current schema without disturbing live SENDING leases."""
 
+    ensure_deferred_intent_schema_compatibility(conn)
     cancellation_table_existed = (
         conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='package_cancellation_outbox'"

@@ -6,12 +6,21 @@ import os
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import Label_Match as label_match_module
 from Label_Match import Label_Match
+from deferred_intent_capture import (
+    DEFERRED_ALERT_THRESHOLDS,
+    DEFERRED_INTENT_STATES,
+    DEFERRED_OPERATOR_STATUS_GROUPS,
+    DeferredIntentStatusReadback,
+    DeferredOperatorStatusGroup,
+    DeferredValidationResult,
+)
 
 
 class FakeWidget:
@@ -74,6 +83,11 @@ class FakeWidget:
         self.grid_columns.setdefault(column, {}).update(kwargs)
 
     columnconfigure = grid_columnconfigure
+
+    def grid_propagate(self, flag=None):
+        if flag is None:
+            return self.options.get("grid_propagate", True)
+        self.options["grid_propagate"] = bool(flag)
 
     def configure(self, **kwargs):
         self.options.update(kwargs)
@@ -232,6 +246,43 @@ def _required_widget(app, name):
     return app.__dict__[name]
 
 
+def _deferred_observability_layout_readback():
+    return DeferredIntentStatusReadback(
+        observed_at="2026-08-29T00:00:00Z",
+        state_counts=tuple((state, 1) for state in DEFERRED_INTENT_STATES),
+        operator_groups=tuple(
+            DeferredOperatorStatusGroup(
+                key=key,
+                operator_status=operator_status,
+                internal_states=states,
+                count=len(states),
+                oldest_at="2026-08-28T23:00:00Z",
+                oldest_age_seconds=3600,
+            )
+            for key, operator_status, states in DEFERRED_OPERATOR_STATUS_GROUPS
+        ),
+        total_count=len(DEFERRED_INTENT_STATES),
+        nonterminal_count=13,
+        oldest_intent_id="intent-layout-proof",
+        oldest_state="ACKED",
+        oldest_age_seconds=3600,
+        retry_schedule=(),
+        last_reason_code="DEPENDENCY_PENDING",
+        last_reason_at="2026-08-29T00:00:00Z",
+        dependency_identity="dependency-layout-proof",
+        dependency_checked_at="2026-08-29T00:00:00Z",
+        blocked_partitions=(),
+        downstream_outbox_refs=("outbox:layout-proof",),
+        quarantine=(),
+        quarantine_count=0,
+        closed_incomplete_count=2,
+        alerts=(),
+        alert_thresholds=DEFERRED_ALERT_THRESHOLDS,
+        read_duration_ms=1.0,
+        auto_prune_enabled=False,
+    )
+
+
 def test_profile_bootstrap_ignores_unrealized_one_pixel_root():
     app = Label_Match.__new__(Label_Match)
     app.winfo_width = lambda: 1
@@ -351,17 +402,20 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
     right = _required_widget(app, "operator_right_pane")
     notebook = _required_widget(app, "operator_notebook")
     session_tab = _required_widget(app, "operator_session_tab")
+    deferred_tab = _required_widget(app, "deferred_observability_tab")
     history_tab = _required_widget(app, "operator_history_tab")
     summary_tab = _required_widget(app, "operator_summary_tab")
 
     assert _is_descendant(notebook, right)
     assert [page for page, _ in notebook.notebook_pages] == [
         session_tab,
+        deferred_tab,
         history_tab,
         summary_tab,
     ]
     tab_text = [options.get("text", "") for _, options in notebook.notebook_pages]
-    assert tab_text == ["이번 세션", "스캔 기록", "통과 요약"]
+    assert tab_text == ["이번 세션", "대기 현황", "스캔 기록", "통과 요약"]
+    assert _is_descendant(app.deferred_observability_tree, deferred_tab)
     assert _is_descendant(app.history_tree, history_tab)
     assert _is_descendant(app.summary_tree, summary_tab)
     assert tuple(app.history_tree["displaycolumns"]) == (
@@ -369,6 +423,149 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
         "Result",
         "Timestamp",
     )
+
+
+def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
+    operator_workbench,
+):
+    app = operator_workbench
+    deferred_tab = _required_widget(app, "deferred_observability_tab")
+    tree = _required_widget(app, "deferred_observability_tree")
+    detail_frame = _required_widget(app, "deferred_observability_detail_frame")
+    detail_text = _required_widget(app, "deferred_observability_detail_text")
+    detail_scrollbar = _required_widget(
+        app,
+        "deferred_observability_detail_scrollbar",
+    )
+
+    assert all(
+        _is_descendant(widget, deferred_tab)
+        for widget in (tree, detail_frame, detail_text, detail_scrollbar)
+    )
+    assert tree.cget("height") == 6
+    assert tree.cget("style") == "Deferred.Treeview"
+    assert len(tree.get_children()) == len(DEFERRED_OPERATOR_STATUS_GROUPS) == 6
+    assert detail_frame.cget("height") == 64
+    assert detail_frame.grid_propagate() is False
+    assert detail_frame.grid_rows[0]["weight"] == 1
+    assert detail_frame.grid_columns[0]["weight"] == 1
+    assert detail_text.master is detail_frame
+    assert detail_scrollbar.master is detail_frame
+    assert detail_text.kind == "tk.Text"
+    assert detail_text.cget("height") == 3
+    assert detail_text.cget("wrap") == "word"
+    assert detail_text.cget("state") == "disabled"
+    assert detail_text.cget("takefocus") is True
+    assert detail_text.cget("yscrollcommand") == detail_scrollbar.set
+    assert detail_scrollbar.cget("command") == detail_text.yview
+    assert detail_text.grid_options == {"row": 0, "column": 0, "sticky": "nsew"}
+    assert detail_scrollbar.grid_options == {"row": 0, "column": 1, "sticky": "ns"}
+
+    readback = _deferred_observability_layout_readback()
+    secret_shaped_state = "PHS2-TOP-SECRET-SHOULD-NOT-RENDER"
+    readback = replace(
+        readback,
+        state_counts=readback.state_counts + ((secret_shaped_state, 9),),
+    )
+    app._render_deferred_observability(readback)
+
+    rendered = detail_text.options["inserted"]
+    assert "전체 17건" in rendered
+    assert "서버확정-로컬반영대기=2건" in rendered
+    assert "종결-미완료=2건" in rendered
+    assert "downstream outbox:layout-proof" in rendered
+    assert all(f"{state}=1" in rendered for state in DEFERRED_INTENT_STATES)
+    assert secret_shaped_state not in rendered
+    assert detail_text.cget("state") == "disabled"
+
+
+def test_deferred_validator_waits_for_active_observability_readback():
+    app = Label_Match.__new__(Label_Match)
+    scheduled = []
+
+    class Store:
+        def next_validation_candidate(self):
+            pytest.fail("validator must not read while status readback is active")
+
+    app.deferred_intent_capture = Store()
+    app._deferred_observability_read_in_progress = True
+    app._prepare_deferred_intent_validation = lambda _intent_id: pytest.fail(
+        "validator must not prepare while status readback is active"
+    )
+    app._refresh_deferred_observability = lambda: pytest.fail(
+        "active status readback must be coalesced, not restarted"
+    )
+    app._schedule_deferred_validation_worker = scheduled.append
+
+    app._run_deferred_validation_worker_once()
+
+    assert scheduled == [100]
+
+
+def test_deferred_validator_refreshes_after_no_candidate():
+    app = Label_Match.__new__(Label_Match)
+    events = []
+
+    class Store:
+        def next_validation_candidate(self):
+            events.append("candidate")
+            return None
+
+    app.deferred_intent_capture = Store()
+    app._deferred_observability_read_in_progress = False
+    app._refresh_deferred_observability = lambda: events.append("refresh")
+    app._schedule_deferred_validation_worker = lambda delay: events.append(
+        ("schedule", delay)
+    )
+
+    app._run_deferred_validation_worker_once()
+
+    assert events == ["candidate", "refresh", ("schedule", 5000)]
+
+
+def test_deferred_validator_refreshes_only_after_immediate_result_is_rendered():
+    app = Label_Match.__new__(Label_Match)
+    events = []
+    result = DeferredValidationResult(
+        intent_id="intent-direct-result",
+        state="WAITING_DEPENDENCY",
+        outcome="RETRYABLE_UNAVAILABLE",
+        reason_code="DEPENDENCY_PENDING",
+        observed_at="2026-08-29T00:00:00Z",
+    )
+
+    class Store:
+        def next_validation_candidate(self):
+            events.append("candidate")
+            return result.intent_id
+
+    app.deferred_intent_capture = Store()
+    app._deferred_observability_read_in_progress = False
+
+    def prepare(intent_id):
+        events.append(("prepare", intent_id))
+        return result
+
+    app._prepare_deferred_intent_validation = prepare
+    app._show_deferred_validation_result = lambda value: events.append(
+        ("show", value)
+    )
+    app._render_operator_workbench = lambda: events.append("render")
+    app._refresh_deferred_observability = lambda: events.append("refresh")
+    app._schedule_deferred_validation_worker = lambda delay: events.append(
+        ("schedule", delay)
+    )
+
+    app._run_deferred_validation_worker_once()
+
+    assert events == [
+        "candidate",
+        ("prepare", result.intent_id),
+        ("show", result),
+        "render",
+        "refresh",
+        ("schedule", 5000),
+    ]
 
 
 def test_history_display_widths_prioritize_full_item_result_and_time():
@@ -1820,6 +2017,40 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             abs(before - after) <= 2
             for before_box, after_box in zip(compact_before, compact_after)
             for before, after in zip(before_box, after_box)
+        )
+
+        app._render_deferred_observability(
+            _deferred_observability_layout_readback(),
+        )
+        app.operator_notebook.select(app.deferred_observability_tab)
+        settle_responsive_layout(app)
+        pump_tk(app, 220)
+        app.update_idletasks()
+
+        deferred_widgets = (
+            app.deferred_observability_heading_label,
+            app.deferred_observability_tree,
+            app.deferred_observability_detail_frame,
+            app.deferred_observability_detail_text,
+            app.deferred_observability_detail_scrollbar,
+            app.deferred_observability_alert_label,
+            app.deferred_observability_threshold_label,
+        )
+        assert all(bool(widget.winfo_ismapped()) for widget in deferred_widgets)
+        assert all(
+            contains(app.deferred_observability_tab, widget)
+            for widget in deferred_widgets
+        )
+        assert app.deferred_observability_detail_frame.winfo_height() == 64
+        deferred_rows = tuple(app.deferred_observability_tree.get_children())
+        assert len(deferred_rows) == len(DEFERRED_OPERATOR_STATUS_GROUPS) == 6
+        deferred_last_row_box = app.deferred_observability_tree.bbox(
+            deferred_rows[-1]
+        )
+        assert deferred_last_row_box
+        assert (
+            deferred_last_row_box[1] + deferred_last_row_box[3]
+            <= app.deferred_observability_tree.winfo_height()
         )
 
         history_placement = _configure_size(
