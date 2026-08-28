@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 from typing import Any, Mapping
+import uuid
 
 from cryptography import x509
 
@@ -75,6 +76,7 @@ LOGISTICS_PROFILE_FIELDS = frozenset(
 LOGISTICS_CREDENTIAL_FIELDS = frozenset(
     {"audience", "auth_scheme", "token_header", "token"}
 )
+MAX_PROTECTED_CREDENTIAL_BYTES = 65_536
 
 
 @dataclass(frozen=True)
@@ -241,12 +243,195 @@ def _secure_profile_directory(path: Path, reader_principal: str) -> None:
 
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(
+        f".{os.getpid()}.{uuid.uuid4().hex}.profile.tmp"
+    )
     try:
-        temporary.write_bytes(data)
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _load_exact_profile_payload(path: Path) -> tuple[dict[str, Any], bytes]:
+    target = assert_path_has_no_reparse_components(path, label="runtime profile")
+    if not target.is_file():
+        raise FileExistsError("existing machine logistics profile is unavailable")
+    try:
+        profile_size = target.stat().st_size
+        if not 0 < profile_size <= MAX_PROTECTED_CREDENTIAL_BYTES:
+            raise LogisticsRuntimeConfigurationError("runtime profile size is invalid")
+        payload_bytes = target.read_bytes()
+    except OSError as exc:
+        raise FileExistsError(
+            "existing machine logistics profile is unavailable"
+        ) from exc
+    if len(payload_bytes) != profile_size:
+        raise LogisticsRuntimeConfigurationError("runtime profile size is invalid")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise LogisticsRuntimeConfigurationError(
+                    "runtime profile contains duplicate fields"
+                )
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(
+            payload_bytes.decode("utf-8-sig"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+    except (UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise LogisticsRuntimeConfigurationError(
+            "runtime profile could not be validated for rotation"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise LogisticsRuntimeConfigurationError("runtime profile must be an object")
+    return payload, payload_bytes
+
+
+def _validate_recovery_rotation_identity(
+    response_payload: Mapping[str, Any],
+    *,
+    expected_producer_id: str,
+    expected_producer_install_id: str,
+    expected_source_host_id: str,
+    expected_manifest_hash: str,
+    expected_endpoint_url: str,
+) -> None:
+    expected = {
+        "producer_id": str(expected_producer_id or "").strip(),
+        "producer_install_id": str(expected_producer_install_id or "").strip(),
+        "source_host_id": str(expected_source_host_id or "").strip(),
+        "endpoint_url": str(expected_endpoint_url or "").strip(),
+    }
+    manifest_digest = str(expected_manifest_hash or "").strip().lower()
+    if any(not value for value in expected.values()) or not re.fullmatch(
+        r"[0-9a-f]{64}", manifest_digest
+    ):
+        raise ValueError("recovery profile rotation binding is incomplete")
+    for field, value in expected.items():
+        if response_payload.get(field) != value:
+            raise ValueError(f"recovery profile rotation {field} binding mismatch")
+    if response_payload.get("active_manifest_hashes") != [manifest_digest]:
+        raise ValueError("recovery profile rotation manifest_hash binding mismatch")
+
+
+def _rotate_existing_profile_token(
+    *,
+    target: Path,
+    existing: Any,
+    candidate: Any,
+    expected_profile_values: Mapping[str, Any],
+    token: str,
+    selected_scope: str,
+) -> dict[str, Any]:
+    existing_payload, original_profile_bytes = _load_exact_profile_payload(target)
+    if not _semantic_json_equal(existing_payload, expected_profile_values):
+        raise FileExistsError(
+            "existing machine logistics profile non-secret binding conflicts with recovery"
+        )
+    if dataclass_replace(existing, bearer_token="") != dataclass_replace(
+        candidate, bearer_token=""
+    ):
+        raise FileExistsError(
+            "existing machine logistics profile non-secret binding conflicts with recovery"
+        )
+    if existing.bearer_token == token:
+        summary = existing.redacted_summary()
+        summary.update(
+            {
+                "status": "reused",
+                "profile_path": str(target),
+                "created_paths": [],
+                "updated_paths": [],
+                "credential_scope": selected_scope,
+            }
+        )
+        return summary
+
+    secret_relative = DEFAULT_TOKEN_REF.split(":", 1)[1].replace("/", os.sep)
+    secret_path = assert_path_has_no_reparse_components(
+        target.parent / secret_relative,
+        label="machine bearer token credential",
+    )
+    secret_path.relative_to(target.parent)
+    if not secret_path.is_file():
+        raise FileExistsError(
+            "existing machine logistics credential is unavailable for recovery"
+        )
+    try:
+        secret_size = secret_path.stat().st_size
+        if not 0 < secret_size <= MAX_PROTECTED_CREDENTIAL_BYTES:
+            raise LogisticsRuntimeConfigurationError(
+                "existing machine logistics credential size is invalid"
+            )
+        original_secret = secret_path.read_bytes()
+    except OSError as exc:
+        raise FileExistsError(
+            "existing machine logistics credential is unavailable for recovery"
+        ) from exc
+    if len(original_secret) != secret_size:
+        raise LogisticsRuntimeConfigurationError(
+            "existing machine logistics credential size is invalid"
+        )
+    if selected_scope != "current_user":
+        raise ValueError("recovery profile rotation requires current_user credential scope")
+    protected = protect_current_user_secret(token)
+    replaced = False
+    try:
+        if target.read_bytes() != original_profile_bytes:
+            raise RuntimeError("runtime profile changed before credential rotation")
+        _atomic_write(secret_path, protected)
+        replaced = True
+        if target.read_bytes() != original_profile_bytes:
+            raise RuntimeError("runtime profile changed during credential rotation")
+        readback = load_logistics_runtime_profile(
+            required=True,
+            profile_path=target,
+            decryptor=unprotect_current_user_secret,
+        )
+        if readback != candidate:
+            raise RuntimeError("rotated runtime profile exact readback failed")
+    except Exception:
+        if replaced:
+            try:
+                _atomic_write(secret_path, original_secret)
+                restored = load_logistics_runtime_profile(
+                    required=True,
+                    profile_path=target,
+                    decryptor=unprotect_current_user_secret,
+                )
+                if restored != existing:
+                    raise RuntimeError(
+                        "runtime profile credential rollback readback failed"
+                    )
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    "runtime profile credential rotation rollback failed"
+                ) from rollback_exc
+        raise
+    summary = candidate.redacted_summary()
+    summary.update(
+        {
+            "status": "rotated",
+            "profile_path": str(target),
+            "created_paths": [],
+            "updated_paths": [str(secret_path)],
+            "credential_scope": selected_scope,
+            "non_secret_profile_preserved": True,
+        }
+    )
+    return summary
 
 
 def install_runtime_profile(
@@ -477,8 +662,13 @@ def ensure_runtime_profile_from_enrollment_bundle(
     profile_path: str | os.PathLike[str] | None = None,
     tls_ca_bundle_path: str | os.PathLike[str] | None = None,
     credential_scope: str = "machine",
+    allow_existing_token_rotation: bool = False,
+    expected_producer_id: str = "",
+    expected_producer_install_id: str = "",
+    expected_manifest_hash: str = "",
+    expected_endpoint_url: str = "",
 ) -> dict[str, Any] | None:
-    """Install the server-issued logistics profile without rotating local state."""
+    """Install a server-issued profile, rotating its token only for recovery."""
 
     bundle = response_payload.get("machine_credential_bundle")
     if bundle is None:
@@ -564,6 +754,19 @@ def ensure_runtime_profile_from_enrollment_bundle(
     selected_scope = str(credential_scope or "").strip().lower()
     if selected_scope not in {"machine", "current_user"}:
         raise ValueError("credential_scope must be machine or current_user")
+    if allow_existing_token_rotation and selected_scope != "current_user":
+        raise ValueError(
+            "recovery profile rotation requires current_user credential scope"
+        )
+    if allow_existing_token_rotation:
+        _validate_recovery_rotation_identity(
+            response_payload,
+            expected_producer_id=expected_producer_id,
+            expected_producer_install_id=expected_producer_install_id,
+            expected_source_host_id=expected_source_host_id,
+            expected_manifest_hash=expected_manifest_hash,
+            expected_endpoint_url=expected_endpoint_url,
+        )
     if selected_scope == "current_user":
         values["credential_scope"] = "current_user"
     if tls_ca_bundle is not None:
@@ -596,8 +799,6 @@ def ensure_runtime_profile_from_enrollment_bundle(
             raise FileExistsError(
                 "existing machine logistics profile conflicts with enrollment"
             )
-        if existing != candidate:
-            raise FileExistsError("existing machine logistics profile conflicts with enrollment")
         if tls_ca_bundle is not None:
             try:
                 existing_ca_content = tls_ca_bundle.target_path.read_bytes()
@@ -609,6 +810,19 @@ def ensure_runtime_profile_from_enrollment_bundle(
                 raise FileExistsError(
                     "existing machine logistics TLS CA bundle conflicts with enrollment"
                 )
+        if existing != candidate:
+            if not allow_existing_token_rotation:
+                raise FileExistsError(
+                    "existing machine logistics profile conflicts with enrollment"
+                )
+            return _rotate_existing_profile_token(
+                target=target,
+                existing=existing,
+                candidate=candidate,
+                expected_profile_values=values,
+                token=token,
+                selected_scope=selected_scope,
+            )
         summary = existing.redacted_summary()
         summary.update(
             {

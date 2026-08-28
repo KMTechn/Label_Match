@@ -31,6 +31,8 @@ from kmtech_zero_pe import (  # noqa: E402
     POSSESSION_KEY_CONTRACT_VERSION,
     PersistentPossessionKey,
     SCOPE_CURRENT_USER,
+    b64url_encode,
+    canonical_json_bytes,
 )
 from kmtech_factory_contracts.bundle import (  # noqa: E402
     load_contract_document,
@@ -47,7 +49,12 @@ from direct_sync_push import (  # noqa: E402
     manifest_hash,
     validate_endpoint_url,
 )
+from logistics_runtime_profile import (  # noqa: E402
+    DEFAULT_TOKEN_REF as LOGISTICS_TOKEN_REF,
+    assert_path_has_no_reparse_components,
+)
 from tools.install_logistics_runtime_profile import (  # noqa: E402
+    TLS_CA_BUNDLE_RELATIVE_PATH,
     ensure_runtime_profile_from_enrollment_bundle,
 )
 
@@ -62,6 +69,16 @@ DEFAULT_RECEIPT_FILENAME = "producer_self_enrollment_receipt.json"
 DEFAULT_REPORT_FILENAME = "label_match_worker_pc_registration.json"
 ENROLLMENT_CONTRACT_VERSION = "producer-self-enrollment-v2"
 ENROLLMENT_PATH = "/api/producer-ingest/v2/enroll"
+ADMIN_RECOVERY_AUTHORIZATION_CONTRACT_VERSION = (
+    "producer-admin-recovery-authorization-v1"
+)
+ADMIN_RECOVERY_PROOF_CONTRACT_VERSION = "producer-admin-recovery-proof-v1"
+ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION = "producer-admin-recovery-complete-v1"
+ADMIN_RECOVERY_AUDIENCE = "worker-analysis-producer-admin-recovery-v1"
+ADMIN_RECOVERY_PATH = "/api/producer-ingest/v2/recover"
+ADMIN_RECOVERY_AUTHORIZATION_STATES = frozenset(
+    {"LOGISTICS_READY", "OPERATION_PENDING"}
+)
 POSSESSION_KEY_SCOPE = SCOPE_CURRENT_USER
 CRYPTPROTECT_LOCAL_MACHINE = 0x4
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
@@ -103,6 +120,26 @@ class PossessionKeyRecoveryRequired(DirectSyncPushError):
         )
 
 
+class _AdminRecoveryProgress:
+    """Record the irreversible recovery boundary without retaining secrets."""
+
+    def __init__(self) -> None:
+        self.server_credential_rotated = False
+        self.logistics_credential_finalized = False
+        self.producer_credential_finalized = False
+        self.local_documents_finalized = False
+        self.authorization_file_deleted = False
+
+    def redacted_summary(self) -> dict[str, bool]:
+        return {
+            "server_credential_rotated": self.server_credential_rotated,
+            "logistics_credential_finalized": self.logistics_credential_finalized,
+            "producer_credential_finalized": self.producer_credential_finalized,
+            "local_documents_finalized": self.local_documents_finalized,
+            "authorization_file_deleted": self.authorization_file_deleted,
+        }
+
+
 def _canonical_raw_event_names() -> list[str]:
     verify_bundled_contracts()
     catalog = load_contract_document("catalogs/canonical-stream-catalog.json")
@@ -136,7 +173,7 @@ def _utc_now_text() -> str:
 
 
 def _write_json(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
-    target = Path(path)
+    target = assert_path_has_no_reparse_components(path, label="JSON output")
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target.with_name(f"{target.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     try:
@@ -332,6 +369,32 @@ def _health_url_from_endpoint(endpoint_url: str) -> str:
 def _enrollment_url_from_endpoint(endpoint_url: str) -> str:
     parsed = urlparse(endpoint_url)
     return f"{parsed.scheme}://{parsed.netloc}{ENROLLMENT_PATH}"
+
+
+def _admin_recovery_url_from_endpoint(endpoint_url: str) -> str:
+    parsed = urlparse(endpoint_url)
+    return f"{parsed.scheme}://{parsed.netloc}{ADMIN_RECOVERY_PATH}"
+
+
+def _validate_admin_recovery_url(recovery_url: str, endpoint_url: str) -> str:
+    validate_endpoint_url(endpoint_url)
+    parsed_endpoint = urlparse(endpoint_url)
+    parsed_recovery = urlparse(str(recovery_url or "").strip())
+    if (
+        parsed_recovery.scheme != "https"
+        or parsed_recovery.netloc != parsed_endpoint.netloc
+        or parsed_recovery.username
+        or parsed_recovery.password
+        or parsed_recovery.params
+        or parsed_recovery.query
+        or parsed_recovery.fragment
+        or parsed_recovery.path != ADMIN_RECOVERY_PATH
+    ):
+        raise DirectSyncPushError(
+            "admin_recovery_url must be HTTPS, same-origin, and use "
+            f"{ADMIN_RECOVERY_PATH}"
+        )
+    return parsed_recovery.geturl()
 
 
 def _build_stream(source_host_id: str) -> dict[str, Any]:
@@ -719,6 +782,9 @@ def _validate_v2_enrollment_response(
         raise DirectSyncPushError("v2 initial enrollment identity action mismatch")
     if response_payload.get("credential_epoch") != 1:
         raise DirectSyncPushError("v2 initial enrollment credential epoch mismatch")
+    authorization_state = response_payload.get("authorization_state")
+    if authorization_state not in ADMIN_RECOVERY_AUTHORIZATION_STATES:
+        raise DirectSyncPushError("v2 response authorization state mismatch")
     possession_key = response_payload.get("possession_key")
     if not isinstance(possession_key, dict):
         raise DirectSyncPushError("v2 response missing possession key binding")
@@ -763,7 +829,7 @@ def _validate_v2_enrollment_response(
     ):
         if receipt.get(field) != response_payload.get(field):
             raise DirectSyncPushError(f"v2 client receipt {field} mismatch")
-    return dict(receipt)
+    return _safe_client_receipt(receipt)
 
 
 class _DataBlob(ctypes.Structure):
@@ -837,7 +903,10 @@ def _dpapi_unprotect_current_user(protected: bytes) -> str:
 
 
 def _secret_path(data_dir: str | os.PathLike[str], secret_ref_target: str) -> Path:
-    return Path(data_dir).expanduser().resolve() / "secrets" / f"{secret_ref_target}.dpapi"
+    return assert_path_has_no_reparse_components(
+        Path(data_dir).expanduser() / "secrets" / f"{secret_ref_target}.dpapi",
+        label="producer protected credential",
+    )
 
 
 def _write_dpapi_secret(
@@ -849,6 +918,8 @@ def _write_dpapi_secret(
 ) -> Path:
     target = _secret_path(data_dir, secret_ref_target)
     target.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(target) and (target.is_symlink() or not target.is_file()):
+        raise DirectSyncPushError("producer credential path is not a regular file")
     selected_scope = str(credential_scope or "").strip().lower()
     if selected_scope == "current_user":
         protected = _dpapi_protect_current_user(secret)
@@ -856,7 +927,20 @@ def _write_dpapi_secret(
         protected = _dpapi_protect_machine(secret)
     else:
         raise DirectSyncPushError("credential_scope must be machine or current_user")
-    target.write_bytes(protected)
+    temporary = target.with_name(
+        f".{os.getpid()}.{uuid.uuid4().hex}.credential.tmp"
+    )
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(protected)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
     return target
 
 
@@ -880,6 +964,455 @@ def _secret_from_response(response_payload: Mapping[str, Any]) -> str:
 
 def _fingerprint(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def _safe_server_binding(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        field: str(value[field])
+        for field in ("producer_manifest_path", "registry_path")
+        if isinstance(value.get(field), str) and value[field]
+    }
+
+
+def _safe_client_receipt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    allowed = {
+        "contract_version",
+        "status",
+        "identity_action",
+        "recovery_action",
+        "authorization_state",
+        "producer_id",
+        "key_id",
+        "credential_epoch",
+        "secret_fingerprint_sha256",
+        "endpoint_url",
+        "source_host_id",
+        "producer_install_id",
+        "active_manifest_hashes",
+        "possession_key_fingerprint",
+    }
+    sanitized = {field: value[field] for field in allowed if field in value}
+    server_binding = _safe_server_binding(value.get("server_binding"))
+    if server_binding:
+        sanitized["server_binding"] = server_binding
+    return sanitized
+
+
+def _load_json_no_duplicate_keys(raw: bytes) -> Any:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise DirectSyncPushError("JSON object contains duplicate keys")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(raw.decode("utf-8-sig"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DirectSyncPushError("JSON document is invalid") from exc
+
+
+def _verify_json_file(path: Path, expected: Mapping[str, Any], *, label: str) -> None:
+    try:
+        size = path.stat().st_size
+        if not 0 < size <= 1_048_576:
+            raise DirectSyncPushError(f"{label} size is invalid")
+        observed = _load_json_no_duplicate_keys(path.read_bytes())
+    except OSError as exc:
+        raise DirectSyncPushError(f"{label} readback failed") from exc
+    if observed != dict(expected):
+        raise DirectSyncPushError(f"{label} exact readback failed")
+
+
+def _load_admin_recovery_authorization(
+    path_value: str,
+    *,
+    expected_producer_id: str,
+) -> tuple[Path, dict[str, Any]]:
+    path = assert_path_has_no_reparse_components(
+        str(path_value or ""),
+        label="admin recovery authorization",
+    )
+    if not path.is_file():
+        raise DirectSyncPushError("admin recovery authorization file is absent")
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise DirectSyncPushError(
+            "admin recovery authorization file is unavailable"
+        ) from exc
+    if size <= 0 or size > 65_536:
+        raise DirectSyncPushError("admin recovery authorization file size is invalid")
+    payload = _load_json_no_duplicate_keys(path.read_bytes())
+    expected_fields = {
+        "contract_version",
+        "authorization_id",
+        "producer_id",
+        "recovery_token",
+        "nonce",
+        "expires_at",
+        "audience",
+        "audit_event_id",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_fields:
+        raise DirectSyncPushError("admin recovery authorization fields are invalid")
+    if (
+        payload.get("contract_version")
+        != ADMIN_RECOVERY_AUTHORIZATION_CONTRACT_VERSION
+        or payload.get("audience") != ADMIN_RECOVERY_AUDIENCE
+        or payload.get("producer_id") != expected_producer_id
+    ):
+        raise DirectSyncPushError(
+            "admin recovery authorization identity or contract is invalid"
+        )
+    for field in (
+        "authorization_id",
+        "recovery_token",
+        "nonce",
+        "expires_at",
+        "audit_event_id",
+    ):
+        if not isinstance(payload.get(field), str) or not payload[field].strip():
+            raise DirectSyncPushError(
+                f"admin recovery authorization {field} is invalid"
+            )
+    try:
+        expires_at = _dt.datetime.strptime(
+            payload["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=_dt.timezone.utc)
+    except ValueError as exc:
+        raise DirectSyncPushError(
+            "admin recovery authorization expiry is invalid"
+        ) from exc
+    if expires_at <= _dt.datetime.now(_dt.timezone.utc):
+        raise DirectSyncPushError("admin recovery authorization is expired")
+    return path, payload
+
+
+def _validated_sha256_hex(value: str, *, label: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise DirectSyncPushError(f"{label} must be lowercase SHA-256 hex")
+    return normalized
+
+
+def _open_admin_recovery_session(tls_ca_bundle_path: str) -> requests.Session:
+    ca_path = assert_path_has_no_reparse_components(
+        str(tls_ca_bundle_path or ""),
+        label="admin recovery TLS CA bundle",
+    )
+    if not ca_path.is_file():
+        raise DirectSyncPushError("admin recovery TLS CA bundle is unavailable")
+    session = requests.Session()
+    session.trust_env = False
+    session.verify = str(ca_path)
+    return session
+
+
+def _validate_admin_recovery_response(
+    response_payload: Mapping[str, Any],
+    *,
+    manifest: Mapping[str, Any],
+    credential: Mapping[str, Any],
+    possession_key: Mapping[str, Any],
+) -> None:
+    identity = manifest.get("pc_identity")
+    if not isinstance(identity, Mapping):
+        raise DirectSyncPushError("admin recovery candidate identity is invalid")
+    candidate_manifest_hash = manifest_hash(manifest)
+    authorization_state = response_payload.get("authorization_state")
+    epoch = response_payload.get("credential_epoch")
+    expected_values = {
+        "contract_version": ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION,
+        "status": "recovered",
+        "identity_action": "REATTACHED",
+        "recovery_action": "ADMIN_RECOVERY",
+        "producer_id": str(credential["producer_id"]),
+        "producer_install_id": str(identity["producer_install_id"]),
+        "source_host_id": str(identity["source_host_id"]),
+        "endpoint_url": str(credential["endpoint_url"]),
+    }
+    if any(response_payload.get(field) != value for field, value in expected_values.items()):
+        raise DirectSyncPushError("admin recovery response identity contract differs")
+    if (
+        authorization_state not in ADMIN_RECOVERY_AUTHORIZATION_STATES
+        or type(epoch) is not int
+        or epoch < 2
+        or response_payload.get("active_manifest_hashes")
+        != [candidate_manifest_hash]
+    ):
+        raise DirectSyncPushError("admin recovery response authorization binding differs")
+    response_possession = response_payload.get("possession_key")
+    if (
+        not isinstance(response_possession, Mapping)
+        or response_possession.get("contract_version")
+        != POSSESSION_KEY_CONTRACT_VERSION
+        or response_possession.get("fingerprint")
+        != possession_key.get("fingerprint")
+    ):
+        raise DirectSyncPushError("admin recovery response possession binding differs")
+    receipt = response_payload.get("client_receipt")
+    if not isinstance(receipt, Mapping):
+        raise DirectSyncPushError("admin recovery response missing client receipt")
+    receipt_values = {
+        **expected_values,
+        "authorization_state": authorization_state,
+        "credential_epoch": epoch,
+        "possession_key_fingerprint": possession_key.get("fingerprint"),
+    }
+    if any(receipt.get(field) != value for field, value in receipt_values.items()):
+        raise DirectSyncPushError("admin recovery client receipt binding differs")
+    if receipt.get("active_manifest_hashes") != [candidate_manifest_hash]:
+        raise DirectSyncPushError("admin recovery client receipt manifest binding differs")
+    for field in ("key_id", "secret_fingerprint_sha256"):
+        if receipt.get(field) != response_payload.get(field):
+            raise DirectSyncPushError(
+                f"admin recovery client receipt {field} mismatch"
+            )
+
+
+def _resolved_output_path(value: str, fallback: Path) -> Path:
+    selected = str(value or "").strip()
+    return assert_path_has_no_reparse_components(
+        Path(selected).expanduser() if selected else fallback,
+        label="admin recovery output",
+    )
+
+
+def _preflight_admin_recovery_local_state(
+    args: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    credential: Mapping[str, Any],
+    recovery_path: Path,
+) -> None:
+    """Prove recovery will replace an existing, non-overlapping local identity."""
+
+    data_dir = assert_path_has_no_reparse_components(
+        str(credential["secret_data_dir"]),
+        label="admin recovery data directory",
+    )
+    profile_text = str(getattr(args, "logistics_profile_path", "") or "").strip()
+    if not profile_text:
+        raise DirectSyncPushError(
+            "admin recovery requires an explicit existing logistics profile path"
+        )
+    profile_path = assert_path_has_no_reparse_components(
+        profile_text,
+        label="admin recovery logistics profile",
+    )
+    token_relative = LOGISTICS_TOKEN_REF.split(":", 1)[1].replace("/", os.sep)
+    logistics_secret_path = assert_path_has_no_reparse_components(
+        profile_path.parent / token_relative,
+        label="admin recovery logistics protected credential",
+    )
+    producer_secret_path = _secret_path(
+        credential["secret_data_dir"],
+        str(credential["secret_ref"]).split(":", 1)[1],
+    )
+    manifest_path = _resolved_output_path(
+        str(getattr(args, "manifest_path", "") or ""),
+        data_dir / DEFAULT_MANIFEST_FILENAME,
+    )
+    credential_path = _resolved_output_path(
+        str(getattr(args, "credential_path", "") or ""),
+        data_dir / DEFAULT_CREDENTIAL_FILENAME,
+    )
+    receipt_path = _resolved_output_path(
+        str(getattr(args, "receipt_path", "") or ""),
+        data_dir / "evidence" / DEFAULT_RECEIPT_FILENAME,
+    )
+    report_path = _resolved_output_path(
+        str(getattr(args, "report_path", "") or ""),
+        data_dir / "status" / DEFAULT_REPORT_FILENAME,
+    )
+    identity_path = assert_path_has_no_reparse_components(
+        _producer_identity_path(args),
+        label="admin recovery producer identity",
+    )
+    tls_target = assert_path_has_no_reparse_components(
+        profile_path.parent / TLS_CA_BUNDLE_RELATIVE_PATH,
+        label="admin recovery logistics TLS CA target",
+    )
+    local_targets = [
+        identity_path,
+        manifest_path,
+        credential_path,
+        receipt_path,
+        report_path,
+        producer_secret_path,
+        profile_path,
+        logistics_secret_path,
+        tls_target,
+    ]
+    target_keys = [os.path.normcase(str(path)) for path in local_targets]
+    if len(target_keys) != len(set(target_keys)):
+        raise DirectSyncPushError("admin recovery local targets must be distinct")
+    recovery_key = os.path.normcase(str(recovery_path))
+    ca_source = assert_path_has_no_reparse_components(
+        str(getattr(args, "tls_ca_bundle_path", "") or ""),
+        label="admin recovery TLS CA source",
+    )
+    if recovery_key in set(target_keys) or recovery_key == os.path.normcase(
+        str(ca_source)
+    ):
+        raise DirectSyncPushError(
+            "admin recovery authorization path overlaps a local target"
+        )
+    for path in local_targets:
+        if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+            raise DirectSyncPushError("admin recovery local target is not a regular file")
+    for path, label in (
+        (identity_path, "producer identity"),
+        (manifest_path, "producer manifest"),
+        (credential_path, "producer credential reference"),
+        (producer_secret_path, "producer protected credential"),
+        (profile_path, "logistics profile"),
+        (logistics_secret_path, "logistics protected credential"),
+        (tls_target, "logistics TLS CA bundle"),
+    ):
+        if not path.is_file():
+            raise DirectSyncPushError(
+                f"admin recovery requires existing {label}"
+            )
+    manifest_size = manifest_path.stat().st_size
+    if not 0 < manifest_size <= 65_536:
+        raise DirectSyncPushError("existing producer manifest size is invalid")
+    stored_manifest = _load_json_no_duplicate_keys(manifest_path.read_bytes())
+    if stored_manifest != dict(manifest):
+        raise DirectSyncPushError(
+            "existing producer manifest differs from the recovery candidate"
+        )
+
+
+def _admin_recover(
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    credential: dict[str, Any],
+    progress: _AdminRecoveryProgress | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str, Path, dict[str, Any]]:
+    if (
+        str(getattr(args, "credential_scope", "") or "").strip().lower()
+        != SCOPE_CURRENT_USER
+    ):
+        raise DirectSyncPushError(
+            "admin recovery requires --credential-scope current_user"
+        )
+    for field, option in (
+        ("pc_id", "--pc-id"),
+        ("producer_id", "--producer-id"),
+        ("source_host_id", "--source-host-id"),
+        ("producer_install_id", "--producer-install-id"),
+    ):
+        if not str(getattr(args, field, "") or "").strip():
+            raise DirectSyncPushError(f"admin recovery requires explicit {option}")
+    candidate_manifest_hash = manifest_hash(manifest)
+    expected_active_manifest_hash = _validated_sha256_hex(
+        str(getattr(args, "expected_active_manifest_hash", "") or ""),
+        label="expected_active_manifest_hash",
+    )
+    if candidate_manifest_hash != expected_active_manifest_hash:
+        raise DirectSyncPushError(
+            "legacy_manifest_hash_mismatch: recovery HTTP was not sent"
+        )
+    configured_ca_bundle_path = str(
+        getattr(args, "tls_ca_bundle_path", "") or ""
+    ).strip()
+    if not configured_ca_bundle_path:
+        raise DirectSyncPushError("admin recovery requires an explicit TLS CA bundle")
+    recovery_path, authorization = _load_admin_recovery_authorization(
+        str(getattr(args, "admin_recovery_secret_file", "") or ""),
+        expected_producer_id=str(credential["producer_id"]),
+    )
+    _preflight_admin_recovery_local_state(
+        args,
+        manifest,
+        credential,
+        recovery_path,
+    )
+    recovery_url = _validate_admin_recovery_url(
+        str(getattr(args, "admin_recovery_url", "") or "")
+        or _admin_recovery_url_from_endpoint(str(credential["endpoint_url"])),
+        str(credential["endpoint_url"]),
+    )
+    token_source, token = _token_from_sources(args)
+    try:
+        possession_context = PersistentPossessionKey.provision_initial(
+            scope=SCOPE_CURRENT_USER
+        )
+    except AdminRecoveryRequired as exc:
+        raise PossessionKeyRecoveryRequired(
+            "admin_recovery",
+            exc.public_state(),
+        ) from exc
+    with possession_context as possession_key_handle:
+        descriptor = possession_key_handle.descriptor().as_dict()
+        non_exportability = possession_key_handle.assert_non_exportable()
+        descriptor["private_export_status"] = (
+            non_exportability.private_export_status_hex
+        )
+        identity = manifest["pc_identity"]
+        proof = {
+            "contract_version": ADMIN_RECOVERY_PROOF_CONTRACT_VERSION,
+            "authorization_id": authorization["authorization_id"],
+            "nonce": authorization["nonce"],
+            "expires_at": authorization["expires_at"],
+            "audience": authorization["audience"],
+            "producer_id": credential["producer_id"],
+            "producer_install_id": identity["producer_install_id"],
+            "source_host_id": identity["source_host_id"],
+            "manifest_hash": candidate_manifest_hash,
+            "new_possession_key_fingerprint": descriptor["fingerprint"],
+        }
+        signature = b64url_encode(
+            possession_key_handle.sign_es256(canonical_json_bytes(proof))
+        )
+        headers = {"X-Producer-Enrollment-Token": token} if token else {}
+        session = _open_admin_recovery_session(configured_ca_bundle_path)
+        try:
+            response = session.post(
+                recovery_url,
+                json={
+                    "contract_version": ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION,
+                    "proof": proof,
+                    "signature": signature,
+                    "recovery_token": authorization["recovery_token"],
+                    "new_possession_public_jwk": dict(descriptor["public_jwk"]),
+                    "manifest": manifest,
+                    "endpoint_url": credential["endpoint_url"],
+                },
+                headers=headers,
+                timeout=max(1, int(args.enrollment_timeout_seconds)),
+                allow_redirects=False,
+            )
+            if response.status_code == 200 and progress is not None:
+                progress.server_credential_rotated = True
+        finally:
+            session.close()
+    try:
+        response_payload = response.json()
+    except ValueError as exc:
+        raise DirectSyncPushError(
+            f"admin recovery response is not JSON: HTTP {response.status_code}"
+        ) from exc
+    if response.status_code != 200:
+        error = response_payload.get("error") if isinstance(response_payload, dict) else {}
+        code = str(error.get("code") or response.status_code) if isinstance(error, dict) else str(response.status_code)
+        message = str(error.get("message") or "").strip() if isinstance(error, dict) else ""
+        raise ProducerEnrollmentHTTPError(response.status_code, code, message)
+    if not isinstance(response_payload, dict):
+        raise DirectSyncPushError("admin recovery response must be a JSON object")
+    _validate_admin_recovery_response(
+        response_payload,
+        manifest=manifest,
+        credential=credential,
+        possession_key=descriptor,
+    )
+    return response_payload, descriptor, token_source, recovery_path, authorization
 
 
 def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -913,6 +1446,9 @@ def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, 
     report = {
         "report_version": "label-match-worker-pc-registration-v1",
         "status": "DRY_RUN" if args.dry_run else "APPLY_REQUESTED",
+        "admin_recovery_requested": bool(
+            str(getattr(args, "admin_recovery_secret_file", "") or "").strip()
+        ),
         "app": LABEL_MATCH_APP,
         "endpoint_url": endpoint_url,
         "enrollment_url": args.enrollment_url or _enrollment_url_from_endpoint(endpoint_url),
@@ -934,14 +1470,74 @@ def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, 
         "sync_dir": sync_dir,
         "data_dir": data_dir,
         "manifest_hash": manifest_hash(manifest),
+        "expected_active_manifest_hash": str(
+            getattr(args, "expected_active_manifest_hash", "") or ""
+        )
+        .strip()
+        .lower(),
     }
     return manifest, credential, report
 
 
-def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], credential: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
-    token_source, token = _token_from_sources(args)
-    enrollment_url = str(report["enrollment_url"])
-    possession_key = _prepare_possession_key(report)
+def apply_registration(
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    credential: dict[str, Any],
+    report: dict[str, Any],
+    progress: _AdminRecoveryProgress | None = None,
+) -> dict[str, Any]:
+    admin_recovery_requested = bool(
+        str(getattr(args, "admin_recovery_secret_file", "") or "").strip()
+    )
+    recovery_path: Path | None = None
+    recovery_authorization: dict[str, Any] | None = None
+    if admin_recovery_requested:
+        (
+            response_payload,
+            possession_key,
+            token_source,
+            recovery_path,
+            recovery_authorization,
+        ) = _admin_recover(args, manifest, credential, progress)
+        registration_contract_version = ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION
+        registration_url = _validate_admin_recovery_url(
+            str(getattr(args, "admin_recovery_url", "") or "")
+            or _admin_recovery_url_from_endpoint(str(credential["endpoint_url"])),
+            str(credential["endpoint_url"]),
+        )
+    else:
+        token_source, token = _token_from_sources(args)
+        enrollment_url = str(report["enrollment_url"])
+        possession_key = _prepare_possession_key(report)
+        enrollment_payload = {
+            "contract_version": ENROLLMENT_CONTRACT_VERSION,
+            "endpoint_url": credential["endpoint_url"],
+            "key_id": credential["key_id"],
+            "manifest": manifest,
+            "manifest_hash": manifest_hash(manifest),
+            "possession_public_jwk": dict(possession_key["public_jwk"]),
+            "producer_id": credential["producer_id"],
+        }
+        response_payload = _enroll(
+            enrollment_payload,
+            enrollment_url=enrollment_url,
+            enrollment_token=token,
+            timeout_seconds=args.enrollment_timeout_seconds,
+            tls_ca_bundle_path=str(
+                getattr(args, "tls_ca_bundle_path", "") or ""
+            ).strip(),
+        )
+        _validate_v2_enrollment_response(
+            response_payload,
+            expected_fingerprint=str(possession_key["fingerprint"]),
+            expected_producer_id=str(credential["producer_id"]),
+            expected_install_id=str(report["producer_install_id"]),
+            expected_source_host_id=str(report["source_host_id"]),
+            expected_endpoint_url=str(credential["endpoint_url"]),
+            expected_manifest_hash=str(report["manifest_hash"]),
+        )
+        registration_contract_version = ENROLLMENT_CONTRACT_VERSION
+        registration_url = enrollment_url
     possession_fingerprint = str(possession_key["fingerprint"])
     report.update(
         {
@@ -953,36 +1549,10 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
             "possession_key_fingerprint": possession_fingerprint,
             "possession_key_scope": str(possession_key["scope"]),
             "possession_key_provisioning_allowed": (
-                report.get("producer_identity_source") == "generated"
+                admin_recovery_requested
+                or report.get("producer_identity_source") == "generated"
             ),
         }
-    )
-    enrollment_payload = {
-        "contract_version": ENROLLMENT_CONTRACT_VERSION,
-        "endpoint_url": credential["endpoint_url"],
-        "key_id": credential["key_id"],
-        "manifest": manifest,
-        "manifest_hash": manifest_hash(manifest),
-        "possession_public_jwk": dict(possession_key["public_jwk"]),
-        "producer_id": credential["producer_id"],
-    }
-    response_payload = _enroll(
-        enrollment_payload,
-        enrollment_url=enrollment_url,
-        enrollment_token=token,
-        timeout_seconds=args.enrollment_timeout_seconds,
-        tls_ca_bundle_path=str(
-            getattr(args, "tls_ca_bundle_path", "") or ""
-        ).strip(),
-    )
-    _validate_v2_enrollment_response(
-        response_payload,
-        expected_fingerprint=possession_fingerprint,
-        expected_producer_id=str(credential["producer_id"]),
-        expected_install_id=str(report["producer_install_id"]),
-        expected_source_host_id=str(report["source_host_id"]),
-        expected_endpoint_url=str(credential["endpoint_url"]),
-        expected_manifest_hash=str(report["manifest_hash"]),
     )
     secret = _secret_from_response(response_payload)
     expected_fingerprint = str(response_payload.get("secret_fingerprint_sha256") or "")
@@ -990,6 +1560,12 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
         raise DirectSyncPushError("self-enroll secret fingerprint mismatch")
     credential["producer_id"] = str(response_payload.get("producer_id") or credential["producer_id"])
     credential["key_id"] = str(response_payload.get("key_id") or credential["key_id"])
+    if admin_recovery_requested and not isinstance(
+        response_payload.get("machine_credential_bundle"), Mapping
+    ):
+        raise DirectSyncPushError(
+            "admin recovery response missing machine credential bundle"
+        )
     machine_profile = ensure_runtime_profile_from_enrollment_bundle(
         response_payload,
         expected_app=LABEL_MATCH_APP,
@@ -1005,14 +1581,37 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
         credential_scope=str(
             getattr(args, "credential_scope", "machine") or "machine"
         ),
+        allow_existing_token_rotation=admin_recovery_requested,
+        expected_producer_id=str(credential["producer_id"]),
+        expected_producer_install_id=str(
+            manifest["pc_identity"]["producer_install_id"]
+        ),
+        expected_manifest_hash=manifest_hash(manifest),
+        expected_endpoint_url=str(credential["endpoint_url"]),
     )
     if machine_profile is None and bool(getattr(args, "require_machine_credential_bundle", False)):
         raise DirectSyncPushError("self-enroll response missing machine credential bundle")
+    if admin_recovery_requested:
+        if not isinstance(machine_profile, Mapping) or machine_profile.get(
+            "status"
+        ) != "rotated":
+            raise DirectSyncPushError(
+                "admin recovery did not rotate the existing logistics credential"
+            )
+        if progress is not None:
+            progress.logistics_credential_finalized = True
     secret_target = str(credential["secret_ref"]).split(":", 1)[1]
     try:
         selected_scope = str(
             getattr(args, "credential_scope", "machine") or "machine"
         )
+        expected_secret_path = _secret_path(
+            credential["secret_data_dir"], secret_target
+        )
+        if expected_secret_path.exists() and not admin_recovery_requested:
+            raise FileExistsError(
+                f"producer credential path already exists: {expected_secret_path}"
+            )
         if selected_scope == "current_user":
             secret_path = _write_dpapi_secret(
                 credential["secret_data_dir"],
@@ -1030,16 +1629,24 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
         for created_path in (machine_profile or {}).get("created_paths", []):
             Path(created_path).unlink(missing_ok=True)
         raise
+    if admin_recovery_requested and progress is not None:
+        progress.producer_credential_finalized = True
     report.update(
         {
-            "status": "SELF_ENROLLMENT_REGISTERED",
+            "status": (
+                "ADMIN_RECOVERY_REGISTERED"
+                if admin_recovery_requested
+                else "SELF_ENROLLMENT_REGISTERED"
+            ),
             "enrollment_status": response_payload.get("status"),
             "key_id": credential["key_id"],
             "producer_id": credential["producer_id"],
             "secret_bootstrap_verified": True,
             "secret_fingerprint_sha256": expected_fingerprint or _fingerprint(secret),
             "secret_material_persisted": False,
-            "server_binding": response_payload.get("server_binding") or {},
+            "server_binding": _safe_server_binding(
+                response_payload.get("server_binding")
+            ),
             "server_registration_verified": True,
             "token_source": token_source,
             "protected_secret_path": str(secret_path),
@@ -1050,10 +1657,35 @@ def apply_registration(args: argparse.Namespace, manifest: dict[str, Any], crede
             "possession_binding_verified": True,
             "v2_client_receipt_verified": True,
             "machine_profiles": {"logistics": machine_profile} if machine_profile else {},
+            "registration_action": (
+                "admin_recovery"
+                if admin_recovery_requested
+                else "initial_enrollment"
+            ),
+            "registration_contract_version": registration_contract_version,
+            "registration_url": registration_url,
+            "enrollment_transport_trust_env": False,
         }
     )
-    client_receipt = response_payload.get("client_receipt")
-    if isinstance(client_receipt, dict):
+    if admin_recovery_requested:
+        assert recovery_path is not None and recovery_authorization is not None
+        report.update(
+            {
+                "admin_recovery_requested": True,
+                "admin_recovery_verified": True,
+                "admin_recovery_action": "ADMIN_RECOVERY",
+                "admin_recovery_authorization_id": recovery_authorization[
+                    "authorization_id"
+                ],
+                "admin_recovery_authorization_audit_event_id": (
+                    recovery_authorization["audit_event_id"]
+                ),
+                "admin_recovery_secret_cleanup_required": True,
+                "admin_recovery_secret_file": str(recovery_path),
+            }
+        )
+    client_receipt = _safe_client_receipt(response_payload.get("client_receipt"))
+    if client_receipt:
         report["client_receipt"] = client_receipt
         report["client_receipt_status"] = client_receipt.get("status")
     return report
@@ -1067,6 +1699,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server-base-url", default=DEFAULT_SERVER_BASE_URL)
     parser.add_argument("--endpoint-url", default="")
     parser.add_argument("--enrollment-url", default="")
+    parser.add_argument("--admin-recovery-url", default="")
+    parser.add_argument(
+        "--admin-recovery-secret-file",
+        default="",
+        help="one-time authorization file issued by the audited server admin tool",
+    )
+    parser.add_argument(
+        "--expected-active-manifest-hash",
+        default="",
+        help="required exact server-active legacy manifest hash for recovery preflight",
+    )
     parser.add_argument("--enrollment-token", default="")
     parser.add_argument("--enrollment-token-file", default="")
     parser.add_argument("--enrollment-token-env", default=DEFAULT_ENROLLMENT_TOKEN_ENV)
@@ -1097,6 +1740,7 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir = Path(args.data_dir or DEFAULT_DIRECT_SYNC_ROOT).expanduser().resolve()
     report_path = Path(args.report_path).expanduser() if args.report_path else data_dir / "status" / DEFAULT_REPORT_FILENAME
+    recovery_progress = _AdminRecoveryProgress()
     report_context: dict[str, Any] = {}
     report: dict[str, Any] = {}
     try:
@@ -1112,9 +1756,19 @@ def main(argv: list[str] | None = None) -> int:
             "producer_identity_source": report.get("producer_identity_source"),
             "producer_install_id": report.get("producer_install_id"),
             "source_host_id": report.get("source_host_id"),
+            "admin_recovery_requested": report.get("admin_recovery_requested"),
+            "expected_active_manifest_hash": report.get(
+                "expected_active_manifest_hash"
+            ),
         }
         if args.apply:
-            report = apply_registration(args, manifest, credential, report)
+            report = apply_registration(
+                args,
+                manifest,
+                credential,
+                report,
+                recovery_progress,
+            )
             for directory in [
                 Path(credential["secret_data_dir"]),
                 Path(manifest["paths"]["evidence_dir"]),
@@ -1140,6 +1794,15 @@ def main(argv: list[str] | None = None) -> int:
             client_receipt = report.get("client_receipt")
             if isinstance(client_receipt, dict):
                 _write_json(receipt_path, client_receipt)
+            _verify_json_file(identity_path, identity, label="producer identity")
+            _verify_json_file(manifest_path, manifest, label="producer manifest")
+            _verify_json_file(
+                credential_path,
+                credential,
+                label="producer credential reference",
+            )
+            if isinstance(client_receipt, dict):
+                _verify_json_file(receipt_path, client_receipt, label="client receipt")
             report.update(
                 {
                     "credential_path": str(credential_path.resolve()),
@@ -1164,6 +1827,33 @@ def main(argv: list[str] | None = None) -> int:
                 or report["persisted_manifest_hash_verified"] is not True
             ):
                 raise DirectSyncPushError("persisted manifest hash readback failed")
+            if report.get("admin_recovery_requested") is True:
+                recovery_progress.local_documents_finalized = True
+                report["admin_recovery_progress"] = (
+                    recovery_progress.redacted_summary()
+                )
+                report["report_path"] = str(report_path.resolve())
+                _write_json(report_path, report)
+                _verify_json_file(
+                    report_path,
+                    report,
+                    label="admin recovery preliminary report",
+                )
+            if report.get("admin_recovery_secret_cleanup_required") is True:
+                recovery_secret_path = Path(
+                    str(report.get("admin_recovery_secret_file") or "")
+                )
+                recovery_secret_path.unlink(missing_ok=True)
+                if recovery_secret_path.exists():
+                    raise OSError(
+                        "consumed admin recovery authorization file still exists"
+                    )
+                report["admin_recovery_secret_file_deleted"] = True
+                report["admin_recovery_secret_cleanup_required"] = False
+                recovery_progress.authorization_file_deleted = True
+                report["admin_recovery_progress"] = (
+                    recovery_progress.redacted_summary()
+                )
         else:
             report.update(
                 {
@@ -1177,13 +1867,55 @@ def main(argv: list[str] | None = None) -> int:
             )
         report["report_path"] = str(report_path.resolve())
         _write_json(report_path, report)
+        _verify_json_file(report_path, report, label="registration report")
         print(f"registration_report={report_path.resolve()}")
-        return 0 if args.dry_run or report["status"] == "SELF_ENROLLMENT_REGISTERED" else 1
+        return (
+            0
+            if args.dry_run
+            or report["status"]
+            in {"SELF_ENROLLMENT_REGISTERED", "ADMIN_RECOVERY_REGISTERED"}
+            else 1
+        )
     except Exception as exc:
+        if recovery_progress.server_credential_rotated:
+            blocked = {
+                "report_version": "label-match-worker-pc-registration-v1",
+                "status": "BLOCKED_POST_RECOVERY_LOCAL_PERSISTENCE",
+                "blocked_reason": type(exc).__name__,
+                "server_credential_rotated": True,
+                "local_rollback_performed": False,
+                "secret_material_persisted": None,
+                "recovery_action": "NEW_AUDITED_RECOVERY_REQUIRED",
+                "admin_recovery_progress": recovery_progress.redacted_summary(),
+                "authorization_file_deleted": (
+                    not Path(args.admin_recovery_secret_file).expanduser().exists()
+                    if str(args.admin_recovery_secret_file or "").strip()
+                    else False
+                ),
+                "report_path": str(report_path.resolve()),
+            }
+            blocked.update(
+                {key: value for key, value in report_context.items() if value is not None}
+            )
+            try:
+                _write_json(report_path, blocked)
+                _verify_json_file(
+                    report_path,
+                    blocked,
+                    label="post-recovery failure report",
+                )
+            except Exception:
+                pass
+            print(f"registration_report={report_path.resolve()}")
+            return 3
         blocked = {
             "report_version": "label-match-worker-pc-registration-v1",
             "status": "BLOCKED",
-            "blocked_reason": str(exc),
+            "blocked_reason": (
+                f"self-enroll failed: {exc.error_code}"
+                if isinstance(exc, ProducerEnrollmentHTTPError)
+                else str(exc)
+            ),
             "raw_secret_written": False,
             "secret_material_persisted": False,
         }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -106,8 +107,17 @@ def _private_ca_pem() -> bytes:
     return certificate.public_bytes(serialization.Encoding.PEM)
 
 
-def _machine_enrollment_response(timeout_seconds):
+def _machine_enrollment_response(
+    timeout_seconds,
+    *,
+    logistics_token="logistics-token-01",
+):
     return {
+        "producer_id": "producer-label-host-01",
+        "producer_install_id": "install-label-host-01",
+        "source_host_id": "label-host-01",
+        "endpoint_url": "https://worker.example.invalid/api/producer-ingest/v1/source-file",
+        "active_manifest_hashes": ["a" * 64],
         "key_id": "producer-key-01",
         "secret": "producer-secret-01",
         "machine_credential_bundle": {
@@ -130,7 +140,7 @@ def _machine_enrollment_response(timeout_seconds):
                     "audience": "worker-analysis-logistics-v1",
                     "auth_scheme": "bearer",
                     "token_header": "X-Logistics-API-Token",
-                    "token": "logistics-token-01",
+                    "token": logistics_token,
                 },
             },
             "profiles": {
@@ -203,6 +213,262 @@ def test_enrollment_profile_reuses_float_timeout_for_equivalent_integer(
             profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
                 _machine_enrollment_response(conflicting), **arguments
             )
+
+
+def _recovery_profile_arguments(target):
+    return {
+        "expected_app": "label_match",
+        "expected_program": "Label_Match",
+        "expected_source_host_id": "label-host-01",
+        "expected_device_id": "label-pc-01",
+        "profile_path": target,
+        "credential_scope": "current_user",
+        "allow_existing_token_rotation": True,
+        "expected_producer_id": "producer-label-host-01",
+        "expected_producer_install_id": "install-label-host-01",
+        "expected_manifest_hash": "a" * 64,
+        "expected_endpoint_url": (
+            "https://worker.example.invalid/api/producer-ingest/v1/source-file"
+        ),
+    }
+
+
+def _fake_current_user_dpapi(monkeypatch):
+    monkeypatch.setattr(
+        profile_installer_module,
+        "protect_current_user_secret",
+        lambda value: b"user-dpapi:" + value.encode("utf-8"),
+    )
+    monkeypatch.setattr(
+        profile_installer_module,
+        "unprotect_current_user_secret",
+        lambda value: value.removeprefix(b"user-dpapi:").decode("utf-8"),
+    )
+
+
+def test_recovery_rotates_only_token_when_every_non_secret_binding_matches(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    _fake_current_user_dpapi(monkeypatch)
+    initial_arguments = {
+        key: value
+        for key, value in _recovery_profile_arguments(target).items()
+        if key
+        not in {
+            "allow_existing_token_rotation",
+            "expected_producer_id",
+            "expected_producer_install_id",
+            "expected_manifest_hash",
+            "expected_endpoint_url",
+        }
+    }
+    profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10.0), **initial_arguments
+    )
+    profile_before = target.read_bytes()
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    secret_before = secret_path.read_bytes()
+
+    rotated = profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10, logistics_token="logistics-token-rotated"),
+        **_recovery_profile_arguments(target),
+    )
+
+    assert rotated["status"] == "rotated"
+    assert rotated["non_secret_profile_preserved"] is True
+    assert target.read_bytes() == profile_before
+    assert secret_path.read_bytes() != secret_before
+    assert (
+        profile_installer_module.unprotect_current_user_secret(secret_path.read_bytes())
+        == "logistics-token-rotated"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("producer_id",), "producer-other"),
+        (("producer_install_id",), "install-other"),
+        (("source_host_id",), "host-other"),
+        (("active_manifest_hashes",), ["b" * 64]),
+        (("endpoint_url",), "https://other.example.invalid/api/producer-ingest/v1/source-file"),
+        (("machine_credential_bundle", "bindings", "authority_scope_id"), "scope-other"),
+    ],
+)
+def test_recovery_rotation_rejects_every_non_secret_binding_mismatch(
+    tmp_path, monkeypatch, path, value
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    _fake_current_user_dpapi(monkeypatch)
+    initial_arguments = {
+        key: item
+        for key, item in _recovery_profile_arguments(target).items()
+        if key
+        not in {
+            "allow_existing_token_rotation",
+            "expected_producer_id",
+            "expected_producer_install_id",
+            "expected_manifest_hash",
+            "expected_endpoint_url",
+        }
+    }
+    profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10.0), **initial_arguments
+    )
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    profile_before = target.read_bytes()
+    secret_before = secret_path.read_bytes()
+    response = _machine_enrollment_response(
+        10, logistics_token="logistics-token-rotated"
+    )
+    selected = response
+    for field in path[:-1]:
+        selected = selected[field]
+    selected[path[-1]] = value
+    if path == ("machine_credential_bundle", "bindings", "authority_scope_id"):
+        response["machine_credential_bundle"]["profiles"]["logistics"][
+            "authority_scope"
+        ] = value
+
+    with pytest.raises((FileExistsError, ValueError)):
+        profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+            response, **_recovery_profile_arguments(target)
+        )
+
+    assert target.read_bytes() == profile_before
+    assert secret_path.read_bytes() == secret_before
+
+
+def test_initial_enrollment_still_rejects_existing_rotated_token(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    _fake_current_user_dpapi(monkeypatch)
+    arguments = {
+        key: value
+        for key, value in _recovery_profile_arguments(target).items()
+        if key
+        not in {
+            "allow_existing_token_rotation",
+            "expected_producer_id",
+            "expected_producer_install_id",
+            "expected_manifest_hash",
+            "expected_endpoint_url",
+        }
+    }
+    profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10.0), **arguments
+    )
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    profile_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+    secret_sha = hashlib.sha256(secret_path.read_bytes()).hexdigest()
+
+    with pytest.raises(FileExistsError, match="conflicts with enrollment"):
+        profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+            _machine_enrollment_response(
+                10, logistics_token="logistics-token-rotated"
+            ),
+            **arguments,
+        )
+
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == profile_sha
+    assert hashlib.sha256(secret_path.read_bytes()).hexdigest() == secret_sha
+
+
+def test_recovery_token_replace_interruption_preserves_original_and_cleans_temp(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    _fake_current_user_dpapi(monkeypatch)
+    initial_arguments = {
+        key: value
+        for key, value in _recovery_profile_arguments(target).items()
+        if key
+        not in {
+            "allow_existing_token_rotation",
+            "expected_producer_id",
+            "expected_producer_install_id",
+            "expected_manifest_hash",
+            "expected_endpoint_url",
+        }
+    }
+    profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10.0), **initial_arguments
+    )
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    profile_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+    secret_sha = hashlib.sha256(secret_path.read_bytes()).hexdigest()
+    real_replace = profile_installer_module.os.replace
+
+    def interrupted_replace(source, destination):
+        if Path(destination) == secret_path:
+            raise OSError("simulated os.replace interruption")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(profile_installer_module.os, "replace", interrupted_replace)
+    with pytest.raises(OSError, match="simulated os.replace interruption"):
+        profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+            _machine_enrollment_response(
+                10, logistics_token="logistics-token-rotated"
+            ),
+            **_recovery_profile_arguments(target),
+        )
+
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == profile_sha
+    assert hashlib.sha256(secret_path.read_bytes()).hexdigest() == secret_sha
+    assert list(secret_path.parent.glob("*.profile.tmp")) == []
+
+
+def test_recovery_post_replace_readback_failure_rolls_back_original(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "current-user" / "runtime-profile.json"
+    _fake_current_user_dpapi(monkeypatch)
+    initial_arguments = {
+        key: value
+        for key, value in _recovery_profile_arguments(target).items()
+        if key
+        not in {
+            "allow_existing_token_rotation",
+            "expected_producer_id",
+            "expected_producer_install_id",
+            "expected_manifest_hash",
+            "expected_endpoint_url",
+        }
+    }
+    profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+        _machine_enrollment_response(10.0), **initial_arguments
+    )
+    secret_path = target.parent / "secrets" / "bearer-token.dpapi"
+    profile_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+    secret_sha = hashlib.sha256(secret_path.read_bytes()).hexdigest()
+    real_loader = profile_installer_module.load_logistics_runtime_profile
+    calls = 0
+
+    def interrupted_readback(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated post-replace readback interruption")
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(
+        profile_installer_module,
+        "load_logistics_runtime_profile",
+        interrupted_readback,
+    )
+    with pytest.raises(RuntimeError, match="post-replace readback"):
+        profile_installer_module.ensure_runtime_profile_from_enrollment_bundle(
+            _machine_enrollment_response(
+                10, logistics_token="logistics-token-rotated"
+            ),
+            **_recovery_profile_arguments(target),
+        )
+
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == profile_sha
+    assert hashlib.sha256(secret_path.read_bytes()).hexdigest() == secret_sha
+    assert list(secret_path.parent.glob("*.profile.tmp")) == []
 
 
 def test_default_profile_path_is_program_scoped(tmp_path):

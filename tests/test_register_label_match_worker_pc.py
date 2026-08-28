@@ -2,6 +2,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,14 +52,16 @@ def fake_possession_descriptor(*, created=True):
     }
 
 
-def fake_v2_enrollment_response(module, payload, secret):
+def fake_v2_enrollment_response(
+    module, payload, secret, *, authorization_state="OPERATION_PENDING"
+):
     identity = payload["manifest"]["pc_identity"]
     active_manifest_hashes = [module.manifest_hash(payload["manifest"])]
     response = {
         "contract_version": module.ENROLLMENT_CONTRACT_VERSION,
         "status": "enrolled",
         "identity_action": "CREATED",
-        "authorization_state": {"status": "OPERATION_PENDING"},
+        "authorization_state": authorization_state,
         "credential_epoch": 1,
         "producer_id": payload["producer_id"],
         "key_id": payload["key_id"],
@@ -916,3 +919,650 @@ def test_label_match_registration_does_not_auto_load_adjacent_token_file(tmp_pat
     )()
 
     assert module._token_from_sources(args) == ("ip_allowlist", "")
+
+
+def _admin_recovery_contract(module, authorization_state):
+    manifest = {
+        "pc_identity": {
+            "pc_id": "LABEL-PC-01",
+            "producer_install_id": "install-label-01",
+            "source_host_id": "label-host-01",
+        },
+        "streams": [],
+    }
+    credential = {
+        "producer_id": "producer-label-01",
+        "endpoint_url": (
+            "https://worker.example.invalid/api/producer-ingest/v1/source-file"
+        ),
+    }
+    possession_key = fake_possession_descriptor()
+    digest = module.manifest_hash(manifest)
+    response = {
+        "contract_version": module.ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION,
+        "status": "recovered",
+        "identity_action": "REATTACHED",
+        "recovery_action": "ADMIN_RECOVERY",
+        "authorization_state": authorization_state,
+        "credential_epoch": 2,
+        "producer_id": credential["producer_id"],
+        "producer_install_id": manifest["pc_identity"]["producer_install_id"],
+        "source_host_id": manifest["pc_identity"]["source_host_id"],
+        "endpoint_url": credential["endpoint_url"],
+        "active_manifest_hashes": [digest],
+        "key_id": "key-rotated",
+        "secret_fingerprint_sha256": "f" * 64,
+        "server_binding": {"producer_manifest_path": "/srv/producer.json"},
+        "possession_key": {
+            "contract_version": module.POSSESSION_KEY_CONTRACT_VERSION,
+            "fingerprint": possession_key["fingerprint"],
+        },
+    }
+    response["client_receipt"] = {
+        "contract_version": response["contract_version"],
+        "status": response["status"],
+        "identity_action": response["identity_action"],
+        "recovery_action": response["recovery_action"],
+        "authorization_state": authorization_state,
+        "credential_epoch": response["credential_epoch"],
+        "producer_id": response["producer_id"],
+        "producer_install_id": response["producer_install_id"],
+        "source_host_id": response["source_host_id"],
+        "endpoint_url": response["endpoint_url"],
+        "active_manifest_hashes": [digest],
+        "possession_key_fingerprint": possession_key["fingerprint"],
+        "key_id": response["key_id"],
+        "secret_fingerprint_sha256": response["secret_fingerprint_sha256"],
+    }
+    return manifest, credential, possession_key, response
+
+
+def _initial_enrollment_contract(module, authorization_state):
+    payload = {
+        "manifest": {
+            "pc_identity": {
+                "producer_install_id": "install-label-01",
+                "source_host_id": "label-host-01",
+            }
+        },
+        "producer_id": "producer-label-01",
+        "key_id": "key-label-01",
+        "endpoint_url": (
+            "https://worker.example.invalid/api/producer-ingest/v1/source-file"
+        ),
+    }
+    response = fake_v2_enrollment_response(
+        module,
+        payload,
+        "initial-producer-secret",
+        authorization_state=authorization_state,
+    )
+    return payload, response
+
+
+@pytest.mark.parametrize("authorization_state", ["LOGISTICS_READY", "OPERATION_PENDING"])
+def test_initial_response_accepts_both_deployed_authorization_states(
+    authorization_state,
+):
+    module = load_registration_module()
+    payload, response = _initial_enrollment_contract(module, authorization_state)
+
+    module._validate_v2_enrollment_response(
+        response,
+        expected_fingerprint=TEST_POSSESSION_FINGERPRINT,
+        expected_producer_id=payload["producer_id"],
+        expected_install_id=payload["manifest"]["pc_identity"][
+            "producer_install_id"
+        ],
+        expected_source_host_id=payload["manifest"]["pc_identity"][
+            "source_host_id"
+        ],
+        expected_endpoint_url=payload["endpoint_url"],
+        expected_manifest_hash=module.manifest_hash(payload["manifest"]),
+    )
+
+
+def test_initial_response_rejects_unknown_authorization_state():
+    module = load_registration_module()
+    payload, response = _initial_enrollment_contract(module, "UNRECOGNIZED")
+
+    with pytest.raises(module.DirectSyncPushError, match="authorization state mismatch"):
+        module._validate_v2_enrollment_response(
+            response,
+            expected_fingerprint=TEST_POSSESSION_FINGERPRINT,
+            expected_producer_id=payload["producer_id"],
+            expected_install_id=payload["manifest"]["pc_identity"][
+                "producer_install_id"
+            ],
+            expected_source_host_id=payload["manifest"]["pc_identity"][
+                "source_host_id"
+            ],
+            expected_endpoint_url=payload["endpoint_url"],
+            expected_manifest_hash=module.manifest_hash(payload["manifest"]),
+        )
+
+
+@pytest.mark.parametrize("authorization_state", ["LOGISTICS_READY", "OPERATION_PENDING"])
+def test_admin_recovery_response_accepts_both_deployed_authorization_states(
+    authorization_state,
+):
+    module = load_registration_module()
+    manifest, credential, possession_key, response = _admin_recovery_contract(
+        module, authorization_state
+    )
+
+    module._validate_admin_recovery_response(
+        response,
+        manifest=manifest,
+        credential=credential,
+        possession_key=possession_key,
+    )
+
+
+def test_admin_recovery_response_rejects_unknown_authorization_state():
+    module = load_registration_module()
+    manifest, credential, possession_key, response = _admin_recovery_contract(
+        module, "UNRECOGNIZED"
+    )
+
+    with pytest.raises(
+        module.DirectSyncPushError, match="authorization binding differs"
+    ):
+        module._validate_admin_recovery_response(
+            response,
+            manifest=manifest,
+            credential=credential,
+            possession_key=possession_key,
+        )
+
+
+def test_admin_recovery_manifest_mismatch_stops_before_key_or_http(monkeypatch):
+    module = load_registration_module()
+    manifest, credential, _possession_key, _response = _admin_recovery_contract(
+        module, "LOGISTICS_READY"
+    )
+    calls = []
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "provision_initial",
+        staticmethod(lambda **_kwargs: calls.append("key")),
+    )
+    monkeypatch.setattr(
+        module,
+        "_open_admin_recovery_session",
+        lambda _path: calls.append("http"),
+    )
+    args = SimpleNamespace(
+        credential_scope="current_user",
+        pc_id="LABEL-PC-01",
+        producer_id=credential["producer_id"],
+        source_host_id=manifest["pc_identity"]["source_host_id"],
+        producer_install_id=manifest["pc_identity"]["producer_install_id"],
+        expected_active_manifest_hash="0" * 64,
+        tls_ca_bundle_path="unused.pem",
+    )
+
+    with pytest.raises(module.DirectSyncPushError, match="legacy_manifest_hash_mismatch"):
+        module._admin_recover(args, manifest, credential)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("authorization_state", ["LOGISTICS_READY", "OPERATION_PENDING"])
+def test_admin_recovery_executor_signs_exact_manifest_without_network(
+    tmp_path, monkeypatch, authorization_state
+):
+    module = load_registration_module()
+    manifest, credential, possession_key, response_payload = _admin_recovery_contract(
+        module, authorization_state
+    )
+    response_payload["secret"] = "rotated-producer-secret"
+    response_payload["machine_credential_bundle"] = {"fixture": True}
+    ca_path = tmp_path / "private-ca.pem"
+    ca_path.write_text("fixture", encoding="ascii")
+    authorization_path = tmp_path / "authorization.json"
+    authorization = {
+        "contract_version": module.ADMIN_RECOVERY_AUTHORIZATION_CONTRACT_VERSION,
+        "authorization_id": "authz-label-01",
+        "producer_id": credential["producer_id"],
+        "recovery_token": "one-time-recovery-secret",
+        "nonce": "nonce-label-01",
+        "expires_at": "2099-01-01T00:00:00Z",
+        "audience": module.ADMIN_RECOVERY_AUDIENCE,
+        "audit_event_id": "audit-label-01",
+    }
+    authorization_path.write_text(json.dumps(authorization), encoding="utf-8")
+    calls = {}
+
+    class Descriptor:
+        def as_dict(self):
+            return dict(possession_key)
+
+    class NonExportability:
+        private_export_status_hex = "0x80090010"
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def descriptor(self):
+            return Descriptor()
+
+        def assert_non_exportable(self):
+            return NonExportability()
+
+        def sign_es256(self, value):
+            calls["signed"] = value
+            return b"s" * 64
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return response_payload
+
+    class Session:
+        trust_env = False
+
+        def post(self, url, **kwargs):
+            calls["post"] = {"url": url, **kwargs}
+            return Response()
+
+        def close(self):
+            calls["closed"] = True
+
+    monkeypatch.setattr(
+        module.PersistentPossessionKey,
+        "provision_initial",
+        staticmethod(lambda **kwargs: calls.update(key_kwargs=kwargs) or Key()),
+    )
+    monkeypatch.setattr(
+        module,
+        "_open_admin_recovery_session",
+        lambda path: calls.update(ca_path=path) or Session(),
+    )
+    monkeypatch.setattr(
+        module,
+        "_preflight_admin_recovery_local_state",
+        lambda *_args: calls.update(local_preflight=True),
+    )
+    args = SimpleNamespace(
+        credential_scope="current_user",
+        pc_id="LABEL-PC-01",
+        producer_id=credential["producer_id"],
+        source_host_id=manifest["pc_identity"]["source_host_id"],
+        producer_install_id=manifest["pc_identity"]["producer_install_id"],
+        expected_active_manifest_hash=module.manifest_hash(manifest),
+        tls_ca_bundle_path=str(ca_path),
+        admin_recovery_secret_file=str(authorization_path),
+        admin_recovery_url="",
+        enrollment_token="",
+        enrollment_token_file="",
+        enrollment_token_env="",
+        enrollment_timeout_seconds=30,
+    )
+    progress = module._AdminRecoveryProgress()
+
+    response, descriptor, token_source, returned_path, returned_authorization = (
+        module._admin_recover(args, manifest, credential, progress)
+    )
+
+    assert response is response_payload
+    assert descriptor["fingerprint"] == possession_key["fingerprint"]
+    assert token_source == "ip_allowlist"
+    assert returned_path == authorization_path.resolve()
+    assert returned_authorization == authorization
+    assert calls["key_kwargs"] == {"scope": module.SCOPE_CURRENT_USER}
+    assert calls["local_preflight"] is True
+    assert calls["ca_path"] == str(ca_path)
+    assert calls["post"]["url"].endswith(module.ADMIN_RECOVERY_PATH)
+    assert calls["post"]["allow_redirects"] is False
+    assert calls["post"]["json"]["proof"]["manifest_hash"] == module.manifest_hash(
+        manifest
+    )
+    assert calls["post"]["json"]["new_possession_public_jwk"] == TEST_POSSESSION_JWK
+    assert calls["closed"] is True
+    assert progress.server_credential_rotated is True
+
+
+def test_admin_recovery_transport_disables_environment_and_pins_explicit_ca(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    ca_path = tmp_path / "private-ca.pem"
+    ca_path.write_text("fixture", encoding="ascii")
+
+    class Session:
+        trust_env = True
+        verify = True
+
+    session = Session()
+    monkeypatch.setattr(module.requests, "Session", lambda: session)
+
+    opened = module._open_admin_recovery_session(str(ca_path))
+
+    assert opened is session
+    assert session.trust_env is False
+    assert session.verify == str(ca_path.resolve())
+
+
+def test_producer_dpapi_replace_interruption_preserves_original_and_temp_zero(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    target = module._secret_path(tmp_path, "producer-label")
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"original-protected-secret")
+    before = hashlib.sha256(target.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        module, "_dpapi_protect_current_user", lambda _secret: b"rotated-protected-secret"
+    )
+    real_replace = module.os.replace
+
+    def interrupted_replace(source, destination):
+        if Path(destination) == target:
+            raise OSError("simulated producer credential replace interruption")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", interrupted_replace)
+
+    with pytest.raises(OSError, match="simulated producer credential"):
+        module._write_dpapi_secret(
+            tmp_path,
+            "producer-label",
+            "rotated-secret",
+            credential_scope="current_user",
+        )
+
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == before
+    assert list(target.parent.iterdir()) == [target]
+
+
+def test_admin_recovery_rejects_url_parameters():
+    module = load_registration_module()
+    endpoint = "https://worker.example.invalid/api/producer-ingest/v1/source-file"
+
+    with pytest.raises(module.DirectSyncPushError, match="same-origin"):
+        module._validate_admin_recovery_url(
+            "https://worker.example.invalid/api/producer-ingest/v2/recover;ignored",
+            endpoint,
+        )
+
+
+def test_admin_recovery_local_preflight_pins_manifest_and_rejects_path_alias(
+    tmp_path,
+):
+    module = load_registration_module()
+    data_dir = tmp_path / "state"
+    identity_path = data_dir / "producer_identity.json"
+    manifest_path = data_dir / "producer_manifest.json"
+    credential_path = data_dir / "credential.json"
+    receipt_path = data_dir / "evidence" / "receipt.json"
+    report_path = data_dir / "status" / "registration.json"
+    profile_path = tmp_path / "logistics" / "runtime-profile.json"
+    logistics_secret_path = profile_path.parent / "secrets" / "bearer-token.dpapi"
+    tls_path = profile_path.parent / module.TLS_CA_BUNDLE_RELATIVE_PATH
+    producer_secret_path = data_dir / "secrets" / "producer-label-01.dpapi"
+    authorization_path = tmp_path / "authorization.json"
+    manifest = {
+        "pc_identity": {
+            "pc_id": "LABEL-PC-01",
+            "producer_install_id": "install-label-01",
+            "source_host_id": "label-host-01",
+        },
+        "streams": [],
+    }
+    credential = {
+        "producer_id": "producer-label-01",
+        "endpoint_url": (
+            "https://worker.example.invalid/api/producer-ingest/v1/source-file"
+        ),
+        "secret_data_dir": str(data_dir),
+        "secret_ref": "dpapi:producer-label-01",
+    }
+    module._write_json(identity_path, manifest["pc_identity"])
+    module._write_json(manifest_path, manifest)
+    module._write_json(credential_path, credential)
+    for path, content in (
+        (profile_path, b"{}"),
+        (logistics_secret_path, b"protected-logistics"),
+        (producer_secret_path, b"protected-producer"),
+        (tls_path, b"private-ca"),
+        (authorization_path, b"authorization"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    args = SimpleNamespace(
+        data_dir=str(data_dir),
+        identity_path=str(identity_path),
+        manifest_path=str(manifest_path),
+        credential_path=str(credential_path),
+        receipt_path=str(receipt_path),
+        report_path=str(report_path),
+        logistics_profile_path=str(profile_path),
+        tls_ca_bundle_path=str(tls_path),
+    )
+
+    module._preflight_admin_recovery_local_state(
+        args,
+        manifest,
+        credential,
+        authorization_path,
+    )
+
+    with pytest.raises(module.DirectSyncPushError, match="overlaps"):
+        module._preflight_admin_recovery_local_state(
+            args,
+            manifest,
+            credential,
+            profile_path,
+        )
+    module._write_json(manifest_path, {**manifest, "unexpected": True})
+    with pytest.raises(module.DirectSyncPushError, match="differs"):
+        module._preflight_admin_recovery_local_state(
+            args,
+            manifest,
+            credential,
+            authorization_path,
+        )
+
+
+def test_admin_recovery_response_requires_machine_credential_bundle(monkeypatch):
+    module = load_registration_module()
+    manifest, credential, possession_key, response = _admin_recovery_contract(
+        module, "LOGISTICS_READY"
+    )
+    response["secret"] = "rotated-producer-secret"
+    response["secret_fingerprint_sha256"] = module._fingerprint(response["secret"])
+    progress = module._AdminRecoveryProgress()
+    args = SimpleNamespace(
+        admin_recovery_secret_file="authorization.json",
+        admin_recovery_url="",
+        credential_scope="current_user",
+        logistics_profile_path="profile.json",
+        require_machine_credential_bundle=False,
+        tls_ca_bundle_path="ca.pem",
+    )
+    report = {
+        "admin_recovery_requested": True,
+        "producer_install_id": manifest["pc_identity"]["producer_install_id"],
+        "source_host_id": manifest["pc_identity"]["source_host_id"],
+        "manifest_hash": module.manifest_hash(manifest),
+        "producer_identity_source": "identity_file",
+    }
+
+    def fake_recover(_args, _manifest, _credential, observed_progress):
+        observed_progress.server_credential_rotated = True
+        return response, possession_key, "ip_allowlist", Path("authorization.json"), {
+            "authorization_id": "authz-label-01",
+            "audit_event_id": "audit-label-01",
+        }
+
+    monkeypatch.setattr(module, "_admin_recover", fake_recover)
+
+    with pytest.raises(
+        module.DirectSyncPushError,
+        match="missing machine credential bundle",
+    ):
+        module.apply_registration(
+            args,
+            manifest,
+            credential,
+            report,
+            progress,
+        )
+
+    assert progress.server_credential_rotated is True
+    assert progress.logistics_credential_finalized is False
+
+
+def test_post_recovery_failure_is_fenced_and_reported_without_exception_text(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    report_path = tmp_path / "status" / "registration.json"
+    authorization_path = tmp_path / "authorization.json"
+    authorization_path.write_text("fixture", encoding="utf-8")
+    manifest = {
+        "pc_identity": {
+            "pc_id": "LABEL-PC-01",
+            "producer_install_id": "install-label-01",
+            "source_host_id": "label-host-01",
+        },
+        "paths": {
+            "evidence_dir": (tmp_path / "evidence").as_posix(),
+            "rollback_dir": (tmp_path / "rollback").as_posix(),
+        },
+        "sync": {"sync_dir": (tmp_path / "sync").as_posix()},
+    }
+    credential = {
+        "producer_id": "producer-label-01",
+        "key_id": "key-label-01",
+        "secret_data_dir": str(tmp_path),
+        "secret_ref": "dpapi:producer-label-01",
+    }
+    initial_report = {
+        "status": "APPLY_REQUESTED",
+        "admin_recovery_requested": True,
+        "manifest_hash": module.manifest_hash(manifest),
+        "producer_id": credential["producer_id"],
+    }
+    monkeypatch.setattr(
+        module,
+        "build_payloads",
+        lambda _args: (manifest, credential, dict(initial_report)),
+    )
+
+    def fail_after_commit(_args, _manifest, _credential, _report, progress):
+        progress.server_credential_rotated = True
+        raise RuntimeError("must-not-be-persisted-verbatim")
+
+    monkeypatch.setattr(module, "apply_registration", fail_after_commit)
+
+    result = module.main(
+        [
+            "--apply",
+            "--admin-recovery-secret-file",
+            str(authorization_path),
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    persisted = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert result == 3
+    assert persisted["status"] == "BLOCKED_POST_RECOVERY_LOCAL_PERSISTENCE"
+    assert persisted["server_credential_rotated"] is True
+    assert persisted["recovery_action"] == "NEW_AUDITED_RECOVERY_REQUIRED"
+    assert persisted["blocked_reason"] == "RuntimeError"
+    assert "must-not-be-persisted-verbatim" not in report_path.read_text(
+        encoding="utf-8-sig"
+    )
+    assert authorization_path.is_file()
+
+
+def test_successful_local_recovery_finalization_deletes_authorization_last(
+    tmp_path, monkeypatch
+):
+    module = load_registration_module()
+    data_dir = tmp_path / "state"
+    report_path = data_dir / "status" / "registration.json"
+    authorization_path = tmp_path / "authorization.json"
+    authorization_path.write_text("fixture", encoding="utf-8")
+    manifest = {
+        "pc_identity": {
+            "pc_id": "LABEL-PC-01",
+            "producer_install_id": "install-label-01",
+            "source_host_id": "label-host-01",
+        },
+        "paths": {
+            "evidence_dir": (data_dir / "evidence").as_posix(),
+            "rollback_dir": (data_dir / "rollback").as_posix(),
+        },
+        "sync": {"sync_dir": (tmp_path / "sync").as_posix()},
+    }
+    credential = {
+        "producer_id": "producer-label-01",
+        "key_id": "key-label-01",
+        "secret_data_dir": str(data_dir),
+        "secret_ref": "dpapi:producer-label-01",
+    }
+    initial_report = {
+        "status": "APPLY_REQUESTED",
+        "admin_recovery_requested": True,
+        "manifest_hash": module.manifest_hash(manifest),
+        "producer_id": credential["producer_id"],
+    }
+    monkeypatch.setattr(
+        module,
+        "build_payloads",
+        lambda _args: (manifest, credential, dict(initial_report)),
+    )
+
+    def finalize(_args, _manifest, _credential, report, progress):
+        progress.server_credential_rotated = True
+        progress.logistics_credential_finalized = True
+        progress.producer_credential_finalized = True
+        report.update(
+            {
+                "status": "ADMIN_RECOVERY_REGISTERED",
+                "admin_recovery_secret_cleanup_required": True,
+                "admin_recovery_secret_file": str(authorization_path),
+                "client_receipt": {
+                    "contract_version": module.ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION,
+                    "status": "recovered",
+                },
+            }
+        )
+        return report
+
+    monkeypatch.setattr(module, "apply_registration", finalize)
+
+    result = module.main(
+        [
+            "--apply",
+            "--admin-recovery-secret-file",
+            str(authorization_path),
+            "--data-dir",
+            str(data_dir),
+            "--report-path",
+            str(report_path),
+        ]
+    )
+
+    persisted = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert result == 0
+    assert authorization_path.exists() is False
+    assert persisted["admin_recovery_secret_file_deleted"] is True
+    assert persisted["admin_recovery_secret_cleanup_required"] is False
+    assert persisted["admin_recovery_progress"] == {
+        "authorization_file_deleted": True,
+        "local_documents_finalized": True,
+        "logistics_credential_finalized": True,
+        "producer_credential_finalized": True,
+        "server_credential_rotated": True,
+    }
