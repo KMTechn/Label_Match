@@ -571,6 +571,7 @@ function Assert-LowRiskNativeFreePackage {
     $pygamePaths = @()
     $pillowPaths = @()
     $charsetNativePaths = @()
+    $runtimeUnusedRpdsPaths = @()
     foreach ($file in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Sort-Object FullName)) {
         $relative = $file.FullName.Substring($PackageRoot.Length + 1).Replace("\", "/")
         $parts = @($relative.Split("/") | ForEach-Object { $_.ToLowerInvariant() })
@@ -586,11 +587,22 @@ function Assert-LowRiskNativeFreePackage {
         ) {
             $charsetNativePaths += $relative
         }
+        if ($parts -contains "rpds" -and $file.Extension.ToLowerInvariant() -eq ".pyd") {
+            $runtimeUnusedRpdsPaths += $relative
+        }
     }
-    if ($pygamePaths.Count -ne 0 -or $pillowPaths.Count -ne 0 -or $charsetNativePaths.Count -ne 0) {
+    if (
+        $pygamePaths.Count -ne 0 -or
+        $pillowPaths.Count -ne 0 -or
+        $charsetNativePaths.Count -ne 0 -or
+        $runtimeUnusedRpdsPaths.Count -ne 0
+    ) {
         throw (
-            "Low-risk native dependency removal failed: pygame={0}; PIL={1}; charset_native={2}" -f
-            ($pygamePaths -join ","), ($pillowPaths -join ","), ($charsetNativePaths -join ",")
+            "Native dependency removal failed: pygame={0}; PIL={1}; charset_native={2}; runtime_unused_rpds={3}" -f
+            ($pygamePaths -join ","),
+            ($pillowPaths -join ","),
+            ($charsetNativePaths -join ","),
+            ($runtimeUnusedRpdsPaths -join ",")
         )
     }
     return [pscustomobject][ordered]@{
@@ -599,6 +611,8 @@ function Assert-LowRiskNativeFreePackage {
         charset_normalizer_native_paths = $charsetNativePaths
         charset_normalizer_mode = "pure-python-source-override"
         audio_backend = "stdlib-winsound"
+        runtime_unused_rpds_paths = $runtimeUnusedRpdsPaths
+        rpds_bundle_disposition = "excluded-from-label-runtime-only"
     }
 }
 
@@ -944,6 +958,7 @@ Assert-LastExitCode "Prepare exact factory compatibility identity"
 
 $mainWorkRoot = Join-Path $workRoot "label_match_pyinstaller"
 $mainArguments = @($nativeFreePyInstallerArguments) + @(
+    "--exclude-module", "rpds",
     "--name", "Label_Match",
     "--onedir",
     "--windowed",

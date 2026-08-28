@@ -59,6 +59,8 @@ def _qualification_receipt(path: Path, fixture: dict[str, object]) -> Path:
             "charset_normalizer_native_paths": [],
             "charset_normalizer_mode": "pure-python-source-override",
             "audio_backend": "stdlib-winsound",
+            "runtime_unused_rpds_paths": [],
+            "rpds_bundle_disposition": "excluded-from-label-runtime-only",
         },
         "source_epoch": SOURCE_EPOCH,
         "path_identity": {"schema_version": "label-match-release-path-identity-v1"},

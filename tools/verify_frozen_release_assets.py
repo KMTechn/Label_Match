@@ -512,13 +512,18 @@ def _validate_qualification_receipt(
             "charset_normalizer_native_paths",
             "charset_normalizer_mode",
             "audio_backend",
+            "runtime_unused_rpds_paths",
+            "rpds_bundle_disposition",
         }
         and native_free.get("pygame_paths") == []
         and native_free.get("pillow_paths") == []
         and native_free.get("charset_normalizer_native_paths") == []
         and native_free.get("charset_normalizer_mode")
         == "pure-python-source-override"
-        and native_free.get("audio_backend") == "stdlib-winsound",
+        and native_free.get("audio_backend") == "stdlib-winsound"
+        and native_free.get("runtime_unused_rpds_paths") == []
+        and native_free.get("rpds_bundle_disposition")
+        == "excluded-from-label-runtime-only",
         "preserved qualification receipt native-free gate differs",
     )
     _require(

@@ -97,6 +97,16 @@ def test_frozen_builder_forces_source_only_charset_and_excludes_removed_packages
     assert '"--exclude-module", "PIL"' in source
     assert '"--exclude-module", "pygame"' in source
     assert '"--exclude-module", "charset_normalizer.md__mypyc"' in source
+    assert '$mainArguments = @($nativeFreePyInstallerArguments) + @(' in source
+    assert '"--exclude-module", "rpds"' in source
+    assert source.count('"--exclude-module", "rpds"') == 1
+    main_arguments = source.index(
+        '$mainArguments = @($nativeFreePyInstallerArguments) + @('
+    )
+    rpds_exclusion = source.index('"--exclude-module", "rpds"')
+    assert main_arguments < rpds_exclusion < source.index(
+        '"--name", "Label_Match"', main_arguments
+    )
     assert '"--hidden-import", "pygame"' not in source
     assert '"--hidden-import", "PIL"' not in source
     assert hook.read_text(encoding="utf-8").count("hiddenimports: list[str] = []") == 1
