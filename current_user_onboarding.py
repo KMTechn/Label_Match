@@ -20,6 +20,7 @@ from current_user_scheduled_task import (
 )
 from direct_sync_push import manifest_hash
 from direct_sync_runtime import load_credentials_from_json
+from label_exact_clone_resolution import validate_resolution_receipt
 from logistics_runtime_profile import (
     PROFILE_PATH_ENV,
     REQUIRED_ENV,
@@ -170,6 +171,17 @@ def _portable_stop_marker_release_preflight(
         or _file_sha256(receipt_path) != expected_receipt_hash
     ):
         raise ValueError("EXACT_CLONE_RUNTIME_CONFLICT receipt pin differs")
+    receipt = _read_json(receipt_path, "EXACT_CLONE_RUNTIME_CONFLICT receipt")
+    receipt_readback = validate_resolution_receipt(
+        receipt,
+        client_db_path=paths.direct_sync_root
+        / "queue"
+        / "direct_sync_relay.sqlite3",
+        identity_path=paths.identity_path,
+        credential_path=paths.credential_path,
+        stop_marker_path=marker,
+        portable_root=paths.app_root,
+    )
     return {
         "status": "CANONICAL_INSTALL_PROVEN",
         "marker_present": True,
@@ -178,9 +190,12 @@ def _portable_stop_marker_release_preflight(
         "bootstrap_integrity_sha256": _file_sha256(integrity_path),
         "conflict_resolution_receipt_path": str(receipt_path),
         "conflict_resolution_receipt_sha256": expected_receipt_hash,
+        "conflict_resolution_receipt_readback": receipt_readback,
         "source_commit": source_commit,
         "source_tree": source_tree,
-        "conflict_resolution_authority": "pinned path plus exact SHA-256",
+        "conflict_resolution_authority": (
+            "pinned path plus exact SHA-256 plus local authority readback"
+        ),
     }
 
 

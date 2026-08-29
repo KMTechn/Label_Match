@@ -473,6 +473,13 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
         },
     )
     monkeypatch.setattr("current_user_onboarding.CANONICAL_PORTABLE_ROOT", app_root)
+    monkeypatch.setattr(
+        "current_user_onboarding.validate_resolution_receipt",
+        lambda *_args, **_kwargs: {
+            "status": "RESOLVED",
+            "selected_authority_scope": "fixture",
+        },
+    )
     environment = _environment(tmp_path)
     conflict_receipt = tmp_path / "label-conflict-resolution.json"
     _write_json(conflict_receipt, {"status": "RESOLVED", "authority": "fixture"})
