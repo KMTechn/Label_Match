@@ -41,6 +41,7 @@ BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v2"
 BOOTSTRAP_INVENTORY_ALGORITHM = "sha256-file-hash-size-utf8-path-v1"
 BOOTSTRAP_ROOT_HASH_DOMAIN = b"label-match-code-root-v1\n"
 ONBOARDING_JSON_MAX_BYTES = 1024 * 1024
+BOOTSTRAP_INTEGRITY_MAX_BYTES = 8 * 1024 * 1024
 ENROLLMENT_TLS_CA_BUNDLE_PATH_ENV = "LABEL_MATCH_ENROLLMENT_TLS_CA_BUNDLE_PATH"
 ONBOARDING_EXIT_CODE = 4
 LABEL_MATCH_DATA_ROOT_ENV = "LABEL_MATCH_SAVE_DIR"
@@ -145,6 +146,8 @@ def _portable_stop_marker_release_preflight(
         or integrity.get("file_count") != len(rows)
         or integrity.get("files") != rows
         or str(integrity.get("aggregate_sha256") or "").lower() != aggregate
+        or integrity.get("identity_profile_created") is not False
+        or integrity.get("state_scope") != "current_user_first_run"
     ):
         raise ValueError("canonical bootstrap integrity readback differs")
 
@@ -360,13 +363,18 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _read_json(path: Path, purpose: str) -> dict[str, Any]:
+def _read_json(
+    path: Path,
+    purpose: str,
+    *,
+    maximum_bytes: int = ONBOARDING_JSON_MAX_BYTES,
+) -> dict[str, Any]:
     try:
         with path.open("rb") as handle:
-            raw = handle.read(ONBOARDING_JSON_MAX_BYTES + 1)
+            raw = handle.read(maximum_bytes + 1)
     except OSError as exc:
         raise ValueError(f"{purpose} is absent") from exc
-    if not raw or len(raw) > ONBOARDING_JSON_MAX_BYTES:
+    if not raw or len(raw) > maximum_bytes:
         raise ValueError(f"{purpose} size is invalid")
     try:
         value = json.loads(raw.decode("utf-8-sig"))
@@ -466,7 +474,81 @@ def verify_bootstrap_integrity(
         raise ValueError("bootstrap integrity record cannot be inspected") from exc
     if not stat.S_ISREG(record_stat.st_mode):
         raise ValueError("bootstrap integrity record is not a regular file")
-    record = _read_json(paths.bootstrap_integrity_path, "bootstrap integrity record")
+    record = _read_json(
+        paths.bootstrap_integrity_path,
+        "bootstrap integrity record",
+        maximum_bytes=BOOTSTRAP_INTEGRITY_MAX_BYTES,
+    )
+    if record.get("schema_version") == PORTABLE_BOOTSTRAP_INTEGRITY_VERSION:
+        rows: list[dict[str, Any]] = []
+        frozen_main_present = False
+        portable_pythonw_present = False
+        portable_main_present = False
+        for candidate in sorted(
+            paths.app_root.rglob("*"),
+            key=lambda path: path.relative_to(paths.app_root).as_posix().casefold(),
+        ):
+            if _is_reparse_point(candidate):
+                raise ValueError(f"bootstrap code path is redirected: {candidate}")
+            if not candidate.is_file():
+                continue
+            relative_path = candidate.relative_to(paths.app_root).as_posix()
+            if (
+                relative_path.casefold()
+                == paths.bootstrap_integrity_path.name.casefold()
+            ):
+                continue
+            before = candidate.stat()
+            content_hash = _file_sha256(candidate)
+            after = candidate.stat()
+            if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+                raise ValueError(
+                    f"bootstrap code file changed during verification: {relative_path}"
+                )
+            rows.append(
+                {
+                    "path": relative_path,
+                    "size": after.st_size,
+                    "sha256": content_hash,
+                }
+            )
+            folded = relative_path.casefold()
+            frozen_main_present = frozen_main_present or folded == "label_match.exe"
+            portable_pythonw_present = (
+                portable_pythonw_present or folded == "runtime/pythonw.exe"
+            )
+            portable_main_present = portable_main_present or folded == "app/main.py"
+        aggregate = hashlib.sha256(
+            "".join(
+                f"{row['sha256']} {row['size']} {row['path']}\n" for row in rows
+            ).encode("utf-8")
+        ).hexdigest()
+        code_root = str(record.get("code_root") or "").strip()
+        resolved_code_root = (
+            paths.app_root if code_root == "." else _resolved(code_root)
+        )
+        portable_layout = portable_pythonw_present and portable_main_present
+        if (
+            record.get("status") != "PASS"
+            or resolved_code_root != paths.app_root
+            or type(record.get("file_count")) is not int
+            or record.get("file_count") != len(rows)
+            or record.get("files") != rows
+            or str(record.get("aggregate_sha256") or "").lower() != aggregate
+            or record.get("identity_profile_created") is not False
+            or record.get("state_scope") != "current_user_first_run"
+            or frozen_main_present == portable_layout
+        ):
+            raise ValueError("bootstrap inventory integrity record is invalid")
+        return {
+            "status": "PASS",
+            "schema_version": PORTABLE_BOOTSTRAP_INTEGRITY_VERSION,
+            "record_path": str(paths.bootstrap_integrity_path),
+            "code_root": str(paths.app_root),
+            "file_count": len(rows),
+            "aggregate_sha256": aggregate,
+            "package_layout": "onedir" if frozen_main_present else "portable_cpython",
+        }
     if record.get("schema_version") != BOOTSTRAP_INTEGRITY_VERSION:
         raise ValueError("bootstrap integrity record schema is invalid")
     if record.get("status") != "PASS":

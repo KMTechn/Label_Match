@@ -25,8 +25,16 @@ def _package(tmp_path: Path) -> Path:
     internal = root / "_internal" / "config"
     internal.mkdir(parents=True)
     installer_source = Path(__file__).resolve().parents[1] / "INSTALL_THIS_PC.ps1"
+    helper_source = (
+        Path(__file__).resolve().parents[1] / "tools" / "bootstrap_integrity.ps1"
+    )
     (root / "INSTALL_THIS_PC.ps1").write_text(
         installer_source.read_text(encoding="utf-8-sig"),
+        encoding="utf-8",
+    )
+    (root / "tools").mkdir()
+    (root / "tools" / "bootstrap_integrity.ps1").write_text(
+        helper_source.read_text(encoding="utf-8-sig"),
         encoding="utf-8",
     )
     (root / "Label_Match.exe").write_bytes(b"onedir product host")

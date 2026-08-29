@@ -21,6 +21,7 @@ REQUIRED_MEMBERS = {
     "Label_Match.exe",
     "contract.lock.json",
     "_internal/config/app_settings.json",
+    "tools/bootstrap_integrity.ps1",
 }
 FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS = {
     "install_label_match_direct_sync.ps1",
@@ -125,18 +126,33 @@ def _assert_safe_package(package_root: Path) -> set[str]:
     return paths
 
 
-def _assert_bootstrap_source(installer: Path) -> None:
+def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
     source = installer.read_text(encoding="utf-8-sig")
+    helper_source = integrity_helper.read_text(encoding="utf-8-sig")
     lowered = source.casefold()
-    required = (
+    helper_lowered = helper_source.casefold()
+    installer_required = (
         "invoke-selfelevated",
         "bootstrap-integrity.json",
-        "state_scope = 'current_user_first_run'",
-        "package_layout = 'onedir'",
+        "tools\\bootstrap_integrity.ps1",
+        "write-bootstrapintegrityrecord",
+        "identity_profile_created=false",
+        "elevation_points=1:code_placement",
         "kmtech.labelmatch.relay",
         "remove-ownedlegacytask",
     )
-    missing = [token for token in required if token not in lowered]
+    helper_required = (
+        "label-match-bootstrap-integrity-v1",
+        "get-bootstrapcodeinventory",
+        "state_scope = 'current_user_first_run'",
+        "identity_profile_created = $false",
+    )
+    missing = [token for token in installer_required if token not in lowered]
+    missing.extend(
+        f"integrity-helper:{token}"
+        for token in helper_required
+        if token not in helper_lowered
+    )
     if missing:
         raise StagedInstallerVerificationError(
             f"code-only bootstrap contract is incomplete: {missing}"
@@ -149,8 +165,11 @@ def _assert_bootstrap_source(installer: Path) -> None:
         "--source-host-id",
         "sourcehostid",
     )
-    present = [token for token in forbidden if token in lowered]
-    if re.search(r"(?im)^\s*Register-ScheduledTask\b", source):
+    combined_lowered = lowered + "\n" + helper_lowered
+    present = [token for token in forbidden if token in combined_lowered]
+    if re.search(
+        r"(?im)^\s*Register-ScheduledTask\b", source + "\n" + helper_source
+    ):
         present.append("register-scheduledtask")
     if present:
         raise StagedInstallerVerificationError(
@@ -222,7 +241,8 @@ def verify_staged_package(package_root: Path) -> dict[str, Any]:
     package_root = package_root.resolve()
     paths_before = _assert_safe_package(package_root)
     installer = package_root / "INSTALL_THIS_PC.ps1"
-    _assert_bootstrap_source(installer)
+    integrity_helper = package_root / "tools" / "bootstrap_integrity.ps1"
+    _assert_bootstrap_source(installer, integrity_helper)
     inventory = _inventory(package_root)
     stdout, stderr = _run_bootstrap_dry_run(package_root)
     paths_after = _assert_safe_package(package_root)
@@ -245,6 +265,8 @@ def verify_staged_package(package_root: Path) -> dict[str, Any]:
         "public_entrypoint": {
             "path": "INSTALL_THIS_PC.ps1",
             "sha256": _sha256(installer),
+            "integrity_helper_path": "tools/bootstrap_integrity.ps1",
+            "integrity_helper_sha256": _sha256(integrity_helper),
         },
         "runtime_host": {
             "path": "Label_Match.exe",

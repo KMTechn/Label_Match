@@ -1104,6 +1104,7 @@ foreach ($pair in @(
 
 $copies = [ordered]@{
     (Join-Path $repoRoot "INSTALL_THIS_PC.ps1") = (Join-Path $packageRoot "INSTALL_THIS_PC.ps1")
+    (Join-Path $repoRoot "tools\bootstrap_integrity.ps1") = (Join-Path $packageRoot "tools\bootstrap_integrity.ps1")
     $releaseIdentityPath = (Join-Path $packageRoot "release-identity.json")
     (Join-Path $factoryIdentityRoot "build-identity.json") = (Join-Path $packageRoot "build-identity.json")
     (Join-Path $factoryIdentityRoot "build-compatibility.json") = (Join-Path $packageRoot "build-compatibility.json")

@@ -468,6 +468,8 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
             "file_count": len(inventory),
             "aggregate_sha256": aggregate,
             "files": inventory,
+            "identity_profile_created": False,
+            "state_scope": "current_user_first_run",
         },
     )
     monkeypatch.setattr("current_user_onboarding.CANONICAL_PORTABLE_ROOT", app_root)
@@ -533,6 +535,66 @@ def _write_bootstrap_root_record(app_root: Path) -> Path:
         },
     )
     return record_path
+
+
+def _write_bootstrap_inventory_record(app_root: Path) -> Path:
+    rows = []
+    for path in sorted(
+        (candidate for candidate in app_root.rglob("*") if candidate.is_file()),
+        key=lambda candidate: candidate.relative_to(app_root).as_posix().casefold(),
+    ):
+        if path.name.casefold() == "bootstrap-integrity.json":
+            continue
+        payload = path.read_bytes()
+        rows.append(
+            {
+                "path": path.relative_to(app_root).as_posix(),
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    aggregate = hashlib.sha256(
+        "".join(
+            f"{row['sha256']} {row['size']} {row['path']}\n" for row in rows
+        ).encode("utf-8")
+    ).hexdigest()
+    record_path = app_root / "bootstrap-integrity.json"
+    _write_json(
+        record_path,
+        {
+            "schema_version": "label-match-bootstrap-integrity-v1",
+            "status": "PASS",
+            "code_root": str(app_root.resolve()),
+            "file_count": len(rows),
+            "aggregate_sha256": aggregate,
+            "files": rows,
+            "identity_profile_created": False,
+            "state_scope": "current_user_first_run",
+        },
+    )
+    return record_path
+
+
+def test_bootstrap_integrity_accepts_installer_inventory_record(tmp_path):
+    app_root = (tmp_path / "portable").resolve()
+    (app_root / "runtime").mkdir(parents=True)
+    (app_root / "app").mkdir()
+    (app_root / "runtime" / "pythonw.exe").write_bytes(b"runtime")
+    (app_root / "app" / "main.py").write_text("pass\n", encoding="utf-8")
+    record_path = _write_bootstrap_inventory_record(app_root)
+    paths = resolve_current_user_onboarding_paths(
+        app_root, environ=_environment(tmp_path)
+    )
+
+    result = verify_bootstrap_integrity(paths, required=True)
+
+    assert result["status"] == "PASS"
+    assert result["schema_version"] == "label-match-bootstrap-integrity-v1"
+    assert result["package_layout"] == "portable_cpython"
+    (app_root / "app" / "main.py").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="inventory integrity"):
+        verify_bootstrap_integrity(paths, required=True)
+    assert record_path.is_file()
 
 
 def test_bootstrap_integrity_requires_exact_onedir_root_hash(tmp_path):

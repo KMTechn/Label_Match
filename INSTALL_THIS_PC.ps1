@@ -545,10 +545,11 @@ try {
                 $bootstrapStatus = 'REPLACED_VERIFIED'
             }
             catch {
-                if (
-                    -not (Test-Path -LiteralPath $installRootFull) -and
-                    (Test-Path -LiteralPath $replacementRollbackRoot -PathType Container)
-                ) {
+                $replacementTargetAbsent = -not (Test-Path -LiteralPath $installRootFull)
+                $replacementRollbackPresent = Test-Path `
+                    -LiteralPath $replacementRollbackRoot `
+                    -PathType Container
+                if ($replacementTargetAbsent -and $replacementRollbackPresent) {
                     Move-Item -LiteralPath $replacementRollbackRoot -Destination $installRootFull
                 }
                 throw
