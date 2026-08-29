@@ -29,6 +29,7 @@ from logistics_runtime_profile import (
 )
 from user_relay import (
     install_user_relay_autostart,
+    release_user_relay_stop_marker,
     remove_user_relay_autostart,
     request_user_relay_stop,
     start_user_relay_process,
@@ -191,6 +192,12 @@ def _portable_stop_marker_release_preflight(
         "conflict_resolution_receipt_path": str(receipt_path),
         "conflict_resolution_receipt_sha256": expected_receipt_hash,
         "conflict_resolution_receipt_readback": receipt_readback,
+        "current_stop_marker_request_id": receipt_readback[
+            "stop_marker_lineage"
+        ]["current_request_id"],
+        "current_stop_marker_sha256": receipt_readback["stop_marker_lineage"][
+            "current_sha256"
+        ],
         "source_commit": source_commit,
         "source_tree": source_tree,
         "conflict_resolution_authority": (
@@ -867,6 +874,27 @@ def onboard_current_user(
         "server_registration_verified": False,
         "failure": "",
     }
+    stop_marker_released = False
+
+    def restore_stop_marker_fence() -> None:
+        nonlocal stop_marker_released
+        if not stop_marker_released:
+            return
+        try:
+            stop_path = user_relay_stop_path(paths.direct_sync_root)
+            if stop_path.exists():
+                report["stop_marker_refence"] = {"status": "ALREADY_PRESENT"}
+            else:
+                report["stop_marker_refence"] = dict(
+                    request_user_relay_stop(paths.direct_sync_root, timeout_seconds=0)
+                )
+        except Exception as refence_error:
+            report["stop_marker_refence"] = {
+                "status": "FAILED",
+                "failure": str(refence_error)[:500],
+                "error_type": refence_error.__class__.__name__,
+            }
+        stop_marker_released = False
     try:
         report["bootstrap_integrity"] = verify_bootstrap_integrity(
             paths,
@@ -968,7 +996,22 @@ def onboard_current_user(
             raise ValueError("current-user scheduled task was not proven")
         # The marker is a safety fence.  It is released only after canonical
         # install ownership, HKCU, and Limited PT1M task bindings all read back.
-        stop_path.unlink(missing_ok=True)
+        if report["stop_marker_release"].get("marker_present"):
+            release = release_user_relay_stop_marker(
+                paths.direct_sync_root,
+                expected_request_id=report["stop_marker_release"][
+                    "current_stop_marker_request_id"
+                ],
+                expected_sha256=report["stop_marker_release"][
+                    "current_stop_marker_sha256"
+                ],
+            )
+            if release.get("status") != "RELEASED":
+                raise ValueError("relay stop marker release was not proven")
+            stop_marker_released = True
+        else:
+            release = {"status": "NOT_REQUIRED"}
+        report["stop_marker_release"]["release"] = release
         report["relay_start"] = dict(relay_launcher(paths.app_root))
         relay_start_status = str(report["relay_start"].get("status") or "")
         if relay_start_status in {"", "UNKNOWN"}:
@@ -996,12 +1039,14 @@ def onboard_current_user(
         _write_json_atomic(paths.onboarding_report_path, report)
         return report
     except CurrentUserOnboardingError as exc:
+        restore_stop_marker_fence()
         report["status"] = exc.status
         report["failure"] = str(exc)
         report["error_type"] = exc.__class__.__name__
         _write_json_atomic(paths.onboarding_report_path, report)
         raise
     except Exception as exc:
+        restore_stop_marker_fence()
         report["status"] = "FAILED"
         report["failure"] = str(exc)[:500]
         report["error_type"] = exc.__class__.__name__

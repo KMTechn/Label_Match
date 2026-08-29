@@ -478,6 +478,10 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
         lambda *_args, **_kwargs: {
             "status": "RESOLVED",
             "selected_authority_scope": "fixture",
+            "stop_marker_lineage": {
+                "current_request_id": "fixture-stop-request",
+                "current_sha256": "0" * 64,
+            },
         },
     )
     environment = _environment(tmp_path)

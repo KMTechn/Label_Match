@@ -20,6 +20,11 @@ import re
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from user_relay_stop_marker import (
+    StopMarkerLineageError,
+    validate_marker_successor_lineage,
+)
+
 
 CONFLICT_CODE = "EXACT_CLONE_RUNTIME_CONFLICT"
 PREIMAGE_SCHEMA = "label-match-exact-clone-conflict-preimage-v1"
@@ -219,8 +224,21 @@ def client_authorities(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
         item["runtime_public_jwk_thumbprint"] = _jwk_thumbprint(
             row["runtime_public_jwk_json"]
         )
+        item["runtime_public_jwk_sha256"] = hashlib.sha256(
+            str(row["runtime_public_jwk_json"] or "").encode("utf-8")
+        ).hexdigest()
         item["next_request_token_present"] = bool(row["next_request_token"])
+        item["next_request_token_sha256"] = (
+            hashlib.sha256(str(row["next_request_token"]).encode("utf-8")).hexdigest()
+            if row["next_request_token"]
+            else ""
+        )
         item["pending_request_present"] = bool(row["pending_request_json"])
+        item["pending_request_sha256"] = (
+            hashlib.sha256(str(row["pending_request_json"]).encode("utf-8")).hexdigest()
+            if row["pending_request_json"]
+            else ""
+        )
         result.append(item)
     return result
 
@@ -266,6 +284,39 @@ def relay_batches_digest(path: str | os.PathLike[str]) -> dict[str, Any]:
         "row_count": count,
         "sha256": digest.hexdigest(),
     }
+
+
+def sqlite_logical_digest_on_connection(
+    connection: sqlite3.Connection,
+) -> dict[str, Any]:
+    """Hash a caller-owned complete logical SQLite image without secret output."""
+
+    digest = hashlib.sha256(b"label-match-sqlite-logical-itertdump-v1\n")
+    statement_count = 0
+    for statement in connection.iterdump():
+        digest.update(statement.encode("utf-8"))
+        digest.update(b"\n")
+        statement_count += 1
+    return {
+        "algorithm": "sha256-sqlite-itertdump-v1",
+        "statement_count": statement_count,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def sqlite_logical_digest(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Hash the complete logical SQLite image without exposing stored secrets."""
+
+    connection = _connect_read_only(path)
+    try:
+        integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
+        if integrity != "ok":
+            raise ExactCloneResolutionError("SQLite logical digest integrity failed")
+        return sqlite_logical_digest_on_connection(connection)
+    except sqlite3.Error as exc:
+        raise ExactCloneResolutionError("SQLite logical digest failed") from exc
+    finally:
+        connection.close()
 
 
 def _server_rows(
@@ -465,9 +516,18 @@ def capture_conflict_preimage(
             "key_id": identity["key_id"],
             "endpoint_url": identity["endpoint_url"],
         },
+        "identity_input": {
+            "path": _resolved_text(identity_path),
+            "sha256": file_sha256(identity_path),
+        },
+        "credential_input": {
+            "path": _resolved_text(credential_path),
+            "sha256": file_sha256(credential_path),
+        },
         "client": {
             "database_path": _resolved_text(client_db_path),
             "database_sha256": file_sha256(client_db_path),
+            "database_logical_digest": sqlite_logical_digest(client_db_path),
             "relay_batches": relay_batches_digest(client_db_path),
             "candidate_authority": candidate,
             "prior_authority": rejected_matches[0],
@@ -492,8 +552,11 @@ def capture_conflict_preimage(
 def _safe_client_authority(value: Mapping[str, Any], label: str) -> dict[str, Any]:
     required = set(_CLIENT_AUTHORITY_FIELDS) | {
         "runtime_public_jwk_thumbprint",
+        "runtime_public_jwk_sha256",
         "next_request_token_present",
+        "next_request_token_sha256",
         "pending_request_present",
+        "pending_request_sha256",
     }
     _require_exact_keys(value, required, label)
     return dict(value)
@@ -739,7 +802,6 @@ def validate_resolution_receipt(
         raise ExactCloneResolutionError("receipt current credential differs")
 
     marker_path = Path(stop_marker_path).resolve(strict=False)
-    marker = read_bounded_json(marker_path, label="Label relay stop marker")
     stop = dict(receipt.get("stop_marker") or {})
     _require_exact_keys(
         stop,
@@ -748,12 +810,21 @@ def validate_resolution_receipt(
     )
     if (
         not _same_path(stop.get("path"), marker_path)
-        or _required_sha256(stop.get("sha256"), "receipt stop marker hash")
-        != file_sha256(marker_path)
-        or stop.get("request_id") != marker.get("request_id")
         or stop.get("preserved_during_resolution") is not True
     ):
         raise ExactCloneResolutionError("receipt stop marker binding differs")
+    try:
+        stop_marker_lineage = validate_marker_successor_lineage(
+            marker_path,
+            anchor_request_id=str(stop.get("request_id") or ""),
+            anchor_sha256=_required_sha256(
+                stop.get("sha256"), "receipt stop marker hash"
+            ),
+        )
+    except StopMarkerLineageError as exc:
+        raise ExactCloneResolutionError(
+            f"receipt stop marker lineage differs: {exc}"
+        ) from exc
 
     if dict(receipt.get("portable") or {}) != _portable_binding(portable_root):
         raise ExactCloneResolutionError("receipt portable packet binding differs")
@@ -846,6 +917,7 @@ def validate_resolution_receipt(
         "selected_lease_id": selected_now["lease_id"],
         "selected_fence": _positive_int(selected_now["fence"], "selected fence"),
         "rejected_authority_count": len(rejected_now),
+        "stop_marker_lineage": stop_marker_lineage,
         "portable_source_commit": dict(receipt["portable"])["source_commit"],
         "portable_source_tree": dict(receipt["portable"])["source_tree"],
     }
@@ -862,6 +934,8 @@ __all__ = [
     "file_sha256",
     "read_bounded_json",
     "relay_batches_digest",
+    "sqlite_logical_digest",
+    "sqlite_logical_digest_on_connection",
     "validate_resolution_receipt",
     "write_new_json",
 ]

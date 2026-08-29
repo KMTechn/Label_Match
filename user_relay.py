@@ -15,6 +15,12 @@ import uuid
 
 from current_user_scheduled_task import build_current_user_task_spec
 from label_match_single_instance import acquire_data_scope_mutex
+from user_relay_stop_marker import (
+    STOP_MARKER_V1,
+    StopMarkerLineageError,
+    build_successor_marker,
+    read_stop_marker,
+)
 
 USER_RELAY_MODE = "--label-match-user-relay"
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
@@ -549,18 +555,42 @@ def request_user_relay_stop(
     timeout_seconds: float = 10.0,
     wait: Callable[[float], None] = time.sleep,
     lease_factory: Callable[[str | os.PathLike[str]], Any] = _acquire_relay_lease,
+    marker_lease_factory: Callable[
+        [str | os.PathLike[str]], Any
+    ] = _acquire_relay_lease,
 ) -> dict[str, Any]:
     root = Path(direct_sync_root).expanduser().resolve()
     stop_path = user_relay_stop_path(root)
     request_id = uuid.uuid4().hex
-    _write_json_atomic(
-        stop_path,
-        {
-            "schema_version": "label-match-user-relay-stop-v1",
-            "request_id": request_id,
-            "requested_at": _now(),
-        },
-    )
+    requested_at = _now()
+    marker_lease = marker_lease_factory(root / "user-relay-stop-marker")
+    if marker_lease is None:
+        raise UserRelayError("relay stop marker is being changed by another process")
+    try:
+        if stop_path.exists():
+            marker_payload = build_successor_marker(
+                stop_path,
+                request_id=request_id,
+                requested_at=requested_at,
+            )
+        else:
+            marker_payload = {
+                "schema_version": STOP_MARKER_V1,
+                "request_id": request_id,
+                "requested_at": requested_at,
+            }
+        _write_json_atomic(stop_path, marker_payload)
+        marker_value, _marker_raw, marker_hash = read_stop_marker(stop_path)
+        if marker_value != marker_payload:
+            raise UserRelayError("relay stop marker readback differs")
+    except StopMarkerLineageError as exc:
+        raise UserRelayError(f"relay stop marker lineage is invalid: {exc}") from exc
+    finally:
+        close = getattr(marker_lease, "close", None) or getattr(
+            marker_lease, "release", None
+        )
+        if callable(close):
+            close()
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     lease_key = root / "user-relay-instance"
     while True:
@@ -573,15 +603,70 @@ def request_user_relay_stop(
                 "status": "ABSENT",
                 "request_id": request_id,
                 "stop_request_path": str(stop_path),
+                "stop_request_sha256": marker_hash,
+                "stop_marker_schema": marker_payload["schema_version"],
+                "stop_marker_lineage_depth": int(
+                    marker_payload.get("lineage_depth") or 0
+                ),
             }
         if time.monotonic() >= deadline:
             return {
                 "status": "UNKNOWN",
                 "request_id": request_id,
                 "stop_request_path": str(stop_path),
+                "stop_request_sha256": marker_hash,
+                "stop_marker_schema": marker_payload["schema_version"],
+                "stop_marker_lineage_depth": int(
+                    marker_payload.get("lineage_depth") or 0
+                ),
                 "reason": "relay process absence was not proven before timeout",
             }
         wait(0.25)
+
+
+def release_user_relay_stop_marker(
+    direct_sync_root: str | os.PathLike[str],
+    *,
+    expected_request_id: str,
+    expected_sha256: str,
+    marker_lease_factory: Callable[
+        [str | os.PathLike[str]], Any
+    ] = _acquire_relay_lease,
+) -> dict[str, Any]:
+    """Remove only the exact marker proven by onboarding under the writer lock."""
+
+    root = Path(direct_sync_root).expanduser().resolve()
+    stop_path = user_relay_stop_path(root)
+    marker_lease = marker_lease_factory(root / "user-relay-stop-marker")
+    if marker_lease is None:
+        raise UserRelayError("relay stop marker is being changed by another process")
+    try:
+        try:
+            marker, _raw, marker_hash = read_stop_marker(stop_path)
+        except StopMarkerLineageError as exc:
+            raise UserRelayError(f"relay stop marker release is unsafe: {exc}") from exc
+        if (
+            str(marker.get("request_id") or "") != str(expected_request_id or "")
+            or marker_hash != str(expected_sha256 or "").lower()
+        ):
+            raise UserRelayError(
+                "relay stop marker changed after canonical preflight"
+            )
+        stop_path.unlink()
+        if stop_path.exists():
+            raise UserRelayError("relay stop marker release readback failed")
+        return {
+            "status": "RELEASED",
+            "request_id": str(expected_request_id),
+            "sha256": marker_hash,
+            "stop_request_path": str(stop_path),
+        }
+    finally:
+        close = getattr(marker_lease, "close", None) or getattr(
+            marker_lease, "release", None
+        )
+        if callable(close):
+            close()
 
 
 def build_parser() -> argparse.ArgumentParser:

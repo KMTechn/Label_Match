@@ -153,11 +153,13 @@ def test_stop_request_proves_single_instance_absence(tmp_path):
         timeout_seconds=1,
         wait=lambda seconds: waits.append(seconds),
         lease_factory=lambda _key: leases.pop(0),
+        marker_lease_factory=lambda _key: _Lease(),
     )
 
     assert report["status"] == "ABSENT"
     assert waits == [0.25]
     assert Path(report["stop_request_path"]).is_file()
+    assert report["stop_marker_schema"] == "label-match-user-relay-stop-v1"
 
 
 def test_scheduled_mode_uses_dedicated_status_and_worker(monkeypatch, tmp_path):
