@@ -11,6 +11,7 @@ onboarding.
 from __future__ import annotations
 
 import base64
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -18,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 from typing import Any, Mapping, Sequence
 
 from user_relay_stop_marker import (
@@ -29,6 +31,7 @@ from user_relay_stop_marker import (
 CONFLICT_CODE = "EXACT_CLONE_RUNTIME_CONFLICT"
 PREIMAGE_SCHEMA = "label-match-exact-clone-conflict-preimage-v1"
 RECEIPT_SCHEMA = "label-match-exact-clone-resolution-v1"
+PORTABLE_REBIND_SCHEMA = "label-match-portable-successor-rebind-v1"
 PORTABLE_MANIFEST_SCHEMA = "label-match-portable-tree-v1"
 MAX_JSON_BYTES = 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -44,6 +47,15 @@ _FORBIDDEN_RECEIPT_KEYS = frozenset(
         "credential_payload",
         "private_key",
         "hmac_key",
+    }
+)
+PORTABLE_REBIND_ALLOWED_PATHS = frozenset(
+    {
+        "current_user_onboarding.py",
+        "label_exact_clone_resolution.py",
+        "tests/test_current_user_onboarding.py",
+        "tests/test_label_exact_clone_resolution.py",
+        "tools/label_exact_clone_resolution_receipt.py",
     }
 )
 
@@ -744,6 +756,200 @@ def create_resolution_receipt(
     }
 
 
+def _git_command(repo_root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ExactCloneResolutionError("portable rebind git proof failed") from exc
+
+
+def _git_output(repo_root: Path, *arguments: str) -> str:
+    completed = _git_command(repo_root, *arguments)
+    if completed.returncode != 0:
+        raise ExactCloneResolutionError(
+            "portable rebind git proof failed: "
+            + str(completed.stderr or completed.stdout).strip()[:512]
+        )
+    return completed.stdout.strip()
+
+
+def create_portable_successor_receipt(
+    *,
+    preimage: Mapping[str, Any],
+    preimage_path: str | os.PathLike[str],
+    predecessor_receipt_path: str | os.PathLike[str],
+    repo_root: str | os.PathLike[str],
+    client_db_path: str | os.PathLike[str],
+    server_db_path: str | os.PathLike[str],
+    identity_path: str | os.PathLike[str],
+    credential_path: str | os.PathLike[str],
+    stop_marker_path: str | os.PathLike[str],
+    portable_root: str | os.PathLike[str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Rebind a valid receipt to one narrowly reviewed portable successor.
+
+    This is evidence-only.  It revalidates the predecessor receipt and the
+    resolved live authority state, requires an exact clean Git descendant with
+    only the fixed receipt/onboarding paths changed, and never changes either
+    SQLite database or the stop marker.
+    """
+
+    selected_preimage_path = Path(preimage_path).resolve(strict=False)
+    persisted_preimage = read_bounded_json(
+        selected_preimage_path,
+        label="portable rebind conflict preimage",
+    )
+    if persisted_preimage != dict(preimage):
+        raise ExactCloneResolutionError("portable rebind conflict preimage differs")
+    selected_predecessor_path = Path(predecessor_receipt_path).resolve(strict=False)
+    predecessor = read_bounded_json(
+        selected_predecessor_path,
+        label="predecessor conflict-resolution receipt",
+    )
+    predecessor_portable = dict(predecessor.get("portable") or {})
+    predecessor_portable_root = Path(
+        _required_text(
+            predecessor_portable.get("root"),
+            "predecessor receipt portable root",
+        )
+    ).resolve(strict=False)
+    validate_resolution_receipt(
+        predecessor,
+        client_db_path=client_db_path,
+        identity_path=identity_path,
+        credential_path=credential_path,
+        stop_marker_path=stop_marker_path,
+        portable_root=predecessor_portable_root,
+    )
+    reconstructed = create_resolution_receipt(
+        preimage=preimage,
+        client_db_path=client_db_path,
+        server_db_path=server_db_path,
+        identity_path=identity_path,
+        credential_path=credential_path,
+        stop_marker_path=stop_marker_path,
+        portable_root=predecessor_portable_root,
+    )
+    predecessor_semantics = copy.deepcopy(predecessor)
+    reconstructed_semantics = copy.deepcopy(reconstructed)
+    predecessor_semantics.pop("captured_at", None)
+    reconstructed_semantics.pop("captured_at", None)
+    if predecessor_semantics != reconstructed_semantics:
+        raise ExactCloneResolutionError(
+            "predecessor receipt no longer exactly describes the resolved live state"
+        )
+
+    selected_repo_root = Path(repo_root).resolve(strict=False)
+    if not (selected_repo_root / ".git").exists():
+        # Linked worktrees use a .git file rather than a directory.
+        if not (selected_repo_root / ".git").is_file():
+            raise ExactCloneResolutionError("portable rebind repo root is not a Git worktree")
+    if _git_output(
+        selected_repo_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=normal",
+    ):
+        raise ExactCloneResolutionError("portable rebind Git worktree is not clean")
+    successor_portable = _portable_binding(portable_root)
+    predecessor_commit = _required_git_object(
+        predecessor_portable.get("source_commit"),
+        "predecessor portable source_commit",
+    )
+    successor_commit = _required_git_object(
+        successor_portable.get("source_commit"),
+        "successor portable source_commit",
+    )
+    successor_tree = _required_git_object(
+        successor_portable.get("source_tree"),
+        "successor portable source_tree",
+    )
+    if (
+        _git_output(selected_repo_root, "rev-parse", "--verify", "HEAD").lower()
+        != successor_commit
+        or _git_output(selected_repo_root, "rev-parse", "--verify", "HEAD^{tree}").lower()
+        != successor_tree
+    ):
+        raise ExactCloneResolutionError("successor portable does not bind the clean Git HEAD")
+    ancestry = _git_command(
+        selected_repo_root,
+        "merge-base",
+        "--is-ancestor",
+        predecessor_commit,
+        successor_commit,
+    )
+    if ancestry.returncode != 0:
+        raise ExactCloneResolutionError(
+            "successor portable source commit is not a descendant of the predecessor"
+        )
+    changed_paths = sorted(
+        path.replace("\\", "/")
+        for path in _git_output(
+            selected_repo_root,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            predecessor_commit,
+            successor_commit,
+            "--",
+        ).splitlines()
+        if path.strip()
+    )
+    if set(changed_paths) != set(PORTABLE_REBIND_ALLOWED_PATHS):
+        raise ExactCloneResolutionError(
+            "portable successor changed paths outside the exact reviewed receipt fix"
+        )
+
+    successor_receipt = copy.deepcopy(reconstructed)
+    successor_receipt["captured_at"] = _utc_now()
+    successor_receipt["portable"] = successor_portable
+    evidence = {
+        "schema_version": PORTABLE_REBIND_SCHEMA,
+        "status": "PASS",
+        "captured_at": _utc_now(),
+        "preimage": {
+            "path": str(selected_preimage_path),
+            "sha256": file_sha256(selected_preimage_path),
+        },
+        "predecessor_receipt": {
+            "path": str(selected_predecessor_path),
+            "sha256": file_sha256(selected_predecessor_path),
+            "source_commit": predecessor_commit,
+            "source_tree": _required_git_object(
+                predecessor_portable.get("source_tree"),
+                "predecessor portable source_tree",
+            ),
+        },
+        "successor_portable": successor_portable,
+        "git_proof": {
+            "repo_root": str(selected_repo_root),
+            "worktree_clean": True,
+            "predecessor_is_ancestor": True,
+            "successor_commit": successor_commit,
+            "successor_tree": successor_tree,
+            "changed_paths": changed_paths,
+            "allowed_changed_paths": sorted(PORTABLE_REBIND_ALLOWED_PATHS),
+        },
+        "invariants": {
+            "authority_state_revalidated": True,
+            "predecessor_receipt_revalidated": True,
+            "receipt_semantics_changed_only_by_capture_time_and_portable": True,
+            "client_state_mutated": False,
+            "server_state_mutated": False,
+            "stop_marker_removed": False,
+            "secret_material_included": False,
+        },
+    }
+    return successor_receipt, evidence
+
+
 def _walk_keys(value: Any) -> list[str]:
     names: list[str] = []
     if isinstance(value, Mapping):
@@ -965,11 +1171,14 @@ def validate_resolution_receipt(
 
 __all__ = [
     "CONFLICT_CODE",
+    "PORTABLE_REBIND_ALLOWED_PATHS",
+    "PORTABLE_REBIND_SCHEMA",
     "PREIMAGE_SCHEMA",
     "RECEIPT_SCHEMA",
     "ExactCloneResolutionError",
     "capture_conflict_preimage",
     "client_authorities",
+    "create_portable_successor_receipt",
     "create_resolution_receipt",
     "file_sha256",
     "read_bounded_json",

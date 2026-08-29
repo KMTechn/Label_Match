@@ -11,8 +11,10 @@ import pytest
 
 from label_exact_clone_resolution import (
     CONFLICT_CODE,
+    PORTABLE_REBIND_ALLOWED_PATHS,
     ExactCloneResolutionError,
     capture_conflict_preimage,
+    create_portable_successor_receipt,
     create_resolution_receipt,
     sqlite_logical_digest,
     validate_resolution_receipt,
@@ -645,6 +647,113 @@ def test_receipt_accepts_exact_portable_copy_at_canonical_root(tmp_path):
             stop_marker_path=paths["stop_marker_path"],
             portable_root=canonical_root,
             allow_portable_relocation=True,
+        )
+
+
+def test_portable_successor_rebind_requires_exact_reviewed_git_diff(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*arguments: str) -> str:
+        completed = subprocess.run(
+            ["git", *arguments],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        return completed.stdout.strip().lower()
+
+    git("init")
+    git("config", "user.name", "Label receipt test")
+    git("config", "user.email", "label-receipt@example.invalid")
+    for relative in sorted(PORTABLE_REBIND_ALLOWED_PATHS):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("before\n", encoding="utf-8")
+    git("add", "--all")
+    git("commit", "-m", "predecessor")
+    predecessor_commit = git("rev-parse", "HEAD")
+    predecessor_tree = git("rev-parse", "HEAD^{tree}")
+
+    state_root = tmp_path / "state"
+    paths = _paths(state_root)
+    predecessor_manifest_path = paths["portable_root"] / "portable-manifest.json"
+    predecessor_manifest = json.loads(
+        predecessor_manifest_path.read_text(encoding="utf-8")
+    )
+    predecessor_manifest["source_commit"] = predecessor_commit
+    predecessor_manifest["source_tree"] = predecessor_tree
+    _write_json(predecessor_manifest_path, predecessor_manifest)
+    preimage = capture_conflict_preimage(**paths)
+    preimage_path = tmp_path / "preimage.json"
+    _write_json(preimage_path, preimage)
+    _resolve_fixture(paths)
+    predecessor_receipt = create_resolution_receipt(preimage=preimage, **paths)
+    predecessor_receipt_path = tmp_path / "predecessor-receipt.json"
+    _write_json(predecessor_receipt_path, predecessor_receipt)
+
+    for relative in sorted(PORTABLE_REBIND_ALLOWED_PATHS):
+        (repo / relative).write_text("after\n", encoding="utf-8")
+    git("add", "--all")
+    git("commit", "-m", "reviewed receipt successor")
+    successor_commit = git("rev-parse", "HEAD")
+    successor_tree = git("rev-parse", "HEAD^{tree}")
+    successor_portable = tmp_path / "successor-portable"
+    shutil.copytree(paths["portable_root"], successor_portable)
+    successor_manifest_path = successor_portable / "portable-manifest.json"
+    successor_manifest = json.loads(successor_manifest_path.read_text(encoding="utf-8"))
+    successor_manifest["source_commit"] = successor_commit
+    successor_manifest["source_tree"] = successor_tree
+    _write_json(successor_manifest_path, successor_manifest)
+
+    receipt, evidence = create_portable_successor_receipt(
+        preimage=preimage,
+        preimage_path=preimage_path,
+        predecessor_receipt_path=predecessor_receipt_path,
+        repo_root=repo,
+        client_db_path=paths["client_db_path"],
+        server_db_path=paths["server_db_path"],
+        identity_path=paths["identity_path"],
+        credential_path=paths["credential_path"],
+        stop_marker_path=paths["stop_marker_path"],
+        portable_root=successor_portable,
+    )
+
+    assert receipt["status"] == "RESOLVED"
+    assert receipt["portable"]["source_commit"] == successor_commit
+    assert evidence["status"] == "PASS"
+    assert evidence["git_proof"]["changed_paths"] == sorted(
+        PORTABLE_REBIND_ALLOWED_PATHS
+    )
+    validate_resolution_receipt(
+        receipt,
+        client_db_path=paths["client_db_path"],
+        identity_path=paths["identity_path"],
+        credential_path=paths["credential_path"],
+        stop_marker_path=paths["stop_marker_path"],
+        portable_root=successor_portable,
+    )
+
+    (repo / "unexpected.py").write_text("not reviewed\n", encoding="utf-8")
+    git("add", "--all")
+    git("commit", "-m", "unreviewed extra path")
+    successor_manifest["source_commit"] = git("rev-parse", "HEAD")
+    successor_manifest["source_tree"] = git("rev-parse", "HEAD^{tree}")
+    _write_json(successor_manifest_path, successor_manifest)
+    with pytest.raises(ExactCloneResolutionError, match="outside the exact reviewed"):
+        create_portable_successor_receipt(
+            preimage=preimage,
+            preimage_path=preimage_path,
+            predecessor_receipt_path=predecessor_receipt_path,
+            repo_root=repo,
+            client_db_path=paths["client_db_path"],
+            server_db_path=paths["server_db_path"],
+            identity_path=paths["identity_path"],
+            credential_path=paths["credential_path"],
+            stop_marker_path=paths["stop_marker_path"],
+            portable_root=successor_portable,
         )
 
 

@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from label_exact_clone_resolution import (  # noqa: E402
     ExactCloneResolutionError,
     capture_conflict_preimage,
+    create_portable_successor_receipt,
     create_resolution_receipt,
     file_sha256,
     read_bounded_json,
@@ -63,6 +64,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     _add_common(receipt)
     receipt.add_argument("--preimage", type=Path, required=True)
+    rebind = subparsers.add_parser(
+        "rebind",
+        help="rebind a valid receipt to the exact reviewed portable successor",
+    )
+    _add_common(rebind)
+    rebind.add_argument("--preimage", type=Path, required=True)
+    rebind.add_argument("--predecessor-receipt", type=Path, required=True)
+    rebind.add_argument("--repo-root", type=Path, required=True)
+    rebind.add_argument("--rebind-evidence-output", type=Path, required=True)
     return parser.parse_args(argv)
 
 
@@ -84,15 +94,51 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         inputs = _paths(args)
+        extra_summary = {}
         if args.operation == "capture":
             payload = capture_conflict_preimage(**inputs)
-        else:
+        elif args.operation == "receipt":
             preimage = read_bounded_json(
                 args.preimage,
                 label="Label exact-clone conflict preimage",
             )
             payload = create_resolution_receipt(preimage=preimage, **inputs)
+        else:
+            if args.output.resolve(strict=False) == args.rebind_evidence_output.resolve(
+                strict=False
+            ):
+                raise ExactCloneResolutionError(
+                    "successor receipt and rebind evidence outputs must differ"
+                )
+            if args.output.exists() or args.rebind_evidence_output.exists():
+                raise ExactCloneResolutionError(
+                    "refusing to overwrite successor receipt or rebind evidence"
+                )
+            preimage = read_bounded_json(
+                args.preimage,
+                label="Label exact-clone conflict preimage",
+            )
+            payload, rebind_evidence = create_portable_successor_receipt(
+                preimage=preimage,
+                preimage_path=args.preimage,
+                predecessor_receipt_path=args.predecessor_receipt,
+                repo_root=args.repo_root,
+                **inputs,
+            )
         output = write_new_json(args.output, payload)
+        if args.operation == "rebind":
+            rebind_evidence["successor_receipt"] = {
+                "path": str(output),
+                "sha256": file_sha256(output),
+            }
+            evidence_output = write_new_json(
+                args.rebind_evidence_output,
+                rebind_evidence,
+            )
+            extra_summary = {
+                "rebind_evidence": str(evidence_output),
+                "rebind_evidence_sha256": file_sha256(evidence_output),
+            }
         summary = {
             "status": payload["status"],
             "schema_version": payload["schema_version"],
@@ -101,6 +147,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "client_state_mutated": False,
             "server_state_mutated": False,
             "stop_marker_removed": False,
+            **extra_summary,
         }
         print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
         return 0
