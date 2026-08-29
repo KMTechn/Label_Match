@@ -15,9 +15,9 @@ def test_main_executable_dispatches_product_modes_before_gui_import():
         encoding="utf-8"
     )
 
-    assert source.index("_early_product_mode_result = dispatch_product_mode") < source.index(
-        "import tkinter as tk"
-    )
+    assert source.index(
+        "_early_product_mode_result = dispatch_product_mode"
+    ) < source.index("import tkinter as tk")
 
 
 def test_non_product_arguments_continue_to_gui_startup():
@@ -56,9 +56,7 @@ def test_frozen_hosted_relay_fails_closed_before_runtime_on_integrity_error(
         lambda arguments: observed.append(list(arguments)) or 0,
     )
 
-    result = product_host.dispatch_product_mode(
-        [product_host.DIRECT_SYNC_RELAY_MODE]
-    )
+    result = product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE])
 
     assert result == product_host.HOSTED_RELAY_FAILURE_EXIT_CODE
     assert observed == []
@@ -76,8 +74,7 @@ def test_frozen_hosted_relay_warns_and_continues_when_record_is_absent(
     monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments: 0)
 
     assert (
-        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE])
-        == 0
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE]) == 0
     )
     assert "integrity record is absent" in capsys.readouterr().err
     warning_path = (
@@ -106,8 +103,7 @@ def test_windowed_host_persists_absent_integrity_warning_without_stderr(
     monkeypatch.setattr(sys, "stderr", None)
 
     assert (
-        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE])
-        == 0
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE]) == 0
     )
 
     warning_path = (
@@ -134,7 +130,9 @@ def test_windowed_host_supplies_and_restores_output_streams(monkeypatch):
     monkeypatch.setattr(sys, "stdout", None)
     monkeypatch.setattr(sys, "stderr", None)
 
-    assert product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE]) == 0
+    assert (
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE]) == 0
+    )
     assert observed == [(True, True, [])]
     assert sys.stdout is None
     assert sys.stderr is None
@@ -194,6 +192,11 @@ def test_user_relay_onboarding_and_removal_modes_dispatch_in_process(monkeypatch
         lambda arguments: observed.append(("relay", list(arguments))) or 0,
     )
     monkeypatch.setattr(
+        user_relay,
+        "scheduled_main",
+        lambda arguments: observed.append(("scheduled", list(arguments))) or 0,
+    )
+    monkeypatch.setattr(
         current_user_onboarding,
         "onboarding_main",
         lambda arguments: observed.append(("onboard", list(arguments))) or 0,
@@ -204,17 +207,31 @@ def test_user_relay_onboarding_and_removal_modes_dispatch_in_process(monkeypatch
         lambda arguments: observed.append(("remove", list(arguments))) or 0,
     )
 
-    assert product_host.dispatch_product_mode(
-        [product_host.USER_RELAY_MODE, "--once"]
-    ) == 0
-    assert product_host.dispatch_product_mode(
-        [product_host.ONBOARD_CURRENT_USER_MODE, "--app-root", "app"]
-    ) == 0
-    assert product_host.dispatch_product_mode(
-        [product_host.REMOVE_CURRENT_USER_MODE, "--app-root", "app"]
-    ) == 0
+    assert (
+        product_host.dispatch_product_mode([product_host.USER_RELAY_MODE, "--once"])
+        == 0
+    )
+    assert (
+        product_host.dispatch_product_mode(
+            [product_host.SCHEDULED_RELAY_MODE, "--app-root", "app"]
+        )
+        == 0
+    )
+    assert (
+        product_host.dispatch_product_mode(
+            [product_host.ONBOARD_CURRENT_USER_MODE, "--app-root", "app"]
+        )
+        == 0
+    )
+    assert (
+        product_host.dispatch_product_mode(
+            [product_host.REMOVE_CURRENT_USER_MODE, "--app-root", "app"]
+        )
+        == 0
+    )
     assert observed == [
         ("relay", ["--once"]),
+        ("scheduled", ["--app-root", "app"]),
         ("onboard", ["--app-root", "app"]),
         ("remove", ["--app-root", "app"]),
     ]

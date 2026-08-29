@@ -100,7 +100,15 @@ def _autostart(_app_root):
 
 
 def _relay_start(_app_root):
-    return {"status": "START_REQUESTED", "process_id": 123}
+    return {"status": "ALIVE", "process_id": 123, "survival_seconds": 2.0}
+
+
+def _scheduled_task(_app_root):
+    return {"status": "PASS", "action": "REUSED"}
+
+
+def _scheduled_task_absent(_app_root):
+    return {"status": "ABSENT"}
 
 
 def _environment(tmp_path):
@@ -115,21 +123,28 @@ def test_paths_separate_code_and_current_user_state(tmp_path):
     )
 
     assert paths.app_root == app_root.resolve()
-    assert paths.data_root == (
-        tmp_path / "local-app-data" / "KMTech" / "Label_Match" / "data"
-    ).resolve()
-    assert paths.direct_sync_root == (
-        tmp_path / "local-app-data" / "KMTech" / "DirectSync" / "label_match"
-    ).resolve()
-    assert paths.logistics_profile_path == (
-        tmp_path
-        / "local-app-data"
-        / "KMTech"
-        / "Logistics"
-        / "profiles"
-        / "Label_Match"
-        / "runtime-profile.json"
-    ).resolve()
+    assert (
+        paths.data_root
+        == (tmp_path / "local-app-data" / "KMTech" / "Label_Match" / "data").resolve()
+    )
+    assert (
+        paths.direct_sync_root
+        == (
+            tmp_path / "local-app-data" / "KMTech" / "DirectSync" / "label_match"
+        ).resolve()
+    )
+    assert (
+        paths.logistics_profile_path
+        == (
+            tmp_path
+            / "local-app-data"
+            / "KMTech"
+            / "Logistics"
+            / "profiles"
+            / "Label_Match"
+            / "runtime-profile.json"
+        ).resolve()
+    )
     assert paths.ledger_path.name == "package_logistics_outbox.sqlite3"
     assert paths.app_root not in paths.data_root.parents
 
@@ -138,17 +153,23 @@ def test_state_absent_partial_and_ready_are_distinguished(tmp_path):
     paths = resolve_current_user_onboarding_paths(
         tmp_path / "app", environ=_environment(tmp_path)
     )
-    assert inspect_current_user_state(
-        paths,
-        profile_loader=_profile_loader,
-        credential_loader=_credential_loader,
-    )["status"] == "ABSENT"
+    assert (
+        inspect_current_user_state(
+            paths,
+            profile_loader=_profile_loader,
+            credential_loader=_credential_loader,
+        )["status"]
+        == "ABSENT"
+    )
     _write_json(paths.identity_path, {"source_host_id": "partial"})
-    assert inspect_current_user_state(
-        paths,
-        profile_loader=_profile_loader,
-        credential_loader=_credential_loader,
-    )["status"] == "RECOVERY_REQUIRED"
+    assert (
+        inspect_current_user_state(
+            paths,
+            profile_loader=_profile_loader,
+            credential_loader=_credential_loader,
+        )["status"]
+        == "RECOVERY_REQUIRED"
+    )
     paths.identity_path.unlink()
     _ready_state(paths)
     ready = inspect_current_user_state(
@@ -184,12 +205,15 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
         "credential_loader": _credential_loader,
         "ledger_factory": _ledger_factory,
         "autostart_installer": _autostart,
+        "scheduled_task_installer": _scheduled_task,
         "relay_launcher": _relay_start,
     }
     code_files = [path for path in app_root.rglob("*") if path.is_file()]
     code_directories = [internal, app_root]
     code_before = {
-        path.relative_to(app_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        path.relative_to(app_root)
+        .as_posix(): hashlib.sha256(path.read_bytes())
+        .hexdigest()
         for path in code_files
     }
     for path in code_files:
@@ -201,7 +225,9 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
         identity_before = paths.identity_path.read_bytes()
         second = onboard_current_user(app_root, **kwargs)
         code_after = {
-            path.relative_to(app_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            path.relative_to(app_root)
+            .as_posix(): hashlib.sha256(path.read_bytes())
+            .hexdigest()
             for path in app_root.rglob("*")
             if path.is_file()
         }
@@ -220,6 +246,7 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
     assert paths.ledger_path.is_file()
     assert first["operation_lease_store"] == "AUTHORITATIVE_SNAPSHOT_PRESERVED"
     assert first["system_scheduled_task_required"] is False
+    assert first["current_user_scheduled_task_required"] is True
     assert environment["LABEL_MATCH_DIRECT_SYNC_ROOT"] == str(paths.direct_sync_root)
     assert code_after == code_before
 
@@ -248,16 +275,15 @@ def test_registration_runner_derives_identity_without_source_host_override(
         raising=False,
     )
 
-    assert _registration_runner(
-        paths, server_base_url="https://worker.example.invalid"
-    ) == 0
+    assert (
+        _registration_runner(paths, server_base_url="https://worker.example.invalid")
+        == 0
+    )
     assert len(calls) == 1
     arguments = calls[0]
     assert "--source-host-id" not in arguments
     assert arguments[arguments.index("--credential-scope") + 1] == "current_user"
-    assert arguments[arguments.index("--identity-path") + 1] == str(
-        paths.identity_path
-    )
+    assert arguments[arguments.index("--identity-path") + 1] == str(paths.identity_path)
 
 
 def test_registration_runner_forwards_bootstrap_tls_ca_bundle(tmp_path, monkeypatch):
@@ -279,11 +305,14 @@ def test_registration_runner_forwards_bootstrap_tls_ca_bundle(tmp_path, monkeypa
         raising=False,
     )
 
-    assert _registration_runner(
-        paths,
-        server_base_url="https://worker.example.invalid",
-        environ=environment,
-    ) == 0
+    assert (
+        _registration_runner(
+            paths,
+            server_base_url="https://worker.example.invalid",
+            environ=environment,
+        )
+        == 0
+    )
     arguments = calls[0]
     assert arguments[arguments.index("--tls-ca-bundle-path") + 1] == str(
         paths.bootstrap_tls_ca_bundle_path
@@ -328,6 +357,7 @@ def test_ready_profile_adds_configured_ca_without_registration(tmp_path, monkeyp
         credential_loader=_credential_loader,
         ledger_factory=_ledger_factory,
         autostart_installer=_autostart,
+        scheduled_task_installer=_scheduled_task,
         relay_launcher=_relay_start,
     )
 
@@ -351,12 +381,96 @@ def test_missing_registration_result_is_unknown_not_success(tmp_path):
             credential_loader=_credential_loader,
             ledger_factory=_ledger_factory,
             autostart_installer=_autostart,
+            scheduled_task_installer=_scheduled_task,
             relay_launcher=_relay_start,
         )
 
     assert caught.value.status == "UNKNOWN"
     report = json.loads(caught.value.report_path.read_text(encoding="utf-8"))
     assert report["status"] == "UNKNOWN"
+
+
+def test_stop_marker_is_preserved_until_canonical_portable_install(tmp_path):
+    app_root = tmp_path / "not-canonical"
+    app_root.mkdir()
+    environment = _environment(tmp_path)
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
+    _ready_state(paths)
+    marker = paths.control_dir / "label_match_user_relay.stop.json"
+    _write_json(marker, {"schema_version": "label-match-user-relay-stop-v1"})
+
+    with pytest.raises(CurrentUserOnboardingError, match="safety fence"):
+        onboard_current_user(
+            app_root,
+            environ=environment,
+            require_bootstrap_integrity=False,
+            profile_loader=_profile_loader,
+            credential_loader=_credential_loader,
+            ledger_factory=_ledger_factory,
+            autostart_installer=_autostart,
+            scheduled_task_installer=_scheduled_task,
+            relay_launcher=_relay_start,
+        )
+
+    assert marker.is_file()
+
+
+def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_path):
+    app_root = (tmp_path / "canonical").resolve()
+    (app_root / "runtime").mkdir(parents=True)
+    runtime = app_root / "runtime" / "pythonw.exe"
+    installer = app_root / "INSTALL_CANONICAL_PORTABLE.ps1"
+    runtime.write_bytes(b"signed-runtime-fixture")
+    installer.write_text("# canonical installer fixture\n", encoding="utf-8")
+    commit = "a" * 40
+    tree = "b" * 40
+    _write_json(
+        app_root / "portable-manifest.json",
+        {
+            "schema": "label-match-portable-tree-v1",
+            "entrypoint": "runtime/pythonw.exe app/main.py",
+            "source_commit": commit,
+            "source_tree": tree,
+            "allowed_unsigned_app_pe": [],
+            "forbidden_package_roots": [],
+            "runtime_pythonw_sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+            "canonical_installer": "INSTALL_CANONICAL_PORTABLE.ps1",
+            "canonical_installer_sha256": hashlib.sha256(
+                installer.read_bytes()
+            ).hexdigest(),
+        },
+    )
+    _write_json(
+        app_root / ".kmtech-canonical-install-owner.json",
+        {
+            "schema": "kmtech-canonical-installed-owner-v1",
+            "app_id": "label_match",
+            "install_root": str(app_root),
+            "source_commit": commit,
+            "source_tree": tree,
+        },
+    )
+    monkeypatch.setattr("current_user_onboarding.CANONICAL_PORTABLE_ROOT", app_root)
+    environment = _environment(tmp_path)
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
+    _ready_state(paths)
+    marker = paths.control_dir / "label_match_user_relay.stop.json"
+    _write_json(marker, {"schema_version": "label-match-user-relay-stop-v1"})
+
+    with pytest.raises(CurrentUserOnboardingError, match="scheduled task"):
+        onboard_current_user(
+            app_root,
+            environ=environment,
+            require_bootstrap_integrity=False,
+            profile_loader=_profile_loader,
+            credential_loader=_credential_loader,
+            ledger_factory=_ledger_factory,
+            autostart_installer=_autostart,
+            scheduled_task_installer=lambda _root: {"status": "FAIL"},
+            relay_launcher=_relay_start,
+        )
+
+    assert marker.is_file()
 
 
 def _write_bootstrap_root_record(app_root: Path) -> Path:
@@ -410,9 +524,10 @@ def test_bootstrap_integrity_requires_exact_onedir_root_hash(tmp_path):
 
     assert result["status"] == "PASS"
     assert result["file_count"] == 2
-    assert result["root_sha256"] == json.loads(
-        record_path.read_text(encoding="utf-8")
-    )["root_sha256"]
+    assert (
+        result["root_sha256"]
+        == json.loads(record_path.read_text(encoding="utf-8"))["root_sha256"]
+    )
     runtime.write_bytes(b"tampered")
     with pytest.raises(ValueError, match="code root integrity failed"):
         verify_bootstrap_integrity(paths, required=True)
@@ -505,6 +620,7 @@ def test_public_remove_clears_relay_but_preserves_identity_profile_and_ledger(
         app_root,
         environ=environment,
         autostart_remover=lambda: {"status": "ABSENT"},
+        scheduled_task_remover=_scheduled_task_absent,
         relay_stopper=lambda _root: {"status": "ABSENT"},
     )
 
@@ -522,6 +638,7 @@ def test_public_remove_does_not_downgrade_unknown_relay_result(tmp_path):
             app_root,
             environ=_environment(tmp_path),
             autostart_remover=lambda: {"status": "ABSENT"},
+            scheduled_task_remover=_scheduled_task_absent,
             relay_stopper=lambda _root: {"status": "UNKNOWN"},
         )
 

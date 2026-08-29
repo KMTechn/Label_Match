@@ -13,11 +13,12 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 import uuid
 
+from current_user_scheduled_task import build_current_user_task_spec
 from label_match_single_instance import acquire_data_scope_mutex
-
 
 USER_RELAY_MODE = "--label-match-user-relay"
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
+SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
 USER_RELAY_RUN_VALUE = "KMTech.LabelMatch.Relay"
 USER_RELAY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DEFAULT_RETRY_INTERVAL_SECONDS = 30
@@ -26,6 +27,7 @@ USER_RELAY_STATUS_NAME = "label_match_user_relay.json"
 USER_RELAY_STOP_NAME = "label_match_user_relay.stop.json"
 LABEL_MATCH_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 LABEL_MATCH_WORKER_ID = "direct-sync-relay-label-match-current-user"
+LABEL_MATCH_SCHEDULED_WORKER_ID = "direct-sync-relay-label-match-current-user-scheduled"
 
 
 class UserRelayError(RuntimeError):
@@ -41,7 +43,9 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dump(
+                dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True
+            )
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -70,17 +74,26 @@ def user_relay_status_path(direct_sync_root: str | os.PathLike[str]) -> Path:
 
 def user_relay_stop_path(direct_sync_root: str | os.PathLike[str]) -> Path:
     return (
-        Path(direct_sync_root).expanduser().resolve()
-        / "control"
-        / USER_RELAY_STOP_NAME
+        Path(direct_sync_root).expanduser().resolve() / "control" / USER_RELAY_STOP_NAME
     )
 
 
-def _application_command(app_root: str | os.PathLike[str]) -> list[str]:
+def _application_command(
+    app_root: str | os.PathLike[str], *, console: bool = False
+) -> list[str]:
     root = Path(app_root).expanduser().resolve()
     executable = root / "Label_Match.exe"
     if executable.is_file():
         return [str(executable)]
+    portable_runtime = root / "runtime" / ("python.exe" if console else "pythonw.exe")
+    portable_entrypoint = root / "app" / "main.py"
+    if portable_runtime.is_file() and portable_entrypoint.is_file():
+        return [
+            str(portable_runtime),
+            "-I",
+            "-B",
+            str(portable_entrypoint),
+        ]
     source_entrypoint = root / "Label_Match.py"
     if source_entrypoint.is_file() and not getattr(sys, "frozen", False):
         return [sys.executable, str(source_entrypoint)]
@@ -88,7 +101,8 @@ def _application_command(app_root: str | os.PathLike[str]) -> list[str]:
 
 
 def build_user_relay_command(app_root: str | os.PathLike[str]) -> list[str]:
-    return [*_application_command(app_root), USER_RELAY_MODE]
+    root = Path(app_root).expanduser().resolve()
+    return [*_application_command(root), USER_RELAY_MODE, "--app-root", str(root)]
 
 
 def user_relay_command_line(app_root: str | os.PathLike[str]) -> str:
@@ -101,11 +115,27 @@ def build_session_direct_sync_command(
     direct_sync_root: str | os.PathLike[str],
     scan_source_dir: str | os.PathLike[str],
     tls_ca_bundle_path: str | os.PathLike[str] = "",
+    runtime_status_path: str | os.PathLike[str] = "",
+    log_path: str | os.PathLike[str] = "",
+    worker_id: str = LABEL_MATCH_WORKER_ID,
 ) -> list[str]:
     root = Path(direct_sync_root).expanduser().resolve()
     source = Path(scan_source_dir).expanduser().resolve()
+    selected_status = (
+        Path(runtime_status_path).expanduser().resolve()
+        if runtime_status_path
+        else root / "status" / "direct_sync_relay_status.json"
+    )
+    selected_log = (
+        Path(log_path).expanduser().resolve()
+        if log_path
+        else root / "logs" / "direct_sync_relay.jsonl"
+    )
+    selected_worker = str(worker_id or "").strip()
+    if not selected_worker:
+        raise ValueError("DirectSync worker id must not be empty")
     command = [
-        *_application_command(app_root),
+        *_application_command(app_root, console=True),
         DIRECT_SYNC_RELAY_MODE,
         "--db-path",
         str(root / "queue" / "direct_sync_relay.sqlite3"),
@@ -118,11 +148,11 @@ def build_session_direct_sync_command(
         "--upload-status-dir",
         str(root / "upload_status"),
         "--runtime-status-path",
-        str(root / "status" / "direct_sync_relay_status.json"),
+        str(selected_status),
         "--log-path",
-        str(root / "logs" / "direct_sync_relay.jsonl"),
+        str(selected_log),
         "--worker-id",
-        LABEL_MATCH_WORKER_ID,
+        selected_worker,
         "--timeout-seconds",
         "15",
         "--operator-pause-path",
@@ -178,6 +208,9 @@ def run_session_direct_sync_once(
     reason: str,
     timeout_seconds: int = 45,
     tls_ca_bundle_path: str | os.PathLike[str] = "",
+    runtime_status_path: str | os.PathLike[str] = "",
+    log_path: str | os.PathLike[str] = "",
+    worker_id: str = LABEL_MATCH_WORKER_ID,
 ) -> dict[str, Any]:
     try:
         command = build_session_direct_sync_command(
@@ -185,6 +218,9 @@ def run_session_direct_sync_once(
             direct_sync_root=direct_sync_root,
             scan_source_dir=scan_source_dir,
             tls_ca_bundle_path=tls_ca_bundle_path,
+            runtime_status_path=runtime_status_path,
+            log_path=log_path,
+            worker_id=worker_id,
         )
     except UserRelayError as exc:
         return {"status": "FAIL", "reason": str(exc)}
@@ -284,6 +320,8 @@ def start_user_relay_process(
     app_root: str | os.PathLike[str],
     *,
     launcher: Callable[[Sequence[str]], Any] | None = None,
+    survival_seconds: float = 2.0,
+    wait: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     command = build_user_relay_command(app_root)
     if launcher is not None:
@@ -306,7 +344,17 @@ def start_user_relay_process(
     )
     if process.pid <= 0:
         raise UserRelayError("current-user relay launch did not return a process id")
-    return {"status": "START_REQUESTED", "process_id": process.pid}
+    wait(max(0.0, float(survival_seconds)))
+    return_code = process.poll()
+    if return_code is not None:
+        raise UserRelayError(
+            f"current-user relay exited before survival readback: {return_code}"
+        )
+    return {
+        "status": "ALIVE",
+        "process_id": process.pid,
+        "survival_seconds": max(0.0, float(survival_seconds)),
+    }
 
 
 def _wait_with_stop_checks(
@@ -332,6 +380,7 @@ def run_persistent_relay_loop(
     stop_requested: Callable[[], bool] | None = None,
     wait: Callable[[float], None] = time.sleep,
     max_cycles: int | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     interval = int(interval_seconds)
     if interval < 0 or interval > MAX_RETRY_INTERVAL_SECONDS:
@@ -342,6 +391,7 @@ def run_persistent_relay_loop(
     should_stop = stop_requested or (lambda: False)
     cycle_count = 0
     last_cycle: dict[str, Any] = {"status": "NOT_TESTED"}
+    fixed_metadata = dict(metadata or {})
     while not should_stop():
         cycle_count += 1
         try:
@@ -363,6 +413,7 @@ def run_persistent_relay_loop(
         _write_json_atomic(
             selected_status_path,
             {
+                **fixed_metadata,
                 "report_version": "label-match-user-relay-v1",
                 "status": "RUNNING",
                 "principal": "current_user",
@@ -378,6 +429,7 @@ def run_persistent_relay_loop(
         if _wait_with_stop_checks(interval, should_stop, wait):
             break
     final = {
+        **fixed_metadata,
         "report_version": "label-match-user-relay-v1",
         "status": "STOPPED" if should_stop() else "COMPLETED",
         "principal": "current_user",
@@ -397,17 +449,25 @@ def _runtime_cycle(
     direct_sync_root: Path,
     scan_source_dir: Path,
     tls_ca_bundle_path: str = "",
+    runtime_status_path: Path | None = None,
+    log_path: Path | None = None,
+    worker_id: str = LABEL_MATCH_WORKER_ID,
+    reason: str = "PERSISTENT_USER_RELAY",
 ) -> dict[str, Any]:
+    selected_status = runtime_status_path or (
+        direct_sync_root / "status" / "direct_sync_relay_status.json"
+    )
     process_result = run_session_direct_sync_once(
         app_root=app_root,
         direct_sync_root=direct_sync_root,
         scan_source_dir=scan_source_dir,
-        reason="PERSISTENT_USER_RELAY",
+        reason=reason,
         tls_ca_bundle_path=tls_ca_bundle_path,
+        runtime_status_path=selected_status,
+        log_path=log_path or (direct_sync_root / "logs" / "direct_sync_relay.jsonl"),
+        worker_id=worker_id,
     )
-    runtime_status = _read_json(
-        direct_sync_root / "status" / "direct_sync_relay_status.json"
-    )
+    runtime_status = _read_json(selected_status)
     process_status = str(process_result.get("status") or "").strip() or "UNKNOWN"
     relay_status = str((runtime_status or {}).get("status") or "").strip() or "UNKNOWN"
     return {
@@ -424,6 +484,51 @@ def _acquire_relay_lease(key: str | os.PathLike[str]):
         return lease
     lease.close()
     return None
+
+
+def _pid_exists(process_id: int) -> bool:
+    try:
+        os.kill(int(process_id), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return int(process_id) > 0
+
+
+def _fresh_persistent_owner(
+    status: Mapping[str, Any] | None,
+    *,
+    app_root: Path,
+    direct_sync_root: Path,
+    pid_exists: Callable[[int], bool] = _pid_exists,
+) -> dict[str, Any] | None:
+    payload = dict(status or {})
+    try:
+        process_id = int(payload.get("process_id") or 0)
+        updated = datetime.fromisoformat(str(payload.get("updated_at") or ""))
+    except (TypeError, ValueError):
+        return None
+    if updated.tzinfo is None:
+        return None
+    age = (
+        datetime.now(timezone.utc) - updated.astimezone(timezone.utc)
+    ).total_seconds()
+    if (
+        payload.get("status") != "RUNNING"
+        or payload.get("worker_id") != LABEL_MATCH_WORKER_ID
+        or os.path.normcase(str(payload.get("app_root") or ""))
+        != os.path.normcase(str(app_root))
+        or os.path.normcase(str(payload.get("direct_sync_root") or ""))
+        != os.path.normcase(str(direct_sync_root))
+        or age < -5
+        or age > (MAX_RETRY_INTERVAL_SECONDS * 2 + 15)
+        or not pid_exists(process_id)
+    ):
+        return None
+    return {"process_id": process_id, "updated_at": updated.isoformat()}
 
 
 def request_user_relay_stop(
@@ -483,16 +588,130 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_scheduled_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Label_Match current-user scheduled DirectSync relay"
+    )
+    parser.add_argument("--app-root", required=True)
+    parser.add_argument("--direct-sync-root", default="")
+    parser.add_argument("--scan-source-dir", default="")
+    return parser
+
+
+def scheduled_main(argv: list[str] | None = None) -> int:
+    args = build_scheduled_parser().parse_args(argv)
+    app_root = Path(args.app_root).expanduser().resolve()
+    from current_user_onboarding import resolve_current_user_onboarding_paths
+    from logistics_runtime_profile import (
+        load_logistics_runtime_profile,
+        unprotect_current_user_secret,
+    )
+
+    paths = resolve_current_user_onboarding_paths(app_root)
+    profile = load_logistics_runtime_profile(
+        required=True,
+        profile_path=paths.logistics_profile_path,
+        decryptor=unprotect_current_user_secret,
+    )
+    if profile is None:
+        raise UserRelayError("the current-user logistics profile is unavailable")
+    direct_sync_root = (
+        Path(args.direct_sync_root).expanduser().resolve()
+        if args.direct_sync_root
+        else paths.direct_sync_root
+    )
+    scan_source_dir = (
+        Path(args.scan_source_dir).expanduser().resolve()
+        if args.scan_source_dir
+        else paths.data_root
+    )
+    runtime_status_path = (
+        direct_sync_root / "status" / "scheduled_direct_sync_relay_status.json"
+    )
+    log_path = direct_sync_root / "logs" / "scheduled_direct_sync_relay.jsonl"
+    for directory in (
+        direct_sync_root / "queue",
+        direct_sync_root / "spool",
+        direct_sync_root / "upload_status",
+        direct_sync_root / "status",
+        direct_sync_root / "logs",
+        direct_sync_root / "control",
+        scan_source_dir,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    task_spec = build_current_user_task_spec(app_root)
+    lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
+    if lease is None:
+        owner = _fresh_persistent_owner(
+            _read_json(user_relay_status_path(direct_sync_root)),
+            app_root=app_root,
+            direct_sync_root=direct_sync_root,
+        )
+        report = {
+            "report_version": "label-match-scheduled-relay-v1",
+            "status": "PASS" if owner else "FAIL",
+            "outcome": "existing_healthy_relay" if owner else "lease_owner_unproven",
+            "worker_id": LABEL_MATCH_SCHEDULED_WORKER_ID,
+            "persistent_worker_id": LABEL_MATCH_WORKER_ID,
+            "persistent_process_id": (owner or {}).get("process_id", 0),
+            "app_root": str(app_root),
+            "direct_sync_root": str(direct_sync_root),
+            "queue_dir": str(direct_sync_root / "queue"),
+            "action_sha256": task_spec["action_sha256"],
+            "updated_at": _now(),
+        }
+        _write_json_atomic(runtime_status_path, report)
+        return 0 if owner else 1
+    try:
+        result = _runtime_cycle(
+            app_root=app_root,
+            direct_sync_root=direct_sync_root,
+            scan_source_dir=scan_source_dir,
+            tls_ca_bundle_path=profile.tls_ca_bundle_path,
+            runtime_status_path=runtime_status_path,
+            log_path=log_path,
+            worker_id=LABEL_MATCH_SCHEDULED_WORKER_ID,
+            reason="SCHEDULED_CURRENT_USER",
+        )
+    finally:
+        lease.close()
+    passed = result.get("process_status") == "PASS" and result.get("status") not in {
+        "FAIL",
+        "UNKNOWN",
+        "runtime_error",
+    }
+    _write_json_atomic(
+        runtime_status_path,
+        {
+            "report_version": "label-match-scheduled-relay-v1",
+            "status": "PASS" if passed else "FAIL",
+            "outcome": "bounded_one_cycle",
+            "worker_id": LABEL_MATCH_SCHEDULED_WORKER_ID,
+            "app_root": str(app_root),
+            "direct_sync_root": str(direct_sync_root),
+            "queue_dir": str(direct_sync_root / "queue"),
+            "action_sha256": task_spec["action_sha256"],
+            "cycle": result,
+            "updated_at": _now(),
+        },
+    )
+    return 0 if passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    app_root = Path(
-        args.app_root
-        or (
-            Path(sys.executable).parent
-            if getattr(sys, "frozen", False)
-            else Path(__file__).resolve().parent
+    app_root = (
+        Path(
+            args.app_root
+            or (
+                Path(sys.executable).parent
+                if getattr(sys, "frozen", False)
+                else Path(__file__).resolve().parent
+            )
         )
-    ).expanduser().resolve()
+        .expanduser()
+        .resolve()
+    )
     from current_user_onboarding import (
         apply_current_user_runtime_environment,
         resolve_current_user_onboarding_paths,
@@ -549,6 +768,13 @@ def main(argv: list[str] | None = None) -> int:
             interval_seconds=args.interval_seconds,
             stop_requested=stop_path.exists,
             max_cycles=1 if args.once else None,
+            metadata={
+                "process_id": os.getpid(),
+                "worker_id": LABEL_MATCH_WORKER_ID,
+                "app_root": str(app_root),
+                "direct_sync_root": str(direct_sync_root),
+                "queue_dir": str(direct_sync_root / "queue"),
+            },
         )
     finally:
         lease.close()

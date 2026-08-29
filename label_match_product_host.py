@@ -12,15 +12,16 @@ import sys
 from typing import Iterator, Sequence
 import uuid
 
-
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
 USER_RELAY_MODE = "--label-match-user-relay"
+SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
 ONBOARD_CURRENT_USER_MODE = "--onboard-current-user"
 REMOVE_CURRENT_USER_MODE = "--remove-current-user-setup"
 PRODUCT_MODES = frozenset(
     {
         DIRECT_SYNC_RELAY_MODE,
         USER_RELAY_MODE,
+        SCHEDULED_RELAY_MODE,
         ONBOARD_CURRENT_USER_MODE,
         REMOVE_CURRENT_USER_MODE,
     }
@@ -44,9 +45,7 @@ def _verify_frozen_host_integrity() -> dict[str, object]:
     )
 
 
-def _record_bootstrap_integrity_absent(
-    arguments: Sequence[str], mode: str
-) -> None:
+def _record_bootstrap_integrity_absent(arguments: Sequence[str], mode: str) -> None:
     captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     payload: dict[str, object] = {
         "status": "warning",
@@ -61,10 +60,15 @@ def _record_bootstrap_integrity_absent(
     try:
         from current_user_onboarding import resolve_current_user_onboarding_paths
 
+        selected_root = _option_value(arguments, "--app-root")
         app_root = (
-            Path(sys.executable).resolve().parent
-            if getattr(sys, "frozen", False)
-            else Path(__file__).resolve().parent
+            Path(selected_root).expanduser().resolve()
+            if selected_root
+            else (
+                Path(sys.executable).resolve().parent
+                if getattr(sys, "frozen", False)
+                else Path(__file__).resolve().parent
+            )
         )
         warning_path = (
             resolve_current_user_onboarding_paths(app_root).status_dir
@@ -136,18 +140,29 @@ def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> 
         "updated_at": captured_at,
     }
     status_path = _option_value(arguments, "--runtime-status-path")
-    if not status_path and USER_RELAY_MODE in arguments:
+    if not status_path and (
+        USER_RELAY_MODE in arguments or SCHEDULED_RELAY_MODE in arguments
+    ):
         try:
             from current_user_onboarding import resolve_current_user_onboarding_paths
 
+            selected_root = _option_value(arguments, "--app-root")
             app_root = (
-                Path(sys.executable).resolve().parent
-                if getattr(sys, "frozen", False)
-                else Path(__file__).resolve().parent
+                Path(selected_root).expanduser().resolve()
+                if selected_root
+                else (
+                    Path(sys.executable).resolve().parent
+                    if getattr(sys, "frozen", False)
+                    else Path(__file__).resolve().parent
+                )
+            )
+            status_name = (
+                "scheduled_direct_sync_relay_status.json"
+                if SCHEDULED_RELAY_MODE in arguments
+                else "label_match_user_relay.json"
             )
             status_path = str(
-                resolve_current_user_onboarding_paths(app_root).status_dir
-                / "label_match_user_relay.json"
+                resolve_current_user_onboarding_paths(app_root).status_dir / status_name
             )
         except Exception:
             status_path = ""
@@ -196,7 +211,11 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
     mode = arguments.pop(0)
 
     with _usable_output_streams():
-        if mode in {DIRECT_SYNC_RELAY_MODE, USER_RELAY_MODE}:
+        if mode in {
+            DIRECT_SYNC_RELAY_MODE,
+            USER_RELAY_MODE,
+            SCHEDULED_RELAY_MODE,
+        }:
             try:
                 integrity = _verify_frozen_host_integrity()
                 if integrity.get("status") == "ABSENT":
@@ -224,6 +243,14 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
                 return int(user_relay_main(arguments))
             except Exception as exc:
                 _record_hosted_relay_failure([USER_RELAY_MODE, *arguments], exc)
+                return HOSTED_RELAY_FAILURE_EXIT_CODE
+        if mode == SCHEDULED_RELAY_MODE:
+            try:
+                from user_relay import scheduled_main
+
+                return int(scheduled_main(arguments))
+            except Exception as exc:
+                _record_hosted_relay_failure([SCHEDULED_RELAY_MODE, *arguments], exc)
                 return HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == ONBOARD_CURRENT_USER_MODE:
             from current_user_onboarding import onboarding_main

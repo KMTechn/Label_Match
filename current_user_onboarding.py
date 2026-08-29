@@ -14,6 +14,10 @@ import sys
 from typing import Any, Callable, Mapping, MutableMapping
 import uuid
 
+from current_user_scheduled_task import (
+    install_current_user_scheduled_task,
+    remove_current_user_scheduled_task,
+)
 from direct_sync_push import manifest_hash
 from direct_sync_runtime import load_credentials_from_json
 from logistics_runtime_profile import (
@@ -30,7 +34,6 @@ from user_relay import (
     user_relay_stop_path,
 )
 
-
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
 REMOVAL_REPORT_VERSION = "label-match-current-user-removal-v1"
@@ -44,6 +47,7 @@ LABEL_MATCH_DATA_ROOT_ENV = "LABEL_MATCH_SAVE_DIR"
 LABEL_MATCH_SETTINGS_PATH_ENV = "LABEL_MATCH_SETTINGS_PATH"
 LABEL_MATCH_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_ROOT"
 LEGACY_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
+CANONICAL_PORTABLE_ROOT = Path(r"C:\KMTech\Apps\Label_Match\current")
 
 
 class CurrentUserOnboardingError(RuntimeError):
@@ -57,6 +61,71 @@ class CurrentUserOnboardingError(RuntimeError):
         super().__init__(message)
         self.report_path = Path(report_path)
         self.status = status
+
+
+def _portable_stop_marker_release_preflight(
+    paths: CurrentUserOnboardingPaths,
+) -> dict[str, Any]:
+    marker = user_relay_stop_path(paths.direct_sync_root)
+    if not marker.exists():
+        return {"status": "NOT_REQUIRED", "marker_present": False}
+    if os.path.normcase(str(paths.app_root)) != os.path.normcase(
+        str(CANONICAL_PORTABLE_ROOT)
+    ):
+        raise ValueError(
+            "relay stop marker is a safety fence until the canonical portable root is installed"
+        )
+    manifest_path = paths.app_root / "portable-manifest.json"
+    installer_path = paths.app_root / "INSTALL_CANONICAL_PORTABLE.ps1"
+    owner_receipt_path = paths.app_root / ".kmtech-canonical-install-owner.json"
+    if (
+        not manifest_path.is_file()
+        or manifest_path.stat().st_size > 64 * 1024
+        or not installer_path.is_file()
+        or not owner_receipt_path.is_file()
+    ):
+        raise ValueError(
+            "relay stop marker cannot be removed before canonical install readback"
+        )
+    manifest = _read_json(manifest_path, "canonical portable manifest")
+    source_commit = str(manifest.get("source_commit") or "").lower()
+    source_tree = str(manifest.get("source_tree") or "").lower()
+    owner_receipt = _read_json(owner_receipt_path, "canonical install owner receipt")
+    runtime = paths.app_root / "runtime" / "pythonw.exe"
+    expected_runtime_hash = str(manifest.get("runtime_pythonw_sha256") or "").lower()
+    if (
+        manifest.get("schema") != "label-match-portable-tree-v1"
+        or manifest.get("entrypoint") != "runtime/pythonw.exe app/main.py"
+        or len(source_commit) != 40
+        or any(character not in "0123456789abcdef" for character in source_commit)
+        or len(source_tree) != 40
+        or any(character not in "0123456789abcdef" for character in source_tree)
+        or manifest.get("allowed_unsigned_app_pe") != []
+        or manifest.get("forbidden_package_roots") != []
+        or manifest.get("canonical_installer") != "INSTALL_CANONICAL_PORTABLE.ps1"
+        or _file_sha256(installer_path)
+        != str(manifest.get("canonical_installer_sha256") or "").lower()
+        or not runtime.is_file()
+        or _file_sha256(runtime) != expected_runtime_hash
+        or owner_receipt.get("schema") != "kmtech-canonical-installed-owner-v1"
+        or owner_receipt.get("app_id") != "label_match"
+        or str(owner_receipt.get("source_commit") or "").lower() != source_commit
+        or str(owner_receipt.get("source_tree") or "").lower() != source_tree
+        or os.path.normcase(str(owner_receipt.get("install_root") or ""))
+        != os.path.normcase(str(paths.app_root))
+    ):
+        raise ValueError(
+            "relay stop marker cannot be removed because canonical install identity differs"
+        )
+    return {
+        "status": "CANONICAL_INSTALL_PROVEN",
+        "marker_present": True,
+        "manifest_path": str(manifest_path),
+        "owner_receipt_path": str(owner_receipt_path),
+        "source_commit": source_commit,
+        "source_tree": source_tree,
+        "conflict_resolution_authority": "pinned parent install preflight",
+    }
 
 
 @dataclass(frozen=True)
@@ -205,9 +274,7 @@ def resolve_current_user_onboarding_paths(
         producer_manifest_path=direct_sync_root / "producer_manifest.json",
         credential_path=direct_sync_root / "credential.json",
         registration_receipt_path=(
-            direct_sync_root
-            / "evidence"
-            / "producer_self_enrollment_receipt.json"
+            direct_sync_root / "evidence" / "producer_self_enrollment_receipt.json"
         ),
         registration_report_path=(
             status_dir / "label_match_worker_pc_registration.json"
@@ -229,7 +296,9 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dump(
+                dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True
+            )
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -473,7 +542,10 @@ def inspect_current_user_state(
             != required_identity["source_host_id"]
         ):
             raise ValueError("logistics profile identity binding differs")
-        if str(getattr(resolved_profile, "authority_plane", "")).upper() != "AUTHORITATIVE":
+        if (
+            str(getattr(resolved_profile, "authority_plane", "")).upper()
+            != "AUTHORITATIVE"
+        ):
             raise ValueError("Label_Match requires AUTHORITATIVE logistics authority")
     except Exception as exc:
         return {
@@ -596,9 +668,18 @@ def onboard_current_user(
     profile_loader: Callable[[Path], Any] = _default_profile_loader,
     credential_loader: Callable[[Path], Any] = load_credentials_from_json,
     ledger_factory: Callable[[Path], None] = _create_ledger,
-    settings_factory: Callable[[CurrentUserOnboardingPaths], Mapping[str, Any]] = _ensure_user_settings,
-    autostart_installer: Callable[[str | os.PathLike[str]], Mapping[str, Any]] = install_user_relay_autostart,
-    relay_launcher: Callable[[str | os.PathLike[str]], Mapping[str, Any]] = start_user_relay_process,
+    settings_factory: Callable[
+        [CurrentUserOnboardingPaths], Mapping[str, Any]
+    ] = _ensure_user_settings,
+    autostart_installer: Callable[
+        [str | os.PathLike[str]], Mapping[str, Any]
+    ] = install_user_relay_autostart,
+    scheduled_task_installer: Callable[
+        [str | os.PathLike[str]], Mapping[str, Any]
+    ] = install_current_user_scheduled_task,
+    relay_launcher: Callable[
+        [str | os.PathLike[str]], Mapping[str, Any]
+    ] = start_user_relay_process,
 ) -> dict[str, Any]:
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
@@ -711,7 +792,7 @@ def onboard_current_user(
             raise ValueError("current-user settings placement was not proven")
 
         stop_path = user_relay_stop_path(paths.direct_sync_root)
-        stop_path.unlink(missing_ok=True)
+        report["stop_marker_release"] = _portable_stop_marker_release_preflight(paths)
         report["relay_autostart"] = dict(autostart_installer(paths.app_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
         if autostart_status in {"", "UNKNOWN"}:
@@ -722,6 +803,19 @@ def onboard_current_user(
             )
         if autostart_status != "PASS":
             raise ValueError("current-user relay autostart was not proven")
+        report["scheduled_task"] = dict(scheduled_task_installer(paths.app_root))
+        scheduled_task_status = str(report["scheduled_task"].get("status") or "")
+        if scheduled_task_status in {"", "UNKNOWN"}:
+            raise CurrentUserOnboardingError(
+                "current-user scheduled-task result is UNKNOWN",
+                report_path=paths.onboarding_report_path,
+                status="UNKNOWN",
+            )
+        if scheduled_task_status != "PASS":
+            raise ValueError("current-user scheduled task was not proven")
+        # The marker is a safety fence.  It is released only after canonical
+        # install ownership, HKCU, and Limited PT1M task bindings all read back.
+        stop_path.unlink(missing_ok=True)
         report["relay_start"] = dict(relay_launcher(paths.app_root))
         relay_start_status = str(report["relay_start"].get("status") or "")
         if relay_start_status in {"", "UNKNOWN"}:
@@ -730,8 +824,8 @@ def onboard_current_user(
                 report_path=paths.onboarding_report_path,
                 status="UNKNOWN",
             )
-        if relay_start_status != "START_REQUESTED":
-            raise ValueError("current-user relay launch was not requested")
+        if relay_start_status != "ALIVE":
+            raise ValueError("current-user relay survival was not proven")
         apply_current_user_runtime_environment(paths, environ=environ)
         report.update(
             {
@@ -742,6 +836,7 @@ def onboard_current_user(
                 "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
                 "persistent_relay_principal": "current_user",
                 "system_scheduled_task_required": False,
+                "current_user_scheduled_task_required": True,
                 "completed_at": _now(),
             }
         )
@@ -770,7 +865,12 @@ def remove_current_user_setup(
     *,
     environ: Mapping[str, str] | None = None,
     autostart_remover: Callable[[], Mapping[str, Any]] = remove_user_relay_autostart,
-    relay_stopper: Callable[[str | os.PathLike[str]], Mapping[str, Any]] = request_user_relay_stop,
+    scheduled_task_remover: Callable[
+        [str | os.PathLike[str]], Mapping[str, Any]
+    ] = remove_current_user_scheduled_task,
+    relay_stopper: Callable[
+        [str | os.PathLike[str]], Mapping[str, Any]
+    ] = request_user_relay_stop,
 ) -> dict[str, Any]:
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     paths.status_dir.mkdir(parents=True, exist_ok=True)
@@ -792,10 +892,16 @@ def remove_current_user_setup(
     }
     try:
         report["relay_autostart"] = dict(autostart_remover())
+        report["scheduled_task"] = dict(scheduled_task_remover(paths.app_root))
         report["relay_process"] = dict(relay_stopper(paths.direct_sync_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
+        scheduled_task_status = str(report["scheduled_task"].get("status") or "")
         relay_status = str(report["relay_process"].get("status") or "")
-        if autostart_status in {"", "UNKNOWN"} or relay_status in {"", "UNKNOWN"}:
+        if (
+            autostart_status in {"", "UNKNOWN"}
+            or scheduled_task_status in {"", "UNKNOWN"}
+            or relay_status in {"", "UNKNOWN"}
+        ):
             raise CurrentUserOnboardingError(
                 "current-user removal result is UNKNOWN",
                 report_path=paths.removal_report_path,
@@ -803,6 +909,8 @@ def remove_current_user_setup(
             )
         if autostart_status != "ABSENT":
             raise ValueError("HKCU relay persistence absence was not proven")
+        if scheduled_task_status != "ABSENT":
+            raise ValueError("current-user task absence was not proven")
         if relay_status != "ABSENT":
             raise ValueError("current-user relay process absence is UNKNOWN")
         report.update({"status": "PASS_DATA_PRESERVED", "completed_at": _now()})

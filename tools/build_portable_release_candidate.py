@@ -14,13 +14,11 @@ import subprocess
 import sys
 from typing import Iterable
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from kmtech_zero_pe.release_signature import validate_public_key_config
-
+from kmtech_zero_pe.release_signature import validate_public_key_config  # noqa: E402
 
 EXPECTED_PYTHON = (3, 12, 10)
 PORTABLE_SCHEMA = "label-match-portable-tree-v1"
@@ -42,6 +40,8 @@ APP_DATA_DIRS = ("assets", "config")
 APP_DATA_FILES = ("contract.lock.json", "kmtech_zero_pe.vendor.json")
 UPDATE_KEY_CONFIG_FILENAME = "update-manifest-key-config.json"
 UPDATE_KEY_CONFIG_SCHEMA = "label-match-update-key-config-v1"
+CANONICAL_INSTALLER_FILENAME = "INSTALL_CANONICAL_PORTABLE.ps1"
+LEGACY_INSTALLER_FILENAME = "INSTALL_THIS_PC.ps1"
 THIRD_PARTY = {
     "babel": ("2.18.0", ("babel",)),
     "certifi": ("2026.6.17", ("certifi",)),
@@ -69,7 +69,11 @@ def _sha256(path: Path) -> str:
 
 
 def _ignore(_directory: str, names: list[str]) -> set[str]:
-    ignored = {name for name in names if name == "__pycache__" or name.endswith((".pyc", ".pyo"))}
+    ignored = {
+        name
+        for name in names
+        if name == "__pycache__" or name.endswith((".pyc", ".pyo"))
+    }
     return ignored
 
 
@@ -90,7 +94,9 @@ def _runtime_source(python_home: Path, runtime: Path) -> None:
     for name in RUNTIME_ROOT_FILES:
         source = python_home / name
         if not source.is_file():
-            raise PortableBuildError(f"curated CPython runtime file is missing: {source}")
+            raise PortableBuildError(
+                f"curated CPython runtime file is missing: {source}"
+            )
         shutil.copy2(source, runtime / name)
 
     dll_source = python_home / "DLLs"
@@ -106,10 +112,13 @@ def _runtime_source(python_home: Path, runtime: Path) -> None:
     def lib_ignore(directory: str, names: list[str]) -> set[str]:
         ignored = _ignore(directory, names)
         if Path(directory).resolve() == lib_source.resolve():
-            ignored.update({"site-packages", "ensurepip", "idlelib", "test", "turtledemo"})
+            ignored.update(
+                {"site-packages", "ensurepip", "idlelib", "test", "turtledemo"}
+            )
         return ignored
 
     shutil.copytree(lib_source, lib_target, ignore=lib_ignore)
+
     def tcl_ignore(directory: str, names: list[str]) -> set[str]:
         ignored = _ignore(directory, names)
         ignored.update(
@@ -151,9 +160,13 @@ def _copy_third_party(site_packages: Path) -> dict[str, str]:
                 raise PortableBuildError(
                     f"distribution {distribution_name} payload is missing: {source}"
                 )
-        shutil.copytree(metadata_path, site_packages / metadata_path.name, ignore=_ignore)
+        shutil.copytree(
+            metadata_path, site_packages / metadata_path.name, ignore=_ignore
+        )
     if len(locations) != 1:
-        raise PortableBuildError("third-party packages must come from one exact environment")
+        raise PortableBuildError(
+            "third-party packages must come from one exact environment"
+        )
     return versions
 
 
@@ -189,8 +202,7 @@ def _app_native_inventory(app_root: Path) -> list[str]:
     names = {Path(path).name for path in native}
     if names != ALLOWED_APP_NATIVE_NAMES or native:
         raise PortableBuildError(
-            "portable app native closure must be empty: "
-            + ", ".join(native)
+            "portable app native closure must be empty: " + ", ".join(native)
         )
     return native
 
@@ -202,13 +214,19 @@ def _update_public_key_config(value: str) -> str | dict[str, object]:
     try:
         validate_public_key_config(text)
     except ValueError as exc:
-        raise PortableBuildError("portable update public key config is invalid") from exc
-    if len(text) == 64 and all(character in "0123456789abcdefABCDEF" for character in text):
+        raise PortableBuildError(
+            "portable update public key config is invalid"
+        ) from exc
+    if len(text) == 64 and all(
+        character in "0123456789abcdefABCDEF" for character in text
+    ):
         return text.lower()
     try:
         document = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise PortableBuildError("portable update public key config is malformed") from exc
+        raise PortableBuildError(
+            "portable update public key config is malformed"
+        ) from exc
     if not isinstance(document, dict):
         raise PortableBuildError("portable update public key config must be an object")
     return document
@@ -290,6 +308,18 @@ def build(
         repo_root / "portable" / "launch-label-match.cmd",
         output / "launch-label-match.cmd",
     )
+    installer_source = repo_root / CANONICAL_INSTALLER_FILENAME
+    if not installer_source.is_file():
+        raise PortableBuildError(
+            f"canonical portable installer is missing: {installer_source}"
+        )
+    shutil.copy2(installer_source, output / CANONICAL_INSTALLER_FILENAME)
+    legacy_installer_source = repo_root / LEGACY_INSTALLER_FILENAME
+    if not legacy_installer_source.is_file():
+        raise PortableBuildError(
+            f"legacy compatibility installer is missing: {legacy_installer_source}"
+        )
+    shutil.copy2(legacy_installer_source, output / LEGACY_INSTALLER_FILENAME)
     native = _app_native_inventory(app_root)
     forbidden_roots = [
         name
@@ -298,7 +328,8 @@ def build(
     ]
     if forbidden_roots:
         raise PortableBuildError(
-            "forbidden package roots entered the portable tree: " + ", ".join(forbidden_roots)
+            "forbidden package roots entered the portable tree: "
+            + ", ".join(forbidden_roots)
         )
     file_count, byte_count = _tree_metrics(output)
     manifest = {
@@ -307,10 +338,13 @@ def build(
         "source_tree": _git_value(repo_root, "HEAD^{tree}"),
         "python_version": ".".join(str(value) for value in EXPECTED_PYTHON),
         "python_home": str(python_home),
+        "runtime_python_sha256": _sha256(output / "runtime" / "python.exe"),
         "runtime_pythonw_sha256": _sha256(output / "runtime" / "pythonw.exe"),
         "entrypoint": "runtime/pythonw.exe app/main.py",
         "launcher": "launch-label-match.cmd",
         "launcher_sha256": _sha256(output / "launch-label-match.cmd"),
+        "canonical_installer": CANONICAL_INSTALLER_FILENAME,
+        "canonical_installer_sha256": _sha256(output / CANONICAL_INSTALLER_FILENAME),
         "third_party_versions": versions,
         "allowed_unsigned_app_pe": native,
         "update_key_config_sha256": update_key_config_sha256,
