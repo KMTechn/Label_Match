@@ -68,7 +68,9 @@ PORTABLE_REBIND_ALLOWED_PATHS = frozenset(
         "tests/test_label_exact_clone_resolution.py",
         "tests/test_label_exact_clone_resolution_receipt_cli.py",
         "tests/test_zero_touch_installer.py",
+        "tests/test_verify_staged_release_installer.py",
         "tools/label_exact_clone_resolution_receipt.py",
+        "tools/verify_staged_release_installer.py",
     }
 )
 

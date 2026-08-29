@@ -132,7 +132,9 @@ def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
     lowered = source.casefold()
     helper_lowered = helper_source.casefold()
     installer_required = (
-        "invoke-selfelevated",
+        "assert-alreadyelevated",
+        "production placement requires integrity functions preloaded",
+        "canonical pinned in-memory launcher",
         "bootstrap-integrity.json",
         "tools\\bootstrap_integrity.ps1",
         "write-bootstrapintegrityrecord",
@@ -164,6 +166,7 @@ def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
         "install_label_match_direct_sync.ps1",
         "--source-host-id",
         "sourcehostid",
+        "-verb runas",
     )
     combined_lowered = lowered + "\n" + helper_lowered
     present = [token for token in forbidden if token in combined_lowered]
@@ -279,6 +282,7 @@ def verify_staged_package(package_root: Path) -> dict[str, Any]:
         "bootstrap_contract": {
             "canonical_code_root": r"C:\KMTech\Apps\Label_Match\current",
             "elevation_points": ["code_placement"],
+            "elevation_authority": "canonical_pinned_in_memory_caller",
             "identity_profile_created": False,
             "state_scope": "current_user_first_run",
             "exact_inventory_readback": True,

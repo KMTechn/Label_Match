@@ -54,6 +54,10 @@ def test_verifier_proves_code_only_current_user_topology(tmp_path):
     assert report["runtime_host"]["package_layout"] == "onedir"
     assert report["runtime_host"]["relay_execution_boundary"] == "product_host"
     assert report["bootstrap_contract"]["elevation_points"] == ["code_placement"]
+    assert (
+        report["bootstrap_contract"]["elevation_authority"]
+        == "canonical_pinned_in_memory_caller"
+    )
     assert report["bootstrap_contract"]["identity_profile_created"] is False
     assert report["state_contract"]["relay_persistence"] == "HKCU_RUN"
     assert report["state_contract"]["relay_port_contract"] == 18456
