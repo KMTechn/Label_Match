@@ -581,6 +581,73 @@ def test_receipt_accepts_only_a_verified_bounded_successor_marker(tmp_path):
         )
 
 
+def test_receipt_accepts_exact_portable_copy_at_canonical_root(tmp_path):
+    paths = _paths(tmp_path)
+    preimage = capture_conflict_preimage(**paths)
+    _resolve_fixture(paths)
+    receipt = create_resolution_receipt(preimage=preimage, **paths)
+    canonical_root = tmp_path / "canonical" / "current"
+    shutil.copytree(paths["portable_root"], canonical_root)
+
+    with pytest.raises(ExactCloneResolutionError, match="packet binding differs"):
+        validate_resolution_receipt(
+            receipt,
+            client_db_path=paths["client_db_path"],
+            identity_path=paths["identity_path"],
+            credential_path=paths["credential_path"],
+            stop_marker_path=paths["stop_marker_path"],
+            portable_root=canonical_root,
+        )
+
+    readback = validate_resolution_receipt(
+        receipt,
+        client_db_path=paths["client_db_path"],
+        identity_path=paths["identity_path"],
+        credential_path=paths["credential_path"],
+        stop_marker_path=paths["stop_marker_path"],
+        portable_root=canonical_root,
+        allow_portable_relocation=True,
+    )
+
+    assert readback["portable_relocated"] is True
+    assert Path(readback["portable_receipt_root"]) == paths["portable_root"].resolve()
+    assert Path(readback["portable_validated_root"]) == canonical_root.resolve()
+
+    (canonical_root / "INSTALL_CANONICAL_PORTABLE.ps1").write_text(
+        "# tampered canonical copy\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ExactCloneResolutionError, match="installer hash"):
+        validate_resolution_receipt(
+            receipt,
+            client_db_path=paths["client_db_path"],
+            identity_path=paths["identity_path"],
+            credential_path=paths["credential_path"],
+            stop_marker_path=paths["stop_marker_path"],
+            portable_root=canonical_root,
+            allow_portable_relocation=True,
+        )
+
+    shutil.copy2(
+        paths["portable_root"] / "INSTALL_CANONICAL_PORTABLE.ps1",
+        canonical_root / "INSTALL_CANONICAL_PORTABLE.ps1",
+    )
+    (paths["portable_root"] / "INSTALL_CANONICAL_PORTABLE.ps1").write_text(
+        "# tampered receipt source\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ExactCloneResolutionError, match="source portable"):
+        validate_resolution_receipt(
+            receipt,
+            client_db_path=paths["client_db_path"],
+            identity_path=paths["identity_path"],
+            credential_path=paths["credential_path"],
+            stop_marker_path=paths["stop_marker_path"],
+            portable_root=canonical_root,
+            allow_portable_relocation=True,
+        )
+
+
 def test_receipt_validation_rejects_secret_bearing_extra_field(tmp_path):
     paths = _paths(tmp_path)
     preimage = capture_conflict_preimage(**paths)

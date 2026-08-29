@@ -764,6 +764,7 @@ def validate_resolution_receipt(
     credential_path: str | os.PathLike[str],
     stop_marker_path: str | os.PathLike[str],
     portable_root: str | os.PathLike[str],
+    allow_portable_relocation: bool = False,
 ) -> dict[str, Any]:
     expected_top = {
         "schema_version",
@@ -826,7 +827,40 @@ def validate_resolution_receipt(
             f"receipt stop marker lineage differs: {exc}"
         ) from exc
 
-    if dict(receipt.get("portable") or {}) != _portable_binding(portable_root):
+    receipt_portable = dict(receipt.get("portable") or {})
+    portable_fields = {
+        "root",
+        "source_commit",
+        "source_tree",
+        "portable_manifest_sha256",
+        "canonical_installer_sha256",
+    }
+    _require_exact_keys(
+        receipt_portable,
+        portable_fields,
+        "resolution receipt portable packet",
+    )
+    receipt_portable_root = Path(
+        _required_text(receipt_portable.get("root"), "receipt portable root")
+    )
+    if not receipt_portable_root.is_absolute():
+        raise ExactCloneResolutionError("receipt portable root is not absolute")
+    try:
+        receipt_source_portable = _portable_binding(receipt_portable_root)
+    except ExactCloneResolutionError as exc:
+        raise ExactCloneResolutionError(
+            f"receipt source portable packet binding differs: {exc}"
+        ) from exc
+    if receipt_portable != receipt_source_portable:
+        raise ExactCloneResolutionError("receipt source portable packet binding differs")
+    validated_portable = _portable_binding(portable_root)
+    portable_identity_fields = portable_fields - {"root"}
+    if not allow_portable_relocation and receipt_portable != validated_portable:
+        raise ExactCloneResolutionError("receipt portable packet binding differs")
+    if allow_portable_relocation and any(
+        receipt_portable[field] != validated_portable[field]
+        for field in portable_identity_fields
+    ):
         raise ExactCloneResolutionError("receipt portable packet binding differs")
 
     client = dict(receipt.get("client") or {})
@@ -918,8 +952,14 @@ def validate_resolution_receipt(
         "selected_fence": _positive_int(selected_now["fence"], "selected fence"),
         "rejected_authority_count": len(rejected_now),
         "stop_marker_lineage": stop_marker_lineage,
-        "portable_source_commit": dict(receipt["portable"])["source_commit"],
-        "portable_source_tree": dict(receipt["portable"])["source_tree"],
+        "portable_source_commit": receipt_portable["source_commit"],
+        "portable_source_tree": receipt_portable["source_tree"],
+        "portable_receipt_root": str(receipt_portable_root.resolve(strict=False)),
+        "portable_validated_root": validated_portable["root"],
+        "portable_relocated": not _same_path(
+            receipt_portable_root,
+            validated_portable["root"],
+        ),
     }
 
 

@@ -473,16 +473,22 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
         },
     )
     monkeypatch.setattr("current_user_onboarding.CANONICAL_PORTABLE_ROOT", app_root)
-    monkeypatch.setattr(
-        "current_user_onboarding.validate_resolution_receipt",
-        lambda *_args, **_kwargs: {
+    receipt_validation_call = {}
+
+    def validate_receipt_fixture(*_args, **kwargs):
+        receipt_validation_call.update(kwargs)
+        return {
             "status": "RESOLVED",
             "selected_authority_scope": "fixture",
             "stop_marker_lineage": {
                 "current_request_id": "fixture-stop-request",
                 "current_sha256": "0" * 64,
             },
-        },
+        }
+
+    monkeypatch.setattr(
+        "current_user_onboarding.validate_resolution_receipt",
+        validate_receipt_fixture,
     )
     environment = _environment(tmp_path)
     conflict_receipt = tmp_path / "label-conflict-resolution.json"
@@ -512,6 +518,8 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
         )
 
     assert marker.is_file()
+    assert receipt_validation_call["portable_root"] == app_root
+    assert receipt_validation_call["allow_portable_relocation"] is True
 
 
 def _write_bootstrap_root_record(app_root: Path) -> Path:

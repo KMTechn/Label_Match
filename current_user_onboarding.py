@@ -182,6 +182,7 @@ def _portable_stop_marker_release_preflight(
         credential_path=paths.credential_path,
         stop_marker_path=marker,
         portable_root=paths.app_root,
+        allow_portable_relocation=True,
     )
     return {
         "status": "CANONICAL_INSTALL_PROVEN",
