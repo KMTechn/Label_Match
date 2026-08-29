@@ -151,7 +151,8 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
     [int]$ExpectedSourceFileCount,
     [uint64]$ExpectedSourceByteCount,
     [switch]$AllowNoncanonicalLayoutForTest,
-    [switch]$ReplaceExistingVerifiedPortable
+    [switch]$ReplaceExistingVerifiedPortable,
+    [switch]$DryRun
 )
 [ordered]@{
     source_root = $SourceRoot
@@ -165,6 +166,7 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
     expected_source_byte_count = $ExpectedSourceByteCount
     allow_noncanonical_layout_for_test = $AllowNoncanonicalLayoutForTest.IsPresent
     replace_existing_verified_portable = $ReplaceExistingVerifiedPortable.IsPresent
+    dry_run = $DryRun.IsPresent
 } | ConvertTo-Json -Compress
 """,
         encoding="utf-8",
@@ -184,6 +186,7 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "ExpectedSourceByteCount": 77580497,
         "AllowNoncanonicalLayoutForTest": True,
         "ReplaceExistingVerifiedPortable": False,
+        "DryRun": True,
     }
     payload = {
         "helper_path": str(helper),
@@ -234,7 +237,116 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "expected_source_byte_count": 77580497,
         "allow_noncanonical_layout_for_test": True,
         "replace_existing_verified_portable": False,
+        "dry_run": True,
     }
+
+
+def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
+    tmp_path: Path,
+) -> None:
+    source = _source()
+    match = re.search(
+        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@\.Replace"
+        r"\('@@payload-base64@@', \$payloadBase64\)",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None
+
+    source_root = tmp_path / "portable"
+    files = {
+        "runtime/python.exe": b"signed-runtime-fixture",
+        "runtime/pythonw.exe": b"signed-runtime-window-fixture",
+        "app/main.py": b"print('fixture')\n",
+        "launch-label-match.cmd": b"@echo off\r\n",
+        "INSTALL_CANONICAL_PORTABLE.ps1": INSTALLER.read_bytes(),
+        "INSTALL_THIS_PC.ps1": HELPER.read_bytes(),
+        "tools/bootstrap_integrity.ps1": INTEGRITY_HELPER.read_bytes(),
+    }
+    for relative, content in files.items():
+        target = source_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    manifest = {
+        "schema": "label-match-portable-tree-v1",
+        "entrypoint": "runtime/pythonw.exe app/main.py",
+        "launcher": "launch-label-match.cmd",
+        "allowed_unsigned_app_pe": [],
+        "forbidden_package_roots": [],
+        "runtime_pythonw_sha256": hashlib.sha256(
+            files["runtime/pythonw.exe"]
+        ).hexdigest(),
+        "launcher_sha256": hashlib.sha256(
+            files["launch-label-match.cmd"]
+        ).hexdigest(),
+        "file_count_before_manifest": len(files),
+        "byte_count_before_manifest": sum(len(content) for content in files.values()),
+    }
+    (source_root / "portable-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    helper_sha256 = hashlib.sha256(HELPER.read_bytes()).hexdigest()
+    integrity_sha256 = hashlib.sha256(INTEGRITY_HELPER.read_bytes()).hexdigest()
+    parameters = {
+        "SourceRoot": str(source_root),
+        "InstallRoot": str(tmp_path / "install"),
+        "ElevationLogPath": str(tmp_path / "elevation.log"),
+        "ExpectedBootstrapScriptSha256": helper_sha256,
+        "VerifiedBootstrapScriptPath": str(HELPER),
+        "BootstrapIntegrityPreloaded": True,
+        "ExpectedSourceAggregateSha256": "",
+        "ExpectedSourceFileCount": 0,
+        "ExpectedSourceByteCount": 0,
+        "AllowNoncanonicalLayoutForTest": True,
+        "ReplaceExistingVerifiedPortable": False,
+        "DryRun": True,
+    }
+    payload = {
+        "helper_path": str(HELPER),
+        "helper_sha256": helper_sha256,
+        "integrity_path": str(INTEGRITY_HELPER),
+        "integrity_sha256": integrity_sha256,
+        "parameters": parameters,
+    }
+    payload_base64 = base64.b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
+    encoded_launcher = base64.b64encode(launcher.encode("utf-16-le")).decode("ascii")
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    environment = os.environ.copy()
+    environment["KMTECH_FACTORY_INSTALL_TEST_MODE"] = "1"
+    environment["LOCALAPPDATA"] = str(tmp_path / "local-app-data")
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            encoded_launcher,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "bootstrap_status=DRY_RUN" in completed.stdout
+    assert "release_layout=PORTABLE_CPYTHON" in completed.stdout
+    assert not (tmp_path / "install").exists()
 
 
 def test_portable_builder_packages_v2_installer_helper_and_integrity_tool() -> None:

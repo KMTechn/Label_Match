@@ -60,7 +60,13 @@ if (
         "canonical pinned in-memory launcher."
     )
 }
-$BootstrapIntegrityFunctions = Join-Path $PSScriptRoot "tools\bootstrap_integrity.ps1"
+$BootstrapIntegrityFunctions = ''
+if (
+    -not $BootstrapIntegrityPreloaded.IsPresent -and
+    -not (-not $DryRun.IsPresent -and $Uninstall.IsPresent -and -not $earlyTestOverride)
+) {
+    $BootstrapIntegrityFunctions = Join-Path $PSScriptRoot "tools\bootstrap_integrity.ps1"
+}
 if ($BootstrapIntegrityPreloaded.IsPresent) {
     foreach ($functionName in @(
         'Get-BootstrapFileSha256',

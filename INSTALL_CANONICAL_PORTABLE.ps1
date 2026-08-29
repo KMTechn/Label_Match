@@ -516,6 +516,7 @@ $parameterNames = @(
     'ExpectedSourceByteCount',
     'AllowNoncanonicalLayoutForTest',
     'ReplaceExistingVerifiedPortable'
+    'DryRun'
 )
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
@@ -534,6 +535,7 @@ $invokeParameters = @{
     ExpectedSourceByteCount = [uint64]$payload.parameters.ExpectedSourceByteCount
     AllowNoncanonicalLayoutForTest = [bool]$payload.parameters.AllowNoncanonicalLayoutForTest
     ReplaceExistingVerifiedPortable = [bool]$payload.parameters.ReplaceExistingVerifiedPortable
+    DryRun = [bool]$payload.parameters.DryRun
 }
 & $helper @invokeParameters
 if (-not $?) { exit 4 }
@@ -721,6 +723,7 @@ if ($placement -eq 'INSTALL_REQUIRED') {
         ExpectedSourceByteCount = [uint64]$receiptSource.byte_count
         AllowNoncanonicalLayoutForTest = [bool]$testMode
         ReplaceExistingVerifiedPortable = [bool]$existingVerified
+        DryRun = $false
     }
     $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
     if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
