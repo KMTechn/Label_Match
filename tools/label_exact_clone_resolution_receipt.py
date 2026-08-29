@@ -25,7 +25,7 @@ from label_exact_clone_resolution import (  # noqa: E402
     capture_conflict_preimage,
     create_portable_successor_receipt,
     create_resolution_receipt,
-    file_sha256,
+    json_document_sha256,
     read_bounded_json,
     write_new_json,
 )
@@ -70,8 +70,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     _add_common(rebind)
     rebind.add_argument("--preimage", type=Path, required=True)
+    rebind.add_argument("--preimage-sha256", required=True)
     rebind.add_argument("--predecessor-receipt", type=Path, required=True)
+    rebind.add_argument("--predecessor-receipt-sha256", required=True)
     rebind.add_argument("--repo-root", type=Path, required=True)
+    rebind.add_argument("--expected-successor-commit", required=True)
+    rebind.add_argument("--expected-successor-tree", required=True)
+    rebind.add_argument("--expected-successor-manifest-sha256", required=True)
+    rebind.add_argument("--expected-successor-installer-sha256", required=True)
+    rebind.add_argument("--expected-changed-paths-sha256", required=True)
     rebind.add_argument("--rebind-evidence-output", type=Path, required=True)
     return parser.parse_args(argv)
 
@@ -114,36 +121,47 @@ def main(argv: Iterable[str] | None = None) -> int:
                 raise ExactCloneResolutionError(
                     "refusing to overwrite successor receipt or rebind evidence"
                 )
-            preimage = read_bounded_json(
-                args.preimage,
-                label="Label exact-clone conflict preimage",
-            )
             payload, rebind_evidence = create_portable_successor_receipt(
-                preimage=preimage,
                 preimage_path=args.preimage,
+                preimage_sha256=args.preimage_sha256,
                 predecessor_receipt_path=args.predecessor_receipt,
+                predecessor_receipt_sha256=args.predecessor_receipt_sha256,
                 repo_root=args.repo_root,
+                expected_successor_commit=args.expected_successor_commit,
+                expected_successor_tree=args.expected_successor_tree,
+                expected_successor_manifest_sha256=(
+                    args.expected_successor_manifest_sha256
+                ),
+                expected_successor_installer_sha256=(
+                    args.expected_successor_installer_sha256
+                ),
+                expected_changed_paths_sha256=args.expected_changed_paths_sha256,
                 **inputs,
             )
-        output = write_new_json(args.output, payload)
         if args.operation == "rebind":
+            output_sha256 = json_document_sha256(payload)
             rebind_evidence["successor_receipt"] = {
-                "path": str(output),
-                "sha256": file_sha256(output),
+                "path": str(args.output.resolve(strict=False)),
+                "sha256": output_sha256,
             }
             evidence_output = write_new_json(
                 args.rebind_evidence_output,
                 rebind_evidence,
             )
+            evidence_sha256 = json_document_sha256(rebind_evidence)
+            output = write_new_json(args.output, payload)
             extra_summary = {
                 "rebind_evidence": str(evidence_output),
-                "rebind_evidence_sha256": file_sha256(evidence_output),
+                "rebind_evidence_sha256": evidence_sha256,
             }
+        else:
+            output = write_new_json(args.output, payload)
+            output_sha256 = json_document_sha256(payload)
         summary = {
             "status": payload["status"],
             "schema_version": payload["schema_version"],
             "output": str(output),
-            "output_sha256": file_sha256(output),
+            "output_sha256": output_sha256,
             "client_state_mutated": False,
             "server_state_mutated": False,
             "stop_marker_removed": False,

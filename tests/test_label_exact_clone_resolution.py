@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import label_exact_clone_resolution as resolution_module
 from label_exact_clone_resolution import (
     CONFLICT_CODE,
     PORTABLE_REBIND_ALLOWED_PATHS,
@@ -16,6 +17,7 @@ from label_exact_clone_resolution import (
     capture_conflict_preimage,
     create_portable_successor_receipt,
     create_resolution_receipt,
+    portable_rebind_changed_paths_sha256,
     sqlite_logical_digest,
     validate_resolution_receipt,
 )
@@ -650,7 +652,9 @@ def test_receipt_accepts_exact_portable_copy_at_canonical_root(tmp_path):
         )
 
 
-def test_portable_successor_rebind_requires_exact_reviewed_git_diff(tmp_path):
+def test_portable_successor_rebind_requires_exact_reviewed_git_diff(
+    monkeypatch, tmp_path
+):
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -707,12 +711,31 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(tmp_path):
     successor_manifest["source_commit"] = successor_commit
     successor_manifest["source_tree"] = successor_tree
     _write_json(successor_manifest_path, successor_manifest)
+    monkeypatch.setattr(
+        resolution_module,
+        "__file__",
+        str(repo / "label_exact_clone_resolution.py"),
+    )
 
     receipt, evidence = create_portable_successor_receipt(
-        preimage=preimage,
         preimage_path=preimage_path,
+        preimage_sha256=hashlib.sha256(preimage_path.read_bytes()).hexdigest(),
         predecessor_receipt_path=predecessor_receipt_path,
+        predecessor_receipt_sha256=hashlib.sha256(
+            predecessor_receipt_path.read_bytes()
+        ).hexdigest(),
         repo_root=repo,
+        expected_successor_commit=successor_commit,
+        expected_successor_tree=successor_tree,
+        expected_successor_manifest_sha256=hashlib.sha256(
+            successor_manifest_path.read_bytes()
+        ).hexdigest(),
+        expected_successor_installer_sha256=hashlib.sha256(
+            (successor_portable / "INSTALL_CANONICAL_PORTABLE.ps1").read_bytes()
+        ).hexdigest(),
+        expected_changed_paths_sha256=portable_rebind_changed_paths_sha256(
+            sorted(PORTABLE_REBIND_ALLOWED_PATHS)
+        ),
         client_db_path=paths["client_db_path"],
         server_db_path=paths["server_db_path"],
         identity_path=paths["identity_path"],
@@ -744,10 +767,24 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(tmp_path):
     _write_json(successor_manifest_path, successor_manifest)
     with pytest.raises(ExactCloneResolutionError, match="outside the exact reviewed"):
         create_portable_successor_receipt(
-            preimage=preimage,
             preimage_path=preimage_path,
+            preimage_sha256=hashlib.sha256(preimage_path.read_bytes()).hexdigest(),
             predecessor_receipt_path=predecessor_receipt_path,
+            predecessor_receipt_sha256=hashlib.sha256(
+                predecessor_receipt_path.read_bytes()
+            ).hexdigest(),
             repo_root=repo,
+            expected_successor_commit=successor_manifest["source_commit"],
+            expected_successor_tree=successor_manifest["source_tree"],
+            expected_successor_manifest_sha256=hashlib.sha256(
+                successor_manifest_path.read_bytes()
+            ).hexdigest(),
+            expected_successor_installer_sha256=hashlib.sha256(
+                (successor_portable / "INSTALL_CANONICAL_PORTABLE.ps1").read_bytes()
+            ).hexdigest(),
+            expected_changed_paths_sha256=portable_rebind_changed_paths_sha256(
+                sorted([*PORTABLE_REBIND_ALLOWED_PATHS, "unexpected.py"])
+            ),
             client_db_path=paths["client_db_path"],
             server_db_path=paths["server_db_path"],
             identity_path=paths["identity_path"],

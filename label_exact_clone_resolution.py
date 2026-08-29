@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import uuid
 from typing import Any, Mapping, Sequence
 
 from user_relay_stop_marker import (
@@ -55,6 +56,7 @@ PORTABLE_REBIND_ALLOWED_PATHS = frozenset(
         "label_exact_clone_resolution.py",
         "tests/test_current_user_onboarding.py",
         "tests/test_label_exact_clone_resolution.py",
+        "tests/test_label_exact_clone_resolution_receipt_cli.py",
         "tools/label_exact_clone_resolution_receipt.py",
     }
 )
@@ -109,16 +111,76 @@ def read_bounded_json(
     return value
 
 
+def read_pinned_json(
+    path: str | os.PathLike[str],
+    expected_sha256: str,
+    *,
+    label: str,
+    maximum_bytes: int = MAX_JSON_BYTES,
+) -> dict[str, Any]:
+    selected = Path(path).resolve(strict=False)
+    expected = _required_sha256(expected_sha256, f"{label} expected SHA-256")
+    try:
+        raw = selected.read_bytes()
+    except OSError as exc:
+        raise ExactCloneResolutionError(f"{label} is absent: {selected}") from exc
+    if not raw or len(raw) > maximum_bytes:
+        raise ExactCloneResolutionError(f"{label} size is invalid: {len(raw)}")
+    if hashlib.sha256(raw).hexdigest() != expected:
+        raise ExactCloneResolutionError(f"{label} SHA-256 differs")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ExactCloneResolutionError(f"{label} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ExactCloneResolutionError(f"{label} must be a JSON object")
+    return value
+
+
+def _json_file_bytes(value: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(dict(value), ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def json_document_sha256(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(_json_file_bytes(value)).hexdigest()
+
+
 def write_new_json(path: str | os.PathLike[str], value: Mapping[str, Any]) -> Path:
     selected = Path(path).resolve(strict=False)
-    if selected.exists():
-        raise ExactCloneResolutionError(f"refusing to overwrite evidence: {selected}")
     selected.parent.mkdir(parents=True, exist_ok=True)
-    selected.write_text(
-        json.dumps(dict(value), ensure_ascii=True, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    temporary = selected.parent / f".{selected.name}.{uuid.uuid4().hex}.tmp"
+    raw = _json_file_bytes(value)
+    descriptor: int | None = None
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, selected)
+    except FileExistsError as exc:
+        raise ExactCloneResolutionError(
+            f"refusing to overwrite evidence: {selected}"
+        ) from exc
+    except OSError as exc:
+        raise ExactCloneResolutionError(
+            f"exclusive evidence publication failed: {selected}"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
     return selected
 
 
@@ -780,12 +842,32 @@ def _git_output(repo_root: Path, *arguments: str) -> str:
     return completed.stdout.strip()
 
 
+def portable_rebind_changed_paths_sha256(paths: Sequence[str]) -> str:
+    normalized = sorted(
+        {
+            _required_text(path, "portable rebind changed path").replace("\\", "/")
+            for path in paths
+        }
+    )
+    digest = hashlib.sha256(b"label-match-portable-rebind-changed-paths-v1\n")
+    for path in normalized:
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def create_portable_successor_receipt(
     *,
-    preimage: Mapping[str, Any],
     preimage_path: str | os.PathLike[str],
+    preimage_sha256: str,
     predecessor_receipt_path: str | os.PathLike[str],
+    predecessor_receipt_sha256: str,
     repo_root: str | os.PathLike[str],
+    expected_successor_commit: str,
+    expected_successor_tree: str,
+    expected_successor_manifest_sha256: str,
+    expected_successor_installer_sha256: str,
+    expected_changed_paths_sha256: str,
     client_db_path: str | os.PathLike[str],
     server_db_path: str | os.PathLike[str],
     identity_path: str | os.PathLike[str],
@@ -802,15 +884,23 @@ def create_portable_successor_receipt(
     """
 
     selected_preimage_path = Path(preimage_path).resolve(strict=False)
-    persisted_preimage = read_bounded_json(
+    pinned_preimage_sha256 = _required_sha256(
+        preimage_sha256,
+        "portable rebind conflict preimage SHA-256",
+    )
+    preimage = read_pinned_json(
         selected_preimage_path,
+        pinned_preimage_sha256,
         label="portable rebind conflict preimage",
     )
-    if persisted_preimage != dict(preimage):
-        raise ExactCloneResolutionError("portable rebind conflict preimage differs")
     selected_predecessor_path = Path(predecessor_receipt_path).resolve(strict=False)
-    predecessor = read_bounded_json(
+    pinned_predecessor_sha256 = _required_sha256(
+        predecessor_receipt_sha256,
+        "predecessor conflict-resolution receipt SHA-256",
+    )
+    predecessor = read_pinned_json(
         selected_predecessor_path,
+        pinned_predecessor_sha256,
         label="predecessor conflict-resolution receipt",
     )
     predecessor_portable = dict(predecessor.get("portable") or {})
@@ -851,6 +941,33 @@ def create_portable_successor_receipt(
         # Linked worktrees use a .git file rather than a directory.
         if not (selected_repo_root / ".git").is_file():
             raise ExactCloneResolutionError("portable rebind repo root is not a Git worktree")
+    verifier_source = Path(__file__).resolve(strict=False)
+    try:
+        verifier_relative = verifier_source.relative_to(selected_repo_root).as_posix()
+    except ValueError as exc:
+        raise ExactCloneResolutionError(
+            "executing portable rebind verifier is outside the proved Git worktree"
+        ) from exc
+    if verifier_relative != "label_exact_clone_resolution.py":
+        raise ExactCloneResolutionError(
+            "executing portable rebind verifier path differs"
+        )
+    verifier_blob = _git_output(
+        selected_repo_root,
+        "hash-object",
+        "--",
+        str(verifier_source),
+    ).lower()
+    verifier_head_blob = _git_output(
+        selected_repo_root,
+        "rev-parse",
+        "--verify",
+        f"HEAD:{verifier_relative}",
+    ).lower()
+    if verifier_blob != verifier_head_blob:
+        raise ExactCloneResolutionError(
+            "executing portable rebind verifier bytes differ from proved Git HEAD"
+        )
     if _git_output(
         selected_repo_root,
         "status",
@@ -871,6 +988,35 @@ def create_portable_successor_receipt(
         successor_portable.get("source_tree"),
         "successor portable source_tree",
     )
+    pinned_successor_commit = _required_git_object(
+        expected_successor_commit,
+        "expected successor source_commit",
+    )
+    pinned_successor_tree = _required_git_object(
+        expected_successor_tree,
+        "expected successor source_tree",
+    )
+    pinned_successor_manifest = _required_sha256(
+        expected_successor_manifest_sha256,
+        "expected successor portable manifest SHA-256",
+    )
+    pinned_successor_installer = _required_sha256(
+        expected_successor_installer_sha256,
+        "expected successor installer SHA-256",
+    )
+    pinned_changed_paths = _required_sha256(
+        expected_changed_paths_sha256,
+        "expected successor changed-paths SHA-256",
+    )
+    if (
+        successor_commit != pinned_successor_commit
+        or successor_tree != pinned_successor_tree
+        or successor_portable["portable_manifest_sha256"]
+        != pinned_successor_manifest
+        or successor_portable["canonical_installer_sha256"]
+        != pinned_successor_installer
+    ):
+        raise ExactCloneResolutionError("successor portable differs from explicit pins")
     if (
         _git_output(selected_repo_root, "rev-parse", "--verify", "HEAD").lower()
         != successor_commit
@@ -889,6 +1035,21 @@ def create_portable_successor_receipt(
         raise ExactCloneResolutionError(
             "successor portable source commit is not a descendant of the predecessor"
         )
+    if (
+        _git_output(
+            selected_repo_root,
+            "rev-parse",
+            "--verify",
+            f"{predecessor_commit}^{{tree}}",
+        ).lower()
+        != _required_git_object(
+            predecessor_portable.get("source_tree"),
+            "predecessor portable source_tree",
+        )
+    ):
+        raise ExactCloneResolutionError(
+            "predecessor portable source tree does not bind its source commit"
+        )
     changed_paths = sorted(
         path.replace("\\", "/")
         for path in _git_output(
@@ -906,6 +1067,11 @@ def create_portable_successor_receipt(
         raise ExactCloneResolutionError(
             "portable successor changed paths outside the exact reviewed receipt fix"
         )
+    changed_paths_sha256 = portable_rebind_changed_paths_sha256(changed_paths)
+    if changed_paths_sha256 != pinned_changed_paths:
+        raise ExactCloneResolutionError(
+            "portable successor changed-path digest differs from explicit pin"
+        )
 
     successor_receipt = copy.deepcopy(reconstructed)
     successor_receipt["captured_at"] = _utc_now()
@@ -916,11 +1082,11 @@ def create_portable_successor_receipt(
         "captured_at": _utc_now(),
         "preimage": {
             "path": str(selected_preimage_path),
-            "sha256": file_sha256(selected_preimage_path),
+            "sha256": pinned_preimage_sha256,
         },
         "predecessor_receipt": {
             "path": str(selected_predecessor_path),
-            "sha256": file_sha256(selected_predecessor_path),
+            "sha256": pinned_predecessor_sha256,
             "source_commit": predecessor_commit,
             "source_tree": _required_git_object(
                 predecessor_portable.get("source_tree"),
@@ -935,7 +1101,17 @@ def create_portable_successor_receipt(
             "successor_commit": successor_commit,
             "successor_tree": successor_tree,
             "changed_paths": changed_paths,
+            "changed_paths_sha256": changed_paths_sha256,
             "allowed_changed_paths": sorted(PORTABLE_REBIND_ALLOWED_PATHS),
+            "explicit_pins": {
+                "successor_commit": pinned_successor_commit,
+                "successor_tree": pinned_successor_tree,
+                "portable_manifest_sha256": pinned_successor_manifest,
+                "canonical_installer_sha256": pinned_successor_installer,
+                "changed_paths_sha256": pinned_changed_paths,
+            },
+            "verifier_source": str(verifier_source),
+            "verifier_blob": verifier_blob,
         },
         "invariants": {
             "authority_state_revalidated": True,
@@ -1181,7 +1357,10 @@ __all__ = [
     "create_portable_successor_receipt",
     "create_resolution_receipt",
     "file_sha256",
+    "json_document_sha256",
+    "portable_rebind_changed_paths_sha256",
     "read_bounded_json",
+    "read_pinned_json",
     "relay_batches_digest",
     "sqlite_logical_digest",
     "sqlite_logical_digest_on_connection",
