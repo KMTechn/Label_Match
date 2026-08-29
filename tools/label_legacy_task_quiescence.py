@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
-import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping, Sequence
@@ -26,24 +24,36 @@ from current_user_scheduled_task import (  # noqa: E402
     LEGACY_TASK_REMEDIATION,
     read_legacy_system_task_quiescence,
 )
+from auth_recovery_canary import write_json_atomic  # noqa: E402
 
 
 def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
     selected = path.expanduser()
     if not selected.is_absolute():
         raise ValueError("report path must be absolute")
-    if selected.exists() and selected.is_symlink():
-        raise ValueError("report path must not be a symlink")
-    selected.parent.mkdir(parents=True, exist_ok=True)
-    temporary = selected.with_name(f".{selected.name}.tmp.{os.getpid()}")
-    try:
-        temporary.write_text(
-            json.dumps(dict(value), ensure_ascii=True, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, selected)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_json_atomic(selected, value)
+
+
+def _validate_report(value: Mapping[str, Any]) -> dict[str, Any]:
+    report = dict(value)
+    status = report.get("status")
+    reason = report.get("reason_code")
+    if (
+        report.get("schema") != LEGACY_TASK_QUIESCENCE_VERSION
+        or status not in {"PASS", "FAIL"}
+        or not isinstance(reason, str)
+        or not reason
+        or report.get("required_state") != "ABSENT_OR_DISABLED"
+        or report.get("read_only") is not True
+        or report.get("task_or_process_mutated") is not False
+    ):
+        raise ValueError("legacy scheduled-task report schema is invalid")
+    if status == "PASS" and reason not in {
+        "LEGACY_TASK_ABSENT",
+        "LEGACY_TASK_DISABLED",
+    }:
+        raise ValueError("legacy scheduled-task PASS reason is invalid")
+    return report
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -64,7 +74,7 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        report = dict(reader())
+        report = _validate_report(reader())
     except Exception as exc:
         report = {
             "schema": LEGACY_TASK_QUIESCENCE_VERSION,

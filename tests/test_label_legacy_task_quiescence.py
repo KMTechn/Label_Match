@@ -50,3 +50,17 @@ def test_cli_negative_control_writes_actionable_fail_for_present_enabled_task(
     assert "Disable or remove" in written["remediation"]
     assert r"\direct-sync-relay-label-match-current-pc" in written["remediation"]
     assert written["task_or_process_mutated"] is False
+
+
+def test_cli_rejects_an_unvalidated_pass_mapping(tmp_path: Path):
+    report_path = (tmp_path / "invalid-pass.json").resolve()
+
+    exit_code = gate.main(
+        ["--report-path", str(report_path)], reader=lambda: {"status": "PASS"}
+    )
+
+    written = json.loads(report_path.read_text(encoding="utf-8"))
+    assert exit_code == 4
+    assert written["status"] == "FAIL"
+    assert written["reason_code"] == "LEGACY_TASK_READBACK_FAILED"
+    assert written["task_or_process_mutated"] is False
