@@ -825,6 +825,96 @@ def test_package_outbox_installs_exact_final_v1_schema_and_guards(tmp_path):
         assert all(str(row[1]).startswith("deferred_intent") for row in deferred_referencing_triggers)
 
 
+def test_package_outbox_installs_exact_deferred_schema_object_inventory(tmp_path):
+    db_path, _outbox, _store_instance = _store(tmp_path)
+    expected_tables = frozenset(
+        {
+            "deferred_intents",
+            "deferred_intent_validation_steps",
+            "deferred_intent_transition_audit",
+        }
+    )
+    expected_indexes = frozenset(
+        {
+            ("sqlite_autoindex_deferred_intents_1", "deferred_intents"),
+            ("sqlite_autoindex_deferred_intents_2", "deferred_intents"),
+            ("sqlite_autoindex_deferred_intents_3", "deferred_intents"),
+            ("idx_deferred_intents_validation_ready", "deferred_intents"),
+            ("idx_deferred_intents_submit_ready", "deferred_intents"),
+            ("idx_deferred_intents_reconcile", "deferred_intents"),
+            ("idx_deferred_intents_partition_fifo", "deferred_intents"),
+            ("idx_deferred_intents_status_age", "deferred_intents"),
+            ("idx_deferred_intents_observability_updated", "deferred_intents"),
+            ("ux_deferred_intents_server_idempotency_key", "deferred_intents"),
+            (
+                "sqlite_autoindex_deferred_intent_validation_steps_1",
+                "deferred_intent_validation_steps",
+            ),
+            (
+                "sqlite_autoindex_deferred_intent_validation_steps_2",
+                "deferred_intent_validation_steps",
+            ),
+            (
+                "sqlite_autoindex_deferred_intent_validation_steps_3",
+                "deferred_intent_validation_steps",
+            ),
+            ("idx_deferred_steps_claim", "deferred_intent_validation_steps"),
+            (
+                "sqlite_autoindex_deferred_intent_transition_audit_1",
+                "deferred_intent_transition_audit",
+            ),
+            (
+                "sqlite_autoindex_deferred_intent_transition_audit_2",
+                "deferred_intent_transition_audit",
+            ),
+        }
+    )
+    expected_triggers = frozenset(
+        {
+            (
+                "trg_deferred_intent_audit_no_update",
+                "deferred_intent_transition_audit",
+            ),
+            (
+                "trg_deferred_intent_audit_no_delete",
+                "deferred_intent_transition_audit",
+            ),
+            (
+                "trg_deferred_intent_step_no_delete",
+                "deferred_intent_validation_steps",
+            ),
+            ("trg_deferred_intent_no_delete_without_tombstone", "deferred_intents"),
+            ("trg_deferred_intent_capture_immutable", "deferred_intents"),
+            ("trg_deferred_intent_command_immutable", "deferred_intents"),
+            ("trg_deferred_intent_receipt_immutable", "deferred_intents"),
+            ("trg_deferred_intent_state_edge_guard", "deferred_intents"),
+        }
+    )
+    with sqlite3.connect(db_path) as conn:
+        tables = frozenset(
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name GLOB 'deferred_intent*'"
+            )
+        )
+        objects = conn.execute(
+            "SELECT type,name,tbl_name FROM sqlite_master "
+            "WHERE type IN ('index','trigger') AND tbl_name IN (?,?,?)",
+            tuple(expected_tables),
+        ).fetchall()
+
+    assert tables == expected_tables
+    assert (
+        frozenset((row[1], row[2]) for row in objects if row[0] == "index")
+        == expected_indexes
+    )
+    assert (
+        frozenset((row[1], row[2]) for row in objects if row[0] == "trigger")
+        == expected_triggers
+    )
+
+
 def test_measured_closed_port_capture_is_durable_encrypted_and_no_effect(tmp_path):
     db_path, _outbox, store = _store(tmp_path)
     domain_tables = (

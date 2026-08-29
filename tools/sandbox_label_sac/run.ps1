@@ -1,5 +1,13 @@
 param(
-    [string]$EvidenceRoot = 'E:\KMTech\autoloop-20260824\seq296-label-sac\sandbox-evidence-001'
+    [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+    [Parameter(Mandatory = $true)][string]$PositiveRoot,
+    [Parameter(Mandatory = $true)][string]$PositiveInventoryPath,
+    [Parameter(Mandatory = $true)][string]$ExpectedPositiveCommit,
+    [Parameter(Mandatory = $true)][string]$ExpectedPositiveManifestSha256,
+    [Parameter(Mandatory = $true)][string]$ExpectedPositiveInventorySha256,
+    [Parameter(Mandatory = $true)][string]$NegativeRoot,
+    [Parameter(Mandatory = $true)][string]$ExpectedNegativeSha256,
+    [string]$MoveScript = 'E:\KMTech\autoloop-20260824\TASKSPEC\Move-ToTestMonitor.ps1'
 )
 
 Set-StrictMode -Version Latest
@@ -8,15 +16,12 @@ $ProgressPreference = 'SilentlyContinue'
 
 $harnessRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $guestScript = Join-Path $harnessRoot 'guest.ps1'
-$positiveRoot = 'E:\KMTech\autoloop-20260824\seq296-label-sac\portable-031d225'
-$positiveInventoryPath = 'E:\KMTech\autoloop-20260824\seq296-label-sac\portable-pe-inventory.json'
-$negativeRoot = 'E:\KMTech\autoloop-20260824\seq280-zero-pe\Label\frozen-diagnostic-head\dist\Label_Match'
 $negativeExe = Join-Path $negativeRoot 'Label_Match.exe'
-$expectedNegativeSha256 = 'ad207f01a333707ee394e89353942ca53a45512f95989aa3aa31b002dbd12bd0'
-$moveScript = 'E:\KMTech\autoloop-20260824\TASKSPEC\Move-ToTestMonitor.ps1'
+$positiveManifestPath = Join-Path $PositiveRoot 'portable-manifest.json'
 $completePath = Join-Path $EvidenceRoot 'complete.marker'
 $summaryPath = Join-Path $EvidenceRoot 'summary.json'
 $hostRunPath = Join-Path $EvidenceRoot 'host-run.json'
+$inputBindingPath = Join-Path $EvidenceRoot 'input-binding.json'
 $moveLogPath = Join-Path $EvidenceRoot 'move-to-display3.log'
 $moveErrorPath = Join-Path $EvidenceRoot 'move-to-display3.stderr.log'
 $wsbPath = Join-Path $EvidenceRoot 'seq296-label-sac.wsb'
@@ -38,7 +43,16 @@ function Get-HostSacState {
     return [int64](Get-ItemPropertyValue -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name VerifiedAndReputablePolicyState)
 }
 
-foreach ($requiredFile in @($guestScript, $positiveInventoryPath, $negativeExe, $moveScript)) {
+foreach ($digest in @($ExpectedPositiveManifestSha256, $ExpectedPositiveInventorySha256, $ExpectedNegativeSha256)) {
+    if ($digest -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'Every artifact SHA-256 binding must be exact 64-hex.' }
+}
+if ($ExpectedPositiveCommit -cnotmatch '^[0-9a-fA-F]{40}$') { throw 'Expected positive commit must be exact 40-hex.' }
+$ExpectedPositiveManifestSha256 = $ExpectedPositiveManifestSha256.ToLowerInvariant()
+$ExpectedPositiveInventorySha256 = $ExpectedPositiveInventorySha256.ToLowerInvariant()
+$ExpectedNegativeSha256 = $ExpectedNegativeSha256.ToLowerInvariant()
+$ExpectedPositiveCommit = $ExpectedPositiveCommit.ToLowerInvariant()
+
+foreach ($requiredFile in @($guestScript, $positiveInventoryPath, $positiveManifestPath, $negativeExe, $moveScript)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) { throw ('Required file is missing: {0}' -f $requiredFile) }
 }
 foreach ($requiredDirectory in @($harnessRoot, $positiveRoot, $negativeRoot)) {
@@ -59,8 +73,23 @@ if ($inventory.pe_count -ne 46 -or $inventory.valid_count -ne 46 -or $inventory.
     throw ('Host portable PE inventory does not match 46/46/0/0: {0}/{1}/{2}/{3}' -f $inventory.pe_count, $inventory.valid_count, $inventory.unsigned_count, $inventory.other_status_count)
 }
 if (@($inventory.unsigned_paths).Count -ne 0) { throw 'Host portable PE inventory has unexpected unsigned paths.' }
+$inventoryHash = (Get-FileHash -LiteralPath $PositiveInventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($inventoryHash -cne $ExpectedPositiveInventorySha256) { throw 'Positive PE inventory SHA-256 binding mismatch.' }
+$manifestHash = (Get-FileHash -LiteralPath $positiveManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($manifestHash -cne $ExpectedPositiveManifestSha256) { throw 'Positive portable manifest SHA-256 binding mismatch.' }
+$manifest = Get-Content -LiteralPath $positiveManifestPath -Raw | ConvertFrom-Json
+if ([string]$manifest.source_commit -cne $ExpectedPositiveCommit) { throw 'Positive portable source commit binding mismatch.' }
 $negativeHash = (Get-FileHash -LiteralPath $negativeExe -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($negativeHash -cne $expectedNegativeSha256) { throw 'Frozen Label negative-control identity mismatch.' }
+
+$inputBinding = [pscustomobject][ordered]@{
+    schema = 'label-sac-input-binding-v1'
+    positive_source_commit = $ExpectedPositiveCommit
+    positive_manifest_sha256 = $ExpectedPositiveManifestSha256
+    positive_inventory_sha256 = $ExpectedPositiveInventorySha256
+    negative_executable_sha256 = $ExpectedNegativeSha256
+}
+Write-BoundedJson -Path $inputBindingPath -Value $inputBinding
 
 $wsb = @"
 <Configuration>
@@ -193,6 +222,7 @@ $hostRun = [pscustomobject][ordered]@{
     move_log_path = $moveLogPath
     move_succeeded = $moveSucceeded
     summary_verdict = $summary.verdict
+    input_binding = $inputBinding
     host_sac_state_before = $hostStateBefore
     host_sac_state_after = $hostStateAfter
     host_sac_unchanged_zero = ($hostStateBefore -eq 0 -and $hostStateAfter -eq 0)
@@ -209,6 +239,11 @@ if (-not $hostRun.move_succeeded) { throw 'Windows Sandbox remote window was not
 if ($summary.verdict -cne 'PASS_SAC_ENFORCE_LABEL_NEGATIVE_THEN_PORTABLE_GUI') {
     throw ('Sandbox verdict failed: {0}' -f $summary.verdict)
 }
+if (
+    [string]$summary.input_binding.positive_source_commit -cne $ExpectedPositiveCommit -or
+    [string]$summary.input_binding.positive_manifest_sha256 -cne $ExpectedPositiveManifestSha256 -or
+    [string]$summary.input_binding.negative_executable_sha256 -cne $ExpectedNegativeSha256
+) { throw 'Sandbox summary input binding differs from the host preflight.' }
 Write-Output ('VERDICT={0}' -f $summary.verdict)
 Write-Output ('NEGATIVE_BLOCK_PROVEN={0}' -f $summary.negative_control.block_proven)
 Write-Output ('POSITIVE_PE={0}/{1}/{2}/{3}' -f $summary.positive_candidate.inventory.pe_count, $summary.positive_candidate.inventory.valid_count, $summary.positive_candidate.inventory.not_signed_count, $summary.positive_candidate.inventory.other_status_count)

@@ -38,6 +38,7 @@ APP_PACKAGE_DIRS = (
 )
 APP_DATA_DIRS = ("assets", "config")
 APP_DATA_FILES = ("contract.lock.json", "kmtech_zero_pe.vendor.json")
+APP_TOOL_FILES = ("label_auth_recovery_canary.py",)
 UPDATE_KEY_CONFIG_FILENAME = "update-manifest-key-config.json"
 UPDATE_KEY_CONFIG_SCHEMA = "label-match-update-key-config-v1"
 CANONICAL_INSTALLER_FILENAME = "INSTALL_CANONICAL_PORTABLE.ps1"
@@ -184,6 +185,13 @@ def _copy_application(repo_root: Path, app_root: Path) -> None:
         if not source.is_file():
             raise PortableBuildError(f"application data file is missing: {source}")
         shutil.copy2(source, app_root / name)
+    tools_root = app_root / "tools"
+    tools_root.mkdir()
+    for name in APP_TOOL_FILES:
+        source = repo_root / "tools" / name
+        if not source.is_file():
+            raise PortableBuildError(f"application tool file is missing: {source}")
+        shutil.copy2(source, tools_root / name)
     shutil.copy2(repo_root / "portable" / "main.py", app_root / "main.py")
 
 

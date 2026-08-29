@@ -9,6 +9,7 @@ $workRoot = 'C:\Seq296Work'
 $negativeRoot = Join-Path $workRoot 'negative'
 $positiveRoot = Join-Path $workRoot 'positive'
 $summaryPath = Join-Path $evidenceRoot 'summary.json'
+$inputBindingPath = Join-Path $evidenceRoot 'input-binding.json'
 $negativeEventsPath = Join-Path $evidenceRoot 'negative-ci-events.json'
 $positiveEventsPath = Join-Path $evidenceRoot 'positive-ci-events.json'
 $positiveInventoryPath = Join-Path $evidenceRoot 'positive-pe-inventory.json'
@@ -17,7 +18,15 @@ $logPath = Join-Path $evidenceRoot 'guest.log'
 $completePath = Join-Path $evidenceRoot 'complete.marker'
 $ciLogName = 'Microsoft-Windows-CodeIntegrity/Operational'
 $utf8 = [Text.UTF8Encoding]::new($false)
-$expectedNegativeSha256 = 'ad207f01a333707ee394e89353942ca53a45512f95989aa3aa31b002dbd12bd0'
+$inputBinding = Get-Content -LiteralPath $inputBindingPath -Raw | ConvertFrom-Json
+if (
+    [string]$inputBinding.schema -cne 'label-sac-input-binding-v1' -or
+    [string]$inputBinding.positive_source_commit -cnotmatch '^[0-9a-f]{40}$' -or
+    [string]$inputBinding.positive_manifest_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    [string]$inputBinding.positive_inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    [string]$inputBinding.negative_executable_sha256 -cnotmatch '^[0-9a-f]{64}$'
+) { throw 'Sandbox input binding is absent or malformed.' }
+$expectedNegativeSha256 = [string]$inputBinding.negative_executable_sha256
 
 function ConvertTo-BoundedText {
     param([AllowNull()][object]$Value, [int]$MaximumCharacters = 32768)
@@ -353,6 +362,13 @@ try {
 
     Write-GuestLog 'POSITIVE_COPY_START'
     Copy-Item -LiteralPath $mappedPositive -Destination $positiveRoot -Recurse
+    $positiveManifestPath = Join-Path $positiveRoot 'portable-manifest.json'
+    $positiveManifestHash = (Get-FileHash -LiteralPath $positiveManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $positiveManifest = Get-Content -LiteralPath $positiveManifestPath -Raw | ConvertFrom-Json
+    if (
+        $positiveManifestHash -cne [string]$inputBinding.positive_manifest_sha256 -or
+        [string]$positiveManifest.source_commit -cne [string]$inputBinding.positive_source_commit
+    ) { throw 'Positive portable identity differs after the read-only Sandbox mapping.' }
     $inventory = Get-PeInventory -Root $positiveRoot
     Write-JsonFile -Path $positiveInventoryPath -Value $inventory
     if ($inventory.pe_count -ne 46 -or $inventory.valid_count -ne 46 -or $inventory.not_signed_count -ne 0 -or $inventory.other_status_count -ne 0) {
@@ -449,6 +465,10 @@ try {
         }
     }
     $positive = [pscustomobject][ordered]@{
+        identity = [pscustomobject][ordered]@{
+            source_commit = [string]$positiveManifest.source_commit
+            manifest_sha256 = $positiveManifestHash
+        }
         inventory = [pscustomobject][ordered]@{
             pe_count = $inventory.pe_count
             valid_count = $inventory.valid_count
@@ -524,6 +544,7 @@ finally {
         run_started_at_utc = $startedAt.ToString('o')
         run_finished_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
         verdict = $verdict
+        input_binding = $inputBinding
         baseline_registry = $baselineRegistry
         final_registry = $finalRegistry
         negative_control = $negative
