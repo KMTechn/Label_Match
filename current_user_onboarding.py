@@ -15,7 +15,10 @@ from typing import Any, Callable, Mapping, MutableMapping
 import uuid
 
 from current_user_scheduled_task import (
+    LEGACY_TASK_QUIESCENCE_VERSION,
+    LEGACY_TASK_REQUIRED_STATE,
     install_current_user_scheduled_task,
+    read_legacy_system_task_quiescence,
     remove_current_user_scheduled_task,
 )
 from direct_sync_push import manifest_hash
@@ -837,6 +840,9 @@ def onboard_current_user(
     scheduled_task_installer: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = install_current_user_scheduled_task,
+    legacy_task_quiescence_reader: Callable[
+        [], Mapping[str, Any]
+    ] = read_legacy_system_task_quiescence,
     relay_launcher: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
@@ -899,6 +905,26 @@ def onboard_current_user(
             }
         stop_marker_released = False
     try:
+        report["legacy_task_quiescence"] = dict(legacy_task_quiescence_reader())
+        legacy_quiescence = report["legacy_task_quiescence"]
+        if (
+            legacy_quiescence.get("schema") != LEGACY_TASK_QUIESCENCE_VERSION
+            or legacy_quiescence.get("required_state")
+            != LEGACY_TASK_REQUIRED_STATE
+            or legacy_quiescence.get("read_only") is not True
+            or legacy_quiescence.get("task_or_process_mutated") is not False
+        ):
+            raise ValueError("legacy scheduled-task quiescence evidence is invalid")
+        if legacy_quiescence.get("status") != "PASS":
+            reason = str(
+                legacy_quiescence.get("reason_code")
+                or "LEGACY_TASK_QUIESCENCE_FAILED"
+            )
+            remediation = str(
+                legacy_quiescence.get("remediation")
+                or "disable or remove the legacy Label scheduled task"
+            )
+            raise ValueError(f"{reason}: {remediation}")
         report["bootstrap_integrity"] = verify_bootstrap_integrity(
             paths,
             required=require_integrity,

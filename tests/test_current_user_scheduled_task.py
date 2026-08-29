@@ -34,6 +34,12 @@ def _successful_runner(command, **kwargs):
             "repetition_interval": "PT1M",
             "principal_run_level": "Limited",
         },
+        "legacy": {"exists": False, "name": scheduled_task.LEGACY_TASK_NAME},
+        "legacy_quiescence_before": {
+            "status": "PASS",
+            "reason_code": "LEGACY_TASK_ABSENT",
+            "required_state": scheduled_task.LEGACY_TASK_REQUIRED_STATE,
+        },
     }
     return SimpleNamespace(returncode=0, stdout=json.dumps(report), stderr="")
 
@@ -92,6 +98,94 @@ def test_task_script_refuses_manual_start_and_task_stop() -> None:
     assert "Stop-ScheduledTask" not in source
     assert "Stop-Process" not in source
     assert "schtasks /run" not in source.lower()
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "status", "reason"),
+    [
+        (
+            {"exists": False, "name": scheduled_task.LEGACY_TASK_NAME},
+            "PASS",
+            "LEGACY_TASK_ABSENT",
+        ),
+        (
+            {
+                "exists": True,
+                "name": scheduled_task.LEGACY_TASK_NAME,
+                "state": "Disabled",
+            },
+            "PASS",
+            "LEGACY_TASK_DISABLED",
+        ),
+        (
+            {
+                "exists": True,
+                "name": scheduled_task.LEGACY_TASK_NAME,
+                "state": "Ready",
+                "principal_user_id": "SYSTEM",
+            },
+            "FAIL",
+            "LEGACY_TASK_PRESENT_ENABLED",
+        ),
+    ],
+)
+def test_legacy_task_quiescence_is_fail_closed(snapshot, status, reason):
+    report = scheduled_task.evaluate_legacy_task_quiescence(snapshot)
+
+    assert report["status"] == status
+    assert report["reason_code"] == reason
+    assert report["required_state"] == "ABSENT_OR_DISABLED"
+    assert report["read_only"] is True
+    assert report["task_or_process_mutated"] is False
+    if status == "FAIL":
+        assert r"\direct-sync-relay-label-match-current-pc" in report["remediation"]
+        assert "Disable or remove" in report["remediation"]
+
+
+def test_legacy_task_readback_uses_only_read_commands_and_rejects_enabled_task():
+    def runner(command, **kwargs):
+        source = command[-1]
+        assert "Get-ScheduledTask" in source
+        assert "input" not in kwargs
+        for forbidden in (
+            "Register-ScheduledTask",
+            "Unregister-ScheduledTask",
+            "Enable-ScheduledTask",
+            "Disable-ScheduledTask",
+            "Start-ScheduledTask",
+            "Stop-ScheduledTask",
+            "Stop-Process",
+        ):
+            assert forbidden not in source
+        snapshot = {
+            "exists": True,
+            "name": scheduled_task.LEGACY_TASK_NAME,
+            "state": "Ready",
+            "principal_user_id": "SYSTEM",
+            "principal_logon_type": "ServiceAccount",
+            "principal_run_level": "Highest",
+        }
+        return SimpleNamespace(returncode=0, stdout=json.dumps(snapshot), stderr="")
+
+    report = scheduled_task.read_legacy_system_task_quiescence(runner=runner)
+
+    assert report["status"] == "FAIL"
+    assert report["reason_code"] == "LEGACY_TASK_PRESENT_ENABLED"
+
+
+def test_apply_and_remove_check_enabled_legacy_before_any_task_mutation():
+    source = scheduled_task._TASK_POWERSHELL
+
+    gate = source.index("LEGACY_TASK_PRESENT_ENABLED")
+    registration = source.index("New-ScheduledTaskAction")
+    removal_mutation = source.index(
+        "Unregister-ScheduledTask -TaskPath '\\' -TaskName ([string]$snapshot.name)",
+        gate,
+    )
+    assert gate < registration
+    assert gate < removal_mutation
+    assert "$operation -ceq 'Apply' -and" not in source
+    assert scheduled_task.LEGACY_TASK_REMEDIATION in source
 
 
 def test_task_spec_rejects_noncanonical_root(tmp_path):

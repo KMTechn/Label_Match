@@ -38,7 +38,10 @@ APP_PACKAGE_DIRS = (
 )
 APP_DATA_DIRS = ("assets", "config")
 APP_DATA_FILES = ("contract.lock.json", "kmtech_zero_pe.vendor.json")
-APP_TOOL_FILES = ("label_auth_recovery_canary.py",)
+APP_TOOL_FILES = (
+    "label_auth_recovery_canary.py",
+    "label_legacy_task_quiescence.py",
+)
 UPDATE_KEY_CONFIG_FILENAME = "update-manifest-key-config.json"
 UPDATE_KEY_CONFIG_SCHEMA = "label-match-update-key-config-v1"
 CANONICAL_INSTALLER_FILENAME = "INSTALL_CANONICAL_PORTABLE.ps1"

@@ -83,7 +83,10 @@ def test_low_difficulty_native_dependencies_are_absent_from_runtime_requirements
 def test_portable_builder_requires_an_empty_native_application_closure() -> None:
     assert portable_builder.EXPECTED_PYTHON == (3, 12, 10)
     assert portable_builder.ALLOWED_APP_NATIVE_NAMES == set()
-    assert portable_builder.APP_TOOL_FILES == ("label_auth_recovery_canary.py",)
+    assert portable_builder.APP_TOOL_FILES == (
+        "label_auth_recovery_canary.py",
+        "label_legacy_task_quiescence.py",
+    )
     for forbidden in ("cffi", "cryptography", "pillow", "pygame", "pycparser"):
         assert forbidden not in portable_builder.THIRD_PARTY
 

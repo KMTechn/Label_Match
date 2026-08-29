@@ -17,6 +17,14 @@ from typing import Any, Callable, Mapping
 TASK_CONTRACT_VERSION = "label-match-current-user-task-v1"
 TASK_NAME = "direct-sync-relay-label-match"
 LEGACY_TASK_NAME = "direct-sync-relay-label-match-current-pc"
+LEGACY_TASK_QUIESCENCE_VERSION = "label-match-legacy-task-quiescence-v1"
+LEGACY_TASK_REQUIRED_STATE = "ABSENT_OR_DISABLED"
+LEGACY_TASK_REMEDIATION = (
+    "Disable or remove root scheduled task "
+    r"\direct-sync-relay-label-match-current-pc before Label enrollment; "
+    "the canonical replacement is root scheduled task "
+    r"\direct-sync-relay-label-match using InteractiveToken, Limited, and PT1M."
+)
 SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
 CANONICAL_ROOT = Path(r"C:\KMTech\Apps\Label_Match\current")
 MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
@@ -24,6 +32,45 @@ MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
 
 class CurrentUserScheduledTaskError(RuntimeError):
     pass
+
+
+def evaluate_legacy_task_quiescence(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Classify the legacy task without accepting an enabled compatibility writer."""
+
+    report: dict[str, Any] = {
+        "schema": LEGACY_TASK_QUIESCENCE_VERSION,
+        "status": "FAIL",
+        "reason_code": "LEGACY_TASK_OBSERVATION_INVALID",
+        "legacy_task_name": LEGACY_TASK_NAME,
+        "required_state": LEGACY_TASK_REQUIRED_STATE,
+        "read_only": True,
+        "task_or_process_mutated": False,
+        "remediation": LEGACY_TASK_REMEDIATION,
+        "observation": dict(snapshot) if isinstance(snapshot, Mapping) else {},
+    }
+    if not isinstance(snapshot, Mapping):
+        return report
+    observed_name = snapshot.get("name")
+    if (
+        not isinstance(observed_name, str)
+        or observed_name.casefold() != LEGACY_TASK_NAME.casefold()
+        or type(snapshot.get("exists")) is not bool
+    ):
+        return report
+    if snapshot["exists"] is False:
+        report.update(status="PASS", reason_code="LEGACY_TASK_ABSENT")
+        return report
+
+    state = snapshot.get("state")
+    if not isinstance(state, str) or not state.strip():
+        return report
+    if state.strip().casefold() == "disabled":
+        report.update(status="PASS", reason_code="LEGACY_TASK_DISABLED")
+        return report
+    report["reason_code"] = "LEGACY_TASK_PRESENT_ENABLED"
+    return report
 
 
 def _resolved(path: str | os.PathLike[str]) -> Path:
@@ -82,6 +129,52 @@ def build_current_user_task_spec(
     }
 
 
+_LEGACY_TASK_READBACK_POWERSHELL = r"""
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$name = 'direct-sync-relay-label-match-current-pc'
+
+function Get-TextSha256([string]$Value) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Value)
+        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally { $sha.Dispose() }
+}
+
+$matches = @(
+    Get-ScheduledTask -TaskPath '\' -ErrorAction Stop |
+        Where-Object { [string]$_.TaskName -ieq $name }
+)
+if ($matches.Count -gt 1) { throw "More than one root task matched $name." }
+if ($matches.Count -eq 0) {
+    [ordered]@{ exists = $false; name = $name } | ConvertTo-Json -Compress
+    exit 0
+}
+$task = $matches[0]
+$actions = @($task.Actions)
+$actionIdentity = @(
+    $actions | ForEach-Object {
+        ([string]$_.Execute) + [char]0 + ([string]$_.Arguments) + [char]0 +
+            ([string]$_.WorkingDirectory)
+    }
+) -join ([char]0)
+[ordered]@{
+    exists = $true
+    name = $name
+    task_path = [string]$task.TaskPath
+    state = [string]$task.State
+    action_count = $actions.Count
+    action_identity_sha256 = Get-TextSha256 $actionIdentity
+    principal_user_id = [string]$task.Principal.UserId
+    principal_logon_type = [string]$task.Principal.LogonType
+    principal_run_level = [string]$task.Principal.RunLevel
+} | ConvertTo-Json -Compress
+exit 0
+"""
+
+
 _TASK_POWERSHELL = r"""
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -107,7 +200,10 @@ function Get-TextSha256([string]$Value) {
 }
 
 function Get-TaskSnapshot([string]$Name) {
-    $matches = @(Get-ScheduledTask -TaskPath '\' -TaskName $Name -ErrorAction SilentlyContinue)
+    $matches = @(
+        Get-ScheduledTask -TaskPath '\' -ErrorAction Stop |
+            Where-Object { [string]$_.TaskName -ieq $Name }
+    )
     if ($matches.Count -gt 1) { throw "More than one root task matched $Name." }
     if ($matches.Count -eq 0) { return [ordered]@{ exists = $false; name = $Name } }
     $task = $matches[0]
@@ -181,13 +277,30 @@ function Restore-TaskSnapshot($Snapshot) {
 
 $beforeCanonical = Get-TaskSnapshot ([string]$spec.task_name)
 $beforeLegacy = Get-TaskSnapshot ([string]$spec.legacy_task_name)
+$operation = [string]$env:KMTECH_LABEL_CURRENT_USER_TASK_OPERATION
+if ($operation -notin @('Apply', 'Remove')) { throw 'Scheduled-task operation is invalid.' }
+$legacyRemediation = 'Disable or remove root scheduled task \direct-sync-relay-label-match-current-pc before Label enrollment; the canonical replacement is root scheduled task \direct-sync-relay-label-match using InteractiveToken, Limited, and PT1M.'
+if (
+    [bool]$beforeLegacy.exists -and
+    [string]$beforeLegacy.state -ine 'Disabled'
+) {
+    [ordered]@{
+        schema = [string]$spec.schema
+        status = 'FAIL'
+        failure = $legacyRemediation
+        reason_code = 'LEGACY_TASK_PRESENT_ENABLED'
+        required_state = 'ABSENT_OR_DISABLED'
+        manual_start = $false
+        process_or_task_stopped = $false
+        preimage = [ordered]@{ canonical = $beforeCanonical; legacy = $beforeLegacy }
+    } | ConvertTo-Json -Depth 20 -Compress
+    exit 2
+}
 foreach ($snapshot in @($beforeCanonical, $beforeLegacy)) {
     if ([bool]$snapshot.exists -and [string]$snapshot.state -ceq 'Running') {
         throw "Refusing to stop or replace a running scheduled task: $($snapshot.name)"
     }
 }
-$operation = [string]$env:KMTECH_LABEL_CURRENT_USER_TASK_OPERATION
-if ($operation -notin @('Apply', 'Remove')) { throw 'Scheduled-task operation is invalid.' }
 
 try {
     if ($operation -ceq 'Apply') {
@@ -215,6 +328,11 @@ try {
             manual_start = $false
             process_or_task_stopped = $false
             spec = $spec
+            legacy_quiescence_before = [ordered]@{
+                status = 'PASS'
+                reason_code = if ([bool]$beforeLegacy.exists) { 'LEGACY_TASK_DISABLED' } else { 'LEGACY_TASK_ABSENT' }
+                required_state = 'ABSENT_OR_DISABLED'
+            }
             preimage = [ordered]@{ canonical = $beforeCanonical; legacy = $beforeLegacy }
             canonical = $afterCanonical
             legacy = $afterLegacy
@@ -275,6 +393,60 @@ def _powershell_executable() -> Path:
     if not executable.is_file():
         raise CurrentUserScheduledTaskError("Windows PowerShell is unavailable")
     return executable
+
+
+def read_legacy_system_task_quiescence(
+    *, runner: Callable[..., Any] | None = None
+) -> dict[str, Any]:
+    """Read the legacy root task and require it to be absent or disabled."""
+
+    selected_runner = subprocess.run if runner is None else runner
+    if runner is None and os.name != "nt":
+        raise CurrentUserScheduledTaskError(
+            "legacy scheduled-task readback is available only on Windows"
+        )
+    command = [
+        str(_powershell_executable()) if runner is None else "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "RemoteSigned",
+        "-Command",
+        _LEGACY_TASK_READBACK_POWERSHELL,
+    ]
+    completed = selected_runner(
+        command,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    output = str(getattr(completed, "stdout", "") or "")
+    error = str(getattr(completed, "stderr", "") or "")
+    if (
+        len(output.encode("utf-8")) > MAX_COMMAND_OUTPUT_BYTES
+        or len(error.encode("utf-8")) > MAX_COMMAND_OUTPUT_BYTES
+    ):
+        raise CurrentUserScheduledTaskError(
+            "legacy scheduled-task readback output is oversized"
+        )
+    if int(getattr(completed, "returncode", 1)) != 0:
+        raise CurrentUserScheduledTaskError(
+            (error or "legacy scheduled-task readback failed")[:500]
+        )
+    lines = [line for line in output.splitlines() if line.strip()]
+    try:
+        snapshot = json.loads(lines[-1]) if lines else None
+    except json.JSONDecodeError as exc:
+        raise CurrentUserScheduledTaskError(
+            "legacy scheduled-task readback returned malformed evidence"
+        ) from exc
+    if not isinstance(snapshot, dict):
+        raise CurrentUserScheduledTaskError(
+            "legacy scheduled-task readback returned a non-object snapshot"
+        )
+    return evaluate_legacy_task_quiescence(snapshot)
 
 
 def _run_task_operation(
@@ -348,6 +520,10 @@ def install_current_user_scheduled_task(
     spec = build_current_user_task_spec(app_root)
     report = _run_task_operation("Apply", spec, runner=runner)
     canonical = report.get("canonical") if isinstance(report, dict) else None
+    legacy = report.get("legacy") if isinstance(report, dict) else None
+    legacy_quiescence = (
+        report.get("legacy_quiescence_before") if isinstance(report, dict) else None
+    )
     if (
         report.get("schema") != TASK_CONTRACT_VERSION
         or report.get("status") != "PASS"
@@ -359,6 +535,11 @@ def install_current_user_scheduled_task(
         or canonical.get("working_directory") != spec["working_directory"]
         or canonical.get("repetition_interval") != "PT1M"
         or canonical.get("principal_run_level") != "Limited"
+        or not isinstance(legacy, dict)
+        or legacy.get("exists") is not False
+        or not isinstance(legacy_quiescence, dict)
+        or legacy_quiescence.get("status") != "PASS"
+        or legacy_quiescence.get("required_state") != LEGACY_TASK_REQUIRED_STATE
     ):
         raise CurrentUserScheduledTaskError(
             "scheduled-task apply evidence failed exact product readback"

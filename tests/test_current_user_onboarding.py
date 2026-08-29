@@ -111,6 +111,17 @@ def _scheduled_task_absent(_app_root):
     return {"status": "ABSENT"}
 
 
+def _legacy_task_quiescent():
+    return {
+        "schema": "label-match-legacy-task-quiescence-v1",
+        "status": "PASS",
+        "reason_code": "LEGACY_TASK_ABSENT",
+        "required_state": "ABSENT_OR_DISABLED",
+        "read_only": True,
+        "task_or_process_mutated": False,
+    }
+
+
 def _environment(tmp_path):
     return {"LABEL_MATCH_SAVE_DIR": str(tmp_path / "state" / "data")}
 
@@ -206,6 +217,7 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
         "ledger_factory": _ledger_factory,
         "autostart_installer": _autostart,
         "scheduled_task_installer": _scheduled_task,
+        "legacy_task_quiescence_reader": _legacy_task_quiescent,
         "relay_launcher": _relay_start,
     }
     code_files = [path for path in app_root.rglob("*") if path.is_file()]
@@ -249,6 +261,61 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
     assert first["current_user_scheduled_task_required"] is True
     assert environment["LABEL_MATCH_DIRECT_SYNC_ROOT"] == str(paths.direct_sync_root)
     assert code_after == code_before
+
+
+def test_enabled_legacy_task_blocks_before_enrollment_or_persistence(tmp_path):
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    environment = _environment(tmp_path)
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
+    calls: list[str] = []
+
+    def called(name, result):
+        def invoke(*_args, **_kwargs):
+            calls.append(name)
+            return result
+
+        return invoke
+
+    legacy_failure = {
+        "schema": "label-match-legacy-task-quiescence-v1",
+        "status": "FAIL",
+        "reason_code": "LEGACY_TASK_PRESENT_ENABLED",
+        "required_state": "ABSENT_OR_DISABLED",
+        "read_only": True,
+        "task_or_process_mutated": False,
+        "remediation": (
+            "Disable or remove root scheduled task "
+            r"\direct-sync-relay-label-match-current-pc before Label enrollment."
+        ),
+    }
+
+    with pytest.raises(
+        CurrentUserOnboardingError,
+        match="LEGACY_TASK_PRESENT_ENABLED",
+    ):
+        onboard_current_user(
+            app_root,
+            environ=environment,
+            require_bootstrap_integrity=False,
+            legacy_task_quiescence_reader=lambda: legacy_failure,
+            registration_runner=called("registration", 0),
+            ledger_factory=called("ledger", None),
+            settings_factory=called("settings", {"status": "CREATED"}),
+            autostart_installer=called("autostart", {"status": "PASS"}),
+            scheduled_task_installer=called("scheduled-task", {"status": "PASS"}),
+            relay_launcher=called("relay", {"status": "ALIVE"}),
+        )
+
+    assert calls == []
+    assert not paths.identity_path.exists()
+    assert not paths.ledger_path.exists()
+    report = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "FAILED"
+    assert report["legacy_task_quiescence"]["reason_code"] == (
+        "LEGACY_TASK_PRESENT_ENABLED"
+    )
+    assert r"\direct-sync-relay-label-match-current-pc" in report["failure"]
 
 
 def test_registration_runner_derives_identity_without_source_host_override(
@@ -358,6 +425,7 @@ def test_ready_profile_adds_configured_ca_without_registration(tmp_path, monkeyp
         ledger_factory=_ledger_factory,
         autostart_installer=_autostart,
         scheduled_task_installer=_scheduled_task,
+        legacy_task_quiescence_reader=_legacy_task_quiescent,
         relay_launcher=_relay_start,
     )
 
@@ -382,6 +450,7 @@ def test_missing_registration_result_is_unknown_not_success(tmp_path):
             ledger_factory=_ledger_factory,
             autostart_installer=_autostart,
             scheduled_task_installer=_scheduled_task,
+            legacy_task_quiescence_reader=_legacy_task_quiescent,
             relay_launcher=_relay_start,
         )
 
@@ -409,6 +478,7 @@ def test_stop_marker_is_preserved_until_canonical_portable_install(tmp_path):
             ledger_factory=_ledger_factory,
             autostart_installer=_autostart,
             scheduled_task_installer=_scheduled_task,
+            legacy_task_quiescence_reader=_legacy_task_quiescent,
             relay_launcher=_relay_start,
         )
 
@@ -514,6 +584,7 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
             ledger_factory=_ledger_factory,
             autostart_installer=_autostart,
             scheduled_task_installer=lambda _root: {"status": "FAIL"},
+            legacy_task_quiescence_reader=_legacy_task_quiescent,
             relay_launcher=_relay_start,
         )
 
