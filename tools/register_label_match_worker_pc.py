@@ -25,6 +25,12 @@ if str(ROOT) not in sys.path:
 
 import requests  # noqa: E402
 
+from enrollment_mutex import (  # noqa: E402
+    DEFAULT_ENROLLMENT_MUTEX_TIMEOUT_SECONDS,
+    EnrollmentMutex,
+    EnrollmentMutexError,
+    require_enrollment_mutex_owned,
+)
 from kmtech_zero_pe import (  # noqa: E402
     ADMIN_RECOVERY_ACTION,
     AdminRecoveryRequired,
@@ -738,6 +744,7 @@ def _enroll(
     timeout_seconds: int,
     tls_ca_bundle_path: str = "",
 ) -> dict[str, Any]:
+    require_enrollment_mutex_owned()
     headers = {"X-Producer-Enrollment-Token": enrollment_token} if enrollment_token else {}
     request_kwargs: dict[str, Any] = {
         "json": dict(payload),
@@ -1295,6 +1302,7 @@ def _admin_recover(
     credential: dict[str, Any],
     progress: _AdminRecoveryProgress | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str, Path, dict[str, Any]]:
+    require_enrollment_mutex_owned()
     if (
         str(getattr(args, "credential_scope", "") or "").strip().lower()
         != SCOPE_CURRENT_USER
@@ -1479,7 +1487,7 @@ def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, 
     return manifest, credential, report
 
 
-def apply_registration(
+def _apply_registration_locked(
     args: argparse.Namespace,
     manifest: dict[str, Any],
     credential: dict[str, Any],
@@ -1691,6 +1699,33 @@ def apply_registration(
     return report
 
 
+def apply_registration(
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    credential: dict[str, Any],
+    report: dict[str, Any],
+    progress: _AdminRecoveryProgress | None = None,
+) -> dict[str, Any]:
+    """Apply through the shared mutex, including direct imported callers."""
+
+    guard = EnrollmentMutex(
+        getattr(
+            args,
+            "enrollment_mutex_timeout_seconds",
+            DEFAULT_ENROLLMENT_MUTEX_TIMEOUT_SECONDS,
+        )
+    )
+    with guard as receipt:
+        report["enrollment_mutex"] = receipt
+        return _apply_registration_locked(
+            args,
+            manifest,
+            credential,
+            report,
+            progress,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Register this Label_Match PC as an HTTPS producer")
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -1714,6 +1749,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enrollment-token-file", default="")
     parser.add_argument("--enrollment-token-env", default=DEFAULT_ENROLLMENT_TOKEN_ENV)
     parser.add_argument("--enrollment-timeout-seconds", type=int, default=30)
+    parser.add_argument(
+        "--enrollment-mutex-timeout-seconds",
+        type=float,
+        default=DEFAULT_ENROLLMENT_MUTEX_TIMEOUT_SECONDS,
+        help="finite wait for the shared one-session enrollment mutex",
+    )
     parser.add_argument("--require-machine-credential-bundle", action="store_true")
     parser.add_argument(
         "--credential-scope",
@@ -1743,9 +1784,16 @@ def main(argv: list[str] | None = None) -> int:
     recovery_progress = _AdminRecoveryProgress()
     report_context: dict[str, Any] = {}
     report: dict[str, Any] = {}
+    enrollment_guard: EnrollmentMutex | None = None
     try:
+        if args.apply:
+            enrollment_guard = EnrollmentMutex(args.enrollment_mutex_timeout_seconds)
+            report_context["enrollment_mutex"] = enrollment_guard.acquire()
         manifest, credential, report = build_payloads(args)
+        if "enrollment_mutex" in report_context:
+            report["enrollment_mutex"] = dict(report_context["enrollment_mutex"])
         report_context = {
+            **report_context,
             "endpoint_url": report.get("endpoint_url"),
             "key_id": report.get("key_id"),
             "manual_pc_approval_required": report.get("manual_pc_approval_required"),
@@ -1920,6 +1968,15 @@ def main(argv: list[str] | None = None) -> int:
             "secret_material_persisted": False,
         }
         blocked.update({key: value for key, value in report_context.items() if value is not None})
+        if isinstance(exc, EnrollmentMutexError):
+            blocked.update(
+                {
+                    "status": exc.report_status,
+                    "blocked_reason": exc.reason_code,
+                    "recovery_action": exc.recovery_action,
+                    "enrollment_mutex": dict(exc.mutex_report),
+                }
+            )
         for key in (
             "enrollment_contract_version",
             "possession_key_contract_version",
@@ -1970,6 +2027,9 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(report_path, blocked)
         print(f"registration_report={report_path.resolve()}")
         return 2
+    finally:
+        if enrollment_guard is not None:
+            enrollment_guard.release()
 
 
 if __name__ == "__main__":

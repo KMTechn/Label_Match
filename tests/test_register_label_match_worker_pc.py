@@ -660,13 +660,14 @@ def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path):
         lambda url, **kwargs: observed.update(url=url, kwargs=kwargs) or Response(),
     )
 
-    result = module._enroll(
-        {"contract_version": module.ENROLLMENT_CONTRACT_VERSION},
-        enrollment_url="https://worker.example.invalid/api/producer-ingest/v2/enroll",
-        enrollment_token="",
-        timeout_seconds=30,
-        tls_ca_bundle_path=str(ca_bundle),
-    )
+    with module.EnrollmentMutex():
+        result = module._enroll(
+            {"contract_version": module.ENROLLMENT_CONTRACT_VERSION},
+            enrollment_url="https://worker.example.invalid/api/producer-ingest/v2/enroll",
+            enrollment_token="",
+            timeout_seconds=30,
+            tls_ca_bundle_path=str(ca_bundle),
+        )
 
     assert result["status"] == "enrolled"
     assert observed["kwargs"]["verify"] == str(ca_bundle)
@@ -1103,8 +1104,9 @@ def test_admin_recovery_manifest_mismatch_stops_before_key_or_http(monkeypatch):
         tls_ca_bundle_path="unused.pem",
     )
 
-    with pytest.raises(module.DirectSyncPushError, match="legacy_manifest_hash_mismatch"):
-        module._admin_recover(args, manifest, credential)
+    with module.EnrollmentMutex():
+        with pytest.raises(module.DirectSyncPushError, match="legacy_manifest_hash_mismatch"):
+            module._admin_recover(args, manifest, credential)
 
     assert calls == []
 
@@ -1208,9 +1210,10 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
     )
     progress = module._AdminRecoveryProgress()
 
-    response, descriptor, token_source, returned_path, returned_authorization = (
-        module._admin_recover(args, manifest, credential, progress)
-    )
+    with module.EnrollmentMutex():
+        response, descriptor, token_source, returned_path, returned_authorization = (
+            module._admin_recover(args, manifest, credential, progress)
+        )
 
     assert response is response_payload
     assert descriptor["fingerprint"] == possession_key["fingerprint"]

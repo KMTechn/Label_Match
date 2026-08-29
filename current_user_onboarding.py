@@ -22,6 +22,7 @@ from current_user_scheduled_task import (
     remove_current_user_scheduled_task,
 )
 from direct_sync_push import manifest_hash
+from enrollment_mutex import EnrollmentMutex, EnrollmentMutexError
 from direct_sync_runtime import load_credentials_from_json
 from label_exact_clone_resolution import read_pinned_json, validate_resolution_receipt
 from logistics_runtime_profile import (
@@ -955,34 +956,55 @@ def onboard_current_user(
         if state["status"] == "RECOVERY_REQUIRED":
             raise ValueError(str(state.get("reason") or "partial current-user state"))
         if state["status"] in {"ABSENT", "ABSENT_RETRYABLE"}:
-            if registration_runner is None:
-                return_code = _registration_runner(
+            with EnrollmentMutex() as mutex_receipt:
+                report["enrollment_mutex"] = mutex_receipt
+                # The first inspection occurs before mutex ownership.  Repeat
+                # it while owned so a simultaneous onboarding winner cannot
+                # be followed by a second enrollment attempt.
+                state = inspect_current_user_state(
                     paths,
-                    server_base_url=server_base_url,
-                    environ=environ,
+                    profile_loader=profile_loader,
+                    credential_loader=credential_loader,
                 )
-            else:
-                return_code = registration_runner(paths)
-            if type(return_code) is not int:
-                raise CurrentUserOnboardingError(
-                    "registration result is UNKNOWN because no exit code was returned",
-                    report_path=paths.onboarding_report_path,
-                    status="UNKNOWN",
-                )
-            if return_code != 0:
-                raise ValueError(
-                    f"current-user registration failed with exit code {return_code}"
-                )
-            state = inspect_current_user_state(
-                paths,
-                profile_loader=profile_loader,
-                credential_loader=credential_loader,
-            )
-            if state["status"] != "READY":
-                raise ValueError(
-                    "registration returned success without complete current-user readback"
-                )
-            report["action"] = "CREATED"
+                if state["status"] == "RECOVERY_REQUIRED":
+                    raise ValueError(
+                        str(state.get("reason") or "partial current-user state")
+                    )
+                if state["status"] in {"ABSENT", "ABSENT_RETRYABLE"}:
+                    if registration_runner is None:
+                        return_code = _registration_runner(
+                            paths,
+                            server_base_url=server_base_url,
+                            environ=environ,
+                        )
+                    else:
+                        return_code = registration_runner(paths)
+                    if type(return_code) is not int:
+                        raise CurrentUserOnboardingError(
+                            "registration result is UNKNOWN because no exit code was returned",
+                            report_path=paths.onboarding_report_path,
+                            status="UNKNOWN",
+                        )
+                    if return_code != 0:
+                        raise ValueError(
+                            f"current-user registration failed with exit code {return_code}"
+                        )
+                    state = inspect_current_user_state(
+                        paths,
+                        profile_loader=profile_loader,
+                        credential_loader=credential_loader,
+                    )
+                    if state["status"] != "READY":
+                        raise ValueError(
+                            "registration returned success without complete current-user readback"
+                        )
+                    report["action"] = "CREATED"
+                elif state["status"] == "READY":
+                    report["action"] = "REUSED_AFTER_MUTEX_WAIT"
+                else:
+                    raise ValueError(
+                        "current-user state became indeterminate under the enrollment mutex"
+                    )
         else:
             report["action"] = "REUSED"
         if tls_ca_source and not state.get("tls_private_ca_configured"):
@@ -1067,6 +1089,19 @@ def onboard_current_user(
         )
         _write_json_atomic(paths.onboarding_report_path, report)
         return report
+    except EnrollmentMutexError as exc:
+        restore_stop_marker_fence()
+        report["status"] = exc.report_status
+        report["failure"] = exc.reason_code
+        report["error_type"] = exc.__class__.__name__
+        report["recovery_action"] = exc.recovery_action
+        report["enrollment_mutex"] = dict(exc.mutex_report)
+        _write_json_atomic(paths.onboarding_report_path, report)
+        raise CurrentUserOnboardingError(
+            f"Label_Match enrollment mutex blocked onboarding: {exc.reason_code}",
+            report_path=paths.onboarding_report_path,
+            status=exc.report_status,
+        ) from exc
     except CurrentUserOnboardingError as exc:
         restore_stop_marker_fence()
         report["status"] = exc.status
