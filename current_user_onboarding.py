@@ -20,7 +20,7 @@ from current_user_scheduled_task import (
 )
 from direct_sync_push import manifest_hash
 from direct_sync_runtime import load_credentials_from_json
-from label_exact_clone_resolution import validate_resolution_receipt
+from label_exact_clone_resolution import read_pinned_json, validate_resolution_receipt
 from logistics_runtime_profile import (
     PROFILE_PATH_ENV,
     REQUIRED_ENV,
@@ -165,14 +165,16 @@ def _portable_stop_marker_release_preflight(
             "relay stop marker requires a pinned EXACT_CLONE_RUNTIME_CONFLICT receipt"
         )
     receipt_path = _resolved(receipt_value)
-    if (
-        not receipt_path.is_file()
-        or receipt_path.stat().st_size <= 0
-        or receipt_path.stat().st_size > ONBOARDING_JSON_MAX_BYTES
-        or _file_sha256(receipt_path) != expected_receipt_hash
-    ):
+    try:
+        receipt = read_pinned_json(
+            receipt_path,
+            expected_receipt_hash,
+            label="EXACT_CLONE_RUNTIME_CONFLICT receipt",
+            maximum_bytes=ONBOARDING_JSON_MAX_BYTES,
+        )
+    except ValueError:
         raise ValueError("EXACT_CLONE_RUNTIME_CONFLICT receipt pin differs")
-    receipt = _read_json(receipt_path, "EXACT_CLONE_RUNTIME_CONFLICT receipt")
+
     receipt_readback = validate_resolution_receipt(
         receipt,
         client_db_path=paths.direct_sync_root

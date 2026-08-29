@@ -152,9 +152,11 @@ def test_bootstrap_is_minimal_code_only_onedir_contract():
     assert "self-enroll" not in text
     assert "SourceHostId" not in text
     assert "Remove-OwnedLegacyTask" in text
-    elevation = text.index("Invoke-SelfElevated")
+    elevation = text.index("Assert-AlreadyElevated")
     uninstall = text.index("if ($Uninstall.IsPresent)")
     assert elevation < uninstall
+    assert "-Verb RunAs" not in text
+    assert "-File $BootstrapScriptPath" not in text
     assert "Test-CurrentUserRelayPersistencePresent" in text
     assert "--remove-current-user-setup" in text
 

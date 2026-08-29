@@ -13,10 +13,12 @@ import label_exact_clone_resolution as resolution_module
 from label_exact_clone_resolution import (
     CONFLICT_CODE,
     PORTABLE_REBIND_ALLOWED_PATHS,
+    RECEIPT_SCHEMA_V2,
     ExactCloneResolutionError,
     capture_conflict_preimage,
     create_portable_successor_receipt,
     create_resolution_receipt,
+    portable_inventory_binding,
     portable_rebind_changed_paths_sha256,
     sqlite_logical_digest,
     validate_resolution_receipt,
@@ -430,6 +432,13 @@ def _paths(tmp_path: Path) -> dict[str, Path]:
     portable.mkdir()
     installer = portable / "INSTALL_CANONICAL_PORTABLE.ps1"
     installer.write_text("# fixture\n", encoding="utf-8")
+    (portable / "INSTALL_THIS_PC.ps1").write_text(
+        "# placement helper fixture\n", encoding="utf-8"
+    )
+    (portable / "tools").mkdir()
+    (portable / "tools" / "bootstrap_integrity.ps1").write_text(
+        "# integrity helper fixture\n", encoding="utf-8"
+    )
     _write_json(
         portable / "portable-manifest.json",
         {
@@ -587,6 +596,9 @@ def test_receipt_accepts_only_a_verified_bounded_successor_marker(tmp_path):
 
 def test_receipt_accepts_exact_portable_copy_at_canonical_root(tmp_path):
     paths = _paths(tmp_path)
+    payload = paths["portable_root"] / "app" / "payload.py"
+    payload.parent.mkdir()
+    payload.write_bytes(b"AAAA")
     preimage = capture_conflict_preimage(**paths)
     _resolve_fixture(paths)
     receipt = create_resolution_receipt(preimage=preimage, **paths)
@@ -603,8 +615,24 @@ def test_receipt_accepts_exact_portable_copy_at_canonical_root(tmp_path):
             portable_root=canonical_root,
         )
 
+    with pytest.raises(ExactCloneResolutionError, match="full-inventory v2"):
+        validate_resolution_receipt(
+            receipt,
+            client_db_path=paths["client_db_path"],
+            identity_path=paths["identity_path"],
+            credential_path=paths["credential_path"],
+            stop_marker_path=paths["stop_marker_path"],
+            portable_root=canonical_root,
+            allow_portable_relocation=True,
+        )
+
+    successor_receipt = json.loads(json.dumps(receipt))
+    successor_receipt["schema_version"] = RECEIPT_SCHEMA_V2
+    successor_receipt["portable_inventory"] = portable_inventory_binding(
+        paths["portable_root"]
+    )
     readback = validate_resolution_receipt(
-        receipt,
+        successor_receipt,
         client_db_path=paths["client_db_path"],
         identity_path=paths["identity_path"],
         credential_path=paths["credential_path"],
@@ -617,13 +645,10 @@ def test_receipt_accepts_exact_portable_copy_at_canonical_root(tmp_path):
     assert Path(readback["portable_receipt_root"]) == paths["portable_root"].resolve()
     assert Path(readback["portable_validated_root"]) == canonical_root.resolve()
 
-    (canonical_root / "INSTALL_CANONICAL_PORTABLE.ps1").write_text(
-        "# tampered canonical copy\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ExactCloneResolutionError, match="installer hash"):
+    (canonical_root / "app" / "payload.py").write_bytes(b"BBBB")
+    with pytest.raises(ExactCloneResolutionError, match="full portable inventory"):
         validate_resolution_receipt(
-            receipt,
+            successor_receipt,
             client_db_path=paths["client_db_path"],
             identity_path=paths["identity_path"],
             credential_path=paths["credential_path"],
@@ -632,17 +657,11 @@ def test_receipt_accepts_exact_portable_copy_at_canonical_root(tmp_path):
             allow_portable_relocation=True,
         )
 
-    shutil.copy2(
-        paths["portable_root"] / "INSTALL_CANONICAL_PORTABLE.ps1",
-        canonical_root / "INSTALL_CANONICAL_PORTABLE.ps1",
-    )
-    (paths["portable_root"] / "INSTALL_CANONICAL_PORTABLE.ps1").write_text(
-        "# tampered receipt source\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ExactCloneResolutionError, match="source portable"):
+    (canonical_root / "app" / "payload.py").write_bytes(b"AAAA")
+    payload.write_bytes(b"CCCC")
+    with pytest.raises(ExactCloneResolutionError, match="source full portable inventory"):
         validate_resolution_receipt(
-            receipt,
+            successor_receipt,
             client_db_path=paths["client_db_path"],
             identity_path=paths["identity_path"],
             credential_path=paths["credential_path"],
@@ -711,6 +730,15 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(
     successor_manifest["source_commit"] = successor_commit
     successor_manifest["source_tree"] = successor_tree
     _write_json(successor_manifest_path, successor_manifest)
+    successor_inventory = portable_inventory_binding(successor_portable)
+    assert successor_inventory["critical_file_sha256"] == {
+        "placement_helper": hashlib.sha256(
+            (successor_portable / "INSTALL_THIS_PC.ps1").read_bytes()
+        ).hexdigest(),
+        "bootstrap_integrity_helper": hashlib.sha256(
+            (successor_portable / "tools" / "bootstrap_integrity.ps1").read_bytes()
+        ).hexdigest(),
+    }
     monkeypatch.setattr(
         resolution_module,
         "__file__",
@@ -733,6 +761,9 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(
         expected_successor_installer_sha256=hashlib.sha256(
             (successor_portable / "INSTALL_CANONICAL_PORTABLE.ps1").read_bytes()
         ).hexdigest(),
+        expected_successor_inventory_sha256=successor_inventory["sha256"],
+        expected_successor_inventory_file_count=successor_inventory["file_count"],
+        expected_successor_inventory_byte_count=successor_inventory["byte_count"],
         expected_changed_paths_sha256=portable_rebind_changed_paths_sha256(
             sorted(PORTABLE_REBIND_ALLOWED_PATHS)
         ),
@@ -745,7 +776,9 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(
     )
 
     assert receipt["status"] == "RESOLVED"
+    assert receipt["schema_version"] == RECEIPT_SCHEMA_V2
     assert receipt["portable"]["source_commit"] == successor_commit
+    assert receipt["portable_inventory"] == successor_inventory
     assert evidence["status"] == "PASS"
     assert evidence["git_proof"]["changed_paths"] == sorted(
         PORTABLE_REBIND_ALLOWED_PATHS
@@ -758,6 +791,43 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(
         stop_marker_path=paths["stop_marker_path"],
         portable_root=successor_portable,
     )
+
+    successor_payload = successor_portable / "app" / "payload.py"
+    successor_payload.parent.mkdir(exist_ok=True)
+    successor_payload.write_bytes(b"AAAA")
+    tamper_inventory = portable_inventory_binding(successor_portable)
+    successor_payload.write_bytes(b"BBBB")
+    with pytest.raises(ExactCloneResolutionError, match="inventory differs"):
+        create_portable_successor_receipt(
+            preimage_path=preimage_path,
+            preimage_sha256=hashlib.sha256(preimage_path.read_bytes()).hexdigest(),
+            predecessor_receipt_path=predecessor_receipt_path,
+            predecessor_receipt_sha256=hashlib.sha256(
+                predecessor_receipt_path.read_bytes()
+            ).hexdigest(),
+            repo_root=repo,
+            expected_successor_commit=successor_commit,
+            expected_successor_tree=successor_tree,
+            expected_successor_manifest_sha256=hashlib.sha256(
+                successor_manifest_path.read_bytes()
+            ).hexdigest(),
+            expected_successor_installer_sha256=hashlib.sha256(
+                (successor_portable / "INSTALL_CANONICAL_PORTABLE.ps1").read_bytes()
+            ).hexdigest(),
+            expected_successor_inventory_sha256=tamper_inventory["sha256"],
+            expected_successor_inventory_file_count=tamper_inventory["file_count"],
+            expected_successor_inventory_byte_count=tamper_inventory["byte_count"],
+            expected_changed_paths_sha256=portable_rebind_changed_paths_sha256(
+                sorted(PORTABLE_REBIND_ALLOWED_PATHS)
+            ),
+            client_db_path=paths["client_db_path"],
+            server_db_path=paths["server_db_path"],
+            identity_path=paths["identity_path"],
+            credential_path=paths["credential_path"],
+            stop_marker_path=paths["stop_marker_path"],
+            portable_root=successor_portable,
+        )
+    successor_payload.unlink()
 
     (repo / "unexpected.py").write_text("not reviewed\n", encoding="utf-8")
     git("add", "--all")
@@ -782,6 +852,15 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(
             expected_successor_installer_sha256=hashlib.sha256(
                 (successor_portable / "INSTALL_CANONICAL_PORTABLE.ps1").read_bytes()
             ).hexdigest(),
+            expected_successor_inventory_sha256=portable_inventory_binding(
+                successor_portable
+            )["sha256"],
+            expected_successor_inventory_file_count=portable_inventory_binding(
+                successor_portable
+            )["file_count"],
+            expected_successor_inventory_byte_count=portable_inventory_binding(
+                successor_portable
+            )["byte_count"],
             expected_changed_paths_sha256=portable_rebind_changed_paths_sha256(
                 sorted([*PORTABLE_REBIND_ALLOWED_PATHS, "unexpected.py"])
             ),

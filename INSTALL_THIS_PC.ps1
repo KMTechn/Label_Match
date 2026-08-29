@@ -7,6 +7,12 @@ param(
     [string]$TlsCaBundlePath = "",
     [string]$OperatorLocalAppDataRoot = "",
     [string]$ElevationLogPath = "",
+    [string]$ExpectedBootstrapScriptSha256 = "",
+    [string]$VerifiedBootstrapScriptPath = "",
+    [switch]$BootstrapIntegrityPreloaded,
+    [string]$ExpectedSourceAggregateSha256 = "",
+    [int]$ExpectedSourceFileCount = 0,
+    [uint64]$ExpectedSourceByteCount = 0,
     [switch]$ReplaceExistingVerifiedPortable,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ApplyHardenedAclForTest
@@ -16,17 +22,68 @@ $ErrorActionPreference = "Stop"
 $ExpectedInstallRoot = "C:\KMTech\Apps\Label_Match\current"
 $IntegrityFileName = "bootstrap-integrity.json"
 $IntegritySchema = "label-match-bootstrap-integrity-v1"
+
+function Get-EarlyFileSha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $hash.Dispose()
+        $stream.Dispose()
+    }
+}
+
+$BootstrapScriptPath = if (
+    [string]::IsNullOrWhiteSpace($VerifiedBootstrapScriptPath)
+) { $MyInvocation.MyCommand.Path } else { $VerifiedBootstrapScriptPath }
+if (
+    -not [string]::IsNullOrWhiteSpace($ExpectedBootstrapScriptSha256) -and
+    (
+        $ExpectedBootstrapScriptSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        (Get-EarlyFileSha256 $BootstrapScriptPath) -cne $ExpectedBootstrapScriptSha256
+    )
+) { throw "Bootstrap script SHA-256 differs from its trusted caller pin." }
+$earlyTestOverride = (
+    $AllowNoncanonicalLayoutForTest.IsPresent -and
+    [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
+)
+if (
+    -not $DryRun.IsPresent -and
+    -not $Uninstall.IsPresent -and
+    -not $earlyTestOverride -and
+    -not $BootstrapIntegrityPreloaded.IsPresent
+) {
+    throw (
+        "Production placement requires integrity functions preloaded by the " +
+        "canonical pinned in-memory launcher."
+    )
+}
 $BootstrapIntegrityFunctions = Join-Path $PSScriptRoot "tools\bootstrap_integrity.ps1"
-if (-not (Test-Path -LiteralPath $BootstrapIntegrityFunctions -PathType Leaf)) {
+if ($BootstrapIntegrityPreloaded.IsPresent) {
+    foreach ($functionName in @(
+        'Get-BootstrapFileSha256',
+        'Get-BootstrapCodeInventory',
+        'Get-BootstrapInventoryAggregate',
+        'Write-BootstrapIntegrityRecord',
+        'Assert-BootstrapIntegrityRecord'
+    )) {
+        if (-not (Get-Command $functionName -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw "Preloaded bootstrap integrity producer is incomplete."
+        }
+    }
+}
+elseif (-not $DryRun.IsPresent -and $Uninstall.IsPresent -and -not $earlyTestOverride) {
+    # Production code-only uninstall does not inspect or execute source-tree helpers.
+}
+elseif (-not (Test-Path -LiteralPath $BootstrapIntegrityFunctions -PathType Leaf)) {
     throw "Bootstrap integrity producer is unavailable."
 }
-. $BootstrapIntegrityFunctions
-$LegacyRelayTaskName = "direct-sync-relay-label-match-current-pc"
-$BootstrapScriptPath = $MyInvocation.MyCommand.Path
-$BootstrapBoundParameters = @{}
-foreach ($boundName in $PSBoundParameters.Keys) {
-    $BootstrapBoundParameters[$boundName] = $PSBoundParameters[$boundName]
+else {
+    . $BootstrapIntegrityFunctions
 }
+$LegacyRelayTaskName = "direct-sync-relay-label-match-current-pc"
 
 function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
@@ -83,31 +140,15 @@ function Install-CurrentUserTlsCaBootstrap([string]$SourcePath, [string]$LocalAp
     if ((Get-FileSha256 $target) -cne (Get-FileSha256 $source)) { throw "TLS CA bootstrap exact readback failed." }
     return $target
 }
-function ConvertTo-ProcessArgument([string]$Value) {
-    if ($Value -notmatch '[\s"]') { return $Value }
-    return '"' + $Value.Replace('\', '\').Replace('"', '\"') + '"'
-}
-
-function Invoke-SelfElevated {
+function Assert-AlreadyElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        return
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw (
+            "Privileged placement must be launched by the canonical installer's " +
+            "pinned in-memory elevation path."
+        )
     }
-    $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $BootstrapScriptPath)
-    foreach ($name in $BootstrapBoundParameters.Keys) {
-        $value = $BootstrapBoundParameters[$name]
-        if ($value -is [Management.Automation.SwitchParameter]) {
-            if ($value.IsPresent) { $arguments += "-$name" }
-        }
-        else {
-            $arguments += @("-$name", [string]$value)
-        }
-    }
-    $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
-    $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-    $process = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $argumentLine -Wait -PassThru
-    exit $process.ExitCode
 }
 
 function Write-ElevationLog([string]$Status, [string]$Message) {
@@ -367,14 +408,10 @@ function Test-CurrentUserRelayPersistencePresent {
     }
 }
 
-$testOverride = (
-    $AllowNoncanonicalLayoutForTest.IsPresent -and
-    [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
-)
+$testOverride = $earlyTestOverride
 if ([string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "The invoking operator LOCALAPPDATA is unavailable." }
     $OperatorLocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA)
-    $BootstrapBoundParameters["OperatorLocalAppDataRoot"] = $OperatorLocalAppDataRoot
 }
 if ($ApplyHardenedAclForTest.IsPresent -and -not $testOverride) {
     throw "ApplyHardenedAclForTest requires the guarded noncanonical test layout."
@@ -399,8 +436,19 @@ if (
         "before removing hardened code."
     )
 }
+if (
+    -not $DryRun.IsPresent -and
+    -not $Uninstall.IsPresent -and
+    -not $testOverride -and
+    (
+        $ExpectedBootstrapScriptSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedSourceAggregateSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedSourceFileCount -lt 1 -or
+        $ExpectedSourceByteCount -lt 1
+    )
+) { throw "Trusted portable source inventory pins are required." }
 if (-not $DryRun.IsPresent -and -not $testOverride) {
-    Invoke-SelfElevated
+    Assert-AlreadyElevated
     Write-ElevationLog 'STARTED' 'Elevated Label code placement started.'
 }
 
@@ -449,6 +497,17 @@ if ($sourceInventory.Count -eq 0) {
     throw "Frozen release code inventory is empty."
 }
 $sourceAggregate = Get-InventoryAggregate $sourceInventory
+$sourceByteCount = [uint64](
+    ($sourceInventory | Measure-Object -Property size -Sum).Sum
+)
+if (
+    -not [string]::IsNullOrWhiteSpace($ExpectedSourceAggregateSha256) -and
+    (
+        $sourceAggregate -cne $ExpectedSourceAggregateSha256 -or
+        $sourceInventory.Count -ne $ExpectedSourceFileCount -or
+        $sourceByteCount -ne $ExpectedSourceByteCount
+    )
+) { throw "Portable source inventory differs from its trusted caller pins." }
 if ($DryRun.IsPresent) {
     Write-Output "bootstrap_status=DRY_RUN"
     Write-Output "code_root=$installRootFull"

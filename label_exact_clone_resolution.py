@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import subprocess
 import uuid
 from typing import Any, Mapping, Sequence
@@ -32,8 +33,14 @@ from user_relay_stop_marker import (
 CONFLICT_CODE = "EXACT_CLONE_RUNTIME_CONFLICT"
 PREIMAGE_SCHEMA = "label-match-exact-clone-conflict-preimage-v1"
 RECEIPT_SCHEMA = "label-match-exact-clone-resolution-v1"
+RECEIPT_SCHEMA_V2 = "label-match-exact-clone-resolution-v2"
 PORTABLE_REBIND_SCHEMA = "label-match-portable-successor-rebind-v1"
+PORTABLE_INVENTORY_SCHEMA = "label-match-portable-full-inventory-v1"
 PORTABLE_MANIFEST_SCHEMA = "label-match-portable-tree-v1"
+PORTABLE_CRITICAL_FILES = {
+    "placement_helper": "INSTALL_THIS_PC.ps1",
+    "bootstrap_integrity_helper": "tools/bootstrap_integrity.ps1",
+}
 MAX_JSON_BYTES = 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _GIT_OBJECT_RE = re.compile(r"[0-9a-f]{40}")
@@ -52,11 +59,15 @@ _FORBIDDEN_RECEIPT_KEYS = frozenset(
 )
 PORTABLE_REBIND_ALLOWED_PATHS = frozenset(
     {
+        "INSTALL_CANONICAL_PORTABLE.ps1",
+        "INSTALL_THIS_PC.ps1",
         "current_user_onboarding.py",
         "label_exact_clone_resolution.py",
         "tests/test_current_user_onboarding.py",
+        "tests/test_canonical_portable_installer.py",
         "tests/test_label_exact_clone_resolution.py",
         "tests/test_label_exact_clone_resolution_receipt_cli.py",
+        "tests/test_zero_touch_installer.py",
         "tools/label_exact_clone_resolution_receipt.py",
     }
 )
@@ -64,6 +75,10 @@ PORTABLE_REBIND_ALLOWED_PATHS = frozenset(
 
 class ExactCloneResolutionError(ValueError):
     """The conflict topology or proposed receipt is not exact."""
+
+
+class EvidencePublicationIndeterminateError(ExactCloneResolutionError):
+    """Evidence may exist because failure happened after destination linking."""
 
 
 def _canonical_json(value: Any) -> str:
@@ -147,12 +162,75 @@ def json_document_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_json_file_bytes(value)).hexdigest()
 
 
-def write_new_json(path: str | os.PathLike[str], value: Mapping[str, Any]) -> Path:
+def _fsync_directory(path: Path) -> None:
+    if os.name != "nt":
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x40000000,  # GENERIC_WRITE
+        0x00000007,  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000,  # FILE_FLAG_BACKUP_SEMANTICS (directory handle)
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        raise OSError(ctypes.get_last_error(), "directory open for fsync failed")
+    try:
+        if not kernel32.FlushFileBuffers(handle):
+            raise OSError(ctypes.get_last_error(), "directory fsync failed")
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _publication_identity(path: Path) -> tuple[int, int, int, int]:
+    value = path.lstat()
+    if path.is_symlink() or not stat.S_ISREG(value.st_mode):
+        raise OSError(f"published evidence is not a regular file: {path}")
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_size),
+        int(value.st_ctime_ns),
+    )
+
+
+def write_new_json(
+    path: str | os.PathLike[str], value: Mapping[str, Any]
+) -> Path:
     selected = Path(path).resolve(strict=False)
     selected.parent.mkdir(parents=True, exist_ok=True)
     temporary = selected.parent / f".{selected.name}.{uuid.uuid4().hex}.tmp"
     raw = _json_file_bytes(value)
+    expected_sha256 = hashlib.sha256(raw).hexdigest()
     descriptor: int | None = None
+    temporary_identity: tuple[int, int, int, int] | None = None
+    link_created = False
     try:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_BINARY"):
@@ -165,12 +243,35 @@ def write_new_json(path: str | os.PathLike[str], value: Mapping[str, Any]) -> Pa
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
+        temporary_identity = _publication_identity(temporary)
         os.link(temporary, selected)
+        link_created = True
+        if (
+            _publication_identity(selected) != temporary_identity
+            or file_sha256(selected) != expected_sha256
+        ):
+            raise EvidencePublicationIndeterminateError(
+                f"exclusive evidence destination changed after link: {selected}"
+            )
+        temporary.unlink()
+        _fsync_directory(selected.parent)
+        if (
+            _publication_identity(selected) != temporary_identity
+            or file_sha256(selected) != expected_sha256
+        ):
+            raise EvidencePublicationIndeterminateError(
+                f"exclusive evidence destination changed before return: {selected}"
+            )
     except FileExistsError as exc:
         raise ExactCloneResolutionError(
             f"refusing to overwrite evidence: {selected}"
         ) from exc
     except OSError as exc:
+        if link_created:
+            raise EvidencePublicationIndeterminateError(
+                "exclusive evidence publication failed after the destination link was "
+                f"created; preserving the path for investigation: {selected}"
+            ) from exc
         raise ExactCloneResolutionError(
             f"exclusive evidence publication failed: {selected}"
         ) from exc
@@ -181,6 +282,10 @@ def write_new_json(path: str | os.PathLike[str], value: Mapping[str, Any]) -> Pa
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
+    if not link_created or temporary_identity is None:
+        raise ExactCloneResolutionError(
+            f"exclusive evidence publication produced no owned file: {selected}"
+        )
     return selected
 
 
@@ -477,6 +582,106 @@ def _portable_binding(portable_root: str | os.PathLike[str]) -> dict[str, Any]:
         "source_tree": source_tree,
         "portable_manifest_sha256": file_sha256(manifest_path),
         "canonical_installer_sha256": installer_hash,
+    }
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        value = path.lstat()
+    except OSError as exc:
+        raise ExactCloneResolutionError(
+            f"portable inventory path is unavailable: {path}"
+        ) from exc
+    attributes = int(getattr(value, "st_file_attributes", 0) or 0)
+    return path.is_symlink() or bool(
+        attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+    )
+
+
+def portable_inventory_binding(
+    portable_root: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Return a complete, path-sensitive portable file inventory digest.
+
+    ``bootstrap-integrity.json`` is the sole exclusion because the canonical
+    installer creates it after copying and independently binds the remaining
+    code inventory.  Every other file is included, and reparse points are
+    rejected rather than traversed.
+    """
+
+    root = Path(os.path.abspath(os.fspath(portable_root)))
+    if not root.is_dir() or _is_reparse_point(root):
+        raise ExactCloneResolutionError(
+            "portable inventory root is absent or is a reparse point"
+        )
+    pending = [root]
+    entries: list[tuple[str, int, str]] = []
+    casefold_paths: set[str] = set()
+    while pending:
+        directory = pending.pop()
+        try:
+            children = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            raise ExactCloneResolutionError(
+                f"portable inventory directory is unreadable: {directory}"
+            ) from exc
+        for child in children:
+            if _is_reparse_point(child):
+                raise ExactCloneResolutionError(
+                    f"portable inventory contains a reparse point: {child}"
+                )
+            try:
+                if child.is_dir():
+                    pending.append(child)
+                    continue
+                if not child.is_file():
+                    raise ExactCloneResolutionError(
+                        f"portable inventory contains a non-file entry: {child}"
+                    )
+                relative = child.relative_to(root).as_posix()
+                if relative.casefold() == "bootstrap-integrity.json":
+                    continue
+                folded = relative.casefold()
+                if folded in casefold_paths:
+                    raise ExactCloneResolutionError(
+                        "portable inventory contains case-insensitive duplicate paths"
+                    )
+                casefold_paths.add(folded)
+                size = child.stat().st_size
+                entries.append((relative, size, file_sha256(child)))
+            except OSError as exc:
+                raise ExactCloneResolutionError(
+                    f"portable inventory file is unreadable: {child}"
+                ) from exc
+    if not entries:
+        raise ExactCloneResolutionError("portable inventory is empty")
+    entries.sort(key=lambda item: item[0])
+    digest = hashlib.sha256(b"label-match-portable-full-inventory-v1\x00")
+    byte_count = 0
+    for relative, size, sha256 in entries:
+        relative_bytes = relative.encode("utf-8")
+        digest.update(len(relative_bytes).to_bytes(8, "big"))
+        digest.update(relative_bytes)
+        digest.update(size.to_bytes(8, "big"))
+        digest.update(bytes.fromhex(sha256))
+        byte_count += size
+    entry_hashes = {relative: sha256 for relative, _size, sha256 in entries}
+    try:
+        critical_file_sha256 = {
+            name: entry_hashes[relative]
+            for name, relative in PORTABLE_CRITICAL_FILES.items()
+        }
+    except KeyError as exc:
+        raise ExactCloneResolutionError(
+            f"portable inventory is missing critical file: {exc.args[0]}"
+        ) from exc
+    return {
+        "schema_version": PORTABLE_INVENTORY_SCHEMA,
+        "algorithm": "sha256-domain-ordinal-path-length-path-size-content-digest-v1",
+        "file_count": len(entries),
+        "byte_count": byte_count,
+        "sha256": digest.hexdigest(),
+        "critical_file_sha256": critical_file_sha256,
     }
 
 
@@ -867,6 +1072,9 @@ def create_portable_successor_receipt(
     expected_successor_tree: str,
     expected_successor_manifest_sha256: str,
     expected_successor_installer_sha256: str,
+    expected_successor_inventory_sha256: str,
+    expected_successor_inventory_file_count: int,
+    expected_successor_inventory_byte_count: int,
     expected_changed_paths_sha256: str,
     client_db_path: str | os.PathLike[str],
     server_db_path: str | os.PathLike[str],
@@ -976,6 +1184,7 @@ def create_portable_successor_receipt(
     ):
         raise ExactCloneResolutionError("portable rebind Git worktree is not clean")
     successor_portable = _portable_binding(portable_root)
+    successor_inventory = portable_inventory_binding(portable_root)
     predecessor_commit = _required_git_object(
         predecessor_portable.get("source_commit"),
         "predecessor portable source_commit",
@@ -1004,6 +1213,18 @@ def create_portable_successor_receipt(
         expected_successor_installer_sha256,
         "expected successor installer SHA-256",
     )
+    pinned_successor_inventory = _required_sha256(
+        expected_successor_inventory_sha256,
+        "expected successor full portable inventory SHA-256",
+    )
+    pinned_successor_inventory_file_count = _positive_int(
+        expected_successor_inventory_file_count,
+        "expected successor full portable inventory file count",
+    )
+    pinned_successor_inventory_byte_count = _positive_int(
+        expected_successor_inventory_byte_count,
+        "expected successor full portable inventory byte count",
+    )
     pinned_changed_paths = _required_sha256(
         expected_changed_paths_sha256,
         "expected successor changed-paths SHA-256",
@@ -1017,6 +1238,16 @@ def create_portable_successor_receipt(
         != pinned_successor_installer
     ):
         raise ExactCloneResolutionError("successor portable differs from explicit pins")
+    if (
+        successor_inventory["sha256"] != pinned_successor_inventory
+        or successor_inventory["file_count"]
+        != pinned_successor_inventory_file_count
+        or successor_inventory["byte_count"]
+        != pinned_successor_inventory_byte_count
+    ):
+        raise ExactCloneResolutionError(
+            "successor full portable inventory differs from explicit pins"
+        )
     if (
         _git_output(selected_repo_root, "rev-parse", "--verify", "HEAD").lower()
         != successor_commit
@@ -1073,9 +1304,27 @@ def create_portable_successor_receipt(
             "portable successor changed-path digest differs from explicit pin"
         )
 
+    if (
+        _portable_binding(portable_root) != successor_portable
+        or portable_inventory_binding(portable_root) != successor_inventory
+    ):
+        raise ExactCloneResolutionError(
+            "successor portable changed during rebind proof"
+        )
+
     successor_receipt = copy.deepcopy(reconstructed)
+    successor_receipt["schema_version"] = RECEIPT_SCHEMA_V2
     successor_receipt["captured_at"] = _utc_now()
     successor_receipt["portable"] = successor_portable
+    successor_receipt["portable_inventory"] = successor_inventory
+    validate_resolution_receipt(
+        successor_receipt,
+        client_db_path=client_db_path,
+        identity_path=identity_path,
+        credential_path=credential_path,
+        stop_marker_path=stop_marker_path,
+        portable_root=portable_root,
+    )
     evidence = {
         "schema_version": PORTABLE_REBIND_SCHEMA,
         "status": "PASS",
@@ -1094,6 +1343,7 @@ def create_portable_successor_receipt(
             ),
         },
         "successor_portable": successor_portable,
+        "successor_portable_inventory": successor_inventory,
         "git_proof": {
             "repo_root": str(selected_repo_root),
             "worktree_clean": True,
@@ -1108,6 +1358,13 @@ def create_portable_successor_receipt(
                 "successor_tree": pinned_successor_tree,
                 "portable_manifest_sha256": pinned_successor_manifest,
                 "canonical_installer_sha256": pinned_successor_installer,
+                "portable_inventory_sha256": pinned_successor_inventory,
+                "portable_inventory_file_count": (
+                    pinned_successor_inventory_file_count
+                ),
+                "portable_inventory_byte_count": (
+                    pinned_successor_inventory_byte_count
+                ),
                 "changed_paths_sha256": pinned_changed_paths,
             },
             "verifier_source": str(verifier_source),
@@ -1116,7 +1373,7 @@ def create_portable_successor_receipt(
         "invariants": {
             "authority_state_revalidated": True,
             "predecessor_receipt_revalidated": True,
-            "receipt_semantics_changed_only_by_capture_time_and_portable": True,
+            "receipt_semantics_changed_only_by_capture_time_portable_and_inventory": True,
             "client_state_mutated": False,
             "server_state_mutated": False,
             "stop_marker_removed": False,
@@ -1148,6 +1405,9 @@ def validate_resolution_receipt(
     portable_root: str | os.PathLike[str],
     allow_portable_relocation: bool = False,
 ) -> dict[str, Any]:
+    schema_version = receipt.get("schema_version")
+    if schema_version not in {RECEIPT_SCHEMA, RECEIPT_SCHEMA_V2}:
+        raise ExactCloneResolutionError("resolution receipt schema differs")
     expected_top = {
         "schema_version",
         "status",
@@ -1161,10 +1421,11 @@ def validate_resolution_receipt(
         "portable",
         "invariants",
     }
+    if schema_version == RECEIPT_SCHEMA_V2:
+        expected_top.add("portable_inventory")
     _require_exact_keys(receipt, expected_top, "resolution receipt")
     if (
-        receipt.get("schema_version") != RECEIPT_SCHEMA
-        or receipt.get("status") != "RESOLVED"
+        receipt.get("status") != "RESOLVED"
         or receipt.get("conflict_code") != CONFLICT_CODE
     ):
         raise ExactCloneResolutionError("resolution receipt status contract differs")
@@ -1237,6 +1498,69 @@ def validate_resolution_receipt(
         raise ExactCloneResolutionError("receipt source portable packet binding differs")
     validated_portable = _portable_binding(portable_root)
     portable_identity_fields = portable_fields - {"root"}
+    receipt_inventory: dict[str, Any] | None = None
+    if schema_version == RECEIPT_SCHEMA_V2:
+        receipt_inventory = dict(receipt.get("portable_inventory") or {})
+        _require_exact_keys(
+            receipt_inventory,
+            {
+                "schema_version",
+                "algorithm",
+                "file_count",
+                "byte_count",
+                "sha256",
+                "critical_file_sha256",
+            },
+            "resolution receipt portable inventory",
+        )
+        if (
+            receipt_inventory.get("schema_version") != PORTABLE_INVENTORY_SCHEMA
+            or receipt_inventory.get("algorithm")
+            != "sha256-domain-ordinal-path-length-path-size-content-digest-v1"
+            or _positive_int(
+                receipt_inventory.get("file_count"),
+                "receipt portable inventory file count",
+            )
+            != receipt_inventory.get("file_count")
+            or _positive_int(
+                receipt_inventory.get("byte_count"),
+                "receipt portable inventory byte count",
+            )
+            != receipt_inventory.get("byte_count")
+            or _required_sha256(
+                receipt_inventory.get("sha256"),
+                "receipt portable inventory SHA-256",
+            )
+            != receipt_inventory.get("sha256")
+        ):
+            raise ExactCloneResolutionError("receipt portable inventory contract differs")
+        critical_file_sha256 = dict(
+            receipt_inventory.get("critical_file_sha256") or {}
+        )
+        _require_exact_keys(
+            critical_file_sha256,
+            set(PORTABLE_CRITICAL_FILES),
+            "resolution receipt critical portable files",
+        )
+        for name, value in critical_file_sha256.items():
+            if _required_sha256(
+                value, f"receipt critical portable file {name} SHA-256"
+            ) != value:
+                raise ExactCloneResolutionError(
+                    "receipt critical portable file binding differs"
+                )
+        if portable_inventory_binding(receipt_portable_root) != receipt_inventory:
+            raise ExactCloneResolutionError(
+                "receipt source full portable inventory differs"
+            )
+        if portable_inventory_binding(portable_root) != receipt_inventory:
+            raise ExactCloneResolutionError(
+                "validated full portable inventory differs"
+            )
+    elif allow_portable_relocation:
+        raise ExactCloneResolutionError(
+            "portable relocation requires a full-inventory v2 receipt"
+        )
     if not allow_portable_relocation and receipt_portable != validated_portable:
         raise ExactCloneResolutionError("receipt portable packet binding differs")
     if allow_portable_relocation and any(
@@ -1325,7 +1649,7 @@ def validate_resolution_receipt(
     if invariants != expected_invariants:
         raise ExactCloneResolutionError("resolution receipt invariants differ")
     return {
-        "schema_version": RECEIPT_SCHEMA,
+        "schema_version": schema_version,
         "status": "RESOLVED",
         "producer_install_id": identity["producer_install_id"],
         "selected_authority_scope": selected_now["authority_scope"],
@@ -1338,6 +1662,9 @@ def validate_resolution_receipt(
         "portable_source_tree": receipt_portable["source_tree"],
         "portable_receipt_root": str(receipt_portable_root.resolve(strict=False)),
         "portable_validated_root": validated_portable["root"],
+        "portable_inventory_sha256": (
+            receipt_inventory["sha256"] if receipt_inventory is not None else ""
+        ),
         "portable_relocated": not _same_path(
             receipt_portable_root,
             validated_portable["root"],
@@ -1349,8 +1676,11 @@ __all__ = [
     "CONFLICT_CODE",
     "PORTABLE_REBIND_ALLOWED_PATHS",
     "PORTABLE_REBIND_SCHEMA",
+    "PORTABLE_INVENTORY_SCHEMA",
     "PREIMAGE_SCHEMA",
     "RECEIPT_SCHEMA",
+    "RECEIPT_SCHEMA_V2",
+    "EvidencePublicationIndeterminateError",
     "ExactCloneResolutionError",
     "capture_conflict_preimage",
     "client_authorities",
@@ -1358,6 +1688,7 @@ __all__ = [
     "create_resolution_receipt",
     "file_sha256",
     "json_document_sha256",
+    "portable_inventory_binding",
     "portable_rebind_changed_paths_sha256",
     "read_bounded_json",
     "read_pinned_json",
