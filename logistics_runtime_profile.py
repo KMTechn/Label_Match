@@ -426,6 +426,24 @@ def _configured_or_preferred_profile_path(
     return _preferred_default_profile_path(environ)
 
 
+def selected_logistics_runtime_profile_path(
+    profile_path: str | os.PathLike[str] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Return the exact profile path selected by the existing trust boundary."""
+
+    values = _runtime_environment(environ)
+    requested_path = str(profile_path or "").strip()
+    configured_path = str(values.get(PROFILE_PATH_ENV) or "").strip()
+    selected = (
+        Path(requested_path).expanduser()
+        if requested_path
+        else _configured_or_preferred_profile_path(configured_path, values)
+    )
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(selected))))
+
+
 default_profile_path = default_logistics_profile_path
 
 
@@ -555,6 +573,53 @@ def _read_profile(path: Path) -> dict[str, Any]:
     return value
 
 
+def inspect_logistics_runtime_profile_identity(
+    profile_path: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Read bounded credential-free fields without opening the DPAPI secret."""
+
+    path = assert_path_has_no_reparse_components(
+        profile_path,
+        label="runtime profile identity",
+    )
+    if not path.exists():
+        raise LogisticsRuntimeConfigurationError("machine logistics profile is missing")
+    profile = _read_profile(path)
+    if "bearer_token" in profile:
+        raise LogisticsRuntimeConfigurationError(
+            "plaintext bearer_token is forbidden in the machine profile"
+        )
+    if profile.get("contract_version") != PROFILE_CONTRACT_VERSION:
+        raise LogisticsRuntimeConfigurationError("machine logistics profile contract_version is invalid")
+    authority_plane = _safe_text(
+        profile.get("authority_plane"), "authority_plane"
+    ).upper()
+    if authority_plane != "AUTHORITATIVE":
+        raise LogisticsRuntimeConfigurationError(
+            "machine logistics authority_plane must be AUTHORITATIVE"
+        )
+    credential_scope = str(profile.get("credential_scope") or "").strip()
+    if len(credential_scope) > 64 or any(
+        ord(character) < 32 for character in credential_scope
+    ):
+        raise LogisticsRuntimeConfigurationError("credential_scope is invalid")
+    return {
+        "contract_version": PROFILE_CONTRACT_VERSION,
+        "credential_scope": credential_scope,
+        "base_url": _https_base_url(profile.get("base_url")),
+        "authority_scope": _safe_text(
+            profile.get("authority_scope"), "authority_scope"
+        ),
+        "authority_epoch": _positive_int(
+            profile.get("authority_epoch"), "authority_epoch"
+        ),
+        "authority_plane": authority_plane,
+        "ledger_plane": _selected_ledger_plane(profile, authority_plane),
+        "plane_epoch": _positive_int(profile.get("plane_epoch"), "plane_epoch"),
+        "profile_path": str(path.resolve()),
+    }
+
+
 def _resolve_secret_path(profile_path: Path, reference: Any) -> Path:
     value = _safe_text(reference, "bearer_token_ref")
     if not value.lower().startswith(DPAPI_REFERENCE_PREFIX):
@@ -630,10 +695,9 @@ def load_logistics_runtime_profile(
     requested_path = str(profile_path or "").strip()
     configured_path = str(values.get(PROFILE_PATH_ENV) or "").strip()
     explicit_path = requested_path or configured_path
-    selected_path = (
-        Path(requested_path).expanduser()
-        if requested_path
-        else _configured_or_preferred_profile_path(configured_path, values)
+    selected_path = selected_logistics_runtime_profile_path(
+        requested_path,
+        environ=values,
     )
     path = assert_path_has_no_reparse_components(
         selected_path,
@@ -774,12 +838,14 @@ __all__ = [
     "assert_path_has_no_reparse_components",
     "default_logistics_profile_path",
     "default_profile_path",
+    "inspect_logistics_runtime_profile_identity",
     "load_logistics_runtime_profile",
     "logistics_runtime_required",
     "profile_from_values",
     "protect_bearer_token",
     "protect_current_user_secret",
     "protect_machine_secret",
+    "selected_logistics_runtime_profile_path",
     "unprotect_current_user_secret",
     "unprotect_machine_secret",
 ]

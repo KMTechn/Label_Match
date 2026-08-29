@@ -181,9 +181,13 @@ import requests
 from item_catalog_sync import (
     ACTIVE_PATH_ENV,
     ItemCatalogSyncError,
+    PROFILE_WARNING_CURRENT_USER_MISMATCH,
+    PROFILE_WARNING_CURRENT_USER_UNREADABLE,
     SNAPSHOT_PARSE_FAILED,
     SNAPSHOT_UNAVAILABLE_AFTER_VERIFY,
     get_catalog_attempt_context,
+    get_catalog_attempt_context_from_error,
+    get_sanitized_catalog_attempt_context,
     get_verified_catalog_snapshot,
     refresh_item_catalog,
     requires_verified_catalog_snapshot,
@@ -18354,6 +18358,21 @@ ITEM_CATALOG_CACHE_WARNING_MESSAGE = (
     "네트워크가 복구되면 다음 실행에서 중앙 목록을 다시 확인합니다."
 )
 ITEM_CATALOG_DIAGNOSTIC_FILENAME = "item_catalog_startup_diagnostic.json"
+LOGISTICS_PROFILE_WARNING_TITLE = "중앙 물류 프로파일 확인 필요"
+LOGISTICS_PROFILE_WARNING_MESSAGES = {
+    PROFILE_WARNING_CURRENT_USER_MISMATCH: (
+        "선택된 중앙 물류 프로파일의 비밀이 아닌 binding이 현재 사용자 설치 "
+        "프로파일과 다릅니다.\n\n"
+        "프로그램은 선택된 프로파일을 유지하지만, IT 담당자는 오래된 설정인지 "
+        "확인하세요."
+    ),
+    PROFILE_WARNING_CURRENT_USER_UNREADABLE: (
+        "선택된 중앙 물류 프로파일과 비교할 현재 사용자 설치 프로파일의 식별 "
+        "정보를 확인할 수 없습니다.\n\n"
+        "프로그램은 선택된 프로파일을 유지하지만, IT 담당자는 사용자 프로파일 "
+        "상태를 확인하세요."
+    ),
+}
 
 FIRST_RUN_ONBOARDING_ERROR_TITLE = "현재 사용자 초기 설정 실패"
 FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
@@ -18397,11 +18416,49 @@ def _show_bootstrap_integrity_absent_warning():
         _label_match_startup_trace("bootstrap_integrity_warning_dialog_unavailable")
 
 
-def _show_item_catalog_startup_error(cause_code):
+def _item_catalog_profile_details_for_display(context):
+    profile_path = str(context.get("selected_profile_path") or "UNKNOWN")
+    authority_scope = str(context.get("selected_authority_scope") or "UNKNOWN")
+    base_url = str(context.get("selected_base_url") or "UNKNOWN")
+    status_code = context.get("http_status_code")
+    reason = str(context.get("http_reason_phrase") or "").strip()
+    request_result = (
+        f"HTTP {status_code}{f' {reason}' if reason else ''}"
+        if status_code is not None
+        else "HTTP 응답 없음"
+    )
+    warning_code = str(context.get("profile_selection_warning") or "").strip()
+    warning_detail = (
+        f"\n프로파일 경고: {warning_code}" if warning_code else ""
+    )
+    return (
+        f"선택 프로파일: {profile_path}\n"
+        f"scope: {authority_scope}\n"
+        f"base: {base_url}\n"
+        f"catalog 요청 결과: {request_result}"
+        f"{warning_detail}"
+    )
+
+
+def _item_catalog_profile_trace_details(context):
+    return {
+        "selected_profile_path": context.get("selected_profile_path"),
+        "selected_authority_scope": context.get("selected_authority_scope"),
+        "selected_base_url": context.get("selected_base_url"),
+        "profile_selection_warning": context.get("profile_selection_warning"),
+    }
+
+
+def _show_item_catalog_startup_error(error):
+    context = get_catalog_attempt_context_from_error(error)
     try:
         messagebox.showerror(
             ITEM_CATALOG_STARTUP_ERROR_TITLE,
-            f"{ITEM_CATALOG_STARTUP_ERROR_MESSAGE}\n오류 코드: {cause_code}",
+            (
+                f"{ITEM_CATALOG_STARTUP_ERROR_MESSAGE}\n\n"
+                f"{_item_catalog_profile_details_for_display(context)}\n"
+                f"오류 코드: {error.cause_code}"
+            ),
         )
     except Exception:  # The fail-closed exit must survive Tk initialization failures.
         _label_match_startup_trace("item_catalog_startup_dialog_unavailable")
@@ -18433,6 +18490,24 @@ def _show_item_catalog_cache_warning(context):
         _label_match_startup_trace("item_catalog_cache_warning_dialog_unavailable")
 
 
+def _show_logistics_profile_warning(context):
+    warning_code = str(context.get("profile_selection_warning") or "")
+    warning_message = LOGISTICS_PROFILE_WARNING_MESSAGES.get(warning_code)
+    if not warning_message:
+        return
+    try:
+        messagebox.showwarning(
+            LOGISTICS_PROFILE_WARNING_TITLE,
+            (
+                f"{warning_message}\n\n"
+                f"{_item_catalog_profile_details_for_display(context)}\n"
+                f"경고 코드: {warning_code}"
+            ),
+        )
+    except Exception:
+        _label_match_startup_trace("logistics_profile_warning_dialog_unavailable")
+
+
 def _item_catalog_diagnostic_path():
     direct_sync_root = str(
         os.environ.get(LABEL_MATCH_DIRECT_SYNC_ROOT_ENV)
@@ -18456,7 +18531,11 @@ def _run_label_match_application():
 
     active_catalog_path = prepare_startup_item_catalog()
     if active_catalog_path is not None:
-        catalog_context = get_catalog_attempt_context()
+        catalog_context = get_sanitized_catalog_attempt_context()
+        _label_match_startup_trace(
+            "item_catalog_profile_selected",
+            **_item_catalog_profile_trace_details(catalog_context),
+        )
         try:
             write_item_catalog_startup_diagnostic(
                 _item_catalog_diagnostic_path()
@@ -18465,6 +18544,7 @@ def _run_label_match_application():
             _label_match_startup_trace(
                 "item_catalog_startup_diagnostic_unavailable"
             )
+        _show_logistics_profile_warning(catalog_context)
         if (
             catalog_context.get("cache_used")
             and catalog_context.get("catalog_source") == "VERIFIED_CACHE"
@@ -18523,6 +18603,7 @@ def main(argv=None):
             data_scope=data_scope,
         )
     except ItemCatalogSyncError as exc:
+        catalog_context = get_catalog_attempt_context_from_error(exc)
         try:
             write_item_catalog_failure_diagnostic(
                 _item_catalog_diagnostic_path(),
@@ -18536,8 +18617,10 @@ def main(argv=None):
             "item_catalog_startup_blocked",
             exit_code=ITEM_CATALOG_STARTUP_EXIT_CODE,
             cause_code=exc.cause_code,
+            http_status_code=catalog_context.get("http_status_code"),
+            **_item_catalog_profile_trace_details(catalog_context),
         )
-        _show_item_catalog_startup_error(exc.cause_code)
+        _show_item_catalog_startup_error(exc)
         return ITEM_CATALOG_STARTUP_EXIT_CODE
     except Exception as exc:
         _label_match_startup_trace(

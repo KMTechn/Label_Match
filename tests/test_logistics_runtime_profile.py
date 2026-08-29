@@ -1013,6 +1013,8 @@ def test_hklm_machine_profile_ignores_process_path_override(tmp_path, monkeypatc
 
     assert resolved is not None
     assert resolved.base_url == "https://logistics.example.invalid"
+    assert Path(resolved.profile_path) == machine.resolve()
+    assert runtime_module.selected_logistics_runtime_profile_path() == machine.resolve()
     assert resolved.required is True
 
 

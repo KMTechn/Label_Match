@@ -72,12 +72,46 @@ class FakeResponse:
 def _profile(**overrides):
     values = {
         "base_url": "https://worker.kmtecherp.com",
+        "authority_scope": "scope-catalog",
+        "authority_epoch": 1,
+        "authority_plane": "AUTHORITATIVE",
+        "ledger_plane": "SHADOW_CANDIDATE",
+        "plane_epoch": 1,
         "bearer_token": SECRET_MARKER,
         "source_host_id": SOURCE_HOST_ID,
         "device_id": DEVICE_ID,
+        "profile_path": "",
+        "required": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def _write_profile_identity(
+    path,
+    *,
+    base_url,
+    authority_scope,
+    authority_epoch=1,
+    plane_epoch=1,
+    credential_scope="current_user",
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": "km-logistics-runtime-profile-v1",
+                "credential_scope": credential_scope,
+                "base_url": base_url,
+                "authority_scope": authority_scope,
+                "authority_epoch": authority_epoch,
+                "authority_plane": "AUTHORITATIVE",
+                "ledger_plane": "SHADOW_CANDIDATE",
+                "plane_epoch": plane_epoch,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -525,6 +559,27 @@ def test_catalog_failure_diagnostic_is_bounded_and_contains_no_secrets(
     source_host_id = "source-host-secret-6b5ffbe0"
     device_id = "device-id-secret-e90547f4"
     bearer_token = "bearer-secret-e30cf16f"
+    machine_profile_path = (
+        tmp_path / "ProgramData" / "KMTech" / "Logistics" / "runtime-profile.json"
+    )
+    _write_profile_identity(
+        machine_profile_path,
+        base_url="https://worker.kmtecherp.com",
+        authority_scope="scope-catalog",
+        credential_scope="machine",
+    )
+    local_app_data = tmp_path / "LocalAppData"
+    current_user_profile_path = (
+        local_app_data / sync.CURRENT_USER_PROFILE_RELATIVE_PATH
+    )
+    current_user_base_url = "https://current-user-only.invalid:18456"
+    current_user_scope = "scope-current-user-only"
+    _write_profile_identity(
+        current_user_profile_path,
+        base_url=current_user_base_url,
+        authority_scope=current_user_scope,
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     monkeypatch.setattr(
         logistics_runtime_profile,
         "load_logistics_runtime_profile",
@@ -532,6 +587,7 @@ def test_catalog_failure_diagnostic_is_bounded_and_contains_no_secrets(
             bearer_token=bearer_token,
             source_host_id=source_host_id,
             device_id=device_id,
+            profile_path=str(machine_profile_path),
         ),
     )
 
@@ -563,11 +619,21 @@ def test_catalog_failure_diagnostic_is_bounded_and_contains_no_secrets(
     assert diagnostic["request_sent"] is True
     assert diagnostic["http_status_code"] == 503
     assert diagnostic["http_reason_phrase"] == "Service Unavailable"
+    assert diagnostic["selected_profile_path"] == str(machine_profile_path)
+    assert diagnostic["selected_authority_scope"] == "scope-catalog"
+    assert diagnostic["selected_base_url"] == "https://worker.kmtecherp.com"
+    assert (
+        diagnostic["profile_selection_warning"]
+        == sync.PROFILE_WARNING_CURRENT_USER_MISMATCH
+    )
     assert diagnostic["cache_state"] == "ABSENT"
     assert diagnostic["exception_type"] == "OSError"
     assert diagnostic_path.stat().st_size <= 8192
     for secret in (bearer_token, source_host_id, device_id, "Authorization", "Bearer"):
         assert secret not in diagnostic_text
+    assert str(current_user_profile_path) not in diagnostic_text
+    assert current_user_base_url not in diagnostic_text
+    assert current_user_scope not in diagnostic_text
 
 
 def test_redirect_response_is_rejected_and_uses_last_good_cache(
@@ -641,10 +707,25 @@ def test_central_refresh_success_and_offline_last_good(monkeypatch, tmp_path):
     bundle = tmp_path / "bundle.csv"
     cache = tmp_path / "cache" / "Item.csv"
     bundle.write_bytes(CATALOG)
+    machine_profile_path = tmp_path / "ProgramData" / "runtime-profile.json"
+    _write_profile_identity(
+        machine_profile_path,
+        base_url="https://worker.kmtecherp.com",
+        authority_scope="scope-catalog",
+        credential_scope="machine",
+    )
+    local_app_data = tmp_path / "LocalAppData"
+    _write_profile_identity(
+        local_app_data / sync.CURRENT_USER_PROFILE_RELATIVE_PATH,
+        base_url="https://current-user-only.invalid:18456",
+        authority_scope="scope-current-user-only",
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    profile = _profile(profile_path=str(machine_profile_path))
     monkeypatch.setattr(
         logistics_runtime_profile,
         "load_logistics_runtime_profile",
-        lambda required=None: _profile(),
+        lambda required=None: profile,
     )
     assert refresh_item_catalog(
         bundle,
@@ -658,6 +739,19 @@ def test_central_refresh_success_and_offline_last_good(monkeypatch, tmp_path):
     )
     assert SECRET_MARKER not in sync._cache_recovery_path(cache).read_text(
         encoding="utf-8"
+    )
+    ready_diagnostic_path = tmp_path / "status" / "ready.json"
+    sync.write_item_catalog_startup_diagnostic(ready_diagnostic_path)
+    ready_diagnostic = json.loads(
+        ready_diagnostic_path.read_text(encoding="utf-8")
+    )
+    assert ready_diagnostic["status"] == "READY"
+    assert ready_diagnostic["selected_profile_path"] == str(machine_profile_path)
+    assert ready_diagnostic["selected_authority_scope"] == "scope-catalog"
+    assert ready_diagnostic["selected_base_url"] == "https://worker.kmtecherp.com"
+    assert (
+        ready_diagnostic["profile_selection_warning"]
+        == sync.PROFILE_WARNING_CURRENT_USER_MISMATCH
     )
     assert refresh_item_catalog(
         bundle,
@@ -680,6 +774,93 @@ def test_central_refresh_success_and_offline_last_good(monkeypatch, tmp_path):
     assert diagnostic["catalog_source"] == "VERIFIED_CACHE"
     assert diagnostic["cache_used"] is True
     assert diagnostic["cache_last_modified_utc"] != "UNKNOWN"
+    assert diagnostic["selected_profile_path"] == str(machine_profile_path)
+    assert diagnostic["selected_authority_scope"] == "scope-catalog"
+    assert diagnostic["selected_base_url"] == "https://worker.kmtecherp.com"
+    assert (
+        diagnostic["profile_selection_warning"]
+        == sync.PROFILE_WARNING_CURRENT_USER_MISMATCH
+    )
+
+
+def test_catalog_profile_selection_context_resets_between_attempts(
+    monkeypatch, tmp_path
+):
+    bundle = tmp_path / "bundle.csv"
+    bundle.write_bytes(CATALOG)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    selected = tmp_path / "selected" / "runtime-profile.json"
+    selected.parent.mkdir(parents=True)
+    selected.write_text("{}", encoding="utf-8")
+    active_profile = [_profile(profile_path=str(selected))]
+    monkeypatch.setattr(
+        logistics_runtime_profile,
+        "load_logistics_runtime_profile",
+        lambda required=None: active_profile[0],
+    )
+
+    refresh_item_catalog(
+        bundle,
+        cache_path=tmp_path / "enrolled.csv",
+        url=PRODUCTION_CATALOG_URL,
+        get=lambda *_args, **_kwargs: FakeResponse(CATALOG),
+    )
+    assert sync.get_sanitized_catalog_attempt_context()[
+        "selected_profile_path"
+    ] == str(selected)
+
+    active_profile[0] = None
+    refresh_item_catalog(
+        bundle,
+        cache_path=tmp_path / "unenrolled.csv",
+        url=UNAUTHENTICATED_OVERRIDE_URL,
+        get=lambda *_args, **_kwargs: FakeResponse(CATALOG),
+    )
+    context = sync.get_sanitized_catalog_attempt_context()
+    assert context["selected_profile_path"] == ""
+    assert context["selected_authority_scope"] == ""
+    assert context["selected_base_url"] == ""
+    assert context["profile_selection_warning"] is None
+
+
+def test_current_user_profile_comparison_normalizes_origin_and_checks_scope(
+    monkeypatch, tmp_path
+):
+    local_app_data = tmp_path / "LocalAppData"
+    current_user_path = local_app_data / sync.CURRENT_USER_PROFILE_RELATIVE_PATH
+    selected_path = tmp_path / "selected" / "runtime-profile.json"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    _write_profile_identity(
+        selected_path,
+        base_url="https://PROFILE.EXAMPLE.INVALID:443",
+        authority_scope="scope-shared",
+    )
+    _write_profile_identity(
+        current_user_path,
+        base_url="https://profile.example.invalid",
+        authority_scope="scope-shared",
+    )
+    profile = _profile(
+        base_url="https://PROFILE.EXAMPLE.INVALID:443",
+        authority_scope="scope-shared",
+        profile_path=str(selected_path),
+        bearer_token="selected-token-not-compared",
+        source_host_id="selected-source-not-compared",
+        device_id="selected-device-not-compared",
+    )
+
+    assert sync._current_user_profile_warning(profile) is None
+
+    _write_profile_identity(
+        selected_path,
+        base_url="https://PROFILE.EXAMPLE.INVALID:443",
+        authority_scope="scope-shared",
+        credential_scope="machine",
+    )
+    assert (
+        sync._current_user_profile_warning(profile)
+        == sync.PROFILE_WARNING_CURRENT_USER_MISMATCH
+    )
 
 
 def test_authenticated_cache_survives_same_host_closed_port_outage(

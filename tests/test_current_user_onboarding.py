@@ -121,6 +121,15 @@ def test_paths_separate_code_and_current_user_state(tmp_path):
     assert paths.direct_sync_root == (
         tmp_path / "local-app-data" / "KMTech" / "DirectSync" / "label_match"
     ).resolve()
+    assert paths.logistics_profile_path == (
+        tmp_path
+        / "local-app-data"
+        / "KMTech"
+        / "Logistics"
+        / "profiles"
+        / "Label_Match"
+        / "runtime-profile.json"
+    ).resolve()
     assert paths.ledger_path.name == "package_logistics_outbox.sqlite3"
     assert paths.app_root not in paths.data_root.parents
 

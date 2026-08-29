@@ -387,6 +387,21 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
             app_module.ItemCatalogSyncError(
                 sensitive_marker,
                 cause_code=catalog_sync.REQUEST_FAILED_NO_CACHE,
+                diagnostic_context={
+                    "request_sent": True,
+                    "http_status_code": 503,
+                    "http_reason_phrase": "Service Unavailable",
+                    "selected_profile_path": (
+                        r"C:\ProgramData\KMTech\Logistics\profiles"
+                        r"\Label_Match\runtime-profile.json"
+                    ),
+                    "selected_authority_scope": "TEST1-STALE-SCOPE",
+                    "selected_base_url": "https://stale.example.invalid",
+                    "profile_selection_warning": (
+                        catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH
+                    ),
+                    "unexpected_secret": sensitive_marker,
+                },
             )
         ),
     )
@@ -421,6 +436,11 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     assert len(dialogs) == 1
     assert "중앙 품목 목록" in dialogs[0][0]
     assert "IT 담당자" in dialogs[0][1]
+    assert r"C:\ProgramData\KMTech\Logistics" in dialogs[0][1]
+    assert "TEST1-STALE-SCOPE" in dialogs[0][1]
+    assert "https://stale.example.invalid" in dialogs[0][1]
+    assert "HTTP 503 Service Unavailable" in dialogs[0][1]
+    assert catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH in dialogs[0][1]
     assert sensitive_marker not in dialogs[0][0]
     assert sensitive_marker not in dialogs[0][1]
     assert sensitive_marker not in repr(traces)
@@ -430,6 +450,16 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
         {
             "exit_code": 3,
             "cause_code": catalog_sync.REQUEST_FAILED_NO_CACHE,
+            "http_status_code": 503,
+            "selected_profile_path": (
+                r"C:\ProgramData\KMTech\Logistics\profiles"
+                r"\Label_Match\runtime-profile.json"
+            ),
+            "selected_authority_scope": "TEST1-STALE-SCOPE",
+            "selected_base_url": "https://stale.example.invalid",
+            "profile_selection_warning": (
+                catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH
+            ),
         },
     ) in traces
 
@@ -456,7 +486,7 @@ def test_main_warns_and_continues_with_verified_catalog_cache(
     )
     monkeypatch.setattr(
         app_module,
-        "get_catalog_attempt_context",
+        "get_sanitized_catalog_attempt_context",
         lambda: {
             "catalog_source": "VERIFIED_CACHE",
             "cache_used": True,
@@ -504,10 +534,105 @@ def test_main_warns_and_continues_with_verified_catalog_cache(
     assert app_module.main([]) == 0
     assert calls[0] == ("main_enter", {})
     assert calls[1] == "catalog"
-    assert calls[2] == ("diagnostic", diagnostic_path)
+    assert calls[2] == (
+        "item_catalog_profile_selected",
+        {
+            "selected_profile_path": None,
+            "selected_authority_scope": None,
+            "selected_base_url": None,
+            "profile_selection_warning": None,
+        },
+    )
+    assert calls[3] == ("diagnostic", diagnostic_path)
     assert "client-created" in calls
     assert "mainloop" in calls
     assert len(dialogs) == 1
     assert dialogs[0][0] == app_module.ITEM_CATALOG_CACHE_WARNING_TITLE
     assert "2026-08-28" in dialogs[0][1]
     assert "UNKNOWN" not in dialogs[0][1]
+
+
+def test_main_warns_and_continues_when_selected_profile_conflicts_with_install(
+    monkeypatch, tmp_path
+):
+    import Label_Match as app_module
+
+    calls = []
+    warnings = []
+    sensitive_marker = "alternate-profile-token-must-not-leak"
+    selected_path = (
+        r"C:\ProgramData\KMTech\Logistics\profiles"
+        r"\Label_Match\runtime-profile.json"
+    )
+    context = {
+        "catalog_source": "CENTRAL_REFRESH",
+        "cache_used": False,
+        "cache_last_modified_utc": "UNKNOWN",
+        "http_status_code": 200,
+        "http_reason_phrase": "OK",
+        "selected_profile_path": selected_path,
+        "selected_authority_scope": "TEST1-SELECTED-SCOPE",
+        "selected_base_url": "https://selected.example.invalid:18456",
+        "profile_selection_warning": (
+            catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH
+        ),
+    }
+    monkeypatch.setattr(app_module, "resolve_data_scope", lambda **_kwargs: str(tmp_path))
+    monkeypatch.setattr(
+        app_module,
+        "run_guarded_entrypoint",
+        lambda start, *, data_scope: start(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "prepare_startup_item_catalog",
+        lambda: calls.append("catalog") or str(tmp_path / "Item.csv"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_sanitized_catalog_attempt_context",
+        lambda: dict(context),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "write_item_catalog_startup_diagnostic",
+        lambda path: calls.append(("diagnostic", Path(path))),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda title, message: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_label_match_startup_trace",
+        lambda stage, **details: calls.append((stage, details)),
+    )
+
+    class FakeLabelMatch:
+        FILES = app_module.Label_Match.FILES
+
+        def __init__(self):
+            calls.append("client-created")
+
+        def title(self):
+            return "Label Match"
+
+        def state(self):
+            return "normal"
+
+        def mainloop(self):
+            calls.append("mainloop")
+
+    monkeypatch.setattr(app_module, "Label_Match", FakeLabelMatch)
+
+    assert app_module.main([]) == 0
+    assert len(warnings) == 1
+    assert warnings[0][0] == app_module.LOGISTICS_PROFILE_WARNING_TITLE
+    assert selected_path in warnings[0][1]
+    assert "TEST1-SELECTED-SCOPE" in warnings[0][1]
+    assert "https://selected.example.invalid:18456" in warnings[0][1]
+    assert catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH in warnings[0][1]
+    assert sensitive_marker not in repr(warnings)
+    assert "client-created" in calls
+    assert "mainloop" in calls

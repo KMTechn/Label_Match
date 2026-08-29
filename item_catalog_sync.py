@@ -18,6 +18,12 @@ from urllib.parse import urlsplit
 
 import requests
 
+from logistics_runtime_profile import (
+    DEFAULT_PROFILE_RELATIVE_PATH,
+    inspect_logistics_runtime_profile_identity,
+    selected_logistics_runtime_profile_path,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +42,13 @@ CACHE_AUTHORITY_SCHEMA = "kmtech.item-catalog.authority.v2"
 CACHE_RECOVERY_SCHEMA = "kmtech.item-catalog.recovery.v1"
 CACHE_HMAC_KEY_LABEL = b"kmtech:item-catalog-cache:v2:key"
 CACHE_HMAC_DOMAIN = b"kmtech:item-catalog-cache:v2:record\0"
-CATALOG_DIAGNOSTIC_SCHEMA = "kmtech.label-match.item-catalog-startup-diagnostic.v1"
+CATALOG_DIAGNOSTIC_SCHEMA = "kmtech.label-match.item-catalog-startup-diagnostic.v2"
+CURRENT_USER_PROFILE_RELATIVE_PATH = DEFAULT_PROFILE_RELATIVE_PATH
+PROFILE_WARNING_CURRENT_USER_MISMATCH = "CURRENT_USER_PROFILE_MISMATCH"
+PROFILE_WARNING_CURRENT_USER_UNREADABLE = "CURRENT_USER_PROFILE_UNREADABLE"
+PROFILE_WARNING_CODES = frozenset(
+    {PROFILE_WARNING_CURRENT_USER_MISMATCH, PROFILE_WARNING_CURRENT_USER_UNREADABLE}
+)
 PROFILE_LOAD_FAILED = "PROFILE_LOAD_FAILED"
 PROFILE_INCOMPLETE = "PROFILE_INCOMPLETE"
 URL_NOT_TRUSTED = "URL_NOT_TRUSTED"
@@ -125,6 +137,10 @@ def _empty_catalog_attempt_context() -> dict[str, object]:
         "profile_present": False,
         "qualification_authority_id_present": False,
         "tls_ca_bundle_configured": False,
+        "selected_profile_path": "",
+        "selected_authority_scope": "",
+        "selected_base_url": "",
+        "profile_selection_warning": None,
         "exception_type": "",
         "catalog_source": "UNKNOWN",
         "cache_path": "",
@@ -201,6 +217,36 @@ def _bounded_timestamp(value: object) -> str:
     return parsed.astimezone(dt.timezone.utc).isoformat()
 
 
+def _bounded_visible_text(value: object, *, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text or any(ord(character) < 32 for character in text):
+        return ""
+    return text[:limit]
+
+
+def _credential_free_base_url(value: object) -> str:
+    text = _bounded_visible_text(value, limit=2048).rstrip("/")
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        return ""
+    return text
+
+
 def _sanitized_catalog_attempt_context(
     context: Mapping[str, object],
 ) -> dict[str, object]:
@@ -231,6 +277,11 @@ def _sanitized_catalog_attempt_context(
     cache_state = str(context.get("cache_state") or "NOT_CHECKED")
     if cache_state not in _CACHE_STATES:
         cache_state = "NOT_CHECKED"
+    profile_selection_warning = str(
+        context.get("profile_selection_warning") or ""
+    )
+    if profile_selection_warning not in PROFILE_WARNING_CODES:
+        profile_selection_warning = ""
     return {
         "catalog_url": {
             "scheme": str(url.get("scheme") or "")[:32],
@@ -253,6 +304,16 @@ def _sanitized_catalog_attempt_context(
         "tls_ca_bundle_configured": bool(
             context.get("tls_ca_bundle_configured")
         ),
+        "selected_profile_path": _bounded_visible_text(
+            context.get("selected_profile_path"), limit=4096
+        ),
+        "selected_authority_scope": _bounded_visible_text(
+            context.get("selected_authority_scope"), limit=200
+        ),
+        "selected_base_url": _credential_free_base_url(
+            context.get("selected_base_url")
+        ),
+        "profile_selection_warning": profile_selection_warning or None,
         "exception_type": _bounded_exception_type(context.get("exception_type")),
         "catalog_source": catalog_source,
         "cache_path": str(context.get("cache_path") or "")[:4096],
@@ -304,6 +365,10 @@ def get_catalog_attempt_context_from_error(
     error: ItemCatalogSyncError,
 ) -> dict[str, object]:
     return _sanitized_catalog_attempt_context(error.diagnostic_context)
+
+
+def get_sanitized_catalog_attempt_context() -> dict[str, object]:
+    return _sanitized_catalog_attempt_context(get_catalog_attempt_context())
 
 
 def write_item_catalog_failure_diagnostic(
@@ -393,11 +458,113 @@ def resolve_catalog_url(environ: Mapping[str, str] | None = None) -> str:
     return base_url.rstrip("/") + CATALOG_PATH
 
 
+def _redact_exact_values(value: object, redacted_values: tuple[str, ...]) -> str:
+    text = str(value or "")
+    for secret in redacted_values:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def _normalized_profile_origin(value: object) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(str(value or "").rstrip("/"))
+        host = str(parsed.hostname or "").casefold()
+        port = parsed.port or 443
+    except ValueError:
+        return None
+    if parsed.scheme.casefold() != "https" or not host or not 1 <= port <= 65535:
+        return None
+    return "https", host, port
+
+
+def _profile_identity_tuple(identity: Mapping[str, object]) -> tuple[object, ...]:
+    credential_scope = str(identity.get("credential_scope") or "").strip().lower()
+    return (
+        str(identity.get("contract_version") or ""),
+        credential_scope,
+        _normalized_profile_origin(identity.get("base_url")),
+        str(identity.get("authority_scope") or ""),
+        int(identity.get("authority_epoch") or 0),
+        str(identity.get("authority_plane") or "").upper(),
+        str(identity.get("ledger_plane") or "").upper(),
+        int(identity.get("plane_epoch") or 0),
+    )
+
+
+def _current_user_profile_warning(profile: object) -> str | None:
+    local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    selected_path = str(getattr(profile, "profile_path", "") or "").strip()
+    if not local_app_data or not selected_path:
+        return None
+    current_user_path = Path(local_app_data) / CURRENT_USER_PROFILE_RELATIVE_PATH
+    if os.path.normcase(os.path.abspath(selected_path)) == os.path.normcase(
+        os.path.abspath(current_user_path)
+    ):
+        return None
+    try:
+        if not current_user_path.is_file():
+            return None
+        current_user_identity = inspect_logistics_runtime_profile_identity(
+            current_user_path
+        )
+    except Exception:  # noqa: BLE001 - warning-only inspection stays non-blocking.
+        return PROFILE_WARNING_CURRENT_USER_UNREADABLE
+    try:
+        selected_identity = inspect_logistics_runtime_profile_identity(selected_path)
+    except Exception:  # noqa: BLE001 - the selected profile was already loaded.
+        selected_identity = {
+            "contract_version": "km-logistics-runtime-profile-v1",
+            "credential_scope": "machine",
+            "base_url": getattr(profile, "base_url", ""),
+            "authority_scope": getattr(profile, "authority_scope", ""),
+            "authority_epoch": getattr(profile, "authority_epoch", 0),
+            "authority_plane": getattr(profile, "authority_plane", ""),
+            "ledger_plane": getattr(profile, "ledger_plane", ""),
+            "plane_epoch": getattr(profile, "plane_epoch", 0),
+        }
+    if not str(selected_identity.get("credential_scope") or "").strip():
+        selected_identity["credential_scope"] = "machine"
+    if _profile_identity_tuple(selected_identity) != _profile_identity_tuple(
+        current_user_identity
+    ):
+        return PROFILE_WARNING_CURRENT_USER_MISMATCH
+    return None
+
+
+def _profile_diagnostic_context(profile: object) -> dict[str, object]:
+    secrets = _profile_secret_values(profile)
+    return {
+        "selected_profile_path": _redact_exact_values(
+            getattr(profile, "profile_path", ""), secrets
+        ),
+        "selected_authority_scope": _redact_exact_values(
+            getattr(profile, "authority_scope", ""), secrets
+        ),
+        "selected_base_url": _redact_exact_values(
+            getattr(profile, "base_url", ""), secrets
+        ),
+        "profile_selection_warning": _current_user_profile_warning(profile),
+    }
+
+
 def _load_item_catalog_logistics_profile() -> Any | None:
     from logistics_runtime_profile import load_logistics_runtime_profile
 
+    try:
+        selected_path = selected_logistics_runtime_profile_path()
+    except Exception:  # noqa: BLE001 - the loader below remains authoritative.
+        selected_path = None
+    if selected_path is not None:
+        _update_catalog_attempt_context(selected_profile_path=str(selected_path))
     profile = load_logistics_runtime_profile(required=None)
     if profile is None:
+        _update_catalog_attempt_context(
+            selected_profile_path="",
+            selected_authority_scope="",
+            selected_base_url="",
+            profile_selection_warning=None,
+        )
         return None
     qualification_authority_id_present = bool(
         str(
@@ -417,6 +584,7 @@ def _load_item_catalog_logistics_profile() -> Any | None:
         tls_ca_bundle_configured=bool(
             str(getattr(profile, "tls_ca_bundle_path", "") or "").strip()
         ),
+        **_profile_diagnostic_context(profile),
     )
     if not all(
         (

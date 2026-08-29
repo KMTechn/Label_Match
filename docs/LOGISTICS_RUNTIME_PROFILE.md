@@ -39,6 +39,14 @@ try {
 같이 설치한다. 둘 중 하나라도 Machine에 있으면 동명 process 값은 사용하지 않는다.
 토큰을 명령줄, JSON, 로그, report에 넣지 않는다. 회전은 `--replace`로 명시한다.
 
+Machine 값의 우선권은 fleet 관리자가 일반 사용자나 process 환경으로 중앙 authority를
+바꾸지 못하게 하는 의도된 trust boundary다. 따라서 Machine anchor와
+`%LOCALAPPDATA%\KMTech\Logistics\profiles\Label_Match\runtime-profile.json`이 함께
+있어도 앱은 Machine 프로파일을 선택하며 사용자 프로파일로 자동 fallback하지 않는다.
+두 프로파일의 credential-free identity(scope, base URL, authority/plane epoch)가 다르면
+앱은 선택한 프로파일의 경로·scope·base와 안정된 경고 코드를 기동 진단 및 화면에 남기되,
+Machine 선택을 바꾸거나 사용자 프로파일의 token·device/source identity를 노출하지 않는다.
+
 `KM_LOGISTICS_REQUIRED=1`에서는 프로필·HTTPS·authority·인증 capability를 Tk 시작 전에
 검증한다. 하나라도 실패하면 포장을 시작하지 않는다. 실행 도중 중앙 client가 없더라도
 `LEGACY_DIRECT_SYNC_ONLY` 또는 수기 완료로 내려가지 않고
