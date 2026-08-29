@@ -327,7 +327,7 @@ def validate_live_client_proof(
     expected_hash = str(preimage_sha256 or "").lower()
     if (
         proof.get("schema_version") != LIVE_CLIENT_PROOF_SCHEMA
-        or proof.get("query_version") != "label-match-old-fence-liveness-query-v2"
+        or proof.get("query_version") != "label-match-old-fence-liveness-query-v3"
         or proof.get("snapshot_isolation") != "sqlite-explicit-read-transaction"
         or proof.get("status") != "PASS"
         or proof.get("preimage_sha256") != expected_hash
@@ -815,21 +815,23 @@ def validate_server_endpoint_binding(
         process_created_at=created_at,
     )
     command_line = process.cmdline()
-    launchers = [Path(value).resolve(strict=True) for value in command_line if value.lower().endswith("run_https.py")]
     launcher = Path(expected_launcher_path).resolve(strict=True)
     executable = Path(expected_executable_path).resolve(strict=True)
     launcher_hash = str(expected_launcher_sha256 or "").strip().lower()
     executable_hash = str(expected_executable_sha256 or "").strip().lower()
     if (
-        len(launchers) != 1
-        or not _same_path(launchers[0], launcher)
-        or not _same_path(process.exe(), executable)
-        or not command_line
+        len(command_line) != 3
         or not _same_path(command_line[0], executable)
+        or command_line[1] != "-u"
+        or not _same_path(command_line[2], launcher)
+        or not _same_path(process.exe(), executable)
         or file_sha256(launcher) != launcher_hash
         or file_sha256(executable) != executable_hash
+        or launcher.stat().st_mtime > created_at + 1
     ):
-        raise GuardedRuntimeReconcileError("server listener launcher is not uniquely identified")
+        raise GuardedRuntimeReconcileError(
+            "server listener executable/launcher argv is not the exact pinned command"
+        )
     return {
         "status": "PASS",
         "endpoint_origin": urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")),
@@ -873,15 +875,19 @@ class _SourceCommitBoundSession:
         self.post_count = 0
 
     def post(self, url: str, **kwargs: Any) -> Any:
-        self.last_pre_dispatch_guard = dict(self._pre_dispatch_guard())
-        if self.last_pre_dispatch_guard.get("status") != "PASS":
-            raise GuardedRuntimeReconcileError("immediate pre-dispatch guard did not pass")
+        if self.post_count != 0:
+            raise GuardedRuntimeReconcileError(
+                "guarded runtime acquire permits exactly one POST attempt"
+            )
+        self.post_count = 1
         before = dict(self._endpoint_validator(**self._endpoint_validator_kwargs))
         if before != self._expected_binding:
             raise GuardedRuntimeReconcileError(
                 "server endpoint binding changed immediately before runtime acquire"
             )
-        self.post_count += 1
+        self.last_pre_dispatch_guard = dict(self._pre_dispatch_guard())
+        if self.last_pre_dispatch_guard.get("status") != "PASS":
+            raise GuardedRuntimeReconcileError("immediate pre-dispatch guard did not pass")
         response = self._session.post(url, **kwargs)
         if (
             response.headers.get("X-KMTech-Source-Commit", "").strip().lower()

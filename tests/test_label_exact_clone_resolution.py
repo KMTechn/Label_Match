@@ -647,7 +647,7 @@ def test_guarded_reconcile_uses_normal_acquirer_and_emits_real_receipt(tmp_path)
     now = datetime.now(timezone.utc)
     proof = {
         "schema_version": LIVE_CLIENT_PROOF_SCHEMA,
-        "query_version": "label-match-old-fence-liveness-query-v2",
+        "query_version": "label-match-old-fence-liveness-query-v3",
         "snapshot_isolation": "sqlite-explicit-read-transaction",
         "status": "PASS",
         "preimage_sha256": hashlib.sha256(preimage_path.read_bytes()).hexdigest(),
@@ -743,7 +743,7 @@ def test_live_client_proof_rejects_a_claimed_window_that_does_not_match_times():
     now = datetime.now(timezone.utc)
     proof = {
         "schema_version": LIVE_CLIENT_PROOF_SCHEMA,
-        "query_version": "label-match-old-fence-liveness-query-v2",
+        "query_version": "label-match-old-fence-liveness-query-v3",
         "snapshot_isolation": "sqlite-explicit-read-transaction",
         "status": "PASS",
         "preimage_sha256": "a" * 64,
@@ -802,7 +802,7 @@ def test_guarded_reconcile_keeps_client_fail_closed_after_dispatch_ambiguity(tmp
         proof_path,
         {
             "schema_version": LIVE_CLIENT_PROOF_SCHEMA,
-            "query_version": "label-match-old-fence-liveness-query-v2",
+            "query_version": "label-match-old-fence-liveness-query-v3",
             "snapshot_isolation": "sqlite-explicit-read-transaction",
             "status": "PASS",
             "preimage_sha256": hashlib.sha256(preimage_path.read_bytes()).hexdigest(),

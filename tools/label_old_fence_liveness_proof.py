@@ -16,7 +16,7 @@ import uuid
 
 
 SCHEMA = "label-match-old-fence-liveness-proof-v1"
-QUERY_VERSION = "label-match-old-fence-liveness-query-v2"
+QUERY_VERSION = "label-match-old-fence-liveness-query-v3"
 
 
 def _canonical(value: object) -> bytes:
@@ -156,7 +156,7 @@ def _server_snapshot(path: Path, preimage: dict) -> dict:
     }
 
 
-def _client_snapshot(path: Path) -> dict:
+def _client_snapshot(path: Path, old_authority_scope: str) -> dict:
     connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only=ON")
@@ -171,8 +171,10 @@ def _client_snapshot(path: Path) -> dict:
         nonterminal = int(
             connection.execute(
                 """SELECT COUNT(*) FROM direct_sync_runtime_authority
-                    WHERE assigned_relay_id IS NOT NULL
-                       OR pending_request_json IS NOT NULL"""
+                    WHERE authority_scope=?
+                      AND (assigned_relay_id IS NOT NULL
+                           OR pending_request_json IS NOT NULL)""",
+                (old_authority_scope,),
             ).fetchone()[0]
         )
         connection.commit()
@@ -228,7 +230,8 @@ Get-CimInstance Win32_Service -ErrorAction Stop | ForEach-Object {{
 
 def _snapshot(args: argparse.Namespace, preimage: dict) -> dict:
     server = _server_snapshot(args.server_db, preimage)
-    client = _client_snapshot(args.client_db)
+    old_scope = str(preimage["client"]["prior_authority"]["authority_scope"])
+    client = _client_snapshot(args.client_db, old_scope)
     marker_hash = _sha256(args.stop_marker)
     host = _host_counts(args.canonical_root, args.direct_sync_root)
     return {**server, **client, **host, "stop_marker_sha256": marker_hash}
