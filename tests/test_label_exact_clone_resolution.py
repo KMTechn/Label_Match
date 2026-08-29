@@ -683,6 +683,8 @@ def test_guarded_reconcile_uses_normal_acquirer_and_emits_real_receipt(tmp_path)
     ca_path.write_text("fixture-ca\n", encoding="utf-8")
 
     def acquire(**_kwargs):
+        _kwargs["session"].last_pre_dispatch_guard = {"status": "PASS"}
+        _kwargs["session"].post_count = 1
         _resolve_fixture(paths)
         return RuntimePreparation(
             status_code=200,
@@ -834,6 +836,8 @@ def test_guarded_reconcile_keeps_client_fail_closed_after_dispatch_ambiguity(tmp
     ca_path.write_text("fixture-ca\n", encoding="utf-8")
 
     def reject(**_kwargs):
+        _kwargs["session"].last_pre_dispatch_guard = {"status": "PASS"}
+        _kwargs["session"].post_count = 1
         return RuntimePreparation(
             operator_review=True,
             error_code="fixture_rejected",

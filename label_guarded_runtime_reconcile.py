@@ -533,6 +533,71 @@ def _git_source_binding(
     return result
 
 
+def _git_full_runtime_source_binding(
+    source_root: Path,
+    *,
+    source_commit: str,
+    process_created_at: float,
+) -> dict[str, Any]:
+    """Bind every tracked runtime source and reject untracked shadow modules."""
+
+    try:
+        status = subprocess.run(
+            [
+                "git", "-C", str(source_root), "status", "--porcelain=v1",
+                "--untracked-files=all",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        tree = subprocess.run(
+            ["git", "-C", str(source_root), "rev-parse", f"{source_commit}^{{tree}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip().lower()
+        python_output = subprocess.run(
+            ["git", "-C", str(source_root), "ls-files", "-z", "--", "*.py"],
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GuardedRuntimeReconcileError(
+            "full server runtime source binding is unavailable"
+        ) from exc
+    if status:
+        raise GuardedRuntimeReconcileError(
+            "server runtime source worktree is not completely clean"
+        )
+    names = [
+        value.decode("utf-8")
+        for value in python_output.split(b"\0")
+        if value
+    ]
+    if not names:
+        raise GuardedRuntimeReconcileError("server runtime source has no tracked Python files")
+    newest_mtime = 0.0
+    for name in names:
+        selected = (source_root / name).resolve(strict=True)
+        try:
+            selected.relative_to(source_root)
+        except ValueError as exc:
+            raise GuardedRuntimeReconcileError(
+                "tracked server runtime source escaped its root"
+            ) from exc
+        newest_mtime = max(newest_mtime, selected.stat().st_mtime)
+    if newest_mtime > process_created_at + 1:
+        raise GuardedRuntimeReconcileError(
+            "a tracked server runtime source changed after process start"
+        )
+    return {
+        "source_tree": tree,
+        "worktree_clean": True,
+        "tracked_python_file_count": len(names),
+        "newest_tracked_python_mtime_epoch": newest_mtime,
+    }
+
+
 def _independent_initializer_replay(
     *,
     snapshot: Path,
@@ -744,6 +809,11 @@ def validate_server_endpoint_binding(
         raise GuardedRuntimeReconcileError(
             "a deployed source file changed after the listener process started"
         )
+    full_source = _git_full_runtime_source_binding(
+        selected_root,
+        source_commit=commit,
+        process_created_at=created_at,
+    )
     command_line = process.cmdline()
     launchers = [Path(value).resolve(strict=True) for value in command_line if value.lower().endswith("run_https.py")]
     launcher = Path(expected_launcher_path).resolve(strict=True)
@@ -773,6 +843,7 @@ def validate_server_endpoint_binding(
         "launcher_path": str(launcher),
         "launcher_sha256": launcher_hash,
         "source_files": source_files,
+        "full_runtime_source": full_source,
         "secret_material_included": False,
     }
 
@@ -787,6 +858,7 @@ class _SourceCommitBoundSession:
         expected_source_commit: str,
         endpoint_validator: Callable[..., Mapping[str, Any]],
         endpoint_validator_kwargs: Mapping[str, Any],
+        pre_dispatch_guard: Callable[[], Mapping[str, Any]],
     ) -> None:
         import requests
 
@@ -796,13 +868,20 @@ class _SourceCommitBoundSession:
         self._expected_source_commit = expected_source_commit.strip().lower()
         self._endpoint_validator = endpoint_validator
         self._endpoint_validator_kwargs = dict(endpoint_validator_kwargs)
+        self._pre_dispatch_guard = pre_dispatch_guard
+        self.last_pre_dispatch_guard: dict[str, Any] = {}
+        self.post_count = 0
 
     def post(self, url: str, **kwargs: Any) -> Any:
+        self.last_pre_dispatch_guard = dict(self._pre_dispatch_guard())
+        if self.last_pre_dispatch_guard.get("status") != "PASS":
+            raise GuardedRuntimeReconcileError("immediate pre-dispatch guard did not pass")
         before = dict(self._endpoint_validator(**self._endpoint_validator_kwargs))
         if before != self._expected_binding:
             raise GuardedRuntimeReconcileError(
                 "server endpoint binding changed immediately before runtime acquire"
             )
+        self.post_count += 1
         response = self._session.post(url, **kwargs)
         if (
             response.headers.get("X-KMTech-Source-Commit", "").strip().lower()
@@ -1375,11 +1454,27 @@ def run_guarded_runtime_reconcile(
         expected_schema_version=int(initializer_proof["live_schema_version"]),
     )
     proof_readback = validate_live_client_proof(proof, **proof_validation_kwargs)
+    def _immediate_pre_dispatch_guard() -> dict[str, Any]:
+        server_readback = _server_live_snapshot_readback(
+            server_db_path=server_db_path,
+            producer_install_id=str(preimage.get("producer_install_id") or ""),
+            expected_logical_digest=dict(initializer_proof["before_logical_digest"]),
+            expected_schema_version=int(initializer_proof["live_schema_version"]),
+        )
+        liveness_readback = validate_live_client_proof(
+            proof, **proof_validation_kwargs
+        )
+        return {
+            "status": "PASS",
+            "server": server_readback,
+            "liveness": liveness_readback,
+        }
     bound_session = _SourceCommitBoundSession(
         expected_binding=endpoint_binding_before,
         expected_source_commit=server_source_commit,
         endpoint_validator=endpoint_validator,
         endpoint_validator_kwargs=endpoint_validator_kwargs,
+        pre_dispatch_guard=_immediate_pre_dispatch_guard,
     )
     client_prepare = prepare_client_compare_and_swap(
         client_db_path=client_db_path,
@@ -1390,7 +1485,7 @@ def run_guarded_runtime_reconcile(
     prior_server = dict(dict(preimage["server"])["prior_active_lease"])
     preparation: RuntimePreparation | None = None
     try:
-        for _attempt in range(3):
+        for _attempt in range(1):
             preparation = authority_acquirer(
                 db_path=client_db_path,
                 credentials=credentials,
@@ -1412,6 +1507,14 @@ def run_guarded_runtime_reconcile(
             server_forward=True,
         ) from exc
     assert preparation is not None
+    if (
+        bound_session.post_count != 1
+        or bound_session.last_pre_dispatch_guard.get("status") != "PASS"
+    ):
+        raise GuardedRuntimeReconcileError(
+            "runtime acquirer did not use the once-only guarded HTTPS session",
+            server_forward=True,
+        )
     try:
         endpoint_binding_after = dict(endpoint_validator(**endpoint_validator_kwargs))
         if endpoint_binding_after != endpoint_binding_before:
@@ -1475,6 +1578,7 @@ def run_guarded_runtime_reconcile(
         "server_initializer_proof": initializer_readback,
         "server_initializer_final_readback": final_initializer_readback,
         "server_endpoint_binding": endpoint_binding_after,
+        "immediate_pre_dispatch_guard": bound_session.last_pre_dispatch_guard,
         "client_prepare": client_prepare,
         "server_transition": {
             **server_state,
