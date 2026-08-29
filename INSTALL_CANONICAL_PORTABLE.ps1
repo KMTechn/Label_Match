@@ -374,6 +374,10 @@ function Get-SourcePlan([string]$Root, [string]$Target) {
     $pe = Get-PeInventory $Root
     Assert-PeGate $pe
     $existing = Get-ExistingInstallPlan $Target
+    [int64]$sourceByteCount = 0
+    foreach ($row in $inventory) {
+        $sourceByteCount += [int64]$row.bytes
+    }
     return [ordered]@{
         source_root = $Root
         source_manifest_path = $manifestPath
@@ -381,7 +385,7 @@ function Get-SourcePlan([string]$Root, [string]$Target) {
         source_commit = [string]$manifest.source_commit
         source_tree = [string]$manifest.source_tree
         source_file_count = $inventory.Count
-        source_byte_count = [int64](($inventory | Measure-Object -Property bytes -Sum).Sum)
+        source_byte_count = $sourceByteCount
         source_inventory_sha256 = Get-InventoryAggregate $inventory
         installer_sha256 = Get-Sha256 (Join-Path $Root 'INSTALL_CANONICAL_PORTABLE.ps1')
         pe = $pe
