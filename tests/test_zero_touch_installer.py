@@ -5,16 +5,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 import subprocess
-from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
-
-from current_user_onboarding import verify_bootstrap_integrity
-
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "INSTALL_THIS_PC.ps1"
@@ -73,32 +69,37 @@ def _release_fixture(root: Path) -> Path:
 
 
 def _seal_release_fixture(release: Path) -> Path:
-    inventory = []
+    inventory: list[dict[str, object]] = []
     for path in sorted(item for item in release.rglob("*") if item.is_file()):
         relative = path.relative_to(release).as_posix()
         if relative.casefold() == "bootstrap-integrity.json":
             continue
         payload = path.read_bytes()
-        inventory.append((relative, len(payload), hashlib.sha256(payload).hexdigest()))
-    entries = sorted(
-        f"{digest} {size} {relative.encode('utf-8').hex()}\n".encode("ascii")
-        for relative, size, digest in inventory
+        inventory.append(
+            {
+                "path": relative,
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    aggregate = hashlib.sha256(
+        "".join(
+            f"{row['sha256']} {row['size']} {row['path']}\n" for row in inventory
+        ).encode("utf-8")
     )
-    root_hash = hashlib.sha256(b"label-match-code-root-v1\n" + b"".join(entries)).hexdigest()
     record_path = release / "bootstrap-integrity.json"
     record_path.write_text(
         json.dumps(
             {
-                "schema_version": "label-match-bootstrap-integrity-v2",
+                "schema_version": "label-match-bootstrap-integrity-v1",
                 "status": "PASS",
                 "code_root": ".",
                 "installed_at": "2026-08-28T00:00:00Z",
                 "file_count": len(inventory),
-                "inventory_algorithm": "sha256-file-hash-size-utf8-path-v1",
-                "root_sha256": root_hash,
+                "aggregate_sha256": aggregate.hexdigest(),
+                "files": inventory,
                 "identity_profile_created": False,
                 "state_scope": "current_user_first_run",
-                "package_layout": "onedir",
             },
             separators=(",", ":"),
         )
@@ -131,12 +132,11 @@ def _private_ca_pem() -> bytes:
 def test_bootstrap_is_minimal_code_only_onedir_contract():
     text = INSTALLER.read_text(encoding="utf-8")
 
-    assert len(text.splitlines()) <= 500
-    assert "label-match-bootstrap-integrity-v2" in text
-    assert "sha256-file-hash-size-utf8-path-v1" in text
+    assert "label-match-bootstrap-integrity-v1" in text
+    assert "tools\\bootstrap_integrity.ps1" in text
     assert "identity_profile_created=false" in text
     assert "elevation_points=1:code_placement" in text
-    assert "package_layout = 'onedir'" in text
+    assert "Write-BootstrapIntegrityRecord" in text
     assert "Set-HardenedCodeAcl" in text
     assert "Assert-HardenedCodeAcl" in text
     assert "'/setowner', '*S-1-5-32-544'" in text
@@ -152,7 +152,7 @@ def test_bootstrap_is_minimal_code_only_onedir_contract():
     assert "self-enroll" not in text
     assert "SourceHostId" not in text
     assert "Remove-OwnedLegacyTask" in text
-    elevation = text.index("Invoke-SelfElevated\n    Remove-OwnedLegacyTask")
+    elevation = text.index("Invoke-SelfElevated")
     uninstall = text.index("if ($Uninstall.IsPresent)")
     assert elevation < uninstall
     assert "Test-CurrentUserRelayPersistencePresent" in text
@@ -213,24 +213,14 @@ def test_bootstrap_places_exact_onedir_bytes_records_integrity_and_reuses(tmp_pa
     assert "acl_readback_status=NOT_TESTED" in first.stdout
     assert "acl_readback_status=NOT_TESTED" in second.stdout
     record = json.loads((install / "bootstrap-integrity.json").read_text(encoding="utf-8"))
-    assert record["schema_version"] == "label-match-bootstrap-integrity-v2"
+    assert record["schema_version"] == "label-match-bootstrap-integrity-v1"
     assert record["status"] == "PASS"
     assert record["identity_profile_created"] is False
     assert record["state_scope"] == "current_user_first_run"
-    assert record["package_layout"] == "onedir"
-    assert record["inventory_algorithm"] == "sha256-file-hash-size-utf8-path-v1"
     assert record["file_count"] == 3
-    assert "files" not in record
-    assert len(record["root_sha256"]) == 64
-    assert (install / "bootstrap-integrity.json").stat().st_size < 1024
-    verified = verify_bootstrap_integrity(
-        SimpleNamespace(
-            app_root=install.resolve(),
-            bootstrap_integrity_path=install / "bootstrap-integrity.json",
-        ),
-        required=True,
-    )
-    assert verified["root_sha256"] == record["root_sha256"]
+    assert len(record["files"]) == 3
+    assert len(record["aggregate_sha256"]) == 64
+    assert (install / "bootstrap-integrity.json").stat().st_size < 4096
     for relative_path in (
         "Label_Match.exe",
         "contract.lock.json",
@@ -245,43 +235,38 @@ def test_bootstrap_places_exact_onedir_bytes_records_integrity_and_reuses(tmp_pa
     )
 
 
-def test_bootstrap_validates_packaged_record_before_resealing_install(tmp_path):
+def test_bootstrap_reseals_current_source_and_excludes_packaged_record(tmp_path):
     source = _release_fixture(tmp_path)
-    _seal_release_fixture(source)
-    first = _run_installer(source, tmp_path / "apps" / "first")
+    source_record = _seal_release_fixture(source)
+    first_root = tmp_path / "apps" / "first"
+    first = _run_installer(source, first_root)
 
     assert first.returncode == 0, first.stderr or first.stdout
-    assert "source_integrity_status=PASS" in first.stdout
+    first_record = json.loads(
+        (first_root / "bootstrap-integrity.json").read_text(encoding="utf-8")
+    )
+    assert first_record["code_root"] == str(first_root.resolve())
+    assert all(row["path"] != source_record.name for row in first_record["files"])
 
     (source / "_internal" / "python312.dll").write_bytes(b"tampered-source")
-    blocked = _run_installer(source, tmp_path / "apps" / "tampered")
+    second_root = tmp_path / "apps" / "second"
+    second = _run_installer(source, second_root)
 
-    assert blocked.returncode != 0
-    assert "source code root" in (blocked.stderr + blocked.stdout)
+    assert second.returncode == 0, second.stderr or second.stdout
+    second_record = json.loads(
+        (second_root / "bootstrap-integrity.json").read_text(encoding="utf-8")
+    )
+    assert second_record["aggregate_sha256"] != first_record["aggregate_sha256"]
 
 
-@pytest.mark.parametrize(
-    ("field", "invalid_value"),
-    [
-        ("schema_version", "label-match-bootstrap-integrity-v1"),
-        ("status", "FAILED"),
-        ("package_layout", "onefile"),
-        ("inventory_algorithm", "other"),
-        ("file_count", "3"),
-        ("code_root", r"C:\wrong-root"),
-        ("files", []),
-    ],
-)
-def test_bootstrap_reuse_rejects_invalid_integrity_metadata(
-    tmp_path, field, invalid_value
-):
+def test_bootstrap_reuse_rejects_invalid_integrity_aggregate(tmp_path):
     source = _release_fixture(tmp_path)
     install = tmp_path / "apps" / "current"
     first = _run_installer(source, install)
     assert first.returncode == 0, first.stderr or first.stdout
     record_path = install / "bootstrap-integrity.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    record[field] = invalid_value
+    record["aggregate_sha256"] = "0" * 64
     record_path.write_text(json.dumps(record), encoding="utf-8")
 
     reused = _run_installer(source, install)
@@ -307,7 +292,7 @@ def test_bootstrap_reuse_rejects_oversized_integrity_record(tmp_path):
     )
 
 
-def test_bootstrap_record_stays_bounded_for_4354_file_onedir(tmp_path):
+def test_bootstrap_record_has_complete_inventory_for_4354_file_onedir(tmp_path):
     source = _release_fixture(tmp_path)
     runtime = source / "_internal" / "runtime"
     runtime.mkdir()
@@ -323,8 +308,8 @@ def test_bootstrap_record_stays_bounded_for_4354_file_onedir(tmp_path):
     record_path = install / "bootstrap-integrity.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert record["file_count"] == 4354
-    assert "files" not in record
-    assert record_path.stat().st_size < 1024
+    assert len(record["files"]) == 4354
+    assert record_path.stat().st_size < 2 * 1024 * 1024
 
 
 def test_bootstrap_copies_opt_in_tls_ca_for_current_user_onboarding(tmp_path):

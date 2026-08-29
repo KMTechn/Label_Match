@@ -1,663 +1,452 @@
-<#
-Label_Match canonical zero-PE portable installer.
-
-This product-owned installer is deliberately fail-closed and ships inside the
-immutable portable root.  It implements the shared one-session v1 interface.
-
-Current-user onboarding, HKCU Run, current-user Limited PT1M task registration,
-identity/credential recovery, and relay launch stay in the product's
---onboard-current-user implementation.  This script owns only elevated code
-placement and its exact code rollback so a parent orchestrator can use one UAC
-session for several apps.
-#>
-
 [CmdletBinding()]
 param(
-    [string]$SourceRoot = '',
-    [string]$InstallRoot = 'C:\KMTech\Apps\Label_Match\current',
-    [string]$EvidencePath = '',
+    [string]$SourceRoot = "",
+    [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
+    [string]$EvidencePath = "",
     [switch]$PlanOnly,
-    [switch]$CodePlacementOnly,
-    [switch]$Rollback
+    [switch]$AllowNoncanonicalLayoutForTest,
+    [switch]$SkipSignatureValidationForTest
 )
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
+# TEMPLATE-CONFIG-GUARD-BEGIN
+# This guard is the only behavior added to the accepted installer template.
+# It is inert after every Label placeholder is replaced and fails closed before then.
+$TemplateConfigurationValues = @(
+    'C:\KMTech\Apps\Label_Match\current',
+    'KMTech\Label_Match\install-audit',
+    'KMTech\DirectSync\label_match\control\label_match_user_relay.stop.json',
+    'KMTech\DirectSync\label_match\status',
+    'label-match-canonical-portable-install-v1',
+    'label-match-portable-tree-v1',
+    'launch-label-match.cmd',
+    'KMTech.LabelMatch.Relay',
+    '--label-match-user-relay',
+    'label_match_user_relay.json',
+    'Label_Match'
+)
+$unresolvedTemplateValues = @($TemplateConfigurationValues | Where-Object {
+    [string]$_ -match '^__[A-Z0-9_]+__$'
+})
+if ($unresolvedTemplateValues.Count -ne 0) {
+    throw 'Installer template is not configured.'
+}
+# TEMPLATE-CONFIG-GUARD-END
 
-$Config = [ordered]@{
-    contract_version = 'kmtech-canonical-portable-installer-v1'
-    app_id = 'label_match'
-    app_name = 'Label_Match'
-    manifest_schema = 'label-match-portable-tree-v1'
-    canonical_install_root = 'C:\KMTech\Apps\Label_Match\current'
-    hkcu_run_name = 'KMTech.LabelMatch.Relay'
-    persistent_relay_mode = '--label-match-user-relay'
-    scheduled_task_name = 'direct-sync-relay-label-match'
-    installed_owner_receipt_name = '.kmtech-canonical-install-owner.json'
-    expected_pe_count = 46
-    required_relative_paths = @(
+$ErrorActionPreference = 'Stop'
+$CanonicalRoot = 'C:\KMTech\Apps\Label_Match\current'
+$RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+$RunName = 'KMTech.LabelMatch.Relay'
+$testMode = $AllowNoncanonicalLayoutForTest -and
+    [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
+if ($SkipSignatureValidationForTest -and -not $testMode) {
+    throw 'Signature bypass is test-only.'
+}
+
+function Full([string]$Value, [string]$Purpose) {
+    if (-not [IO.Path]::IsPathRooted($Value) -or $Value.StartsWith('\\?\')) {
+        throw "$Purpose must be an ordinary absolute path."
+    }
+    $result = [IO.Path]::GetFullPath($Value).TrimEnd('\')
+    if ($result -eq [IO.Path]::GetPathRoot($result)) { throw "$Purpose is too broad." }
+    return $result
+}
+
+function Same([string]$Left, [string]$Right) {
+    return (Full $Left 'left path').Equals((Full $Right 'right path'), 'OrdinalIgnoreCase')
+}
+
+function Sha([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $hash.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Arg([string]$Value) {
+    if ($Value.Contains('"')) { throw 'A command path contains a quote.' }
+    if ($Value -match '\s') { return '"' + $Value + '"' }
+    return $Value
+}
+
+function Command([string]$Root) {
+    return ('{0} -I -B {1} --label-match-user-relay' -f
+        (Arg (Join-Path $Root 'runtime\pythonw.exe')),
+        (Arg (Join-Path $Root 'app\main.py')))
+}
+
+function Manifest([string]$Root, [bool]$UnsignedOk) {
+    foreach ($relative in @(
         'portable-manifest.json',
         'runtime\python.exe',
         'runtime\pythonw.exe',
         'app\main.py',
         'launch-label-match.cmd',
         'INSTALL_CANONICAL_PORTABLE.ps1',
-        'INSTALL_THIS_PC.ps1'
-    )
-}
-function Assert-TemplateConfigured {
-    foreach ($property in $Config.GetEnumerator()) {
-        if ([string]$property.Value -match '__[A-Z0-9_]+__') {
-            throw "Installer template is not configured: $($property.Key)"
+        'INSTALL_THIS_PC.ps1',
+        'tools\bootstrap_integrity.ps1'
+    )) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) {
+            throw "Portable tree is missing $relative."
         }
     }
-    if ($InstallRoot -match '__[A-Z0-9_]+__') {
-        throw 'Installer template InstallRoot is not configured.'
+    foreach ($item in @((Get-Item $Root -Force)) + @(Get-ChildItem $Root -Force -Recurse)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Portable tree contains a reparse point: $($item.FullName)"
+        }
     }
+    $path = Join-Path $Root 'portable-manifest.json'
+    if ((Get-Item $path).Length -gt 65536) { throw 'Portable manifest is oversized.' }
+    $value = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (
+        [string]$value.schema -cne 'label-match-portable-tree-v1' -or
+        [string]$value.entrypoint -cne 'runtime/pythonw.exe app/main.py' -or
+        [string]$value.launcher -cne 'launch-label-match.cmd' -or
+        @($value.allowed_unsigned_app_pe).Count -ne 0 -or
+        @($value.forbidden_package_roots).Count -ne 0 -or
+        (Sha (Join-Path $Root 'runtime\pythonw.exe')) -cne
+            ([string]$value.runtime_pythonw_sha256).ToLowerInvariant() -or
+        (Sha (Join-Path $Root 'launch-label-match.cmd')) -cne
+            ([string]$value.launcher_sha256).ToLowerInvariant()
+    ) {
+        throw 'Portable manifest readback failed.'
+    }
+    if (-not $UnsignedOk) {
+        foreach ($relative in @('runtime\python.exe', 'runtime\pythonw.exe')) {
+            if ([string](Get-AuthenticodeSignature (Join-Path $Root $relative)).Status -cne 'Valid') {
+                throw "Signed CPython readback failed: $relative"
+            }
+        }
+    }
+    return $value
 }
 
-function Get-FullPath([string]$Value, [string]$Purpose) {
-    if ([string]::IsNullOrWhiteSpace($Value) -or -not [IO.Path]::IsPathRooted($Value)) {
-        throw "$Purpose must be an absolute path."
-    }
-    if ($Value.StartsWith('\\?\') -or $Value.StartsWith('\\.\')) {
-        throw "$Purpose must not use a device namespace."
-    }
-    $full = [IO.Path]::GetFullPath($Value).TrimEnd('\')
-    if ($full -eq [IO.Path]::GetPathRoot($full)) {
-        throw "$Purpose must not be a filesystem root."
-    }
-    return $full
-}
-
-function Test-SamePath([string]$Left, [string]$Right) {
+function Snapshot {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($RunKey, $false)
+    if ($null -eq $key) { return [ordered]@{ exists = $false; kind = ''; data = '' } }
     try {
-        return (Get-FullPath $Left 'left path').Equals(
-            (Get-FullPath $Right 'right path'),
-            [StringComparison]::OrdinalIgnoreCase
+        try { $kind = [string]$key.GetValueKind($RunName) }
+        catch [IO.IOException] { return [ordered]@{ exists = $false; kind = ''; data = '' } }
+        if ($kind -notin @('String', 'ExpandString')) { throw "Unsupported Run type: $kind" }
+        $data = [string]$key.GetValue(
+            $RunName,
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
         )
+        return [ordered]@{ exists = $true; kind = $kind; data = $data }
+    }
+    finally { $key.Dispose() }
+}
+
+function Restore($Before) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($RunKey, $true)
+    try {
+        if ([bool]$Before.exists) {
+            $key.SetValue(
+                $RunName,
+                [string]$Before.data,
+                [Microsoft.Win32.RegistryValueKind]::$($Before.kind)
+            )
+        }
+        else { $key.DeleteValue($RunName, $false) }
+    }
+    finally { $key.Dispose() }
+}
+
+function Save([string]$Path, $Value) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    $temp = "$Path.tmp.$PID"
+    [IO.File]::WriteAllText(
+        $temp,
+        ($Value | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+        (New-Object Text.UTF8Encoding($false))
+    )
+    Move-Item $temp $Path -Force
+}
+
+function Relays {
+    return @(Get-CimInstance Win32_Process | Where-Object {
+        [string]$_.CommandLine -like '*--label-match-user-relay*' -and
+        [string]$_.ExecutablePath -match '(?i)(pythonw?\.exe|Label_Match\.exe)$'
+    })
+}
+
+function Product([string]$Root, [string]$Mode) {
+    $args = '-I -B {0} {1} --app-root {2}' -f
+        (Arg (Join-Path $Root 'app\main.py')),
+        $Mode,
+        (Arg $Root)
+    $process = Start-Process `
+        (Join-Path $Root 'runtime\pythonw.exe') `
+        -ArgumentList $args `
+        -WindowStyle Hidden `
+        -PassThru
+    # Start-Process -Wait includes the persistent relay child; wait only for the product host.
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "Product mode failed: $Mode/$($process.ExitCode)" }
+}
+
+function StartRaw([string]$Line) {
+    $created = Invoke-CimMethod `
+        -ClassName Win32_Process `
+        -MethodName Create `
+        -Arguments @{ CommandLine = $Line }
+    if ([uint32]$created.ReturnValue -ne 0) { throw 'Rollback process start failed.' }
+    return [int]$created.ProcessId
+}
+
+if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
+$source = Full $SourceRoot 'SourceRoot'
+$install = Full $InstallRoot 'InstallRoot'
+if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
+    throw 'InstallRoot is not canonical.'
+}
+$sourceManifest = Manifest $source $SkipSignatureValidationForTest
+$wanted = Command $install
+if ($PlanOnly) {
+    "install_status=PLAN_ONLY"
+    "install_root=$install"
+    "autostart_command=$wanted"
+    'registry_changed=false'
+    exit 0
+}
+
+$runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' +
+    [Guid]::NewGuid().ToString('N')
+$lad = Full $env:LOCALAPPDATA 'LOCALAPPDATA'
+$localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
+$auditPath = Join-Path $localAuditRoot "canonical-portable-$runId.json"
+$elevationLogPath = Join-Path $localAuditRoot "canonical-portable-$runId-elevated.jsonl"
+$statusRoot = Join-Path $lad 'KMTech\DirectSync\label_match\status'
+$stop = Join-Path $lad 'KMTech\DirectSync\label_match\control\label_match_user_relay.stop.json'
+$onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
+$removalPath = Join-Path $statusRoot 'current_user_removal.json'
+$relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
+$before = Snapshot
+$old = @(Relays)
+$stopBefore = [ordered]@{ exists = $false; sha256 = ''; backup_path = '' }
+if (Test-Path -LiteralPath $stop -PathType Leaf) {
+    New-Item -ItemType Directory -Path $localAuditRoot -Force | Out-Null
+    $stopBackup = Join-Path $localAuditRoot "canonical-portable-$runId-stop-preimage.json"
+    Copy-Item -LiteralPath $stop -Destination $stopBackup -Force
+    $stopBefore = [ordered]@{
+        exists = $true
+        sha256 = Sha $stop
+        backup_path = $stopBackup
+    }
+}
+if ([bool]$stopBefore.exists -and $old.Count -gt 0) {
+    throw 'Relay preimage is internally inconsistent: stop marker and running relay coexist.'
+}
+$audit = [ordered]@{
+    schema = 'label-match-canonical-portable-install-v1'
+    status = 'PREIMAGE_SAVED'
+    run_id = $runId
+    captured_at = (Get-Date).ToUniversalTime().ToString('o')
+    install_root = $install
+    code_placement = 'PENDING'
+    source_commit = [string]$sourceManifest.source_commit
+    runtime_pythonw_sha256 = Sha (Join-Path $source 'runtime\pythonw.exe')
+    runtime_pythonw_signature = [string](
+        Get-AuthenticodeSignature (Join-Path $source 'runtime\pythonw.exe')
+    ).Status
+    elevation_log_path = $elevationLogPath
+    registry_value = $RunName
+    preimage = $before
+    after = [ordered]@{ exists = $true; kind = 'String'; data = $wanted }
+    relay_process_preimage_count = $old.Count
+    stop_marker_path = $stop
+    stop_marker_preimage = $stopBefore
+    rollback = [ordered]@{ available = $true; applied = $false; runtime_restored = $false }
+}
+Save $auditPath $audit
+if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+
+$winps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$placement = 'INSTALL_REQUIRED'
+$existingVerified = $false
+if (Test-Path $install -PathType Container) {
+    try {
+        $candidate = Manifest $install $SkipSignatureValidationForTest
+        $helper = (Join-Path $PSScriptRoot 'tools\bootstrap_integrity.ps1').Replace("'", "''")
+        $escapedRoot = $install.Replace("'", "''")
+        & $winps -NoLogo -NoProfile -NonInteractive -Command `
+            ". '$helper'; [void](Assert-BootstrapIntegrityRecord '$escapedRoot')"
+        if ($LASTEXITCODE -ne 0) { throw 'integrity differs' }
+        $existingVerified = $true
+        if (
+            [string]$candidate.source_commit -ceq [string]$sourceManifest.source_commit -and
+            (Sha (Join-Path $install 'runtime\pythonw.exe')) -ceq
+                (Sha (Join-Path $source 'runtime\pythonw.exe'))
+        ) { $placement = 'REUSED_VERIFIED' }
     }
     catch {
-        return $false
+        $existingVerified = $false
+        $placement = 'INSTALL_REQUIRED'
     }
 }
-
-function Test-PathInside([string]$Candidate, [string]$Root) {
-    $candidateFull = (Get-FullPath $Candidate 'candidate path') + '\'
-    $rootFull = (Get-FullPath $Root 'root path') + '\'
-    return $candidateFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)
+if ($placement -eq 'INSTALL_REQUIRED') {
+    if ((Test-Path $install -PathType Container) -and -not $existingVerified) {
+        throw 'Existing canonical tree is not eligible for verified replacement.'
+    }
+    $bootstrap = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'INSTALL_THIS_PC.ps1'),
+        '-SourceRoot',
+        $source,
+        '-InstallRoot',
+        $install,
+        '-ElevationLogPath',
+        $elevationLogPath
+    )
+    if ($testMode) { $bootstrap += '-AllowNoncanonicalLayoutForTest' }
+    if ($existingVerified) { $bootstrap += '-ReplaceExistingVerifiedPortable' }
+    & $winps @bootstrap
+    if ($LASTEXITCODE -ne 0) { throw "Code placement failed: $LASTEXITCODE" }
+    $placement = 'PASS'
 }
-
-function Assert-SafeOwnedWorkPath([string]$Path, [string]$Parent, [string]$Prefix) {
-    $full = Get-FullPath $Path 'owned work path'
-    $parentFull = Get-FullPath $Parent 'owned work parent'
-    if (-not (Test-PathInside $full $parentFull)) {
-        throw 'Owned work path escaped its canonical parent.'
-    }
-    if (-not ([IO.Path]::GetFileName($full)).StartsWith($Prefix, [StringComparison]::Ordinal)) {
-        throw 'Owned work path has an unexpected name.'
-    }
-    return $full
+$installedManifest = Manifest $install $SkipSignatureValidationForTest
+if ([string]$installedManifest.source_commit -cne [string]$sourceManifest.source_commit) {
+    throw 'Installed identity differs.'
 }
+$audit.code_placement = $placement
+$audit.runtime_pythonw_sha256 = Sha (Join-Path $install 'runtime\pythonw.exe')
+$audit.runtime_pythonw_signature = [string](
+    Get-AuthenticodeSignature (Join-Path $install 'runtime\pythonw.exe')
+).Status
+Save $auditPath $audit
+if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
 
-function Get-Sha256([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-}
-
-function Write-JsonAtomic([string]$Path, $Payload, [switch]$AllowReplace) {
-    $full = Get-FullPath $Path 'evidence path'
-    if (-not $full.StartsWith('E:\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Production evidence must be written to E:.'
-    }
-    if ((Test-Path -LiteralPath $full) -and -not $AllowReplace.IsPresent) {
-        throw 'Refusing to overwrite an existing evidence path.'
-    }
-    $parent = Split-Path -Parent $full
-    New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
-    $temporary = Join-Path $parent ('.{0}.{1}.{2}.tmp' -f ([IO.Path]::GetFileName($full)), $PID, [guid]::NewGuid().ToString('N'))
-    try {
-        $json = $Payload | ConvertTo-Json -Depth 30
-        [IO.File]::WriteAllText($temporary, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-        Move-Item -LiteralPath $temporary -Destination $full -Force:$AllowReplace.IsPresent -ErrorAction Stop
-    }
-    finally {
-        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Read-BoundedJson([string]$Path, [int64]$MaximumBytes = 1048576) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "JSON file is absent: $Path" }
-    $item = Get-Item -LiteralPath $Path -Force
-    if ($item.Length -le 0 -or $item.Length -gt $MaximumBytes) { throw "JSON file size is invalid: $Path" }
-    return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
-}
-
-function Assert-NoReparsePoint([string]$Root) {
-    $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
-    foreach ($item in @($rootItem) + @(Get-ChildItem -LiteralPath $Root -Force -Recurse -ErrorAction Stop)) {
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Reparse points are forbidden: $($item.FullName)"
-        }
-    }
-}
-
-function Get-RelativePath([string]$Root, [string]$Path) {
-    $rootFull = (Get-FullPath $Root 'inventory root') + '\'
-    $pathFull = Get-FullPath $Path 'inventory path'
-    if (-not $pathFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Inventory path escaped its root.'
-    }
-    return $pathFull.Substring($rootFull.Length).Replace('\', '/')
-}
-
-function Get-CodeInventory([string]$Root) {
-    $receiptName = [string]$Config.installed_owner_receipt_name
-    $rows = [Collections.Generic.List[object]]::new()
-    foreach ($file in @(Get-ChildItem -LiteralPath $Root -File -Force -Recurse -ErrorAction Stop)) {
-        $relative = Get-RelativePath $Root $file.FullName
-        if ($relative -ceq $receiptName) { continue }
-        $rows.Add([ordered]@{
-            path = $relative
-            bytes = [int64]$file.Length
-            sha256 = Get-Sha256 $file.FullName
-        })
-    }
-    return @($rows | Sort-Object path)
-}
-
-function Get-InventoryAggregate([object[]]$Rows) {
-    $builder = [Text.StringBuilder]::new()
-    foreach ($row in $Rows) {
-        [void]$builder.Append([string]$row.path)
-        [void]$builder.Append("`0")
-        [void]$builder.Append([string]$row.bytes)
-        [void]$builder.Append("`0")
-        [void]$builder.Append([string]$row.sha256)
-        [void]$builder.Append("`n")
-    }
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [Text.Encoding]::UTF8.GetBytes($builder.ToString())
-        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha.Dispose()
-    }
-}
-
-function Get-PeInventory([string]$Root) {
-    $rows = [Collections.Generic.List[object]]::new()
-    foreach ($file in @(Get-ChildItem -LiteralPath $Root -File -Force -Recurse -ErrorAction Stop)) {
-        if ($file.Length -lt 2) { continue }
-        $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-        try {
-            $isPe = ($stream.ReadByte() -eq 0x4d -and $stream.ReadByte() -eq 0x5a)
-        }
-        finally {
-            $stream.Dispose()
-        }
-        if (-not $isPe) { continue }
-        $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
-        $rows.Add([ordered]@{
-            path = Get-RelativePath $Root $file.FullName
-            bytes = [int64]$file.Length
-            sha256 = Get-Sha256 $file.FullName
-            status = [string]$signature.Status
-            signer = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { '' }
-        })
-    }
-    $sorted = @($rows | Sort-Object path)
-    return [ordered]@{
-        pe_count = $sorted.Count
-        valid_count = @($sorted | Where-Object status -eq 'Valid').Count
-        unsigned_count = @($sorted | Where-Object status -eq 'NotSigned').Count
-        other_status_count = @($sorted | Where-Object { $_.status -notin @('Valid', 'NotSigned') }).Count
-        files = $sorted
-    }
-}
-
-function Assert-PeGate($Inventory) {
-    if (
-        [int]$Inventory.pe_count -ne [int]$Config.expected_pe_count -or
-        [int]$Inventory.valid_count -ne [int]$Config.expected_pe_count -or
-        [int]$Inventory.unsigned_count -ne 0 -or
-        [int]$Inventory.other_status_count -ne 0
-    ) {
-        throw (
-            'Portable PE inventory is not exact {0}/{0}/0/0; observed {1}/{2}/{3}/{4}.' -f
-            $Config.expected_pe_count,
-            $Inventory.pe_count,
-            $Inventory.valid_count,
-            $Inventory.unsigned_count,
-            $Inventory.other_status_count
-        )
-    }
-}
-
-function Get-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-function Get-SidText($IdentityReference) {
-    return [string]$IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-}
-
-function Assert-HardenedAcl([string]$Root) {
-    $allowed = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545')
-    foreach ($item in @((Get-Item -LiteralPath $Root -Force)) + @(Get-ChildItem -LiteralPath $Root -Force -Recurse -ErrorAction Stop)) {
-        $acl = Get-Acl -LiteralPath $item.FullName
-        $ownerSid = Get-SidText ([Security.Principal.NTAccount]::new([string]$acl.Owner))
-        if ($ownerSid -cne 'S-1-5-32-544') { throw "Code owner is not BUILTIN Administrators: $($item.FullName)" }
-        if (-not $acl.AreAccessRulesProtected) { throw "Code DACL inherits from its parent: $($item.FullName)" }
-        foreach ($rule in @($acl.Access)) {
-            $sid = Get-SidText $rule.IdentityReference
-            if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and $allowed -notcontains $sid) {
-                throw "Unexpected allow ACE on code: $sid $($item.FullName)"
-            }
-            if ($sid -ceq 'S-1-5-32-545' -and $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) {
-                $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
-                    [Security.AccessControl.FileSystemRights]::Modify -bor
-                    [Security.AccessControl.FileSystemRights]::FullControl -bor
-                    [Security.AccessControl.FileSystemRights]::Delete
-                if (($rule.FileSystemRights -band $writeMask) -ne 0) {
-                    throw "BUILTIN Users can modify code: $($item.FullName)"
-                }
-            }
-        }
-    }
-}
-
-function Set-HardenedAcl([string]$Root) {
-    & icacls.exe $Root '/setowner' '*S-1-5-32-544' '/T' '/C' '/L' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not set code owner.' }
-    & icacls.exe $Root `
-        '/inheritance:r' `
-        '/grant:r' `
-        '*S-1-5-18:(OI)(CI)F' `
-        '*S-1-5-32-544:(OI)(CI)F' `
-        '*S-1-5-32-545:(OI)(CI)RX' `
-        '/T' '/C' '/L' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not apply hardened code DACL.' }
-    Assert-HardenedAcl $Root
-}
-
-function Get-DirectoryAclPreimage([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return [ordered]@{ existed = $false; path = $Path }
-    }
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        throw 'Canonical app parent exists but is not a directory.'
-    }
-    $item = Get-Item -LiteralPath $Path -Force
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'Canonical app parent is a reparse point.'
-    }
-    $acl = Get-Acl -LiteralPath $Path
-    $sections = [Security.AccessControl.AccessControlSections]::Access -bor
-        [Security.AccessControl.AccessControlSections]::Owner -bor
-        [Security.AccessControl.AccessControlSections]::Group
-    return [ordered]@{
-        existed = $true
-        path = $Path
-        sddl = $acl.GetSecurityDescriptorSddlForm($sections)
-    }
-}
-
-function Restore-DirectoryAclPreimage($Preimage) {
-    $path = Get-FullPath ([string]$Preimage.path) 'parent ACL preimage path'
-    if ([bool]$Preimage.existed) {
-        if (-not (Test-Path -LiteralPath $path -PathType Container)) {
-            throw 'Cannot restore the original app-parent ACL because the directory is absent.'
-        }
-        $security = [Security.AccessControl.DirectorySecurity]::new()
-        $security.SetSecurityDescriptorSddlForm([string]$Preimage.sddl)
-        Set-Acl -LiteralPath $path -AclObject $security -ErrorAction Stop
-        $sections = [Security.AccessControl.AccessControlSections]::Access -bor
-            [Security.AccessControl.AccessControlSections]::Owner -bor
-            [Security.AccessControl.AccessControlSections]::Group
-        $readback = (Get-Acl -LiteralPath $path).GetSecurityDescriptorSddlForm($sections)
-        if ($readback -cne [string]$Preimage.sddl) {
-            throw 'App-parent ACL preimage restoration readback failed.'
-        }
-        return
-    }
-    if (Test-Path -LiteralPath $path -PathType Container) {
-        if (@(Get-ChildItem -LiteralPath $path -Force).Count -ne 0) {
-            throw 'A newly created app parent is not empty during rollback.'
-        }
-        Remove-Item -LiteralPath $path -Force -ErrorAction Stop
-    }
-    if (Test-Path -LiteralPath $path) { throw 'A newly created app parent survived rollback.' }
-}
-
-function Assert-RequiredSource([string]$Root) {
-    foreach ($relative in @($Config.required_relative_paths)) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) {
-            throw "Portable source is missing $relative."
-        }
-    }
-}
-
-function Get-SourcePlan([string]$Root, [string]$Target) {
-    Assert-NoReparsePoint $Root
-    Assert-RequiredSource $Root
-    $manifestPath = Join-Path $Root 'portable-manifest.json'
-    $manifest = Read-BoundedJson $manifestPath 65536
-    if (
-        [string]$manifest.schema -cne [string]$Config.manifest_schema -or
-        [string]$manifest.entrypoint -cne 'runtime/pythonw.exe app/main.py' -or
-        [string]$manifest.launcher -cne 'launch-label-match.cmd' -or
-        [string]$manifest.canonical_installer -cne 'INSTALL_CANONICAL_PORTABLE.ps1' -or
-        [string]$manifest.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
-        [string]$manifest.source_tree -cnotmatch '^[0-9a-f]{40}$' -or
-        @($manifest.allowed_unsigned_app_pe).Count -ne 0 -or
-        @($manifest.forbidden_package_roots).Count -ne 0
-    ) {
-        throw 'Portable manifest contract is invalid.'
-    }
-    if ((Get-Sha256 (Join-Path $Root 'runtime\pythonw.exe')) -cne ([string]$manifest.runtime_pythonw_sha256).ToLowerInvariant()) {
-        throw 'runtime/pythonw.exe differs from the portable manifest.'
-    }
-    if ((Get-Sha256 (Join-Path $Root 'runtime\python.exe')) -cne ([string]$manifest.runtime_python_sha256).ToLowerInvariant()) {
-        throw 'runtime/python.exe differs from the portable manifest.'
-    }
-    if ((Get-Sha256 (Join-Path $Root 'launch-label-match.cmd')) -cne ([string]$manifest.launcher_sha256).ToLowerInvariant()) {
-        throw 'The launcher differs from the portable manifest.'
-    }
-    if ((Get-Sha256 (Join-Path $Root 'INSTALL_CANONICAL_PORTABLE.ps1')) -cne ([string]$manifest.canonical_installer_sha256).ToLowerInvariant()) {
-        throw 'The canonical installer differs from the portable manifest.'
-    }
-    $inventory = @(Get-CodeInventory $Root)
-    $pe = Get-PeInventory $Root
-    Assert-PeGate $pe
-    $existing = Get-ExistingInstallPlan $Target
-    [int64]$sourceByteCount = 0
-    foreach ($row in $inventory) {
-        $sourceByteCount += [int64]$row.bytes
-    }
-    return [ordered]@{
-        source_root = $Root
-        source_manifest_path = $manifestPath
-        source_manifest_sha256 = Get-Sha256 $manifestPath
-        source_commit = [string]$manifest.source_commit
-        source_tree = [string]$manifest.source_tree
-        source_file_count = $inventory.Count
-        source_byte_count = $sourceByteCount
-        source_inventory_sha256 = Get-InventoryAggregate $inventory
-        installer_sha256 = Get-Sha256 (Join-Path $Root 'INSTALL_CANONICAL_PORTABLE.ps1')
-        pe = $pe
-        prestate = $existing
-    }
-}
-
-function Get-ExistingInstallPlan([string]$Target) {
-    if (-not (Test-Path -LiteralPath $Target)) {
-        return [ordered]@{ disposition = 'absent' }
-    }
-    if (-not (Test-Path -LiteralPath $Target -PathType Container)) {
-        throw 'Canonical target exists but is not a directory.'
-    }
-    Assert-NoReparsePoint $Target
-    $receiptPath = Join-Path $Target ([string]$Config.installed_owner_receipt_name)
-    $receipt = Read-BoundedJson $receiptPath 1048576
-    $manifestPath = Join-Path $Target 'portable-manifest.json'
-    if (
-        [string]$receipt.schema -cne 'kmtech-canonical-installed-owner-v1' -or
-        [string]$receipt.app_id -cne [string]$Config.app_id -or
-        -not (Test-SamePath ([string]$receipt.install_root) $Target) -or
-        (Get-Sha256 $manifestPath) -cne ([string]$receipt.installed_manifest_sha256).ToLowerInvariant()
-    ) {
-        throw 'Existing canonical target lacks an exact app-owned receipt.'
-    }
-    $inventory = @(Get-CodeInventory $Target)
-    if ((Get-InventoryAggregate $inventory) -cne ([string]$receipt.installed_inventory_sha256).ToLowerInvariant()) {
-        throw 'Existing canonical code inventory drifted from its owner receipt.'
-    }
-    $pe = Get-PeInventory $Target
-    Assert-PeGate $pe
-    Assert-HardenedAcl $Target
-    return [ordered]@{
-        disposition = 'owned_exact'
-        owner_receipt_path = $receiptPath
-        owner_receipt_sha256 = Get-Sha256 $receiptPath
-        installed_inventory_sha256 = Get-InventoryAggregate $inventory
-    }
-}
-
-function Test-HkcuRunValueAbsent {
-    $path = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
-    try {
-        $value = Get-ItemPropertyValue -LiteralPath $path -Name ([string]$Config.hkcu_run_name) -ErrorAction Stop
-        return [string]::IsNullOrWhiteSpace([string]$value)
-    }
-    catch [Management.Automation.ItemNotFoundException] { return $true }
-    catch [Management.Automation.PSArgumentException] { return $true }
-}
-
-function Test-CurrentUserTaskAbsent {
-    $task = Get-ScheduledTask -TaskPath '\' -TaskName ([string]$Config.scheduled_task_name) -ErrorAction SilentlyContinue
-    return $null -eq $task
-}
-
-function New-BaseEvidence([string]$Operation, [string]$Status, [string]$Source, [string]$Target) {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    return [ordered]@{
-        schema = [string]$Config.contract_version
-        app_id = [string]$Config.app_id
-        app_name = [string]$Config.app_name
-        operation = $Operation
-        status = $Status
-        run_id = [guid]::NewGuid().ToString('N')
-        captured_at_utc = [DateTime]::UtcNow.ToString('o')
-        operator_sid = [string]$identity.User.Value
-        elevated = Get-IsAdministrator
-        source_root = $Source
-        install_root = $Target
-    }
-}
-
-Assert-TemplateConfigured
-$modeCount = @(@($PlanOnly.IsPresent, $CodePlacementOnly.IsPresent, $Rollback.IsPresent) | Where-Object { $_ }).Count
-if ($modeCount -ne 1) { throw 'Select exactly one of PlanOnly, CodePlacementOnly, or Rollback.' }
-
-$targetRoot = Get-FullPath $InstallRoot 'InstallRoot'
-if (-not (Test-SamePath $targetRoot ([string]$Config.canonical_install_root))) {
-    throw 'InstallRoot is not this app canonical root.'
-}
-$evidenceFull = Get-FullPath $EvidencePath 'EvidencePath'
-if (-not $evidenceFull.StartsWith('E:\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'EvidencePath must be on E:.'
-}
-
-if ($Rollback.IsPresent) {
-    if (-not (Get-IsAdministrator)) { throw 'Rollback requires the parent orchestrator elevated session.' }
-    $evidence = Read-BoundedJson $evidenceFull 1048576
-    if (
-        [string]$evidence.schema -cne [string]$Config.contract_version -or
-        [string]$evidence.app_id -cne [string]$Config.app_id -or
-        [string]$evidence.operation -cne 'CodePlacementOnly' -or
-        [string]$evidence.status -cne 'PASS' -or
-        -not (Test-SamePath ([string]$evidence.install_root) $targetRoot)
-    ) {
-        throw 'Rollback evidence does not own this installed target.'
-    }
-    if (-not (Test-HkcuRunValueAbsent)) {
-        throw 'Remove current-user setup before rolling back canonical code.'
-    }
-    if (-not (Test-CurrentUserTaskAbsent)) {
-        throw 'Remove the current-user scheduled task before rolling back canonical code.'
-    }
-    $ownerReceiptPath = Join-Path $targetRoot ([string]$Config.installed_owner_receipt_name)
-    $ownerReceipt = Read-BoundedJson $ownerReceiptPath 1048576
-    if (
-        [string]$ownerReceipt.run_id -cne [string]$evidence.run_id -or
-        [string]$ownerReceipt.installed_inventory_sha256 -cne [string]$evidence.installed.inventory_sha256
-    ) {
-        throw 'Installed code is no longer the exact code owned by this evidence.'
-    }
-    $parentRoot = Split-Path -Parent $targetRoot
-    $rollbackRoot = [string]$evidence.rollback.code_backup_path
-    if ([string]$evidence.rollback.prestate -ceq 'absent') {
-        if (-not [string]::IsNullOrWhiteSpace($rollbackRoot)) { throw 'Absent prestate unexpectedly names a code backup.' }
-        Remove-Item -LiteralPath $targetRoot -Recurse -Force -ErrorAction Stop
-        if (Test-Path -LiteralPath $targetRoot) { throw 'New canonical target survived rollback.' }
-    }
-    elseif ([string]$evidence.rollback.prestate -ceq 'owned_exact') {
-        [void](Assert-SafeOwnedWorkPath $rollbackRoot $parentRoot '.current.rollback.')
-        if (-not (Test-Path -LiteralPath $rollbackRoot -PathType Container)) { throw 'Prior code backup is absent.' }
-        Remove-Item -LiteralPath $targetRoot -Recurse -Force -ErrorAction Stop
-        Move-Item -LiteralPath $rollbackRoot -Destination $targetRoot -ErrorAction Stop
-        [void](Get-ExistingInstallPlan $targetRoot)
-    }
-    else { throw 'Rollback prestate is invalid.' }
-    Restore-DirectoryAclPreimage $evidence.rollback.parent_preimage
-    $evidence.status = 'ROLLED_BACK'
-    $evidence.rollback.completed_at_utc = [DateTime]::UtcNow.ToString('o')
-    Write-JsonAtomic $evidenceFull $evidence -AllowReplace
-    Write-Output 'installer_status=ROLLED_BACK'
-    Write-Output "installer_evidence=$evidenceFull"
-    exit 0
-}
-
-$sourceRootFull = Get-FullPath $SourceRoot 'SourceRoot'
-if (-not (Test-Path -LiteralPath $sourceRootFull -PathType Container)) { throw 'SourceRoot does not exist.' }
-if (Test-SamePath $sourceRootFull $targetRoot -or (Test-PathInside $sourceRootFull $targetRoot) -or (Test-PathInside $targetRoot $sourceRootFull)) {
-    throw 'SourceRoot and InstallRoot must not overlap.'
-}
-$plan = Get-SourcePlan $sourceRootFull $targetRoot
-
-if ($PlanOnly.IsPresent) {
-    $evidence = New-BaseEvidence 'PlanOnly' 'PLAN_READY' $sourceRootFull $targetRoot
-    $evidence.source = $plan
-    $evidence.rollback_feasible = $true
-    $evidence.mutation_scope = 'evidence_only'
-    $evidence.current_user_phase = [ordered]@{
-        owner = 'runtime/python.exe -I -B app/main.py --onboard-current-user'
-        hkcu_run_name = [string]$Config.hkcu_run_name
-        scheduled_task_name = [string]$Config.scheduled_task_name
-        persistent_relay_mode = [string]$Config.persistent_relay_mode
-        mutation = 'DEFERRED_TO_UNELEVATED_PRODUCT_ONBOARDING'
-        stop_marker = 'PRESERVED_UNTIL_CANONICAL_BINDING_AND_PINNED_EXACT_CLONE_CONFLICT_RESOLUTION'
-        relay_survival = 'DEFERRED_TO_PARENT_NATURAL_TRIGGER_AND_PROCESS_POSTCHECK'
-    }
-    Write-JsonAtomic $evidenceFull $evidence
-    Write-Output 'installer_status=PLAN_READY'
-    Write-Output "installer_evidence=$evidenceFull"
-    exit 0
-}
-
-if (-not (Get-IsAdministrator)) { throw 'CodePlacementOnly requires the parent orchestrator elevated session.' }
-if (Test-Path -LiteralPath $evidenceFull) { throw 'CodePlacementOnly evidence path already exists.' }
-
-$parentRoot = Split-Path -Parent $targetRoot
-$parentAclPreimage = Get-DirectoryAclPreimage $parentRoot
-$nonce = [guid]::NewGuid().ToString('N')
-$stagingRoot = Assert-SafeOwnedWorkPath (Join-Path $parentRoot ('.current.staging.' + $nonce)) $parentRoot '.current.staging.'
-$backupRoot = Assert-SafeOwnedWorkPath (Join-Path $parentRoot ('.current.rollback.' + $nonce)) $parentRoot '.current.rollback.'
-$movedPrior = $false
-$activatedNew = $false
-$evidence = New-BaseEvidence 'CodePlacementOnly' 'STARTED' $sourceRootFull $targetRoot
-$evidence.source = $plan
-$evidence.rollback = [ordered]@{
-    prestate = [string]$plan.prestate.disposition
-    code_backup_path = if ([string]$plan.prestate.disposition -ceq 'owned_exact') { $backupRoot } else { '' }
-    parent_preimage = $parentAclPreimage
-    available = $true
-}
-
+$mutated = $false
 try {
-    New-Item -ItemType Directory -Path $parentRoot -Force -ErrorAction Stop | Out-Null
-    Set-HardenedAcl $parentRoot
-    Copy-Item -LiteralPath $sourceRootFull -Destination $stagingRoot -Recurse -Force -ErrorAction Stop
-    Assert-NoReparsePoint $stagingRoot
-    $stagedInventory = @(Get-CodeInventory $stagingRoot)
-    $stagedPe = Get-PeInventory $stagingRoot
-    Assert-PeGate $stagedPe
+    $mutated = $true
+    Product $install '--remove-current-user-setup'
+    $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (
-        $stagedInventory.Count -ne [int]$plan.source_file_count -or
-        (Get-InventoryAggregate $stagedInventory) -cne [string]$plan.source_inventory_sha256
-    ) { throw 'Staged code differs from source inventory.' }
-    Set-HardenedAcl $stagingRoot
+        (Snapshot).exists -or
+        [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
+        [string]$removal.relay_process.status -cne 'ABSENT'
+    ) { throw 'Removal readback failed.' }
 
-    if ([string]$plan.prestate.disposition -ceq 'owned_exact') {
-        Move-Item -LiteralPath $targetRoot -Destination $backupRoot -ErrorAction Stop
-        $movedPrior = $true
-    }
-    Move-Item -LiteralPath $stagingRoot -Destination $targetRoot -ErrorAction Stop
-    $activatedNew = $true
-
-    $installedInventory = @(Get-CodeInventory $targetRoot)
-    $installedPe = Get-PeInventory $targetRoot
-    Assert-PeGate $installedPe
-    $installedAggregate = Get-InventoryAggregate $installedInventory
+    $started = (Get-Date).ToUniversalTime()
+    Product $install '--onboard-current-user'
+    $onboarding = Get-Content $onboardingPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $after = Snapshot
     if (
-        $installedInventory.Count -ne [int]$plan.source_file_count -or
-        $installedAggregate -cne [string]$plan.source_inventory_sha256
-    ) { throw 'Installed code differs from source inventory.' }
-    Assert-HardenedAcl $targetRoot
+        [string]$onboarding.status -cne 'READY' -or
+        [string]$onboarding.relay_autostart.command -cne $wanted -or
+        -not $after.exists -or
+        [string]$after.data -cne $wanted
+    ) { throw 'Onboarding Run readback failed.' }
+    if (Test-Path -LiteralPath $stop) { throw 'Relay stop marker survived onboarding.' }
 
-    $ownerReceiptPath = Join-Path $targetRoot ([string]$Config.installed_owner_receipt_name)
-    $ownerReceipt = [ordered]@{
-        schema = 'kmtech-canonical-installed-owner-v1'
-        app_id = [string]$Config.app_id
-        run_id = [string]$evidence.run_id
-        install_root = $targetRoot
-        source_commit = [string]$plan.source_commit
-        source_tree = [string]$plan.source_tree
-        installed_manifest_sha256 = Get-Sha256 (Join-Path $targetRoot 'portable-manifest.json')
-        installed_inventory_sha256 = $installedAggregate
-        installed_file_count = $installedInventory.Count
-        installer_sha256 = [string]$plan.installer_sha256
-        installed_at_utc = [DateTime]::UtcNow.ToString('o')
-    }
-    # The owner receipt is the one excluded mutable install metadata file.
-    $ownerJson = $ownerReceipt | ConvertTo-Json -Depth 10
-    [IO.File]::WriteAllText($ownerReceiptPath, $ownerJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-    Set-HardenedAcl $targetRoot
+    $pidValue = [int]$onboarding.relay_start.process_id
+    Start-Sleep -Seconds 5
+    $process = Get-CimInstance `
+        Win32_Process `
+        -Filter "ProcessId = $pidValue" `
+        -ErrorAction SilentlyContinue
+    if (
+        $null -eq $process -or
+        -not (Same ([string]$process.ExecutablePath) (Join-Path $install 'runtime\pythonw.exe'))
+    ) { throw 'Relay process proof failed.' }
 
-    $evidence.status = 'PASS'
-    $evidence.installed = [ordered]@{
-        inventory_sha256 = $installedAggregate
-        file_count = $installedInventory.Count
-        manifest_sha256 = Get-Sha256 (Join-Path $targetRoot 'portable-manifest.json')
-        owner_receipt_path = $ownerReceiptPath
-        owner_receipt_sha256 = Get-Sha256 $ownerReceiptPath
-        pe_count = $installedPe.pe_count
-        valid_count = $installedPe.valid_count
-        unsigned_count = $installedPe.unsigned_count
-        other_status_count = $installedPe.other_status_count
+    $deadline = (Get-Date).AddSeconds(75)
+    $relay = $null
+    while ((Get-Date) -lt $deadline) {
+        if (
+            (Test-Path $relayPath) -and
+            (Get-Item $relayPath).LastWriteTimeUtc -ge $started.AddSeconds(-1)
+        ) {
+            $relay = Get-Content $relayPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ([bool]$relay.persistent_retry) { break }
+        }
+        Start-Sleep -Milliseconds 500
     }
-    $evidence.completed_at_utc = [DateTime]::UtcNow.ToString('o')
-    Write-JsonAtomic $evidenceFull $evidence
-    Write-Output 'installer_status=PASS'
-    Write-Output "installer_evidence=$evidenceFull"
-    exit 0
+    if ($null -eq $relay -or -not [bool]$relay.persistent_retry) {
+        throw 'Fresh relay status proof failed.'
+    }
+
+    $audit.status = 'PASS'
+    $audit.completed_at = (Get-Date).ToUniversalTime().ToString('o')
+    $audit.stop_marker_absent = -not (Test-Path $stop)
+    $audit.onboarding = [ordered]@{
+        status = [string]$onboarding.status
+        action = [string]$onboarding.action
+        autostart_writer = 'product_onboarding'
+    }
+    $audit.exact_launch = [ordered]@{
+        status = 'PROVEN'
+        process_id = $pidValue
+        executable = [string]$process.ExecutablePath
+        relay_status = [string]$relay.status
+        persistent_retry = [bool]$relay.persistent_retry
+    }
+    Save $auditPath $audit
+    if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+    'install_status=PASS'
+    "install_root=$install"
+    "code_placement_status=$placement"
+    'autostart_status=PROVEN_NON_REBOOT_APPROXIMATION'
+    "autostart_command=$wanted"
+    "autostart_process_id=$pidValue"
+    "stop_marker_absent=$($audit.stop_marker_absent.ToString().ToLowerInvariant())"
+    'cold_boot_status=UNPROVEN'
+    "audit_path=$auditPath"
+    "elevation_log_path=$elevationLogPath"
 }
 catch {
-    $failure = $_
-    $rollbackError = ''
+    $original = $_
     try {
-        if ($activatedNew -and (Test-Path -LiteralPath $targetRoot)) {
-            Remove-Item -LiteralPath $targetRoot -Recurse -Force -ErrorAction Stop
+        if ($mutated) {
+            try { Product $install '--remove-current-user-setup' } catch {}
+            Restore $before
         }
-        if ($movedPrior -and (Test-Path -LiteralPath $backupRoot -PathType Container)) {
-            Move-Item -LiteralPath $backupRoot -Destination $targetRoot -ErrorAction Stop
+        if ([bool]$stopBefore.exists) {
+            Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
+            if ((Sha $stop) -cne [string]$stopBefore.sha256) {
+                throw 'stop marker restore failed'
+            }
         }
-        if (Test-Path -LiteralPath $stagingRoot) {
-            Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction Stop
+        elseif (Test-Path $stop) {
+            Remove-Item $stop -Force
         }
-        Restore-DirectoryAclPreimage $parentAclPreimage
+        foreach ($item in $old) {
+            $newPid = StartRaw ([string]$item.CommandLine)
+            Start-Sleep -Seconds 3
+            $restored = Get-CimInstance `
+                Win32_Process `
+                -Filter "ProcessId = $newPid" `
+                -ErrorAction SilentlyContinue
+            if (
+                $null -eq $restored -or
+                -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
+            ) { throw 'runtime restore failed' }
+        }
+        $check = Snapshot
+        if (
+            [bool]$check.exists -ne [bool]$before.exists -or
+            [string]$check.kind -cne [string]$before.kind -or
+            [string]$check.data -cne [string]$before.data
+        ) { throw 'registry restore failed' }
+        $audit.status = 'FAILED_ROLLED_BACK'
+        $audit.rollback.applied = $mutated
+        $audit.rollback.runtime_restored = $true
+        $audit.failure_type = $original.Exception.GetType().Name
+        Save $auditPath $audit
+        if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
     }
-    catch { $rollbackError = $_.Exception.Message }
-    $evidence.status = if ([string]::IsNullOrWhiteSpace($rollbackError)) { 'FAILED_ROLLED_BACK' } else { 'ROLLBACK_FAILED' }
-    $evidence.failure = [ordered]@{
-        error_type = $failure.Exception.GetType().FullName
-        error_message = $failure.Exception.Message
-        rollback_error = $rollbackError
+    catch {
+        throw "AUTOSTART_ROLLBACK_FAILED: $($_.Exception.GetType().Name)"
     }
-    try { Write-JsonAtomic $evidenceFull $evidence } catch { }
-    throw $failure
+    throw $original
 }

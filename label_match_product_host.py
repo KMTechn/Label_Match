@@ -30,6 +30,18 @@ HOSTED_RELAY_FAILURE_EXIT_CODE = 1
 BOOTSTRAP_INTEGRITY_WARNING_FILENAME = "bootstrap_integrity_warning.json"
 
 
+def _default_product_root() -> Path:
+    module_parent = Path(__file__).resolve().parent
+    portable_root = module_parent.parent
+    if (
+        module_parent.name.casefold() == "app"
+        and (portable_root / "runtime" / "pythonw.exe").is_file()
+        and (portable_root / "portable-manifest.json").is_file()
+    ):
+        return portable_root
+    return module_parent
+
+
 def _verify_frozen_host_integrity() -> dict[str, object]:
     if not getattr(sys, "frozen", False):
         return {"status": "NOT_TESTED", "reason": "source mode"}
@@ -67,7 +79,7 @@ def _record_bootstrap_integrity_absent(arguments: Sequence[str], mode: str) -> N
             else (
                 Path(sys.executable).resolve().parent
                 if getattr(sys, "frozen", False)
-                else Path(__file__).resolve().parent
+                else _default_product_root()
             )
         )
         warning_path = (
@@ -153,7 +165,7 @@ def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> 
                 else (
                     Path(sys.executable).resolve().parent
                     if getattr(sys, "frozen", False)
-                    else Path(__file__).resolve().parent
+                    else _default_product_root()
                 )
             )
             status_name = (

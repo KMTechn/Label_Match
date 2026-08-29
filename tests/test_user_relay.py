@@ -82,10 +82,8 @@ def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):
         "-B",
         str((app_root / "app" / "main.py").resolve()),
     ]
-    assert persistent[-2:] == [
-        "--app-root",
-        str(app_root.resolve()),
-    ]
+    assert persistent[-1] == user_relay.USER_RELAY_MODE
+    assert "--app-root" not in persistent
     assert scheduled[:4] == [
         str((app_root / "runtime" / "python.exe").resolve()),
         "-I",
@@ -96,6 +94,18 @@ def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):
     assert (
         str((tmp_path / "state" / "status" / "scheduled.json").resolve()) in scheduled
     )
+
+
+def test_portable_default_root_is_the_release_parent(monkeypatch, tmp_path):
+    release = tmp_path / "portable"
+    app = release / "app"
+    (release / "runtime").mkdir(parents=True)
+    app.mkdir()
+    (release / "runtime" / "pythonw.exe").write_bytes(b"runtime")
+    (release / "portable-manifest.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(user_relay, "__file__", str(app / "user_relay.py"))
+
+    assert user_relay._default_application_root() == release.resolve()
 
 
 def test_persistent_loop_maps_missing_cycle_value_to_unknown(tmp_path):

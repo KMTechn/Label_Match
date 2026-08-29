@@ -49,8 +49,10 @@ def _powershell() -> Path:
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hashing is Windows-only")
 def test_public_bootstrap_hash_authority_does_not_require_get_file_hash(tmp_path):
     script = ROOT / "INSTALL_THIS_PC.ps1"
+    helper = ROOT / "tools" / "bootstrap_integrity.ps1"
     source = script.read_text(encoding="utf-8-sig")
     assert "get-filehash" not in source.casefold()
+    assert "get-filehash" not in helper.read_text(encoding="utf-8-sig").casefold()
     fixture = tmp_path / "hash.bin"
     fixture.write_bytes(b"abc")
     isolated_modules = tmp_path / "modules"
@@ -58,24 +60,8 @@ def test_public_bootstrap_hash_authority_does_not_require_get_file_hash(tmp_path
     command = r'''
 $ErrorActionPreference = "Stop"
 $PSModuleAutoLoadingPreference = "None"
-$tokens = $null
-$errors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile(
-    $env:LABEL_MATCH_INSTALLER_SCRIPT, [ref]$tokens, [ref]$errors
-)
-if ($errors.Count) { throw "Installer AST is invalid." }
-$functionAst = $null
-foreach ($candidate in $ast.FindAll({
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $node.Name -ceq "Get-FileSha256"
-}, $true)) {
-    $functionAst = $candidate
-    break
-}
-if ($null -eq $functionAst) { throw "Get-FileSha256 is missing." }
-. ([scriptblock]::Create($functionAst.Extent.Text))
-if ((Get-FileSha256 $env:LABEL_MATCH_HASH_FIXTURE) -cne $env:LABEL_MATCH_EXPECTED_SHA256) {
+. $env:LABEL_MATCH_BOOTSTRAP_HELPER
+if ((Get-BootstrapFileSha256 $env:LABEL_MATCH_HASH_FIXTURE) -cne $env:LABEL_MATCH_EXPECTED_SHA256) {
     throw "SHA-256 mismatch."
 }
 [Console]::Out.Write("PASS")
@@ -100,6 +86,7 @@ if ((Get-FileSha256 $env:LABEL_MATCH_HASH_FIXTURE) -cne $env:LABEL_MATCH_EXPECTE
             "PATH": "",
             "PSModulePath": str(isolated_modules),
             "LABEL_MATCH_INSTALLER_SCRIPT": str(script),
+            "LABEL_MATCH_BOOTSTRAP_HELPER": str(helper),
             "LABEL_MATCH_HASH_FIXTURE": str(fixture),
             "LABEL_MATCH_EXPECTED_SHA256": (
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"

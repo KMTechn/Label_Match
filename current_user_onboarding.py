@@ -48,6 +48,9 @@ LABEL_MATCH_SETTINGS_PATH_ENV = "LABEL_MATCH_SETTINGS_PATH"
 LABEL_MATCH_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_ROOT"
 LEGACY_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
 CANONICAL_PORTABLE_ROOT = Path(r"C:\KMTech\Apps\Label_Match\current")
+PORTABLE_BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v1"
+CONFLICT_RECEIPT_PATH_ENV = "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH"
+CONFLICT_RECEIPT_SHA256_ENV = "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256"
 
 
 class CurrentUserOnboardingError(RuntimeError):
@@ -65,6 +68,8 @@ class CurrentUserOnboardingError(RuntimeError):
 
 def _portable_stop_marker_release_preflight(
     paths: CurrentUserOnboardingPaths,
+    *,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     marker = user_relay_stop_path(paths.direct_sync_root)
     if not marker.exists():
@@ -77,20 +82,16 @@ def _portable_stop_marker_release_preflight(
         )
     manifest_path = paths.app_root / "portable-manifest.json"
     installer_path = paths.app_root / "INSTALL_CANONICAL_PORTABLE.ps1"
-    owner_receipt_path = paths.app_root / ".kmtech-canonical-install-owner.json"
-    if (
-        not manifest_path.is_file()
-        or manifest_path.stat().st_size > 64 * 1024
-        or not installer_path.is_file()
-        or not owner_receipt_path.is_file()
-    ):
+    integrity_path = paths.app_root / "bootstrap-integrity.json"
+    if not all(
+        path.is_file() for path in (manifest_path, installer_path, integrity_path)
+    ) or manifest_path.stat().st_size > 64 * 1024:
         raise ValueError(
             "relay stop marker cannot be removed before canonical install readback"
         )
     manifest = _read_json(manifest_path, "canonical portable manifest")
     source_commit = str(manifest.get("source_commit") or "").lower()
     source_tree = str(manifest.get("source_tree") or "").lower()
-    owner_receipt = _read_json(owner_receipt_path, "canonical install owner receipt")
     runtime = paths.app_root / "runtime" / "pythonw.exe"
     expected_runtime_hash = str(manifest.get("runtime_pythonw_sha256") or "").lower()
     if (
@@ -107,24 +108,76 @@ def _portable_stop_marker_release_preflight(
         != str(manifest.get("canonical_installer_sha256") or "").lower()
         or not runtime.is_file()
         or _file_sha256(runtime) != expected_runtime_hash
-        or owner_receipt.get("schema") != "kmtech-canonical-installed-owner-v1"
-        or owner_receipt.get("app_id") != "label_match"
-        or str(owner_receipt.get("source_commit") or "").lower() != source_commit
-        or str(owner_receipt.get("source_tree") or "").lower() != source_tree
-        or os.path.normcase(str(owner_receipt.get("install_root") or ""))
-        != os.path.normcase(str(paths.app_root))
     ):
         raise ValueError(
             "relay stop marker cannot be removed because canonical install identity differs"
         )
+    integrity = _read_json(integrity_path, "canonical bootstrap integrity record")
+    rows: list[dict[str, Any]] = []
+    for file_path in sorted(
+        (path for path in paths.app_root.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(paths.app_root).as_posix().casefold(),
+    ):
+        relative = file_path.relative_to(paths.app_root).as_posix()
+        if relative.casefold() == integrity_path.name.casefold():
+            continue
+        file_stat = file_path.lstat()
+        if file_path.is_symlink() or (
+            getattr(file_stat, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        ):
+            raise ValueError("canonical portable install contains a reparse point")
+        rows.append(
+            {
+                "path": relative,
+                "size": file_stat.st_size,
+                "sha256": _file_sha256(file_path),
+            }
+        )
+    aggregate_payload = "".join(
+        f"{row['sha256']} {row['size']} {row['path']}\n" for row in rows
+    ).encode("utf-8")
+    aggregate = hashlib.sha256(aggregate_payload).hexdigest()
+    if (
+        integrity.get("schema_version") != PORTABLE_BOOTSTRAP_INTEGRITY_VERSION
+        or integrity.get("status") != "PASS"
+        or str(integrity.get("code_root") or "") not in {".", str(paths.app_root)}
+        or integrity.get("file_count") != len(rows)
+        or integrity.get("files") != rows
+        or str(integrity.get("aggregate_sha256") or "").lower() != aggregate
+    ):
+        raise ValueError("canonical bootstrap integrity readback differs")
+
+    values = os.environ if environ is None else environ
+    receipt_value = str(values.get(CONFLICT_RECEIPT_PATH_ENV) or "").strip()
+    expected_receipt_hash = str(
+        values.get(CONFLICT_RECEIPT_SHA256_ENV) or ""
+    ).strip().lower()
+    if not receipt_value or len(expected_receipt_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_receipt_hash
+    ):
+        raise ValueError(
+            "relay stop marker requires a pinned EXACT_CLONE_RUNTIME_CONFLICT receipt"
+        )
+    receipt_path = _resolved(receipt_value)
+    if (
+        not receipt_path.is_file()
+        or receipt_path.stat().st_size <= 0
+        or receipt_path.stat().st_size > ONBOARDING_JSON_MAX_BYTES
+        or _file_sha256(receipt_path) != expected_receipt_hash
+    ):
+        raise ValueError("EXACT_CLONE_RUNTIME_CONFLICT receipt pin differs")
     return {
         "status": "CANONICAL_INSTALL_PROVEN",
         "marker_present": True,
         "manifest_path": str(manifest_path),
-        "owner_receipt_path": str(owner_receipt_path),
+        "bootstrap_integrity_path": str(integrity_path),
+        "bootstrap_integrity_sha256": _file_sha256(integrity_path),
+        "conflict_resolution_receipt_path": str(receipt_path),
+        "conflict_resolution_receipt_sha256": expected_receipt_hash,
         "source_commit": source_commit,
         "source_tree": source_tree,
-        "conflict_resolution_authority": "pinned parent install preflight",
+        "conflict_resolution_authority": "pinned path plus exact SHA-256",
     }
 
 
@@ -792,7 +845,10 @@ def onboard_current_user(
             raise ValueError("current-user settings placement was not proven")
 
         stop_path = user_relay_stop_path(paths.direct_sync_root)
-        report["stop_marker_release"] = _portable_stop_marker_release_preflight(paths)
+        report["stop_marker_release"] = _portable_stop_marker_release_preflight(
+            paths,
+            environ=environ,
+        )
         report["relay_autostart"] = dict(autostart_installer(paths.app_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
         if autostart_status in {"", "UNKNOWN"}:

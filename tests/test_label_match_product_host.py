@@ -10,6 +10,18 @@ from tools import direct_sync_relay_runner
 import user_relay
 
 
+def test_portable_default_product_root_is_the_release_parent(monkeypatch, tmp_path):
+    release = tmp_path / "portable"
+    app = release / "app"
+    (release / "runtime").mkdir(parents=True)
+    app.mkdir()
+    (release / "runtime" / "pythonw.exe").write_bytes(b"runtime")
+    (release / "portable-manifest.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(product_host, "__file__", str(app / "host.py"))
+
+    assert product_host._default_product_root() == release.resolve()
+
+
 def test_main_executable_dispatches_product_modes_before_gui_import():
     source = (Path(__file__).resolve().parents[1] / "Label_Match.py").read_text(
         encoding="utf-8"

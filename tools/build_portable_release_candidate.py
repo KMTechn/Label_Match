@@ -42,6 +42,7 @@ UPDATE_KEY_CONFIG_FILENAME = "update-manifest-key-config.json"
 UPDATE_KEY_CONFIG_SCHEMA = "label-match-update-key-config-v1"
 CANONICAL_INSTALLER_FILENAME = "INSTALL_CANONICAL_PORTABLE.ps1"
 LEGACY_INSTALLER_FILENAME = "INSTALL_THIS_PC.ps1"
+BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
 THIRD_PARTY = {
     "babel": ("2.18.0", ("babel",)),
     "certifi": ("2026.6.17", ("certifi",)),
@@ -320,6 +321,14 @@ def build(
             f"legacy compatibility installer is missing: {legacy_installer_source}"
         )
     shutil.copy2(legacy_installer_source, output / LEGACY_INSTALLER_FILENAME)
+    bootstrap_helper_source = repo_root / BOOTSTRAP_INTEGRITY_HELPER
+    if not bootstrap_helper_source.is_file():
+        raise PortableBuildError(
+            f"bootstrap integrity helper is missing: {bootstrap_helper_source}"
+        )
+    bootstrap_helper_target = output / BOOTSTRAP_INTEGRITY_HELPER
+    bootstrap_helper_target.parent.mkdir()
+    shutil.copy2(bootstrap_helper_source, bootstrap_helper_target)
     native = _app_native_inventory(app_root)
     forbidden_roots = [
         name

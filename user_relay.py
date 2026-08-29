@@ -100,9 +100,21 @@ def _application_command(
     raise UserRelayError("the hardened Label_Match application host is unavailable")
 
 
+def _default_application_root() -> Path:
+    module_parent = Path(__file__).resolve().parent
+    portable_root = module_parent.parent
+    if (
+        module_parent.name.casefold() == "app"
+        and (portable_root / "runtime" / "pythonw.exe").is_file()
+        and (portable_root / "portable-manifest.json").is_file()
+    ):
+        return portable_root
+    return module_parent
+
+
 def build_user_relay_command(app_root: str | os.PathLike[str]) -> list[str]:
     root = Path(app_root).expanduser().resolve()
-    return [*_application_command(root), USER_RELAY_MODE, "--app-root", str(root)]
+    return [*_application_command(root), USER_RELAY_MODE]
 
 
 def user_relay_command_line(app_root: str | os.PathLike[str]) -> str:
@@ -706,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
             or (
                 Path(sys.executable).parent
                 if getattr(sys, "frozen", False)
-                else Path(__file__).resolve().parent
+                else _default_application_root()
             )
         )
         .expanduser()

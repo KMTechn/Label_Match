@@ -6,20 +6,28 @@ param(
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
     [string]$TlsCaBundlePath = "",
     [string]$OperatorLocalAppDataRoot = "",
+    [string]$ElevationLogPath = "",
+    [switch]$ReplaceExistingVerifiedPortable,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ApplyHardenedAclForTest
 )
+
 $ErrorActionPreference = "Stop"
 $ExpectedInstallRoot = "C:\KMTech\Apps\Label_Match\current"
 $IntegrityFileName = "bootstrap-integrity.json"
-$IntegritySchema = "label-match-bootstrap-integrity-v2"; $IntegrityAlgorithm = "sha256-file-hash-size-utf8-path-v1"; $IntegrityMaxBytes = 1MB
-$IntegrityRequiredFields = @('schema_version', 'status', 'code_root', 'file_count', 'inventory_algorithm', 'root_sha256', 'package_layout')
-$LegacyRelayTaskName = "direct-sync-relay-label-match"
+$IntegritySchema = "label-match-bootstrap-integrity-v1"
+$BootstrapIntegrityFunctions = Join-Path $PSScriptRoot "tools\bootstrap_integrity.ps1"
+if (-not (Test-Path -LiteralPath $BootstrapIntegrityFunctions -PathType Leaf)) {
+    throw "Bootstrap integrity producer is unavailable."
+}
+. $BootstrapIntegrityFunctions
+$LegacyRelayTaskName = "direct-sync-relay-label-match-current-pc"
 $BootstrapScriptPath = $MyInvocation.MyCommand.Path
 $BootstrapBoundParameters = @{}
 foreach ($boundName in $PSBoundParameters.Keys) {
     $BootstrapBoundParameters[$boundName] = $PSBoundParameters[$boundName]
 }
+
 function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
         throw "$Purpose must be an absolute path."
@@ -33,6 +41,7 @@ function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     }
     return $full
 }
+
 function Test-SamePath([string]$Left, [string]$Right) {
     try {
         $leftFull = Get-StrictFullPath $Left "left path"
@@ -43,6 +52,7 @@ function Test-SamePath([string]$Left, [string]$Right) {
         return $false
     }
 }
+
 function Assert-NoReparsePoint([string]$Path, [string]$Purpose) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
     $items = @((Get-Item -LiteralPath $Path -Force))
@@ -55,17 +65,11 @@ function Assert-NoReparsePoint([string]$Path, [string]$Purpose) {
         }
     }
 }
+
 function Get-FileSha256([string]$Path) {
-    $stream = [IO.File]::OpenRead($Path)
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha.Dispose()
-        $stream.Dispose()
-    }
+    return Get-BootstrapFileSha256 $Path
 }
+
 function Install-CurrentUserTlsCaBootstrap([string]$SourcePath, [string]$LocalAppDataRoot) {
     if ([string]::IsNullOrWhiteSpace($SourcePath)) { return $null }
     $source = Get-StrictFullPath $SourcePath "TLS CA bundle source"; Assert-NoReparsePoint $source "TLS CA bundle source"
@@ -83,6 +87,7 @@ function ConvertTo-ProcessArgument([string]$Value) {
     if ($Value -notmatch '[\s"]') { return $Value }
     return '"' + $Value.Replace('\', '\').Replace('"', '\"') + '"'
 }
+
 function Invoke-SelfElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -104,66 +109,123 @@ function Invoke-SelfElevated {
     $process = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $argumentLine -Wait -PassThru
     exit $process.ExitCode
 }
+
+function Write-ElevationLog([string]$Status, [string]$Message) {
+    if ([string]::IsNullOrWhiteSpace($ElevationLogPath)) { return }
+    $path = Get-StrictFullPath $ElevationLogPath "ElevationLogPath"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+    $entry = [ordered]@{
+        captured_at = (Get-Date).ToUniversalTime().ToString('o')
+        process_id = $PID
+        elevated = $true
+        status = $Status
+        message = $Message
+    }
+    [IO.File]::AppendAllText(
+        $path,
+        (($entry | ConvertTo-Json -Compress) + [Environment]::NewLine),
+        (New-Object Text.UTF8Encoding($false))
+    )
+}
+
 function Get-RelativeCodePath([string]$Root, [string]$Path) {
-    $rootFull = (Get-StrictFullPath $Root "inventory root") + '\'
-    $pathFull = [IO.Path]::GetFullPath($Path)
-    if (-not $pathFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Inventory path escaped its root."
-    }
-    return $pathFull.Substring($rootFull.Length).Replace('\', '/')
+    return Get-BootstrapRelativeCodePath -Root $Root -Path $Path
 }
+
 function Get-CodeInventory([string]$Root) {
-    $rootFull = Get-StrictFullPath $Root "code root"
-    $result = @(foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -File -Force -Recurse | Sort-Object FullName)) {
-        $relative = Get-RelativeCodePath $rootFull $file.FullName
-        if ($relative.Equals($IntegrityFileName, [StringComparison]::OrdinalIgnoreCase)) {
-            continue
-        }
-        [pscustomobject][ordered]@{
-            path = $relative
-            size = [int64]$file.Length
-            sha256 = Get-FileSha256 $file.FullName
-        }
-    })
-    return $result
+    return Get-BootstrapCodeInventory -Root $Root -IntegrityFileName $IntegrityFileName
 }
+
 function Get-InventoryAggregate([object[]]$Inventory) {
-    $utf8 = New-Object Text.UTF8Encoding($false)
-    $lines = [string[]]@($Inventory | ForEach-Object {
-        "$($_.sha256) $($_.size) $(([BitConverter]::ToString($utf8.GetBytes([string]$_.path))).Replace('-', '').ToLowerInvariant())"
-    })
-    [Array]::Sort($lines, [StringComparer]::Ordinal); $bytes = $utf8.GetBytes("label-match-code-root-v1`n" + (($lines -join "`n") + "`n"))
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha.Dispose()
-    }
+    return Get-BootstrapInventoryAggregate -Inventory $Inventory
 }
+
 function Write-Utf8Json([string]$Path, $Payload) {
-    $temporary = "$Path.tmp.$PID"
-    $json = $Payload | ConvertTo-Json -Depth 8 -Compress
-    [IO.File]::WriteAllText($temporary, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $temporary -Destination $Path -Force
+    Write-BootstrapUtf8Json -Path $Path -Payload $Payload
 }
-function Assert-SourceIntegrityRecord([string]$Root, [object[]]$Inventory, [string]$Aggregate) {
-    $path = Join-Path $Root $IntegrityFileName; if (-not (Test-Path -LiteralPath $path)) { Write-Warning "Bootstrap integrity record is absent; continuing without source verification."; return }; if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Packaged bootstrap integrity record is not a regular file." }; try { $length = (Get-Item -LiteralPath $path).Length; if ($length -le 0 -or $length -gt $IntegrityMaxBytes) { throw "size" }; $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { throw "Packaged bootstrap integrity record cannot be read." }; $fieldNames = @($record.PSObject.Properties.Name); $missing = @($IntegrityRequiredFields | Where-Object { $fieldNames -cnotcontains $_ }); $rootMatches = ($record.code_root -ceq '.') -or (Test-SamePath ([string]$record.code_root) $Root); $valid = (($record -is [pscustomobject]) -and $missing.Count -eq 0 -and $fieldNames -cnotcontains 'files' -and $record.schema_version -ceq $IntegritySchema -and $record.status -ceq 'PASS' -and $record.package_layout -ceq 'onedir' -and $rootMatches -and $record.inventory_algorithm -ceq $IntegrityAlgorithm -and (($record.file_count -is [int]) -or ($record.file_count -is [long])) -and [long]$record.file_count -eq $Inventory.Count -and $record.root_sha256 -ceq $Aggregate); if (-not $valid) { throw "Packaged bootstrap integrity record does not match the source code root." }; Write-Output "source_integrity_status=PASS" }
-function Assert-RequiredRelease([string]$Root) {
-    foreach ($name in @('Label_Match.exe', 'contract.lock.json')) {
-        $path = Join-Path $Root $name
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Frozen release is incomplete. Missing: $name"
+
+function Assert-RequiredRelease([string]$Root, [bool]$AllowUnsignedPortableForTest) {
+    $frozenFiles = @('Label_Match.exe', 'contract.lock.json')
+    $portableFiles = @(
+        'portable-manifest.json',
+        'runtime\python.exe',
+        'runtime\pythonw.exe',
+        'app\main.py',
+        'launch-label-match.cmd',
+        'INSTALL_CANONICAL_PORTABLE.ps1',
+        'INSTALL_THIS_PC.ps1',
+        'tools\bootstrap_integrity.ps1'
+    )
+    $frozen = @($frozenFiles | Where-Object {
+        Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf
+    }).Count -eq $frozenFiles.Count
+    $portable = @($portableFiles | Where-Object {
+        Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf
+    }).Count -eq $portableFiles.Count
+    if ($frozen -eq $portable) {
+        throw "Release layout must be exactly one of FROZEN_EXE or PORTABLE_CPYTHON."
+    }
+    if ($frozen) { return 'FROZEN_EXE' }
+
+    $manifestPath = Join-Path $Root 'portable-manifest.json'
+    if ((Get-Item -LiteralPath $manifestPath -Force).Length -gt 65536) {
+        throw "Portable release manifest is oversized."
+    }
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+    }
+    catch {
+        throw "Portable release manifest is invalid."
+    }
+    if (
+        [string]$manifest.schema -cne 'label-match-portable-tree-v1' -or
+        [string]$manifest.entrypoint -cne 'runtime/pythonw.exe app/main.py' -or
+        [string]$manifest.launcher -cne 'launch-label-match.cmd' -or
+        @($manifest.allowed_unsigned_app_pe).Count -ne 0 -or
+        @($manifest.forbidden_package_roots).Count -ne 0
+    ) {
+        throw "Portable release manifest contract is invalid."
+    }
+    $pythonwPath = Join-Path $Root 'runtime\pythonw.exe'
+    $launcherPath = Join-Path $Root 'launch-label-match.cmd'
+    if (
+        (Get-FileSha256 $pythonwPath) -cne
+            ([string]$manifest.runtime_pythonw_sha256).ToLowerInvariant() -or
+        (Get-FileSha256 $launcherPath) -cne
+            ([string]$manifest.launcher_sha256).ToLowerInvariant()
+    ) {
+        throw "Portable release manifest hash readback failed."
+    }
+    $filesBeforeManifest = @(
+        Get-ChildItem -LiteralPath $Root -File -Force -Recurse |
+            Where-Object { -not (Test-SamePath $_.FullName $manifestPath) }
+    )
+    $bytesBeforeManifest = [int64](
+        ($filesBeforeManifest | Measure-Object -Property Length -Sum).Sum
+    )
+    if (
+        [int64]$manifest.file_count_before_manifest -ne $filesBeforeManifest.Count -or
+        [int64]$manifest.byte_count_before_manifest -ne $bytesBeforeManifest
+    ) {
+        throw "Portable release tree metrics differ from the manifest."
+    }
+    if (-not $AllowUnsignedPortableForTest) {
+        foreach ($relativePath in @('runtime\python.exe', 'runtime\pythonw.exe')) {
+            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $Root $relativePath)
+            if ([string]$signature.Status -cne 'Valid') {
+                throw "Portable CPython signature is not valid: $relativePath"
+            }
         }
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $Root '_internal') -PathType Container)) {
-        throw "Frozen release must preserve the Label_Match onedir _internal payload."
-    }
+    return 'PORTABLE_CPYTHON'
 }
+
 function ConvertTo-NormalizedAclRights([int64]$Rights) {
     $synchronize = [int64][System.Security.AccessControl.FileSystemRights]::Synchronize
     return $Rights -band (-bnot $synchronize)
 }
+
 function Assert-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
     Assert-NoReparsePoint $Path "Hardened code ACL readback"
     $expected = @{
@@ -232,6 +294,7 @@ function Assert-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
         }
     }
 }
+
 function Set-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
     try {
         Assert-NoReparsePoint $Path "Hardened code ACL target"
@@ -261,6 +324,7 @@ function Set-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
         throw
     }
 }
+
 function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
     $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
     if ($null -eq $task) { return }
@@ -269,12 +333,12 @@ function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
         throw "Refusing to remove a legacy task with an ambiguous action: $Name"
     }
     $actionText = "$([string]$actions[0].Execute) $([string]$actions[0].Arguments)"
-    $ownedVbsLauncher = 'C:\ProgramData\KMTech\DirectSync\label_match\bin\run_direct-sync-relay-label-match.vbs'
-    $ownedPsLauncher = 'C:\ProgramData\KMTech\DirectSync\label_match\bin\run_direct-sync-relay-label-match.ps1'
+    $ownedVbsLauncher = 'C:\ProgramData\KMTech\DirectSync\label-match-margin-r2\bin\run_direct-sync-relay-label-match-current-pc.vbs'
+    $ownedCmdLauncher = 'C:\ProgramData\KMTech\DirectSync\label-match-margin-r2\bin\run_direct-sync-relay-label-match-current-pc.ps1'
     $owned = (
         $actionText.IndexOf($ExpectedRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
         $actionText.IndexOf($ownedVbsLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-        $actionText.IndexOf($ownedPsLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        $actionText.IndexOf($ownedCmdLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0
     )
     if (-not $owned) {
         throw "Refusing to remove a scheduled task not owned by this application: $Name"
@@ -285,6 +349,7 @@ function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
         throw "Legacy scheduled task removal readback failed: $Name"
     }
 }
+
 function Test-CurrentUserRelayPersistencePresent {
     $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
     try {
@@ -301,6 +366,7 @@ function Test-CurrentUserRelayPersistencePresent {
         return $false
     }
 }
+
 $testOverride = (
     $AllowNoncanonicalLayoutForTest.IsPresent -and
     [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
@@ -312,6 +378,9 @@ if ([string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
 }
 if ($ApplyHardenedAclForTest.IsPresent -and -not $testOverride) {
     throw "ApplyHardenedAclForTest requires the guarded noncanonical test layout."
+}
+if ($ReplaceExistingVerifiedPortable.IsPresent -and $Uninstall.IsPresent) {
+    throw "ReplaceExistingVerifiedPortable cannot be combined with Uninstall."
 }
 $applyHardenedAcl = (-not $testOverride -or $ApplyHardenedAclForTest.IsPresent)
 $aclReadbackStatus = if ($applyHardenedAcl) { 'UNKNOWN' } else { 'NOT_TESTED' }
@@ -332,7 +401,7 @@ if (
 }
 if (-not $DryRun.IsPresent -and -not $testOverride) {
     Invoke-SelfElevated
-    Remove-OwnedLegacyTask $LegacyRelayTaskName $installRootFull
+    Write-ElevationLog 'STARTED' 'Elevated Label code placement started.'
 }
 
 if ($Uninstall.IsPresent) {
@@ -343,6 +412,9 @@ if ($Uninstall.IsPresent) {
     }
     [void](Get-StrictFullPath $installRootFull "uninstall target")
     Assert-NoReparsePoint $installRootFull "Label_Match code root"
+    if (-not $testOverride) {
+        Remove-OwnedLegacyTask $LegacyRelayTaskName $installRootFull
+    }
     if (Test-Path -LiteralPath $installRootFull) {
         Remove-Item -LiteralPath $installRootFull -Recurse -Force -ErrorAction Stop
     }
@@ -354,8 +426,12 @@ if ($Uninstall.IsPresent) {
     Write-Output "system_task_status=ABSENT"
     Write-Output "user_state_preserved=true"
     Write-Output "current_user_setup_removal_command=Label_Match.exe --remove-current-user-setup"
+    if (-not $testOverride) {
+        Write-ElevationLog 'PASS' 'Elevated Label code removal completed.'
+    }
     exit 0
 }
+
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $SourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
@@ -367,24 +443,28 @@ if (Test-SamePath $sourceRootFull $installRootFull) {
     throw "SourceRoot and InstallRoot must differ."
 }
 Assert-NoReparsePoint $sourceRootFull "Frozen release"
-Assert-RequiredRelease $sourceRootFull
+$releaseLayout = Assert-RequiredRelease $sourceRootFull $testOverride
 $sourceInventory = @(Get-CodeInventory $sourceRootFull)
 if ($sourceInventory.Count -eq 0) {
     throw "Frozen release code inventory is empty."
 }
-$sourceAggregate = Get-InventoryAggregate $sourceInventory; Assert-SourceIntegrityRecord $sourceRootFull $sourceInventory $sourceAggregate
+$sourceAggregate = Get-InventoryAggregate $sourceInventory
 if ($DryRun.IsPresent) {
     Write-Output "bootstrap_status=DRY_RUN"
     Write-Output "code_root=$installRootFull"
+    Write-Output "release_layout=$releaseLayout"
     Write-Output "file_count=$($sourceInventory.Count)"
-    Write-Output "root_sha256=$sourceAggregate"
+    Write-Output "aggregate_sha256=$sourceAggregate"
     Write-Output "identity_profile_created=false"
     Write-Output "tls_ca_bootstrap_configured=$(-not [string]::IsNullOrWhiteSpace($TlsCaBundlePath))"
     Write-Output "elevation_points=1:code_placement"
     exit 0
 }
+
 $applicationParent = Split-Path -Parent $installRootFull
 $stagingRoot = Join-Path $applicationParent ('.current.bootstrap.' + [Guid]::NewGuid().ToString('N'))
+$replacementRollbackRoot = ''
+$replacementApplied = $false
 New-Item -ItemType Directory -Path $applicationParent -Force | Out-Null
 if ($applyHardenedAcl) {
     Set-HardenedCodeAcl $applicationParent
@@ -407,56 +487,77 @@ try {
     if ($stagedAggregate -cne $sourceAggregate) {
         throw "Staged code integrity readback differs from the frozen release."
     }
-    $record = [ordered]@{
-        schema_version = $IntegritySchema
-        status = 'PASS'
-        code_root = $installRootFull
-        installed_at = (Get-Date).ToUniversalTime().ToString('o')
-        file_count = $stagedInventory.Count
-        inventory_algorithm = $IntegrityAlgorithm
-        root_sha256 = $stagedAggregate
-        identity_profile_created = $false
-        state_scope = 'current_user_first_run'
-        package_layout = 'onedir'
+    $record = Write-BootstrapIntegrityRecord `
+        -Root $stagingRoot `
+        -CodeRoot $installRootFull `
+        -Inventory $stagedInventory `
+        -IntegrityFileName $IntegrityFileName `
+        -IntegritySchema $IntegritySchema
+    if ([string]$record.aggregate_sha256 -cne $stagedAggregate) {
+        throw "Bootstrap integrity producer aggregate differs from staged inventory."
     }
-    Write-Utf8Json (Join-Path $stagingRoot $IntegrityFileName) $record
     if ($applyHardenedAcl) {
         Set-HardenedCodeAcl $stagingRoot -Recursive
     }
     if (Test-Path -LiteralPath $installRootFull) {
         $existingRecordPath = Join-Path $installRootFull $IntegrityFileName
-        $existingRecord = $null; $existingCodeAggregate = ''
+        $existingAggregate = ''
+        $existingCodeAggregate = ''
         if (Test-Path -LiteralPath $existingRecordPath -PathType Leaf) {
             try {
-                $existingRecordLength = (Get-Item -LiteralPath $existingRecordPath).Length
-                if ($existingRecordLength -le 0 -or $existingRecordLength -gt $IntegrityMaxBytes) { throw "Existing integrity record size is invalid." }
-                $existingRecord = Get-Content -LiteralPath $existingRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $existingAggregate = [string]((Get-Content -LiteralPath $existingRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json).aggregate_sha256)
                 $existingCodeAggregate = Get-InventoryAggregate @(Get-CodeInventory $installRootFull)
             }
             catch {
-                $existingRecord = $null; $existingCodeAggregate = ''
+                $existingAggregate = ''
+                $existingCodeAggregate = ''
             }
         }
-        $existingFieldNames = @($existingRecord.PSObject.Properties.Name)
-        $missingFields = @($IntegrityRequiredFields | Where-Object { $existingFieldNames -cnotcontains $_ })
-        $existingMetadataMatches = (
-            ($existingRecord -is [pscustomobject]) -and $missingFields.Count -eq 0 -and
-            $existingFieldNames -cnotcontains 'files' -and $existingRecord.schema_version -ceq $IntegritySchema -and
-            $existingRecord.status -ceq 'PASS' -and $existingRecord.package_layout -ceq 'onedir' -and
-            (Test-SamePath ([string]$existingRecord.code_root) $installRootFull) -and
-            $existingRecord.inventory_algorithm -ceq $IntegrityAlgorithm -and
-            (($existingRecord.file_count -is [int]) -or ($existingRecord.file_count -is [long])) -and
-            [long]$existingRecord.file_count -eq $sourceInventory.Count -and
-            $existingRecord.root_sha256 -ceq $sourceAggregate
-        )
         if (
-            -not $existingMetadataMatches -or
+            $existingAggregate -cne $sourceAggregate -or
             $existingCodeAggregate -cne $sourceAggregate
         ) {
-            throw "A different or damaged hardened code placement exists; remove it explicitly before replacement."
+            if (-not $ReplaceExistingVerifiedPortable.IsPresent) {
+                throw "A different or damaged hardened code placement exists; remove it explicitly before replacement."
+            }
+            [void](Assert-BootstrapIntegrityRecord -Root $installRootFull)
+            $existingManifestPath = Join-Path $installRootFull 'portable-manifest.json'
+            if (-not (Test-Path -LiteralPath $existingManifestPath -PathType Leaf)) {
+                throw "Verified replacement requires an existing portable manifest."
+            }
+            $existingManifest = Get-Content `
+                -LiteralPath $existingManifestPath `
+                -Raw `
+                -Encoding UTF8 | ConvertFrom-Json
+            if (
+                [string]$existingManifest.schema -cne 'label-match-portable-tree-v1' -or
+                [string]$existingManifest.source_commit -notmatch '^[0-9a-f]{40}$'
+            ) {
+                throw "Verified replacement existing portable identity is invalid."
+            }
+            $replacementRollbackRoot = Join-Path $applicationParent (
+                '.current.rollback.' + [Guid]::NewGuid().ToString('N')
+            )
+            Move-Item -LiteralPath $installRootFull -Destination $replacementRollbackRoot
+            try {
+                Move-Item -LiteralPath $stagingRoot -Destination $installRootFull
+                $replacementApplied = $true
+                $bootstrapStatus = 'REPLACED_VERIFIED'
+            }
+            catch {
+                if (
+                    -not (Test-Path -LiteralPath $installRootFull) -and
+                    (Test-Path -LiteralPath $replacementRollbackRoot -PathType Container)
+                ) {
+                    Move-Item -LiteralPath $replacementRollbackRoot -Destination $installRootFull
+                }
+                throw
+            }
         }
-        Remove-Item -LiteralPath $stagingRoot -Recurse -Force
-        $bootstrapStatus = 'REUSED'
+        else {
+            Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+            $bootstrapStatus = 'REUSED'
+        }
     }
     else {
         Move-Item -LiteralPath $stagingRoot -Destination $installRootFull
@@ -477,17 +578,27 @@ try {
         Write-Output "dacl_normalized=true"
     }
     Write-Output "code_root=$installRootFull"
+    Write-Output "release_layout=$releaseLayout"
     Write-Output "integrity_record=$(Join-Path $installRootFull $IntegrityFileName)"
     $tlsCaBootstrap = Install-CurrentUserTlsCaBootstrap $TlsCaBundlePath $OperatorLocalAppDataRoot
     if ($null -eq $tlsCaBootstrap) { Write-Output "tls_ca_bootstrap_status=ABSENT" }
     else { Write-Output "tls_ca_bootstrap_status=PASS"; Write-Output "tls_ca_bootstrap_path=$tlsCaBootstrap" }
     Write-Output "file_count=$($sourceInventory.Count)"
-    Write-Output "root_sha256=$sourceAggregate"
+    Write-Output "aggregate_sha256=$sourceAggregate"
     Write-Output "identity_profile_created=false"
     Write-Output "elevation_points=1:code_placement"
-    Write-Output "system_task_status=ABSENT"
+    if ($replacementApplied) {
+        Write-Output "replacement_rollback_status=PRESERVED"
+        Write-Output "replacement_rollback_root=$replacementRollbackRoot"
+    }
+    if (-not $testOverride) {
+        Write-ElevationLog 'PASS' "Elevated Label code placement completed: $bootstrapStatus."
+    }
 }
 catch {
+    if (-not $testOverride) {
+        Write-ElevationLog 'FAILED' ($_.Exception.GetType().Name)
+    }
     if (Test-Path -LiteralPath $stagingRoot) {
         $stagingFull = Get-StrictFullPath $stagingRoot "bootstrap staging root"
         $parentFull = (Get-StrictFullPath $applicationParent "application parent") + '\'
@@ -495,6 +606,19 @@ catch {
             throw "Bootstrap failed and staging cleanup target escaped its parent."
         }
         Remove-Item -LiteralPath $stagingFull -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($replacementApplied) {
+        $failedRoot = Join-Path $applicationParent (
+            '.current.failed.' + [Guid]::NewGuid().ToString('N')
+        )
+        if (Test-Path -LiteralPath $installRootFull -PathType Container) {
+            Move-Item -LiteralPath $installRootFull -Destination $failedRoot
+        }
+        if (-not (Test-Path -LiteralPath $replacementRollbackRoot -PathType Container)) {
+            throw "Verified replacement rollback source is unavailable."
+        }
+        Move-Item -LiteralPath $replacementRollbackRoot -Destination $installRootFull
+        throw "Verified replacement failed and the prior canonical tree was restored."
     }
     throw
 }

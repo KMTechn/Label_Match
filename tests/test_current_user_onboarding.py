@@ -440,18 +440,46 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
             ).hexdigest(),
         },
     )
+    inventory = []
+    for path in sorted(
+        (candidate for candidate in app_root.rglob("*") if candidate.is_file()),
+        key=lambda candidate: candidate.relative_to(app_root).as_posix().casefold(),
+    ):
+        relative = path.relative_to(app_root).as_posix()
+        payload = path.read_bytes()
+        inventory.append(
+            {
+                "path": relative,
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    aggregate = hashlib.sha256(
+        "".join(
+            f"{row['sha256']} {row['size']} {row['path']}\n" for row in inventory
+        ).encode("utf-8")
+    ).hexdigest()
     _write_json(
-        app_root / ".kmtech-canonical-install-owner.json",
+        app_root / "bootstrap-integrity.json",
         {
-            "schema": "kmtech-canonical-installed-owner-v1",
-            "app_id": "label_match",
-            "install_root": str(app_root),
-            "source_commit": commit,
-            "source_tree": tree,
+            "schema_version": "label-match-bootstrap-integrity-v1",
+            "status": "PASS",
+            "code_root": str(app_root),
+            "file_count": len(inventory),
+            "aggregate_sha256": aggregate,
+            "files": inventory,
         },
     )
     monkeypatch.setattr("current_user_onboarding.CANONICAL_PORTABLE_ROOT", app_root)
     environment = _environment(tmp_path)
+    conflict_receipt = tmp_path / "label-conflict-resolution.json"
+    _write_json(conflict_receipt, {"status": "RESOLVED", "authority": "fixture"})
+    environment["KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH"] = str(
+        conflict_receipt
+    )
+    environment["KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256"] = (
+        hashlib.sha256(conflict_receipt.read_bytes()).hexdigest()
+    )
     paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
     _ready_state(paths)
     marker = paths.control_dir / "label_match_user_relay.stop.json"
