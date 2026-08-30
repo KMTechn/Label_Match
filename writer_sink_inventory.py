@@ -11,7 +11,7 @@ import re
 from typing import Iterable
 
 
-INVENTORY_SCHEMA = "label-match-writer-sink-inventory-v1"
+INVENTORY_SCHEMA = "label-match-writer-sink-inventory-v2"
 _EXCLUDED_ROOTS = frozenset(
     {
         ".git",
@@ -60,6 +60,16 @@ class WriterSinkEvidence:
         }
 
 
+def _canonical_source_text(raw: bytes, path: Path) -> str:
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise WriterSinkInventoryError(
+            f"writer inventory parse failed: {path}"
+        ) from exc
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _runtime_files(root: Path, suffix: str) -> Iterable[Path]:
     for path in root.rglob(f"*{suffix}"):
         relative = path.relative_to(root)
@@ -86,12 +96,13 @@ def _literal_source(call: ast.Call, function_name: str) -> str | None:
 
 def _python_inventory(path: Path, root: Path) -> list[WriterSinkEvidence]:
     raw = path.read_bytes()
+    text = _canonical_source_text(raw, path)
     try:
-        tree = ast.parse(raw.decode("utf-8-sig"), filename=str(path))
-    except (SyntaxError, UnicodeDecodeError) as exc:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError as exc:
         raise WriterSinkInventoryError(f"writer inventory parse failed: {path}") from exc
     relative = path.relative_to(root).as_posix()
-    source_sha256 = hashlib.sha256(raw).hexdigest()
+    source_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
     rows: list[WriterSinkEvidence] = []
 
     class Visitor(ast.NodeVisitor):
@@ -158,11 +169,8 @@ def _python_inventory(path: Path, root: Path) -> list[WriterSinkEvidence]:
 
 def _powershell_inventory(path: Path, root: Path) -> list[WriterSinkEvidence]:
     raw = path.read_bytes()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise WriterSinkInventoryError(f"writer inventory parse failed: {path}") from exc
-    source_sha256 = hashlib.sha256(raw).hexdigest()
+    text = _canonical_source_text(raw, path)
+    source_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
     relative = path.relative_to(root).as_posix()
     rows: list[WriterSinkEvidence] = []
     for match in _POWERSHELL_DELEGATED_SOURCE.finditer(text):

@@ -124,6 +124,28 @@ def test_code_derived_inventory_is_exactly_bound_and_covers_all_sink_families() 
     assert len(sources) == len(inventory)
 
 
+def test_inventory_pin_is_invariant_across_git_checkout_line_endings(
+    tmp_path: Path,
+) -> None:
+    lf_root = tmp_path / "lf"
+    crlf_root = tmp_path / "crlf"
+    lf_root.mkdir()
+    crlf_root.mkdir()
+    source = '@writer_sink("sample")\ndef mutate():\n    return None\n'
+    (lf_root / "sink.py").write_bytes(source.encode("utf-8"))
+    (crlf_root / "sink.py").write_bytes(source.replace("\n", "\r\n").encode("utf-8"))
+
+    lf_inventory = derive_writer_sink_inventory(lf_root)
+    crlf_inventory = derive_writer_sink_inventory(crlf_root)
+
+    assert [row.record() for row in lf_inventory] == [
+        row.record() for row in crlf_inventory
+    ]
+    assert writer_sink_inventory_sha256(lf_inventory) == writer_sink_inventory_sha256(
+        crlf_inventory
+    )
+
+
 def test_every_literal_package_post_is_guarded_by_derived_inventory() -> None:
     path = ROOT / "package_logistics.py"
     tree = ast.parse(path.read_text(encoding="utf-8-sig"))
