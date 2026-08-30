@@ -1,0 +1,32 @@
+{
+  "schema": "label-writer-fence-contract-v1",
+  "app_id": "label_match",
+  "all_writer_fence": {
+    "admission_mutex_name": "Local\\KMTech.LabelMatch.WriterAdmission.v1",
+    "noncanonical_mutex_derivation": "Local\\KMTech.LabelMatch.WriterAdmission.v1.<first 16 lowercase hex characters of SHA-256 over the normalized one-field control_root tuple, encoded as UTF-8 without BOM>",
+    "noncanonical_mutex_prefix": "Local\\KMTech.LabelMatch.WriterAdmission.v1.",
+    "tuple_fields": [
+      "control_root"
+    ],
+    "tuple_separator": "No separator because the ordered tuple contains exactly one field; no trailing LF",
+    "tuple_encoding": "UTF-8 without BOM",
+    "tuple_normalization": "Apply Windows Path.GetFullPath to control_root, convert U+002F slash to U+005C backslash, remove trailing U+005C backslashes, apply Unicode NFC, then map ASCII A-Z to a-z with every other code point unchanged",
+    "digest_algorithm": "SHA-256",
+    "digest_projection": "first 16 lowercase hexadecimal characters",
+    "name_construction": "noncanonical_mutex_prefix + digest_projection(SHA-256(tuple_encoding(normalized ordered tuple)))",
+    "verification_vectors": [
+      {
+        "control_root": "C:\\KMTech\\Label_Match\\Tests\\Fence-A\\",
+        "expected_mutex_name": "Local\\KMTech.LabelMatch.WriterAdmission.v1.3460462ffc9be1cf"
+      },
+      {
+        "control_root": "C:/KMTech/Label_Match/Tests/CAF\u00c9/../CAF\u00c9/FENCE-B",
+        "expected_mutex_name": "Local\\KMTech.LabelMatch.WriterAdmission.v1.68a8295ff8084589"
+      },
+      {
+        "control_root": "C:/KMTech/Label_Match/Tests/Cafe\u0301/../Cafe\u0301\\Fence-C",
+        "expected_mutex_name": "Local\\KMTech.LabelMatch.WriterAdmission.v1.9fc5d500e16beaf5"
+      }
+    ]
+  }
+}

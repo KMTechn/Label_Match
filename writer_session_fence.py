@@ -96,6 +96,13 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _ascii_lower(value: str) -> str:
+    return "".join(
+        chr(ord(character) + 32) if "A" <= character <= "Z" else character
+        for character in value
+    )
+
+
 def session_authority_mutex_name(
     session_id: str,
     attempt_id: str,
@@ -116,7 +123,8 @@ def session_authority_mutex_name(
 
 def _normalized_control_root(value: str | os.PathLike[str]) -> str:
     selected = os.path.abspath(os.fspath(Path(value).expanduser()))
-    return unicodedata.normalize("NFC", selected.replace("/", "\\").rstrip("\\")).lower()
+    selected = selected.replace("/", "\\").rstrip("\\")
+    return _ascii_lower(unicodedata.normalize("NFC", selected))
 
 
 def canonical_control_root(environ: Mapping[str, str] | None = None) -> Path:

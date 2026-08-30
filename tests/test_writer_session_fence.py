@@ -4,10 +4,13 @@ import ast
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import unicodedata
 
 import pytest
 
@@ -20,6 +23,8 @@ from writer_sink_inventory import (
 
 ROOT = Path(__file__).resolve().parents[1]
 CHILD = ROOT / "tests" / "_writer_fence_child.py"
+HELPER = ROOT / "tools" / "label_writer_fence.ps1"
+CONTRACT = ROOT / "tools" / "label_writer_fence_contract.json"
 
 
 def _environment(control_root: Path) -> dict[str, str]:
@@ -101,6 +106,146 @@ def _run_child(
         timeout=20,
         check=False,
     )
+
+
+def _powershell() -> str:
+    executable = shutil.which("powershell.exe")
+    if not executable:
+        pytest.skip("Windows PowerShell is required")
+    return executable
+
+
+def _quote(value: str | Path) -> str:
+    return str(value).replace("'", "''")
+
+
+def _run_powershell_harness(
+    tmp_path: Path,
+    body: str,
+) -> subprocess.CompletedProcess[str]:
+    harness = tmp_path / "label-writer-fence-harness.ps1"
+    harness.write_text(
+        "$ErrorActionPreference='Stop'\n" + f". '{_quote(HELPER)}'\n" + body,
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            _powershell(),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _independent_normalized_control_root(control_root: str) -> str:
+    selected = ntpath.abspath(control_root).replace("/", "\\").rstrip("\\")
+    selected = unicodedata.normalize("NFC", selected)
+    return "".join(
+        chr(ord(character) + 32) if "A" <= character <= "Z" else character
+        for character in selected
+    )
+
+
+def _independent_mutex_name(contract: dict[str, object], control_root: str) -> str:
+    fence_contract = contract["all_writer_fence"]
+    assert isinstance(fence_contract, dict)
+    normalized = _independent_normalized_control_root(control_root)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return str(fence_contract["noncanonical_mutex_prefix"]) + digest
+
+
+def test_public_mutex_contract_vectors_and_uppercase_nonascii_regression(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    assert set(contract) == {"schema", "app_id", "all_writer_fence"}
+    assert contract["schema"] == "label-writer-fence-contract-v1"
+    assert contract["app_id"] == fence.APP_ID
+    fence_contract = contract["all_writer_fence"]
+    assert set(fence_contract) == {
+        "admission_mutex_name",
+        "noncanonical_mutex_derivation",
+        "noncanonical_mutex_prefix",
+        "tuple_fields",
+        "tuple_separator",
+        "tuple_encoding",
+        "tuple_normalization",
+        "digest_algorithm",
+        "digest_projection",
+        "name_construction",
+        "verification_vectors",
+    }
+    assert fence_contract["admission_mutex_name"] == fence.WRITER_MUTEX_NAME
+    assert fence_contract["noncanonical_mutex_prefix"] == (
+        fence.WRITER_MUTEX_NAME + "."
+    )
+    assert fence_contract["tuple_fields"] == ["control_root"]
+    assert fence_contract["tuple_encoding"] == "UTF-8 without BOM"
+
+    vectors = fence_contract["verification_vectors"]
+    assert len(vectors) == 3
+    expected: list[str] = []
+    for vector in vectors:
+        assert set(vector) == {"control_root", "expected_mutex_name"}
+        independently_derived = _independent_mutex_name(
+            contract,
+            vector["control_root"],
+        )
+        assert independently_derived == vector["expected_mutex_name"]
+        expected.append(independently_derived)
+
+    uppercase_vectors = [
+        vector for vector in vectors if "\u00c9" in vector["control_root"]
+    ]
+    assert len(uppercase_vectors) == 1
+    uppercase_vector = uppercase_vectors[0]
+    normalized = _independent_normalized_control_root(uppercase_vector["control_root"])
+    assert "\u00c9" in normalized
+    full_unicode_lower_name = str(fence_contract["noncanonical_mutex_prefix"]) + (
+        hashlib.sha256(normalized.lower().encode("utf-8")).hexdigest()[:16]
+    )
+    assert full_unicode_lower_name != uppercase_vector["expected_mutex_name"]
+
+    decomposed_vectors = [
+        vector for vector in vectors if "\u0301" in vector["control_root"]
+    ]
+    assert len(decomposed_vectors) == 1
+    decomposed_root = decomposed_vectors[0]["control_root"]
+    assert ".." in decomposed_root
+    assert "/" in decomposed_root and "\\" in decomposed_root
+
+    monkeypatch.setattr(
+        fence,
+        "canonical_control_root",
+        lambda environ=None: Path(r"C:\KMTech\Label_Match\Production-Control"),
+    )
+    assert [
+        fence.writer_admission_mutex_name(vector["control_root"])
+        for vector in vectors
+    ] == expected
+
+    completed = _run_powershell_harness(
+        tmp_path,
+        f"""
+$contract = Get-Content -LiteralPath '{_quote(CONTRACT)}' -Raw -Encoding UTF8 |
+  ConvertFrom-Json
+@($contract.all_writer_fence.verification_vectors | ForEach-Object {{
+  Get-LabelWriterAdmissionMutexName ([string]$_.control_root)
+}}) | ConvertTo-Json -Compress
+""",
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert json.loads(completed.stdout.splitlines()[-1]) == expected
 
 
 def test_code_derived_inventory_is_exactly_bound_and_covers_all_sink_families() -> None:

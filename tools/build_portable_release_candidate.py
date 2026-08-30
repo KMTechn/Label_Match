@@ -49,6 +49,7 @@ CANONICAL_INSTALLER_FILENAME = "INSTALL_CANONICAL_PORTABLE.ps1"
 LEGACY_INSTALLER_FILENAME = "INSTALL_THIS_PC.ps1"
 BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
 WRITER_FENCE_HELPER = Path("tools/label_writer_fence.ps1")
+WRITER_FENCE_CONTRACT = Path("tools/label_writer_fence_contract.json")
 THIRD_PARTY = {
     "babel": ("2.18.0", ("babel",)),
     "certifi": ("2026.6.17", ("certifi",)),
@@ -490,6 +491,15 @@ def build(
         )
     writer_fence_target = output / WRITER_FENCE_HELPER
     shutil.copy2(writer_fence_source, writer_fence_target)
+    writer_fence_contract_source = repo_root / WRITER_FENCE_CONTRACT
+    if not writer_fence_contract_source.is_file():
+        raise PortableBuildError(
+            f"writer fence contract is missing: {writer_fence_contract_source}"
+        )
+    shutil.copy2(
+        writer_fence_contract_source,
+        output / WRITER_FENCE_CONTRACT,
+    )
     native = _app_native_inventory(app_root)
     forbidden_roots = [
         name

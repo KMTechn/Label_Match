@@ -16,6 +16,7 @@ INSTALLER = ROOT / "INSTALL_CANONICAL_PORTABLE.ps1"
 HELPER = ROOT / "INSTALL_THIS_PC.ps1"
 INTEGRITY_HELPER = ROOT / "tools" / "bootstrap_integrity.ps1"
 WRITER_FENCE_HELPER = ROOT / "tools" / "label_writer_fence.ps1"
+WRITER_FENCE_CONTRACT = ROOT / "tools" / "label_writer_fence_contract.json"
 
 
 def _source(path: Path = INSTALLER) -> str:
@@ -787,12 +788,17 @@ def test_portable_builder_packages_v2_installer_helper_and_integrity_tool() -> N
     assert portable_builder.WRITER_FENCE_HELPER.as_posix() == (
         "tools/label_writer_fence.ps1"
     )
+    assert portable_builder.WRITER_FENCE_CONTRACT.as_posix() == (
+        "tools/label_writer_fence_contract.json"
+    )
+    assert WRITER_FENCE_CONTRACT.is_file()
     assert "canonical_installer_sha256" in source
     assert "runtime_python_sha256" in source
     assert "shutil.copy2(installer_source" in source
     assert "shutil.copy2(legacy_installer_source" in source
     assert "shutil.copy2(bootstrap_helper_source" in source
     assert "shutil.copy2(writer_fence_source" in source
+    assert "writer_fence_contract_source" in source
 
 
 def test_plan_only_contract_is_stdout_only_and_non_mutating() -> None:

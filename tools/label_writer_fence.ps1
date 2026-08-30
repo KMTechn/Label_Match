@@ -24,6 +24,13 @@ function Get-LabelWriterFenceStringSha256([string]$Value) {
     finally { $algorithm.Dispose() }
 }
 
+function ConvertTo-LabelWriterFenceAsciiLower([string]$Value) {
+    return -join @($Value.ToCharArray() | ForEach-Object {
+        $code = [int][char]$_
+        if ($code -ge 65 -and $code -le 90) { [char]($code + 32) } else { $_ }
+    })
+}
+
 function Test-LabelWriterFenceHex([string]$Value, [int]$Length) {
     return $Value -cmatch ('\A[0-9a-f]{' + $Length.ToString([Globalization.CultureInfo]::InvariantCulture) + '}\z')
 }
@@ -69,7 +76,10 @@ function Get-LabelWriterFenceControlRoot {
 }
 
 function Get-LabelWriterFenceNormalizedRoot([string]$ControlRoot) {
-    return ([IO.Path]::GetFullPath($ControlRoot).TrimEnd('\').Normalize([Text.NormalizationForm]::FormC).ToLowerInvariant())
+    $normalized = [IO.Path]::GetFullPath($ControlRoot).Replace('/', '\').TrimEnd('\').Normalize(
+        [Text.NormalizationForm]::FormC
+    )
+    return ConvertTo-LabelWriterFenceAsciiLower $normalized
 }
 
 function Get-LabelWriterAdmissionMutexName {
