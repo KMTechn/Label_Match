@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib.metadata
 import json
@@ -38,9 +39,9 @@ APP_PACKAGE_DIRS = (
 )
 APP_DATA_DIRS = ("assets", "config")
 APP_DATA_FILES = ("contract.lock.json", "kmtech_zero_pe.vendor.json")
-APP_TOOL_FILES = (
-    "label_auth_recovery_canary.py",
-    "label_legacy_task_quiescence.py",
+EXTERNAL_TOOL_MODULES = (
+    "tools.label_auth_recovery_canary",
+    "tools.label_legacy_task_quiescence",
 )
 UPDATE_KEY_CONFIG_FILENAME = "update-manifest-key-config.json"
 UPDATE_KEY_CONFIG_SCHEMA = "label-match-update-key-config-v1"
@@ -86,6 +87,102 @@ def _copy_tree(source: Path, target: Path) -> None:
     if not source.is_dir():
         raise PortableBuildError(f"required source directory is missing: {source}")
     shutil.copytree(source, target, ignore=_ignore)
+
+
+def _tool_module_source(repo_root: Path, module_name: str) -> Path:
+    if not module_name.startswith("tools."):
+        raise PortableBuildError(f"not a tools module: {module_name}")
+    relative = Path(*module_name.split(".")[1:]).with_suffix(".py")
+    source = repo_root / "tools" / relative
+    if not source.is_file():
+        raise PortableBuildError(
+            f"required portable tool module is missing: {module_name}"
+        )
+    return source
+
+
+def _imported_tool_modules(source: Path) -> set[str]:
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        raise PortableBuildError(
+            f"portable dependency scan failed for {source}"
+        ) from exc
+
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(
+                alias.name
+                for alias in node.names
+                if alias.name.startswith("tools.")
+            )
+            continue
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "tools":
+                modules.update(
+                    f"tools.{alias.name}"
+                    for alias in node.names
+                    if alias.name != "*"
+                )
+            elif node.module.startswith("tools."):
+                modules.add(node.module)
+            continue
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = node.func
+        is_dynamic_import = (
+            isinstance(function, ast.Name)
+            and function.id == "__import__"
+        ) or (
+            isinstance(function, ast.Attribute)
+            and function.attr == "import_module"
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "importlib"
+        )
+        first = node.args[0]
+        if (
+            is_dynamic_import
+            and isinstance(first, ast.Constant)
+            and isinstance(first.value, str)
+            and first.value.startswith("tools.")
+        ):
+            modules.add(first.value)
+    return modules
+
+
+def _portable_application_sources(repo_root: Path) -> list[Path]:
+    sources = list(repo_root.glob("*.py"))
+    for name in APP_PACKAGE_DIRS:
+        sources.extend((repo_root / name).rglob("*.py"))
+    portable_main = repo_root / "portable" / "main.py"
+    if not portable_main.is_file():
+        raise PortableBuildError(
+            f"portable entrypoint is missing: {portable_main}"
+        )
+    sources.append(portable_main)
+    return sorted(set(sources), key=lambda item: item.as_posix().casefold())
+
+
+def _discover_portable_tool_sources(
+    repo_root: Path,
+    initial_sources: Iterable[Path] | None = None,
+    external_modules: Iterable[str] = EXTERNAL_TOOL_MODULES,
+) -> list[Path]:
+    pending = set(external_modules)
+    for source in initial_sources or _portable_application_sources(repo_root):
+        pending.update(_imported_tool_modules(source))
+
+    discovered: dict[str, Path] = {}
+    while pending:
+        module_name = min(pending, key=str.casefold)
+        pending.remove(module_name)
+        if module_name in discovered:
+            continue
+        source = _tool_module_source(repo_root, module_name)
+        discovered[module_name] = source
+        pending.update(_imported_tool_modules(source) - discovered.keys())
+    return [discovered[name] for name in sorted(discovered, key=str.casefold)]
 
 
 def _runtime_source(python_home: Path, runtime: Path) -> None:
@@ -190,11 +287,11 @@ def _copy_application(repo_root: Path, app_root: Path) -> None:
         shutil.copy2(source, app_root / name)
     tools_root = app_root / "tools"
     tools_root.mkdir()
-    for name in APP_TOOL_FILES:
-        source = repo_root / "tools" / name
-        if not source.is_file():
-            raise PortableBuildError(f"application tool file is missing: {source}")
-        shutil.copy2(source, tools_root / name)
+    for source in _discover_portable_tool_sources(repo_root):
+        relative = source.relative_to(repo_root / "tools")
+        target = tools_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
     shutil.copy2(repo_root / "portable" / "main.py", app_root / "main.py")
 
 

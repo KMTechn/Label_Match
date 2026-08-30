@@ -4,6 +4,8 @@ import ast
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from kmtech_zero_pe import RasterImage
 from phs_label_workflow import PHSLabelRenderer
 from tools import build_portable_release_candidate as portable_builder
@@ -83,12 +85,57 @@ def test_low_difficulty_native_dependencies_are_absent_from_runtime_requirements
 def test_portable_builder_requires_an_empty_native_application_closure() -> None:
     assert portable_builder.EXPECTED_PYTHON == (3, 12, 10)
     assert portable_builder.ALLOWED_APP_NATIVE_NAMES == set()
-    assert portable_builder.APP_TOOL_FILES == (
-        "label_auth_recovery_canary.py",
-        "label_legacy_task_quiescence.py",
+    assert portable_builder.EXTERNAL_TOOL_MODULES == (
+        "tools.label_auth_recovery_canary",
+        "tools.label_legacy_task_quiescence",
     )
     for forbidden in ("cffi", "cryptography", "pillow", "pygame", "pycparser"):
         assert forbidden not in portable_builder.THIRD_PARTY
+
+
+def test_portable_builder_derives_complete_tool_dependency_closure() -> None:
+    relative = {
+        path.relative_to(ROOT).as_posix()
+        for path in portable_builder._discover_portable_tool_sources(ROOT)
+    }
+    assert relative == {
+        "tools/direct_sync_relay_runner.py",
+        "tools/install_logistics_runtime_profile.py",
+        "tools/label_auth_recovery_canary.py",
+        "tools/label_legacy_task_quiescence.py",
+        "tools/register_label_match_worker_pc.py",
+    }
+
+
+def test_portable_tool_dependency_closure_is_recursive_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    entrypoint = tmp_path / "main.py"
+    first = tools / "first.py"
+    second = tools / "second.py"
+    entrypoint.write_text("from tools import first\n", encoding="utf-8")
+    first.write_text("from tools import second\n", encoding="utf-8")
+    second.write_text("VALUE = 1\n", encoding="utf-8")
+
+    discovered = portable_builder._discover_portable_tool_sources(
+        tmp_path,
+        initial_sources=[entrypoint],
+        external_modules=(),
+    )
+    assert [path.name for path in discovered] == ["first.py", "second.py"]
+
+    second.unlink()
+    with pytest.raises(
+        portable_builder.PortableBuildError,
+        match="required portable tool module is missing: tools.second",
+    ):
+        portable_builder._discover_portable_tool_sources(
+            tmp_path,
+            initial_sources=[entrypoint],
+            external_modules=(),
+        )
 
 
 def test_portable_launcher_uses_pythonw_source_entrypoint() -> None:
