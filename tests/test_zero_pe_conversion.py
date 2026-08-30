@@ -94,10 +94,8 @@ def test_portable_builder_requires_an_empty_native_application_closure() -> None
 
 
 def test_portable_builder_derives_complete_tool_dependency_closure() -> None:
-    relative = {
-        path.relative_to(ROOT).as_posix()
-        for path in portable_builder._discover_portable_tool_sources(ROOT)
-    }
+    sources = portable_builder._discover_portable_tool_sources(ROOT)
+    relative = {path.relative_to(ROOT).as_posix() for path in sources}
     assert relative == {
         "tools/direct_sync_relay_runner.py",
         "tools/install_logistics_runtime_profile.py",
@@ -105,6 +103,20 @@ def test_portable_builder_derives_complete_tool_dependency_closure() -> None:
         "tools/label_legacy_task_quiescence.py",
         "tools/register_label_match_worker_pc.py",
     }
+    native_imports: list[tuple[str, str]] = []
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                if name.split(".", 1)[0] in FORBIDDEN_ROOTS:
+                    native_imports.append((path.relative_to(ROOT).as_posix(), name))
+    assert native_imports == []
 
 
 def test_portable_tool_dependency_closure_is_recursive_and_fail_closed(

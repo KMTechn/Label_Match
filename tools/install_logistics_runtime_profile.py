@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import ctypes
+from ctypes import wintypes
 from dataclasses import dataclass, replace as dataclass_replace
 from decimal import Decimal
 import json
@@ -14,8 +18,6 @@ import subprocess
 import sys
 from typing import Any, Mapping
 import uuid
-
-from cryptography import x509
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +47,18 @@ _PEM_CERTIFICATE_BLOCK_RE = re.compile(
     rb"-----END CERTIFICATE-----",
 )
 _PEM_LINE_BREAKS_RE = re.compile(rb"(?:\r?\n)*")
+_X509_ASN_ENCODING = 0x00000001
+_PKCS_7_ASN_ENCODING = 0x00010000
+_CRYPT32 = ctypes.WinDLL("crypt32.dll", use_last_error=True) if os.name == "nt" else None
+if _CRYPT32 is not None:
+    _CRYPT32.CertCreateCertificateContext.argtypes = (
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_ubyte),
+        wintypes.DWORD,
+    )
+    _CRYPT32.CertCreateCertificateContext.restype = wintypes.LPVOID
+    _CRYPT32.CertFreeCertificateContext.argtypes = (wintypes.LPVOID,)
+    _CRYPT32.CertFreeCertificateContext.restype = wintypes.BOOL
 MACHINE_CREDENTIAL_BUNDLE_CONTRACT_VERSION = (
     "producer-self-enrollment-machine-credentials-v1"
 )
@@ -84,6 +98,31 @@ class _ResolvedTlsCaBundle:
     source_path: Path
     target_path: Path
     content: bytes
+
+
+def _validate_x509_der_with_windows_cryptoapi(content: bytes) -> None:
+    if _CRYPT32 is None:
+        raise LogisticsRuntimeConfigurationError(
+            "TLS CA bundle validation requires Windows CryptoAPI"
+        )
+    if not content:
+        raise LogisticsRuntimeConfigurationError(
+            "TLS CA bundle source contains an invalid PEM certificate"
+        )
+    buffer = (ctypes.c_ubyte * len(content)).from_buffer_copy(content)
+    context = _CRYPT32.CertCreateCertificateContext(
+        _X509_ASN_ENCODING | _PKCS_7_ASN_ENCODING,
+        buffer,
+        len(content),
+    )
+    if not context:
+        raise LogisticsRuntimeConfigurationError(
+            "TLS CA bundle source contains an invalid PEM certificate"
+        )
+    if not _CRYPT32.CertFreeCertificateContext(context):
+        raise LogisticsRuntimeConfigurationError(
+            "TLS CA bundle certificate context cleanup failed"
+        )
 
 
 def _semantic_json_value(value: Any) -> tuple[Any, ...]:
@@ -153,8 +192,10 @@ def _validate_tls_ca_bundle_pem(content: bytes) -> None:
                 "TLS CA bundle source must contain only PEM certificates"
             )
         try:
-            x509.load_pem_x509_certificate(match.group(0))
-        except ValueError as exc:
+            lines = match.group(0).splitlines()
+            der = base64.b64decode(b"".join(lines[1:-1]), validate=True)
+            _validate_x509_der_with_windows_cryptoapi(der)
+        except (ValueError, binascii.Error) as exc:
             raise LogisticsRuntimeConfigurationError(
                 "TLS CA bundle source contains an invalid PEM certificate"
             ) from exc
