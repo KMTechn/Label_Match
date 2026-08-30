@@ -51,6 +51,7 @@ from deferred_intent_capture import (
 )
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
 from label_match_product_host import dispatch_product_mode
+from writer_session_fence import writer_sink
 from storage_policy import label_match_local_events_dir
 
 
@@ -1302,6 +1303,7 @@ def _label_match_write_session_direct_sync_result(context, *, reason, result, wr
     }
 
 
+@writer_sink("gui_direct_sync")
 def _label_match_run_and_record_session_direct_sync(
     context,
     *,
@@ -12146,6 +12148,7 @@ class Label_Match(tk.Tk):
             return f"scan_{position - LABEL_MATCH_MASTER_SCAN_POSITION}"
         return None
 
+    @writer_sink("gui_package_enqueue")
     def _queue_authoritative_package(self, *, item_code, is_manual_complete):
         required_mode = bool(
             self.__dict__.get("_logistics_authoritative_required", False)
@@ -12428,6 +12431,7 @@ class Label_Match(tk.Tk):
             "중앙 확인 전 해당 트레이를 반출하지 마세요."
         )
 
+    @writer_sink("gui_package_cancel_enqueue")
     def _queue_authoritative_package_cancellation(
         self,
         *,

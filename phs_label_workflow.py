@@ -30,6 +30,7 @@ from kmtech_zero_pe import (
     PrintSpec,
     RasterCanvas,
 )
+from writer_session_fence import writer_sink
 
 
 PHS_LABEL_EXCHANGE_JOURNAL_VERSION = "label-match-phs-label-exchange-v1"
@@ -2638,6 +2639,7 @@ class PHSLabelExchangeCoordinator:
             journal_state=dict(state),
         )
 
+    @writer_sink("phs_single_exchange")
     def execute_single(
         self,
         current_set: dict[str, Any],
@@ -3235,6 +3237,7 @@ class PHSLabelExchangeCoordinator:
             ),
         )
 
+    @writer_sink("phs_reconciliation_exchange")
     def execute_reconciliation(
         self,
         action_resolution: Mapping[str, Any] | None,
@@ -4019,6 +4022,7 @@ class PHSLabelExchangeCoordinator:
             ),
         )
 
+    @writer_sink("phs_reconciliation_recovery")
     def recover_reconciliation(
         self,
         *,
@@ -4041,6 +4045,7 @@ class PHSLabelExchangeCoordinator:
             ),
         )
 
+    @writer_sink("phs_current_recovery")
     def recover_current(
         self,
         current_set: dict[str, Any],

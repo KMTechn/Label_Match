@@ -21,6 +21,7 @@ from user_relay_stop_marker import (
     build_successor_marker,
     read_stop_marker,
 )
+from writer_session_fence import WriterFencedError, writer_admission, writer_sink
 
 USER_RELAY_MODE = "--label-match-user-relay"
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
@@ -218,6 +219,7 @@ def _run_command(command: list[str], timeout_seconds: int) -> dict[str, Any]:
     }
 
 
+@writer_sink("relay_child_launch")
 def run_session_direct_sync_once(
     *,
     app_root: str | os.PathLike[str],
@@ -298,6 +300,7 @@ def _registry_delete() -> None:
         return
 
 
+@writer_sink("user_relay_autostart_install")
 def install_user_relay_autostart(
     app_root: str | os.PathLike[str],
     *,
@@ -318,6 +321,7 @@ def install_user_relay_autostart(
     }
 
 
+@writer_sink("user_relay_autostart_remove")
 def remove_user_relay_autostart(
     *,
     deleter: Callable[[], None] | None = None,
@@ -334,6 +338,7 @@ def remove_user_relay_autostart(
     }
 
 
+@writer_sink("user_relay_process_start")
 def start_user_relay_process(
     app_root: str | os.PathLike[str],
     *,
@@ -411,37 +416,50 @@ def run_persistent_relay_loop(
     last_cycle: dict[str, Any] = {"status": "NOT_TESTED"}
     fixed_metadata = dict(metadata or {})
     while not should_stop():
-        cycle_count += 1
         try:
-            raw_cycle = run_cycle()
-            cycle = dict(raw_cycle) if isinstance(raw_cycle, Mapping) else {}
-            if not str(cycle.get("status") or "").strip():
+            with writer_admission("persistent_relay_cycle"):
+                cycle_count += 1
+                try:
+                    raw_cycle = run_cycle()
+                    cycle = dict(raw_cycle) if isinstance(raw_cycle, Mapping) else {}
+                    if not str(cycle.get("status") or "").strip():
+                        cycle = {
+                            **cycle,
+                            "status": "UNKNOWN",
+                            "reason": "relay cycle returned no status value",
+                        }
+                except Exception as exc:
+                    cycle = {
+                        "status": "UNKNOWN",
+                        "reason": "relay cycle did not return a result",
+                        "error_type": exc.__class__.__name__,
+                    }
+                last_cycle = cycle
+                _write_json_atomic(
+                    selected_status_path,
+                    {
+                        **fixed_metadata,
+                        "report_version": "label-match-user-relay-v1",
+                        "status": "RUNNING",
+                        "principal": "current_user",
+                        "persistent_retry": True,
+                        "retry_interval_seconds": interval,
+                        "cycle_count": cycle_count,
+                        "last_cycle": cycle,
+                        "updated_at": _now(),
+                    },
+                )
+        except WriterFencedError:
+            if max_cycles is not None:
                 cycle = {
-                    **cycle,
-                    "status": "UNKNOWN",
-                    "reason": "relay cycle returned no status value",
+                    "status": "FENCED",
+                    "reason": "deployment writer fence denied the relay cycle",
                 }
-        except Exception as exc:
-            cycle = {
-                "status": "UNKNOWN",
-                "reason": "relay cycle did not return a result",
-                "error_type": exc.__class__.__name__,
-            }
-        last_cycle = cycle
-        _write_json_atomic(
-            selected_status_path,
-            {
-                **fixed_metadata,
-                "report_version": "label-match-user-relay-v1",
-                "status": "RUNNING",
-                "principal": "current_user",
-                "persistent_retry": True,
-                "retry_interval_seconds": interval,
-                "cycle_count": cycle_count,
-                "last_cycle": cycle,
-                "updated_at": _now(),
-            },
-        )
+                last_cycle = cycle
+                break
+            if _wait_with_stop_checks(interval, should_stop, wait):
+                break
+            continue
         if max_cycles is not None and cycle_count >= int(max_cycles):
             break
         if _wait_with_stop_checks(interval, should_stop, wait):
@@ -457,7 +475,15 @@ def run_persistent_relay_loop(
         "last_cycle": last_cycle,
         "updated_at": _now(),
     }
-    _write_json_atomic(selected_status_path, final)
+    try:
+        with writer_admission("persistent_relay_status"):
+            _write_json_atomic(selected_status_path, final)
+    except WriterFencedError:
+        final = {
+            **final,
+            "status": "FENCED",
+            "reason": "deployment writer fence denied the final status mutation",
+        }
     return final
 
 
@@ -549,6 +575,7 @@ def _fresh_persistent_owner(
     return {"process_id": process_id, "updated_at": updated.isoformat()}
 
 
+@writer_sink("user_relay_stop_request")
 def request_user_relay_stop(
     direct_sync_root: str | os.PathLike[str],
     *,
@@ -624,6 +651,7 @@ def request_user_relay_stop(
         wait(0.25)
 
 
+@writer_sink("user_relay_stop_release")
 def release_user_relay_stop_marker(
     direct_sync_root: str | os.PathLike[str],
     *,
@@ -695,6 +723,7 @@ def build_scheduled_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@writer_sink("scheduled_relay")
 def scheduled_main(argv: list[str] | None = None) -> int:
     args = build_scheduled_parser().parse_args(argv)
     app_root = Path(args.app_root).expanduser().resolve()

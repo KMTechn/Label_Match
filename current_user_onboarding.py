@@ -39,6 +39,7 @@ from user_relay import (
     start_user_relay_process,
     user_relay_stop_path,
 )
+from writer_session_fence import writer_sink
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
@@ -822,6 +823,7 @@ def apply_current_user_runtime_environment(
     values[REQUIRED_ENV] = "1"
 
 
+@writer_sink("current_user_onboarding")
 def onboard_current_user(
     app_root: str | os.PathLike[str],
     *,
@@ -1122,6 +1124,7 @@ def onboard_current_user(
         ) from exc
 
 
+@writer_sink("current_user_setup_removal")
 def remove_current_user_setup(
     app_root: str | os.PathLike[str],
     *,

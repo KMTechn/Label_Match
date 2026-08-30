@@ -40,6 +40,7 @@ PORTABLE_MANIFEST_SCHEMA = "label-match-portable-tree-v1"
 PORTABLE_CRITICAL_FILES = {
     "placement_helper": "INSTALL_THIS_PC.ps1",
     "bootstrap_integrity_helper": "tools/bootstrap_integrity.ps1",
+    "writer_fence_helper": "tools/label_writer_fence.ps1",
 }
 MAX_JSON_BYTES = 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -63,13 +64,17 @@ PORTABLE_REBIND_ALLOWED_PATHS = frozenset(
         "INSTALL_THIS_PC.ps1",
         "current_user_onboarding.py",
         "label_exact_clone_resolution.py",
+        "writer_session_fence.py",
+        "writer_sink_inventory.py",
         "tests/test_current_user_onboarding.py",
         "tests/test_canonical_portable_installer.py",
         "tests/test_label_exact_clone_resolution.py",
         "tests/test_label_exact_clone_resolution_receipt_cli.py",
+        "tests/test_writer_session_fence.py",
         "tests/test_zero_touch_installer.py",
         "tests/test_verify_staged_release_installer.py",
         "tools/label_exact_clone_resolution_receipt.py",
+        "tools/label_writer_fence.ps1",
         "tools/verify_staged_release_installer.py",
     }
 )

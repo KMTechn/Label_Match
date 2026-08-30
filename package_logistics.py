@@ -38,6 +38,7 @@ from deferred_intent_capture import (
     ensure_deferred_intent_schema_compatibility,
     supersede_for_legacy_outbox,
 )
+from writer_session_fence import writer_sink
 
 
 OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v10"
@@ -2578,6 +2579,7 @@ class PackageLogisticsClient:
 
         return self._data(self._request("GET", "/logistics/api/v1/capabilities"))
 
+    @writer_sink("package_operation_lease")
     def issue_operation_lease(
         self,
         *,
@@ -2642,6 +2644,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("package_transfer_reseal")
     def replace_and_reseal_transfer(
         self, command: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -2987,6 +2990,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("phs_label_adopt")
     def adopt_phs_label(
         self,
         *,
@@ -3025,6 +3029,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("phs_exchange_prepare")
     def prepare_phs_label_exchange(
         self,
         *,
@@ -3061,6 +3066,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("phs_reconciliation_prepare")
     def prepare_phs_reconciliation_label_exchange(
         self,
         reconciliation_id: str,
@@ -3151,6 +3157,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("phs_print_request")
     def request_phs_label_print(
         self,
         exchange_id: str,
@@ -3185,6 +3192,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("phs_print_complete")
     def complete_phs_label_print(
         self,
         print_attempt_id: str,
@@ -3232,6 +3240,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("phs_exchange_activate")
     def activate_phs_label_exchange(
         self,
         exchange_id: str,
@@ -3453,6 +3462,7 @@ class PackageLogisticsClient:
         )
         return source_id, command
 
+    @writer_sink("package_create")
     def create_package(self, command: Mapping[str, Any]) -> dict[str, Any]:
         key = str(command.get("idempotency_key") or "").strip()
         if not key:
@@ -3540,6 +3550,7 @@ class PackageLogisticsClient:
         )
         return command
 
+    @writer_sink("package_cancel")
     def cancel_package(self, command: Mapping[str, Any]) -> dict[str, Any]:
         key = str(command.get("idempotency_key") or "").strip()
         if not key:
@@ -4618,6 +4629,7 @@ class PackageOutboxProcessor:
         self.client = client
         self._drain_lock = threading.Lock()
 
+    @writer_sink("package_outbox_drain")
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0}
         with self._drain_lock:
@@ -5346,6 +5358,7 @@ class PackageCancellationOutboxProcessor:
         self.client = client
         self._drain_lock = threading.Lock()
 
+    @writer_sink("package_cancellation_drain")
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0, "deferred": 0}
         with self._drain_lock:

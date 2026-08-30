@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text  # noqa: E402
+from writer_session_fence import writer_sink  # noqa: E402
 
 
 ALLOWED_SOURCE_PREFIX = "포장실작업이벤트로그_"
@@ -486,6 +487,7 @@ def _persist_scan_runtime_status(config: DirectSyncRuntimeConfig, status: dict) 
         handle.write("\n")
 
 
+@writer_sink("raw_relay_runner")
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Label_Match direct-sync relay runner")
     parser.add_argument("--db-path", required=True)

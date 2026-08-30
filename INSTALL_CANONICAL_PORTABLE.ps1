@@ -36,6 +36,7 @@ $ErrorActionPreference = 'Stop'
 $CanonicalRoot = 'C:\KMTech\Apps\Label_Match\current'
 $RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $RunName = 'KMTech.LabelMatch.Relay'
+$CanonicalTaskName = 'direct-sync-relay-label-match'
 $testMode = $AllowNoncanonicalLayoutForTest -and
     [string]$env:KMTECH_FACTORY_INSTALL_TEST_MODE -ceq '1'
 if ($SkipSignatureValidationForTest -and -not $testMode) {
@@ -198,7 +199,8 @@ function PortableInventory([string]$Root) {
         foreach ($record in $records) { $criticalRecords[[string]$record.path] = $record }
         foreach ($criticalPath in @(
             'INSTALL_THIS_PC.ps1',
-            'tools/bootstrap_integrity.ps1'
+            'tools/bootstrap_integrity.ps1',
+            'tools/label_writer_fence.ps1'
         )) {
             if (-not $criticalRecords.ContainsKey($criticalPath)) {
                 throw "Portable inventory is missing critical file: $criticalPath"
@@ -215,6 +217,9 @@ function PortableInventory([string]$Root) {
                 placement_helper = [string]$criticalRecords['INSTALL_THIS_PC.ps1'].sha256
                 bootstrap_integrity_helper = [string](
                     $criticalRecords['tools/bootstrap_integrity.ps1'].sha256
+                )
+                writer_fence_helper = [string](
+                    $criticalRecords['tools/label_writer_fence.ps1'].sha256
                 )
             }
         }
@@ -272,7 +277,9 @@ function ReceiptSource([string]$Root, $ManifestValue) {
         [string]$receipt.portable_inventory.critical_file_sha256.placement_helper -cne
             [string]$inventory.critical_file_sha256.placement_helper -or
         [string]$receipt.portable_inventory.critical_file_sha256.bootstrap_integrity_helper -cne
-            [string]$inventory.critical_file_sha256.bootstrap_integrity_helper
+            [string]$inventory.critical_file_sha256.bootstrap_integrity_helper -or
+        [string]$receipt.portable_inventory.critical_file_sha256.writer_fence_helper -cne
+            [string]$inventory.critical_file_sha256.writer_fence_helper
     ) { throw 'Pinned receipt full portable source inventory differs.' }
     return $inventory
 }
@@ -298,7 +305,8 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
         'launch-label-match.cmd',
         'INSTALL_CANONICAL_PORTABLE.ps1',
         'INSTALL_THIS_PC.ps1',
-        'tools\bootstrap_integrity.ps1'
+        'tools\bootstrap_integrity.ps1',
+        'tools\label_writer_fence.ps1'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) {
             throw "Portable tree is missing $relative."
@@ -367,6 +375,96 @@ function Restore($Before) {
     finally { $key.Dispose() }
 }
 
+function TextSha([string]$Value) {
+    return ByteSha ((New-Object Text.UTF8Encoding($false)).GetBytes($Value))
+}
+
+function ScheduledTaskSnapshot([string]$AuditRoot, [string]$RunId) {
+    $task = Get-ScheduledTask `
+        -TaskName $CanonicalTaskName `
+        -TaskPath '\' `
+        -ErrorAction SilentlyContinue
+    if ($null -eq $task) {
+        return [pscustomobject][ordered]@{
+            exists = $false
+            enabled = $false
+            xml_sha256 = ''
+            backup_path = ''
+        }
+    }
+    $xml = [string](Export-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\')
+    if ([string]::IsNullOrWhiteSpace($xml)) { throw 'Scheduled task preimage is empty.' }
+    $backup = Join-Path $AuditRoot "canonical-portable-$RunId-task-preimage.xml"
+    [IO.File]::WriteAllText($backup, $xml, (New-Object Text.UTF8Encoding($false)))
+    if ((TextSha ([IO.File]::ReadAllText($backup, (New-Object Text.UTF8Encoding($false, $true))))) -cne (TextSha $xml)) {
+        throw 'Scheduled task preimage backup readback failed.'
+    }
+    return [pscustomobject][ordered]@{
+        exists = $true
+        enabled = [bool]$task.Settings.Enabled
+        xml_sha256 = TextSha $xml
+        backup_path = $backup
+    }
+}
+
+function RestoreScheduledTask($Before) {
+    $existing = Get-ScheduledTask `
+        -TaskName $CanonicalTaskName `
+        -TaskPath '\' `
+        -ErrorAction SilentlyContinue
+    if (-not [bool]$Before.exists) {
+        if ($null -ne $existing) {
+            Unregister-ScheduledTask `
+                -TaskName $CanonicalTaskName `
+                -TaskPath '\' `
+                -Confirm:$false
+        }
+        if ($null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+            throw 'Scheduled task absence restore readback failed.'
+        }
+        return
+    }
+    $xml = [IO.File]::ReadAllText(
+        [string]$Before.backup_path,
+        (New-Object Text.UTF8Encoding($false, $true))
+    )
+    if ((TextSha $xml) -cne [string]$Before.xml_sha256) {
+        throw 'Scheduled task preimage changed before restore.'
+    }
+    Register-ScheduledTask `
+        -TaskName $CanonicalTaskName `
+        -TaskPath '\' `
+        -Xml $xml `
+        -Force | Out-Null
+    if ([bool]$Before.enabled) {
+        Enable-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' | Out-Null
+    }
+    else {
+        Disable-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' | Out-Null
+    }
+    $restored = Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\'
+    $restoredXml = [string](Export-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\')
+    if (
+        [bool]$restored.Settings.Enabled -ne [bool]$Before.enabled -or
+        (TextSha $restoredXml) -cne [string]$Before.xml_sha256
+    ) { throw 'Scheduled task exact restore readback failed.' }
+}
+
+function UnquiescedProductWriters {
+    return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        $command = [string]$_.CommandLine
+        $executable = [string]$_.ExecutablePath
+        ($executable -match '(?i)(pythonw?\.exe|Label_Match\.exe)$') -and
+        (
+            $command -like '*--label-match-user-relay*' -or
+            $command -like '*--label-match-scheduled-relay*' -or
+            $command -like '*--label-match-direct-sync-relay*' -or
+            $command -like '*tools*direct_sync_relay_runner.py*' -or
+            $command -like '*Label_Match*app*main.py*'
+        )
+    })
+}
+
 function Save([string]$Path, $Value) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     $temp = "$Path.tmp.$PID"
@@ -389,21 +487,28 @@ function FreezePlacementHelper(
     New-Item -ItemType Directory -Path $frozenTools -Force | Out-Null
     $sourceHelper = Join-Path $Source 'INSTALL_THIS_PC.ps1'
     $sourceIntegrity = Join-Path $Source 'tools\bootstrap_integrity.ps1'
+    $sourceWriterFence = Join-Path $Source 'tools\label_writer_fence.ps1'
     $frozenHelper = Join-Path $frozenRoot 'INSTALL_THIS_PC.ps1'
     $frozenIntegrity = Join-Path $frozenTools 'bootstrap_integrity.ps1'
+    $frozenWriterFence = Join-Path $frozenTools 'label_writer_fence.ps1'
     $helperSha256 = [string]$ExpectedCriticalFileSha256.placement_helper
     $integritySha256 = [string]$ExpectedCriticalFileSha256.bootstrap_integrity_helper
+    $writerFenceSha256 = [string]$ExpectedCriticalFileSha256.writer_fence_helper
     if (
         $helperSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-        $integritySha256 -cnotmatch '^[0-9a-f]{64}$'
+        $integritySha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $writerFenceSha256 -cnotmatch '^[0-9a-f]{64}$'
     ) { throw 'Pinned critical helper hashes are invalid.' }
     [byte[]]$helperBytes = PinnedFileBytes $sourceHelper $helperSha256
     [byte[]]$integrityBytes = PinnedFileBytes $sourceIntegrity $integritySha256
+    [byte[]]$writerFenceBytes = PinnedFileBytes $sourceWriterFence $writerFenceSha256
     [IO.File]::WriteAllBytes($frozenHelper, $helperBytes)
     [IO.File]::WriteAllBytes($frozenIntegrity, $integrityBytes)
+    [IO.File]::WriteAllBytes($frozenWriterFence, $writerFenceBytes)
     if (
         (Sha $frozenHelper) -cne $helperSha256 -or
-        (Sha $frozenIntegrity) -cne $integritySha256
+        (Sha $frozenIntegrity) -cne $integritySha256 -or
+        (Sha $frozenWriterFence) -cne $writerFenceSha256
     ) { throw 'Frozen placement helper readback differs.' }
 
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -434,7 +539,7 @@ function FreezePlacementHelper(
         )))
     }
     Set-Acl -LiteralPath $frozenRoot -AclObject $acl
-    foreach ($frozenPath in @($frozenHelper, $frozenIntegrity)) {
+    foreach ($frozenPath in @($frozenHelper, $frozenIntegrity, $frozenWriterFence)) {
         $writeProbe = $null
         try {
             $writeProbe = [IO.File]::Open(
@@ -452,13 +557,16 @@ function FreezePlacementHelper(
     }
     if (
         (Sha $frozenHelper) -cne $helperSha256 -or
-        (Sha $frozenIntegrity) -cne $integritySha256
+        (Sha $frozenIntegrity) -cne $integritySha256 -or
+        (Sha $frozenWriterFence) -cne $writerFenceSha256
     ) { throw 'Frozen placement helper changed while its ACL was applied.' }
     return [pscustomobject][ordered]@{
         root = $frozenRoot
         helper_path = $frozenHelper
         helper_sha256 = $helperSha256
         integrity_sha256 = $integritySha256
+        writer_fence_path = $frozenWriterFence
+        writer_fence_sha256 = $writerFenceSha256
         current_user_writable = $false
     }
 }
@@ -496,6 +604,8 @@ function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
         helper_sha256 = [string]$Frozen.helper_sha256
         integrity_path = Join-Path ([string]$Frozen.root) 'tools\bootstrap_integrity.ps1'
         integrity_sha256 = [string]$Frozen.integrity_sha256
+        writer_fence_path = [string]$Frozen.writer_fence_path
+        writer_fence_sha256 = [string]$Frozen.writer_fence_sha256
         parameters = $HelperParameters
     }
     $payloadJson = $payload | ConvertTo-Json -Depth 5 -Compress
@@ -549,9 +659,11 @@ function Get-RequiredExternalInteger($Object, [string]$Name) {
     return [int64]$value
 }
 [byte[]]$integrityBytes = PinnedBytes ([string]$payload.integrity_path) ([string]$payload.integrity_sha256)
+[byte[]]$writerFenceBytes = PinnedBytes ([string]$payload.writer_fence_path) ([string]$payload.writer_fence_sha256)
 [byte[]]$helperBytes = PinnedBytes ([string]$payload.helper_path) ([string]$payload.helper_sha256)
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
 . ([ScriptBlock]::Create($utf8.GetString($integrityBytes)))
+. ([ScriptBlock]::Create($utf8.GetString($writerFenceBytes)))
 $helper = [ScriptBlock]::Create($utf8.GetString($helperBytes))
 $parameterNames = @(
     'SourceRoot',
@@ -563,6 +675,12 @@ $parameterNames = @(
     'ExpectedSourceAggregateSha256',
     'ExpectedSourceFileCount',
     'ExpectedSourceByteCount',
+    'WriterFenceFunctionsPreloaded',
+    'WriterFenceControlRoot',
+    'WriterFenceSessionId',
+    'WriterFenceAttemptId',
+    'WriterFenceReplacementTransactionId',
+    'WriterFenceDelegationToken',
     'AllowNoncanonicalLayoutForTest',
     'ReplaceExistingVerifiedPortable'
     'DryRun'
@@ -590,6 +708,12 @@ $invokeParameters = @{
     ExpectedSourceAggregateSha256 = [string]$payload.parameters.ExpectedSourceAggregateSha256
     ExpectedSourceFileCount = [int]$expectedSourceFileCount
     ExpectedSourceByteCount = [uint64]$expectedSourceByteCount
+    WriterFenceFunctionsPreloaded = Get-RequiredExternalBoolean $payload.parameters 'WriterFenceFunctionsPreloaded'
+    WriterFenceControlRoot = [string]$payload.parameters.WriterFenceControlRoot
+    WriterFenceSessionId = [string]$payload.parameters.WriterFenceSessionId
+    WriterFenceAttemptId = [string]$payload.parameters.WriterFenceAttemptId
+    WriterFenceReplacementTransactionId = [string]$payload.parameters.WriterFenceReplacementTransactionId
+    WriterFenceDelegationToken = [string]$payload.parameters.WriterFenceDelegationToken
     AllowNoncanonicalLayoutForTest = Get-RequiredExternalBoolean $payload.parameters 'AllowNoncanonicalLayoutForTest'
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
@@ -659,6 +783,35 @@ function Product([string]$Root, [string]$Mode) {
     if ($process.ExitCode -ne 0) { throw "Product mode failed: $Mode/$($process.ExitCode)" }
 }
 
+$WriterDelegationEnvironmentNames = @(
+    'KMTECH_LABEL_WRITER_DELEGATION_TOKEN',
+    'KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID',
+    'KMTECH_LABEL_WRITER_DELEGATION_ATTEMPT_ID',
+    'KMTECH_LABEL_WRITER_DELEGATION_TRANSACTION_ID'
+)
+
+function SetWriterDelegationEnvironment(
+    [string]$Token,
+    [string]$SessionId,
+    [string]$AttemptId,
+    [string]$TransactionId
+) {
+    [Environment]::SetEnvironmentVariable($WriterDelegationEnvironmentNames[0], $Token, 'Process')
+    [Environment]::SetEnvironmentVariable($WriterDelegationEnvironmentNames[1], $SessionId, 'Process')
+    [Environment]::SetEnvironmentVariable($WriterDelegationEnvironmentNames[2], $AttemptId, 'Process')
+    [Environment]::SetEnvironmentVariable($WriterDelegationEnvironmentNames[3], $TransactionId, 'Process')
+}
+
+function RestoreWriterDelegationEnvironment($Before) {
+    for ($index = 0; $index -lt $WriterDelegationEnvironmentNames.Count; $index++) {
+        [Environment]::SetEnvironmentVariable(
+            $WriterDelegationEnvironmentNames[$index],
+            $Before[$index],
+            'Process'
+        )
+    }
+}
+
 function StartRaw([string]$Line) {
     $created = Invoke-CimMethod `
         -ClassName Win32_Process `
@@ -703,18 +856,20 @@ $runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' +
     [Guid]::NewGuid().ToString('N')
 $lad = Full $env:LOCALAPPDATA 'LOCALAPPDATA'
 $localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
+New-Item -ItemType Directory -Path $localAuditRoot -Force | Out-Null
 $auditPath = Join-Path $localAuditRoot "canonical-portable-$runId.json"
 $elevationLogPath = Join-Path $localAuditRoot "canonical-portable-$runId-elevated.jsonl"
 $statusRoot = Join-Path $lad 'KMTech\DirectSync\label_match\status'
 $stop = Join-Path $lad 'KMTech\DirectSync\label_match\control\label_match_user_relay.stop.json'
+$writerFenceControlRoot = Join-Path $lad 'KMTech\DirectSync\label_match\control\writer-session'
 $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
 $before = Snapshot
+$taskBefore = ScheduledTaskSnapshot $localAuditRoot $runId
 $old = @(Relays)
 $stopBefore = [ordered]@{ exists = $false; sha256 = ''; backup_path = '' }
 if (Test-Path -LiteralPath $stop -PathType Leaf) {
-    New-Item -ItemType Directory -Path $localAuditRoot -Force | Out-Null
     $stopBackup = Join-Path $localAuditRoot "canonical-portable-$runId-stop-preimage.json"
     Copy-Item -LiteralPath $stop -Destination $stopBackup -Force
     $stopBefore = [ordered]@{
@@ -743,6 +898,12 @@ $audit = [ordered]@{
     preimage = $before
     after = [ordered]@{ exists = $true; kind = 'String'; data = $wanted }
     relay_process_preimage_count = $old.Count
+    scheduled_task_preimage = [ordered]@{
+        exists = [bool]$taskBefore.exists
+        enabled = [bool]$taskBefore.enabled
+        xml_sha256 = [string]$taskBefore.xml_sha256
+        backup_path = [string]$taskBefore.backup_path
+    }
     stop_marker_path = $stop
     stop_marker_preimage = $stopBefore
     rollback = [ordered]@{ available = $true; applied = $false; runtime_restored = $false }
@@ -754,6 +915,7 @@ $frozenPlacement = FreezePlacementHelper `
     $localAuditRoot `
     $runId `
     $receiptSource.critical_file_sha256
+. ([string]$frozenPlacement.writer_fence_path)
 
 $placement = 'INSTALL_REQUIRED'
 $existingVerified = $false
@@ -773,66 +935,189 @@ if (Test-Path $install -PathType Container) {
         $placement = 'INSTALL_REQUIRED'
     }
 }
-if ($placement -eq 'INSTALL_REQUIRED') {
-    if ((Test-Path $install -PathType Container) -and -not $existingVerified) {
-        throw 'Existing canonical tree is not eligible for verified replacement.'
+$writerSessionId = [Guid]::NewGuid().ToString('N')
+$writerAttemptId = [Guid]::NewGuid().ToString('N')
+$writerTransactionId = [Guid]::NewGuid().ToString('N')
+$writerDelegationToken = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
+$writerStartedAt = [DateTime]::UtcNow.ToString('o')
+$writerOrchestratorSha256 = Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1')
+$writerContractSha256 = [string]$frozenPlacement.writer_fence_sha256
+$writerAuthority = $null
+$writerFenceStarted = $false
+$writerEnvironmentBefore = @(
+    $WriterDelegationEnvironmentNames | ForEach-Object {
+        [Environment]::GetEnvironmentVariable($_, 'Process')
     }
-    # Bind the frozen helper and the source bytes immediately before UAC/copy.
-    $receiptSource = ReceiptSource $source $sourceManifest
-    if (
-        [string]$frozenPlacement.helper_sha256 -cne
-            [string]$receiptSource.critical_file_sha256.placement_helper -or
-        [string]$frozenPlacement.integrity_sha256 -cne
-            [string]$receiptSource.critical_file_sha256.bootstrap_integrity_helper
-    ) { throw 'Frozen placement helper no longer matches the attested source.' }
-    $helperParameters = @{
-        SourceRoot = $source
-        InstallRoot = $install
-        ElevationLogPath = $elevationLogPath
-        ExpectedBootstrapScriptSha256 = [string]$frozenPlacement.helper_sha256
-        VerifiedBootstrapScriptPath = [string]$frozenPlacement.helper_path
-        BootstrapIntegrityPreloaded = $true
-        ExpectedSourceAggregateSha256 = [string]$receiptSource.bootstrap_aggregate_sha256
-        ExpectedSourceFileCount = [int]$receiptSource.file_count
-        ExpectedSourceByteCount = [uint64]$receiptSource.byte_count
-        AllowNoncanonicalLayoutForTest = [bool]$testMode
-        ReplaceExistingVerifiedPortable = [bool]$existingVerified
-        DryRun = $false
-    }
-    $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
-    if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
-    $placement = 'PASS'
-}
-$installedManifest = Manifest $install $SkipSignatureValidationForTest
-if ([string]$installedManifest.source_commit -cne [string]$sourceManifest.source_commit) {
-    throw 'Installed identity differs.'
-}
-$installedInventory = PortableInventory $install
-if (
-    [string]$installedInventory.schema_version -cne [string]$receiptSource.schema_version -or
-    [string]$installedInventory.algorithm -cne [string]$receiptSource.algorithm -or
-    [int]$installedInventory.file_count -ne [int]$receiptSource.file_count -or
-    [uint64]$installedInventory.byte_count -ne [uint64]$receiptSource.byte_count -or
-    [string]$installedInventory.sha256 -cne [string]$receiptSource.sha256
-) { throw 'Installed full portable inventory differs before Product execution.' }
-$audit.code_placement = $placement
-$audit.runtime_pythonw_sha256 = Sha (Join-Path $install 'runtime\pythonw.exe')
-$audit.runtime_pythonw_signature = [string](
-    Get-AuthenticodeSignature (Join-Path $install 'runtime\pythonw.exe')
-).Status
-Save $auditPath $audit
-if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
-
+)
+$restoreSources = @(
+    'current_user_onboarding',
+    'direct_sync_enqueue',
+    'direct_sync_relay_cycle',
+    'direct_sync_upload',
+    'persistent_relay_cycle',
+    'persistent_relay_status',
+    'raw_relay_runner',
+    'relay_batch_claim',
+    'relay_batch_drain',
+    'relay_child_launch',
+    'relay_queue_schema',
+    'relay_spool_enqueue',
+    'relay_stale_lease_reset',
+    'scheduled_task_install',
+    'user_relay_autostart_install',
+    'user_relay_process_start',
+    'user_relay_stop_release',
+    'user_relay_stop_request'
+)
+$rollbackSources = @(
+    'current_user_setup_removal',
+    'scheduled_task_remove',
+    'user_relay_autostart_remove',
+    'user_relay_stop_request'
+)
 $mutated = $false
 try {
     $mutated = $true
-    Product $install '--remove-current-user-setup'
+    $writerAuthority = Enter-LabelWriterSessionAuthority `
+        -SessionId $writerSessionId `
+        -AttemptId $writerAttemptId `
+        -OrchestratorSha256 $writerOrchestratorSha256 `
+        -ReplacementTransactionId $writerTransactionId `
+        -WriterContractSha256 $writerContractSha256
+    [void](Start-LabelWriterFence `
+        -ControlRoot $writerFenceControlRoot `
+        -Status 'QUIESCING' `
+        -SessionId $writerSessionId `
+        -AttemptId $writerAttemptId `
+        -ReplacementTransactionId $writerTransactionId `
+        -SessionStartedAtUtc $writerStartedAt `
+        -OrchestratorSha256 $writerOrchestratorSha256 `
+        -WriterContractSha256 $writerContractSha256 `
+        -AuthorityOwnedByCaller)
+    $writerFenceStarted = $true
+    $audit.writer_fence = [ordered]@{
+        status = 'QUIESCING'
+        session_id = $writerSessionId
+        attempt_id = $writerAttemptId
+        replacement_transaction_id = $writerTransactionId
+        writer_inventory_sha256 = $Script:LabelWriterFenceInventorySha256
+        token_recorded = $false
+    }
+    Save $auditPath $audit
+
+    [void](Set-LabelWriterFenceDelegation `
+        -ControlRoot $writerFenceControlRoot `
+        -Status 'QUIESCING' `
+        -SessionId $writerSessionId `
+        -AttemptId $writerAttemptId `
+        -ReplacementTransactionId $writerTransactionId `
+        -DelegationToken $writerDelegationToken `
+        -DelegatedSources $rollbackSources `
+        -LifetimeSeconds 600)
+    SetWriterDelegationEnvironment `
+        $writerDelegationToken `
+        $writerSessionId `
+        $writerAttemptId `
+        $writerTransactionId
+
+    $removalRoot = if ($existingVerified) { $install } else { $source }
+    $removalStarted = [DateTime]::UtcNow
+    Product $removalRoot '--remove-current-user-setup'
     $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (
         (Snapshot).exists -or
         [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
-        [string]$removal.relay_process.status -cne 'ABSENT'
+        [string]$removal.relay_process.status -cne 'ABSENT' -or
+        (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
+        $null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)
     ) { throw 'Removal readback failed.' }
+    $unquiesced = @(UnquiescedProductWriters)
+    if ($unquiesced.Count -ne 0) {
+        throw 'Writer quiescence failed: a Label product writer process remains.'
+    }
+    $audit.writer_fence.status = 'QUIESCED'
+    Save $auditPath $audit
+
+    if ($placement -eq 'INSTALL_REQUIRED') {
+        if ((Test-Path $install -PathType Container) -and -not $existingVerified) {
+            throw 'Existing canonical tree is not eligible for verified replacement.'
+        }
+        $receiptSource = ReceiptSource $source $sourceManifest
+        if (
+            [string]$frozenPlacement.helper_sha256 -cne
+                [string]$receiptSource.critical_file_sha256.placement_helper -or
+            [string]$frozenPlacement.integrity_sha256 -cne
+                [string]$receiptSource.critical_file_sha256.bootstrap_integrity_helper -or
+            [string]$frozenPlacement.writer_fence_sha256 -cne
+                [string]$receiptSource.critical_file_sha256.writer_fence_helper
+        ) { throw 'Frozen placement helper no longer matches the attested source.' }
+        [void](Set-LabelWriterFenceDelegation `
+            -ControlRoot $writerFenceControlRoot `
+            -Status 'INSTALLING' `
+            -SessionId $writerSessionId `
+            -AttemptId $writerAttemptId `
+            -ReplacementTransactionId $writerTransactionId `
+            -DelegationToken $writerDelegationToken `
+            -DelegatedSources @('canonical_placement') `
+            -LifetimeSeconds 600)
+        $helperParameters = @{
+            SourceRoot = $source
+            InstallRoot = $install
+            ElevationLogPath = $elevationLogPath
+            ExpectedBootstrapScriptSha256 = [string]$frozenPlacement.helper_sha256
+            VerifiedBootstrapScriptPath = [string]$frozenPlacement.helper_path
+            BootstrapIntegrityPreloaded = $true
+            ExpectedSourceAggregateSha256 = [string]$receiptSource.bootstrap_aggregate_sha256
+            ExpectedSourceFileCount = [int]$receiptSource.file_count
+            ExpectedSourceByteCount = [uint64]$receiptSource.byte_count
+            WriterFenceFunctionsPreloaded = $true
+            WriterFenceControlRoot = $writerFenceControlRoot
+            WriterFenceSessionId = $writerSessionId
+            WriterFenceAttemptId = $writerAttemptId
+            WriterFenceReplacementTransactionId = $writerTransactionId
+            WriterFenceDelegationToken = $writerDelegationToken
+            AllowNoncanonicalLayoutForTest = [bool]$testMode
+            ReplaceExistingVerifiedPortable = [bool]$existingVerified
+            DryRun = $false
+        }
+        $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
+        if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
+        $placement = 'PASS'
+    }
+    $installedManifest = Manifest $install $SkipSignatureValidationForTest
+    if ([string]$installedManifest.source_commit -cne [string]$sourceManifest.source_commit) {
+        throw 'Installed identity differs.'
+    }
+    $installedInventory = PortableInventory $install
+    if (
+        [string]$installedInventory.schema_version -cne [string]$receiptSource.schema_version -or
+        [string]$installedInventory.algorithm -cne [string]$receiptSource.algorithm -or
+        [int]$installedInventory.file_count -ne [int]$receiptSource.file_count -or
+        [uint64]$installedInventory.byte_count -ne [uint64]$receiptSource.byte_count -or
+        [string]$installedInventory.sha256 -cne [string]$receiptSource.sha256
+    ) { throw 'Installed full portable inventory differs before Product execution.' }
+    $audit.code_placement = $placement
+    $audit.runtime_pythonw_sha256 = Sha (Join-Path $install 'runtime\pythonw.exe')
+    $audit.runtime_pythonw_signature = [string](
+        Get-AuthenticodeSignature (Join-Path $install 'runtime\pythonw.exe')
+    ).Status
+    Save $auditPath $audit
+    if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+
+    [void](Set-LabelWriterFenceDelegation `
+        -ControlRoot $writerFenceControlRoot `
+        -Status 'RESTORING' `
+        -SessionId $writerSessionId `
+        -AttemptId $writerAttemptId `
+        -ReplacementTransactionId $writerTransactionId `
+        -DelegationToken $writerDelegationToken `
+        -DelegatedSources $restoreSources `
+        -LifetimeSeconds 600)
+    SetWriterDelegationEnvironment `
+        $writerDelegationToken `
+        $writerSessionId `
+        $writerAttemptId `
+        $writerTransactionId
 
     $started = (Get-Date).ToUniversalTime()
     Product $install '--onboard-current-user'
@@ -875,9 +1160,20 @@ try {
         throw 'Fresh relay status proof failed.'
     }
 
+    [void](Stop-LabelWriterFence `
+        -ControlRoot $writerFenceControlRoot `
+        -SessionId $writerSessionId `
+        -AttemptId $writerAttemptId `
+        -ReplacementTransactionId $writerTransactionId `
+        -TimeoutMilliseconds 90000)
+    $writerFenceStarted = $false
+    Exit-LabelWriterSessionAuthority $writerAuthority
+    $writerAuthority = $null
+
     $audit.status = 'PASS'
     $audit.completed_at = (Get-Date).ToUniversalTime().ToString('o')
     $audit.stop_marker_absent = -not (Test-Path $stop)
+    $audit.writer_fence.status = 'RELEASED_AFTER_RESTORE'
     $audit.onboarding = [ordered]@{
         status = [string]$onboarding.status
         action = [string]$onboarding.action
@@ -907,18 +1203,61 @@ catch {
     $original = $_
     try {
         if ($mutated) {
-            Product $install '--remove-current-user-setup'
+            if ($writerFenceStarted) {
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources $rollbackSources `
+                    -LifetimeSeconds 600)
+                SetWriterDelegationEnvironment `
+                    $writerDelegationToken `
+                    $writerSessionId `
+                    $writerAttemptId `
+                    $writerTransactionId
+            }
+            $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
+                $install
+            }
+            else { $source }
+            Product $rollbackProductRoot '--remove-current-user-setup'
             [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
-            Restore $before
         }
-        if ([bool]$stopBefore.exists) {
-            Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
-            if ((Sha $stop) -cne [string]$stopBefore.sha256) {
-                throw 'stop marker restore failed'
+        $ownerMutationLease = $null
+        try {
+            if ($writerFenceStarted) {
+                $ownerMutationLease = Enter-LabelWriterAdmission `
+                    -ControlRoot $writerFenceControlRoot `
+                    -TimeoutMilliseconds 90000
+            }
+            Restore $before
+            RestoreScheduledTask $taskBefore
+            if ([bool]$stopBefore.exists) {
+                Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
+                if ((Sha $stop) -cne [string]$stopBefore.sha256) {
+                    throw 'stop marker restore failed'
+                }
+            }
+            elseif (Test-Path $stop) {
+                Remove-Item $stop -Force
             }
         }
-        elseif (Test-Path $stop) {
-            Remove-Item $stop -Force
+        finally {
+            if ($null -ne $ownerMutationLease) {
+                Exit-LabelWriterAdmission $ownerMutationLease
+            }
+        }
+        if ($writerFenceStarted) {
+            [void](Stop-LabelWriterFence `
+                -ControlRoot $writerFenceControlRoot `
+                -SessionId $writerSessionId `
+                -AttemptId $writerAttemptId `
+                -ReplacementTransactionId $writerTransactionId `
+                -TimeoutMilliseconds 90000)
+            $writerFenceStarted = $false
         }
         foreach ($item in $old) {
             $newPid = StartRaw ([string]$item.CommandLine)
@@ -966,4 +1305,11 @@ catch {
         throw "AUTOSTART_ROLLBACK_FAILED: $($rollbackFailure.Exception.GetType().Name)"
     }
     throw $original
+}
+finally {
+    RestoreWriterDelegationEnvironment $writerEnvironmentBefore
+    if ($null -ne $writerAuthority) {
+        Exit-LabelWriterSessionAuthority $writerAuthority
+        $writerAuthority = $null
+    }
 }

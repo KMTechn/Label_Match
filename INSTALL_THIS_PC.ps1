@@ -13,6 +13,12 @@ param(
     [string]$ExpectedSourceAggregateSha256 = "",
     [int]$ExpectedSourceFileCount = 0,
     [uint64]$ExpectedSourceByteCount = 0,
+    [switch]$WriterFenceFunctionsPreloaded,
+    [string]$WriterFenceControlRoot = "",
+    [string]$WriterFenceSessionId = "",
+    [string]$WriterFenceAttemptId = "",
+    [string]$WriterFenceReplacementTransactionId = "",
+    [string]$WriterFenceDelegationToken = "",
     [switch]$ReplaceExistingVerifiedPortable,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ApplyHardenedAclForTest
@@ -88,6 +94,16 @@ elseif (-not (Test-Path -LiteralPath $BootstrapIntegrityFunctions -PathType Leaf
 }
 else {
     . $BootstrapIntegrityFunctions
+}
+if ($WriterFenceFunctionsPreloaded.IsPresent) {
+    foreach ($functionName in @(
+        'Enter-LabelWriterDelegatedOperation',
+        'Exit-LabelWriterAdmission'
+    )) {
+        if (-not (Get-Command $functionName -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw "Preloaded writer fence helper is incomplete."
+        }
+    }
 }
 $LegacyRelayTaskName = "direct-sync-relay-label-match-current-pc"
 
@@ -550,6 +566,21 @@ if ($DryRun.IsPresent) {
     exit 0
 }
 
+$writerFenceLease = $null
+if (-not $testOverride) {
+    if (-not $WriterFenceFunctionsPreloaded.IsPresent) {
+        throw "Production placement requires the preloaded writer fence helper."
+    }
+    $writerFenceLease = Enter-LabelWriterDelegatedOperation `
+        -ControlRoot $WriterFenceControlRoot `
+        -SessionId $WriterFenceSessionId `
+        -AttemptId $WriterFenceAttemptId `
+        -ReplacementTransactionId $WriterFenceReplacementTransactionId `
+        -DelegationToken $WriterFenceDelegationToken `
+        -Source 'canonical_placement' `
+        -TimeoutMilliseconds 15000
+}
+
 $applicationParent = Split-Path -Parent $installRootFull
 $stagingRoot = Join-Path $applicationParent ('.current.bootstrap.' + [Guid]::NewGuid().ToString('N'))
 $replacementRollbackRoot = ''
@@ -711,4 +742,9 @@ catch {
         throw "Verified replacement failed and the prior canonical tree was restored."
     }
     throw
+}
+finally {
+    if ($null -ne $writerFenceLease) {
+        Exit-LabelWriterAdmission $writerFenceLease
+    }
 }

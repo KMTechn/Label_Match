@@ -14,6 +14,8 @@ from pathlib import Path
 import subprocess
 from typing import Any, Callable, Mapping
 
+from writer_session_fence import writer_sink
+
 TASK_CONTRACT_VERSION = "label-match-current-user-task-v1"
 TASK_NAME = "direct-sync-relay-label-match"
 LEGACY_TASK_NAME = "direct-sync-relay-label-match-current-pc"
@@ -512,6 +514,7 @@ def _run_task_operation(
     return report
 
 
+@writer_sink("scheduled_task_install")
 def install_current_user_scheduled_task(
     app_root: str | os.PathLike[str],
     *,
@@ -547,6 +550,7 @@ def install_current_user_scheduled_task(
     return report
 
 
+@writer_sink("scheduled_task_remove")
 def remove_current_user_scheduled_task(
     app_root: str | os.PathLike[str],
     *,

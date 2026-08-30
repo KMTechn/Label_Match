@@ -29,6 +29,7 @@ from package_logistics import (
     canonical_member_ids,
     membership_hash,
 )
+from writer_session_fence import writer_sink
 
 
 SCHEMA_VERSION = "label-match-sealed-transfer-exchange-v1"
@@ -634,6 +635,7 @@ class SealedTransferExchangeCoordinator:
         self.store = store
         self.client = client
 
+    @writer_sink("sealed_transfer_prepare")
     def prepare(
         self,
         *,
@@ -1256,6 +1258,7 @@ class SealedTransferExchangeCoordinator:
             )
         return qr
 
+    @writer_sink("sealed_transfer_attempt")
     def attempt(self, intent_id: str) -> SealedTransferExchangeAttempt:
         row = self.store.load(intent_id)
         if row["status"] == "ACKED":
@@ -1316,6 +1319,7 @@ class SealedTransferExchangeCoordinator:
             )
         return self._attempt(row)
 
+    @writer_sink("sealed_transfer_drain")
     def drain_pending(self) -> list[SealedTransferExchangeAttempt]:
         return [self.attempt(intent_id) for intent_id in self.store.pending_ids()]
 

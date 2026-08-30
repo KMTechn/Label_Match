@@ -439,6 +439,9 @@ def _paths(tmp_path: Path) -> dict[str, Path]:
     (portable / "tools" / "bootstrap_integrity.ps1").write_text(
         "# integrity helper fixture\n", encoding="utf-8"
     )
+    (portable / "tools" / "label_writer_fence.ps1").write_text(
+        "# writer fence helper fixture\n", encoding="utf-8"
+    )
     _write_json(
         portable / "portable-manifest.json",
         {
@@ -737,6 +740,9 @@ def test_portable_successor_rebind_requires_exact_reviewed_git_diff(
         ).hexdigest(),
         "bootstrap_integrity_helper": hashlib.sha256(
             (successor_portable / "tools" / "bootstrap_integrity.ps1").read_bytes()
+        ).hexdigest(),
+        "writer_fence_helper": hashlib.sha256(
+            (successor_portable / "tools" / "label_writer_fence.ps1").read_bytes()
         ).hexdigest(),
     }
     monkeypatch.setattr(

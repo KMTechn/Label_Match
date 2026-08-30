@@ -39,6 +39,7 @@ from direct_sync_push import (
 )
 from direct_sync_operator import read_operator_pause
 from producer_runtime_client import ensure_runtime_authority
+from writer_session_fence import writer_sink
 
 
 DEFAULT_WORKER_ID = "direct-sync-relay-label-match"
@@ -736,6 +737,7 @@ def _recover_aged_queue_before_enqueue(
     return current
 
 
+@writer_sink("direct_sync_enqueue")
 def enqueue_completed_source_file(
     config: DirectSyncRuntimeConfig,
     *,
@@ -850,6 +852,7 @@ def enqueue_completed_source_file(
     return status
 
 
+@writer_sink("direct_sync_relay_cycle")
 def run_relay_once(
     config: DirectSyncRuntimeConfig,
     *,

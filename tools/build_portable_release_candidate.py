@@ -48,6 +48,7 @@ UPDATE_KEY_CONFIG_SCHEMA = "label-match-update-key-config-v1"
 CANONICAL_INSTALLER_FILENAME = "INSTALL_CANONICAL_PORTABLE.ps1"
 LEGACY_INSTALLER_FILENAME = "INSTALL_THIS_PC.ps1"
 BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
+WRITER_FENCE_HELPER = Path("tools/label_writer_fence.ps1")
 THIRD_PARTY = {
     "babel": ("2.18.0", ("babel",)),
     "certifi": ("2026.6.17", ("certifi",)),
@@ -482,6 +483,13 @@ def build(
     bootstrap_helper_target = output / BOOTSTRAP_INTEGRITY_HELPER
     bootstrap_helper_target.parent.mkdir()
     shutil.copy2(bootstrap_helper_source, bootstrap_helper_target)
+    writer_fence_source = repo_root / WRITER_FENCE_HELPER
+    if not writer_fence_source.is_file():
+        raise PortableBuildError(
+            f"writer fence helper is missing: {writer_fence_source}"
+        )
+    writer_fence_target = output / WRITER_FENCE_HELPER
+    shutil.copy2(writer_fence_source, writer_fence_target)
     native = _app_native_inventory(app_root)
     forbidden_roots = [
         name

@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "INSTALL_CANONICAL_PORTABLE.ps1"
 HELPER = ROOT / "INSTALL_THIS_PC.ps1"
 INTEGRITY_HELPER = ROOT / "tools" / "bootstrap_integrity.ps1"
+WRITER_FENCE_HELPER = ROOT / "tools" / "label_writer_fence.ps1"
 
 
 def _source(path: Path = INSTALLER) -> str:
@@ -230,7 +231,7 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
         "label-match-portable-tree-v1",
         "label-match-canonical-portable-install-v1",
         "INSTALL_THIS_PC.ps1",
-        "Product $install '--remove-current-user-setup'",
+        "Product $removalRoot '--remove-current-user-setup'",
         "Product $install '--onboard-current-user'",
         "PREIMAGE_SAVED",
         "FAILED_ROLLED_BACK",
@@ -243,10 +244,13 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
     ):
         assert token in source
     assert "(Arg $Root)" in source
-    assert "Register-ScheduledTask" not in source
+    assert "Register-ScheduledTask" in source
     assert "Start-ScheduledTask" not in source
     assert "Stop-ScheduledTask" not in source
     assert "schtasks /run" not in source.lower()
+    assert source.index("Product $removalRoot '--remove-current-user-setup'") < source.index(
+        "InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
+    )
     assert source.index("ReceiptSource $source $sourceManifest") < source.index(
         "InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
     )
@@ -257,16 +261,17 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     rollback = source[source.index("catch {\n    $original = $_") :]
 
     assert "try { Product $install '--remove-current-user-setup' } catch {}" not in rollback
-    product = rollback.index("Product $install '--remove-current-user-setup'")
+    product = rollback.index("Product $rollbackProductRoot '--remove-current-user-setup'")
     zero_readback = rollback.index(
         "Assert-RollbackRelayPreimage -ExpectedRelays @()"
     )
     restore = rollback.index("Restore $before")
+    restore_task = rollback.index("RestoreScheduledTask $taskBefore")
     exact_readback = rollback.index(
         "Assert-RollbackRelayPreimage -ExpectedRelays $old"
     )
     restored_true = rollback.index("$audit.rollback.runtime_restored = $true")
-    assert product < zero_readback < restore < exact_readback < restored_true
+    assert product < zero_readback < restore < restore_task < exact_readback < restored_true
     for token in (
         "$audit.status = 'ROLLBACK_FAILED'",
         "$audit.rollback.runtime_restored = $false",
@@ -316,6 +321,12 @@ def test_code_helper_owns_privileged_placement_and_exact_rollback() -> None:
         "ExpectedSourceAggregateSha256",
         "ExpectedSourceFileCount",
         "ExpectedSourceByteCount",
+        "WriterFenceFunctionsPreloaded",
+        "WriterFenceControlRoot",
+        "WriterFenceSessionId",
+        "WriterFenceAttemptId",
+        "WriterFenceReplacementTransactionId",
+        "WriterFenceDelegationToken",
         "ReplaceExistingVerifiedPortable",
     ):
         parameter_block = source[
@@ -324,6 +335,7 @@ def test_code_helper_owns_privileged_placement_and_exact_rollback() -> None:
         assert re.search(rf"\${name}\b", parameter_block)
     for token in (
         "tools\\bootstrap_integrity.ps1",
+        "Preloaded writer fence helper is incomplete.",
         ".current.rollback.",
         "REPLACED_VERIFIED",
         "replacement_rollback_status=PRESERVED",
@@ -332,7 +344,7 @@ def test_code_helper_owns_privileged_placement_and_exact_rollback() -> None:
         "Bootstrap script SHA-256 differs from its trusted caller pin.",
     ):
         assert token in source
-    assert "Register-ScheduledTask" not in source
+    assert "Enter-LabelWriterDelegatedOperation" in source
     assert INTEGRITY_HELPER.is_file()
 
 
@@ -349,6 +361,7 @@ def test_top_level_freezes_and_pins_the_uac_helper_before_copy() -> None:
         "ExpectedSourceFileCount =",
         "ExpectedSourceByteCount =",
         "[string]$frozenPlacement.helper_path",
+        "[string]$frozenPlacement.writer_fence_path",
     ):
         assert token in source
     final_receipt_read = source.rindex("ReceiptSource $source $sourceManifest")
@@ -382,6 +395,12 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
     [string]$ExpectedSourceAggregateSha256,
     [int]$ExpectedSourceFileCount,
     [uint64]$ExpectedSourceByteCount,
+    [switch]$WriterFenceFunctionsPreloaded,
+    [string]$WriterFenceControlRoot,
+    [string]$WriterFenceSessionId,
+    [string]$WriterFenceAttemptId,
+    [string]$WriterFenceReplacementTransactionId,
+    [string]$WriterFenceDelegationToken,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ReplaceExistingVerifiedPortable,
     [switch]$DryRun
@@ -396,6 +415,12 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
     expected_source_aggregate_sha256 = $ExpectedSourceAggregateSha256
     expected_source_file_count = $ExpectedSourceFileCount
     expected_source_byte_count = $ExpectedSourceByteCount
+    writer_fence_functions_preloaded = $WriterFenceFunctionsPreloaded.IsPresent
+    writer_fence_control_root = $WriterFenceControlRoot
+    writer_fence_session_id = $WriterFenceSessionId
+    writer_fence_attempt_id = $WriterFenceAttemptId
+    writer_fence_replacement_transaction_id = $WriterFenceReplacementTransactionId
+    writer_fence_delegation_token = $WriterFenceDelegationToken
     allow_noncanonical_layout_for_test = $AllowNoncanonicalLayoutForTest.IsPresent
     replace_existing_verified_portable = $ReplaceExistingVerifiedPortable.IsPresent
     dry_run = $DryRun.IsPresent
@@ -404,8 +429,11 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         encoding="utf-8",
     )
     integrity.write_bytes(b"# verified integrity helper\n")
+    writer_fence = tmp_path / "writer-fence.ps1"
+    writer_fence.write_bytes(WRITER_FENCE_HELPER.read_bytes())
     helper_sha256 = hashlib.sha256(helper.read_bytes()).hexdigest()
     integrity_sha256 = hashlib.sha256(integrity.read_bytes()).hexdigest()
+    writer_fence_sha256 = hashlib.sha256(writer_fence.read_bytes()).hexdigest()
     parameters = {
         "SourceRoot": r"E:\source root",
         "InstallRoot": r"E:\install root",
@@ -416,6 +444,12 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "ExpectedSourceAggregateSha256": "a" * 64,
         "ExpectedSourceFileCount": 3380,
         "ExpectedSourceByteCount": 77580497,
+        "WriterFenceFunctionsPreloaded": True,
+        "WriterFenceControlRoot": str(tmp_path / "writer-control"),
+        "WriterFenceSessionId": "1" * 32,
+        "WriterFenceAttemptId": "2" * 32,
+        "WriterFenceReplacementTransactionId": "3" * 32,
+        "WriterFenceDelegationToken": "4" * 64,
         "AllowNoncanonicalLayoutForTest": True,
         "ReplaceExistingVerifiedPortable": False,
         "DryRun": True,
@@ -425,6 +459,8 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "helper_sha256": helper_sha256,
         "integrity_path": str(integrity),
         "integrity_sha256": integrity_sha256,
+        "writer_fence_path": str(writer_fence),
+        "writer_fence_sha256": writer_fence_sha256,
         "parameters": parameters,
     }
     payload_base64 = base64.b64encode(
@@ -467,6 +503,12 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "expected_source_aggregate_sha256": "a" * 64,
         "expected_source_file_count": 3380,
         "expected_source_byte_count": 77580497,
+        "writer_fence_functions_preloaded": True,
+        "writer_fence_control_root": str(tmp_path / "writer-control"),
+        "writer_fence_session_id": "1" * 32,
+        "writer_fence_attempt_id": "2" * 32,
+        "writer_fence_replacement_transaction_id": "3" * 32,
+        "writer_fence_delegation_token": "4" * 64,
         "allow_noncanonical_layout_for_test": True,
         "replace_existing_verified_portable": False,
         "dry_run": True,
@@ -546,8 +588,11 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
     integrity = tmp_path / "integrity.ps1"
     helper.write_text("throw 'HELPER_MUST_NOT_RUN'\n", encoding="utf-8")
     integrity.write_bytes(b"# verified integrity helper\n")
+    writer_fence = tmp_path / "writer-fence.ps1"
+    writer_fence.write_bytes(WRITER_FENCE_HELPER.read_bytes())
     helper_sha256 = hashlib.sha256(helper.read_bytes()).hexdigest()
     integrity_sha256 = hashlib.sha256(integrity.read_bytes()).hexdigest()
+    writer_fence_sha256 = hashlib.sha256(writer_fence.read_bytes()).hexdigest()
     parameters: dict[str, object] = {
         "SourceRoot": r"E:\source root",
         "InstallRoot": r"E:\install root",
@@ -558,6 +603,12 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         "ExpectedSourceAggregateSha256": "a" * 64,
         "ExpectedSourceFileCount": 3380,
         "ExpectedSourceByteCount": 77580497,
+        "WriterFenceFunctionsPreloaded": True,
+        "WriterFenceControlRoot": str(tmp_path / "writer-control"),
+        "WriterFenceSessionId": "1" * 32,
+        "WriterFenceAttemptId": "2" * 32,
+        "WriterFenceReplacementTransactionId": "3" * 32,
+        "WriterFenceDelegationToken": "4" * 64,
         "AllowNoncanonicalLayoutForTest": True,
         "ReplaceExistingVerifiedPortable": False,
         "DryRun": True,
@@ -568,6 +619,8 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         "helper_sha256": helper_sha256,
         "integrity_path": str(integrity),
         "integrity_sha256": integrity_sha256,
+        "writer_fence_path": str(writer_fence),
+        "writer_fence_sha256": writer_fence_sha256,
         "parameters": parameters,
     }
     payload_base64 = base64.b64encode(
@@ -626,6 +679,7 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         "INSTALL_CANONICAL_PORTABLE.ps1": INSTALLER.read_bytes(),
         "INSTALL_THIS_PC.ps1": HELPER.read_bytes(),
         "tools/bootstrap_integrity.ps1": INTEGRITY_HELPER.read_bytes(),
+        "tools/label_writer_fence.ps1": WRITER_FENCE_HELPER.read_bytes(),
     }
     for relative, content in files.items():
         target = source_root / relative
@@ -654,6 +708,7 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
 
     helper_sha256 = hashlib.sha256(HELPER.read_bytes()).hexdigest()
     integrity_sha256 = hashlib.sha256(INTEGRITY_HELPER.read_bytes()).hexdigest()
+    writer_fence_sha256 = hashlib.sha256(WRITER_FENCE_HELPER.read_bytes()).hexdigest()
     parameters = {
         "SourceRoot": str(source_root),
         "InstallRoot": str(tmp_path / "install"),
@@ -664,6 +719,12 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         "ExpectedSourceAggregateSha256": "",
         "ExpectedSourceFileCount": 0,
         "ExpectedSourceByteCount": 0,
+        "WriterFenceFunctionsPreloaded": True,
+        "WriterFenceControlRoot": str(tmp_path / "writer-control"),
+        "WriterFenceSessionId": "1" * 32,
+        "WriterFenceAttemptId": "2" * 32,
+        "WriterFenceReplacementTransactionId": "3" * 32,
+        "WriterFenceDelegationToken": "4" * 64,
         "AllowNoncanonicalLayoutForTest": True,
         "ReplaceExistingVerifiedPortable": False,
         "DryRun": True,
@@ -673,6 +734,8 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         "helper_sha256": helper_sha256,
         "integrity_path": str(INTEGRITY_HELPER),
         "integrity_sha256": integrity_sha256,
+        "writer_fence_path": str(WRITER_FENCE_HELPER),
+        "writer_fence_sha256": writer_fence_sha256,
         "parameters": parameters,
     }
     payload_base64 = base64.b64encode(
@@ -721,11 +784,15 @@ def test_portable_builder_packages_v2_installer_helper_and_integrity_tool() -> N
     assert portable_builder.BOOTSTRAP_INTEGRITY_HELPER.as_posix() == (
         "tools/bootstrap_integrity.ps1"
     )
+    assert portable_builder.WRITER_FENCE_HELPER.as_posix() == (
+        "tools/label_writer_fence.ps1"
+    )
     assert "canonical_installer_sha256" in source
     assert "runtime_python_sha256" in source
     assert "shutil.copy2(installer_source" in source
     assert "shutil.copy2(legacy_installer_source" in source
     assert "shutil.copy2(bootstrap_helper_source" in source
+    assert "shutil.copy2(writer_fence_source" in source
 
 
 def test_plan_only_contract_is_stdout_only_and_non_mutating() -> None:
