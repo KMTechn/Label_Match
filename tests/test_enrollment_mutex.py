@@ -16,6 +16,9 @@ from enrollment_mutex import (
     EnrollmentMutex,
     EnrollmentMutexNotOwned,
 )
+from tests.enrollment_entrypoint_inventory import (
+    derive_enrollment_entrypoint_inventory,
+)
 from tools import register_label_match_worker_pc as registration
 
 
@@ -382,44 +385,34 @@ def test_direct_transport_is_allowed_only_while_current_thread_owns_mutex(monkey
     assert calls == [True]
 
 
-def test_all_audited_entry_routes_converge_on_one_mutex():
-    sources = {
-        path: (ROOT / path).read_text(encoding="utf-8-sig")
-        for path in (
-            "INSTALL_CANONICAL_PORTABLE.ps1",
-            "Label_Match.py",
-            "current_user_onboarding.py",
-            "enrollment_mutex.py",
-            "install_label_match_direct_sync.ps1",
-            "label_match_product_host.py",
-            "tools/direct_sync_relay_install_pack.py",
-            "tools/register_label_match_worker_pc.py",
+def test_logical_entrypoint_inventory_is_derived_from_executable_code():
+    inventory = derive_enrollment_entrypoint_inventory(ROOT)
+    logical_ids = [row.logical_id for row in inventory]
+
+    assert inventory
+    assert len(logical_ids) == len(set(logical_ids))
+    assert all(row.guard_path for row in inventory), [
+        row.logical_id for row in inventory if not row.guard_path
+    ]
+    assert all(not row.source_path.startswith("tests/") for row in inventory)
+    for row in inventory:
+        source_path = ROOT / row.source_path
+        source_lines = source_path.read_text(encoding="utf-8-sig").splitlines()
+        assert 1 <= row.source_line <= len(source_lines)
+        assert source_lines[row.source_line - 1].strip() == row.source_text
+        assert hashlib.sha256(source_path.read_bytes()).hexdigest() == (
+            row.source_sha256
         )
-    }
+
+
+def test_registration_transport_guard_cardinality_is_unchanged():
+    registration_source = (
+        ROOT / "tools" / "register_label_match_worker_pc.py"
+    ).read_text(encoding="utf-8-sig")
+
     assert ENROLLMENT_MUTEX_NAME == r"Local\KMTech.Enrollment.LabelMatch.v1"
-    assert "'--onboard-current-user'" in sources["INSTALL_CANONICAL_PORTABLE.ps1"]
-    assert "onboarding_main" in sources["label_match_product_host.py"]
-    assert "with EnrollmentMutex()" in sources["current_user_onboarding.py"]
-    assert "register_label_match_worker_pc.main(arguments)" in sources[
-        "current_user_onboarding.py"
-    ]
-    assert "onboard_current_user(" in sources["Label_Match.py"]
-    assert '"--self-enroll"' in sources["install_label_match_direct_sync.ps1"]
-    assert '_run_imported_main("tools.register_label_match_worker_pc"' in sources[
-        "tools/direct_sync_relay_install_pack.py"
-    ]
-    registration_source = sources["tools/register_label_match_worker_pc.py"]
     assert "EnrollmentMutex(args.enrollment_mutex_timeout_seconds)" in registration_source
     assert "with guard as receipt" in registration_source
     assert registration_source.count("require_enrollment_mutex_owned()") == 2
     assert registration_source.count("requests.post(") == 1
     assert registration_source.count("session.post(") == 1
-    assert r'ENROLLMENT_MUTEX_NAME = r"Local\KMTech.Enrollment.LabelMatch.v1"' in sources[
-        "enrollment_mutex.py"
-    ]
-
-    inventory = {
-        path: hashlib.sha256(text.encode("utf-8")).hexdigest()
-        for path, text in sources.items()
-    }
-    assert len(inventory) == 8
