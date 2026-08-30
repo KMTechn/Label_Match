@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -148,6 +149,44 @@ def test_portable_tool_dependency_closure_is_recursive_and_fail_closed(
             initial_sources=[entrypoint],
             external_modules=(),
         )
+
+
+def test_portable_runtime_import_probe_fails_closed_on_missing_module(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "packet"
+    app = output / "app"
+    tools = app / "tools"
+    tools.mkdir(parents=True)
+    (app / "current_user_onboarding.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (app / "label_match_product_host.py").write_text("VALUE = 1\n", encoding="utf-8")
+    source_tools = tmp_path / "source" / "tools"
+    source_tools.mkdir(parents=True)
+    first = source_tools / "first.py"
+    first.write_text("from tools import missing\n", encoding="utf-8")
+    (tools / "first.py").write_bytes(first.read_bytes())
+
+    with pytest.raises(
+        portable_builder.PortableBuildError,
+        match="portable runtime import closure failed",
+    ):
+        portable_builder._assert_portable_import_closure(
+            output,
+            tmp_path / "source",
+            [first],
+            python_executable=Path(sys.executable),
+        )
+
+    missing = source_tools / "missing.py"
+    missing.write_text("VALUE = 1\n", encoding="utf-8")
+    (tools / "missing.py").write_bytes(missing.read_bytes())
+    portable_builder._assert_portable_import_closure(
+        output,
+        tmp_path / "source",
+        [first, missing],
+        python_executable=Path(sys.executable),
+    )
+    assert list(output.rglob("__pycache__")) == []
 
 
 def test_portable_launcher_uses_pythonw_source_entrypoint() -> None:

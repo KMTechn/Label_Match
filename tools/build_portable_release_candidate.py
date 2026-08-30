@@ -272,7 +272,7 @@ def _copy_third_party(site_packages: Path) -> dict[str, str]:
     return versions
 
 
-def _copy_application(repo_root: Path, app_root: Path) -> None:
+def _copy_application(repo_root: Path, app_root: Path) -> list[Path]:
     app_root.mkdir(parents=True)
     for source in sorted(repo_root.glob("*.py"), key=lambda item: item.name.casefold()):
         shutil.copy2(source, app_root / source.name)
@@ -287,12 +287,57 @@ def _copy_application(repo_root: Path, app_root: Path) -> None:
         shutil.copy2(source, app_root / name)
     tools_root = app_root / "tools"
     tools_root.mkdir()
-    for source in _discover_portable_tool_sources(repo_root):
+    tool_sources = _discover_portable_tool_sources(repo_root)
+    for source in tool_sources:
         relative = source.relative_to(repo_root / "tools")
         target = tools_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
     shutil.copy2(repo_root / "portable" / "main.py", app_root / "main.py")
+    return tool_sources
+
+
+def _assert_portable_import_closure(
+    output: Path,
+    repo_root: Path,
+    tool_sources: Iterable[Path],
+    python_executable: Path | None = None,
+) -> None:
+    modules = ["current_user_onboarding", "label_match_product_host"]
+    modules.extend(
+        "tools."
+        + ".".join(
+            source.relative_to(repo_root / "tools").with_suffix("").parts
+        )
+        for source in tool_sources
+    )
+    code = (
+        "import importlib,json,os,sys;"
+        "app=sys.argv[1];"
+        "sys.path[:0]=[app,os.path.join(app,'site-packages')];"
+        "[importlib.import_module(name) for name in json.loads(sys.argv[2])]"
+    )
+    completed = subprocess.run(
+        [
+            str(python_executable or output / "runtime" / "python.exe"),
+            "-I",
+            "-B",
+            "-c",
+            code,
+            str(output / "app"),
+            json.dumps(sorted(set(modules), key=str.casefold)),
+        ],
+        cwd=output,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "no diagnostic").strip()
+        raise PortableBuildError(
+            "portable runtime import closure failed: " + detail[-1000:]
+        )
 
 
 def _is_pe(path: Path) -> bool:
@@ -405,7 +450,7 @@ def build(
     output.mkdir(parents=True)
     _runtime_source(python_home, output / "runtime")
     app_root = output / "app"
-    _copy_application(repo_root, app_root)
+    tool_sources = _copy_application(repo_root, app_root)
     update_key_config_sha256 = _write_update_key_config(
         app_root,
         update_manifest_public_key_config,
@@ -448,6 +493,7 @@ def build(
             "forbidden package roots entered the portable tree: "
             + ", ".join(forbidden_roots)
         )
+    _assert_portable_import_closure(output, repo_root, tool_sources)
     file_count, byte_count = _tree_metrics(output)
     manifest = {
         "schema": PORTABLE_SCHEMA,
