@@ -40,6 +40,21 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+function Get-RequiredExternalBoolean($Object, [string]$Name) {
+    if ($null -eq $Object) { throw "External object is absent: $Name" }
+    if ($Object -is [Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { throw "External boolean is absent: $Name" }
+        $value = $Object[$Name]
+    }
+    else {
+        $property = $Object.PSObject.Properties[$Name]
+        if ($null -eq $property) { throw "External boolean is absent: $Name" }
+        $value = $property.Value
+    }
+    if ($value -isnot [bool]) { throw "External boolean has invalid type: $Name" }
+    return [bool]$value
+}
+
 function Get-FileSha256 {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
     return (Get-FileHash -LiteralPath $LiteralPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -166,14 +181,17 @@ function Assert-ReleaseMatchesState {
         [Parameter(Mandatory = $true)][bool]$ExpectedDraft,
         [Parameter(Mandatory = $true)][bool]$ExpectedImmutable
     )
+    $draft = Get-RequiredExternalBoolean $Release 'draft'
+    $prerelease = Get-RequiredExternalBoolean $Release 'prerelease'
+    $immutable = Get-RequiredExternalBoolean $Release 'immutable'
     $body = ([string]$Release.body).Replace("`r`n", "`n").TrimEnd([char[]]"`n")
     if (
         [string]$Release.id -cne [string]$State.release_id -or
         $Release.tag_name -cne $Tag -or
         $Release.name -cne "Release $Tag" -or
-        [bool]$Release.draft -ne $ExpectedDraft -or
-        [bool]$Release.prerelease -ne $true -or
-        [bool]$Release.immutable -ne $ExpectedImmutable -or
+        $draft -ne $ExpectedDraft -or
+        $prerelease -ne $true -or
+        $immutable -ne $ExpectedImmutable -or
         [string]$Release.target_commitish -cne [string]$State.target_commitish -or
         $body -cne [string]$State.body
     ) {

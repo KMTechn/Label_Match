@@ -1509,6 +1509,43 @@ def test_custom_transport_error_normalizes_top_level_retry_metadata():
     assert error.retry_after_seconds == 0.0
 
 
+@pytest.mark.parametrize(
+    "invalid_ok",
+    ["false", "0", "", "null", None, 0, 1, [], {}],
+    ids=[
+        "string-false",
+        "string-zero",
+        "empty-string",
+        "string-null",
+        "json-null",
+        "integer-zero",
+        "integer-one",
+        "array",
+        "object",
+    ],
+)
+def test_package_api_envelope_rejects_non_boolean_ok_sentinels(invalid_ok):
+    with pytest.raises(
+        PackageTransportError, match="package API ok must be a JSON boolean"
+    ):
+        PackageLogisticsClient._data(
+            {"ok": invalid_ok, "data": {"package_bundle_id": "PKG-TEST"}}
+        )
+
+
+def test_package_api_envelope_accepts_literal_true_positive_control():
+    assert PackageLogisticsClient._data(
+        {"ok": True, "data": {"package_bundle_id": "PKG-TEST"}}
+    ) == {"package_bundle_id": "PKG-TEST"}
+
+
+def test_package_api_envelope_rejects_missing_ok_field():
+    with pytest.raises(
+        PackageTransportError, match="package API ok must be a JSON boolean"
+    ):
+        PackageLogisticsClient._data({"data": {"package_bundle_id": "PKG-TEST"}})
+
+
 def test_incomplete_post_body_recovers_committed_cancel_receipt(monkeypatch):
     receipt = {"receipt_id": "cancel-recovered-after-incomplete-read"}
     methods = []

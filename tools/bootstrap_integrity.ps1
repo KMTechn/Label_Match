@@ -2,6 +2,23 @@ $BootstrapIntegrityFileName = "bootstrap-integrity.json"
 $BootstrapIntegritySchema = "label-match-bootstrap-integrity-v1"
 $BootstrapPortableCodeRoot = "."
 
+function Get-RequiredExternalInteger($Object, [string]$Name) {
+    if ($null -eq $Object) { throw "External object is absent: $Name" }
+    if ($Object -is [Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { throw "External integer is absent: $Name" }
+        $value = $Object[$Name]
+    }
+    else {
+        $property = $Object.PSObject.Properties[$Name]
+        if ($null -eq $property) { throw "External integer is absent: $Name" }
+        $value = $property.Value
+    }
+    if ($value -isnot [int] -and $value -isnot [long]) {
+        throw "External integer has invalid type: $Name"
+    }
+    return [int64]$value
+}
+
 function Get-BootstrapStrictFullPath {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -159,8 +176,9 @@ function Assert-BootstrapIntegrityRecord {
     $inventory = @(
         Get-BootstrapCodeInventory -Root $rootFull -IntegrityFileName $IntegrityFileName
     )
+    $recordFileCount = Get-RequiredExternalInteger $record 'file_count'
     if (
-        [int]$record.file_count -ne $inventory.Count -or
+        $recordFileCount -ne $inventory.Count -or
         @($record.files).Count -ne $inventory.Count
     ) {
         throw "Bootstrap integrity record file count is invalid."

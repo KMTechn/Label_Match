@@ -705,9 +705,20 @@ def restore_raw_artifact_to_file(
     if not 200 <= status_code < 300:
         payload = _response_json(response)
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        retryable_value = payload.get("retryable")
+        if retryable_value is not None and type(retryable_value) is not bool:
+            return _restore_error_result(
+                status_code=status_code,
+                retryable=False,
+                destination_path=destination,
+                metadata=restore_metadata,
+                error_code="restore_response_contract_invalid",
+                error_message="raw artifact restore retryable must be a JSON boolean",
+            )
         return _restore_error_result(
             status_code=status_code,
-            retryable=bool(payload.get("retryable")) or status_code in {408, 429, 500, 502, 503, 504},
+            retryable=retryable_value is True
+            or status_code in {408, 429, 500, 502, 503, 504},
             destination_path=destination,
             metadata=restore_metadata,
             error_code=str(error.get("code") or "restore_http_error"),

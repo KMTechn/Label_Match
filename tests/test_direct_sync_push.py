@@ -290,6 +290,92 @@ def test_restore_raw_artifact_downloads_verified_payload(tmp_path):
     assert session.calls[0]["verify"] == str(ca_bundle)
 
 
+@pytest.mark.parametrize(
+    "invalid_retryable",
+    ["false", "0", "", "null", 0, 1, [], {}],
+    ids=[
+        "string-false",
+        "string-zero",
+        "empty-string",
+        "string-null",
+        "integer-zero",
+        "integer-one",
+        "array",
+        "object",
+    ],
+)
+def test_restore_response_rejects_non_boolean_retryable_sentinels(
+    tmp_path, invalid_retryable
+):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    plan = build_source_file_plan(
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    session = FakeRestoreSession(
+        FakeRestoreResponse(
+            400,
+            payload={
+                "retryable": invalid_retryable,
+                "error": {"code": "synthetic_failure", "message": "rejected"},
+            },
+        )
+    )
+
+    result = restore_raw_artifact_to_file(
+        credentials=credentials,
+        metadata=plan.metadata,
+        destination_path=tmp_path / "spool" / "restored.csv",
+        session=session,
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error_code == "restore_response_contract_invalid"
+    assert result.error_message == "raw artifact restore retryable must be a JSON boolean"
+
+
+@pytest.mark.parametrize(
+    ("retryable_value", "expected_retryable"),
+    [(True, True), (False, False), (None, False)],
+    ids=["true", "false", "optional-null"],
+)
+def test_restore_response_accepts_literal_boolean_retryable_positive_controls(
+    tmp_path, retryable_value, expected_retryable
+):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    plan = build_source_file_plan(
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    session = FakeRestoreSession(
+        FakeRestoreResponse(
+            400,
+            payload={
+                "retryable": retryable_value,
+                "error": {"code": "synthetic_failure", "message": "rejected"},
+            },
+        )
+    )
+
+    result = restore_raw_artifact_to_file(
+        credentials=credentials,
+        metadata=plan.metadata,
+        destination_path=tmp_path / "spool" / "restored.csv",
+        session=session,
+    )
+
+    assert result.success is False
+    assert result.retryable is expected_retryable
+    assert result.error_code == "synthetic_failure"
+
+
 def test_restore_raw_artifact_falls_back_when_hardlink_is_unavailable(tmp_path, monkeypatch):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)

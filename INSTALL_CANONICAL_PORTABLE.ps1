@@ -42,6 +42,25 @@ if ($SkipSignatureValidationForTest -and -not $testMode) {
     throw 'Signature bypass is test-only.'
 }
 
+function Get-RequiredExternalBoolean($Object, [string]$Name) {
+    if ($null -eq $Object) { throw "External object is absent: $Name" }
+    if ($Object -is [Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { throw "External boolean is absent: $Name" }
+        $value = $Object[$Name]
+    }
+    else {
+        $property = $Object.PSObject.Properties[$Name]
+        if ($null -eq $property) { throw "External boolean is absent: $Name" }
+        $value = $property.Value
+    }
+    if ($value -isnot [bool]) { throw "External boolean has invalid type: $Name" }
+    return [bool]$value
+}
+
+function Test-RelayPersistentRetry($Relay) {
+    return Get-RequiredExternalBoolean $Relay 'persistent_retry'
+}
+
 function Full([string]$Value, [string]$Purpose) {
     if (-not [IO.Path]::IsPathRooted($Value) -or $Value.StartsWith('\\?\')) {
         throw "$Purpose must be an ordinary absolute path."
@@ -499,6 +518,36 @@ function PinnedBytes([string]$Path, [string]$Expected) {
     if ($actual -cne $Expected) { throw "Elevated helper byte pin differs: $Path" }
     return ,$bytes
 }
+function Get-RequiredExternalBoolean($Object, [string]$Name) {
+    if ($null -eq $Object) { throw "External object is absent: $Name" }
+    if ($Object -is [Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { throw "External boolean is absent: $Name" }
+        $value = $Object[$Name]
+    }
+    else {
+        $property = $Object.PSObject.Properties[$Name]
+        if ($null -eq $property) { throw "External boolean is absent: $Name" }
+        $value = $property.Value
+    }
+    if ($value -isnot [bool]) { throw "External boolean has invalid type: $Name" }
+    return [bool]$value
+}
+function Get-RequiredExternalInteger($Object, [string]$Name) {
+    if ($null -eq $Object) { throw "External object is absent: $Name" }
+    if ($Object -is [Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { throw "External integer is absent: $Name" }
+        $value = $Object[$Name]
+    }
+    else {
+        $property = $Object.PSObject.Properties[$Name]
+        if ($null -eq $property) { throw "External integer is absent: $Name" }
+        $value = $property.Value
+    }
+    if ($value -isnot [int] -and $value -isnot [long]) {
+        throw "External integer has invalid type: $Name"
+    }
+    return [int64]$value
+}
 [byte[]]$integrityBytes = PinnedBytes ([string]$payload.integrity_path) ([string]$payload.integrity_sha256)
 [byte[]]$helperBytes = PinnedBytes ([string]$payload.helper_path) ([string]$payload.helper_sha256)
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
@@ -523,19 +572,27 @@ if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
     @($actualParameterNames | Where-Object { $_ -notin $parameterNames }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
+$expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
+$expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
+if ($expectedSourceFileCount -lt 0 -or $expectedSourceFileCount -gt [int]::MaxValue) {
+    throw 'External integer is outside the supported range: ExpectedSourceFileCount'
+}
+if ($expectedSourceByteCount -lt 0) {
+    throw 'External integer is outside the supported range: ExpectedSourceByteCount'
+}
 $invokeParameters = @{
     SourceRoot = [string]$payload.parameters.SourceRoot
     InstallRoot = [string]$payload.parameters.InstallRoot
     ElevationLogPath = [string]$payload.parameters.ElevationLogPath
     ExpectedBootstrapScriptSha256 = [string]$payload.parameters.ExpectedBootstrapScriptSha256
     VerifiedBootstrapScriptPath = [string]$payload.parameters.VerifiedBootstrapScriptPath
-    BootstrapIntegrityPreloaded = [bool]$payload.parameters.BootstrapIntegrityPreloaded
+    BootstrapIntegrityPreloaded = Get-RequiredExternalBoolean $payload.parameters 'BootstrapIntegrityPreloaded'
     ExpectedSourceAggregateSha256 = [string]$payload.parameters.ExpectedSourceAggregateSha256
-    ExpectedSourceFileCount = [int]$payload.parameters.ExpectedSourceFileCount
-    ExpectedSourceByteCount = [uint64]$payload.parameters.ExpectedSourceByteCount
-    AllowNoncanonicalLayoutForTest = [bool]$payload.parameters.AllowNoncanonicalLayoutForTest
-    ReplaceExistingVerifiedPortable = [bool]$payload.parameters.ReplaceExistingVerifiedPortable
-    DryRun = [bool]$payload.parameters.DryRun
+    ExpectedSourceFileCount = [int]$expectedSourceFileCount
+    ExpectedSourceByteCount = [uint64]$expectedSourceByteCount
+    AllowNoncanonicalLayoutForTest = Get-RequiredExternalBoolean $payload.parameters 'AllowNoncanonicalLayoutForTest'
+    ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
+    DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
 }
 & $helper @invokeParameters
 if (-not $?) { exit 4 }
@@ -802,17 +859,19 @@ try {
 
     $deadline = (Get-Date).AddSeconds(75)
     $relay = $null
+    $relayPersistentRetry = $false
     while ((Get-Date) -lt $deadline) {
         if (
             (Test-Path $relayPath) -and
             (Get-Item $relayPath).LastWriteTimeUtc -ge $started.AddSeconds(-1)
         ) {
             $relay = Get-Content $relayPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ([bool]$relay.persistent_retry) { break }
+            $relayPersistentRetry = Test-RelayPersistentRetry $relay
+            if ($relayPersistentRetry) { break }
         }
         Start-Sleep -Milliseconds 500
     }
-    if ($null -eq $relay -or -not [bool]$relay.persistent_retry) {
+    if ($null -eq $relay -or -not $relayPersistentRetry) {
         throw 'Fresh relay status proof failed.'
     }
 
@@ -829,7 +888,7 @@ try {
         process_id = $pidValue
         executable = [string]$process.ExecutablePath
         relay_status = [string]$relay.status
-        persistent_retry = [bool]$relay.persistent_retry
+        persistent_retry = $relayPersistentRetry
     }
     Save $auditPath $audit
     if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }

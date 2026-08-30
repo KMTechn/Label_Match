@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 import subprocess
 
+import pytest
+
 from tools import build_portable_release_candidate as portable_builder
 
 
@@ -103,6 +105,99 @@ catch {{
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
     return json.loads(completed.stdout)
+
+
+def _run_relay_persistent_retry_guard(
+    tmp_path: Path, persistent_retry: object
+) -> subprocess.CompletedProcess[str]:
+    source = _source()
+    functions = source[
+        source.index("function Get-RequiredExternalBoolean") : source.index(
+            "function Full"
+        )
+    ]
+    payload = base64.b64encode(
+        json.dumps({"persistent_retry": persistent_retry}).encode("utf-8")
+    ).decode("ascii")
+    harness = tmp_path / "relay-persistent-retry-guard.ps1"
+    harness.write_text(
+        f"""
+{functions}
+$json = (New-Object Text.UTF8Encoding($false, $true)).GetString(
+    [Convert]::FromBase64String('{payload}')
+)
+$relay = $json | ConvertFrom-Json
+try {{
+    $result = Test-RelayPersistentRetry $relay
+    Write-Output ('guard_result=' + ([string]$result).ToLowerInvariant())
+    exit 0
+}}
+catch {{
+    Write-Output ('guard_error=' + [string]$_.Exception.Message)
+    exit 7
+}}
+""",
+        encoding="utf-8-sig",
+    )
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_relay_persistent_retry_guard_accepts_literal_booleans(tmp_path: Path) -> None:
+    true_result = _run_relay_persistent_retry_guard(tmp_path, True)
+    false_result = _run_relay_persistent_retry_guard(tmp_path, False)
+
+    assert true_result.returncode == 0, true_result.stderr or true_result.stdout
+    assert "guard_result=true" in true_result.stdout
+    assert false_result.returncode == 0, false_result.stderr or false_result.stdout
+    assert "guard_result=false" in false_result.stdout
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    ["false", "0", "", "null", None, 0, 1, [], {}],
+    ids=[
+        "string-false",
+        "string-zero",
+        "empty-string",
+        "string-null",
+        "json-null",
+        "integer-zero",
+        "integer-one",
+        "array",
+        "object",
+    ],
+)
+def test_relay_persistent_retry_guard_rejects_actual_non_boolean_sentinels(
+    tmp_path: Path, invalid_value: object
+) -> None:
+    completed = _run_relay_persistent_retry_guard(tmp_path, invalid_value)
+
+    assert completed.returncode == 7
+    assert "guard_error=External boolean has invalid type: persistent_retry" in (
+        completed.stdout
+    )
 
 
 def test_installer_exposes_inspection_equivalent_v2_interface() -> None:
@@ -376,6 +471,138 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "replace_existing_verified_portable": False,
         "dry_run": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value", "expected_message"),
+    [
+        (
+            "BootstrapIntegrityPreloaded",
+            value,
+            "External boolean has invalid type: BootstrapIntegrityPreloaded",
+        )
+        for value in ("false", "0", "", "null", None, 0, 1, [], {})
+    ]
+    + [
+        (
+            "AllowNoncanonicalLayoutForTest",
+            "false",
+            "External boolean has invalid type: AllowNoncanonicalLayoutForTest",
+        ),
+        (
+            "ReplaceExistingVerifiedPortable",
+            "0",
+            "External boolean has invalid type: ReplaceExistingVerifiedPortable",
+        ),
+        (
+            "DryRun",
+            "null",
+            "External boolean has invalid type: DryRun",
+        ),
+        (
+            "ExpectedSourceFileCount",
+            "3380",
+            "External integer has invalid type: ExpectedSourceFileCount",
+        ),
+        (
+            "ExpectedSourceByteCount",
+            "77580497",
+            "External integer has invalid type: ExpectedSourceByteCount",
+        ),
+    ],
+    ids=[
+        "bootstrap-string-false",
+        "bootstrap-string-zero",
+        "bootstrap-empty-string",
+        "bootstrap-string-null",
+        "bootstrap-json-null",
+        "bootstrap-integer-zero",
+        "bootstrap-integer-one",
+        "bootstrap-array",
+        "bootstrap-object",
+        "layout-string-false",
+        "replace-string-zero",
+        "dry-run-string-null",
+        "file-count-numeric-string",
+        "byte-count-numeric-string",
+    ],
+)
+def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
+    tmp_path: Path,
+    field: str,
+    invalid_value: object,
+    expected_message: str,
+) -> None:
+    source = _source()
+    match = re.search(
+        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@\.Replace"
+        r"\('@@payload-base64@@', \$payloadBase64\)",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None
+
+    helper = tmp_path / "must-not-run.ps1"
+    integrity = tmp_path / "integrity.ps1"
+    helper.write_text("throw 'HELPER_MUST_NOT_RUN'\n", encoding="utf-8")
+    integrity.write_bytes(b"# verified integrity helper\n")
+    helper_sha256 = hashlib.sha256(helper.read_bytes()).hexdigest()
+    integrity_sha256 = hashlib.sha256(integrity.read_bytes()).hexdigest()
+    parameters: dict[str, object] = {
+        "SourceRoot": r"E:\source root",
+        "InstallRoot": r"E:\install root",
+        "ElevationLogPath": r"E:\audit\elevation.log",
+        "ExpectedBootstrapScriptSha256": helper_sha256,
+        "VerifiedBootstrapScriptPath": str(helper),
+        "BootstrapIntegrityPreloaded": True,
+        "ExpectedSourceAggregateSha256": "a" * 64,
+        "ExpectedSourceFileCount": 3380,
+        "ExpectedSourceByteCount": 77580497,
+        "AllowNoncanonicalLayoutForTest": True,
+        "ReplaceExistingVerifiedPortable": False,
+        "DryRun": True,
+    }
+    parameters[field] = invalid_value
+    payload = {
+        "helper_path": str(helper),
+        "helper_sha256": helper_sha256,
+        "integrity_path": str(integrity),
+        "integrity_sha256": integrity_sha256,
+        "parameters": parameters,
+    }
+    payload_base64 = base64.b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
+    encoded_launcher = base64.b64encode(launcher.encode("utf-16-le")).decode("ascii")
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            encoded_launcher,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert expected_message in combined
+    assert "HELPER_MUST_NOT_RUN" not in combined
 
 
 def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(

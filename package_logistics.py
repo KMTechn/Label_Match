@@ -3614,7 +3614,10 @@ class PackageLogisticsClient:
 
     @staticmethod
     def _data(response: Mapping[str, Any]) -> dict[str, Any]:
-        if response.get("ok") is False:
+        ok = response.get("ok")
+        if ok is not True and ok is not False:
+            raise PackageTransportError("package API ok must be a JSON boolean")
+        if ok is False:
             error = response.get("error") if isinstance(response.get("error"), Mapping) else {}
             retry_after = None
             retry_after_candidates = []
