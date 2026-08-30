@@ -372,9 +372,25 @@ function Set-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
     }
 }
 
+function Get-LegacyTaskByNameFailClosed([string]$Name) {
+    try {
+        $taskMatches = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+            ([string]$_.TaskName).Equals($Name, [StringComparison]::OrdinalIgnoreCase)
+        })
+    }
+    catch {
+        throw "Legacy scheduled task observation failed: $Name/$($_.Exception.GetType().Name)"
+    }
+    if ($taskMatches.Count -gt 1) {
+        throw "Legacy scheduled task observation is non-unique: $Name"
+    }
+    return $taskMatches
+}
+
 function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
-    $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
-    if ($null -eq $task) { return }
+    $taskMatches = @(Get-LegacyTaskByNameFailClosed $Name)
+    if ($taskMatches.Count -eq 0) { return }
+    $task = $taskMatches[0]
     $actions = @($task.Actions)
     if ($actions.Count -ne 1) {
         throw "Refusing to remove a legacy task with an ambiguous action: $Name"
@@ -390,9 +406,17 @@ function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
     if (-not $owned) {
         throw "Refusing to remove a scheduled task not owned by this application: $Name"
     }
-    Stop-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction Stop
-    if ($null -ne (Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue)) {
+    $taskPath = [string]$task.TaskPath
+    Stop-ScheduledTask `
+        -TaskName ([string]$task.TaskName) `
+        -TaskPath $taskPath `
+        -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask `
+        -TaskName ([string]$task.TaskName) `
+        -TaskPath $taskPath `
+        -Confirm:$false `
+        -ErrorAction Stop
+    if (@(Get-LegacyTaskByNameFailClosed $Name).Count -ne 0) {
         throw "Legacy scheduled task removal readback failed: $Name"
     }
 }

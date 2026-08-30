@@ -23,6 +23,107 @@ def _powershell() -> str:
     return executable
 
 
+def _run_legacy_task_removal_harness(tmp_path: Path, scenario: str):
+    installer_text = INSTALLER.read_text(encoding="utf-8")
+    start = installer_text.index("function Get-LegacyTaskByNameFailClosed")
+    end = installer_text.index("function Test-CurrentUserRelayPersistencePresent")
+    functions = installer_text[start:end]
+    harness = tmp_path / f"legacy-task-{scenario}.ps1"
+    harness.write_text(
+        functions
+        + rf"""
+$script:scenario = '{scenario}'
+$script:queryCalls = 0
+$script:stopCalls = 0
+$script:unregisterCalls = 0
+
+function New-SyntheticOwnedTask([string]$TaskPath) {{
+    return [pscustomobject]@{{
+        TaskName = 'legacy-label-task'
+        TaskPath = $TaskPath
+        Actions = @([pscustomobject]@{{
+            Execute = 'powershell.exe'
+            Arguments = '-File C:\expected\current\relay.ps1'
+        }})
+    }}
+}}
+
+function Get-ScheduledTask {{
+    param([object]$ErrorAction)
+    $script:queryCalls++
+    if ($script:scenario -eq 'query_error') {{
+        throw [InvalidOperationException]::new('synthetic inventory failure')
+    }}
+    if ($script:scenario -eq 'duplicate') {{
+        return @(
+            (New-SyntheticOwnedTask '\One\'),
+            (New-SyntheticOwnedTask '\Two\')
+        )
+    }}
+    if ($script:scenario -eq 'readback_error') {{
+        if ($script:queryCalls -eq 1) {{ return New-SyntheticOwnedTask '\Owned\' }}
+        throw [InvalidOperationException]::new('synthetic readback failure')
+    }}
+    if ($script:scenario -eq 'still_present') {{
+        return New-SyntheticOwnedTask '\Owned\'
+    }}
+    return @()
+}}
+
+function Stop-ScheduledTask {{
+    param([string]$TaskName, [string]$TaskPath, [object]$ErrorAction)
+    $script:stopCalls++
+}}
+
+function Unregister-ScheduledTask {{
+    param(
+        [string]$TaskName,
+        [string]$TaskPath,
+        [switch]$Confirm,
+        [object]$ErrorAction
+    )
+    $script:unregisterCalls++
+}}
+
+$status = 'PASS'
+$message = ''
+try {{
+    Remove-OwnedLegacyTask 'legacy-label-task' 'C:\expected\current'
+}}
+catch {{
+    $status = 'FAIL'
+    $message = [string]$_.Exception.Message
+}}
+[pscustomobject]@{{
+    status = $status
+    message = $message
+    query_calls = $script:queryCalls
+    stop_calls = $script:stopCalls
+    unregister_calls = $script:unregisterCalls
+}} | ConvertTo-Json -Compress
+""",
+        encoding="utf-8-sig",
+    )
+    completed = subprocess.run(
+        [
+            _powershell(),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return json.loads(completed.stdout)
+
+
 def _run_installer(
     source_root: Path,
     install_root: Path,
@@ -184,6 +285,41 @@ def test_bootstrap_powershell_parses():
     )
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+@pytest.mark.parametrize(
+    ("scenario", "message_fragment", "expected_unregister_calls"),
+    [
+        ("query_error", "observation failed", 0),
+        ("duplicate", "non-unique", 0),
+        ("readback_error", "observation failed", 1),
+        ("still_present", "removal readback failed", 1),
+    ],
+)
+def test_legacy_task_removal_fails_closed_without_host_mutation(
+    tmp_path,
+    scenario,
+    message_fragment,
+    expected_unregister_calls,
+):
+    result = _run_legacy_task_removal_harness(tmp_path, scenario)
+
+    assert result["status"] == "FAIL"
+    assert message_fragment in result["message"]
+    assert result["unregister_calls"] == expected_unregister_calls
+    assert result["stop_calls"] == expected_unregister_calls
+
+
+def test_legacy_task_absence_is_the_only_clean_noop(tmp_path):
+    result = _run_legacy_task_removal_harness(tmp_path, "absent")
+
+    assert result == {
+        "status": "PASS",
+        "message": "",
+        "query_calls": 1,
+        "stop_calls": 0,
+        "unregister_calls": 0,
+    }
 
 
 def test_bootstrap_dry_run_does_not_create_identity_profile_or_target(tmp_path):
