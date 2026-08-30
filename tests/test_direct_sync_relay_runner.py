@@ -659,6 +659,7 @@ def test_runner_scan_source_does_not_record_watermark_for_operator_review(
         receipt = {
             "client_batch_id": relay_id,
             "status": "accepted",
+            "projection_disposition": "COMPLETE",
             "committed": True,
             "retryable": False,
             "totals": {"inserted": 1, "quarantined": 1, "errors": 0, "replayed": 0},
@@ -719,6 +720,7 @@ def test_runner_scan_source_blocks_after_operator_review_prefix_without_reenqueu
     receipt = {
         "client_batch_id": first_row["relay_id"],
         "status": "accepted",
+        "projection_disposition": "COMPLETE",
         "committed": True,
         "retryable": False,
         "totals": {"inserted": 1, "quarantined": 1, "errors": 0, "replayed": 0},

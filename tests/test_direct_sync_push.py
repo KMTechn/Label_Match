@@ -522,6 +522,7 @@ def test_upload_writes_status_without_storing_secret(tmp_path):
                 ),
                 "committed": True,
                 "status": "accepted",
+                "projection_disposition": "COMPLETE",
                 "retryable": False,
                 "next_retry_after": None,
                 "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -1222,6 +1223,7 @@ def test_relay_retry_then_success_uses_fresh_signed_request_and_marks_acked(tmp_
                     "server_source_file_id": server_source_file_id,
                     "committed": True,
                     "status": "accepted",
+                    "projection_disposition": "COMPLETE",
                     "retryable": False,
                     "next_retry_after": None,
                     "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -1396,6 +1398,7 @@ def test_drain_non_2xx_committed_response_requires_operator_review_without_retry
                 "server_source_file_id": server_source_file_id,
                 "committed": True,
                 "status": "accepted",
+                "projection_disposition": "COMPLETE",
                 "retryable": False,
                 "next_retry_after": None,
                 "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -1489,6 +1492,104 @@ def test_logistics_committed_receipt_never_advances_producer_ack_or_retention(
     assert Path(row.spooled_file_path).is_file()
 
 
+@pytest.mark.parametrize(
+    ("projection_disposition", "expected_error_code"),
+    [
+        pytest.param(
+            "REQUIRED_NOT_PROJECTED",
+            "producer_projection_incomplete",
+            id="required-not-projected",
+        ),
+        pytest.param(
+            "RAW_LEGITIMATE",
+            "producer_projection_incomplete",
+            id="raw-legitimate",
+        ),
+        pytest.param(
+            "UNKNOWN", "producer_projection_incomplete", id="unknown"
+        ),
+        pytest.param(
+            "ASSUMED_COMPLETE",
+            "producer_projection_incomplete",
+            id="unregistered-string",
+        ),
+        pytest.param("__MISSING__", "producer_receipt_invalid", id="missing"),
+        pytest.param(None, "producer_receipt_invalid", id="null"),
+        pytest.param(7, "producer_receipt_invalid", id="integer"),
+    ],
+)
+def test_committed_noncomplete_projection_never_acks_and_preserves_evidence(
+    tmp_path,
+    projection_disposition,
+    expected_error_code,
+):
+    manifest, manifest_path = make_manifest(tmp_path)
+    csv_path = write_csv(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    row = enqueue_source_file_for_relay(
+        db_path=db_path,
+        spool_dir=tmp_path / "spool",
+        source_file_path=csv_path,
+        producer_manifest_path=manifest_path,
+        credentials=credentials,
+    )
+    source_sha256 = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    spool_path = Path(row.spooled_file_path)
+    spool_sha256 = hashlib.sha256(spool_path.read_bytes()).hexdigest()
+    receipt = {
+        "request_id": "request-projection-negative",
+        "client_batch_id": row.relay_id,
+        "server_source_file_id": (
+            f"{manifest['pc_identity']['source_host_id']}/"
+            f"label_match/label_match_events/{row.relative_path}"
+        ),
+        "committed": True,
+        "status": "accepted",
+        "retryable": False,
+        "next_retry_after": None,
+        "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
+    }
+    if projection_disposition != "__MISSING__":
+        receipt["projection_disposition"] = projection_disposition
+
+    result = drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=FakeSession(FakeResponse(200, receipt)),
+        status_dir=tmp_path / "status",
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.committed is True
+    assert result.retryable is False
+    assert result.error_code == expected_error_code
+    assert "_local_runtime_lease_status" not in result.receipt
+    assert relay_queue_status(db_path)["counts"].get(RELAY_STATUS_ACKED, 0) == 0
+    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
+    assert acked_relay_retention_candidates(db_path) == ()
+    assert csv_path.is_file()
+    assert hashlib.sha256(csv_path.read_bytes()).hexdigest() == source_sha256
+    assert spool_path.is_file()
+    assert hashlib.sha256(spool_path.read_bytes()).hexdigest() == spool_sha256
+    assert Path(result.status_path).is_file()
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        persisted = connection.execute(
+            """
+            SELECT status, next_attempt_at, last_error_code, receipt_json
+            FROM direct_sync_relay_batches
+            WHERE relay_id = ?
+            """,
+            (row.relay_id,),
+        ).fetchone()
+    assert persisted["status"] == RELAY_STATUS_OPERATOR_REVIEW
+    assert persisted["next_attempt_at"] is None
+    assert persisted["last_error_code"] == expected_error_code
+    assert json.loads(persisted["receipt_json"])["committed"] is True
+
+
 def test_drain_uses_enqueued_metadata_snapshot_after_manifest_changes(tmp_path):
     manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
@@ -1525,6 +1626,7 @@ def test_drain_uses_enqueued_metadata_snapshot_after_manifest_changes(tmp_path):
                     ),
                     "committed": True,
                     "status": "accepted",
+                    "projection_disposition": "COMPLETE",
                     "retryable": False,
                     "next_retry_after": None,
                     "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -1749,6 +1851,7 @@ def test_drain_acks_committed_upload_when_status_artifact_write_fails(tmp_path):
                 "server_source_file_id": server_source_file_id,
                 "committed": True,
                 "status": "accepted",
+                "projection_disposition": "COMPLETE",
                 "retryable": False,
                 "next_retry_after": None,
                 "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -1804,6 +1907,7 @@ def test_acked_relay_retention_report_is_read_only_and_candidates_require_full_e
         "server_source_file_id": server_source_file_id,
         "committed": True,
         "status": "accepted",
+        "projection_disposition": "COMPLETE",
         "retryable": False,
         "next_retry_after": None,
         "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -1840,6 +1944,21 @@ def test_acked_relay_retention_report_is_read_only_and_candidates_require_full_e
     ) == 1
     assert acked_relay_retention_candidates(db_path, spool_roots=[tmp_path / "wrong-spool"]) == ()
     assert acked_relay_retention_candidates(db_path, artifact_roots=[tmp_path / "wrong-status"]) == ()
+
+    noncomplete_receipt = dict(result.receipt)
+    noncomplete_receipt["projection_disposition"] = "REQUIRED_NOT_PROJECTED"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE direct_sync_relay_batches SET receipt_json = ? WHERE relay_id = ?",
+            (
+                json.dumps(noncomplete_receipt, ensure_ascii=False, sort_keys=True),
+                row.relay_id,
+            ),
+        )
+        conn.commit()
+    assert acked_relay_retention_candidates(db_path) == ()
+    assert Path(row.spooled_file_path).is_file()
+    assert Path(result.status_path).is_file()
 
     with sqlite3.connect(db_path) as conn:
         conn.execute(

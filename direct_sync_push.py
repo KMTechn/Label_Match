@@ -942,6 +942,17 @@ def _receipt_accepted_shape_error(receipt: Mapping[str, Any]) -> tuple[str, str]
         return "producer_receipt_invalid", "accepted receipt next_retry_after must be null"
     if receipt.get("error") is not None:
         return "producer_receipt_invalid", "accepted receipt must not include error details"
+    projection_disposition = receipt.get("projection_disposition")
+    if not isinstance(projection_disposition, str):
+        return (
+            "producer_receipt_invalid",
+            "accepted receipt projection_disposition must be a string",
+        )
+    if projection_disposition != "COMPLETE":
+        return (
+            "producer_projection_incomplete",
+            "accepted receipt projection_disposition must be COMPLETE",
+        )
     return "", ""
 
 
