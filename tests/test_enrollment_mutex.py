@@ -108,6 +108,12 @@ def _write_evidence(root: Path, payload: dict) -> None:
     )
 
 
+def test_mutex_name_is_local_and_label_specific():
+    assert ENROLLMENT_MUTEX_NAME == r"Local\KMTech.Enrollment.LabelMatch.v1"
+    assert ENROLLMENT_MUTEX_NAME.startswith("Local\\")
+    assert "OneSessionInstall" not in ENROLLMENT_MUTEX_NAME
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows named mutex proof")
 def test_two_real_child_pids_allow_exactly_one_enrollment_body(tmp_path):
     root = _evidence_root(tmp_path, "two-child-contention")
@@ -266,6 +272,70 @@ def test_positive_timeout_is_bounded_and_never_enters_body(tmp_path):
                 process.wait(timeout=5)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named mutex proof")
+def test_same_thread_reentry_is_bounded_and_inner_release_keeps_outer_owned(tmp_path):
+    root = _evidence_root(tmp_path, "same-thread-reentry")
+    _write_json(root / "start.json", {"status": "RELEASED"})
+    contender = None
+    recovery = None
+    try:
+        started = time.perf_counter()
+        with EnrollmentMutex(timeout_seconds=0.2) as outer:
+            with EnrollmentMutex(timeout_seconds=0.2) as inner:
+                assert outer["owner_pid"] == inner["owner_pid"] == os.getpid()
+                assert outer["owner_thread_id"] == inner["owner_thread_id"]
+                assert inner["disposition"] == "ACQUIRED"
+            nested_elapsed_milliseconds = int(
+                round((time.perf_counter() - started) * 1000.0)
+            )
+            assert nested_elapsed_milliseconds < 1000
+
+            contender, contender_paths = _spawn_child(
+                root, "contender", hold_seconds=0.0, mutex_timeout_seconds=0.0
+            )
+            contender_exit, contender_stdout, contender_stderr = _finish(contender)
+            contender_result = _read_json(contender_paths["result"])
+            assert contender_exit == 2
+            assert contender_result["status"] == "BLOCKED_ENROLLMENT_MUTEX_TIMEOUT"
+            assert not contender_paths["entered"].exists()
+
+        recovery, recovery_paths = _spawn_child(
+            root, "recovery", hold_seconds=0.0, mutex_timeout_seconds=0.0
+        )
+        recovery_exit, recovery_stdout, recovery_stderr = _finish(recovery)
+        recovery_result = _read_json(recovery_paths["result"])
+        assert recovery_exit == 0
+        assert recovery_result["status"] == "PASSED"
+        assert recovery_paths["entered"].is_file()
+        _write_evidence(
+            root,
+            {
+                "case": "same_thread_reentry",
+                "owner_pid": os.getpid(),
+                "owner_thread_id": outer["owner_thread_id"],
+                "nested_elapsed_milliseconds": nested_elapsed_milliseconds,
+                "contender_pid": contender.pid,
+                "contender": contender_result,
+                "recovery_pid": recovery.pid,
+                "recovery": recovery_result,
+                "stdout_bytes": [
+                    len(contender_stdout.encode()),
+                    len(recovery_stdout.encode()),
+                ],
+                "stderr_bytes": [
+                    len(contender_stderr.encode()),
+                    len(recovery_stderr.encode()),
+                ],
+                "status": "PASS",
+            },
+        )
+    finally:
+        for process in (contender, recovery):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
 def test_direct_enrollment_transport_cannot_bypass_mutex(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -326,7 +396,7 @@ def test_all_audited_entry_routes_converge_on_one_mutex():
             "tools/register_label_match_worker_pc.py",
         )
     }
-    assert ENROLLMENT_MUTEX_NAME == r"Local\KMTech.OneSessionInstall.Enrollment.v1"
+    assert ENROLLMENT_MUTEX_NAME == r"Local\KMTech.Enrollment.LabelMatch.v1"
     assert "'--onboard-current-user'" in sources["INSTALL_CANONICAL_PORTABLE.ps1"]
     assert "onboarding_main" in sources["label_match_product_host.py"]
     assert "with EnrollmentMutex()" in sources["current_user_onboarding.py"]
@@ -344,7 +414,7 @@ def test_all_audited_entry_routes_converge_on_one_mutex():
     assert registration_source.count("require_enrollment_mutex_owned()") == 2
     assert registration_source.count("requests.post(") == 1
     assert registration_source.count("session.post(") == 1
-    assert r'ENROLLMENT_MUTEX_NAME = r"Local\KMTech.OneSessionInstall.Enrollment.v1"' in sources[
+    assert r'ENROLLMENT_MUTEX_NAME = r"Local\KMTech.Enrollment.LabelMatch.v1"' in sources[
         "enrollment_mutex.py"
     ]
 

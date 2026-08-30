@@ -1,10 +1,10 @@
 """Fail-closed Windows named mutex for Label enrollment mutations.
 
-Every supported enrollment entrypoint uses the same Local-session mutex as
-the other one-session installers.  A wait that observes an abandoned owner
-deliberately fails the current attempt: Windows transfers ownership in that
-case, but partial local/server state from the terminated owner must be
-inspected before another mutation is allowed.
+Every supported enrollment entrypoint uses the same app-specific Local-session
+mutex.  A wait that observes an abandoned owner deliberately fails the current
+attempt: Windows transfers ownership in that case, but partial local/server
+state from the terminated owner must be inspected before another mutation is
+allowed.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import time
 from typing import Any
 
 
-ENROLLMENT_MUTEX_NAME = r"Local\KMTech.OneSessionInstall.Enrollment.v1"
+ENROLLMENT_MUTEX_NAME = r"Local\KMTech.Enrollment.LabelMatch.v1"
 ENROLLMENT_MUTEX_CONTRACT_VERSION = "label-enrollment-mutex-v1"
 DEFAULT_ENROLLMENT_MUTEX_TIMEOUT_SECONDS = 0.0
 
