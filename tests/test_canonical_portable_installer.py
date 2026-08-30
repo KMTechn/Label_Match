@@ -33,6 +33,7 @@ function Same([string]$A, [string]$B) {{
 
 {functions}
 $script:scenario = '{scenario}'
+$script:lastActualType = ''
 function Get-CimInstance {{
     param([string]$ClassName, [object]$ErrorAction)
     if ($script:scenario -eq 'query_error') {{
@@ -44,17 +45,19 @@ function Get-CimInstance {{
     else {{
         'pythonw.exe --label-match-user-relay --expected'
     }}
-    return [pscustomobject]@{{
+    $row = [ordered]@{{
         ExecutablePath = 'C:\runtime\pythonw.exe'
         CommandLine = $commandLine
     }}
+    $script:lastActualType = $row.GetType().FullName
+    return $row
 }}
 
 $expected = if ($script:scenario -eq 'extra') {{
     @()
 }}
 else {{
-    @([pscustomobject]@{{
+    @([ordered]@{{
         ExecutablePath = 'C:\runtime\pythonw.exe'
         CommandLine = 'pythonw.exe --label-match-user-relay --expected'
     }})
@@ -66,7 +69,11 @@ catch {{
     $status = 'FAIL'
     $message = [string]$_.Exception.Message
 }}
-[pscustomobject]@{{ status = $status; message = $message }} |
+[pscustomobject]@{{
+    status = $status
+    message = $message
+    actual_row_type = $script:lastActualType
+}} |
     ConvertTo-Json -Compress
 """,
         encoding="utf-8-sig",
@@ -187,12 +194,17 @@ def test_rollback_relay_readback_rejects_query_failure_extra_and_mismatch(
         result = _run_rollback_relay_harness(tmp_path, scenario)
         assert result["status"] == "FAIL"
         assert message in result["message"]
+        if scenario != "query_error":
+            assert result["actual_row_type"] == (
+                "System.Collections.Specialized.OrderedDictionary"
+            )
 
 
 def test_rollback_relay_readback_accepts_only_exact_preimage(tmp_path: Path) -> None:
     assert _run_rollback_relay_harness(tmp_path, "exact") == {
         "status": "PASS",
         "message": "",
+        "actual_row_type": "System.Collections.Specialized.OrderedDictionary",
     }
 
 

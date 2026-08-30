@@ -36,16 +36,21 @@ $script:scenario = '{scenario}'
 $script:queryCalls = 0
 $script:stopCalls = 0
 $script:unregisterCalls = 0
+$script:lastRowType = ''
+$script:stopTaskPath = ''
+$script:unregisterTaskPath = ''
 
 function New-SyntheticOwnedTask([string]$TaskPath) {{
-    return [pscustomobject]@{{
+    $row = [ordered]@{{
         TaskName = 'legacy-label-task'
         TaskPath = $TaskPath
-        Actions = @([pscustomobject]@{{
+        Actions = @([ordered]@{{
             Execute = 'powershell.exe'
             Arguments = '-File C:\expected\current\relay.ps1'
         }})
     }}
+    $script:lastRowType = $row.GetType().FullName
+    return $row
 }}
 
 function Get-ScheduledTask {{
@@ -73,6 +78,7 @@ function Get-ScheduledTask {{
 function Stop-ScheduledTask {{
     param([string]$TaskName, [string]$TaskPath, [object]$ErrorAction)
     $script:stopCalls++
+    $script:stopTaskPath = $TaskPath
 }}
 
 function Unregister-ScheduledTask {{
@@ -83,6 +89,7 @@ function Unregister-ScheduledTask {{
         [object]$ErrorAction
     )
     $script:unregisterCalls++
+    $script:unregisterTaskPath = $TaskPath
 }}
 
 $status = 'PASS'
@@ -100,6 +107,9 @@ catch {{
     query_calls = $script:queryCalls
     stop_calls = $script:stopCalls
     unregister_calls = $script:unregisterCalls
+    row_type = $script:lastRowType
+    stop_task_path = $script:stopTaskPath
+    unregister_task_path = $script:unregisterTaskPath
 }} | ConvertTo-Json -Compress
 """,
         encoding="utf-8-sig",
@@ -308,6 +318,13 @@ def test_legacy_task_removal_fails_closed_without_host_mutation(
     assert message_fragment in result["message"]
     assert result["unregister_calls"] == expected_unregister_calls
     assert result["stop_calls"] == expected_unregister_calls
+    if scenario != "query_error":
+        assert result["row_type"] == (
+            "System.Collections.Specialized.OrderedDictionary"
+        )
+    if expected_unregister_calls:
+        assert result["stop_task_path"] == r"\Owned\"
+        assert result["unregister_task_path"] == r"\Owned\"
 
 
 def test_legacy_task_absence_is_the_only_clean_noop(tmp_path):
@@ -319,6 +336,9 @@ def test_legacy_task_absence_is_the_only_clean_noop(tmp_path):
         "query_calls": 1,
         "stop_calls": 0,
         "unregister_calls": 0,
+        "row_type": "",
+        "stop_task_path": "",
+        "unregister_task_path": "",
     }
 
 
