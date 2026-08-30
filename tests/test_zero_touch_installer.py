@@ -323,8 +323,8 @@ def test_legacy_task_removal_fails_closed_without_host_mutation(
             "System.Collections.Specialized.OrderedDictionary"
         )
     if expected_unregister_calls:
-        assert result["stop_task_path"] == r"\Owned\"
-        assert result["unregister_task_path"] == r"\Owned\"
+        assert result["stop_task_path"] == "\\Owned\\"
+        assert result["unregister_task_path"] == "\\Owned\\"
 
 
 def test_legacy_task_absence_is_the_only_clean_noop(tmp_path):
