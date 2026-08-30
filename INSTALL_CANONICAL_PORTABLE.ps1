@@ -564,10 +564,27 @@ exit 0
 }
 
 function Relays {
-    return @(Get-CimInstance Win32_Process | Where-Object {
+    return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
         [string]$_.CommandLine -like '*--label-match-user-relay*' -and
         [string]$_.ExecutablePath -match '(?i)(pythonw?\.exe|Label_Match\.exe)$'
     })
+}
+
+function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
+    $actualRelays = @(Relays)
+    if ($actualRelays.Count -ne $ExpectedRelays.Count) {
+        throw 'rollback relay process-count readback failed'
+    }
+    foreach ($expected in $ExpectedRelays) {
+        $matching = @($actualRelays | Where-Object {
+            (Same ([string]$_.ExecutablePath) ([string]$expected.ExecutablePath)) -and
+            [string]$_.CommandLine -ceq [string]$expected.CommandLine
+        })
+        if ($matching.Count -ne 1) {
+            throw 'rollback relay executable/command readback failed'
+        }
+    }
+    return $actualRelays
 }
 
 function Product([string]$Root, [string]$Mode) {
@@ -831,7 +848,8 @@ catch {
     $original = $_
     try {
         if ($mutated) {
-            try { Product $install '--remove-current-user-setup' } catch {}
+            Product $install '--remove-current-user-setup'
+            [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
             Restore $before
         }
         if ([bool]$stopBefore.exists) {
@@ -855,6 +873,7 @@ catch {
                 -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
             ) { throw 'runtime restore failed' }
         }
+        [void](Assert-RollbackRelayPreimage -ExpectedRelays $old)
         $check = Snapshot
         if (
             [bool]$check.exists -ne [bool]$before.exists -or
@@ -869,7 +888,23 @@ catch {
         if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
     }
     catch {
-        throw "AUTOSTART_ROLLBACK_FAILED: $($_.Exception.GetType().Name)"
+        $rollbackFailure = $_
+        try {
+            $audit.status = 'ROLLBACK_FAILED'
+            $audit.rollback.applied = $mutated
+            $audit.rollback.runtime_restored = $false
+            $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
+            $audit.failure_type = $original.Exception.GetType().Name
+            Save $auditPath $audit
+            if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        }
+        catch {
+            throw (
+                'ROLLBACK_AUDIT_PERSISTENCE_FAILED: ' + $_.Exception.GetType().Name +
+                '; rollback=' + $rollbackFailure.Exception.GetType().Name
+            )
+        }
+        throw "AUTOSTART_ROLLBACK_FAILED: $($rollbackFailure.Exception.GetType().Name)"
     }
     throw $original
 }

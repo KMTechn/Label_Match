@@ -19,6 +19,85 @@ def _source(path: Path = INSTALLER) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _run_rollback_relay_harness(tmp_path: Path, scenario: str) -> dict[str, object]:
+    source = _source()
+    start = source.index("function Relays")
+    end = source.index("function Product", start)
+    functions = source[start:end]
+    harness = tmp_path / f"rollback-relays-{scenario}.ps1"
+    harness.write_text(
+        rf"""
+function Same([string]$A, [string]$B) {{
+    return [StringComparer]::OrdinalIgnoreCase.Equals($A, $B)
+}}
+
+{functions}
+$script:scenario = '{scenario}'
+function Get-CimInstance {{
+    param([string]$ClassName, [object]$ErrorAction)
+    if ($script:scenario -eq 'query_error') {{
+        throw [InvalidOperationException]::new('synthetic CIM failure')
+    }}
+    $commandLine = if ($script:scenario -eq 'mismatch') {{
+        'pythonw.exe --label-match-user-relay --different'
+    }}
+    else {{
+        'pythonw.exe --label-match-user-relay --expected'
+    }}
+    return [pscustomobject]@{{
+        ExecutablePath = 'C:\runtime\pythonw.exe'
+        CommandLine = $commandLine
+    }}
+}}
+
+$expected = if ($script:scenario -eq 'extra') {{
+    @()
+}}
+else {{
+    @([pscustomobject]@{{
+        ExecutablePath = 'C:\runtime\pythonw.exe'
+        CommandLine = 'pythonw.exe --label-match-user-relay --expected'
+    }})
+}}
+$status = 'PASS'
+$message = ''
+try {{ [void](Assert-RollbackRelayPreimage -ExpectedRelays $expected) }}
+catch {{
+    $status = 'FAIL'
+    $message = [string]$_.Exception.Message
+}}
+[pscustomobject]@{{ status = $status; message = $message }} |
+    ConvertTo-Json -Compress
+""",
+        encoding="utf-8-sig",
+    )
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return json.loads(completed.stdout)
+
+
 def test_installer_exposes_inspection_equivalent_v2_interface() -> None:
     source = _source()
     parameter_block = source[
@@ -69,6 +148,52 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
     assert source.index("ReceiptSource $source $sourceManifest") < source.index(
         "InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
     )
+
+
+def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
+    source = _source()
+    rollback = source[source.index("catch {\n    $original = $_") :]
+
+    assert "try { Product $install '--remove-current-user-setup' } catch {}" not in rollback
+    product = rollback.index("Product $install '--remove-current-user-setup'")
+    zero_readback = rollback.index(
+        "Assert-RollbackRelayPreimage -ExpectedRelays @()"
+    )
+    restore = rollback.index("Restore $before")
+    exact_readback = rollback.index(
+        "Assert-RollbackRelayPreimage -ExpectedRelays $old"
+    )
+    restored_true = rollback.index("$audit.rollback.runtime_restored = $true")
+    assert product < zero_readback < restore < exact_readback < restored_true
+    for token in (
+        "$audit.status = 'ROLLBACK_FAILED'",
+        "$audit.rollback.runtime_restored = $false",
+        "$audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name",
+        "ROLLBACK_AUDIT_PERSISTENCE_FAILED",
+        "AUTOSTART_ROLLBACK_FAILED",
+    ):
+        assert token in rollback
+
+
+def test_rollback_relay_readback_rejects_query_failure_extra_and_mismatch(
+    tmp_path: Path,
+) -> None:
+    scenarios = {
+        "query_error": "synthetic CIM failure",
+        "extra": "process-count readback failed",
+        "mismatch": "executable/command readback failed",
+    }
+    for scenario, message in scenarios.items():
+        result = _run_rollback_relay_harness(tmp_path, scenario)
+        assert result["status"] == "FAIL"
+        assert message in result["message"]
+
+
+def test_rollback_relay_readback_accepts_only_exact_preimage(tmp_path: Path) -> None:
+    assert _run_rollback_relay_harness(tmp_path, "exact") == {
+        "status": "PASS",
+        "message": "",
+    }
 
 
 def test_code_helper_owns_privileged_placement_and_exact_rollback() -> None:
