@@ -1348,6 +1348,125 @@ def test_online_legacy_outbox_and_supersede_handoff_commit_together(tmp_path):
             )
 
 
+def test_validated_materialization_handoff_unblocks_fifo_atomically(tmp_path):
+    db_path, outbox, store = _store(tmp_path)
+    first = _capture(store, set_id="SET-VALIDATED-HANDOFF-1")
+    second = _capture(store, set_id="SET-VALIDATED-HANDOFF-2")
+    claim = _claim_and_plan(store, first.intent_id)
+    store.record_validation_step_valid(
+        claim,
+        step_id="label-package-source",
+        evidence=_source_evidence(set_id="SET-VALIDATED-HANDOFF-1"),
+        now="2026-08-29T01:00:01Z",
+    )
+    result = store.finish_validation(
+        claim,
+        step_id="label-operation-lease",
+        outcome="VALID",
+        reason_code="ORDERED_VALIDATION_VALID",
+        evidence={
+            "contract_version": "label-validation-evidence-v1",
+            "authority_epoch": 1,
+            "authority_scope_id": "SCOPE-LABEL-MEASURED",
+            "ledger_plane": "SHADOW_CANDIDATE",
+            "plane_epoch": 1,
+            "operation": "CREATE_PACKAGE",
+            "lease_id": "lease-materialized",
+            "fence": 1,
+            "snapshot_hash": "c" * 64,
+            "status": "PREFETCHED",
+            "physical_qr_sha256": hashlib.sha256(b"PHS2-MEASURED").hexdigest(),
+            "issued_at": "2026-08-29T01:00:00Z",
+            "expires_at": "2026-08-29T01:05:02Z",
+            "observed_at": "2026-08-29T01:00:02Z",
+        },
+        issued_at="2026-08-29T01:00:00Z",
+        expires_at="2026-08-29T01:05:02Z",
+        now="2026-08-29T01:00:02Z",
+    )
+    assert result.state == "VALIDATED"
+    assert store.next_validation_candidate(now="2026-08-29T01:00:03Z") is None
+
+    queued = outbox.enqueue(
+        _draft("SET-VALIDATED-HANDOFF-1"),
+        captured_intent_id=first.intent_id,
+    )
+
+    first_row = _row(db_path, first.intent_id)
+    assert first_row["state"] == "SUPERSEDED"
+    assert first_row["downstream_outbox_ref"] == (
+        f"package_command_outbox:{queued['idempotency_key']}"
+    )
+    assert store.next_validation_candidate(
+        now="2026-08-29T01:00:03Z"
+    ) == second.intent_id
+    with sqlite3.connect(db_path) as conn:
+        audit = conn.execute(
+            """SELECT from_state,to_state,transition_code,reason_code
+                 FROM deferred_intent_transition_audit
+                WHERE intent_id=? ORDER BY audit_seq DESC LIMIT 1""",
+            (first.intent_id,),
+        ).fetchone()
+        assert audit == (
+            "VALIDATED",
+            "SUPERSEDED",
+            "TS_SUPERSEDE",
+            "LEGACY_PATH_OWNS_SUBMISSION",
+        )
+
+
+def test_validated_materialization_can_be_requeued_after_restart(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store, set_id="SET-MATERIALIZER-RESTART")
+    claim = _claim_and_plan(store, captured.intent_id)
+    store.record_validation_step_valid(
+        claim,
+        step_id="label-package-source",
+        evidence=_source_evidence(set_id="SET-MATERIALIZER-RESTART"),
+        now="2026-08-29T01:00:01Z",
+    )
+    result = store.finish_validation(
+        claim,
+        step_id="label-operation-lease",
+        outcome="VALID",
+        reason_code="ORDERED_VALIDATION_VALID",
+        evidence={
+            "contract_version": "label-validation-evidence-v1",
+            "authority_epoch": 1,
+            "authority_scope_id": "SCOPE-LABEL-MEASURED",
+            "ledger_plane": "SHADOW_CANDIDATE",
+            "plane_epoch": 1,
+            "operation": "CREATE_PACKAGE",
+            "lease_id": "lease-restart",
+            "fence": 1,
+            "snapshot_hash": "c" * 64,
+            "status": "PREFETCHED",
+            "physical_qr_sha256": hashlib.sha256(b"PHS2-MEASURED").hexdigest(),
+            "issued_at": "2026-08-29T01:00:00Z",
+            "expires_at": "2026-08-29T01:05:02Z",
+            "observed_at": "2026-08-29T01:00:02Z",
+        },
+        issued_at="2026-08-29T01:00:00Z",
+        expires_at="2026-08-29T01:05:02Z",
+        now="2026-08-29T01:00:02Z",
+    )
+    assert result.state == "VALIDATED"
+
+    assert store.next_materialization_candidate() == captured.intent_id
+    store.requeue_validated_for_materialization(
+        captured.intent_id,
+        now="2026-08-29T01:00:03Z",
+    )
+
+    row = _row(db_path, captured.intent_id)
+    assert row["state"] == "RETRY_WAIT_VALIDATION"
+    assert row["last_reason_code"] == "MATERIALIZATION_REVALIDATION_REQUIRED"
+    assert row["validation_snapshot_hash"] is None
+    assert store.next_validation_candidate(
+        now="2026-08-29T01:00:03Z"
+    ) == captured.intent_id
+
+
 def test_missing_capture_handoff_rolls_back_new_business_outbox_row(tmp_path):
     db_path, outbox, _store_instance = _store(tmp_path)
     with pytest.raises(DeferredIntentCaptureError) as failure:
@@ -1509,7 +1628,11 @@ def _claim_and_plan(store, intent_id, *, worker="validator-1", now="2026-08-29T0
     return verified
 
 
-def _source_evidence():
+def _source_evidence(
+    *,
+    set_id="1787940225728641500",
+    scan="PHS2-MEASURED",
+):
     bundle_id = "TRANSFER-LABEL-MEASURED"
     return {
         "contract_version": "label-validation-evidence-v1",
@@ -1526,10 +1649,8 @@ def _source_evidence():
         "active_label_id": "LBL-MEASURED",
         "membership_hash": "d" * 64,
         "member_count": 4,
-        "physical_qr_sha256": hashlib.sha256(
-            b"PHS2-MEASURED"
-        ).hexdigest(),
-        "local_work_identity": "1787940225728641500",
+        "physical_qr_sha256": hashlib.sha256(scan.encode("utf-8")).hexdigest(),
+        "local_work_identity": set_id,
         "observed_at": "2026-08-29T01:00:01Z",
     }
 
@@ -2139,7 +2260,7 @@ def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
     def pending_lease(*_args, **_kwargs):
         calls.append("operation_lease")
         assert _kwargs["reuse_allowed"] is False
-        assert _kwargs["persist_artifact"] is False
+        assert _kwargs["persist_artifact"] is True
         assert str(_kwargs["issue_idempotency_key"]).startswith(
             "lease-issue-"
         )
@@ -2189,6 +2310,83 @@ def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
     assert "자동 재시도하지 않습니다" in notice.message
     with sqlite3.connect(db_path) as conn:
         assert _count(conn, "package_command_outbox") == 0
+
+
+def test_real_gui_validated_path_materializes_current_set(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "start_time": None,
+        "error_count": 0,
+        "has_error_or_reset": False,
+    }
+    app.deferred_intent_capture = store
+    app._deferred_intent_capture_error = ""
+    app.package_logistics_client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-LABEL-MEASURED")
+    )
+    app.run_tests = True
+    persistence = []
+    accepted = []
+    evidence = SimpleNamespace(
+        item_id="ITEM-LABEL-1",
+        active_label_id="LBL-MEASURED",
+        membership_hash="d" * 64,
+        member_count=4,
+    )
+    snapshot = {
+        "authority_scope_id": "SCOPE-LABEL-MEASURED",
+        "bundle_id": "TRANSFER-LABEL-MEASURED",
+        "entity_version": 7,
+        "authority_epoch": 1,
+        "ledger_plane": "SHADOW_CANDIDATE",
+        "plane_epoch": 1,
+    }
+    operation_lease = {
+        "lease_id": "lease-measured",
+        "fence": 1,
+        "snapshot_hash": "c" * 64,
+        "status": "PREFETCHED",
+        "issued_at": "2026-08-29T01:00:00Z",
+        "expires_at": "2099-08-29T01:05:00Z",
+    }
+
+    app._resolve_central_phs2_scan_overlay = lambda *_args: (
+        evidence,
+        snapshot,
+        None,
+        None,
+    )
+
+    def acquire(*_args, **kwargs):
+        persistence.append(kwargs["persist_artifact"])
+        return evidence, snapshot, None, operation_lease
+
+    def accept(*args, **kwargs):
+        accepted.append((args, kwargs))
+        app.current_set_info["raw"] = ["PHS2-MATERIALIZED"]
+        app.current_set_info["parsed"] = ["ITEM-LABEL-1"]
+        app.current_set_info["deferred_intent_id"] = kwargs[
+            "deferred_intent_id"
+        ]
+        return True
+
+    app._acquire_operation_lease = acquire
+    app._accept_resolved_central_phs2_scan = accept
+
+    assert app._begin_central_phs2_scan_overlay(
+        "PHS2-ONLINE-MATERIALIZE", "ITEM-LABEL-1"
+    ) is True
+    intent_id = app.current_set_info["deferred_intent_id"]
+    assert persistence == [True]
+    assert len(accepted) == 1
+    assert accepted[0][1]["deferred_intent_id"] == intent_id
+    assert accepted[0][1]["local_work_identity"]
+    assert _row(db_path, intent_id)["state"] == "VALIDATED"
+    assert app.current_set_info["raw"] == ["PHS2-MATERIALIZED"]
 
 
 def test_gui_local_integrity_invalid_calls_no_remote(tmp_path):

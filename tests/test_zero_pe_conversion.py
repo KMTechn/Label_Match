@@ -88,6 +88,7 @@ def test_portable_builder_requires_an_empty_native_application_closure() -> None
     assert portable_builder.ALLOWED_APP_NATIVE_NAMES == set()
     assert portable_builder.EXTERNAL_TOOL_MODULES == (
         "tools.label_auth_recovery_canary",
+        "tools.label_exact_clone_resolution_receipt",
         "tools.label_legacy_task_quiescence",
     )
     for forbidden in ("cffi", "cryptography", "pillow", "pygame", "pycparser"):
@@ -101,6 +102,7 @@ def test_portable_builder_derives_complete_tool_dependency_closure() -> None:
         "tools/direct_sync_relay_runner.py",
         "tools/install_logistics_runtime_profile.py",
         "tools/label_auth_recovery_canary.py",
+        "tools/label_exact_clone_resolution_receipt.py",
         "tools/label_legacy_task_quiescence.py",
         "tools/register_label_match_worker_pc.py",
     }

@@ -1030,6 +1030,46 @@ def create_resolution_receipt(
     }
 
 
+def create_install_resolution_receipt(
+    *,
+    preimage: Mapping[str, Any],
+    client_db_path: str | os.PathLike[str],
+    server_db_path: str | os.PathLike[str],
+    identity_path: str | os.PathLike[str],
+    credential_path: str | os.PathLike[str],
+    stop_marker_path: str | os.PathLike[str],
+    portable_root: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Create the exact v2 receipt accepted by the canonical installer.
+
+    The v1 resolution proof remains the authority-state verifier.  Installation
+    additionally requires the complete portable inventory so that a copied
+    packet can be checked byte-for-byte before onboarding releases the stop
+    marker.  This function changes no database and removes no marker.
+    """
+
+    receipt = create_resolution_receipt(
+        preimage=preimage,
+        client_db_path=client_db_path,
+        server_db_path=server_db_path,
+        identity_path=identity_path,
+        credential_path=credential_path,
+        stop_marker_path=stop_marker_path,
+        portable_root=portable_root,
+    )
+    receipt["schema_version"] = RECEIPT_SCHEMA_V2
+    receipt["portable_inventory"] = portable_inventory_binding(portable_root)
+    validate_resolution_receipt(
+        receipt,
+        client_db_path=client_db_path,
+        identity_path=identity_path,
+        credential_path=credential_path,
+        stop_marker_path=stop_marker_path,
+        portable_root=portable_root,
+    )
+    return receipt
+
+
 def _git_command(repo_root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -1691,6 +1731,7 @@ __all__ = [
     "ExactCloneResolutionError",
     "capture_conflict_preimage",
     "client_authorities",
+    "create_install_resolution_receipt",
     "create_portable_successor_receipt",
     "create_resolution_receipt",
     "file_sha256",

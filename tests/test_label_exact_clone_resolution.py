@@ -16,12 +16,16 @@ from label_exact_clone_resolution import (
     RECEIPT_SCHEMA_V2,
     ExactCloneResolutionError,
     capture_conflict_preimage,
+    create_install_resolution_receipt,
     create_portable_successor_receipt,
     create_resolution_receipt,
+    json_document_sha256,
     portable_inventory_binding,
     portable_rebind_changed_paths_sha256,
+    read_pinned_json,
     sqlite_logical_digest,
     validate_resolution_receipt,
+    write_new_json,
 )
 from label_guarded_runtime_reconcile import (
     GuardedRuntimeReconcileError,
@@ -559,6 +563,76 @@ def test_capture_then_receipt_requires_exact_two_sided_resolution(tmp_path):
     assert receipt["invariants"]["relay_batches_unchanged"] is True
     assert readback["selected_lease_id"] == NEW_LEASE
     assert readback["selected_fence"] == 2
+
+
+def test_install_receipt_generator_emits_exact_consumer_v2_contract(tmp_path):
+    paths = _paths(tmp_path)
+    preimage = capture_conflict_preimage(**paths)
+    _resolve_fixture(paths)
+
+    receipt = create_install_resolution_receipt(preimage=preimage, **paths)
+    readback = validate_resolution_receipt(
+        receipt,
+        client_db_path=paths["client_db_path"],
+        identity_path=paths["identity_path"],
+        credential_path=paths["credential_path"],
+        stop_marker_path=paths["stop_marker_path"],
+        portable_root=paths["portable_root"],
+    )
+
+    assert receipt["schema_version"] == RECEIPT_SCHEMA_V2
+    assert receipt["portable_inventory"] == portable_inventory_binding(
+        paths["portable_root"]
+    )
+    assert readback["status"] == "RESOLVED"
+    assert readback["portable_inventory_sha256"] == receipt["portable_inventory"][
+        "sha256"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("invalid_case", "message"),
+    [
+        ("missing-field", "resolution receipt fields differ"),
+        ("format-violation", "SHA-256"),
+        ("identity-mismatch", "producer_install_id differs"),
+        ("raw-sha-mismatch", "SHA-256 differs"),
+    ],
+)
+def test_install_receipt_consumer_rejects_invalid_contracts(
+    tmp_path, invalid_case, message
+):
+    paths = _paths(tmp_path)
+    preimage = capture_conflict_preimage(**paths)
+    _resolve_fixture(paths)
+    receipt = create_install_resolution_receipt(preimage=preimage, **paths)
+
+    if invalid_case == "raw-sha-mismatch":
+        output = write_new_json(tmp_path / "receipt.json", receipt)
+        assert json_document_sha256(receipt) != "0" * 64
+        with pytest.raises(ExactCloneResolutionError, match=message):
+            read_pinned_json(
+                output,
+                "0" * 64,
+                label="Label install conflict-resolution receipt",
+            )
+        return
+    if invalid_case == "missing-field":
+        receipt.pop("portable_inventory")
+    elif invalid_case == "format-violation":
+        receipt["portable_inventory"]["sha256"] = "Z" * 64
+    elif invalid_case == "identity-mismatch":
+        receipt["producer_install_id"] = "different-install"
+
+    with pytest.raises(ExactCloneResolutionError, match=message):
+        validate_resolution_receipt(
+            receipt,
+            client_db_path=paths["client_db_path"],
+            identity_path=paths["identity_path"],
+            credential_path=paths["credential_path"],
+            stop_marker_path=paths["stop_marker_path"],
+            portable_root=paths["portable_root"],
+        )
 
 
 def test_receipt_accepts_only_a_verified_bounded_successor_marker(tmp_path):

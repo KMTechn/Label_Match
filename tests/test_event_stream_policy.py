@@ -12,7 +12,6 @@ from event_stream_policy import (
 
 EXPECTED_CONTRACT_CANDIDATES = frozenset(
     {
-        "PHS_LABEL_ACTIVE_RESOLVED",
         "PHS_LABEL_EXCHANGE_RESULT",
         "PHS_RECONCILIATION_EXCHANGE_RESULT",
         "SEALED_TRANSFER_EXCHANGE_APPLIED",
@@ -23,6 +22,7 @@ EXPECTED_CONTRACT_CANDIDATES = frozenset(
 
 EXPECTED_LOCAL_ONLY = frozenset(
     {
+        "PHS_LABEL_ACTIVE_RESOLVED",
         "EXACT_RESCAN_STARTED",
         "EXACT_RESCAN_OK",
         "EXACT_RESCAN_COMPLETED",
@@ -76,6 +76,11 @@ def test_catalog_stream_does_not_admit_local_only_events():
 
     assert not (catalog_events & LOCAL_ONLY_EVENT_TYPES)
     assert not (catalog_events & CONTRACT_CANDIDATE_EVENT_TYPES)
+
+
+def test_materializer_success_event_is_preserved_locally_not_relayed():
+    assert "PHS_LABEL_ACTIVE_RESOLVED" in LOCAL_ONLY_EVENT_TYPES
+    assert "PHS_LABEL_ACTIVE_RESOLVED" not in CONTRACT_CANDIDATE_EVENT_TYPES
 
 
 def test_all_eight_reviewed_values_remain_present_in_label_source():

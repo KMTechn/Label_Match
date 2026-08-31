@@ -8659,13 +8659,13 @@ class Label_Match(tk.Tk):
                             "request_hash"
                         ],
                         reuse_allowed=False,
-                        persist_artifact=False,
+                        persist_artifact=True,
                     )
                 )
             lease_evidence = self._deferred_operation_lease_evidence(
                 physical_qr, operation_lease, snapshot
             )
-            return store.finish_validation(
+            result = store.finish_validation(
                 claim,
                 step_id=current_step,
                 outcome="VALID",
@@ -8674,6 +8674,17 @@ class Label_Match(tk.Tk):
                 expires_at=str((operation_lease or {}).get("expires_at") or "")
                 or None,
             )
+            self._deferred_label_materialization = {
+                "intent_id": result.intent_id,
+                "local_work_identity": str(
+                    payload.get("local_work_identity") or ""
+                ).strip(),
+                "evidence": evidence,
+                "snapshot": dict(snapshot or {}),
+                "sealed": dict(sealed) if isinstance(sealed, dict) else sealed,
+                "operation_lease": dict(operation_lease or {}),
+            }
+            return result
         except DeferredIntentCaptureError:
             raise
         except Exception as exc:
@@ -8690,6 +8701,43 @@ class Label_Match(tk.Tk):
                 evidence=classified["evidence"],
                 retry_after_seconds=classified["retry_after_seconds"],
             )
+
+    def _materialize_validated_deferred_label(self, result):
+        """Apply one freshly validated FIFO row to the durable current set once."""
+
+        if str(getattr(result, "state", "") or "") != "VALIDATED":
+            return False
+        intent_id = str(getattr(result, "intent_id", "") or "").strip()
+        pending = self.__dict__.get("_deferred_label_materialization")
+        if not isinstance(pending, dict) or str(
+            pending.get("intent_id") or ""
+        ).strip() != intent_id:
+            return False
+        current = self.__dict__.get("current_set_info") or {}
+        current_raw = list(current.get("raw") or [])
+        current_intent_id = str(current.get("deferred_intent_id") or "").strip()
+        if current_raw:
+            if current_intent_id == intent_id:
+                self.__dict__.pop("_deferred_label_materialization", None)
+                return True
+            raise PackageLogisticsError(
+                "current packaging set changed before deferred materialization"
+            )
+        accepted = self._accept_resolved_central_phs2_scan(
+            pending["evidence"],
+            pending["snapshot"],
+            pending["sealed"],
+            pending["operation_lease"],
+            deferred_intent_id=intent_id,
+            local_work_identity=pending["local_work_identity"],
+        )
+        if accepted is not True:
+            raise PackageLogisticsError(
+                "validated deferred Label intent was not materialized"
+            )
+        if self.__dict__.get("_deferred_label_materialization") is pending:
+            self.__dict__.pop("_deferred_label_materialization", None)
+        return True
 
     @staticmethod
     def _format_deferred_age(seconds):
@@ -8987,6 +9035,21 @@ class Label_Match(tk.Tk):
         try:
             intent_id = store.next_validation_candidate()
             if not intent_id:
+                next_materialization = getattr(
+                    store, "next_materialization_candidate", None
+                )
+                materialization_id = (
+                    next_materialization()
+                    if callable(next_materialization)
+                    else None
+                )
+                current = self.__dict__.get("current_set_info") or {}
+                if materialization_id and not list(current.get("raw") or []):
+                    store.requeue_validated_for_materialization(
+                        materialization_id
+                    )
+                    intent_id = store.next_validation_candidate()
+            if not intent_id:
                 self._refresh_deferred_observability()
                 self._schedule_deferred_validation_worker(5000)
                 return
@@ -9029,7 +9092,8 @@ class Label_Match(tk.Tk):
                 return
             self._deferred_validation_worker_in_progress = False
             if ok:
-                self._show_deferred_validation_result(value)
+                if not self._materialize_validated_deferred_label(value):
+                    self._show_deferred_validation_result(value)
             else:
                 print(
                     "Deferred validation worker technical diagnostic: "
@@ -9347,6 +9411,9 @@ class Label_Match(tk.Tk):
         snapshot,
         sealed,
         operation_lease=None,
+        *,
+        deferred_intent_id="",
+        local_work_identity="",
     ):
         if list(self.current_set_info.get("raw") or []):
             raise PackageLogisticsError(
@@ -9365,6 +9432,12 @@ class Label_Match(tk.Tk):
                 scanned_label_id = ""
 
         def prepare_durable_acceptance(current_set):
+            selected_work_identity = str(local_work_identity or "").strip()
+            selected_intent_id = str(deferred_intent_id or "").strip()
+            if selected_work_identity:
+                current_set["id"] = selected_work_identity
+            if selected_intent_id:
+                current_set["deferred_intent_id"] = selected_intent_id
             current_set.update(evidence.state_fields())
             current_set["central_inherit_all"] = True
             current_set["package_source_snapshot"] = dict(
@@ -9504,7 +9577,8 @@ class Label_Match(tk.Tk):
         if self.run_tests:
             try:
                 result = self._execute_deferred_label_validation(validation_work)
-                self._show_deferred_validation_result(result)
+                if not self._materialize_validated_deferred_label(result):
+                    self._show_deferred_validation_result(result)
                 self._render_operator_workbench()
                 return True
             except Exception as exc:
@@ -9564,7 +9638,8 @@ class Label_Match(tk.Tk):
                 self._show_deferred_validation_result(durable)
                 self._render_operator_workbench()
                 return
-            self._show_deferred_validation_result(value)
+            if not self._materialize_validated_deferred_label(value):
+                self._show_deferred_validation_result(value)
             self._render_operator_workbench()
 
         threading.Thread(

@@ -41,6 +41,7 @@ APP_DATA_DIRS = ("assets", "config")
 APP_DATA_FILES = ("contract.lock.json", "kmtech_zero_pe.vendor.json")
 EXTERNAL_TOOL_MODULES = (
     "tools.label_auth_recovery_canary",
+    "tools.label_exact_clone_resolution_receipt",
     "tools.label_legacy_task_quiescence",
 )
 UPDATE_KEY_CONFIG_FILENAME = "update-manifest-key-config.json"

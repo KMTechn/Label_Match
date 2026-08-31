@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from label_exact_clone_resolution import (  # noqa: E402
     ExactCloneResolutionError,
     capture_conflict_preimage,
+    create_install_resolution_receipt,
     create_portable_successor_receipt,
     create_resolution_receipt,
     json_document_sha256,
@@ -66,6 +67,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     _add_common(receipt)
     receipt.add_argument("--preimage", type=Path, required=True)
+    install_receipt = subparsers.add_parser(
+        "install-receipt",
+        help="emit the exact full-inventory v2 receipt consumed by installation",
+    )
+    _add_common(install_receipt)
+    install_receipt.add_argument("--preimage", type=Path, required=True)
+    install_receipt.add_argument("--preimage-sha256", required=True)
     rebind = subparsers.add_parser(
         "rebind",
         help="rebind a valid receipt to the exact reviewed portable successor",
@@ -123,6 +131,23 @@ def main(argv: Iterable[str] | None = None) -> int:
                 label="Label exact-clone conflict preimage",
             )
             payload = create_resolution_receipt(preimage=preimage, **inputs)
+        elif args.operation == "install-receipt":
+            portable_root = inputs["portable_root"].resolve(strict=False)
+            receipt_output = args.output.resolve(strict=False)
+            inputs["portable_root"] = portable_root
+            if receipt_output == portable_root or portable_root in receipt_output.parents:
+                raise ExactCloneResolutionError(
+                    "install receipt output must be outside the resolved portable root"
+                )
+            preimage = read_pinned_json(
+                args.preimage,
+                args.preimage_sha256,
+                label="Label exact-clone conflict preimage",
+            )
+            payload = create_install_resolution_receipt(
+                preimage=preimage,
+                **inputs,
+            )
         else:
             portable_root = inputs["portable_root"].resolve(strict=False)
             receipt_output = args.output.resolve(strict=False)
@@ -232,8 +257,25 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "rebind_evidence_sha256": evidence_sha256,
             }
         else:
-            output_path = write_new_json(args.output, payload)
+            output_path = write_new_json(
+                receipt_output if args.operation == "install-receipt" else args.output,
+                payload,
+            )
             output_sha256 = json_document_sha256(payload)
+            if args.operation == "install-receipt":
+                published_receipt = read_pinned_json(
+                    output_path,
+                    output_sha256,
+                    label="published Label install receipt",
+                )
+                validate_resolution_receipt(
+                    published_receipt,
+                    client_db_path=inputs["client_db_path"],
+                    identity_path=inputs["identity_path"],
+                    credential_path=inputs["credential_path"],
+                    stop_marker_path=inputs["stop_marker_path"],
+                    portable_root=portable_root,
+                )
         summary = {
             "status": payload["status"],
             "schema_version": payload["schema_version"],

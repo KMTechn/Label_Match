@@ -1,10 +1,10 @@
 """Durable capture and validation slice of ``kmtech.deferred-intent.v1.1``.
 
 The module installs the final v1 storage contract, captures encrypted Label
-operator intent before remote work, preserves exact v1 evidence, and runs only
-the fenced validation phase.
-It deliberately contains no materializer, promoter, submitter, or domain-table
-trigger.  The exact legacy-outbox handoff remains for already-owned work.
+operator intent before remote work, preserves exact v1 evidence, and runs the
+fenced validation phase.  A validated row can be replayed for the Label-owned
+current-set materializer and is terminally handed to the existing package
+outbox in the same SQLite transaction; no captured row is deleted.
 """
 
 from __future__ import annotations
@@ -861,7 +861,7 @@ WHEN NEW.state <> OLD.state AND NOT (
     (OLD.state='WAITING_DEPENDENCY' AND NEW.state IN ('VALIDATING','CANCELLED','SUPERSEDED','OPERATOR_REVIEW')) OR
     (OLD.state='BLOCKED_INVALID' AND NEW.state IN ('CANCELLED','SUPERSEDED','OPERATOR_REVIEW')) OR
     (OLD.state='RECONCILE_PENDING_VALIDATION' AND NEW.state IN ('VALIDATING','BLOCKED_INVALID','OPERATOR_REVIEW')) OR
-    (OLD.state='VALIDATED' AND NEW.state IN ('READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW')) OR
+    (OLD.state='VALIDATED' AND NEW.state IN ('READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW','SUPERSEDED')) OR
     (OLD.state='READY_TO_SUBMIT' AND NEW.state IN ('SUBMITTING','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW')) OR
     (OLD.state='SUBMITTING' AND NEW.state IN ('ACKED','RETRY_WAIT_SUBMIT','RECONCILE_PENDING_SUBMIT','OPERATOR_REVIEW')) OR
     (OLD.state='RETRY_WAIT_SUBMIT' AND NEW.state IN ('SUBMITTING','OPERATOR_REVIEW')) OR
@@ -976,7 +976,13 @@ def ensure_deferred_intent_schema_compatibility(conn: sqlite3.Connection) -> boo
         )
     existing_table_sql = str(table_sql_row[0] or "")
     existing_audit_sql = str(audit_sql_row[0] or "") if audit_sql_row else ""
+    trigger_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type='trigger' AND name='trg_deferred_intent_state_edge_guard'"
+    ).fetchone()
+    existing_trigger_sql = str(trigger_sql_row[0] or "") if trigger_sql_row else ""
     compact_table_sql = re.sub(r"\s+", "", existing_table_sql)
+    compact_trigger_sql = re.sub(r"\s+", "", existing_trigger_sql)
     coupled_envelopes = (
         "(contract_version='kmtech.deferred-intent.v1'AND"
         "payload_protection='WIN_DPAPI_CURRENT_USER_V1')OR"
@@ -988,6 +994,11 @@ def ensure_deferred_intent_schema_compatibility(conn: sqlite3.Connection) -> boo
         and PAYLOAD_PROTECTION in existing_table_sql
         and coupled_envelopes in compact_table_sql
         and "T1D_DUPLICATE_SUPPRESSED" in existing_audit_sql
+        and (
+            "OLD.state='VALIDATED'ANDNEW.stateIN("
+            "'READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW','SUPERSEDED')"
+        )
+        in compact_trigger_sql
     ):
         return False
     if conn.in_transaction:
@@ -1225,7 +1236,8 @@ def supersede_for_legacy_outbox(
                 "captured intent already references a different downstream outbox row",
             )
         return
-    if current["state"] != "CAPTURED_UNVERIFIED":
+    source_state = str(current["state"])
+    if source_state not in {"CAPTURED_UNVERIFIED", "VALIDATED"}:
         raise DeferredIntentCaptureError(
             "LEGACY_HANDOFF_STATE_INVALID",
             "captured intent is not eligible for the legacy outbox handoff",
@@ -1235,8 +1247,8 @@ def supersede_for_legacy_outbox(
               SET state='SUPERSEDED',downstream_outbox_ref=?,
                   last_reason_code='LEGACY_PATH_OWNS_SUBMISSION',
                   last_error_code=NULL,row_version=row_version+1,updated_at=?
-            WHERE intent_id=? AND state='CAPTURED_UNVERIFIED'""",
-        (exact_ref, occurred_at, current["intent_id"]),
+            WHERE intent_id=? AND state=?""",
+        (exact_ref, occurred_at, current["intent_id"], source_state),
     )
     if conn.execute("SELECT changes()").fetchone()[0] != 1:
         raise DeferredIntentCaptureError(
@@ -1246,7 +1258,7 @@ def supersede_for_legacy_outbox(
     append_transition_audit(
         conn,
         intent_id=current["intent_id"],
-        from_state="CAPTURED_UNVERIFIED",
+        from_state=source_state,
         to_state="SUPERSEDED",
         transition_code="TS_SUPERSEDE",
         reason_code="LEGACY_PATH_OWNS_SUBMISSION",
@@ -3701,6 +3713,107 @@ class DeferredIntentCaptureStore:
             )
         finally:
             conn.close()
+
+    def next_materialization_candidate(self) -> str | None:
+        """Return the oldest FIFO row whose validation awaits local materialization."""
+
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """SELECT candidate.intent_id
+                     FROM deferred_intents AS candidate
+                    WHERE candidate.state='VALIDATED'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM deferred_intents AS predecessor
+                           WHERE predecessor.app_id=candidate.app_id
+                             AND predecessor.producer_install_id=
+                                 candidate.producer_install_id
+                             AND predecessor.authority_scope_id=
+                                 candidate.authority_scope_id
+                             AND predecessor.partition_key=candidate.partition_key
+                             AND predecessor.partition_seq<candidate.partition_seq
+                             AND predecessor.state NOT IN (
+                                 'COMPLETED','CANCELLED','SUPERSEDED'
+                             )
+                      )
+                    ORDER BY candidate.created_at,candidate.intent_id LIMIT 1"""
+            ).fetchone()
+            return str(row[0]) if row else None
+        finally:
+            conn.close()
+
+    def requeue_validated_for_materialization(
+        self,
+        intent_id: str,
+        *,
+        now: str | None = None,
+    ) -> None:
+        """Replay a crash-stranded validation before materializing current state."""
+
+        selected_id = str(intent_id or "").strip()
+        observed_at = str(now or utc_now())
+        if not selected_id:
+            raise DeferredIntentCaptureError(
+                "MATERIALIZATION_INTENT_INVALID",
+                "the validated materialization intent identity is empty",
+            )
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT state FROM deferred_intents WHERE intent_id=?",
+                    (selected_id,),
+                ).fetchone()
+                if row is None:
+                    raise DeferredIntentCaptureError(
+                        "MATERIALIZATION_INTENT_MISSING",
+                        "the validated materialization intent is unavailable",
+                    )
+                if str(row["state"]) != "VALIDATED":
+                    raise DeferredIntentCaptureError(
+                        "MATERIALIZATION_STATE_INVALID",
+                        "the deferred intent is not awaiting materialization",
+                    )
+                cursor = conn.execute(
+                    """UPDATE deferred_intents
+                          SET state='RETRY_WAIT_VALIDATION',
+                              validation_snapshot_hash=NULL,
+                              validation_expires_at=NULL,
+                              next_attempt_at=NULL,
+                              claim_owner=NULL,claim_expires_at=NULL,
+                              last_reason_code='MATERIALIZATION_REVALIDATION_REQUIRED',
+                              last_error_code=NULL,row_version=row_version+1,
+                              updated_at=?
+                        WHERE intent_id=? AND state='VALIDATED'""",
+                    (observed_at, selected_id),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError(
+                        "MATERIALIZATION_STATE_RACE",
+                        "the validated intent changed before materialization replay",
+                    )
+                append_transition_audit(
+                    conn,
+                    intent_id=selected_id,
+                    from_state="VALIDATED",
+                    to_state="RETRY_WAIT_VALIDATION",
+                    transition_code="T13_REVALIDATE_BEFORE_COMMAND",
+                    reason_code="MATERIALIZATION_REVALIDATION_REQUIRED",
+                    occurred_at=observed_at,
+                )
+                conn.commit()
+            except DeferredIntentCaptureError:
+                conn.rollback()
+                raise
+            except sqlite3.Error as exc:
+                conn.rollback()
+                raise DeferredIntentCaptureError(
+                    "MATERIALIZATION_REQUEUE_FAILED",
+                    "the validated intent could not be safely requeued",
+                ) from exc
+            finally:
+                conn.close()
 
     def next_validation_candidate(self, *, now: str | None = None) -> str | None:
         """Return the oldest eligible or expired-claim FIFO validation row."""

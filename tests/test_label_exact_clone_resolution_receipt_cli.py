@@ -90,6 +90,85 @@ def _rebind_arguments(
     ]
 
 
+def _install_receipt_arguments(tmp_path: Path) -> list[str]:
+    return [
+        "install-receipt",
+        "--client-db",
+        str(tmp_path / "client.sqlite3"),
+        "--server-db",
+        str(tmp_path / "server.sqlite3"),
+        "--identity",
+        str(tmp_path / "producer-identity.json"),
+        "--credential",
+        str(tmp_path / "credential.json"),
+        "--stop-marker",
+        str(tmp_path / "stop-marker.json"),
+        "--portable-root",
+        str(tmp_path / "portable"),
+        "--output",
+        str(tmp_path / "install-receipt.json"),
+        "--preimage",
+        str(tmp_path / "preimage.json"),
+        "--preimage-sha256",
+        "1" * 64,
+    ]
+
+
+def test_install_receipt_cli_pins_preimage_and_postvalidates_published_receipt(
+    monkeypatch, tmp_path, capsys
+):
+    preimage = {"schema_version": "fixture-preimage"}
+    payload = {
+        "schema_version": "label-match-exact-clone-resolution-v2",
+        "status": "RESOLVED",
+    }
+    forwarded = {}
+    pinned_reads = []
+    validations = []
+    real_read = receipt_cli.read_pinned_json
+    write_new_json(tmp_path / "preimage.json", preimage)
+
+    def recording_read(path, expected_sha256, *, label):
+        pinned_reads.append((Path(path), expected_sha256, label))
+        if Path(path).name == "preimage.json":
+            return preimage
+        return real_read(path, expected_sha256, label=label)
+
+    def fake_create(**kwargs):
+        forwarded.update(kwargs)
+        return payload
+
+    def recording_validation(value, **kwargs):
+        validations.append((value, kwargs))
+        return {"status": "RESOLVED"}
+
+    monkeypatch.setattr(receipt_cli, "read_pinned_json", recording_read)
+    monkeypatch.setattr(receipt_cli, "create_install_resolution_receipt", fake_create)
+    monkeypatch.setattr(
+        receipt_cli,
+        "validate_resolution_receipt",
+        recording_validation,
+    )
+
+    assert receipt_cli.main(_install_receipt_arguments(tmp_path)) == 0
+    summary = json.loads(capsys.readouterr().out)
+    output = tmp_path / "install-receipt.json"
+    assert summary["schema_version"] == "label-match-exact-clone-resolution-v2"
+    assert summary["output_sha256"] == receipt_cli.json_document_sha256(payload)
+    assert output.is_file()
+    assert pinned_reads[0] == (
+        tmp_path / "preimage.json",
+        "1" * 64,
+        "Label exact-clone conflict preimage",
+    )
+    assert pinned_reads[-1][0] == output.resolve()
+    assert pinned_reads[-1][1] == summary["output_sha256"]
+    assert pinned_reads[-1][2] == "published Label install receipt"
+    assert forwarded["preimage"] == preimage
+    assert len(validations) == 1
+    assert validations[0][0] == payload
+
+
 def test_rebind_cli_publishes_lineage_evidence_before_receipt(
     monkeypatch, tmp_path
 ):
