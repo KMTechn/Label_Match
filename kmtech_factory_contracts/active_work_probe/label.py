@@ -72,6 +72,11 @@ _HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
 _B64URL_COORDINATE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _RUNTIME_ID_RE = re.compile(r"^runtime-[0-9a-f]{32}$")
 _RUNTIME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
+_SELF_ENROLLMENT_REGISTERED_STATUS = "SELF_ENROLLMENT_REGISTERED"
+_ADMIN_RECOVERY_REGISTERED_STATUS = "ADMIN_RECOVERY_REGISTERED"
+_ADMIN_RECOVERY_IDENTITY_ACTION = "REATTACHED"
+_ADMIN_RECOVERY_ENROLLMENT_STATUS = "recovered"
+_ADMIN_RECOVERY_REGISTRATION_ACTION = "admin_recovery"
 _DELTA_NAME_RE = re.compile(
     r"^bytes-(?P<start>[0-9]+)-(?P<end>[0-9]+)-sha256-(?P<prefix>[0-9a-f]{16})\.csv$"
 )
@@ -199,6 +204,22 @@ def _canonical_manifest_hash(manifest: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _registration_readback_is_authorized(report: Mapping[str, Any]) -> bool:
+    status = str(report.get("status") or "")
+    if status == _SELF_ENROLLMENT_REGISTERED_STATUS:
+        return True
+    return (
+        status == _ADMIN_RECOVERY_REGISTERED_STATUS
+        and str(report.get("identity_action") or "")
+        == _ADMIN_RECOVERY_IDENTITY_ACTION
+        and str(report.get("enrollment_status") or "")
+        == _ADMIN_RECOVERY_ENROLLMENT_STATUS
+        and str(report.get("registration_action") or "")
+        == _ADMIN_RECOVERY_REGISTRATION_ACTION
+        and report.get("admin_recovery_verified") is True
+    )
+
+
 def _validate_producer_registration(
     session: ObservationSession,
     runtime_profile: Mapping[str, Any],
@@ -276,7 +297,7 @@ def _validate_producer_registration(
         raise ProbeError("REGISTRATION_REPORT_INVALID", "registration report is not an object")
     if (
         report.get("report_version") != report_version
-        or report.get("status") != "SELF_ENROLLMENT_REGISTERED"
+        or not _registration_readback_is_authorized(report)
         or report.get("server_registration_verified") is not True
         or report.get("secret_bootstrap_verified") is not True
         or any(report.get(key) is not True for key in required_report_flags)
