@@ -1,4 +1,11 @@
-# 포장실 사용 설명서 OUTLINE 게시자 노트
+# HISTORICAL — 현장 사용 금지
+
+현장 작업자 정본: [LABEL_MATCH_WORKER_GUIDE.md](LABEL_MATCH_WORKER_GUIDE.md)
+
+이 파일은 과거 캡처·게시 계약을 보존한 관리자 이력 자료입니다. 현재 작업자
+안내나 현행 게시 패킷으로 사용하지 마세요.
+
+# 포장실 사용 설명서 OUTLINE 게시자 노트 (이력 보존본)
 
 대상 문서: `OUTLINE_LABEL_MATCH_USER_MANUAL_20260626.md`
 

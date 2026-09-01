@@ -1,3 +1,6 @@
+HISTORICAL — 현장 사용 금지
+현장 작업자 정본: docs/LABEL_MATCH_WORKER_GUIDE.md
+이 README의 validation_rules.csv 설명은 이력 자료이며 현재 작업·교육 기준이 아닙니다.
 
 ============================================================
 **바코드 검증 시스템 - 규칙 설정 안내 (README.txt)**
