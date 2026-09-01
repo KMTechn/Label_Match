@@ -588,20 +588,121 @@ def test_program_close_bypasses_f5_pending_gate_for_lane_drain():
     _close_lane(app, root)
 
 
+def test_confirmed_close_blocks_f5_and_deferred_admission_while_active_drains():
+    admission_results = {}
+
+    for admission_kind in ("f5", "deferred"):
+        app, root = _app_with_lane()
+        active_gate = threading.Event()
+        entry_states = []
+        settings_states = []
+        deferred_timer_id = root.after(60000, lambda: None)
+        app.after = root.after
+        app.after_cancel = root.after_cancel
+        app.initialized_successfully = True
+        app.run_tests = True
+        app.is_blinking = True
+        app.entry = SimpleNamespace(
+            configure=lambda **kwargs: entry_states.append(kwargs["state"])
+        )
+        app.settings_button = SimpleNamespace(
+            configure=lambda **kwargs: settings_states.append(kwargs["state"])
+        )
+        app._deferred_validation_after_id = deferred_timer_id
+        app._has_background_work = lambda: False
+        app._arm_app_close_lane_drain_watchdog = lambda _lane: None
+
+        assert app.ui_lane.submit(
+            LaneTask(
+                "active-at-close-confirmation",
+                0,
+                lambda: active_gate.wait(timeout=2.0),
+                lambda _value: None,
+                pytest.fail,
+            )
+        ).accepted
+
+        label_module.Label_Match.on_closing(app)
+        assert app._app_close_in_progress is True
+        assert entry_states == ["disabled"]
+        assert settings_states == ["disabled"]
+        assert app._deferred_validation_after_id is None
+        assert deferred_timer_id in root.cancelled
+        current_before_blocked_f1 = dict(app.current_set_info)
+        assert app._reset_current_set(full_reset=True) is False
+        assert app.current_set_info == current_before_blocked_f1
+        assert app.open_settings_window() is None
+        assert app._save_settings_and_close(object(), "new-worker") is None
+
+        active_gate.set()
+        root.run_until(lambda: not app.ui_lane.is_busy())
+        app.on_closing = lambda _confirmed=False: None
+
+        if admission_kind == "f5":
+            app._phs_reconciliation_lookup_pending = False
+            app._phs_reconciliation_scope = lambda: "PACKAGING"
+            app.phs_label_exchange_coordinator = SimpleNamespace(
+                resolve_reconciliation_actions=lambda **_kwargs: {"actions": []}
+            )
+            app._show_phs_replacement_required_notice_once = lambda _value: None
+            app._show_phs_reconciliation_action_window = (
+                lambda _value, **_kwargs: None
+            )
+            admission_results[admission_kind] = (
+                app._begin_phs_reconciliation_lookup("PHS2-DURING-CLOSE")
+            )
+        else:
+            app.run_tests = False
+            app.deferred_intent_capture = object()
+            app._deferred_observability_read_in_progress = False
+            app._deferred_validation_lane_trigger = CoalescingTrigger(
+                app.ui_lane,
+                lambda: LaneTask(
+                    "deferred-tick-during-close",
+                    0,
+                    lambda: None,
+                    lambda _value: None,
+                    pytest.fail,
+                ),
+                submit_task=app._submit_deferred_validation_lane_task,
+            )
+            app._run_deferred_validation_worker_once()
+            stale_tick_admission = (
+                app._deferred_validation_lane_trigger.trigger()
+            )
+            assert stale_tick_admission.reason == "closing"
+            admission_results[admission_kind] = bool(
+                stale_tick_admission.accepted or app.ui_lane.is_busy()
+            )
+
+        app._app_close_in_progress = False
+        if app.ui_lane.is_busy():
+            root.run_until(lambda: not app.ui_lane.is_busy())
+        _close_lane(app, root)
+
+    assert admission_results == {"f5": False, "deferred": False}
+
+
 def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
     app, root = _app_with_lane()
     entry_states = []
+    settings_states = []
     outbox_restarts = []
     cancelled_ui_jobs = []
+    deferred_timer_transitions = []
 
     class CloseFailingDataManager:
+        def __init__(self):
+            self._close_requested = False
+            self.log_thread = SimpleNamespace(is_alive=lambda: False)
+
         @staticmethod
         def log_event(_event, _details):
             return None
 
-        @staticmethod
-        def close(timeout=None):
+        def close(self, timeout=None):
             assert timeout == label_module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
+            self._close_requested = True
             raise RuntimeError("forced close failure")
 
     app.initialized_successfully = True
@@ -610,13 +711,29 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
     app.entry = SimpleNamespace(
         configure=lambda **kwargs: entry_states.append(kwargs["state"])
     )
+    app.settings_button = SimpleNamespace(
+        configure=lambda **kwargs: settings_states.append(kwargs["state"])
+    )
     app.data_manager = CloseFailingDataManager()
     app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
     app._has_background_work = lambda: False
     app._cancel_pending_ui_jobs = lambda: cancelled_ui_jobs.append(True)
-    app._replace_closed_data_manager_after_close_failure = (
-        lambda _manager: None
+    app._deferred_validation_after_id = "deferred-before-close"
+    app.after_cancel = lambda after_id: deferred_timer_transitions.append(
+        ("cancel", after_id)
     )
+    app._schedule_deferred_validation_worker = (
+        lambda delay_ms=1000: deferred_timer_transitions.append(
+            ("rearm", delay_ms)
+        )
+    )
+    replacement_manager = SimpleNamespace()
+
+    def replace_closed_manager(_manager):
+        app.data_manager = replacement_manager
+        return True
+
+    app._replace_closed_data_manager_after_close_failure = replace_closed_manager
     app._start_package_outbox_drain = (
         lambda: outbox_restarts.append(True)
     )
@@ -652,9 +769,191 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
 
     assert lane_state_after_failure is LaneState.IDLE
     assert admitted_after_resume is True
-    assert entry_states == ["disabled", "disabled", "normal"]
+    assert app.data_manager is replacement_manager
+    assert entry_states == ["disabled", "normal"]
+    assert settings_states == ["disabled", "normal"]
     assert outbox_restarts == [True]
     assert cancelled_ui_jobs == []
+    assert deferred_timer_transitions == [
+        ("cancel", "deferred-before-close"),
+        ("rearm", 1000),
+    ]
+
+
+def test_close_retries_manager_recovery_before_rolling_back(monkeypatch):
+    app, root = _app_with_lane()
+    entry_states = []
+    settings_states = []
+    scheduled_recovery = []
+    deferred_transitions = []
+    replacement_attempts = []
+
+    class TemporarilyUnrecoverableManager:
+        def __init__(self):
+            self._close_requested = False
+
+        @staticmethod
+        def log_event(_event, _details):
+            return None
+
+        def close(self, timeout=None):
+            assert timeout == label_module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
+            self._close_requested = True
+            raise RuntimeError("forced writer close failure")
+
+    failed_manager = TemporarilyUnrecoverableManager()
+    replacement_manager = SimpleNamespace()
+    app.initialized_successfully = True
+    app.run_tests = False
+    app.is_blinking = True
+    app.entry = SimpleNamespace(
+        configure=lambda **kwargs: entry_states.append(kwargs["state"])
+    )
+    app.settings_button = SimpleNamespace(
+        configure=lambda **kwargs: settings_states.append(kwargs["state"])
+    )
+    app.data_manager = failed_manager
+    app._deferred_validation_after_id = "deferred-before-close"
+    app.after_cancel = lambda after_id: deferred_transitions.append(
+        ("cancel", after_id)
+    )
+    app.after = lambda delay, callback: (
+        scheduled_recovery.append((delay, callback)) or "close-recovery"
+    )
+    app._schedule_deferred_validation_worker = (
+        lambda delay_ms=1000: deferred_transitions.append(
+            ("rearm", delay_ms)
+        )
+    )
+    app._has_background_work = lambda: False
+    app._start_package_outbox_drain = lambda: None
+
+    def replace_manager(_manager):
+        replacement_attempts.append(True)
+        if len(replacement_attempts) == 1:
+            return False
+        app.data_manager = replacement_manager
+        return True
+
+    app._replace_closed_data_manager_after_close_failure = replace_manager
+    monkeypatch.setattr(
+        label_module.messagebox,
+        "askokcancel",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        label_module.messagebox,
+        "showerror",
+        lambda *_args, **_kwargs: None,
+    )
+
+    app.on_closing()
+
+    assert app._app_close_in_progress is True
+    assert app.ui_lane.state is LaneState.IDLE
+    assert len(scheduled_recovery) == 1
+    assert scheduled_recovery[0][0] == 1000
+
+    scheduled_recovery.pop()[1]()
+
+    assert app._app_close_in_progress is False
+    assert app.data_manager is replacement_manager
+    assert app.ui_lane.state is LaneState.IDLE
+    assert entry_states == ["disabled", "normal"]
+    assert settings_states == ["disabled", "normal"]
+    assert deferred_transitions == [
+        ("cancel", "deferred-before-close"),
+        ("rearm", 1000),
+    ]
+    _close_lane(app, root)
+
+
+def test_close_drain_deadline_breaks_lane_and_shows_cleanup_delay():
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    scheduled = []
+    broken = []
+    delays = []
+    app._app_close_in_progress = True
+    app._app_close_drain_watchdog_after_id = None
+    app.after = lambda delay, callback: (
+        scheduled.append((delay, callback)) or "drain-watchdog"
+    )
+    app._show_app_close_cleanup_delay = lambda: delays.append(True)
+    lane = SimpleNamespace(
+        break_for_shutdown_timeout=lambda error: broken.append(error) or True
+    )
+
+    app._arm_app_close_lane_drain_watchdog(lane)
+
+    assert scheduled[0][0] == int(
+        label_module.LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS * 1000
+    )
+    scheduled[0][1]()
+    assert len(broken) == 1
+    assert "app-close drain deadline" in str(broken[0])
+    assert delays == [True]
+
+
+def test_destroy_closes_domain_workers_before_lane_and_root(monkeypatch):
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    sequence = []
+    lane_thread = SimpleNamespace(is_alive=lambda: True, name="lane-worker")
+    lane = SimpleNamespace(
+        state=LaneState.IDLE,
+        is_busy=lambda: False,
+        worker_thread=lane_thread,
+    )
+
+    def close_lane():
+        sequence.append("close-lane")
+        lane.state = LaneState.CLOSED
+
+    lane.close_idle = close_lane
+    app.ui_lane = lane
+    app._cancel_app_close_lane_drain_watchdog = lambda: None
+    app._stop_error_siren = lambda: None
+    app._cancel_pending_ui_jobs = lambda: sequence.append("cancel-jobs")
+
+    def join_domain_threads(*, exclude_threads=()):
+        assert lane_thread in exclude_threads
+        sequence.append("join-domain")
+        return ()
+
+    app._join_tk_shutdown_threads = join_domain_threads
+    app._close_data_manager_before_tk_destroy = (
+        lambda: sequence.append("close-data-manager") or True
+    )
+    monkeypatch.setattr(
+        label_module.tk.Tk,
+        "destroy",
+        lambda _self: sequence.append("destroy-root"),
+    )
+
+    label_module.Label_Match.destroy(app)
+
+    assert sequence == [
+        "cancel-jobs",
+        "join-domain",
+        "close-data-manager",
+        "close-lane",
+        "destroy-root",
+    ]
+    assert app._tk_destroy_complete is True
+
+
+def test_pending_job_cleanup_preserves_lane_pump_until_final_close():
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    cancelled = []
+    app.ui_lane = SimpleNamespace(_after_id="lane-pump")
+    app.tk = SimpleNamespace(
+        call=lambda *_args: ("lane-pump", "ordinary-app-job"),
+        splitlist=lambda value: tuple(value),
+    )
+    app.after_cancel = lambda after_id: cancelled.append(str(after_id))
+
+    app._cancel_pending_ui_jobs()
+
+    assert cancelled == ["ordinary-app-job"]
 
 
 def test_f5_popup_busy_rejection_preserves_popup_and_raw(monkeypatch):

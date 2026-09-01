@@ -411,6 +411,19 @@ class TkSerialUiLane:
         if schedule_now:
             self._root.after(0, callback)
 
+    def break_for_shutdown_timeout(self, error: BaseException) -> bool:
+        """Keep Tk alive but make a terminally overdue drain explicit."""
+
+        self._assert_owner()
+        with self._state_lock:
+            if self._active is None or self._state in {
+                LaneState.BROKEN,
+                LaneState.CLOSED,
+            }:
+                return False
+        self._break_lane(error)
+        return True
+
     def _worker_main(self) -> None:
         self._worker_thread_id = threading.get_ident()
         self._worker_started.set()
@@ -722,10 +735,12 @@ class CoalescingTrigger:
         lane: TkSerialUiLane,
         task_factory: Optional[Callable[[], LaneTask]] = None,
         on_admitted: Optional[Callable[[Admission], None]] = None,
+        submit_task: Optional[Callable[[LaneTask], Admission]] = None,
     ) -> None:
         self._lane = lane
         self._task_factory = task_factory
         self._on_admitted = on_admitted
+        self._submit_task = submit_task or lane.submit
         self._running = False
         self._pending = False
         self._idle_wait_registered = False
@@ -780,7 +795,7 @@ class CoalescingTrigger:
             if self._pending:
                 self._lane._root.after(0, self._resume_when_idle)
 
-        admission = self._lane.submit(replace(task, on_idle=on_idle))
+        admission = self._submit_task(replace(task, on_idle=on_idle))
         self._running = admission.accepted
         if admission.accepted and self._on_admitted is not None:
             self._on_admitted(admission)

@@ -247,6 +247,7 @@ from ui.style_tokens import build_style_tokens
 from ui.workflow_snapshot_adapter import adapt_workflow_snapshot
 from ui.workflow_view_state import WorkflowNotice, operator_safe_message, present_workflow
 from tk_serial_ui_lane import (
+    Admission,
     CoalescingTrigger,
     Failure,
     LaneState,
@@ -5048,6 +5049,10 @@ class Label_Match(tk.Tk):
         self._ui_lane_generation = 0
         self._ui_lane_busy_label = ""
         self._ui_lane_busy_task = ""
+        self._app_close_in_progress = False
+        self._app_close_resume_deferred_validation = False
+        self._app_close_drain_watchdog_after_id = None
+        self._app_close_recovery_after_id = None
         self._capture_startup_geometry = capture_startup_geometry
         self._capture_startup_dpi = capture_startup_dpi
         self._capture_dpi_awareness = capture_dpi_awareness
@@ -5318,6 +5323,7 @@ class Label_Match(tk.Tk):
             self.ui_lane,
             self._build_deferred_validation_lane_task,
             on_admitted=self._on_deferred_validation_lane_admitted,
+            submit_task=self._submit_deferred_validation_lane_task,
         )
         _label_match_startup_trace("app_init_complete")
 
@@ -5438,6 +5444,10 @@ class Label_Match(tk.Tk):
         lane = self.__dict__.get("ui_lane")
         if lane is None:
             return None
+        if self.__dict__.get("_app_close_in_progress", False):
+            admission = Admission(False, reason="closing")
+            self._show_ui_lane_rejection(admission.reason)
+            return admission
         task_name = str(name or "label-operation")
         task_generation = int(
             self.__dict__.get("_ui_lane_generation", 0)
@@ -5485,6 +5495,20 @@ class Label_Match(tk.Tk):
         else:
             self._show_ui_lane_rejection(admission.reason)
         return admission
+
+    def _submit_deferred_validation_lane_task(self, task):
+        return self._submit_ui_lane_task(
+            name=task.name,
+            busy_text="저장된 현품표 · 중앙 확인 중",
+            work=task.work,
+            finish=task.finish,
+            fail=task.fail,
+            generation=task.generation,
+            on_idle=task.on_idle,
+            settle=task.settle,
+            failure_adapter=task.failure_adapter,
+            shutdown_policy=task.shutdown_policy,
+        )
 
     def _start_package_outbox_drain(self):
         package_processor = self.__dict__.get("package_outbox_processor")
@@ -7177,12 +7201,15 @@ class Label_Match(tk.Tk):
             unique.append(thread)
         return unique
 
-    def _join_tk_shutdown_threads(self):
+    def _join_tk_shutdown_threads(self, *, exclude_threads=()):
         deadline = (
             time.monotonic() + LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS
         )
         remaining_names = []
+        excluded = {id(thread) for thread in exclude_threads if thread is not None}
         for thread in self._tracked_tk_shutdown_threads():
+            if id(thread) in excluded:
+                continue
             if not thread.is_alive():
                 continue
             remaining = max(0.0, deadline - time.monotonic())
@@ -7196,6 +7223,52 @@ class Label_Match(tk.Tk):
                 + ", ".join(sorted(set(remaining_names)))
             )
         return tuple(remaining_names)
+
+    def _show_app_close_cleanup_delay(self):
+        if "big_display_label" in self.__dict__:
+            self.update_big_display("종료 정리 지연", "red")
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            try:
+                status_label.config(
+                    text=(
+                        "종료 정리 지연 · 백그라운드 작업 정리를 "
+                        "기다리고 있습니다."
+                    ),
+                    style="Error.TLabel",
+                )
+            except (TclError, AttributeError):
+                pass
+
+    def _cancel_app_close_lane_drain_watchdog(self):
+        after_id = self.__dict__.get(
+            "_app_close_drain_watchdog_after_id"
+        )
+        if after_id is None:
+            return
+        self._app_close_drain_watchdog_after_id = None
+        try:
+            self.after_cancel(after_id)
+        except (TclError, RuntimeError, AttributeError):
+            pass
+
+    def _arm_app_close_lane_drain_watchdog(self, ui_lane):
+        if self.__dict__.get("_app_close_drain_watchdog_after_id") is not None:
+            return
+
+        def expire_overdue_drain():
+            self._app_close_drain_watchdog_after_id = None
+            if not self.__dict__.get("_app_close_in_progress", False):
+                return
+            if ui_lane.break_for_shutdown_timeout(
+                RuntimeError("UI lane exceeded the app-close drain deadline")
+            ):
+                self._show_app_close_cleanup_delay()
+
+        self._app_close_drain_watchdog_after_id = self.after(
+            int(LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS * 1000),
+            expire_overdue_drain,
+        )
 
     def _close_data_manager_before_tk_destroy(self):
         manager = self.__dict__.get("data_manager")
@@ -7225,21 +7298,16 @@ class Label_Match(tk.Tk):
         if state.get("_tk_destroy_in_progress", False):
             return None
         ui_lane = state.get("ui_lane")
+        state["_app_close_in_progress"] = True
         if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
             if ui_lane.is_busy():
                 if not state.get("_tk_destroy_waiting_for_ui_lane", False):
                     state["_tk_destroy_waiting_for_ui_lane"] = True
                     self._show_ui_lane_rejection("closing")
-                    ui_lane.drain_then(self.destroy)
+                    self._arm_app_close_lane_drain_watchdog(ui_lane)
+                    ui_lane.defer_until_idle(self.destroy)
                 return None
-            try:
-                ui_lane.close_idle()
-            except Exception as exc:
-                print(
-                    "Tk 종료 중 UI lane 정리 오류: "
-                    f"{getattr(exc, 'code', exc.__class__.__name__)}"
-                )
-                return None
+        self._cancel_app_close_lane_drain_watchdog()
         state["_tk_destroy_waiting_for_ui_lane"] = False
         state["_tk_destroy_in_progress"] = True
         state["_tk_shutdown_requested"] = True
@@ -7247,11 +7315,15 @@ class Label_Match(tk.Tk):
         destroy_completed = False
         try:
             self._cancel_pending_ui_jobs()
-            remaining_threads = self._join_tk_shutdown_threads()
+            lane_thread = getattr(ui_lane, "worker_thread", None)
+            remaining_threads = self._join_tk_shutdown_threads(
+                exclude_threads=(lane_thread,)
+            )
             if remaining_threads:
                 # Tk must outlive every worker that ever held a reference to
                 # this root.  Keep the interpreter intact and re-check from
                 # the Tk thread instead of tearing down Tcl under a live worker.
+                self._show_app_close_cleanup_delay()
                 try:
                     state["_tk_destroy_retry_after_id"] = self.after(
                         100, self.destroy
@@ -7259,7 +7331,32 @@ class Label_Match(tk.Tk):
                 except (TclError, RuntimeError):
                     state["_tk_destroy_retry_after_id"] = None
                 return None
-            self._close_data_manager_before_tk_destroy()
+            if not self._close_data_manager_before_tk_destroy():
+                self._show_app_close_cleanup_delay()
+                try:
+                    state["_tk_destroy_retry_after_id"] = self.after(
+                        100, self.destroy
+                    )
+                except (TclError, RuntimeError):
+                    state["_tk_destroy_retry_after_id"] = None
+                return None
+            if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
+                try:
+                    ui_lane.close_idle()
+                except Exception as exc:
+                    print(
+                        "Tk 종료 중 UI lane 정리 오류: "
+                        f"{getattr(exc, 'code', exc.__class__.__name__)}"
+                    )
+                if ui_lane.state is not LaneState.CLOSED:
+                    self._show_app_close_cleanup_delay()
+                    try:
+                        state["_tk_destroy_retry_after_id"] = self.after(
+                            100, self.destroy
+                        )
+                    except (TclError, RuntimeError):
+                        state["_tk_destroy_retry_after_id"] = None
+                    return None
             audio_result_queue = state.get("_audio_init_result_queue")
             if audio_result_queue is not None:
                 while True:
@@ -7287,7 +7384,53 @@ class Label_Match(tk.Tk):
                 state["_tk_destroy_complete"] = True
             state["_tk_destroy_in_progress"] = False
 
+    def _suspend_deferred_validation_for_close(self):
+        after_id = self.__dict__.get("_deferred_validation_after_id")
+        trigger = self.__dict__.get("_deferred_validation_lane_trigger")
+        should_resume = bool(
+            after_id is not None
+            or self.__dict__.get(
+                "_deferred_validation_worker_in_progress", False
+            )
+            or int(getattr(trigger, "pending_count", 0) or 0)
+        )
+        self._app_close_resume_deferred_validation = bool(
+            self.__dict__.get(
+                "_app_close_resume_deferred_validation", False
+            )
+            or should_resume
+        )
+        if after_id is None:
+            return
+        try:
+            self.after_cancel(after_id)
+        except (TclError, RuntimeError, AttributeError):
+            pass
+        self._deferred_validation_after_id = None
+
+    def _resume_deferred_validation_after_close_cancel(self):
+        should_resume = bool(
+            self.__dict__.pop(
+                "_app_close_resume_deferred_validation", False
+            )
+        )
+        if should_resume:
+            self._schedule_deferred_validation_worker(1000)
+
+    def _schedule_app_close_recovery_retry(self):
+        if self.__dict__.get("_app_close_recovery_after_id") is not None:
+            return
+
+        def retry():
+            self._app_close_recovery_after_id = None
+            if self.__dict__.get("_app_close_in_progress", False):
+                self.on_closing(_confirmed=True)
+
+        self._app_close_recovery_after_id = self.after(1000, retry)
+
     def on_closing(self, _confirmed=False):
+        if _confirmed:
+            self._app_close_recovery_after_id = None
         if (
             self.__dict__.get("_app_close_in_progress", False)
             and not _confirmed
@@ -7313,9 +7456,14 @@ class Label_Match(tk.Tk):
 
         if do_close:
             ui_lane = self.__dict__.get("ui_lane")
-            if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
+            entry = self.__dict__.get("entry")
+            if not self.__dict__.get("_app_close_in_progress", False):
                 self._app_close_in_progress = True
-                entry = self.__dict__.get("entry")
+                self._app_close_previous_is_blinking = bool(
+                    self.__dict__.get("is_blinking", False)
+                )
+                self.is_blinking = False
+                self._suspend_deferred_validation_for_close()
                 if entry is not None:
                     try:
                         configure_entry = getattr(
@@ -7326,40 +7474,85 @@ class Label_Match(tk.Tk):
                         configure_entry(state="disabled")
                     except Exception:
                         pass
-                if ui_lane.is_busy():
-                    self._show_ui_lane_rejection("closing")
-                    ui_lane.defer_until_idle(
-                        lambda: self.on_closing(_confirmed=True)
-                    )
-                    return
-            self._app_close_in_progress = True
-            self.is_blinking = False
-            entry = self.__dict__.get("entry")
-            if entry is not None:
-                try:
-                    configure_entry = getattr(entry, "configure", None) or getattr(entry, "config")
-                    configure_entry(state="disabled")
-                except Exception:
-                    pass
+                settings_button = self.__dict__.get("settings_button")
+                if settings_button is not None:
+                    try:
+                        settings_button.configure(state="disabled")
+                    except (TclError, AttributeError):
+                        pass
+                if self.__dict__.get("operator_workbench_ready", False):
+                    self._render_operator_workbench()
+                self._show_ui_lane_rejection("closing")
+            if (
+                ui_lane is not None
+                and ui_lane.state is not LaneState.CLOSED
+                and ui_lane.is_busy()
+            ):
+                self._arm_app_close_lane_drain_watchdog(ui_lane)
+                ui_lane.defer_until_idle(
+                    lambda: self.on_closing(_confirmed=True)
+                )
+                return
+            self._cancel_app_close_lane_drain_watchdog()
             try:
+                if not self._save_current_set_state():
+                    raise RuntimeError(
+                        "current packaging state could not be saved"
+                    )
                 self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
                 self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
             except Exception as e:
                 print(f"종료 보류 기술 진단: {e}")
+                failed_manager = self.data_manager
+                manager_close_requested = bool(
+                    getattr(failed_manager, "_close_requested", False)
+                )
+                manager_restored = not manager_close_requested
+                if manager_close_requested:
+                    manager_restored = bool(
+                        self._replace_closed_data_manager_after_close_failure(
+                            failed_manager
+                        )
+                    )
+                if not manager_restored:
+                    self._show_app_close_cleanup_delay()
+                    if self.run_tests:
+                        raise
+                    self._schedule_app_close_recovery_retry()
+                    return
                 self._app_close_in_progress = False
+                self.is_blinking = bool(
+                    self.__dict__.pop(
+                        "_app_close_previous_is_blinking", False
+                    )
+                )
                 if entry is not None:
                     try:
                         configure_entry = getattr(entry, "configure", None) or getattr(entry, "config")
                         configure_entry(state="normal")
                     except Exception:
                         pass
-                self._replace_closed_data_manager_after_close_failure(self.data_manager)
+                settings_button = self.__dict__.get("settings_button")
+                if settings_button is not None:
+                    try:
+                        settings_button.configure(state="normal")
+                    except (TclError, AttributeError):
+                        pass
+                try:
+                    self._resume_deferred_validation_after_close_cancel()
+                except Exception as deferred_error:
+                    print(
+                        "종료 보류 후 deferred 검증 재시작 오류: "
+                        f"{deferred_error}"
+                    )
                 try:
                     # Closing is being abandoned, so keep the package advisory
                     # and retry cycle active for resumed operation.
                     self._start_package_outbox_drain()
                 except Exception as outbox_error:
                     print(f"종료 보류 후 포장 물류 재시작 오류: {outbox_error}")
+                if self.__dict__.get("operator_workbench_ready", False):
+                    self._render_operator_workbench()
                 if self.run_tests:
                     raise
                 messagebox.showerror(
@@ -7369,8 +7562,6 @@ class Label_Match(tk.Tk):
                 )
                 return
             self._cancel_pending_ui_jobs()
-            if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
-                ui_lane.close_idle()
             if not self.run_tests:
                 context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
                     self.save_directory,
@@ -7406,6 +7597,8 @@ class Label_Match(tk.Tk):
             "_deferred_validation_after_id",
             "_deferred_observability_poll_after_id",
             "_app_close_poll_after_id",
+            "_app_close_drain_watchdog_after_id",
+            "_app_close_recovery_after_id",
             "package_outbox_after_id",
             "package_outbox_poll_after_id",
             "_audio_init_after_id",
@@ -7436,8 +7629,16 @@ class Label_Match(tk.Tk):
             )
         except (TclError, RuntimeError, TypeError):
             pending = ()
+        lane_after_id = getattr(
+            self.__dict__.get("ui_lane"), "_after_id", None
+        )
         for after_id in pending:
             if isinstance(after_id, (tuple, list)):
+                continue
+            if (
+                lane_after_id is not None
+                and str(after_id) == str(lane_after_id)
+            ):
                 continue
             try:
                 self.after_cancel(str(after_id))
@@ -7468,9 +7669,13 @@ class Label_Match(tk.Tk):
             return False
 
     def _save_current_set_state(self):
-        if not self.initialized_successfully or not self.current_set_info['raw']:
+        current_set = self.__dict__.get("current_set_info") or {}
+        if not self.initialized_successfully or not current_set.get("raw"):
             return True
-        state_data = {'current_set_info': self.current_set_info, 'timestamp': datetime.now().isoformat()}
+        state_data = {
+            'current_set_info': current_set,
+            'timestamp': datetime.now().isoformat(),
+        }
         return bool(self.data_manager.save_current_state(state_data))
 
     def _migrate_restored_central_package_state(self, saved_set_info):
@@ -9311,7 +9516,10 @@ class Label_Match(tk.Tk):
         return readback
 
     def _schedule_deferred_validation_worker(self, delay_ms=1000):
-        if self.__dict__.get("_tk_shutdown_requested", False):
+        if (
+            self.__dict__.get("_tk_shutdown_requested", False)
+            or self.__dict__.get("_app_close_in_progress", False)
+        ):
             return
         prior = self.__dict__.get("_deferred_validation_after_id")
         if prior is not None:
@@ -9452,6 +9660,8 @@ class Label_Match(tk.Tk):
     def _run_deferred_validation_worker_once(self):
         """Drain one eligible validation row; dependency waits are never selected."""
 
+        if self.__dict__.get("_app_close_in_progress", False):
+            return
         if (
             self.__dict__.get("ui_lane") is not None
             and not self.__dict__.get("run_tests", False)
@@ -10543,6 +10753,12 @@ class Label_Match(tk.Tk):
         coordinator = self.__dict__.get("sealed_transfer_exchange_coordinator")
         return coordinator._attempt(rows[-1]) if coordinator is not None else None
 
+    def _app_close_blocks_local_action(self):
+        if not self.__dict__.get("_app_close_in_progress", False):
+            return False
+        self._show_ui_lane_rejection("closing")
+        return True
+
     def _sealed_transfer_exchange_blocks_local_action(self, action):
         current_state = self.__dict__.get("current_set_info", {}) or {}
         if str(action or "") == "프로그램 종료":
@@ -10550,6 +10766,8 @@ class Label_Match(tk.Tk):
             # state survives restart, so this gate must not strand Tcl behind
             # an active F5 command or a recoverable journal row.
             return False
+        if self._app_close_blocks_local_action():
+            return True
         if self._ui_lane_is_busy():
             self._show_ui_lane_rejection("busy")
             return True
@@ -11635,6 +11853,7 @@ class Label_Match(tk.Tk):
         )
         return bool(
             coordinator is not None
+            and not self.__dict__.get("_app_close_in_progress", False)
             and (
                 coordinator.reconciliation_available()
                 or coordinator.available()
@@ -14142,6 +14361,8 @@ class Label_Match(tk.Tk):
             messagebox.showerror("삭제 실패", message, parent=self)
 
     def _delete_selected_row(self):
+        if self._app_close_blocks_local_action():
+            return
         if self._block_active_history_load_action("기록 삭제"):
             return
         if not self.history_view_updates_active_state:
@@ -14640,6 +14861,8 @@ class Label_Match(tk.Tk):
 
     def _prompt_and_cancel_completed_tray(self):
         if not self.initialized_successfully: return
+        if self._app_close_blocks_local_action():
+            return
         if self._block_active_history_load_action("완료된 트레이 취소", parent=self):
             return
         if not self.history_view_updates_active_state:
@@ -15039,6 +15262,8 @@ class Label_Match(tk.Tk):
             )
 
     def open_settings_window(self):
+        if self._app_close_blocks_local_action():
+            return
         if self.current_set_info.get('id'):
             if not self.run_tests:
                 messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n설정 변경은 다음 작업부터 적용됩니다.")
@@ -15088,6 +15313,8 @@ class Label_Match(tk.Tk):
             worker_entry.selection_range(0, tk.END)
 
     def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str):
+        if self._app_close_blocks_local_action():
+            return
         active_set = bool(getattr(self, 'current_set_info', {}).get('id'))
         if active_set or self._has_background_work():
             if not self.run_tests:
@@ -17273,6 +17500,9 @@ class Label_Match(tk.Tk):
             entry_enabled = bool(
                 view.scan_input_enabled
                 and self.__dict__.get("initialized_successfully", False)
+                and not self.__dict__.get(
+                    "_app_close_in_progress", False
+                )
                 and self._current_sealed_transfer_exchange_attempt() is None
                 and not self.__dict__.get(
                     "_central_seal_lookup_in_progress", False
@@ -17327,7 +17557,9 @@ class Label_Match(tk.Tk):
             button = self.__dict__.get(name)
             if button is not None:
                 try:
-                    if self.__dict__.get("_ui_lane_busy_task", ""):
+                    if self.__dict__.get(
+                        "_app_close_in_progress", False
+                    ) or self.__dict__.get("_ui_lane_busy_task", ""):
                         enabled = False
                     elif self.__dict__.get(
                         "_central_seal_lookup_in_progress", False
@@ -17401,6 +17633,8 @@ class Label_Match(tk.Tk):
 
     def _handle_workflow_shortcut(self, action, event=None):
         """Apply the same presenter gate to keyboard and button actions."""
+        if self._app_close_blocks_local_action():
+            return "break"
         action = str(action).lower()
         if self.__dict__.get("operator_workbench_ready"):
             view = self._render_operator_workbench()
@@ -17434,6 +17668,8 @@ class Label_Match(tk.Tk):
         return None
 
     def _acknowledge_workflow_notice(self, event=None):
+        if self._app_close_blocks_local_action():
+            return "break"
         pending = self.__dict__.get("_pending_workflow_error") or self.__dict__.get(
             "_workflow_pending_error"
         )
@@ -18745,8 +18981,8 @@ class Label_Match(tk.Tk):
 
         about_button = ttk.Button(top_right_frame, text="정보", command=self._show_about_window, style='Control.TButton')
         about_button.pack(side=tk.RIGHT, padx=(5, 0))
-        settings_button = ttk.Button(top_right_frame, text="설정", command=self.open_settings_window, style='Control.TButton')
-        settings_button.pack(side=tk.RIGHT)
+        self.settings_button = ttk.Button(top_right_frame, text="설정", command=self.open_settings_window, style='Control.TButton')
+        self.settings_button.pack(side=tk.RIGHT)
 
         input_frame = ttk.Frame(self.top_card, style='Borderless.TFrame')
         input_frame.grid(row=1, column=0, sticky="ew")
