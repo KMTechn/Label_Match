@@ -4,6 +4,7 @@ import inspect
 from types import SimpleNamespace
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 
@@ -13,7 +14,12 @@ from deferred_intent_capture import (
     DeferredValidationResult,
 )
 from tests.test_tk_serial_ui_lane import FakeTkRoot
-from tk_serial_ui_lane import CoalescingTrigger, LaneTask, TkSerialUiLane
+from tk_serial_ui_lane import (
+    CoalescingTrigger,
+    LaneState,
+    LaneTask,
+    TkSerialUiLane,
+)
 
 
 def _app_with_lane():
@@ -580,6 +586,147 @@ def test_program_close_bypasses_f5_pending_gate_for_lane_drain():
         is False
     )
     _close_lane(app, root)
+
+
+def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
+    app, root = _app_with_lane()
+    entry_states = []
+    outbox_restarts = []
+    cancelled_ui_jobs = []
+
+    class CloseFailingDataManager:
+        @staticmethod
+        def log_event(_event, _details):
+            return None
+
+        @staticmethod
+        def close(timeout=None):
+            assert timeout == label_module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
+            raise RuntimeError("forced close failure")
+
+    app.initialized_successfully = True
+    app.run_tests = True
+    app.is_blinking = True
+    app.entry = SimpleNamespace(
+        configure=lambda **kwargs: entry_states.append(kwargs["state"])
+    )
+    app.data_manager = CloseFailingDataManager()
+    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._has_background_work = lambda: False
+    app._cancel_pending_ui_jobs = lambda: cancelled_ui_jobs.append(True)
+    app._replace_closed_data_manager_after_close_failure = (
+        lambda _manager: None
+    )
+    app._start_package_outbox_drain = (
+        lambda: outbox_restarts.append(True)
+    )
+    app._save_app_settings = lambda: pytest.fail("settings should not save")
+    app.destroy = lambda: pytest.fail("window should not close")
+    app._phs_reconciliation_lookup_pending = False
+    app._phs_reconciliation_scope = lambda: "PACKAGING"
+    app.phs_label_exchange_coordinator = SimpleNamespace(
+        resolve_reconciliation_actions=lambda **_kwargs: {"actions": []}
+    )
+    app._show_phs_replacement_required_notice_once = lambda _value: None
+    app._show_phs_reconciliation_action_window = (
+        lambda _value, **_kwargs: None
+    )
+
+    admitted_after_resume = False
+    lane_state_after_failure = None
+    try:
+        with pytest.raises(RuntimeError, match="forced close failure"):
+            app.on_closing()
+
+        lane_state_after_failure = app.ui_lane.state
+        admitted_after_resume = app._begin_phs_reconciliation_lookup(
+            "PHS2-AFTER-CLOSE-FAILURE"
+        )
+        if admitted_after_resume:
+            root.run_until(lambda: not app.ui_lane.is_busy())
+    finally:
+        if app.ui_lane.is_busy():
+            root.run_until(lambda: not app.ui_lane.is_busy())
+        if app.ui_lane.state is not LaneState.CLOSED:
+            _close_lane(app, root)
+
+    assert lane_state_after_failure is LaneState.IDLE
+    assert admitted_after_resume is True
+    assert entry_states == ["disabled", "disabled", "normal"]
+    assert outbox_restarts == [True]
+    assert cancelled_ui_jobs == []
+
+
+def test_f5_popup_busy_rejection_preserves_popup_and_raw(monkeypatch):
+    app, root = _app_with_lane()
+    gate = threading.Event()
+    popup = Mock()
+    scan_entry = Mock()
+    scan_entry.get.return_value = "PHS2-F5-PRESERVE"
+    monkeypatch.setattr(
+        label_module.tk,
+        "Toplevel",
+        lambda _parent: popup,
+    )
+    monkeypatch.setattr(
+        label_module.tk,
+        "StringVar",
+        lambda **_kwargs: Mock(),
+    )
+    monkeypatch.setattr(
+        label_module.ttk,
+        "Frame",
+        lambda *_args, **_kwargs: Mock(),
+    )
+    monkeypatch.setattr(
+        label_module.ttk,
+        "Label",
+        lambda *_args, **_kwargs: Mock(),
+    )
+    monkeypatch.setattr(
+        label_module.ttk,
+        "Entry",
+        lambda *_args, **_kwargs: scan_entry,
+    )
+
+    app.default_font_name = "Test Font"
+    app.colors = {}
+    app._phs_reconciliation_lookup_pending = False
+    app._phs_reconciliation_scope = lambda: "PACKAGING"
+    app.phs_label_exchange_coordinator = SimpleNamespace(
+        resolve_reconciliation_actions=lambda **_kwargs: {"actions": []}
+    )
+    assert app.ui_lane.submit(
+        LaneTask(
+            "blocking-deferred-validation",
+            0,
+            lambda: gate.wait(timeout=2.0),
+            lambda _value: None,
+            pytest.fail,
+        )
+    ).accepted
+
+    popup_after_rejection = None
+    raw_after_rejection = None
+    try:
+        assert app._show_phs_reconciliation_scan_window() is True
+        submit = next(
+            call.args[1]
+            for call in scan_entry.bind.call_args_list
+            if call.args[0] == "<Return>"
+        )
+        submit()
+        popup_after_rejection = app._phs_reconciliation_scan_window
+        raw_after_rejection = scan_entry.get()
+    finally:
+        gate.set()
+        root.run_until(lambda: not app.ui_lane.is_busy())
+        _close_lane(app, root)
+
+    popup.destroy.assert_not_called()
+    popup.grab_release.assert_not_called()
+    assert popup_after_rejection is popup
+    assert raw_after_rejection == "PHS2-F5-PRESERVE"
 
 
 @pytest.mark.parametrize(

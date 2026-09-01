@@ -7328,14 +7328,12 @@ class Label_Match(tk.Tk):
                         pass
                 if ui_lane.is_busy():
                     self._show_ui_lane_rejection("closing")
-                    ui_lane.drain_then(
+                    ui_lane.defer_until_idle(
                         lambda: self.on_closing(_confirmed=True)
                     )
                     return
-                ui_lane.close_idle()
             self._app_close_in_progress = True
             self.is_blinking = False
-            self._cancel_pending_ui_jobs()
             entry = self.__dict__.get("entry")
             if entry is not None:
                 try:
@@ -7357,8 +7355,8 @@ class Label_Match(tk.Tk):
                         pass
                 self._replace_closed_data_manager_after_close_failure(self.data_manager)
                 try:
-                    # Closing is being abandoned, so restore the cancellation
-                    # advisory/retry cycle that _cancel_pending_ui_jobs stopped.
+                    # Closing is being abandoned, so keep the package advisory
+                    # and retry cycle active for resumed operation.
                     self._start_package_outbox_drain()
                 except Exception as outbox_error:
                     print(f"종료 보류 후 포장 물류 재시작 오류: {outbox_error}")
@@ -7370,6 +7368,9 @@ class Label_Match(tk.Tk):
                     "잠시 후 다시 시도하고 계속 실패하면 관리자에게 확인을 요청하세요.",
                 )
                 return
+            self._cancel_pending_ui_jobs()
+            if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
+                ui_lane.close_idle()
             if not self.run_tests:
                 context = getattr(self, "direct_sync_bootstrap_context", None) or _label_match_direct_sync_context(
                     self.save_directory,
@@ -11948,13 +11949,15 @@ class Label_Match(tk.Tk):
                 status_var.set("현품표를 스캔해야 합니다.")
                 scan_entry.focus_set()
                 return "break"
+            if not self._begin_phs_reconciliation_lookup(value):
+                scan_entry.focus_set()
+                return "break"
             try:
                 popup.grab_release()
             except TclError:
                 pass
             popup.destroy()
             self._phs_reconciliation_scan_window = None
-            self._begin_phs_reconciliation_lookup(value)
             return "break"
 
         scan_entry.bind("<Return>", submit)
