@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import fields
 import importlib
 import threading
 import time
@@ -65,6 +66,56 @@ def _close(root, lane) -> None:
         return
     lane.close_idle()
     root.run_until(lambda: str(lane.state) == "CLOSED")
+
+
+def test_every_lane_envelope_carries_canonical_identity_fields():
+    module, _LaneTask, _TkSerialUiLane = _symbols()
+    required = {"sequence", "kind", "op_id", "generation"}
+    required_failure = {
+        "category",
+        "commit_state",
+        "retryable",
+        "safe_operator_code",
+        "diagnostic_id",
+        "durable_resume_ref",
+    }
+
+    assert required_failure <= {
+        field.name for field in fields(module.Failure)
+    }
+
+    for envelope_name in (
+        "_TaskEnvelope",
+        "_UiCallEnvelope",
+        "_ResultEnvelope",
+    ):
+        envelope_fields = {
+            field.name for field in fields(getattr(module, envelope_name))
+        }
+        assert required <= envelope_fields, envelope_name
+
+    root = FakeTkRoot()
+    lane = _TkSerialUiLane(root, poll_ms=1)
+    gate = threading.Event()
+    admission = lane.submit(
+        _LaneTask(
+            "identity-snapshot",
+            37,
+            lambda: gate.wait(timeout=2.0),
+            lambda _value: None,
+            pytest.fail,
+        )
+    )
+    try:
+        envelope = lane._active
+        assert envelope.sequence > 0
+        assert envelope.kind == "task"
+        assert envelope.op_id == admission.op_id
+        assert envelope.generation == 37
+    finally:
+        gate.set()
+        root.run_until(lambda: not lane.is_busy())
+        _close(root, lane)
 
 
 def test_blocked_work_does_not_block_tk_pump():
@@ -176,7 +227,7 @@ def test_success_finish_runs_once_on_tk():
 
 
 def test_exception_reaches_fail_once_on_tk():
-    _module, LaneTask, TkSerialUiLane = _symbols()
+    module, LaneTask, TkSerialUiLane = _symbols()
     root = FakeTkRoot()
     lane = TkSerialUiLane(root, poll_ms=1)
     finished = []
@@ -191,7 +242,7 @@ def test_exception_reaches_fail_once_on_tk():
             1,
             work,
             finished.append,
-            lambda exc: failed.append((type(exc), threading.get_ident())),
+            lambda exc: failed.append((exc, threading.get_ident())),
         )
     )
     root.run_until(lambda: not lane.is_busy())
@@ -199,7 +250,15 @@ def test_exception_reaches_fail_once_on_tk():
         root.run_one()
 
     assert finished == []
-    assert failed == [(ValueError, root.owner_thread_id)]
+    assert len(failed) == 1
+    failure, callback_thread_id = failed[0]
+    assert isinstance(failure, module.Failure)
+    assert failure.cause_type == "ValueError"
+    assert failure.category == "programmer_error"
+    assert failure.commit_state == "unknown"
+    assert callback_thread_id == root.owner_thread_id
+    assert "secret detail" not in str(failure)
+    assert "secret detail" not in repr(failure)
     _close(root, lane)
 
 
@@ -293,6 +352,78 @@ def test_fifo_ui_call_before_final_result():
     _close(root, lane)
 
 
+def test_result_sequence_allocation_and_enqueue_are_atomic():
+    module, LaneTask, TkSerialUiLane = _symbols()
+    root = FakeTkRoot()
+    lane = TkSerialUiLane(root, poll_ms=1)
+    inner_queue = lane._result_queue
+    result_waiting = threading.Event()
+    release_result = threading.Event()
+    ui_call_enqueued = threading.Event()
+
+    class GatedResultQueue:
+        def put_nowait(self, item):
+            if (
+                isinstance(item, module._ResultEnvelope)
+                and item.kind == "success"
+                and not result_waiting.is_set()
+            ):
+                result_waiting.set()
+                assert release_result.wait(timeout=2.0)
+            if isinstance(item, module._UiCallEnvelope):
+                ui_call_enqueued.set()
+            inner_queue.put_nowait(item)
+
+        def get_nowait(self):
+            return inner_queue.get_nowait()
+
+        def task_done(self):
+            inner_queue.task_done()
+
+    lane._result_queue = GatedResultQueue()
+    finished = []
+    assert lane.submit(
+        LaneTask(
+            "terminal-race",
+            1,
+            lambda: "terminal",
+            finished.append,
+            pytest.fail,
+        )
+    ).accepted
+    assert result_waiting.wait(timeout=1.0)
+
+    attacker_started = threading.Event()
+    attacker_done = threading.Event()
+    attacker_errors = []
+
+    def late_ui_call():
+        attacker_started.set()
+        try:
+            lane.call_ui_sync(lambda: "too-late")
+        except BaseException as error:
+            attacker_errors.append(error)
+        finally:
+            attacker_done.set()
+
+    attacker = threading.Thread(target=late_ui_call, daemon=False)
+    attacker.start()
+    assert attacker_started.wait(timeout=1.0)
+    ui_call_overtook_terminal = ui_call_enqueued.wait(timeout=0.1)
+    release_result.set()
+    root.run_until(
+        lambda: not lane.is_busy() and attacker_done.is_set(),
+    )
+    attacker.join(timeout=1.0)
+
+    assert ui_call_overtook_terminal is False
+    assert finished == ["terminal"]
+    assert str(lane.state) == "IDLE"
+    assert len(attacker_errors) == 1
+    assert "stale" in str(attacker_errors[0]).lower()
+    _close(root, lane)
+
+
 def test_on_idle_barrier_order():
     _module, LaneTask, TkSerialUiLane = _symbols()
     root = FakeTkRoot()
@@ -362,7 +493,7 @@ def test_generation_fence_settles_but_skips_stale_render():
 
 
 def test_timeout_is_typed_and_ui_stays_live():
-    _module, LaneTask, TkSerialUiLane = _symbols()
+    module, LaneTask, TkSerialUiLane = _symbols()
     root = FakeTkRoot()
     lane = TkSerialUiLane(root, poll_ms=1)
     gate = threading.Event()
@@ -370,22 +501,43 @@ def test_timeout_is_typed_and_ui_stays_live():
     failures = []
 
     class TypedTimeout(TimeoutError):
+        category = "transient"
         commit_state = "unknown"
         retryable = True
+        safe_operator_code = "CENTRAL_TIMEOUT"
 
     def work():
         assert gate.wait(timeout=2.0)
         raise TypedTimeout("safe timeout")
 
-    lane.submit(LaneTask("timeout", 1, work, pytest.fail, failures.append))
+    lane.submit(
+        LaneTask(
+            "timeout",
+            1,
+            work,
+            pytest.fail,
+            failures.append,
+            failure_adapter=lambda error: module.Failure.from_exception(
+                error,
+                category="transient",
+                commit_state="unknown",
+                retryable=True,
+                safe_operator_code="CENTRAL_TIMEOUT",
+            ),
+        )
+    )
     root.after(0, lambda: heartbeat.append("alive"))
     root.run_until(lambda: heartbeat == ["alive"])
     gate.set()
     root.run_until(lambda: not lane.is_busy())
 
     assert len(failures) == 1
-    assert isinstance(failures[0], TypedTimeout)
+    assert isinstance(failures[0], module.Failure)
+    assert failures[0].cause_type == "TypedTimeout"
+    assert failures[0].category == "transient"
     assert failures[0].commit_state == "unknown"
+    assert failures[0].retryable is True
+    assert failures[0].safe_operator_code == "CENTRAL_TIMEOUT"
     _close(root, lane)
 
 
@@ -433,7 +585,7 @@ def test_close_stops_admission_and_drains_before_destroy():
 
 
 def test_call_ui_sync_round_trip_and_exception():
-    _module, LaneTask, TkSerialUiLane = _symbols()
+    module, LaneTask, TkSerialUiLane = _symbols()
     root = FakeTkRoot()
     lane = TkSerialUiLane(root, poll_ms=1)
     round_trip = []
@@ -454,7 +606,100 @@ def test_call_ui_sync_round_trip_and_exception():
 
     assert round_trip == [42]
     assert len(failures) == 1
-    assert isinstance(failures[0], LookupError)
+    assert isinstance(failures[0], module.Failure)
+    assert failures[0].cause_type == "LookupError"
+    assert "checkpoint failed" not in str(failures[0])
+    _close(root, lane)
+
+
+def test_failure_adapter_must_return_safe_typed_failure():
+    module, LaneTask, TkSerialUiLane = _symbols()
+    root = FakeTkRoot()
+    lane = TkSerialUiLane(root, poll_ms=1)
+    failures = []
+
+    class SecretBearingError(RuntimeError):
+        category = "business_reject"
+        commit_state = "committed"
+        retryable = True
+        safe_operator_code = "ATTACKER_CONTROLLED"
+        durable_resume_ref = (
+            "https://secret.invalid/resume?token=DO-NOT-COPY"
+        )
+
+    def work():
+        raise SecretBearingError(
+            "Authorization: Bearer TOP-SECRET; "
+            "https://secret.invalid/api; C:/private/token.txt"
+        )
+
+    def adapt(error):
+        return module.Failure.from_exception(
+            error,
+            category="local_durability",
+            commit_state="not_committed",
+            retryable=False,
+            safe_operator_code="LOCAL_SAVE_FAILED",
+            durable_resume_ref="intent-42",
+        )
+
+    lane.submit(
+        LaneTask(
+            "safe-adapter",
+            7,
+            work,
+            pytest.fail,
+            failures.append,
+            failure_adapter=adapt,
+        )
+    )
+    root.run_until(lambda: not lane.is_busy())
+
+    assert len(failures) == 1
+    failure = failures[0]
+    assert isinstance(failure, module.Failure)
+    assert failure.category == "local_durability"
+    assert failure.commit_state == "not_committed"
+    assert failure.retryable is False
+    assert failure.safe_operator_code == "LOCAL_SAVE_FAILED"
+    assert failure.durable_resume_ref == "intent-42"
+    serialized = repr(failure) + str(failure) + repr(vars(failure))
+    assert "TOP-SECRET" not in serialized
+    assert "secret.invalid" not in serialized
+    assert "private/token" not in serialized
+    _close(root, lane)
+
+
+@pytest.mark.parametrize("adapter_mode", ("returns-raw", "raises"))
+def test_broken_failure_adapter_fails_closed_without_secret(adapter_mode):
+    module, LaneTask, TkSerialUiLane = _symbols()
+    root = FakeTkRoot()
+    lane = TkSerialUiLane(root, poll_ms=1)
+    failures = []
+
+    def adapt(_error):
+        adapter_error = RuntimeError("adapter token=ADAPTER-SECRET")
+        if adapter_mode == "raises":
+            raise adapter_error
+        return adapter_error
+
+    lane.submit(
+        LaneTask(
+            "broken-adapter",
+            1,
+            lambda: (_ for _ in ()).throw(RuntimeError("WORK-SECRET")),
+            pytest.fail,
+            failures.append,
+            failure_adapter=adapt,
+        )
+    )
+    root.run_until(lambda: not lane.is_busy())
+
+    assert len(failures) == 1
+    assert failures[0].safe_operator_code == "FAILURE_ADAPTER_ERROR"
+    serialized = repr(failures[0]) + str(failures[0])
+    assert "ADAPTER-SECRET" not in serialized
+    assert "WORK-SECRET" not in serialized
     _close(root, lane)
 
 

@@ -248,6 +248,7 @@ from ui.workflow_snapshot_adapter import adapt_workflow_snapshot
 from ui.workflow_view_state import WorkflowNotice, operator_safe_message, present_workflow
 from tk_serial_ui_lane import (
     CoalescingTrigger,
+    Failure,
     LaneState,
     LaneTask,
     TkSerialUiLane,
@@ -5332,6 +5333,21 @@ class Label_Match(tk.Tk):
             }
         )
 
+    def _advance_ui_lane_generation(self):
+        """Fence terminal rendering from the prior current-set screen."""
+
+        generation = int(
+            self.__dict__.get("_ui_lane_generation", 0)
+        ) + 1
+        self._ui_lane_generation = generation
+        return generation
+
+    @staticmethod
+    def _ui_lane_diagnostic_text(error):
+        if isinstance(error, Failure):
+            return f"{error} cause={error.cause_type}"
+        return str(getattr(error, "code", error.__class__.__name__))
+
     def _set_ui_lane_busy(self, task_name, operator_text):
         self._ui_lane_busy_task = str(task_name or "")
         self._ui_lane_busy_label = str(operator_text or "처리 중")
@@ -5389,7 +5405,7 @@ class Label_Match(tk.Tk):
         self._ui_lane_busy_label = ""
         print(
             "Label Tk UI lane technical diagnostic: "
-            f"{getattr(error, 'code', error.__class__.__name__)}"
+            f"{self._ui_lane_diagnostic_text(error)}"
         )
         if "big_display_label" in self.__dict__:
             self.update_big_display("처리 상태 확인 필요", "red")
@@ -5416,12 +5432,18 @@ class Label_Match(tk.Tk):
         generation=None,
         on_idle=None,
         settle=None,
+        failure_adapter=None,
         shutdown_policy="DRAIN_TO_TERMINAL",
     ):
         lane = self.__dict__.get("ui_lane")
         if lane is None:
             return None
         task_name = str(name or "label-operation")
+        task_generation = int(
+            self.__dict__.get("_ui_lane_generation", 0)
+            if generation is None
+            else generation
+        )
 
         def finish_on_tk(value):
             try:
@@ -5435,19 +5457,26 @@ class Label_Match(tk.Tk):
             finally:
                 self._clear_ui_lane_busy(task_name)
 
+        def settle_on_tk(value, error):
+            try:
+                if settle is not None:
+                    settle(value, error)
+            finally:
+                if int(
+                    self.__dict__.get("_ui_lane_generation", 0)
+                ) != task_generation:
+                    self._clear_ui_lane_busy(task_name)
+
         admission = lane.submit(
             LaneTask(
                 name=task_name,
-                generation=int(
-                    self.__dict__.get("_ui_lane_generation", 0)
-                    if generation is None
-                    else generation
-                ),
+                generation=task_generation,
                 work=work,
                 finish=finish_on_tk,
                 fail=fail_on_tk,
                 on_idle=on_idle,
-                settle=settle,
+                settle=settle_on_tk,
+                failure_adapter=failure_adapter,
                 shutdown_policy=shutdown_policy,
             )
         )
@@ -9363,49 +9392,45 @@ class Label_Match(tk.Tk):
                     )
                 return {
                     "kind": "error",
-                    "error": error,
+                    "error": Failure.from_exception(error),
                     "durable": durable,
                 }
 
         def finish(payload):
-            self._deferred_validation_worker_in_progress = False
-            try:
-                result = dict(payload or {}).get("result")
-                materialization = dict(payload or {}).get(
-                    "materialization"
-                )
-                if isinstance(materialization, dict):
-                    self._deferred_label_materialization = materialization
-                if dict(payload or {}).get("kind") == "error":
-                    error = dict(payload or {}).get("error")
-                    print(
-                        "Deferred validation scheduler technical diagnostic: "
-                        f"{getattr(error, 'code', error.__class__.__name__)}"
-                    )
-                    durable = dict(payload or {}).get("durable")
-                    if durable is not None:
-                        self._show_deferred_validation_result(durable)
-                elif result is not None:
-                    if not self._materialize_validated_deferred_label(result):
-                        self._show_deferred_validation_result(result)
-                self._refresh_deferred_observability()
-                self._render_operator_workbench()
-                self._schedule_deferred_validation_worker(5000)
-            finally:
-                self._clear_ui_lane_busy("deferred-validation")
-
-        def fail(error):
-            self._deferred_validation_worker_in_progress = False
-            try:
+            result = dict(payload or {}).get("result")
+            materialization = dict(payload or {}).get(
+                "materialization"
+            )
+            if isinstance(materialization, dict):
+                self._deferred_label_materialization = materialization
+            if dict(payload or {}).get("kind") == "error":
+                error = dict(payload or {}).get("error")
                 print(
                     "Deferred validation scheduler technical diagnostic: "
-                    f"{getattr(error, 'code', error.__class__.__name__)}"
+                    f"{self._ui_lane_diagnostic_text(error)}"
                 )
-                self._refresh_deferred_observability()
-                self._render_operator_workbench()
-                self._schedule_deferred_validation_worker(5000)
-            finally:
-                self._clear_ui_lane_busy("deferred-validation")
+                durable = dict(payload or {}).get("durable")
+                if durable is not None:
+                    self._show_deferred_validation_result(durable)
+            elif result is not None:
+                if not self._materialize_validated_deferred_label(result):
+                    self._show_deferred_validation_result(result)
+            self._refresh_deferred_observability()
+            self._render_operator_workbench()
+            self._schedule_deferred_validation_worker(5000)
+
+        def fail(error):
+            print(
+                "Deferred validation scheduler technical diagnostic: "
+                f"{self._ui_lane_diagnostic_text(error)}"
+            )
+            self._refresh_deferred_observability()
+            self._render_operator_workbench()
+            self._schedule_deferred_validation_worker(5000)
+
+        def settle(_value, _error):
+            self._deferred_validation_worker_in_progress = False
+            self._clear_ui_lane_busy("deferred-validation")
 
         return LaneTask(
             name="deferred-validation",
@@ -9413,6 +9438,14 @@ class Label_Match(tk.Tk):
             work=work,
             finish=finish,
             fail=fail,
+            settle=settle,
+            failure_adapter=lambda error: Failure.from_exception(
+                error,
+                category="transient",
+                commit_state="unknown",
+                retryable=True,
+                safe_operator_code="DEFERRED_VALIDATION_FAILED",
+            ),
         )
 
     def _run_deferred_validation_worker_once(self):
@@ -9754,7 +9787,12 @@ class Label_Match(tk.Tk):
             "operator_complete_signal": False,
         }
 
-    def _capture_central_phs2_scan(self, physical_qr_payload, item_code):
+    def _capture_central_phs2_scan(
+        self,
+        physical_qr_payload,
+        item_code,
+        local_work_identity=None,
+    ):
         store = self.__dict__.get("deferred_intent_capture")
         if store is None:
             raise DeferredIntentCaptureError(
@@ -9762,17 +9800,33 @@ class Label_Match(tk.Tk):
                 or "CAPTURE_STORE_UNAVAILABLE",
                 "durable Label deferred-intent capture is unavailable",
             )
-        set_id = str(self._ensure_current_set_id() or "").strip()
-        result = store.capture_label_package_source(
+        set_id = str(
+            local_work_identity or self._ensure_current_set_id() or ""
+        ).strip()
+        return store.capture_label_package_source(
             local_work_identity=set_id,
             physical_qr_payload=physical_qr_payload,
             item_code=item_code,
         )
+
+    def _apply_captured_central_phs2_scan(
+        self,
+        result,
+        *,
+        central_check_pending,
+        local_work_identity="",
+        on_capture_committed=None,
+    ):
+        selected_work_identity = str(local_work_identity or "").strip()
+        if selected_work_identity and not self.current_set_info.get("id"):
+            self.current_set_info["id"] = selected_work_identity
         self.current_set_info["deferred_intent_id"] = result.intent_id
         self._show_deferred_capture_pending(
             result,
-            central_check_pending=True,
+            central_check_pending=bool(central_check_pending),
         )
+        if callable(on_capture_committed):
+            on_capture_committed()
         return result
 
     def _resolve_central_phs2_scan_overlay(
@@ -9948,6 +10002,8 @@ class Label_Match(tk.Tk):
         self,
         physical_qr_payload,
         item_code,
+        *,
+        on_capture_committed=None,
     ):
         if self.__dict__.get(
             "_phs_label_scan_lookup_in_progress", False
@@ -9955,14 +10011,25 @@ class Label_Match(tk.Tk):
             self._show_ui_lane_rejection("busy")
             return False
         captured_raw = tuple(self.current_set_info.get("raw") or ())
+        captured_set_id = str(
+            self.current_set_info.get("id") or time.time_ns()
+        ).strip()
         work_state = {}
 
         def work():
             capture_result = self._capture_central_phs2_scan(
                 physical_qr_payload,
                 item_code,
+                captured_set_id,
             )
             work_state["capture_result"] = capture_result
+            self.ui_lane.call_ui_sync(
+                self._apply_captured_central_phs2_scan,
+                capture_result,
+                central_check_pending=True,
+                local_work_identity=captured_set_id,
+                on_capture_committed=on_capture_committed,
+            )
             validation_work = self._prepare_deferred_label_validation(
                 capture_result
             )
@@ -9993,7 +10060,7 @@ class Label_Match(tk.Tk):
             self._phs_label_scan_lookup_in_progress = False
             print(
                 "PHS2 deferred validation technical diagnostic: "
-                f"{getattr(error, 'code', error.__class__.__name__)}"
+                f"{self._ui_lane_diagnostic_text(error)}"
             )
             capture_result = work_state.get("capture_result")
             if capture_result is None:
@@ -10008,12 +10075,31 @@ class Label_Match(tk.Tk):
                     self._show_deferred_capture_pending(capture_result)
             self._render_operator_workbench()
 
+        def adapt_failure(error):
+            capture_committed = work_state.get("capture_result") is not None
+            return Failure.from_exception(
+                error,
+                category=(
+                    "transient" if capture_committed else "local_durability"
+                ),
+                commit_state=(
+                    "unknown" if capture_committed else "not_committed"
+                ),
+                retryable=True,
+                safe_operator_code=(
+                    "PHS2_VALIDATION_FAILED"
+                    if capture_committed
+                    else "PHS2_CAPTURE_FAILED"
+                ),
+            )
+
         admission = self._submit_ui_lane_task(
             name="phs2-capture-validation",
             busy_text="현품표 저장 · 중앙 확인 중",
             work=work,
             finish=finish,
             fail=fail,
+            failure_adapter=adapt_failure,
         )
         if admission is not None and admission.accepted:
             self._phs_label_scan_lookup_in_progress = True
@@ -10024,6 +10110,8 @@ class Label_Match(tk.Tk):
         self,
         physical_qr_payload,
         item_code,
+        *,
+        on_capture_committed=None,
     ):
         if (
             self.__dict__.get("ui_lane") is not None
@@ -10032,6 +10120,7 @@ class Label_Match(tk.Tk):
             return self._begin_central_phs2_scan_overlay_on_lane(
                 physical_qr_payload,
                 item_code,
+                on_capture_committed=on_capture_committed,
             )
         if self.__dict__.get(
             "_phs_label_scan_lookup_in_progress", False
@@ -10041,6 +10130,14 @@ class Label_Match(tk.Tk):
             capture_result = self._capture_central_phs2_scan(
                 physical_qr_payload,
                 item_code,
+            )
+            self._apply_captured_central_phs2_scan(
+                capture_result,
+                central_check_pending=True,
+                local_work_identity=str(
+                    self.current_set_info.get("id") or ""
+                ),
+                on_capture_committed=on_capture_committed,
             )
         except Exception as exc:
             print(
@@ -10154,10 +10251,18 @@ class Label_Match(tk.Tk):
         if self.__dict__.get("_app_close_in_progress", False):
             return
         raw_input = self.entry.get().strip()
+        input_consumed = False
+
+        def consume_input():
+            nonlocal input_consumed
+            if input_consumed:
+                return
+            self.entry.delete(0, tk.END)
+            input_consumed = True
+
         if self._ui_lane_is_busy():
             self._show_ui_lane_rejection("busy")
             return
-        self.entry.delete(0, tk.END)
 
         if self.is_blinking or not self.initialized_successfully: return
         if not raw_input: return
@@ -10168,6 +10273,7 @@ class Label_Match(tk.Tk):
         )
         if raw_input in {'_RUN_AUTO_TEST_', '_RUN_DEMO_'}:
             if not test_tools_enabled:
+                consume_input()
                 self._handle_input_error(
                     raw_input,
                     title="[지원하지 않는 입력]",
@@ -10178,6 +10284,7 @@ class Label_Match(tk.Tk):
                 return
             if self._block_active_history_load_action("테스트 기능을 실행"):
                 return
+            consume_input()
 
         if raw_input == '_RUN_AUTO_TEST_':
             self._run_auto_test_simulation()
@@ -10194,6 +10301,7 @@ class Label_Match(tk.Tk):
             return
 
         if self.current_set_info.get("exact_rescan_active"):
+            consume_input()
             self._process_exact_rescan_product(raw_input)
             return
 
@@ -10231,6 +10339,7 @@ class Label_Match(tk.Tk):
             try:
                 transfer_label_data = _label_match_parse_sealed_transfer_qr(processed_input)
             except ValueError as exc:
+                consume_input()
                 self._handle_input_error(
                     raw_input,
                     title="[이적 컨테이너 QR 오류]",
@@ -10249,6 +10358,7 @@ class Label_Match(tk.Tk):
                         processed_input
                     )
                 except ValueError as exc:
+                    consume_input()
                     self._handle_input_error(
                         raw_input,
                         title="[PHS2 현품표 오류]",
@@ -10257,6 +10367,16 @@ class Label_Match(tk.Tk):
                     return
             else:
                 new_label_data = self._parse_new_format_label(processed_input)
+            central_label_candidate = bool(
+                new_label_data
+                and _label_match_has_central_source_identity(
+                    processed_input
+                )
+                and self.__dict__.get("package_logistics_client")
+                is not None
+            )
+            if not central_label_candidate:
+                consume_input()
             if transfer_label_data:
                 self._handle_input_error(
                     raw_input,
@@ -10284,23 +10404,26 @@ class Label_Match(tk.Tk):
                 client_code = new_label_data.get('CLC')
                 supplier_code = new_label_data.get('SPC')
                 phase = new_label_data.get('PHS')
-                if (
-                    _label_match_has_central_source_identity(
-                        processed_input
+                if central_label_candidate:
+                    previous_phase = self.current_set_info.get("phase")
+                    previous_name_override = self.current_set_info.get(
+                        "item_name_override"
                     )
-                    and self.__dict__.get(
-                        "package_logistics_client"
-                    )
-                    is not None
-                ):
                     self.current_set_info["phase"] = phase
                     self.current_set_info[
                         "item_name_override"
                     ] = supplier_code
-                    return self._begin_central_phs2_scan_overlay(
+                    accepted = self._begin_central_phs2_scan_overlay(
                         processed_input,
                         client_code,
+                        on_capture_committed=consume_input,
                     )
+                    if not accepted:
+                        self.current_set_info["phase"] = previous_phase
+                        self.current_set_info[
+                            "item_name_override"
+                        ] = previous_name_override
+                    return accepted
                 self.current_set_info['phase'] = phase
                 self.current_set_info['item_name_override'] = supplier_code
                 if _label_match_has_central_source_identity(processed_input):
@@ -10329,6 +10452,7 @@ class Label_Match(tk.Tk):
                 self._update_on_success_scan(raw_input, raw_input)
 
         elif 2 <= scan_pos <= self._workflow_total_scan_count():
+            consume_input()
             if (
                 test_tools_enabled
                 and scan_pos == 2
@@ -10396,6 +10520,8 @@ class Label_Match(tk.Tk):
                     return
                 self.current_set_info['production_date'] = production_date
             self._update_on_success_scan(raw_input, master_code)
+        else:
+            consume_input()
 
     def _current_sealed_transfer_exchange_attempt(
         self,
@@ -10418,10 +10544,12 @@ class Label_Match(tk.Tk):
 
     def _sealed_transfer_exchange_blocks_local_action(self, action):
         current_state = self.__dict__.get("current_set_info", {}) or {}
-        if (
-            self._ui_lane_is_busy()
-            and str(action or "") != "프로그램 종료"
-        ):
+        if str(action or "") == "프로그램 종료":
+            # Shutdown owns an explicit lane drain.  Durable exchange/package
+            # state survives restart, so this gate must not strand Tcl behind
+            # an active F5 command or a recoverable journal row.
+            return False
+        if self._ui_lane_is_busy():
             self._show_ui_lane_rejection("busy")
             return True
         if (
@@ -11002,7 +11130,7 @@ class Label_Match(tk.Tk):
             self._central_seal_lookup_in_progress = False
             print(
                 "제품 교체 준비 기술 진단: "
-                f"{getattr(error, 'code', error.__class__.__name__)}"
+                f"{self._ui_lane_diagnostic_text(error)}"
             )
             self.update_big_display("제품 교체 준비 차단", "red")
             self._render_operator_workbench()
@@ -11214,7 +11342,7 @@ class Label_Match(tk.Tk):
         def fail(error):
             print(
                 "제품 교체 lease gate 기술 진단: "
-                f"{getattr(error, 'code', error.__class__.__name__)}"
+                f"{self._ui_lane_diagnostic_text(error)}"
             )
             messagebox.showerror(
                 "제품 교체 상태 확인 실패",
@@ -11843,34 +11971,21 @@ class Label_Match(tk.Tk):
             return False
         captured = _label_match_capture_current_set(self.current_set_info)
         scope = self._phs_reconciliation_scope()
-        result_queue = queue.Queue(maxsize=1)
-        self._phs_reconciliation_lookup_pending = True
-        self.update_big_display("현품표 교체 작업 조회 중", "primary")
-        self._render_operator_workbench()
 
-        def worker():
-            try:
-                result_queue.put(
-                    (
-                        True,
-                        self.phs_label_exchange_coordinator
-                        .resolve_reconciliation_actions(
-                            authority_scope_id=scope,
-                            scan_payload=scan_payload,
-                            limit=20,
-                        ),
-                    )
+        def work():
+            return (
+                self.phs_label_exchange_coordinator
+                .resolve_reconciliation_actions(
+                    authority_scope_id=scope,
+                    scan_payload=scan_payload,
+                    limit=20,
                 )
-            except Exception as exc:
-                result_queue.put((False, exc))
+            )
 
-        def poll():
-            try:
-                ok, value = result_queue.get_nowait()
-            except queue.Empty:
-                self.after(100, poll)
-                return
+        def settle(_value, _error):
             self._phs_reconciliation_lookup_pending = False
+
+        def finish(value):
             unchanged = _label_match_current_set_unchanged(
                 self.current_set_info,
                 captured,
@@ -11889,32 +12004,45 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
                 self._focus_scan_entry_if_available()
                 return
-            if not ok:
-                self._phs_label_guidance_notice = WorkflowNotice(
-                    title="현품표 교체 작업 없음",
-                    message=(
-                        "현품표 교체 작업을 확인하지 못했습니다. "
-                        "F5를 눌러 다시 시도하세요."
-                    ),
-                    kind="phs_label_exchange",
-                    tone="danger",
-                )
-                self._render_operator_workbench()
-                self._focus_scan_entry_if_available()
-                return
             self._show_phs_replacement_required_notice_once(value)
             self._show_phs_reconciliation_action_window(
                 value,
                 captured_current_set=captured,
             )
 
-        threading.Thread(
-            target=worker,
-            name="label-match-phs-reconciliation-resolve",
-            daemon=True,
-        ).start()
-        self.after(100, poll)
-        return True
+        def fail(error):
+            print(f"F5 reconciliation lookup diagnostic: {error}")
+            self._phs_label_guidance_notice = WorkflowNotice(
+                title="현품표 교체 작업 없음",
+                message=(
+                    "현품표 교체 작업을 확인하지 못했습니다. "
+                    "F5를 눌러 다시 시도하세요."
+                ),
+                kind="phs_label_exchange",
+                tone="danger",
+            )
+            self._render_operator_workbench()
+            self._focus_scan_entry_if_available()
+
+        admission = self._submit_ui_lane_task(
+            name="f5-reconciliation-lookup",
+            busy_text="현품표 교체 작업 조회 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+            settle=settle,
+            failure_adapter=lambda error: Failure.from_exception(
+                error,
+                category="transient",
+                commit_state="not_started",
+                retryable=True,
+                safe_operator_code="F5_LOOKUP_FAILED",
+            ),
+        )
+        if admission is not None and admission.accepted:
+            self._phs_reconciliation_lookup_pending = True
+            return True
+        return False
 
     def _show_phs_reconciliation_action_window(
         self,
@@ -12040,13 +12168,6 @@ class Label_Match(tk.Tk):
             return False
         captured = _label_match_capture_current_set(self.current_set_info)
         working = copy.deepcopy(self.current_set_info)
-        result_queue = queue.Queue(maxsize=1)
-        self._phs_label_exchange_pending = True
-        self.update_big_display(
-            "현품표 출력 → 확인 → 교체 중",
-            "primary",
-        )
-        self._render_operator_workbench()
 
         def persist_working():
             return bool(
@@ -12058,61 +12179,73 @@ class Label_Match(tk.Tk):
                 )
             )
 
-        def worker():
+        def work():
             try:
-                result_queue.put(
-                    (
-                        True,
-                        self.phs_label_exchange_coordinator
-                        .execute_reconciliation(
-                            resolution,
-                            current_set=working,
-                            persist_current_set=persist_working,
-                            retry_failed_target_ids=(
-                                retry_failed_target_ids
-                            ),
-                            confirm_ambiguous_reprint_target_ids=(
-                                confirm_ambiguous_reprint_target_ids
-                            ),
+                result = (
+                    self.phs_label_exchange_coordinator
+                    .execute_reconciliation(
+                        resolution,
+                        current_set=working,
+                        persist_current_set=persist_working,
+                        retry_failed_target_ids=(
+                            retry_failed_target_ids
+                        ),
+                        confirm_ambiguous_reprint_target_ids=(
+                            confirm_ambiguous_reprint_target_ids
                         ),
                     )
                 )
-            except Exception as exc:
-                result_queue.put((False, exc))
+            except PHSLabelWorkflowError as error:
+                if (
+                    error.code
+                    == "PHS_PRINT_REPRINT_CONFIRMATION_REQUIRED"
+                ):
+                    target_id = str(
+                        error.details.get("target_label_id") or ""
+                    ).strip()
+                    return {
+                        "kind": "reprint_confirmation_required",
+                        "target_label_id": target_id,
+                    }
+                return {"kind": "business_failure"}
+            return {"kind": "result", "result": result}
 
-        def poll():
-            try:
-                ok, value = result_queue.get_nowait()
-            except queue.Empty:
-                self.after(100, poll)
-                return
+        def settle(_value, _error):
             self._phs_label_exchange_pending = False
+
+        def current_unchanged():
+            return _label_match_current_set_unchanged(
+                self.current_set_info,
+                captured,
+            )
+
+        def show_local_conflict():
+            self._phs_label_guidance_notice = WorkflowNotice(
+                title="현품표 교체 로컬 충돌",
+                message=(
+                    "교체 중 현재 포장 상태가 바뀌었습니다. "
+                    "중앙 처리 결과는 F5 복구만 사용하세요."
+                ),
+                kind="phs_label_exchange",
+                tone="danger",
+            )
+            self._render_operator_workbench()
+            self._focus_scan_entry_if_available()
+
+        def finish(payload):
             unchanged = _label_match_current_set_unchanged(
                 self.current_set_info,
                 captured,
             )
             if not unchanged:
-                self._phs_label_guidance_notice = WorkflowNotice(
-                    title="현품표 교체 로컬 충돌",
-                    message=(
-                        "교체 중 현재 포장 상태가 바뀌었습니다. "
-                        "중앙 처리 결과는 F5 복구만 사용하세요."
-                    ),
-                    kind="phs_label_exchange",
-                    tone="danger",
-                )
-                self._render_operator_workbench()
-                self._focus_scan_entry_if_available()
+                show_local_conflict()
                 return
             self.current_set_info = working
-            if not ok:
-                if (
-                    isinstance(value, PHSLabelWorkflowError)
-                    and value.code
-                    == "PHS_PRINT_REPRINT_CONFIRMATION_REQUIRED"
-                ):
+            kind = str(dict(payload or {}).get("kind") or "")
+            if kind != "result":
+                if kind == "reprint_confirmation_required":
                     target_id = str(
-                        value.details.get("target_label_id") or ""
+                        dict(payload or {}).get("target_label_id") or ""
                     ).strip()
                     if target_id:
                         self._phs_reconciliation_confirm_reprint_ids = {
@@ -12140,7 +12273,7 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
                 self._focus_scan_entry_if_available()
                 return
-            result = value
+            result = dict(payload or {}).get("result")
             self._phs_label_guidance_notice = WorkflowNotice(
                 title=(
                     "현품표 교체 완료"
@@ -12191,13 +12324,43 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
             self._focus_scan_entry_if_available()
 
-        threading.Thread(
-            target=worker,
-            name="label-match-phs-reconciliation-exchange",
-            daemon=True,
-        ).start()
-        self.after(100, poll)
-        return True
+        def fail(error):
+            print(f"F5 reconciliation exchange diagnostic: {error}")
+            if not current_unchanged():
+                show_local_conflict()
+                return
+            self.current_set_info = working
+            self._phs_label_guidance_notice = WorkflowNotice(
+                title="현품표 교체 실패",
+                message=(
+                    "현품표 교체를 완료하지 못했습니다. "
+                    "F5로 복구하거나 관리자에게 문의하세요."
+                ),
+                kind="phs_label_exchange",
+                tone="danger",
+            )
+            self._render_operator_workbench()
+            self._focus_scan_entry_if_available()
+
+        admission = self._submit_ui_lane_task(
+            name="f5-reconciliation-exchange",
+            busy_text="현품표 출력 → 확인 → 교체 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+            settle=settle,
+            failure_adapter=lambda error: Failure.from_exception(
+                error,
+                category="conflict_review",
+                commit_state="unknown",
+                retryable=None,
+                safe_operator_code="F5_EXCHANGE_REVIEW",
+            ),
+        )
+        if admission is not None and admission.accepted:
+            self._phs_label_exchange_pending = True
+            return True
+        return False
 
     def _show_phs_label_candidate_window(self, candidates):
         existing = self.__dict__.get(
@@ -12298,31 +12461,17 @@ class Label_Match(tk.Tk):
             self.current_set_info.get("raw") or ()
         )
         current_copy = copy.deepcopy(self.current_set_info)
-        result_queue = queue.Queue(maxsize=1)
-        self._phs_label_candidate_pending = True
-        self.update_big_display("교환할 작업지시 조회 중", "primary")
-        self._render_operator_workbench()
 
-        def worker():
-            try:
-                result_queue.put(
-                    (
-                        True,
-                        coordinator.list_candidates(
-                            current_copy, business_date
-                        ),
-                    )
-                )
-            except Exception as exc:
-                result_queue.put((False, exc))
+        def work():
+            return coordinator.list_candidates(
+                current_copy,
+                business_date,
+            )
 
-        def poll():
-            try:
-                ok, value = result_queue.get_nowait()
-            except queue.Empty:
-                self.after(100, poll)
-                return
+        def settle(_value, _error):
             self._phs_label_candidate_pending = False
+
+        def finish(value):
             if (
                 str(self.current_set_info.get("id") or "")
                 != captured_set_id
@@ -12330,15 +12479,6 @@ class Label_Match(tk.Tk):
                 != captured_raw
             ):
                 self._render_operator_workbench()
-                return
-            if not ok:
-                messagebox.showerror(
-                    "현품표 교환 후보 조회 실패",
-                    str(value),
-                    parent=self,
-                )
-                self._render_operator_workbench()
-                self._focus_scan_entry_if_available()
                 return
             if not value:
                 messagebox.showinfo(
@@ -12355,13 +12495,38 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
             self._show_phs_label_candidate_window(value)
 
-        threading.Thread(
-            target=worker,
-            name="label-match-phs-label-candidates",
-            daemon=True,
-        ).start()
-        self.after(100, poll)
-        return True
+        def fail(error):
+            print(f"F5 label candidate lookup diagnostic: {error}")
+            messagebox.showerror(
+                "현품표 교환 후보 조회 실패",
+                (
+                    "교환할 작업지시를 확인하지 못했습니다. "
+                    "잠시 후 다시 시도하고 계속 실패하면 관리자에게 문의하세요."
+                ),
+                parent=self,
+            )
+            self._render_operator_workbench()
+            self._focus_scan_entry_if_available()
+
+        admission = self._submit_ui_lane_task(
+            name="f5-label-candidate-lookup",
+            busy_text="교환할 작업지시 조회 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+            settle=settle,
+            failure_adapter=lambda error: Failure.from_exception(
+                error,
+                category="transient",
+                commit_state="not_started",
+                retryable=True,
+                safe_operator_code="F5_LOOKUP_FAILED",
+            ),
+        )
+        if admission is not None and admission.accepted:
+            self._phs_label_candidate_pending = True
+            return True
+        return False
 
     def _start_phs_label_exchange(
         self,
@@ -12384,13 +12549,6 @@ class Label_Match(tk.Tk):
             self.current_set_info.get("package_source_snapshot")
         )
         working = copy.deepcopy(self.current_set_info)
-        result_queue = queue.Queue(maxsize=1)
-        self._phs_label_exchange_pending = True
-        self.update_big_display(
-            "현품표 준비 → 실제 출력 → 교체 중",
-            "primary",
-        )
-        self._render_operator_workbench()
 
         def persist_working():
             return bool(
@@ -12402,31 +12560,56 @@ class Label_Match(tk.Tk):
                 )
             )
 
-        def worker():
+        def work():
             try:
-                result_queue.put(
-                    (
-                        True,
-                        self.phs_label_exchange_coordinator.execute_single(
-                            working,
-                            target_instruction,
-                            persist_current_set=persist_working,
-                            confirm_ambiguous_reprint=(
-                                confirm_ambiguous_reprint
-                            ),
-                        ),
-                    )
+                result = self.phs_label_exchange_coordinator.execute_single(
+                    working,
+                    target_instruction,
+                    persist_current_set=persist_working,
+                    confirm_ambiguous_reprint=(
+                        confirm_ambiguous_reprint
+                    ),
                 )
-            except Exception as exc:
-                result_queue.put((False, exc))
+            except PHSLabelWorkflowError as error:
+                if (
+                    error.code
+                    == "PHS_PRINT_REPRINT_CONFIRMATION_REQUIRED"
+                ):
+                    return {"kind": "reprint_confirmation_required"}
+                return {"kind": "business_failure"}
+            return {"kind": "result", "result": result}
 
-        def poll():
-            try:
-                ok, value = result_queue.get_nowait()
-            except queue.Empty:
-                self.after(100, poll)
-                return
+        def settle(_value, _error):
             self._phs_label_exchange_pending = False
+
+        def current_unchanged():
+            return bool(
+                str(self.current_set_info.get("id") or "")
+                == captured_set_id
+                and tuple(self.current_set_info.get("raw") or ())
+                == captured_raw
+                and tuple(
+                    self.current_set_info.get("parsed") or ()
+                )
+                == captured_parsed
+                and self.current_set_info.get(
+                    "package_source_snapshot"
+                )
+                == captured_snapshot
+            )
+
+        def show_local_conflict():
+            self._render_operator_workbench()
+            messagebox.showerror(
+                "현품표 교환 로컬 상태 충돌",
+                (
+                    "교환 중 현재 포장 상태가 변경됐습니다. "
+                    "추가 교체를 중지하고 관리자에게 문의하세요."
+                ),
+                parent=self,
+            )
+
+        def finish(payload):
             current_unchanged = bool(
                 str(self.current_set_info.get("id") or "")
                 == captured_set_id
@@ -12442,26 +12625,12 @@ class Label_Match(tk.Tk):
                 == captured_snapshot
             )
             if not current_unchanged:
-                self._render_operator_workbench()
-                messagebox.showerror(
-                    "현품표 교환 로컬 상태 충돌",
-                    (
-                        "교환 중 현재 포장 상태가 변경됐습니다. "
-                        "추가 교체를 중지하고 관리자에게 문의하세요."
-                    ),
-                    parent=self,
-                )
+                show_local_conflict()
                 return
-            if not ok:
-                # The coordinator works on a detached copy.  Any accepted
-                # active-successor refresh was durably saved before an error;
-                # failed local target writes roll their copy back.
-                self.current_set_info = working
-                if (
-                    isinstance(value, PHSLabelWorkflowError)
-                    and value.code
-                    == "PHS_PRINT_REPRINT_CONFIRMATION_REQUIRED"
-                ):
+            self.current_set_info = working
+            kind = str(dict(payload or {}).get("kind") or "")
+            if kind != "result":
+                if kind == "reprint_confirmation_required":
                     confirmed = messagebox.askyesno(
                         "실물 출력 확인 필요",
                         (
@@ -12472,10 +12641,14 @@ class Label_Match(tk.Tk):
                     )
                     self._render_operator_workbench()
                     if confirmed:
-                        return self._start_phs_label_exchange(
-                            target_instruction,
-                            confirm_ambiguous_reprint=True,
+                        self.after(
+                            0,
+                            lambda: self._start_phs_label_exchange(
+                                target_instruction,
+                                confirm_ambiguous_reprint=True,
+                            ),
                         )
+                        return
                     self._focus_scan_entry_if_available()
                     return
                 messagebox.showerror(
@@ -12486,8 +12659,7 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
                 self._focus_scan_entry_if_available()
                 return
-            self.current_set_info = working
-            result = value
+            result = dict(payload or {}).get("result")
             notice = WorkflowNotice(
                 title=(
                     "현품표 날짜 교환 완료"
@@ -12535,13 +12707,42 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
             self._focus_scan_entry_if_available()
 
-        threading.Thread(
-            target=worker,
-            name="label-match-phs-label-exchange",
-            daemon=True,
-        ).start()
-        self.after(100, poll)
-        return True
+        def fail(error):
+            print(f"F5 label exchange diagnostic: {error}")
+            if not current_unchanged():
+                show_local_conflict()
+                return
+            self.current_set_info = working
+            messagebox.showerror(
+                "현품표 날짜 교환 실패",
+                (
+                    "현품표 날짜 교환을 완료하지 못했습니다. "
+                    "관리자에게 문의하세요."
+                ),
+                parent=self,
+            )
+            self._render_operator_workbench()
+            self._focus_scan_entry_if_available()
+
+        admission = self._submit_ui_lane_task(
+            name="f5-label-exchange",
+            busy_text="현품표 준비 → 실제 출력 → 교체 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+            settle=settle,
+            failure_adapter=lambda error: Failure.from_exception(
+                error,
+                category="conflict_review",
+                commit_state="unknown",
+                retryable=None,
+                safe_operator_code="F5_EXCHANGE_REVIEW",
+            ),
+        )
+        if admission is not None and admission.accepted:
+            self._phs_label_exchange_pending = True
+            return True
+        return False
 
     def _handle_phs_label_exchange_shortcut(self, event=None):
         if not self._phs_label_exchange_enabled_for_current():
@@ -14207,6 +14408,7 @@ class Label_Match(tk.Tk):
             self._phs_label_guidance_notice = None
             self._workflow_recovered = False
 
+        self._advance_ui_lane_generation()
         self.current_set_info = {
             'id': None, 'parsed': [], 'raw': [],
             'start_time': None, 'error_count': 0, 'has_error_or_reset': False,
@@ -17354,7 +17556,13 @@ class Label_Match(tk.Tk):
         """Hard-block the worker surface without exposing storage internals."""
 
         print(f"로컬 durable commit 오류: {error}")
-        lease_failure = isinstance(error, OperationLeaseError)
+        lease_failure = bool(
+            isinstance(error, OperationLeaseError)
+            or (
+                isinstance(error, Failure)
+                and error.cause_type == "OperationLeaseError"
+            )
+        )
         message = (
             (
                 "이 장비의 포장 권한과 현재 현품표 상태를 확인하지 못했습니다. "

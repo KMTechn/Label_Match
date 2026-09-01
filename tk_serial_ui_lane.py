@@ -10,9 +10,11 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import itertools
 import queue
+import re
 import threading
 import time
 from typing import Any, Callable, Optional
+import uuid
 
 
 UI_LANE_SPEC = "kmtech-tk-ui-lane-v1"
@@ -46,19 +48,112 @@ class Admission:
         return self.accepted
 
 
+_FAILURE_CATEGORIES = {
+    "transient",
+    "business_reject",
+    "conflict_review",
+    "local_durability",
+    "programmer_error",
+}
+_COMMIT_STATES = {"not_started", "not_committed", "unknown", "committed"}
+_SAFE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+_DIAGNOSTIC_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{5,95}$")
+_DURABLE_RESUME_REF_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"
+)
+_CAUSE_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,95}$")
+
+
+@dataclass(frozen=True)
+class Failure(Exception):
+    """Safe, typed task failure delivered across the worker/Tk boundary.
+
+    Raw exception messages are deliberately not retained.  A task-specific
+    adapter can refine the domain fields while the conservative default keeps
+    unexpected failures fail-closed.
+    """
+
+    category: str
+    commit_state: str
+    retryable: Optional[bool]
+    safe_operator_code: str
+    diagnostic_id: str
+    durable_resume_ref: str
+    cause_type: str
+
+    def __post_init__(self) -> None:
+        if self.category not in _FAILURE_CATEGORIES:
+            raise ValueError("unsupported failure category")
+        if self.commit_state not in _COMMIT_STATES:
+            raise ValueError("unsupported failure commit state")
+        if not (
+            self.retryable is True
+            or self.retryable is False
+            or self.retryable is None
+        ):
+            raise ValueError("retryable must be true, false, or unknown")
+        if not _SAFE_CODE_RE.fullmatch(self.safe_operator_code):
+            raise ValueError("unsafe operator code")
+        if not _DIAGNOSTIC_ID_RE.fullmatch(self.diagnostic_id):
+            raise ValueError("invalid diagnostic id")
+        if self.durable_resume_ref and not _DURABLE_RESUME_REF_RE.fullmatch(
+            self.durable_resume_ref
+        ):
+            raise ValueError("unsafe durable resume reference")
+        if not _CAUSE_TYPE_RE.fullmatch(self.cause_type):
+            raise ValueError("unsafe failure cause type")
+
+    def __str__(self) -> str:
+        return f"{self.safe_operator_code} ({self.diagnostic_id})"
+
+    @property
+    def code(self) -> str:
+        """Compatibility alias for existing safe-code-only UI adapters."""
+
+        return self.safe_operator_code
+
+    @classmethod
+    def from_exception(
+        cls,
+        error: BaseException,
+        *,
+        category: str = "programmer_error",
+        commit_state: str = "unknown",
+        retryable: Optional[bool] = None,
+        safe_operator_code: str = "UNEXPECTED_WORK_FAILURE",
+        durable_resume_ref: str = "",
+    ) -> "Failure":
+        if isinstance(error, cls):
+            return error
+        diagnostic_id = f"UIL-{uuid.uuid4().hex[:16].upper()}"
+        cause_type = error.__class__.__name__[:96]
+        if not _CAUSE_TYPE_RE.fullmatch(cause_type):
+            cause_type = "Exception"
+        return cls(
+            category=category,
+            commit_state=commit_state,
+            retryable=retryable,
+            safe_operator_code=safe_operator_code,
+            diagnostic_id=diagnostic_id,
+            durable_resume_ref=str(durable_resume_ref or "")[:160],
+            cause_type=cause_type,
+        )
+
+
 @dataclass(frozen=True)
 class LaneTask:
     name: str
     generation: int
     work: Callable[[], Any]
     finish: Callable[[Any], None]
-    fail: Callable[[BaseException], None]
+    fail: Callable[[Failure], None]
     on_idle: Optional[Callable[[], None]] = None
     cancel_safe: bool = False
     shutdown_policy: str = DRAIN_TO_TERMINAL
     settle: Optional[
-        Callable[[Any, Optional[BaseException]], None]
+        Callable[[Any, Optional[Failure]], None]
     ] = None
+    failure_adapter: Optional[Callable[[BaseException], Failure]] = None
 
     def __post_init__(self) -> None:
         if not str(self.name or "").strip():
@@ -68,17 +163,25 @@ class LaneTask:
         for callback in (self.work, self.finish, self.fail):
             if not callable(callback):
                 raise TypeError("lane task callbacks must be callable")
+        if self.failure_adapter is not None and not callable(
+            self.failure_adapter
+        ):
+            raise TypeError("failure adapter must be callable")
 
 
 @dataclass(frozen=True)
 class _TaskEnvelope:
+    sequence: int
+    kind: str
     op_id: int
+    generation: int
     task: LaneTask
 
 
 @dataclass
 class _UiCallEnvelope:
     sequence: int
+    kind: str
     op_id: int
     generation: int
     callback: Callable[..., Any]
@@ -89,7 +192,7 @@ class _UiCallEnvelope:
     error: Optional[BaseException] = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class _ResultEnvelope:
     sequence: int
     kind: str
@@ -97,7 +200,7 @@ class _ResultEnvelope:
     generation: int
     task: LaneTask
     value: Any = None
-    error: Optional[BaseException] = None
+    error: Optional[Failure] = None
     elapsed: float = 0.0
 
 
@@ -137,6 +240,7 @@ class TkSerialUiLane:
         self._active: Optional[_TaskEnvelope] = None
         self._idle_barrier = False
         self._fault_presented = False
+        self._last_result_sequence = 0
         self._stop_sent = False
         self._task_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
         self._result_queue: queue.Queue[Any] = queue.Queue()
@@ -185,6 +289,13 @@ class TkSerialUiLane:
         with self._sequence_lock:
             return next(self._sequences)
 
+    def _enqueue_result(self, envelope: Any) -> None:
+        """Assign sequence and publish atomically across result producers."""
+
+        with self._sequence_lock:
+            envelope.sequence = next(self._sequences)
+            self._result_queue.put_nowait(envelope)
+
     def submit(self, task: LaneTask) -> Admission:
         self._assert_owner()
         if not isinstance(task, LaneTask):
@@ -196,7 +307,13 @@ class TkSerialUiLane:
                 return Admission(False, reason="closing")
             if self._active is not None or self._idle_barrier:
                 return Admission(False, reason="busy")
-            envelope = _TaskEnvelope(next(self._op_ids), task)
+            envelope = _TaskEnvelope(
+                sequence=self._next_sequence(),
+                kind="task",
+                op_id=next(self._op_ids),
+                generation=task.generation,
+                task=task,
+            )
             self._active = envelope
             self._state = LaneState.BUSY
         try:
@@ -227,7 +344,8 @@ class TkSerialUiLane:
             if active is None:
                 raise RuntimeError("Tk UI call has no active lane task")
             envelope = _UiCallEnvelope(
-                sequence=self._next_sequence(),
+                sequence=0,
+                kind="ui_call",
                 op_id=active.op_id,
                 generation=active.task.generation,
                 callback=callback,
@@ -235,7 +353,7 @@ class TkSerialUiLane:
                 kwargs=dict(kwargs),
                 event=threading.Event(),
             )
-            self._result_queue.put_nowait(envelope)
+            self._enqueue_result(envelope)
         envelope.event.wait()
         if envelope.error is not None:
             raise envelope.error
@@ -308,32 +426,36 @@ class TkSerialUiLane:
                     try:
                         value = queued.task.work()
                     except BaseException as exc:
+                        failure = self._adapt_task_failure(
+                            queued.task,
+                            exc,
+                        )
                         result = _ResultEnvelope(
-                            self._next_sequence(),
+                            0,
                             "failure",
                             queued.op_id,
-                            queued.task.generation,
+                            queued.generation,
                             queued.task,
-                            error=exc,
+                            error=failure,
                             elapsed=time.monotonic() - started,
                         )
                     else:
                         result = _ResultEnvelope(
-                            self._next_sequence(),
+                            0,
                             "success",
                             queued.op_id,
-                            queued.task.generation,
+                            queued.generation,
                             queued.task,
                             value=value,
                             elapsed=time.monotonic() - started,
                         )
-                    self._result_queue.put_nowait(result)
+                    self._enqueue_result(result)
                 finally:
                     self._task_queue.task_done()
         except BaseException as exc:
-            self._result_queue.put_nowait(
+            self._enqueue_result(
                 _ResultEnvelope(
-                    self._next_sequence(),
+                    0,
                     "runner_fault",
                     0,
                     0,
@@ -344,8 +466,30 @@ class TkSerialUiLane:
                         lambda _value: None,
                         lambda _error: None,
                     ),
-                    error=exc,
+                    error=Failure.from_exception(
+                        exc,
+                        safe_operator_code="UI_LANE_RUNNER_FAULT",
+                    ),
                 )
+            )
+
+    @staticmethod
+    def _adapt_task_failure(
+        task: LaneTask,
+        error: BaseException,
+    ) -> Failure:
+        adapter = task.failure_adapter
+        if adapter is None:
+            return Failure.from_exception(error)
+        try:
+            failure = adapter(error)
+            if not isinstance(failure, Failure):
+                raise TypeError("failure adapter must return Failure")
+            return failure
+        except BaseException as adapter_error:
+            return Failure.from_exception(
+                adapter_error,
+                safe_operator_code="FAILURE_ADAPTER_ERROR",
             )
 
     def _schedule_pump(self) -> None:
@@ -373,8 +517,24 @@ class TkSerialUiLane:
                 break
             try:
                 if isinstance(envelope, _UiCallEnvelope):
+                    if envelope.sequence <= self._last_result_sequence:
+                        self._break_lane(
+                            RuntimeError(
+                                "Tk UI lane result sequence regressed"
+                            )
+                        )
+                        break
+                    self._last_result_sequence = envelope.sequence
                     self._apply_ui_call(envelope)
                 elif isinstance(envelope, _ResultEnvelope):
+                    if envelope.sequence <= self._last_result_sequence:
+                        self._break_lane(
+                            RuntimeError(
+                                "Tk UI lane result sequence regressed"
+                            )
+                        )
+                        break
+                    self._last_result_sequence = envelope.sequence
                     self._apply_result(envelope)
                 else:
                     self._break_lane(
@@ -435,8 +595,11 @@ class TkSerialUiLane:
                 else:
                     task.fail(
                         envelope.error
-                        or RuntimeError(
-                            "Tk UI lane task failed without an exception"
+                        or Failure.from_exception(
+                            RuntimeError(
+                                "Tk UI lane task failed without a failure"
+                            ),
+                            safe_operator_code="UI_LANE_FAILURE_MISSING",
                         )
                     )
         except BaseException as exc:
@@ -629,6 +792,7 @@ __all__ = [
     "CoalescingTrigger",
     "DRAIN_TO_DURABLE_HANDOFF",
     "DRAIN_TO_TERMINAL",
+    "Failure",
     "LaneState",
     "LaneTask",
     "TkSerialUiLane",

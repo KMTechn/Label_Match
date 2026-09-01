@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 import threading
 import time
@@ -27,7 +28,11 @@ def _app_with_lane():
     app.update_big_display = lambda *_args: None
     app._render_operator_workbench = lambda: None
     app._focus_scan_entry_if_available = lambda: None
-    app.ui_lane = TkSerialUiLane(root, poll_ms=1)
+    app.ui_lane = TkSerialUiLane(
+        root,
+        poll_ms=1,
+        generation_provider=lambda: app._ui_lane_generation,
+    )
     return app, root
 
 
@@ -109,6 +114,9 @@ def test_phs2_capture_validation_runs_off_tk_and_materializes_on_tk():
     assert app._begin_central_phs2_scan_overlay_on_lane(
         "PHS2-RAW",
         "ITEM-1",
+        on_capture_committed=lambda: thread_trace.append(
+            ("input-consumed", threading.get_ident())
+        ),
     ) is True
     assert time.perf_counter() - started_at < 0.1
     assert app._ui_lane_busy_label == "현품표 저장 · 중앙 확인 중"
@@ -120,6 +128,10 @@ def test_phs2_capture_validation_runs_off_tk_and_materializes_on_tk():
         if name in {"capture", "prepare", "execute"}
     }
     assert worker_ids == {app.ui_lane.worker_thread_id}
+    assert ("input-consumed", owner) in thread_trace
+    assert thread_trace.index(("capture", app.ui_lane.worker_thread_id)) < (
+        thread_trace.index(("input-consumed", owner))
+    )
     assert ("materialize", owner) in thread_trace
     assert app._phs_label_scan_lookup_in_progress is False
     assert app._ui_lane_busy_label == ""
@@ -436,4 +448,275 @@ def test_scan_is_not_cleared_while_lane_is_busy():
     assert rejected == ["busy"]
     gate.set()
     root.run_until(lambda: not app.ui_lane.is_busy())
+    _close_lane(app, root)
+
+
+def test_scan_is_not_cleared_when_non_lane_gate_rejects_it():
+    app, root = _app_with_lane()
+    deleted = []
+    app._app_close_in_progress = False
+    app.is_blinking = False
+    app.initialized_successfully = True
+    app.entry = SimpleNamespace(
+        get=lambda: "PHS2-PRESERVE-BLOCKED",
+        delete=lambda *_args: deleted.append(True),
+    )
+    app._sealed_transfer_exchange_blocks_local_action = (
+        lambda action: action == "다음 스캔"
+    )
+
+    app.process_input()
+
+    assert deleted == []
+    _close_lane(app, root)
+
+
+def test_current_set_reset_advances_ui_generation():
+    app, root = _app_with_lane()
+    app.is_blinking = False
+    app.initialized_successfully = False
+    app.progress_bar = {}
+    initial_generation = app._ui_lane_generation
+
+    assert app._reset_current_set() is True
+
+    assert app._ui_lane_generation == initial_generation + 1
+    _close_lane(app, root)
+
+
+def test_generation_transition_settles_stale_task_and_clears_busy_ui():
+    app, root = _app_with_lane()
+    gate = threading.Event()
+    settled = []
+    rendered = []
+
+    admission = app._submit_ui_lane_task(
+        name="stale-generation",
+        busy_text="중앙 확인 중",
+        work=lambda: gate.wait(timeout=2.0) or "receipt",
+        finish=rendered.append,
+        fail=lambda error: rendered.append(error),
+        settle=lambda value, error: settled.append((value, error)),
+    )
+    assert admission.accepted is True
+    assert app._ui_lane_busy_label == "중앙 확인 중"
+
+    app._advance_ui_lane_generation()
+    gate.set()
+    root.run_until(lambda: not app.ui_lane.is_busy())
+
+    assert settled == [(True, None)]
+    assert rendered == []
+    assert app._ui_lane_busy_label == ""
+    _close_lane(app, root)
+
+
+def test_current_generation_keeps_busy_visible_through_terminal_apply():
+    app, root = _app_with_lane()
+    observed_busy = []
+
+    admission = app._submit_ui_lane_task(
+        name="terminal-busy-order",
+        busy_text="중앙 확인 중",
+        work=lambda: "receipt",
+        finish=lambda _value: observed_busy.append(
+            app._ui_lane_busy_label
+        ),
+        fail=pytest.fail,
+    )
+    assert admission.accepted is True
+    root.run_until(lambda: not app.ui_lane.is_busy())
+
+    assert observed_busy == ["중앙 확인 중"]
+    assert app._ui_lane_busy_label == ""
+    _close_lane(app, root)
+
+
+def test_failed_durable_capture_preserves_input_and_exposes_only_failure(
+    capsys,
+):
+    app, root = _app_with_lane()
+    consumed = []
+    failures = []
+    app._phs_label_scan_lookup_in_progress = False
+
+    def capture(*_args):
+        raise RuntimeError(
+            "Authorization: Bearer DO-NOT-LEAK; "
+            "https://secret.invalid/capture"
+        )
+
+    app._capture_central_phs2_scan = capture
+    app._show_deferred_capture_failure = failures.append
+    app._show_deferred_capture_pending = lambda *_args, **_kwargs: None
+    app._render_operator_workbench = lambda: None
+
+    assert app._begin_central_phs2_scan_overlay_on_lane(
+        "PHS2-RAW",
+        "ITEM-1",
+        on_capture_committed=lambda: consumed.append(True),
+    ) is True
+    root.run_until(lambda: not app.ui_lane.is_busy())
+
+    assert consumed == []
+    assert len(failures) == 1
+    assert failures[0].safe_operator_code == "PHS2_CAPTURE_FAILED"
+    diagnostic = capsys.readouterr().out + repr(failures[0])
+    assert "DO-NOT-LEAK" not in diagnostic
+    assert "secret.invalid" not in diagnostic
+    _close_lane(app, root)
+
+
+def test_program_close_bypasses_f5_pending_gate_for_lane_drain():
+    app, root = _app_with_lane()
+    app.run_tests = True
+    app._phs_label_exchange_pending = True
+    app._phs_label_candidate_pending = True
+    app._phs_reconciliation_lookup_pending = True
+    app._phs_label_scan_lookup_in_progress = True
+
+    assert (
+        app._sealed_transfer_exchange_blocks_local_action("프로그램 종료")
+        is False
+    )
+    _close_lane(app, root)
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    (
+        "_begin_phs_reconciliation_lookup",
+        "_start_phs_reconciliation_exchange",
+        "_begin_phs_label_candidate_lookup",
+        "_start_phs_label_exchange",
+    ),
+)
+def test_f5_slow_paths_have_no_per_operation_thread(method_name):
+    source = inspect.getsource(getattr(label_module.Label_Match, method_name))
+
+    assert "threading.Thread" not in source
+    assert "_submit_ui_lane_task" in source
+
+
+def test_all_four_f5_slow_paths_share_the_tracked_lane_worker():
+    app, root = _app_with_lane()
+    owner = root.owner_thread_id
+    trace = []
+    app.after = root.after
+    app.run_tests = True
+    app.worker_name = "operator"
+    app._phs_label_guidance_notice = None
+    app._phs_reconciliation_lookup_pending = False
+    app._phs_label_candidate_pending = False
+    app._phs_label_exchange_pending = False
+    app._phs_reconciliation_scope = lambda: "PACKAGING"
+    app._show_phs_replacement_required_notice_once = (
+        lambda value: trace.append(("resolve-apply", threading.get_ident(), value))
+    )
+    app._show_phs_reconciliation_action_window = lambda value, **_kwargs: (
+        trace.append(("resolve-window", threading.get_ident(), value))
+    )
+    app._show_phs_label_candidate_window = lambda value: trace.append(
+        ("candidate-window", threading.get_ident(), value)
+    )
+    app._focus_scan_entry_if_available = lambda: trace.append(
+        ("focus", threading.get_ident())
+    )
+
+    result = SimpleNamespace(
+        success=True,
+        status="ACKED",
+        exchange_id="exchange-1",
+        error_code="",
+    )
+
+    class Coordinator:
+        @staticmethod
+        def resolve_reconciliation_actions(**_kwargs):
+            trace.append(("resolve-work", threading.get_ident()))
+            return {"actions": []}
+
+        @staticmethod
+        def execute_reconciliation(
+            _resolution,
+            *,
+            current_set,
+            persist_current_set,
+            **_kwargs,
+        ):
+            trace.append(("reconcile-work", threading.get_ident()))
+            assert persist_current_set() is True
+            current_set["active_label_qr_payload"] = "PHS=2|CLC=ITEM"
+            return result
+
+        @staticmethod
+        def list_candidates(_current, _business_date):
+            trace.append(("candidate-work", threading.get_ident()))
+            return [{"instruction_id": "instruction-1"}]
+
+        @staticmethod
+        def execute_single(
+            current_set,
+            _target,
+            *,
+            persist_current_set,
+            **_kwargs,
+        ):
+            trace.append(("single-work", threading.get_ident()))
+            assert persist_current_set() is True
+            current_set["active_label_qr_payload"] = "PHS=2|CLC=ITEM"
+            return result
+
+    class DataManager:
+        @staticmethod
+        def save_current_state(_state):
+            trace.append(("persist", threading.get_ident()))
+            return True
+
+        @staticmethod
+        def log_event(_event, _details):
+            trace.append(("log", threading.get_ident()))
+
+    app.phs_label_exchange_coordinator = Coordinator()
+    app.data_manager = DataManager()
+
+    assert app._begin_phs_reconciliation_lookup("PHS2-SCAN") is True
+    root.run_until(
+        lambda: not app._phs_reconciliation_lookup_pending
+        and any(row[0] == "resolve-window" for row in trace)
+    )
+    assert app._start_phs_reconciliation_exchange({"actions": []}) is True
+    root.run_until(
+        lambda: not app._phs_label_exchange_pending
+        and any(row[0] == "reconcile-work" for row in trace)
+    )
+    assert app._begin_phs_label_candidate_lookup("2026-09-02") is True
+    root.run_until(
+        lambda: not app._phs_label_candidate_pending
+        and any(row[0] == "candidate-window" for row in trace)
+    )
+    assert app._start_phs_label_exchange(
+        {"instruction_id": "instruction-1"}
+    ) is True
+    root.run_until(
+        lambda: not app._phs_label_exchange_pending
+        and any(row[0] == "single-work" for row in trace)
+    )
+
+    worker_id = app.ui_lane.worker_thread_id
+    assert {
+        row[0]
+        for row in trace
+        if len(row) > 1 and row[1] == worker_id
+    } >= {
+        "resolve-work",
+        "reconcile-work",
+        "candidate-work",
+        "single-work",
+        "persist",
+    }
+    for row in trace:
+        if row[0] in {"resolve-apply", "resolve-window", "candidate-window"}:
+            assert row[1] == owner
+    assert app.ui_lane.worker_thread in app._tracked_tk_shutdown_threads()
     _close_lane(app, root)

@@ -130,7 +130,8 @@ def test_f5_scan_and_background_exchange_restore_scanner_focus():
 
     assert 'bind("<Return>", submit)' in scan_source
     assert "scan_entry.focus_set()" in scan_source
-    assert "threading.Thread" in exchange_source
+    assert "threading.Thread" not in exchange_source
+    assert "_submit_ui_lane_task" in exchange_source
     assert "_focus_scan_entry_if_available()" in exchange_source
     assert "messagebox.showinfo" not in exchange_source
 
