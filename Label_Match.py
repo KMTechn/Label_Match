@@ -246,6 +246,13 @@ from ui.operator_layout import build_operator_layout
 from ui.style_tokens import build_style_tokens
 from ui.workflow_snapshot_adapter import adapt_workflow_snapshot
 from ui.workflow_view_state import WorkflowNotice, operator_safe_message, present_workflow
+from tk_serial_ui_lane import (
+    CoalescingTrigger,
+    LaneState,
+    LaneTask,
+    TkSerialUiLane,
+    UI_LANE_SPEC,
+)
 
 LABEL_MATCH_SOURCE_SYSTEM = "label_match"
 LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET = "legacy_packaging_csv"
@@ -5037,6 +5044,9 @@ class Label_Match(tk.Tk):
         self._initial_load_after_id = None
         self._history_after_id = None
         self._update_check_after_id = None
+        self._ui_lane_generation = 0
+        self._ui_lane_busy_label = ""
+        self._ui_lane_busy_task = ""
         self._capture_startup_geometry = capture_startup_geometry
         self._capture_startup_dpi = capture_startup_dpi
         self._capture_dpi_awareness = capture_dpi_awareness
@@ -5296,7 +5306,156 @@ class Label_Match(tk.Tk):
                 state=self.state(),
                 window_dpi=capture_reveal_receipt["window_dpi"],
             )
+        self.ui_lane = TkSerialUiLane(
+            self,
+            generation_provider=lambda: int(
+                self.__dict__.get("_ui_lane_generation", 0)
+            ),
+            on_runner_fault=self._handle_ui_lane_fault,
+        )
+        self._deferred_validation_lane_trigger = CoalescingTrigger(
+            self.ui_lane,
+            self._build_deferred_validation_lane_task,
+            on_admitted=self._on_deferred_validation_lane_admitted,
+        )
         _label_match_startup_trace("app_init_complete")
+
+    def _ui_lane_is_busy(self):
+        lane = self.__dict__.get("ui_lane")
+        if lane is None:
+            return False
+        return bool(
+            lane.is_busy()
+            or lane.state in {
+                LaneState.DRAINING,
+                LaneState.BROKEN,
+            }
+        )
+
+    def _set_ui_lane_busy(self, task_name, operator_text):
+        self._ui_lane_busy_task = str(task_name or "")
+        self._ui_lane_busy_label = str(operator_text or "처리 중")
+        if self.__dict__.get("operator_workbench_ready"):
+            self._render_operator_workbench()
+        if "big_display_label" in self.__dict__:
+            self.update_big_display(self._ui_lane_busy_label, "primary")
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            try:
+                status_label.config(
+                    text=(
+                        f"{self._ui_lane_busy_label} · 통신 완료 전 추가 입력은 받지 않습니다."
+                    ),
+                    style="Status.TLabel",
+                )
+            except (TclError, AttributeError):
+                pass
+
+    def _clear_ui_lane_busy(self, task_name=""):
+        active_name = str(self.__dict__.get("_ui_lane_busy_task") or "")
+        if task_name and active_name and str(task_name) != active_name:
+            return
+        self._ui_lane_busy_task = ""
+        self._ui_lane_busy_label = ""
+        if self.__dict__.get("operator_workbench_ready"):
+            self._render_operator_workbench()
+        self._focus_scan_entry_if_available()
+
+    def _show_ui_lane_rejection(self, reason="busy"):
+        closing = str(reason or "") == "closing"
+        headline = (
+            "처리 완료 후 종료합니다"
+            if closing
+            else "이전 작업 처리 중 · 입력 보존"
+        )
+        if "big_display_label" in self.__dict__:
+            self.update_big_display(headline, "primary")
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            try:
+                status_label.config(
+                    text=(
+                        "새 작업은 받지 않습니다. 처리 완료 후 종료합니다."
+                        if closing
+                        else "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+                    ),
+                    style="Status.TLabel",
+                )
+            except (TclError, AttributeError):
+                pass
+
+    def _handle_ui_lane_fault(self, error):
+        self._ui_lane_busy_task = ""
+        self._ui_lane_busy_label = ""
+        print(
+            "Label Tk UI lane technical diagnostic: "
+            f"{getattr(error, 'code', error.__class__.__name__)}"
+        )
+        if "big_display_label" in self.__dict__:
+            self.update_big_display("처리 상태 확인 필요", "red")
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            try:
+                status_label.config(
+                    text="처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요.",
+                    style="Error.TLabel",
+                )
+            except (TclError, AttributeError):
+                pass
+        if self.__dict__.get("operator_workbench_ready"):
+            self._render_operator_workbench()
+
+    def _submit_ui_lane_task(
+        self,
+        *,
+        name,
+        busy_text,
+        work,
+        finish,
+        fail,
+        generation=None,
+        on_idle=None,
+        settle=None,
+        shutdown_policy="DRAIN_TO_TERMINAL",
+    ):
+        lane = self.__dict__.get("ui_lane")
+        if lane is None:
+            return None
+        task_name = str(name or "label-operation")
+
+        def finish_on_tk(value):
+            try:
+                finish(value)
+            finally:
+                self._clear_ui_lane_busy(task_name)
+
+        def fail_on_tk(error):
+            try:
+                fail(error)
+            finally:
+                self._clear_ui_lane_busy(task_name)
+
+        admission = lane.submit(
+            LaneTask(
+                name=task_name,
+                generation=int(
+                    self.__dict__.get("_ui_lane_generation", 0)
+                    if generation is None
+                    else generation
+                ),
+                work=work,
+                finish=finish_on_tk,
+                fail=fail_on_tk,
+                on_idle=on_idle,
+                settle=settle,
+                shutdown_policy=shutdown_policy,
+            )
+        )
+        if admission.accepted:
+            self._set_ui_lane_busy(task_name, busy_text)
+        else:
+            self._show_ui_lane_rejection(admission.reason)
+        return admission
 
     def _start_package_outbox_drain(self):
         package_processor = self.__dict__.get("package_outbox_processor")
@@ -5499,6 +5658,14 @@ class Label_Match(tk.Tk):
             )
         )
         if not needs_source_refresh:
+            if (
+                self.__dict__.get("ui_lane") is not None
+                and not self.__dict__.get("run_tests", False)
+                and not self.__dict__.get(
+                    "is_running_simulation", False
+                )
+            ):
+                return self._enqueue_central_package_submission()
             # PHS2 acceptance already captured strict source evidence. F3 can
             # only claim completion after the current-set recovery authority
             # has been durably refreshed with every accepted scan.
@@ -5525,6 +5692,53 @@ class Label_Match(tk.Tk):
                 active_updates,
             )
             return self._enqueue_central_package_submission()
+
+        if self.__dict__.get("ui_lane") is not None:
+            set_id = str(current.get("id") or "")
+            master = tuple(current.get("raw") or ())
+            captured = copy.deepcopy(current)
+
+            def work():
+                return self._resolve_central_phs2_seal_for_exchange(
+                    captured
+                )
+
+            def finish(value):
+                self._central_package_preflight_in_progress = False
+                if (
+                    str(self.current_set_info.get("id") or "") != set_id
+                    or tuple(self.current_set_info.get("raw") or ())
+                    != master
+                ):
+                    self._render_operator_workbench()
+                    return
+                sealed, snapshot, active_updates = value
+                try:
+                    self._apply_resolved_central_phs2_seal(
+                        sealed,
+                        snapshot,
+                        active_updates,
+                    )
+                except Exception as exc:
+                    self._publish_durable_commit_block(exc)
+                    return
+                self.after(0, self._enqueue_central_package_submission)
+
+            def fail(error):
+                self._central_package_preflight_in_progress = False
+                self._publish_submission_block(error)
+
+            admission = self._submit_ui_lane_task(
+                name="f3-package-source-refresh",
+                busy_text="포장 완료 · 현재 제품 집합 확인 중",
+                work=work,
+                finish=finish,
+                fail=fail,
+            )
+            if admission is not None and admission.accepted:
+                self._central_package_preflight_in_progress = True
+                return True
+            return False
 
         set_id = str(current.get("id") or "")
         master = tuple(current.get("raw") or ())
@@ -6904,6 +7118,7 @@ class Label_Match(tk.Tk):
         """Return app-owned workers that can retain or callback into this root."""
 
         state = self.__dict__
+        ui_lane = state.get("ui_lane")
         candidates = [
             state.get("_initial_load_thread"),
             state.get("_audio_init_thread"),
@@ -6915,6 +7130,7 @@ class Label_Match(tk.Tk):
             state.get("_direct_sync_auto_bootstrap_thread"),
             state.get("_app_close_sync_thread"),
             state.get("direct_sync_session_thread"),
+            getattr(ui_lane, "worker_thread", None),
         ]
         for attr_name in (
             "_history_loader_threads",
@@ -6979,6 +7195,23 @@ class Label_Match(tk.Tk):
             return None
         if state.get("_tk_destroy_in_progress", False):
             return None
+        ui_lane = state.get("ui_lane")
+        if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
+            if ui_lane.is_busy():
+                if not state.get("_tk_destroy_waiting_for_ui_lane", False):
+                    state["_tk_destroy_waiting_for_ui_lane"] = True
+                    self._show_ui_lane_rejection("closing")
+                    ui_lane.drain_then(self.destroy)
+                return None
+            try:
+                ui_lane.close_idle()
+            except Exception as exc:
+                print(
+                    "Tk 종료 중 UI lane 정리 오류: "
+                    f"{getattr(exc, 'code', exc.__class__.__name__)}"
+                )
+                return None
+        state["_tk_destroy_waiting_for_ui_lane"] = False
         state["_tk_destroy_in_progress"] = True
         state["_tk_shutdown_requested"] = True
         self._stop_error_siren()
@@ -7025,23 +7258,52 @@ class Label_Match(tk.Tk):
                 state["_tk_destroy_complete"] = True
             state["_tk_destroy_in_progress"] = False
 
-    def on_closing(self):
-        if self.__dict__.get("_app_close_in_progress", False):
+    def on_closing(self, _confirmed=False):
+        if (
+            self.__dict__.get("_app_close_in_progress", False)
+            and not _confirmed
+        ):
             return
-        if not self.initialized_successfully:
-            self._cancel_pending_ui_jobs()
-            self.destroy()
-            return
-        if self._sealed_transfer_exchange_blocks_local_action("프로그램 종료"):
-            return
-        if self._has_background_work():
-            if not self.run_tests:
-                messagebox.showwarning("작업 진행 중", "테스트 시뮬레이션 또는 테스트 로그 생성이 진행 중입니다.\n작업이 끝난 뒤 프로그램을 종료하세요.")
-            return
-        
-        do_close = self.run_tests or messagebox.askokcancel("종료 확인", "프로그램을 종료하시겠습니까?")
+        if not _confirmed:
+            if not self.initialized_successfully:
+                self._cancel_pending_ui_jobs()
+                self.destroy()
+                return
+            if self._sealed_transfer_exchange_blocks_local_action("프로그램 종료"):
+                return
+            if self._has_background_work():
+                if not self.run_tests:
+                    messagebox.showwarning("작업 진행 중", "테스트 시뮬레이션 또는 테스트 로그 생성이 진행 중입니다.\n작업이 끝난 뒤 프로그램을 종료하세요.")
+                return
+            do_close = self.run_tests or messagebox.askokcancel(
+                "종료 확인",
+                "프로그램을 종료하시겠습니까?",
+            )
+        else:
+            do_close = True
 
         if do_close:
+            ui_lane = self.__dict__.get("ui_lane")
+            if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
+                self._app_close_in_progress = True
+                entry = self.__dict__.get("entry")
+                if entry is not None:
+                    try:
+                        configure_entry = getattr(
+                            entry,
+                            "configure",
+                            None,
+                        ) or getattr(entry, "config")
+                        configure_entry(state="disabled")
+                    except Exception:
+                        pass
+                if ui_lane.is_busy():
+                    self._show_ui_lane_rejection("closing")
+                    ui_lane.drain_then(
+                        lambda: self.on_closing(_confirmed=True)
+                    )
+                    return
+                ui_lane.close_idle()
             self._app_close_in_progress = True
             self.is_blinking = False
             self._cancel_pending_ui_jobs()
@@ -7111,6 +7373,8 @@ class Label_Match(tk.Tk):
             "_initial_load_after_id",
             "_history_after_id",
             "_update_check_after_id",
+            "_deferred_validation_after_id",
+            "_deferred_observability_poll_after_id",
             "_app_close_poll_after_id",
             "package_outbox_after_id",
             "package_outbox_poll_after_id",
@@ -8616,7 +8880,12 @@ class Label_Match(tk.Tk):
             str(getattr(capture_result, "intent_id", "") or "")
         )
 
-    def _execute_deferred_label_validation(self, claim):
+    def _execute_deferred_label_validation(
+        self,
+        claim,
+        *,
+        return_materialization=False,
+    ):
         store = self.__dict__.get("deferred_intent_capture")
         if store is None or not isinstance(claim, DeferredValidationClaim):
             raise DeferredIntentCaptureError(
@@ -8674,7 +8943,7 @@ class Label_Match(tk.Tk):
                 expires_at=str((operation_lease or {}).get("expires_at") or "")
                 or None,
             )
-            self._deferred_label_materialization = {
+            materialization = {
                 "intent_id": result.intent_id,
                 "local_work_identity": str(
                     payload.get("local_work_identity") or ""
@@ -8684,6 +8953,9 @@ class Label_Match(tk.Tk):
                 "sealed": dict(sealed) if isinstance(sealed, dict) else sealed,
                 "operation_lease": dict(operation_lease or {}),
             }
+            if return_materialization:
+                return result, materialization
+            self._deferred_label_materialization = materialization
             return result
         except DeferredIntentCaptureError:
             raise
@@ -8693,7 +8965,7 @@ class Label_Match(tk.Tk):
                 step_id=current_step,
                 dispatch_record=dispatch_record,
             )
-            return store.finish_validation(
+            classified_result = store.finish_validation(
                 claim,
                 step_id=current_step,
                 outcome=classified["outcome"],
@@ -8701,6 +8973,9 @@ class Label_Match(tk.Tk):
                 evidence=classified["evidence"],
                 retry_after_seconds=classified["retry_after_seconds"],
             )
+            if return_materialization:
+                return classified_result, None
+            return classified_result
 
     def _materialize_validated_deferred_label(self, result):
         """Apply one freshly validated FIFO row to the durable current set once."""
@@ -9018,9 +9293,150 @@ class Label_Match(tk.Tk):
 
         self._deferred_validation_after_id = self.after(int(delay_ms), run_once)
 
+    def _on_deferred_validation_lane_admitted(self, _admission):
+        self._deferred_validation_worker_in_progress = True
+        self._set_ui_lane_busy(
+            "deferred-validation",
+            "저장된 현품표 · 중앙 확인 중",
+        )
+
+    def _build_deferred_validation_lane_task(self):
+        store = self.__dict__.get("deferred_intent_capture")
+        current_is_empty = not bool(
+            list((self.__dict__.get("current_set_info") or {}).get("raw") or [])
+        )
+        work_state = {}
+
+        def work():
+            try:
+                if store is None:
+                    return {"kind": "idle", "result": None}
+                intent_id = store.next_validation_candidate()
+                if not intent_id:
+                    next_materialization = getattr(
+                        store,
+                        "next_materialization_candidate",
+                        None,
+                    )
+                    materialization_id = (
+                        next_materialization()
+                        if callable(next_materialization)
+                        else None
+                    )
+                    if materialization_id and current_is_empty:
+                        store.requeue_validated_for_materialization(
+                            materialization_id
+                        )
+                        intent_id = store.next_validation_candidate()
+                if not intent_id:
+                    return {"kind": "idle", "result": None}
+                validation_work = self._prepare_deferred_intent_validation(
+                    intent_id
+                )
+                work_state["validation_work"] = validation_work
+                if isinstance(validation_work, DeferredValidationClaim):
+                    result, materialization = (
+                        self._execute_deferred_label_validation(
+                            validation_work,
+                            return_materialization=True,
+                        )
+                    )
+                    return {
+                        "kind": "result",
+                        "result": result,
+                        "materialization": materialization,
+                    }
+                return {
+                    "kind": "result",
+                    "result": validation_work,
+                    "materialization": None,
+                }
+            except Exception as error:
+                validation_work = work_state.get("validation_work")
+                durable = None
+                if (
+                    store is not None
+                    and isinstance(validation_work, DeferredValidationClaim)
+                ):
+                    durable = store.validation_status(
+                        validation_work.intent_id
+                    )
+                return {
+                    "kind": "error",
+                    "error": error,
+                    "durable": durable,
+                }
+
+        def finish(payload):
+            self._deferred_validation_worker_in_progress = False
+            try:
+                result = dict(payload or {}).get("result")
+                materialization = dict(payload or {}).get(
+                    "materialization"
+                )
+                if isinstance(materialization, dict):
+                    self._deferred_label_materialization = materialization
+                if dict(payload or {}).get("kind") == "error":
+                    error = dict(payload or {}).get("error")
+                    print(
+                        "Deferred validation scheduler technical diagnostic: "
+                        f"{getattr(error, 'code', error.__class__.__name__)}"
+                    )
+                    durable = dict(payload or {}).get("durable")
+                    if durable is not None:
+                        self._show_deferred_validation_result(durable)
+                elif result is not None:
+                    if not self._materialize_validated_deferred_label(result):
+                        self._show_deferred_validation_result(result)
+                self._refresh_deferred_observability()
+                self._render_operator_workbench()
+                self._schedule_deferred_validation_worker(5000)
+            finally:
+                self._clear_ui_lane_busy("deferred-validation")
+
+        def fail(error):
+            self._deferred_validation_worker_in_progress = False
+            try:
+                print(
+                    "Deferred validation scheduler technical diagnostic: "
+                    f"{getattr(error, 'code', error.__class__.__name__)}"
+                )
+                self._refresh_deferred_observability()
+                self._render_operator_workbench()
+                self._schedule_deferred_validation_worker(5000)
+            finally:
+                self._clear_ui_lane_busy("deferred-validation")
+
+        return LaneTask(
+            name="deferred-validation",
+            generation=int(self.__dict__.get("_ui_lane_generation", 0)),
+            work=work,
+            finish=finish,
+            fail=fail,
+        )
+
     def _run_deferred_validation_worker_once(self):
         """Drain one eligible validation row; dependency waits are never selected."""
 
+        if (
+            self.__dict__.get("ui_lane") is not None
+            and not self.__dict__.get("run_tests", False)
+        ):
+            if self.__dict__.get("_tk_shutdown_requested", False):
+                return
+            if self.__dict__.get("deferred_intent_capture") is None:
+                return
+            if self.__dict__.get(
+                "_deferred_observability_read_in_progress", False
+            ):
+                self._schedule_deferred_validation_worker(100)
+                return
+            trigger = self.__dict__.get(
+                "_deferred_validation_lane_trigger"
+            )
+            if trigger is not None:
+                trigger.trigger()
+                return
         if self.__dict__.get("_tk_shutdown_requested", False):
             return
         if self.__dict__.get("_deferred_validation_worker_in_progress", False):
@@ -9528,11 +9944,95 @@ class Label_Match(tk.Tk):
         self._focus_scan_entry_if_available()
         return True
 
+    def _begin_central_phs2_scan_overlay_on_lane(
+        self,
+        physical_qr_payload,
+        item_code,
+    ):
+        if self.__dict__.get(
+            "_phs_label_scan_lookup_in_progress", False
+        ):
+            self._show_ui_lane_rejection("busy")
+            return False
+        captured_raw = tuple(self.current_set_info.get("raw") or ())
+        work_state = {}
+
+        def work():
+            capture_result = self._capture_central_phs2_scan(
+                physical_qr_payload,
+                item_code,
+            )
+            work_state["capture_result"] = capture_result
+            validation_work = self._prepare_deferred_label_validation(
+                capture_result
+            )
+            work_state["validation_work"] = validation_work
+            if isinstance(validation_work, DeferredValidationClaim):
+                result, materialization = (
+                    self._execute_deferred_label_validation(
+                        validation_work,
+                        return_materialization=True,
+                    )
+                )
+                return result, materialization
+            return validation_work, None
+
+        def finish(value):
+            self._phs_label_scan_lookup_in_progress = False
+            if tuple(self.current_set_info.get("raw") or ()) != captured_raw:
+                self._render_operator_workbench()
+                return
+            result, materialization = value
+            if isinstance(materialization, dict):
+                self._deferred_label_materialization = materialization
+            if not self._materialize_validated_deferred_label(result):
+                self._show_deferred_validation_result(result)
+            self._render_operator_workbench()
+
+        def fail(error):
+            self._phs_label_scan_lookup_in_progress = False
+            print(
+                "PHS2 deferred validation technical diagnostic: "
+                f"{getattr(error, 'code', error.__class__.__name__)}"
+            )
+            capture_result = work_state.get("capture_result")
+            if capture_result is None:
+                self._show_deferred_capture_failure(error)
+            else:
+                durable = self.deferred_intent_capture.validation_status(
+                    capture_result.intent_id
+                )
+                if durable is not None:
+                    self._show_deferred_validation_result(durable)
+                else:
+                    self._show_deferred_capture_pending(capture_result)
+            self._render_operator_workbench()
+
+        admission = self._submit_ui_lane_task(
+            name="phs2-capture-validation",
+            busy_text="현품표 저장 · 중앙 확인 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+        )
+        if admission is not None and admission.accepted:
+            self._phs_label_scan_lookup_in_progress = True
+            return True
+        return False
+
     def _begin_central_phs2_scan_overlay(
         self,
         physical_qr_payload,
         item_code,
     ):
+        if (
+            self.__dict__.get("ui_lane") is not None
+            and not self.__dict__.get("run_tests", False)
+        ):
+            return self._begin_central_phs2_scan_overlay_on_lane(
+                physical_qr_payload,
+                item_code,
+            )
         if self.__dict__.get(
             "_phs_label_scan_lookup_in_progress", False
         ):
@@ -9654,6 +10154,9 @@ class Label_Match(tk.Tk):
         if self.__dict__.get("_app_close_in_progress", False):
             return
         raw_input = self.entry.get().strip()
+        if self._ui_lane_is_busy():
+            self._show_ui_lane_rejection("busy")
+            return
         self.entry.delete(0, tk.END)
 
         if self.is_blinking or not self.initialized_successfully: return
@@ -9894,10 +10397,17 @@ class Label_Match(tk.Tk):
                 self.current_set_info['production_date'] = production_date
             self._update_on_success_scan(raw_input, master_code)
 
-    def _current_sealed_transfer_exchange_attempt(self):
+    def _current_sealed_transfer_exchange_attempt(
+        self,
+        current_set_info=None,
+    ):
         store = self.__dict__.get("sealed_transfer_exchange_store")
-        current_set_info = self.__dict__.get("current_set_info") or {}
-        set_id = str(current_set_info.get("id") or "").strip()
+        current = (
+            current_set_info
+            if isinstance(current_set_info, dict)
+            else (self.__dict__.get("current_set_info") or {})
+        )
+        set_id = str(current.get("id") or "").strip()
         if store is None or not set_id:
             return None
         rows = store.blocking_rows(set_id=set_id)
@@ -9908,6 +10418,12 @@ class Label_Match(tk.Tk):
 
     def _sealed_transfer_exchange_blocks_local_action(self, action):
         current_state = self.__dict__.get("current_set_info", {}) or {}
+        if (
+            self._ui_lane_is_busy()
+            and str(action or "") != "프로그램 종료"
+        ):
+            self._show_ui_lane_rejection("busy")
+            return True
         if (
             self.__dict__.get("_phs_label_scan_lookup_in_progress", False)
             or self.__dict__.get("_phs_label_candidate_pending", False)
@@ -10446,9 +10962,79 @@ class Label_Match(tk.Tk):
             self._workflow_last_normal_override = refreshed_active_qr
         return current.get("sealed_transfer")
 
+    def _start_central_phs2_exchange_on_lane(self):
+        set_id = str(self.current_set_info.get("id") or "")
+        master = tuple(self.current_set_info.get("raw") or ())
+        captured = copy.deepcopy(self.current_set_info)
+
+        def work():
+            return self._resolve_central_phs2_seal_for_exchange(captured)
+
+        def finish(value):
+            self._central_seal_lookup_in_progress = False
+            if (
+                str(self.current_set_info.get("id") or "") != set_id
+                or tuple(self.current_set_info.get("raw") or ()) != master
+            ):
+                self._render_operator_workbench()
+                return
+            sealed, snapshot, active_updates = value
+            self._apply_resolved_central_phs2_seal(
+                sealed,
+                snapshot,
+                active_updates,
+            )
+            self._render_operator_workbench()
+            if not isinstance(sealed, dict):
+                messagebox.showerror(
+                    "제품 교체 불가",
+                    (
+                        "현재 현품표는 여러 이적 묶음을 합치거나 일부만 "
+                        "나눈 작업입니다. 포장(F3)은 가능하지만 제품 교체(F4)는 "
+                        "원본 이적 묶음 전체를 대표하는 단일 현품표에서만 가능합니다."
+                    ),
+                    parent=self,
+                )
+                return
+            self._prompt_sealed_transfer_exchange()
+
+        def fail(error):
+            self._central_seal_lookup_in_progress = False
+            print(
+                "제품 교체 준비 기술 진단: "
+                f"{getattr(error, 'code', error.__class__.__name__)}"
+            )
+            self.update_big_display("제품 교체 준비 차단", "red")
+            self._render_operator_workbench()
+            messagebox.showerror(
+                "제품 교체 준비 실패",
+                (
+                    "중앙 연결 상태를 확인한 뒤 다시 시도하세요. "
+                    "계속 실패하면 관리자에게 확인을 요청하세요."
+                ),
+                parent=self,
+            )
+
+        admission = self._submit_ui_lane_task(
+            name="f4-central-source-lookup",
+            busy_text="제품 교체 · 중앙 확인 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+        )
+        if admission is not None and admission.accepted:
+            self._central_seal_lookup_in_progress = True
+            return True
+        return False
+
     def _start_central_phs2_exchange(self):
         if self.__dict__.get("_central_seal_lookup_in_progress", False):
             return False
+        if (
+            self.__dict__.get("ui_lane") is not None
+            and not self.__dict__.get("run_tests", False)
+        ):
+            return self._start_central_phs2_exchange_on_lane()
         if self.run_tests:
             sealed, snapshot, active_updates = (
                 self._resolve_central_phs2_seal_for_exchange()
@@ -10537,12 +11123,17 @@ class Label_Match(tk.Tk):
         self.after(100, poll)
         return True
 
-    def _operation_lease_blocks_f4(self):
+    def _operation_lease_blocks_f4(self, current_set_info=None):
         store = self.__dict__.get("package_operation_lease_store")
         if store is None:
             return False
+        current = (
+            current_set_info
+            if isinstance(current_set_info, dict)
+            else self.current_set_info
+        )
         lease_id = str(
-            self.current_set_info.get("operation_lease_id") or ""
+            current.get("operation_lease_id") or ""
         ).strip()
         if lease_id:
             row = store.get(lease_id=lease_id)
@@ -10551,9 +11142,9 @@ class Label_Match(tk.Tk):
                 "LOCAL_COMPLETED",
             }:
                 return True
-        raw = list(self.current_set_info.get("raw") or [])
+        raw = list(current.get("raw") or [])
         physical_qr = str(
-            self.current_set_info.get("physical_scanned_qr_payload")
+            current.get("physical_scanned_qr_payload")
             or (raw[0] if raw else "")
             or ""
         ).strip()
@@ -10572,7 +11163,80 @@ class Label_Match(tk.Tk):
             attempt and str(attempt.get("status") or "") == "ACTIVE"
         )
 
-    def _prompt_sealed_transfer_exchange(self):
+    def _begin_f4_operation_lease_gate_on_lane(self, captured):
+        captured_id = str(captured.get("id") or "")
+        captured_raw = tuple(captured.get("raw") or ())
+
+        def work():
+            return {
+                "lease_blocked": self._operation_lease_blocks_f4(
+                    captured
+                ),
+                "pending_exchange": (
+                    self._current_sealed_transfer_exchange_attempt(captured)
+                ),
+            }
+
+        def finish(preflight):
+            if (
+                str(self.current_set_info.get("id") or "") != captured_id
+                or tuple(self.current_set_info.get("raw") or ())
+                != captured_raw
+            ):
+                self._render_operator_workbench()
+                return
+            if preflight.get("lease_blocked"):
+                messagebox.showwarning(
+                    "포장 처리 우선",
+                    (
+                        "포장 완료 준비가 이미 시작되어 제품 교체를 진행할 수 없습니다. "
+                        "현재 포장 결과를 먼저 확정하거나 관리자에게 상태 확인을 요청하세요."
+                    ),
+                    parent=self,
+                )
+                return
+            pending = preflight.get("pending_exchange")
+            if pending is not None:
+                if pending.status == "ACKED":
+                    self._prompt_new_seal_verification(pending)
+                else:
+                    messagebox.showwarning(
+                        "제품 교체 처리 중",
+                        "이전 교체 명령의 중앙 처리 결과를 확인 중입니다.",
+                        parent=self,
+                    )
+                return
+            self._prompt_sealed_transfer_exchange(
+                _lease_gate_checked=True,
+                _pending_checked=True,
+            )
+
+        def fail(error):
+            print(
+                "제품 교체 lease gate 기술 진단: "
+                f"{getattr(error, 'code', error.__class__.__name__)}"
+            )
+            messagebox.showerror(
+                "제품 교체 상태 확인 실패",
+                "포장 처리 상태를 확인하지 못했습니다. 잠시 후 다시 시도하세요.",
+                parent=self,
+            )
+
+        admission = self._submit_ui_lane_task(
+            name="f4-operation-lease-gate",
+            busy_text="제품 교체 · 포장 상태 확인 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+        )
+        return bool(admission is not None and admission.accepted)
+
+    def _prompt_sealed_transfer_exchange(
+        self,
+        *,
+        _lease_gate_checked=False,
+        _pending_checked=False,
+    ):
         """Start F4 only with the online replace-and-reseal authority.
 
         A prefetched CREATE_PACKAGE lease deliberately cannot authorize this
@@ -10601,7 +11265,15 @@ class Label_Match(tk.Tk):
                     parent=self,
                 )
             return False
-        if self._operation_lease_blocks_f4():
+        if (
+            not _lease_gate_checked
+            and self.__dict__.get("ui_lane") is not None
+            and not self.__dict__.get("run_tests", False)
+        ):
+            return self._begin_f4_operation_lease_gate_on_lane(
+                copy.deepcopy(self.current_set_info)
+            )
+        if not _lease_gate_checked and self._operation_lease_blocks_f4():
             if not self.run_tests:
                 messagebox.showwarning(
                     "포장 처리 우선",
@@ -10612,17 +11284,18 @@ class Label_Match(tk.Tk):
                     parent=self,
                 )
             return False
-        pending = self._current_sealed_transfer_exchange_attempt()
-        if pending is not None:
-            if pending.status == "ACKED":
-                return self._prompt_new_seal_verification(pending)
-            if not self.run_tests:
-                messagebox.showwarning(
-                    "제품 교체 처리 중",
-                    "이전 교체 명령의 중앙 처리 결과를 확인 중입니다.",
-                    parent=self,
-                )
-            return False
+        if not _pending_checked:
+            pending = self._current_sealed_transfer_exchange_attempt()
+            if pending is not None:
+                if pending.status == "ACKED":
+                    return self._prompt_new_seal_verification(pending)
+                if not self.run_tests:
+                    messagebox.showwarning(
+                        "제품 교체 처리 중",
+                        "이전 교체 명령의 중앙 처리 결과를 확인 중입니다.",
+                        parent=self,
+                    )
+                return False
         if self.package_logistics_client is None:
             if not self.run_tests:
                 messagebox.showerror(
@@ -10667,6 +11340,16 @@ class Label_Match(tk.Tk):
         old_values = []
         new_values = []
         stage = {"value": "old"}
+
+        def close_popup():
+            try:
+                popup.grab_release()
+            except TclError:
+                pass
+            try:
+                popup.destroy()
+            except TclError:
+                pass
 
         def render_rows():
             lines = []
@@ -10726,36 +11409,56 @@ class Label_Match(tk.Tk):
             scan_entry.configure(state="disabled")
             title_var.set("중앙 원자 교체 및 재봉인 처리 중")
             status_var.set("창을 닫지 마세요.")
-            result_queue = queue.Queue()
+            popup.protocol(
+                "WM_DELETE_WINDOW",
+                lambda: status_var.set(
+                    "중앙 처리가 끝난 뒤 창을 닫을 수 있습니다."
+                ),
+            )
+            old_qr = str(
+                sealed.get("_seal_qr_payload")
+                or _label_match_decode_possible_base64_label(raw[0])
+            )
+            captured_set_id = str(
+                self.current_set_info.get("id") or ""
+            )
+            captured_sealed = copy.deepcopy(sealed)
+            captured_old_values = tuple(old_values)
+            captured_new_values = tuple(new_values)
+            captured_operator = persistent_operator_name(self.worker_name)
 
-            def worker():
+            def work():
+                prepared = self.sealed_transfer_exchange_coordinator.prepare(
+                    set_id=captured_set_id,
+                    old_seal_qr_payload=old_qr,
+                    old_seal_fields=captured_sealed,
+                    operator=captured_operator,
+                    old_barcodes=captured_old_values,
+                    new_barcodes=captured_new_values,
+                )
+                return self.sealed_transfer_exchange_coordinator.attempt(
+                    prepared.intent_id
+                )
+
+            def apply_value(value):
                 try:
-                    old_qr = str(
-                        sealed.get("_seal_qr_payload")
-                        or _label_match_decode_possible_base64_label(raw[0])
-                    )
-                    prepared = self.sealed_transfer_exchange_coordinator.prepare(
-                        set_id=str(self.current_set_info.get("id") or ""),
-                        old_seal_qr_payload=old_qr,
-                        old_seal_fields=sealed,
-                        operator=persistent_operator_name(self.worker_name),
-                        old_barcodes=old_values,
-                        new_barcodes=new_values,
-                    )
-                    result_queue.put(
-                        self.sealed_transfer_exchange_coordinator.attempt(
-                            prepared.intent_id
-                        )
-                    )
-                except Exception as exc:
-                    result_queue.put(exc)
+                    popup.protocol("WM_DELETE_WINDOW", close_popup)
+                except TclError:
+                    return
+                result_queue = queue.Queue(maxsize=1)
+                result_queue.put_nowait(value)
+                poll_result(result_queue)
 
-            threading.Thread(
-                target=worker,
-                name="label-match-sealed-transfer-exchange",
-                daemon=True,
-            ).start()
-            popup.after(100, poll_result, result_queue)
+            admission = self._submit_ui_lane_task(
+                name="f4-atomic-replacement",
+                busy_text="제품 교체 · 중앙 처리 중",
+                work=work,
+                finish=apply_value,
+                fail=apply_value,
+            )
+            if admission is None or not admission.accepted:
+                popup.protocol("WM_DELETE_WINDOW", close_popup)
+                scan_entry.configure(state="normal")
 
         def accept_scan(event=None):
             value = normalize_exchange_barcode(scan_entry.get())
@@ -10793,7 +11496,7 @@ class Label_Match(tk.Tk):
 
         render_rows()
         scan_entry.bind("<Return>", accept_scan)
-        popup.protocol("WM_DELETE_WINDOW", lambda: (popup.grab_release(), popup.destroy()))
+        popup.protocol("WM_DELETE_WINDOW", close_popup)
         scan_entry.focus_set()
         return True
 
@@ -12224,7 +12927,14 @@ class Label_Match(tk.Tk):
         return None
 
     @writer_sink("gui_package_enqueue")
-    def _queue_authoritative_package(self, *, item_code, is_manual_complete):
+    def _queue_authoritative_package(
+        self,
+        *,
+        item_code,
+        is_manual_complete,
+        current_set_info=None,
+        persist_current_state=None,
+    ):
         required_mode = bool(
             self.__dict__.get("_logistics_authoritative_required", False)
         ) or logistics_runtime_required()
@@ -12239,9 +12949,23 @@ class Label_Match(tk.Tk):
                     "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
                 )
             return None
-        current = self.current_set_info or {}
+        current = (
+            current_set_info
+            if isinstance(current_set_info, dict)
+            else (self.current_set_info or {})
+        )
         raw = list(current.get("raw") or [])
-        central_inherit_all = self._central_inherit_all_active()
+        central_inherit_all = bool(current.get("central_inherit_all"))
+        if (
+            not central_inherit_all
+            and not current.get("exact_rescan_active")
+            and not current.get("exact_rescan_complete")
+        ):
+            central_inherit_all = bool(
+                self.__dict__.get("package_logistics_client") is not None
+                and raw
+                and _label_match_has_central_source_identity(raw[0])
+            )
         required_scan_count = (
             LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
             if central_inherit_all
@@ -12255,7 +12979,7 @@ class Label_Match(tk.Tk):
             sealed_transfer = _label_match_parse_sealed_transfer_qr(raw[0])
         except ValueError as exc:
             raise PackageLogisticsError(str(exc)) from exc
-        exact_mode = bool(self.current_set_info.get("exact_rescan_complete"))
+        exact_mode = bool(current.get("exact_rescan_complete"))
         central_enabled = self.__dict__.get("package_logistics_client") is not None
         if required_mode and not central_enabled:
             raise PackageLogisticsError(
@@ -12390,10 +13114,15 @@ class Label_Match(tk.Tk):
             current["operation_lease_expires_at"] = str(
                 verified_lease.get("expires_at") or ""
             )
-            if self.__dict__.get("initialized_successfully", False) and not self._save_current_set_state():
-                raise PackageLogisticsError(
-                    "prefetched operation lease current-state save failed"
-                )
+            if self.__dict__.get("initialized_successfully", False):
+                if callable(persist_current_state):
+                    persisted = bool(persist_current_state(current))
+                else:
+                    persisted = bool(self._save_current_set_state())
+                if not persisted:
+                    raise PackageLogisticsError(
+                        "prefetched operation lease current-state save failed"
+                    )
             operation_completed_at = str(
                 current.get("operation_lease_completed_at") or ""
             ).strip() or datetime.now(timezone.utc).strftime(
@@ -12671,7 +13400,189 @@ class Label_Match(tk.Tk):
             reconciled += 1
         return reconciled
 
-    def _finalize_set(self, result, error_details="", is_manual_complete=False):
+    def _persist_ui_lane_current_set_snapshot(self, current):
+        return bool(
+            self.data_manager.save_current_state(
+                {
+                    "current_set_info": current,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+        )
+
+    def _commit_finalized_set_durable(
+        self,
+        *,
+        details,
+        item_code,
+        is_manual_complete,
+        result,
+        central_inherit_all,
+        set_id_for_log,
+        current_snapshot=None,
+    ):
+        detached = isinstance(current_snapshot, dict)
+        if (
+            detached
+            and self.__dict__.get("initialized_successfully", False)
+            and list(current_snapshot.get("raw") or [])
+            and not self._persist_ui_lane_current_set_snapshot(
+                current_snapshot
+            )
+        ):
+            raise PackageLogisticsError(
+                "current packaging state could not be saved before completion"
+            )
+        package_logistics = (
+            self._queue_authoritative_package(
+                item_code=item_code,
+                is_manual_complete=is_manual_complete,
+                current_set_info=current_snapshot if detached else None,
+                persist_current_state=(
+                    self._persist_ui_lane_current_set_snapshot
+                    if detached
+                    else None
+                ),
+            )
+            if result == self.Results.PASS
+            else None
+        )
+        durable_details = copy.deepcopy(dict(details or {}))
+        if package_logistics:
+            durable_details["package_logistics"] = package_logistics
+            durable_details["package_membership_mode"] = (
+                package_logistics.get("membership_mode")
+            )
+            durable_details["sample_barcodes_are_membership"] = False
+        local_event_exists = bool(
+            central_inherit_all
+            and package_logistics
+            and _label_match_local_completion_event_exists(
+                self.__dict__.get("data_manager"),
+                set_id_for_log,
+            )
+        )
+        if not local_event_exists:
+            self.data_manager.log_event(
+                self.Events.TRAY_COMPLETE,
+                durable_details,
+            )
+            self._flush_data_manager_if_supported()
+        if central_inherit_all and package_logistics:
+            outbox = self.__dict__.get("package_outbox")
+            if outbox is None:
+                raise PackageLogisticsError(
+                    "durable package outbox disappeared before local completion"
+                )
+            lease_id = str(
+                package_logistics.get("operation_lease_id") or ""
+            )
+            if lease_id:
+                outbox.mark_local_completion_committed(
+                    package_logistics.get("idempotency_key"),
+                    operation_lease_id=lease_id,
+                    operation_completed_at=str(
+                        package_logistics.get(
+                            "operation_lease_completed_at"
+                        )
+                        or ""
+                    ),
+                )
+            else:
+                outbox.mark_local_completion_committed(
+                    package_logistics.get("idempotency_key")
+                )
+        return {
+            "details": durable_details,
+            "package_logistics": package_logistics,
+            "current_snapshot": current_snapshot if detached else None,
+        }
+
+    def _apply_ui_lane_completion_snapshot(self, snapshot):
+        if not isinstance(snapshot, dict):
+            return True
+        current = self.current_set_info or {}
+        if (
+            str(current.get("id") or "")
+            != str(snapshot.get("id") or "")
+            or tuple(current.get("raw") or ())
+            != tuple(snapshot.get("raw") or ())
+        ):
+            return False
+        for key in (
+            "central_inherit_all",
+            "operation_lease_id",
+            "operation_lease_fence",
+            "operation_lease_snapshot_hash",
+            "operation_lease_expires_at",
+            "operation_lease_completed_at",
+        ):
+            if key in snapshot:
+                current[key] = copy.deepcopy(snapshot[key])
+        self.current_set_info = current
+        return True
+
+    def _submit_finalized_set_on_lane(
+        self,
+        *,
+        result,
+        error_details,
+        is_manual_complete,
+        details,
+        item_code,
+        central_inherit_all,
+        set_id_for_log,
+    ):
+        current_snapshot = copy.deepcopy(self.current_set_info or {})
+
+        def work():
+            return self._commit_finalized_set_durable(
+                details=details,
+                item_code=item_code,
+                is_manual_complete=is_manual_complete,
+                result=result,
+                central_inherit_all=central_inherit_all,
+                set_id_for_log=set_id_for_log,
+                current_snapshot=current_snapshot,
+            )
+
+        def finish(durable_completion):
+            if not self._apply_ui_lane_completion_snapshot(
+                durable_completion.get("current_snapshot")
+            ):
+                self._publish_durable_commit_block(
+                    PackageLogisticsError(
+                        "packaging state changed before durable completion apply"
+                    )
+                )
+                return
+            self._finalize_set(
+                result,
+                error_details,
+                is_manual_complete,
+                _durable_completion=durable_completion,
+            )
+
+        def fail(error):
+            self._publish_durable_commit_block(error)
+
+        admission = self._submit_ui_lane_task(
+            name="f3-package-completion",
+            busy_text="포장 완료 · 중앙 저장 중",
+            work=work,
+            finish=finish,
+            fail=fail,
+        )
+        return bool(admission is not None and admission.accepted)
+
+    def _finalize_set(
+        self,
+        result,
+        error_details="",
+        is_manual_complete=False,
+        *,
+        _durable_completion=None,
+    ):
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
         central_inherit_all = self._central_inherit_all_active()
@@ -12774,57 +13685,37 @@ class Label_Match(tk.Tk):
             _label_match_apply_package_source_origins(
                 details, package_snapshot
             )
-        try:
-            package_logistics = (
-                self._queue_authoritative_package(
+        if (
+            _durable_completion is None
+            and self.__dict__.get("ui_lane") is not None
+            and not self.__dict__.get("run_tests", False)
+            and not self.__dict__.get("is_running_simulation", False)
+        ):
+            return self._submit_finalized_set_on_lane(
+                result=result,
+                error_details=error_details,
+                is_manual_complete=is_manual_complete,
+                details=details,
+                item_code=item_code,
+                central_inherit_all=central_inherit_all,
+                set_id_for_log=set_id_for_log,
+            )
+        if _durable_completion is None:
+            try:
+                _durable_completion = self._commit_finalized_set_durable(
+                    details=details,
                     item_code=item_code,
                     is_manual_complete=is_manual_complete,
+                    result=result,
+                    central_inherit_all=central_inherit_all,
+                    set_id_for_log=set_id_for_log,
                 )
-                if result == self.Results.PASS
-                else None
-            )
-            if package_logistics:
-                details["package_logistics"] = package_logistics
-                details["package_membership_mode"] = package_logistics.get(
-                    "membership_mode"
-                )
-                details["sample_barcodes_are_membership"] = False
-            local_event_exists = bool(
-                central_inherit_all
-                and package_logistics
-                and _label_match_local_completion_event_exists(
-                    self.__dict__.get("data_manager"), set_id_for_log
-                )
-            )
-            if not local_event_exists:
-                self.data_manager.log_event(self.Events.TRAY_COMPLETE, details)
-                self._flush_data_manager_if_supported()
-            if central_inherit_all and package_logistics:
-                outbox = self.__dict__.get("package_outbox")
-                if outbox is None:
-                    raise PackageLogisticsError(
-                        "durable package outbox disappeared before local completion"
-                    )
-                lease_id = str(
-                    package_logistics.get("operation_lease_id") or ""
-                )
-                if lease_id:
-                    outbox.mark_local_completion_committed(
-                        package_logistics.get("idempotency_key"),
-                        operation_lease_id=lease_id,
-                        operation_completed_at=str(
-                            package_logistics.get(
-                                "operation_lease_completed_at"
-                            )
-                            or ""
-                        ),
-                    )
-                else:
-                    outbox.mark_local_completion_committed(
-                        package_logistics.get("idempotency_key")
-                    )
-        except Exception as exc:
-            return self._publish_durable_commit_block(exc)
+            except Exception as exc:
+                return self._publish_durable_commit_block(exc)
+        details = copy.deepcopy(
+            dict(_durable_completion.get("details") or details)
+        )
+        package_logistics = _durable_completion.get("package_logistics")
         if result == self.Results.PASS and not self.is_running_simulation:
             # Sound and all visible success mutations happen only after the
             # append-only intent, CSV event, and local commit marker are durable.
@@ -16196,6 +17087,7 @@ class Label_Match(tk.Tk):
                 and not self.__dict__.get(
                     "_phs_label_exchange_pending", False
                 )
+                and not self.__dict__.get("_ui_lane_busy_task", "")
             )
             try:
                 entry.configure(state="normal" if entry_enabled else "disabled")
@@ -16230,7 +17122,9 @@ class Label_Match(tk.Tk):
             button = self.__dict__.get(name)
             if button is not None:
                 try:
-                    if self.__dict__.get(
+                    if self.__dict__.get("_ui_lane_busy_task", ""):
+                        enabled = False
+                    elif self.__dict__.get(
                         "_central_seal_lookup_in_progress", False
                     ) or self.__dict__.get(
                         "_central_package_preflight_in_progress", False
@@ -18304,7 +19198,9 @@ class Label_Match(tk.Tk):
 
     def _update_manual_complete_button_state(self):
         if not self.initialized_successfully: return
-        if not getattr(self, "history_view_updates_active_state", True):
+        if self.__dict__.get("_ui_lane_busy_task", ""):
+            state = "disabled"
+        elif not getattr(self, "history_view_updates_active_state", True):
             state = "disabled"
         else:
             state = "normal" if _label_match_manual_complete_allowed(self.current_set_info) else "disabled"
@@ -18340,6 +19236,7 @@ class Label_Match(tk.Tk):
             )
             and not self.current_set_info.get("exact_rescan_active")
             and not self.current_set_info.get("exact_rescan_complete")
+            and not self.__dict__.get("_ui_lane_busy_task", "")
         )
         self.exact_rescan_button.config(
             state="normal" if enabled else "disabled",

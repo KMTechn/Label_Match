@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
@@ -2387,6 +2388,207 @@ def test_real_gui_validated_path_materializes_current_set(tmp_path):
     assert accepted[0][1]["local_work_identity"]
     assert _row(db_path, intent_id)["state"] == "VALIDATED"
     assert app.current_set_info["raw"] == ["PHS2-MATERIALIZED"]
+
+
+def test_validated_materializer_flows_through_f3_durable_completion(
+    tmp_path,
+    monkeypatch,
+):
+    db_path, outbox, store = _store(tmp_path)
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    physical_qr = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-MATERIALIZE-F3|"
+        "CLC=ITEM-LABEL-1|LBL=LBL-MATERIALIZE-F3|HSH=0123456789abcdef"
+    )
+    snapshot = {
+        "bundle_id": "TRANSFER-MATERIALIZE-F3",
+        "authority_scope_id": "SCOPE-LABEL-MEASURED",
+        "member_count": 4,
+        "membership_hash": "d" * 64,
+        "authority_epoch": 1,
+        "ledger_plane": "SHADOW_CANDIDATE",
+        "plane_epoch": 1,
+        "entity_version": 7,
+    }
+    operation_lease = {
+        "lease_id": "lease-materialize-f3",
+        "fence": 1,
+        "snapshot_hash": "c" * 64,
+        "status": "PREFETCHED",
+        "issued_at": "2026-08-29T01:00:00Z",
+        "expires_at": "2099-08-29T01:05:00Z",
+    }
+    evidence = SimpleNamespace(
+        replaced_scan=False,
+        canonical_input_tag_qr=physical_qr,
+        physical_scanned_qr_payload=physical_qr,
+        active_label_qr_payload=physical_qr,
+        active_label_id="LBL-MATERIALIZE-F3",
+        active_label_business_date="2026-08-29",
+        active_label_worker_code="worker",
+        active_label_resolution="CURRENT_ACTIVE",
+        item_id="ITEM-LABEL-1",
+        member_count=4,
+        membership_hash="d" * 64,
+        state_fields=lambda: {
+            "canonical_input_tag_qr": physical_qr,
+            "physical_scanned_qr_payload": physical_qr,
+            "active_label_qr_payload": physical_qr,
+            "active_label_id": "LBL-MATERIALIZE-F3",
+            "active_label_resolution": "CURRENT_ACTIVE",
+        },
+    )
+
+    class LeaseStore:
+        def __init__(self):
+            self.bound_set_id = ""
+
+        def get(self, *, lease_id):
+            assert lease_id == operation_lease["lease_id"]
+            return {"lease_id": lease_id, "set_id": self.bound_set_id}
+
+        def attach_set(self, lease_id, set_id):
+            assert lease_id == operation_lease["lease_id"]
+            assert self.bound_set_id in {"", set_id}
+            self.bound_set_id = set_id
+            return {"lease_id": lease_id, "set_id": set_id}
+
+    class Progress:
+        def __init__(self):
+            self.value = 0
+
+        def configure(self, **_kwargs):
+            return None
+
+        def __setitem__(self, key, value):
+            assert key == "value"
+            self.value = value
+
+    class HistoryTree:
+        @staticmethod
+        def exists(_set_id):
+            return False
+
+    class Label:
+        @staticmethod
+        def config(**_kwargs):
+            return None
+
+    class FinishedThread:
+        @staticmethod
+        def is_alive():
+            return False
+
+    app.current_set_info = {
+        "id": None,
+        "raw": [],
+        "parsed": [],
+        "start_time": None,
+        "error_count": 0,
+        "has_error_or_reset": False,
+        "phase": "-",
+        "item_name_override": None,
+        "production_date": None,
+    }
+    app.deferred_intent_capture = store
+    app._deferred_intent_capture_error = ""
+    app.package_outbox = outbox
+    app.package_logistics_client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-LABEL-MEASURED")
+    )
+    app.package_operation_lease_store = LeaseStore()
+    app.run_tests = True
+    app.initialized_successfully = True
+    app.is_running_simulation = False
+    app.progress_bar = Progress()
+    app.data_manager = label_module.DataManager(
+        str(tmp_path),
+        "포장실",
+        "worker",
+        "MATERIALIZER-F3",
+    )
+    app.items_data = {
+        "ITEM-LABEL-1": {"Item Name": "Measured item", "Spec": "Spec"}
+    }
+    app.scan_count = defaultdict(lambda: defaultdict(int))
+    app.global_scanned_set = set()
+    app.set_details_map = {}
+    app.history_row_details_map = {}
+    app.history_tree = HistoryTree()
+    app.save_status_label = Label()
+    app.direct_sync_session_threads = []
+    app.direct_sync_bootstrap_context = {"isolated": True}
+    app.save_directory = str(tmp_path)
+    app.update_big_display = lambda *_args: None
+    app._update_status_label = lambda: None
+    app._update_history_tree_in_progress = lambda: None
+    app._render_operator_workbench = lambda: None
+    app._focus_scan_entry_if_available = lambda: None
+    app._play_sound = lambda _sound: None
+    app._update_summary_tree = lambda: None
+    app.after = lambda _delay, _callback: None
+    app._return_to_idle_after_finalized_set = lambda: True
+    app._start_package_outbox_drain = lambda: None
+    app._publish_durable_commit_block = lambda error, **_kwargs: pytest.fail(
+        f"durable completion unexpectedly blocked: {error}"
+    )
+    app._resolve_central_phs2_scan_overlay = lambda *_args: (
+        evidence,
+        snapshot,
+        None,
+        None,
+    )
+    app._acquire_operation_lease = lambda *_args, **_kwargs: (
+        evidence,
+        snapshot,
+        None,
+        operation_lease,
+    )
+    monkeypatch.setattr(label_module, "logistics_runtime_required", lambda: False)
+    monkeypatch.setattr(
+        label_module,
+        "_label_match_direct_sync_context",
+        lambda *_args, **_kwargs: {"isolated": True},
+    )
+    monkeypatch.setattr(
+        label_module,
+        "_label_match_bind_current_log_source",
+        lambda context, _manager: context,
+    )
+    monkeypatch.setattr(
+        label_module,
+        "_label_match_start_session_direct_sync",
+        lambda *_args, **_kwargs: FinishedThread(),
+    )
+
+    try:
+        assert app._begin_central_phs2_scan_overlay(
+            physical_qr,
+            "ITEM-LABEL-1",
+        ) is True
+        set_id = str(app.current_set_info["id"])
+        intent_id = str(app.current_set_info["deferred_intent_id"])
+        assert _row(db_path, intent_id)["state"] == "VALIDATED"
+        assert app.current_set_info["raw"] == [physical_qr]
+
+        app.run_tests = False
+        assert app._begin_central_package_submission() is True
+        app.data_manager.flush(timeout=2)
+
+        row = outbox.get_by_set_id(set_id)
+        assert row is not None
+        assert row["status"] == "PENDING"
+        assert row["local_completion_committed"] == 1
+        assert _row(db_path, intent_id)["state"] == "SUPERSEDED"
+        assert _row(db_path, intent_id)["downstream_outbox_ref"] == (
+            f"package_command_outbox:{row['idempotency_key']}"
+        )
+        log_text = Path(app.data_manager._get_log_filepath()).read_text(
+            encoding="utf-8-sig"
+        )
+        assert label_module.Label_Match.Events.TRAY_COMPLETE in log_text
+    finally:
+        app.data_manager.close(timeout=2)
 
 
 def test_gui_local_integrity_invalid_calls_no_remote(tmp_path):
