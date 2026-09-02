@@ -2091,6 +2091,8 @@ def test_durable_event_manifest_includes_completion_replacement_and_review():
     module = load_label_match_module()
 
     assert module.LABEL_MATCH_DURABLE_EVENT_TYPES == {
+        module.Label_Match.Events.APP_CLOSE,
+        module.Label_Match.Events.APP_CLOSE_CANCELLED,
         module.Label_Match.Events.TRAY_COMPLETE,
         module.Label_Match.Events.SET_DELETED,
         module.Label_Match.Events.TRAY_COMPLETION_CANCELLED,
@@ -5725,6 +5727,10 @@ class _CloseFailingDataManager:
 
     def close(self, timeout=None):
         raise RuntimeError("forced close failure")
+
+    @staticmethod
+    def flush(timeout=None):
+        return True
 
 
 class _StoppedThread:

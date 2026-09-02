@@ -273,6 +273,8 @@ LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION = 1
 LABEL_MATCH_RESULT_PASS = "통과"
 LABEL_MATCH_RESULT_FAIL_MISMATCH = "불일치"
 LABEL_MATCH_DURABLE_EVENT_TYPES = {
+    "APP_CLOSE",
+    "APP_CLOSE_CANCELLED",
     "TRAY_COMPLETE",
     "SET_DELETED",
     "TRAY_COMPLETION_CANCELLED",
@@ -4922,6 +4924,7 @@ class Label_Match(tk.Tk):
     class Events:
         APP_START = "APP_START"
         APP_CLOSE = "APP_CLOSE"
+        APP_CLOSE_CANCELLED = "APP_CLOSE_CANCELLED"
         SCAN_OK = "SCAN_OK"
         TRAY_COMPLETE = "TRAY_COMPLETE"
         SET_CANCELLED = "SET_CANCELLED"
@@ -7410,12 +7413,15 @@ class Label_Match(tk.Tk):
 
     def _resume_deferred_validation_after_close_cancel(self):
         should_resume = bool(
-            self.__dict__.pop(
+            self.__dict__.get(
                 "_app_close_resume_deferred_validation", False
             )
         )
         if should_resume:
             self._schedule_deferred_validation_worker(1000)
+        self.__dict__.pop(
+            "_app_close_resume_deferred_validation", None
+        )
 
     def _schedule_app_close_recovery_retry(self):
         if self.__dict__.get("_app_close_recovery_after_id") is not None:
@@ -7427,6 +7433,41 @@ class Label_Match(tk.Tk):
                 self.on_closing(_confirmed=True)
 
         self._app_close_recovery_after_id = self.after(1000, retry)
+
+    def _record_pending_app_close_cancellations(self):
+        attempt_ids = tuple(
+            dict.fromkeys(
+                self.__dict__.get(
+                    "_app_close_pending_cancel_attempt_ids", ()
+                )
+                or ()
+            )
+        )
+        if not attempt_ids:
+            return
+        for attempt_id in attempt_ids:
+            self.data_manager.log_event(
+                self.Events.APP_CLOSE_CANCELLED,
+                {
+                    "message": "Application close cancelled.",
+                    "close_attempt_id": attempt_id,
+                    "reason_code": "APP_CLOSE_ABORTED_AFTER_LOG",
+                },
+            )
+        self.data_manager.flush(
+            timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
+        )
+        self.__dict__.pop(
+            "_app_close_pending_cancel_attempt_ids", None
+        )
+
+    def _hold_app_close_fail_closed(self, diagnostic):
+        print(f"종료 정리 복구 대기 기술 진단: {diagnostic}")
+        self._show_app_close_cleanup_delay()
+        try:
+            self._schedule_app_close_recovery_retry()
+        except Exception as retry_error:
+            print(f"종료 정리 복구 재시도 예약 오류: {retry_error}")
 
     def on_closing(self, _confirmed=False):
         if _confirmed:
@@ -7494,13 +7535,28 @@ class Label_Match(tk.Tk):
                 )
                 return
             self._cancel_app_close_lane_drain_watchdog()
+            close_attempt_id = uuid.uuid4().hex
             try:
                 if not self._save_current_set_state():
                     raise RuntimeError(
                         "current packaging state could not be saved"
                     )
-                self.data_manager.log_event(self.Events.APP_CLOSE, {"message": "Application closed."})
+                self._record_pending_app_close_cancellations()
+                self.data_manager.log_event(
+                    self.Events.APP_CLOSE,
+                    {
+                        "message": "Application closed.",
+                        "close_attempt_id": close_attempt_id,
+                    },
+                )
+                pending_attempt_ids = self.__dict__.setdefault(
+                    "_app_close_pending_cancel_attempt_ids", []
+                )
+                pending_attempt_ids.append(close_attempt_id)
                 self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
+                self.__dict__.pop(
+                    "_app_close_pending_cancel_attempt_ids", None
+                )
             except Exception as e:
                 print(f"종료 보류 기술 진단: {e}")
                 failed_manager = self.data_manager
@@ -7514,45 +7570,47 @@ class Label_Match(tk.Tk):
                             failed_manager
                         )
                     )
-                if not manager_restored:
-                    self._show_app_close_cleanup_delay()
+                compensation_error = None
+                if manager_restored:
+                    try:
+                        self._record_pending_app_close_cancellations()
+                    except Exception as error:
+                        compensation_error = error
+                if not manager_restored or compensation_error is not None:
+                    diagnostic = compensation_error or e
+                    self._hold_app_close_fail_closed(diagnostic)
                     if self.run_tests:
+                        if compensation_error is not None:
+                            raise compensation_error from e
                         raise
-                    self._schedule_app_close_recovery_retry()
                     return
-                self._app_close_in_progress = False
+                try:
+                    if entry is not None:
+                        configure_entry = getattr(entry, "configure", None) or getattr(entry, "config")
+                        configure_entry(state="normal")
+                    settings_button = self.__dict__.get("settings_button")
+                    if settings_button is not None:
+                        settings_button.configure(state="normal")
+                    self._resume_deferred_validation_after_close_cancel()
+                    if self.__dict__.get("operator_workbench_ready", False):
+                        self._render_operator_workbench()
+                except Exception as rollback_error:
+                    self._hold_app_close_fail_closed(rollback_error)
+                    if self.run_tests:
+                        raise rollback_error from e
+                    return
                 self.is_blinking = bool(
                     self.__dict__.pop(
                         "_app_close_previous_is_blinking", False
                     )
                 )
-                if entry is not None:
-                    try:
-                        configure_entry = getattr(entry, "configure", None) or getattr(entry, "config")
-                        configure_entry(state="normal")
-                    except Exception:
-                        pass
-                settings_button = self.__dict__.get("settings_button")
-                if settings_button is not None:
-                    try:
-                        settings_button.configure(state="normal")
-                    except (TclError, AttributeError):
-                        pass
-                try:
-                    self._resume_deferred_validation_after_close_cancel()
-                except Exception as deferred_error:
-                    print(
-                        "종료 보류 후 deferred 검증 재시작 오류: "
-                        f"{deferred_error}"
-                    )
+                self._app_close_in_progress = False
                 try:
                     # Closing is being abandoned, so keep the package advisory
                     # and retry cycle active for resumed operation.
                     self._start_package_outbox_drain()
                 except Exception as outbox_error:
                     print(f"종료 보류 후 포장 물류 재시작 오류: {outbox_error}")
-                if self.__dict__.get("operator_workbench_ready", False):
-                    self._render_operator_workbench()
                 if self.run_tests:
                     raise
                 messagebox.showerror(
