@@ -135,9 +135,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "task_name": "phs2-capture-validation",
         "busy_text": "현품표 저장 · 중앙 확인 중",
         "expected_headline": "현품표 저장 · 중앙 확인 중",
-        "expected_status": (
-            "현품표 저장 · 중앙 확인 중 · 통신 완료 전 추가 입력은 받지 않습니다."
-        ),
+        "expected_status_source": "production_busy_seam",
     },
     "phs2_rejected_input_preserved": {
         "production_call_path": (
@@ -157,9 +155,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "task_name": "f4-central-source-lookup",
         "busy_text": "제품 교체 · 중앙 확인 중",
         "expected_headline": "제품 교체 · 중앙 확인 중",
-        "expected_status": (
-            "제품 교체 · 중앙 확인 중 · 통신 완료 전 추가 입력은 받지 않습니다."
-        ),
+        "expected_status_source": "production_busy_seam",
     },
     "f4_rejected_input_preserved": {
         "production_call_path": (
@@ -179,9 +175,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "task_name": "f3-package-completion",
         "busy_text": "포장 완료 · 중앙 저장 중",
         "expected_headline": "포장 완료 · 중앙 저장 중",
-        "expected_status": (
-            "포장 완료 · 중앙 저장 중 · 통신 완료 전 추가 입력은 받지 않습니다."
-        ),
+        "expected_status_source": "production_busy_seam",
     },
     "f3_rejected_input_preserved": {
         "production_call_path": (
@@ -2876,10 +2870,30 @@ def apply_m7_production_transition(
             f"M7 state {fixture.state_id} requires the production scan entry"
         )
 
+    production_busy_seam_output: dict[str, str] | None = None
     for name in call_path:
         method = methods[name]
         if name == "_set_ui_lane_busy":
             method(spec["task_name"], spec["busy_text"])
+            if spec.get("expected_status_source") == "production_busy_seam":
+                app_state = getattr(app, "__dict__", {})
+                headline_widget = app_state.get("big_display_label")
+                status_widget = app_state.get("status_label")
+                try:
+                    headline_text = str(headline_widget.cget("text") or "")
+                except Exception:
+                    headline_text = ""
+                try:
+                    status_text = str(status_widget.cget("text") or "")
+                except Exception:
+                    status_text = ""
+                production_busy_seam_output = {
+                    "operator_text": str(
+                        app_state.get("_ui_lane_busy_label", "") or ""
+                    ),
+                    "headline_text": headline_text,
+                    "status_text": status_text,
+                }
         elif name == "_show_ui_lane_rejection":
             method("busy")
         elif name == "_set_active_package_submission_notice":
@@ -2908,6 +2922,8 @@ def apply_m7_production_transition(
         "preserved_input_before": input_before,
         "preserved_input_after": input_after,
     }
+    if production_busy_seam_output is not None:
+        receipt["production_busy_seam_output"] = production_busy_seam_output
     app._capture_m7_transition_receipt = receipt
     return receipt
 
@@ -5553,10 +5569,22 @@ def evaluate_m7_state_contract(record: Mapping[str, Any]) -> list[str]:
     expected_headline = str(spec.get("expected_headline") or "")
     if expected_headline and rendered.get("headline_text") != expected_headline:
         issues.append("m7_operation_headline_mismatch")
-    expected_status = str(spec.get("expected_status") or "")
-    if expected_status and rendered.get("status_text") != expected_status:
+    status_source = str(spec.get("expected_status_source") or "")
+    if status_source == "production_busy_seam":
+        busy_seam_output = receipt.get("production_busy_seam_output") or {}
+        expected_status = str(busy_seam_output.get("status_text") or "")
+        if busy_seam_output.get("operator_text") != spec.get("busy_text"):
+            issues.append("m7_production_busy_seam_prefix_mismatch")
+        if busy_seam_output.get("headline_text") != expected_headline:
+            issues.append("m7_production_busy_seam_headline_mismatch")
+        if not expected_status:
+            issues.append("m7_production_busy_seam_status_missing")
+    else:
+        expected_status = str(spec.get("expected_status") or "")
+    status_required = bool(expected_status or status_source)
+    if status_required and rendered.get("status_text") != expected_status:
         issues.append("m7_operation_status_mismatch")
-    if expected_status and rendered.get("status_mapped") is not True:
+    if status_required and rendered.get("status_mapped") is not True:
         issues.append("m7_operation_status_not_visible")
 
     expected_notice_title = str(spec.get("expected_notice_title") or "")

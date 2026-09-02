@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import ctypes
+import functools
 import hashlib
 import importlib
 import importlib.abc
@@ -80,6 +82,86 @@ from tools.capture_label_operator_ui import (
     validate_window_capture_pair,
     validate_root_only_toplevels,
 )
+
+
+_ADMITTED_BUSY_PRODUCT_CALLS = {
+    "phs2_admitted_busy": ("phs2-capture-validation", 10375),
+    "f4_admitted_busy": ("f4-central-source-lookup", 11433),
+    "f3_admitted_busy": ("f3-package-completion", 14060),
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _product_admitted_busy_seam_literals():
+    product_source = (capture.ROOT / "Label_Match.py").read_text(encoding="utf-8")
+    product_tree = ast.parse(product_source)
+    expected_tasks = {
+        task_name for task_name, _line in _ADMITTED_BUSY_PRODUCT_CALLS.values()
+    }
+    prefixes_by_task = {}
+    for node in ast.walk(product_tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_submit_ui_lane_task"
+        ):
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        task_node = keywords.get("name")
+        if not isinstance(task_node, ast.Constant) or task_node.value not in expected_tasks:
+            continue
+        prefix_node = keywords.get("busy_text")
+        assert isinstance(prefix_node, ast.Constant)
+        assert isinstance(prefix_node.value, str)
+        assert task_node.value not in prefixes_by_task
+        prefixes_by_task[task_node.value] = {
+            "text": prefix_node.value,
+            "line": prefix_node.lineno,
+        }
+
+    label_class = next(
+        node
+        for node in product_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Label_Match"
+    )
+    busy_method = next(
+        node
+        for node in label_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_set_ui_lane_busy"
+    )
+    templates = []
+    for node in ast.walk(busy_method):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        for index, value in enumerate(node.values):
+            if not (
+                isinstance(value, ast.FormattedValue)
+                and isinstance(value.value, ast.Attribute)
+                and value.value.attr == "_ui_lane_busy_label"
+            ):
+                continue
+            suffix_nodes = node.values[index + 1 :]
+            assert suffix_nodes
+            assert all(
+                isinstance(suffix_node, ast.Constant)
+                and isinstance(suffix_node.value, str)
+                for suffix_node in suffix_nodes
+            )
+            templates.append(
+                (
+                    "".join(suffix_node.value for suffix_node in suffix_nodes),
+                    node.lineno,
+                )
+            )
+
+    assert set(prefixes_by_task) == expected_tasks
+    assert len(templates) == 1
+    prefixes_by_state = {
+        state_id: prefixes_by_task[task_name]
+        for state_id, (task_name, _line) in _ADMITTED_BUSY_PRODUCT_CALLS.items()
+    }
+    suffix, suffix_line = templates[0]
+    return prefixes_by_state, suffix, suffix_line
 
 
 def test_default_capture_matrix_covers_required_sizes_states_and_scale():
@@ -341,6 +423,43 @@ def test_only_the_state_selected_live_scan_tree_is_mapping_critical():
     }
 
 
+def test_admitted_busy_strings_use_exact_product_literals_and_are_absent_from_tools():
+    prefixes, suffix, suffix_line = _product_admitted_busy_seam_literals()
+
+    assert suffix_line == 5372
+    for state_id, (task_name, prefix_line) in _ADMITTED_BUSY_PRODUCT_CALLS.items():
+        spec = M7_STATE_CONTRACT[state_id]
+        product_prefix = prefixes[state_id]
+
+        assert product_prefix["line"] == prefix_line
+        assert product_prefix["text"] == spec["busy_text"]
+        assert spec["task_name"] == task_name
+        assert spec["expected_headline"] == product_prefix["text"]
+        assert spec["expected_status_source"] == "production_busy_seam"
+        assert "expected_status" not in spec
+
+        completed_status = product_prefix["text"] + suffix
+        grep = subprocess.run(
+            [
+                "git",
+                "grep",
+                "-F",
+                "-n",
+                "-e",
+                completed_status,
+                "--",
+                "tools",
+            ],
+            cwd=capture.ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        assert grep.returncode == 1, grep.stdout + grep.stderr
+
+
 def test_declared_states_are_free_of_the_nonproduction_mismatch_copy():
     fake = "현품표와 제품의 PHS " + "멤버십이 불일치합니다."
     production = "현품표와 제품이 불일치합니다."
@@ -468,6 +587,9 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
             MethodType(getattr(Label_Match, method_name), app),
         )
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+    product_prefixes, product_suffix, _suffix_line = (
+        _product_admitted_busy_seam_literals()
+    )
 
     for state_id in M7_REQUIRED_STATE_IDS:
         _view, refresh_method = apply_state_fixture(app, fixtures[state_id])
@@ -488,6 +610,17 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
         assert receipt["preserved_input_before"] == expected_input
         assert receipt["preserved_input_after"] == expected_input
         assert app.entry.get() == expected_input
+        if state_id in _ADMITTED_BUSY_PRODUCT_CALLS:
+            product_prefix = product_prefixes[state_id]["text"]
+            assembled_status = product_prefix + product_suffix
+            seam_output = receipt["production_busy_seam_output"]
+
+            assert seam_output["operator_text"] == product_prefix
+            assert seam_output["headline_text"] == product_prefix
+            assert seam_output["status_text"] == assembled_status
+            assert seam_output["status_text"][len(product_prefix) :] == product_suffix
+            assert app.big_display_label.cget("text") == product_prefix
+            assert app.status_label.cget("text") == assembled_status
 
     assert "Label Tk UI lane technical diagnostic: RuntimeError" in (
         capsys.readouterr().out
@@ -2875,6 +3008,19 @@ def _valid_capture_record(state_id: str = "qa_progress"):
     ]
     notice = view.notice
     m7_spec = M7_STATE_CONTRACT.get(state_id, {})
+    status_text = str(m7_spec.get("expected_status") or "")
+    production_busy_seam_output = None
+    if m7_spec.get("expected_status_source") == "production_busy_seam":
+        product_prefixes, product_suffix, _suffix_line = (
+            _product_admitted_busy_seam_literals()
+        )
+        product_prefix = product_prefixes[state_id]["text"]
+        status_text = product_prefix + product_suffix
+        production_busy_seam_output = {
+            "operator_text": product_prefix,
+            "headline_text": product_prefix,
+            "status_text": status_text,
+        }
     central_notice_messages = {
         "central_submission_wait": (
             "저장된 포장 완료 기록을 복구하고 있습니다. "
@@ -3085,7 +3231,7 @@ def _valid_capture_record(state_id: str = "qa_progress"):
             else "normal",
             "entry_value": m7_preserved_input_value(state_id),
             "headline_text": str(m7_spec.get("expected_headline") or ""),
-            "status_text": str(m7_spec.get("expected_status") or ""),
+            "status_text": status_text,
             "status_mapped": True,
             "m7_transition_receipt": (
                 {
@@ -3101,6 +3247,15 @@ def _valid_capture_record(state_id: str = "qa_progress"):
                     "preserved_input_expected": m7_preserved_input_value(state_id),
                     "preserved_input_before": m7_preserved_input_value(state_id),
                     "preserved_input_after": m7_preserved_input_value(state_id),
+                    **(
+                        {
+                            "production_busy_seam_output": (
+                                production_busy_seam_output
+                            )
+                        }
+                        if production_busy_seam_output is not None
+                        else {}
+                    ),
                 }
                 if m7_spec
                 else {}
@@ -3136,6 +3291,27 @@ def test_capture_evaluation_accepts_complete_synthetic_contract(state_id):
     record = _valid_capture_record(state_id)
 
     assert evaluate_capture(record) == []
+
+
+@pytest.mark.parametrize("state_id", tuple(_ADMITTED_BUSY_PRODUCT_CALLS))
+def test_m7_capture_evaluation_binds_admitted_busy_screen_to_product_seam(state_id):
+    record = _valid_capture_record(state_id)
+    rendered = record["rendered_state"]
+    seam_output = rendered["m7_transition_receipt"][
+        "production_busy_seam_output"
+    ]
+
+    assert rendered["status_text"] == seam_output["status_text"]
+    rendered["status_text"] += "!"
+    assert "m7_operation_status_mismatch" in evaluate_capture(record)
+
+    record = _valid_capture_record(state_id)
+    record["rendered_state"]["m7_transition_receipt"].pop(
+        "production_busy_seam_output"
+    )
+    issues = evaluate_capture(record)
+    assert "m7_production_busy_seam_status_missing" in issues
+    assert "m7_operation_status_mismatch" in issues
 
 
 def test_m7_capture_evaluation_blocks_broken_warning_overwrite_and_input_reenable():
