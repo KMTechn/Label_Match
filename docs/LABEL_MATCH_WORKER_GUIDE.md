@@ -85,11 +85,12 @@
 
 ## 5. M7 external capture bundle v1 계약
 
-M7 화면 증거의 schema 이름은 `M7 external capture bundle v1`입니다. 승인 위치는
-앱 저장소와 release packet 밖의 승인된
-`<M7 handover evidence root>/capture-bundles/Label_Match/`입니다. 저장소의 기존
-tracked 이미지는 삭제하지 않고 이력 자료로 보존하며, 현행 화면 증거는 external
-bundle로 대체 예정입니다.
+이 저장소는 별도 계약 사본을 정의하지 않습니다. 정본은
+`E:/KMTech/production-readiness-20260830/HANDOVER/CAPTURE-BUNDLE-V1-CONTRACT.md`이며,
+schema는 `M7 external capture bundle v1`, 앱 식별자는 `app=Label_Match`, 외부 앱
+root는 `E:/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 저장소의 기존
+tracked 이미지는 삭제하지 않고 이력 자료로 보존하며, 현행 화면 증거는 승인된
+external bundle로 대체 예정입니다.
 
 필수 state ID는 다음 9개입니다.
 
@@ -103,18 +104,19 @@ bundle로 대체 예정입니다.
 8. `central_submission_conflict`
 9. `broken_fail_closed_warning`
 
-조회할 때는 `<M7 handover evidence root>/handover-index.json`에서
-`app_id=Label_Match` 항목을 찾고, 그 항목이 가리키는
-`capture-bundles/Label_Match/manifest.json`의 `captures[].state_id`로 화면을
-선택합니다. manifest는 app commit/tree, portable artifact SHA-256, capture tool
-commit/blob SHA-256, viewport/DPI, 생성 시각, image SHA-256, 승인자와 보관 receipt를
-결합해야 합니다. 승인자와 보관 receipt가 없거나 release capture gate가 PASS가
-아니면 게시·교육·인계 화면으로 사용하지 마세요.
+조회는
+`E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md`에서
+시작합니다. 그 문서가 게시한 immutable
+`E:/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
+receipt에서 `app=Label_Match`를 고르고, 항목이 가리키는
+`Label_Match/<bundle-id>/manifest.json`의 `captures[].state_id`로 화면을
+선택합니다. 승인 또는 custody가 미정이면 게시·교육·인계 화면으로 사용하지
+마세요.
 
-이 문서에는 나중에 생성될 image/artifact digest 값을 다시 기록하지 않습니다.
-digest 값은 외부 index와 manifest에만 둡니다. `L-5`와 `L-6`의 제품 판정이 끝나기
-전에는 capture tool의 release gate가 차단되며, BROKEN 경고 상태를 정상 화면처럼
-간주할 수 없습니다.
+이 문서에는 raster, bundle-id 또는 나중에 생성될 digest 값을 다시 기록하지
+않습니다. 그 값은 외부 bundle과 handover index에만 둡니다. `L-5`와 `L-6`의 제품
+판정이 끝나기 전에는 capture tool의 release gate가 차단되며, BROKEN 경고 상태를
+정상 화면처럼 간주할 수 없습니다.
 
 ## 6. M7 TODO 처리표
 

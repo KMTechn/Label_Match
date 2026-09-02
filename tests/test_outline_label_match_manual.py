@@ -53,10 +53,14 @@ def test_label_docs_share_the_m7_external_capture_bundle_contract():
         section = text[start:] if end < 0 else text[start:end]
         assert m7_capture.M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA in section, name
         assert m7_capture.M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION in section, name
-        assert "handover-index.json" in section, name
+        assert m7_capture.M7_HANDOVER_INDEX in section, name
+        assert "handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json" in section, name
+        assert "app=Label_Match" in section, name
         assert "captures[].state_id" in section, name
         assert "대체 예정" in section, name
         assert not re.search(r"(?i)\b[0-9a-f]{64}\b", section), name
+        assert "<M7 handover evidence root>" not in section, name
+        assert "capture-bundles/Label_Match" not in section, name
         for state_id in m7_capture.M7_REQUIRED_STATE_IDS:
             assert state_id in section, (name, state_id)
 
@@ -69,10 +73,21 @@ def test_label_docs_share_the_m7_external_capture_bundle_contract():
     assert "| L-6 | 제품 판정 대기 |" in worker
     assert "closure는 `0/6`" in worker
     assert "처리표 정정은\n`6/6`" in worker
+    worker_contract = worker[worker.index("## 5. M7 external capture bundle v1 계약") :]
+    assert "app_source.commit" not in worker_contract
+    assert "portable_artifact.sha256" not in worker_contract
+    assert "L-5" in worker_contract and "L-6" in worker_contract
+
+    publishing_notes = documents["publisher"][0].read_text(encoding="utf-8")
+    assert "--external-bundle-manifest <manifest-path>" in publishing_notes
+    assert "--expected-manifest-sha256 <64hex>" in publishing_notes
 
 
 def test_legacy_outline_publisher_is_fail_closed_for_m7_external_bundle():
-    with pytest.raises(RuntimeError, match="legacy tracked-image publishing is disabled"):
+    with pytest.raises(
+        publisher.ExternalBundleValidationError,
+        match="LEGACY_TRACKED_IMAGE_PUBLISHING_DEPRECATED",
+    ):
         publisher._enforce_current_capture_publish_contract()
 
     assert (

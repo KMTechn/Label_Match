@@ -186,9 +186,10 @@ F3는 현재 표준 포장 완료 버튼입니다. 샘플 출고용 예외 완�
 
 ## 12. M7 external capture bundle v1과 보고
 
-현행 게시용 화면의 schema 이름은 `M7 external capture bundle v1`이고, 승인 위치는
-앱 저장소와 release packet 밖의
-`<M7 handover evidence root>/capture-bundles/Label_Match/`입니다. 필수 state ID는
+이 이력 원고는 별도 화면 계약을 정의하지 않습니다. 현행 정본은
+`E:/KMTech/production-readiness-20260830/HANDOVER/CAPTURE-BUNDLE-V1-CONTRACT.md`이고,
+schema는 `M7 external capture bundle v1`, 앱 식별자는 `app=Label_Match`, 외부 앱
+root는 `E:/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 필수 state ID는
 다음과 같습니다.
 
 1. `phs2_admitted_busy`
@@ -201,12 +202,13 @@ F3는 현재 표준 포장 완료 버튼입니다. 샘플 출고용 예외 완�
 8. `central_submission_conflict`
 9. `broken_fail_closed_warning`
 
-`<M7 handover evidence root>/handover-index.json`에서 `app_id=Label_Match`를 조회한
-뒤 `capture-bundles/Label_Match/manifest.json`의 `captures[].state_id`로 필요한
-화면을 찾습니다. manifest에는 app commit/tree, portable artifact SHA-256,
-capture tool commit/blob SHA-256, viewport/DPI, 생성 시각, image SHA-256, 승인자와
-보관 receipt가 결합되어야 합니다. 이 문서에는 아직 존재하지 않는 digest 값이나
-나중에 생성된 digest 값을 다시 쓰지 않습니다.
+조회는 `E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md`에서
+시작합니다. 그 문서가 게시한 immutable
+`E:/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
+receipt에서 `app=Label_Match`를 선택하고, 해당
+`Label_Match/<bundle-id>/manifest.json`의 `captures[].state_id`로 필요한 화면을
+찾습니다. 이 문서에는 raster, bundle-id 또는 나중에 생성된 digest 값을 다시
+쓰지 않습니다.
 
 `L-5` BROKEN 경고/입력 재활성 위험과 `L-6` synchronous generation fence가 제품
 판정 대기인 동안 release capture gate는 차단됩니다. `broken_fail_closed_warning`이

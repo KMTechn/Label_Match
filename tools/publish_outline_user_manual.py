@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import mimetypes
@@ -22,13 +23,34 @@ from requests.auth import AuthBase
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANUAL = ROOT / "docs" / "OUTLINE_LABEL_MATCH_USER_MANUAL_20260626.md"
+DEFAULT_MANUAL = ROOT / "docs" / "LABEL_MATCH_WORKER_GUIDE.md"
 ASSET_FOLDER = "label_match_user_manual_20260716_display2_v2_0_36"
 DEFAULT_ASSET_DIR = ROOT / "docs" / "assets" / ASSET_FOLDER
 DEFAULT_OUTLINE_URL = "https://wiki.kmtecherp.com"
 DEFAULT_DOCUMENT_ID = "4115be8b-488a-4934-80af-f0f9e4ee721b"
 DEFAULT_TITLE = "Label_Match(포장실 프로그램)"
 M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA = "M7 external capture bundle v1"
+M7_APP_ID = "Label_Match"
+M7_EXTERNAL_CAPTURE_ROOT = "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+M7_HANDOVER_INDEX = (
+    "E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md"
+)
+M7_CANONICAL_HANDOVER_DIR = Path(
+    "E:/KMTech/production-readiness-20260830/HANDOVER"
+).resolve()
+M7_CAPTURE_TOOL_PATH = "tools/capture_label_operator_ui.py"
+M7_APPROVAL_PLACEHOLDER = "미정 — 조직 확정 필요(Q1)"
+M7_REQUIRED_STATE_IDS = (
+    "phs2_admitted_busy",
+    "phs2_rejected_input_preserved",
+    "f4_admitted_busy",
+    "f4_rejected_input_preserved",
+    "f3_admitted_busy",
+    "f3_rejected_input_preserved",
+    "central_submission_wait",
+    "central_submission_conflict",
+    "broken_fail_closed_warning",
+)
 ASSET_PREFIX = f"assets/{ASSET_FOLDER}/"
 EXPECTED_UNIQUE_WORKER_IMAGES = 17
 EXPECTED_MARKDOWN_IMAGE_REFS = 17
@@ -163,6 +185,313 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+class ExternalBundleValidationError(RuntimeError):
+    """Typed rejection for canonical external-bundle validation failures."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = str(code)
+        super().__init__(f"{self.code}: {message}")
+
+
+def _require_lower_hex(value: Any, length: int, *, label: str) -> str:
+    normalized = str(value or "").strip()
+    if not re.fullmatch(rf"[0-9a-f]{{{length}}}", normalized):
+        raise ExternalBundleValidationError(
+            "INVALID_MANIFEST_FIELD",
+            f"{label} must be lowercase {length}-hex",
+        )
+    return normalized
+
+
+def _relative_bundle_path(value: Any, *, label: str) -> str:
+    raw = str(value or "")
+    if not raw or raw != raw.strip() or "\\" in raw or "\x00" in raw:
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_PATH", f"{label} must be a clean POSIX relative path"
+        )
+    path = Path(raw)
+    if path.is_absolute() or path.drive or any(
+        part in {"", ".", ".."} for part in path.parts
+    ):
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_PATH", f"{label} must not escape the bundle"
+        )
+    return path.as_posix()
+
+
+def _bundle_file(bundle_root: Path, value: Any, *, label: str) -> tuple[str, Path]:
+    relative = _relative_bundle_path(value, label=label)
+    candidate = (bundle_root / relative).resolve()
+    resolved_root = bundle_root.resolve()
+    if candidate == resolved_root or resolved_root not in candidate.parents:
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_PATH", f"{label} escapes the bundle"
+        )
+    return relative, candidate
+
+
+def _require_rfc3339_utc(value: Any, *, label: str) -> str:
+    normalized = str(value or "").strip()
+    if not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", normalized
+    ):
+        raise ExternalBundleValidationError(
+            "INVALID_MANIFEST_FIELD", f"{label} must be RFC 3339 UTC with Z"
+        )
+    try:
+        dt.datetime.fromisoformat(normalized.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ExternalBundleValidationError(
+            "INVALID_MANIFEST_FIELD", f"{label} is not a real UTC timestamp"
+        ) from exc
+    return normalized
+
+
+def _read_bounded_json(path: Path, *, label: str) -> tuple[bytes, dict[str, Any]]:
+    if not path.is_file():
+        raise ExternalBundleValidationError(
+            "BUNDLE_FILE_MISSING", f"{label} is missing: {path}"
+        )
+    size = path.stat().st_size
+    if size <= 0 or size > 1024 * 1024:
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_JSON", f"{label} must be between 1 byte and 1 MiB"
+        )
+    payload = path.read_bytes()
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_JSON", f"{label} is not UTF-8 JSON"
+        ) from exc
+    if not isinstance(value, dict):
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_JSON", f"{label} root must be an object"
+        )
+    return payload, value
+
+
+def _approval_is_pending(value: Any) -> bool:
+    normalized = str(value or "").strip()
+    return not normalized or normalized == M7_APPROVAL_PLACEHOLDER
+
+
+def validate_external_bundle_manifest(
+    manifest_path: Path, expected_manifest_sha256: str
+) -> dict[str, Any]:
+    """Validate one final canonical bundle without copying its raster into docs."""
+
+    expected_digest = _require_lower_hex(
+        expected_manifest_sha256, 64, label="expected manifest SHA-256"
+    )
+    path = manifest_path.resolve()
+    if path.name != "manifest.json":
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_TOPOLOGY", "external bundle input must be manifest.json"
+        )
+    bundle_root = path.parent
+    if bundle_root.parent.name != M7_APP_ID or not re.fullmatch(
+        r"Label_Match__[0-9a-f]{12}__\d{8}T\d{6}Z__[0-9a-f]{8}",
+        bundle_root.name,
+    ):
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_TOPOLOGY",
+            "manifest must use Label_Match/<canonical-bundle-id>/manifest.json",
+        )
+    for name in ("captures", "states", "approval"):
+        if not (bundle_root / name).is_dir():
+            raise ExternalBundleValidationError(
+                "INVALID_BUNDLE_TOPOLOGY", f"canonical {name}/ directory is missing"
+            )
+    manifest_bytes, manifest = _read_bounded_json(path, label="manifest.json")
+    actual_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    if actual_digest != expected_digest:
+        raise ExternalBundleValidationError(
+            "MANIFEST_DIGEST_MISMATCH",
+            "manifest bytes do not match --expected-manifest-sha256",
+        )
+    if manifest.get("schema") != M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA:
+        raise ExternalBundleValidationError(
+            "SCHEMA_MISMATCH", "manifest schema is not the canonical exact string"
+        )
+    if manifest.get("app") != M7_APP_ID:
+        raise ExternalBundleValidationError(
+            "APP_MISMATCH", "manifest app must be Label_Match"
+        )
+
+    app_source = manifest.get("app_source")
+    portable = manifest.get("portable_artifact")
+    capture_tool = manifest.get("capture_tool")
+    approval = manifest.get("approval")
+    captures = manifest.get("captures")
+    if not all(
+        isinstance(value, dict)
+        for value in (app_source, portable, capture_tool, approval)
+    ) or not isinstance(captures, list):
+        raise ExternalBundleValidationError(
+            "INVALID_MANIFEST_FIELD", "canonical nested manifest groups are missing"
+        )
+    app_commit = _require_lower_hex(
+        app_source.get("commit"), 40, label="app_source.commit"
+    )
+    _require_lower_hex(app_source.get("tree"), 40, label="app_source.tree")
+    if bundle_root.name.split("__", 2)[1] != app_commit[:12]:
+        raise ExternalBundleValidationError(
+            "SOURCE_IDENTITY_MISMATCH",
+            "bundle-id commit prefix does not match app_source.commit",
+        )
+    _relative_bundle_path(portable.get("file"), label="portable_artifact.file")
+    _require_lower_hex(
+        portable.get("sha256"), 64, label="portable_artifact.sha256"
+    )
+    if capture_tool.get("path") != M7_CAPTURE_TOOL_PATH:
+        raise ExternalBundleValidationError(
+            "CAPTURE_TOOL_MISMATCH",
+            f"capture_tool.path must be {M7_CAPTURE_TOOL_PATH}",
+        )
+    _require_lower_hex(
+        capture_tool.get("commit"), 40, label="capture_tool.commit"
+    )
+    _require_lower_hex(
+        capture_tool.get("blob_sha256"),
+        64,
+        label="capture_tool.blob_sha256",
+    )
+
+    state_ids: list[str] = []
+    verified_images: list[str] = []
+    for index, capture in enumerate(captures):
+        if not isinstance(capture, dict):
+            raise ExternalBundleValidationError(
+                "INVALID_CAPTURE", f"captures[{index}] must be an object"
+            )
+        state_id = str(capture.get("state_id") or "")
+        state_ids.append(state_id)
+        viewport = capture.get("viewport")
+        if not isinstance(viewport, dict):
+            raise ExternalBundleValidationError(
+                "INVALID_CAPTURE", f"{state_id} viewport is missing"
+            )
+        width = viewport.get("width_px")
+        height = viewport.get("height_px")
+        dpi = capture.get("dpi")
+        if any(isinstance(value, bool) for value in (width, height, dpi)) or not all(
+            isinstance(value, int) and value > 0 for value in (width, height, dpi)
+        ):
+            raise ExternalBundleValidationError(
+                "INVALID_CAPTURE", f"{state_id} viewport and dpi must be positive integers"
+            )
+        _require_rfc3339_utc(
+            capture.get("generated_at"), label=f"captures[{index}].generated_at"
+        )
+        expected_image_file = (
+            f"captures/{state_id}__{width}x{height}__{dpi}dpi.png"
+        )
+        image_file, image_path = _bundle_file(
+            bundle_root, capture.get("image_file"), label=f"{state_id}.image_file"
+        )
+        if image_file != expected_image_file:
+            raise ExternalBundleValidationError(
+                "INVALID_CAPTURE_FILENAME",
+                f"{state_id} image_file must be {expected_image_file}",
+            )
+        expected_image_digest = _require_lower_hex(
+            capture.get("image_sha256"), 64, label=f"{state_id}.image_sha256"
+        )
+        if not image_path.is_file() or _sha256_file(image_path) != expected_image_digest:
+            raise ExternalBundleValidationError(
+                "IMAGE_DIGEST_MISMATCH", f"{state_id} PNG digest does not match"
+            )
+        image_info = _png_info(image_path)
+        if image_info["format"] != "PNG" or image_info["size"] != (width, height):
+            raise ExternalBundleValidationError(
+                "IMAGE_DIMENSION_MISMATCH",
+                f"{state_id} PNG format/dimensions do not match viewport",
+            )
+        verified_images.append(image_file)
+    if len(state_ids) != len(M7_REQUIRED_STATE_IDS) or set(state_ids) != set(
+        M7_REQUIRED_STATE_IDS
+    ):
+        raise ExternalBundleValidationError(
+            "REQUIRED_STATE_SET_MISMATCH",
+            "captures must contain every required state exactly once and no extras",
+        )
+
+    capture_set_path = bundle_root / "capture-set.json"
+    _capture_set_bytes, capture_set = _read_bounded_json(
+        capture_set_path, label="capture-set.json"
+    )
+    for key in (
+        "schema",
+        "app",
+        "app_source",
+        "portable_artifact",
+        "capture_tool",
+        "captures",
+    ):
+        if capture_set.get(key) != manifest.get(key):
+            raise ExternalBundleValidationError(
+                "CAPTURE_SET_MISMATCH", f"capture-set.json differs at {key}"
+            )
+
+    approval_keys = {
+        "approver",
+        "approval_receipt_file",
+        "approval_receipt_sha256",
+        "custody_receipt_file",
+        "custody_receipt_sha256",
+    }
+    if set(approval) != approval_keys:
+        raise ExternalBundleValidationError(
+            "INVALID_APPROVAL", "approval must contain five canonical fields exactly"
+        )
+    if any(_approval_is_pending(approval.get(key)) for key in approval_keys):
+        raise ExternalBundleValidationError(
+            "APPROVAL_PENDING", "approval or custody still contains a placeholder"
+        )
+    receipt_specs = (
+        (
+            "approval_receipt_file",
+            "approval_receipt_sha256",
+            "approval/approval-receipt.json",
+        ),
+        (
+            "custody_receipt_file",
+            "custody_receipt_sha256",
+            "approval/custody-receipt.json",
+        ),
+    )
+    verified_receipts: list[str] = []
+    for file_key, digest_key, expected_file in receipt_specs:
+        receipt_file, receipt_path = _bundle_file(
+            bundle_root, approval[file_key], label=f"approval.{file_key}"
+        )
+        if receipt_file != expected_file:
+            raise ExternalBundleValidationError(
+                "INVALID_APPROVAL", f"approval.{file_key} must be {expected_file}"
+            )
+        receipt_digest = _require_lower_hex(
+            approval[digest_key], 64, label=f"approval.{digest_key}"
+        )
+        if not receipt_path.is_file() or _sha256_file(receipt_path) != receipt_digest:
+            raise ExternalBundleValidationError(
+                "RECEIPT_DIGEST_MISMATCH", f"{receipt_file} digest does not match"
+            )
+        verified_receipts.append(receipt_file)
+
+    return {
+        "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+        "app": M7_APP_ID,
+        "manifest_path": str(path),
+        "manifest_sha256": actual_digest,
+        "bundle_id": bundle_root.name,
+        "verified_state_ids": state_ids,
+        "verified_image_files": verified_images,
+        "verified_receipt_files": verified_receipts,
+        "approval_status": "APPROVED",
+    }
+
+
 def _png_info(path: Path) -> dict[str, Any]:
     with Image.open(path) as image:
         image.load()
@@ -204,11 +533,12 @@ def _rows_sha256(rows: Any) -> str:
 
 
 def _enforce_current_capture_publish_contract() -> None:
-    """Keep the legacy tracked-image publisher fail-closed for M7."""
+    """Reject the retired tracked-image path and name its replacement."""
 
-    raise RuntimeError(
-        f"legacy tracked-image publishing is disabled; "
-        f"{M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA} approval validation is required"
+    raise ExternalBundleValidationError(
+        "LEGACY_TRACKED_IMAGE_PUBLISHING_DEPRECATED",
+        "use --external-bundle-manifest <path> "
+        "--expected-manifest-sha256 <64hex>; tracked raster is historical only",
     )
 
 
@@ -499,6 +829,44 @@ def _build_outline_text(manual_path: Path, asset_dir: Path, attachment_urls: dic
     return text, report
 
 
+def _build_reference_only_outline_text(
+    manual_path: Path,
+) -> tuple[str, dict[str, Any]]:
+    """Prepare current guidance that points to custody evidence without embedding it."""
+
+    text = manual_path.read_text(encoding="utf-8")
+    required_references = (
+        M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+        M7_APP_ID,
+        M7_EXTERNAL_CAPTURE_ROOT,
+        M7_HANDOVER_INDEX,
+        "captures[].state_id",
+    )
+    missing = [value for value in required_references if value not in text]
+    missing.extend(state_id for state_id in M7_REQUIRED_STATE_IDS if state_id not in text)
+    if missing:
+        raise ExternalBundleValidationError(
+            "DOCUMENT_REFERENCE_MISSING",
+            "manual is missing canonical references: " + ", ".join(missing),
+        )
+    markdown_rasters = re.findall(r"!\[[^\]]*\]\([^)]*\)", text)
+    digest_values = re.findall(r"(?i)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", text)
+    if markdown_rasters or digest_values:
+        raise ExternalBundleValidationError(
+            "DOCUMENT_NOT_REFERENCE_ONLY",
+            "current manual must not embed raster links or bundle digest values",
+        )
+    return text, {
+        "manual_path": str(manual_path),
+        "document_reference_only": True,
+        "document_markdown_image_refs": 0,
+        "document_digest_values": 0,
+        "canonical_handover_index": M7_HANDOVER_INDEX,
+        "canonical_external_root": M7_EXTERNAL_CAPTURE_ROOT,
+        "required_state_ids": list(M7_REQUIRED_STATE_IDS),
+    }
+
+
 def _reject_unsafe_url_text(value: str, *, label: str) -> str:
     if value != value.strip() or not value:
         raise ValueError(f"{label} must be a non-empty URL without surrounding whitespace")
@@ -685,7 +1053,12 @@ class OutlineClient:
 def _write_report(path: str, report: dict[str, Any]) -> None:
     if not path:
         return
-    target = Path(path)
+    target = Path(path).resolve()
+    if target == M7_CANONICAL_HANDOVER_DIR or M7_CANONICAL_HANDOVER_DIR in target.parents:
+        raise ExternalBundleValidationError(
+            "HANDOVER_WRITE_FORBIDDEN",
+            "publisher reports must not modify the canonical HANDOVER directory",
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -693,7 +1066,13 @@ def _write_report(path: str, report: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Publish the Label_Match worker manual to Outline")
     parser.add_argument("--manual", default=str(DEFAULT_MANUAL))
-    parser.add_argument("--asset-dir", default=str(DEFAULT_ASSET_DIR))
+    parser.add_argument(
+        "--asset-dir",
+        default=str(DEFAULT_ASSET_DIR),
+        help="deprecated historical tracked-image argument; no raster is uploaded",
+    )
+    parser.add_argument("--external-bundle-manifest", default="")
+    parser.add_argument("--expected-manifest-sha256", default="")
     parser.add_argument("--outline-url", default="")
     parser.add_argument("--document-id", default=DEFAULT_DOCUMENT_ID)
     parser.add_argument("--title", default=DEFAULT_TITLE)
@@ -714,82 +1093,107 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     manual_path = Path(args.manual)
-    asset_dir = Path(args.asset_dir)
-    outline_url, token = _load_outline_config(args)
 
     try:
-        _enforce_current_capture_publish_contract()
+        if not args.external_bundle_manifest and not args.expected_manifest_sha256:
+            _enforce_current_capture_publish_contract()
+        if not args.external_bundle_manifest or not args.expected_manifest_sha256:
+            raise ExternalBundleValidationError(
+                "EXTERNAL_BUNDLE_ARGUMENTS_REQUIRED",
+                "both --external-bundle-manifest and --expected-manifest-sha256 are required",
+            )
+        bundle_report = validate_external_bundle_manifest(
+            Path(args.external_bundle_manifest), args.expected_manifest_sha256
+        )
+        source_text, document_report = _build_reference_only_outline_text(manual_path)
+        outline_url, token = _load_outline_config(args)
         if args.dry_run:
             normalized_outline_url, normalized_outline_origin = _validate_outline_base_url(outline_url)
-            _, report = _build_outline_text(manual_path, asset_dir)
-            report.update(
-                {
-                    "status": "PASS",
-                    "mode": "dry-run",
-                    "outline_url": normalized_outline_url,
-                    "outline_origin": normalized_outline_origin,
-                    "document_id": args.document_id,
-                    "title": args.title,
-                    "token_present": bool(token),
-                }
-            )
-            _write_report(args.report_path, report)
+            report = {
+                **bundle_report,
+                **document_report,
+                "status": "PASS",
+                "mode": "dry-run",
+                "outline_url": normalized_outline_url,
+                "outline_origin": normalized_outline_origin,
+                "document_id": args.document_id,
+                "title": args.title,
+                "token_present": bool(token),
+                "network_writes": 0,
+                "file_writes": 0,
+                "report_write_skipped": bool(args.report_path),
+            }
             print(json.dumps(report, ensure_ascii=False, sort_keys=True))
             return 0
 
-        source_text, _ = _build_outline_text(manual_path, asset_dir)
         client = OutlineClient(
             outline_url,
             token,
             trusted_upload_origins=args.trusted_upload_origin,
             tls_ca_bundle_path=args.tls_ca_bundle_path,
         )
-        unique_links = list(dict.fromkeys(_manual_image_paths(source_text)))
-        attachment_urls = {
-            rel: client.upload_image(args.document_id, _asset_path(asset_dir, rel))
-            for rel in unique_links
-        }
-        outline_text, local_report = _build_outline_text(manual_path, asset_dir, attachment_urls)
-        client.api("documents.update", {"id": args.document_id, "title": args.title, "text": outline_text, "editMode": "replace", "publish": True})
+        client.api(
+            "documents.update",
+            {
+                "id": args.document_id,
+                "title": args.title,
+                "text": source_text,
+                "editMode": "replace",
+                "publish": True,
+            },
+        )
         info = client.api("documents.info", {"id": args.document_id})
         data = info.get("data") or {}
         doc = data.get("document") or data
         doc_text = doc.get("text") or ""
+        missing_references = [
+            value
+            for value in (
+                M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+                M7_APP_ID,
+                M7_EXTERNAL_CAPTURE_ROOT,
+                M7_HANDOVER_INDEX,
+                *M7_REQUIRED_STATE_IDS,
+            )
+            if value not in doc_text
+        ]
         report = {
-            **local_report,
+            **bundle_report,
+            **document_report,
             "status": "PASS",
             "mode": "publish",
             "outline_url": client.base_url + str(doc.get("url", "")),
             "document_id": args.document_id,
-            "unique_images_uploaded": len(attachment_urls),
+            "unique_images_uploaded": 0,
             "document_markdown_image_refs": doc_text.count("!["),
-            "document_attachment_refs": doc_text.count("/api/attachments.redirect"),
-            "document_relative_image_refs": doc_text.count(ASSET_PREFIX),
-            "document_file_upload_text_count": doc_text.count("파일 업로드"),
-            "document_typo_count": _count_today_button_typo(doc_text),
-            "document_today_phrase_count": doc_text.count("`오늘` 버튼으로") + doc_text.count("오늘 버튼으로"),
+            "document_digest_values": len(
+                re.findall(
+                    r"(?i)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", doc_text
+                )
+            ),
+            "missing_canonical_references": missing_references,
             "document_text_length": len(doc_text),
         }
-        required = {
-            "document_markdown_image_refs": EXPECTED_MARKDOWN_IMAGE_REFS,
-            "document_attachment_refs": EXPECTED_MARKDOWN_IMAGE_REFS,
-            "document_relative_image_refs": 0,
-            "document_file_upload_text_count": 0,
-            "document_typo_count": 0,
-        }
-        for key, expected in required.items():
-            if report[key] != expected:
-                report["status"] = "FAIL"
-                raise RuntimeError(f"{key} expected {expected}, got {report[key]}")
-        if report["document_today_phrase_count"] < 1:
+        if (
+            report["document_markdown_image_refs"] != 0
+            or report["document_digest_values"] != 0
+            or missing_references
+        ):
             report["status"] = "FAIL"
-            raise RuntimeError("published document does not contain expected today-button phrase")
+            raise ExternalBundleValidationError(
+                "PUBLISHED_DOCUMENT_NOT_REFERENCE_ONLY",
+                "Outline document contains raster/digest or lacks canonical references",
+            )
         _write_report(args.report_path, report)
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return 0
     except Exception as exc:
         report = {"status": "FAIL", "error": str(exc), "mode": "dry-run" if args.dry_run else "publish"}
-        _write_report(args.report_path, report)
+        if not args.dry_run and not (
+            isinstance(exc, ExternalBundleValidationError)
+            and exc.code == "HANDOVER_WRITE_FORBIDDEN"
+        ):
+            _write_report(args.report_path, report)
         print(json.dumps(report, ensure_ascii=False, sort_keys=True), file=sys.stderr)
         return 1
 

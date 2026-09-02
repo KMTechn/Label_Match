@@ -28,30 +28,33 @@
 
 ## 0. 현행 M7 외부 캡처 계약
 
-- schema: `M7 external capture bundle v1`
-- 외부 승인 위치:
-  `<M7 handover evidence root>/capture-bundles/Label_Match/` (앱 저장소·release
-  packet 밖)
+- 별도 계약 사본을 두지 않으며 정본은
+  `E:/KMTech/production-readiness-20260830/HANDOVER/CAPTURE-BUNDLE-V1-CONTRACT.md`
+- schema: `M7 external capture bundle v1`, 앱 식별자: `app=Label_Match`
+- 외부 승인 위치: `E:/requal-evidence/capture-bundle-v1/Label_Match/`
+  (앱 저장소·release packet 밖)
 - 필수 state ID:
   `phs2_admitted_busy`, `phs2_rejected_input_preserved`,
   `f4_admitted_busy`, `f4_rejected_input_preserved`,
   `f3_admitted_busy`, `f3_rejected_input_preserved`,
   `central_submission_wait`, `central_submission_conflict`,
   `broken_fail_closed_warning`
-- 조회: `<M7 handover evidence root>/handover-index.json`의
-  `app_id=Label_Match` → `capture-bundles/Label_Match/manifest.json` →
+- 조회:
+  `E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md` → 그 문서가
+  게시한 immutable
+  `E:/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
+  → `app=Label_Match` → `Label_Match/<bundle-id>/manifest.json` →
   `captures[].state_id`
-- 승인 조건: manifest의 app commit/tree, portable artifact SHA-256, capture tool
-  commit/blob SHA-256, viewport/DPI, 생성 시각, image SHA-256, 승인자·보관 receipt가
-  결합되고 release capture gate가 PASS여야 합니다.
+- 승인 조건은 위 정본과 external manifest/receipt에서 판정하며 이 문서에 다시
+  복사하지 않습니다.
 
-아직 없는 digest 값과 나중에 생성될 digest 값은 이 문서나 OUTLINE 원고에 다시
-쓰지 않습니다. 아래 2026-07-16 tracked 이미지와 게시 절차는 삭제하지 않고 이력
+Raster, bundle-id, 아직 없는 digest 값과 나중에 생성될 digest 값은 이 문서나
+OUTLINE 원고에 다시 쓰지 않습니다. 아래 2026-07-16 tracked 이미지와 게시 절차는 삭제하지 않고 이력
 재현용으로 보존하며, 현행 화면은 external bundle로 대체 예정입니다. `L-5`와
 `L-6`가 제품 판정 대기인 동안 `broken_fail_closed_warning`을 정상으로 위조하지
-않고 release capture를 차단합니다. 기존 `tools/publish_outline_user_manual.py`도
-external bundle 승인 검증이 구현되기 전까지 legacy tracked-image 게시를
-fail-closed 합니다.
+않고 release capture를 차단합니다. `tools/publish_outline_user_manual.py`는 승인된
+external bundle manifest와 그 expected SHA-256을 검증하는 경로만 현행 게시로
+허용하고 legacy tracked-image 게시를 명시적으로 거부합니다.
 
 ## 1. 게시 대상
 
@@ -130,41 +133,37 @@ fail-closed 합니다.
 컴포넌트 저장소에서 다음을 실행합니다.
 
 ```powershell
-python -B tools/publish_outline_user_manual.py --dry-run
-python -B -m pytest -q -p no:cacheprovider tests/test_label_match_core.py tests/test_package_logistics.py tests/test_outline_label_match_manual.py
+python -B tools/publish_outline_user_manual.py --external-bundle-manifest <manifest-path> --expected-manifest-sha256 <64hex> --dry-run
+python -B -m pytest -q -p no:cacheprovider -p no:deepeval tests/test_capture_label_operator_ui.py tests/test_outline_label_match_manual.py tests/test_m7_external_capture_bundle.py
 ```
 
-드라이런은 네트워크 쓰기를 하지 않으며 다음 조건을 검증합니다.
+드라이런은 네트워크와 파일 쓰기를 하지 않으며 다음 조건을 검증합니다.
 
-- Markdown 이미지 참조 17개, 고유 이미지 17개
-- 모든 상대 링크가 승인된 새 자산 폴더 아래에 존재
-- 매니페스트 PASS와 이미지 17개 일치
-- 전 이미지 2560×1440
-- 매니페스트 계약 v2와 앱 버전 `v2.0.36`
-- commit `faaca1c7783e2e7a91b0fea862e23eefefde09bd`와 tree `3d169822fae1cf978b3623cfbb433e5e647615bb`
-- 비주 `\\.\DISPLAY2`의 정확한 화면·work rect, foreground, 앱 root 완전 포함, 대화상자 소유 관계
-- 일반 QA 다섯 행 또는 F4 exact 행의 기대값·관측값 일치
-- 호스트명·사용자/임시 절대경로·운영 식별자가 없는 개인정보 검사
-- near-black 증가율이 0.5% 이하
-- `파일 업로드` 문구와 `늘 버튼으로` 오탈자 없음
-- `오늘` 버튼 문구 존재
+- 입력 manifest bytes가 `--expected-manifest-sha256`과 일치
+- schema, `app=Label_Match`, app source, portable artifact, capture tool의 정본 field
+- 필수 state ID 9개가 누락·중복·추가 없이 각 1회 존재
+- 각 PNG의 path, SHA-256, viewport, DPI, UTC 생성 시각
+- approval/custody receipt 두 파일의 실제 SHA-256과 non-placeholder 승인자
+- 게시 본문이 raster나 digest를 싣지 않고 정본 index 조회만 제공
 
 ## 5. 승인 후 게시 방법
 
 게시 권한과 승인된 `OUTLINE_API_TOKEN`이 별도로 준비된 경우에만 실행합니다.
 
 ```powershell
-python -B tools/publish_outline_user_manual.py --report-path docs/outline_user_manual_publish_result_20260716.json
+python -B tools/publish_outline_user_manual.py --external-bundle-manifest <manifest-path> --expected-manifest-sha256 <64hex> --report-path <external-report-path>
 ```
 
-도구는 17개 주석 이미지를 attachment로 업로드하고 상대 링크를 attachment URL로 치환한 뒤 기존 document id에 `replace` 업데이트합니다. 게시 후에는 브라우저에서 강제 새로고침하고 다음을 확인합니다.
+도구는 raster를 업로드하지 않고 정본 조회 문장을 포함한 현재 작업자 guide를 기존
+document id에 `replace` 업데이트합니다. 게시 후에는 브라우저에서 강제 새로고침하고
+다음을 확인합니다.
 
 1. 문서 제목과 상위 컬렉션이 그대로인지
-2. 이미지 17장이 본문 순서대로 보이는지
-3. 상대 `assets/...` 링크가 0개인지
-4. 5단계, sealed 5회, PHS+F4 N+5회와 전체 체인 N=60/65회가 정확히 보이는지
-5. 오류·취소·복구 안내가 누락되지 않았는지
-6. 게시 결과 보고서가 PASS이고 매니페스트 v2의 소스·DISPLAY2·foreground·중앙 실제 목록·개인정보 계약이 유지되는지
+2. Markdown 이미지와 attachment 참조가 0개인지
+3. 정본 경로, schema, `app=Label_Match`, 필수 state ID 9개가 보이는지
+4. 실제 bundle-id, raster path, digest 값이 본문에 복사되지 않았는지
+5. L-5/L-6 pending과 release capture 차단 문장이 유지되는지
+6. 게시 결과 보고서가 PASS이고 검증된 state·image·approval/custody 수가 맞는지
 
 ## 6. 새 PC 관리자 확인표
 

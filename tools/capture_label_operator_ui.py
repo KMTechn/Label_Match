@@ -20,10 +20,14 @@ import hashlib
 import importlib
 import importlib.machinery
 import inspect
+from io import BytesIO
 import json
 import math
 import os
 from pathlib import Path
+import re
+import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -34,7 +38,9 @@ from PIL import Image, ImageGrab, ImageStat
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CAPTURE_OUTPUT_BASE = (ROOT.parent / "tmp" / "label_match_operator_ui").resolve()
+CAPTURE_OUTPUT_BASE = Path(
+    "E:/requal-evidence/capture-bundle-v1/Label_Match"
+).resolve()
 DEFAULT_SOURCE_ROOT = Path(
     os.environ.get("LABEL_MATCH_CAPTURE_SOURCE_ROOT", ROOT)
 ).resolve()
@@ -66,7 +72,6 @@ BASELINE_STATE_IDS = (
     "qa_product_3",
     "cancellation_conflict",
     "sealed",
-    "error",
     "full_complete",
     "partial_complete",
     "recovery",
@@ -85,10 +90,40 @@ M7_REQUIRED_STATE_IDS = (
     "broken_fail_closed_warning",
 )
 DEFAULT_STATE_IDS = (*BASELINE_STATE_IDS, *M7_REQUIRED_STATE_IDS)
-CAPTURE_MANIFEST_SCHEMA_VERSION = 7
+APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION = 7
 M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA = "M7 external capture bundle v1"
 M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION = (
-    "<M7 handover evidence root>/capture-bundles/Label_Match/"
+    "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+)
+M7_HANDOVER_INDEX = (
+    "E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md"
+)
+M7_CAPTURE_TOOL_PATH = "tools/capture_label_operator_ui.py"
+M7_APPROVAL_PLACEHOLDER = "미정 — 조직 확정 필요(Q1)"
+M7_BUNDLE_CAPTURE_SIZE = (1440, 900)
+M7_MANIFEST_FIELD_GROUPS = (
+    ("app_source.commit", "app_source.tree"),
+    ("portable_artifact.file", "portable_artifact.sha256"),
+    (
+        "capture_tool.path",
+        "capture_tool.commit",
+        "capture_tool.blob_sha256",
+    ),
+    ("captures[].state_id",),
+    (
+        "captures[].viewport.width_px",
+        "captures[].viewport.height_px",
+        "captures[].dpi",
+    ),
+    ("captures[].generated_at",),
+    ("captures[].image_file", "captures[].image_sha256"),
+    (
+        "approval.approver",
+        "approval.approval_receipt_file",
+        "approval.approval_receipt_sha256",
+        "approval.custody_receipt_file",
+        "approval.custody_receipt_sha256",
+    ),
 )
 M7_PRODUCT_DECISION_BLOCKERS = ("L-5", "L-6")
 M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
@@ -495,32 +530,260 @@ def m7_preserved_input_value(state_id: str) -> str:
     return _m7_exact_phs2(profile) if profile else ""
 
 
+class CaptureBundleContractError(RuntimeError):
+    """Typed, fail-closed error raised before release evidence is emitted."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = str(code)
+        super().__init__(f"{self.code}: {message}")
+
+
+def _require_hex(value: Any, length: int, *, label: str) -> str:
+    normalized = str(value or "").strip()
+    if not re.fullmatch(rf"[0-9a-f]{{{length}}}", normalized):
+        raise CaptureBundleContractError(
+            "INVALID_MANIFEST_IDENTITY",
+            f"{label} must be lowercase {length}-hex",
+        )
+    return normalized
+
+
+def _bundle_relative_path(value: Any, *, label: str) -> str:
+    raw = str(value or "")
+    if not raw or raw != raw.strip() or "\\" in raw or "\x00" in raw:
+        raise CaptureBundleContractError(
+            "INVALID_BUNDLE_PATH", f"{label} must be a clean POSIX relative path"
+        )
+    path = Path(raw)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise CaptureBundleContractError(
+            "INVALID_BUNDLE_PATH", f"{label} must not escape the bundle"
+        )
+    return path.as_posix()
+
+
+def _rfc3339_utc(value: Any, *, label: str = "generated_at") -> str:
+    normalized = str(value or "").strip()
+    if not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", normalized
+    ):
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_TIME", f"{label} must be RFC 3339 UTC with Z"
+        )
+    try:
+        dt.datetime.fromisoformat(normalized.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_TIME", f"{label} is not a real UTC timestamp"
+        ) from exc
+    return normalized
+
+
+def _utc_now_rfc3339() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _placeholder_approval() -> dict[str, str]:
+    return {
+        "approver": M7_APPROVAL_PLACEHOLDER,
+        "approval_receipt_file": "approval/approval-receipt.json",
+        "approval_receipt_sha256": M7_APPROVAL_PLACEHOLDER,
+        "custody_receipt_file": "approval/custody-receipt.json",
+        "custody_receipt_sha256": M7_APPROVAL_PLACEHOLDER,
+    }
+
+
+def _validated_approval_block(value: Mapping[str, Any] | None) -> dict[str, str]:
+    approval = dict(value or _placeholder_approval())
+    required = tuple(_placeholder_approval())
+    if set(approval) != set(required):
+        raise CaptureBundleContractError(
+            "INVALID_APPROVAL_BLOCK",
+            "approval must contain the five canonical receipt fields exactly",
+        )
+    approver = str(approval["approver"] or "").strip()
+    if not approver:
+        raise CaptureBundleContractError(
+            "INVALID_APPROVAL_BLOCK", "approval.approver is required"
+        )
+    for key in ("approval_receipt_file", "custody_receipt_file"):
+        approval[key] = _bundle_relative_path(approval[key], label=f"approval.{key}")
+    for key in ("approval_receipt_sha256", "custody_receipt_sha256"):
+        digest = str(approval[key] or "").strip()
+        if digest != M7_APPROVAL_PLACEHOLDER:
+            approval[key] = _require_hex(digest, 64, label=f"approval.{key}")
+    approval["approver"] = approver
+    return {key: str(approval[key]) for key in required}
+
+
+def _canonical_capture_from_bytes(value: Mapping[str, Any]) -> dict[str, Any]:
+    state_id = str(value.get("state_id") or "").strip()
+    if state_id not in M7_REQUIRED_STATE_IDS:
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_STATE", f"unexpected state_id: {state_id!r}"
+        )
+    image_bytes = value.get("image_bytes")
+    if not isinstance(image_bytes, (bytes, bytearray, memoryview)) or not image_bytes:
+        raise CaptureBundleContractError(
+            "INVALID_PNG_BYTES", f"{state_id} image_bytes are required"
+        )
+    payload = bytes(image_bytes)
+    try:
+        with Image.open(BytesIO(payload)) as image:
+            image.load()
+            image_format = image.format
+            actual_width, actual_height = map(int, image.size)
+    except Exception as exc:
+        raise CaptureBundleContractError(
+            "INVALID_PNG_BYTES", f"{state_id} image bytes are unreadable"
+        ) from exc
+    if image_format != "PNG":
+        raise CaptureBundleContractError(
+            "INVALID_PNG_BYTES", f"{state_id} image must be PNG"
+        )
+    viewport = value.get("viewport")
+    if not isinstance(viewport, Mapping):
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_VIEWPORT", f"{state_id} viewport is required"
+        )
+    width = viewport.get("width_px")
+    height = viewport.get("height_px")
+    if (
+        isinstance(width, bool)
+        or isinstance(height, bool)
+        or not isinstance(width, int)
+        or not isinstance(height, int)
+        or width <= 0
+        or height <= 0
+        or (width, height) != (actual_width, actual_height)
+    ):
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_VIEWPORT",
+            f"{state_id} viewport must match PNG dimensions",
+        )
+    dpi = value.get("dpi")
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or dpi <= 0:
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_DPI", f"{state_id} dpi must be a positive integer"
+        )
+    expected_file = f"captures/{state_id}__{width}x{height}__{dpi}dpi.png"
+    image_file = _bundle_relative_path(value.get("image_file"), label="image_file")
+    if image_file != expected_file:
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_FILENAME",
+            f"{state_id} image_file must be {expected_file}",
+        )
+    return {
+        "state_id": state_id,
+        "image_file": image_file,
+        "image_sha256": hashlib.sha256(payload).hexdigest(),
+        "viewport": {"width_px": width, "height_px": height},
+        "dpi": dpi,
+        "generated_at": _rfc3339_utc(value.get("generated_at")),
+    }
+
+
+def build_m7_external_capture_manifest(
+    *,
+    app_commit: str,
+    app_tree: str,
+    portable_artifact_file: str,
+    portable_artifact_sha256: str,
+    capture_tool_commit: str,
+    capture_tool_blob_sha256: str,
+    captures: Sequence[Mapping[str, Any]],
+    approval: Mapping[str, Any] | None = None,
+    app_specific: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the canonical manifest from supplied PNG bytes without rendering."""
+
+    if not str(portable_artifact_file or "").strip() or not str(
+        portable_artifact_sha256 or ""
+    ).strip():
+        raise CaptureBundleContractError(
+            "PORTABLE_ARTIFACT_REQUIRED",
+            "portable artifact file and SHA-256 must be supplied",
+        )
+    canonical_captures = [_canonical_capture_from_bytes(item) for item in captures]
+    state_ids = [item["state_id"] for item in canonical_captures]
+    if len(state_ids) != len(M7_REQUIRED_STATE_IDS) or set(state_ids) != set(
+        M7_REQUIRED_STATE_IDS
+    ):
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_STATE_SET",
+            "captures must contain every required Label_Match state exactly once",
+        )
+    return {
+        "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+        "app": "Label_Match",
+        "app_source": {
+            "commit": _require_hex(app_commit, 40, label="app_source.commit"),
+            "tree": _require_hex(app_tree, 40, label="app_source.tree"),
+        },
+        "portable_artifact": {
+            "file": _bundle_relative_path(
+                portable_artifact_file, label="portable_artifact.file"
+            ),
+            "sha256": _require_hex(
+                portable_artifact_sha256,
+                64,
+                label="portable_artifact.sha256",
+            ),
+        },
+        "capture_tool": {
+            "path": M7_CAPTURE_TOOL_PATH,
+            "commit": _require_hex(
+                capture_tool_commit, 40, label="capture_tool.commit"
+            ),
+            "blob_sha256": _require_hex(
+                capture_tool_blob_sha256,
+                64,
+                label="capture_tool.blob_sha256",
+            ),
+        },
+        "captures": canonical_captures,
+        "approval": _validated_approval_block(approval),
+        "app_specific": dict(app_specific or {}),
+    }
+
+
 def build_m7_external_capture_bundle_contract() -> dict[str, Any]:
-    """Return the repository-side half of the external M7 evidence contract."""
+    """Describe the exact canonical external-bundle contract used by the tool."""
 
     return {
         "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
-        "app_id": "Label_Match",
+        "app": "Label_Match",
+        "canonical_contract": (
+            "E:/KMTech/production-readiness-20260830/HANDOVER/"
+            "CAPTURE-BUNDLE-V1-CONTRACT.md"
+        ),
         "external_approval_location": M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION,
         "required_state_ids": list(M7_REQUIRED_STATE_IDS),
-        "manifest_identity_fields": [
-            "app_source.commit",
-            "app_source.tree",
-            "portable_artifact.sha256",
-            "capture_tool.commit",
-            "capture_tool.blob_sha256",
-            "captures[].state_id",
-            "captures[].viewport",
-            "captures[].dpi",
-            "captures[].generated_at",
-            "captures[].image_sha256",
-            "approval.approver",
-            "approval.custody_receipt",
+        "manifest_required_field_groups": [
+            list(group) for group in M7_MANIFEST_FIELD_GROUPS
         ],
+        "bundle_layout": {
+            "capture_set": "<bundle-id>/capture-set.json",
+            "manifest": "<bundle-id>/manifest.json",
+            "captures": "<bundle-id>/captures/",
+            "states": "<bundle-id>/states/",
+            "approval": "<bundle-id>/approval/",
+        },
         "lookup": {
-            "start_at": "<M7 handover evidence root>/handover-index.json",
-            "select": "app_id=Label_Match",
-            "manifest": "capture-bundles/Label_Match/manifest.json",
+            "start_at": M7_HANDOVER_INDEX,
+            "select": "app=Label_Match",
+            "external_index": (
+                "E:/requal-evidence/capture-bundle-v1/indexes/"
+                "handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json"
+            ),
+            "manifest": (
+                "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+                "<bundle-id>/manifest.json"
+            ),
             "state_selector": "captures[].state_id",
             "approval_required": True,
         },
@@ -628,19 +891,6 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
             qa_scans=(f"SEALED TRANSFER · {CAPTURE_ITEM_CODE}",),
             sealed_transfer=True,
             last_normal_scan=f"SEALED TRANSFER · {CAPTURE_ITEM_CODE}",
-        ),
-        StateFixture(
-            "error",
-            "오류",
-            qa_scans=qa_four,
-            has_error=True,
-            error_message=(
-                "현품표와 제품의 PHS 멤버십이 불일치합니다.\n"
-                f"- 현품표: {master}\n"
-                f"- 스캔 제품: {_realistic_phs_scan('MISMATCH', 999)}\n"
-                "→ 제품을 제거하고 새 현품표부터 다시 스캔하세요."
-            ),
-            last_normal_scan=product_3,
         ),
         StateFixture(
             "full_complete",
@@ -1001,6 +1251,84 @@ def _git_text(source_root: Path, *args: str) -> str:
         encoding="utf-8",
     )
     return completed.stdout.strip()
+
+
+def measure_m7_capture_identities(
+    source_root: Path, *, tool_root: Path = ROOT
+) -> dict[str, dict[str, str]]:
+    """Measure source and capture-tool identity from Git and exact tool bytes."""
+
+    source = source_root.resolve()
+    harness = tool_root.resolve()
+    tool_file = harness / M7_CAPTURE_TOOL_PATH
+    if not tool_file.is_file():
+        raise CaptureBundleContractError(
+            "CAPTURE_TOOL_MISSING", f"capture tool is missing: {M7_CAPTURE_TOOL_PATH}"
+        )
+    return {
+        "app_source": {
+            "commit": _require_hex(
+                _git_text(source, "rev-parse", "HEAD"),
+                40,
+                label="app_source.commit",
+            ),
+            "tree": _require_hex(
+                _git_text(source, "rev-parse", "HEAD^{tree}"),
+                40,
+                label="app_source.tree",
+            ),
+        },
+        "capture_tool": {
+            "path": M7_CAPTURE_TOOL_PATH,
+            "commit": _require_hex(
+                _git_text(harness, "rev-parse", "HEAD"),
+                40,
+                label="capture_tool.commit",
+            ),
+            "blob_sha256": _sha256(tool_file),
+        },
+    }
+
+
+def make_m7_bundle_id(
+    app_commit: str,
+    *,
+    generated_at: dt.datetime | None = None,
+    nonce: str | None = None,
+) -> str:
+    commit = _require_hex(app_commit, 40, label="app_source.commit")
+    instant = generated_at or dt.datetime.now(dt.timezone.utc)
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise CaptureBundleContractError(
+            "INVALID_CAPTURE_TIME", "bundle timestamp must be timezone-aware"
+        )
+    stamp = instant.astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    nonce_value = str(nonce or secrets.token_hex(4)).strip()
+    if not re.fullmatch(r"[0-9a-f]{8}", nonce_value):
+        raise CaptureBundleContractError(
+            "INVALID_BUNDLE_ID", "bundle nonce must be lowercase 8-hex"
+        )
+    return f"Label_Match__{commit[:12]}__{stamp}__{nonce_value}"
+
+
+def _default_bundle_output_root() -> Path:
+    commit = _git_text(DEFAULT_SOURCE_ROOT, "rev-parse", "HEAD")
+    return CAPTURE_OUTPUT_BASE / make_m7_bundle_id(commit)
+
+
+def validate_m7_bundle_output_root(output_root: Path, app_commit: str) -> Path:
+    resolved = output_root.resolve()
+    expected_parent = CAPTURE_OUTPUT_BASE.resolve()
+    expected_name = re.compile(
+        rf"Label_Match__{re.escape(app_commit[:12])}__"
+        r"\d{8}T\d{6}Z__[0-9a-f]{8}"
+    )
+    if resolved.parent != expected_parent or not expected_name.fullmatch(resolved.name):
+        raise CaptureBundleContractError(
+            "INVALID_BUNDLE_ID",
+            "output root must be the canonical Label_Match/<bundle-id> path",
+        )
+    return resolved
 
 
 def verify_no_bytecode_artifacts(source_root: Path) -> dict[str, Any]:
@@ -1542,26 +1870,51 @@ def redact_sensitive_manifest_values(
     return sanitized, tuple(sorted(redacted))
 
 
-def minimal_privacy_failure_manifest(error: BaseException) -> dict[str, Any]:
-    """Discard all prior evidence when privacy sanitization itself fails."""
+def minimal_privacy_failure_manifest(
+    error: BaseException, canonical: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Discard sensitive details while retaining the canonical root shape."""
 
+    source = dict((canonical or {}).get("app_source") or {})
+    artifact = dict((canonical or {}).get("portable_artifact") or {})
+    tool = dict((canonical or {}).get("capture_tool") or {})
+    approval = dict((canonical or {}).get("approval") or _placeholder_approval())
     return {
-        "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
-        "tool": "capture_label_operator_ui",
-        "external_capture_bundle_contract": (
-            build_m7_external_capture_bundle_contract()
-        ),
-        "summary": {
-            "capture_count": 0,
-            "passed_capture_count": 0,
-            "failed_capture_count": 0,
-            "passed": False,
-            "fatal_error": f"privacy_contract_failed:{type(error).__name__}",
+        "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+        "app": "Label_Match",
+        "app_source": {
+            "commit": str(source.get("commit") or ""),
+            "tree": str(source.get("tree") or ""),
         },
-        "privacy_contract": {
-            "status": "FAIL",
-            "original_manifest_discarded": True,
-            "real_environment_values_recorded": False,
+        "portable_artifact": {
+            "file": str(artifact.get("file") or ""),
+            "sha256": str(artifact.get("sha256") or ""),
+        },
+        "capture_tool": {
+            "path": str(tool.get("path") or M7_CAPTURE_TOOL_PATH),
+            "commit": str(tool.get("commit") or ""),
+            "blob_sha256": str(tool.get("blob_sha256") or ""),
+        },
+        "captures": [],
+        "approval": approval,
+        "app_specific": {
+            "capture_gate_schema_version": APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION,
+            "external_capture_bundle_contract": (
+                build_m7_external_capture_bundle_contract()
+            ),
+            "summary": {
+                "capture_count": 0,
+                "passed_capture_count": 0,
+                "failed_capture_count": 0,
+                "passed": False,
+                "fatal_error": f"privacy_contract_failed:{type(error).__name__}",
+            },
+            "privacy_contract": {
+                "status": "FAIL",
+                "original_manifest_discarded": True,
+                "real_environment_values_recorded": False,
+            },
+            "approval_eligible": False,
         },
     }
 
@@ -2443,7 +2796,9 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
         app._package_cancellation_review_notice = None
         app._package_cancellation_review_rows = ()
     if fixture.state_id == "submission_blocked":
-        retry_action = lambda: None
+        def retry_action() -> None:
+            return None
+
         publish_durable_block = getattr(
             app, "_publish_durable_commit_block", None
         )
@@ -7189,6 +7544,68 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_create_new_json(path: Path, value: Mapping[str, Any]) -> None:
+    with path.open("x", encoding="utf-8", newline="\n") as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2)
+        stream.write("\n")
+
+
+def _write_m7_bundle_documents(
+    bundle_root: Path, manifest: dict[str, Any]
+) -> None:
+    """Write state/capture-set/final manifests once, in canonical order."""
+
+    details = manifest.get("app_specific")
+    if not isinstance(details, dict):
+        raise CaptureBundleContractError(
+            "INVALID_MANIFEST_SHAPE", "app_specific diagnostics are missing"
+        )
+    records = details.get("capture_records")
+    if not isinstance(records, list):
+        records = []
+    records_by_path = {
+        str(record.get("path") or ""): record
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    for capture in manifest.get("captures") or ():
+        image_file = str(capture["image_file"])
+        record = records_by_path.get(image_file)
+        if record is None:
+            raise CaptureBundleContractError(
+                "STATE_MANIFEST_MISSING",
+                f"no diagnostic state record for {image_file}",
+            )
+        viewport = capture["viewport"]
+        state_file = (
+            f"states/{capture['state_id']}__{viewport['width_px']}x"
+            f"{viewport['height_px']}__{capture['dpi']}dpi.json"
+        )
+        state_path = bundle_root / state_file
+        _write_create_new_json(state_path, record)
+        capture["state_manifest_file"] = state_file
+        capture["state_manifest_sha256"] = _sha256(state_path)
+
+    details["diagnostic_capture_count"] = len(records)
+    details.pop("capture_records", None)
+
+    capture_set = {
+        "schema": manifest["schema"],
+        "app": manifest["app"],
+        "app_source": manifest["app_source"],
+        "portable_artifact": manifest["portable_artifact"],
+        "capture_tool": manifest["capture_tool"],
+        "captures": manifest["captures"],
+    }
+    capture_set_path = bundle_root / "capture-set.json"
+    _write_create_new_json(capture_set_path, capture_set)
+    details["capture_set"] = {
+        "file": "capture-set.json",
+        "sha256": _sha256(capture_set_path),
+    }
+    _write_create_new_json(bundle_root / "manifest.json", manifest)
+
+
 def image_region_sha256(image: Image.Image, bbox: Sequence[int]) -> str:
     if len(bbox) != 4:
         raise ValueError(f"invalid image region bbox: {bbox}")
@@ -7306,6 +7723,8 @@ def run_capture_matrix(
     source_root: Path = DEFAULT_SOURCE_ROOT,
     expected_source_commit: str = EXPECTED_SOURCE_COMMIT,
     expected_source_tree: str = EXPECTED_SOURCE_TREE,
+    portable_artifact_file: str = "",
+    portable_artifact_sha256: str = "",
     display_device: str = TARGET_DISPLAY_DEVICE,
     work_area: Sequence[int] = TARGET_DISPLAY_WORK_AREA,
 ) -> tuple[Path, dict[str, Any]]:
@@ -7319,22 +7738,47 @@ def run_capture_matrix(
     cancellation_contract_validation = (
         validate_cancellation_surface_capture_contract(state_ids)
     )
+    if not str(portable_artifact_file or "").strip() or not str(
+        portable_artifact_sha256 or ""
+    ).strip():
+        raise CaptureBundleContractError(
+            "PORTABLE_ARTIFACT_REQUIRED",
+            "--portable-artifact-file and --portable-artifact-sha256 are required",
+        )
+    artifact_identity = {
+        "file": _bundle_relative_path(
+            portable_artifact_file, label="portable_artifact.file"
+        ),
+        "sha256": _require_hex(
+            portable_artifact_sha256,
+            64,
+            label="portable_artifact.sha256",
+        ),
+    }
+    measured_identity = measure_m7_capture_identities(source_root)
     resolved_output = assert_external_capture_descendant(
         output_root,
         CAPTURE_OUTPUT_BASE,
         source_root,
         label="output root",
     )
+    resolved_output = validate_m7_bundle_output_root(
+        resolved_output, measured_identity["app_source"]["commit"]
+    )
     if resolved_output.exists():
         raise RuntimeError(f"capture output root already exists: {resolved_output}")
     resolved_output.mkdir(parents=True, exist_ok=False)
-    screenshots = resolved_output / "screenshots"
-    screenshots.mkdir(parents=True, exist_ok=True)
+    captures_dir = resolved_output / "captures"
+    states_dir = resolved_output / "states"
+    approval_dir = resolved_output / "approval"
+    for directory in (captures_dir, states_dir, approval_dir):
+        directory.mkdir(parents=True, exist_ok=False)
     data_root = resolved_output / "_isolated_data"
-    manifest: dict[str, Any] = {
-        "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
-        "tool": "tools/capture_label_operator_ui.py",
-        "generated_at": dt.datetime.now(dt.timezone.utc).astimezone().isoformat(),
+    diagnostics_dir = data_root / "diagnostic-images"
+    details: dict[str, Any] = {
+        "schema_version": APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION,
+        "tool": M7_CAPTURE_TOOL_PATH,
+        "generated_at": _utc_now_rfc3339(),
         "tool_repository_root": str(ROOT),
         "requested_source_root": str(source_root.resolve()),
         "expected_source_commit": str(expected_source_commit),
@@ -7365,7 +7809,17 @@ def run_capture_matrix(
         ),
         "requested_scale": requested_scale,
         "near_black_failure_ratio": NEAR_BLACK_FAILURE_RATIO,
+        "capture_records": [],
+    }
+    manifest: dict[str, Any] = {
+        "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+        "app": "Label_Match",
+        "app_source": dict(measured_identity["app_source"]),
+        "portable_artifact": artifact_identity,
+        "capture_tool": dict(measured_identity["capture_tool"]),
         "captures": [],
+        "approval": _placeholder_approval(),
+        "app_specific": details,
     }
     app = None
     module = None
@@ -7381,7 +7835,7 @@ def run_capture_matrix(
             source_root=source_root,
         )
         guards = environment_isolation.guards
-        manifest["isolation_guards"] = {
+        details["isolation_guards"] = {
             "keys": sorted(guards),
             "programdata_isolated": True,
             "localappdata_isolated": True,
@@ -7399,8 +7853,8 @@ def run_capture_matrix(
             fixture.state_id: fixture for fixture in build_state_fixtures()
         }
         harness_identity = verify_harness_identity(ROOT)
-        manifest["harness_identity"] = harness_identity
-        manifest["execution_source_binding"] = validate_execution_source_binding(
+        details["harness_identity"] = harness_identity
+        details["execution_source_binding"] = validate_execution_source_binding(
             ROOT,
             source_root,
             harness_identity,
@@ -7412,25 +7866,25 @@ def run_capture_matrix(
             expected_commit=expected_source_commit,
             expected_tree=expected_source_tree,
         )
-        manifest["source_identity"] = source_identity
-        manifest["bytecode_artifacts_before_import"] = (
+        details["source_identity"] = source_identity
+        details["bytecode_artifacts_before_import"] = (
             verify_no_bytecode_artifacts(source_root)
         )
         dpi_mode = enable_per_monitor_dpi_awareness()
-        manifest["dpi_awareness"] = dpi_mode
+        details["dpi_awareness"] = dpi_mode
         monitor_target = resolve_capture_monitor(
             display_device,
             requested_work_area,
         )
-        manifest["monitor_target"] = monitor_target
+        details["monitor_target"] = monitor_target
         sys.dont_write_bytecode = True
         module, initial_origins, import_isolation = import_label_match_from_source(
             source_root
         )
-        manifest["initial_import_origins"] = initial_origins
+        details["initial_import_origins"] = initial_origins
         original_hostname_resolver = module.socket.gethostname
         module.socket.gethostname = lambda: "CAPTURE-DISPLAY2"
-        manifest["identity_fixture"] = {
+        details["identity_fixture"] = {
             "worker_name": "캡처 작업자",
             "host_name": "CAPTURE-DISPLAY2",
             "real_host_name_recorded": False,
@@ -7440,24 +7894,24 @@ def run_capture_matrix(
             settings,
             target_dpi=int(monitor_target["dpi"][0]),
         )
-        manifest["constructor_tk_scaling"] = dict(
+        details["constructor_tk_scaling"] = dict(
             app.__dict__.get("_capture_constructor_tk_scaling") or {}
         )
-        manifest["previsible_placement"] = place_hidden_on_work_area(
+        details["previsible_placement"] = place_hidden_on_work_area(
             app, monitor_target
         )
         _wait_until_ready(app)
         _apply_scale(app, requested_scale)
-        manifest["tk_scaling_after_app_scale"] = observe_target_tk_scaling(
+        details["tk_scaling_after_app_scale"] = observe_target_tk_scaling(
             app,
             int(monitor_target["dpi"][0]),
             hwnd=_window_root_hwnd(app),
         )
         contract_issues = validate_live_contract(app)
-        manifest["live_contract_ready"] = not contract_issues
-        manifest["live_contract_issues"] = contract_issues
+        details["live_contract_ready"] = not contract_issues
+        details["live_contract_issues"] = contract_issues
         if contract_issues:
-            manifest["summary"] = {
+            details["summary"] = {
                 "capture_count": 0,
                 "expected_capture_count": len(sizes) * len(state_ids),
                 "passed_capture_count": 0,
@@ -7466,15 +7920,15 @@ def run_capture_matrix(
                 "fatal_error": "operator_workbench_contract_missing",
             }
             return manifest_path, manifest
-        manifest["applied_scale_factor"] = float(app.scale_factor)
+        details["applied_scale_factor"] = float(app.scale_factor)
         compact = min(sizes, key=lambda value: (value[0], value[1]))
         wide = max(sizes, key=lambda value: (value[0], value[1]))
-        manifest["compact_wide_compact"] = _round_trip_check(
+        details["compact_wide_compact"] = _round_trip_check(
             app, compact, wide, fixture_map["qa_progress"], monitor_target
         )
         for size in sizes:
             size_placement = _configure_size(app, tuple(size), monitor_target)
-            size_dir = screenshots / f"{size[0]}x{size[1]}"
+            size_dir = diagnostics_dir / f"{size[0]}x{size[1]}"
             size_dir.mkdir(parents=True, exist_ok=True)
             for state_id in state_ids:
                 fixture = fixture_map[state_id]
@@ -7510,8 +7964,19 @@ def run_capture_matrix(
                 capture_geometry_gate["foreground_acquisition"] = (
                     foreground_acquisition
                 )
-                path = size_dir / f"{state_id}.png"
+                capture_dpi = int(monitor_target["dpi"][0])
+                is_bundle_capture = (
+                    tuple(size) == M7_BUNDLE_CAPTURE_SIZE
+                    and state_id in M7_REQUIRED_STATE_IDS
+                )
+                if is_bundle_capture:
+                    path = captures_dir / (
+                        f"{state_id}__{size[0]}x{size[1]}__{capture_dpi}dpi.png"
+                    )
+                else:
+                    path = size_dir / f"{state_id}.png"
                 image.save(path, format="PNG", optimize=True)
+                captured_at = _utc_now_rfc3339()
                 workbench_record = next(
                     record
                     for record in geometry["widgets"]
@@ -7522,7 +7987,7 @@ def run_capture_matrix(
                 workbench_bbox = list(map(int, workbench_record["bbox"]))
                 record: dict[str, Any] = {
                     "id": f"{size[0]}x{size[1]}-{state_id}",
-                    "capture_gate_schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
+                    "capture_gate_schema_version": APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION,
                     "state": state_id,
                     "state_id": state_id,
                     "state_label": fixture.label,
@@ -7534,6 +7999,7 @@ def run_capture_matrix(
                     "capture_pixel_semantics": "client-area-pixels",
                     "requested_scale": requested_scale,
                     "applied_scale_factor": float(app.scale_factor),
+                    "generated_at": captured_at,
                     "path": path.relative_to(resolved_output).as_posix(),
                     "capture_source": source,
                     "capture_screen_bbox": list(capture_screen_bbox),
@@ -7565,19 +8031,19 @@ def run_capture_matrix(
                 }
                 record["issues"] = evaluate_capture(record)
                 record["passed"] = not record["issues"]
-                manifest["captures"].append(record)
-        apply_cross_capture_contracts(manifest["captures"])
-        manifest["final_import_origins"] = verify_import_origins(source_root)
-        manifest["bytecode_artifacts_after_capture"] = (
+                details["capture_records"].append(record)
+        apply_cross_capture_contracts(details["capture_records"])
+        details["final_import_origins"] = verify_import_origins(source_root)
+        details["bytecode_artifacts_after_capture"] = (
             verify_no_bytecode_artifacts(source_root)
         )
-        manifest["source_identity_after"] = verify_source_identity(
+        details["source_identity_after"] = verify_source_identity(
             source_root,
             expected_commit=expected_source_commit,
             expected_tree=expected_source_tree,
         )
         harness_identity_after = verify_harness_identity(ROOT)
-        manifest["harness_identity_after"] = harness_identity_after
+        details["harness_identity_after"] = harness_identity_after
         if harness_identity_after != harness_identity:
             raise RuntimeError("capture harness identity changed during matrix run")
         validate_execution_source_binding(
@@ -7588,44 +8054,83 @@ def run_capture_matrix(
             expected_tree=expected_source_tree,
         )
         issue_counts: dict[str, int] = {}
-        for capture in manifest["captures"]:
+        for capture in details["capture_records"]:
             for issue in capture["issues"]:
                 issue_counts[issue] = issue_counts.get(issue, 0) + 1
         expected_count = len(sizes) * len(state_ids)
-        round_trip_ok = bool(manifest["compact_wide_compact"]["passed"])
-        manifest["summary"] = {
-            "capture_count": len(manifest["captures"]),
+        round_trip_ok = bool(details["compact_wide_compact"]["passed"])
+        details["summary"] = {
+            "capture_count": len(details["capture_records"]),
             "expected_capture_count": expected_count,
             "passed_capture_count": sum(
-                1 for capture in manifest["captures"] if capture["passed"]
+                1 for capture in details["capture_records"] if capture["passed"]
             ),
             "failed_capture_count": sum(
-                1 for capture in manifest["captures"] if not capture["passed"]
+                1
+                for capture in details["capture_records"]
+                if not capture["passed"]
             ),
             "compact_wide_compact_passed": round_trip_ok,
             "issue_counts": issue_counts,
-            "passed": len(manifest["captures"]) == expected_count
+            "passed": len(details["capture_records"]) == expected_count
             and not issue_counts
             and round_trip_ok,
-            "release_capture_gate_status": manifest[
+            "release_capture_gate_status": details[
                 "external_capture_bundle_contract"
             ]["release_capture_gate"]["status"],
         }
-        manifest["matrix_complete"] = len(manifest["captures"]) == expected_count
-        manifest["approval_eligible"] = bool(
-            manifest["matrix_complete"]
-            and manifest["summary"]["passed"]
-            and _m7_release_capture_gate_passed(manifest)
+        details["matrix_complete"] = (
+            len(details["capture_records"]) == expected_count
         )
+        details["approval_eligible"] = bool(
+            details["matrix_complete"]
+            and details["summary"]["passed"]
+            and _m7_release_capture_gate_passed(details)
+        )
+        canonical_inputs = []
+        for record in details["capture_records"]:
+            if (
+                record["state_id"] not in M7_REQUIRED_STATE_IDS
+                or tuple(record["actual_capture_size"]) != M7_BUNDLE_CAPTURE_SIZE
+            ):
+                continue
+            image_path = resolved_output / record["path"]
+            canonical_inputs.append(
+                {
+                    "state_id": record["state_id"],
+                    "image_file": record["path"],
+                    "image_bytes": image_path.read_bytes(),
+                    "viewport": {
+                        "width_px": int(record["actual_capture_size"][0]),
+                        "height_px": int(record["actual_capture_size"][1]),
+                    },
+                    "dpi": int(monitor_target["dpi"][0]),
+                    "generated_at": record["generated_at"],
+                }
+            )
+        completed_manifest = build_m7_external_capture_manifest(
+            app_commit=manifest["app_source"]["commit"],
+            app_tree=manifest["app_source"]["tree"],
+            portable_artifact_file=manifest["portable_artifact"]["file"],
+            portable_artifact_sha256=manifest["portable_artifact"]["sha256"],
+            capture_tool_commit=manifest["capture_tool"]["commit"],
+            capture_tool_blob_sha256=manifest["capture_tool"]["blob_sha256"],
+            captures=canonical_inputs,
+            approval=manifest["approval"],
+            app_specific=details,
+        )
+        manifest.clear()
+        manifest.update(completed_manifest)
+        details = manifest["app_specific"]
         return manifest_path, manifest
     except Exception as exc:
-        manifest["live_contract_ready"] = False
-        manifest.setdefault("live_contract_issues", [])
-        manifest["summary"] = {
-            "capture_count": len(manifest["captures"]),
+        details["live_contract_ready"] = False
+        details.setdefault("live_contract_issues", [])
+        details["summary"] = {
+            "capture_count": len(details["capture_records"]),
             "expected_capture_count": len(sizes) * len(state_ids),
             "passed_capture_count": 0,
-            "failed_capture_count": len(manifest["captures"]),
+            "failed_capture_count": len(details["capture_records"]),
             "passed": False,
             "fatal_error": f"{type(exc).__name__}: {exc}",
         }
@@ -7643,7 +8148,7 @@ def run_capture_matrix(
                 )
         if app is not None:
             try:
-                manifest["previsible_toplevel_guard_restore"] = (
+                details["previsible_toplevel_guard_restore"] = (
                     release_previsible_toplevel_guard(
                         app, reject_created=False
                     )
@@ -7666,7 +8171,7 @@ def run_capture_matrix(
                 cleanup_failures.append(f"app_destroy:{type(exc).__name__}:{exc}")
         if import_isolation is not None:
             try:
-                manifest["import_environment_restore"] = import_isolation.restore()
+                details["import_environment_restore"] = import_isolation.restore()
             except Exception as exc:
                 cleanup_failures.append(
                     f"import_restore:{type(exc).__name__}:{exc}"
@@ -7674,9 +8179,9 @@ def run_capture_matrix(
         sys.dont_write_bytecode = previous_dont_write_bytecode
         if environment_isolation is not None:
             try:
-                manifest["environment_restore"] = environment_isolation.restore()
+                details["environment_restore"] = environment_isolation.restore()
             except Exception as exc:
-                manifest["environment_restore"] = {
+                details["environment_restore"] = {
                     "status": "FAIL",
                     "error": f"{type(exc).__name__}: {exc}",
                     "values_recorded": False,
@@ -7685,11 +8190,23 @@ def run_capture_matrix(
                     f"environment_restore:{type(exc).__name__}:{exc}"
                 )
         else:
-            manifest["environment_restore"] = {
+            details["environment_restore"] = {
                 "status": "NOT_STARTED",
                 "values_recorded": False,
             }
-        record_cleanup_contract(manifest, cleanup_failures)
+        if data_root.exists():
+            try:
+                shutil.rmtree(data_root)
+                details["isolated_data_cleanup"] = {"status": "PASS"}
+            except Exception as exc:
+                details["isolated_data_cleanup"] = {
+                    "status": "FAIL",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                cleanup_failures.append(
+                    f"isolated_data_cleanup:{type(exc).__name__}:{exc}"
+                )
+        record_cleanup_contract(details, cleanup_failures)
         try:
             sanitized, redacted_labels = redact_sensitive_manifest_values(
                 manifest,
@@ -7701,23 +8218,20 @@ def run_capture_matrix(
             )
             manifest.clear()
             manifest.update(sanitized)
-            manifest["privacy_contract"] = {
+            manifest["app_specific"]["privacy_contract"] = {
                 "status": "PASS",
                 "real_environment_values_recorded": False,
                 "real_computer_name_recorded": False,
                 "redacted_labels": list(redacted_labels),
             }
         except Exception as exc:
-            minimal = minimal_privacy_failure_manifest(exc)
+            minimal = minimal_privacy_failure_manifest(exc, manifest)
             manifest.clear()
             manifest.update(minimal)
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _write_m7_bundle_documents(resolved_output, manifest)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     parser = argparse.ArgumentParser(
         description=(
             "Capture isolated Label Match operator-workbench states and write "
@@ -7727,10 +8241,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=CAPTURE_OUTPUT_BASE / f"capture_{timestamp}",
+        default=_default_bundle_output_root(),
         help=(
-            f"new output directory below external base {CAPTURE_OUTPUT_BASE}; "
-            "the directory must remain outside --source-root"
+            f"new canonical <bundle-id> directory directly below {CAPTURE_OUTPUT_BASE}"
         ),
     )
     parser.add_argument(
@@ -7746,6 +8259,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--expected-source-tree",
         default=EXPECTED_SOURCE_TREE,
+    )
+    parser.add_argument(
+        "--portable-artifact-file",
+        default=os.environ.get("LABEL_MATCH_CAPTURE_ARTIFACT_FILE", ""),
+        help="canonical root-relative portable artifact file",
+    )
+    parser.add_argument(
+        "--portable-artifact-sha256",
+        default=os.environ.get("LABEL_MATCH_CAPTURE_ARTIFACT_SHA256", ""),
+        help="sealed portable artifact lowercase SHA-256 (required)",
+    )
+    parser.add_argument(
+        "--describe-m7-contract",
+        action="store_true",
+        help="print the canonical external-bundle contract without rendering",
     )
     parser.add_argument(
         "--display-device",
@@ -7786,26 +8314,49 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    manifest_path, manifest = run_capture_matrix(
-        output_root=args.output_root,
-        sizes=args.sizes,
-        state_ids=args.states,
-        scale=args.scale,
-        source_root=args.source_root,
-        expected_source_commit=args.expected_source_commit,
-        expected_source_tree=args.expected_source_tree,
-        display_device=args.display_device,
-        work_area=args.work_area,
-    )
-    summary = manifest["summary"]
+    if args.describe_m7_contract:
+        print(
+            json.dumps(
+                build_m7_external_capture_bundle_contract(),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    try:
+        manifest_path, manifest = run_capture_matrix(
+            output_root=args.output_root,
+            sizes=args.sizes,
+            state_ids=args.states,
+            scale=args.scale,
+            source_root=args.source_root,
+            expected_source_commit=args.expected_source_commit,
+            expected_source_tree=args.expected_source_tree,
+            portable_artifact_file=args.portable_artifact_file,
+            portable_artifact_sha256=args.portable_artifact_sha256,
+            display_device=args.display_device,
+            work_area=args.work_area,
+        )
+    except CaptureBundleContractError as exc:
+        print(
+            json.dumps(
+                {"status": "FAIL", "error_code": exc.code, "error": str(exc)},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 3
+    details = manifest["app_specific"]
+    summary = details["summary"]
     print(
         json.dumps(
             {
                 "manifest": str(manifest_path),
-                "live_contract_ready": manifest.get("live_contract_ready", False),
+                "live_contract_ready": details.get("live_contract_ready", False),
                 "capture_count": summary["capture_count"],
                 "passed": summary["passed"],
-                "approval_eligible": manifest.get("approval_eligible", False),
+                "approval_eligible": details.get("approval_eligible", False),
                 "fatal_error": summary.get("fatal_error"),
                 "issue_counts": summary.get("issue_counts", {}),
             },
@@ -7814,7 +8365,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if summary.get("fatal_error"):
         return 3
-    return 0 if summary["passed"] and manifest.get("approval_eligible") else 2
+    return 0 if summary["passed"] and details.get("approval_eligible") else 2
 
 
 if __name__ == "__main__":

@@ -27,13 +27,15 @@ from tools.capture_label_operator_ui import (
     CANCELLATION_CONFLICT_MESSAGE,
     CANCELLATION_CONFLICT_TITLE,
     CANCELLATION_SURFACE_CAPTURE_CONTRACT,
-    CAPTURE_MANIFEST_SCHEMA_VERSION,
+    APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION,
     DEFAULT_SCALE,
     DEFAULT_SIZES,
     DEFAULT_STATE_IDS,
     MAX_SCALE,
     M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION,
     M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+    M7_HANDOVER_INDEX,
+    M7_MANIFEST_FIELD_GROUPS,
     M7_PRODUCT_DECISION_BLOCKERS,
     M7_REQUIRED_STATE_IDS,
     M7_STATE_CONTRACT,
@@ -97,7 +99,6 @@ def test_default_capture_matrix_covers_required_sizes_states_and_scale():
         "qa_product_3",
         "cancellation_conflict",
         "sealed",
-        "error",
         "full_complete",
         "partial_complete",
         "recovery",
@@ -116,6 +117,7 @@ def test_default_capture_matrix_covers_required_sizes_states_and_scale():
         "broken_fail_closed_warning",
     )
     assert DEFAULT_STATE_IDS == (*BASELINE_STATE_IDS, *M7_REQUIRED_STATE_IDS)
+    assert len(DEFAULT_STATE_IDS) == 24
     assert DEFAULT_SCALE == 1.0
 
 
@@ -124,7 +126,7 @@ def test_cli_parsers_validate_deduplicate_and_keep_korean_multiplication_mark():
         (1366, 768),
         (1440, 900),
     )
-    assert parse_states("waiting,error,waiting") == ("waiting", "error")
+    assert parse_states("waiting,qa_master,waiting") == ("waiting", "qa_master")
     assert parse_scale(str(MIN_SCALE)) == MIN_SCALE
     assert parse_scale(str(MAX_SCALE)) == MAX_SCALE
     args = build_parser().parse_args([])
@@ -148,7 +150,7 @@ def test_cli_parsers_validate_deduplicate_and_keep_korean_multiplication_mark():
             parse_work_area(value)
 
 
-def test_programmatic_matrix_requires_all_five_sizes_all_twenty_five_states_once():
+def test_programmatic_matrix_requires_all_five_sizes_all_twenty_four_states_once():
     sizes, states = validate_capture_matrix_request(
         tuple(reversed(DEFAULT_SIZES)), tuple(reversed(DEFAULT_STATE_IDS))
     )
@@ -189,7 +191,7 @@ def test_manifest_contract_captures_only_persistent_cancellation_conflict():
         assert "messagebox" in metadata["runtime_surface"]
         assert "root-only visible capture" in metadata["reason"]
         assert "PrintWindow" not in metadata["reason"]
-    assert CAPTURE_MANIFEST_SCHEMA_VERSION == 7
+    assert APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION == 7
     assert APPLICATION_STARTUP_PATH == "disabled_for_inprocess_matrix"
     with pytest.raises(RuntimeError, match="cannot be persistent captures"):
         validate_cancellation_surface_capture_contract(
@@ -205,10 +207,20 @@ def test_m7_external_bundle_manifest_schema_is_explicit_and_release_blocked():
         M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION
     )
     assert tuple(contract["required_state_ids"]) == M7_REQUIRED_STATE_IDS
+    assert contract["manifest_required_field_groups"] == [
+        list(group) for group in M7_MANIFEST_FIELD_GROUPS
+    ]
     assert contract["lookup"] == {
-        "start_at": "<M7 handover evidence root>/handover-index.json",
-        "select": "app_id=Label_Match",
-        "manifest": "capture-bundles/Label_Match/manifest.json",
+        "start_at": M7_HANDOVER_INDEX,
+        "select": "app=Label_Match",
+        "external_index": (
+            "E:/requal-evidence/capture-bundle-v1/indexes/"
+            "handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json"
+        ),
+        "manifest": (
+            "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+            "<bundle-id>/manifest.json"
+        ),
         "state_selector": "captures[].state_id",
         "approval_required": True,
     }
@@ -246,9 +258,6 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
         fixtures["cancellation_conflict"].last_normal_scan
         == fixtures["qa_product_3"].last_normal_scan
     )
-    assert fixtures["error"].qa_scans == fixtures["qa_product_3"].qa_scans
-    assert fixtures["error"].last_normal_scan == fixtures["qa_product_3"].last_normal_scan
-    assert fixtures["error"].has_error is True
     assert len(fixtures["exact_first"].exact_barcodes) == 1
     assert fixtures["exact_active"].exact_active is True
     assert len(fixtures["exact_active"].exact_barcodes) < fixtures["exact_active"].exact_target
@@ -276,9 +285,6 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
         "PHS=" in raw and len(raw) >= 160
         for raw in fixtures["full_complete"].qa_scans
     )
-    assert len(
-        [line for line in fixtures["error"].error_message.splitlines() if line.strip()]
-    ) == 4
     for state_id in M7_REQUIRED_STATE_IDS:
         fixture = fixtures[state_id]
         assert fixture.central_inherit_all is True
@@ -322,22 +328,15 @@ def test_only_the_state_selected_live_scan_tree_is_mapping_critical():
     }
 
 
-def test_apply_error_fixture_sets_and_clears_all_renderer_error_aliases():
-    app = SimpleNamespace(
-        current_set_info={},
-        _refresh_operator_workbench=lambda: None,
-    )
-    fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+def test_declared_states_are_free_of_the_nonproduction_mismatch_copy():
+    fake = "현품표와 제품의 PHS " + "멤버십이 불일치합니다."
+    production = "현품표와 제품이 불일치합니다."
+    tool_text = Path(capture.__file__).read_text(encoding="utf-8")
+    product_text = (capture.ROOT / "Label_Match.py").read_text(encoding="utf-8")
 
-    apply_state_fixture(app, fixtures["error"])
-    assert app._pending_workflow_error == fixtures["error"].error_message
-    assert app._workflow_pending_error == fixtures["error"].error_message
-    assert app._workflow_error_message == fixtures["error"].error_message
-
-    apply_state_fixture(app, fixtures["waiting"])
-    assert app._pending_workflow_error is None
-    assert app._workflow_pending_error is None
-    assert app._workflow_error_message == ""
+    assert "error" not in BASELINE_STATE_IDS
+    assert fake not in tool_text
+    assert production in product_text
 
 
 def test_apply_submission_blocked_fixture_calls_production_durable_renderer():
@@ -2802,9 +2801,24 @@ def _passing_capture_geometry_gate():
 
 
 def _valid_capture_record(state_id: str = "qa_progress"):
-    fixture = next(
-        fixture for fixture in build_state_fixtures() if fixture.state_id == state_id
-    )
+    fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+    if state_id == "error":
+        baseline = fixtures["qa_product_3"]
+        fixture = capture.StateFixture(
+            "error",
+            "validator-only production mismatch",
+            qa_scans=baseline.qa_scans,
+            has_error=True,
+            error_message=(
+                "현품표와 제품이 불일치합니다.\n\n"
+                f"- 현품표: {baseline.qa_scans[0]}\n"
+                f"- 스캔 제품: {baseline.qa_scans[-1]}\n\n"
+                "→ 이 세트는 오류 처리됩니다. 제품을 제거하고 확인 후 새 현품표부터 다시 스캔하세요."
+            ),
+            last_normal_scan=baseline.last_normal_scan,
+        )
+    else:
+        fixture = fixtures[state_id]
     view = build_presenter_view(fixture)
     exact_mode = bool(
         fixture.exact_active
@@ -2907,7 +2921,7 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         else ""
     )
     return {
-        "capture_gate_schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
+        "capture_gate_schema_version": APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION,
         "state": state_id,
         "state_id": state_id,
         "requested_size": [1366, 768],
@@ -4262,6 +4276,19 @@ def test_matrix_restores_environment_when_initialization_fails(
     source_root.mkdir()
     output_base.mkdir()
     monkeypatch.setattr(capture, "CAPTURE_OUTPUT_BASE", output_base)
+    app_commit = "a" * 40
+    monkeypatch.setattr(
+        capture,
+        "measure_m7_capture_identities",
+        lambda *_args, **_kwargs: {
+            "app_source": {"commit": app_commit, "tree": "b" * 40},
+            "capture_tool": {
+                "path": capture.M7_CAPTURE_TOOL_PATH,
+                "commit": "c" * 40,
+                "blob_sha256": "d" * 64,
+            },
+        },
+    )
     monkeypatch.setenv("COMPUTERNAME", "REAL-HOST-88")
     monkeypatch.setenv(
         "LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY", "1366x768+693-1440"
@@ -4275,18 +4302,29 @@ def test_matrix_restores_environment_when_initialization_fails(
     )
 
     manifest_path, manifest = capture.run_capture_matrix(
-        output_root=output_base / "failed-run",
+        output_root=output_base
+        / capture.make_m7_bundle_id(
+            app_commit,
+            generated_at=capture.dt.datetime(
+                2026, 9, 3, tzinfo=capture.dt.timezone.utc
+            ),
+            nonce="1234abcd",
+        ),
         source_root=source_root,
         expected_source_commit="deadbeef",
         expected_source_tree="cafebabe",
+        portable_artifact_file="portable/Label_Match.zip",
+        portable_artifact_sha256="e" * 64,
     )
 
     assert manifest_path.is_file()
-    assert manifest["summary"]["passed"] is False
-    assert "fixture initialization failed" in manifest["summary"]["fatal_error"]
-    assert manifest["environment_restore"]["status"] == "PASS"
-    assert manifest["cleanup_contract"]["status"] == "PASS"
-    assert manifest["approval_eligible"] is False
+    details = manifest["app_specific"]
+    assert details["summary"]["passed"] is False
+    assert "fixture initialization failed" in details["summary"]["fatal_error"]
+    assert details["environment_restore"]["status"] == "PASS"
+    assert details["cleanup_contract"]["status"] == "PASS"
+    assert details["approval_eligible"] is False
+    assert (manifest_path.parent / "capture-set.json").is_file()
     assert os.environ["COMPUTERNAME"] == "REAL-HOST-88"
     assert (
         os.environ["LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY"]
@@ -4301,8 +4339,9 @@ def test_privacy_failure_manifest_discards_original_sensitive_keys_and_values():
     serialized = repr(minimal)
     assert "REAL-HOST-77" not in serialized
     assert "Users" not in serialized
-    assert minimal["privacy_contract"]["original_manifest_discarded"] is True
-    assert minimal["summary"]["passed"] is False
+    details = minimal["app_specific"]
+    assert details["privacy_contract"]["original_manifest_discarded"] is True
+    assert details["summary"]["passed"] is False
 
 
 def test_cleanup_contract_is_part_of_approval_eligibility():
