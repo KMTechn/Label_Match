@@ -5387,25 +5387,24 @@ class Label_Match(tk.Tk):
         self._focus_scan_entry_if_available()
 
     def _show_ui_lane_rejection(self, reason="busy"):
-        closing = str(reason or "") == "closing"
-        headline = (
-            "처리 완료 후 종료합니다"
-            if closing
-            else "이전 작업 처리 중 · 입력 보존"
+        reason = str(reason or "")
+        broken = reason == "broken" or getattr(self.__dict__.get("ui_lane"), "state", None) is LaneState.BROKEN
+        closing = reason == "closing" and not broken
+        headline = "처리 상태 확인 필요" if broken else (
+            "처리 완료 후 종료합니다" if closing else "이전 작업 처리 중 · 입력 보존"
         )
         if "big_display_label" in self.__dict__:
-            self.update_big_display(headline, "primary")
+            self.update_big_display(headline, "red" if broken else "primary")
         status_label = self.__dict__.get("status_label")
         if status_label is not None:
             try:
-                status_label.config(
-                    text=(
-                        "새 작업은 받지 않습니다. 처리 완료 후 종료합니다."
-                        if closing
-                        else "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
-                    ),
-                    style="Status.TLabel",
+                status_text = (
+                    "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요." if broken else
+                    "새 작업은 받지 않습니다. 처리 완료 후 종료합니다." if closing else
+                    "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
                 )
+                status_label.config(text=status_text, style="Error.TLabel" if broken else "Status.TLabel")
+                if broken: status_label.grid()
             except (TclError, AttributeError):
                 pass
 
@@ -5416,6 +5415,8 @@ class Label_Match(tk.Tk):
             "Label Tk UI lane technical diagnostic: "
             f"{self._ui_lane_diagnostic_text(error)}"
         )
+        if self.__dict__.get("operator_workbench_ready"):
+            self._render_operator_workbench()
         if "big_display_label" in self.__dict__:
             self.update_big_display("처리 상태 확인 필요", "red")
         status_label = self.__dict__.get("status_label")
@@ -5425,10 +5426,9 @@ class Label_Match(tk.Tk):
                     text="처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요.",
                     style="Error.TLabel",
                 )
+                status_label.grid()
             except (TclError, AttributeError):
                 pass
-        if self.__dict__.get("operator_workbench_ready"):
-            self._render_operator_workbench()
 
     def _submit_ui_lane_task(
         self,
@@ -17588,7 +17588,7 @@ class Label_Match(tk.Tk):
                 and not self.__dict__.get(
                     "_phs_label_exchange_pending", False
                 )
-                and not self.__dict__.get("_ui_lane_busy_task", "")
+                and not self._ui_lane_is_busy()
             )
             try:
                 entry.configure(state="normal" if entry_enabled else "disabled")

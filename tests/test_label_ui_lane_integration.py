@@ -13,9 +13,11 @@ from deferred_intent_capture import (
     DeferredValidationClaim,
     DeferredValidationResult,
 )
+from tests.test_label_operator_action_gates import FakeWidget, _render_app
 from tests.test_tk_serial_ui_lane import FakeTkRoot
 from tk_serial_ui_lane import (
     CoalescingTrigger,
+    Failure,
     LaneState,
     LaneTask,
     TkSerialUiLane,
@@ -457,6 +459,69 @@ def test_scan_is_not_cleared_while_lane_is_busy():
     _close_lane(app, root)
 
 
+def test_broken_lane_keeps_critical_warning_and_scan_entry_fail_closed():
+    app = _render_app()
+    root = FakeTkRoot()
+    raw_input = "PHS=2|CLC=ITEM-001|PROBE=L5"
+    deleted = []
+    capture_work = Mock()
+    gate = threading.Event()
+    app._ui_lane_generation = 0
+    app._ui_lane_busy_label = ""
+    app._ui_lane_busy_task = ""
+    app._app_close_in_progress = False
+    app.status_label = FakeWidget()
+    app.entry.get = lambda: raw_input
+    app.entry.delete = lambda *_args: deleted.append(True)
+    app._capture_central_phs2_scan = capture_work
+    app.ui_lane = TkSerialUiLane(
+        root,
+        poll_ms=1,
+        generation_provider=lambda: app._ui_lane_generation,
+        on_runner_fault=app._handle_ui_lane_fault,
+    )
+
+    admission = app._submit_ui_lane_task(
+        name="break-lane",
+        busy_text="처리 중",
+        work=lambda: gate.wait(timeout=2.0),
+        finish=lambda _value: None,
+        fail=pytest.fail,
+    )
+    assert admission.accepted is True
+    assert app.entry.options["state"] == "disabled"
+    assert app.ui_lane.break_for_shutdown_timeout(
+        RuntimeError("forced BROKEN lane")
+    ) is True
+
+    scan_event_return = app._handle_scan_enter()
+    path_result = app._begin_central_phs2_scan_overlay_on_lane(
+        raw_input,
+        "ITEM-001",
+    )
+    admission = app.ui_lane.submit(
+        LaneTask("after-broken", 0, lambda: None, lambda _value: None, pytest.fail)
+    )
+
+    assert scan_event_return is None
+    assert app.big_display_label.options["text"] == "처리 상태 확인 필요"
+    assert app.big_display_label.options["foreground"] == app.colors["danger"]
+    assert app.status_label.options["text"] == (
+        "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요."
+    )
+    assert app.status_label.options["style"] == "Error.TLabel"
+    assert app.status_label.mapped is True
+    assert app.entry.options["state"] == "disabled"
+    assert app.entry.get() == raw_input
+    assert deleted == []
+    assert path_result is False
+    capture_work.assert_not_called()
+    assert admission.accepted is False
+    assert admission.reason == "broken"
+    gate.set()
+    _close_lane(app, root)
+
+
 def test_scan_is_not_cleared_when_non_lane_gate_rejects_it():
     app, root = _app_with_lane()
     deleted = []
@@ -513,6 +578,57 @@ def test_generation_transition_settles_stale_task_and_clears_busy_ui():
 
     assert settled == [(True, None)]
     assert rendered == []
+    assert app._ui_lane_busy_label == ""
+    _close_lane(app, root)
+
+
+def test_stale_phs2_checkpoint_cannot_mutate_new_current_set():
+    app, root = _app_with_lane()
+    app._ui_lane_generation = 1
+    release_checkpoint = threading.Event()
+    capture = SimpleNamespace(intent_id="intent-from-generation-1")
+    capture_committed = []
+    settled = []
+    app._show_deferred_capture_pending = (
+        lambda *_args, **_kwargs: pytest.fail("stale checkpoint rendered")
+    )
+
+    def work():
+        assert release_checkpoint.wait(timeout=2.0)
+        return app.ui_lane.call_ui_sync(
+            app._apply_captured_central_phs2_scan,
+            capture,
+            central_check_pending=True,
+            local_work_identity="current-set-generation-1",
+            on_capture_committed=lambda: capture_committed.append("called"),
+        )
+
+    app._submit_ui_lane_task(
+        name="stale-phs2-checkpoint",
+        busy_text="현품표 저장 중",
+        work=work,
+        finish=pytest.fail,
+        fail=pytest.fail,
+        settle=lambda value, error: settled.append((value, error)),
+    )
+    app._advance_ui_lane_generation()
+    current_set = {
+        "id": "current-set-generation-2",
+        "raw": ["GENERATION-2"],
+        "parsed": ["ITEM-002"],
+    }
+    app.current_set_info = current_set
+    current_set_before = dict(current_set)
+    release_checkpoint.set()
+    root.run_until(lambda: not app.ui_lane.is_busy())
+
+    assert app.current_set_info is current_set
+    assert app.current_set_info == current_set_before
+    assert capture_committed == []
+    assert len(settled) == 1
+    assert settled[0][0] is None
+    assert isinstance(settled[0][1], Failure)
+    assert settled[0][1].cause_type == "RuntimeError"
     assert app._ui_lane_busy_label == ""
     _close_lane(app, root)
 

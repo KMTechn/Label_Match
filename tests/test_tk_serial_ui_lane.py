@@ -612,6 +612,50 @@ def test_call_ui_sync_round_trip_and_exception():
     _close(root, lane)
 
 
+def test_call_ui_sync_stale_generation_releases_waiter_and_settles_failure():
+    module, LaneTask, TkSerialUiLane = _symbols()
+    root = FakeTkRoot()
+    generation = {"value": 1}
+    lane = TkSerialUiLane(
+        root,
+        poll_ms=1,
+        generation_provider=lambda: generation["value"],
+    )
+    release_checkpoint = threading.Event()
+    waiter_released = threading.Event()
+    callback_calls = []
+    settled = []
+
+    def work():
+        assert release_checkpoint.wait(timeout=2.0)
+        try:
+            return lane.call_ui_sync(lambda: callback_calls.append("called"))
+        finally:
+            waiter_released.set()
+
+    lane.submit(
+        LaneTask(
+            "stale-checkpoint",
+            1,
+            work,
+            pytest.fail,
+            pytest.fail,
+            settle=lambda value, error: settled.append((value, error)),
+        )
+    )
+    generation["value"] = 2
+    release_checkpoint.set()
+    root.run_until(lambda: not lane.is_busy())
+
+    assert callback_calls == []
+    assert waiter_released.is_set()
+    assert len(settled) == 1
+    assert settled[0][0] is None
+    assert isinstance(settled[0][1], module.Failure)
+    assert settled[0][1].cause_type == "RuntimeError"
+    _close(root, lane)
+
+
 def test_failure_adapter_must_return_safe_typed_failure():
     module, LaneTask, TkSerialUiLane = _symbols()
     root = FakeTkRoot()

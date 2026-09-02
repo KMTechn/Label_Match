@@ -565,7 +565,11 @@ class TkSerialUiLane:
         try:
             with self._state_lock:
                 active = self._active
-            if active is None or active.op_id != envelope.op_id:
+            if (
+                active is None
+                or active.op_id != envelope.op_id
+                or not self._generation_is_current(envelope.generation)
+            ):
                 raise RuntimeError("stale Tk UI lane checkpoint")
             envelope.value = envelope.callback(
                 *envelope.args,
