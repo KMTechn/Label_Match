@@ -7419,9 +7419,12 @@ class Label_Match(tk.Tk):
         )
         if should_resume:
             self._schedule_deferred_validation_worker(1000)
+            if self.__dict__.get("_deferred_validation_after_id") is None:
+                return False
         self.__dict__.pop(
             "_app_close_resume_deferred_validation", None
         )
+        return True
 
     def _schedule_app_close_recovery_retry(self):
         if self.__dict__.get("_app_close_recovery_after_id") is not None:
@@ -7591,10 +7594,15 @@ class Label_Match(tk.Tk):
                     settings_button = self.__dict__.get("settings_button")
                     if settings_button is not None:
                         settings_button.configure(state="normal")
-                    self._resume_deferred_validation_after_close_cancel()
+                    self._app_close_in_progress = False
                     if self.__dict__.get("operator_workbench_ready", False):
                         self._render_operator_workbench()
+                    if not self._resume_deferred_validation_after_close_cancel():
+                        raise RuntimeError(
+                            "deferred validation timer rearm was rejected"
+                        )
                 except Exception as rollback_error:
+                    self._app_close_in_progress = True
                     self._hold_app_close_fail_closed(rollback_error)
                     if self.run_tests:
                         raise rollback_error from e

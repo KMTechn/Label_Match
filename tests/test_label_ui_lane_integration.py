@@ -696,7 +696,6 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
     settings_states = []
     outbox_restarts = []
     cancelled_ui_jobs = []
-    deferred_timer_transitions = []
 
     class CloseFailingDataManager:
         def __init__(self):
@@ -735,15 +734,10 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
     app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
     app._has_background_work = lambda: False
     app._cancel_pending_ui_jobs = lambda: cancelled_ui_jobs.append(True)
-    app._deferred_validation_after_id = "deferred-before-close"
-    app.after_cancel = lambda after_id: deferred_timer_transitions.append(
-        ("cancel", after_id)
-    )
-    app._schedule_deferred_validation_worker = (
-        lambda delay_ms=1000: deferred_timer_transitions.append(
-            ("rearm", delay_ms)
-        )
-    )
+    app.after = root.after
+    app.after_cancel = root.after_cancel
+    deferred_timer_id = root.after(60000, lambda: None)
+    app._deferred_validation_after_id = deferred_timer_id
     replacement_manager = ReplacementDataManager()
 
     def replace_closed_manager(_manager):
@@ -776,6 +770,19 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
             close_error = error
 
         lane_state_after_failure = app.ui_lane.state
+        deferred_jobs = [
+            job
+            for job in root.jobs
+            if job[0] not in root.cancelled
+            and job[1] == 1000
+            and getattr(job[2], "__name__", "") == "run_once"
+        ]
+        assert len(deferred_jobs) == 1
+        assert app._deferred_validation_after_id == deferred_jobs[0][0]
+        assert deferred_timer_id in root.cancelled
+        assert "_app_close_resume_deferred_validation" not in app.__dict__
+        root.after_cancel(app._deferred_validation_after_id)
+        app._deferred_validation_after_id = None
         admitted_after_resume = app._begin_phs_reconciliation_lookup(
             "PHS2-AFTER-CLOSE-FAILURE"
         )
@@ -787,6 +794,10 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
         assert str(close_error) == "forced close failure"
         assert app.data_manager is replacement_manager
     finally:
+        deferred_after_id = app.__dict__.get("_deferred_validation_after_id")
+        if deferred_after_id is not None:
+            root.after_cancel(deferred_after_id)
+            app._deferred_validation_after_id = None
         if app.ui_lane.is_busy():
             root.run_until(lambda: not app.ui_lane.is_busy())
         if app.ui_lane.state is not LaneState.CLOSED:
@@ -827,6 +838,10 @@ def test_close_failure_compensates_durable_app_close_before_resume():
     app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
     app._has_background_work = lambda: False
     app._start_package_outbox_drain = lambda: None
+    app.after = root.after
+    app.after_cancel = root.after_cancel
+    deferred_timer_id = root.after(60000, lambda: None)
+    app._deferred_validation_after_id = deferred_timer_id
     replacement_manager = ReplacementDataManager()
 
     def replace_closed_manager(_manager):
@@ -852,10 +867,243 @@ def test_close_failure_compensates_durable_app_close_before_resume():
         assert flush_timeouts == [
             label_module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
         ]
+        deferred_jobs = [
+            job
+            for job in root.jobs
+            if job[0] not in root.cancelled
+            and job[1] == 1000
+            and getattr(job[2], "__name__", "") == "run_once"
+        ]
+        assert len(deferred_jobs) == 1
+        assert app._deferred_validation_after_id == deferred_jobs[0][0]
+        assert deferred_timer_id in root.cancelled
+        assert "_app_close_resume_deferred_validation" not in app.__dict__
         assert app._app_close_in_progress is False
         assert str(close_error) == "forced close failure after APP_CLOSE"
     finally:
         app._app_close_in_progress = False
+        deferred_after_id = app.__dict__.get("_deferred_validation_after_id")
+        if deferred_after_id is not None:
+            root.after_cancel(deferred_after_id)
+            app._deferred_validation_after_id = None
+        if app.ui_lane.state is not LaneState.CLOSED:
+            _close_lane(app, root)
+
+
+def test_close_cancel_rearms_deferred_validation_through_real_scheduler():
+    app, root = _app_with_lane()
+
+    class RecordingStateWidget:
+        def __init__(self):
+            self.transitions = []
+
+        def configure(self, **kwargs):
+            state = kwargs.get("state")
+            if state is not None:
+                caller = inspect.currentframe().f_back.f_code.co_name
+                self.transitions.append(
+                    (
+                        state,
+                        caller,
+                        bool(
+                            app.__dict__.get(
+                                "_app_close_in_progress",
+                                False,
+                            )
+                        ),
+                    )
+                )
+
+        config = configure
+
+    class CloseFailingDataManager:
+        def __init__(self):
+            self._close_requested = False
+            self.log_thread = SimpleNamespace(is_alive=lambda: False)
+
+        @staticmethod
+        def log_event(_event, _details):
+            return None
+
+        def close(self, timeout=None):
+            self._close_requested = True
+            raise RuntimeError("forced close failure for deferred rearm")
+
+    class ReplacementDataManager:
+        @staticmethod
+        def log_event(_event, _details):
+            return None
+
+        @staticmethod
+        def flush(timeout=None):
+            return True
+
+    app.__dict__.pop("_render_operator_workbench")
+    assert (
+        app._render_operator_workbench.__func__
+        is label_module.Label_Match._render_operator_workbench
+    )
+    assert "_schedule_deferred_validation_worker" not in app.__dict__
+    app.initialized_successfully = True
+    app.run_tests = True
+    app.is_blinking = True
+    app.operator_workbench_ready = True
+    app.colors = {}
+    app.entry = RecordingStateWidget()
+    app.settings_button = RecordingStateWidget()
+    app.data_manager = CloseFailingDataManager()
+    app.after = root.after
+    app.after_cancel = root.after_cancel
+    deferred_timer_id = root.after(60000, lambda: None)
+    app._deferred_validation_after_id = deferred_timer_id
+    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._has_background_work = lambda: False
+    app._start_package_outbox_drain = lambda: None
+    replacement_manager = ReplacementDataManager()
+
+    def replace_closed_manager(_manager):
+        app.data_manager = replacement_manager
+        return True
+
+    app._replace_closed_data_manager_after_close_failure = replace_closed_manager
+    close_error = None
+    try:
+        try:
+            app.on_closing()
+        except RuntimeError as error:
+            close_error = error
+
+        deferred_jobs = [
+            job
+            for job in root.jobs
+            if job[0] not in root.cancelled
+            and job[1] == 1000
+            and getattr(job[2], "__name__", "") == "run_once"
+        ]
+        assert len(deferred_jobs) == 1
+        assert app._deferred_validation_after_id == deferred_jobs[0][0]
+        assert deferred_timer_id in root.cancelled
+        assert "_app_close_resume_deferred_validation" not in app.__dict__
+        assert app._app_close_in_progress is False
+        assert (
+            "normal",
+            "on_closing",
+            True,
+        ) in app.entry.transitions
+        assert app.settings_button.transitions[-1] == (
+            "normal",
+            "on_closing",
+            True,
+        )
+        assert app.entry.transitions[-1] == (
+            "normal",
+            "_render_operator_workbench",
+            False,
+        )
+        assert app.__dict__.get("_last_workflow_view") is not None
+        assert app.data_manager is replacement_manager
+        assert str(close_error) == "forced close failure for deferred rearm"
+    finally:
+        app._app_close_in_progress = False
+        deferred_after_id = app.__dict__.get("_deferred_validation_after_id")
+        if deferred_after_id is not None:
+            root.after_cancel(deferred_after_id)
+            app._deferred_validation_after_id = None
+        if app.ui_lane.state is not LaneState.CLOSED:
+            _close_lane(app, root)
+
+
+def test_close_cancel_rearm_rejection_relatches_and_preserves_resume_flag(
+    monkeypatch,
+):
+    app, root = _app_with_lane()
+    cleanup_delays = []
+
+    class CloseFailingDataManager:
+        def __init__(self):
+            self._close_requested = False
+            self.log_thread = SimpleNamespace(is_alive=lambda: False)
+
+        @staticmethod
+        def log_event(_event, _details):
+            return None
+
+        def close(self, timeout=None):
+            self._close_requested = True
+            raise RuntimeError("forced close failure before rearm rejection")
+
+    class ReplacementDataManager:
+        @staticmethod
+        def log_event(_event, _details):
+            return None
+
+        @staticmethod
+        def flush(timeout=None):
+            return True
+
+    app.initialized_successfully = True
+    app.run_tests = False
+    app.is_blinking = True
+    app.entry = SimpleNamespace(configure=lambda **_kwargs: None)
+    app.settings_button = SimpleNamespace(configure=lambda **_kwargs: None)
+    app.data_manager = CloseFailingDataManager()
+    app.after = root.after
+    app.after_cancel = root.after_cancel
+    deferred_timer_id = root.after(60000, lambda: None)
+    app._deferred_validation_after_id = deferred_timer_id
+    app._tk_shutdown_requested = True
+    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._has_background_work = lambda: False
+    app._start_package_outbox_drain = lambda: None
+    app._show_app_close_cleanup_delay = lambda: cleanup_delays.append(True)
+    replacement_manager = ReplacementDataManager()
+
+    def replace_closed_manager(_manager):
+        app.data_manager = replacement_manager
+        return True
+
+    app._replace_closed_data_manager_after_close_failure = replace_closed_manager
+    monkeypatch.setattr(
+        label_module.messagebox,
+        "askokcancel",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        label_module.messagebox,
+        "showerror",
+        lambda *_args, **_kwargs: None,
+    )
+
+    try:
+        app.on_closing()
+
+        deferred_jobs = [
+            job
+            for job in root.jobs
+            if job[0] not in root.cancelled
+            and getattr(job[2], "__name__", "") == "run_once"
+        ]
+        recovery_jobs = [
+            job
+            for job in root.jobs
+            if job[0] not in root.cancelled
+            and job[1] == 1000
+            and getattr(job[2], "__name__", "") == "retry"
+        ]
+        assert deferred_jobs == []
+        assert len(recovery_jobs) == 1
+        assert app._app_close_recovery_after_id == recovery_jobs[0][0]
+        assert deferred_timer_id in root.cancelled
+        assert app._deferred_validation_after_id is None
+        assert app._app_close_resume_deferred_validation is True
+        assert app._app_close_in_progress is True
+        assert cleanup_delays == [True]
+    finally:
+        app._app_close_in_progress = False
+        recovery_after_id = app.__dict__.get("_app_close_recovery_after_id")
+        if recovery_after_id is not None:
+            root.after_cancel(recovery_after_id)
+            app._app_close_recovery_after_id = None
         if app.ui_lane.state is not LaneState.CLOSED:
             _close_lane(app, root)
 
@@ -865,7 +1113,6 @@ def test_close_cancel_restore_failure_stays_fail_closed_and_retries(monkeypatch)
     entry_states = []
     settings_states = []
     cleanup_delays = []
-    scheduled_recovery = []
 
     class RestoreFailingEntry:
         def configure(self, *, state):
@@ -907,9 +1154,10 @@ def test_close_cancel_restore_failure_stays_fail_closed_and_retries(monkeypatch)
     app._has_background_work = lambda: False
     app._start_package_outbox_drain = lambda: None
     app._show_app_close_cleanup_delay = lambda: cleanup_delays.append(True)
-    app.after = lambda delay, callback: (
-        scheduled_recovery.append((delay, callback)) or "close-recovery"
-    )
+    app.after = root.after
+    app.after_cancel = root.after_cancel
+    deferred_timer_id = root.after(60000, lambda: None)
+    app._deferred_validation_after_id = deferred_timer_id
     replacement_manager = ReplacementDataManager()
 
     def replace_closed_manager(_manager):
@@ -933,12 +1181,27 @@ def test_close_cancel_restore_failure_stays_fail_closed_and_retries(monkeypatch)
 
         assert app._app_close_in_progress is True
         assert cleanup_delays == [True]
-        assert [delay for delay, _callback in scheduled_recovery] == [1000]
+        recovery_jobs = [
+            job
+            for job in root.jobs
+            if job[0] not in root.cancelled
+            and job[1] == 1000
+            and getattr(job[2], "__name__", "") == "retry"
+        ]
+        assert len(recovery_jobs) == 1
+        assert app._app_close_recovery_after_id == recovery_jobs[0][0]
+        assert deferred_timer_id in root.cancelled
+        assert app._deferred_validation_after_id is None
+        assert app._app_close_resume_deferred_validation is True
         assert entry_states == ["disabled", "normal"]
         assert settings_states == ["disabled"]
         assert app.ui_lane.state is LaneState.IDLE
     finally:
         app._app_close_in_progress = False
+        recovery_after_id = app.__dict__.get("_app_close_recovery_after_id")
+        if recovery_after_id is not None:
+            root.after_cancel(recovery_after_id)
+            app._app_close_recovery_after_id = None
         if app.ui_lane.state is not LaneState.CLOSED:
             _close_lane(app, root)
 
@@ -947,8 +1210,6 @@ def test_close_retries_manager_recovery_before_rolling_back(monkeypatch):
     app, root = _app_with_lane()
     entry_states = []
     settings_states = []
-    scheduled_recovery = []
-    deferred_transitions = []
     replacement_attempts = []
 
     class TemporarilyUnrecoverableManager:
@@ -982,18 +1243,10 @@ def test_close_retries_manager_recovery_before_rolling_back(monkeypatch):
         configure=lambda **kwargs: settings_states.append(kwargs["state"])
     )
     app.data_manager = failed_manager
-    app._deferred_validation_after_id = "deferred-before-close"
-    app.after_cancel = lambda after_id: deferred_transitions.append(
-        ("cancel", after_id)
-    )
-    app.after = lambda delay, callback: (
-        scheduled_recovery.append((delay, callback)) or "close-recovery"
-    )
-    app._schedule_deferred_validation_worker = (
-        lambda delay_ms=1000: deferred_transitions.append(
-            ("rearm", delay_ms)
-        )
-    )
+    app.after = root.after
+    app.after_cancel = root.after_cancel
+    deferred_timer_id = root.after(60000, lambda: None)
+    app._deferred_validation_after_id = deferred_timer_id
     app._has_background_work = lambda: False
     app._start_package_outbox_drain = lambda: None
 
@@ -1020,20 +1273,36 @@ def test_close_retries_manager_recovery_before_rolling_back(monkeypatch):
 
     assert app._app_close_in_progress is True
     assert app.ui_lane.state is LaneState.IDLE
-    assert len(scheduled_recovery) == 1
-    assert scheduled_recovery[0][0] == 1000
+    recovery_jobs = [
+        job
+        for job in root.jobs
+        if job[0] not in root.cancelled
+        and job[1] == 1000
+        and getattr(job[2], "__name__", "") == "retry"
+    ]
+    assert len(recovery_jobs) == 1
+    assert app._app_close_recovery_after_id == recovery_jobs[0][0]
 
-    scheduled_recovery.pop()[1]()
+    root.run_until(lambda: len(replacement_attempts) == 2)
 
     assert app._app_close_in_progress is False
     assert app.data_manager is replacement_manager
     assert app.ui_lane.state is LaneState.IDLE
     assert entry_states == ["disabled", "normal"]
     assert settings_states == ["disabled", "normal"]
-    assert deferred_transitions == [
-        ("cancel", "deferred-before-close"),
-        ("rearm", 1000),
+    deferred_jobs = [
+        job
+        for job in root.jobs
+        if job[0] not in root.cancelled
+        and job[1] == 1000
+        and getattr(job[2], "__name__", "") == "run_once"
     ]
+    assert len(deferred_jobs) == 1
+    assert app._deferred_validation_after_id == deferred_jobs[0][0]
+    assert deferred_timer_id in root.cancelled
+    assert "_app_close_resume_deferred_validation" not in app.__dict__
+    root.after_cancel(app._deferred_validation_after_id)
+    app._deferred_validation_after_id = None
     _close_lane(app, root)
 
 
