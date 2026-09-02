@@ -219,6 +219,61 @@ class FakeWidget:
         self.options[key] = value
 
 
+def _production_mismatch_presentation(raw, master):
+    """Build mismatch presenter arguments through the real Tcl-free caller path."""
+
+    events = []
+
+    class RecordingDataManager:
+        def log_event(self, event, details):
+            events.append((event, details))
+
+    app = Label_Match.__new__(Label_Match)
+    app.current_set_info = {
+        "id": "production-mismatch-fixture",
+        "raw": [master],
+        "parsed": [master],
+        "error_count": 0,
+        "has_error_or_reset": False,
+    }
+    app.data_manager = RecordingDataManager()
+    app.run_tests = False
+    app.is_running_simulation = False
+    app.is_blinking = False
+    app.status_label = FakeWidget()
+    app.big_display_label = FakeWidget()
+    app.workflow_notice_label = FakeWidget()
+    app.workflow_notice_action_button = FakeWidget()
+    app.operator_workbench_ready = True
+    app.sound_objects = {}
+    app._render_operator_workbench = lambda: None
+    app._trigger_modal_error = lambda *args: pytest.fail(
+        f"workbench mismatch used the modal path: {args!r}"
+    )
+    app._save_current_set_state = lambda: None
+    app._update_manual_complete_button_state = lambda: None
+    app.update_big_display = (
+        lambda text, color="": app.big_display_label.configure(
+            text=text,
+            color=color,
+        )
+    )
+
+    Label_Match._handle_mismatch(app, raw, master)
+
+    assert events and events[-1][0] == app.Events.ERROR_MISMATCH
+    pending = app._pending_workflow_error
+    notice = app._workflow_blocking_notice
+    assert pending is app._workflow_pending_error
+    assert notice is app._workflow_notice
+    return (
+        notice.title,
+        notice.message,
+        pending["result"],
+        pending["error_details"],
+    )
+
+
 def _factory(kind):
     def create(master=None, *args, **kwargs):
         return FakeWidget(master, *args, kind=kind, **kwargs)
@@ -1358,20 +1413,11 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
 
         long_master = "CLC|MASTER|" + "M" * 72
         long_product = "PHS|PRODUCT|" + "P" * 72
-        displayed_master = app._middle_ellipsis(long_master, 48)
-        displayed_product = app._middle_ellipsis(long_product, 48)
-        mismatch_message = (
-            "현품표와 제품이 불일치합니다.\n\n"
-            f"- 현품표: {displayed_master}\n"
-            f"- 스캔 제품: {displayed_product}\n\n"
-            "→ 이 세트는 오류 처리됩니다. 제품을 제거하고 확인 후 새 현품표부터 다시 스캔하세요."
-        )
-        app._present_inline_workflow_error(
-            "[제품 불일치]",
-            mismatch_message,
-            app.Results.FAIL_MISMATCH,
+        mismatch_presentation = _production_mismatch_presentation(
             long_product,
+            long_master,
         )
+        app._present_inline_workflow_error(*mismatch_presentation)
         pump_tk(app, 260)
 
         mismatch_text = str(app.workflow_notice_label.cget("text"))
@@ -1418,12 +1464,13 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
 
         _apply_scale(app, 1.0)
         configure_hosted_size((2560, 1392))
-        error_fixture = next(
+        mismatch_source_fixture = next(
             fixture
             for fixture in build_state_fixtures()
-            if fixture.state_id == "error"
+            if fixture.state_id == "qa_product_3"
         )
-        apply_state_fixture(app, error_fixture)
+        apply_state_fixture(app, mismatch_source_fixture)
+        app._present_inline_workflow_error(*mismatch_presentation)
         settle_responsive_layout(app)
         pump_tk(app, 260)
 
@@ -1794,15 +1841,26 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
         fixtures = {
             fixture.state_id: fixture for fixture in build_state_fixtures()
         }
+        mismatch_source_fixture = fixtures["qa_product_3"]
+        mismatch_presentation = _production_mismatch_presentation(
+            mismatch_source_fixture.qa_scans[-1],
+            mismatch_source_fixture.qa_scans[0],
+        )
         for state_id in (
             "waiting",
-            "error",
+            "production_mismatch",
             "qa_progress",
             "exact_first",
             "exact_complete",
         ):
-            fixture = fixtures[state_id]
+            fixture = (
+                mismatch_source_fixture
+                if state_id == "production_mismatch"
+                else fixtures[state_id]
+            )
             apply_state_fixture(app, fixture)
+            if state_id == "production_mismatch":
+                app._present_inline_workflow_error(*mismatch_presentation)
             settle_responsive_layout(app)
             pump_tk(app, 220)
 
