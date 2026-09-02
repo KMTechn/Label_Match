@@ -496,84 +496,60 @@ def test_capture_identity_measurement_uses_git_and_exact_tool_blob(tmp_path):
 
 def _write_approved_bundle(tmp_path: Path) -> tuple[Path, str, bytes]:
     payload = _png_bytes()
-    bundle_id = BUNDLE_ID
-    bundle_root = tmp_path / "Label_Match" / bundle_id
-    for name in ("captures", "states", "approval"):
-        (bundle_root / name).mkdir(parents=True, exist_ok=True)
-    approval_receipt = _json_bytes(
-        {"schema": "approval receipt fixture", "capture_set": "capture-set.json"}
+    result = _materialize(
+        tmp_path,
+        captures=_capture_inputs(payload),
+        approver="품질 리더",
+        custodian="증거 보관 담당자",
+        custody_location="승인된 외부 증거 보관소",
+        retention_period="7 years",
     )
-    custody_receipt = _json_bytes(
-        {
-            "schema": "custody receipt fixture",
-            "capture_set": "capture-set.json",
-            "approval_receipt": "approval/approval-receipt.json",
-        }
-    )
-    (bundle_root / "approval" / "approval-receipt.json").write_bytes(
-        approval_receipt
-    )
-    (bundle_root / "approval" / "custody-receipt.json").write_bytes(
-        custody_receipt
-    )
-    approval = {
-        "approver": "품질 리더",
-        "approval_receipt_file": "approval/approval-receipt.json",
-        "approval_receipt_sha256": _sha256_bytes(approval_receipt),
-        "custody_receipt_file": "approval/custody-receipt.json",
-        "custody_receipt_sha256": _sha256_bytes(custody_receipt),
-    }
-    captures = [
-        {
-            "state_id": state_id,
-            "viewport": {"width_px": 2, "height_px": 2},
-            "dpi": 96,
-            "generated_at": GENERATED_AT,
-            "image_file": f"captures/{state_id}__2x2__96dpi.png",
-            "image_sha256": _sha256_bytes(payload),
-        }
-        for state_id in capture.M7_REQUIRED_STATE_IDS
-    ]
-    manifest = {
-        "schema": capture.M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
-        "app": "Label_Match",
-        "app_source": {"commit": APP_COMMIT, "tree": APP_TREE},
-        "portable_artifact": {
-            "file": ARTIFACT_FILE,
-            "sha256": ARTIFACT_SHA256,
-        },
-        "capture_tool": {
-            "path": capture.M7_CAPTURE_TOOL_PATH,
-            "commit": TOOL_COMMIT,
-            "blob_sha256": TOOL_BLOB_SHA256,
-        },
-        "captures": captures,
-        "approval": approval,
-    }
-    for entry in manifest["captures"]:
-        (bundle_root / entry["image_file"]).write_bytes(payload)
-    capture_set = {
-        key: manifest[key]
-        for key in (
-            "schema",
-            "app",
-            "app_source",
-            "portable_artifact",
-            "capture_tool",
-            "captures",
-        )
-    }
-    (bundle_root / "capture-set.json").write_bytes(_json_bytes(capture_set))
-    manifest_bytes = _json_bytes(manifest)
-    manifest_path = bundle_root / "manifest.json"
-    manifest_path.write_bytes(manifest_bytes)
+    manifest_path = result["manifest_path"]
+    manifest_bytes = manifest_path.read_bytes()
     return manifest_path, _sha256_bytes(manifest_bytes), payload
+
+
+def _rewrite_index_manifest_digest(manifest_path: Path, digest: str) -> None:
+    evidence_root = manifest_path.parents[2]
+    index_paths = sorted((evidence_root / "indexes").glob("handover-index__*.json"))
+    assert len(index_paths) == 1
+    index = json.loads(index_paths[0].read_text(encoding="utf-8"))
+    matching = [
+        entry
+        for entry in index["manifests"]
+        if entry["app"] == "Label_Match"
+        and entry["manifest_file"]
+        == f"Label_Match/{manifest_path.parent.name}/manifest.json"
+    ]
+    assert len(matching) == 1
+    matching[0]["manifest_sha256"] = digest
+    index_paths[0].write_bytes(_json_bytes(index))
 
 
 def _rewrite_manifest(manifest_path: Path, manifest: dict) -> str:
     payload = _json_bytes(manifest)
     manifest_path.write_bytes(payload)
-    return _sha256_bytes(payload)
+    digest = _sha256_bytes(payload)
+    _rewrite_index_manifest_digest(manifest_path, digest)
+    return digest
+
+
+def _replace_approval_receipt_with_arbitrary_json(manifest_path: Path) -> str:
+    approval_path = manifest_path.parent / "approval" / "approval-receipt.json"
+    approval_payload = _json_bytes({"arbitrary": "receipt fixture"})
+    approval_path.write_bytes(approval_payload)
+    approval_digest = _sha256_bytes(approval_payload)
+
+    custody_path = manifest_path.parent / "approval" / "custody-receipt.json"
+    custody = json.loads(custody_path.read_text(encoding="utf-8"))
+    custody["approval_receipt_sha256"] = approval_digest
+    custody_payload = _json_bytes(custody)
+    custody_path.write_bytes(custody_payload)
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["approval"]["approval_receipt_sha256"] = approval_digest
+    manifest["approval"]["custody_receipt_sha256"] = _sha256_bytes(custody_payload)
+    return _rewrite_manifest(manifest_path, manifest)
 
 
 def test_publisher_validates_an_approved_canonical_bundle(tmp_path):
@@ -587,32 +563,74 @@ def test_publisher_validates_an_approved_canonical_bundle(tmp_path):
     assert report["verified_state_ids"] == list(publisher.M7_REQUIRED_STATE_IDS)
     assert len(report["verified_image_files"]) == 9
     assert len(report["verified_receipt_files"]) == 2
+    assert all(
+        path.startswith(f"Label_Match/{BUNDLE_ID}/")
+        for path in (
+            *report["verified_image_files"],
+            *report["verified_receipt_files"],
+        )
+    )
+    assert report["canonical_validator_result"] == "PASS"
+    assert report["canonical_validator_exit_code"] == 0
+    assert report["canonical_validator_summary"]["FAIL"] == 0
+    assert report["canonical_validator_summary"]["APPROVAL_PENDING"] == 0
 
 
 @pytest.mark.parametrize(
-    ("defect", "error_code"),
+    ("defect", "reason_code"),
     (
-        ("schema", "SCHEMA_MISMATCH"),
-        ("state", "REQUIRED_STATE_SET_MISMATCH"),
+        ("schema", "SCHEMA_VIOLATION"),
         ("image_digest", "IMAGE_DIGEST_MISMATCH"),
-        ("approval", "APPROVAL_PENDING"),
     ),
 )
-def test_publisher_rejects_canonical_bundle_defects(tmp_path, defect, error_code):
+def test_publisher_rejects_canonical_validator_failures(tmp_path, defect, reason_code):
     manifest_path, _digest, _payload = _write_approved_bundle(tmp_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if defect == "schema":
         manifest["schema"] = "not canonical"
-    elif defect == "state":
-        manifest["captures"].pop()
     elif defect == "image_digest":
         manifest["captures"][0]["image_sha256"] = "0" * 64
-    elif defect == "approval":
-        manifest["approval"]["approver"] = publisher.M7_APPROVAL_PLACEHOLDER
     digest = _rewrite_manifest(manifest_path, manifest)
 
-    with pytest.raises(publisher.ExternalBundleValidationError, match=error_code):
+    with pytest.raises(publisher.ExternalBundleValidationError) as caught:
         publisher.validate_external_bundle_manifest(manifest_path, digest)
+    assert caught.value.code == "CANONICAL_VALIDATOR_REJECTED"
+    assert reason_code in str(caught.value)
+
+
+def test_publisher_rejects_empty_states_directory(tmp_path):
+    manifest_path, digest, _payload = _write_approved_bundle(tmp_path)
+    states_dir = manifest_path.parent / "states"
+    for state_path in states_dir.iterdir():
+        state_path.unlink()
+    assert not list(states_dir.iterdir())
+
+    with pytest.raises(publisher.ExternalBundleValidationError) as caught:
+        publisher.validate_external_bundle_manifest(manifest_path, digest)
+    assert caught.value.code == "CANONICAL_VALIDATOR_REJECTED"
+    assert "FILE_MISSING" in str(caught.value)
+
+
+def test_publisher_rejects_arbitrary_receipt_with_resealed_digest_chain(tmp_path):
+    manifest_path, _digest, _payload = _write_approved_bundle(tmp_path)
+    digest = _replace_approval_receipt_with_arbitrary_json(manifest_path)
+
+    with pytest.raises(publisher.ExternalBundleValidationError) as caught:
+        publisher.validate_external_bundle_manifest(manifest_path, digest)
+    assert caught.value.code == "CANONICAL_VALIDATOR_REJECTED"
+    assert "SCHEMA_VIOLATION" in str(caught.value)
+
+
+def test_publisher_rejects_canonical_approval_pending_exit_3(tmp_path):
+    result = _materialize(tmp_path)
+    manifest_path = result["manifest_path"]
+    digest = _sha256_bytes(manifest_path.read_bytes())
+
+    with pytest.raises(publisher.ExternalBundleValidationError) as caught:
+        publisher.validate_external_bundle_manifest(manifest_path, digest)
+    assert caught.value.code == "APPROVAL_PENDING"
+    assert "canonical validator exit 3" in str(caught.value)
+    assert "ORGANIZATION_PLACEHOLDER" in str(caught.value)
 
 
 def test_publisher_rejects_expected_manifest_digest_mismatch(tmp_path):
@@ -653,6 +671,7 @@ def test_publisher_dry_run_verifies_bundle_without_network_or_file_writes(
     assert report["network_writes"] == 0
     assert report["file_writes"] == 0
     assert report["verified_state_ids"] == list(publisher.M7_REQUIRED_STATE_IDS)
+    assert report["canonical_validator_result"] == "PASS"
     assert report["document_reference_only"] is True
     assert not report_path.exists()
 

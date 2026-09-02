@@ -5,12 +5,12 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import hashlib
 import json
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -38,6 +38,9 @@ M7_HANDOVER_INDEX = (
 M7_CANONICAL_HANDOVER_DIR = Path(
     "E:/KMTech/production-readiness-20260830/HANDOVER"
 ).resolve()
+M7_CANONICAL_VALIDATOR = (
+    M7_CANONICAL_HANDOVER_DIR / "tools" / "validate_capture_bundle_v1.py"
+)
 M7_CAPTURE_TOOL_PATH = "tools/capture_label_operator_ui.py"
 M7_APPROVAL_PLACEHOLDER = "미정 — 조직 확정 필요(Q1)"
 M7_REQUIRED_STATE_IDS = (
@@ -53,6 +56,14 @@ M7_REQUIRED_STATE_IDS = (
 )
 ASSET_PREFIX = f"assets/{ASSET_FOLDER}/"
 EXPECTED_UNIQUE_WORKER_IMAGES = 17
+M7_BUNDLE_ID_RE = re.compile(
+    r"^Label_Match__[0-9a-f]{12}__[0-9]{8}T[0-9]{6}Z__[0-9a-f]{8}$"
+)
+M7_INDEX_NAME_RE = re.compile(
+    r"^handover-index__[0-9]{8}T[0-9]{6}Z__[0-9a-f]{8}\.json$"
+)
+M7_MAX_JSON_BYTES = 10 * 1024 * 1024
+M7_MAX_VALIDATOR_OUTPUT_BYTES = 1024 * 1024
 EXPECTED_MARKDOWN_IMAGE_REFS = 17
 EXPECTED_CAPTURE_REPORT_VERSION = "label-match-outline-manual-capture-v2"
 EXPECTED_APP_VERSION = "v2.0.36"
@@ -203,59 +214,15 @@ def _require_lower_hex(value: Any, length: int, *, label: str) -> str:
     return normalized
 
 
-def _relative_bundle_path(value: Any, *, label: str) -> str:
-    raw = str(value or "")
-    if not raw or raw != raw.strip() or "\\" in raw or "\x00" in raw:
-        raise ExternalBundleValidationError(
-            "INVALID_BUNDLE_PATH", f"{label} must be a clean POSIX relative path"
-        )
-    path = Path(raw)
-    if path.is_absolute() or path.drive or any(
-        part in {"", ".", ".."} for part in path.parts
-    ):
-        raise ExternalBundleValidationError(
-            "INVALID_BUNDLE_PATH", f"{label} must not escape the bundle"
-        )
-    return path.as_posix()
-
-
-def _bundle_file(bundle_root: Path, value: Any, *, label: str) -> tuple[str, Path]:
-    relative = _relative_bundle_path(value, label=label)
-    candidate = (bundle_root / relative).resolve()
-    resolved_root = bundle_root.resolve()
-    if candidate == resolved_root or resolved_root not in candidate.parents:
-        raise ExternalBundleValidationError(
-            "INVALID_BUNDLE_PATH", f"{label} escapes the bundle"
-        )
-    return relative, candidate
-
-
-def _require_rfc3339_utc(value: Any, *, label: str) -> str:
-    normalized = str(value or "").strip()
-    if not re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", normalized
-    ):
-        raise ExternalBundleValidationError(
-            "INVALID_MANIFEST_FIELD", f"{label} must be RFC 3339 UTC with Z"
-        )
-    try:
-        dt.datetime.fromisoformat(normalized.removesuffix("Z") + "+00:00")
-    except ValueError as exc:
-        raise ExternalBundleValidationError(
-            "INVALID_MANIFEST_FIELD", f"{label} is not a real UTC timestamp"
-        ) from exc
-    return normalized
-
-
 def _read_bounded_json(path: Path, *, label: str) -> tuple[bytes, dict[str, Any]]:
     if not path.is_file():
         raise ExternalBundleValidationError(
             "BUNDLE_FILE_MISSING", f"{label} is missing: {path}"
         )
     size = path.stat().st_size
-    if size <= 0 or size > 1024 * 1024:
+    if size <= 0 or size > M7_MAX_JSON_BYTES:
         raise ExternalBundleValidationError(
-            "INVALID_BUNDLE_JSON", f"{label} must be between 1 byte and 1 MiB"
+            "INVALID_BUNDLE_JSON", f"{label} must be between 1 byte and 10 MiB"
         )
     payload = path.read_bytes()
     try:
@@ -271,38 +238,191 @@ def _read_bounded_json(path: Path, *, label: str) -> tuple[bytes, dict[str, Any]
     return payload, value
 
 
-def _approval_is_pending(value: Any) -> bool:
-    normalized = str(value or "").strip()
-    return not normalized or normalized == M7_APPROVAL_PLACEHOLDER
+def _canonical_manifest_location(manifest_path: Path) -> tuple[Path, Path, str]:
+    path = manifest_path.resolve()
+    bundle_root = path.parent
+    if (
+        path.name != "manifest.json"
+        or bundle_root.parent.name != M7_APP_ID
+        or M7_BUNDLE_ID_RE.fullmatch(bundle_root.name) is None
+    ):
+        raise ExternalBundleValidationError(
+            "INVALID_BUNDLE_TOPOLOGY",
+            "manifest must use <evidence-root>/Label_Match/"
+            "<canonical-bundle-id>/manifest.json",
+        )
+    evidence_root = bundle_root.parent.parent
+    manifest_relative = path.relative_to(evidence_root).as_posix()
+    return path, evidence_root, manifest_relative
+
+
+def _matching_canonical_indexes(
+    evidence_root: Path, manifest_relative: str, manifest_sha256: str
+) -> list[Path]:
+    """Bind the requested manifest back to an immutable §5 handover index."""
+
+    indexes_dir = evidence_root / "indexes"
+    if not indexes_dir.is_dir():
+        raise ExternalBundleValidationError(
+            "CANONICAL_INDEX_NOT_FOUND",
+            "evidence root has no indexes/ directory",
+        )
+    matches: list[Path] = []
+    try:
+        candidates = sorted(indexes_dir.iterdir())
+    except OSError as exc:
+        raise ExternalBundleValidationError(
+            "CANONICAL_INDEX_NOT_FOUND",
+            f"could not scan indexes/: {type(exc).__name__}",
+        ) from exc
+    for candidate in candidates:
+        if not candidate.is_file() or M7_INDEX_NAME_RE.fullmatch(candidate.name) is None:
+            continue
+        try:
+            _index_bytes, document = _read_bounded_json(
+                candidate, label=candidate.name
+            )
+        except ExternalBundleValidationError:
+            continue
+        entries = document.get("manifests")
+        if not isinstance(entries, list):
+            continue
+        if any(
+            isinstance(entry, dict)
+            and entry.get("app") == M7_APP_ID
+            and entry.get("manifest_file") == manifest_relative
+            and entry.get("manifest_sha256") == manifest_sha256
+            for entry in entries
+        ):
+            matches.append(candidate)
+    if not matches:
+        raise ExternalBundleValidationError(
+            "CANONICAL_INDEX_NOT_FOUND",
+            "no immutable index binds the requested Label_Match manifest and digest",
+        )
+    return matches
+
+
+def _validator_reason_codes(report: dict[str, Any], status: str) -> list[str]:
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        return []
+    reasons: list[str] = []
+    for check in checks:
+        if not isinstance(check, dict) or check.get("status") != status:
+            continue
+        reason = str(check.get("reason_code") or "")[:100]
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    return reasons[:12]
+
+
+def _run_canonical_bundle_validator(index_path: Path) -> dict[str, Any]:
+    if not M7_CANONICAL_VALIDATOR.is_file():
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_MISSING",
+            f"canonical validator is unavailable: {M7_CANONICAL_VALIDATOR}",
+        )
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(M7_CANONICAL_VALIDATOR),
+                str(index_path),
+                "--app",
+                M7_APP_ID,
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_ERROR",
+            f"canonical validator could not complete: {type(exc).__name__}",
+        ) from exc
+    if (
+        len(completed.stdout) > M7_MAX_VALIDATOR_OUTPUT_BYTES
+        or len(completed.stderr) > M7_MAX_VALIDATOR_OUTPUT_BYTES
+    ):
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_PROTOCOL",
+            "canonical validator output exceeded 1 MiB",
+        )
+    if completed.stderr:
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_PROTOCOL",
+            f"canonical validator wrote {len(completed.stderr)} unexpected stderr bytes",
+        )
+    try:
+        report = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_PROTOCOL",
+            "canonical validator did not return one UTF-8 JSON report",
+        ) from exc
+    expected_result = {0: "PASS", 2: "FAIL", 3: "APPROVAL_PENDING"}.get(
+        completed.returncode
+    )
+    summary = report.get("summary") if isinstance(report, dict) else None
+    if (
+        expected_result is None
+        or not isinstance(report, dict)
+        or report.get("exit_code") != completed.returncode
+        or report.get("result") != expected_result
+        or not isinstance(summary, dict)
+    ):
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_PROTOCOL",
+            "canonical validator process/result/summary fields disagree",
+        )
+    if completed.returncode == 3:
+        if summary.get("FAIL") != 0 or not summary.get("APPROVAL_PENDING"):
+            raise ExternalBundleValidationError(
+                "CANONICAL_VALIDATOR_PROTOCOL",
+                "validator exit 3 requires FAIL 0 and pending approval",
+            )
+        reasons = _validator_reason_codes(report, "APPROVAL_PENDING")
+        raise ExternalBundleValidationError(
+            "APPROVAL_PENDING",
+            "canonical validator exit 3; reason_codes=" + ",".join(reasons),
+        )
+    if completed.returncode == 2:
+        if not summary.get("FAIL"):
+            raise ExternalBundleValidationError(
+                "CANONICAL_VALIDATOR_PROTOCOL",
+                "validator exit 2 requires at least one FAIL",
+            )
+        reasons = _validator_reason_codes(report, "FAIL")
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_REJECTED",
+            "canonical validator exit 2; reason_codes=" + ",".join(reasons),
+        )
+    if (
+        summary.get("FAIL") != 0
+        or summary.get("APPROVAL_PENDING") != 0
+    ):
+        raise ExternalBundleValidationError(
+            "CANONICAL_VALIDATOR_PROTOCOL",
+            "only canonical validator exit 0/PASS/FAIL 0/pending 0 is publishable",
+        )
+    return report
 
 
 def validate_external_bundle_manifest(
     manifest_path: Path, expected_manifest_sha256: str
 ) -> dict[str, Any]:
-    """Validate one final canonical bundle without copying its raster into docs."""
+    """Allow only a canonical validator PASS bound through an immutable index."""
 
     expected_digest = _require_lower_hex(
         expected_manifest_sha256, 64, label="expected manifest SHA-256"
     )
-    path = manifest_path.resolve()
-    if path.name != "manifest.json":
-        raise ExternalBundleValidationError(
-            "INVALID_BUNDLE_TOPOLOGY", "external bundle input must be manifest.json"
-        )
-    bundle_root = path.parent
-    if bundle_root.parent.name != M7_APP_ID or not re.fullmatch(
-        r"Label_Match__[0-9a-f]{12}__\d{8}T\d{6}Z__[0-9a-f]{8}",
-        bundle_root.name,
-    ):
-        raise ExternalBundleValidationError(
-            "INVALID_BUNDLE_TOPOLOGY",
-            "manifest must use Label_Match/<canonical-bundle-id>/manifest.json",
-        )
-    for name in ("captures", "states", "approval"):
-        if not (bundle_root / name).is_dir():
-            raise ExternalBundleValidationError(
-                "INVALID_BUNDLE_TOPOLOGY", f"canonical {name}/ directory is missing"
-            )
+    path, evidence_root, manifest_relative = _canonical_manifest_location(manifest_path)
     manifest_bytes, manifest = _read_bounded_json(path, label="manifest.json")
     actual_digest = hashlib.sha256(manifest_bytes).hexdigest()
     if actual_digest != expected_digest:
@@ -310,184 +430,37 @@ def validate_external_bundle_manifest(
             "MANIFEST_DIGEST_MISMATCH",
             "manifest bytes do not match --expected-manifest-sha256",
         )
-    if manifest.get("schema") != M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA:
-        raise ExternalBundleValidationError(
-            "SCHEMA_MISMATCH", "manifest schema is not the canonical exact string"
-        )
-    if manifest.get("app") != M7_APP_ID:
-        raise ExternalBundleValidationError(
-            "APP_MISMATCH", "manifest app must be Label_Match"
-        )
+    indexes = _matching_canonical_indexes(
+        evidence_root, manifest_relative, actual_digest
+    )
+    # Canonical §5 starts at an immutable index. The newest matching receipt is
+    # deterministic when the same immutable bundle is carried into a later index.
+    selected_index = indexes[-1]
+    validator_report = _run_canonical_bundle_validator(selected_index)
 
-    app_source = manifest.get("app_source")
-    portable = manifest.get("portable_artifact")
-    capture_tool = manifest.get("capture_tool")
-    approval = manifest.get("approval")
     captures = manifest.get("captures")
-    if not all(
-        isinstance(value, dict)
-        for value in (app_source, portable, capture_tool, approval)
-    ) or not isinstance(captures, list):
+    approval = manifest.get("approval")
+    if not isinstance(captures, list) or not isinstance(approval, dict):
         raise ExternalBundleValidationError(
-            "INVALID_MANIFEST_FIELD", "canonical nested manifest groups are missing"
+            "CANONICAL_VALIDATOR_PROTOCOL",
+            "validator PASS did not yield canonical manifest groups",
         )
-    app_commit = _require_lower_hex(
-        app_source.get("commit"), 40, label="app_source.commit"
-    )
-    _require_lower_hex(app_source.get("tree"), 40, label="app_source.tree")
-    if bundle_root.name.split("__", 2)[1] != app_commit[:12]:
-        raise ExternalBundleValidationError(
-            "SOURCE_IDENTITY_MISMATCH",
-            "bundle-id commit prefix does not match app_source.commit",
-        )
-    _relative_bundle_path(portable.get("file"), label="portable_artifact.file")
-    _require_lower_hex(
-        portable.get("sha256"), 64, label="portable_artifact.sha256"
-    )
-    if capture_tool.get("path") != M7_CAPTURE_TOOL_PATH:
-        raise ExternalBundleValidationError(
-            "CAPTURE_TOOL_MISMATCH",
-            f"capture_tool.path must be {M7_CAPTURE_TOOL_PATH}",
-        )
-    _require_lower_hex(
-        capture_tool.get("commit"), 40, label="capture_tool.commit"
-    )
-    _require_lower_hex(
-        capture_tool.get("blob_sha256"),
-        64,
-        label="capture_tool.blob_sha256",
-    )
-
-    state_ids: list[str] = []
-    verified_images: list[str] = []
-    for index, capture in enumerate(captures):
-        if not isinstance(capture, dict):
-            raise ExternalBundleValidationError(
-                "INVALID_CAPTURE", f"captures[{index}] must be an object"
-            )
-        state_id = str(capture.get("state_id") or "")
-        state_ids.append(state_id)
-        viewport = capture.get("viewport")
-        if not isinstance(viewport, dict):
-            raise ExternalBundleValidationError(
-                "INVALID_CAPTURE", f"{state_id} viewport is missing"
-            )
-        width = viewport.get("width_px")
-        height = viewport.get("height_px")
-        dpi = capture.get("dpi")
-        if any(isinstance(value, bool) for value in (width, height, dpi)) or not all(
-            isinstance(value, int) and value > 0 for value in (width, height, dpi)
-        ):
-            raise ExternalBundleValidationError(
-                "INVALID_CAPTURE", f"{state_id} viewport and dpi must be positive integers"
-            )
-        _require_rfc3339_utc(
-            capture.get("generated_at"), label=f"captures[{index}].generated_at"
-        )
-        expected_image_file = (
-            f"captures/{state_id}__{width}x{height}__{dpi}dpi.png"
-        )
-        image_file, image_path = _bundle_file(
-            bundle_root, capture.get("image_file"), label=f"{state_id}.image_file"
-        )
-        if image_file != expected_image_file:
-            raise ExternalBundleValidationError(
-                "INVALID_CAPTURE_FILENAME",
-                f"{state_id} image_file must be {expected_image_file}",
-            )
-        expected_image_digest = _require_lower_hex(
-            capture.get("image_sha256"), 64, label=f"{state_id}.image_sha256"
-        )
-        if not image_path.is_file() or _sha256_file(image_path) != expected_image_digest:
-            raise ExternalBundleValidationError(
-                "IMAGE_DIGEST_MISMATCH", f"{state_id} PNG digest does not match"
-            )
-        image_info = _png_info(image_path)
-        if image_info["format"] != "PNG" or image_info["size"] != (width, height):
-            raise ExternalBundleValidationError(
-                "IMAGE_DIMENSION_MISMATCH",
-                f"{state_id} PNG format/dimensions do not match viewport",
-            )
-        verified_images.append(image_file)
-    if len(state_ids) != len(M7_REQUIRED_STATE_IDS) or set(state_ids) != set(
-        M7_REQUIRED_STATE_IDS
-    ):
-        raise ExternalBundleValidationError(
-            "REQUIRED_STATE_SET_MISMATCH",
-            "captures must contain every required state exactly once and no extras",
-        )
-
-    capture_set_path = bundle_root / "capture-set.json"
-    _capture_set_bytes, capture_set = _read_bounded_json(
-        capture_set_path, label="capture-set.json"
-    )
-    for key in (
-        "schema",
-        "app",
-        "app_source",
-        "portable_artifact",
-        "capture_tool",
-        "captures",
-    ):
-        if capture_set.get(key) != manifest.get(key):
-            raise ExternalBundleValidationError(
-                "CAPTURE_SET_MISMATCH", f"capture-set.json differs at {key}"
-            )
-
-    approval_keys = {
-        "approver",
-        "approval_receipt_file",
-        "approval_receipt_sha256",
-        "custody_receipt_file",
-        "custody_receipt_sha256",
-    }
-    if set(approval) != approval_keys:
-        raise ExternalBundleValidationError(
-            "INVALID_APPROVAL", "approval must contain five canonical fields exactly"
-        )
-    if any(_approval_is_pending(approval.get(key)) for key in approval_keys):
-        raise ExternalBundleValidationError(
-            "APPROVAL_PENDING", "approval or custody still contains a placeholder"
-        )
-    receipt_specs = (
-        (
-            "approval_receipt_file",
-            "approval_receipt_sha256",
-            "approval/approval-receipt.json",
-        ),
-        (
-            "custody_receipt_file",
-            "custody_receipt_sha256",
-            "approval/custody-receipt.json",
-        ),
-    )
-    verified_receipts: list[str] = []
-    for file_key, digest_key, expected_file in receipt_specs:
-        receipt_file, receipt_path = _bundle_file(
-            bundle_root, approval[file_key], label=f"approval.{file_key}"
-        )
-        if receipt_file != expected_file:
-            raise ExternalBundleValidationError(
-                "INVALID_APPROVAL", f"approval.{file_key} must be {expected_file}"
-            )
-        receipt_digest = _require_lower_hex(
-            approval[digest_key], 64, label=f"approval.{digest_key}"
-        )
-        if not receipt_path.is_file() or _sha256_file(receipt_path) != receipt_digest:
-            raise ExternalBundleValidationError(
-                "RECEIPT_DIGEST_MISMATCH", f"{receipt_file} digest does not match"
-            )
-        verified_receipts.append(receipt_file)
-
     return {
         "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
         "app": M7_APP_ID,
         "manifest_path": str(path),
         "manifest_sha256": actual_digest,
-        "bundle_id": bundle_root.name,
-        "verified_state_ids": state_ids,
-        "verified_image_files": verified_images,
-        "verified_receipt_files": verified_receipts,
+        "bundle_id": path.parent.name,
+        "canonical_index_path": str(selected_index),
+        "canonical_validator_result": validator_report["result"],
+        "canonical_validator_exit_code": validator_report["exit_code"],
+        "canonical_validator_summary": validator_report["summary"],
+        "verified_state_ids": [str(capture["state_id"]) for capture in captures],
+        "verified_image_files": [str(capture["image_file"]) for capture in captures],
+        "verified_receipt_files": [
+            str(approval["approval_receipt_file"]),
+            str(approval["custody_receipt_file"]),
+        ],
         "approval_status": "APPROVED",
     }
 

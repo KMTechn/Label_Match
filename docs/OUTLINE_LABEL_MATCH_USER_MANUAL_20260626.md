@@ -210,10 +210,13 @@ receipt에서 `app=Label_Match`를 선택하고, 해당
 찾습니다. 이 문서에는 raster, bundle-id 또는 나중에 생성된 digest 값을 다시
 쓰지 않습니다.
 
-`L-5` BROKEN 경고/입력 재활성 위험과 `L-6` synchronous generation fence가 제품
-판정 대기인 동안 release capture gate는 차단됩니다. `broken_fail_closed_warning`이
-실제 fail-closed 상태를 보이지 않으면 정상 화면으로 대체하거나 게시하지 마세요.
-아래 tracked 레거시 이미지는 삭제하지 않으며 external bundle이 승인될 때까지
-대체 예정 상태로 남습니다.
+`L-5` BROKEN 경고/입력 재활성 위험과 `L-6` synchronous generation fence는
+`ff2e104c`에서 해소됐고
+`E:/KMTech/production-readiness-20260830/RESEARCH/_GAP-AUDIT-FINAL-lp.md`
+§§3-4에서 확인됐습니다. 두 항목은 `해소(ff2e104c) — external bundle 캡처 대기`
+상태이며 release capture gate를 더 이상 차단하지 않습니다.
+`broken_fail_closed_warning`이 실제 fail-closed 상태를 보이지 않으면 정상 화면으로
+대체하거나 게시하지 마세요. 아래 tracked 레거시 이미지는 삭제하지 않으며
+external bundle이 승인될 때까지 대체 예정 상태로 남습니다.
 
 화면 문제를 보고할 때는 프로그램 버전, 작업자, PHS2, source/work group, F4 old/new, package ID, lease와 중앙 상태, 재시도 여부를 함께 전달하세요. 비밀 token이나 DB 전체 파일을 전달하지 마세요.

@@ -114,9 +114,12 @@ receipt에서 `app=Label_Match`를 고르고, 항목이 가리키는
 마세요.
 
 이 문서에는 raster, bundle-id 또는 나중에 생성될 digest 값을 다시 기록하지
-않습니다. 그 값은 외부 bundle과 handover index에만 둡니다. `L-5`와 `L-6`의 제품
-판정이 끝나기 전에는 capture tool의 release gate가 차단되며, BROKEN 경고 상태를
-정상 화면처럼 간주할 수 없습니다.
+않습니다. 그 값은 외부 bundle과 handover index에만 둡니다. `L-5`와 `L-6`는
+`ff2e104c`에서 해소됐고
+`E:/KMTech/production-readiness-20260830/RESEARCH/_GAP-AUDIT-FINAL-lp.md`
+§§3-4에서 확인됐으므로 capture tool의 release gate는 해제됐습니다. 현재 상태는
+`해소(ff2e104c) — external bundle 캡처 대기`이며, BROKEN 경고 상태를 정상
+화면처럼 간주할 수 없다는 증거 조건은 그대로입니다.
 
 ## 6. M7 TODO 처리표
 
@@ -126,10 +129,10 @@ receipt에서 `app=Label_Match`를 고르고, 항목이 가리키는
 | L-2 | 캡처 대기 | 9개 필수 state ID와 도구 경로는 고정했지만 PNG·승인 manifest는 아직 만들지 않았습니다. |
 | L-3 | 캡처 대기 | 실제 공장 PC의 문구·배치 qualification은 아직 수행하지 않았습니다. |
 | L-4 | 조직 확정 필요 | 배포 승인자 직책과 화면 증거 책임 소재는 임의로 채우지 않았습니다. |
-| L-5 | 제품 판정 대기 | BROKEN lane 경고가 busy 거절로 덮이거나 입력이 재활성화될 수 있는 current source 위험은 미해소입니다. release capture를 차단합니다. |
-| L-6 | 제품 판정 대기 | synchronous UI checkpoint가 generation이 아니라 `op_id`만 검사하는 UNPROVEN 경로는 미해소입니다. release capture를 차단합니다. |
+| L-5 | 해소(ff2e104c) — external bundle 캡처 대기 | BROKEN lane 경고를 유지하고 입력 재활성화를 막는 fail-closed 수정은 최종 감사 §4에서 확인됐습니다. 이 항목은 release capture를 더 이상 차단하지 않지만 승인된 external bundle은 아직 필요합니다. |
+| L-6 | 해소(ff2e104c) — external bundle 캡처 대기 | synchronous UI checkpoint의 generation fence 수정은 최종 감사 §3에서 확인됐습니다. 이 항목은 release capture를 더 이상 차단하지 않지만 승인된 external bundle은 아직 필요합니다. |
 
-이번 변경은 여섯 항목의 문장과 상태를 정정했을 뿐, 외부 캡처·조직 답·제품 판정
-없이 완료로 닫지 않았습니다. 따라서 현재 closure는 `0/6`, 처리표 정정은
-`6/6`입니다. 위 항목이 끝나기 전에는 저장소 소스 대조 결과를 실제 배포·현장
-화면 검증으로 확대 해석하지 마세요.
+이번 변경으로 L-5/L-6 제품 결함은 해소되어 현재 closure는 `2/6`입니다. 외부
+캡처·조직 답 없이 나머지 항목이나 최종 인계를 완료로 닫지 않았습니다. 처리표
+정정은 `6/6`이며, 남은 항목이 끝나기 전에는 저장소 소스 대조 결과를 실제
+배포·현장 화면 검증으로 확대 해석하지 마세요.

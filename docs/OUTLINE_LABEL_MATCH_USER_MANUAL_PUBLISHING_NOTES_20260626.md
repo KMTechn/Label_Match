@@ -51,10 +51,13 @@
 Raster, bundle-id, 아직 없는 digest 값과 나중에 생성될 digest 값은 이 문서나
 OUTLINE 원고에 다시 쓰지 않습니다. 아래 2026-07-16 tracked 이미지와 게시 절차는 삭제하지 않고 이력
 재현용으로 보존하며, 현행 화면은 external bundle로 대체 예정입니다. `L-5`와
-`L-6`가 제품 판정 대기인 동안 `broken_fail_closed_warning`을 정상으로 위조하지
-않고 release capture를 차단합니다. `tools/publish_outline_user_manual.py`는 승인된
-external bundle manifest와 그 expected SHA-256을 검증하는 경로만 현행 게시로
-허용하고 legacy tracked-image 게시를 명시적으로 거부합니다.
+`L-6`는 `ff2e104c`에서 해소됐고
+`E:/KMTech/production-readiness-20260830/RESEARCH/_GAP-AUDIT-FINAL-lp.md`
+§§3-4에서 확인됐습니다. 두 항목은 `해소(ff2e104c) — external bundle 캡처 대기`
+상태이며 release capture를 더 이상 차단하지 않습니다.
+`tools/publish_outline_user_manual.py`는 승인된 external bundle manifest와 그
+expected SHA-256을 정본 validator로 검증하는 경로만 현행 게시로 허용하고 legacy
+tracked-image 게시를 명시적으로 거부합니다.
 
 ## 1. 게시 대상
 
@@ -162,7 +165,7 @@ document id에 `replace` 업데이트합니다. 게시 후에는 브라우저에
 2. Markdown 이미지와 attachment 참조가 0개인지
 3. 정본 경로, schema, `app=Label_Match`, 필수 state ID 9개가 보이는지
 4. 실제 bundle-id, raster path, digest 값이 본문에 복사되지 않았는지
-5. L-5/L-6 pending과 release capture 차단 문장이 유지되는지
+5. L-5/L-6 해소(`ff2e104c`), release capture gate 해제와 external bundle 캡처 대기 문장이 유지되는지
 6. 게시 결과 보고서가 PASS이고 검증된 state·image·approval/custody 수가 맞는지
 
 ## 6. 새 PC 관리자 확인표

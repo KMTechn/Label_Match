@@ -69,14 +69,22 @@ def test_label_docs_share_the_m7_external_capture_bundle_contract():
     assert "| L-2 | 캡처 대기 |" in worker
     assert "| L-3 | 캡처 대기 |" in worker
     assert "| L-4 | 조직 확정 필요 |" in worker
-    assert "| L-5 | 제품 판정 대기 |" in worker
-    assert "| L-6 | 제품 판정 대기 |" in worker
-    assert "closure는 `0/6`" in worker
-    assert "처리표 정정은\n`6/6`" in worker
+    resolved_capture_pending = "해소(ff2e104c) — external bundle 캡처 대기"
+    assert f"| L-5 | {resolved_capture_pending} |" in worker
+    assert f"| L-6 | {resolved_capture_pending} |" in worker
+    assert "closure는 `2/6`" in worker
+    assert "처리표\n정정은 `6/6`" in worker
     worker_contract = worker[worker.index("## 5. M7 external capture bundle v1 계약") :]
     assert "app_source.commit" not in worker_contract
     assert "portable_artifact.sha256" not in worker_contract
     assert "L-5" in worker_contract and "L-6" in worker_contract
+
+    for name, (path, heading) in documents.items():
+        text = path.read_text(encoding="utf-8")
+        section = text[text.index(heading) :]
+        assert "ff2e104c" in section, name
+        assert resolved_capture_pending in section, name
+        assert "release capture" in section, name
 
     publishing_notes = documents["publisher"][0].read_text(encoding="utf-8")
     assert "--external-bundle-manifest <manifest-path>" in publishing_notes

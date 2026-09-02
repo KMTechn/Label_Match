@@ -39,6 +39,7 @@ from tools.capture_label_operator_ui import (
     M7_MANIFEST_FIELD_GROUPS,
     M7_PRODUCT_DECISION_BLOCKERS,
     M7_REQUIRED_STATE_IDS,
+    M7_RESOLVED_PRODUCT_DECISIONS,
     M7_STATE_CONTRACT,
     MIN_SCALE,
     REQUIRED_WIDGET_ATTRS,
@@ -200,7 +201,7 @@ def test_manifest_contract_captures_only_persistent_cancellation_conflict():
         )
 
 
-def test_m7_external_bundle_manifest_schema_is_explicit_and_release_blocked():
+def test_m7_external_bundle_manifest_schema_releases_fixed_l5_l6_gate():
     contract = build_m7_external_capture_bundle_contract()
     assert set(contract) == {
         "schema",
@@ -235,8 +236,11 @@ def test_m7_external_bundle_manifest_schema_is_explicit_and_release_blocked():
     }
     assert app_specific["repository_document_digest_values_allowed"] is False
     gate = app_specific["release_capture_gate"]
-    assert gate["status"] == "BLOCKED_PRODUCT_DECISION"
-    assert tuple(gate["pending"]) == M7_PRODUCT_DECISION_BLOCKERS == ("L-5", "L-6")
+    assert gate["status"] == "PASS"
+    assert tuple(gate["pending"]) == M7_PRODUCT_DECISION_BLOCKERS == ()
+    assert tuple(gate["resolved"]) == M7_RESOLVED_PRODUCT_DECISIONS == ("L-5", "L-6")
+    assert "ff2e104c" in gate["reason"]
+    assert "_GAP-AUDIT-FINAL-lp.md" in gate["reason"]
     manifest = {
         "external_capture_bundle_contract": contract,
         "summary": {"passed": True},
@@ -244,7 +248,7 @@ def test_m7_external_bundle_manifest_schema_is_explicit_and_release_blocked():
         "approval_eligible": True,
     }
     capture.record_cleanup_contract(manifest, ())
-    assert manifest["approval_eligible"] is False
+    assert manifest["approval_eligible"] is True
 
 
 def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
@@ -4361,10 +4365,6 @@ def test_privacy_failure_manifest_discards_original_sensitive_keys_and_values():
 
 def test_cleanup_contract_is_part_of_approval_eligibility():
     passed_contract = build_m7_external_capture_bundle_contract()
-    passed_contract["app_specific"]["release_capture_gate"] = {
-        "status": "PASS",
-        "pending": [],
-    }
     successful = {
         "external_capture_bundle_contract": passed_contract,
         "matrix_complete": True,
@@ -4392,6 +4392,19 @@ def test_cleanup_contract_is_part_of_approval_eligibility():
     }
     capture.record_cleanup_contract(malformed_contract, [])
     assert malformed_contract["approval_eligible"] is False
+
+    stale_pending_contract = build_m7_external_capture_bundle_contract()
+    stale_pending_contract["app_specific"]["release_capture_gate"]["pending"] = [
+        "L-5"
+    ]
+    stale_pending = {
+        "external_capture_bundle_contract": stale_pending_contract,
+        "matrix_complete": True,
+        "approval_eligible": True,
+        "summary": {"passed": True},
+    }
+    capture.record_cleanup_contract(stale_pending, [])
+    assert stale_pending["approval_eligible"] is False
 
     failed = {
         "matrix_complete": True,

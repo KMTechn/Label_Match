@@ -125,7 +125,10 @@ M7_MANIFEST_FIELD_GROUPS = (
         "approval.custody_receipt_sha256",
     ),
 )
-M7_PRODUCT_DECISION_BLOCKERS = ("L-5", "L-6")
+# L-5/L-6 were fixed by ff2e104c and independently confirmed in
+# E:/KMTech/production-readiness-20260830/RESEARCH/_GAP-AUDIT-FINAL-lp.md §§3-4.
+M7_RESOLVED_PRODUCT_DECISIONS = ("L-5", "L-6")
+M7_PRODUCT_DECISION_BLOCKERS: tuple[str, ...] = ()
 M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
     "phs2_admitted_busy": {
         "production_call_path": ("_set_ui_lane_busy",),
@@ -970,11 +973,13 @@ def build_m7_external_capture_bundle_contract() -> dict[str, Any]:
             "tracked_images": "retained_historical_pending_external_replacement",
             "repository_document_digest_values_allowed": False,
             "release_capture_gate": {
-                "status": "BLOCKED_PRODUCT_DECISION",
+                "status": "PASS",
                 "pending": list(M7_PRODUCT_DECISION_BLOCKERS),
+                "resolved": list(M7_RESOLVED_PRODUCT_DECISIONS),
                 "reason": (
                     "L-5 BROKEN fail-closed UI behavior and L-6 synchronous "
-                    "generation fencing await product decisions"
+                    "generation fencing were fixed by ff2e104c and confirmed "
+                    "by RESEARCH/_GAP-AUDIT-FINAL-lp.md sections 3-4"
                 ),
             },
         },
@@ -2110,7 +2115,12 @@ def _m7_release_capture_gate_passed(manifest: Mapping[str, Any]) -> bool:
     gate = app_specific.get("release_capture_gate")
     if not isinstance(gate, Mapping):
         return False
-    return gate.get("status") == "PASS"
+    pending = gate.get("pending")
+    return (
+        gate.get("status") == "PASS"
+        and isinstance(pending, list)
+        and not pending
+    )
 
 
 def record_cleanup_contract(
