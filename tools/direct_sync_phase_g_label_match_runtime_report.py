@@ -322,6 +322,7 @@ class EchoAcceptedSession(RuntimeLeaseFixtureSession):
                 ),
                 "committed": True,
                 "status": "accepted",
+                "projection_disposition": "COMPLETE",
                 "retryable": False,
                 "next_retry_after": None,
                 "totals": {"inserted": 1, "replayed": 0, "quarantined": 0, "errors": 0},
@@ -1013,7 +1014,7 @@ def _lost_ack_replay_report(tmp_root: Path) -> dict:
 def _retry_dead_letter_report(tmp_root: Path) -> dict:
     review_config = _runtime_config(tmp_root, name="operator-review")
     review_source = _write_source_file(tmp_root / "operator-review")
-    enqueue_completed_source_file(review_config, source_file_path=review_source)
+    review_enqueued = enqueue_completed_source_file(review_config, source_file_path=review_source)
     review_status = run_relay_once(
         review_config,
         session=FixedSession(
@@ -1021,9 +1022,14 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
                 200,
                 {
                     "request_id": "request-operator-review",
-                    "client_batch_id": "relay-operator-review",
+                    "client_batch_id": review_enqueued["last_result"]["relay_id"],
+                    "server_source_file_id": (
+                        "label-match-phase-g-host/label_match/label_match_events/"
+                        f"{review_enqueued['last_result']['relative_path']}"
+                    ),
                     "committed": True,
                     "status": "accepted",
+                    "projection_disposition": "COMPLETE",
                     "retryable": False,
                     "next_retry_after": None,
                     "totals": {"inserted": 0, "replayed": 0, "quarantined": 1, "errors": 0},
