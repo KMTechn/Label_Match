@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -143,6 +144,49 @@ def test_runtime_authority_rejects_invalid_lease_hmac():
     assert authority.issue_count == 0
 
 
+def test_retry_dead_letter_receipt_identity_comes_from_enqueued_plan(tmp_path):
+    manifest_path = runtime_report_tool._make_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["pc_identity"]["source_host_id"] = "label-match-phase-g-plan-host"
+    runtime_report_tool._write_json(manifest_path, manifest)
+    runtime_report_tool._make_credential(tmp_path)
+
+    report = runtime_report_tool._retry_dead_letter_report(tmp_path)
+
+    with sqlite3.connect(tmp_path / "operator-review" / "direct_sync_relay.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT metadata_json, receipt_json FROM direct_sync_relay_batches LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    plan_metadata = json.loads(row[0])
+    receipt = json.loads(row[1])
+    assert receipt["server_source_file_id"] == runtime_report_tool._server_source_file_id_from_metadata(
+        plan_metadata
+    )
+    assert receipt["server_source_file_id"].startswith("label-match-phase-g-plan-host/")
+    assert report["status"] == "PASS"
+
+
+def test_retry_dead_letter_gate_rejects_receipt_identity_error(tmp_path, monkeypatch):
+    runtime_report_tool._make_manifest(tmp_path)
+    runtime_report_tool._make_credential(tmp_path)
+    monkeypatch.setattr(
+        runtime_report_tool,
+        "_server_source_file_id_from_metadata",
+        lambda metadata: f"mismatched/{metadata['relative_path']}",
+        raising=False,
+    )
+
+    report = runtime_report_tool._retry_dead_letter_report(tmp_path)
+
+    assert report["status"] == "FAIL"
+    assert report["operator_review_status"] == "operator_review"
+    assert report["operator_review_queue"]["counts"]["operator_review"] == 1
+    assert report["error_code"] == "receipt_identity_mismatch"
+    assert report["receipt_totals"]["quarantined"] == 1
+    assert report["identity_shape_errors"] == ["receipt_identity_mismatch"]
+
+
 def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked(tmp_path):
     report_path = tmp_path / "reports" / "phase-g-label-match-runtime.json"
     completed = subprocess.run(
@@ -281,7 +325,20 @@ def test_phase_g_label_match_runtime_report_is_local_pass_but_production_blocked
     assert report["retry_wait_report"]["status"] == "PASS"
     assert report["queue_backpressure_report"]["status"] == "PASS"
     assert report["queue_backpressure_report"]["blocked_status"] == "blocked_queue_backpressure"
-    assert report["retry_dead_letter_report"]["status"] == "PASS"
+    retry_dead_letter = report["retry_dead_letter_report"]
+    assert retry_dead_letter["status"] == "PASS"
+    assert retry_dead_letter["error_code"] == "operator_review_required"
+    assert retry_dead_letter["error_message"] == (
+        "server committed upload but operator review is required: "
+        "inserted=0, replayed=0, quarantined=1, errors=0"
+    )
+    assert retry_dead_letter["receipt_totals"] == {
+        "inserted": 0,
+        "replayed": 0,
+        "quarantined": 1,
+        "errors": 0,
+    }
+    assert retry_dead_letter["identity_shape_errors"] == []
     assert report["source_scan_admission_report"]["status"] == "PASS"
     assert report["source_scan_admission_report"]["broad_glob_selected_files"] == [
         "포장실작업이벤트로그_admission.csv"

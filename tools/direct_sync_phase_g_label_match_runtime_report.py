@@ -31,6 +31,7 @@ from direct_sync_push import (  # noqa: E402
     RELAY_STATUS_PENDING,
     RELAY_STATUS_RETRY_WAIT,
     ProducerCredentials,
+    _server_source_file_id_from_metadata,
     build_source_file_plan,
     canonical_json,
     claim_next_relay_batch,
@@ -316,10 +317,7 @@ class EchoAcceptedSession(RuntimeLeaseFixtureSession):
             {
                 "request_id": f"request-{metadata['client_batch_id']}",
                 "client_batch_id": metadata["client_batch_id"],
-                "server_source_file_id": (
-                    f"{metadata['source_host_id']}/{metadata['producer_role']}/"
-                    f"{metadata['stream_name']}/{metadata['relative_path']}"
-                ),
+                "server_source_file_id": _server_source_file_id_from_metadata(metadata),
                 "committed": True,
                 "status": "accepted",
                 "projection_disposition": "COMPLETE",
@@ -1015,6 +1013,15 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
     review_config = _runtime_config(tmp_root, name="operator-review")
     review_source = _write_source_file(tmp_root / "operator-review")
     review_enqueued = enqueue_completed_source_file(review_config, source_file_path=review_source)
+    review_relay_id = review_enqueued["last_result"]["relay_id"]
+    with sqlite3.connect(review_config.db_path) as conn:
+        row = conn.execute(
+            "SELECT metadata_json FROM direct_sync_relay_batches WHERE relay_id = ?",
+            (review_relay_id,),
+        ).fetchone()
+    assert row is not None
+    review_plan_metadata = json.loads(str(row[0]))
+    assert isinstance(review_plan_metadata, dict)
     review_status = run_relay_once(
         review_config,
         session=FixedSession(
@@ -1022,11 +1029,8 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
                 200,
                 {
                     "request_id": "request-operator-review",
-                    "client_batch_id": review_enqueued["last_result"]["relay_id"],
-                    "server_source_file_id": (
-                        "label-match-phase-g-host/label_match/label_match_events/"
-                        f"{review_enqueued['last_result']['relative_path']}"
-                    ),
+                    "client_batch_id": review_plan_metadata["client_batch_id"],
+                    "server_source_file_id": _server_source_file_id_from_metadata(review_plan_metadata),
                     "committed": True,
                     "status": "accepted",
                     "projection_disposition": "COMPLETE",
@@ -1038,10 +1042,25 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
         ),
     )
     review_queue = relay_queue_status(review_config.db_path)
-    review_relay_id = ""
-    with sqlite3.connect(review_config.db_path) as conn:
-        row = conn.execute("SELECT relay_id FROM direct_sync_relay_batches LIMIT 1").fetchone()
-        review_relay_id = row[0] if row else ""
+    review_last_result = review_status.get("last_result")
+    review_last_result = review_last_result if isinstance(review_last_result, dict) else {}
+    review_error_code = str(review_status.get("error_code") or "")
+    review_error_message = str(review_status.get("error_message") or "")
+    raw_receipt_totals = review_last_result.get("receipt_totals")
+    review_receipt_totals = dict(raw_receipt_totals) if isinstance(raw_receipt_totals, dict) else {}
+    identity_shape_error_codes = {
+        "receipt_identity_mismatch",
+        "producer_receipt_invalid",
+        "producer_projection_incomplete",
+    }
+    review_identity_shape_errors = sorted(
+        error_code
+        for error_code in {
+            review_error_code,
+            str(review_last_result.get("error_code") or ""),
+        }
+        if error_code in identity_shape_error_codes
+    )
 
     permanent_config = _runtime_config(tmp_root, name="failed-permanent")
     permanent_source = _write_source_file(tmp_root / "failed-permanent")
@@ -1077,6 +1096,9 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
     ok = (
         review_status["status"] == "operator_review"
         and review_queue["counts"].get(RELAY_STATUS_OPERATOR_REVIEW) == 1
+        and review_error_code == "operator_review_required"
+        and review_receipt_totals.get("quarantined") == 1
+        and not review_identity_shape_errors
         and permanent_status["status"] == "failed_permanent"
         and permanent_queue["counts"].get(RELAY_STATUS_FAILED_PERMANENT) == 1
         and retried_permanent["status"] == "PASS"
@@ -1087,6 +1109,10 @@ def _retry_dead_letter_report(tmp_root: Path) -> dict:
         "scope": "local committed-conflict operator review and permanent failure dead-letter proof",
         "operator_review_status": review_status["status"],
         "operator_review_queue": review_queue,
+        "error_code": review_error_code,
+        "error_message": review_error_message,
+        "receipt_totals": review_receipt_totals,
+        "identity_shape_errors": review_identity_shape_errors,
         "failed_permanent_status": permanent_status["status"],
         "failed_permanent_queue": permanent_queue,
         "retry_dead_permanent_status": retried_permanent["status"],
