@@ -127,9 +127,16 @@ def test_capture_describe_path_matches_canonical_contract_without_rendering(caps
 
     described = json.loads(capsys.readouterr().out)
     assert described == capture.build_m7_external_capture_bundle_contract()
+    assert set(described) == {
+        "schema",
+        "app",
+        "required_state_ids",
+        "app_specific",
+    }
+    assert "app_id" not in described
     assert described["schema"] == "M7 external capture bundle v1"
     assert described["app"] == "Label_Match"
-    assert len(described["manifest_required_field_groups"]) == 8
+    assert len(described["app_specific"]["manifest_required_field_groups"]) == 8
 
 
 def test_capture_cli_rejects_missing_portable_artifact_before_rendering(capsys):

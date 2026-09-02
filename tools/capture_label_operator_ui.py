@@ -757,45 +757,47 @@ def build_m7_external_capture_bundle_contract() -> dict[str, Any]:
     return {
         "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
         "app": "Label_Match",
-        "canonical_contract": (
-            "E:/KMTech/production-readiness-20260830/HANDOVER/"
-            "CAPTURE-BUNDLE-V1-CONTRACT.md"
-        ),
-        "external_approval_location": M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION,
         "required_state_ids": list(M7_REQUIRED_STATE_IDS),
-        "manifest_required_field_groups": [
-            list(group) for group in M7_MANIFEST_FIELD_GROUPS
-        ],
-        "bundle_layout": {
-            "capture_set": "<bundle-id>/capture-set.json",
-            "manifest": "<bundle-id>/manifest.json",
-            "captures": "<bundle-id>/captures/",
-            "states": "<bundle-id>/states/",
-            "approval": "<bundle-id>/approval/",
-        },
-        "lookup": {
-            "start_at": M7_HANDOVER_INDEX,
-            "select": "app=Label_Match",
-            "external_index": (
-                "E:/requal-evidence/capture-bundle-v1/indexes/"
-                "handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json"
+        "app_specific": {
+            "canonical_contract": (
+                "E:/KMTech/production-readiness-20260830/HANDOVER/"
+                "CAPTURE-BUNDLE-V1-CONTRACT.md"
             ),
-            "manifest": (
-                "E:/requal-evidence/capture-bundle-v1/Label_Match/"
-                "<bundle-id>/manifest.json"
-            ),
-            "state_selector": "captures[].state_id",
-            "approval_required": True,
-        },
-        "tracked_images": "retained_historical_pending_external_replacement",
-        "repository_document_digest_values_allowed": False,
-        "release_capture_gate": {
-            "status": "BLOCKED_PRODUCT_DECISION",
-            "pending": list(M7_PRODUCT_DECISION_BLOCKERS),
-            "reason": (
-                "L-5 BROKEN fail-closed UI behavior and L-6 synchronous "
-                "generation fencing await product decisions"
-            ),
+            "external_approval_location": M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION,
+            "manifest_required_field_groups": [
+                list(group) for group in M7_MANIFEST_FIELD_GROUPS
+            ],
+            "bundle_layout": {
+                "capture_set": "<bundle-id>/capture-set.json",
+                "manifest": "<bundle-id>/manifest.json",
+                "captures": "<bundle-id>/captures/",
+                "states": "<bundle-id>/states/",
+                "approval": "<bundle-id>/approval/",
+            },
+            "lookup": {
+                "start_at": M7_HANDOVER_INDEX,
+                "select": "app=Label_Match",
+                "external_index": (
+                    "E:/requal-evidence/capture-bundle-v1/indexes/"
+                    "handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json"
+                ),
+                "manifest": (
+                    "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+                    "<bundle-id>/manifest.json"
+                ),
+                "state_selector": "captures[].state_id",
+                "approval_required": True,
+            },
+            "tracked_images": "retained_historical_pending_external_replacement",
+            "repository_document_digest_values_allowed": False,
+            "release_capture_gate": {
+                "status": "BLOCKED_PRODUCT_DECISION",
+                "pending": list(M7_PRODUCT_DECISION_BLOCKERS),
+                "reason": (
+                    "L-5 BROKEN fail-closed UI behavior and L-6 synchronous "
+                    "generation fencing await product decisions"
+                ),
+            },
         },
     }
 
@@ -1923,7 +1925,10 @@ def _m7_release_capture_gate_passed(manifest: Mapping[str, Any]) -> bool:
     contract = manifest.get("external_capture_bundle_contract")
     if not isinstance(contract, Mapping):
         return False
-    gate = contract.get("release_capture_gate")
+    app_specific = contract.get("app_specific")
+    if not isinstance(app_specific, Mapping):
+        return False
+    gate = app_specific.get("release_capture_gate")
     if not isinstance(gate, Mapping):
         return False
     return gate.get("status") == "PASS"
@@ -8077,7 +8082,7 @@ def run_capture_matrix(
             and round_trip_ok,
             "release_capture_gate_status": details[
                 "external_capture_bundle_contract"
-            ]["release_capture_gate"]["status"],
+            ]["app_specific"]["release_capture_gate"]["status"],
         }
         details["matrix_complete"] = (
             len(details["capture_records"]) == expected_count

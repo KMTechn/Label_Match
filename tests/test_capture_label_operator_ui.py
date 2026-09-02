@@ -201,16 +201,24 @@ def test_manifest_contract_captures_only_persistent_cancellation_conflict():
 
 def test_m7_external_bundle_manifest_schema_is_explicit_and_release_blocked():
     contract = build_m7_external_capture_bundle_contract()
+    assert set(contract) == {
+        "schema",
+        "app",
+        "required_state_ids",
+        "app_specific",
+    }
+    assert "app_id" not in contract
 
     assert contract["schema"] == M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA
-    assert contract["external_approval_location"] == (
+    app_specific = contract["app_specific"]
+    assert app_specific["external_approval_location"] == (
         M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION
     )
     assert tuple(contract["required_state_ids"]) == M7_REQUIRED_STATE_IDS
-    assert contract["manifest_required_field_groups"] == [
+    assert app_specific["manifest_required_field_groups"] == [
         list(group) for group in M7_MANIFEST_FIELD_GROUPS
     ]
-    assert contract["lookup"] == {
+    assert app_specific["lookup"] == {
         "start_at": M7_HANDOVER_INDEX,
         "select": "app=Label_Match",
         "external_index": (
@@ -224,8 +232,8 @@ def test_m7_external_bundle_manifest_schema_is_explicit_and_release_blocked():
         "state_selector": "captures[].state_id",
         "approval_required": True,
     }
-    assert contract["repository_document_digest_values_allowed"] is False
-    gate = contract["release_capture_gate"]
+    assert app_specific["repository_document_digest_values_allowed"] is False
+    gate = app_specific["release_capture_gate"]
     assert gate["status"] == "BLOCKED_PRODUCT_DECISION"
     assert tuple(gate["pending"]) == M7_PRODUCT_DECISION_BLOCKERS == ("L-5", "L-6")
     manifest = {
@@ -4346,7 +4354,10 @@ def test_privacy_failure_manifest_discards_original_sensitive_keys_and_values():
 
 def test_cleanup_contract_is_part_of_approval_eligibility():
     passed_contract = build_m7_external_capture_bundle_contract()
-    passed_contract["release_capture_gate"] = {"status": "PASS", "pending": []}
+    passed_contract["app_specific"]["release_capture_gate"] = {
+        "status": "PASS",
+        "pending": [],
+    }
     successful = {
         "external_capture_bundle_contract": passed_contract,
         "matrix_complete": True,
@@ -4365,7 +4376,9 @@ def test_cleanup_contract_is_part_of_approval_eligibility():
     assert missing_contract["approval_eligible"] is False
 
     malformed_contract = {
-        "external_capture_bundle_contract": {"release_capture_gate": "PASS"},
+        "external_capture_bundle_contract": {
+            "app_specific": {"release_capture_gate": "PASS"}
+        },
         "matrix_complete": True,
         "approval_eligible": True,
         "summary": {"passed": True},
