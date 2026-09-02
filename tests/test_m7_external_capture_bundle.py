@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 from PIL import Image
@@ -15,10 +17,17 @@ from tools import publish_outline_user_manual as publisher
 
 APP_COMMIT = "a" * 40
 APP_TREE = "b" * 40
-ARTIFACT_SHA256 = "c" * 64
 TOOL_COMMIT = "d" * 40
 TOOL_BLOB_SHA256 = "e" * 64
 GENERATED_AT = "2026-09-03T01:02:03Z"
+BUNDLE_ID = "Label_Match__aaaaaaaaaaaa__20260903T010203Z__1234abcd"
+ARTIFACT_FILE = "artifacts/Label_Match.zip"
+ARTIFACT_BYTES = b"synthetic portable Label_Match artifact\n"
+ARTIFACT_SHA256 = hashlib.sha256(ARTIFACT_BYTES).hexdigest()
+VALIDATOR = Path(
+    "E:/KMTech/production-readiness-20260830/HANDOVER/tools/"
+    "validate_capture_bundle_v1.py"
+)
 
 
 def _png_bytes(size: tuple[int, int] = (2, 2)) -> bytes:
@@ -27,11 +36,16 @@ def _png_bytes(size: tuple[int, int] = (2, 2)) -> bytes:
     return stream.getvalue()
 
 
-def _capture_inputs(payload: bytes) -> list[dict[str, object]]:
+def _capture_inputs(
+    payload: bytes, *, bundle_id: str = BUNDLE_ID
+) -> list[dict[str, object]]:
     return [
         {
             "state_id": state_id,
-            "image_file": f"captures/{state_id}__2x2__96dpi.png",
+            "image_file": (
+                f"Label_Match/{bundle_id}/captures/"
+                f"{state_id}__2x2__96dpi.png"
+            ),
             "image_bytes": payload,
             "viewport": {"width_px": 2, "height_px": 2},
             "dpi": 96,
@@ -41,17 +55,42 @@ def _capture_inputs(payload: bytes) -> list[dict[str, object]]:
     ]
 
 
-def _manifest(payload: bytes, *, approval=None, app_specific=None):
-    return capture.build_m7_external_capture_manifest(
+def _materialize(
+    tmp_path: Path,
+    *,
+    app_specific: dict[str, object] | None = None,
+    captures: list[dict[str, object]] | None = None,
+    forbidden_name: str | None = None,
+    approver: str = capture.M7_APPROVAL_PLACEHOLDER,
+    custodian: str = capture.M7_APPROVAL_PLACEHOLDER,
+    custody_location: str = capture.M7_APPROVAL_PLACEHOLDER,
+    retention_period: str = capture.M7_APPROVAL_PLACEHOLDER,
+) -> dict[str, object]:
+    evidence_root = tmp_path / "evidence"
+    artifact = evidence_root / ARTIFACT_FILE
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(ARTIFACT_BYTES)
+    if forbidden_name is not None:
+        (evidence_root / forbidden_name).write_text("mutable alias\n", encoding="utf-8")
+    return capture.materialize_m7_external_capture_bundle(
+        evidence_root=evidence_root,
+        bundle_id=BUNDLE_ID,
         app_commit=APP_COMMIT,
         app_tree=APP_TREE,
-        portable_artifact_file="portable/Label_Match.zip",
+        portable_artifact_file=ARTIFACT_FILE,
         portable_artifact_sha256=ARTIFACT_SHA256,
         capture_tool_commit=TOOL_COMMIT,
         capture_tool_blob_sha256=TOOL_BLOB_SHA256,
-        captures=_capture_inputs(payload),
-        approval=approval,
+        captures=captures if captures is not None else _capture_inputs(_png_bytes()),
         app_specific=app_specific,
+        approver=approver,
+        custodian=custodian,
+        custody_location=custody_location,
+        retention_period=retention_period,
+        index_generated_at=capture.dt.datetime(
+            2026, 9, 3, 1, 2, 4, tzinfo=capture.dt.timezone.utc
+        ),
+        index_nonce="87654321",
     )
 
 
@@ -65,9 +104,18 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def test_capture_manifest_builder_uses_all_eight_canonical_groups_from_png_bytes():
-    payload = _png_bytes()
-    manifest = _manifest(payload, app_specific={"diagnostic": "kept below root"})
+def test_capture_bundle_writer_materializes_exact_canonical_document_topology(
+    tmp_path,
+):
+    result = _materialize(
+        tmp_path, app_specific={"diagnostic": "kept below root"}
+    )
+    evidence_root = result["evidence_root"]
+    bundle_root = result["bundle_root"]
+    manifest = result["manifest"]
+    capture_set = json.loads(
+        result["capture_set_path"].read_text(encoding="utf-8")
+    )
 
     assert set(manifest) == {
         "schema",
@@ -83,7 +131,7 @@ def test_capture_manifest_builder_uses_all_eight_canonical_groups_from_png_bytes
     assert manifest["app"] == "Label_Match"
     assert manifest["app_source"] == {"commit": APP_COMMIT, "tree": APP_TREE}
     assert manifest["portable_artifact"] == {
-        "file": "portable/Label_Match.zip",
+        "file": ARTIFACT_FILE,
         "sha256": ARTIFACT_SHA256,
     }
     assert manifest["capture_tool"] == {
@@ -96,15 +144,127 @@ def test_capture_manifest_builder_uses_all_eight_canonical_groups_from_png_bytes
         capture.M7_REQUIRED_STATE_IDS
     )
     assert all(
-        entry["image_sha256"] == _sha256_bytes(payload)
+        set(entry)
+        == {
+            "state_id",
+            "viewport",
+            "dpi",
+            "generated_at",
+            "image_file",
+            "image_sha256",
+            "state_manifest_file",
+            "state_manifest_sha256",
+        }
         and entry["viewport"] == {"width_px": 2, "height_px": 2}
         and entry["dpi"] == 96
         and entry["generated_at"] == GENERATED_AT
         for entry in manifest["captures"]
     )
     assert manifest["approval"]["approver"] == capture.M7_APPROVAL_PLACEHOLDER
+    assert all(
+        len(manifest["approval"][key]) == 64
+        for key in ("approval_receipt_sha256", "custody_receipt_sha256")
+    )
     assert manifest["app_specific"] == {"diagnostic": "kept below root"}
+    assert "bundle_id" not in manifest
     assert "schema_version" not in manifest
+    assert set(capture_set) == {
+        "schema",
+        "app",
+        "bundle_id",
+        "app_source",
+        "portable_artifact",
+        "capture_tool",
+        "captures",
+        "app_specific",
+    }
+    assert capture_set["bundle_id"] == BUNDLE_ID
+    for key in (
+        "schema",
+        "app",
+        "app_source",
+        "portable_artifact",
+        "capture_tool",
+        "captures",
+        "app_specific",
+    ):
+        assert capture_set[key] == manifest[key]
+
+    for item in manifest["captures"]:
+        state_path = evidence_root.joinpath(*item["state_manifest_file"].split("/"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert set(state) == {
+            "schema",
+            "app",
+            "bundle_id",
+            "state_id",
+            "viewport",
+            "dpi",
+            "generated_at",
+            "image_file",
+            "image_sha256",
+        }
+        assert state["bundle_id"] == BUNDLE_ID
+        assert state["state_id"] == item["state_id"]
+        assert _sha256_bytes(state_path.read_bytes()) == item[
+            "state_manifest_sha256"
+        ]
+
+    approval_receipt = json.loads(
+        result["approval_receipt_path"].read_text(encoding="utf-8")
+    )
+    custody_receipt = json.loads(
+        result["custody_receipt_path"].read_text(encoding="utf-8")
+    )
+    assert set(approval_receipt) == {
+        "schema",
+        "app",
+        "bundle_id",
+        "capture_set_file",
+        "capture_set_sha256",
+        "approver",
+    }
+    assert set(custody_receipt) == {
+        "schema",
+        "app",
+        "bundle_id",
+        "capture_set_file",
+        "capture_set_sha256",
+        "approval_receipt_file",
+        "approval_receipt_sha256",
+        "custodian",
+        "custody_location",
+        "retention_period",
+    }
+    capture_set_sha256 = _sha256_bytes(result["capture_set_path"].read_bytes())
+    assert approval_receipt["capture_set_sha256"] == capture_set_sha256
+    assert custody_receipt["capture_set_sha256"] == capture_set_sha256
+    assert custody_receipt["approval_receipt_sha256"] == _sha256_bytes(
+        result["approval_receipt_path"].read_bytes()
+    )
+    assert manifest["approval"]["custody_receipt_sha256"] == _sha256_bytes(
+        result["custody_receipt_path"].read_bytes()
+    )
+
+    index = json.loads(result["index_path"].read_text(encoding="utf-8"))
+    assert result["index_path"].name == (
+        "handover-index__20260903T010204Z__87654321.json"
+    )
+    assert set(index) == {"schema", "manifests"}
+    assert index["manifests"] == [
+        {
+            "app": "Label_Match",
+            "manifest_file": f"Label_Match/{BUNDLE_ID}/manifest.json",
+            "manifest_sha256": _sha256_bytes(result["manifest_path"].read_bytes()),
+        }
+    ]
+    assert {path.name for path in bundle_root.iterdir()} == {
+        "capture-set.json",
+        "manifest.json",
+        "captures",
+        "states",
+        "approval",
+    }
 
 
 def test_capture_manifest_builder_requires_portable_artifact_identity_before_rendering():
@@ -112,14 +272,165 @@ def test_capture_manifest_builder_requires_portable_artifact_identity_before_ren
         capture.CaptureBundleContractError, match="PORTABLE_ARTIFACT_REQUIRED"
     ):
         capture.build_m7_external_capture_manifest(
+            bundle_id=BUNDLE_ID,
             app_commit=APP_COMMIT,
             app_tree=APP_TREE,
             portable_artifact_file="",
             portable_artifact_sha256="",
             capture_tool_commit=TOOL_COMMIT,
             capture_tool_blob_sha256=TOOL_BLOB_SHA256,
-            captures=_capture_inputs(_png_bytes()),
+            captures=(),
         )
+
+
+def test_capture_bundle_writer_seals_receipts_before_final_manifest_and_index(
+    monkeypatch, tmp_path
+):
+    writes: list[str] = []
+    evidence_root = (tmp_path / "evidence").resolve()
+    real_bytes_writer = capture._write_create_new_bytes
+    real_json_writer = capture._write_create_new_json
+
+    def record(path: Path) -> None:
+        writes.append(path.resolve().relative_to(evidence_root).as_posix())
+
+    def write_bytes(path: Path, payload: bytes) -> None:
+        record(path)
+        real_bytes_writer(path, payload)
+
+    def write_json(path: Path, value) -> None:
+        record(path)
+        real_json_writer(path, value)
+
+    monkeypatch.setattr(capture, "_write_create_new_bytes", write_bytes)
+    monkeypatch.setattr(capture, "_write_create_new_json", write_json)
+
+    result = _materialize(tmp_path)
+
+    image_writes = [
+        f"Label_Match/{BUNDLE_ID}/captures/{state_id}__2x2__96dpi.png"
+        for state_id in capture.M7_REQUIRED_STATE_IDS
+    ]
+    state_writes = [
+        f"Label_Match/{BUNDLE_ID}/states/{state_id}__2x2__96dpi.json"
+        for state_id in capture.M7_REQUIRED_STATE_IDS
+    ]
+    assert writes[:9] == image_writes
+    assert writes[9:18] == state_writes
+    assert writes[18:] == [
+        f"Label_Match/{BUNDLE_ID}/capture-set.json",
+        f"Label_Match/{BUNDLE_ID}/approval/approval-receipt.json",
+        f"Label_Match/{BUNDLE_ID}/approval/custody-receipt.json",
+        f"Label_Match/{BUNDLE_ID}/manifest.json",
+        "indexes/handover-index__20260903T010204Z__87654321.json",
+    ]
+    assert result["manifest_path"].is_file()
+
+
+def test_capture_bundle_writer_rejects_forbidden_latest_before_bundle_creation(
+    tmp_path,
+):
+    with pytest.raises(
+        capture.CaptureBundleContractError,
+        match="INVALID_EVIDENCE_ROOT_TOPOLOGY",
+    ):
+        _materialize(tmp_path, forbidden_name="latest.json")
+
+    assert not (tmp_path / "evidence" / "Label_Match").exists()
+
+
+def test_capture_bundle_writer_checks_lexical_evidence_root_before_resolving(
+    monkeypatch, tmp_path
+):
+    evidence_root = (tmp_path / "evidence").resolve()
+    real_redirect_check = capture._is_reparse_or_symlink
+
+    def redirect_check(path: Path) -> bool:
+        return Path(path) == evidence_root or real_redirect_check(path)
+
+    monkeypatch.setattr(capture, "_is_reparse_or_symlink", redirect_check)
+
+    with pytest.raises(
+        capture.CaptureBundleContractError, match="INVALID_BUNDLE_LOCATION"
+    ):
+        _materialize(tmp_path)
+
+    assert not (evidence_root / "Label_Match").exists()
+
+
+def test_capture_bundle_writer_rejects_incomplete_state_set_before_bundle_creation(
+    tmp_path,
+):
+    incomplete = _capture_inputs(_png_bytes())[:-1]
+
+    with pytest.raises(
+        capture.CaptureBundleContractError, match="INVALID_CAPTURE_STATE_SET"
+    ):
+        _materialize(tmp_path, captures=incomplete)
+
+    assert not (tmp_path / "evidence" / "Label_Match").exists()
+
+
+def test_capture_bundle_writer_never_seals_final_manifest_after_receipt_io_failure(
+    monkeypatch, tmp_path
+):
+    real_json_writer = capture._write_create_new_json
+
+    def fail_custody(path: Path, value) -> None:
+        if path.name == "custody-receipt.json":
+            raise OSError("synthetic custody write failure")
+        real_json_writer(path, value)
+
+    monkeypatch.setattr(capture, "_write_create_new_json", fail_custody)
+
+    with pytest.raises(capture.CaptureBundleContractError, match="BUNDLE_WRITE_FAILED"):
+        _materialize(tmp_path)
+
+    bundle_root = tmp_path / "evidence" / "Label_Match" / BUNDLE_ID
+    assert (bundle_root / "capture-set.json").is_file()
+    assert (bundle_root / "approval" / "approval-receipt.json").is_file()
+    assert not (bundle_root / "approval" / "custody-receipt.json").exists()
+    assert not (bundle_root / "manifest.json").exists()
+    assert not (tmp_path / "evidence" / "indexes").exists()
+
+
+def test_synthetic_png_bundle_passes_canonical_validator_as_approval_pending(
+    tmp_path, capsys
+):
+    assert VALIDATOR.is_file(), f"canonical validator is missing: {VALIDATOR}"
+    result = _materialize(tmp_path)
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(VALIDATOR),
+            str(result["index_path"]),
+            "--app",
+            "Label_Match",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+    print(completed.stdout, end="")
+
+    report = json.loads(completed.stdout)
+    assert completed.stderr == ""
+    assert completed.returncode == 3
+    assert report["result"] == "APPROVAL_PENDING"
+    assert report["exit_code"] == 3
+    assert report["summary"]["FAIL"] == 0
+    assert report["summary"]["APPROVAL_PENDING"] == 5
+    assert {
+        check["reason_code"]
+        for check in report["checks"]
+        if check["status"] == "APPROVAL_PENDING"
+    } == {"ORGANIZATION_PLACEHOLDER"}
 
 
 def test_capture_describe_path_matches_canonical_contract_without_rendering(capsys):
@@ -137,6 +448,10 @@ def test_capture_describe_path_matches_canonical_contract_without_rendering(caps
     assert described["schema"] == "M7 external capture bundle v1"
     assert described["app"] == "Label_Match"
     assert len(described["app_specific"]["manifest_required_field_groups"]) == 8
+    assert all(
+        path.startswith("Label_Match/<bundle-id>/")
+        for path in described["app_specific"]["bundle_layout"].values()
+    )
 
 
 def test_capture_cli_rejects_missing_portable_artifact_before_rendering(capsys):
@@ -181,7 +496,7 @@ def test_capture_identity_measurement_uses_git_and_exact_tool_blob(tmp_path):
 
 def _write_approved_bundle(tmp_path: Path) -> tuple[Path, str, bytes]:
     payload = _png_bytes()
-    bundle_id = "Label_Match__aaaaaaaaaaaa__20260903T010203Z__1234abcd"
+    bundle_id = BUNDLE_ID
     bundle_root = tmp_path / "Label_Match" / bundle_id
     for name in ("captures", "states", "approval"):
         (bundle_root / name).mkdir(parents=True, exist_ok=True)
@@ -208,7 +523,33 @@ def _write_approved_bundle(tmp_path: Path) -> tuple[Path, str, bytes]:
         "custody_receipt_file": "approval/custody-receipt.json",
         "custody_receipt_sha256": _sha256_bytes(custody_receipt),
     }
-    manifest = _manifest(payload, approval=approval)
+    captures = [
+        {
+            "state_id": state_id,
+            "viewport": {"width_px": 2, "height_px": 2},
+            "dpi": 96,
+            "generated_at": GENERATED_AT,
+            "image_file": f"captures/{state_id}__2x2__96dpi.png",
+            "image_sha256": _sha256_bytes(payload),
+        }
+        for state_id in capture.M7_REQUIRED_STATE_IDS
+    ]
+    manifest = {
+        "schema": capture.M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+        "app": "Label_Match",
+        "app_source": {"commit": APP_COMMIT, "tree": APP_TREE},
+        "portable_artifact": {
+            "file": ARTIFACT_FILE,
+            "sha256": ARTIFACT_SHA256,
+        },
+        "capture_tool": {
+            "path": capture.M7_CAPTURE_TOOL_PATH,
+            "commit": TOOL_COMMIT,
+            "blob_sha256": TOOL_BLOB_SHA256,
+        },
+        "captures": captures,
+        "approval": approval,
+    }
     for entry in manifest["captures"]:
         (bundle_root / entry["image_file"]).write_bytes(payload)
     capture_set = {

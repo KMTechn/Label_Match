@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import importlib
 import importlib.abc
 import importlib.machinery
@@ -4283,6 +4284,10 @@ def test_matrix_restores_environment_when_initialization_fails(
     output_base = tmp_path / "external-captures"
     source_root.mkdir()
     output_base.mkdir()
+    artifact_path = tmp_path / "artifacts" / "Label_Match.zip"
+    artifact_path.parent.mkdir()
+    artifact_path.write_bytes(b"synthetic portable artifact\n")
+    artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
     monkeypatch.setattr(capture, "CAPTURE_OUTPUT_BASE", output_base)
     app_commit = "a" * 40
     monkeypatch.setattr(
@@ -4319,20 +4324,22 @@ def test_matrix_restores_environment_when_initialization_fails(
             nonce="1234abcd",
         ),
         source_root=source_root,
-        expected_source_commit="deadbeef",
-        expected_source_tree="cafebabe",
-        portable_artifact_file="portable/Label_Match.zip",
-        portable_artifact_sha256="e" * 64,
+        expected_source_commit=app_commit,
+        expected_source_tree="b" * 40,
+        portable_artifact_file="artifacts/Label_Match.zip",
+        portable_artifact_sha256=artifact_sha256,
     )
 
-    assert manifest_path.is_file()
+    assert not manifest_path.exists()
     details = manifest["app_specific"]
     assert details["summary"]["passed"] is False
     assert "fixture initialization failed" in details["summary"]["fatal_error"]
     assert details["environment_restore"]["status"] == "PASS"
     assert details["cleanup_contract"]["status"] == "PASS"
     assert details["approval_eligible"] is False
-    assert (manifest_path.parent / "capture-set.json").is_file()
+    assert details["bundle_materialization"]["status"] == "NOT_SEALED"
+    assert not (manifest_path.parent / "capture-set.json").exists()
+    assert not list((manifest_path.parent / "approval").iterdir())
     assert os.environ["COMPUTERNAME"] == "REAL-HOST-88"
     assert (
         os.environ["LABEL_MATCH_CAPTURE_STARTUP_GEOMETRY"]
