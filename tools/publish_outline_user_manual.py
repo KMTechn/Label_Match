@@ -28,6 +28,7 @@ DEFAULT_ASSET_DIR = ROOT / "docs" / "assets" / ASSET_FOLDER
 DEFAULT_OUTLINE_URL = "https://wiki.kmtecherp.com"
 DEFAULT_DOCUMENT_ID = "4115be8b-488a-4934-80af-f0f9e4ee721b"
 DEFAULT_TITLE = "Label_Match(포장실 프로그램)"
+M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA = "M7 external capture bundle v1"
 ASSET_PREFIX = f"assets/{ASSET_FOLDER}/"
 EXPECTED_UNIQUE_WORKER_IMAGES = 17
 EXPECTED_MARKDOWN_IMAGE_REFS = 17
@@ -200,6 +201,15 @@ def _rows_sha256(rows: Any) -> str:
     return hashlib.sha256(
         json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _enforce_current_capture_publish_contract() -> None:
+    """Keep the legacy tracked-image publisher fail-closed for M7."""
+
+    raise RuntimeError(
+        f"legacy tracked-image publishing is disabled; "
+        f"{M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA} approval validation is required"
+    )
 
 
 def _validate_capture_manifest(asset_dir: Path, unique_links: list[str]) -> dict[str, Any]:
@@ -708,6 +718,7 @@ def main(argv: list[str] | None = None) -> int:
     outline_url, token = _load_outline_config(args)
 
     try:
+        _enforce_current_capture_publish_contract()
         if args.dry_run:
             normalized_outline_url, normalized_outline_origin = _validate_outline_base_url(outline_url)
             _, report = _build_outline_text(manual_path, asset_dir)

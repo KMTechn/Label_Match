@@ -18,13 +18,40 @@
 > **현재 게시 판정: `DENY` (2026-07-20).** 아래 `faaca1c` commit/tree와
 > 2026-07-16 캡처 항목은 완료된 현행 패킷이 아니라 보존된 캡처 계약입니다.
 > 참조 폴더가 현재 저장소에 없으므로 게시 도구는 `manifest.json` 누락으로
-> fail-closed 합니다. 최종 `main`의 정확한 commit/tree로 34개 원본·주석
-> 이미지를 다시 만들고 모든 계약 검사를 통과하기 전에는 게시·태그·릴리스할
-> 수 없습니다.
+> fail-closed 합니다. 이 tracked v2 경로를 새 현행 이미지로 다시 만들지 않습니다.
+> M7 화면은 아래 `M7 external capture bundle v1` 계약으로만 승인하며, 그 전에는
+> 게시·태그·릴리스할 수 없습니다.
 
-> 현재 UI 계약은 `현품표/이적 QR + QA 제품 샘플 3개 + 최종 라벨지 = 5단계`입니다. sealed 이적 QR 경로는 물리 스캔도 5회이고, PHS=2 + F4 경로는 전량 N개를 별도로 스캔하므로 물리 스캔이 N+5회입니다.
+> 아래 이력 캡처 당시 UI 계약은 `현품표/이적 QR + QA 제품 샘플 3개 + 최종 라벨지 = 5단계`였습니다. 이는 현재 PHS2 1회 + 선택 F4 + F3 표준이 아닙니다.
 
 이 파일은 작업자 본문이 아니라 OUTLINE 게시자와 관리자 확인용입니다. 2026-07-16 작업에서는 로컬 원고와 게시 도구만 준비하며, 별도 게시 승인이 있기 전에는 OUTLINE에 쓰기 요청을 보내지 않습니다.
+
+## 0. 현행 M7 외부 캡처 계약
+
+- schema: `M7 external capture bundle v1`
+- 외부 승인 위치:
+  `<M7 handover evidence root>/capture-bundles/Label_Match/` (앱 저장소·release
+  packet 밖)
+- 필수 state ID:
+  `phs2_admitted_busy`, `phs2_rejected_input_preserved`,
+  `f4_admitted_busy`, `f4_rejected_input_preserved`,
+  `f3_admitted_busy`, `f3_rejected_input_preserved`,
+  `central_submission_wait`, `central_submission_conflict`,
+  `broken_fail_closed_warning`
+- 조회: `<M7 handover evidence root>/handover-index.json`의
+  `app_id=Label_Match` → `capture-bundles/Label_Match/manifest.json` →
+  `captures[].state_id`
+- 승인 조건: manifest의 app commit/tree, portable artifact SHA-256, capture tool
+  commit/blob SHA-256, viewport/DPI, 생성 시각, image SHA-256, 승인자·보관 receipt가
+  결합되고 release capture gate가 PASS여야 합니다.
+
+아직 없는 digest 값과 나중에 생성될 digest 값은 이 문서나 OUTLINE 원고에 다시
+쓰지 않습니다. 아래 2026-07-16 tracked 이미지와 게시 절차는 삭제하지 않고 이력
+재현용으로 보존하며, 현행 화면은 external bundle로 대체 예정입니다. `L-5`와
+`L-6`가 제품 판정 대기인 동안 `broken_fail_closed_warning`을 정상으로 위조하지
+않고 release capture를 차단합니다. 기존 `tools/publish_outline_user_manual.py`도
+external bundle 승인 검증이 구현되기 전까지 legacy tracked-image 게시를
+fail-closed 합니다.
 
 ## 1. 게시 대상
 

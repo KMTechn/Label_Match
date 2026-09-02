@@ -12,7 +12,7 @@ import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -21,6 +21,7 @@ from tools import capture_label_operator_ui as capture
 from tools.capture_label_operator_ui import (
     APPLICATION_STARTUP_PATH,
     AUTHORITATIVE_CAPTURE_SOURCE,
+    BASELINE_STATE_IDS,
     CANCEL_BUTTON_ALIASES,
     CANCELLATION_CONFLICT_COUNT,
     CANCELLATION_CONFLICT_MESSAGE,
@@ -31,6 +32,11 @@ from tools.capture_label_operator_ui import (
     DEFAULT_SIZES,
     DEFAULT_STATE_IDS,
     MAX_SCALE,
+    M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION,
+    M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+    M7_PRODUCT_DECISION_BLOCKERS,
+    M7_REQUIRED_STATE_IDS,
+    M7_STATE_CONTRACT,
     MIN_SCALE,
     REQUIRED_WIDGET_ATTRS,
     TARGET_DISPLAY_DEVICE,
@@ -42,6 +48,7 @@ from tools.capture_label_operator_ui import (
     apply_cross_capture_contracts,
     assert_descendant,
     build_parser,
+    build_m7_external_capture_bundle_contract,
     build_presenter_view,
     build_state_fixtures,
     compare_layout_signatures,
@@ -53,6 +60,7 @@ from tools.capture_label_operator_ui import (
     evaluate_middle_ellipsis_fit,
     expected_scan_tree_mapping,
     expected_presenter_rows,
+    m7_preserved_input_value,
     parse_scale,
     parse_sizes,
     parse_states,
@@ -78,7 +86,7 @@ def test_default_capture_matrix_covers_required_sizes_states_and_scale():
         (2560, 1080),
         (2560, 1392),
     )
-    assert DEFAULT_STATE_IDS == (
+    assert BASELINE_STATE_IDS == (
         "waiting",
         "qa_master",
         "exact_first",
@@ -96,6 +104,18 @@ def test_default_capture_matrix_covers_required_sizes_states_and_scale():
         "history_readonly",
         "submission_blocked",
     )
+    assert M7_REQUIRED_STATE_IDS == (
+        "phs2_admitted_busy",
+        "phs2_rejected_input_preserved",
+        "f4_admitted_busy",
+        "f4_rejected_input_preserved",
+        "f3_admitted_busy",
+        "f3_rejected_input_preserved",
+        "central_submission_wait",
+        "central_submission_conflict",
+        "broken_fail_closed_warning",
+    )
+    assert DEFAULT_STATE_IDS == (*BASELINE_STATE_IDS, *M7_REQUIRED_STATE_IDS)
     assert DEFAULT_SCALE == 1.0
 
 
@@ -128,7 +148,7 @@ def test_cli_parsers_validate_deduplicate_and_keep_korean_multiplication_mark():
             parse_work_area(value)
 
 
-def test_programmatic_matrix_requires_all_five_sizes_all_sixteen_states_once():
+def test_programmatic_matrix_requires_all_five_sizes_all_twenty_five_states_once():
     sizes, states = validate_capture_matrix_request(
         tuple(reversed(DEFAULT_SIZES)), tuple(reversed(DEFAULT_STATE_IDS))
     )
@@ -169,7 +189,7 @@ def test_manifest_contract_captures_only_persistent_cancellation_conflict():
         assert "messagebox" in metadata["runtime_surface"]
         assert "root-only visible capture" in metadata["reason"]
         assert "PrintWindow" not in metadata["reason"]
-    assert CAPTURE_MANIFEST_SCHEMA_VERSION == 6
+    assert CAPTURE_MANIFEST_SCHEMA_VERSION == 7
     assert APPLICATION_STARTUP_PATH == "disabled_for_inprocess_matrix"
     with pytest.raises(RuntimeError, match="cannot be persistent captures"):
         validate_cancellation_surface_capture_contract(
@@ -177,7 +197,38 @@ def test_manifest_contract_captures_only_persistent_cancellation_conflict():
         )
 
 
+def test_m7_external_bundle_manifest_schema_is_explicit_and_release_blocked():
+    contract = build_m7_external_capture_bundle_contract()
+
+    assert contract["schema"] == M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA
+    assert contract["external_approval_location"] == (
+        M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION
+    )
+    assert tuple(contract["required_state_ids"]) == M7_REQUIRED_STATE_IDS
+    assert contract["lookup"] == {
+        "start_at": "<M7 handover evidence root>/handover-index.json",
+        "select": "app_id=Label_Match",
+        "manifest": "capture-bundles/Label_Match/manifest.json",
+        "state_selector": "captures[].state_id",
+        "approval_required": True,
+    }
+    assert contract["repository_document_digest_values_allowed"] is False
+    gate = contract["release_capture_gate"]
+    assert gate["status"] == "BLOCKED_PRODUCT_DECISION"
+    assert tuple(gate["pending"]) == M7_PRODUCT_DECISION_BLOCKERS == ("L-5", "L-6")
+    manifest = {
+        "external_capture_bundle_contract": contract,
+        "summary": {"passed": True},
+        "matrix_complete": True,
+        "approval_eligible": True,
+    }
+    capture.record_cleanup_contract(manifest, ())
+    assert manifest["approval_eligible"] is False
+
+
 def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
+    from Label_Match import _label_match_parse_compact_phs2
+
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
 
     assert tuple(fixtures) == DEFAULT_STATE_IDS
@@ -228,6 +279,29 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     assert len(
         [line for line in fixtures["error"].error_message.splitlines() if line.strip()]
     ) == 4
+    for state_id in M7_REQUIRED_STATE_IDS:
+        fixture = fixtures[state_id]
+        assert fixture.central_inherit_all is True
+        assert state_id in M7_STATE_CONTRACT
+    for state_id in M7_REQUIRED_STATE_IDS[2:-1]:
+        raw = fixtures[state_id].qa_scans[0]
+        assert raw.split("|") == [
+            "PHS=2",
+            "SRC=KMTECH_INPUT_TAG",
+            "ITG=ITG-M7-ACTIVE",
+            f"CLC={capture.CAPTURE_ITEM_CODE}",
+            "LBL=LBL-M7-ACTIVE",
+            raw.split("|")[-1],
+        ]
+        assert len(raw.split("|")[-1].removeprefix("HSH=")) == 16
+        assert _label_match_parse_compact_phs2(raw) == {
+            "PHS": "2",
+            "SRC": "KMTECH_INPUT_TAG",
+            "ITG": "ITG-M7-ACTIVE",
+            "CLC": capture.CAPTURE_ITEM_CODE,
+            "LBL": "LBL-M7-ACTIVE",
+            "HSH": raw.rsplit("HSH=", 1)[1],
+        }
 
 
 def test_only_the_state_selected_live_scan_tree_is_mapping_critical():
@@ -329,7 +403,88 @@ def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
     assert app._package_cancellation_review_rows == ()
 
 
+def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys):
+    from Label_Match import Label_Match
+
+    class MemoryWidget:
+        def __init__(self, *, text="", state="normal"):
+            self.options = {"text": text, "state": state}
+            self.value = ""
+
+        def cget(self, key):
+            return self.options.get(key, "")
+
+        def configure(self, **changes):
+            self.options.update(changes)
+
+        config = configure
+
+        def delete(self, *_args):
+            self.value = ""
+
+        def insert(self, _index, value):
+            self.value = str(value)
+
+        def get(self):
+            return self.value
+
+    app = SimpleNamespace(
+        current_set_info={},
+        operator_workbench_ready=False,
+        _workflow_widgets_ready=False,
+        entry=MemoryWidget(),
+        big_display_label=MemoryWidget(),
+        status_label=MemoryWidget(),
+        _render_operator_workbench=lambda: None,
+        _retry_blocked_submission=lambda: None,
+        _ui_lane_diagnostic_text=lambda error: type(error).__name__,
+    )
+    app.update_big_display = lambda text, _color: app.big_display_label.configure(
+        text=text
+    )
+    app._refresh_operator_workbench = MethodType(
+        Label_Match._refresh_operator_workbench, app
+    )
+    for method_name in {
+        name
+        for spec in M7_STATE_CONTRACT.values()
+        for name in spec["production_call_path"]
+    }:
+        setattr(
+            app,
+            method_name,
+            MethodType(getattr(Label_Match, method_name), app),
+        )
+    fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+
+    for state_id in M7_REQUIRED_STATE_IDS:
+        _view, refresh_method = apply_state_fixture(app, fixtures[state_id])
+        receipt = app._capture_m7_transition_receipt
+        expected_path = list(M7_STATE_CONTRACT[state_id]["production_call_path"])
+
+        assert refresh_method == "_refresh_operator_workbench"
+        assert receipt["state_id"] == state_id
+        assert receipt["presenter_call_path"] == (
+            "Label_Match.Label_Match._refresh_operator_workbench"
+        )
+        assert receipt["production_call_path"] == expected_path
+        assert receipt["production_method_identities"] == {
+            name: f"Label_Match.Label_Match.{name}" for name in expected_path
+        }
+        expected_input = m7_preserved_input_value(state_id)
+        assert receipt["preserved_input_expected"] == expected_input
+        assert receipt["preserved_input_before"] == expected_input
+        assert receipt["preserved_input_after"] == expected_input
+        assert app.entry.get() == expected_input
+
+    assert "Label Tk UI lane technical diagnostic: RuntimeError" in (
+        capsys.readouterr().out
+    )
+
+
 def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
+    from Label_Match import Label_Match
+
     class FakeNotebook:
         def __init__(self):
             self.selections = []
@@ -337,16 +492,56 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
         def select(self, target):
             self.selections.append(target)
 
+    class FakeEntry:
+        def __init__(self):
+            self.value = ""
+            self.state = "normal"
+
+        def cget(self, _key):
+            return self.state
+
+        def configure(self, **changes):
+            self.state = changes.get("state", self.state)
+
+        def delete(self, *_args):
+            self.value = ""
+
+        def insert(self, _index, value):
+            self.value = str(value)
+
+        def get(self):
+            return self.value
+
     notebook = FakeNotebook()
     session_tab = object()
     history_tab = object()
     app = SimpleNamespace(
         current_set_info={},
+        operator_workbench_ready=False,
+        _workflow_widgets_ready=False,
         operator_history_notebook=notebook,
         operator_session_tab=session_tab,
         operator_history_tab=history_tab,
-        _refresh_operator_workbench=lambda: None,
+        history_tree=None,
+        session_tree=None,
+        entry=FakeEntry(),
+        _render_operator_workbench=lambda: None,
+        _retry_blocked_submission=lambda: None,
+        _ui_lane_diagnostic_text=lambda error: type(error).__name__,
     )
+    app._refresh_operator_workbench = MethodType(
+        Label_Match._refresh_operator_workbench, app
+    )
+    for method_name in {
+        name
+        for spec in M7_STATE_CONTRACT.values()
+        for name in spec["production_call_path"]
+    }:
+        setattr(
+            app,
+            method_name,
+            MethodType(getattr(Label_Match, method_name), app),
+        )
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
 
     apply_state_fixture(app, fixtures["history_readonly"])
@@ -361,6 +556,26 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
 
 def test_apply_fixture_seeds_real_activity_rows_without_touching_business_maps():
     from Label_Match import Label_Match
+
+    class MemoryEntry:
+        def __init__(self):
+            self.value = ""
+            self.state = "normal"
+
+        def cget(self, _key):
+            return self.state
+
+        def configure(self, **changes):
+            self.state = changes.get("state", self.state)
+
+        def delete(self, *_args):
+            self.value = ""
+
+        def insert(self, _index, value):
+            self.value = str(value)
+
+        def get(self):
+            return self.value
 
     class MemoryTree:
         def __init__(self):
@@ -398,10 +613,16 @@ def test_apply_fixture_seeds_real_activity_rows_without_touching_business_maps()
     app.operator_notebook = None
     app.ui_profile_name = "standard"
     app.tree_font_size = 13
+    app.entry = MemoryEntry()
+    app.operator_workbench_ready = False
+    app._workflow_widgets_ready = False
+    app._last_workflow_view = None
     app.history_row_details_map = {"sentinel": {"raw": "unchanged"}}
     app.set_details_map = {"sentinel": {"raw": "unchanged"}}
     app.scan_count = {"sentinel": {"AAA": 7}}
-    app._refresh_operator_workbench = lambda: None
+    app._refresh_operator_workbench = MethodType(
+        Label_Match._refresh_operator_workbench, app
+    )
     sentinels = (
         app.history_row_details_map,
         app.set_details_map,
@@ -2626,16 +2847,55 @@ def _valid_capture_record(state_id: str = "qa_progress"):
         for row in history_rows
     ]
     notice = view.notice
-    display_notice = (
-        SimpleNamespace(
-            title=CANCELLATION_CONFLICT_TITLE,
-            message=CANCELLATION_CONFLICT_MESSAGE,
-            kind="package_cancellation_review",
-            tone="danger",
+    m7_spec = M7_STATE_CONTRACT.get(state_id, {})
+    central_notice_messages = {
+        "central_submission_wait": (
+            "저장된 포장 완료 기록을 복구하고 있습니다. "
+            "복구가 끝날 때까지 PHS2를 이동하거나 다음 포장을 시작하지 마세요."
+        ),
+        "central_submission_conflict": (
+            "로컬 포장 완료 기록은 안전하게 유지됩니다. "
+            "해당 PHS2 실물을 구분 보관하고 관리자에게 중앙 상태 확인을 요청하세요."
+        ),
+    }
+    if state_id in central_notice_messages:
+        display_notice = SimpleNamespace(
+            title=m7_spec["expected_notice_title"],
+            message=central_notice_messages[state_id],
+            kind="submission_blocked",
+            tone=m7_spec["expected_notice_tone"],
         )
-        if state_id == "cancellation_conflict"
-        else notice
-    )
+        presenter_notice = display_notice
+        presenter_stage_label = display_notice.title
+        presenter_next_action = display_notice.message
+        presenter_action_gates = {
+            "scan_input_enabled": False,
+            "f1_cancel_current_enabled": False,
+            "f2_cancel_completed_enabled": False,
+            "f3_enabled": False,
+            "f4_enabled": False,
+        }
+    else:
+        display_notice = (
+            SimpleNamespace(
+                title=CANCELLATION_CONFLICT_TITLE,
+                message=CANCELLATION_CONFLICT_MESSAGE,
+                kind="package_cancellation_review",
+                tone="danger",
+            )
+            if state_id == "cancellation_conflict"
+            else notice
+        )
+        presenter_notice = notice
+        presenter_stage_label = view.current_stage_label
+        presenter_next_action = view.next_action
+        presenter_action_gates = {
+            "scan_input_enabled": bool(view.scan_input_enabled),
+            "f1_cancel_current_enabled": bool(view.cancel_current_enabled),
+            "f2_cancel_completed_enabled": bool(view.cancel_completed_enabled),
+            "f3_enabled": bool(view.f3_enabled),
+            "f4_enabled": bool(view.f4_enabled),
+        }
     selected_iid = (
         f"qa-slot-{fixture.selected_qa_index}"
         if fixture.selected_qa_index
@@ -2649,6 +2909,7 @@ def _valid_capture_record(state_id: str = "qa_progress"):
     return {
         "capture_gate_schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "state": state_id,
+        "state_id": state_id,
         "requested_size": [1366, 768],
         "capture_source": AUTHORITATIVE_CAPTURE_SOURCE,
         "capture_geometry_gate": _passing_capture_geometry_gate(),
@@ -2737,17 +2998,17 @@ def _valid_capture_record(state_id: str = "qa_progress"):
             "expected_exact_display_values": [
                 str(row.get("values", [""])[0]) for row in exact_rows
             ],
-            "presenter_stage_label": view.current_stage_label,
-            "presenter_next_action": view.next_action,
+            "presenter_stage_label": presenter_stage_label,
+            "presenter_next_action": presenter_next_action,
             "presenter_last_normal_scan": view.last_normal_scan,
             "presenter_notice": (
                 {
-                    "title": notice.title,
-                    "message": notice.message,
-                    "kind": notice.kind,
-                    "tone": notice.tone,
+                    "title": presenter_notice.title,
+                    "message": presenter_notice.message,
+                    "kind": presenter_notice.kind,
+                    "tone": presenter_notice.tone,
                 }
-                if notice
+                if presenter_notice
                 else None
             ),
             "display_notice": (
@@ -2760,13 +3021,7 @@ def _valid_capture_record(state_id: str = "qa_progress"):
                 if display_notice
                 else None
             ),
-            "presenter_action_gates": {
-                "scan_input_enabled": bool(view.scan_input_enabled),
-                "f1_cancel_current_enabled": bool(view.cancel_current_enabled),
-                "f2_cancel_completed_enabled": bool(view.cancel_completed_enabled),
-                "f3_enabled": bool(view.f3_enabled),
-                "f4_enabled": bool(view.f4_enabled),
-            },
+            "presenter_action_gates": presenter_action_gates,
             "button_states": {
                 "reset_button": "normal" if view.cancel_current_enabled else "disabled",
                 "cancel_button": "normal" if view.cancel_completed_enabled else "disabled",
@@ -2787,14 +3042,42 @@ def _valid_capture_record(state_id: str = "qa_progress"):
                 1 if fixture.last_normal_scan else 0
             ),
             "last_normal_occurrences_in_right": 0,
-            "center_visible_texts": [view.current_stage_label, view.next_action],
-            "notice_action_mapped": state_id in {"error", "submission_blocked"},
+            "center_visible_texts": [presenter_stage_label, presenter_next_action],
+            "notice_action_mapped": state_id
+            in {"error", "submission_blocked", "central_submission_wait"},
             "notice_action_text": (
-                "저장 재시도" if state_id == "submission_blocked" else "확인"
+                "제출 재시도"
+                if state_id == "central_submission_wait"
+                else "저장 재시도"
+                if state_id == "submission_blocked"
+                else "확인"
             ),
             "entry_state": "disabled"
-            if state_id in {"error", "history_readonly", "submission_blocked"}
+            if state_id
+            in {"error", "history_readonly", "submission_blocked", *M7_REQUIRED_STATE_IDS}
             else "normal",
+            "entry_value": m7_preserved_input_value(state_id),
+            "headline_text": str(m7_spec.get("expected_headline") or ""),
+            "status_text": str(m7_spec.get("expected_status") or ""),
+            "status_mapped": True,
+            "m7_transition_receipt": (
+                {
+                    "state_id": state_id,
+                    "presenter_call_path": (
+                        "Label_Match.Label_Match._refresh_operator_workbench"
+                    ),
+                    "production_call_path": list(m7_spec["production_call_path"]),
+                    "production_method_identities": {
+                        name: f"Label_Match.Label_Match.{name}"
+                        for name in m7_spec["production_call_path"]
+                    },
+                    "preserved_input_expected": m7_preserved_input_value(state_id),
+                    "preserved_input_before": m7_preserved_input_value(state_id),
+                    "preserved_input_after": m7_preserved_input_value(state_id),
+                }
+                if m7_spec
+                else {}
+            ),
             "history_tree_mapped": state_id == "history_readonly",
             "session_tree_mapped": state_id != "history_readonly",
             "current_tree_mapped": not exact_mode,
@@ -2826,6 +3109,43 @@ def test_capture_evaluation_accepts_complete_synthetic_contract(state_id):
     record = _valid_capture_record(state_id)
 
     assert evaluate_capture(record) == []
+
+
+def test_m7_capture_evaluation_blocks_broken_warning_overwrite_and_input_reenable():
+    record = _valid_capture_record("broken_fail_closed_warning")
+    record["rendered_state"]["headline_text"] = "포장 준비"
+    record["rendered_state"]["status_text"] = "랩핑 후 F3 포장 완료"
+    record["rendered_state"]["status_mapped"] = False
+    record["rendered_state"]["entry_state"] = "normal"
+
+    issues = evaluate_capture(record)
+
+    assert "m7_operation_headline_mismatch" in issues
+    assert "m7_operation_status_mismatch" in issues
+    assert "m7_operation_status_not_visible" in issues
+    assert "m7_state_scan_entry_not_fail_closed" in issues
+    assert "blocked_state_scan_entry_enabled" in issues
+
+
+@pytest.mark.parametrize(
+    "state_id",
+    (
+        "phs2_rejected_input_preserved",
+        "f4_rejected_input_preserved",
+        "f3_rejected_input_preserved",
+    ),
+)
+def test_m7_capture_evaluation_requires_the_rejected_input_to_remain_visible(state_id):
+    record = _valid_capture_record(state_id)
+    record["rendered_state"]["entry_value"] = ""
+    record["rendered_state"]["m7_transition_receipt"][
+        "preserved_input_after"
+    ] = ""
+
+    issues = evaluate_capture(record)
+
+    assert "m7_preserved_input_changed_by_rejection" in issues
+    assert "m7_preserved_input_not_visible" in issues
 
 
 @pytest.mark.parametrize("state_id", ("qa_progress", "error", "full_complete"))
@@ -2893,18 +3213,25 @@ def test_capture_evaluation_accepts_identity_preserving_session_item_ellipsis():
     assert evaluate_capture(record) == []
 
 
-def test_schema_v6_capture_evaluation_requires_visible_geometry_gate():
+def test_schema_v7_capture_evaluation_requires_visible_geometry_gate():
     record = _valid_capture_record("qa_progress")
     record.pop("capture_geometry_gate")
 
     assert evaluate_capture(record) == ["capture_geometry_gate_missing"]
 
 
+def test_schema_v7_capture_evaluation_binds_external_state_id():
+    record = _valid_capture_record("qa_progress")
+    record["state_id"] = "wrong-state"
+
+    assert evaluate_capture(record) == ["capture_state_id_mismatch"]
+
+
 @pytest.mark.parametrize(
     "check_name",
     _CAPTURE_GEOMETRY_CHECKS,
 )
-def test_schema_v6_capture_geometry_gate_fails_each_geometry_focus_or_pixel_check(
+def test_schema_v7_capture_geometry_gate_fails_each_geometry_focus_or_pixel_check(
     check_name,
 ):
     record = _valid_capture_record("qa_product_3")
@@ -3979,13 +4306,33 @@ def test_privacy_failure_manifest_discards_original_sensitive_keys_and_values():
 
 
 def test_cleanup_contract_is_part_of_approval_eligibility():
+    passed_contract = build_m7_external_capture_bundle_contract()
+    passed_contract["release_capture_gate"] = {"status": "PASS", "pending": []}
     successful = {
+        "external_capture_bundle_contract": passed_contract,
         "matrix_complete": True,
         "approval_eligible": False,
         "summary": {"passed": True},
     }
     assert capture.record_cleanup_contract(successful, []) == {"status": "PASS"}
     assert successful["approval_eligible"] is True
+
+    missing_contract = {
+        "matrix_complete": True,
+        "approval_eligible": True,
+        "summary": {"passed": True},
+    }
+    capture.record_cleanup_contract(missing_contract, [])
+    assert missing_contract["approval_eligible"] is False
+
+    malformed_contract = {
+        "external_capture_bundle_contract": {"release_capture_gate": "PASS"},
+        "matrix_complete": True,
+        "approval_eligible": True,
+        "summary": {"passed": True},
+    }
+    capture.record_cleanup_contract(malformed_contract, [])
+    assert malformed_contract["approval_eligible"] is False
 
     failed = {
         "matrix_complete": True,

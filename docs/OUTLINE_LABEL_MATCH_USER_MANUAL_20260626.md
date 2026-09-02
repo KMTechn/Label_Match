@@ -7,8 +7,8 @@
 
 # 포장실 프로그램 사용 설명서 (이력 보존본)
 
-당시 대상 프로그램 표기는 폐기되었습니다. 현재 동작 대조 기준은 적용 commit
-`e3c56ca2458d64cda008a0f24a3aa2a5ec8811a3`이며, 승인 배포 버전은 정본의 TODO로
+당시 대상 프로그램 표기는 폐기되었습니다. 현재 제품 코드 대조 기준은
+`9363f5e0`이며, 승인 배포본 identity/evidence는 정본의 `캡처 대기` 항목으로
 관리합니다.
 
 문서 갱신일: `2026-08-03`
@@ -19,7 +19,8 @@
 
 > **화면 자산 안내:** 저장소의 기존 화면은 구형 다단계 UI를 촬영한 레거시
 > 증거입니다. 적용 commit 이후의 PHS2 1회, 선택 F4, F3, busy와 중앙 상태
-> 화면은 **현재 캡처 TODO**입니다. 아래 레거시 화면은 현장 기준으로 사용하지
+> 화면은 저장소 밖의 **`M7 external capture bundle v1`로 대체 예정**입니다.
+> 기존 tracked 이미지는 삭제하지 않고 이력으로 보존하지만 현장 기준으로 사용하지
 > 마세요.
 
 ## 1. 한눈에 보는 표준 작업
@@ -183,15 +184,34 @@ F3는 현재 표준 포장 완료 버튼입니다. 샘플 출고용 예외 완�
 
 구형 제품 3회, 최종 라벨과 N회 전량 스캔은 중앙 PHS2 표준의 대안이 아닙니다. 별도 호환 입력을 처리할 때만 승인된 레거시 절차로 격리하세요.
 
-## 12. 현재 캡처와 보고
+## 12. M7 external capture bundle v1과 보고
 
-적용 commit 이후 게시용 화면은 정본의 TODO에 따라 별도로 캡처·검증하세요.
+현행 게시용 화면의 schema 이름은 `M7 external capture bundle v1`이고, 승인 위치는
+앱 저장소와 release packet 밖의
+`<M7 handover evidence root>/capture-bundles/Label_Match/`입니다. 필수 state ID는
+다음과 같습니다.
 
-1. 원본 물리 PHS2 1회와 exact membership 표시
-2. F4 old/new 동일 품목 1~2쌍과 새 seal 재스캔
-3. 랩핑 뒤 F3와 lease 상태
-4. `LOCAL_COMMITTED`, `PENDING`, `ACKED`, `OPERATOR_REVIEW`
-5. 재시작 reconciliation과 receipt 복구
-6. PACKAGE·`SHIPPING-WAIT` readback
+1. `phs2_admitted_busy`
+2. `phs2_rejected_input_preserved`
+3. `f4_admitted_busy`
+4. `f4_rejected_input_preserved`
+5. `f3_admitted_busy`
+6. `f3_rejected_input_preserved`
+7. `central_submission_wait`
+8. `central_submission_conflict`
+9. `broken_fail_closed_warning`
+
+`<M7 handover evidence root>/handover-index.json`에서 `app_id=Label_Match`를 조회한
+뒤 `capture-bundles/Label_Match/manifest.json`의 `captures[].state_id`로 필요한
+화면을 찾습니다. manifest에는 app commit/tree, portable artifact SHA-256,
+capture tool commit/blob SHA-256, viewport/DPI, 생성 시각, image SHA-256, 승인자와
+보관 receipt가 결합되어야 합니다. 이 문서에는 아직 존재하지 않는 digest 값이나
+나중에 생성된 digest 값을 다시 쓰지 않습니다.
+
+`L-5` BROKEN 경고/입력 재활성 위험과 `L-6` synchronous generation fence가 제품
+판정 대기인 동안 release capture gate는 차단됩니다. `broken_fail_closed_warning`이
+실제 fail-closed 상태를 보이지 않으면 정상 화면으로 대체하거나 게시하지 마세요.
+아래 tracked 레거시 이미지는 삭제하지 않으며 external bundle이 승인될 때까지
+대체 예정 상태로 남습니다.
 
 화면 문제를 보고할 때는 프로그램 버전, 작업자, PHS2, source/work group, F4 old/new, package ID, lease와 중앙 상태, 재시도 여부를 함께 전달하세요. 비밀 token이나 DB 전체 파일을 전달하지 마세요.

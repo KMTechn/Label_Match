@@ -3,9 +3,9 @@
 > **현장 작업자 안내의 정본은 이 문서 하나입니다.** 다른 날짜가 붙은 OUTLINE,
 > 캡처 노트, UI 목업과 `README.txt`는 현재 작업 절차로 사용하지 마세요.
 
-- 적용 동작 commit: `e3c56ca2458d64cda008a0f24a3aa2a5ec8811a3`
-- 승인 배포 버전: **TODO — 승인된 배포 증거로 확정**
-- 현장 게시용 화면 캡처: **TODO — 위 commit 이후 승인 배포본에서 별도 제작·검증**
+- 제품 코드 기준 commit: `9363f5e0` (M7 도구·문서 변경 전 최종 제품 코드)
+- 승인 배포본 identity/evidence: **캡처 대기 — 재자격과 artifact 봉인 뒤 외부 승인 증거로 확정**
+- 현장 게시용 화면: **캡처 대기 — `M7 external capture bundle v1`에서만 승인**
 - 소스 대조일: `2026-09-02`
 
 소스의 동작과 문서가 다르면 진행을 멈추고 작업 리더에게 확인하세요. 위 commit의
@@ -83,12 +83,51 @@
 - 입력이 접수되지 않았다는 안내와 입력칸에 보존된 바코드는 구분하세요. 현재
   Label_Match는 busy 거절 때 입력칸 값을 보존하므로 재스캔하지 않습니다.
 
-## 5. 게시 전 TODO
+## 5. M7 external capture bundle v1 계약
 
-- TODO: 승인된 실제 배포 버전과 승인 증거를 이 문서의 머리말에 반영
-- TODO: 승인 배포본의 PHS2/F4/F3 처리 중, 입력 보존, 중앙 대기·충돌 화면 캡처
-- TODO: 실제 공장 PC에서 문구·배치와 이 문서가 일치하는지 qualification
-- TODO: 배포 승인자 직책과 화면 증거 책임 소재 확정 — 현재 `미정`
+M7 화면 증거의 schema 이름은 `M7 external capture bundle v1`입니다. 승인 위치는
+앱 저장소와 release packet 밖의 승인된
+`<M7 handover evidence root>/capture-bundles/Label_Match/`입니다. 저장소의 기존
+tracked 이미지는 삭제하지 않고 이력 자료로 보존하며, 현행 화면 증거는 external
+bundle로 대체 예정입니다.
 
-위 TODO가 끝나기 전에는 저장소 소스 대조 결과를 실제 배포·현장 화면 검증으로
-확대 해석하지 마세요.
+필수 state ID는 다음 9개입니다.
+
+1. `phs2_admitted_busy`
+2. `phs2_rejected_input_preserved`
+3. `f4_admitted_busy`
+4. `f4_rejected_input_preserved`
+5. `f3_admitted_busy`
+6. `f3_rejected_input_preserved`
+7. `central_submission_wait`
+8. `central_submission_conflict`
+9. `broken_fail_closed_warning`
+
+조회할 때는 `<M7 handover evidence root>/handover-index.json`에서
+`app_id=Label_Match` 항목을 찾고, 그 항목이 가리키는
+`capture-bundles/Label_Match/manifest.json`의 `captures[].state_id`로 화면을
+선택합니다. manifest는 app commit/tree, portable artifact SHA-256, capture tool
+commit/blob SHA-256, viewport/DPI, 생성 시각, image SHA-256, 승인자와 보관 receipt를
+결합해야 합니다. 승인자와 보관 receipt가 없거나 release capture gate가 PASS가
+아니면 게시·교육·인계 화면으로 사용하지 마세요.
+
+이 문서에는 나중에 생성될 image/artifact digest 값을 다시 기록하지 않습니다.
+digest 값은 외부 index와 manifest에만 둡니다. `L-5`와 `L-6`의 제품 판정이 끝나기
+전에는 capture tool의 release gate가 차단되며, BROKEN 경고 상태를 정상 화면처럼
+간주할 수 없습니다.
+
+## 6. M7 TODO 처리표
+
+| ID | 상태 | 이번 정정과 남은 조건 |
+| --- | --- | --- |
+| L-1 | 캡처 대기 | 제품 코드 기준은 정정했지만 승인 배포본 identity와 배포 증거는 재자격·artifact 봉인 뒤 외부 증거가 필요합니다. |
+| L-2 | 캡처 대기 | 9개 필수 state ID와 도구 경로는 고정했지만 PNG·승인 manifest는 아직 만들지 않았습니다. |
+| L-3 | 캡처 대기 | 실제 공장 PC의 문구·배치 qualification은 아직 수행하지 않았습니다. |
+| L-4 | 조직 확정 필요 | 배포 승인자 직책과 화면 증거 책임 소재는 임의로 채우지 않았습니다. |
+| L-5 | 제품 판정 대기 | BROKEN lane 경고가 busy 거절로 덮이거나 입력이 재활성화될 수 있는 current source 위험은 미해소입니다. release capture를 차단합니다. |
+| L-6 | 제품 판정 대기 | synchronous UI checkpoint가 generation이 아니라 `op_id`만 검사하는 UNPROVEN 경로는 미해소입니다. release capture를 차단합니다. |
+
+이번 변경은 여섯 항목의 문장과 상태를 정정했을 뿐, 외부 캡처·조직 답·제품 판정
+없이 완료로 닫지 않았습니다. 따라서 현재 closure는 `0/6`, 처리표 정정은
+`6/6`입니다. 위 항목이 끝나기 전에는 저장소 소스 대조 결과를 실제 배포·현장
+화면 검증으로 확대 해석하지 마세요.

@@ -55,7 +55,7 @@ DEFAULT_SIZES = (
     (2560, 1080),
     (2560, 1392),
 )
-DEFAULT_STATE_IDS = (
+BASELINE_STATE_IDS = (
     "waiting",
     "qa_master",
     "exact_first",
@@ -73,7 +73,118 @@ DEFAULT_STATE_IDS = (
     "history_readonly",
     "submission_blocked",
 )
-CAPTURE_MANIFEST_SCHEMA_VERSION = 6
+M7_REQUIRED_STATE_IDS = (
+    "phs2_admitted_busy",
+    "phs2_rejected_input_preserved",
+    "f4_admitted_busy",
+    "f4_rejected_input_preserved",
+    "f3_admitted_busy",
+    "f3_rejected_input_preserved",
+    "central_submission_wait",
+    "central_submission_conflict",
+    "broken_fail_closed_warning",
+)
+DEFAULT_STATE_IDS = (*BASELINE_STATE_IDS, *M7_REQUIRED_STATE_IDS)
+CAPTURE_MANIFEST_SCHEMA_VERSION = 7
+M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA = "M7 external capture bundle v1"
+M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION = (
+    "<M7 handover evidence root>/capture-bundles/Label_Match/"
+)
+M7_PRODUCT_DECISION_BLOCKERS = ("L-5", "L-6")
+M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
+    "phs2_admitted_busy": {
+        "production_call_path": ("_set_ui_lane_busy",),
+        "task_name": "phs2-capture-validation",
+        "busy_text": "현품표 저장 · 중앙 확인 중",
+        "expected_headline": "현품표 저장 · 중앙 확인 중",
+        "expected_status": (
+            "현품표 저장 · 중앙 확인 중 · 통신 완료 전 추가 입력은 받지 않습니다."
+        ),
+    },
+    "phs2_rejected_input_preserved": {
+        "production_call_path": (
+            "_set_ui_lane_busy",
+            "_show_ui_lane_rejection",
+        ),
+        "task_name": "phs2-capture-validation",
+        "busy_text": "현품표 저장 · 중앙 확인 중",
+        "preserved_input_profile": "phs2-next",
+        "expected_headline": "이전 작업 처리 중 · 입력 보존",
+        "expected_status": (
+            "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+        ),
+    },
+    "f4_admitted_busy": {
+        "production_call_path": ("_set_ui_lane_busy",),
+        "task_name": "f4-central-source-lookup",
+        "busy_text": "제품 교체 · 중앙 확인 중",
+        "expected_headline": "제품 교체 · 중앙 확인 중",
+        "expected_status": (
+            "제품 교체 · 중앙 확인 중 · 통신 완료 전 추가 입력은 받지 않습니다."
+        ),
+    },
+    "f4_rejected_input_preserved": {
+        "production_call_path": (
+            "_set_ui_lane_busy",
+            "_show_ui_lane_rejection",
+        ),
+        "task_name": "f4-central-source-lookup",
+        "busy_text": "제품 교체 · 중앙 확인 중",
+        "preserved_input_profile": "f4-next",
+        "expected_headline": "이전 작업 처리 중 · 입력 보존",
+        "expected_status": (
+            "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+        ),
+    },
+    "f3_admitted_busy": {
+        "production_call_path": ("_set_ui_lane_busy",),
+        "task_name": "f3-package-completion",
+        "busy_text": "포장 완료 · 중앙 저장 중",
+        "expected_headline": "포장 완료 · 중앙 저장 중",
+        "expected_status": (
+            "포장 완료 · 중앙 저장 중 · 통신 완료 전 추가 입력은 받지 않습니다."
+        ),
+    },
+    "f3_rejected_input_preserved": {
+        "production_call_path": (
+            "_set_ui_lane_busy",
+            "_show_ui_lane_rejection",
+        ),
+        "task_name": "f3-package-completion",
+        "busy_text": "포장 완료 · 중앙 저장 중",
+        "preserved_input_profile": "f3-next",
+        "expected_headline": "이전 작업 처리 중 · 입력 보존",
+        "expected_status": (
+            "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+        ),
+    },
+    "central_submission_wait": {
+        "production_call_path": ("_set_active_package_submission_notice",),
+        "submission_status": "PENDING",
+        "expected_notice_title": "중앙 포장 확정 대기",
+        "expected_notice_tone": "warning",
+    },
+    "central_submission_conflict": {
+        "production_call_path": ("_set_active_package_submission_notice",),
+        "submission_status": "CONFLICT",
+        "local_completion_committed": 1,
+        "expected_notice_title": "중앙 포장 충돌 · 실물 작업 중지",
+        "expected_notice_tone": "danger",
+    },
+    "broken_fail_closed_warning": {
+        "production_call_path": (
+            "_set_ui_lane_busy",
+            "_handle_ui_lane_fault",
+        ),
+        "task_name": "phs2-capture-validation",
+        "busy_text": "현품표 저장 · 중앙 확인 중",
+        "expected_headline": "처리 상태 확인 필요",
+        "expected_status": (
+            "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요."
+        ),
+        "product_decision": "L-5",
+    },
+}
 APPLICATION_STARTUP_PATH = "disabled_for_inprocess_matrix"
 CANCELLATION_CONFLICT_COUNT = 3
 CANCELLATION_CONFLICT_CODE = "IMMUTABLE_CAS"
@@ -360,6 +471,72 @@ def _realistic_phs_scan(stage: str, serial: int) -> str:
     )
 
 
+def _m7_exact_phs2(profile: str) -> str:
+    """Return one synthetic exact-six PHS2 accepted by the production parser."""
+
+    marker = "".join(
+        character for character in str(profile).upper() if character.isalnum()
+    ) or "CAPTURE"
+    hash_prefix = hashlib.sha256(
+        f"Label_Match:M7:{marker}".encode("ascii")
+    ).hexdigest()[:16]
+    return (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|"
+        f"ITG=ITG-M7-{marker}|CLC={CAPTURE_ITEM_CODE}|"
+        f"LBL=LBL-M7-{marker}|HSH={hash_prefix}"
+    )
+
+
+def m7_preserved_input_value(state_id: str) -> str:
+    """Return the operation-specific synthetic value kept after busy rejection."""
+
+    spec = M7_STATE_CONTRACT.get(str(state_id), {})
+    profile = str(spec.get("preserved_input_profile") or "")
+    return _m7_exact_phs2(profile) if profile else ""
+
+
+def build_m7_external_capture_bundle_contract() -> dict[str, Any]:
+    """Return the repository-side half of the external M7 evidence contract."""
+
+    return {
+        "schema": M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA,
+        "app_id": "Label_Match",
+        "external_approval_location": M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION,
+        "required_state_ids": list(M7_REQUIRED_STATE_IDS),
+        "manifest_identity_fields": [
+            "app_source.commit",
+            "app_source.tree",
+            "portable_artifact.sha256",
+            "capture_tool.commit",
+            "capture_tool.blob_sha256",
+            "captures[].state_id",
+            "captures[].viewport",
+            "captures[].dpi",
+            "captures[].generated_at",
+            "captures[].image_sha256",
+            "approval.approver",
+            "approval.custody_receipt",
+        ],
+        "lookup": {
+            "start_at": "<M7 handover evidence root>/handover-index.json",
+            "select": "app_id=Label_Match",
+            "manifest": "capture-bundles/Label_Match/manifest.json",
+            "state_selector": "captures[].state_id",
+            "approval_required": True,
+        },
+        "tracked_images": "retained_historical_pending_external_replacement",
+        "repository_document_digest_values_allowed": False,
+        "release_capture_gate": {
+            "status": "BLOCKED_PRODUCT_DECISION",
+            "pending": list(M7_PRODUCT_DECISION_BLOCKERS),
+            "reason": (
+                "L-5 BROKEN fail-closed UI behavior and L-6 synchronous "
+                "generation fencing await product decisions"
+            ),
+        },
+    }
+
+
 def build_state_fixtures() -> tuple[StateFixture, ...]:
     """Return the complete deterministic operator-state matrix."""
 
@@ -379,6 +556,8 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
         _realistic_phs_scan("F4-EXACT-2", 102),
     )
     exact_full = (*exact_two, _realistic_phs_scan("F4-EXACT-3", 103))
+    m7_phs2 = _m7_exact_phs2("ACTIVE")
+    m7_active = (m7_phs2,)
     return (
         StateFixture("waiting", "대기"),
         StateFixture(
@@ -502,6 +681,63 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
                 "계속 실패하면 관리자에게 확인을 요청하세요."
             ),
             last_normal_scan=master,
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "phs2_admitted_busy",
+            "PHS2 접수 · 처리 중",
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "phs2_rejected_input_preserved",
+            "PHS2 처리 중 · 추가 입력 보존",
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "f4_admitted_busy",
+            "F4 접수 · 처리 중",
+            qa_scans=m7_active,
+            last_normal_scan=m7_phs2,
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "f4_rejected_input_preserved",
+            "F4 처리 중 · 추가 입력 보존",
+            qa_scans=m7_active,
+            last_normal_scan=m7_phs2,
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "f3_admitted_busy",
+            "F3 접수 · 처리 중",
+            qa_scans=m7_active,
+            last_normal_scan=m7_phs2,
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "f3_rejected_input_preserved",
+            "F3 처리 중 · 추가 입력 보존",
+            qa_scans=m7_active,
+            last_normal_scan=m7_phs2,
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "central_submission_wait",
+            "중앙 포장 확정 대기",
+            qa_scans=m7_active,
+            last_normal_scan=m7_phs2,
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "central_submission_conflict",
+            "중앙 포장 충돌",
+            qa_scans=m7_active,
+            last_normal_scan=m7_phs2,
+            central_inherit_all=True,
+        ),
+        StateFixture(
+            "broken_fail_closed_warning",
+            "BROKEN lane · 추가 스캔 중지",
             central_inherit_all=True,
         ),
     )
@@ -1312,6 +1548,9 @@ def minimal_privacy_failure_manifest(error: BaseException) -> dict[str, Any]:
     return {
         "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "tool": "capture_label_operator_ui",
+        "external_capture_bundle_contract": (
+            build_m7_external_capture_bundle_contract()
+        ),
         "summary": {
             "capture_count": 0,
             "passed_capture_count": 0,
@@ -1325,6 +1564,16 @@ def minimal_privacy_failure_manifest(error: BaseException) -> dict[str, Any]:
             "real_environment_values_recorded": False,
         },
     }
+
+
+def _m7_release_capture_gate_passed(manifest: Mapping[str, Any]) -> bool:
+    contract = manifest.get("external_capture_bundle_contract")
+    if not isinstance(contract, Mapping):
+        return False
+    gate = contract.get("release_capture_gate")
+    if not isinstance(gate, Mapping):
+        return False
+    return gate.get("status") == "PASS"
 
 
 def record_cleanup_contract(
@@ -1348,6 +1597,7 @@ def record_cleanup_contract(
         not failures
         and manifest.get("matrix_complete") is True
         and summary.get("passed") is True
+        and _m7_release_capture_gate_passed(manifest)
     )
     return cleanup_contract
 
@@ -1396,7 +1646,7 @@ def _capture_client_with_print_window(
 
     PrintWindow is intentionally non-authoritative because it can render stale
     or occluded content that was not actually visible on the operator monitor.
-    The caller records the result for diagnosis, while the schema-5 capture
+    The caller records the result for diagnosis, while the schema-7 capture
     geometry gate prevents it from passing.
     """
 
@@ -2002,6 +2252,119 @@ def _select_qa_detail_for_fixture(app: Any, fixture: StateFixture) -> None:
         raise RuntimeError(f"selected QA fixture could not select {iid}") from exc
 
 
+def _bound_method_identity(method: Any) -> str:
+    function = getattr(method, "__func__", method)
+    module = str(getattr(function, "__module__", "") or "")
+    qualname = str(getattr(function, "__qualname__", "") or "")
+    return ".".join(part for part in (module, qualname) if part)
+
+
+def _replace_capture_entry_value(entry: Any, value: str) -> str:
+    """Seed one already-scanned value without introducing a fake UI surface."""
+
+    previous_state = ""
+    try:
+        previous_state = str(entry.cget("state") or "")
+    except Exception:
+        previous_state = ""
+    if previous_state in {"disabled", "readonly"}:
+        entry.configure(state="normal")
+    try:
+        entry.delete(0, "end")
+        entry.insert(0, value)
+    finally:
+        if previous_state in {"disabled", "readonly"}:
+            entry.configure(state=previous_state)
+    return str(entry.get())
+
+
+def apply_m7_production_transition(
+    app: Any,
+    fixture: StateFixture,
+    *,
+    presenter_method_name: str,
+) -> dict[str, Any] | None:
+    """Drive an M7 state only through the production application's UI seams."""
+
+    spec = M7_STATE_CONTRACT.get(fixture.state_id)
+    if spec is None:
+        app._capture_m7_transition_receipt = None
+        return None
+
+    presenter_method = getattr(app, presenter_method_name, None)
+    presenter_identity = _bound_method_identity(presenter_method)
+    if not callable(presenter_method) or not presenter_identity.startswith(
+        "Label_Match.Label_Match."
+    ):
+        raise RuntimeError(
+            f"M7 state {fixture.state_id} is not bound to the production presenter: "
+            f"{presenter_identity or '<unknown>'}"
+        )
+
+    call_path = tuple(str(name) for name in spec["production_call_path"])
+    methods: dict[str, Any] = {}
+    method_identities: dict[str, str] = {}
+    for name in call_path:
+        method = getattr(app, name, None)
+        if not callable(method):
+            raise RuntimeError(
+                f"M7 state {fixture.state_id} requires production method {name}"
+            )
+        identity = _bound_method_identity(method)
+        if not identity.startswith("Label_Match.Label_Match."):
+            raise RuntimeError(
+                f"M7 state {fixture.state_id} is not bound to production {name}: "
+                f"{identity or '<unknown>'}"
+            )
+        methods[name] = method
+        method_identities[name] = identity
+
+    preserved_input = m7_preserved_input_value(fixture.state_id)
+    input_before = ""
+    entry = getattr(app, "entry", None)
+    if entry is not None:
+        input_before = _replace_capture_entry_value(entry, preserved_input)
+    elif preserved_input:
+        raise RuntimeError(
+            f"M7 state {fixture.state_id} requires the production scan entry"
+        )
+
+    for name in call_path:
+        method = methods[name]
+        if name == "_set_ui_lane_busy":
+            method(spec["task_name"], spec["busy_text"])
+        elif name == "_show_ui_lane_rejection":
+            method("busy")
+        elif name == "_set_active_package_submission_notice":
+            method(
+                {
+                    "status": spec["submission_status"],
+                    "local_completion_committed": int(
+                        spec.get("local_completion_committed", 0)
+                    ),
+                }
+            )
+        elif name == "_handle_ui_lane_fault":
+            method(RuntimeError("M7 capture lane fault"))
+        else:  # pragma: no cover - constant and tests guard the closed set
+            raise RuntimeError(f"unsupported M7 production method: {name}")
+
+    input_after = ""
+    if entry is not None:
+        input_after = str(entry.get())
+    receipt = {
+        "state_id": fixture.state_id,
+        "presenter_call_path": presenter_identity,
+        "production_call_path": list(call_path),
+        "production_method_identities": method_identities,
+        "preserved_input_expected": preserved_input,
+        "preserved_input_before": input_before,
+        "preserved_input_after": input_after,
+    }
+    app._capture_m7_transition_receipt = receipt
+    return receipt
+
+
 def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     """Apply display-only state and ask the application to render its presenter."""
 
@@ -2039,6 +2402,9 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     app._pending_workflow_error = pending_error
     app._workflow_pending_error = pending_error
     app._workflow_error_message = fixture.error_message or ""
+    app._ui_lane_busy_task = ""
+    app._ui_lane_busy_label = ""
+    app._capture_m7_transition_receipt = None
     app._workflow_notice_action = None
     app._workflow_notice_action_text = "확인"
     app._workflow_blocking_notice = (
@@ -2051,6 +2417,7 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
         if fixture.notice_title
         else None
     )
+    app._workflow_notice = app._workflow_blocking_notice
     conflict_rows = _fixture_cancellation_conflict_rows(fixture)
     app.package_cancellation_outbox = _CaptureCancellationConflictOutbox(
         conflict_rows
@@ -2132,6 +2499,18 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
     app._workflow_view_state = view
     app._last_workflow_view_state = view
     method_name = _invoke_presenter_refresh(app, view)
+    apply_m7_production_transition(
+        app,
+        fixture,
+        presenter_method_name=method_name,
+    )
+    if fixture.state_id in {
+        "central_submission_wait",
+        "central_submission_conflict",
+    }:
+        rendered_view = getattr(app, "_last_workflow_view", None)
+        if rendered_view is not None:
+            view = rendered_view
     _apply_activity_fixture_rows(app)
     _select_qa_detail_for_fixture(app, fixture)
     _select_activity_tab_for_fixture(app, fixture)
@@ -4360,6 +4739,21 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
         entry_state = str(widgets["entry"].cget("state"))
     except Exception:
         entry_state = "unknown"
+    try:
+        entry_value = str(widgets["entry"].get())
+    except Exception:
+        entry_value = ""
+    try:
+        headline_text = str(widgets["big_display_label"].cget("text") or "")
+    except Exception:
+        headline_text = ""
+    try:
+        status_label = getattr(app, "status_label")
+        status_text = str(status_label.cget("text") or "")
+    except Exception:
+        status_label = None
+        status_text = ""
+    status_mapped = _is_mapped(status_label) if status_label is not None else False
     notice_action_mapped = _is_mapped(widgets["workflow_notice_action_button"])
     try:
         notice_action_text = str(
@@ -4534,6 +4928,13 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
             "f4_enabled": bool(view.f4_enabled),
         },
         "entry_state": entry_state,
+        "entry_value": entry_value,
+        "headline_text": headline_text,
+        "status_text": status_text,
+        "status_mapped": status_mapped,
+        "m7_transition_receipt": dict(
+            getattr(app, "_capture_m7_transition_receipt", None) or {}
+        ),
         "notice_action_mapped": notice_action_mapped,
         "notice_action_text": notice_action_text,
         "button_states": button_states,
@@ -4564,8 +4965,73 @@ def collect_rendered_state(app: Any, fixture: StateFixture, view: Any) -> dict[s
     }
 
 
+def evaluate_m7_state_contract(record: Mapping[str, Any]) -> list[str]:
+    """Validate the operation-specific M7 surface and production call receipt."""
+
+    state_id = str(record.get("state") or "")
+    spec = M7_STATE_CONTRACT.get(state_id)
+    if spec is None:
+        return []
+    rendered = record.get("rendered_state") or {}
+    issues: list[str] = []
+    receipt = rendered.get("m7_transition_receipt") or {}
+    expected_path = list(spec["production_call_path"])
+    if receipt.get("state_id") != state_id:
+        issues.append("m7_transition_state_id_mismatch")
+    if not str(receipt.get("presenter_call_path") or "").startswith(
+        "Label_Match.Label_Match."
+    ):
+        issues.append("m7_production_presenter_call_path_mismatch")
+    if receipt.get("production_call_path") != expected_path:
+        issues.append("m7_production_call_path_mismatch")
+    expected_identities = {
+        name: f"Label_Match.Label_Match.{name}" for name in expected_path
+    }
+    if receipt.get("production_method_identities") != expected_identities:
+        issues.append("m7_production_method_identity_mismatch")
+
+    expected_input = m7_preserved_input_value(state_id)
+    if expected_input:
+        if receipt.get("preserved_input_expected") != expected_input:
+            issues.append("m7_preserved_input_receipt_expected_mismatch")
+        if receipt.get("preserved_input_before") != expected_input:
+            issues.append("m7_preserved_input_missing_before_rejection")
+        if receipt.get("preserved_input_after") != expected_input:
+            issues.append("m7_preserved_input_changed_by_rejection")
+        if rendered.get("entry_value") != expected_input:
+            issues.append("m7_preserved_input_not_visible")
+
+    expected_headline = str(spec.get("expected_headline") or "")
+    if expected_headline and rendered.get("headline_text") != expected_headline:
+        issues.append("m7_operation_headline_mismatch")
+    expected_status = str(spec.get("expected_status") or "")
+    if expected_status and rendered.get("status_text") != expected_status:
+        issues.append("m7_operation_status_mismatch")
+    if expected_status and rendered.get("status_mapped") is not True:
+        issues.append("m7_operation_status_not_visible")
+
+    expected_notice_title = str(spec.get("expected_notice_title") or "")
+    if expected_notice_title:
+        notice = rendered.get("display_notice") or rendered.get("presenter_notice") or {}
+        if notice.get("title") != expected_notice_title:
+            issues.append("m7_central_notice_title_mismatch")
+        if notice.get("tone") != spec.get("expected_notice_tone"):
+            issues.append("m7_central_notice_tone_mismatch")
+    if state_id == "central_submission_wait" and (
+        rendered.get("notice_action_mapped") is not True
+        or rendered.get("notice_action_text") != "제출 재시도"
+    ):
+        issues.append("m7_central_wait_retry_action_mismatch")
+
+    if str(rendered.get("entry_state") or "") not in {"disabled", "readonly"}:
+        issues.append("m7_state_scan_entry_not_fail_closed")
+    return issues
+
+
 def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
     issues: list[str] = []
+    if record.get("state_id") != record.get("state"):
+        issues.append("capture_state_id_mismatch")
     image = record["image_analysis"]
     geometry = record["ui_geometry"]
     structure = geometry["structure"]
@@ -4768,7 +5234,11 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
                 f"notice_display_contract:{issue}"
                 for issue in notice_contract.get("issues", ())
             )
-    expected_notice_action = record["state"] in {"error", "submission_blocked"}
+    expected_notice_action = record["state"] in {
+        "error",
+        "submission_blocked",
+        "central_submission_wait",
+    }
     if bool(rendered.get("notice_action_mapped")) != expected_notice_action:
         issues.append("notice_action_mapping_mismatch")
     if record["state"] == "error" and "확인" not in str(
@@ -4815,11 +5285,20 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
         ):
             issues.append("cancellation_conflict_selected_raw_detail_changed")
     center_text = "\n".join(rendered.get("center_visible_texts", ()))
-    if rendered.get("presenter_stage_label") not in center_text:
-        issues.append("presenter_stage_label_not_visible_in_center")
-    if rendered.get("presenter_next_action") not in center_text:
-        issues.append("presenter_next_action_not_visible_in_center")
-    blocked = record["state"] in {"error", "history_readonly", "submission_blocked"}
+    operation_override = bool(
+        M7_STATE_CONTRACT.get(str(record["state"]), {}).get("expected_headline")
+    )
+    if not operation_override:
+        if rendered.get("presenter_stage_label") not in center_text:
+            issues.append("presenter_stage_label_not_visible_in_center")
+        if rendered.get("presenter_next_action") not in center_text:
+            issues.append("presenter_next_action_not_visible_in_center")
+    blocked = record["state"] in {
+        "error",
+        "history_readonly",
+        "submission_blocked",
+        *M7_REQUIRED_STATE_IDS,
+    }
     entry_state = str(rendered.get("entry_state") or "")
     if blocked and entry_state not in {"disabled", "readonly"}:
         issues.append("blocked_state_scan_entry_enabled")
@@ -4838,6 +5317,8 @@ def evaluate_capture(record: Mapping[str, Any]) -> list[str]:
         issues.append("history_activity_tree_mapping_mismatch")
     if bool(rendered.get("session_tree_mapped")) == history_mode:
         issues.append("session_activity_tree_mapping_mismatch")
+
+    issues.extend(evaluate_m7_state_contract(record))
 
     expected_history_identity = (
         ("capture-activity-001", CAPTURE_ITEM_CODE, "통과", "19:41:03"),
@@ -6869,6 +7350,9 @@ def run_capture_matrix(
         "requested_work_area": list(requested_work_area),
         "requested_sizes": [list(size) for size in sizes],
         "requested_states": list(state_ids),
+        "external_capture_bundle_contract": (
+            build_m7_external_capture_bundle_contract()
+        ),
         "cancellation_surface_capture_contract": json.loads(
             json.dumps(
                 CANCELLATION_SURFACE_CAPTURE_CONTRACT,
@@ -7040,6 +7524,7 @@ def run_capture_matrix(
                     "id": f"{size[0]}x{size[1]}-{state_id}",
                     "capture_gate_schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
                     "state": state_id,
+                    "state_id": state_id,
                     "state_label": fixture.label,
                     "requested_size": list(size),
                     "actual_client_size": list(geometry["root_size"]),
@@ -7122,10 +7607,15 @@ def run_capture_matrix(
             "passed": len(manifest["captures"]) == expected_count
             and not issue_counts
             and round_trip_ok,
+            "release_capture_gate_status": manifest[
+                "external_capture_bundle_contract"
+            ]["release_capture_gate"]["status"],
         }
         manifest["matrix_complete"] = len(manifest["captures"]) == expected_count
         manifest["approval_eligible"] = bool(
-            manifest["matrix_complete"] and manifest["summary"]["passed"]
+            manifest["matrix_complete"]
+            and manifest["summary"]["passed"]
+            and _m7_release_capture_gate_passed(manifest)
         )
         return manifest_path, manifest
     except Exception as exc:
@@ -7315,6 +7805,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "live_contract_ready": manifest.get("live_contract_ready", False),
                 "capture_count": summary["capture_count"],
                 "passed": summary["passed"],
+                "approval_eligible": manifest.get("approval_eligible", False),
                 "fatal_error": summary.get("fatal_error"),
                 "issue_counts": summary.get("issue_counts", {}),
             },
@@ -7323,7 +7814,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if summary.get("fatal_error"):
         return 3
-    return 0 if summary["passed"] else 2
+    return 0 if summary["passed"] and manifest.get("approval_eligible") else 2
 
 
 if __name__ == "__main__":

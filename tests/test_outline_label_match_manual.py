@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 from PIL import Image
 
 from tools import capture_label_match_manual_20260715 as capture
+from tools import capture_label_operator_ui as m7_capture
 from tools import publish_outline_user_manual as publisher
 
 
@@ -24,6 +26,59 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def test_label_docs_share_the_m7_external_capture_bundle_contract():
+    documents = {
+        "worker": (
+            publisher.ROOT / "docs" / "LABEL_MATCH_WORKER_GUIDE.md",
+            "## 5. M7 external capture bundle v1 계약",
+        ),
+        "outline": (
+            publisher.ROOT / "docs" / "OUTLINE_LABEL_MATCH_USER_MANUAL_20260626.md",
+            "## 12. M7 external capture bundle v1과 보고",
+        ),
+        "publisher": (
+            publisher.ROOT
+            / "docs"
+            / "OUTLINE_LABEL_MATCH_USER_MANUAL_PUBLISHING_NOTES_20260626.md",
+            "## 0. 현행 M7 외부 캡처 계약",
+        ),
+    }
+
+    for name, (path, heading) in documents.items():
+        text = path.read_text(encoding="utf-8")
+        start = text.index(heading)
+        end = text.find("\n## ", start + len(heading))
+        section = text[start:] if end < 0 else text[start:end]
+        assert m7_capture.M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA in section, name
+        assert m7_capture.M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION in section, name
+        assert "handover-index.json" in section, name
+        assert "captures[].state_id" in section, name
+        assert "대체 예정" in section, name
+        assert not re.search(r"(?i)\b[0-9a-f]{64}\b", section), name
+        for state_id in m7_capture.M7_REQUIRED_STATE_IDS:
+            assert state_id in section, (name, state_id)
+
+    worker = documents["worker"][0].read_text(encoding="utf-8")
+    assert "| L-1 | 캡처 대기 |" in worker
+    assert "| L-2 | 캡처 대기 |" in worker
+    assert "| L-3 | 캡처 대기 |" in worker
+    assert "| L-4 | 조직 확정 필요 |" in worker
+    assert "| L-5 | 제품 판정 대기 |" in worker
+    assert "| L-6 | 제품 판정 대기 |" in worker
+    assert "closure는 `0/6`" in worker
+    assert "처리표 정정은\n`6/6`" in worker
+
+
+def test_legacy_outline_publisher_is_fail_closed_for_m7_external_bundle():
+    with pytest.raises(RuntimeError, match="legacy tracked-image publishing is disabled"):
+        publisher._enforce_current_capture_publish_contract()
+
+    assert (
+        publisher.M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA
+        == m7_capture.M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA
+    )
 
 
 @pytest.mark.skipif(not LIVE_ASSETS_AVAILABLE, reason="fresh DISPLAY2 manual packet not generated yet")
