@@ -248,6 +248,14 @@ $contract = Get-Content -LiteralPath '{_quote(CONTRACT)}' -Raw -Encoding UTF8 |
     assert json.loads(completed.stdout.splitlines()[-1]) == expected
 
 
+def test_powershell_helper_inventory_pin_matches_python_writer_inventory() -> None:
+    helper = HELPER.read_text(encoding="utf-8")
+    assert (
+        "$Script:LabelWriterFenceInventorySha256 = "
+        f"'{fence.WRITER_INVENTORY_SHA256}'"
+    ) in helper
+
+
 def test_code_derived_inventory_is_exactly_bound_and_covers_all_sink_families() -> None:
     inventory = derive_writer_sink_inventory(ROOT)
     sources = {row.source for row in inventory}
