@@ -909,6 +909,93 @@ def test_frozen_placement_helper_denies_current_user_write(tmp_path: Path) -> No
         assert frozen["has_current_user_deny_write"] is True, frozen
 
 
+def _product_functions() -> str:
+    source = _source()
+    start = source.index("function Arg([string]$Value) {")
+    end = source.index("\n$WriterDelegationEnvironmentNames = @(")
+    return source[start:end]
+
+
+def _run_product_stderr_harness(tmp_path: Path) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    root = tmp_path / "portable"
+    runtime = root / "runtime"
+    app = root / "app"
+    runtime.mkdir(parents=True)
+    app.mkdir(parents=True)
+    (app / "main.py").write_text(
+        "raise SystemExit('stub pythonw.exe must run instead')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    token = "repro-delegation-token-value-32ok"
+    pythonw = runtime / "pythonw.exe"
+    harness = tmp_path / "product-stderr.ps1"
+    harness.write_text(
+        rf"""
+$ErrorActionPreference = 'Stop'
+{_product_functions()}
+Add-Type -OutputAssembly '{str(pythonw).replace("'", "''")}' -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+public class ProductStub {{
+  public static int Main(string[] args) {{
+    Console.Error.WriteLine("token=" + (Environment.GetEnvironmentVariable("KMTECH_LABEL_WRITER_DELEGATION_TOKEN") ?? ""));
+    return 3;
+  }}
+}}
+'@
+[Environment]::SetEnvironmentVariable(
+    'KMTECH_LABEL_WRITER_DELEGATION_TOKEN',
+    '{token}',
+    'Process'
+)
+try {{
+    Product '{str(root).replace("'", "''")}' '--onboard-current-user'
+    Write-Output 'product_status=UNEXPECTED_SUCCESS'
+    exit 0
+}}
+catch {{
+    Write-Output ('product_error=' + [string]$_.Exception.Message)
+    exit 0
+}}
+""",
+        encoding="utf-8-sig",
+    )
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return completed.stdout
+
+
+def test_product_failure_includes_child_stderr_and_delegation_env(
+    tmp_path: Path,
+) -> None:
+    output = _run_product_stderr_harness(tmp_path)
+    assert "product_error=Product mode failed: --onboard-current-user/3" in output
+    assert "token=repro-delegation-token-value-32ok" in output
+
+
 def test_top_level_freezes_and_pins_the_uac_helper_before_copy() -> None:
     source = _source()
 

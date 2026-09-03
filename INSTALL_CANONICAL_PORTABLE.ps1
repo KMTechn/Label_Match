@@ -793,14 +793,42 @@ function Product([string]$Root, [string]$Mode) {
         (Arg (Join-Path $Root 'app\main.py')),
         $Mode,
         (Arg $Root)
-    $process = Start-Process `
-        (Join-Path $Root 'runtime\pythonw.exe') `
-        -ArgumentList $args `
-        -WindowStyle Hidden `
-        -PassThru
-    # Start-Process -Wait includes the persistent relay child; wait only for the product host.
-    $process.WaitForExit()
-    if ($process.ExitCode -ne 0) { throw "Product mode failed: $Mode/$($process.ExitCode)" }
+    $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.out'
+    )
+    $stderrPath = Join-Path ([IO.Path]::GetTempPath()) (
+        'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.err'
+    )
+    try {
+        $process = Start-Process `
+            (Join-Path $Root 'runtime\pythonw.exe') `
+            -ArgumentList $args `
+            -WindowStyle Hidden `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+        # Start-Process -Wait includes the persistent relay child; wait only for the product host.
+        Wait-Process -InputObject $process
+        $null = $process.HasExited
+        $exitCode = [int]$process.ExitCode
+        $stdout = ''
+        $stderr = ''
+        if (Test-Path -LiteralPath $stdoutPath) {
+            $stdout = [IO.File]::ReadAllText($stdoutPath)
+        }
+        if (Test-Path -LiteralPath $stderrPath) {
+            $stderr = [IO.File]::ReadAllText($stderrPath)
+        }
+        if ($exitCode -ne 0) {
+            $detail = (($stderr + ' ' + $stdout) -replace '\s+', ' ').Trim()
+            if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
+            throw "Product mode failed: $Mode/$exitCode $detail"
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $WriterDelegationEnvironmentNames = @(
@@ -1415,7 +1443,8 @@ catch {
                 '; rollback=' + $rollbackFailure.Exception.GetType().Name
             )
         }
-        throw "AUTOSTART_ROLLBACK_FAILED: $($rollbackFailure.Exception.GetType().Name)"
+        throw ("AUTOSTART_ROLLBACK_FAILED: " + $rollbackFailure.Exception.Message +
+            '; original=' + $original.Exception.Message)
     }
     throw $original
 }
