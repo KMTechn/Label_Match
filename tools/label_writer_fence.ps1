@@ -5,7 +5,7 @@ $Script:LabelWriterFenceAppId = 'label_match'
 $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority-v1'
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
-$Script:LabelWriterFenceInventorySha256 = 'fc249376a105c95f6b64980ca21f9fbc670b78025a2d60c53691a1208f3b1032'
+$Script:LabelWriterFenceInventorySha256 = 'b53f1a27bb3b8638ee8bae2d534397cf37924a5cc293875f481ed8cf0c25e109'
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
     'schema','status','app_id','session_id','attempt_id','replacement_transaction_id',

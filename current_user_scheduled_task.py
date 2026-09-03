@@ -7,6 +7,7 @@ manually or stops an existing process/task.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -238,8 +239,11 @@ function Get-TaskSnapshot([string]$Name) {
 function Test-ExactTask($Snapshot) {
     if (-not [bool]$Snapshot.exists) { return $false }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $userName = [string]$identity.Name
+    $sam = $userName.Split('\')[-1]
     $principalMatches = (
-        [string]$Snapshot.principal_user_id -ieq [string]$identity.Name -or
+        [string]$Snapshot.principal_user_id -ieq $userName -or
+        [string]$Snapshot.principal_user_id -ieq $sam -or
         [string]$Snapshot.principal_user_id -ieq [string]$identity.User.Value
     )
     return (
@@ -467,6 +471,7 @@ def _run_task_operation(
     environment["KMTECH_LABEL_CURRENT_USER_TASK_SPEC"] = json.dumps(
         dict(spec), ensure_ascii=True, separators=(",", ":"), sort_keys=True
     )
+    encoded = base64.b64encode(_TASK_POWERSHELL.encode("utf-16le")).decode("ascii")
     command = [
         str(_powershell_executable()) if runner is None else "powershell.exe",
         "-NoLogo",
@@ -474,12 +479,11 @@ def _run_task_operation(
         "-NonInteractive",
         "-ExecutionPolicy",
         "RemoteSigned",
-        "-Command",
-        "-",
+        "-EncodedCommand",
+        encoded,
     ]
     completed = selected_runner(
         command,
-        input=_TASK_POWERSHELL,
         text=True,
         capture_output=True,
         env=environment,

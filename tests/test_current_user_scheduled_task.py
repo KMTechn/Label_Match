@@ -100,6 +100,30 @@ def test_task_script_refuses_manual_start_and_task_stop() -> None:
     assert "schtasks /run" not in source.lower()
 
 
+def test_task_operation_sends_script_as_encoded_command(monkeypatch, tmp_path):
+    root = _canonical_fixture(monkeypatch, tmp_path)
+    captured: dict[str, object] = {}
+
+    def runner(command, **kwargs):
+        captured["command"] = list(command)
+        captured["input"] = kwargs.get("input")
+        return _successful_runner(command, **kwargs)
+
+    scheduled_task.install_current_user_scheduled_task(root, runner=runner)
+
+    command = captured["command"]
+    assert "-EncodedCommand" in command
+    assert command[command.index("-EncodedCommand") + 1]
+    assert captured["input"] in (None, "")
+    assert command[-2:] != ["-Command", "-"]
+
+
+def test_task_powershell_accepts_sam_account_principal_readback() -> None:
+    source = scheduled_task._TASK_POWERSHELL
+    assert "$sam = $userName.Split('\\')[-1]" in source
+    assert "-ieq $sam" in source
+
+
 @pytest.mark.parametrize(
     ("snapshot", "status", "reason"),
     [
