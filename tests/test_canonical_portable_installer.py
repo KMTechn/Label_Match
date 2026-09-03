@@ -23,6 +23,98 @@ def _source(path: Path = INSTALLER) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _run_clean_install_receipt_gate_harness(
+    tmp_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    source_root = tmp_path / "portable"
+    install_root = tmp_path / "canonical" / "current"
+    local_app_data = tmp_path / "local-app-data"
+    source_root.mkdir()
+
+    installer_source = _source()
+    sentinel = "$runId = (Get-Date).ToUniversalTime()"
+    assert sentinel in installer_source
+    assert installer_source.index(
+        "if ($null -eq $receiptSource)"
+    ) < installer_source.index(sentinel)
+    installer_source = installer_source.replace(
+        sentinel,
+        "Write-Output 'receipt_gate_status=PASS'\nexit 0\n\n" + sentinel,
+        1,
+    )
+    files = {
+        "runtime/python.exe": b"unsigned-python-fixture\n",
+        "runtime/pythonw.exe": b"unsigned-pythonw-fixture\n",
+        "app/main.py": b"raise SystemExit('must not run')\n",
+        "launch-label-match.cmd": b"@echo off\r\nexit /b 99\r\n",
+        "INSTALL_CANONICAL_PORTABLE.ps1": installer_source.encode("utf-8"),
+        "INSTALL_THIS_PC.ps1": b"throw 'placement helper must not run'\n",
+        "tools/bootstrap_integrity.ps1": b"throw 'integrity helper must not run'\n",
+        "tools/label_writer_fence.ps1": b"throw 'writer fence must not run'\n",
+    }
+    for relative, content in files.items():
+        target = source_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+    manifest = {
+        "schema": "label-match-portable-tree-v1",
+        "entrypoint": "runtime/pythonw.exe app/main.py",
+        "launcher": "launch-label-match.cmd",
+        "source_commit": "1" * 40,
+        "source_tree": "2" * 40,
+        "allowed_unsigned_app_pe": [],
+        "forbidden_package_roots": [],
+        "runtime_pythonw_sha256": hashlib.sha256(
+            files["runtime/pythonw.exe"]
+        ).hexdigest(),
+        "launcher_sha256": hashlib.sha256(
+            files["launch-label-match.cmd"]
+        ).hexdigest(),
+    }
+    (source_root / "portable-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    environment = os.environ.copy()
+    environment["KMTECH_FACTORY_INSTALL_TEST_MODE"] = "1"
+    environment["LOCALAPPDATA"] = str(local_app_data)
+    environment.pop("KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH", None)
+    environment.pop("KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256", None)
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(source_root / "INSTALL_CANONICAL_PORTABLE.ps1"),
+            "-SourceRoot",
+            str(source_root),
+            "-InstallRoot",
+            str(install_root),
+            "-AllowNoncanonicalLayoutForTest",
+            "-SkipSignatureValidationForTest",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=environment,
+    )
+
+
 def _run_rollback_relay_harness(tmp_path: Path, scenario: str) -> dict[str, object]:
     source = _source()
     start = source.index("function Relays")
@@ -200,6 +292,32 @@ def test_relay_persistent_retry_guard_rejects_actual_non_boolean_sentinels(
     assert "guard_error=External boolean has invalid type: persistent_retry" in (
         completed.stdout
     )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=RuntimeError,
+    reason=(
+        "B: the v2 receipt is RESOLVED-only after CONFLICT_CONFIRMED and "
+        "cannot represent a clean install"
+    ),
+)
+def test_clean_install_without_conflict_receipt_reaches_post_gate_sentinel(
+    tmp_path: Path,
+) -> None:
+    completed = _run_clean_install_receipt_gate_harness(tmp_path)
+
+    combined = completed.stdout + completed.stderr
+    assert not (tmp_path / "canonical" / "current").exists()
+    if completed.returncode != 0:
+        assert (
+            "Pinned conflict-resolution receipt source validation is required."
+            in combined
+        )
+        raise RuntimeError(combined)
+
+    assert completed.returncode == 0, combined
+    assert "receipt_gate_status=PASS" in completed.stdout
 
 
 def test_installer_exposes_inspection_equivalent_v2_interface() -> None:
