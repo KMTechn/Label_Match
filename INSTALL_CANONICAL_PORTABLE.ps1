@@ -821,6 +821,26 @@ function StartRaw([string]$Line) {
     return [int]$created.ProcessId
 }
 
+function Test-PristineInstallState(
+    [string]$InstallRootValue,
+    $RunSnapshotValue,
+    [object[]]$RelaySnapshotValue,
+    [object[]]$ScheduledTaskValues,
+    [string[]]$ResiduePaths
+) {
+    if (Test-Path -LiteralPath $InstallRootValue) { return $false }
+    if ([bool]$RunSnapshotValue.exists) { return $false }
+    if (@($RelaySnapshotValue).Count -ne 0) { return $false }
+    if (@($ScheduledTaskValues).Count -ne 0) { return $false }
+    foreach ($path in $ResiduePaths) {
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            throw 'Pristine-install residue path is empty.'
+        }
+        if (Test-Path -LiteralPath $path) { return $false }
+    }
+    return $true
+}
+
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
 $source = Full $SourceRoot 'SourceRoot'
 $install = Full $InstallRoot 'InstallRoot'
@@ -829,14 +849,15 @@ if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
 }
 $sourceManifest = Manifest $source $SkipSignatureValidationForTest
 $receiptSource = $null
-if (
+$conflictReceiptSupplied = (
     -not [string]::IsNullOrWhiteSpace(
         [string]$env:KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH
     ) -or
     -not [string]::IsNullOrWhiteSpace(
         [string]$env:KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256
     )
-) {
+)
+if ($conflictReceiptSupplied) {
     $receiptSource = ReceiptSource $source $sourceManifest
 }
 $wanted = Command $install
@@ -848,26 +869,94 @@ if ($PlanOnly) {
     'registry_changed=false'
     exit 0
 }
-if ($null -eq $receiptSource) {
-    throw 'Pinned conflict-resolution receipt source validation is required.'
-}
 
-$runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' +
-    [Guid]::NewGuid().ToString('N')
 $lad = Full $env:LOCALAPPDATA 'LOCALAPPDATA'
-$localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
-New-Item -ItemType Directory -Path $localAuditRoot -Force | Out-Null
-$auditPath = Join-Path $localAuditRoot "canonical-portable-$runId.json"
-$elevationLogPath = Join-Path $localAuditRoot "canonical-portable-$runId-elevated.jsonl"
-$statusRoot = Join-Path $lad 'KMTech\DirectSync\label_match\status'
-$stop = Join-Path $lad 'KMTech\DirectSync\label_match\control\label_match_user_relay.stop.json'
-$writerFenceControlRoot = Join-Path $lad 'KMTech\DirectSync\label_match\control\writer-session'
+$defaultDirectSyncRoot = Join-Path $lad 'KMTech\DirectSync\label_match'
+$defaultDataRoot = Join-Path $lad 'KMTech\Label_Match\data'
+$defaultSettingsPath = Join-Path $lad 'KMTech\Label_Match\config\app_settings.json'
+$defaultProfilePath = Join-Path $lad 'KMTech\Logistics\profiles\Label_Match\runtime-profile.json'
+$bootstrapCaPath = Join-Path $lad 'KMTech\Bootstrap\Label_Match\ca-bundle.pem'
+
+$selectedDirectSyncRootValue = [string]$env:LABEL_MATCH_DIRECT_SYNC_ROOT
+if ([string]::IsNullOrWhiteSpace($selectedDirectSyncRootValue)) {
+    $selectedDirectSyncRootValue = [string]$env:LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT
+}
+$selectedDirectSyncRoot = if ([string]::IsNullOrWhiteSpace($selectedDirectSyncRootValue)) {
+    $defaultDirectSyncRoot
+}
+else { Full $selectedDirectSyncRootValue 'Label current-user DirectSync root' }
+$selectedDataRoot = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_SAVE_DIR)) {
+    $defaultDataRoot
+}
+else { Full ([string]$env:LABEL_MATCH_SAVE_DIR) 'Label current-user data root' }
+$selectedSettingsPath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_SETTINGS_PATH)) {
+    $defaultSettingsPath
+}
+else { Full ([string]$env:LABEL_MATCH_SETTINGS_PATH) 'Label current-user settings path' }
+$selectedProfilePath = if ([string]::IsNullOrWhiteSpace([string]$env:KM_LOGISTICS_PROFILE_PATH)) {
+    $defaultProfilePath
+}
+else { Full ([string]$env:KM_LOGISTICS_PROFILE_PATH) 'Label logistics profile path' }
+
+$statusRoot = Join-Path $defaultDirectSyncRoot 'status'
+$stop = Join-Path $defaultDirectSyncRoot 'control\label_match_user_relay.stop.json'
+$writerFenceControlRoot = Join-Path $defaultDirectSyncRoot 'control\writer-session'
 $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
 $before = Snapshot
-$taskBefore = ScheduledTaskSnapshot $localAuditRoot $runId
 $old = @(Relays)
+$scheduledTasksAtPreflight = @(
+    Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        [StringComparer]::OrdinalIgnoreCase.Equals(
+            [string]$_.TaskName,
+            $CanonicalTaskName
+        ) -and [StringComparer]::OrdinalIgnoreCase.Equals([string]$_.TaskPath, '\')
+    }
+)
+$pristineResiduePaths = @(
+    # The whole DirectSync root catches credentials, identity, queue, status, and control residue.
+    $defaultDirectSyncRoot,
+    $selectedDirectSyncRoot,
+    # These explicit paths keep stop-marker and credential absence visible in the predicate contract.
+    $stop,
+    (Join-Path $selectedDirectSyncRoot 'control\label_match_user_relay.stop.json'),
+    (Join-Path $selectedDirectSyncRoot 'credential.json'),
+    # User data/settings are preserved by removal, so their presence still means the PC is not pristine.
+    $defaultDataRoot,
+    $selectedDataRoot,
+    (Split-Path -Parent $defaultSettingsPath),
+    (Split-Path -Parent $selectedSettingsPath),
+    $defaultSettingsPath,
+    $selectedSettingsPath,
+    # Profile and DPAPI secret residue live outside the DirectSync root and must be checked separately.
+    (Split-Path -Parent $defaultProfilePath),
+    $defaultProfilePath,
+    (Join-Path (Split-Path -Parent $defaultProfilePath) 'secrets\bearer-token.dpapi'),
+    (Split-Path -Parent $selectedProfilePath),
+    $selectedProfilePath,
+    (Join-Path (Split-Path -Parent $selectedProfilePath) 'secrets\bearer-token.dpapi'),
+    (Split-Path -Parent $bootstrapCaPath),
+    $bootstrapCaPath
+)
+$pristineInstall = Test-PristineInstallState `
+    $install `
+    $before `
+    $old `
+    $scheduledTasksAtPreflight `
+    $pristineResiduePaths
+if ($null -eq $receiptSource -and -not $pristineInstall) {
+    throw 'Pinned conflict-resolution receipt source validation is required.'
+}
+if ($null -eq $receiptSource) { $receiptSource = PortableInventory $source }
+
+$runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' +
+    [Guid]::NewGuid().ToString('N')
+$localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
+New-Item -ItemType Directory -Path $localAuditRoot -Force | Out-Null
+$auditPath = Join-Path $localAuditRoot "canonical-portable-$runId.json"
+$elevationLogPath = Join-Path $localAuditRoot "canonical-portable-$runId-elevated.jsonl"
+$taskBefore = ScheduledTaskSnapshot $localAuditRoot $runId
 $stopBefore = [ordered]@{ exists = $false; sha256 = ''; backup_path = '' }
 if (Test-Path -LiteralPath $stop -PathType Leaf) {
     $stopBackup = Join-Path $localAuditRoot "canonical-portable-$runId-stop-preimage.json"
@@ -1020,17 +1109,19 @@ try {
         $writerAttemptId `
         $writerTransactionId
 
-    $removalRoot = if ($existingVerified) { $install } else { $source }
-    $removalStarted = [DateTime]::UtcNow
-    Product $removalRoot '--remove-current-user-setup'
-    $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (
-        (Snapshot).exists -or
-        [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
-        [string]$removal.relay_process.status -cne 'ABSENT' -or
-        (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
-        $null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)
-    ) { throw 'Removal readback failed.' }
+    if (-not $pristineInstall) {
+        $removalRoot = if ($existingVerified) { $install } else { $source }
+        $removalStarted = [DateTime]::UtcNow
+        Product $removalRoot '--remove-current-user-setup'
+        $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (
+            (Snapshot).exists -or
+            [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
+            [string]$removal.relay_process.status -cne 'ABSENT' -or
+            (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
+            $null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)
+        ) { throw 'Removal readback failed.' }
+    }
     $unquiesced = @(UnquiescedProductWriters)
     if ($unquiesced.Count -ne 0) {
         throw 'Writer quiescence failed: a Label product writer process remains.'
@@ -1042,7 +1133,9 @@ try {
         if ((Test-Path $install -PathType Container) -and -not $existingVerified) {
             throw 'Existing canonical tree is not eligible for verified replacement.'
         }
-        $receiptSource = ReceiptSource $source $sourceManifest
+        if ($conflictReceiptSupplied) {
+            $receiptSource = ReceiptSource $source $sourceManifest
+        }
         if (
             [string]$frozenPlacement.helper_sha256 -cne
                 [string]$receiptSource.critical_file_sha256.placement_helper -or

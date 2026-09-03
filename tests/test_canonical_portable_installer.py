@@ -8,7 +8,13 @@ import subprocess
 
 import pytest
 
+from current_user_onboarding import (
+    _portable_stop_marker_release_preflight,
+    resolve_current_user_onboarding_paths,
+)
+from label_exact_clone_resolution import capture_conflict_preimage
 from tools import build_portable_release_candidate as portable_builder
+from tests.test_label_exact_clone_resolution import _paths as _exact_clone_paths
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +23,19 @@ HELPER = ROOT / "INSTALL_THIS_PC.ps1"
 INTEGRITY_HELPER = ROOT / "tools" / "bootstrap_integrity.ps1"
 WRITER_FENCE_HELPER = ROOT / "tools" / "label_writer_fence.ps1"
 WRITER_FENCE_CONTRACT = ROOT / "tools" / "label_writer_fence_contract.json"
+PRISTINE_RESIDUE_KINDS = (
+    "canonical-tree",
+    "run-autostart",
+    "relay",
+    "scheduled-task",
+    "stop-marker",
+    "credential",
+    "data-root",
+    "settings",
+    "profile",
+    "profile-secret",
+    "bootstrap-ca",
+)
 
 
 def _source(path: Path = INSTALLER) -> str:
@@ -25,11 +44,13 @@ def _source(path: Path = INSTALLER) -> str:
 
 def _run_clean_install_receipt_gate_harness(
     tmp_path: Path,
+    *,
+    extra_environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     source_root = tmp_path / "portable"
     install_root = tmp_path / "canonical" / "current"
     local_app_data = tmp_path / "local-app-data"
-    source_root.mkdir()
+    source_root.mkdir(parents=True)
 
     installer_source = _source()
     sentinel = "$runId = (Get-Date).ToUniversalTime()"
@@ -88,8 +109,18 @@ def _run_clean_install_receipt_gate_harness(
     environment = os.environ.copy()
     environment["KMTECH_FACTORY_INSTALL_TEST_MODE"] = "1"
     environment["LOCALAPPDATA"] = str(local_app_data)
-    environment.pop("KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH", None)
-    environment.pop("KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256", None)
+    for name in (
+        "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH",
+        "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256",
+        "LABEL_MATCH_DIRECT_SYNC_ROOT",
+        "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT",
+        "LABEL_MATCH_SAVE_DIR",
+        "LABEL_MATCH_SETTINGS_PATH",
+        "KM_LOGISTICS_PROFILE_PATH",
+    ):
+        environment.pop(name, None)
+    if extra_environment:
+        environment.update(extra_environment)
     return subprocess.run(
         [
             str(powershell),
@@ -113,6 +144,192 @@ def _run_clean_install_receipt_gate_harness(
         timeout=30,
         env=environment,
     )
+
+
+def _run_pristine_removal_gate_harness(
+    tmp_path: Path, *, pristine_install: bool = True
+) -> dict[str, object]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    source = _source()
+    removal_anchor = "    $removalRoot = if ($existingVerified) { $install } else { $source }"
+    removal_anchor_index = source.index(removal_anchor)
+    guarded_start = source.rfind(
+        "    if (-not $pristineInstall) {", 0, removal_anchor_index
+    )
+    block_start = (
+        guarded_start
+        if guarded_start >= 0 and removal_anchor_index - guarded_start < 256
+        else removal_anchor_index
+    )
+    block_end = source.index(
+        "    $unquiesced = @(UnquiescedProductWriters)", removal_anchor_index
+    )
+    removal_block = source[block_start:block_end]
+    harness = tmp_path / "pristine-removal-gate.ps1"
+    marker = tmp_path / "label_match_user_relay.stop.json"
+    removal_report = tmp_path / "current_user_removal.json"
+    harness.write_text(
+        rf"""
+$ErrorActionPreference = 'Stop'
+$script:removalCalls = 0
+$pristineInstall = {'$true' if pristine_install else '$false'}
+$existingVerified = $false
+$source = '{str(tmp_path / "source").replace("'", "''")}'
+$install = '{str(tmp_path / "install").replace("'", "''")}'
+$stop = '{str(marker).replace("'", "''")}'
+$removalPath = '{str(removal_report).replace("'", "''")}'
+$CanonicalTaskName = 'direct-sync-relay-label-match'
+
+function Product([string]$Root, [string]$Mode) {{
+    $script:removalCalls += 1
+    [IO.File]::WriteAllText($stop, '{{}}')
+    [IO.File]::WriteAllText(
+        $removalPath,
+        '{{"status":"PASS_DATA_PRESERVED","relay_process":{{"status":"ABSENT"}}}}'
+    )
+}}
+function Snapshot {{ return [ordered]@{{ exists = $false; kind = ''; data = '' }} }}
+function Get-ScheduledTask {{ return $null }}
+
+{removal_block}
+
+[pscustomobject][ordered]@{{
+    removal_calls = $script:removalCalls
+    marker_exists = Test-Path -LiteralPath $stop
+}} | ConvertTo-Json -Compress
+""",
+        encoding="utf-8-sig",
+    )
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return json.loads(completed.stdout)
+
+
+def _run_pristine_predicate_harness(tmp_path: Path, residue: str) -> bool:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    source = _source()
+    start = source.index("function Test-PristineInstallState")
+    end = source.index("\nif (-not $SourceRoot)", start)
+    predicate = source[start:end]
+
+    install = tmp_path / "canonical" / "current"
+    direct_sync = tmp_path / "direct-sync"
+    stop_marker = direct_sync / "control" / "label_match_user_relay.stop.json"
+    credential = direct_sync / "credential.json"
+    data_root = tmp_path / "data"
+    settings = tmp_path / "config" / "app_settings.json"
+    profile = tmp_path / "profile" / "runtime-profile.json"
+    secret = profile.parent / "secrets" / "bearer-token.dpapi"
+    bootstrap_ca = tmp_path / "bootstrap" / "ca-bundle.pem"
+    path_residue = {
+        "canonical-tree": install,
+        "stop-marker": stop_marker,
+        "credential": credential,
+        "data-root": data_root,
+        "settings": settings,
+        "profile": profile,
+        "profile-secret": secret,
+        "bootstrap-ca": bootstrap_ca,
+    }
+    if residue in path_residue:
+        selected = path_residue[residue]
+        if residue in {"canonical-tree", "data-root"}:
+            selected.mkdir(parents=True)
+        else:
+            selected.parent.mkdir(parents=True, exist_ok=True)
+            selected.write_text("residue\n", encoding="utf-8")
+
+    quoted_paths = ",\n    ".join(
+        "'" + str(path).replace("'", "''") + "'"
+        for path in (
+            direct_sync,
+            stop_marker,
+            credential,
+            data_root,
+            settings,
+            profile,
+            secret,
+            bootstrap_ca,
+        )
+    )
+    run_exists = "$true" if residue == "run-autostart" else "$false"
+    relay_values = (
+        "@([pscustomobject]@{ ProcessId = 123 })" if residue == "relay" else "@()"
+    )
+    scheduled_tasks = (
+        "@([pscustomobject]@{ TaskName = 'direct-sync-relay-label-match' })"
+        if residue == "scheduled-task"
+        else "@()"
+    )
+    harness = tmp_path / f"pristine-predicate-{residue}.ps1"
+    harness.write_text(
+        rf"""
+$ErrorActionPreference = 'Stop'
+{predicate}
+$install = '{str(install).replace("'", "''")}'
+$runSnapshot = [pscustomobject]@{{ exists = {run_exists} }}
+$relaySnapshot = {relay_values}
+$scheduledTaskSnapshot = {scheduled_tasks}
+$residuePaths = @(
+    {quoted_paths}
+)
+$result = Test-PristineInstallState `
+    -InstallRootValue $install `
+    -RunSnapshotValue $runSnapshot `
+    -RelaySnapshotValue $relaySnapshot `
+    -ScheduledTaskValues $scheduledTaskSnapshot `
+    -ResiduePaths $residuePaths
+[pscustomobject]@{{ pristine = [bool]$result }} | ConvertTo-Json -Compress
+""",
+        encoding="utf-8-sig",
+    )
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return bool(json.loads(completed.stdout)["pristine"])
 
 
 def _run_rollback_relay_harness(tmp_path: Path, scenario: str) -> dict[str, object]:
@@ -294,14 +511,6 @@ def test_relay_persistent_retry_guard_rejects_actual_non_boolean_sentinels(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=RuntimeError,
-    reason=(
-        "B: the v2 receipt is RESOLVED-only after CONFLICT_CONFIRMED and "
-        "cannot represent a clean install"
-    ),
-)
 def test_clean_install_without_conflict_receipt_reaches_post_gate_sentinel(
     tmp_path: Path,
 ) -> None:
@@ -318,6 +527,80 @@ def test_clean_install_without_conflict_receipt_reaches_post_gate_sentinel(
 
     assert completed.returncode == 0, combined
     assert "receipt_gate_status=PASS" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "residue",
+    PRISTINE_RESIDUE_KINDS,
+)
+def test_pristine_predicate_rejects_every_residue_kind(
+    tmp_path: Path, residue: str
+) -> None:
+    assert _run_pristine_predicate_harness(tmp_path, residue) is False
+
+
+def test_pristine_predicate_accepts_only_an_empty_machine(tmp_path: Path) -> None:
+    assert _run_pristine_predicate_harness(tmp_path, "none") is True
+
+
+def test_pristine_install_skips_removal_without_creating_stop_marker(
+    tmp_path: Path,
+) -> None:
+    assert _run_pristine_removal_gate_harness(tmp_path) == {
+        "removal_calls": 0,
+        "marker_exists": False,
+    }
+
+
+@pytest.mark.parametrize("residue", PRISTINE_RESIDUE_KINDS)
+def test_every_residue_kind_keeps_removal_enabled(
+    tmp_path: Path, residue: str
+) -> None:
+    pristine = _run_pristine_predicate_harness(tmp_path / "predicate", residue)
+    assert pristine is False
+    assert _run_pristine_removal_gate_harness(
+        tmp_path / "removal", pristine_install=pristine
+    ) == {
+        "removal_calls": 1,
+        "marker_exists": True,
+    }
+
+
+def test_pristine_absence_keeps_onboarding_preflight_not_required(
+    tmp_path: Path,
+) -> None:
+    environment = {"LOCALAPPDATA": str(tmp_path / "local-app-data")}
+    paths = resolve_current_user_onboarding_paths(
+        tmp_path / "canonical" / "current", environ=environment
+    )
+
+    assert _portable_stop_marker_release_preflight(
+        paths, environ=environment
+    ) == {
+        "status": "NOT_REQUIRED",
+        "marker_present": False,
+    }
+
+
+def test_exact_clone_conflict_without_receipt_remains_gated(tmp_path: Path) -> None:
+    conflict_paths = _exact_clone_paths(tmp_path / "exact-clone")
+    preimage = capture_conflict_preimage(**conflict_paths)
+    assert preimage["status"] == "CONFLICT_CONFIRMED"
+    direct_sync_root = conflict_paths["client_db_path"].parents[1]
+
+    completed = _run_clean_install_receipt_gate_harness(
+        tmp_path / "installer",
+        extra_environment={
+            "LABEL_MATCH_DIRECT_SYNC_ROOT": str(direct_sync_root),
+        },
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert "receipt_gate_status=PASS" not in completed.stdout
+    assert (
+        "Pinned conflict-resolution receipt source validation is required." in combined
+    )
 
 
 def test_installer_exposes_inspection_equivalent_v2_interface() -> None:
