@@ -518,9 +518,22 @@ function FreezePlacementHelper(
         [Security.AccessControl.InheritanceFlags]::ObjectInherit
     $propagation = [Security.AccessControl.PropagationFlags]::None
     $allow = [Security.AccessControl.AccessControlType]::Allow
+    $deny = [Security.AccessControl.AccessControlType]::Deny
+    $denyWrite = [Security.AccessControl.FileSystemRights]::WriteData -bor
+        [Security.AccessControl.FileSystemRights]::AppendData -bor
+        [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [Security.AccessControl.FileSystemRights]::Delete
     $acl = New-Object Security.AccessControl.DirectorySecurity
     $acl.SetOwner($userSid)
     $acl.SetAccessRuleProtection($true, $false)
+    [void]$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+        $userSid,
+        $denyWrite,
+        $inheritance,
+        $propagation,
+        $deny
+    )))
     [void]$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
         $userSid,
         ([Security.AccessControl.FileSystemRights]::ReadAndExecute -bor
@@ -540,6 +553,13 @@ function FreezePlacementHelper(
     }
     Set-Acl -LiteralPath $frozenRoot -AclObject $acl
     foreach ($frozenPath in @($frozenHelper, $frozenIntegrity, $frozenWriterFence)) {
+        $fileAcl = [IO.File]::GetAccessControl($frozenPath)
+        [void]$fileAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $userSid,
+            $denyWrite,
+            $deny
+        )))
+        [IO.File]::SetAccessControl($frozenPath, $fileAcl)
         $writeProbe = $null
         try {
             $writeProbe = [IO.File]::Open(

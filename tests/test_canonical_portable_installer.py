@@ -750,6 +750,165 @@ def test_code_helper_owns_privileged_placement_and_exact_rollback() -> None:
     assert INTEGRITY_HELPER.is_file()
 
 
+def _freeze_helper_functions() -> str:
+    source = _source()
+    sha_start = source.index("function Sha([string]$Path) {")
+    sha_end = source.index("function UInt64BE([uint64]$Value)")
+    freeze_start = source.index("function FreezePlacementHelper(")
+    freeze_end = source.index("\nfunction InvokeFrozenIntegrityProbe")
+    return source[sha_start:sha_end] + source[freeze_start:freeze_end]
+
+
+def _run_freeze_placement_helper_harness(tmp_path: Path) -> dict[str, object]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    source_root = tmp_path / "source"
+    tools = source_root / "tools"
+    tools.mkdir(parents=True)
+    helpers = {
+        "INSTALL_THIS_PC.ps1": HELPER,
+        "tools/bootstrap_integrity.ps1": INTEGRITY_HELPER,
+        "tools/label_writer_fence.ps1": WRITER_FENCE_HELPER,
+    }
+    hashes: dict[str, str] = {}
+    for relative, original in helpers.items():
+        target = source_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = original.read_bytes()
+        target.write_bytes(data)
+        hashes[relative] = hashlib.sha256(data).hexdigest()
+
+    audit_root = tmp_path / "audit"
+    audit_root.mkdir()
+    harness = tmp_path / "freeze-placement-helper.ps1"
+    harness.write_text(
+        rf"""
+$ErrorActionPreference = 'Stop'
+{_freeze_helper_functions()}
+$source = '{str(source_root).replace("'", "''")}'
+$audit = '{str(audit_root).replace("'", "''")}'
+$expected = [pscustomobject]@{{
+    placement_helper = '{hashes["INSTALL_THIS_PC.ps1"]}'
+    bootstrap_integrity_helper = '{hashes["tools/bootstrap_integrity.ps1"]}'
+    writer_fence_helper = '{hashes["tools/label_writer_fence.ps1"]}'
+}}
+function Set-Acl {{
+    param([string]$LiteralPath, $AclObject)
+    if ($AclObject -is [Security.AccessControl.DirectorySecurity]) {{
+        [IO.Directory]::SetAccessControl($LiteralPath, $AclObject)
+        return
+    }}
+    if ($AclObject -is [Security.AccessControl.FileSecurity]) {{
+        [IO.File]::SetAccessControl($LiteralPath, $AclObject)
+        return
+    }}
+    throw 'Unsupported ACL object.'
+}}
+$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$writeData = [int][Security.AccessControl.FileSystemRights]::WriteData
+function Inspect([string]$Path) {{
+    $acl = [IO.File]::GetAccessControl($Path)
+    $denyWrite = $false
+    $access = @()
+    $rules = $acl.GetAccessRules(
+        $true,
+        $true,
+        [type][Security.Principal.SecurityIdentifier]
+    )
+    foreach ($rule in @($rules)) {{
+        $sid = [string]$rule.IdentityReference.Value
+        $access += [ordered]@{{
+            sid = $sid
+            rights = [string]$rule.FileSystemRights
+            type = [string]$rule.AccessControlType
+            inherited = [bool]$rule.IsInherited
+        }}
+        if (
+            $sid -ceq $userSid -and
+            $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny -and
+            (([int]$rule.FileSystemRights) -band $writeData) -eq $writeData
+        ) {{ $denyWrite = $true }}
+    }}
+    $probe = $false
+    try {{
+        $stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::Read
+        )
+        $stream.Dispose()
+        $probe = $true
+    }} catch [UnauthorizedAccessException] {{}}
+    return [ordered]@{{
+        path = $Path
+        write_probe_succeeded = $probe
+        has_current_user_deny_write = $denyWrite
+        access = $access
+    }}
+}}
+$status = 'OK'
+$writable = $null
+$paths = @()
+try {{
+    $frozen = FreezePlacementHelper $source $audit 'repro-freeze' $expected
+    $writable = [bool]$frozen.current_user_writable
+    $paths = @(
+        [string]$frozen.helper_path,
+        (Join-Path ([string]$frozen.root) 'tools\bootstrap_integrity.ps1'),
+        [string]$frozen.writer_fence_path
+    )
+}}
+catch {{
+    $status = [string]$_.Exception.Message
+    $paths = @(Get-ChildItem -LiteralPath $audit -Recurse -File |
+        ForEach-Object {{ $_.FullName }})
+}}
+[pscustomobject][ordered]@{{
+    status = $status
+    current_user_writable = $writable
+    files = @($paths | ForEach-Object {{ Inspect $_ }})
+}} | ConvertTo-Json -Depth 6 -Compress
+""",
+        encoding="utf-8-sig",
+    )
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    completed = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return json.loads(completed.stdout)
+
+
+def test_frozen_placement_helper_denies_current_user_write(tmp_path: Path) -> None:
+    result = _run_freeze_placement_helper_harness(tmp_path)
+    assert result["status"] == "OK", result
+    assert result["current_user_writable"] is False, result
+    files = result["files"]
+    assert len(files) == 3, result
+    for frozen in files:
+        assert frozen["write_probe_succeeded"] is False, frozen
+        assert frozen["has_current_user_deny_write"] is True, frozen
+
+
 def test_top_level_freezes_and_pins_the_uac_helper_before_copy() -> None:
     source = _source()
 
