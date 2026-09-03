@@ -9,6 +9,8 @@ import sys
 
 
 APP_ROOT = Path(__file__).resolve().parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 SITE_PACKAGES = APP_ROOT / "site-packages"
 if str(SITE_PACKAGES) not in sys.path:
     sys.path.insert(1, str(SITE_PACKAGES))

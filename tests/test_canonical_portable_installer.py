@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -994,6 +995,33 @@ def test_product_failure_includes_child_stderr_and_delegation_env(
     output = _run_product_stderr_harness(tmp_path)
     assert "product_error=Product mode failed: --onboard-current-user/3" in output
     assert "token=repro-delegation-token-value-32ok" in output
+
+
+def test_portable_main_imports_label_match_under_isolated_python(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "main.py").write_bytes((ROOT / "portable" / "main.py").read_bytes())
+    (app / "Label_Match.py").write_text(
+        "def main() -> int:\n    return 0\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(app / "main.py"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        cwd=tmp_path,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_top_level_freezes_and_pins_the_uac_helper_before_copy() -> None:
