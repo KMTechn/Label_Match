@@ -311,6 +311,45 @@ class _NamedMutexLease:
     def __init__(self, handle: int, *, abandoned: bool = False) -> None:
         self.handle = handle
         self.abandoned = abandoned
+        self.owned = bool(handle)
+
+    def suspend(self) -> None:
+        """Release ownership without closing the named-mutex handle."""
+
+        if not self.handle or not self.owned:
+            return
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not kernel32.ReleaseMutex(ctypes.c_void_p(self.handle)):
+            raise WriterFenceError(
+                "WRITER_MUTEX_RELEASE_FAILED",
+                "writer admission mutex ownership could not be released",
+            )
+        self.owned = False
+
+    def resume(self, timeout_seconds: float) -> None:
+        """Reacquire a suspended named-mutex handle on the same thread."""
+
+        if not self.handle or self.owned:
+            return
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        milliseconds = max(0, min(0xFFFFFFFE, int(float(timeout_seconds) * 1000)))
+        result = int(
+            kernel32.WaitForSingleObject(ctypes.c_void_p(self.handle), milliseconds)
+        )
+        if result in {0, 0x80}:
+            self.owned = True
+            self.abandoned = result == 0x80
+            return
+        if result == 0x102:
+            raise WriterFencedError(
+                "WRITER_GATE_TIMEOUT",
+                "writer admission mutex is held by a deployment operation",
+            )
+        raise WriterFenceError(
+            "WRITER_MUTEX_WAIT_FAILED", "writer mutex wait failed"
+        )
 
     def release(self) -> None:
         handle, self.handle = self.handle, 0
@@ -318,8 +357,10 @@ class _NamedMutexLease:
             return
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         try:
-            kernel32.ReleaseMutex(ctypes.c_void_p(handle))
+            if self.owned:
+                kernel32.ReleaseMutex(ctypes.c_void_p(handle))
         finally:
+            self.owned = False
             kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
@@ -394,6 +435,33 @@ def _delegation_matches(
     )
 
 
+def _admitted_writer_sources(
+    root: Path,
+    *,
+    source: str,
+    environ: Mapping[str, str],
+) -> frozenset[str] | None:
+    try:
+        active = active_fence(root, environ=environ)
+    except WriterFenceError as exc:
+        raise WriterFencedError(
+            exc.code,
+            "writer denied because the active fence is not exact",
+        ) from exc
+    if active is not None and not _delegation_matches(
+        active,
+        source=source,
+        environ=environ,
+    ):
+        raise WriterFencedError(
+            "ACTIVE_WRITER_FENCE",
+            "writer denied by the active deployment fence",
+        )
+    return (
+        frozenset(active["delegated_sources"]) if active is not None else None
+    )
+
+
 @contextmanager
 def writer_admission(
     source: str,
@@ -444,53 +512,141 @@ def writer_admission(
                 "WRITER_GATE_ABANDONED",
                 "writer admission mutex ownership was abandoned",
             )
-        try:
-            active = active_fence(root, environ=values)
-        except WriterFenceError as exc:
-            raise WriterFencedError(
-                exc.code,
-                "writer denied because the active fence is not exact",
-            ) from exc
-        if active is not None and not _delegation_matches(
-            active,
+        allowed_sources = _admitted_writer_sources(
+            root,
             source=selected_source,
             environ=values,
-        ):
-            raise WriterFencedError(
-                "ACTIVE_WRITER_FENCE",
-                "writer denied by the active deployment fence",
-            )
+        )
     except WriterFenceError:
         if lease is not None:
             lease.release()
         raise
 
     _WRITER_LOCAL.depth = 1
-    _WRITER_LOCAL.allowed_sources = (
-        frozenset(active["delegated_sources"]) if active is not None else None
-    )
+    _WRITER_LOCAL.allowed_sources = allowed_sources
+    _WRITER_LOCAL.lease = lease
+    _WRITER_LOCAL.source = selected_source
+    _WRITER_LOCAL.control_root = root
+    _WRITER_LOCAL.environ = values
+    _WRITER_LOCAL.timeout_seconds = float(timeout_seconds)
     try:
         yield
     finally:
         _WRITER_LOCAL.depth = 0
         _WRITER_LOCAL.allowed_sources = None
+        _WRITER_LOCAL.lease = None
+        _WRITER_LOCAL.source = None
+        _WRITER_LOCAL.control_root = None
+        _WRITER_LOCAL.environ = None
+        _WRITER_LOCAL.timeout_seconds = None
         lease.release()
 
 
 P = ParamSpec("P")
 R = TypeVar("R")
+_PROBE_ONLY_WRITER_SINK = (
+    "relay_child_launch",
+    "user_relay.run_session_direct_sync_once",
+)
 
 
-def writer_sink(source: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Guard and mark one concrete sink for the code-derived inventory."""
+def _probe_then_call(
+    source: str,
+    function: Callable[P, R],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> R:
+    """Probe admission, release any parent lease, then call the child launcher."""
+
+    outer_depth = int(getattr(_WRITER_LOCAL, "depth", 0))
+    with writer_admission(source):
+        pass
+    if not outer_depth:
+        return function(*args, **kwargs)
+
+    lease = getattr(_WRITER_LOCAL, "lease", None)
+    outer_source = str(getattr(_WRITER_LOCAL, "source", "") or "")
+    root = getattr(_WRITER_LOCAL, "control_root", None)
+    values = getattr(_WRITER_LOCAL, "environ", None)
+    timeout_seconds = getattr(_WRITER_LOCAL, "timeout_seconds", None)
+    allowed_sources = getattr(_WRITER_LOCAL, "allowed_sources", None)
+    if (
+        not isinstance(lease, _NamedMutexLease)
+        or not outer_source
+        or not isinstance(root, Path)
+        or values is None
+        or timeout_seconds is None
+    ):
+        raise WriterFencedError(
+            "WRITER_PROBE_CONTEXT_INVALID",
+            "probe-only admission cannot release an inexact parent writer context",
+        )
+
+    lease.suspend()
+    _WRITER_LOCAL.depth = 0
+    _WRITER_LOCAL.allowed_sources = None
+    _WRITER_LOCAL.lease = None
+    _WRITER_LOCAL.source = None
+    _WRITER_LOCAL.control_root = None
+    _WRITER_LOCAL.environ = None
+    _WRITER_LOCAL.timeout_seconds = None
+    resumed_sources = allowed_sources
+    try:
+        return function(*args, **kwargs)
+    finally:
+        try:
+            lease.resume(float(timeout_seconds))
+            if lease.abandoned:
+                raise WriterFencedError(
+                    "WRITER_GATE_ABANDONED",
+                    "writer admission mutex ownership was abandoned",
+                )
+            resumed_sources = _admitted_writer_sources(
+                root,
+                source=outer_source,
+                environ=values,
+            )
+        finally:
+            _WRITER_LOCAL.depth = outer_depth
+            _WRITER_LOCAL.allowed_sources = resumed_sources
+            _WRITER_LOCAL.lease = lease
+            _WRITER_LOCAL.source = outer_source
+            _WRITER_LOCAL.control_root = root
+            _WRITER_LOCAL.environ = values
+            _WRITER_LOCAL.timeout_seconds = float(timeout_seconds)
+
+
+def writer_sink(
+    source: str,
+    *,
+    probe_only: bool = False,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Guard one sink with a spanning lease or its exact child-launch probe."""
 
     selected_source = str(source or "").strip()
     if not selected_source:
         raise ValueError("writer sink source is required")
 
     def decorate(function: Callable[P, R]) -> Callable[P, R]:
+        sink_id = f"{function.__module__}.{function.__qualname__}"
+        approved_probe = (selected_source, sink_id) == _PROBE_ONLY_WRITER_SINK
+        if probe_only and not approved_probe:
+            raise WriterFencedError(
+                "WRITER_PROBE_ONLY_SINK_NOT_ALLOWED",
+                "probe-only admission is not approved for this writer sink",
+            )
+
         @wraps(function)
         def guarded(*args: P.args, **kwargs: P.kwargs) -> R:
+            # This exact sink is selected here instead of changing its deployed,
+            # code-derived inventory source bytes and rotating the inventory pin.
+            if approved_probe:
+                return _probe_then_call(
+                    selected_source,
+                    function,
+                    args,
+                    kwargs,
+                )
             with writer_admission(selected_source):
                 return function(*args, **kwargs)
 
