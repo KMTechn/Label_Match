@@ -367,6 +367,112 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
     return $value
 }
 
+function Assert-WriterTransition([string]$Source, [string]$Installed) {
+    # Run only the attested candidate's scanner. Never import installed code.
+    # AST equality admits comments/line movement, not changed runtime semantics.
+    $probe = @'
+import ast, hashlib, json, pathlib, re, sys
+source, installed = map(pathlib.Path, sys.argv[1:])
+sys.path.insert(0, str(source / 'app'))
+from writer_sink_inventory import derive_writer_sink_inventory, writer_sink_inventory_sha256, _powershell_inventory
+
+def identity(root):
+    path = root / 'app/writer_session_fence.py'
+    tree = ast.parse(path.read_text(encoding='utf-8-sig'))
+    pins = [node for node in tree.body if isinstance(node, ast.Assign) and
+            any(isinstance(target, ast.Name) and target.id == 'WRITER_INVENTORY_SHA256' for target in node.targets)]
+    if len(pins) != 1 or not isinstance(pins[0].value, ast.Constant) or not isinstance(pins[0].value.value, str):
+        raise ValueError('WRITER_TRANSITION_PIN_INVALID')
+    pin = pins[0].value.value
+    helper = (root / 'tools/label_writer_fence.ps1').read_text(encoding='utf-8-sig')
+    helper_pins = re.findall(r"(?m)^\$Script:LabelWriterFenceInventorySha256 = '([0-9a-f]{64})'\s*$", helper)
+    rows = derive_writer_sink_inventory(root / 'app')
+    rows += _powershell_inventory(root / 'INSTALL_THIS_PC.ps1', root)
+    rows.sort(key=lambda row: (row.source, row.source_path.casefold(), row.source_line, row.qualified_name))
+    if helper_pins != [pin] or writer_sink_inventory_sha256(rows) != pin:
+        raise ValueError('WRITER_TRANSITION_PIN_INVALID')
+    membership = [(row.source, row.source_path, row.qualified_name, row.guard_kind) for row in rows]
+    return pin, membership
+
+def files(root, directory):
+    return {path.relative_to(root).as_posix(): path for path in (root / directory).rglob('*') if path.is_file()}
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').digest()
+
+def syntax(path, relative):
+    tree = ast.parse(path.read_text(encoding='utf-8-sig'))
+    if relative == 'app/writer_session_fence.py':
+        # The only supported executable delta is this exact test-root isolation
+        # branch. It is unreachable without the explicit test-mode/root pair;
+        # ordinary production admission remains AST-identical to the preimage.
+        test_guard = ast.parse('if (str((os.environ if environ is None else environ).get(TEST_MODE_ENV) or "") == "1" and str((os.environ if environ is None else environ).get(CONTROL_ROOT_OVERRIDE_ENV) or "").strip()):\n    return f"{WRITER_MUTEX_NAME}.{_sha256_text(selected)[:16]}"').body[0]
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'WRITER_INVENTORY_SHA256' for target in node.targets):
+                node.value = ast.Constant(value='validated-inventory-pin')
+            if isinstance(node, ast.FunctionDef) and node.name == 'writer_admission_mutex_name' and len(node.body) > 1:
+                if ast.dump(node.body[1], include_attributes=False) == ast.dump(test_guard, include_attributes=False):
+                    del node.body[1]
+    return ast.dump(tree, include_attributes=False)
+
+candidate_pin, candidate_sources = identity(source)
+installed_pin, installed_sources = identity(installed)
+if candidate_sources != installed_sources:
+    raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+for directory in ('app', 'runtime'):
+    left, right = files(source, directory), files(installed, directory)
+    if left.keys() != right.keys():
+        raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+    for relative, path in left.items():
+        other = right[relative]
+        if digest(path) == digest(other):
+            continue
+        if directory == 'app' and path.suffix == '.py' and not relative.startswith('app/site-packages/'):
+            if syntax(path, relative) == syntax(other, relative):
+                continue
+        raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: ' + relative)
+for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence_contract.json'):
+    if (source / relative).read_bytes() != (installed / relative).read_bytes():
+        raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: ' + relative)
+print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility='UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')))
+'@
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = Join-Path $Source 'runtime\python.exe'
+    # Windows argv quoting; the probe is literal source, never shell input.
+    $startInfo.Arguments = '-I -B -c "' + $probe.Replace('"', '\"') + '" ' +
+        (Arg $Source) + ' ' + (Arg $Installed)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw ('Installed writer transition is unsupported: ' + $stderr.Trim())
+        }
+        return $stdout | ConvertFrom-Json
+    }
+    finally { $process.Dispose() }
+}
+
+function ReplacementPreimage([string]$InstallRootValue, $ExpectedInventory, [string[]]$Before) {
+    $newBackups = @(Get-ChildItem -LiteralPath (Split-Path -Parent $InstallRootValue) -Directory -Force |
+        Where-Object { $_.Name -like '.current.rollback.*' -and $_.FullName -cnotin $Before })
+    if ($newBackups.Count -eq 0) { return '' }
+    if ($newBackups.Count -ne 1) { throw 'Replacement code preimage is ambiguous.' }
+    $root = [string]$newBackups[0].FullName
+    [void](Manifest $root $SkipSignatureValidationForTest)
+    $inventory = PortableInventory $root
+    if ([string]$inventory.sha256 -cne [string]$ExpectedInventory.sha256) {
+        throw 'Replacement code preimage differs from the validated installed identity.'
+    }
+    return $root
+}
+
 function Snapshot {
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($RunKey, $false)
     if ($null -eq $key) { return [ordered]@{ exists = $false; kind = ''; data = '' } }
@@ -1030,6 +1136,25 @@ if ($null -eq $receiptSource) { $receiptSource = PortableInventory $source }
 
 $runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' +
     [Guid]::NewGuid().ToString('N')
+$placement = 'INSTALL_REQUIRED'
+$existingVerified = $false
+$installedPreimageInventory = $null
+$candidate = $sourceManifest
+if (Test-Path -LiteralPath $install) {
+    $candidate = Manifest $install $SkipSignatureValidationForTest
+    InvokeFrozenIntegrityProbe ([pscustomobject]@{
+        root = $source
+        integrity_sha256 = [string]$receiptSource.critical_file_sha256.bootstrap_integrity_helper
+    }) $install
+    $installedPreimageInventory = PortableInventory $install
+    $existingVerified = $true
+    if ([string]$candidate.source_commit -ceq [string]$sourceManifest.source_commit) {
+        $placement = 'REUSED_VERIFIED'
+    }
+}
+$writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $install } else { $source })
+# All compatibility checks precede snapshots on disk and the active fence: even
+# publishing an undelegated fence can stop a resident preimage relay.
 $localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
 New-Item -ItemType Directory -Path $localAuditRoot -Force | Out-Null
 $auditPath = Join-Path $localAuditRoot "canonical-portable-$runId.json"
@@ -1077,6 +1202,15 @@ $audit = [ordered]@{
     }
     stop_marker_path = $stop
     stop_marker_preimage = $stopBefore
+    writer_transition = [ordered]@{
+        compatibility = [string]$writerTransition.compatibility
+        installed_inventory_sha256 = [string]$writerTransition.installed_inventory_sha256
+        candidate_inventory_sha256 = [string]$writerTransition.candidate_inventory_sha256
+        installed_source_commit = if ($existingVerified) { [string]$candidate.source_commit } else { '' }
+        candidate_source_commit = [string]$sourceManifest.source_commit
+        installed_portable_inventory_sha256 = if ($existingVerified) { [string]$installedPreimageInventory.sha256 } else { '' }
+        candidate_portable_inventory_sha256 = [string]$receiptSource.sha256
+    }
     rollback = [ordered]@{ available = $true; applied = $false; runtime_restored = $false }
 }
 Save $auditPath $audit
@@ -1088,24 +1222,6 @@ $frozenPlacement = FreezePlacementHelper `
     $receiptSource.critical_file_sha256
 . ([string]$frozenPlacement.writer_fence_path)
 
-$placement = 'INSTALL_REQUIRED'
-$existingVerified = $false
-if (Test-Path $install -PathType Container) {
-    try {
-        $candidate = Manifest $install $SkipSignatureValidationForTest
-        InvokeFrozenIntegrityProbe $frozenPlacement $install
-        $existingVerified = $true
-        if (
-            [string]$candidate.source_commit -ceq [string]$sourceManifest.source_commit -and
-            (Sha (Join-Path $install 'runtime\pythonw.exe')) -ceq
-                (Sha (Join-Path $source 'runtime\pythonw.exe'))
-        ) { $placement = 'REUSED_VERIFIED' }
-    }
-    catch {
-        $existingVerified = $false
-        $placement = 'INSTALL_REQUIRED'
-    }
-}
 $writerSessionId = [Guid]::NewGuid().ToString('N')
 $writerAttemptId = [Guid]::NewGuid().ToString('N')
 $writerTransactionId = [Guid]::NewGuid().ToString('N')
@@ -1113,6 +1229,17 @@ $writerDelegationToken = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().To
 $writerStartedAt = [DateTime]::UtcNow.ToString('o')
 $writerOrchestratorSha256 = Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1')
 $writerContractSha256 = [string]$frozenPlacement.writer_fence_sha256
+$Script:LabelWriterFenceInstalledIdentity = [pscustomobject]@{
+    session_id = $writerSessionId
+    attempt_id = $writerAttemptId
+    replacement_transaction_id = $writerTransactionId
+    orchestrator_sha256 = $writerOrchestratorSha256
+    writer_contract_sha256 = $writerContractSha256
+    inventory_sha256 = [string]$writerTransition.installed_inventory_sha256
+}
+if ([string]$writerTransition.candidate_inventory_sha256 -cne $Script:LabelWriterFenceInventorySha256) {
+    throw 'Candidate writer inventory differs from the frozen helper.'
+}
 $writerAuthority = $null
 $writerFenceStarted = $false
 $writerEnvironmentBefore = @(
@@ -1147,8 +1274,9 @@ $rollbackSources = @(
     'user_relay_stop_request'
 )
 $mutated = $false
+$replacementRollbackRoot = ''
+$replacementBackupsBefore = @()
 try {
-    $mutated = $true
     $writerAuthority = Enter-LabelWriterSessionAuthority `
         -SessionId $writerSessionId `
         -AttemptId $writerAttemptId `
@@ -1166,6 +1294,7 @@ try {
         -WriterContractSha256 $writerContractSha256 `
         -AuthorityOwnedByCaller)
     $writerFenceStarted = $true
+    $mutated = $true
     $audit.writer_fence = [ordered]@{
         status = 'QUIESCING'
         session_id = $writerSessionId
@@ -1193,6 +1322,9 @@ try {
 
     if (-not $pristineInstall) {
         $removalRoot = if ($existingVerified) { $install } else { $source }
+        if ($existingVerified) {
+            [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+        }
         $removalStarted = [DateTime]::UtcNow
         Product $removalRoot '--remove-current-user-setup'
         $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -1210,6 +1342,7 @@ try {
     }
     $audit.writer_fence.status = 'QUIESCED'
     Save $auditPath $audit
+    [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $false)
 
     if ($placement -eq 'INSTALL_REQUIRED') {
         if ((Test-Path $install -PathType Container) -and -not $existingVerified) {
@@ -1255,7 +1388,14 @@ try {
             ReplaceExistingVerifiedPortable = [bool]$existingVerified
             DryRun = $false
         }
+        if ($existingVerified) {
+            $replacementBackupsBefore = @(Get-ChildItem -LiteralPath (Split-Path -Parent $install) -Directory -Force |
+                Where-Object { $_.Name -like '.current.rollback.*' } | ForEach-Object { $_.FullName })
+        }
         $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
+        if ($existingVerified) {
+            $replacementRollbackRoot = ReplacementPreimage $install $installedPreimageInventory $replacementBackupsBefore
+        }
         if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
         $placement = 'PASS'
     }
@@ -1376,8 +1516,33 @@ try {
 }
 catch {
     $original = $_
+    if (-not $mutated) { throw $original }
     try {
         if ($mutated) {
+            if (-not $writerFenceStarted) {
+                # Final audit persistence can fail after the success path released
+                # its fence. Reacquire the same session before stopping/restoring
+                # any runtime or code; all existing phase checks still apply.
+                if ($null -eq $writerAuthority) {
+                    $writerAuthority = Enter-LabelWriterSessionAuthority `
+                        -SessionId $writerSessionId `
+                        -AttemptId $writerAttemptId `
+                        -OrchestratorSha256 $writerOrchestratorSha256 `
+                        -ReplacementTransactionId $writerTransactionId `
+                        -WriterContractSha256 $writerContractSha256
+                }
+                [void](Start-LabelWriterFence `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -SessionStartedAtUtc $writerStartedAt `
+                    -OrchestratorSha256 $writerOrchestratorSha256 `
+                    -WriterContractSha256 $writerContractSha256 `
+                    -AuthorityOwnedByCaller)
+                $writerFenceStarted = $true
+            }
             if ($writerFenceStarted) {
                 [void](Set-LabelWriterFenceDelegation `
                     -ControlRoot $writerFenceControlRoot `
@@ -1398,8 +1563,68 @@ catch {
                 $install
             }
             else { $source }
+            $rollbackUsesInstalled = $false
+            if ($existingVerified -and (Same $rollbackProductRoot $install)) {
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $rollbackInventory = PortableInventory $install
+                if ([string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
+                    $rollbackUsesInstalled = $true
+                }
+                elseif ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
+                    throw 'Rollback tree differs from both validated identities.'
+                }
+            }
+            if ($writerFenceStarted) {
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $rollbackUsesInstalled)
+            }
             Product $rollbackProductRoot '--remove-current-user-setup'
             [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+            if ($existingVerified -and -not $rollbackUsesInstalled) {
+                if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
+                    throw 'Exact installed code preimage is unavailable for rollback.'
+                }
+                # Reuse the same pinned placement helper and its verified-tree
+                # replacement contract, now with the already validated preimage.
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $false)
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources @('canonical_placement') `
+                    -LifetimeSeconds 600)
+                # INSTALL_THIS_PC consumes a release tree: its manifest metrics
+                # exclude the installed bootstrap record. Reconstruct that exact
+                # release view without changing or deleting the retained backup.
+                $rollbackSource = Join-Path (Split-Path -Parent $auditPath) ($writerTransactionId + '-rollback-source')
+                if (Test-Path -LiteralPath $rollbackSource) { throw 'Rollback source staging already exists.' }
+                [void](New-Item -ItemType Directory -Path $rollbackSource)
+                $backupPrefix = $replacementRollbackRoot.TrimEnd('\') + '\'
+                foreach ($file in @(Get-ChildItem -LiteralPath $replacementRollbackRoot -File -Force -Recurse)) {
+                    $relative = $file.FullName.Substring($backupPrefix.Length)
+                    if ($relative -ieq 'bootstrap-integrity.json') { continue }
+                    $destination = Join-Path $rollbackSource $relative
+                    [void](New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force)
+                    Copy-Item -LiteralPath $file.FullName -Destination $destination
+                }
+                $restoreParameters = $helperParameters.Clone()
+                $restoreParameters.SourceRoot = $rollbackSource
+                $restoreParameters.ExpectedSourceAggregateSha256 = [string]$installedPreimageInventory.bootstrap_aggregate_sha256
+                $restoreParameters.ExpectedSourceFileCount = [int]$installedPreimageInventory.file_count
+                $restoreParameters.ExpectedSourceByteCount = [uint64]$installedPreimageInventory.byte_count
+                $restoreExitCode = InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters
+                if ($restoreExitCode -ne 0) { throw "Exact code rollback failed: $restoreExitCode" }
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $restoredInventory = PortableInventory $install
+                if ([string]$restoredInventory.sha256 -cne [string]$installedPreimageInventory.sha256) {
+                    throw 'Restored code differs from the validated installed preimage.'
+                }
+                $audit.rollback.code_placement = 'RESTORED_PREIMAGE'
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+            }
+            $audit.rollback.code_restored = $existingVerified
         }
         $ownerMutationLease = $null
         try {
@@ -1426,13 +1651,15 @@ catch {
             }
         }
         if ($writerFenceStarted) {
-            [void](Stop-LabelWriterFence `
+            $releasedFence = Stop-LabelWriterFence `
                 -ControlRoot $writerFenceControlRoot `
                 -SessionId $writerSessionId `
                 -AttemptId $writerAttemptId `
                 -ReplacementTransactionId $writerTransactionId `
-                -TimeoutMilliseconds 90000)
+                -TimeoutMilliseconds 90000
             $writerFenceStarted = $false
+            $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
+            $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
         }
         foreach ($item in $old) {
             $newPid = StartRaw ([string]$item.CommandLine)
@@ -1488,4 +1715,5 @@ finally {
         Exit-LabelWriterSessionAuthority $writerAuthority
         $writerAuthority = $null
     }
+    $Script:LabelWriterFenceInstalledIdentity = $null
 }

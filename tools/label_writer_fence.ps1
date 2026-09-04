@@ -6,6 +6,7 @@ $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
 $Script:LabelWriterFenceInventorySha256 = 'b53f1a27bb3b8638ee8bae2d534397cf37924a5cc293875f481ed8cf0c25e109'
+$Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
     'schema','status','app_id','session_id','attempt_id','replacement_transaction_id',
@@ -245,7 +246,7 @@ function Read-LabelWriterFence {
         -not (Test-LabelWriterFenceHex ([string]$payload.replacement_transaction_id) 32) -or
         -not (Test-LabelWriterFenceHex ([string]$payload.orchestrator_sha256) 64) -or
         -not (Test-LabelWriterFenceHex ([string]$payload.writer_contract_sha256) 64) -or
-        [string]$payload.writer_inventory_sha256 -cne $Script:LabelWriterFenceInventorySha256 -or
+        -not (Test-LabelWriterFenceInventoryIdentity $payload) -or
         $payload.secret_values_recorded -isnot [bool] -or [bool]$payload.secret_values_recorded -or
         $payload.delegated_sources -isnot [Object[]] -or
         @($payload.delegated_sources | Where-Object { $_ -isnot [string] }).Count -ne 0
@@ -275,6 +276,51 @@ function Read-LabelWriterFence {
         [void](ConvertTo-LabelWriterFenceUtc ([string]$payload.delegation_expires_at_utc))
     }
     return $payload
+}
+
+function Test-LabelWriterFenceInventoryIdentity($Payload) {
+    if ([string]$Payload.writer_inventory_sha256 -ceq $Script:LabelWriterFenceInventorySha256) { return $true }
+    $installed = $Script:LabelWriterFenceInstalledIdentity
+    return (
+        $null -ne $installed -and
+        (Test-LabelWriterFenceHex ([string]$installed.inventory_sha256) 64) -and
+        [string]$Payload.writer_inventory_sha256 -ceq [string]$installed.inventory_sha256 -and
+        [string]$Payload.session_id -ceq [string]$installed.session_id -and
+        [string]$Payload.attempt_id -ceq [string]$installed.attempt_id -and
+        [string]$Payload.replacement_transaction_id -ceq [string]$installed.replacement_transaction_id -and
+        [string]$Payload.orchestrator_sha256 -ceq [string]$installed.orchestrator_sha256 -and
+        [string]$Payload.writer_contract_sha256 -ceq [string]$installed.writer_contract_sha256
+    )
+}
+
+function Set-LabelWriterFenceInstalledTree(
+    [string]$ControlRoot,
+    [string]$SessionId,
+    [string]$AttemptId,
+    [string]$ReplacementTransactionId,
+    [bool]$InstalledTree
+) {
+    $lease = Enter-LabelWriterAdmission $ControlRoot
+    try {
+        $active = Assert-LabelWriterFenceOwner $ControlRoot $SessionId $AttemptId $ReplacementTransactionId
+        $installed = $Script:LabelWriterFenceInstalledIdentity
+        if (
+            $null -eq $installed -or
+            [string]$installed.session_id -cne $SessionId -or
+            [string]$installed.attempt_id -cne $AttemptId -or
+            [string]$installed.replacement_transaction_id -cne $ReplacementTransactionId -or
+            [string]$installed.orchestrator_sha256 -cne [string]$active.orchestrator_sha256 -or
+            [string]$installed.writer_contract_sha256 -cne [string]$active.writer_contract_sha256
+        ) { throw 'LABEL_WRITER_FENCE_INSTALLED_IDENTITY_UNBOUND' }
+        $active.writer_inventory_sha256 = if ($InstalledTree) {
+            [string]$installed.inventory_sha256
+        } else { $Script:LabelWriterFenceInventorySha256 }
+        if (-not (Test-LabelWriterFenceInventoryIdentity $active)) {
+            throw 'LABEL_WRITER_FENCE_BINDING_INVALID'
+        }
+        return Write-LabelWriterFenceAtomic $ControlRoot $active
+    }
+    finally { Exit-LabelWriterAdmission $lease }
 }
 
 function Write-LabelWriterFenceAtomic([string]$ControlRoot, $Payload) {
@@ -478,11 +524,11 @@ function Stop-LabelWriterFence {
     )
     $lease = Enter-LabelWriterAdmission $ControlRoot $TimeoutMilliseconds
     try {
-        [void](Assert-LabelWriterFenceOwner `
+        $active = Assert-LabelWriterFenceOwner `
             -ControlRoot $ControlRoot `
             -SessionId $SessionId `
             -AttemptId $AttemptId `
-            -ReplacementTransactionId $ReplacementTransactionId)
+            -ReplacementTransactionId $ReplacementTransactionId
         $path = Get-LabelWriterFenceActivePath $ControlRoot
         Remove-Item -LiteralPath $path -Force
         if (Test-Path -LiteralPath $path) { throw 'LABEL_WRITER_FENCE_CLEAR_READBACK_FAILED' }
@@ -491,7 +537,7 @@ function Stop-LabelWriterFence {
             session_id=$SessionId
             attempt_id=$AttemptId
             replacement_transaction_id=$ReplacementTransactionId
-            writer_inventory_sha256=$Script:LabelWriterFenceInventorySha256
+            writer_inventory_sha256=[string]$active.writer_inventory_sha256
         }
     }
     finally { Exit-LabelWriterAdmission $lease }

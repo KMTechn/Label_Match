@@ -256,6 +256,29 @@ def test_powershell_helper_inventory_pin_matches_python_writer_inventory() -> No
     ) in helper
 
 
+def test_explicit_guarded_root_uses_derived_name_without_allocating_production_mutex(tmp_path: Path) -> None:
+    environment = {
+        "LOCALAPPDATA": str(tmp_path / "LocalAppData"),
+        fence.TEST_MODE_ENV: "1",
+        fence.CONTROL_ROOT_OVERRIDE_ENV: str(tmp_path / "control"),
+    }
+    root = fence.canonical_control_root(environment)
+    expected = fence.WRITER_MUTEX_NAME + "." + hashlib.sha256(
+        _independent_normalized_control_root(str(root)).encode("utf-8")
+    ).hexdigest()[:16]
+    assert fence.writer_admission_mutex_name(root, environ=environment) == expected
+    assert expected != fence.WRITER_MUTEX_NAME
+    environment.pop(fence.TEST_MODE_ENV)
+    with pytest.raises(fence.WriterFenceError, match="test-only"):
+        fence.canonical_control_root(environment)
+
+
+def test_ordinary_production_root_keeps_literal_mutex_name_without_allocating_it(tmp_path: Path) -> None:
+    environment = {"LOCALAPPDATA": str(tmp_path / "LocalAppData")}
+    root = fence.canonical_control_root(environment)
+    assert fence.writer_admission_mutex_name(root, environ=environment) == fence.WRITER_MUTEX_NAME
+
+
 def test_code_derived_inventory_is_exactly_bound_and_covers_all_sink_families() -> None:
     inventory = derive_writer_sink_inventory(ROOT)
     sources = {row.source for row in inventory}

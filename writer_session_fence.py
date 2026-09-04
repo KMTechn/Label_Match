@@ -152,6 +152,12 @@ def writer_admission_mutex_name(
     environ: Mapping[str, str] | None = None,
 ) -> str:
     selected = _normalized_control_root(control_root)
+    if (
+        str((os.environ if environ is None else environ).get(TEST_MODE_ENV) or "") == "1"
+        and str((os.environ if environ is None else environ).get(CONTROL_ROOT_OVERRIDE_ENV) or "").strip()
+    ):
+        # Keep explicitly guarded tests on the public path-derived mutex name.
+        return f"{WRITER_MUTEX_NAME}.{_sha256_text(selected)[:16]}"
     try:
         production = _normalized_control_root(canonical_control_root(environ))
     except WriterFenceError:
