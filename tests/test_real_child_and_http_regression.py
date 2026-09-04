@@ -21,6 +21,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import time
 from typing import Any, Iterator, Mapping
 from urllib.parse import urlsplit
 
@@ -59,6 +60,10 @@ CAPABILITIES_PATH = "/logistics/api/v1/capabilities"
 LEASE_EXPIRES_AT = "2099-01-01T00:00:00Z"
 BARCODE = "LM-REAL-HTTP-BC-1"
 CSV_NAME = "포장실작업이벤트로그_real_http_20260904.csv"
+GUI_WRITER_SOURCE = "gui_package_enqueue"
+GUI_ADMISSION_TIMEOUT_SECONDS = 5.0
+CONTENTION_SAMPLE_INTERVAL_SECONDS = 0.05
+CONTENTION_DEADLINE_SECONDS = 90.0
 
 
 def _now() -> datetime:
@@ -881,3 +886,242 @@ def test_upload_source_file_real_session_fails_closed_when_loopback_is_down(
     assert result.retryable is True
     assert result.error_code == "transport_error"
     assert not server.source_file_requests
+
+
+def test_nonempty_relay_child_cycle_does_not_deny_concurrent_gui_writer_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measure what a representative nonempty relay cycle does to ordinary writes.
+
+    The relay child holds the same admission mutex the GUI sinks use, for the
+    whole of its ``main()``.  A finite relay transaction is not the same defect
+    as an unbounded relay-loop hold, so this samples the real ordinary-writer
+    admission the GUI would perform, at the deployed 5.0 s timeout, while a real
+    child drains a real nonempty queue over real loopback HTTPS.
+    """
+
+    roots = _isolate_writer_and_user_roots(tmp_path, monkeypatch)
+    _install_loopback_host_alias(monkeypatch, LOOPBACK_HOST)
+    tls_dir = tmp_path / "tls"
+    ca_path, cert_path, key_path = _write_tls_material(tls_dir, LOOPBACK_HOST)
+    direct_sync_root = tmp_path / "direct-sync"
+    scan_dir = tmp_path / "label-data"
+    mutex_name = fence.writer_admission_mutex_name(
+        roots["control_root"], environ=os.environ
+    )
+    samples: list[dict[str, Any]] = []
+    denials: list[str] = []
+
+    with _loopback_https_server(cert_path, key_path) as server:
+        port = int(server.server_address[1])
+        csv_path = _prepare_direct_sync_root(
+            direct_sync_root,
+            endpoint_url=_endpoint_url(port),
+            scan_dir=scan_dir,
+        )
+        assert csv_path.stat().st_size > 0, "the relay cycle under test must be nonempty"
+        child = subprocess.Popen(
+            _relay_command(
+                direct_sync_root=direct_sync_root,
+                scan_dir=scan_dir,
+                ca_path=ca_path,
+                worker_id="direct-sync-relay-label-match-gui-contention",
+            ),
+            cwd=ROOT,
+            env=_child_environment(roots["control_root"], roots["local_app_data"]),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        started = time.perf_counter()
+        try:
+            while True:
+                alive = child.poll() is None
+                held_by_child = fence._named_mutex_held_by_other(mutex_name)  # noqa: SLF001
+                begin = time.perf_counter()
+                try:
+                    with fence.writer_admission(
+                        GUI_WRITER_SOURCE,
+                        timeout_seconds=GUI_ADMISSION_TIMEOUT_SECONDS,
+                    ):
+                        waited = time.perf_counter() - begin
+                except fence.WriterFenceError as exc:
+                    waited = time.perf_counter() - begin
+                    denials.append(exc.code)
+                samples.append(
+                    {
+                        "child_alive": alive,
+                        "held_by_child": held_by_child,
+                        "waited_seconds": waited,
+                    }
+                )
+                if not alive:
+                    break
+                if time.perf_counter() - started > CONTENTION_DEADLINE_SECONDS:
+                    break
+                time.sleep(CONTENTION_SAMPLE_INTERVAL_SECONDS)
+            stdout, stderr = child.communicate(timeout=30)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=30)
+        child_seconds = time.perf_counter() - started
+
+    concurrent = [sample for sample in samples if sample["child_alive"]]
+    contended = [sample for sample in concurrent if sample["held_by_child"]]
+    waits = [float(sample["waited_seconds"]) for sample in samples]
+    with capsys.disabled():
+        print(
+            "\nrelay-vs-gui-admission "
+            f"child_seconds={child_seconds:.3f} "
+            f"samples={len(samples)} concurrent_samples={len(concurrent)} "
+            f"samples_observing_child_hold={len(contended)} "
+            f"max_wait_seconds={max(waits):.4f} "
+            f"mean_wait_seconds={sum(waits) / len(waits):.4f} "
+            f"denials={denials}"
+        )
+
+    assert child.returncode == 0, stderr or stdout
+    assert "direct_sync_relay_status=acked" in stdout
+    posted = _assert_ingest_received_barcode(server, BARCODE)
+    assert posted["metadata"]["row_count"] == 1
+    db_path = direct_sync_root / "queue" / "direct_sync_relay.sqlite3"
+    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_ACKED] == 1
+
+    assert len(concurrent) >= 5, (
+        "the ordinary writer was not sampled while the real relay child was alive; "
+        f"samples={samples}"
+    )
+    assert denials == [], (
+        "a representative nonempty relay cycle denied an ordinary GUI writer: "
+        f"{denials}"
+    )
+    assert max(waits) < GUI_ADMISSION_TIMEOUT_SECONDS, (
+        "ordinary GUI writer admission reached the deployed timeout during a "
+        f"representative nonempty relay cycle: max_wait_seconds={max(waits):.4f}"
+    )
+
+
+def test_persistent_relay_cycle_with_real_child_leaves_gui_writers_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The resident relay shape, measured: parent lease + probe + real child.
+
+    ``run_persistent_relay_loop`` holds ``persistent_relay_cycle`` around the
+    whole cycle and the child launch is probe-only, so the parent lease must be
+    released across the real child instead of spanning it.  A regression that
+    re-spans the parent lease shows up here as a denied ordinary GUI writer.
+    """
+
+    roots = _isolate_writer_and_user_roots(tmp_path, monkeypatch)
+    _install_loopback_host_alias(monkeypatch, LOOPBACK_HOST)
+    tls_dir = tmp_path / "tls"
+    ca_path, cert_path, key_path = _write_tls_material(tls_dir, LOOPBACK_HOST)
+    direct_sync_root = tmp_path / "direct-sync"
+    scan_dir = tmp_path / "label-data"
+    loop_status_path = tmp_path / "user-relay-status.json"
+    samples: list[dict[str, Any]] = []
+    denials: list[str] = []
+    outcome: dict[str, Any] = {}
+
+    with _loopback_https_server(cert_path, key_path) as server:
+        port = int(server.server_address[1])
+        _prepare_direct_sync_root(
+            direct_sync_root,
+            endpoint_url=_endpoint_url(port),
+            scan_dir=scan_dir,
+        )
+
+        def run_cycle() -> dict[str, Any]:
+            return user_relay.run_session_direct_sync_once(
+                app_root=ROOT,
+                direct_sync_root=direct_sync_root,
+                scan_source_dir=scan_dir,
+                reason="TEST_NONEMPTY_PERSISTENT_CYCLE",
+                timeout_seconds=45,
+                tls_ca_bundle_path=str(ca_path),
+                runtime_status_path=direct_sync_root
+                / "status"
+                / "direct_sync_relay_status.json",
+                log_path=direct_sync_root / "logs" / "direct_sync_relay.jsonl",
+                worker_id="direct-sync-relay-label-match-persistent-contention",
+            )
+
+        def drive() -> None:
+            try:
+                outcome["report"] = user_relay.run_persistent_relay_loop(
+                    run_cycle,
+                    status_path=loop_status_path,
+                    interval_seconds=0,
+                    max_cycles=1,
+                )
+            except BaseException as exc:  # noqa: BLE001 - reported on the main thread
+                outcome["error"] = exc
+
+        relay = threading.Thread(target=drive, name="persistent-relay-cycle")
+        started = time.perf_counter()
+        relay.start()
+        try:
+            while True:
+                alive = relay.is_alive()
+                begin = time.perf_counter()
+                try:
+                    with fence.writer_admission(
+                        GUI_WRITER_SOURCE,
+                        timeout_seconds=GUI_ADMISSION_TIMEOUT_SECONDS,
+                    ):
+                        waited = time.perf_counter() - begin
+                except fence.WriterFenceError as exc:
+                    waited = time.perf_counter() - begin
+                    denials.append(exc.code)
+                samples.append({"relay_alive": alive, "waited_seconds": waited})
+                if not alive:
+                    break
+                if time.perf_counter() - started > CONTENTION_DEADLINE_SECONDS:
+                    break
+                time.sleep(CONTENTION_SAMPLE_INTERVAL_SECONDS)
+        finally:
+            relay.join(timeout=CONTENTION_DEADLINE_SECONDS)
+        cycle_seconds = time.perf_counter() - started
+
+    assert "error" not in outcome, outcome.get("error")
+    assert not relay.is_alive()
+    concurrent = [sample for sample in samples if sample["relay_alive"]]
+    waits = [float(sample["waited_seconds"]) for sample in samples]
+    with capsys.disabled():
+        print(
+            "\npersistent-cycle-vs-gui-admission "
+            f"cycle_seconds={cycle_seconds:.3f} "
+            f"samples={len(samples)} concurrent_samples={len(concurrent)} "
+            f"max_wait_seconds={max(waits):.4f} "
+            f"mean_wait_seconds={sum(waits) / len(waits):.4f} "
+            f"denials={denials}"
+        )
+
+    report = outcome["report"]
+    assert report["cycle_count"] == 1
+    assert report["last_cycle"]["status"] == "PASS", report
+    assert report["last_cycle"]["returncode"] == 0, report
+    relay_status = json.loads(
+        (direct_sync_root / "status" / "direct_sync_relay_status.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert relay_status["status"] == "acked", relay_status
+    posted = _assert_ingest_received_barcode(server, BARCODE)
+    assert posted["metadata"]["row_count"] == 1
+    db_path = direct_sync_root / "queue" / "direct_sync_relay.sqlite3"
+    assert relay_queue_status(db_path)["counts"][RELAY_STATUS_ACKED] == 1
+
+    assert len(concurrent) >= 5, (
+        "the ordinary writer was not sampled while the persistent relay cycle "
+        f"was running; samples={samples}"
+    )
+    assert denials == [], (
+        "a representative nonempty persistent relay cycle denied an ordinary "
+        f"GUI writer: {denials}"
+    )
+    assert max(waits) < GUI_ADMISSION_TIMEOUT_SECONDS, (
+        "ordinary GUI writer admission reached the deployed timeout during a "
+        f"representative persistent relay cycle: max_wait_seconds={max(waits):.4f}"
+    )

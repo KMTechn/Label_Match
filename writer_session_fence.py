@@ -476,6 +476,15 @@ def writer_admission(
     if not selected_source:
         raise WriterFencedError("WRITER_SOURCE_MISSING", "writer source is required")
     depth = int(getattr(_WRITER_LOCAL, "depth", 0))
+    if depth < 0:
+        # A negative depth is truthy, so without this the nested branch below
+        # would admit every later writer on this thread with no admission mutex
+        # and no active-fence check.  Deny instead of clamping: a clamp would
+        # hide the same accounting defect the next time it appears.
+        raise WriterFenceError(
+            "WRITER_ADMISSION_DEPTH_UNDERFLOW",
+            "writer admission depth accounting underflowed",
+        )
     if depth:
         allowed = getattr(_WRITER_LOCAL, "allowed_sources", None)
         if allowed is not None and selected_source not in allowed:

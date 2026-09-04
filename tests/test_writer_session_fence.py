@@ -444,3 +444,39 @@ def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
     )
     assert "WriterFenceFunctionsPreloaded = $true" in source
     assert "-DelegatedSources @('canonical_placement')" in source
+
+
+def test_negative_admission_depth_fails_closed_instead_of_bypassing_active_fence(
+    tmp_path: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    _write_active(control_root, _payload(delegated_sources=[]))
+    environment = _environment(control_root)
+    admitted: list[str] = []
+
+    fence._WRITER_LOCAL.depth = 0  # noqa: SLF001
+    try:
+        with pytest.raises(fence.WriterFenceError) as balanced:
+            with fence.writer_admission(
+                "gui_package_enqueue",
+                control_root=control_root,
+                environ=environment,
+            ):
+                admitted.append("balanced")
+        # An underflowed depth is truthy, so before the guard it took the nested
+        # branch: no admission mutex and no active-fence check.
+        fence._WRITER_LOCAL.depth = -1  # noqa: SLF001
+        with pytest.raises(fence.WriterFenceError) as underflowed:
+            with fence.writer_admission(
+                "gui_package_enqueue",
+                control_root=control_root,
+                environ=environment,
+            ):
+                admitted.append("underflowed")
+    finally:
+        fence._WRITER_LOCAL.depth = 0  # noqa: SLF001
+        fence._WRITER_LOCAL.allowed_sources = None  # noqa: SLF001
+
+    assert admitted == []
+    assert balanced.value.code == "ACTIVE_WRITER_FENCE"
+    assert underflowed.value.code == "WRITER_ADMISSION_DEPTH_UNDERFLOW"
