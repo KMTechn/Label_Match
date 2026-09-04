@@ -7,6 +7,7 @@ import pytest
 
 from current_user_onboarding import (
     CurrentUserOnboardingError,
+    DEFAULT_SERVER_BASE_URL,
     ENROLLMENT_TLS_CA_BUNDLE_PATH_ENV,
     _registration_runner,
     inspect_current_user_state,
@@ -823,3 +824,123 @@ def test_public_remove_does_not_downgrade_unknown_relay_result(tmp_path):
         )
 
     assert caught.value.status == "UNKNOWN"
+
+
+def test_onboarding_product_mode_forwards_server_base_url_argument(monkeypatch, tmp_path):
+    import current_user_onboarding
+    import label_match_product_host as product_host
+
+    calls = []
+
+    def fake_onboard(app_root, **kwargs):
+        calls.append((str(app_root), dict(kwargs)))
+        return {"status": "READY", "action": "CREATED"}
+
+    monkeypatch.setattr(current_user_onboarding, "onboard_current_user", fake_onboard)
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    explicit = "https://isolated.example.invalid:8443"
+
+    assert (
+        product_host.dispatch_product_mode(
+            [
+                "--onboard-current-user",
+                "--app-root",
+                str(app_root),
+                "--server-base-url",
+                explicit,
+            ]
+        )
+        == 0
+    )
+    assert (
+        product_host.dispatch_product_mode(
+            ["--onboard-current-user", "--app-root", str(app_root)]
+        )
+        == 0
+    )
+
+    assert [call[0] for call in calls] == [str(app_root), str(app_root)]
+    assert [call[1]["server_base_url"] for call in calls] == [
+        explicit,
+        DEFAULT_SERVER_BASE_URL,
+    ]
+    assert DEFAULT_SERVER_BASE_URL == "https://worker.kmtecherp.com"
+    assert all(call[1]["require_bootstrap_integrity"] is False for call in calls)
+
+
+def test_onboarding_forwards_server_base_url_to_registration_and_keeps_ready_profiles(
+    monkeypatch, tmp_path
+):
+    import tools
+
+    explicit = "https://isolated.example.invalid:8443"
+    registrations = []
+
+    def onboard(name, **extra):
+        app_root = tmp_path / name / "app"
+        app_root.mkdir(parents=True)
+        environment = {
+            "LABEL_MATCH_SAVE_DIR": str(tmp_path / name / "state" / "data"),
+            "LOCALAPPDATA": str(tmp_path / name / "local-app-data"),
+        }
+        paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
+
+        def register(arguments):
+            registrations.append(list(arguments))
+            _ready_state(paths)
+            return 0
+
+        monkeypatch.setattr(
+            tools,
+            "register_label_match_worker_pc",
+            SimpleNamespace(main=register),
+            raising=False,
+        )
+        kwargs = {
+            "environ": environment,
+            "require_bootstrap_integrity": False,
+            "profile_loader": _profile_loader,
+            "credential_loader": _credential_loader,
+            "ledger_factory": _ledger_factory,
+            "autostart_installer": _autostart,
+            "scheduled_task_installer": _scheduled_task,
+            "legacy_task_quiescence_reader": _legacy_task_quiescent,
+            "relay_launcher": _relay_start,
+        }
+        report = onboard_current_user(app_root, **kwargs, **extra)
+        return report, paths, app_root, kwargs
+
+    first, paths, app_root, kwargs = onboard("explicit", server_base_url=explicit)
+    default, _default_paths, _default_root, _default_kwargs = onboard("default")
+
+    assert first["action"] == "CREATED"
+    assert default["action"] == "CREATED"
+    assert len(registrations) == 2
+    explicit_arguments, default_arguments = registrations
+    assert explicit_arguments[0] == "--apply"
+    assert explicit_arguments.count("--server-base-url") == 1
+    assert explicit_arguments[explicit_arguments.index("--server-base-url") + 1] == explicit
+    assert explicit_arguments[
+        explicit_arguments.index("--logistics-profile-path") + 1
+    ] == str(paths.logistics_profile_path)
+    assert explicit_arguments[explicit_arguments.index("--credential-path") + 1] == str(
+        paths.credential_path
+    )
+    assert default_arguments[default_arguments.index("--server-base-url") + 1] == (
+        DEFAULT_SERVER_BASE_URL
+    )
+
+    # An existing READY profile keeps its enrolled endpoint: a later explicit URL
+    # must not trigger a second registration.
+    rerun = onboard_current_user(
+        app_root,
+        **kwargs,
+        server_base_url="https://other.example.invalid",
+        registration_runner=lambda _paths: (_ for _ in ()).throw(
+            AssertionError("re-registration attempted")
+        ),
+    )
+
+    assert rerun["action"] == "REUSED"
+    assert len(registrations) == 2

@@ -47,6 +47,7 @@ def _run_clean_install_receipt_gate_harness(
     tmp_path: Path,
     *,
     extra_environment: dict[str, str] | None = None,
+    extra_arguments: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     source_root = tmp_path / "portable"
     install_root = tmp_path / "canonical" / "current"
@@ -138,6 +139,7 @@ def _run_clean_install_receipt_gate_harness(
             str(install_root),
             "-AllowNoncanonicalLayoutForTest",
             "-SkipSignatureValidationForTest",
+            *(extra_arguments or []),
         ],
         check=False,
         capture_output=True,
@@ -1485,3 +1487,301 @@ def test_plan_only_contract_is_stdout_only_and_non_mutating() -> None:
     assert "Save " not in plan_block
     assert "Start-Process" not in plan_block
     assert "INSTALL_THIS_PC.ps1" not in plan_block
+
+
+SERVER_BASE_URL = "https://isolated.example.invalid:8443"
+INVALID_SERVER_BASE_URLS = (
+    "http://isolated.example.invalid",
+    "ftp://isolated.example.invalid",
+    "isolated.example.invalid",
+    "https://",
+    "https://user:secret@isolated.example.invalid",
+    "https://isolated.example.invalid/api/producer-ingest",
+    "https://isolated.example.invalid?scope=1",
+    "https://isolated.example.invalid#fragment",
+    "https://isolated.example.invalid:0",
+    "https://isolated.example.invalid:70000",
+    "https://-isolated.example.invalid",
+    "https://isolated.example.invalid --app-root C:\\evil",
+    'https://isolated.example.invalid"',
+    "https://isolated.example.invalid\\path",
+    "https://isolated.example.invalid//",
+)
+
+
+def _run_windows_powershell_file(
+    harness: Path, *, timeout: int = 60
+) -> subprocess.CompletedProcess[str]:
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _run_server_base_url_origin_harness(
+    tmp_path: Path, values: list[str]
+) -> list[dict[str, object]]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    payload = base64.b64encode(json.dumps(values).encode("utf-8")).decode("ascii")
+    harness = tmp_path / "server-base-url-origin.ps1"
+    harness.write_text(
+        f"""
+$ErrorActionPreference = 'Stop'
+{_product_functions()}
+$json = (New-Object Text.UTF8Encoding($false, $true)).GetString(
+    [Convert]::FromBase64String('{payload}')
+)
+$values = $json | ConvertFrom-Json
+$results = @()
+foreach ($value in $values) {{
+    $row = [ordered]@{{
+        value = [string]$value
+        status = ''
+        origin = ''
+        arguments = @()
+        error = ''
+    }}
+    try {{
+        $origin = ServerBaseUrlOrigin ([string]$value)
+        $row.status = 'PASS'
+        $row.origin = $origin
+        $row.arguments = [string[]](OnboardingArguments $origin)
+    }}
+    catch {{
+        $row.status = 'REJECTED'
+        $row.error = [string]$_.Exception.Message
+    }}
+    $results += [pscustomobject]$row
+}}
+ConvertTo-Json -InputObject $results -Depth 4 -Compress
+""",
+        encoding="utf-8-sig",
+    )
+    completed = _run_windows_powershell_file(harness)
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return json.loads(completed.stdout)
+
+
+def _run_onboarding_product_argv_harness(
+    tmp_path: Path, server_base_url: str
+) -> tuple[Path, list[str], str]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    root = tmp_path / "portable"
+    runtime = root / "runtime"
+    app = root / "app"
+    runtime.mkdir(parents=True)
+    app.mkdir(parents=True)
+    (app / "main.py").write_text(
+        "raise SystemExit('stub pythonw.exe must run instead')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    argv_path = tmp_path / "product-argv.txt"
+    pythonw = runtime / "pythonw.exe"
+    harness = tmp_path / "product-argv.ps1"
+    harness.write_text(
+        rf"""
+$ErrorActionPreference = 'Stop'
+{_product_functions()}
+Add-Type -OutputAssembly '{str(pythonw).replace("'", "''")}' -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.IO;
+public class ProductArgvStub {{
+  public static int Main(string[] args) {{
+    File.WriteAllLines(Environment.GetEnvironmentVariable("LABEL_PRODUCT_ARGV_PATH"), args);
+    return 0;
+  }}
+}}
+'@
+[Environment]::SetEnvironmentVariable(
+    'LABEL_PRODUCT_ARGV_PATH',
+    '{str(argv_path).replace("'", "''")}',
+    'Process'
+)
+$origin = ServerBaseUrlOrigin '{server_base_url.replace("'", "''")}'
+$onboardingArguments = OnboardingArguments $origin
+Product '{str(root).replace("'", "''")}' '--onboard-current-user' $onboardingArguments
+Write-Output ('origin=' + $origin)
+Write-Output 'product_status=PASS'
+""",
+        encoding="utf-8-sig",
+    )
+    completed = _run_windows_powershell_file(harness)
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert "product_status=PASS" in completed.stdout, completed.stdout
+    argv = argv_path.read_text(encoding="utf-8-sig").splitlines()
+    return root, argv, completed.stdout
+
+
+def test_server_base_url_origin_accepts_only_credential_free_https_origins(
+    tmp_path: Path,
+) -> None:
+    values = [
+        "",
+        SERVER_BASE_URL,
+        "https://isolated.example.invalid/",
+        "https://isolated.example.invalid",
+        *INVALID_SERVER_BASE_URLS,
+    ]
+    results = {
+        str(row["value"]): row
+        for row in _run_server_base_url_origin_harness(tmp_path, values)
+    }
+
+    assert len(results) == len(values)
+    assert results[""] == {
+        "value": "",
+        "status": "PASS",
+        "origin": "",
+        "arguments": [],
+        "error": "",
+    }
+    assert results[SERVER_BASE_URL]["status"] == "PASS"
+    assert results[SERVER_BASE_URL]["origin"] == SERVER_BASE_URL
+    assert results[SERVER_BASE_URL]["arguments"] == ["--server-base-url", SERVER_BASE_URL]
+    assert results["https://isolated.example.invalid/"]["origin"] == (
+        "https://isolated.example.invalid"
+    )
+    assert results["https://isolated.example.invalid"]["arguments"] == [
+        "--server-base-url",
+        "https://isolated.example.invalid",
+    ]
+    for value in INVALID_SERVER_BASE_URLS:
+        row = results[value]
+        assert row["status"] == "REJECTED", row
+        assert str(row["error"]).startswith("ServerBaseUrl "), row
+        assert row["origin"] == "", row
+        assert row["arguments"] == [], row
+
+
+def test_onboarding_product_call_forwards_explicit_server_base_url(
+    tmp_path: Path,
+) -> None:
+    root, argv, stdout = _run_onboarding_product_argv_harness(
+        tmp_path, SERVER_BASE_URL + "/"
+    )
+
+    assert f"origin={SERVER_BASE_URL}" in stdout
+    assert argv == [
+        "-I",
+        "-B",
+        str(root / "app" / "main.py"),
+        "--onboard-current-user",
+        "--app-root",
+        str(root),
+        "--server-base-url",
+        SERVER_BASE_URL,
+    ]
+
+
+def test_onboarding_product_call_omits_server_base_url_when_not_supplied(
+    tmp_path: Path,
+) -> None:
+    root, argv, stdout = _run_onboarding_product_argv_harness(tmp_path, "")
+
+    assert "origin=\n" in stdout.replace("\r\n", "\n")
+    assert argv == [
+        "-I",
+        "-B",
+        str(root / "app" / "main.py"),
+        "--onboard-current-user",
+        "--app-root",
+        str(root),
+    ]
+    assert "--server-base-url" not in argv
+
+
+def test_invalid_server_base_url_fails_closed_before_plan_or_side_effects(
+    tmp_path: Path,
+) -> None:
+    scenarios = {
+        "install": ["-ServerBaseUrl", "http://isolated.example.invalid"],
+        "plan-only": [
+            "-PlanOnly",
+            "-ServerBaseUrl",
+            "https://isolated.example.invalid/api/producer-ingest",
+        ],
+    }
+    for name, extra_arguments in scenarios.items():
+        completed = _run_clean_install_receipt_gate_harness(
+            tmp_path / name, extra_arguments=extra_arguments
+        )
+        combined = completed.stdout + completed.stderr
+
+        assert completed.returncode != 0, combined
+        assert (
+            "ServerBaseUrl must be a credential-free https://host[:port] origin."
+            in combined
+        ), combined
+        assert "install_status=" not in completed.stdout, combined
+        assert "receipt_gate_status=PASS" not in completed.stdout, combined
+        assert not (tmp_path / name / "local-app-data").exists()
+        assert not (tmp_path / name / "canonical").exists()
+
+
+def test_plan_only_reports_explicit_or_product_default_server_base_url(
+    tmp_path: Path,
+) -> None:
+    explicit = _run_clean_install_receipt_gate_harness(
+        tmp_path / "explicit",
+        extra_arguments=["-PlanOnly", "-ServerBaseUrl", SERVER_BASE_URL + "/"],
+    )
+    explicit_stdout = explicit.stdout.replace("\r\n", "\n")
+    assert explicit.returncode == 0, explicit.stderr or explicit.stdout
+    assert "install_status=PLAN_ONLY\n" in explicit_stdout
+    assert "onboarding_server_base_url_source=explicit\n" in explicit_stdout
+    assert f"onboarding_server_base_url={SERVER_BASE_URL}\n" in explicit_stdout
+    assert "registry_changed=false\n" in explicit_stdout
+
+    default = _run_clean_install_receipt_gate_harness(
+        tmp_path / "default", extra_arguments=["-PlanOnly"]
+    )
+    default_stdout = default.stdout.replace("\r\n", "\n")
+    assert default.returncode == 0, default.stderr or default.stdout
+    assert "install_status=PLAN_ONLY\n" in default_stdout
+    assert "onboarding_server_base_url_source=product_default\n" in default_stdout
+    assert "onboarding_server_base_url=" not in default_stdout
+    for name in ("explicit", "default"):
+        assert not (tmp_path / name / "local-app-data").exists()
+        assert not (tmp_path / name / "canonical").exists()
+
+
+def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> None:
+    source = _source()
+    parameter_block = source[
+        source.index("param(") : source.index(")", source.index("param("))
+    ]
+
+    assert re.search(r"\$ServerBaseUrl\b", parameter_block)
+    validation = source.index("$serverBaseUrl = ServerBaseUrlOrigin $ServerBaseUrl")
+    assert validation < source.index("$sourceManifest = Manifest $source")
+    assert validation < source.index("if ($PlanOnly)")
+    assert validation < source.index("$before = Snapshot")
+    assert source.count("$onboardingArguments") == 2
+    assert "Product $install '--onboard-current-user' $onboardingArguments" in source
+    assert "'--remove-current-user-setup' $onboardingArguments" not in source
+    assert "onboarding_server_base_url = [ordered]@{" in source
+    launcher_parameters = source[
+        source.index("$parameterNames = @(") : source.index("$actualParameterNames")
+    ]
+    assert "ServerBaseUrl" not in launcher_parameters
+    assert "ServerBaseUrl" not in _source(HELPER)

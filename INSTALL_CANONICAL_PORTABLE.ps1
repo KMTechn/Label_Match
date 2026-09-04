@@ -3,6 +3,7 @@ param(
     [string]$SourceRoot = "",
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
     [string]$EvidencePath = "",
+    [string]$ServerBaseUrl = "",
     [switch]$PlanOnly,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$SkipSignatureValidationForTest
@@ -294,6 +295,29 @@ function Command([string]$Root) {
     return ('{0} -I -B {1} --label-match-user-relay' -f
         (Arg (Join-Path $Root 'runtime\pythonw.exe')),
         (Arg (Join-Path $Root 'app\main.py')))
+}
+
+function ServerBaseUrlOrigin([string]$Value) {
+    # Optional onboarding endpoint; empty keeps the product default. Only a
+    # credential-free https://host[:port] origin is accepted so the value can never
+    # carry a path, query, fragment, whitespace, or quoting into the product command.
+    $origin = $Value.Trim()
+    if ($origin.Length -eq 0) { return '' }
+    if (
+        $origin -notmatch ('^https://' +
+            '(?<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?' +
+            '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)' +
+            '(?::(?<port>[1-9][0-9]{0,4}))?/?$')
+    ) { throw 'ServerBaseUrl must be a credential-free https://host[:port] origin.' }
+    if ($Matches.ContainsKey('port') -and [int]$Matches['port'] -gt 65535) {
+        throw 'ServerBaseUrl port must be within 1-65535.'
+    }
+    return $origin.TrimEnd('/')
+}
+
+function OnboardingArguments([string]$ServerBaseUrlValue) {
+    if ($ServerBaseUrlValue.Length -eq 0) { return ,[string[]]@() }
+    return ,[string[]]@('--server-base-url', $ServerBaseUrlValue)
 }
 
 function Manifest([string]$Root, [bool]$UnsignedOk) {
@@ -788,11 +812,12 @@ function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
     return $actualRelays
 }
 
-function Product([string]$Root, [string]$Mode) {
+function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @()) {
     $args = '-I -B {0} {1} --app-root {2}' -f
         (Arg (Join-Path $Root 'app\main.py')),
         $Mode,
         (Arg $Root)
+    foreach ($extraArgument in $ExtraArguments) { $args += ' ' + (Arg $extraArgument) }
     $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) (
         'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.out'
     )
@@ -895,6 +920,9 @@ $install = Full $InstallRoot 'InstallRoot'
 if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
     throw 'InstallRoot is not canonical.'
 }
+$serverBaseUrl = ServerBaseUrlOrigin $ServerBaseUrl
+$onboardingArguments = OnboardingArguments $serverBaseUrl
+$serverBaseUrlSource = if ($serverBaseUrl) { 'explicit' } else { 'product_default' }
 $sourceManifest = Manifest $source $SkipSignatureValidationForTest
 $receiptSource = $null
 $conflictReceiptSupplied = (
@@ -913,6 +941,8 @@ if ($PlanOnly) {
     "install_status=PLAN_ONLY"
     "install_root=$install"
     "autostart_command=$wanted"
+    "onboarding_server_base_url_source=$serverBaseUrlSource"
+    if ($serverBaseUrl) { "onboarding_server_base_url=$serverBaseUrl" }
     "receipt_source_status=$(if ($null -eq $receiptSource) { 'NOT_REQUESTED' } else { 'PASS' })"
     'registry_changed=false'
     exit 0
@@ -1032,6 +1062,10 @@ $audit = [ordered]@{
     ).Status
     elevation_log_path = $elevationLogPath
     registry_value = $RunName
+    onboarding_server_base_url = [ordered]@{
+        source = $serverBaseUrlSource
+        value = $serverBaseUrl
+    }
     preimage = $before
     after = [ordered]@{ exists = $true; kind = 'String'; data = $wanted }
     relay_process_preimage_count = $old.Count
@@ -1261,7 +1295,7 @@ try {
         $writerTransactionId
 
     $started = (Get-Date).ToUniversalTime()
-    Product $install '--onboard-current-user'
+    Product $install '--onboard-current-user' $onboardingArguments
     $onboarding = Get-Content $onboardingPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $after = Snapshot
     if (
