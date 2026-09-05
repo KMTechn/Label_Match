@@ -242,7 +242,9 @@ class TkSerialUiLane:
         self._fault_presented = False
         self._last_result_sequence = 0
         self._stop_sent = False
-        self._task_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
+        # Admission still permits one task; reserve a second slot for its stop
+        # signal when a broken lane closes before the worker dequeues that task.
+        self._task_queue: queue.Queue[Any] = queue.Queue(maxsize=2)
         self._result_queue: queue.Queue[Any] = queue.Queue()
         self._op_ids = itertools.count(1)
         self._sequences = itertools.count(1)
@@ -686,8 +688,8 @@ class TkSerialUiLane:
     def _signal_worker_stop(self) -> None:
         if self._stop_sent:
             return
-        self._stop_sent = True
         self._task_queue.put_nowait(_STOP)
+        self._stop_sent = True
 
     def _complete_close(self) -> None:
         self._assert_owner()
