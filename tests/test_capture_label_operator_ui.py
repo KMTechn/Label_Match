@@ -85,9 +85,9 @@ from tools.capture_label_operator_ui import (
 
 
 _ADMITTED_BUSY_PRODUCT_CALLS = {
-    "phs2_admitted_busy": ("phs2-capture-validation", 10375),
-    "f4_admitted_busy": ("f4-central-source-lookup", 11433),
-    "f3_admitted_busy": ("f3-package-completion", 14060),
+    "phs2_admitted_busy": ("phs2-capture-validation", 10428),
+    "f4_admitted_busy": ("f4-central-source-lookup", 11486),
+    "f3_admitted_busy": ("f3-package-completion", 14113),
 }
 
 
