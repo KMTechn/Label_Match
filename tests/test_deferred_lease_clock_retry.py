@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import json
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -15,13 +16,14 @@ from tests.test_deferred_intent_capture import (
     _binding, _protect, _unprotect, _protect_v2, _unprotect_v2, _row,
 )
 from tests.test_package_logistics import (
-    SCOPE, _OperationLeaseTestSigner, _work_group_response,
+    SCOPE, _OperationLeaseTestSigner, _work_group_response, _work_group_draft,
 )
-from package_logistics import PackageApiError, PackageClientConfig, PackageOutbox, PackageTransportError
+from tests.test_phs_label_workflow import _source_input_tag
+from package_logistics import PackageApiError, PackageClientConfig, PackageLogisticsClient, PackageOutbox, PackageTransportError
 
 
 @pytest.fixture
-def clock_case(tmp_path, monkeypatch):
+def clock_case(tmp_path, monkeypatch, request):
     instant = [datetime(2026, 9, 5, 3, 28, 14, tzinfo=timezone.utc)]
 
     class Clock(datetime):
@@ -43,7 +45,8 @@ def clock_case(tmp_path, monkeypatch):
             initialize_schema=False,
         )
 
-    response = _work_group_response(split=False)
+    work_group = getattr(request, "param", None)
+    response = _work_group_response(split=work_group == "split")
     group = response["phs_work_group"]
     # The established single-transfer deferred fixture avoids the separate
     # work-group destination-version-zero evidence gate (tracked in the report).
@@ -53,6 +56,24 @@ def clock_case(tmp_path, monkeypatch):
         "bundle_id": "TRANSFER-CLOCK-1", "entity_version": 7,
         "member_count": group["member_count"], "membership_hash": group["membership_hash"],
     }
+    if work_group:
+        response["source_input_tags"] = [
+            _source_input_tag(
+                source_id,
+                group["scan_payload"] if source_id == "ITG-WORK-ONE" else (
+                    f"PHS=2|SRC=KMTECH_INPUT_TAG|ITG={source_id}|"
+                    f"CLC={group['item_id']}|LBL=LBL-WORK-TWO|HSH=bbbbbbbbbbbbbbbb"
+                ),
+                item_id=group["item_id"],
+            )
+            for source_id in response["work_group_source"]["source_session_ids"]
+        ]
+        response["input_tag"] = response["source_input_tags"][0]
+        # Use both real normal-response validators before deferred validation.
+        PackageLogisticsClient._validate_work_group_source(
+            response, _work_group_draft(response), expected_scope=SCOPE,
+        )
+        snapshot = label_module._label_match_package_source_snapshot(response)
     config = PackageClientConfig(
         base_url="https://logistics.example.test", token="test-only",
         authority_scope_id=SCOPE, authority_epoch=5, ledger_plane="AUTHORITATIVE",
@@ -95,7 +116,8 @@ def clock_case(tmp_path, monkeypatch):
     # request recording, capture, retry claims and materialization stay real.
     evidence = SimpleNamespace(item_id=group["item_id"], active_label_id=group["label_id"],
                                membership_hash=group["membership_hash"], member_count=group["member_count"])
-    app._central_phs2_response_parts = lambda _qr, _response: (evidence, snapshot, None)
+    if not work_group:
+        app._central_phs2_response_parts = lambda _qr, _response: (evidence, snapshot, None)
 
     def accept(*args, **kwargs):
         accepted.append((args, kwargs))
@@ -105,7 +127,8 @@ def clock_case(tmp_path, monkeypatch):
     app._accept_resolved_central_phs2_scan = accept
     return SimpleNamespace(app=app, instant=instant, database=database, group=group,
                            calls=calls, accepted=accepted, claims=claims, artifact=artifact,
-                           signer=signer, open_capture=open_capture)
+                           signer=signer, open_capture=open_capture,
+                           response=response, snapshot=snapshot)
 
 
 def _first_scan(case):
@@ -234,3 +257,71 @@ def test_api_error_text_is_not_a_verified_clock_response(clock_case):
     intent_id = _first_scan(case)
     assert _row(case.database, intent_id)["state"] == "BLOCKED_INVALID"
     assert "재스캔하지 말고" not in case.app._deferred_capture_pending_notice().message
+
+
+@pytest.mark.parametrize("clock_case", ["merged", "split"], indirect=True)
+def test_normal_work_group_response_matures_and_preserves_absent_destinations(clock_case):
+    case = clock_case
+    intent_id = _first_scan(case)
+    assert _row(case.database, intent_id)["state"] == "RETRY_WAIT_VALIDATION"
+    case.instant[0] += timedelta(seconds=40)
+    claim = case.app._prepare_deferred_intent_validation(intent_id)
+    result = case.app._execute_deferred_label_validation(claim)
+    assert result.state == "VALIDATED"
+    assert case.app._materialize_validated_deferred_label(result) is True
+    assert case.calls[0] == case.calls[1]
+    expected = case.response["work_group_source"]["entity_versions"]
+    with sqlite3.connect(case.database) as conn:
+        raw = conn.execute(
+            """SELECT evidence_json FROM deferred_intent_validation_steps
+                 WHERE intent_id=? AND step_id='label-package-source'
+                 ORDER BY validation_generation DESC LIMIT 1""", (intent_id,),
+        ).fetchone()[0]
+    assert json.loads(raw)["entity_versions"] == expected
+
+
+@pytest.mark.parametrize("clock_case", ["split"], indirect=True)
+@pytest.mark.parametrize("invalid", [
+    "existing_source_zero", "existing_group_zero", "unrelated_zero", "destination_exists",
+    "negative", "boolean", "float", "missing_destination", "remainder_exists",
+    "missing_remainders", "unknown_remainder", "duplicate_remainder", "source_as_remainder",
+])
+def test_work_group_zero_versions_are_limited_to_exact_absent_destinations(clock_case, invalid):
+    case = clock_case
+    app = case.app
+    normalized, snapshot, _sealed = app._central_phs2_response_parts(case.group["scan_payload"], case.response)
+    evidence = app._deferred_package_source_evidence(case.group["scan_payload"], "SET-VERSION-GUARD", normalized, snapshot)
+    request = {
+        "authority_scope_id": SCOPE, "item_code": case.group["item_id"],
+        "local_work_identity": "SET-VERSION-GUARD",
+        "physical_qr_sha256": evidence["physical_qr_sha256"],
+    }
+    versions = evidence["entity_versions"]
+    destination = "bundle:" + evidence["package_bundle_id"]
+    source = "bundle:" + case.response["work_group_source"]["source_transfer_bundle_ids"][0]
+    if invalid == "existing_source_zero":
+        versions[source] = 0
+    elif invalid == "existing_group_zero":
+        versions["phs_work_group:" + case.group["group_id"]] = 0
+    elif invalid == "unrelated_zero":
+        versions["bundle:UNRELATED"] = 0
+    elif invalid == "missing_destination":
+        del versions[destination]
+    elif invalid == "remainder_exists":
+        versions["bundle:" + evidence["remainder_transfer_bundle_ids"][0]] = 1
+    elif invalid == "missing_remainders":
+        del evidence["remainder_transfer_bundle_ids"]
+    elif invalid == "unknown_remainder":
+        evidence["remainder_transfer_bundle_ids"].append("UNRELATED")
+    elif invalid == "duplicate_remainder":
+        evidence["remainder_transfer_bundle_ids"] *= 2
+    elif invalid == "source_as_remainder":
+        evidence["remainder_transfer_bundle_ids"].append(source.removeprefix("bundle:"))
+    else:
+        versions[destination] = {"destination_exists": 1, "negative": -1, "boolean": False, "float": 0.0}[invalid]
+    with pytest.raises(capture_module.DeferredIntentCaptureError) as error:
+        app.deferred_intent_capture._validate_verified_step_evidence(
+            step_id="label-package-source",
+            request_json=json.dumps(request), evidence_json=json.dumps(evidence),
+        )
+    assert error.value.code == "VALIDATION_EVIDENCE_INCOMPLETE"

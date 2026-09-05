@@ -9105,7 +9105,7 @@ class Label_Match(tk.Tk):
                     }
                 )
             ).hexdigest()
-        return {
+        result = {
             "contract_version": "label-validation-evidence-v1",
             "authority_scope_id": str(
                 source.get("authority_scope_id") or ""
@@ -9136,6 +9136,14 @@ class Label_Match(tk.Tk):
                 "+00:00", "Z"
             ),
         }
+        if (
+            source.get("source_resolution_basis")
+            == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+        ):
+            result["remainder_transfer_bundle_ids"] = list(
+                source.get("remainder_transfer_bundle_ids") or []
+            )
+        return result
 
     @staticmethod
     def _deferred_operation_lease_evidence(

@@ -2865,6 +2865,36 @@ class DeferredIntentCaptureStore:
                 "topology_hash",
             }
             versions = evidence.get("entity_versions")
+            absent_destinations = set()
+            if (
+                evidence.get("source_resolution_basis")
+                == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
+            ):
+                required.add("remainder_transfer_bundle_ids")
+                remainders = evidence.get("remainder_transfer_bundle_ids")
+                package_id = str(evidence.get("package_bundle_id") or "")
+                if (
+                    not isinstance(remainders, list)
+                    or any(
+                        not isinstance(value, str)
+                        or not value.strip()
+                        or value != value.strip()
+                        for value in remainders
+                    )
+                    or len(set(remainders)) != len(remainders)
+                    or package_id in remainders
+                    or str(evidence.get("bundle_id") or "")
+                    in [package_id, *remainders]
+                ):
+                    raise DeferredIntentCaptureError(
+                        "VALIDATION_EVIDENCE_INCOMPLETE",
+                        "the work-group destination identities are invalid",
+                    )
+                # Only these exact new package/remainder identities must be
+                # absent (version 0). Existing topology stays strictly positive.
+                absent_destinations = {
+                    f"bundle:{value}" for value in [package_id, *remainders]
+                }
             if (
                 set(evidence) != required
                 or evidence.get("contract_version")
@@ -2897,11 +2927,16 @@ class DeferredIntentCaptureStore:
                 )
                 or not isinstance(versions, dict)
                 or not versions
+                or not absent_destinations.issubset(versions)
                 or any(
                     not str(identity or "")
                     or isinstance(version, bool)
                     or not isinstance(version, int)
-                    or version < 1
+                    or (
+                        version != 0
+                        if identity in absent_destinations
+                        else version < 1
+                    )
                     for identity, version in versions.items()
                 )
             ):
