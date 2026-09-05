@@ -50,7 +50,7 @@ from deferred_intent_capture import (
     operator_safe_reason_code,
 )
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
-from label_match_product_host import dispatch_product_mode
+from label_match_product_host import _default_product_root, dispatch_product_mode
 from writer_session_fence import writer_sink
 from storage_policy import label_match_local_events_dir
 
@@ -386,7 +386,16 @@ def _default_label_match_settings_path():
     raise RuntimeError("LOCALAPPDATA is required for writable Label_Match settings")
 
 
+def _label_match_portable_app_root():
+    root = _default_product_root()
+    return root if root / "app" == Path(__file__).resolve().parent else None
+
+
 def _label_match_runtime_app_root():
+    if not getattr(sys, "frozen", False):
+        portable_root = _label_match_portable_app_root()
+        if portable_root is not None:
+            return str(portable_root)
     runtime = sys.executable if getattr(sys, "frozen", False) else __file__
     return os.path.dirname(os.path.abspath(runtime))
 
@@ -19930,7 +19939,10 @@ BOOTSTRAP_INTEGRITY_ABSENT_WARNING_MESSAGE = (
 
 
 def _first_run_onboarding_enabled():
-    if getattr(sys, "frozen", False) and os.name == "nt":
+    if os.name == "nt" and (
+        getattr(sys, "frozen", False)
+        or _label_match_portable_app_root() is not None
+    ):
         return True
     value = os.environ.get(
         LABEL_MATCH_ENABLE_FIRST_RUN_ONBOARDING_ENV, ""
@@ -20120,6 +20132,7 @@ def main(argv=None):
                     or LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
                     require_bootstrap_integrity=bool(
                         getattr(sys, "frozen", False)
+                        or _label_match_portable_app_root() is not None
                     ),
                 )
                 if (
