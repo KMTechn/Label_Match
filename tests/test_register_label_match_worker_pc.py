@@ -1203,7 +1203,7 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
         tls_ca_bundle_path=str(ca_path),
         admin_recovery_secret_file=str(authorization_path),
         admin_recovery_url="",
-        enrollment_token="",
+        enrollment_token="test-normal-enrollment-token",
         enrollment_token_file="",
         enrollment_token_env="",
         enrollment_timeout_seconds=30,
@@ -1217,7 +1217,7 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
 
     assert response is response_payload
     assert descriptor["fingerprint"] == possession_key["fingerprint"]
-    assert token_source == "ip_allowlist"
+    assert token_source == "argument"
     assert returned_path == authorization_path.resolve()
     assert returned_authorization == authorization
     assert calls["key_kwargs"] == {"scope": module.SCOPE_CURRENT_USER}
@@ -1572,7 +1572,7 @@ def test_successful_local_recovery_finalization_deletes_authorization_last(
     }
 
 
-@pytest.mark.parametrize("rejection", [None, "manifest", "authorization", "expired", "ca"])
+@pytest.mark.parametrize("rejection", [None, "manifest", "authorization", "expired", "ca", "token"])
 def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
     tmp_path, monkeypatch, rejection
 ):
@@ -1586,6 +1586,8 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
     authorization_path = tmp_path / "authorization.json"
     ca_path = tmp_path / "source-ca.pem"
     ca_path.write_bytes(b"test-public-ca")
+    token_path = tmp_path / "enrollment-token.txt"
+    token_path.write_text("test-normal-enrollment-token", encoding="utf-8")
     monkeypatch.setattr(module, "_current_user_sid", lambda: TEST_USER_SID)
     argv = [
         "--apply", "--server-base-url", "https://worker.example.invalid",
@@ -1607,6 +1609,8 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
     assert module.main(argv) == 2
     rejected = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert rejected["server_error_code"] == "producer_identity_conflict"
+    assert rejected["status"] == "ADMIN_RECOVERY_REQUIRED"
+    assert rejected["recovery_action"] == "ADMIN_RECOVERY_REQUIRED"
     assert not (data_dir / module.PRODUCER_IDENTITY_FILENAME).exists()
     assert not profile_path.exists()
     original = observed["original"]
@@ -1640,6 +1644,7 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
     class Session:
         def post(self, url, **kwargs):
             observed["recovery_http"] += 1
+            assert kwargs["headers"] == {"X-Producer-Enrollment-Token": "test-normal-enrollment-token"}
             assert url.endswith(module.ADMIN_RECOVERY_PATH)
             assert kwargs["allow_redirects"] is False
             assert kwargs["json"]["manifest"] == manifest
@@ -1689,6 +1694,7 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
     monkeypatch.setattr(module, "_write_dpapi_secret", protect)
     monkeypatch.setattr(module, "_verify_dpapi_secret", lambda *_a: True)
     recovery_argv = argv + [
+        "--enrollment-token-file", str(token_path),
         "--admin-recovery-secret-file", str(authorization_path),
         "--expected-active-manifest-hash", module.manifest_hash(manifest),
         "--producer-id", rejected["producer_id"],
@@ -1704,6 +1710,9 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
                 "another-producer" if rejection == "authorization" else "2000-01-01T00:00:00Z"
             )
             authorization_path.write_text(json.dumps(invalid), encoding="utf-8")
+        elif rejection == "token":
+            recovery_argv.remove(str(token_path))
+            recovery_argv.remove("--enrollment-token-file")
         else:
             ca_path.unlink()
         assert module.main(recovery_argv) == 2

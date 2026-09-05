@@ -382,14 +382,16 @@ def test_unhealthy_lifecycle_rejects_before_mutation(tmp_path, healthy_pair, con
     assert original == {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in install.rglob("*") if path.is_file()}
 
 
-def test_healthy_upgrade_failure_restores_exact_code_identity_and_running_relay(tmp_path, healthy_pair):
+@pytest.mark.parametrize("quoted", [False, True])
+def test_healthy_upgrade_failure_restores_exact_code_identity_and_running_relay(tmp_path, healthy_pair, quoted):
     install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
     assert _prepare_installed(tmp_path, install, candidate, env).returncode == 0
     before = _hashes(paths)
     old_files = {str(path.relative_to(install)): hashlib.sha256(path.read_bytes()).hexdigest() for path in install.rglob("*") if path.is_file() and path.name != "bootstrap-integrity.json"}
     command = [str(install / "runtime/pythonw.exe"), "-I", "-B", str(install / "app/main.py"), "--label-match-user-relay"]
     (Path(env["LM_TRANSITION_NATIVE_STATE"]) / "registry.txt").write_text(subprocess.list2cmdline(command))
-    process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = (_start_quoted_relay(tmp_path, install, env) if quoted else
+               subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     try:
         state = Path(env["LM_TRANSITION_NATIVE_STATE"])
         deadline = time.monotonic() + 15
@@ -409,6 +411,10 @@ def test_healthy_upgrade_failure_restores_exact_code_identity_and_running_relay(
         assert not (paths.direct_sync_root / "control/label_match_user_relay.stop.json").exists()
         assert not (Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]) / "active.json").exists()
         assert int((state / "relay.pid").read_text()) != process.pid
+        restored_pid = int((state / "relay.pid").read_text())
+        observed = _ps(tmp_path, f"(Get-CimInstance Win32_Process -Filter 'ProcessId={restored_pid}').CommandLine | ConvertTo-Json -Compress", env)
+        assert observed.returncode == 0
+        assert json.loads(observed.stdout) == (process.args if quoted else subprocess.list2cmdline(command))
     finally:
         _stop_fixture(tmp_path, install, env)
         process.wait(timeout=10)
@@ -461,3 +467,111 @@ def test_healthy_reinstall_failure_restores_code_absence_and_original_stop_marke
     assert marker.read_bytes() == marker_before
     assert paths.removal_report_path.read_bytes() == removal_before
     assert not (Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]) / "active.json").exists()
+
+
+def test_recovered_identity_without_code_or_removal_marker_installs(tmp_path, healthy_pair):
+    install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
+    assert install.resolve().is_relative_to(tmp_path.resolve())
+    shutil.rmtree(install)
+    before = _hashes(paths)
+    assert not paths.removal_report_path.exists()
+    try:
+        result = _install(tmp_path, install, candidate, env)
+        assert result.returncode == 0, result.stderr[-2200:]
+        audit = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))
+        assert audit["status"] == "PASS"
+        assert audit["onboarding"]["status"] == "READY"
+        assert _hashes(paths) == before
+        assert not paths.removal_report_path.exists()
+        assert not (paths.control_dir / "label_match_user_relay.stop.json").exists()
+    finally:
+        _stop_fixture(tmp_path, install, env)
+
+
+def test_recovered_fresh_failure_restores_absent_code_and_removal_report(tmp_path, healthy_pair):
+    install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
+    assert install.resolve().is_relative_to(tmp_path.resolve())
+    shutil.rmtree(install)
+    before = _hashes(paths)
+    result = _install(tmp_path, install, candidate, env, failure="onboarding")
+    assert result.returncode != 0
+    audit = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))
+    assert audit["status"] == "FAILED_ROLLED_BACK", result.stderr[-2200:]
+    assert not install.exists()
+    assert not paths.removal_report_path.exists()
+    assert not (paths.control_dir / "label_match_user_relay.stop.json").exists()
+    assert _hashes(paths) == before
+    try:
+        retry = _install(tmp_path, install, candidate, env)
+        assert retry.returncode == 0, retry.stderr[-2200:]
+        assert _hashes(paths) == before
+    finally:
+        _stop_fixture(tmp_path, install, env)
+
+
+@pytest.mark.parametrize("residue", ["missing-marker", "autostart"])
+def test_recovered_no_code_rejects_removal_or_persistence_residue(tmp_path, healthy_pair, residue):
+    install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
+    assert install.resolve().is_relative_to(tmp_path.resolve())
+    shutil.rmtree(install)
+    if residue == "missing-marker":
+        _json(paths.removal_report_path, {"status": "PASS_DATA_PRESERVED"})
+    else:
+        command = subprocess.list2cmdline([str(install / "runtime/pythonw.exe"), "-I", "-B", str(install / "app/main.py"), "--label-match-user-relay"])
+        (Path(env["LM_TRANSITION_NATIVE_STATE"]) / "registry.txt").write_text(command)
+    before = _hashes(paths)
+    result = _install(tmp_path, install, candidate, env)
+    assert result.returncode != 0
+    assert "Healthy reinstall requires completed same-user removal and absent persistence" in result.stderr
+    assert not install.exists()
+    assert not (Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]) / "active.json").exists()
+    assert _hashes(paths) == before
+
+
+def _fresh_fixture(tmp_path, healthy_pair, error):
+    _old, candidate = healthy_pair
+    install = tmp_path / "canonical/current"
+    env = _environment(tmp_path)
+    for name in ("LABEL_MATCH_DIRECT_SYNC_ROOT", "LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_SETTINGS_PATH", "KM_LOGISTICS_PROFILE_PATH"):
+        env.pop(name)
+    env.update(
+        LM_HEALTHY_LIFECYCLE_FIXTURE="1", LM_HEALTHY_INSTALL_ROOT=str(install),
+        LM_TRANSITION_NATIVE_ADAPTER=str(Path(__file__).with_name("_fresh_install_native.py")),
+        LM_FRESH_ENROLLMENT_ERROR=error,
+    )
+    paths = resolve_current_user_onboarding_paths(install, environ=env)
+    env["LABEL_MATCH_DIRECT_SYNC_ROOT"] = str(paths.direct_sync_root)
+    return install, candidate, env, paths
+
+
+def test_fresh_identity_conflict_retains_code_and_reports_recovery_required(tmp_path, healthy_pair):
+    install, candidate, env, paths = _fresh_fixture(tmp_path, healthy_pair, "producer_identity_conflict")
+    result = _install(tmp_path, install, candidate, env)
+    assert result.returncode == 0, result.stderr[-2200:]
+    audit = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))
+    assert audit["status"] == "RECOVERY_REQUIRED"
+    assert audit["code_state"] == "PRESENT"
+    assert audit["rollback"]["applied"] is False
+    assert audit["onboarding"]["status"] == "RECOVERY_REQUIRED"
+    assert "normal enrollment token and a separate administrator authorization" in result.stdout
+    assert (install / "app/tools/register_label_match_worker_pc.py").is_file()
+    assert not paths.identity_path.exists()
+    assert not paths.credential_path.exists()
+    assert not paths.logistics_profile_path.exists()
+    assert not (Path(env["LM_TRANSITION_NATIVE_STATE"]) / "registry.txt").exists()
+    assert not (Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]) / "active.json").exists()
+    assert not paths.removal_report_path.exists()
+
+
+def test_fresh_genuine_enrollment_failure_restores_actual_code_absence(tmp_path, healthy_pair):
+    install, candidate, env, paths = _fresh_fixture(tmp_path, healthy_pair, "enrollment_token_invalid")
+    result = _install(tmp_path, install, candidate, env)
+    assert result.returncode != 0
+    audit = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))
+    assert audit["status"] == "FAILED_ROLLED_BACK", result.stderr[-2200:]
+    assert not install.exists()
+    assert audit["code_state"] == "ABSENT"
+    assert audit["rollback"]["code_restored"] is True
+    assert audit["rollback"]["code_placement"] == "RESTORED_ABSENCE"
+    assert not (Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]) / "active.json").exists()
+    assert not paths.removal_report_path.exists()

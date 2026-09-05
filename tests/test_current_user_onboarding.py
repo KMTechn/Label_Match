@@ -19,6 +19,42 @@ from current_user_onboarding import (
 from direct_sync_push import manifest_hash
 
 
+def test_recovery_required_onboarding_is_visible_and_does_not_repeat_enrollment(tmp_path):
+    env = {"LOCALAPPDATA": str(tmp_path / "local")}
+    paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=env)
+    attempts = []
+
+    def registration(selected):
+        attempts.append(True)
+        _write_json(selected.registration_report_path, {
+            "status": "ADMIN_RECOVERY_REQUIRED", "recovery_action": "ADMIN_RECOVERY_REQUIRED",
+            "secret_material_persisted": False,
+        })
+        return 2
+
+    for _ in range(2):
+        with pytest.raises(CurrentUserOnboardingError) as caught:
+            onboard_current_user(
+                paths.app_root, environ=env, require_bootstrap_integrity=False,
+                registration_runner=registration,
+                legacy_task_quiescence_reader=lambda: {
+                    "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
+                    "required_state": "ABSENT_OR_DISABLED", "read_only": True,
+                    "task_or_process_mutated": False,
+                },
+                autostart_installer=lambda _root: pytest.fail("recovery activated persistence"),
+            )
+        assert caught.value.status == "RECOVERY_REQUIRED"
+        assert "일반 등록 토큰과 별도의 관리자 복구 승인" in str(caught.value)
+        report = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
+        assert report["status"] == "RECOVERY_REQUIRED"
+        assert report["recovery_action"] == "ADMIN_RECOVERY_REQUIRED"
+        assert report["server_registration_verified"] is False
+    assert attempts == [True]
+    assert not paths.identity_path.exists()
+    assert not paths.ledger_path.exists()
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

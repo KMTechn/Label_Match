@@ -657,6 +657,12 @@ def inspect_current_user_state(
         report = _read_json(paths.registration_report_path, "registration report")
         if str(report.get("status") or "") in {"BLOCKED", "FAILED", "UNKNOWN"}:
             return {"status": "ABSENT_RETRYABLE", "present": present}
+        if (
+            report.get("status") == "ADMIN_RECOVERY_REQUIRED"
+            and report.get("recovery_action") == "ADMIN_RECOVERY_REQUIRED"
+            and report.get("secret_material_persisted") is False
+        ):
+            return {"status": "ADMIN_RECOVERY_REQUIRED", "present": present}
     if not all(present.values()):
         return {
             "status": "RECOVERY_REQUIRED",
@@ -888,6 +894,18 @@ def onboard_current_user(
     }
     stop_marker_released = False
 
+    def require_registration_recovery(state: Mapping[str, Any]) -> None:
+        if state.get("status") != "ADMIN_RECOVERY_REQUIRED":
+            return
+        report["action"] = "ADMIN_RECOVERY_REQUIRED"
+        report["recovery_action"] = "ADMIN_RECOVERY_REQUIRED"
+        raise CurrentUserOnboardingError(
+            "이 PC의 기존 등록을 복구해야 합니다. 관리자는 설치된 등록 도구에서 "
+            "일반 등록 토큰과 별도의 관리자 복구 승인을 사용한 뒤 초기 설정을 다시 실행하세요.",
+            report_path=paths.onboarding_report_path,
+            status="RECOVERY_REQUIRED",
+        )
+
     def restore_stop_marker_fence() -> None:
         nonlocal stop_marker_released
         if not stop_marker_released:
@@ -938,6 +956,7 @@ def onboard_current_user(
             credential_loader=credential_loader,
         )
         report["initial_state"] = state
+        require_registration_recovery(state)
         if state["status"] == "READY" and tls_ca_source:
             from tools.install_logistics_runtime_profile import (
                 install_tls_ca_bundle_for_existing_profile,
@@ -968,6 +987,7 @@ def onboard_current_user(
                     profile_loader=profile_loader,
                     credential_loader=credential_loader,
                 )
+                require_registration_recovery(state)
                 if state["status"] == "RECOVERY_REQUIRED":
                     raise ValueError(
                         str(state.get("reason") or "partial current-user state")
@@ -988,6 +1008,10 @@ def onboard_current_user(
                             status="UNKNOWN",
                         )
                     if return_code != 0:
+                        require_registration_recovery(inspect_current_user_state(
+                            paths, profile_loader=profile_loader,
+                            credential_loader=credential_loader,
+                        ))
                         raise ValueError(
                             f"current-user registration failed with exit code {return_code}"
                         )
@@ -1228,6 +1252,8 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     except CurrentUserOnboardingError as exc:
         print(f"onboarding_status={exc.status}")
         print(f"onboarding_report={exc.report_path}")
+        if exc.status == "RECOVERY_REQUIRED":
+            print(str(exc))
         return ONBOARDING_EXIT_CODE
     print(f"onboarding_status={report['status']}")
     print(f"onboarding_action={report['action']}")

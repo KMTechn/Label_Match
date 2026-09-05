@@ -1291,7 +1291,7 @@ def _preflight_admin_recovery_local_state(
                 raise DirectSyncPushError("fresh recovery diagnostic report size is invalid")
             diagnostic = _load_json_no_duplicate_keys(report_path.read_bytes())
             if not isinstance(diagnostic, dict) or diagnostic.get("status") not in {
-                "BLOCKED", "FAILED", "UNKNOWN", "DRY_RUN",
+                "BLOCKED", "FAILED", "UNKNOWN", "DRY_RUN", ADMIN_RECOVERY_ACTION,
             }:
                 raise DirectSyncPushError("fresh recovery cannot reuse an existing registration")
         if not ca_source.is_file():
@@ -1369,6 +1369,8 @@ def _admin_recover(
         str(credential["endpoint_url"]),
     )
     token_source, token = _token_from_sources(args)
+    if not token:
+        raise DirectSyncPushError("admin recovery requires a normal enrollment token")
     try:
         possession_context = PersistentPossessionKey.provision_initial(
             scope=SCOPE_CURRENT_USER
@@ -2035,12 +2037,18 @@ def main(argv: list[str] | None = None) -> int:
                     "server_http_status": exc.status_code,
                 }
             )
-            if exc.error_code == "admin_recovery_required":
+            if exc.error_code == "admin_recovery_required" or (
+                exc.status_code == 409 and exc.error_code == "producer_identity_conflict"
+            ):
                 blocked.update(
                     {
                         "status": ADMIN_RECOVERY_ACTION,
                         "recovery_action": ADMIN_RECOVERY_ACTION,
-                        "recovery_origin": "server_legacy_identity",
+                        "recovery_origin": (
+                            "server_identity_conflict"
+                            if exc.error_code == "producer_identity_conflict"
+                            else "server_legacy_identity"
+                        ),
                         "automatic_legacy_upgrade_performed": False,
                         "existing_identity_preserved": True,
                     }

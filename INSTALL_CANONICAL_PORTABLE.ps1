@@ -1341,9 +1341,11 @@ $writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $
 if (-not $conflictReceiptSupplied -and -not $pristineInstall) {
     $healthyLifecycle = HealthyLifecycle $source $install
 }
-$healthyRemovedInstall = $null -ne $healthyLifecycle -and -not $existingVerified
-if ($healthyRemovedInstall -and (
-    -not $healthyLifecycle.marker_present -or $before.exists -or $old.Count -ne 0 -or
+$healthyWithoutCode = $null -ne $healthyLifecycle -and -not $existingVerified
+$healthyRemovedInstall = $healthyWithoutCode -and $healthyLifecycle.marker_present
+if ($healthyWithoutCode -and (
+    ((Test-Path -LiteralPath $removalPath) -and -not $healthyLifecycle.marker_present) -or
+    $before.exists -or $old.Count -ne 0 -or
     $scheduledTasksAtPreflight.Count -ne 0
 )) { throw 'Healthy reinstall requires completed same-user removal and absent persistence.' }
 # All compatibility checks precede snapshots on disk and the active fence: even
@@ -1354,6 +1356,7 @@ $auditPath = Join-Path $localAuditRoot "canonical-portable-$runId.json"
 $elevationLogPath = Join-Path $localAuditRoot "canonical-portable-$runId-elevated.jsonl"
 $taskBefore = ScheduledTaskSnapshot $localAuditRoot $runId
 $healthyRemovalReportBefore = $null
+$removalReportExisted = Test-Path -LiteralPath $removalPath
 $stopBefore = [ordered]@{ exists = $false; sha256 = ''; backup_path = '' }
 if (Test-Path -LiteralPath $stop -PathType Leaf) {
     $stopBackup = Join-Path $localAuditRoot "canonical-portable-$runId-stop-preimage.json"
@@ -1379,6 +1382,8 @@ $audit = [ordered]@{
     captured_at = (Get-Date).ToUniversalTime().ToString('o')
     install_root = $install
     code_placement = 'PENDING'
+    code_preimage = if ($existingVerified) { 'PRESENT' } else { 'ABSENT' }
+    code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
     source_commit = [string]$sourceManifest.source_commit
     runtime_pythonw_sha256 = Sha (Join-Path $source 'runtime\pythonw.exe')
     runtime_pythonw_signature = [string](
@@ -1525,7 +1530,7 @@ try {
         }
         # Completed same-user removal remains valid after code uninstall. Its
         # canonical host is absent, so do not rerun removal from a staging root.
-        if (-not $healthyRemovedInstall) {
+        if (-not $healthyWithoutCode) {
             $removalRoot = if ($existingVerified) { $install } else { $source }
             if ($existingVerified) {
                 [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
@@ -1618,6 +1623,7 @@ try {
         [string]$installedInventory.sha256 -cne [string]$receiptSource.sha256
     ) { throw 'Installed full portable inventory differs before Product execution.' }
     $audit.code_placement = $placement
+    $audit.code_state = 'PRESENT'
     $audit.runtime_pythonw_sha256 = Sha (Join-Path $install 'runtime\pythonw.exe')
     $audit.runtime_pythonw_signature = [string](
         Get-AuthenticodeSignature (Join-Path $install 'runtime\pythonw.exe')
@@ -1642,11 +1648,51 @@ try {
 
     $started = (Get-Date).ToUniversalTime()
     if ($null -ne $healthyLifecycle) {
-        $audit.healthy_lifecycle = HealthyLifecycle $install $install 'release' ([string]$healthyLifecycle.state_sha256)
+        $healthyMode = if ($healthyWithoutCode -and -not $healthyRemovedInstall) { 'inspect' } else { 'release' }
+        $audit.healthy_lifecycle = HealthyLifecycle $install $install $healthyMode ([string]$healthyLifecycle.state_sha256)
     }
-    Product $install '--onboard-current-user' $onboardingArguments
+    $onboardingFailure = $null
+    try { Product $install '--onboard-current-user' $onboardingArguments }
+    catch { $onboardingFailure = $_ }
+    if ($null -ne $onboardingFailure -and -not (Test-Path -LiteralPath $onboardingPath)) {
+        throw $onboardingFailure
+    }
     $onboarding = Get-Content $onboardingPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $after = Snapshot
+    if ($null -ne $onboardingFailure -and $pristineInstall -and
+        [string]$onboarding.report_version -ceq 'label-match-current-user-onboarding-v1' -and
+        [string]$onboarding.status -ceq 'RECOVERY_REQUIRED' -and
+        [string]$onboarding.recovery_action -ceq 'ADMIN_RECOVERY_REQUIRED' -and
+        $onboarding.server_registration_verified -ceq $false -and
+        (Get-Item -LiteralPath $onboardingPath).LastWriteTimeUtc -ge $started.AddSeconds(-1)) {
+        if ($after.exists -or @(Relays).Count -ne 0 -or
+            @(Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue).Count -ne 0 -or
+            (Test-Path -LiteralPath $stop)) {
+            throw 'Recovery-required registration must leave persistence absent.'
+        }
+        [void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot `
+            -SessionId $writerSessionId -AttemptId $writerAttemptId `
+            -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 90000)
+        $writerFenceStarted = $false
+        Exit-LabelWriterSessionAuthority $writerAuthority
+        $writerAuthority = $null
+        $audit.status = 'RECOVERY_REQUIRED'
+        $audit.completed_at = [DateTime]::UtcNow.ToString('o')
+        $audit.after = $after
+        $audit.writer_fence.status = 'RELEASED_FOR_ADMIN_RECOVERY'
+        $audit.onboarding = [ordered]@{ status='RECOVERY_REQUIRED'; action='ADMIN_RECOVERY_REQUIRED' }
+        $audit.recovery_guidance = 'Code is installed. Use the installed registration tool with the normal enrollment token and a separate administrator authorization, then run current-user onboarding again.'
+        Save $auditPath $audit
+        if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        'install_status=RECOVERY_REQUIRED'
+        "install_root=$install"
+        "code_placement_status=$placement"
+        'autostart_status=NOT_CONFIGURED'
+        "next_action=$($audit.recovery_guidance)"
+        "audit_path=$auditPath"
+        return
+    }
+    if ($null -ne $onboardingFailure) { throw $onboardingFailure }
     if (
         [string]$onboarding.status -cne 'READY' -or
         [string]$onboarding.relay_autostart.command -cne $wanted -or
@@ -1773,7 +1819,7 @@ catch {
             }
             else { $source }
             $rollbackUsesInstalled = $false
-            if (($existingVerified -or $healthyRemovedInstall) -and (Same $rollbackProductRoot $install)) {
+            if (Same $rollbackProductRoot $install) {
                 InvokeFrozenIntegrityProbe $frozenPlacement $install
                 $rollbackInventory = PortableInventory $install
                 if ($existingVerified -and [string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
@@ -1835,7 +1881,7 @@ catch {
                 $audit.rollback.code_placement = 'RESTORED_PREIMAGE'
                 [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
             }
-            if ($healthyRemovedInstall -and (Test-Path -LiteralPath $install)) {
+            if (-not $existingVerified -and (Test-Path -LiteralPath $install)) {
                 InvokeFrozenIntegrityProbe $frozenPlacement $install
                 $rollbackInventory = PortableInventory $install
                 if ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
@@ -1862,10 +1908,11 @@ catch {
                     throw 'Absent-code rollback failed to restore code absence.'
                 }
             }
-            if ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install)) {
+            if (-not $existingVerified -and -not (Test-Path -LiteralPath $install)) {
                 $audit.rollback.code_placement = 'RESTORED_ABSENCE'
             }
-            $audit.rollback.code_restored = $existingVerified -or ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install))
+            $audit.rollback.code_restored = $existingVerified -or -not (Test-Path -LiteralPath $install)
+            $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
         }
         $ownerMutationLease = $null
         try {
@@ -1890,6 +1937,11 @@ catch {
                 if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
                     throw 'Normal removal report preimage restoration failed.'
                 }
+                $audit.rollback.removal_report_restored = $true
+            }
+            elseif (-not $removalReportExisted -and (Test-Path -LiteralPath $removalPath)) {
+                Remove-Item -LiteralPath $removalPath -Force
+                if (Test-Path -LiteralPath $removalPath) { throw 'Removal report absence restoration failed.' }
                 $audit.rollback.removal_report_restored = $true
             }
         }
@@ -1939,6 +1991,7 @@ catch {
         $rollbackFailure = $_
         try {
             $audit.status = 'ROLLBACK_FAILED'
+            $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
             $audit.rollback.applied = $mutated
             $audit.rollback.runtime_restored = $false
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
