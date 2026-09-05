@@ -2513,12 +2513,23 @@ class DeferredIntentCaptureStore:
                         # original request. Skip later read-only failures (no
                         # dispatch) when finding the last actual issue attempt.
                         prior = conn.execute(
-                            """SELECT idempotency_key,request_hash,status,
-                                      last_error_code
-                                 FROM deferred_intent_validation_steps
-                                WHERE intent_id=? AND step_id=?
-                                  AND validation_generation<? AND attempt_count>0
-                                ORDER BY validation_generation DESC LIMIT 1""",
+                            """SELECT attempt.idempotency_key,
+                                      attempt.request_hash,attempt.status,
+                                      EXISTS (
+                                          SELECT 1 FROM deferred_intent_validation_steps clock
+                                           WHERE clock.intent_id=attempt.intent_id
+                                             AND clock.step_id=attempt.step_id
+                                             AND clock.idempotency_key=attempt.idempotency_key
+                                             AND clock.request_hash=attempt.request_hash
+                                             AND clock.validation_generation<=attempt.validation_generation
+                                             AND clock.status='RETRY_WAIT'
+                                             AND clock.last_error_code='OPERATION_LEASE_NOT_YET_VALID'
+                                      ) AS known_future_issue
+                                 FROM deferred_intent_validation_steps attempt
+                                WHERE attempt.intent_id=? AND attempt.step_id=?
+                                  AND attempt.validation_generation<?
+                                  AND attempt.attempt_count>0
+                                ORDER BY attempt.validation_generation DESC LIMIT 1""",
                             (
                                 claim.intent_id,
                                 step_id,
@@ -2528,10 +2539,11 @@ class DeferredIntentCaptureStore:
                         if (
                             prior is not None
                             and prior["status"] == "RETRY_WAIT"
-                            and prior["last_error_code"]
-                            == "OPERATION_LEASE_NOT_YET_VALID"
+                            and prior["known_future_issue"]
                             and prior["request_hash"] == request_hash
                         ):
+                            # Later definite issue unavailability cannot erase
+                            # proof that this same request already issued a lease.
                             idempotency_key = str(prior["idempotency_key"])
                     conn.execute(
                         """INSERT INTO deferred_intent_validation_steps(

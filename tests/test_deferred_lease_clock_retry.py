@@ -238,6 +238,31 @@ def test_clock_retry_with_lost_issue_response_uses_unknown_result_lane(clock_cas
     assert case.accepted == []
 
 
+@pytest.mark.parametrize("outages", [1, 2])
+def test_clock_retry_keeps_original_key_after_definite_issue_service_failure(clock_case, outages):
+    case = clock_case
+    intent_id = _first_scan(case)
+    issue = case.app.package_logistics_client.issue_operation_lease
+
+    def unavailable_then_replay(**kwargs):
+        artifact = issue(**kwargs)
+        if 2 <= len(case.calls) <= 1 + outages:
+            raise PackageApiError(503, "OPERATION_LEASE_UNAVAILABLE", "service unavailable", committed=False)
+        if kwargs["idempotency_key"] != case.calls[0]["idempotency_key"]:
+            raise PackageApiError(409, "OPERATION_RESOURCE_ALREADY_LEASED", "another key owns the resource", committed=False)
+        return artifact
+
+    case.app.package_logistics_client.issue_operation_lease = unavailable_then_replay
+    attempts = [(10, "RETRY_WAIT_VALIDATION"), (30, "RETRY_WAIT_VALIDATION")][:outages]
+    for elapsed, expected in [*attempts, (60, "VALIDATED")]:
+        case.instant[0] = datetime(2026, 9, 5, 3, 28, 14, tzinfo=timezone.utc) + timedelta(seconds=elapsed)
+        claim = case.app._prepare_deferred_intent_validation(intent_id)
+        result = case.app._execute_deferred_label_validation(claim)
+        assert result.state == expected
+    assert all(call == case.calls[0] for call in case.calls)
+    assert case.app._materialize_validated_deferred_label(result) is True
+
+
 def test_expired_original_clock_lease_is_blocked_without_new_request(clock_case):
     case = clock_case
     intent_id = _first_scan(case)
