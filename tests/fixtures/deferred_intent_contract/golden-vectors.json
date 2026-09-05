@@ -1,0 +1,1539 @@
+{
+  "allowed_edges": {
+    "ACKED": [
+      "LOCAL_EFFECT_PENDING",
+      "COMPLETED",
+      "OPERATOR_REVIEW"
+    ],
+    "BLOCKED_INVALID": [
+      "CANCELLED",
+      "SUPERSEDED",
+      "OPERATOR_REVIEW"
+    ],
+    "CANCELLED": [],
+    "CAPTURED_UNVERIFIED": [
+      "VALIDATING",
+      "BLOCKED_INVALID",
+      "CANCELLED",
+      "SUPERSEDED"
+    ],
+    "COMPLETED": [],
+    "LOCAL_EFFECT_PENDING": [
+      "COMPLETED",
+      "OPERATOR_REVIEW"
+    ],
+    "OPERATOR_REVIEW": [
+      "CANCELLED",
+      "SUPERSEDED"
+    ],
+    "READY_TO_SUBMIT": [
+      "SUBMITTING",
+      "RETRY_WAIT_VALIDATION",
+      "OPERATOR_REVIEW"
+    ],
+    "RECONCILE_PENDING_SUBMIT": [
+      "ACKED",
+      "RETRY_WAIT_SUBMIT",
+      "OPERATOR_REVIEW"
+    ],
+    "RECONCILE_PENDING_VALIDATION": [
+      "VALIDATING",
+      "BLOCKED_INVALID",
+      "OPERATOR_REVIEW"
+    ],
+    "RETRY_WAIT_SUBMIT": [
+      "SUBMITTING",
+      "OPERATOR_REVIEW"
+    ],
+    "RETRY_WAIT_VALIDATION": [
+      "VALIDATING",
+      "CANCELLED",
+      "SUPERSEDED",
+      "OPERATOR_REVIEW"
+    ],
+    "SUBMITTING": [
+      "ACKED",
+      "RETRY_WAIT_SUBMIT",
+      "RECONCILE_PENDING_SUBMIT",
+      "OPERATOR_REVIEW",
+      "SUPERSEDED"
+    ],
+    "SUPERSEDED": [],
+    "VALIDATED": [
+      "READY_TO_SUBMIT",
+      "RETRY_WAIT_VALIDATION",
+      "OPERATOR_REVIEW"
+    ],
+    "VALIDATING": [
+      "VALIDATED",
+      "RETRY_WAIT_VALIDATION",
+      "WAITING_DEPENDENCY",
+      "BLOCKED_INVALID",
+      "RECONCILE_PENDING_VALIDATION",
+      "OPERATOR_REVIEW"
+    ],
+    "WAITING_DEPENDENCY": [
+      "VALIDATING",
+      "CANCELLED",
+      "SUPERSEDED",
+      "OPERATOR_REVIEW"
+    ]
+  },
+  "allowed_state_edges": {
+    "ACKED": [
+      "LOCAL_EFFECT_PENDING",
+      "COMPLETED",
+      "OPERATOR_REVIEW"
+    ],
+    "BLOCKED_INVALID": [
+      "CANCELLED",
+      "SUPERSEDED",
+      "OPERATOR_REVIEW"
+    ],
+    "CAPTURED_UNVERIFIED": [
+      "VALIDATING",
+      "BLOCKED_INVALID",
+      "CANCELLED",
+      "SUPERSEDED"
+    ],
+    "LOCAL_EFFECT_PENDING": [
+      "COMPLETED",
+      "OPERATOR_REVIEW"
+    ],
+    "OPERATOR_REVIEW": [
+      "CANCELLED",
+      "SUPERSEDED"
+    ],
+    "READY_TO_SUBMIT": [
+      "SUBMITTING",
+      "RETRY_WAIT_VALIDATION",
+      "OPERATOR_REVIEW"
+    ],
+    "RECONCILE_PENDING_SUBMIT": [
+      "ACKED",
+      "RETRY_WAIT_SUBMIT",
+      "OPERATOR_REVIEW"
+    ],
+    "RECONCILE_PENDING_VALIDATION": [
+      "VALIDATING",
+      "BLOCKED_INVALID",
+      "OPERATOR_REVIEW"
+    ],
+    "RETRY_WAIT_SUBMIT": [
+      "SUBMITTING",
+      "OPERATOR_REVIEW"
+    ],
+    "RETRY_WAIT_VALIDATION": [
+      "VALIDATING",
+      "CANCELLED",
+      "SUPERSEDED",
+      "OPERATOR_REVIEW"
+    ],
+    "SUBMITTING": [
+      "ACKED",
+      "RETRY_WAIT_SUBMIT",
+      "RECONCILE_PENDING_SUBMIT",
+      "OPERATOR_REVIEW",
+      "SUPERSEDED"
+    ],
+    "VALIDATED": [
+      "READY_TO_SUBMIT",
+      "RETRY_WAIT_VALIDATION",
+      "OPERATOR_REVIEW"
+    ],
+    "VALIDATING": [
+      "VALIDATED",
+      "RETRY_WAIT_VALIDATION",
+      "WAITING_DEPENDENCY",
+      "BLOCKED_INVALID",
+      "RECONCILE_PENDING_VALIDATION",
+      "OPERATOR_REVIEW"
+    ],
+    "WAITING_DEPENDENCY": [
+      "VALIDATING",
+      "CANCELLED",
+      "SUPERSEDED",
+      "OPERATOR_REVIEW"
+    ]
+  },
+  "canonicalization_vectors": [
+    {
+      "canonical_json": "{\"operator_id\":\"검증작업자\",\"product_barcode\":\"AAA0000000001R001\",\"result\":\"GOOD\"}",
+      "id": "UTF8_INTEGER_STRING_SUBSET",
+      "sha256": "dd716eace007229613b1493d6c87ca619e2aa941b8c41e1fffa2534107780a81",
+      "value": {
+        "operator_id": "검증작업자",
+        "product_barcode": "AAA0000000001R001",
+        "result": "GOOD"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        },
+        {
+          "expect": {
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "restart"
+        }
+      ],
+      "case_sha256": "04d6b1638e1cdc981b20e84e9f04401fc582bbd6abc0cc6f4d97ccb5b176c89e",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "CAPTURED_UNVERIFIED",
+        "ui_saved_signals": 0
+      },
+      "id": "MEASURED_LABEL_CLOSED_PORT_CAPTURE_PRESERVES_SCAN",
+      "initial": {
+        "state": null
+      },
+      "premise": "Historical scenario identifier retained; synthetic specification, not a new physical measurement. Remote port is unavailable after durable capture."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        },
+        {
+          "expect": {
+            "accepted": true,
+            "state": "VALIDATING"
+          },
+          "op": "claim_validation"
+        },
+        {
+          "expect": {
+            "state": "VALIDATED"
+          },
+          "op": "validation_result",
+          "outcome": "VALID"
+        },
+        {
+          "expect": {
+            "state": "READY_TO_SUBMIT"
+          },
+          "op": "materialize_command"
+        },
+        {
+          "expect": {
+            "state": "SUBMITTING"
+          },
+          "op": "claim_submit"
+        },
+        {
+          "expect": {
+            "effects_delta": {
+              "server_mutations": 1,
+              "server_requests": 1
+            },
+            "state": "RECONCILE_PENDING_SUBMIT"
+          },
+          "op": "submit_result",
+          "outcome": "UNKNOWN_COMMIT"
+        },
+        {
+          "expect": {
+            "effects_delta": {
+              "receipt_rows": 1
+            },
+            "state": "ACKED"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "FOUND_EXACT",
+          "phase": "submit"
+        },
+        {
+          "expect": {
+            "effects_delta": {
+              "authoritative_local_writes": 1,
+              "downstream_outbox_rows": 1,
+              "outbox_rows": 1
+            },
+            "state": "COMPLETED"
+          },
+          "op": "apply_local_effect",
+          "outcome": "APPLIED"
+        }
+      ],
+      "case_sha256": "c966f578bc6f26477bc35dfc3109e8c13bf6fa9cec98948c48cdf6d6f2210236",
+      "final_expect": {
+        "authoritative_local_writes": 1,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 1,
+        "outbox_rows": 1,
+        "receipt_rows": 1,
+        "server_mutations": 1,
+        "server_requests": 1,
+        "state": "COMPLETED",
+        "ui_saved_signals": 0
+      },
+      "id": "MEASURED_DEFECT_OFFLINE_QUEUE_ONLINE_FLUSH_EXACT_RECEIPT",
+      "initial": {
+        "state": null
+      },
+      "premise": "Historical scenario identifier retained; synthetic specification. One remote commit loses its reply, then exact readback enables one local effect."
+    },
+    {
+      "actions": [
+        {
+          "cut_point": "after_begin_before_intent_insert",
+          "expect": {
+            "state": null
+          },
+          "op": "crash"
+        },
+        {
+          "expect": {
+            "state": null
+          },
+          "op": "restart"
+        }
+      ],
+      "case_sha256": "a4cad5fb80a04467f1e36bb7e7fd4d7b16d38bdb5ebf05f9ecff121b5b7ac239",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 0,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": null,
+        "ui_saved_signals": 0
+      },
+      "id": "CRASH_BEFORE_CAPTURE_COMMIT",
+      "initial": {
+        "state": null
+      },
+      "premise": "SQLite capture transaction never committed; no saved acknowledgement."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        },
+        {
+          "cut_point": "after_commit_before_ui_ack",
+          "expect": {
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "crash"
+        },
+        {
+          "expect": {
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "restart"
+        }
+      ],
+      "case_sha256": "3b923dc9e7b7ec75f842aa592008fe68028914e5a89226d3a62a43ca47c83c83",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "CAPTURED_UNVERIFIED",
+        "ui_saved_signals": 0
+      },
+      "id": "CRASH_AFTER_CAPTURE_COMMIT_BEFORE_UI_ACK",
+      "initial": {
+        "state": null
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        },
+        {
+          "expect": {
+            "accepted": true,
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_duplicate"
+        }
+      ],
+      "case_sha256": "d010da6c11690d17758a4434ba747e5a3e55871a84de86007e34903ffca88c9c",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "CAPTURED_UNVERIFIED",
+        "ui_saved_signals": 0
+      },
+      "id": "DUPLICATE_CAPTURE_SAME_PAYLOAD_CONVERGES",
+      "initial": {
+        "state": null
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        },
+        {
+          "expect": {
+            "error_code": "DUPLICATE_IDENTITY_PAYLOAD_MISMATCH",
+            "state": "BLOCKED_INVALID"
+          },
+          "op": "capture_conflict"
+        }
+      ],
+      "case_sha256": "ae263ed7cf43c8f680283c3279512c9411de5772766e8c64625cc140358ce17c",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "BLOCKED_INVALID",
+        "ui_saved_signals": 0
+      },
+      "id": "DUPLICATE_CAPTURE_DIFFERENT_PAYLOAD_BLOCKS",
+      "initial": {
+        "state": null
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "accepted": false,
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "attempt_transition",
+          "target": "main",
+          "to": "SUBMITTING"
+        }
+      ],
+      "case_sha256": "76787a4eb769234fa4cfc6249c3b4f67d56ffb75946d707cfd6e6663dabc7f93",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "CAPTURED_UNVERIFIED",
+        "ui_saved_signals": 0
+      },
+      "id": "FORBID_CAPTURED_TO_SUBMIT_FAMILY",
+      "initial": {
+        "state": "CAPTURED_UNVERIFIED"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        }
+      ],
+      "case_sha256": "b04bf04a5339261bfe67f96c58af811e223e88dfbdabc621feea6db87ebbcc91",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "completion_count": 3,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "downstream_release_count": 2,
+        "inventory_quantity": 7,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "CAPTURED_UNVERIFIED",
+        "ui_saved_signals": 0
+      },
+      "id": "CAPTURE_ONLY_NO_AUTHORITATIVE_LEAK",
+      "initial": {
+        "completion_count": 3,
+        "downstream_release_count": 2,
+        "inventory_quantity": 7,
+        "state": null
+      },
+      "premise": "No products, ledger event, outbox, dashboard or server success may be inferred from capture."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        },
+        {
+          "downstream_outbox_ref": "conformance-outbox:legacy-1",
+          "expect": {
+            "audit_reason": "LEGACY_PATH_OWNS_SUBMISSION",
+            "effects_delta": {
+              "authoritative_local_writes": 1,
+              "downstream_outbox_rows": 1,
+              "outbox_rows": 1
+            },
+            "state": "SUPERSEDED"
+          },
+          "op": "legacy_handoff"
+        },
+        {
+          "expect": {
+            "accepted": false,
+            "state": "SUPERSEDED"
+          },
+          "op": "claim_validation"
+        }
+      ],
+      "case_sha256": "5ff620dbefe4405deb698d0da046c64a2cd4ddcdd37ad5241b0ca2278fb03c66",
+      "final_expect": {
+        "authoritative_local_writes": 1,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 1,
+        "outbox_rows": 1,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "SUPERSEDED",
+        "ui_saved_signals": 0
+      },
+      "id": "CAPTURE_ONLY_ONLINE_LEGACY_HANDOFF_PREVENTS_FUTURE_DUPLICATE",
+      "initial": {
+        "state": null
+      },
+      "premise": "Legacy result, outbox and supersede audit are in one SQLite transaction; legacy outbox owns submission."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "captured_intent_rows": 1
+            },
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "capture_commit"
+        },
+        {
+          "expect": {
+            "accepted": true,
+            "state": "VALIDATING"
+          },
+          "op": "claim_validation"
+        }
+      ],
+      "case_sha256": "ee63ab391e548706c8545c53954564d29168ccf54fa0eae688407179aca75b7b",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "VALIDATING",
+        "ui_saved_signals": 0
+      },
+      "id": "CAPTURE_ONLY_ROW_IS_FORWARD_COMPATIBLE_WITH_FULL_ENGINE",
+      "initial": {
+        "state": null
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": null
+          },
+          "op": "capture_failure",
+          "outcome": "SQLITE_FULL"
+        }
+      ],
+      "case_sha256": "b8fd463ee36e70680f6262e8483bd1790a4006e996226369dd448028bea80e9c",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 0,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": null,
+        "ui_saved_signals": 0
+      },
+      "id": "CAPTURE_DISK_FULL_NEVER_REPORTS_SAVED",
+      "initial": {
+        "state": null
+      },
+      "premise": "Disk-full commit failure produces no saved UI signal or durable row."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "VALIDATED"
+          },
+          "op": "validation_result",
+          "outcome": "VALID"
+        }
+      ],
+      "case_sha256": "d0a69e95f45aec816a09822866bc5ed0eaca1c4b1d67d860938be0477185811f",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "VALIDATED",
+        "ui_saved_signals": 0
+      },
+      "id": "VALIDATION_VALID",
+      "initial": {
+        "state": "VALIDATING"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "RETRY_WAIT_VALIDATION"
+          },
+          "op": "validation_result",
+          "outcome": "RETRYABLE_UNAVAILABLE"
+        }
+      ],
+      "case_sha256": "4524d9f04bd00563db449e6480d94aa615f23d3413d1eec56c3926115de09139",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RETRY_WAIT_VALIDATION",
+        "ui_saved_signals": 0
+      },
+      "id": "VALIDATION_RETRYABLE_UNAVAILABLE",
+      "initial": {
+        "state": "VALIDATING"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "WAITING_DEPENDENCY"
+          },
+          "op": "validation_result",
+          "outcome": "REQUIRED_ABSENT"
+        }
+      ],
+      "case_sha256": "7aa879a6ebdad50c4c9d94f507df1e6a32acd838189b8ba5248cf3a671dfb7d5",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "WAITING_DEPENDENCY",
+        "ui_saved_signals": 0
+      },
+      "id": "VALIDATION_REQUIRED_ABSENT",
+      "initial": {
+        "state": "VALIDATING"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "WAITING_DEPENDENCY"
+          },
+          "op": "validation_result",
+          "outcome": "ABSENT_MATERIALIZABLE"
+        }
+      ],
+      "case_sha256": "3765a45d32b7e2beaa906b6d4af89314209b343eea9ad8701af8f2729176c503",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "WAITING_DEPENDENCY",
+        "ui_saved_signals": 0
+      },
+      "id": "VALIDATION_ABSENT_MATERIALIZABLE",
+      "initial": {
+        "state": "VALIDATING"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "BLOCKED_INVALID"
+          },
+          "op": "validation_result",
+          "outcome": "INVALID"
+        }
+      ],
+      "case_sha256": "463f5ffcd2d546e985fed1274c32489fe49b4e7a315911016bc80f5396d463a0",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "BLOCKED_INVALID",
+        "ui_saved_signals": 0
+      },
+      "id": "VALIDATION_INVALID",
+      "initial": {
+        "state": "VALIDATING"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "OPERATOR_REVIEW"
+          },
+          "op": "validation_result",
+          "outcome": "CONFLICT"
+        }
+      ],
+      "case_sha256": "fa010d0fd8510afe13ffcdee3397a7af48481e578e3634455eec7457126c75a3",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "OPERATOR_REVIEW",
+        "ui_saved_signals": 0
+      },
+      "id": "VALIDATION_CONFLICT",
+      "initial": {
+        "state": "VALIDATING"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "RECONCILE_PENDING_VALIDATION"
+          },
+          "op": "validation_result",
+          "outcome": "UNKNOWN_COMMIT"
+        }
+      ],
+      "case_sha256": "e90b71938b59ac6685405261c64e887df8580fc77695ff57e5249610a01b2d98",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RECONCILE_PENDING_VALIDATION",
+        "ui_saved_signals": 0
+      },
+      "id": "VALIDATION_UNKNOWN_COMMIT",
+      "initial": {
+        "state": "VALIDATING"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "VALIDATING"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "FOUND_EXACT",
+          "phase": "validation"
+        }
+      ],
+      "case_sha256": "253ba41e0bd553715d71b9ad9b5216803989854d2607e1393df9281d0cedabc2",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "VALIDATING",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_VALIDATION_FOUND_EXACT",
+      "initial": {
+        "state": "RECONCILE_PENDING_VALIDATION"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "VALIDATING"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "NOT_FOUND",
+          "phase": "validation"
+        }
+      ],
+      "case_sha256": "88d0703af9096d9817ee275ba7985ef09fd6f2af33e445a4127c0a0b00df0032",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "VALIDATING",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_VALIDATION_NOT_FOUND",
+      "initial": {
+        "state": "RECONCILE_PENDING_VALIDATION"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "OPERATOR_REVIEW"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "FOUND_MISMATCH",
+          "phase": "validation"
+        }
+      ],
+      "case_sha256": "524b99d2b3d61b2f9e1cd49bfab45189d2be1ddb4bdf472359bf4a8fdc951bdb",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "OPERATOR_REVIEW",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_VALIDATION_FOUND_MISMATCH",
+      "initial": {
+        "state": "RECONCILE_PENDING_VALIDATION"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "RECONCILE_PENDING_VALIDATION"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "READBACK_UNAVAILABLE",
+          "phase": "validation"
+        }
+      ],
+      "case_sha256": "f7edaffd7f5f22eb49664f3678a57ae2935ad08d0dc5a59bf98b176f7fc1666e",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RECONCILE_PENDING_VALIDATION",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_VALIDATION_READBACK_UNAVAILABLE",
+      "initial": {
+        "state": "RECONCILE_PENDING_VALIDATION"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "ACKED"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "FOUND_EXACT",
+          "phase": "submit"
+        }
+      ],
+      "case_sha256": "5d79db60565385f2ae6f1d514f9d4a4d220939ffd5589e40c8a1a21738ea6ab9",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "ACKED",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_SUBMIT_FOUND_EXACT",
+      "initial": {
+        "state": "RECONCILE_PENDING_SUBMIT"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "RETRY_WAIT_SUBMIT"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "NOT_FOUND",
+          "phase": "submit"
+        }
+      ],
+      "case_sha256": "bac417e4014517a058b0c0321a9c7a195c8833607fcbc38e4acf651b8c225abd",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RETRY_WAIT_SUBMIT",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_SUBMIT_NOT_FOUND",
+      "initial": {
+        "state": "RECONCILE_PENDING_SUBMIT"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "OPERATOR_REVIEW"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "FOUND_MISMATCH",
+          "phase": "submit"
+        }
+      ],
+      "case_sha256": "56b9f19125d3570b739449af5e0c17c5bc49149f0218f577b6729e5c97fa321b",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "OPERATOR_REVIEW",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_SUBMIT_FOUND_MISMATCH",
+      "initial": {
+        "state": "RECONCILE_PENDING_SUBMIT"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "RECONCILE_PENDING_SUBMIT"
+          },
+          "op": "reconciliation_readback",
+          "outcome": "READBACK_UNAVAILABLE",
+          "phase": "submit"
+        }
+      ],
+      "case_sha256": "016c4f64cdffee0e55b72cb9e0b64838e76ca489f996ae8b5635e50aac4a6e46",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RECONCILE_PENDING_SUBMIT",
+        "ui_saved_signals": 0
+      },
+      "id": "RECONCILIATION_SUBMIT_READBACK_UNAVAILABLE",
+      "initial": {
+        "state": "RECONCILE_PENDING_SUBMIT"
+      },
+      "premise": "Readback reconciles the original immutable request; exact identity is required and no blind POST is allowed."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "effects_delta": {
+              "authoritative_local_writes": 1,
+              "downstream_outbox_rows": 1,
+              "outbox_rows": 1
+            },
+            "state": "COMPLETED"
+          },
+          "op": "apply_local_effect",
+          "outcome": "APPLIED"
+        }
+      ],
+      "case_sha256": "2d197454b44e8d7b5de48a5fbf280bd48defb7562bd862140343b1a7e11f3cce",
+      "final_expect": {
+        "authoritative_local_writes": 1,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 1,
+        "outbox_rows": 1,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "COMPLETED",
+        "ui_saved_signals": 0
+      },
+      "id": "LOCAL_EFFECT_APPLIES_ONCE",
+      "initial": {
+        "state": "ACKED"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "LOCAL_EFFECT_PENDING"
+          },
+          "op": "apply_local_effect",
+          "outcome": "READBACK_UNAVAILABLE"
+        }
+      ],
+      "case_sha256": "6c84566e6a8e45f2dc09740eaff91d33e076249c3bc6113d32a4fdf28d29a3fd",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "LOCAL_EFFECT_PENDING",
+        "ui_saved_signals": 0
+      },
+      "id": "LOCAL_EFFECT_UNAVAILABLE_PRESERVES_ACK",
+      "initial": {
+        "state": "ACKED"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "accepted": false,
+            "state": "COMPLETED"
+          },
+          "op": "claim_validation"
+        }
+      ],
+      "case_sha256": "3eb7e4db1cd206198f9bb1e634c46bd60ef3be215b4b983dde2fbaa8020a712c",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "COMPLETED",
+        "ui_saved_signals": 0
+      },
+      "id": "TERMINAL_COMPLETED_NEVER_RECLAIMED",
+      "initial": {
+        "state": "COMPLETED"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "accepted": false,
+            "state": "CAPTURED_UNVERIFIED"
+          },
+          "op": "claim_validation",
+          "target": "later"
+        }
+      ],
+      "case_sha256": "a9cfc5e0c03cf68d55b516275d2369a3adef095729c9004b902af7b0154eabb9",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 2,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "WAITING_DEPENDENCY",
+        "ui_saved_signals": 0
+      },
+      "id": "FIFO_PREDECESSOR_BLOCKS_LATER_CAPTURE",
+      "initial": {
+        "intents": [
+          {
+            "partition_key": "P1",
+            "partition_seq": 1,
+            "state": "WAITING_DEPENDENCY",
+            "target": "main"
+          },
+          {
+            "partition_key": "P1",
+            "partition_seq": 2,
+            "state": "CAPTURED_UNVERIFIED",
+            "target": "later"
+          }
+        ]
+      },
+      "premise": "An unresolved earlier intent blocks validation of the later record in the same partition."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "state": "RETRY_WAIT_VALIDATION"
+          },
+          "op": "expire_claim"
+        },
+        {
+          "expect": {
+            "accepted": true,
+            "fence": 2,
+            "state": "VALIDATING"
+          },
+          "op": "claim_validation"
+        },
+        {
+          "expect": {
+            "accepted": false,
+            "state": "VALIDATING"
+          },
+          "op": "attempt_transition",
+          "target": "main",
+          "to": "VALIDATED",
+          "worker_fence": 1
+        }
+      ],
+      "case_sha256": "8f9b73848c5ba6a83e8bd5542ae7399194511a6716268abe20dcaadc3e86db4e",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "VALIDATING",
+        "ui_saved_signals": 0
+      },
+      "id": "STALE_WORKER_FENCE_CANNOT_WRITE",
+      "initial": {
+        "fence": 1,
+        "state": "VALIDATING"
+      },
+      "premise": "Lease expiry and reclaim replace fence 1 with fence 2; the old worker may not write."
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "accepted": false,
+            "state": "WAITING_DEPENDENCY"
+          },
+          "op": "attempt_transition",
+          "target": "main",
+          "to": "SUBMITTING"
+        }
+      ],
+      "case_sha256": "05a95334c2e17534a3779e2c1e4b74d720b859474cd4929857a2933785f14c39",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "WAITING_DEPENDENCY",
+        "ui_saved_signals": 0
+      },
+      "id": "FORBID_WAITING_DEPENDENCY_TO_SUBMIT",
+      "initial": {
+        "state": "WAITING_DEPENDENCY"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "accepted": false,
+            "state": "RETRY_WAIT_VALIDATION"
+          },
+          "op": "attempt_transition",
+          "target": "main",
+          "to": "SUBMITTING"
+        }
+      ],
+      "case_sha256": "d6eeed2567d196ed01950bf39cd7271ef40765e52a40492eb219ebe181e5eff9",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RETRY_WAIT_VALIDATION",
+        "ui_saved_signals": 0
+      },
+      "id": "FORBID_RETRY_VALIDATION_TO_SUBMIT",
+      "initial": {
+        "state": "RETRY_WAIT_VALIDATION"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "accepted": false,
+            "state": "RECONCILE_PENDING_SUBMIT"
+          },
+          "op": "attempt_transition",
+          "target": "main",
+          "to": "SUBMITTING"
+        }
+      ],
+      "case_sha256": "2a501178fcb97284b4064435bb6c7c0fabaac7be294c09295d77842185f50edb",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RECONCILE_PENDING_SUBMIT",
+        "ui_saved_signals": 0
+      },
+      "id": "UNKNOWN_SUBMIT_NEVER_BLINDLY_REPOSTS",
+      "initial": {
+        "state": "RECONCILE_PENDING_SUBMIT"
+      },
+      "premise": ""
+    },
+    {
+      "actions": [
+        {
+          "expect": {
+            "accepted": false,
+            "state": "RECONCILE_PENDING_SUBMIT"
+          },
+          "op": "cancel"
+        }
+      ],
+      "case_sha256": "be1766d1db952ce560f906f72ed506138128bb77dc538b31a9a02bc474d32bd5",
+      "final_expect": {
+        "authoritative_local_writes": 0,
+        "captured_intent_rows": 1,
+        "dashboard_projection_rows": 0,
+        "downstream_outbox_rows": 0,
+        "outbox_rows": 0,
+        "receipt_rows": 0,
+        "server_mutations": 0,
+        "server_requests": 0,
+        "state": "RECONCILE_PENDING_SUBMIT",
+        "ui_saved_signals": 0
+      },
+      "id": "UNKNOWN_SUBMIT_CANNOT_CANCEL",
+      "initial": {
+        "state": "RECONCILE_PENDING_SUBMIT"
+      },
+      "premise": ""
+    }
+  ],
+  "consumer_profile": {
+    "capture_storage_actions_per_implementation": 23,
+    "capture_storage_cases_per_implementation": 15
+  },
+  "contract_version": "kmtech.deferred-intent.v1.1",
+  "default_effect_counters": {
+    "authoritative_local_writes": 0,
+    "captured_intent_rows": 0,
+    "dashboard_projection_rows": 0,
+    "downstream_outbox_rows": 0,
+    "outbox_rows": 0,
+    "receipt_rows": 0,
+    "server_mutations": 0,
+    "server_requests": 0,
+    "ui_saved_signals": 0
+  },
+  "entropy_vectors": [
+    {
+      "context": {
+        "app_id": "rework",
+        "authority_scope_id": "SCOPE-CONFORMANCE",
+        "capture_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "contract_version": "kmtech.deferred-intent.v1.1",
+        "intent_kind": "REWORK_GOOD_PRECLAIM",
+        "producer_install_id": "install-conformance",
+        "purpose": "kmtech.deferred-intent.payload-protection.v2"
+      },
+      "id": "V2_CURRENT_USER_CONTEXT",
+      "sha256": "ec8688ca45cfa7919f1ed04aba32a9ad94b66521a09dbc6a85f607ebc22d5b86"
+    }
+  ],
+  "operation_vocabulary": [
+    "capture_commit",
+    "capture_duplicate",
+    "capture_conflict",
+    "capture_failure",
+    "restart",
+    "claim_validation",
+    "validation_result",
+    "materialization_dispatch",
+    "materialization_readback",
+    "materialize_command",
+    "claim_submit",
+    "submit_result",
+    "reconciliation_readback",
+    "apply_local_effect",
+    "legacy_handoff",
+    "cancel",
+    "crash",
+    "expire_claim",
+    "attempt_transition"
+  ],
+  "payload_protection": {
+    "emit": "WIN_DPAPI_CURRENT_USER_V2",
+    "entropy_derivation": "SHA256_RFC8785_JCS_CONTEXT_V1",
+    "legacy_v1_status": "AMBIGUOUS_DO_NOT_EMIT",
+    "plaintext_envelope": "RAW_CANONICAL_BYTES"
+  },
+  "provenance": {
+    "generation_time": "2026-09-06T05:54:44+09:00",
+    "generator": "rework_worker/shared_runtime_overlays/generate_deferred_intent_contract.py",
+    "generator_sha256": "7a073b44a909f1fedb4558e7c2f2bf556415f35a4cd3a2ff6c8d5a08a3123284",
+    "reconstruction_notice": "seq292 originals were lost on 2026-09-06; this is a newly reconstructed specification with new pins, not byte recovery or new native measurement",
+    "reconstruction_revision": 2,
+    "source_commit": "cd9e03e45d830f166911f8c051c22ea428c31917",
+    "source_sha256": {
+      "rework_worker/deferred_intent_capture.py": "798c2a58a6600466fa5ff682cdd8895ad6a37668bd80402394280277536d5cb9",
+      "rework_worker/deferred_intent_recovery.py": "50378914c4a54549e02041de8b285c4ca999e5a680379fcaaea9cf2ff4f435d3",
+      "rework_worker/deferred_intent_recovery_schema.py": "b637a4bbbf01ca264b1d2c2d9946037540f5d0d1347a6be861f00ba110e8d228"
+    },
+    "source_state": "rw13 reviewed worktree based on source_commit; source_sha256 identifies exact inputs",
+    "vector_body_sha256": "a01566fc8dd8ec16144a4b7b5d9076ee24e35157b86858321831490660de6357"
+  },
+  "reconciliation_outcome_destinations": {
+    "submit": {
+      "FOUND_EXACT": "ACKED",
+      "FOUND_MISMATCH": "OPERATOR_REVIEW",
+      "NOT_FOUND": "RETRY_WAIT_SUBMIT",
+      "READBACK_UNAVAILABLE": "RECONCILE_PENDING_SUBMIT"
+    },
+    "validation": {
+      "FOUND_EXACT": "VALIDATING",
+      "FOUND_MISMATCH": "OPERATOR_REVIEW",
+      "NOT_FOUND": "VALIDATING",
+      "READBACK_UNAVAILABLE": "RECONCILE_PENDING_VALIDATION"
+    }
+  },
+  "states": [
+    "CAPTURED_UNVERIFIED",
+    "VALIDATING",
+    "RETRY_WAIT_VALIDATION",
+    "WAITING_DEPENDENCY",
+    "BLOCKED_INVALID",
+    "RECONCILE_PENDING_VALIDATION",
+    "VALIDATED",
+    "READY_TO_SUBMIT",
+    "SUBMITTING",
+    "RETRY_WAIT_SUBMIT",
+    "RECONCILE_PENDING_SUBMIT",
+    "ACKED",
+    "LOCAL_EFFECT_PENDING",
+    "OPERATOR_REVIEW",
+    "COMPLETED",
+    "CANCELLED",
+    "SUPERSEDED"
+  ],
+  "terminal_states": [
+    "COMPLETED",
+    "CANCELLED",
+    "SUPERSEDED"
+  ],
+  "transition_codes": [
+    "T1_CAPTURE",
+    "T1D_DUPLICATE_SUPPRESSED",
+    "T2_CLAIM_VALIDATION",
+    "T3_LOCAL_INTEGRITY",
+    "T4_LOCAL_INVALID",
+    "T5_VALIDATE_PLAN",
+    "T5A_RECORD_MUTATION_ATTEMPT",
+    "T6_VALIDATION_RETRY",
+    "T6A_VALIDATION_UNKNOWN",
+    "T6B_VALIDATION_RECONCILED",
+    "T6C_VALIDATION_MISMATCH",
+    "T7_CLASSIFY_ABSENCE",
+    "T8_MATERIALIZE_DEPENDENCY",
+    "T9_WAIT_DEPENDENCY",
+    "T10_REJECT_OR_REVIEW",
+    "T11_FREEZE_VALIDATION",
+    "T12_MATERIALIZE_COMMAND",
+    "T13_REVALIDATE_BEFORE_COMMAND",
+    "T14_CLAIM_SUBMIT",
+    "T15_CLASSIFY_SUBMIT",
+    "T16_SUBMIT_UNKNOWN",
+    "T17_SUBMIT_RECONCILED",
+    "T18_APPLY_LOCAL_EFFECT",
+    "T19_COMPLETE",
+    "TC_CANCEL",
+    "TS_SUPERSEDE",
+    "TR_RETRY_AUDIT"
+  ],
+  "validation_outcome_destinations": {
+    "ABSENT_MATERIALIZABLE": "WAITING_DEPENDENCY",
+    "CONFLICT": "OPERATOR_REVIEW",
+    "INVALID": "BLOCKED_INVALID",
+    "REQUIRED_ABSENT": "WAITING_DEPENDENCY",
+    "RETRYABLE_UNAVAILABLE": "RETRY_WAIT_VALIDATION",
+    "UNKNOWN_COMMIT": "RECONCILE_PENDING_VALIDATION",
+    "VALID": "VALIDATED"
+  },
+  "vector_schema_version": "kmtech.deferred-intent.golden-vectors.v1"
+}

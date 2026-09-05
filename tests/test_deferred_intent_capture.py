@@ -50,14 +50,11 @@ from package_logistics import (
 from terminal_operation_lease import OperationLeaseError
 
 
-CONTRACT_PATH = Path(
-    r"E:\KMTech\autoloop-20260824\seq292-intent-contract\CONTRACT.md"
-)
-VECTORS_PATH = Path(
-    r"E:\KMTech\autoloop-20260824\seq292-intent-contract\golden-vectors.json"
-)
-CONTRACT_SHA256 = "557bc72dfb44dba859a5cb18a606a933f6259573fed9cf6df7044a9ba4b09074"
-VECTORS_SHA256 = "047e572ef07cbbec64b7b735b5bd9e5fdfefeafefe7db24908f81cd7a34a2507"
+CONTRACT_ROOT = Path(__file__).resolve().parent / "fixtures" / "deferred_intent_contract"
+CONTRACT_PATH = CONTRACT_ROOT / "CONTRACT.md"
+VECTORS_PATH = CONTRACT_ROOT / "golden-vectors.json"
+CONTRACT_SHA256 = "b42c175e6d2d6c3b3c108e6ed2e4a083304ff7557994fa20020ba6d6231c193f"
+VECTORS_SHA256 = "683727b2c19eae50ea919fe720788cc10669fe93b4c98f6d1a836eac46662822"
 
 
 def _binding() -> DeferredIntentBinding:
