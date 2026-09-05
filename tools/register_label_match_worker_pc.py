@@ -130,6 +130,7 @@ class _AdminRecoveryProgress:
     """Record the irreversible recovery boundary without retaining secrets."""
 
     def __init__(self) -> None:
+        self.fresh_local_state = False
         self.server_credential_rotated = False
         self.logistics_credential_finalized = False
         self.producer_credential_finalized = False
@@ -1196,8 +1197,8 @@ def _preflight_admin_recovery_local_state(
     manifest: Mapping[str, Any],
     credential: Mapping[str, Any],
     recovery_path: Path,
-) -> None:
-    """Prove recovery will replace an existing, non-overlapping local identity."""
+) -> bool:
+    """Admit a wholly absent local identity or verify the complete existing one."""
 
     data_dir = assert_path_has_no_reparse_components(
         str(credential["secret_data_dir"]),
@@ -1273,7 +1274,7 @@ def _preflight_admin_recovery_local_state(
     for path in local_targets:
         if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
             raise DirectSyncPushError("admin recovery local target is not a regular file")
-    for path, label in (
+    required_state = (
         (identity_path, "producer identity"),
         (manifest_path, "producer manifest"),
         (credential_path, "producer credential reference"),
@@ -1281,7 +1282,24 @@ def _preflight_admin_recovery_local_state(
         (profile_path, "logistics profile"),
         (logistics_secret_path, "logistics protected credential"),
         (tls_target, "logistics TLS CA bundle"),
-    ):
+    )
+    if not any(path.exists() for path, _label in required_state):
+        if receipt_path.exists():
+            raise DirectSyncPushError("fresh recovery cannot reuse an existing receipt")
+        if report_path.exists():
+            if not 0 < report_path.stat().st_size <= 65_536:
+                raise DirectSyncPushError("fresh recovery diagnostic report size is invalid")
+            diagnostic = _load_json_no_duplicate_keys(report_path.read_bytes())
+            if not isinstance(diagnostic, dict) or diagnostic.get("status") not in {
+                "BLOCKED", "FAILED", "UNKNOWN", "DRY_RUN",
+            }:
+                raise DirectSyncPushError("fresh recovery cannot reuse an existing registration")
+        if not ca_source.is_file():
+            raise DirectSyncPushError("fresh recovery requires an existing TLS CA source")
+        if os.path.normcase(str(ca_source)) in set(target_keys):
+            raise DirectSyncPushError("fresh recovery TLS CA source overlaps a local target")
+        return True
+    for path, label in required_state:
         if not path.is_file():
             raise DirectSyncPushError(
                 f"admin recovery requires existing {label}"
@@ -1294,6 +1312,7 @@ def _preflight_admin_recovery_local_state(
         raise DirectSyncPushError(
             "existing producer manifest differs from the recovery candidate"
         )
+    return False
 
 
 def _admin_recover(
@@ -1336,12 +1355,14 @@ def _admin_recover(
         str(getattr(args, "admin_recovery_secret_file", "") or ""),
         expected_producer_id=str(credential["producer_id"]),
     )
-    _preflight_admin_recovery_local_state(
+    fresh_local_state = _preflight_admin_recovery_local_state(
         args,
         manifest,
         credential,
         recovery_path,
     )
+    if progress is not None:
+        progress.fresh_local_state = bool(fresh_local_state)
     recovery_url = _validate_admin_recovery_url(
         str(getattr(args, "admin_recovery_url", "") or "")
         or _admin_recovery_url_from_endpoint(str(credential["endpoint_url"])),
@@ -1497,6 +1518,8 @@ def _apply_registration_locked(
     admin_recovery_requested = bool(
         str(getattr(args, "admin_recovery_secret_file", "") or "").strip()
     )
+    if progress is None:
+        progress = _AdminRecoveryProgress()
     recovery_path: Path | None = None
     recovery_authorization: dict[str, Any] | None = None
     if admin_recovery_requested:
@@ -1589,7 +1612,9 @@ def _apply_registration_locked(
         credential_scope=str(
             getattr(args, "credential_scope", "machine") or "machine"
         ),
-        allow_existing_token_rotation=admin_recovery_requested,
+        allow_existing_token_rotation=(
+            admin_recovery_requested and not progress.fresh_local_state
+        ),
         expected_producer_id=str(credential["producer_id"]),
         expected_producer_install_id=str(
             manifest["pc_identity"]["producer_install_id"]
@@ -1600,11 +1625,14 @@ def _apply_registration_locked(
     if machine_profile is None and bool(getattr(args, "require_machine_credential_bundle", False)):
         raise DirectSyncPushError("self-enroll response missing machine credential bundle")
     if admin_recovery_requested:
+        expected_profile_status = "installed" if progress.fresh_local_state else "rotated"
         if not isinstance(machine_profile, Mapping) or machine_profile.get(
             "status"
-        ) != "rotated":
+        ) != expected_profile_status:
             raise DirectSyncPushError(
-                "admin recovery did not rotate the existing logistics credential"
+                "admin recovery did not install the fresh logistics credential"
+                if progress.fresh_local_state
+                else "admin recovery did not rotate the existing logistics credential"
             )
         if progress is not None:
             progress.logistics_credential_finalized = True
@@ -1616,7 +1644,9 @@ def _apply_registration_locked(
         expected_secret_path = _secret_path(
             credential["secret_data_dir"], secret_target
         )
-        if expected_secret_path.exists() and not admin_recovery_requested:
+        if expected_secret_path.exists() and (
+            not admin_recovery_requested or progress.fresh_local_state
+        ):
             raise FileExistsError(
                 f"producer credential path already exists: {expected_secret_path}"
             )

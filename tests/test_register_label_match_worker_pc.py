@@ -1570,3 +1570,225 @@ def test_successful_local_recovery_finalization_deletes_authorization_last(
         "producer_credential_finalized": True,
         "server_credential_rotated": True,
     }
+
+
+@pytest.mark.parametrize("rejection", [None, "manifest", "authorization", "expired", "ca"])
+def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
+    tmp_path, monkeypatch, rejection
+):
+    """A re-imaged PC has its old server identity but none of its local files."""
+    from contextlib import contextmanager
+
+    module = load_registration_module()
+    data_dir = tmp_path / "state"
+    profile_path = tmp_path / "logistics" / "runtime-profile.json"
+    report_path = data_dir / "status" / module.DEFAULT_REPORT_FILENAME
+    authorization_path = tmp_path / "authorization.json"
+    ca_path = tmp_path / "source-ca.pem"
+    ca_path.write_bytes(b"test-public-ca")
+    monkeypatch.setattr(module, "_current_user_sid", lambda: TEST_USER_SID)
+    argv = [
+        "--apply", "--server-base-url", "https://worker.example.invalid",
+        "--credential-scope", "current_user", "--pc-id", "LABEL-PC-01",
+        "--machine-guid", TEST_MACHINE_GUID,
+        "--data-dir", str(data_dir), "--sync-dir", str(tmp_path / "work"),
+        "--logistics-profile-path", str(profile_path),
+        "--report-path", str(report_path), "--tls-ca-bundle-path", str(ca_path),
+        "--enrollment-token-env", "",
+    ]
+    observed = {"key": 0, "recovery_http": 0}
+    monkeypatch.setattr(module, "_prepare_possession_key", lambda _r: fake_possession_descriptor())
+
+    def conflict(payload, **_kwargs):
+        observed["original"] = payload
+        raise module.ProducerEnrollmentHTTPError(409, "producer_identity_conflict", "")
+
+    monkeypatch.setattr(module, "_enroll", conflict)
+    assert module.main(argv) == 2
+    rejected = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert rejected["server_error_code"] == "producer_identity_conflict"
+    assert not (data_dir / module.PRODUCER_IDENTITY_FILENAME).exists()
+    assert not profile_path.exists()
+    original = observed["original"]
+    manifest = original["manifest"]
+    identity = manifest["pc_identity"]
+    authorization_path.write_text(json.dumps({
+        "contract_version": module.ADMIN_RECOVERY_AUTHORIZATION_CONTRACT_VERSION,
+        "authorization_id": "test-recovery-authorization",
+        "producer_id": rejected["producer_id"], "recovery_token": "test-one-time-token",
+        "nonce": "test-nonce", "expires_at": "2099-01-01T00:00:00Z",
+        "audience": module.ADMIN_RECOVERY_AUDIENCE, "audit_event_id": "test-audit",
+    }), encoding="utf-8")
+
+    class Key:
+        def descriptor(self):
+            return SimpleNamespace(as_dict=lambda: fake_possession_descriptor())
+
+        def assert_non_exportable(self):
+            return SimpleNamespace(private_export_status_hex="0x80090010")
+
+        def sign_es256(self, value):
+            observed["proof"] = json.loads(value)
+            return b"s" * 64
+
+    @contextmanager
+    def provision(**kwargs):
+        observed["key"] += 1
+        assert kwargs == {"scope": "current_user"}
+        yield Key()
+
+    class Session:
+        def post(self, url, **kwargs):
+            observed["recovery_http"] += 1
+            assert url.endswith(module.ADMIN_RECOVERY_PATH)
+            assert kwargs["allow_redirects"] is False
+            assert kwargs["json"]["manifest"] == manifest
+            response = fake_v2_enrollment_response(module, original, "test-new-secret")
+            response["machine_credential_bundle"] = {"test": True}
+            for target in (response, response["client_receipt"]):
+                target.update(contract_version=module.ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION,
+                              status="recovered", identity_action="REATTACHED",
+                              recovery_action="ADMIN_RECOVERY", credential_epoch=2)
+            return SimpleNamespace(status_code=200, json=lambda: response)
+
+        def close(self):
+            observed["closed"] = True
+
+    def install_profile(_response, **kwargs):
+        assert kwargs["allow_existing_token_rotation"] is False
+        assert kwargs["credential_scope"] == "current_user"
+        assert kwargs["expected_manifest_hash"] == module.manifest_hash(manifest)
+        assert authorization_path.is_file()
+        profile_path.parent.mkdir(parents=True)
+        tls_target = profile_path.parent / module.TLS_CA_BUNDLE_RELATIVE_PATH
+        tls_target.parent.mkdir(parents=True, exist_ok=True)
+        tls_target.write_bytes(ca_path.read_bytes())
+        profile_path.write_text(json.dumps({
+            "credential_scope": "current_user",
+            "source_host_id": identity["source_host_id"],
+            "authority_plane": "AUTHORITATIVE",
+            "tls_ca_bundle_path": str(tls_target),
+        }), encoding="utf-8")
+        logistics_secret = profile_path.parent / "secrets" / "bearer-token.dpapi"
+        logistics_secret.parent.mkdir()
+        logistics_secret.write_bytes(b"test-protected-logistics-key")
+        return {"status": "installed", "created_paths": [
+            str(profile_path), str(logistics_secret), str(tls_target),
+        ]}
+
+    def protect(data_root, target, _secret, *, credential_scope):
+        assert credential_scope == "current_user"
+        path = module._secret_path(data_root, target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"test-protected-producer-key")
+        return path
+
+    monkeypatch.setattr(module.PersistentPossessionKey, "provision_initial", staticmethod(provision))
+    monkeypatch.setattr(module, "_open_admin_recovery_session", lambda _p: Session())
+    monkeypatch.setattr(module, "ensure_runtime_profile_from_enrollment_bundle", install_profile)
+    monkeypatch.setattr(module, "_write_dpapi_secret", protect)
+    monkeypatch.setattr(module, "_verify_dpapi_secret", lambda *_a: True)
+    recovery_argv = argv + [
+        "--admin-recovery-secret-file", str(authorization_path),
+        "--expected-active-manifest-hash", module.manifest_hash(manifest),
+        "--producer-id", rejected["producer_id"],
+        "--source-host-id", identity["source_host_id"],
+        "--producer-install-id", identity["producer_install_id"],
+    ]
+    if rejection:
+        if rejection == "manifest":
+            recovery_argv[recovery_argv.index("--expected-active-manifest-hash") + 1] = "0" * 64
+        elif rejection in {"authorization", "expired"}:
+            invalid = json.loads(authorization_path.read_text(encoding="utf-8"))
+            invalid["producer_id" if rejection == "authorization" else "expires_at"] = (
+                "another-producer" if rejection == "authorization" else "2000-01-01T00:00:00Z"
+            )
+            authorization_path.write_text(json.dumps(invalid), encoding="utf-8")
+        else:
+            ca_path.unlink()
+        assert module.main(recovery_argv) == 2
+        assert observed["key"] == observed["recovery_http"] == 0
+        assert authorization_path.is_file()
+        assert not profile_path.exists()
+        assert not (data_dir / module.PRODUCER_IDENTITY_FILENAME).exists()
+        return
+    assert module.main(recovery_argv) == 0
+    recovered = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    assert recovered["status"] == "ADMIN_RECOVERY_REGISTERED"
+    assert recovered["server_registration_verified"] is True
+    assert recovered["persisted_manifest_hash_verified"] is True
+    assert recovered["producer_id"] == rejected["producer_id"]
+    assert recovered["producer_install_id"] == identity["producer_install_id"]
+    assert observed["key"] == observed["recovery_http"] == 1
+    assert observed["proof"]["manifest_hash"] == module.manifest_hash(manifest)
+    assert profile_path.is_file()
+    for name in (module.PRODUCER_IDENTITY_FILENAME, module.DEFAULT_MANIFEST_FILENAME,
+                 module.DEFAULT_CREDENTIAL_FILENAME):
+        assert (data_dir / name).is_file()
+    assert not authorization_path.exists()
+    # Consume the actual registration output through ordinary onboarding; do not
+    # replace its state inspection or re-enroll the recovered server identity.
+    import current_user_onboarding as onboarding
+
+    environment = {
+        "LOCALAPPDATA": str(tmp_path / "LocalAppData"),
+        "LABEL_MATCH_SAVE_DIR": str(tmp_path / "work"),
+        "LABEL_MATCH_DIRECT_SYNC_ROOT": str(data_dir),
+        "KM_LOGISTICS_PROFILE_PATH": str(profile_path),
+    }
+    continued = onboarding.onboard_current_user(
+        tmp_path / "app", environ=environment, require_bootstrap_integrity=False,
+        registration_runner=lambda _paths: pytest.fail("recovered identity was re-enrolled"),
+        profile_loader=lambda p: SimpleNamespace(**json.loads(p.read_text(encoding="utf-8"))),
+        credential_loader=lambda p: SimpleNamespace(**json.loads(p.read_text(encoding="utf-8-sig"))),
+        ledger_factory=lambda p: p.write_bytes(b"test-ledger"),
+        autostart_installer=lambda _root: {"status": "PASS"},
+        scheduled_task_installer=lambda _root: {"status": "PASS"},
+        legacy_task_quiescence_reader=lambda: {
+            "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
+            "required_state": "ABSENT_OR_DISABLED", "read_only": True,
+            "task_or_process_mutated": False,
+        },
+        relay_launcher=lambda _root: {"status": "ALIVE", "process_id": 123},
+    )
+    assert continued["status"] == "READY"
+    assert continued["action"] == "REUSED"
+    assert continued["server_registration_verified"] is True
+    assert continued["state_readback"]["manifest_hash"] == module.manifest_hash(manifest)
+    assert observed["key"] == observed["recovery_http"] == 1
+
+
+@pytest.mark.parametrize("residue", [
+    "identity", "manifest", "credential", "producer_secret", "profile",
+    "logistics_secret", "tls", "receipt", "registration",
+])
+def test_admin_recovery_partial_local_state_cannot_be_treated_as_fresh(tmp_path, residue):
+    module = load_registration_module()
+    data_dir = tmp_path / "state"
+    profile_path = tmp_path / "logistics" / "runtime-profile.json"
+    paths = {
+        "identity": data_dir / module.PRODUCER_IDENTITY_FILENAME,
+        "manifest": data_dir / module.DEFAULT_MANIFEST_FILENAME,
+        "credential": data_dir / module.DEFAULT_CREDENTIAL_FILENAME,
+        "producer_secret": data_dir / "secrets" / "producer-label-01.dpapi",
+        "profile": profile_path,
+        "logistics_secret": profile_path.parent / "secrets" / "bearer-token.dpapi",
+        "tls": profile_path.parent / module.TLS_CA_BUNDLE_RELATIVE_PATH,
+        "receipt": data_dir / "evidence" / module.DEFAULT_RECEIPT_FILENAME,
+        "registration": data_dir / "status" / module.DEFAULT_REPORT_FILENAME,
+    }
+    ca_path = tmp_path / "source-ca.pem"
+    ca_path.write_bytes(b"test-public-ca")
+    present = paths[residue]
+    present.parent.mkdir(parents=True)
+    content = b'{"status":"ADMIN_RECOVERY_REGISTERED"}' if residue == "registration" else b"existing-local-state"
+    present.write_bytes(content)
+    args = SimpleNamespace(data_dir=str(data_dir), logistics_profile_path=str(profile_path),
+                           tls_ca_bundle_path=str(ca_path))
+    manifest, credential, _, _ = _admin_recovery_contract(module, "LOGISTICS_READY")
+    credential.update(secret_data_dir=str(data_dir), secret_ref="dpapi:producer-label-01")
+    with pytest.raises(module.DirectSyncPushError):
+        module._preflight_admin_recovery_local_state(
+            args, manifest, credential, tmp_path / "authorization.json"
+        )
+    assert present.read_bytes() == content
