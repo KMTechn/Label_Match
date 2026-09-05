@@ -69,12 +69,15 @@ if "--onboard-current-user" in sys.argv and os.environ.get("LM_TRANSITION_ACTIVA
     with fence.writer_admission("current_user_onboarding"):
         persistence = relay.install_user_relay_autostart(app_root)
         marker_path = relay.user_relay_stop_path(paths.direct_sync_root)
-        marker, _raw, marker_hash = relay.read_stop_marker(marker_path)
-        relay.release_user_relay_stop_marker(
-            paths.direct_sync_root,
-            expected_request_id=marker["request_id"],
-            expected_sha256=marker_hash,
-        )
+        if os.environ.get("LM_HEALTHY_LIFECYCLE_FIXTURE") == "1":
+            onboarding._portable_stop_marker_release_preflight(paths)
+        if marker_path.exists():
+            marker, _raw, marker_hash = relay.read_stop_marker(marker_path)
+            relay.release_user_relay_stop_marker(
+                paths.direct_sync_root,
+                expected_request_id=marker["request_id"],
+                expected_sha256=marker_hash,
+            )
         started = relay.start_user_relay_process(app_root)
         onboarding._write_json_atomic(paths.onboarding_report_path, {
             "status": "READY", "action": "FIXTURE_ENROLLMENT",

@@ -159,11 +159,8 @@ def _run_pristine_removal_gate_harness(
     guarded_start = source.rfind(
         "    if (-not $pristineInstall) {", 0, removal_anchor_index
     )
-    block_start = (
-        guarded_start
-        if guarded_start >= 0 and removal_anchor_index - guarded_start < 256
-        else removal_anchor_index
-    )
+    assert guarded_start >= 0
+    block_start = guarded_start
     block_end = source.index(
         "    $unquiesced = @(UnquiescedProductWriters)", removal_anchor_index
     )
@@ -176,6 +173,8 @@ def _run_pristine_removal_gate_harness(
 $ErrorActionPreference = 'Stop'
 $script:removalCalls = 0
 $pristineInstall = {'$true' if pristine_install else '$false'}
+$healthyLifecycle = $null
+$healthyRemovedInstall = $false
 $existingVerified = $false
 $source = '{str(tmp_path / "source").replace("'", "''")}'
 $install = '{str(tmp_path / "install").replace("'", "''")}'

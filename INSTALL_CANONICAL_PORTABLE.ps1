@@ -838,7 +838,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin $parameterNames }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -867,6 +867,20 @@ $invokeParameters = @{
     AllowNoncanonicalLayoutForTest = Get-RequiredExternalBoolean $payload.parameters 'AllowNoncanonicalLayoutForTest'
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
+}
+if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
+    (Get-RequiredExternalBoolean $payload.parameters 'Uninstall')) {
+    if ($invokeParameters.ReplaceExistingVerifiedPortable -or $invokeParameters.DryRun) {
+        throw 'Absent-code rollback cannot replace or dry-run.'
+    }
+    [void](Assert-BootstrapIntegrityRecord -Root $invokeParameters.InstallRoot)
+    $inventory = @(Get-BootstrapCodeInventory -Root $invokeParameters.InstallRoot)
+    if ((Get-BootstrapInventoryAggregate -Inventory $inventory) -cne $invokeParameters.ExpectedSourceAggregateSha256 -or
+        $inventory.Count -ne $invokeParameters.ExpectedSourceFileCount -or
+        [uint64](($inventory | Measure-Object -Property size -Sum).Sum) -ne $invokeParameters.ExpectedSourceByteCount) {
+        throw 'Absent-code rollback candidate inventory differs.'
+    }
+    $invokeParameters.Uninstall = $true
 }
 & $helper @invokeParameters
 if (-not $?) { exit 4 }
@@ -1000,6 +1014,157 @@ function StartRaw([string]$Line) {
     return [int]$created.ProcessId
 }
 
+function HealthyLifecycle([string]$Root, [string]$Installed, [string]$Mode = 'inspect', [string]$ExpectedStateSha256 = '') {
+    # Only the attested candidate is imported. This path does not enroll, rotate
+    # identities, reconcile authorities, or create conflict-resolution receipts.
+    $probe = @'
+import hashlib, json, pathlib, sys
+root, installed = map(pathlib.Path, sys.argv[1:3])
+mode = sys.argv[3]
+expected = sys.argv[4] if len(sys.argv) > 4 else ''
+sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
+import current_user_onboarding as onboarding
+from label_exact_clone_resolution import client_authorities, read_bounded_json
+from producer_runtime_client import _scope_values, _scope_key
+from tools.register_label_match_worker_pc import _current_machine_guid, _current_user_sid, derive_path_independent_install_id
+from user_relay import release_user_relay_stop_marker, user_relay_stop_path
+from user_relay_stop_marker import read_stop_marker, _validated_node, canonical_marker_bytes
+from writer_session_fence import writer_admission, active_fence
+
+def inspect():
+    paths = onboarding.resolve_current_user_onboarding_paths(installed)
+    reference = read_bounded_json(paths.credential_path, label='producer credential reference')
+    secret_ref = str(reference.get('secret_ref') or '')
+    if (reference.get('secret') or not secret_ref.startswith('dpapi:') or
+        pathlib.Path(reference.get('secret_data_dir') or paths.direct_sync_root).resolve() != paths.direct_sync_root):
+        raise ValueError('healthy lifecycle requires canonical current-user DPAPI credentials')
+    secret_name = secret_ref.split(':', 1)[1]
+    if not secret_name or any(character in secret_name for character in '/\\:'):
+        raise ValueError('healthy lifecycle credential reference is invalid')
+    protected = [paths.identity_path, paths.producer_manifest_path, paths.credential_path,
+                 paths.registration_report_path, paths.logistics_profile_path, paths.logistics_secret_path,
+                 paths.direct_sync_root / 'secrets' / (secret_name + '.dpapi')]
+    database = paths.direct_sync_root / 'queue/direct_sync_relay.sqlite3'
+    for path in protected + [paths.direct_sync_root, paths.data_root, paths.settings_path, database]:
+        for parent in (path, *path.parents):
+            if parent.is_symlink() or (parent.exists() and parent.lstat().st_file_attributes & 0x400):
+                raise ValueError('healthy lifecycle state contains a reparse point')
+    state = onboarding.inspect_current_user_state(paths)
+    if state['status'] != 'READY':
+        raise ValueError('healthy lifecycle requires complete current-user identity and credential readback')
+    identity = read_bounded_json(paths.identity_path, label='producer identity')
+    local_install_id = derive_path_independent_install_id(machine_guid=_current_machine_guid(), user_sid=_current_user_sid())
+    if identity['producer_install_id'] != local_install_id:
+        raise ValueError('healthy lifecycle identity belongs to another machine or user')
+    credential = onboarding.load_credentials_from_json(paths.credential_path)
+    if credential.producer_id != identity['producer_id']:
+        raise ValueError('healthy lifecycle credential identity differs')
+    scope = _scope_values(credential, identity['producer_install_id'])
+    if database.exists():
+        for authority in client_authorities(database):
+            if (authority['authority_scope'] != _scope_key(scope) or
+                any(authority[name] != value for name, value in scope.items()) or
+                authority['status'] not in {'ACTIVE', 'PENDING'} or authority['last_error_code']):
+                raise ValueError('healthy lifecycle runtime authority is foreign, quarantined, or requires recovery')
+    digest = hashlib.sha256()
+    for path in protected:
+        digest.update(str(path).encode('utf-8'))
+        with path.open('rb') as stream:
+            digest.update(hashlib.file_digest(stream, 'sha256').digest())
+    state_hash = digest.hexdigest()
+    if expected and state_hash != expected:
+        raise ValueError('healthy lifecycle protected identity changed during replacement')
+    result = dict(status='HEALTHY_CURRENT_USER', state_sha256=state_hash, marker_present=False)
+    marker_path = user_relay_stop_path(paths.direct_sync_root)
+    if marker_path.exists():
+        marker, raw, marker_hash = read_stop_marker(marker_path)
+        _validated_node(marker)
+        if raw != canonical_marker_bytes(marker):
+            raise ValueError('healthy lifecycle stop marker is not canonical')
+        removal = read_bounded_json(paths.removal_report_path, label='normal removal report')
+        relay = removal.get('relay_process', {})
+        if (removal.get('status') != 'PASS_DATA_PRESERVED' or removal.get('data_preserved') is not True or
+            pathlib.Path(removal.get('machine_code_root', '')).resolve() != installed.resolve() or
+            relay.get('status') != 'ABSENT' or relay.get('request_id') != marker['request_id'] or
+            relay.get('stop_request_sha256') != marker_hash):
+            raise ValueError('healthy lifecycle stop marker is not the exact normal removal marker')
+        result.update(marker_present=True, request_id=marker['request_id'], marker_sha256=marker_hash)
+    return paths, result
+
+if mode == 'inspect':
+    _, result = inspect()
+elif mode == 'release' and expected:
+    # The canonical transaction still holds its active writer fence. Admission
+    # validates the candidate identity and exact session delegation before the
+    # marker is inspected or removed; ordinary onboarding retains its own guard.
+    with writer_admission('user_relay_stop_release'):
+        if active_fence() is None:
+            raise ValueError('healthy lifecycle release requires an active replacement fence')
+        paths, result = inspect()
+        if not result['marker_present']:
+            raise ValueError('normal removal marker disappeared before release')
+        result['release'] = release_user_relay_stop_marker(paths.direct_sync_root,
+            expected_request_id=result['request_id'], expected_sha256=result['marker_sha256'])
+else:
+    raise ValueError('unsupported healthy lifecycle operation')
+print(json.dumps(result, sort_keys=True))
+'@
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = Join-Path $Root 'runtime\python.exe'
+    $startInfo.Arguments = '-I -B -c "' + $probe.Replace('"', '\"') + '" ' +
+        (Arg $Root) + ' ' + (Arg $Installed) + ' ' + (Arg $Mode) + ' ' + (Arg $ExpectedStateSha256)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw ('Pinned conflict-resolution receipt source validation is required; healthy lifecycle validation failed: ' + $stderr.Trim())
+        }
+        return $stdout | ConvertFrom-Json
+    }
+    finally { $process.Dispose() }
+}
+
+function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$Installed) {
+    if ($Run.exists -and ([string]$Run.kind -cne 'String' -or [string]$Run.data -cne (Command $Installed))) {
+        throw 'Healthy lifecycle autostart belongs to another command.'
+    }
+    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if (@($RelayValues).Count -gt 1) { throw 'Healthy lifecycle relay ownership is ambiguous.' }
+    foreach ($relay in $RelayValues) {
+        $owner = Invoke-CimMethod -InputObject $relay -MethodName GetOwnerSid -ErrorAction Stop
+        if ($owner.ReturnValue -ne 0 -or [string]$owner.Sid -cne $userSid -or
+            -not (Same ([string]$relay.ExecutablePath) (Join-Path $Installed 'runtime\pythonw.exe')) -or
+            [string]$relay.CommandLine -cne (Command $Installed)) {
+            throw 'Healthy lifecycle relay belongs to another owner or command.'
+        }
+    }
+    foreach ($task in $Tasks) {
+        $owner = New-Object Security.Principal.NTAccount([string]$task.Principal.UserId)
+        $taskSid = if ([string]$task.Principal.UserId -match '^S-1-') {
+            [string]$task.Principal.UserId
+        } else { $owner.Translate([Security.Principal.SecurityIdentifier]).Value }
+        if ($taskSid -cne $userSid -or [string]$task.Principal.RunLevel -cne 'Limited' -or
+            [string]$task.Principal.LogonType -cne 'Interactive') {
+            throw 'Healthy lifecycle task belongs to another principal.'
+        }
+        $actions = @($task.Actions)
+        $expectedArguments = '-I -B ' + (Arg (Join-Path $Installed 'app\main.py')) +
+            ' --label-match-scheduled-relay --app-root ' + (Arg $Installed)
+        if ($actions.Count -ne 1 -or
+            -not (Same ([string]$actions[0].Execute) (Join-Path $Installed 'runtime\python.exe')) -or
+            [string]$actions[0].Arguments -cne $expectedArguments -or
+            -not (Same ([string]$actions[0].WorkingDirectory) (Join-Path $Installed 'app'))) {
+            throw 'Healthy lifecycle task belongs to another command.'
+        }
+    }
+}
+
 function Test-PristineInstallState(
     [string]$InstallRootValue,
     $RunSnapshotValue,
@@ -1129,8 +1294,15 @@ $pristineInstall = Test-PristineInstallState `
     $old `
     $scheduledTasksAtPreflight `
     $pristineResiduePaths
-if ($null -eq $receiptSource -and -not $pristineInstall) {
-    throw 'Pinned conflict-resolution receipt source validation is required.'
+$healthyLifecycle = $null
+if (-not $conflictReceiptSupplied -and -not $pristineInstall) {
+    if (-not (Same $selectedDirectSyncRoot $defaultDirectSyncRoot) -or
+        -not (Same $selectedDataRoot $defaultDataRoot) -or
+        -not (Same $selectedSettingsPath $defaultSettingsPath) -or
+        -not (Same $selectedProfilePath $defaultProfilePath)) {
+        throw 'Pinned conflict-resolution receipt source validation is required. Noncanonical state is not eligible for healthy lifecycle.'
+    }
+    Assert-HealthyLifecycleOwnership $before $old $scheduledTasksAtPreflight $install
 }
 if ($null -eq $receiptSource) { $receiptSource = PortableInventory $source }
 
@@ -1153,6 +1325,14 @@ if (Test-Path -LiteralPath $install) {
     }
 }
 $writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $install } else { $source })
+if (-not $conflictReceiptSupplied -and -not $pristineInstall) {
+    $healthyLifecycle = HealthyLifecycle $source $install
+}
+$healthyRemovedInstall = $null -ne $healthyLifecycle -and -not $existingVerified
+if ($healthyRemovedInstall -and (
+    -not $healthyLifecycle.marker_present -or $before.exists -or $old.Count -ne 0 -or
+    $scheduledTasksAtPreflight.Count -ne 0
+)) { throw 'Healthy reinstall requires completed same-user removal and absent persistence.' }
 # All compatibility checks precede snapshots on disk and the active fence: even
 # publishing an undelegated fence can stop a resident preimage relay.
 $localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
@@ -1160,6 +1340,7 @@ New-Item -ItemType Directory -Path $localAuditRoot -Force | Out-Null
 $auditPath = Join-Path $localAuditRoot "canonical-portable-$runId.json"
 $elevationLogPath = Join-Path $localAuditRoot "canonical-portable-$runId-elevated.jsonl"
 $taskBefore = ScheduledTaskSnapshot $localAuditRoot $runId
+$healthyRemovalReportBefore = $null
 $stopBefore = [ordered]@{ exists = $false; sha256 = ''; backup_path = '' }
 if (Test-Path -LiteralPath $stop -PathType Leaf) {
     $stopBackup = Join-Path $localAuditRoot "canonical-portable-$runId-stop-preimage.json"
@@ -1168,6 +1349,11 @@ if (Test-Path -LiteralPath $stop -PathType Leaf) {
         exists = $true
         sha256 = Sha $stop
         backup_path = $stopBackup
+    }
+    if ($null -ne $healthyLifecycle) {
+        $reportBackup = Join-Path $localAuditRoot "canonical-portable-$runId-removal-preimage.json"
+        Copy-Item -LiteralPath $removalPath -Destination $reportBackup
+        $healthyRemovalReportBefore = [ordered]@{ backup_path=$reportBackup; sha256=(Sha $reportBackup) }
     }
 }
 if ([bool]$stopBefore.exists -and $old.Count -gt 0) {
@@ -1321,20 +1507,27 @@ try {
         $writerTransactionId
 
     if (-not $pristineInstall) {
-        $removalRoot = if ($existingVerified) { $install } else { $source }
-        if ($existingVerified) {
-            [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+        if ($null -ne $healthyLifecycle) {
+            [void](HealthyLifecycle $source $install 'inspect' ([string]$healthyLifecycle.state_sha256))
         }
-        $removalStarted = [DateTime]::UtcNow
-        Product $removalRoot '--remove-current-user-setup'
-        $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if (
-            (Snapshot).exists -or
-            [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
-            [string]$removal.relay_process.status -cne 'ABSENT' -or
-            (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
-            $null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)
-        ) { throw 'Removal readback failed.' }
+        # Completed same-user removal remains valid after code uninstall. Its
+        # canonical host is absent, so do not rerun removal from a staging root.
+        if (-not $healthyRemovedInstall) {
+            $removalRoot = if ($existingVerified) { $install } else { $source }
+            if ($existingVerified) {
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+            }
+            $removalStarted = [DateTime]::UtcNow
+            Product $removalRoot '--remove-current-user-setup'
+            $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (
+                (Snapshot).exists -or
+                [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
+                [string]$removal.relay_process.status -cne 'ABSENT' -or
+                (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
+                $null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)
+            ) { throw 'Removal readback failed.' }
+        }
     }
     $unquiesced = @(UnquiescedProductWriters)
     if ($unquiesced.Count -ne 0) {
@@ -1435,6 +1628,9 @@ try {
         $writerTransactionId
 
     $started = (Get-Date).ToUniversalTime()
+    if ($null -ne $healthyLifecycle) {
+        $audit.healthy_lifecycle = HealthyLifecycle $install $install 'release' ([string]$healthyLifecycle.state_sha256)
+    }
     Product $install '--onboard-current-user' $onboardingArguments
     $onboarding = Get-Content $onboardingPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $after = Snapshot
@@ -1564,10 +1760,10 @@ catch {
             }
             else { $source }
             $rollbackUsesInstalled = $false
-            if ($existingVerified -and (Same $rollbackProductRoot $install)) {
+            if (($existingVerified -or $healthyRemovedInstall) -and (Same $rollbackProductRoot $install)) {
                 InvokeFrozenIntegrityProbe $frozenPlacement $install
                 $rollbackInventory = PortableInventory $install
-                if ([string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
+                if ($existingVerified -and [string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
                     $rollbackUsesInstalled = $true
                 }
                 elseif ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
@@ -1577,7 +1773,9 @@ catch {
             if ($writerFenceStarted) {
                 [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $rollbackUsesInstalled)
             }
-            Product $rollbackProductRoot '--remove-current-user-setup'
+            if (-not ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install))) {
+                Product $rollbackProductRoot '--remove-current-user-setup'
+            }
             [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
             if ($existingVerified -and -not $rollbackUsesInstalled) {
                 if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
@@ -1624,7 +1822,37 @@ catch {
                 $audit.rollback.code_placement = 'RESTORED_PREIMAGE'
                 [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
             }
-            $audit.rollback.code_restored = $existingVerified
+            if ($healthyRemovedInstall -and (Test-Path -LiteralPath $install)) {
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $rollbackInventory = PortableInventory $install
+                if ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
+                    throw 'Absent-code rollback tree differs from the validated candidate.'
+                }
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources @('canonical_placement') `
+                    -LifetimeSeconds 600)
+                $removeParameters = $helperParameters.Clone()
+                $removeParameters.ReplaceExistingVerifiedPortable = $false
+                $removeParameters.Uninstall = $true
+                # As with setup-preimage restoration below, the orchestrator
+                # holds writer admission for the entire privileged mutation.
+                $codeRemovalAdmission = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+                try { $removeExit = InvokeFrozenPlacementHelper $frozenPlacement $removeParameters }
+                finally { Exit-LabelWriterAdmission $codeRemovalAdmission }
+                if ($removeExit -ne 0 -or (Test-Path -LiteralPath $install)) {
+                    throw 'Absent-code rollback failed to restore code absence.'
+                }
+            }
+            if ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install)) {
+                $audit.rollback.code_placement = 'RESTORED_ABSENCE'
+            }
+            $audit.rollback.code_restored = $existingVerified -or ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install))
         }
         $ownerMutationLease = $null
         try {
@@ -1643,6 +1871,13 @@ catch {
             }
             elseif (Test-Path $stop) {
                 Remove-Item $stop -Force
+            }
+            if ($null -ne $healthyRemovalReportBefore) {
+                Copy-Item -LiteralPath $healthyRemovalReportBefore.backup_path -Destination $removalPath -Force
+                if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
+                    throw 'Normal removal report preimage restoration failed.'
+                }
+                $audit.rollback.removal_report_restored = $true
             }
         }
         finally {
