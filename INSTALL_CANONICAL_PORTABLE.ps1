@@ -915,6 +915,18 @@ function Relays {
     })
 }
 
+function Normalize-RelayExecutableQuoting([string]$CommandLine, [string]$ExecutablePath) {
+    # Windows startup may quote an executable that Arg would leave unquoted.
+    # Strip only that exact, case-sensitive executable prefix; preserve all
+    # argument bytes and required quotes around paths containing whitespace.
+    $quoted = '"' + $ExecutablePath + '"'
+    if ($ExecutablePath -notmatch '[\s"]' -and
+        $CommandLine.StartsWith($quoted + ' ', [StringComparison]::Ordinal)) {
+        return $ExecutablePath + $CommandLine.Substring($quoted.Length)
+    }
+    return $CommandLine
+}
+
 function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
     $actualRelays = @(Relays)
     if ($actualRelays.Count -ne $ExpectedRelays.Count) {
@@ -923,7 +935,8 @@ function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
     foreach ($expected in $ExpectedRelays) {
         $matching = @($actualRelays | Where-Object {
             (Same ([string]$_.ExecutablePath) ([string]$expected.ExecutablePath)) -and
-            [string]$_.CommandLine -ceq [string]$expected.CommandLine
+            (Normalize-RelayExecutableQuoting ([string]$_.CommandLine) ([string]$expected.ExecutablePath)) -ceq
+                (Normalize-RelayExecutableQuoting ([string]$expected.CommandLine) ([string]$expected.ExecutablePath))
         })
         if ($matching.Count -ne 1) {
             throw 'rollback relay executable/command readback failed'
@@ -1140,7 +1153,7 @@ function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$I
         $owner = Invoke-CimMethod -InputObject $relay -MethodName GetOwnerSid -ErrorAction Stop
         if ($owner.ReturnValue -ne 0 -or [string]$owner.Sid -cne $userSid -or
             -not (Same ([string]$relay.ExecutablePath) (Join-Path $Installed 'runtime\pythonw.exe')) -or
-            [string]$relay.CommandLine -cne (Command $Installed)) {
+            (Normalize-RelayExecutableQuoting ([string]$relay.CommandLine) (Join-Path $Installed 'runtime\pythonw.exe')) -cne (Command $Installed)) {
             throw 'Healthy lifecycle relay belongs to another owner or command.'
         }
     }

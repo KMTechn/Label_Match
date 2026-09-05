@@ -224,6 +224,125 @@ def test_healthy_same_user_upgrade_preserves_identity_and_business_data(tmp_path
         _stop_fixture(tmp_path, install, env)
 
 
+def _start_quoted_relay(tmp_path, install, env, *, difference=""):
+    executable = str(install / "runtime/pythonw.exe")
+    script = str(install / "app/main.py")
+    expected = subprocess.list2cmdline(
+        [executable, "-I", "-B", script, "--label-match-user-relay"]
+    )
+    arguments = ["-I", "-B", script, "--label-match-user-relay"]
+    observed_executable = executable
+    if difference == "executable-case":
+        observed_executable = executable.upper()
+    elif difference == "script-case":
+        arguments[2] = script.upper()
+    elif difference == "extra-argument":
+        arguments.extend(["--app-root", str(install)])
+    command = '"' + observed_executable + '" ' + subprocess.list2cmdline(arguments)
+    state = Path(env["LM_TRANSITION_NATIVE_STATE"])
+    (state / "registry.txt").write_text(expected, encoding="utf-8")
+    process = subprocess.Popen(
+        command, executable=executable, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not (state / "relay-tick.json").exists() and time.monotonic() < deadline:
+            assert process.poll() is None
+            time.sleep(.05)
+        assert (state / "relay-tick.json").exists()
+        observed = _ps(tmp_path, f"(Get-CimInstance Win32_Process -Filter 'ProcessId={process.pid}').CommandLine | ConvertTo-Json -Compress", env)
+        assert observed.returncode == 0, observed.stderr
+        assert json.loads(observed.stdout) == command
+        return process
+    except BaseException:
+        process.terminate()
+        process.wait(timeout=10)
+        raise
+
+
+def test_quoted_relay_allows_normal_removal_uninstall_and_reinstall(tmp_path, healthy_pair):
+    install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
+    assert _prepare_installed(tmp_path, install, candidate, env).returncode == 0
+    before = _hashes(paths)
+    process = _start_quoted_relay(tmp_path, install, env)
+    try:
+        # The real canonical transaction validates ownership, removes the quoted
+        # running relay, places code, and activates the replacement relay.
+        result = _install(tmp_path, install, candidate, env)
+        assert result.returncode == 0, result.stderr[-2200:] + result.stdout[-1000:]
+        assert process.wait(timeout=10) == 0
+        assert json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))["status"] == "PASS"
+        assert _hashes(paths) == before
+        removed = _uninstall(tmp_path, install, candidate, env)
+        assert removed.returncode == 0, removed.stderr[-2000:]
+        assert not install.exists()
+        assert _hashes(paths) == before
+        result = _install(tmp_path, install, candidate, env)
+        assert result.returncode == 0, result.stderr[-2200:] + result.stdout[-1000:]
+        assert json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))["status"] == "PASS"
+        assert _hashes(paths) == before
+    finally:
+        _stop_fixture(tmp_path, install, env)
+        process.wait(timeout=10)
+
+
+@pytest.mark.parametrize("difference", ["executable-case", "script-case", "extra-argument"])
+def test_quoted_relay_different_command_rejects_before_removal(tmp_path, healthy_pair, difference):
+    install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
+    assert _prepare_installed(tmp_path, install, candidate, env).returncode == 0
+    before = _hashes(paths)
+    code_before = {str(path.relative_to(install)): hashlib.sha256(path.read_bytes()).hexdigest()
+                   for path in install.rglob("*") if path.is_file()}
+    process = _start_quoted_relay(tmp_path, install, env, difference=difference)
+    try:
+        result = _install(tmp_path, install, candidate, env)
+        assert result.returncode != 0
+        assert "Healthy lifecycle relay belongs to another owner or command." in result.stderr
+        assert process.poll() is None
+        assert _hashes(paths) == before
+        assert not paths.removal_report_path.exists()
+        assert not (Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]) / "active.json").exists()
+        assert code_before == {str(path.relative_to(install)): hashlib.sha256(path.read_bytes()).hexdigest()
+                               for path in install.rglob("*") if path.is_file()}
+    finally:
+        _stop_fixture(tmp_path, install, env)
+        process.wait(timeout=10)
+
+
+@pytest.mark.parametrize("space,expected_quoted,actual_quoted,different_arguments,accepted", [
+    (False, False, True, False, True),
+    (False, True, False, False, True),
+    (True, True, True, False, True),
+    (True, True, False, False, False),
+    (False, True, True, True, False),
+])
+def test_rollback_relay_readback_preserves_binding_with_executable_quotes(
+    tmp_path, space, expected_quoted, actual_quoted, different_arguments, accepted,
+):
+    env = _environment(tmp_path)
+    executable = str(tmp_path / ("space root" if space else "root") / "pythonw.exe")
+    arguments = " -I -B app.py --label-match-user-relay"
+    expected = ('"' + executable + '"' if expected_quoted else executable) + arguments
+    actual = ('"' + executable + '"' if actual_quoted else executable) + arguments
+    if different_arguments:
+        actual += " --different"
+    code = _definitions() + f'''
+function Relays {{
+    return @([pscustomobject]@{{ExecutablePath={_quote(executable)}; CommandLine={_quote(actual)}}})
+}}
+$expected = @([pscustomobject]@{{ExecutablePath={_quote(executable)}; CommandLine={_quote(expected)}}})
+Assert-RollbackRelayPreimage -ExpectedRelays $expected | Out-Null
+'''
+    result = _ps(tmp_path, code, env)
+    if accepted:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert "rollback relay executable/command readback failed" in result.stderr
+
+
 @pytest.mark.parametrize("conflict", ["foreign-user", "credential-owner", "partial", "quarantined", "marker", "foreign-autostart", "tampered-code"])
 def test_unhealthy_lifecycle_rejects_before_mutation(tmp_path, healthy_pair, conflict):
     install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
