@@ -8871,6 +8871,26 @@ class Label_Match(tk.Tk):
             and dispatch.get("recorded_at")
         )
         chain = tuple(self._deferred_validation_exception_chain(error))
+        if (
+            mutating_dispatch
+            and isinstance(error, OperationLeaseError)
+            and error.code == "OPERATION_LEASE_NOT_YET_VALID"
+        ):
+            # A signed response arrived, but its strict local time gate has
+            # not opened. Retry the recorded issue request, not a new lease.
+            return {
+                "outcome": "RETRYABLE_UNAVAILABLE",
+                "reason_code": error.code,
+                "retry_after_seconds": None,
+                "evidence": {
+                    "contract_version": "label-validation-evidence-v1",
+                    "step_id": selected_step,
+                    "idempotency_key": str(dispatch["idempotency_key"]),
+                    "request_hash": str(dispatch["request_hash"]),
+                    "error_code": error.code,
+                    "observed_at": observed_at,
+                },
+            }
         api_error = next(
             (item for item in chain if isinstance(item, PackageApiError)),
             None,
@@ -9847,8 +9867,14 @@ class Label_Match(tk.Tk):
         intent_id = str(getattr(result, "intent_id", "") or "").strip()
         pending_count = int(getattr(result, "pending_count", 0) or 0)
         oldest_age = int(getattr(result, "oldest_age_seconds", 0) or 0)
+        clock_wait = (
+            str(getattr(result, "reason_code", "") or "")
+            == "OPERATION_LEASE_NOT_YET_VALID"
+        )
         headline = "저장됨-검증대기"
-        if central_check_pending:
+        if clock_wait:
+            headline += " · 시간 확인 대기"
+        elif central_check_pending:
             headline += " · 중앙 확인 중"
         if "big_display_label" in self.__dict__:
             self.update_big_display(headline, "primary")
@@ -9856,8 +9882,12 @@ class Label_Match(tk.Tk):
         if status_label is not None:
             status_label.config(
                 text=(
-                    f"저장됨-검증대기 | intent {intent_id} | "
-                    f"대기 {pending_count}건 | 최장 {oldest_age}초"
+                    "현품표는 저장되었습니다. 시간 확인 대기 중 · 자동 재확인"
+                    if clock_wait
+                    else (
+                        f"저장됨-검증대기 | intent {intent_id} | "
+                        f"대기 {pending_count}건 | 최장 {oldest_age}초"
+                    )
                 ),
                 style="Status.TLabel",
             )
@@ -9867,6 +9897,7 @@ class Label_Match(tk.Tk):
             "pending_count": pending_count,
             "oldest_age_seconds": oldest_age,
             "central_check_pending": bool(central_check_pending),
+            "reason_code": "OPERATION_LEASE_NOT_YET_VALID" if clock_wait else "",
             "operator_complete_signal": False,
         }
 
@@ -9976,6 +10007,20 @@ class Label_Match(tk.Tk):
 
     def _deferred_capture_pending_notice(self):
         state = self.__dict__.get("_deferred_capture_ui") or {}
+        if (
+            state.get("status") == "저장됨-검증대기"
+            and state.get("reason_code") == "OPERATION_LEASE_NOT_YET_VALID"
+        ):
+            return WorkflowNotice(
+                title="저장됨-시간 확인 대기",
+                message=(
+                    "현품표는 저장되었습니다. PC와 서버의 시간 차이로 잠시 대기합니다.\n"
+                    "같은 작업을 자동으로 다시 확인하니 재스캔하지 말고 기다려 주세요.\n"
+                    "계속 대기하면 IT 담당자에게 PC와 서버 시간 동기화 확인을 요청하세요."
+                ),
+                kind="deferred_capture_pending",
+                tone="warning",
+            )
         if state.get("status") == "저장됨-선행조건대기":
             dependency = str(state.get("dependency_identity") or "").strip()
             checked_at = str(state.get("last_checked_at") or "").strip()

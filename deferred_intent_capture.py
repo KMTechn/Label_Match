@@ -2508,6 +2508,31 @@ class DeferredIntentCaptureStore:
                         if step_effect == "IDEMPOTENT_MUTATION"
                         else None
                     )
+                    if step_effect == "IDEMPOTENT_MUTATION":
+                        # A known future-issued lease must mature under its
+                        # original request. Skip later read-only failures (no
+                        # dispatch) when finding the last actual issue attempt.
+                        prior = conn.execute(
+                            """SELECT idempotency_key,request_hash,status,
+                                      last_error_code
+                                 FROM deferred_intent_validation_steps
+                                WHERE intent_id=? AND step_id=?
+                                  AND validation_generation<? AND attempt_count>0
+                                ORDER BY validation_generation DESC LIMIT 1""",
+                            (
+                                claim.intent_id,
+                                step_id,
+                                claim.validation_generation,
+                            ),
+                        ).fetchone()
+                        if (
+                            prior is not None
+                            and prior["status"] == "RETRY_WAIT"
+                            and prior["last_error_code"]
+                            == "OPERATION_LEASE_NOT_YET_VALID"
+                            and prior["request_hash"] == request_hash
+                        ):
+                            idempotency_key = str(prior["idempotency_key"])
                     conn.execute(
                         """INSERT INTO deferred_intent_validation_steps(
                                intent_id,validation_generation,step_ordinal,
