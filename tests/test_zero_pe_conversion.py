@@ -99,6 +99,7 @@ def test_portable_builder_derives_complete_tool_dependency_closure() -> None:
     sources = portable_builder._discover_portable_tool_sources(ROOT)
     relative = {path.relative_to(ROOT).as_posix() for path in sources}
     assert relative == {
+        "tools/direct_sync_relay_install_pack.py",
         "tools/direct_sync_relay_runner.py",
         "tools/install_logistics_runtime_profile.py",
         "tools/label_auth_recovery_canary.py",

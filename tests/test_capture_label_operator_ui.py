@@ -85,9 +85,9 @@ from tools.capture_label_operator_ui import (
 
 
 _ADMITTED_BUSY_PRODUCT_CALLS = {
-    "phs2_admitted_busy": ("phs2-capture-validation", 10437),
-    "f4_admitted_busy": ("f4-central-source-lookup", 11495),
-    "f3_admitted_busy": ("f3-package-completion", 14122),
+    "phs2_admitted_busy": ("phs2-capture-validation", 10439),
+    "f4_admitted_busy": ("f4-central-source-lookup", 11497),
+    "f3_admitted_busy": ("f3-package-completion", 14124),
 }
 
 
@@ -426,7 +426,7 @@ def test_only_the_state_selected_live_scan_tree_is_mapping_critical():
 def test_admitted_busy_strings_use_exact_product_literals_and_are_absent_from_tools():
     prefixes, suffix, suffix_line = _product_admitted_busy_seam_literals()
 
-    assert suffix_line == 5381
+    assert suffix_line == 5383
     for state_id, (task_name, prefix_line) in _ADMITTED_BUSY_PRODUCT_CALLS.items():
         spec = M7_STATE_CONTRACT[state_id]
         product_prefix = prefixes[state_id]
