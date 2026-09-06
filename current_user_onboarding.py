@@ -25,6 +25,7 @@ from direct_sync_push import manifest_hash
 from enrollment_mutex import EnrollmentMutex, EnrollmentMutexError
 from direct_sync_runtime import load_credentials_from_json
 from label_exact_clone_resolution import read_pinned_json, validate_resolution_receipt
+from label_match_product_host import _default_product_root, requires_bootstrap_integrity
 from logistics_runtime_profile import (
     PROFILE_PATH_ENV,
     REQUIRED_ENV,
@@ -68,10 +69,12 @@ class CurrentUserOnboardingError(RuntimeError):
         *,
         report_path: Path,
         status: str = "FAILED",
+        cause_code: str = "SETUP_FAILED",
     ) -> None:
         super().__init__(message)
         self.report_path = Path(report_path)
         self.status = status
+        self.cause_code = cause_code
 
 
 def _portable_stop_marker_release_preflight(
@@ -516,7 +519,9 @@ def verify_bootstrap_integrity(
         portable_main_present = False
         for candidate in sorted(
             paths.app_root.rglob("*"),
-            key=lambda path: path.relative_to(paths.app_root).as_posix().casefold(),
+            # Ordering contract: tools/bootstrap_integrity.ps1. Big-endian UTF-16
+            # preserves .NET ordinal code-unit order, including non-BMP names.
+            key=lambda path: path.relative_to(paths.app_root).as_posix().encode("utf-16-be"),
         ):
             if _is_reparse_point(candidate):
                 raise ValueError(f"bootstrap code path is redirected: {candidate}")
@@ -872,7 +877,7 @@ def onboard_current_user(
     ):
         directory.mkdir(parents=True, exist_ok=True)
     require_integrity = (
-        bool(getattr(sys, "frozen", False))
+        requires_bootstrap_integrity(paths.app_root)
         if require_bootstrap_integrity is None
         else bool(require_bootstrap_integrity)
     )
@@ -946,10 +951,16 @@ def onboard_current_user(
                 or "disable or remove the legacy Label scheduled task"
             )
             raise ValueError(f"{reason}: {remediation}")
-        report["bootstrap_integrity"] = verify_bootstrap_integrity(
-            paths,
-            required=require_integrity,
-        )
+        try:
+            report["bootstrap_integrity"] = verify_bootstrap_integrity(
+                paths,
+                required=require_integrity,
+            )
+        except ValueError as exc:
+            raise CurrentUserOnboardingError(
+                str(exc), report_path=paths.onboarding_report_path,
+                cause_code="BOOTSTRAP_INTEGRITY_INVALID",
+            ) from exc
         state = inspect_current_user_state(
             paths,
             profile_loader=profile_loader,
@@ -1012,6 +1023,22 @@ def onboard_current_user(
                             paths, profile_loader=profile_loader,
                             credential_loader=credential_loader,
                         ))
+                        if paths.registration_report_path.is_file():
+                            registration_failure = _read_json(
+                                paths.registration_report_path, "registration failure report"
+                            )
+                            if (
+                                registration_failure.get("report_version")
+                                == "label-match-worker-pc-registration-v1"
+                                and registration_failure.get("status") == "BLOCKED"
+                                and registration_failure.get("failure_category")
+                                == "NETWORK_OR_SERVER_UNAVAILABLE"
+                            ):
+                                raise CurrentUserOnboardingError(
+                                    "current-user registration network or server is unavailable",
+                                    report_path=paths.onboarding_report_path,
+                                    cause_code="NETWORK_OR_SERVER_UNAVAILABLE",
+                                )
                         raise ValueError(
                             f"current-user registration failed with exit code {return_code}"
                         )
@@ -1133,6 +1160,7 @@ def onboard_current_user(
         report["status"] = exc.status
         report["failure"] = str(exc)
         report["error_type"] = exc.__class__.__name__
+        report["cause_code"] = exc.cause_code
         _write_json_atomic(paths.onboarding_report_path, report)
         raise
     except Exception as exc:
@@ -1140,11 +1168,19 @@ def onboard_current_user(
         report["status"] = "FAILED"
         report["failure"] = str(exc)[:500]
         report["error_type"] = exc.__class__.__name__
+        from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
+        cause_code = (
+            "NETWORK_OR_SERVER_UNAVAILABLE"
+            if isinstance(exc, (ConnectionError, TimeoutError, RequestsConnectionError, Timeout))
+            else "SETUP_FAILED"
+        )
+        report["cause_code"] = cause_code
         _write_json_atomic(paths.onboarding_report_path, report)
         raise CurrentUserOnboardingError(
             f"Label_Match first-run onboarding failed: {exc}",
             report_path=paths.onboarding_report_path,
             status="FAILED",
+            cause_code=cause_code,
         ) from exc
 
 
@@ -1233,7 +1269,7 @@ def remove_current_user_setup(
 def _default_app_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    return _default_product_root()
 
 
 def onboarding_main(argv: list[str] | None = None) -> int:
@@ -1247,7 +1283,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
         report = onboard_current_user(
             args.app_root,
             server_base_url=args.server_base_url,
-            require_bootstrap_integrity=bool(getattr(sys, "frozen", False)),
+            require_bootstrap_integrity=requires_bootstrap_integrity(args.app_root),
         )
     except CurrentUserOnboardingError as exc:
         print(f"onboarding_status={exc.status}")

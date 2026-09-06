@@ -759,6 +759,10 @@ def _enroll(
     try:
         response_payload = response.json()
     except ValueError as exc:
+        if response.status_code >= 400:
+            raise ProducerEnrollmentHTTPError(
+                response.status_code, str(response.status_code), "response is not JSON"
+            ) from exc
         raise DirectSyncPushError(f"self-enroll response is not JSON: HTTP {response.status_code}") from exc
     if response.status_code >= 400:
         error = response_payload.get("error") if isinstance(response_payload, dict) else {}
@@ -2061,6 +2065,16 @@ def main(argv: list[str] | None = None) -> int:
                         "automatic_credential_replay_performed": False,
                     }
                 )
+        if blocked["status"] == "BLOCKED" and (
+            isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
+            or (
+                isinstance(exc, ProducerEnrollmentHTTPError)
+                and (exc.status_code in {408, 429} or 500 <= exc.status_code <= 599)
+            )
+        ):
+            # Preserve a bounded category across this CLI's exception/exit-code
+            # boundary. Explicit administrator recovery decisions take precedence.
+            blocked["failure_category"] = "NETWORK_OR_SERVER_UNAVAILABLE"
         blocked["report_path"] = str(report_path.resolve())
         _write_json(report_path, blocked)
         print(f"registration_report={report_path.resolve()}")

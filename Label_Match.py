@@ -50,7 +50,9 @@ from deferred_intent_capture import (
     operator_safe_reason_code,
 )
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
-from label_match_product_host import _default_product_root, dispatch_product_mode
+from label_match_product_host import (
+    _default_product_root, dispatch_product_mode, requires_bootstrap_integrity,
+)
 from writer_session_fence import writer_sink
 from storage_policy import label_match_local_events_dir
 
@@ -19928,9 +19930,21 @@ LOGISTICS_PROFILE_WARNING_MESSAGES = {
 FIRST_RUN_ONBOARDING_ERROR_TITLE = "현재 사용자 초기 설정 실패"
 FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
     "이 PC의 사용자별 물류 설정을 완료하지 못해 프로그램 시작을 중단했습니다.\n\n"
-    "네트워크 연결을 확인한 뒤 다시 실행하세요. 계속 실패하면 보고서 경로를 "
-    "IT 담당자에게 전달하세요."
+    "이 PC의 설치 및 사용자 설정을 관리자에게 확인받으세요. "
+    "아래 보고서 경로를 IT 담당자에게 전달하세요."
 )
+FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
+    "BOOTSTRAP_INTEGRITY_INVALID": (
+        "설치 파일의 로컬 무결성 기록이 올바르지 않아 프로그램 시작을 중단했습니다.\n\n"
+        "관리자에게 공식 배포본으로 다시 설치하도록 요청하세요. "
+        "아래 보고서 경로를 함께 전달하세요."
+    ),
+    "NETWORK_OR_SERVER_UNAVAILABLE": (
+        "네트워크 또는 중앙 서버에 연결하지 못해 사용자 초기 설정을 중단했습니다.\n\n"
+        "네트워크 연결과 서버 상태를 확인한 뒤 다시 실행하세요. "
+        "계속 실패하면 아래 보고서 경로를 IT 담당자에게 전달하세요."
+    ),
+}
 BOOTSTRAP_INTEGRITY_ABSENT_WARNING_TITLE = "배포 무결성 기록 없음"
 BOOTSTRAP_INTEGRITY_ABSENT_WARNING_MESSAGE = (
     "배포 무결성 기록이 없어 파일 변조 여부를 확인하지 못했습니다.\n\n"
@@ -19951,13 +19965,35 @@ def _first_run_onboarding_enabled():
 
 
 def _show_first_run_onboarding_error(failure):
+    parent = None
     try:
+        message = FIRST_RUN_ONBOARDING_CAUSE_MESSAGES.get(
+            getattr(failure, "cause_code", ""), FIRST_RUN_ONBOARDING_ERROR_MESSAGE,
+        )
+        if failure.status == "RECOVERY_REQUIRED":
+            message = str(failure)
+        parent = tk.Tk()
+        parent.withdraw()
+        parent.title(FIRST_RUN_ONBOARDING_ERROR_TITLE)
+        parent.geometry("1x1+0+0")
+        parent.attributes("-topmost", True)
+        parent.deiconify()
+        parent.lift()
+        parent.update()
+        parent.focus_force()
         messagebox.showerror(
             FIRST_RUN_ONBOARDING_ERROR_TITLE,
-            f"{FIRST_RUN_ONBOARDING_ERROR_MESSAGE}\n보고서: {failure.report_path}",
+            f"{message}\n보고서: {failure.report_path}",
+            parent=parent,
         )
     except Exception:
         _label_match_startup_trace("current_user_onboarding_dialog_unavailable")
+    finally:
+        if parent is not None:
+            try:
+                parent.destroy()
+            except tk.TclError:
+                pass
 
 
 def _show_bootstrap_integrity_absent_warning():
@@ -20130,10 +20166,7 @@ def main(argv=None):
                         LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
                     ).strip()
                     or LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
-                    require_bootstrap_integrity=bool(
-                        getattr(sys, "frozen", False)
-                        or _label_match_portable_app_root() is not None
-                    ),
+                    require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
                 )
                 if (
                     (onboarding_report.get("bootstrap_integrity") or {}).get(

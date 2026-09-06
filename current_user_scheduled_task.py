@@ -100,8 +100,15 @@ def build_current_user_task_spec(
         raise CurrentUserScheduledTaskError(
             "canonical scheduled-task runtime or entrypoint is absent"
         )
+    from current_user_onboarding import resolve_current_user_onboarding_paths
+
+    log_path = (
+        resolve_current_user_onboarding_paths(root).logs_dir
+        / "scheduled_direct_sync_relay.jsonl"
+    )
     arguments = subprocess.list2cmdline(
-        ["-I", "-B", str(entrypoint), SCHEDULED_RELAY_MODE, "--app-root", str(root)]
+        ["-I", "-B", str(entrypoint), SCHEDULED_RELAY_MODE, "--app-root", str(root),
+         "--log-path", str(log_path)]
     )
     action_identity = json.dumps(
         {

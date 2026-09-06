@@ -30,13 +30,24 @@ HOSTED_RELAY_FAILURE_EXIT_CODE = 1
 BOOTSTRAP_INTEGRITY_WARNING_FILENAME = "bootstrap_integrity_warning.json"
 
 
+def is_portable_product_root(app_root: str | os.PathLike[str]) -> bool:
+    root = Path(app_root).expanduser().resolve()
+    return (
+        (root / "runtime" / "pythonw.exe").is_file()
+        and (root / "portable-manifest.json").is_file()
+    )
+
+
+def requires_bootstrap_integrity(app_root: str | os.PathLike[str]) -> bool:
+    return bool(getattr(sys, "frozen", False) or is_portable_product_root(app_root))
+
+
 def _default_product_root() -> Path:
     module_parent = Path(__file__).resolve().parent
     portable_root = module_parent.parent
     if (
         module_parent.name.casefold() == "app"
-        and (portable_root / "runtime" / "pythonw.exe").is_file()
-        and (portable_root / "portable-manifest.json").is_file()
+        and is_portable_product_root(portable_root)
     ):
         return portable_root
     return module_parent
@@ -139,6 +150,8 @@ def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
 
 
 def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> None:
+    from tools.direct_sync_relay_install_pack import _bounded_diagnostic_text
+
     captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     error_type = error.__class__.__name__[:128]
     worker_id = _option_value(arguments, "--worker-id")[:256]
@@ -147,7 +160,8 @@ def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> 
         "app": "Label_Match",
         "worker_id": worker_id,
         "error_code": "hosted_relay_unhandled_exception",
-        "error_message": f"hosted DirectSync relay failed unexpectedly: {error_type}",
+        "error_type": error_type,
+        "error_message": _bounded_diagnostic_text(f"{error_type}: {error}"),
         "runtime_status_write_status": "PASS",
         "updated_at": captured_at,
     }
@@ -194,6 +208,7 @@ def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> 
                     "worker_id": worker_id,
                     "error_code": diagnostic["error_code"],
                     "error_type": error_type,
+                    "error_message": diagnostic["error_message"],
                     "generated_at": captured_at,
                 },
             )

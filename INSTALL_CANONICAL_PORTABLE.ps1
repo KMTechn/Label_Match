@@ -182,7 +182,8 @@ function PortableInventory([string]$Root) {
         $stream.Position = 0
         $aggregate = ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
         $bootstrapLines = @(
-            $records | Sort-Object path | ForEach-Object {
+            # Already ordinal UTF-16 path ordered; see tools/bootstrap_integrity.ps1.
+            $records | ForEach-Object {
                 "$($_.sha256) $($_.size) $($_.path)"
             }
         )

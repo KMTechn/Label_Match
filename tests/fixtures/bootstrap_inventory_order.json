@@ -1,0 +1,21 @@
+{
+  "content": "inventory fixture\n",
+  "paths_in_expected_order": [
+    "Z-last.txt",
+    "a-first.txt",
+    "app/babel-2.18.0.dist-info/METADATA",
+    "app/babel/__init__.py",
+    "app/common-1.txt",
+    "app/common.1.txt",
+    "app/install-readiness.schema.json",
+    "app/installer-field-layout.schema.json",
+    "app/installer-plan.schema.json",
+    "app/main.py",
+    "app/number10.txt",
+    "app/number2.txt",
+    "app/\ud800\udc00.txt",
+    "app/\ue000.txt",
+    "portable-manifest.json",
+    "runtime/pythonw.exe"
+  ]
+}

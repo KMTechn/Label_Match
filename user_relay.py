@@ -532,14 +532,39 @@ def _acquire_relay_lease(key: str | os.PathLike[str]):
 
 def _pid_exists(process_id: int) -> bool:
     try:
-        os.kill(int(process_id), 0)
+        process_id = int(process_id)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if process_id <= 0 or process_id > 0xFFFFFFFF:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, process_id)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False  # An inaccessible PID supplies no ownership proof.
+        try:
+            exit_code = wintypes.DWORD()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))) and exit_code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(process_id, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except (OSError, ValueError):
         return False
-    return int(process_id) > 0
+    return True
 
 
 def _fresh_persistent_owner(
@@ -720,6 +745,7 @@ def build_scheduled_parser() -> argparse.ArgumentParser:
     parser.add_argument("--app-root", required=True)
     parser.add_argument("--direct-sync-root", default="")
     parser.add_argument("--scan-source-dir", default="")
+    parser.add_argument("--log-path", default="")
     return parser
 
 
@@ -754,7 +780,10 @@ def scheduled_main(argv: list[str] | None = None) -> int:
     runtime_status_path = (
         direct_sync_root / "status" / "scheduled_direct_sync_relay_status.json"
     )
-    log_path = direct_sync_root / "logs" / "scheduled_direct_sync_relay.jsonl"
+    log_path = (
+        Path(args.log_path).expanduser().resolve() if args.log_path
+        else direct_sync_root / "logs" / "scheduled_direct_sync_relay.jsonl"
+    )
     for directory in (
         direct_sync_root / "queue",
         direct_sync_root / "spool",

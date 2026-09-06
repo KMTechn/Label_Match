@@ -2,6 +2,26 @@ $BootstrapIntegrityFileName = "bootstrap-integrity.json"
 $BootstrapIntegritySchema = "label-match-bootstrap-integrity-v1"
 $BootstrapPortableCodeRoot = "."
 
+# Bootstrap v1 ordering/aggregate contract (also consumed by Python onboarding
+# and the canonical installer's expected bootstrap digest): relative POSIX paths,
+# case-sensitive ordinal UTF-16 code-unit order, without culture/case folding or
+# Unicode normalization. Hash UTF-8 (no BOM) rows: "sha256 size path\n", including
+# the final LF. The stored row order must be this same canonical order.
+function Sort-BootstrapInventory {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Inventory)
+    [object[]]$ordered = @($Inventory)
+    [Array]::Sort(
+        $ordered,
+        [System.Collections.Generic.Comparer[object]]::Create(
+            [System.Comparison[object]]{
+                param($left, $right)
+                return [StringComparer]::Ordinal.Compare([string]$left.path, [string]$right.path)
+            }
+        )
+    )
+    return $ordered
+}
+
 function Get-RequiredExternalInteger($Object, [string]$Name) {
     if ($null -eq $Object) { throw "External object is absent: $Name" }
     if ($Object -is [Collections.IDictionary]) {
@@ -66,7 +86,7 @@ function Get-BootstrapCodeInventory {
     )
     $rootFull = Get-BootstrapStrictFullPath $Root "code root"
     $result = @()
-    foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -File -Force -Recurse | Sort-Object FullName)) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -File -Force -Recurse)) {
         $relative = Get-BootstrapRelativeCodePath $rootFull $file.FullName
         if ($relative.Equals($IntegrityFileName, [StringComparison]::OrdinalIgnoreCase)) {
             continue
@@ -77,7 +97,7 @@ function Get-BootstrapCodeInventory {
             sha256 = Get-BootstrapFileSha256 $file.FullName
         }
     }
-    return $result
+    return Sort-BootstrapInventory -Inventory $result
 }
 
 function Get-BootstrapInventoryAggregate {
@@ -124,6 +144,7 @@ function Write-BootstrapIntegrityRecord {
     if ($selectedInventory.Count -eq 0) {
         throw "Frozen release code inventory is empty."
     }
+    $selectedInventory = @(Sort-BootstrapInventory -Inventory $selectedInventory)
     $aggregate = Get-BootstrapInventoryAggregate -Inventory $selectedInventory
     $record = [ordered]@{
         schema_version = $IntegritySchema
@@ -194,6 +215,9 @@ function Assert-BootstrapIntegrityRecord {
     for ($index = 0; $index -lt @($record.files).Count; $index += 1) {
         $expected = @($record.files)[$index]
         $expectedPath = [string]$expected.path
+        if ($expectedPath -cne [string]$inventory[$index].path) {
+            throw "Bootstrap integrity inventory order is invalid at index $index."
+        }
         if (-not $actualByPath.ContainsKey($expectedPath)) {
             throw "Bootstrap integrity inventory is missing the recorded path at index $index."
         }
