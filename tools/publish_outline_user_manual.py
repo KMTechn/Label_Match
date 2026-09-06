@@ -38,9 +38,7 @@ M7_HANDOVER_INDEX = (
 M7_CANONICAL_HANDOVER_DIR = Path(
     "E:/KMTech/production-readiness-20260830/HANDOVER"
 ).resolve()
-M7_CANONICAL_VALIDATOR = (
-    M7_CANONICAL_HANDOVER_DIR / "tools" / "validate_capture_bundle_v1.py"
-)
+M7_CANONICAL_VALIDATOR = ROOT / "tools" / "validate_capture_bundle_v1.py"
 M7_CAPTURE_TOOL_PATH = "tools/capture_label_operator_ui.py"
 M7_APPROVAL_PLACEHOLDER = "미정 — 조직 확정 필요(Q1)"
 M7_REQUIRED_STATE_IDS = (

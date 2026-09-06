@@ -24,14 +24,17 @@ BUNDLE_ID = "Label_Match__aaaaaaaaaaaa__20260903T010203Z__1234abcd"
 ARTIFACT_FILE = "artifacts/Label_Match.zip"
 ARTIFACT_BYTES = b"synthetic portable Label_Match artifact\n"
 ARTIFACT_SHA256 = hashlib.sha256(ARTIFACT_BYTES).hexdigest()
-VALIDATOR = Path(
-    "E:/KMTech/production-readiness-20260830/HANDOVER/tools/"
-    "validate_capture_bundle_v1.py"
-)
-requires_canonical_validator = pytest.mark.skipif(
-    not VALIDATOR.is_file(),
-    reason=f"external canonical capture validator absent ({VALIDATOR}) - gap recorded",
-)
+VALIDATOR = Path(__file__).resolve().parents[1] / "tools/validate_capture_bundle_v1.py"
+
+
+def test_canonical_validator_uses_reviewed_repository_copy():
+    expected = Path(__file__).resolve().parents[1] / "tools/validate_capture_bundle_v1.py"
+    assert publisher.M7_CANONICAL_VALIDATOR == expected
+    assert VALIDATOR == expected
+    assert expected.is_file()
+    assert hashlib.sha256(expected.read_bytes()).hexdigest() == (
+        "86713b77bd004a3577b53221be8667362d67984f915395dec95727ca5b1235e1"
+    )
 
 
 def _png_bytes(size: tuple[int, int] = (2, 2)) -> bytes:
@@ -398,7 +401,6 @@ def test_capture_bundle_writer_never_seals_final_manifest_after_receipt_io_failu
     assert not (tmp_path / "evidence" / "indexes").exists()
 
 
-@requires_canonical_validator
 def test_synthetic_png_bundle_passes_canonical_validator_as_approval_pending(
     tmp_path, capsys
 ):
@@ -557,7 +559,6 @@ def _replace_approval_receipt_with_arbitrary_json(manifest_path: Path) -> str:
     return _rewrite_manifest(manifest_path, manifest)
 
 
-@requires_canonical_validator
 def test_publisher_validates_an_approved_canonical_bundle(tmp_path):
     manifest_path, digest, _payload = _write_approved_bundle(tmp_path)
 
@@ -582,7 +583,6 @@ def test_publisher_validates_an_approved_canonical_bundle(tmp_path):
     assert report["canonical_validator_summary"]["APPROVAL_PENDING"] == 0
 
 
-@requires_canonical_validator
 @pytest.mark.parametrize(
     ("defect", "reason_code"),
     (
@@ -605,7 +605,6 @@ def test_publisher_rejects_canonical_validator_failures(tmp_path, defect, reason
     assert reason_code in str(caught.value)
 
 
-@requires_canonical_validator
 def test_publisher_rejects_empty_states_directory(tmp_path):
     manifest_path, digest, _payload = _write_approved_bundle(tmp_path)
     states_dir = manifest_path.parent / "states"
@@ -619,7 +618,6 @@ def test_publisher_rejects_empty_states_directory(tmp_path):
     assert "FILE_MISSING" in str(caught.value)
 
 
-@requires_canonical_validator
 def test_publisher_rejects_arbitrary_receipt_with_resealed_digest_chain(tmp_path):
     manifest_path, _digest, _payload = _write_approved_bundle(tmp_path)
     digest = _replace_approval_receipt_with_arbitrary_json(manifest_path)
@@ -630,7 +628,6 @@ def test_publisher_rejects_arbitrary_receipt_with_resealed_digest_chain(tmp_path
     assert "SCHEMA_VIOLATION" in str(caught.value)
 
 
-@requires_canonical_validator
 def test_publisher_rejects_canonical_approval_pending_exit_3(tmp_path):
     result = _materialize(tmp_path)
     manifest_path = result["manifest_path"]
@@ -652,7 +649,6 @@ def test_publisher_rejects_expected_manifest_digest_mismatch(tmp_path):
         publisher.validate_external_bundle_manifest(manifest_path, "0" * 64)
 
 
-@requires_canonical_validator
 def test_publisher_dry_run_verifies_bundle_without_network_or_file_writes(
     monkeypatch, tmp_path, capsys
 ):
@@ -687,7 +683,6 @@ def test_publisher_dry_run_verifies_bundle_without_network_or_file_writes(
     assert not report_path.exists()
 
 
-@requires_canonical_validator
 def test_publisher_live_path_updates_reference_text_without_uploading_raster(
     monkeypatch, tmp_path, capsys
 ):
