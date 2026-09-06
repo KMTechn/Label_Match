@@ -9,8 +9,10 @@ import importlib
 import importlib.abc
 import importlib.machinery
 import importlib.util
+import json
 import os
 import py_compile
+import socket
 import subprocess
 import sys
 from dataclasses import asdict
@@ -217,8 +219,7 @@ def test_cli_parsers_validate_deduplicate_and_keep_korean_multiplication_mark():
     assert args.scale == DEFAULT_SCALE
     assert args.display_device == TARGET_DISPLAY_DEVICE
     assert args.work_area == TARGET_DISPLAY_WORK_AREA
-    assert args.output_root.resolve().is_relative_to(capture.CAPTURE_OUTPUT_BASE)
-    assert not args.output_root.resolve().is_relative_to(capture.ROOT)
+    assert args.output_root is None
     assert parse_work_area("693,-1440,3253,-48") == TARGET_DISPLAY_WORK_AREA
 
     for value in ("800x600", "wide", "1366x"):
@@ -232,6 +233,208 @@ def test_cli_parsers_validate_deduplicate_and_keep_korean_multiplication_mark():
     for value in ("0,0,800,600", "693,-1440,3253", "bad"):
         with pytest.raises(argparse.ArgumentTypeError):
             parse_work_area(value)
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        pytest.param("--describe-m7-contract", id="describe"),
+        pytest.param("--help", id="help"),
+    ],
+)
+def test_informational_cli_needs_no_git_repository_or_capture(
+    option, monkeypatch, tmp_path, capsys
+):
+    source = tmp_path / "no-repository"
+    source.mkdir()
+    empty_path = tmp_path / "no-executables"
+    empty_path.mkdir()
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setattr(capture, "DEFAULT_SOURCE_ROOT", source)
+    monkeypatch.setattr(capture, "CAPTURE_OUTPUT_BASE", tmp_path / "output")
+    before = set(tmp_path.rglob("*"))
+
+    def unexpected_effect(*_args, **_kwargs):
+        pytest.fail("informational CLI attempted Git, capture, network or output")
+
+    monkeypatch.setattr(capture.subprocess, "run", unexpected_effect)
+    monkeypatch.setattr(capture, "run_capture_matrix", unexpected_effect)
+    monkeypatch.setattr(capture, "_write_create_new_bytes", unexpected_effect)
+    monkeypatch.setattr(capture, "_write_create_new_json", unexpected_effect)
+    monkeypatch.setattr(socket, "socket", unexpected_effect)
+    if option == "--help":
+        with pytest.raises(SystemExit) as exc:
+            capture.main([option])
+        assert exc.value.code == 0
+    else:
+        assert capture.main([option]) == 0
+
+    output = capsys.readouterr()
+    assert output.err == ""
+    if option == "--help":
+        assert "usage:" in output.out
+        assert "--describe-m7-contract" in output.out
+        assert "--output-root" in output.out
+    else:
+        assert json.loads(output.out) == build_m7_external_capture_bundle_contract()
+    assert set(tmp_path.rglob("*")) == before
+    assert not (source / ".git").exists()
+
+
+@pytest.mark.parametrize("explicit_source", [False, True], ids=["default", "selected"])
+def test_capture_cli_resolves_canonical_default_from_real_repository(
+    explicit_source, monkeypatch, tmp_path
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "identity.txt").write_text("real fixture repository\n", encoding="utf-8")
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", str(source), *args], text=True, encoding="utf-8"
+        ).strip()
+
+    git("init", "--quiet")
+    git("config", "user.name", "Capture Test")
+    git("config", "user.email", "capture-test@example.invalid")
+    git("add", "identity.txt")
+    git("commit", "--quiet", "-m", "fixture")
+    head = git("rev-parse", "HEAD")
+    output_base = tmp_path / "external-captures" / "Label_Match"
+    monkeypatch.setattr(capture, "CAPTURE_OUTPUT_BASE", output_base)
+    monkeypatch.setattr(
+        capture, "DEFAULT_SOURCE_ROOT", tmp_path / "unused" if explicit_source else source
+    )
+    captured = {}
+
+    def stop_before_capture(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("capture boundary reached")
+
+    monkeypatch.setattr(capture, "run_capture_matrix", stop_before_capture)
+    before = capture.dt.datetime.now(capture.dt.timezone.utc)
+    with pytest.raises(RuntimeError, match="capture boundary reached"):
+        capture.main(["--source-root", str(source)] if explicit_source else [])
+    after = capture.dt.datetime.now(capture.dt.timezone.utc)
+
+    output_root = captured["output_root"]
+    assert captured["source_root"] == source
+    assert output_root.resolve().is_relative_to(capture.CAPTURE_OUTPUT_BASE)
+    assert not output_root.resolve().is_relative_to(capture.ROOT)
+    assert output_root.parent == output_base
+    prefix, commit_prefix, stamp, nonce = output_root.name.split("__")
+    assert prefix == "Label_Match"
+    assert commit_prefix == head[:12]
+    generated_at = capture.dt.datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(
+        tzinfo=capture.dt.timezone.utc
+    )
+    assert before.replace(microsecond=0) <= generated_at <= after
+    assert len(nonce) == 8 and set(nonce) <= set("0123456789abcdef")
+    assert (
+        capture.validate_m7_bundle_output_root(output_root, head)
+        == output_root.resolve()
+    )
+    assert not output_base.exists()
+    assert git("status", "--porcelain=v1", "--untracked-files=all") == ""
+
+
+def test_capture_cli_preserves_explicit_output_without_resolving_default(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    output_root = tmp_path / "explicit-output"
+    captured = {}
+
+    def unexpected_default(*_args):
+        pytest.fail("explicit output must not resolve a default Git identity")
+
+    def stop_before_capture(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("capture boundary reached")
+
+    monkeypatch.setattr(capture, "_default_bundle_output_root", unexpected_default)
+    monkeypatch.setattr(capture, "run_capture_matrix", stop_before_capture)
+    with pytest.raises(RuntimeError, match="capture boundary reached"):
+        capture.main(["--source-root", str(source), "--output-root", str(output_root)])
+    assert captured["source_root"] == source
+    assert captured["output_root"] == output_root
+    assert not output_root.exists()
+
+
+@pytest.mark.parametrize("missing_git", [True, False], ids=["missing-git", "no-repository"])
+def test_capture_default_still_requires_real_git_identity(
+    missing_git, monkeypatch, tmp_path
+):
+    source = tmp_path / "no-repository"
+    source.mkdir()
+    monkeypatch.chdir(source)
+    monkeypatch.setattr(capture, "DEFAULT_SOURCE_ROOT", source)
+    monkeypatch.setattr(capture, "CAPTURE_OUTPUT_BASE", tmp_path / "output")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    if missing_git:
+        empty_path = tmp_path / "no-executables"
+        empty_path.mkdir()
+        monkeypatch.setenv("PATH", str(empty_path))
+
+    def unexpected_capture(**_kwargs):
+        pytest.fail("capture must not start without its real default identity")
+
+    monkeypatch.setattr(capture, "run_capture_matrix", unexpected_capture)
+    error_type = FileNotFoundError if missing_git else subprocess.CalledProcessError
+    with pytest.raises(error_type) as exc:
+        capture.main([])
+    if not missing_git:
+        assert exc.value.cmd == ["git", "-C", str(source), "rev-parse", "HEAD"]
+        assert exc.value.returncode != 0
+    assert not (tmp_path / "output").exists()
+    assert not (source / ".git").exists()
+
+
+def test_explicit_capture_output_still_requires_real_source_identity(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "no-repository"
+    source.mkdir()
+    output_root = tmp_path / "explicit-output"
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        capture.main(
+            [
+                "--source-root", str(source),
+                "--output-root", str(output_root),
+                "--portable-artifact-file", "artifacts/fixture.zip",
+                "--portable-artifact-sha256", "0" * 64,
+            ]
+        )
+    assert exc.value.cmd == ["git", "-C", str(source.resolve()), "rev-parse", "HEAD"]
+    assert exc.value.returncode != 0
+    assert not output_root.exists()
+    assert not (source / ".git").exists()
+
+
+def test_explicit_capture_output_keeps_missing_artifact_error(
+    monkeypatch, tmp_path, capsys
+):
+    source = tmp_path / "no-repository"
+    source.mkdir()
+    output_root = tmp_path / "explicit-output"
+
+    def unexpected_git(*_args):
+        pytest.fail("missing artifact must be rejected before source measurement")
+
+    monkeypatch.setattr(capture, "_git_text", unexpected_git)
+    assert capture.main(
+        ["--source-root", str(source), "--output-root", str(output_root)]
+    ) == 3
+    output = capsys.readouterr()
+    assert output.out == ""
+    error = json.loads(output.err)
+    assert error["status"] == "FAIL"
+    assert error["error_code"] == "PORTABLE_ARTIFACT_REQUIRED"
+    assert not output_root.exists()
 
 
 def test_programmatic_matrix_requires_all_five_sizes_all_twenty_four_states_once():

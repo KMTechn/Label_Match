@@ -1491,8 +1491,8 @@ def make_m7_bundle_id(
     return f"Label_Match__{commit[:12]}__{stamp}__{nonce_value}"
 
 
-def _default_bundle_output_root() -> Path:
-    commit = _git_text(DEFAULT_SOURCE_ROOT, "rev-parse", "HEAD")
+def _default_bundle_output_root(source_root: Path) -> Path:
+    commit = _git_text(source_root, "rev-parse", "HEAD")
     return CAPTURE_OUTPUT_BASE / make_m7_bundle_id(commit)
 
 
@@ -9006,7 +9006,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=_default_bundle_output_root(),
+        default=None,
         help=(
             f"new canonical <bundle-id> directory directly below {CAPTURE_OUTPUT_BASE}"
         ),
@@ -9088,6 +9088,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
+    if args.output_root is None:
+        args.output_root = _default_bundle_output_root(args.source_root)
     try:
         manifest_path, manifest = run_capture_matrix(
             output_root=args.output_root,
