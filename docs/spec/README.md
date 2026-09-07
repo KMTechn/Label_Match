@@ -6,8 +6,8 @@
 
 ## 기준과 판정 범위
 
-- 조사·작성일: **2026-09-07**. Label HEAD `3f535c97086129862e5c4699f0d4d0b3b69152a7`, 소스의 `APP_VERSION=v2.0.94`를 기준으로 한다. 버전 문자열은 설치본의 신원이 아니다.
-- 읽은 작업 트리는 `Label_Match.py`, `tests/test_deferred_intent_capture.py`, `tests/test_label_match_core.py`, `tests/test_label_ui_lane_integration.py` 수정 및 `tests/test_completion_csv_durability.py` 미추적 상태다. HEAD만으로 이 상태를 재현할 수 없다. [작성 전 파일·index 해시](E:/KMTech/spec-hub-build-20260907/Label_Match/PRESTATE.json)와 [문서 검토 보고](E:/KMTech/spec-hub-build-20260907/Label_Match/IMPLEMENTATION.md)를 연결한다.
+- 최초 조사일: **2026-09-07**, 후속 소스 종결·증거 갱신일: **2026-09-08**. 최초 Label HEAD `3f535c97086129862e5c4699f0d4d0b3b69152a7`, 소스의 `APP_VERSION=v2.0.94`를 기준으로 조사했다. 버전 문자열은 설치본의 신원이 아니다.
+- 최초 작업 트리는 `Label_Match.py`, `tests/test_deferred_intent_capture.py`, `tests/test_label_match_core.py`, `tests/test_label_ui_lane_integration.py` 수정 및 `tests/test_completion_csv_durability.py` 미추적 상태였으므로 당시 HEAD만으로 재현할 수 없었다. [작성 전 파일·index 해시](E:/KMTech/spec-hub-build-20260907/Label_Match/PRESTATE.json)와 [문서 검토 보고](E:/KMTech/spec-hub-build-20260907/Label_Match/IMPLEMENTATION.md)는 이력으로 보존한다. 후속 [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md)은 parent `a28e40d9b11cb374b34835b5b94c92fc2ee12071` 위에 다섯 경로의 테스트 당시 working bytes와 네 명세를 묶고, working SHA256과 Git EOL 정규화 blob pins를 별도로 기록한다.
 - 후속 LM-B10 작업에서 `label_match_single_instance.py`와 `tests/test_label_match_single_instance.py`를 수정했다. 기존 writer 위치·위 dirty 파일·HEAD/index는 보존했다. [소스 교정·정적 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-fix/IMPLEMENTATION.md)에 전후 해시·diff·미실행 회귀 범위를 연결하며, 아래 과거 PASS를 새 코드에 상속하지 않는다.
 - [독립 소스 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-independent/REVIEW.md), [Windows focused packet](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-vm-prepare/PREPARATION.md)의 [독립 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-vm-independent/REVIEW.md)와 Main의 전체 제어 파일·diff 검토를 마쳤다. Main은 **2026-09-07 13:09:40Z에 SaveRoot13 실제 13 PASS / 39 ordered phase PASS**를 수용했다. 기존 VM01 interpreter/providers, 원본 108개와 guard/test 2개의 110개 source closure에서 선택한 6개 정의만 해당한다. [실제 결과의 독립 검토·명세 갱신](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-actual-source-close/REVIEW-AND-UPDATE.md)과 [정확한 실행 범위·한계](operations.md#saveroot13-evidence)를 연결한다.
 - [완료된 조사](E:/KMTech/spec-hub-research-20260907/Label_Match/RESEARCH.md), [근거 인덱스 S01–S58](E:/KMTech/spec-hub-research-20260907/Label_Match/SOURCE-MAP.tsv)를 바탕으로 관련 현행 소스를 재대조했다. 서버 조사 기준 HEAD는 `0218a671e13bb4d2210b3197a7245e9bec35417a`와 당시 dirty 작업 트리다. 서버 링크는 소유 저장소의 변하는 소스이며 설치 서버 증거가 아니다.
@@ -16,16 +16,22 @@
 | --- | --- |
 | 구현 | **PROVEN — 2026-09-07 위 작업 트리에서 아래 인용 분기·저장 경계의 정적 존재를 확인한 범위만**. 모든 함수의 완전성 판정은 아님 |
 | 실제 연동 | **UNPROVEN — 이 기준선과 실제 설치 앱·서버·소비 화면 조합의 일치 및 종단 결과** |
-| 수용 검증 | **PROVEN — ProducerClose 실제 50개/150 ordered phase, SaveRoot13 실제 13개/39 phase 및 아래 과거 증거의 각 한정 범위**. 서로 합산하지 않으며 Baseline8, 카드 전체 및 설치 조합의 남은 기준은 **UNPROVEN / NOT TESTED** |
+| 수용 검증 | **PROVEN — M3 실제 313/939 중 변경 13사례 매핑, 별도 N6 실제 6/18, ProducerClose 실제 50/150, SaveRoot13 실제 13/39의 각 한정 범위**. 서로 합산하지 않으며 Baseline8, 카드 전체 및 설치 조합의 남은 기준은 **UNPROVEN / NOT TESTED** |
 | 운영 준비 | **UNPROVEN — 최종 설치·재시작·재설치·롤백·통합 E2E 및 실장비 범위**. 중앙 준비도에서 통합 판정 |
 
-기존 Goal의 Label Modules3 **313 PASS / 939 ordered PASS**는 2026-09-07 08:11:02Z 코디네이터가 수정된 reader 결과를 수용한 이력이다. 원래 reader의 11개 repr ID/33개 비교 불일치 실패도 보존된다. 이번에 재실행하거나 현재 dirty 코드 전체로 PASS를 확장하지 않았다. 정확한 동결 소스·provider·환경·원본 결과와 남은 Baseline8/통합 범위는 [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)와 [DIRECTION](E:/KMTech/coordinator-handoff-20260907-01a07992/DIRECTION.md)의 해당 시점이 소유한다. 문서 기준선 작성, 개발 작업 완료, 제품 Ready는 별도 상태다.
+기존 Goal의 Label Modules3 **313 PASS / 939 ordered PASS**는 2026-09-07 08:11:02Z 코디네이터가 수정된 reader 결과를 수용한 이력이다. 원래 reader의 11개 repr ID/33개 비교 불일치 실패도 보존된다. 이번에는 [M3/N6 사례·소스 매핑](operations.md#residual-source-evidence)을 추가했고 시험을 재실행하거나 통합 후보 전체로 PASS를 확장하지 않았다. 정확한 동결 소스·provider·환경·원본 결과는 원래 pins와 [DIRECTION](E:/KMTech/coordinator-handoff-20260907-01a07992/DIRECTION.md)의 해당 시점을 따른다. 문서 기준선 작성, 개발 작업 완료, 제품 Ready는 별도 상태다.
+
+### 2026-09-08 완료 CSV·복구 잔여 소스 종결
+
+[독립 전체 diff·증거 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-review/REVIEW.md)는 다섯 경로에서 구체적인 결함을 확인하지 않았고 Main이 한 소스 단위 종결을 승인했다. 기존 완료 CSV는 writer barrier 뒤 write-capable descriptor에서 같은 set를 다시 확인하고 fsync한 뒤 재사용한다. 동기화 실패는 중복 append·marker 승격을 차단하며 ACKED orphan의 같은 작업·스캔을 복구 차단 상태로 보존한다. F3의 intent → durable event → marker/lease → UI 성공 순서를 유지한다.
+
+V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경계를 [M3/N6 사례·소스 매핑](operations.md#residual-source-evidence)에 연결했다. **Baseline8 causal RED는 NOT TESTED인 역사 공백이며 이번 승인된 소스 종결의 선행 조건이 아니다.** real lease-bearing orphan 통합 재시작, native F3/close/reopen, 두 GUI writer, 실제 backend와 FULL은 **UNPROVEN**이다. 다음 실행은 종결된 후보·provider·환경을 동결해 남은 native/backend/FULL 범위를 확인한다. Ready **0/6** 유지.
 
 ### 2026-09-08 producer 정상 종료 계약 교정
 
 [소스·회귀·새 VM 준비](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/PREPARATION.md)에서 F3 전송 ACK 뒤 `APP_CLOSE`만 새 delta로 전송되는 경로를 정적으로 확인하고 `direct_sync_push.py`와 해당 테스트를 교정했다. 동결 서버는 이 lifecycle evidence에 `accepted/committed + RAW_LEGITIMATE`를 반환하므로, exact CSV·identity·hash/byte·행별 nonprojecting observation이 일치할 때만 raw 수신 ACK를 허용한다. 업무 투영은 계속 `COMPLETE`가 필요하다.
 
-구현 분기·도달 가능성은 **PROVEN(정적)**이며, 독립/Main 소스·packet 검토 후 Main이 [ProducerClose 실제 50 collected/50 PASS·150 ordered phase PASS](operations.md#producer-close-evidence)를 수용했다. `Label112-ProducerClose-20260908`의 동결 receipt·로컬 session double 회귀에 한정하며 native close/F3·실제 서버 연동은 **NOT TESTED / UNPROVEN**이다. [소스 종결 근거](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md)는 테스트 당시 uploader·회귀 두 파일과 네 명세의 커밋·parent·해시를 결속한다. 다른 dirty 다섯 파일과 과거 packet·Main hash pins는 보존한다. Modules3 313/939와 SaveRoot13 13/39는 각 원래 소스 범위로 유지하며 합산·상속하지 않는다. Ready **0/6** 유지.
+구현 분기·도달 가능성은 **PROVEN(정적)**이며, 독립/Main 소스·packet 검토 후 Main이 [ProducerClose 실제 50 collected/50 PASS·150 ordered phase PASS](operations.md#producer-close-evidence)를 수용했다. `Label112-ProducerClose-20260908`의 동결 receipt·로컬 session double 회귀에 한정하며 native close/F3·실제 서버 연동은 **NOT TESTED / UNPROVEN**이다. [소스 종결 근거](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md)는 테스트 당시 uploader·회귀 두 파일과 네 명세의 커밋·parent·해시를 결속한다. 당시 보존한 다른 dirty 다섯 파일은 위 후속 소스 종결에 연결하며 과거 packet·Main hash pins는 보존한다. Modules3 313/939와 SaveRoot13 13/39는 각 원래 소스 범위로 유지하며 합산·상속하지 않는다. Ready **0/6** 유지.
 
 ## 사용자·경계·지원 경로
 
@@ -190,6 +196,6 @@
 
 ## 명세 진행·알려진 미조사 범위
 
-최초 명세 기준선은 AGENTS·기능·계약·운영·백로그를 정적으로 대조하고 당시 제품 코드·테스트를 보존했으며, [독립 교차 검토](E:/KMTech/spec-hub-build-20260907/cross-review/REVIEW.md)와 Main 대조도 완료했다. 후속 LM-B10 단위에서는 guard와 해당 회귀 테스트, 이 네 spec 문서를 수정했고 SaveRoot13의 한정 runtime 수용까지 연결했다. 앞선 실제 증거 검토·명세 갱신은 문서 작업이었다. 2026-09-08 후속 producer-close 소스 종결은 테스트 당시 uploader·회귀와 이 네 명세를 한 소스 단위로 묶고 실제 50/150 수용을 연결했다. 동결 packet과 과거 Main hash pins는 보존했다. 기존 CODEX·작업자 정본 및 다른 dirty 코드는 보존했다. 설정 template/사용자 쓰기 위치, onboarding/기본/Machine 경로와 오래된 안내는 [운영](operations.md#configuration), [LM-B09](BACKLOG.md#lm-b09), [LM-B10](BACKLOG.md#lm-b10)에서 구분한다. 소스 교정·focused runtime 수용·제품 준비도는 별도다.
+최초 명세 기준선은 AGENTS·기능·계약·운영·백로그를 정적으로 대조하고 당시 제품 코드·테스트를 보존했으며, [독립 교차 검토](E:/KMTech/spec-hub-build-20260907/cross-review/REVIEW.md)와 Main 대조도 완료했다. 후속 LM-B10 단위에서는 guard와 해당 회귀 테스트, 이 네 spec 문서를 수정했고 SaveRoot13의 한정 runtime 수용까지 연결했다. 앞선 실제 증거 검토·명세 갱신은 문서 작업이었다. 2026-09-08 후속 producer-close 소스 종결은 테스트 당시 uploader·회귀와 이 네 명세를 한 소스 단위로 묶고 실제 50/150 수용을 연결했다. 동결 packet과 과거 Main hash pins는 보존했다. 그때 보존한 잔여 다섯 경로는 2026-09-08 후속 [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md)에서 working bytes 변경 없이 네 명세와 묶고 M3 변경 13사례·N6 6사례의 기존 수용을 매핑했다. 기존 CODEX·작업자 정본은 보존했다. 설정 template/사용자 쓰기 위치, onboarding/기본/Machine 경로와 오래된 안내는 [운영](operations.md#configuration), [LM-B09](BACKLOG.md#lm-b09), [LM-B10](BACKLOG.md#lm-b10)에서 구분한다. 소스 교정·focused runtime 수용·제품 준비도는 별도다.
 
 이번 산출물은 핵심 업무·예외·계약·운영 공백과 수용 기준을 연결한 **소스 기반 기준선**이다. 메뉴 전체, 모든 호환 barcode/수정·관리자 분기, 업데이트 모든 장애 단계, 실제 provider/overlay·설치 플래그, 상류 PHS 발행부터 출고까지, 검토 사건의 실제 화면 소비·종결은 전수 확인하지 않았다. 테스트 파일의 존재를 실행 증거로 세지 않는다. 후속 작업은 [BACKLOG](BACKLOG.md)에서 관리하고 공통 관계·우선순위는 [중앙 통합](../../../Program_Spec_Hub/INTEGRATIONS.md)과 [중앙 백로그](../../../Program_Spec_Hub/BACKLOG.md)에 전달한다.

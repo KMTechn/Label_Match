@@ -333,100 +333,251 @@ def test_f4_lease_and_pending_exchange_gate_runs_off_tk():
     _close_lane(app, root)
 
 
-def test_f3_lease_outbox_and_flush_run_off_tk_before_ui_apply(monkeypatch):
+def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_id):
+    """Admit explicit locally verified input; no server/signature claim here."""
+    import hashlib
+    from contextlib import contextmanager
+    from terminal_operation_lease import OperationLeaseStore
+
+    class ClosingLeaseStore(OperationLeaseStore):
+        @contextmanager
+        def _connect(self):
+            conn = super()._connect()
+            try:
+                with conn:
+                    yield conn
+            finally:
+                conn.close()
+
+    store = ClosingLeaseStore(db_path)
+    lease = {
+        "lease_id": lease_id, "resource_id": "transfer:" + snapshot["bundle_id"],
+        "fence": 4, "snapshot_hash": "c" * 64, "status": "PREFETCHED",
+        "issued_at": "2026-08-29T01:00:00Z", "expires_at": "2099-08-29T01:05:00Z",
+    }
+    binding = {
+        "program": "Label_Match", "device_id": "B1", "source_host_id": "HOST-B1",
+        "authority_scope_id": snapshot["authority_scope_id"],
+        "ledger_plane": snapshot["ledger_plane"], "plane_epoch": snapshot["plane_epoch"],
+        "operation": "CREATE_PACKAGE", "resource_id": lease["resource_id"],
+        "physical_label_id": label_id,
+        "physical_qr_sha256": hashlib.sha256(physical_qr.encode("utf-8")).hexdigest(),
+        "item_id": item_id, "quantity": 4, "member_count": 4,
+        "membership_hash": "d" * 64, "expected_versions": {"bundle:" + snapshot["bundle_id"]: 7},
+    }
+    store.save_prefetched(
+        artifact={"claims": lease, "token": "local-boundary-token", "operation_snapshot": snapshot},
+        binding=binding, issue_idempotency_key="issue-" + lease_id,
+    )
+    return store, lease
+
+
+def test_f3_lease_outbox_and_flush_run_off_tk_before_ui_apply(tmp_path, monkeypatch):
+    import csv
+    import json
+    import sqlite3
+    from collections import defaultdict
+    from contextlib import closing
+    from datetime import datetime
+    from package_logistics import PackageOutbox
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 8, 29, 1, 0, 0)
+            return value if tz is None else value.replace(tzinfo=tz)
+
+    monkeypatch.setattr(label_module, "datetime", Clock)
+    monkeypatch.setattr(label_module, "logistics_runtime_required", lambda: False)
+    monkeypatch.setattr(label_module, "_label_match_direct_sync_context", lambda *a, **k: {})
+    monkeypatch.setattr(label_module, "_label_match_bind_current_log_source", lambda c, m: c)
+    monkeypatch.setattr(label_module, "_label_match_start_session_direct_sync",
+                        lambda *a, **k: SimpleNamespace(is_alive=lambda: False))
     app, root = _app_with_lane()
     owner = root.owner_thread_id
-    trace = []
-    app.initialized_successfully = True
-    app.is_running_simulation = False
-    app.run_tests = False
-    app.current_set_info = {
-        "id": "set-f3",
-        "raw": ["PHS2-F3"],
-        "parsed": ["ITEM-F3"],
-        "operation_lease_id": "",
-    }
-
-    class DataManager:
-        @staticmethod
-        def save_current_state(_state):
-            trace.append(("state-save", threading.get_ident()))
-            return True
-
-        @staticmethod
-        def log_event(_event, _details):
-            trace.append(("event", threading.get_ident()))
-
-        @staticmethod
-        def flush(timeout=None):
-            assert timeout == 5.0
-            trace.append(("flush", threading.get_ident()))
-            return True
-
-    class Outbox:
-        @staticmethod
-        def mark_local_completion_committed(*_args, **_kwargs):
-            trace.append(("outbox-marker", threading.get_ident()))
-
-    def queue_package(**kwargs):
-        trace.append(("lease-outbox", threading.get_ident()))
-        snapshot = kwargs["current_set_info"]
-        snapshot["operation_lease_id"] = "lease-f3"
-        snapshot["operation_lease_fence"] = 4
-        snapshot["operation_lease_snapshot_hash"] = "a" * 64
-        snapshot["operation_lease_expires_at"] = "2099-01-01T00:00:00Z"
-        snapshot["operation_lease_completed_at"] = "2026-09-01T00:00:00Z"
-        assert kwargs["persist_current_state"](snapshot) is True
-        return {
-            "status": "PENDING",
-            "idempotency_key": "label-package-f3",
-            "operation_lease_id": "lease-f3",
-            "operation_lease_completed_at": "2026-09-01T00:00:00Z",
+    trace, successes, ui_mutations = [], [], []
+    gate, marker_entered = threading.Event(), threading.Event()
+    try:
+        db_path = tmp_path / "package_logistics_outbox.sqlite3"
+        raw = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-F3|CLC=ITEM-F3|LBL=LBL-F3|HSH=0123456789abcdef"
+        expected_key = "label-package-cmd-bcc381febddba32e1f904f61"
+        app.tk = SimpleNamespace()  # FakeTkRoot supplies the scheduler boundary.
+        snapshot = {
+            "bundle_id": "TRANSFER-F3", "package_bundle_id": "PACKAGE-F3",
+            "authority_scope_id": "SCOPE-F3", "member_count": 4, "membership_hash": "d" * 64,
+            "authority_epoch": 1, "ledger_plane": "SHADOW_CANDIDATE", "plane_epoch": 1,
         }
+        app.package_outbox = PackageOutbox(db_path)
+        app.package_operation_lease_store, lease = _b1_local_lease(
+            db_path, raw, snapshot, lease_id="lease-f3", item_id="ITEM-F3", label_id="LBL-F3",
+        )
+        app.package_operation_lease_keyring = object()  # Local verification boundary.
+        app.package_logistics_client = SimpleNamespace(
+            config=SimpleNamespace(authority_scope_id="SCOPE-F3"),
+            issue_operation_lease=lambda **k: pytest.fail("unexpected remote lease issue"),
+        )
+        evidence = SimpleNamespace(
+            replaced_scan=False, canonical_input_tag_qr=raw, physical_scanned_qr_payload=raw,
+            active_label_qr_payload=raw, active_label_id="LBL-F3", active_label_business_date="2026-08-29",
+            active_label_worker_code="worker-f3", active_label_resolution="CURRENT_ACTIVE",
+            item_id="ITEM-F3", member_count=4, membership_hash="d" * 64,
+            state_fields=lambda: {"canonical_input_tag_qr": raw},
+        )
+        app.initialized_successfully = True
+        app.is_running_simulation = False
+        app.run_tests = False
+        app.current_set_info = {"id": None, "raw": [], "parsed": [], "start_time": None}
+        app.save_directory = str(tmp_path)
+        app.data_manager = label_module.DataManager(str(tmp_path), "포장실", "worker-f3", "F3")
+        app.items_data = {"ITEM-F3": {"Item Name": "F3 item", "Spec": "F3 spec"}}
+        app.scan_count = defaultdict(lambda: defaultdict(int))
+        app.global_scanned_set = set()
+        app.set_details_map = {}
+        app.history_row_details_map = {}
+        app.history_tree = SimpleNamespace(exists=lambda _: False)
+        app.save_status_label = SimpleNamespace(config=lambda **k: ui_mutations.append(k))
+        app.progress_bar = {}
+        app._update_status_label = lambda: None
+        app._update_history_tree_in_progress = lambda: None
+        app._play_sound = lambda sound: None
+        app._update_summary_tree = lambda: None
+        app._return_to_idle_after_finalized_set = lambda: True
+        app._start_package_outbox_drain = lambda: trace.append(("drain", threading.get_ident()))
+        app._publish_durable_commit_block = lambda error, **k: pytest.fail(str(error))
+        app.after = lambda *a: None
 
-    def finalize_ui(*_args, **kwargs):
-        trace.append(("ui-apply", threading.get_ident()))
-        assert kwargs["_durable_completion"]["package_logistics"][
-            "idempotency_key"
-        ] == "label-package-f3"
-        return True
+        def read_completion(committed):
+            with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                commands = [dict(row) for row in conn.execute("SELECT * FROM package_command_outbox")]
+                leases = [dict(row) for row in conn.execute("SELECT * FROM package_operation_leases")]
+            assert len(commands) == len(leases) == 1
+            command, stored_lease = commands[0], leases[0]
+            assert (stored_lease["fence"], stored_lease["snapshot_hash"]) == (4, "c" * 64)
+            assert (command["set_id"], command["idempotency_key"], command["status"],
+                    command["local_completion_committed"]) == ("set-f3", expected_key, "PENDING", int(committed))
+            assert (stored_lease["lease_id"], stored_lease["set_id"], stored_lease["status"]) == (
+                "lease-f3", "set-f3", "LOCAL_COMPLETED" if committed else "PREFETCHED",
+            )
+            assert stored_lease["operation_result_id"] == (expected_key if committed else None)
+            if committed:
+                assert command["local_completion_committed_at"]
+                assert stored_lease["consume_idempotency_key"] == expected_key
+                assert stored_lease["operation_completed_at"] == "2026-08-29T01:00:00Z"
+            draft = json.loads(command["draft_json"])
+            assert draft["item_code"] == "ITEM-F3" and draft["source_bundle_id"] == "TRANSFER-F3"
+            assert draft["source_canonical_input_tag_qr"] == raw
+            assert draft["expected_member_count"] == 4 and draft["expected_membership_hash"] == "d" * 64
+            assert draft["membership_mode"] == "INHERIT_ALL" and draft["operation_lease_id"] == "lease-f3"
+            assert (draft["operation_lease_fence"], draft["operation_lease_snapshot_hash"]) == (4, "c" * 64)
+            with (tmp_path / "포장실작업이벤트로그_F3_20260829.csv").open(encoding="utf-8-sig", newline="") as stream:
+                rows = [row for row in csv.DictReader(stream) if row["event"] == "TRAY_COMPLETE"]
+            assert len(rows) == 1
+            assert (rows[0]["timestamp"], rows[0]["worker_name"]) == ("2026-08-29T01:00:00", "worker-f3")
+            details = json.loads(rows[0]["details"])
+            assert {key: details[key] for key in (
+                "set_id", "item_code", "scanned_product_barcodes", "parsed_product_barcodes",
+                "scan_count", "final_result", "packaging_completed_date", "start_time", "end_time",
+            )} == {
+                "set_id": "set-f3", "item_code": "ITEM-F3", "scanned_product_barcodes": [raw],
+                "parsed_product_barcodes": ["ITEM-F3"], "scan_count": 1, "final_result": "통과",
+                "packaging_completed_date": "2026-08-29", "start_time": "2026-08-29T01:00:00",
+                "end_time": "2026-08-29T01:00:00",
+            }
+            assert details["package_logistics"]["idempotency_key"] == expected_key
+            assert details["package_logistics"]["operation_lease_id"] == "lease-f3"
+            assert details["package_logistics"]["expected_member_count"] == 4
+            assert details["package_logistics"]["expected_membership_hash"] == "d" * 64
 
-    monkeypatch.setattr(
-        label_module,
-        "_label_match_local_completion_event_exists",
-        lambda *_args: False,
-    )
-    app.data_manager = DataManager()
-    app.package_outbox = Outbox()
-    app._queue_authoritative_package = queue_package
-    app._finalize_set = finalize_ui
-    app._publish_durable_commit_block = lambda error: pytest.fail(str(error))
+        def instrument(obj, name, label):
+            original = getattr(obj, name)
 
-    assert app._submit_finalized_set_on_lane(
-        result=app.Results.PASS,
-        error_details="",
-        is_manual_complete=False,
-        details={"set_id": "set-f3"},
-        item_code="ITEM-F3",
-        central_inherit_all=True,
-        set_id_for_log="set-f3",
-    ) is True
-    assert app._ui_lane_busy_label == "포장 완료 · 중앙 저장 중"
-    root.run_until(lambda: not app.ui_lane.is_busy())
+            def call(*args, **kwargs):
+                trace.append((label, threading.get_ident()))
+                return original(*args, **kwargs)
 
-    worker_id = app.ui_lane.worker_thread_id
-    for name in (
-        "state-save",
-        "lease-outbox",
-        "event",
-        "flush",
-        "outbox-marker",
-    ):
-        assert (name, worker_id) in trace
-    assert trace[-1] == ("ui-apply", owner)
-    assert app.current_set_info["operation_lease_id"] == "lease-f3"
-    assert app._ui_lane_busy_label == ""
-    _close_lane(app, root)
+            monkeypatch.setattr(obj, name, call)
+
+        original_marker = app.package_outbox.mark_local_completion_committed
+        original_apply = app._apply_ui_lane_completion_snapshot
+
+        def marker(*args, **kwargs):
+            trace.append(("outbox-marker", threading.get_ident()))
+            marker_entered.set()
+            gate.wait()
+            return original_marker(*args, **kwargs)
+
+        def apply(snapshot):
+            assert threading.get_ident() == owner
+            assert successes == []
+            read_completion(True)
+            trace.append(("ui-apply", threading.get_ident()))
+            return original_apply(snapshot)
+
+        def first_success(sound):
+            assert sound == "pass" and threading.get_ident() == owner
+            assert ui_mutations == []
+            assert not app.scan_count and not app.set_details_map
+            assert not app.global_scanned_set and not app.history_row_details_map
+            assert not any(name == "drain" for name, _ in trace)
+            read_completion(True)
+            successes.append(sound)
+
+        assert app._accept_resolved_central_phs2_scan(
+            evidence, snapshot, None, lease, local_work_identity="set-f3",
+        ) is True
+        app.data_manager.flush(timeout=5)  # Setup only; before F3 starts.
+        app._load_reusable_operation_lease = lambda *a, **k: (
+            trace.append(("lease", threading.get_ident())) or (evidence, snapshot, None, lease)
+        )
+        for obj, name, label in (
+            (app.data_manager, "save_current_state", "state-save"),
+            (app.data_manager, "log_event", "event"),
+            (app.data_manager, "flush", "flush"),
+            (app.package_outbox, "enqueue", "outbox"),
+        ):
+            instrument(obj, name, label)
+        app.package_outbox.mark_local_completion_committed = marker
+        app._apply_ui_lane_completion_snapshot = apply
+        app._play_sound = first_success
+        assert app._begin_central_package_submission() is True
+        assert app._ui_lane_busy_label == "포장 완료 · 중앙 저장 중"
+        assert marker_entered.wait(5)
+        read_completion(False)
+        assert successes == [] and not app.scan_count and not app.set_details_map
+        assert ui_mutations == []
+        assert not app.global_scanned_set and not app.history_row_details_map
+        assert not any(name in {"ui-apply", "drain"} for name, _ in trace)
+        gate.set()
+        root.run_until(lambda: not app.ui_lane.is_busy(), timeout=5)
+        worker = app.ui_lane.worker_thread_id
+        assert worker is not None and worker != owner
+        for name in ("state-save", "lease", "outbox", "event", "flush", "outbox-marker"):
+            assert (name, worker) in trace
+            assert all(thread == worker for label, thread in trace if label == name)
+        assert trace[-2:] == [("ui-apply", owner), ("drain", owner)]
+        assert successes == ["pass"]
+        assert app.current_set_info["operation_lease_id"] == "lease-f3"
+        assert app.current_set_info["operation_lease_completed_at"] == "2026-08-29T01:00:00Z"
+        assert app._ui_lane_busy_label == ""
+    finally:
+        gate.set()
+        primary = __import__("sys").exc_info()[1]
+        try:
+            _close_lane(app, root)
+        except BaseException as error:
+            if primary is None:
+                raise
+            primary.add_note("lane close: " + str(error))
+        finally:
+            try:
+                manager = app.__dict__.get("data_manager")
+                if manager is not None:
+                    manager.close(timeout=5)
+            except BaseException as error:
+                if primary is None:
+                    raise
+                primary.add_note("DataManager close: " + str(error))
 
 
 def test_scan_is_not_cleared_while_lane_is_busy():

@@ -1531,86 +1531,499 @@ def test_finalize_set_waits_for_durable_log_before_mutating_active_state():
     assert durable_blocks == ["flush failed"]
 
 
-def test_central_finalize_commits_intent_and_local_event_before_ui_success():
-    module = load_label_match_module()
-    actions = []
+_B1_RAW = (
+    "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-B1|"
+    "CLC=ITEM-B1|LBL=LBL-B1|HSH=0123456789abcdef"
+)
+# Literal command identity for set b1-first and package PACKAGE-B1.
+_B1_KEY = "label-package-cmd-70701d50d99da2418af832c3"
 
-    class OrderedManager:
-        def __init__(self):
-            self.events = []
 
-        def log_event(self, event_type, details):
-            actions.append("log")
-            self.events.append((event_type, details))
+def _b1_app(module, tmp_path, monkeypatch, *, accept=True):
+    """Local storage integration; resolved source and remote delivery are seams."""
+    from types import SimpleNamespace
+    from package_logistics import PackageOutbox
 
-        def flush(self, timeout=None):
-            actions.append("flush")
+    class Clock(datetime):
+        instant = datetime(2026, 8, 31, 23, 59, 59)
 
-    class OrderedOutbox:
-        def mark_local_completion_committed(self, key):
-            assert key == "package-key"
-            actions.append("mark-local")
+        @classmethod
+        def now(cls, tz=None):
+            return cls.instant if tz is None else cls.instant.replace(tzinfo=tz)
 
+    monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setattr(module, "logistics_runtime_required", lambda: False)
+    monkeypatch.setattr(module, "_label_match_direct_sync_context", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_label_match_bind_current_log_source", lambda c, m: c)
+    monkeypatch.setattr(
+        module, "_label_match_start_session_direct_sync",
+        lambda *a, **k: SimpleNamespace(is_alive=lambda: False),
+    )
     app = object.__new__(module.Label_Match)
-    app.Results = module.Label_Match.Results
-    app.Events = module.Label_Match.Events
-    app.current_set_info = {
-        "id": "central-local-first",
-        "raw": [
-            "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-LOCAL-FIRST|"
-            "CLC=ITEM-1|LBL=LBL-LOCAL-FIRST|HSH=0123456789abcdef"
-        ],
-        "parsed": ["ITEM-1"],
-        "central_inherit_all": True,
-        "package_source_snapshot": {},
-        "start_time": datetime(2026, 8, 1, 10, 0, 0),
-        "error_count": 0,
-        "has_error_or_reset": False,
-        "phase": "-",
-        "item_name_override": None,
-        "production_date": None,
-    }
-    app.items_data = {"ITEM-1": {"Item Name": "Item", "Spec": "Spec"}}
+    app.current_set_info = {"id": None, "raw": [], "parsed": [], "start_time": None}
+    app.tk = SimpleNamespace()  # No Tcl interpreter in this storage fixture.
+    app.initialized_successfully = True
+    app.is_running_simulation = False
+    app.run_tests = False
+    app.worker_name = "worker-b1"
+    app.save_directory = str(tmp_path)
+    app.data_manager = module.DataManager(str(tmp_path), "포장실", "worker-b1", "B1")
+    app.package_outbox = PackageOutbox(tmp_path / "package_logistics_outbox.sqlite3")
+    # This core case deliberately has no operation lease; the materializer/lane
+    # cases below exercise the real lease store and its transaction separately.
+    app.package_logistics_client = SimpleNamespace(config=SimpleNamespace())
+    app.items_data = {"ITEM-B1": {"Item Name": "B1 item", "Spec": "B1 spec"}}
     app.scan_count = defaultdict(lambda: defaultdict(int))
     app.global_scanned_set = set()
     app.set_details_map = {}
     app.history_row_details_map = {}
-    app.data_manager = OrderedManager()
-    app.package_outbox = OrderedOutbox()
     app.history_tree = _FakeHistoryTree()
     app.save_status_label = _FakeLabel()
-    app.is_running_simulation = False
-    app.initialized_successfully = True
-    app.run_tests = True
-    app._queue_authoritative_package = lambda **_kwargs: (
-        actions.append("intent")
-        or {
-            "status": "PENDING",
-            "idempotency_key": "package-key",
-            "membership_mode": "INHERIT_ALL",
-        }
-    )
-    app._play_sound = lambda sound_key: actions.append(f"sound:{sound_key}")
+    app.progress_bar = {}
+    app.update_big_display = lambda *a: None
+    app._update_status_label = lambda: None
+    app._update_history_tree_in_progress = lambda: None
+    app._render_operator_workbench = lambda: None
+    app._focus_scan_entry_if_available = lambda: None
+    app.after = lambda *a: None
+    actions = []
+    app._play_sound = lambda sound: actions.append("sound:" + sound)
     app._start_package_outbox_drain = lambda: actions.append("drain")
     app._update_summary_tree = lambda: actions.append("summary")
-    app._return_to_idle_after_finalized_set = (
-        lambda: actions.append("idle") or True
+    app._return_to_idle_after_finalized_set = lambda: actions.append("idle") or True
+    app._publish_durable_commit_block = lambda error, **k: actions.append(str(error)) or False
+    if accept:
+        evidence = SimpleNamespace(
+            replaced_scan=False, canonical_input_tag_qr=_B1_RAW,
+            physical_scanned_qr_payload=_B1_RAW, active_label_qr_payload=_B1_RAW,
+            active_label_id="LBL-B1", active_label_business_date="2026-08-31",
+            active_label_worker_code="worker-b1", active_label_resolution="CURRENT_ACTIVE",
+            item_id="ITEM-B1", member_count=4, membership_hash="d" * 64,
+            state_fields=lambda: {"canonical_input_tag_qr": _B1_RAW},
+        )
+        snapshot = {
+            "bundle_id": "TRANSFER-B1", "package_bundle_id": "PACKAGE-B1",
+            "authority_scope_id": "SCOPE-B1", "member_count": 4,
+            "membership_hash": "d" * 64, "authority_epoch": 1,
+            "ledger_plane": "SHADOW_CANDIDATE", "plane_epoch": 1,
+        }
+        try:
+            assert app._accept_resolved_central_phs2_scan(
+                evidence, snapshot, None, local_work_identity="b1-first",
+            ) is True
+            app.data_manager.flush(timeout=5)
+        except BaseException:
+            app.data_manager.close(timeout=5)
+            raise
+        actions.clear()
+    return app, actions, Clock
+
+
+def _b1_rows(tmp_path):
+    """Independent readers, never product getters or an extra flush."""
+    import sqlite3
+    from contextlib import closing
+
+    with closing(sqlite3.connect(
+        (tmp_path / "package_logistics_outbox.sqlite3").as_uri() + "?mode=ro",
+        uri=True,
+    )) as conn:
+        conn.row_factory = sqlite3.Row
+        commands = [dict(row) for row in conn.execute(
+            "SELECT * FROM package_command_outbox ORDER BY set_id"
+        )]
+    events = []
+    for path in sorted(tmp_path.glob("포장실작업이벤트로그_B1_*.csv")):
+        with path.open(encoding="utf-8-sig", newline="") as stream:
+            for row in csv.DictReader(stream):
+                if row["event"] == "TRAY_COMPLETE":
+                    events.append((row, json.loads(row["details"])))
+    return commands, events
+
+
+def _b1_assert_completion(tmp_path):
+    commands, events = _b1_rows(tmp_path)
+    assert len(commands) == len(events) == 1
+    command = commands[0]
+    assert (command["set_id"], command["idempotency_key"], command["status"],
+            command["local_completion_committed"]) == ("b1-first", _B1_KEY, "PENDING", 1)
+    assert command["local_completion_committed_at"]
+    draft = json.loads(command["draft_json"])
+    assert {key: draft[key] for key in (
+        "set_id", "item_code", "package_bundle_id", "source_bundle_id",
+        "source_canonical_input_tag_qr", "expected_member_count",
+        "expected_membership_hash", "membership_mode",
+    )} == {
+        "set_id": "b1-first", "item_code": "ITEM-B1", "package_bundle_id": "PACKAGE-B1",
+        "source_bundle_id": "TRANSFER-B1", "source_canonical_input_tag_qr": _B1_RAW,
+        "expected_member_count": 4, "expected_membership_hash": "d" * 64,
+        "membership_mode": "INHERIT_ALL",
+    }
+    row, details = events[0]
+    assert (row["timestamp"], row["worker_name"], row["event"]) == (
+        "2026-08-31T23:59:59", "worker-b1", "TRAY_COMPLETE",
     )
-    app.after = lambda _delay, _callback: None
-
-    assert module.Label_Match._finalize_set(app, app.Results.PASS) is True
-
-    assert actions[:6] == [
-        "intent",
-        "log",
-        "flush",
-        "mark-local",
-        "sound:pass",
-        "drain",
-    ]
-    details = app.data_manager.events[0][1]
+    assert {key: details[key] for key in (
+        "set_id", "item_code", "scanned_product_barcodes", "parsed_product_barcodes",
+        "scan_count", "final_result", "packaging_completed_date", "start_time", "end_time",
+    )} == {
+        "set_id": "b1-first", "item_code": "ITEM-B1", "scanned_product_barcodes": [_B1_RAW],
+        "parsed_product_barcodes": ["ITEM-B1"], "scan_count": 1, "final_result": "통과",
+        "packaging_completed_date": "2026-08-31", "start_time": "2026-08-31T23:59:59",
+        "end_time": "2026-08-31T23:59:59",
+    }
+    assert details["package_logistics"]["idempotency_key"] == _B1_KEY
+    assert details["package_logistics"]["expected_member_count"] == 4
+    assert details["package_logistics"]["expected_membership_hash"] == "d" * 64
     assert details["package_logistics"]["status"] == "PENDING"
-    assert details["final_result"] == app.Results.PASS
+    assert details["product_sample_barcodes"] == []
+    return command, row
+
+
+def _b1_close(manager, *, writer_fault=False):
+    """Join even after an assertion fails, preserving that primary failure."""
+    import sys
+
+    primary = sys.exc_info()[1]
+    try:
+        manager.close(timeout=5)
+    except BaseException as error:
+        if primary is not None:
+            primary.add_note("DataManager close: " + str(error))
+        elif not (writer_fault and isinstance(error, RuntimeError) and "injected B1" in str(error)):
+            raise
+    if manager.log_thread.is_alive():
+        if primary is not None:
+            primary.add_note("DataManager writer remains live; guest supervisor settlement required")
+        else:
+            raise AssertionError("DataManager writer remains live")
+
+
+def test_central_finalize_commits_intent_and_local_event_before_ui_success(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, actions, _clock = _b1_app(module, tmp_path, monkeypatch)
+    observed = []
+
+    def first_success(sound):
+        assert sound == "pass"
+        assert actions == []
+        assert not hasattr(app.save_status_label, "kwargs")
+        assert not app.scan_count and not app.set_details_map
+        assert not app.global_scanned_set and not app.history_row_details_map
+        observed.append(_b1_assert_completion(tmp_path))
+        actions.append("sound:pass")
+
+    app._play_sound = first_success
+    try:
+        assert app._begin_central_package_submission() is True
+        assert len(observed) == 1
+        assert actions == ["sound:pass", "drain", "summary", "idle"]
+    finally:
+        _b1_close(app.data_manager)
+
+
+def _b1_inject_sql_fault(outbox, monkeypatch, fault, hits):
+    from contextlib import contextmanager
+    import sqlite3
+
+    original = outbox._connect
+
+    class Connection:
+        def __init__(self, conn):
+            self.conn = conn
+            self.operation = None
+
+        def execute(self, sql, parameters=()):
+            statement = " ".join(sql.split()).upper()
+            if statement.startswith("INSERT INTO PACKAGE_COMMAND_OUTBOX("):
+                self.operation = "intent"
+                if fault == "intent_insert":
+                    hits.append(fault)
+                    raise sqlite3.OperationalError("injected B1 intent insert failure")
+            if statement.startswith("UPDATE PACKAGE_COMMAND_OUTBOX SET LOCAL_COMPLETION_COMMITTED=1"):
+                self.operation = "marker"
+            return self.conn.execute(sql, parameters)
+
+        def commit(self):
+            if self.operation and fault == self.operation + "_commit":
+                # Real transaction has already inserted/updated the owned row.
+                assert self.conn.in_transaction
+                assert self.conn.execute("SELECT COUNT(*) FROM package_command_outbox").fetchone()[0] == 1
+                hits.append(fault)
+                raise sqlite3.OperationalError("injected B1 " + fault + " failure")
+            return self.conn.commit()
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+    @contextmanager
+    def connect():
+        with original() as conn:
+            yield Connection(conn)
+
+    monkeypatch.setattr(outbox, "_connect", connect)
+
+
+def _b1_csv_io(module, monkeypatch, path, *, fault=None, gate=None):
+    """Intercept only the exact owned CSV; all fsync calls delegate unless faulted."""
+    import builtins
+    import os
+
+    real_open, real_fsync = builtins.open, os.fsync
+    observations = {"faults": [], "synced": [], "entered": threading.Event()}
+
+    def owned(fd):
+        return path.exists() and os.path.samestat(os.fstat(fd), path.stat())
+
+    def fsync(fd):
+        if not owned(fd):
+            return real_fsync(fd)
+        observations["entered"].set()
+        if gate is not None:
+            gate.wait()
+        if fault == "csv_fsync" and not observations["faults"]:
+            observations["faults"].append(fault)
+            raise OSError("injected B1 CSV fsync failure")
+        real_fsync(fd)
+        with path.open(encoding="utf-8-sig", newline="") as reader:
+            observations["synced"].append(list(csv.DictReader(reader)))
+
+    class CsvFile:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def flush(self):
+            if fault == "csv_flush" and not observations["faults"]:
+                observations["faults"].append(fault)
+                raise OSError("injected B1 CSV flush failure")
+            return self.stream.flush()
+
+    def open_csv(file, *args, **kwargs):
+        stream = real_open(file, *args, **kwargs)
+        if Path(file).resolve() == path.resolve() and "a" in str(args[0] if args else kwargs.get("mode", "r")):
+            return CsvFile(stream)
+        return stream
+
+    monkeypatch.setattr(module, "open", open_csv, raising=False)
+    monkeypatch.setattr(module.os, "fsync", fsync)
+    return observations
+
+
+@pytest.mark.parametrize("fault", [
+    "intent_insert", "intent_commit", "csv_flush", "csv_fsync", "marker_commit",
+])
+def test_f3_real_storage_refusal_preserves_packaging_and_recovery(tmp_path, monkeypatch, fault):
+    module = load_label_match_module()
+    app, actions, _clock = _b1_app(module, tmp_path, monkeypatch)
+    before = copy.deepcopy(app.current_set_info)
+    writer_fault = fault.startswith("csv_")
+    hits = []
+    try:
+        with monkeypatch.context() as injection:
+            if writer_fault:
+                io = _b1_csv_io(module, injection, tmp_path / "포장실작업이벤트로그_B1_20260831.csv", fault=fault)
+                hits = io["faults"]
+            else:
+                _b1_inject_sql_fault(app.package_outbox, injection, fault, hits)
+            assert app._begin_central_package_submission() is False
+        assert hits == [fault]
+        assert len(actions) == 1 and "injected B1" in actions[0]
+        assert app.current_set_info == before
+        assert not hasattr(app.save_status_label, "kwargs")
+        assert not app.scan_count and not app.set_details_map
+        assert not app.global_scanned_set and not app.history_row_details_map
+        commands, events = _b1_rows(tmp_path)
+        if fault.startswith("intent_"):
+            assert commands == events == []
+        else:
+            assert len(commands) == len(events) == 1
+            assert commands[0]["idempotency_key"] == _B1_KEY
+            assert commands[0]["local_completion_committed"] == 0
+    finally:
+        _b1_close(app.data_manager, writer_fault=writer_fault)
+
+    # A fresh writer has no retained error flag; recovery must still establish
+    # durable bytes, rather than treating readable cache contents as fsynced.
+    app.data_manager = module.DataManager(str(tmp_path), "포장실", "worker-b1", "B1")
+    from package_logistics import PackageOutbox
+    app.package_outbox = PackageOutbox(tmp_path / "package_logistics_outbox.sqlite3")
+    actions.clear()
+    io = _b1_csv_io(module, monkeypatch, tmp_path / "포장실작업이벤트로그_B1_20260831.csv")
+    successes = []
+
+    def recovered_success(sound):
+        assert sound == "pass"
+        successes.append(_b1_assert_completion(tmp_path))
+        if writer_fault:
+            assert any(row["event"] == "TRAY_COMPLETE" for batch in io["synced"] for row in batch), (
+                "recovery displayed success after failed CSV durability without a successful CSV fsync"
+            )
+
+    app._play_sound = recovered_success
+    try:
+        assert app._begin_central_package_submission() is True
+        assert len(successes) == 1
+        # A second recovery pass must reuse the committed command/event.
+        assert app._reconcile_active_package_submission() is True
+        _b1_assert_completion(tmp_path)
+    finally:
+        _b1_close(app.data_manager)
+
+
+def _b1_crash_child(directory, cut):
+    """Guest-only disposable child: terminate itself at a real durable cut."""
+    import os
+
+    module = load_label_match_module()
+    patch = pytest.MonkeyPatch()
+    app, actions, _clock = _b1_app(module, Path(directory), patch)
+    marker = app.package_outbox.mark_local_completion_committed
+
+    def crash_at_marker(*args, **kwargs):
+        commands, events = _b1_rows(Path(directory))
+        assert len(commands) == len(events) == 1
+        assert commands[0]["local_completion_committed"] == 0
+        if cut == "committed_before_ui":
+            marker(*args, **kwargs)
+        assert actions == []
+        print("B1_CRASH_CUT", cut, os.getpid(), os.getppid(), flush=True)
+        os._exit(73)
+
+    app.package_outbox.mark_local_completion_committed = crash_at_marker
+    try:
+        app._begin_central_package_submission()
+        raise AssertionError("crash cut was not reached")
+    finally:
+        # os._exit deliberately bypasses this; ordinary setup/cut failures must
+        # still settle the exact writer and restore the local test patches.
+        try:
+            _b1_close(app.data_manager)
+        finally:
+            patch.undo()
+
+
+def test_f3_pending_first_keeps_second_prepared_input_on_reopen(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    module = load_label_match_module()
+    app, _actions, clock = _b1_app(module, tmp_path, monkeypatch)
+    second_raw = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-B1-SECOND|CLC=ITEM-B1|LBL=LBL-B1-SECOND|HSH=fedcba9876543210"
+    evidence = SimpleNamespace(
+        replaced_scan=False, canonical_input_tag_qr=second_raw,
+        physical_scanned_qr_payload=second_raw, active_label_qr_payload=second_raw,
+        active_label_id="LBL-B1-SECOND", active_label_business_date="2026-09-01",
+        active_label_worker_code="worker-b1", active_label_resolution="CURRENT_ACTIVE",
+        item_id="ITEM-B1", member_count=4, membership_hash="e" * 64,
+        state_fields=lambda: {"canonical_input_tag_qr": second_raw},
+    )
+    snapshot = {
+        "bundle_id": "TRANSFER-B1-SECOND", "package_bundle_id": "PACKAGE-B1-SECOND",
+        "authority_scope_id": "SCOPE-B1", "member_count": 4, "membership_hash": "e" * 64,
+        "authority_epoch": 1, "ledger_plane": "SHADOW_CANDIDATE", "plane_epoch": 1,
+    }
+    try:
+        # Use the real post-completion reset before accepting the next input.
+        del app._return_to_idle_after_finalized_set
+        app.is_blinking = False
+        app.entry = SimpleNamespace(focus_set=lambda: None)
+        app._play_sound = lambda sound: _b1_assert_completion(tmp_path) if sound == "pass" else None
+        assert app._begin_central_package_submission() is True
+        assert app.current_set_info["raw"] == []
+        clock.instant = datetime(2026, 9, 1, 0, 0, 1)
+        assert app._accept_resolved_central_phs2_scan(
+            evidence, snapshot, None, local_work_identity="b1-second",
+        ) is True
+        with (tmp_path / module.Label_Match.FILES.CURRENT_STATE).open(encoding="utf-8") as stream:
+            saved = json.load(stream)
+        assert saved["current_set_info"]["id"] == "b1-second"
+        assert saved["current_set_info"]["raw"] == [second_raw]
+        assert saved["current_set_info"]["package_source_snapshot"] == snapshot
+        assert app._reconcile_active_package_submission() is False
+        assert app.current_set_info["raw"] == [second_raw]
+        _b1_assert_completion(tmp_path)  # First central ACK is still pending.
+    finally:
+        _b1_close(app.data_manager)
+
+    restored, _actions, clock = _b1_app(module, tmp_path, monkeypatch, accept=False)
+    clock.instant = datetime(2026, 9, 2, 0, 0, 1)
+    restored.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **k: [])
+    restored._reconcile_pending_sealed_transfer_exchanges = lambda **k: None
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
+    try:
+        restored._load_current_set_state()
+        assert restored.current_set_info["id"] == "b1-second"
+        assert restored.current_set_info["raw"] == [second_raw]
+        assert restored.current_set_info["parsed"] == ["ITEM-B1"]
+        assert restored.current_set_info["package_source_snapshot"] == snapshot
+        _b1_assert_completion(tmp_path)
+    finally:
+        _b1_close(restored.data_manager)
+
+
+@pytest.mark.parametrize("cut", ["csv_durable_marker_uncommitted", "committed_before_ui"])
+def test_f3_crash_recovery_keeps_one_completion_across_midnight(tmp_path, monkeypatch, cut):
+    import os
+    import subprocess
+    import sys
+
+    stdout, stderr = tmp_path / "child.stdout.txt", tmp_path / "child.stderr.txt"
+    code = "from tests.test_label_match_core import _b1_crash_child; import sys; _b1_crash_child(sys.argv[1], sys.argv[2])"
+    with stdout.open("wb") as out, stderr.open("wb") as err:
+        child = subprocess.Popen(
+            [sys.executable, "-B", "-c", code, str(tmp_path), cut],
+            cwd=Path(__file__).resolve().parents[1],
+            env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+            stdout=out, stderr=err,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        # Retain this exact Popen/process handle; never infer descendants or kill
+        # by PID. Main's guest supervisor owns any abnormal/hung settlement.
+        exit_code = child.wait()
+    assert exit_code == 73
+    assert stdout.stat().st_size < 16_384 and stderr.stat().st_size < 16_384
+    cut_line = stdout.read_text(encoding="utf-8")
+    cut_fields = cut_line.removesuffix("\n").split(" ")
+    assert cut_line.endswith("\n") and len(cut_fields) == 4
+    assert cut_fields[:2] == ["B1_CRASH_CUT", cut]
+    assert all(field.isascii() and field.isdecimal() and int(field) > 0 for field in cut_fields[2:])
+    crash_pid, crash_parent_pid = map(int, cut_fields[2:])
+    # A Windows venv redirector can own the interpreter that reports this cut.
+    # Accept only its direct child when the reported PID differs from Popen.
+    assert crash_pid == child.pid or (
+        os.name == "nt" and sys.prefix != sys.base_prefix
+        and crash_parent_pid == child.pid
+    )
+    assert stderr.read_text(encoding="utf-8") == ""
+    commands, events = _b1_rows(tmp_path)
+    assert len(commands) == len(events) == 1
+    assert commands[0]["local_completion_committed"] == int(cut == "committed_before_ui")
+    original_event = events[0][0]
+    module = load_label_match_module()
+    app, actions, clock = _b1_app(module, tmp_path, monkeypatch, accept=False)
+    clock.instant = datetime(2026, 9, 1, 0, 0, 1)
+    monkeypatch.setattr(module.messagebox, "showwarning", lambda *a, **k: None)
+    # Only the recovery dialog is a seam; run_tests stays False for real F3.
+    app.sealed_transfer_exchange_store = type("ExchangeBoundary", (), {"blocking_rows": lambda self, **k: []})()
+    app._reconcile_pending_sealed_transfer_exchanges = lambda **k: None
+    observations = []
+    app._play_sound = lambda sound: observations.append(_b1_assert_completion(tmp_path))
+    try:
+        app._load_current_set_state()
+        assert len(observations) == int(cut == "csv_durable_marker_uncommitted")
+        assert _b1_assert_completion(tmp_path)[1] == original_event
+        assert app._reconcile_active_package_submission() is True
+        assert _b1_assert_completion(tmp_path)[1] == original_event
+    finally:
+        _b1_close(app.data_manager)
 
 
 def test_central_finalize_durable_intent_write_failure_never_shows_success():
@@ -2063,28 +2476,57 @@ def test_data_manager_close_flushes_queue_using_event_timestamp_date(tmp_path):
     assert manager.log_thread.is_alive() is False
 
 
-def test_data_manager_fsyncs_local_completion_before_flush_returns(
-    tmp_path, monkeypatch
-):
+def test_data_manager_fsyncs_local_completion_before_flush_returns(tmp_path, monkeypatch):
     module = load_label_match_module()
-    fsync_calls = []
-    monkeypatch.setattr(
-        module.os,
-        "fsync",
-        lambda file_descriptor: fsync_calls.append(file_descriptor),
-    )
-    manager = module.DataManager(
-        str(tmp_path), "포장실", "worker-a", "PC01"
-    )
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 31, 23, 59, 59)
 
-    manager.log_event(
-        module.Label_Match.Events.TRAY_COMPLETE,
-        {"set_id": "durable-local-completion"},
-    )
-    manager.flush(timeout=5.0)
-    manager.close(timeout=5.0)
+    monkeypatch.setattr(module, "datetime", Clock)
+    gate = threading.Event()
+    io = _b1_csv_io(module, monkeypatch, tmp_path / "포장실작업이벤트로그_B1_20260831.csv", gate=gate)
+    manager = module.DataManager(str(tmp_path), "포장실", "worker-b1", "B1")
+    returned, entered = threading.Event(), threading.Event()
+    errors = []
 
-    assert len(fsync_calls) == 1
+    def flush():
+        entered.set()
+        try:
+            manager.flush(timeout=5)
+            assert io["synced"], "flush returned before delegated CSV fsync completed"
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            returned.set()
+
+    waiter = threading.Thread(target=flush, name="b1-flush-observer")
+    try:
+        manager.log_event("TRAY_COMPLETE", {"set_id": "durable-local-completion", "final_result": "통과"})
+        assert io["entered"].wait(5)
+        waiter.start()
+        assert entered.wait(5)
+        assert not returned.is_set()
+        assert io["synced"] == []
+        gate.set()
+        waiter.join(5)
+        assert not waiter.is_alive() and returned.is_set() and errors == []
+        # Readback is captured inside delegated fsync before the queue task can
+        # complete, and asserted here before close adds any possible durability.
+        assert io["synced"]
+        rows = io["synced"][-1]
+        assert len(rows) == 1
+        assert (rows[0]["timestamp"], rows[0]["worker_name"], rows[0]["event"]) == (
+            "2026-08-31T23:59:59", "worker-b1", "TRAY_COMPLETE",
+        )
+        details = json.loads(rows[0]["details"])
+        assert details["set_id"] == "durable-local-completion"
+        assert details["final_result"] == "통과"
+    finally:
+        gate.set()
+        if waiter.ident is not None:
+            waiter.join(5)
+        _b1_close(manager)
 
 
 def test_durable_event_manifest_includes_completion_replacement_and_review():

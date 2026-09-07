@@ -1488,7 +1488,7 @@ def _label_match_summary_date(details):
 
 
 def _label_match_local_completion_event_exists(data_manager, set_id):
-    """Find an already-flushed TRAY_COMPLETE after a local commit crash window."""
+    """Synchronize a matching TRAY_COMPLETE before reusing its completion."""
 
     identity = str(set_id or "").strip()
     save_directory = str(
@@ -1507,20 +1507,53 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
         ]
     except OSError:
         return False
+    def contains_completion(handle):
+        for row in csv.DictReader(handle):
+            if row.get("event") != "TRAY_COMPLETE":
+                continue
+            try:
+                details = json.loads(row.get("details") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(details, dict)
+                and str(details.get("set_id") or "").strip() == identity
+            ):
+                return True
+        return False
+
     for path in sorted(candidates, reverse=True):
         try:
             with open(path, "r", encoding="utf-8-sig", newline="") as handle:
-                for row in csv.DictReader(handle):
-                    if row.get("event") != "TRAY_COMPLETE":
-                        continue
-                    try:
-                        details = json.loads(row.get("details") or "{}")
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        continue
-                    if str(details.get("set_id") or "").strip() == identity:
-                        return True
-        except (OSError, csv.Error):
+                matched = contains_completion(handle)
+        except (OSError, UnicodeError, csv.Error):
             continue
+        if not matched:
+            continue
+
+        # A readable row can survive a failed writer fsync. Drain/check the
+        # writer before reopening, but a fresh manager's empty queue alone
+        # cannot establish durability of a file written by its predecessor.
+        try:
+            flush = getattr(data_manager, "flush", None)
+            if callable(flush):
+                flush(timeout=5.0)
+            # Windows fsync requires write access. r+ neither creates nor
+            # truncates the existing history; revalidate on the descriptor
+            # that will actually be synchronized.
+            with open(path, "r+", encoding="utf-8-sig", newline="") as handle:
+                if not contains_completion(handle):
+                    raise PackageLogisticsError(
+                        "matched local completion row changed before synchronization"
+                    )
+                os.fsync(handle.fileno())
+            return True
+        except (OSError, UnicodeError, csv.Error, RuntimeError) as exc:
+            # Known completion synchronization failures must not fall through
+            # as absence, append another physical event, or authorize a marker.
+            raise PackageLogisticsError(
+                "existing local completion CSV could not be synchronized"
+            ) from exc
     return False
 
 
@@ -7835,6 +7868,7 @@ class Label_Match(tk.Tk):
         return saved
 
     def _load_current_set_state(self):
+        completion_sync_error = None
         package_outbox = self.__dict__.get("package_outbox")
         reconcile_superseded = getattr(
             package_outbox,
@@ -7879,12 +7913,17 @@ class Label_Match(tk.Tk):
                 except PackageLogisticsError as exc:
                     invalid.append((row, exc))
                     continue
-                if (
-                    str(row.get("status") or "").upper() == "ACKED"
-                    and _label_match_local_completion_event_exists(
-                        self.data_manager, recovered.get("id")
-                    )
-                ):
+                local_event_durable = False
+                if str(row.get("status") or "").upper() == "ACKED":
+                    try:
+                        local_event_durable = _label_match_local_completion_event_exists(
+                            self.data_manager, recovered.get("id")
+                        )
+                    except PackageLogisticsError as exc:
+                        # Keep the unmarked command reconstructable and restore
+                        # its scans below before publishing the existing block.
+                        completion_sync_error = exc
+                if local_event_durable:
                     lease_id = str(
                         recovered.get("operation_lease_id") or ""
                     ).strip()
@@ -8064,6 +8103,9 @@ class Label_Match(tk.Tk):
             self._update_history_tree_in_progress()
             self._workflow_recovered = True
             self._render_operator_workbench()
+            if completion_sync_error is not None:
+                self._publish_durable_commit_block(completion_sync_error)
+                return
             self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
             self._reconcile_active_package_submission()
         else:
@@ -14007,7 +14049,7 @@ class Label_Match(tk.Tk):
                 package_logistics.get("membership_mode")
             )
             durable_details["sample_barcodes_are_membership"] = False
-        local_event_exists = bool(
+        local_event_durable = bool(
             central_inherit_all
             and package_logistics
             and _label_match_local_completion_event_exists(
@@ -14015,7 +14057,7 @@ class Label_Match(tk.Tk):
                 set_id_for_log,
             )
         )
-        if not local_event_exists:
+        if not local_event_durable:
             self.data_manager.log_event(
                 self.Events.TRAY_COMPLETE,
                 durable_details,

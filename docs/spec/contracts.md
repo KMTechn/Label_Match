@@ -2,7 +2,7 @@
 
 [제품·기능](README.md) · [운영·복구](operations.md) · [백로그](BACKLOG.md) · [중앙 통합](../../../Program_Spec_Hub/INTEGRATIONS.md) · [공통 용어](../../../Program_Spec_Hub/GLOSSARY.md)
 
-기준일·dirty 소스·증거 적용 범위는 [README 기준](README.md#기준과-판정-범위)과 같다. 다음은 2026-09-07 source-backed 정적 계약 대조이며 실제 설치본의 호출·권한·서버 설정·화면 반영 입증이 아니다. `L`은 `/logistics/api/v1`이다. 서버 상세 계약을 복제해 새 정본으로 만들지 않고 클라이언트의 소비·검증 책임을 기록한다.
+최초 기준일·후속 소스 종결·증거 적용 범위는 [README 기준](README.md#기준과-판정-범위)과 같다. 다음은 2026-09-07 source-backed 정적 계약 대조이며 실제 설치본의 호출·권한·서버 설정·화면 반영 입증이 아니다. `L`은 `/logistics/api/v1`이다. 서버 상세 계약을 복제해 새 정본으로 만들지 않고 클라이언트의 소비·검증 책임을 기록한다.
 
 ## 엔터티와 identity
 
@@ -94,6 +94,8 @@ HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`,
 
 - API: `POST L/operation-leases/issue`, `POST L/packages`, `GET L/receipts/{scope}/{key}`. 기본 membership mode는 `INHERIT_ALL`; 정확한 work-group 경로와 호환 `EXACT_RESCAN`의 command 생성은 [package_logistics](../../package_logistics.py)에 남아 있다.
 - lease: current set에 attach된 `PREFETCHED` lease의 ID·snapshot hash·fence가 검증 결과와 일치해야 한다. UTC 완료시각을 결속해 로컬 marker와 lease를 같은 SQLite transaction으로 확정한다. 서버 승인 없이 새 offline lease를 임의 발급하지 않는다.
+- 기존 완료 재사용·복구: `_label_match_local_completion_event_exists`는 발견한 같은 set의 `TRAY_COMPLETE`를 writer flush/barrier 뒤 `r+`로 다시 열어 같은 descriptor에서 재대조·fsync한 뒤에만 durable event로 재사용한다. sticky writer 오류·재대조·동기화 실패는 `PackageLogisticsError`로 전파해 중복 append와 marker 승격을 막는다. ACKED orphan의 동기화 실패는 같은 command/set/scans를 복원·보존하고 기존 입력/재시도 차단 안내를 적용한다. 유효한 orphan의 lease가 있으면 원래 완료시각과 함께 marker transaction에 전달한다.
+- 근거·한계: [M3/N6 사례·소스 매핑](operations.md#residual-source-evidence)의 M3 변경 13사례는 실제 저장 거부·자정/중단·materializer 및 worker/Tk 적용 경계, 별도 N6 6사례는 기존 CSV 재동기화·거부·writer 오류·재대조를 입증한다. N6의 역사 ACKED/marker0 row는 lease 없이 로컬 seed한 것이며 현재 `claim_next`는 marker1을 요구한다. 따라서 서버가 그 역사 상태를 생성했거나 real lease-bearing orphan의 동기화/marker 실패가 하나의 통합 재시작 경로로 통과했다는 증거는 **UNPROVEN**이다. 원격 lease 발급·backend ACK·native F3는 별도 수용 범위다.
 - 중앙 원자성: source TRANSFER의 `AVAILABLE → CONSUMED` CAS, PACKAGE 및 `SHIPPING-WAIT`, `PACKAGE_CREATED` event·outbox·receipt를 중앙 transaction으로 기록한다. 앱 CSV와 중앙 transaction 사이에는 분산 원자 commit이 없으며 동일 키 복구로 연결한다.
 - 선택/순서: `claim_next`는 marker=1, due PENDING만 선택한다. stale `SENDING`은 300초 기준으로 PENDING 회수하며 `COALESCE(last_attempt_at,created_at), created_at, idempotency_key`로 정렬한다. 한 drain에서 시도한 key를 제외하므로 첫 실패가 뒤의 준비 row를 영구 차단하는 엄격 FIFO가 아니다. 300초는 **전송 claim 구현 상수**로 업무 lease 허용 시간과 다르다.
 - 오류: transport는 retry. `408/425/429`, 5xx 또는 retryable 오류는 409/412가 아닐 때 retry 대상이다. `committed=true` 오류, 409/412, 비재시도 거부 및 receipt 불일치는 conflict로 보존한다. `Retry-After` 처리와 재시도 시 같은 key를 유지한다.

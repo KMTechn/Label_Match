@@ -2387,18 +2387,73 @@ def test_real_gui_validated_path_materializes_current_set(tmp_path):
     assert app.current_set_info["raw"] == ["PHS2-MATERIALIZED"]
 
 
+def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_id):
+    """Admit explicit locally verified input; no server/signature claim here."""
+    import hashlib
+    from contextlib import contextmanager
+    from terminal_operation_lease import OperationLeaseStore
+
+    class ClosingLeaseStore(OperationLeaseStore):
+        @contextmanager
+        def _connect(self):
+            conn = super()._connect()
+            try:
+                with conn:
+                    yield conn
+            finally:
+                conn.close()
+
+    store = ClosingLeaseStore(db_path)
+    lease = {
+        "lease_id": lease_id, "resource_id": "transfer:" + snapshot["bundle_id"],
+        "fence": 4, "snapshot_hash": "c" * 64, "status": "PREFETCHED",
+        "issued_at": "2026-08-29T01:00:00Z", "expires_at": "2099-08-29T01:05:00Z",
+    }
+    binding = {
+        "program": "Label_Match", "device_id": "B1", "source_host_id": "HOST-B1",
+        "authority_scope_id": snapshot["authority_scope_id"],
+        "ledger_plane": snapshot["ledger_plane"], "plane_epoch": snapshot["plane_epoch"],
+        "operation": "CREATE_PACKAGE", "resource_id": lease["resource_id"],
+        "physical_label_id": label_id,
+        "physical_qr_sha256": hashlib.sha256(physical_qr.encode("utf-8")).hexdigest(),
+        "item_id": item_id, "quantity": 4, "member_count": 4,
+        "membership_hash": "d" * 64, "expected_versions": {"bundle:" + snapshot["bundle_id"]: 7},
+    }
+    store.save_prefetched(
+        artifact={"claims": lease, "token": "local-boundary-token", "operation_snapshot": snapshot},
+        binding=binding, issue_idempotency_key="issue-" + lease_id,
+    )
+    return store, lease
+
+
+@pytest.mark.parametrize("marker_fault", [False, True], ids=["first-success", "marker-commit-refusal"])
 def test_validated_materializer_flows_through_f3_durable_completion(
     tmp_path,
     monkeypatch,
+    marker_fault,
 ):
+    import csv
+    from contextlib import closing, contextmanager
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 8, 29, 1, 0, 0)
+            return value if tz is None else value.replace(tzinfo=tz)
+
+    monkeypatch.setattr(label_module, "datetime", Clock)
+    expected_key = "label-package-cmd-61278d88493310664b226547"
+    success_label_updates = []
     db_path, outbox, store = _store(tmp_path)
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.tk = SimpleNamespace()  # Storage integration has no Tcl interpreter.
     physical_qr = (
         "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-MATERIALIZE-F3|"
         "CLC=ITEM-LABEL-1|LBL=LBL-MATERIALIZE-F3|HSH=0123456789abcdef"
     )
     snapshot = {
         "bundle_id": "TRANSFER-MATERIALIZE-F3",
+        "package_bundle_id": "PACKAGE-MATERIALIZE-F3",
         "authority_scope_id": "SCOPE-LABEL-MEASURED",
         "member_count": 4,
         "membership_hash": "d" * 64,
@@ -2407,14 +2462,10 @@ def test_validated_materializer_flows_through_f3_durable_completion(
         "plane_epoch": 1,
         "entity_version": 7,
     }
-    operation_lease = {
-        "lease_id": "lease-materialize-f3",
-        "fence": 1,
-        "snapshot_hash": "c" * 64,
-        "status": "PREFETCHED",
-        "issued_at": "2026-08-29T01:00:00Z",
-        "expires_at": "2099-08-29T01:05:00Z",
-    }
+    lease_store, operation_lease = _b1_local_lease(
+        db_path, physical_qr, snapshot, lease_id="lease-materialize-f3",
+        item_id="ITEM-LABEL-1", label_id="LBL-MATERIALIZE-F3",
+    )
     evidence = SimpleNamespace(
         replaced_scan=False,
         canonical_input_tag_qr=physical_qr,
@@ -2436,20 +2487,6 @@ def test_validated_materializer_flows_through_f3_durable_completion(
         },
     )
 
-    class LeaseStore:
-        def __init__(self):
-            self.bound_set_id = ""
-
-        def get(self, *, lease_id):
-            assert lease_id == operation_lease["lease_id"]
-            return {"lease_id": lease_id, "set_id": self.bound_set_id}
-
-        def attach_set(self, lease_id, set_id):
-            assert lease_id == operation_lease["lease_id"]
-            assert self.bound_set_id in {"", set_id}
-            self.bound_set_id = set_id
-            return {"lease_id": lease_id, "set_id": set_id}
-
     class Progress:
         def __init__(self):
             self.value = 0
@@ -2468,8 +2505,8 @@ def test_validated_materializer_flows_through_f3_durable_completion(
 
     class Label:
         @staticmethod
-        def config(**_kwargs):
-            return None
+        def config(**kwargs):
+            success_label_updates.append(kwargs)
 
     class FinishedThread:
         @staticmethod
@@ -2477,7 +2514,7 @@ def test_validated_materializer_flows_through_f3_durable_completion(
             return False
 
     app.current_set_info = {
-        "id": None,
+        "id": "materialize-f3-set",
         "raw": [],
         "parsed": [],
         "start_time": None,
@@ -2491,9 +2528,11 @@ def test_validated_materializer_flows_through_f3_durable_completion(
     app._deferred_intent_capture_error = ""
     app.package_outbox = outbox
     app.package_logistics_client = SimpleNamespace(
-        config=SimpleNamespace(authority_scope_id="SCOPE-LABEL-MEASURED")
+        config=SimpleNamespace(authority_scope_id="SCOPE-LABEL-MEASURED"),
+        issue_operation_lease=lambda **k: pytest.fail("unexpected remote lease issue"),
     )
-    app.package_operation_lease_store = LeaseStore()
+    app.package_operation_lease_store = lease_store
+    app.package_operation_lease_keyring = object()  # Verification is an explicit remote boundary.
     app.run_tests = True
     app.initialized_successfully = True
     app.is_running_simulation = False
@@ -2504,88 +2543,216 @@ def test_validated_materializer_flows_through_f3_durable_completion(
         "worker",
         "MATERIALIZER-F3",
     )
-    app.items_data = {
-        "ITEM-LABEL-1": {"Item Name": "Measured item", "Spec": "Spec"}
-    }
-    app.scan_count = defaultdict(lambda: defaultdict(int))
-    app.global_scanned_set = set()
-    app.set_details_map = {}
-    app.history_row_details_map = {}
-    app.history_tree = HistoryTree()
-    app.save_status_label = Label()
-    app.direct_sync_session_threads = []
-    app.direct_sync_bootstrap_context = {"isolated": True}
-    app.save_directory = str(tmp_path)
-    app.update_big_display = lambda *_args: None
-    app._update_status_label = lambda: None
-    app._update_history_tree_in_progress = lambda: None
-    app._render_operator_workbench = lambda: None
-    app._focus_scan_entry_if_available = lambda: None
-    app._play_sound = lambda _sound: None
-    app._update_summary_tree = lambda: None
-    app.after = lambda _delay, _callback: None
-    app._return_to_idle_after_finalized_set = lambda: True
-    app._start_package_outbox_drain = lambda: None
-    app._publish_durable_commit_block = lambda error, **_kwargs: pytest.fail(
-        f"durable completion unexpectedly blocked: {error}"
-    )
-    app._resolve_central_phs2_scan_overlay = lambda *_args: (
-        evidence,
-        snapshot,
-        None,
-        None,
-    )
-    app._acquire_operation_lease = lambda *_args, **_kwargs: (
-        evidence,
-        snapshot,
-        None,
-        operation_lease,
-    )
-    monkeypatch.setattr(label_module, "logistics_runtime_required", lambda: False)
-    monkeypatch.setattr(
-        label_module,
-        "_label_match_direct_sync_context",
-        lambda *_args, **_kwargs: {"isolated": True},
-    )
-    monkeypatch.setattr(
-        label_module,
-        "_label_match_bind_current_log_source",
-        lambda context, _manager: context,
-    )
-    monkeypatch.setattr(
-        label_module,
-        "_label_match_start_session_direct_sync",
-        lambda *_args, **_kwargs: FinishedThread(),
-    )
-
     try:
-        assert app._begin_central_phs2_scan_overlay(
-            physical_qr,
-            "ITEM-LABEL-1",
-        ) is True
-        set_id = str(app.current_set_info["id"])
+        app.items_data = {
+            "ITEM-LABEL-1": {"Item Name": "Measured item", "Spec": "Spec"}
+        }
+        app.scan_count = defaultdict(lambda: defaultdict(int))
+        app.global_scanned_set = set()
+        app.set_details_map = {}
+        app.history_row_details_map = {}
+        app.history_tree = HistoryTree()
+        app.save_status_label = Label()
+        app.direct_sync_session_threads = []
+        app.direct_sync_bootstrap_context = {"isolated": True}
+        app.save_directory = str(tmp_path)
+        app.update_big_display = lambda *_args: None
+        app._update_status_label = lambda: None
+        app._update_history_tree_in_progress = lambda: None
+        app._render_operator_workbench = lambda: None
+        app._focus_scan_entry_if_available = lambda: None
+        app._play_sound = lambda _sound: None
+        app._update_summary_tree = lambda: None
+        app.after = lambda _delay, _callback: None
+        app._return_to_idle_after_finalized_set = lambda: True
+        app._start_package_outbox_drain = lambda: None
+        app._publish_durable_commit_block = lambda error, **_kwargs: pytest.fail(
+            f"durable completion unexpectedly blocked: {error}"
+        )
+        app._resolve_central_phs2_scan_overlay = lambda *_args: (
+            evidence,
+            snapshot,
+            None,
+            None,
+        )
+        app._acquire_operation_lease = lambda *_args, **_kwargs: (
+            evidence,
+            snapshot,
+            None,
+            operation_lease,
+        )
+        app._load_reusable_operation_lease = lambda *_args, **_kwargs: (
+            evidence, snapshot, None, operation_lease,
+        )
+        monkeypatch.setattr(label_module, "logistics_runtime_required", lambda: False)
+        monkeypatch.setattr(
+            label_module,
+            "_label_match_direct_sync_context",
+            lambda *_args, **_kwargs: {"isolated": True},
+        )
+        monkeypatch.setattr(
+            label_module,
+            "_label_match_bind_current_log_source",
+            lambda context, _manager: context,
+        )
+        monkeypatch.setattr(
+            label_module,
+            "_label_match_start_session_direct_sync",
+            lambda *_args, **_kwargs: FinishedThread(),
+        )
+
+        def read_completion(*, committed):
+            with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                commands = [dict(row) for row in conn.execute("SELECT * FROM package_command_outbox")]
+                leases = [dict(row) for row in conn.execute("SELECT * FROM package_operation_leases")]
+                captures = [dict(row) for row in conn.execute(
+                    "SELECT intent_id,state,downstream_outbox_ref FROM deferred_intents"
+                )]
+            assert len(commands) == len(leases) == len(captures) == 1
+            command, lease, capture = commands[0], leases[0], captures[0]
+            assert (lease["fence"], lease["snapshot_hash"]) == (4, "c" * 64)
+            assert (command["set_id"], command["idempotency_key"], command["status"],
+                    command["local_completion_committed"]) == (
+                "materialize-f3-set", expected_key, "PENDING", int(committed),
+            )
+            assert (capture["intent_id"], capture["state"], capture["downstream_outbox_ref"]) == (
+                intent_id, "SUPERSEDED", "package_command_outbox:" + expected_key,
+            )
+            assert (lease["lease_id"], lease["set_id"], lease["status"], lease["operation_result_id"]) == (
+                "lease-materialize-f3", "materialize-f3-set",
+                "LOCAL_COMPLETED" if committed else "PREFETCHED", expected_key if committed else None,
+            )
+            if committed:
+                assert command["local_completion_committed_at"]
+                assert lease["operation_completed_at"] == "2026-08-29T01:00:00Z"
+                assert lease["consume_idempotency_key"] == expected_key
+            else:
+                assert command["local_completion_committed_at"] is None
+                assert lease["operation_completed_at"] is None
+            draft = json.loads(command["draft_json"])
+            assert draft["set_id"] == "materialize-f3-set"
+            assert draft["item_code"] == "ITEM-LABEL-1"
+            assert draft["source_canonical_input_tag_qr"] == physical_qr
+            assert draft["source_bundle_id"] == "TRANSFER-MATERIALIZE-F3"
+            assert draft["expected_member_count"] == 4
+            assert draft["expected_membership_hash"] == "d" * 64
+            assert draft["membership_mode"] == "INHERIT_ALL"
+            assert draft["operation_lease_id"] == "lease-materialize-f3"
+            assert (draft["operation_lease_fence"], draft["operation_lease_snapshot_hash"]) == (4, "c" * 64)
+            assert draft["operation_lease_completed_at"] == "2026-08-29T01:00:00Z"
+            with (tmp_path / "포장실작업이벤트로그_MATERIALIZER-F3_20260829.csv").open(
+                encoding="utf-8-sig", newline="",
+            ) as stream:
+                rows = [row for row in csv.DictReader(stream) if row["event"] == "TRAY_COMPLETE"]
+            assert len(rows) == 1
+            assert (rows[0]["timestamp"], rows[0]["worker_name"]) == ("2026-08-29T01:00:00", "worker")
+            details = json.loads(rows[0]["details"])
+            assert {key: details[key] for key in (
+                "set_id", "item_code", "scanned_product_barcodes", "parsed_product_barcodes",
+                "scan_count", "final_result", "packaging_completed_date", "start_time", "end_time",
+            )} == {
+                "set_id": "materialize-f3-set", "item_code": "ITEM-LABEL-1",
+                "scanned_product_barcodes": [physical_qr], "parsed_product_barcodes": ["ITEM-LABEL-1"],
+                "scan_count": 1, "final_result": "통과", "packaging_completed_date": "2026-08-29",
+                "start_time": "2026-08-29T01:00:00", "end_time": "2026-08-29T01:00:00",
+            }
+            assert details["package_logistics"]["idempotency_key"] == expected_key
+            assert details["package_logistics"]["operation_lease_id"] == "lease-materialize-f3"
+            assert details["package_logistics"]["expected_member_count"] == 4
+            assert details["package_logistics"]["expected_membership_hash"] == "d" * 64
+
+        successes, drains = [], []
+
+        def first_success(sound):
+            assert sound == "pass"
+            assert drains == []
+            assert success_label_updates == []
+            assert app.scan_count == {} and app.set_details_map == {}
+            assert app.global_scanned_set == set() and app.history_row_details_map == {}
+            read_completion(committed=True)
+            successes.append(sound)
+
+        def marker_commit_failure():
+            original = outbox._connect
+
+            class Connection:
+                def __init__(self, conn):
+                    self.conn = conn
+                    self.marker = False
+
+                def execute(self, sql, args=()):
+                    if " ".join(sql.split()).upper().startswith(
+                        "UPDATE PACKAGE_COMMAND_OUTBOX SET LOCAL_COMPLETION_COMMITTED=1"
+                    ):
+                        self.marker = True
+                    return self.conn.execute(sql, args)
+
+                def commit(self):
+                    if self.marker:
+                        # Both writes are actually present in this transaction,
+                        # but the independent connection still sees neither.
+                        assert self.conn.execute(
+                            "SELECT local_completion_committed FROM package_command_outbox"
+                        ).fetchone()[0] == 1
+                        assert self.conn.execute(
+                            "SELECT status FROM package_operation_leases"
+                        ).fetchone()[0] == "LOCAL_COMPLETED"
+                        read_completion(committed=False)
+                        raise sqlite3.OperationalError("injected B1 marker commit failure")
+                    return self.conn.commit()
+
+                def __getattr__(self, name):
+                    return getattr(self.conn, name)
+
+            @contextmanager
+            def connect():
+                with original() as conn:
+                    yield Connection(conn)
+
+            return connect
+
+        assert app._begin_central_phs2_scan_overlay(physical_qr, "ITEM-LABEL-1") is True
+        assert app.current_set_info["id"] == "materialize-f3-set"
         intent_id = str(app.current_set_info["deferred_intent_id"])
-        assert _row(db_path, intent_id)["state"] == "VALIDATED"
         assert app.current_set_info["raw"] == [physical_qr]
-
+        with closing(sqlite3.connect(db_path)) as conn:
+            assert conn.execute("SELECT state FROM deferred_intents WHERE intent_id=?", (intent_id,)).fetchall() == [("VALIDATED",)]
+            assert conn.execute("SELECT status,set_id FROM package_operation_leases").fetchall() == [
+                ("PREFETCHED", "materialize-f3-set"),
+            ]
+        before = dict(app.current_set_info)
         app.run_tests = False
+        app._play_sound = first_success
+        app._start_package_outbox_drain = lambda: drains.append(True)
+        if marker_fault:
+            blocked = []
+            app._publish_durable_commit_block = lambda error, **k: blocked.append(str(error)) or False
+            with monkeypatch.context() as injection:
+                injection.setattr(outbox, "_connect", marker_commit_failure())
+                assert app._begin_central_package_submission() is False
+            assert blocked == ["injected B1 marker commit failure"]
+            assert successes == drains == []
+            assert success_label_updates == []
+            # Completion timestamp is assigned during F3; packaging identity,
+            # input and membership must survive the failed marker transaction.
+            for key in ("id", "raw", "parsed", "package_source_snapshot", "deferred_intent_id"):
+                assert app.current_set_info[key] == before[key]
+            assert not app.scan_count and not app.set_details_map
+            assert not app.global_scanned_set and not app.history_row_details_map
+            read_completion(committed=False)
         assert app._begin_central_package_submission() is True
-        app.data_manager.flush(timeout=2)
-
-        row = outbox.get_by_set_id(set_id)
-        assert row is not None
-        assert row["status"] == "PENDING"
-        assert row["local_completion_committed"] == 1
-        assert _row(db_path, intent_id)["state"] == "SUPERSEDED"
-        assert _row(db_path, intent_id)["downstream_outbox_ref"] == (
-            f"package_command_outbox:{row['idempotency_key']}"
-        )
-        log_text = Path(app.data_manager._get_log_filepath()).read_text(
-            encoding="utf-8-sig"
-        )
-        assert label_module.Label_Match.Events.TRAY_COMPLETE in log_text
+        assert successes == ["pass"] and drains == [True]
+        assert app._reconcile_active_package_submission() is True
+        read_completion(committed=True)
     finally:
-        app.data_manager.close(timeout=2)
+        primary = __import__("sys").exc_info()[1]
+        try:
+            app.data_manager.close(timeout=5)
+        except Exception as error:
+            if primary is None:
+                raise
+            primary.add_note("DataManager close: " + str(error))
 
 
 def test_gui_local_integrity_invalid_calls_no_remote(tmp_path):
