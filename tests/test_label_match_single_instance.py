@@ -98,7 +98,7 @@ def test_mutex_name_is_stable_for_the_same_windows_data_scope():
     assert left.startswith(r"Global\KMTech.LabelMatch.")
 
 
-def test_data_scope_resolution_prefers_explicit_environment(tmp_path):
+def test_data_scope_resolution_preserves_app_custom_root_precedence(tmp_path):
     settings = tmp_path / "app_settings.json"
     settings.write_text(
         json.dumps({"custom_save_path": r"D:\configured"}),
@@ -111,7 +111,92 @@ def test_data_scope_resolution_prefers_explicit_environment(tmp_path):
             "ProgramData": r"C:\ProgramData",
         },
         settings_path=settings,
-    ) == r"E:\explicit"
+    ) == r"D:\configured"
+
+
+@pytest.mark.parametrize(
+    "settings_payload",
+    [{}, {"custom_save_path": ""}, {"custom_save_path": "   "}, {"custom_save_path": None}],
+    ids=["missing", "empty", "whitespace", "null"],
+)
+@pytest.mark.parametrize("with_override", [False, True], ids=["default", "env"])
+def test_data_scope_fallback_matches_app_writer(
+    monkeypatch, tmp_path, settings_payload, with_override
+):
+    import Label_Match as app_module
+
+    settings = tmp_path / "app_settings.json"
+    settings.write_text(json.dumps(settings_payload), encoding="utf-8")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "program-data"))
+    if with_override:
+        expected = tmp_path / "env-data"
+        monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(expected))
+    else:
+        expected = tmp_path / "program-data" / "KMTech" / "Label_Match" / "data"
+        monkeypatch.delenv("LABEL_MATCH_SAVE_DIR", raising=False)
+
+    app = object.__new__(app_module.Label_Match)
+    app.app_settings = settings_payload
+    writer_root = app_module.Label_Match._resolve_configured_save_path(app)
+    guard_root = resolve_data_scope(settings_path=settings)
+
+    assert writer_root == str(expected)
+    assert mutex_name_for_data_scope(guard_root) == mutex_name_for_data_scope(writer_root)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows named mutex contract")
+def test_conflicting_environment_roots_exclude_duplicate_writer(monkeypatch, tmp_path):
+    import Label_Match as app_module
+
+    shared_root = str(tmp_path / "shared-store")
+    settings = tmp_path / "app_settings.json"
+    settings_payload = {"custom_save_path": shared_root}
+    settings.write_text(json.dumps(settings_payload), encoding="utf-8")
+    app = object.__new__(app_module.Label_Match)
+    app.app_settings = settings_payload
+    scopes = []
+    writer_roots = []
+    for launch_root in (tmp_path / "launch-a", tmp_path / "launch-b"):
+        monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(launch_root))
+        scopes.append(resolve_data_scope(settings_path=settings))
+        writer_roots.append(app_module.Label_Match._resolve_configured_save_path(app))
+
+    events = []
+    mutex_names = []
+
+    def acquire(scope):
+        lease = acquire_data_scope_mutex(scope)
+        mutex_names.append(lease.name)
+        return lease
+
+    def start_first():
+        events.append("first-writer")
+        return run_guarded_entrypoint(
+            lambda: events.append("duplicate-writer"),
+            data_scope=scopes[1],
+            acquire=acquire,
+            activate=lambda: events.append("activated")
+            or ActivationResult(found=True, foreground=True),
+        )
+
+    assert run_guarded_entrypoint(
+        start_first,
+        data_scope=scopes[0],
+        acquire=acquire,
+        activate=lambda: pytest.fail("the first writer should own the temporary store"),
+    ) == 0
+    # The original env-first guard would run both callbacks despite one writer root.
+    assert events == ["first-writer", "activated"]
+    assert scopes == writer_roots == [shared_root, shared_root]
+    assert mutex_names == [mutex_name_for_data_scope(shared_root)] * 2
+
+    assert run_guarded_entrypoint(
+        lambda: events.append("reopened-writer"),
+        data_scope=scopes[1],
+        acquire=acquire,
+        activate=lambda: pytest.fail("the temporary store should be released"),
+    ) == 0
+    assert events == ["first-writer", "activated", "reopened-writer"]
 
 
 def test_data_scope_resolution_uses_config_then_program_data(tmp_path):

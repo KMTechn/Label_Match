@@ -50,16 +50,14 @@ def resolve_data_scope(
     """Resolve the same durable root used by the application without writing."""
 
     env = os.environ if environment is None else environment
-    override = str(env.get("LABEL_MATCH_SAVE_DIR", "") or "").strip()
-    if override:
-        return override
-
+    # Preserve the application's existing custom-root precedence.
     if settings_path:
         try:
             with open(settings_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
             configured = str(
-                payload.get("custom_save_path", "") if isinstance(payload, dict) else ""
+                (payload.get("custom_save_path", "") or "")
+                if isinstance(payload, dict) else ""
             ).strip()
             if configured:
                 return configured
@@ -67,6 +65,10 @@ def resolve_data_scope(
             # Invalid settings are handled by the normal app startup.  The
             # guard still owns the default state before that code can run.
             pass
+
+    override = str(env.get("LABEL_MATCH_SAVE_DIR", "") or "").strip()
+    if override:
+        return override
 
     program_data = str(env.get("ProgramData", r"C:\ProgramData") or "").strip()
     if not program_data:
