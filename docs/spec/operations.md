@@ -2,7 +2,7 @@
 
 [제품·기능](README.md) · [데이터·통합 계약](contracts.md) · [남은 일](BACKLOG.md) · [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)
 
-기준일은 **2026-09-07**이며 소스·dirty 상태와 네 판단 축은 [README](README.md#기준과-판정-범위)를 따른다. 이 문서는 현행 코드와 기존 운영 계약을 연결한 기준선이다. 문서 작성·후속 증거 검토에서는 앱·테스트·VM·프린터를 실행하지 않았다. Main이 별도로 수행·수용한 [SaveRoot13 실제 결과](#saveroot13-evidence)를 연결하며, 나머지 복구·수용 항목을 실행 결과로 간주하지 않는다.
+기준일은 **2026-09-07**이며 소스·dirty 상태와 네 판단 축은 [README](README.md#기준과-판정-범위)를 따른다. 이 문서는 현행 코드와 기존 운영 계약을 연결한 기준선이다. 문서 작성·후속 증거 검토에서는 앱·테스트·VM·프린터를 실행하지 않았다. Main이 별도로 수행·수용한 [ProducerClose 실제 결과](#producer-close-evidence)와 [SaveRoot13 실제 결과](#saveroot13-evidence)를 연결하며, 나머지 복구·수용 항목을 실행 결과로 간주하지 않는다.
 
 ## 실행 구성과 소유 경계
 
@@ -95,7 +95,7 @@
 <a id="verification"></a>
 ## 수용 기준과 기존 증거의 연결
 
-아래는 핵심 확인 묶음이며 테스트 개수나 전체 완성도 분모가 아니다. 카드의 현행 계약 확인 기준을 입력/장애/관측 결과로 묶었다. 목표 설치 조합의 필수·조건부·비적용은 담당자가 근거와 함께 확정하고, 이미 확보된 실행을 먼저 연결한 뒤 실제 부족한 범위를 검증한다. 후속 LM-B10 교정의 **SaveRoot13만 아래 지정 범위에서 PROVEN**이며 V01 전체와 V02–V08을 통과로 바꾸지 않는다.
+아래는 핵심 확인 묶음이며 테스트 개수나 전체 완성도 분모가 아니다. 카드의 현행 계약 확인 기준을 입력/장애/관측 결과로 묶었다. 목표 설치 조합의 필수·조건부·비적용은 담당자가 근거와 함께 확정하고, 이미 확보된 실행을 먼저 연결한 뒤 실제 부족한 범위를 검증한다. **SaveRoot13의 V01 저장 경로 회귀와 ProducerClose의 V06 receipt 회귀만 아래 지정 범위에서 PROVEN**이며 V01–V08 전체를 통과로 바꾸지 않는다.
 
 | 묶음·연결 | 입력·장애와 기대 결과 | 현재 연결할 근거·공백 |
 | --- | --- | --- |
@@ -104,9 +104,30 @@
 | V03 · LM-04/06/08 | 유효 lease 유무별 offline, intent/CSV/marker 경계 중단·writer 실패·자정 → 거짓 성공 없음·같은 set 1회 복구 | [test_label_match_core](../../tests/test_label_match_core.py), [test_completion_csv_durability](../../tests/test_completion_csv_durability.py), [test_deferred_intent_capture](../../tests/test_deferred_intent_capture.py) 설계; 현재 dirty 기준 매핑 [LM-B05](BACKLOG.md#lm-b05) |
 | V04 · LM-07/09 | 다중 PC·lost ACK·429/409·취소 dependency → receipt 수렴, 후속 due row 진행, 로컬 완료 보존, 취소 후 재고 유지 | [test_package_logistics](../../tests/test_package_logistics.py) 설계와 [서버 계약](contracts.md#c-04); 중앙·실물 인계 [LM-B02](BACKLOG.md#lm-b02) |
 | V05 · LM-10 | F5 출력 실패/출력 후 ACK 유실/재시작 → journal 단계 조정·중복 출력 통제·실물 판독 | [F5](../../phs_label_workflow.py) 정적 근거; 실제 프린터 [LM-B04](BACKLOG.md#lm-b04) |
-| V06 · LM-11 | 정상·취소·중복·부분 이벤트, 명령/CSV 순서 바꿈, spool 손상 → 세트 단위·receipt·projection·실제 화면 별도 확인 | [양쪽 전송/소비](contracts.md#c-05); 실제 flag·화면·지연 [LM-B06](BACKLOG.md#lm-b06) |
+| V06 · LM-11 | 정상·취소·중복·부분 이벤트, 명령/CSV 순서 바꿈, spool 손상 및 F3 ACK 뒤 raw APP_CLOSE → 수신·세트 projection·화면 별도 확인. [ProducerClose 실제 50/150 PASS](#producer-close-evidence)는 receipt 회귀에 한정하며 native/서버·화면 연동은 미실행 | [양쪽 전송/소비](contracts.md#c-05); 실제 flag·화면·지연 [LM-B06](BACKLOG.md#lm-b06) |
 | V07 · LM-12 | busy/과거 날짜/연속 Enter/종료·stale 결과 → 입력 보존, gate 일치, 중단 후 저장 정합 | [test_label_ui_lane_integration](../../tests/test_label_ui_lane_integration.py) 설계; 실장비/배율 별도 |
 | V08 · 설치·복원 | exact candidate 설치→첫 업무→cold boot→업그레이드/제거·재설치→rollback → 데이터·미전송 identity 보존. 기존 custom 저장소의 owner 종료/중단 후 같은 위치 복구와 onboarding/relay A/C 선택을 별도 확인 | [릴리스 계약](../../RELEASE_GATE_CONTRACT.md), [중앙 준비도](../../../Program_Spec_Hub/READINESS.md); 전체 범위 [LM-B07](BACKLOG.md#lm-b07), [LM-B10](BACKLOG.md#lm-b10) |
+
+<a id="producer-close-preparation"></a>
+<a id="producer-close-evidence"></a>
+### ProducerClose · lifecycle 수신 계약의 한정 회귀 수용
+
+2026-09-08 [소스·VM packet 준비](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/PREPARATION.md)는 uploader와 회귀 테스트를 교정하고 별도 `vm-packet02`를 작성했다. 기존 SaveRoot13 controls의 source/provider/native handle·dual EOF·phase/JUnit·보존 기준을 재사용하되 새 source manifest **Label112-ProducerClose-20260908**(109개 기존 guest copy + uploader/두 테스트 모듈 3개 delta), 새 guest `C:\Qualification\vm-test-g6\label-producer-close-07`, `ProducerClose/pc50`만 선택한다. 기존 Label110 snapshot과 source pins는 과거 증거로 보존하며 새 코드에 그대로 적용하지 않는다.
+
+독립/Main 소스·packet 검토 후 Main이 **실제 50 collected/50 PASS(신규 38 + 기존 12), 150 contiguous ordered setup/call/teardown 모두 PASS, failure/error/skip 0**을 수용했다. pytest stdout은 `50 passed in 3.29s`다. canonical close-only/reopen-close/scan-close 및 replay ACK·retention, identity/hash/byte·observation·오류/격리·business 대체·HTTP commit·runtime fence 거부와 기존 COMPLETE/명령 구별/rotation의 동결 receipt·로컬 session double 회귀다. 실제 서버나 native GUI/F3/close 실행이 아니며 Label25/Linux40 설치 admission을 대신하지 않는다. 이번 소스 종결은 기존 원본의 정적 대조만 수행했고 동일 50개를 재실행하지 않았다. 준비/독립 검토 보고의 당시 NOT TESTED와 Main 원본의 수용 대기 문구는 이력으로 보존하며, 후속 Main 수용과 [커밋·정확한 범위](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md)를 별도로 연결한다.
+
+[실제 Main readback](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/vm-packet02/MAIN-ProducerClose-READBACK.json)은 **2,641,188 bytes / SHA256 `a922aed7a84255770a3193be5e1a9378828d0b06344a24ae8770c647aa58d91d`**다. [선택](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/vm-packet02/control/SELECTION.json)과 [소스 manifest](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/vm-packet02/control/SOURCE-MANIFEST.json)의 원래 pins를 변경하지 않는다.
+
+| 근거 축 | 정확한 수용 범위 |
+| --- | --- |
+| 소스 pin | `direct_sync_push.py` 107,609 bytes / SHA256 `eebb80c832821cdac1d07829f7673557da6ba994720e24b1425a5f3fcf71ae00`; `tests/test_direct_sync_push.py` 86,502 bytes / `0defe8aeaf3a23555fb8f6e3143860c866be728612f3101d0164a39c9fc8194f`. 테스트 당시 working bytes를 유지하며 Git 저장 표현은 종결 근거에 별도 기록 |
+| 환경·provider | VM01 `8d9fd433-02bb-4609-93fa-f992ef8a1838` / `KMTech-GenericPC-01`, 기존 `label-b1-f3-01\venv\Scripts\python.exe`, x64 Python 3.12.10·pytest 9.0.2. Label22의 22 versions/19 imports 및 원래 desktop·source/provider closure 일치 |
+| 실제 Main 대조 | native 36784 birth `19:07:44.7865471Z` → 자연 종료0 `19:09:29.3768049Z`(2026-09-07 UTC), retained handle·dual EOF **803/0 bytes**. guest 8,503·host 17 불일치0, task Ready/result0/XML 일치, active owned0, evidenceComplete/candidateReadyForMainDisposition=true |
+| 자식·stderr | controller2832·dependency2516·pytest5276 모두 자연 종료0 및 stdout/stderr 길이 대조. 각각 0/0·0/187·101/238 bytes이며 dependency의 정확한 기존 tkcalendar SyntaxWarning 1회와 pytest debug 경로 안내 두 줄을 보존 |
+
+초기 [Export01 FAILED](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/vm-packet02/MAIN-NATIVE-PRODUCERCLOSE-EXPORT-01.json)는 PID49544가 `19:02:00.4082666Z`에 자연 종료1한 이력이며, controller의 자연 종료0 `19:02:56.0121977Z`보다 앞선 관측이다. 원본 stderr의 observe-probe RemoteException과 실패를 보존한다. 이후 [Export02](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/vm-packet02/MAIN-NATIVE-PRODUCERCLOSE-EXPORT-02.json)는 PID34512 birth `19:06:13.9159115Z` → 자연 종료0 `19:06:59.0967975Z`, dual EOF 6583/0 bytes로 안정된 17파일을 반출했고 별도 Main 수용 및 이번 호스트 재해시에서 불일치0이었다. 두 번째 export는 시험 재실행이 아니며 초기 실패를 지우거나 PASS로 바꾸지 않는다.
+
+별도 5파일 E: `fixture-overlay`는 **PREP ONLY / NOT TESTED**이며 N_CLOSE/FINAL_CLOSE raw observation과 실제 업로드 lifecycle counts 비교, PHS2 조회/F3 lease 발급 설명, guest evidence를 쓸 때 `guestFilesWritten=true`를 반영했다. 기존 D controls/docs는 변경하지 않았다. 이 overlay만으로 native 실행은 준비되지 않는다. Main이 실제 Machine anchor·기존 DNS/TLS/authority·두 pending operation grant·Linux40/Label25 provider·새 source binding과 Stage/Start/Export/Main 및 native input/F3/normal-close/interruption/reopen/EOF·producer metadata capture/transport를 연결해야 한다. 실제 backend/security grant는 수행하지 않았다. N/I의 같은 store/key/member/hash/lease와 기존 실패·미실행을 유지하며 Ready **0/6**, FULL/설치/통합은 **NOT TESTED**다.
 
 <a id="saveroot13-evidence"></a>
 ### SaveRoot13 · 실제 저장 경로 회귀의 한정 수용

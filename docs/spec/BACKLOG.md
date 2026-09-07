@@ -2,7 +2,7 @@
 
 [제품·기능](README.md) · [계약](contracts.md) · [운영](operations.md) · [공통 백로그](../../../Program_Spec_Hub/BACKLOG.md) · [실제 준비도](../../../Program_Spec_Hub/READINESS.md)
 
-기준일: **2026-09-07**. 최초 5문서 명세 기준선의 독립/Main 교차 검토와 승인된 LM-B10 guard·회귀 테스트·spec 소스 단위, 후속 **SaveRoot13 실제 13 PASS/39 ordered phase PASS** 수용을 반영했다. 이번 갱신은 기존 결과의 독립 검토·문서 작업이며 runtime을 새로 실행하지 않았다. 문서·소스 단위 완료나 이 한정 PASS로 제품 Ready를 판정하지 않는다. P1은 필수 업무/계약·검증 공백의 우선순위, P2는 추가 요구 후보다. 담당은 책임 역할이며 실명·기한·목표 릴리스는 미지정이다. 실제 순서는 Main의 현행 지시를 따른다.
+기준일: **2026-09-07**. 최초 5문서 명세 기준선의 독립/Main 교차 검토와 승인된 LM-B10 guard·회귀 테스트·spec 소스 단위, 후속 **SaveRoot13 실제 13 PASS/39 ordered phase PASS** 수용을 반영했다. 2026-09-08 후속 소스 종결은 Main이 수용한 ProducerClose 실제 50 PASS/150 ordered phase PASS와 승인된 두 소스·네 명세를 연결했으며 이번 검토에서 runtime을 재실행하지 않았다. 문서·소스 단위 완료나 이 한정 PASS로 제품 Ready를 판정하지 않는다. P1은 필수 업무/계약·검증 공백의 우선순위, P2는 추가 요구 후보다. 담당은 책임 역할이며 실명·기한·목표 릴리스는 미지정이다. 실제 순서는 Main의 현행 지시를 따른다.
 
 ## 현재 진행
 
@@ -10,7 +10,8 @@
 | --- | --- | --- |
 | 승인된 명세 구축 | AGENTS와 4개 spec 기준선 작성·정적 검토 및 [독립 교차 검토](E:/KMTech/spec-hub-build-20260907/cross-review/REVIEW.md)·Main 대조 완료. [IMPLEMENTATION](E:/KMTech/spec-hub-build-20260907/Label_Match/IMPLEMENTATION.md) | 후속 변경마다 기능·계약·증거·남은 일 유지; 전수 기능·설치 자격과 구별 |
 | 개발 작업 | LM-B10의 좁은 guard 교정·[독립 소스 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-independent/REVIEW.md)·packet 독립/Main 검토 완료, 한정 회귀 PROVEN. [실제 검토·문서 갱신](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-actual-source-close/REVIEW-AND-UPDATE.md)은 기존 dirty 제품·테스트·HEAD/index·동결 packet 보존 | Main이 guard·회귀·명세와 기존 AGENTS 기준선을 한 번의 소스 단위 커밋으로 수용. LM-B10 잔여 수용·운영 범위 OPEN |
-| 실제 검증 | Main이 SaveRoot13 **13 collected/13 PASS/39 ordered phase PASS** 수용; [정확한 소스·환경·범위](operations.md#saveroot13-evidence). 기존 Modules3 313/939 PASS와 원래 reader 실패는 각 원래 범위로 보존 | LM-B05에서 남은 Baseline8·설치/복구 기준 대조. 새 13개를 두 GUI writer나 전체 제품 PASS로 확대하지 않음 |
+| producer-close 소스·한정 회귀 | [LM-B11](#lm-b11) 독립/Main 소스·packet 검토와 실제 50 PASS/150 ordered phase PASS 수용, [두 소스·네 명세 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md) | native N/I·F3 close/reopen/서버 연동은 NOT TESTED. 다른 dirty 다섯 파일의 소스 종결 감사·근거 매핑이 다음 단계이며 FULL/build 준비와 구분 |
+| 실제 검증 | [ProducerClose 50/150](operations.md#producer-close-evidence), [SaveRoot13 13/39](operations.md#saveroot13-evidence), 기존 Modules3 313/939를 각 exact source/선택 범위로 유지; 초기 export·원래 reader 실패 보존 | LM-B05의 남은 Baseline8·설치/복구 기준 대조. 겹침이 확정되지 않은 수를 합산하거나 현재 dirty 코드 전체·GUI PASS로 확대하지 않음 |
 | 운영 준비 | 목표 릴리스 실제 연동·설치·cold boot·재설치·rollback·통합 E2E의 전체 근거 UNPROVEN | LM-B04/06/07 및 중앙 Q06/Q07 추적. 임의 완료율 없음 |
 
 <a id="lm-b01"></a>
@@ -54,7 +55,8 @@
 
 - 유형/우선: **증거 연결·미실행 범위 · P1**. 테스트 수를 전체 제품 완료로 오인하거나 현재 dirty 코드에 이전 PASS를 확장할 위험이 있다.
 - 근거: [README의 source/evidence 기준](README.md#기준과-판정-범위), [V01–V08](operations.md#verification), [중앙 준비도](../../../Program_Spec_Hub/READINESS.md). Modules3 313/939 수탁 수용과 원래 reader repr 비교 실패를 함께 보존한다.
-- 상태/다음: **SaveRoot13의 V01 저장 경로 범위 연결 완료 / 나머지 수용 범위 남음**. Label 검증 담당·Main이 원본 frozen source/test/provider/environment와 현재 변경을 비교해 이미 입증된 주장·바뀐 주장·Baseline8 등 미실행 항목을 나눈다. [실제 13개/39 phase](operations.md#saveroot13-evidence)는 기존 313/939의 재실행이나 새 소스 전체 수용이 아니다. 테스트 설계 파일의 존재는 실행 PASS가 아니다.
+- 상태/다음: **SaveRoot13의 V01 저장 경로·ProducerClose의 V06 receipt 회귀 연결 완료 / 나머지 수용 범위 남음**. Label 검증 담당·Main이 원본 frozen source/test/provider/environment와 현재 변경을 비교해 이미 입증된 주장·바뀐 주장·Baseline8 등 미실행 항목을 나눈다. [실제 13/39](operations.md#saveroot13-evidence)와 [실제 50/150](operations.md#producer-close-evidence)는 기존 313/939의 재실행이나 현재 소스 전체 수용이 아니며 합산하지 않는다. 테스트 설계 파일의 존재는 실행 PASS가 아니다.
+- 다음 최소 소스 종결 감사: 보존한 `Label_Match.py`의 기존 완료 CSV 재동기화·ACKED orphan 복구와 `tests/test_deferred_intent_capture.py`, `tests/test_label_match_core.py`, `tests/test_label_ui_lane_integration.py`, 미추적 `tests/test_completion_csv_durability.py`를 [경로별 감사·증거 매핑](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md)으로 연결한다. 이 다섯 파일은 Label112에 포함돼도 ProducerClose50의 선택 시험은 아니다. 전체 diff·기존 Modules3/Baseline 선택과 exact pin을 대조해 재사용 가능한 주장과 남은 검증을 확정한 뒤 별도 소스 단위 승인으로 연결한다. 이번 커밋에 포함하거나 암묵적으로 추가 commit·FULL/build를 실행하지 않는다.
 - 완료 기준: 정상·저장 실패·중단/자정·lease/경합·취소·ACK 유실·busy/종료의 적용 기준마다 exact 실행 근거 또는 실패/미입증/미실행·다음 행동이 연결된다. 남은 필수 실행의 수용은 실제 결과가 있어야 한다.
 - 의존/병렬: 중앙 [Q06/Q07](../../../Program_Spec_Hub/BACKLOG.md#qualification)과 연결. 정적 매핑은 독립 가능; 실행은 후보·환경 소유권과 기존 지시를 따른다.
 
@@ -103,6 +105,15 @@
 - 별도 잔여 항목: default packaged 시작에서 기존 custom C가 있어도 onboarding ledger/persistent scan source는 A를 선택할 수 있다. 앱 session sync는 C를 전달하므로 enqueue 이전 CSV·기존 spool을 나눠 [bounded 다음 대조](operations.md#storage-root-residual)를 진행한다. guard 이전 ledger 쓰기, settings가 없을 때 template 복사 시점, relative/alias의 실제 동일성도 이번 수정의 해결 범위가 아니다. **OPEN**, 추가 구현은 이 단위에 포함하지 않았다.
 - 다음/완료 기준: [focused packet](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-vm-prepare/PREPARATION.md)의 독립/Main 검토와 실제 13개 수용은 완료했고 VM01 Label 예약도 해제됐다. 다음 좁은 준비 단위는 기존 source/source 두 GUI launch에서 서로 다른 env A/B·공통 settings C를 주어 두 번째 writer 생성 전 제외, 첫 소유자 종료/중단 뒤 같은 C의 pending identity 복구를 관측하도록 기존 진입·복구 경로에 결속하는 것이다. 실행은 Main의 별도 자원·지시를 따르며 이 packet의 SaveRoot13 선택을 GUI 시험으로 해석하지 않는다. packaged/source의 exact 설치 후보, onboarding/relay A/C pre-enqueue 발견 및 지원 경로 잔여 항목은 별도로 해결 또는 근거 있는 제한을 확정해야 한다. 이 기준들 전에는 LM-B10 전체를 종결하지 않으며 기존 Baseline8·최종 qualification도 미입증이다.
 - 의존/소유: [LM-01](README.md#lm-01), [LM-B04](#lm-b04), [LM-B09](#lm-b09). 코드/spec는 Label 담당, 중앙 계약·준비도·우선순위 요약은 Main 소유다.
+
+<a id="lm-b11"></a>
+## LM-B11 · producer lifecycle 정상 종료 receipt 불일치
+
+- 유형/우선: **도달 가능한 계약 불일치 교정·한정 50/150 회귀 PROVEN / native 연동 수용 NOT TESTED · P1**. F3 ACK 뒤 APP_CLOSE-only delta에 서버가 `RAW_LEGITIMATE`를 반환하지만 종전 Label과 final reader는 COMPLETE만 허용했다. 교정 전 문제의 근거는 관측된 runtime 실패가 아닌 정적 소스 대조다.
+- 구현/근거: [준비 보고](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/PREPARATION.md), [C-05](contracts.md#c-05). uploader의 exact nonprojecting lifecycle 검증을 ACK/retention에 적용했고 업무 COMPLETE·실패/거부·원래 runtime/명령 검증은 유지했다. reader만 완화하거나 F3·이전 receipt를 대신 넣지 않았다. Web 소스는 읽기 전용으로 보존했다.
+- 상태/다음: **독립/Main 소스·packet 검토 및 실제 50 collected/50 PASS·150 ordered phase PASS 수용 완료**. [두 소스·네 명세의 소스 단위](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md)는 테스트 당시 working bytes를 유지한다. 이전 Label110/SaveRoot13/Modules3 결과와 실패는 각 원래 pins에 남으며 새 소스에 상속하지 않는다. [실제 transport/authority/native 준비 잔여](operations.md#producer-close-evidence)를 해결한 뒤 원래 N/I same-store identity·F3·정상 close·중단·재개를 검증한다.
+- 완료 기준: 지정 source/provider/환경의 실제 50개/150 phase 회귀는 충족했다. 실제 F3 ACK 선행 APP_CLOSE delta·reopen-close 수신, 불완전 business/rejected/wrong-scope/key/hash/member/fence 거부와 native close custody의 연동 수용은 별도로 남는다. implementation/연동/수용/운영을 구분하며 LM-B11 전체 종결이나 Ready 승격으로 해석하지 않는다. Ready 0/6 유지.
+- 소유: 코드·로컬 명세는 Label, 동결 backend 계약/회귀는 Web, runtime grants·VM 예약·중앙 INT-09/Q08·준비도 요약은 Main. LM-B06/10 및 FULL/설치 기준은 계속 OPEN이다.
 
 ## 갱신·종결 규칙
 

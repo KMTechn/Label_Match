@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
 import ipaddress
@@ -15,11 +16,12 @@ import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
+from collections import Counter
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
 from producer_runtime_client import (
     METADATA_FIELDS as RUNTIME_METADATA_FIELDS,
@@ -945,7 +947,107 @@ def _receipt_identity_error(plan: SourceFilePlan, receipt: Mapping[str, Any]) ->
     return "", ""
 
 
-def _receipt_accepted_shape_error(receipt: Mapping[str, Any]) -> tuple[str, str]:
+def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) -> bool:
+    """Accept only the server's nonprojecting Label lifecycle contract.
+
+    A close delta can follow an already acknowledged TRAY_COMPLETE prefix.
+    Its receipt acknowledges raw evidence; it must not stand in for business
+    projection. Bind the observation to the exact uploaded lifecycle rows.
+    """
+    metadata = plan.metadata
+    if any(metadata.get(key) != expected for key, expected in (
+        ("source_system", DEFAULT_SOURCE_SYSTEM),
+        ("source_transport", DEFAULT_SOURCE_TRANSPORT),
+        ("producer_role", DEFAULT_PRODUCER_ROLE),
+        ("stream_name", DEFAULT_STREAM_NAME),
+    )):
+        return False
+    server_id = _server_source_file_id_from_metadata(metadata)
+    install_id = metadata["producer_install_id"]
+    scope = f"producer-install/{quote(install_id, safe='')}/{'/'.join(server_id.split('/')[:3])}"
+    expected_identity = {
+        "contract_version": "install-scoped-source-file-v2",
+        "producer_install_id": install_id,
+        "server_source_file_id": server_id,
+    }
+    expected_file = {
+        "content_sha256": plan.content_sha256,
+        "byte_length": plan.byte_length,
+        "declared_row_count": metadata["row_count"],
+        "declared_first_row_number": metadata["first_row_number"],
+        "declared_last_row_number": metadata["last_row_number"],
+    }
+    if (
+        receipt.get("producer_install_id") != install_id
+        or receipt.get("source_file_identity") != expected_identity
+        or receipt.get("source_system") != DEFAULT_SOURCE_SYSTEM
+        or receipt.get("source_transport") != DEFAULT_SOURCE_TRANSPORT
+        or receipt.get("source_scope_key") != scope
+        or receipt.get("source_scope_key_sha256") != hashlib.sha256(scope.encode("utf-8")).hexdigest()
+        or not isinstance(receipt.get("source_file"), dict)
+        or any(type(receipt["source_file"].get(key)) is not type(value)
+               or receipt["source_file"].get(key) != value for key, value in expected_file.items())
+    ):
+        return False
+    observation = receipt.get("projection_observation")
+    row_count = metadata["row_count"]
+    if not isinstance(observation, dict) or type(row_count) is not int or row_count <= 0:
+        return False
+    expected_observation = {
+        "contract_version": "producer-receipt-projection-observation-v1",
+        "observation_only": True,
+        "status": "OBSERVED",
+        "projection_required": False,
+        "observed_event_count": row_count,
+        "not_projected_event_count": row_count,
+        "projection_not_required_event_count": row_count,
+        "projected_event_count": 0,
+        "projection_required_event_count": 0,
+        "projection_required_not_projected_event_count": 0,
+        "classification_unknown_event_count": 0,
+        "projection_status_unknown_event_count": 0,
+    }
+    if any(type(observation.get(key)) is not type(value) or observation.get(key) != value
+           for key, value in expected_observation.items()):
+        return False
+    entries = observation.get("event_classifications")
+    if not isinstance(entries, list) or not entries:
+        return False
+    observed_names: Counter[str] = Counter()
+    lifecycle_names = {"APP_START", "APP_CLOSE", "SCAN_ATTEMPT"}
+    for entry in entries:
+        if (not isinstance(entry, dict)
+            or not isinstance(entry.get("raw_event_name"), str)
+            or entry.get("raw_event_name") not in lifecycle_names
+            or entry.get("projection_required") is not False
+            or entry.get("projection_status") != "NOT_PROJECTED"
+            or entry.get("event_projection_class") != "RAW_EVIDENCE_ONLY"
+            or entry.get("raw_only_reason_code") != "NO_STAGE1_REDUCER"
+            or type(entry.get("count")) is not int or entry["count"] <= 0):
+            return False
+        observed_names[entry["raw_event_name"]] += entry["count"]
+    try:
+        path = Path(plan.source_file_path)
+        if _read_file_digest(path) != (plan.content_sha256, plan.byte_length):
+            return False
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, strict=True)
+            if reader.fieldnames != ["timestamp", "worker_name", "event", "details"]:
+                return False
+            uploaded_names: Counter[str] = Counter()
+            for row in reader:
+                if None in row or any(value is None for value in row.values()):
+                    return False
+                name = row["event"]
+                if name not in lifecycle_names:
+                    return False
+                uploaded_names[name] += 1
+        return sum(uploaded_names.values()) == row_count and uploaded_names == observed_names
+    except (OSError, UnicodeError, csv.Error):
+        return False
+
+
+def _receipt_accepted_shape_error(plan: SourceFilePlan, receipt: Mapping[str, Any]) -> tuple[str, str]:
     if str(receipt.get("status") or "") != "accepted":
         return "producer_receipt_invalid", "accepted receipt status must be accepted"
     if receipt.get("retryable") is not False:
@@ -960,10 +1062,12 @@ def _receipt_accepted_shape_error(receipt: Mapping[str, Any]) -> tuple[str, str]
             "producer_receipt_invalid",
             "accepted receipt projection_disposition must be a string",
         )
-    if projection_disposition != "COMPLETE":
+    if projection_disposition != "COMPLETE" and not (
+        projection_disposition == "RAW_LEGITIMATE" and _is_raw_lifecycle_receipt(plan, receipt)
+    ):
         return (
             "producer_projection_incomplete",
-            "accepted receipt projection_disposition must be COMPLETE",
+            "accepted receipt requires COMPLETE or verified nonprojecting Label lifecycle evidence",
         )
     return "", ""
 
@@ -1041,7 +1145,7 @@ def _upload_response_result(
     if committed:
         receipt_error_code, receipt_error_message = _receipt_identity_error(plan, payload)
         if not receipt_error_code:
-            receipt_error_code, receipt_error_message = _receipt_accepted_shape_error(payload)
+            receipt_error_code, receipt_error_message = _receipt_accepted_shape_error(plan, payload)
         if not receipt_error_code:
             receipt_error_code, receipt_error_message = _receipt_totals_error(plan, payload)
         runtime_lease, runtime_error_code, runtime_error_message = runtime_receipt_result(
@@ -1623,7 +1727,7 @@ def acked_relay_retention_candidates(
             receipt = _json_object_from_text(str(row["receipt_json"] or "{}"))
             receipt_error_code, _receipt_error_message = _receipt_identity_error(plan, receipt)
             if not receipt_error_code:
-                receipt_error_code, _receipt_error_message = _receipt_accepted_shape_error(receipt)
+                receipt_error_code, _receipt_error_message = _receipt_accepted_shape_error(plan, receipt)
             if not receipt_error_code:
                 receipt_error_code, _receipt_error_message = _receipt_totals_error(plan, receipt)
             totals = receipt.get("totals") if isinstance(receipt.get("totals"), dict) else {}

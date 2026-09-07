@@ -27,7 +27,7 @@
 | 접수 보존 | encrypted/authenticated intent의 durable commit | 바코드 유효성, 포장 완료, 중앙 재고 변경 |
 | 로컬 포장 완료 | current-state 보존, intent, `TRAY_COMPLETE` flush/fsync, 완료 marker·lease transaction | 중앙 PACKAGE 명령 COMMITTED |
 | 중앙 명령 확정 | 같은 authority/key/command에 대한 검증된 logistics `status=COMMITTED` receipt | CSV ingest·집계·화면 최신성 |
-| producer 수신·투영 | source identity 및 행 합계가 맞는 `status=accepted`, `committed=true`, `projection_disposition=COMPLETE` | 명령 원장 ACK, 모든 소비 화면 표시 |
+| producer 수신·투영 | source identity·행 합계가 맞는 `accepted/committed`와 업무 `COMPLETE`; exact nonprojecting lifecycle은 아래 C-05의 `RAW_LEGITIMATE` 조건 | raw lifecycle은 업무 투영·수량을 증명하지 않음; 명령 원장 ACK·화면 표시도 별도 |
 | 소비 화면 | 해당 API의 filter/flag/source readiness 아래 실제 값·표시를 관찰 | 실물 랩핑·인쇄·다른 화면의 최신성 |
 
 `package_command_outbox.status`는 전달 상태(`PENDING`, `SENDING`, `ACKED`, `CONFLICT`)이며 `local_completion_committed`가 로컬 완료 축이다. `PREPARED`는 `PENDING + marker=0`의 설명용 용어로 DB enum이 아니다. marker=0은 status와 무관하게 로컬 완료가 아니며, marker=1의 중앙 conflict는 기존 로컬 완료를 보존하고 `OPERATOR_REVIEW`/사후 검토 사건으로 투영한다. 근거: [mark_local_completion_committed, mark_conflict](../../package_logistics.py), [완료 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md).
@@ -77,7 +77,7 @@ HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`,
 
 - API: `GET L/bundles/resolve`, `bundle_role=PACKAGE_SOURCE`, `input_tag_id`(ITG), 품목·scope, `input_tag_label_id`(LBL)와 `input_tag_hash_prefix`(HSH). 물리 label 표시 문자열을 독립 조회 권위로 사용하지 않는다.
 - 검증: LBL/HSH는 함께 공급하며 ITG가 필요하다. HSH는 16자리 hex다. 선택적인 barcode membership hash와 member count filter도 쌍으로 검증한다. 응답의 unit/barcode 매핑·membership hash·entity version·work-group topology가 현재 작업에 결속된다.
-- 효과/오류: 조회 자체는 포장 확정이 아니다. 잘못된 라벨·불완전 증거·구성 변화는 fail-closed; 최신 snapshot과 operation lease의 일치는 F3에서 다시 필요하다. 읽기 조회에 명령 receipt/cursor를 가정하지 않는다.
+- 효과/오류: ordinary PHS2 조회는 `PACKAGE_SOURCE`를 resolve하며 새 exclusive `CREATE_PACKAGE` lease를 발급하지 않는다. 재사용 가능한 같은 lease가 없을 때 ordinary F3가 발급받는다. 조회 자체는 포장 확정이 아니다. 잘못된 라벨·불완전 증거·구성 변화는 fail-closed; 최신 snapshot과 operation lease의 일치는 F3에서 다시 필요하다. 읽기 조회에 명령 receipt/cursor를 가정하지 않는다.
 - 양쪽 근거: [resolve_transfer_bundle/resolve_package_source_projection](../../package_logistics.py), [resolve_bundle](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py). [LM-03](README.md#lm-03), [LM-B05](BACKLOG.md#lm-b05).
 
 <a id="c-03"></a>
@@ -105,7 +105,9 @@ HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`,
 
 - 경로: 로컬 event CSV → spool/relay → `POST /api/producer-ingest/v1/source-file` → server common projection → `/dashboard/api/operations_flow` → 웹 표시. source system `label_match`, dataset `legacy_packaging_csv`, 앱 scan 계약 `label_match_current_v1`이다.
 - wire/identity: HMAC 서명 multipart의 CSV+metadata에 install/host/stream/source identity, content SHA-256, byte length, row count, client batch ID를 결속한다. 로그 내용·인증 값을 문서에 복사하지 않는다.
-- 수신/진척: accepted/committed, source-file identity·행 합계·projection COMPLETE까지 확인한다. 전송 중 `pending/leased/retry_wait`는 정확한 spool path/hash/byte가 일치할 때 in-flight 중복 억제 증거다. 그것만으로 source prefix 진척을 ACK 처리하지 않는다.
+- 수신/진척: 업무 projection은 `accepted/committed`, source-file identity·행 합계·`COMPLETE`를 요구한다. 2026-09-08 교정은 다음 lifecycle 예외만 추가한다. 전송 중 `pending/leased/retry_wait`는 exact spool path/hash/byte의 in-flight 중복 억제 증거이며 자체로 source prefix 진척을 ACK 처리하지 않는다.
+- lifecycle 예외: `label_match/legacy_packaging_csv`, role `label_match`, stream `label_match_events`의 canonical emitter 헤더 `timestamp,worker_name,event,details`와 실제 `APP_START/APP_CLOSE/SCAN_ATTEMPT` 행만 허용한다. `RAW_LEGITIMATE` receipt의 install/source-file identity v2, install scope/hash, source content SHA-256/byte/range, 로컬 파일 hash와 실제 event별 개수가 일치해야 한다. observation v1은 `observation_only=true`, `OBSERVED`, `projection_required=false`, 모든 행 `NOT_PROJECTED/RAW_EVIDENCE_ONLY/NO_STAGE1_REDUCER`이며 unknown/required/projected 수는 0이어야 한다. 나머지 관측 행 수는 업로드 행 수와 같다. 2xx·boolean committed·accepted·retryable=false·retry/error 없음·정수 행 합계·errors/quarantine=0과 기존 runtime fence/rotation 검증을 유지한다. ACK 및 read-only retention 후보에 같은 검증을 적용한다. COMPLETE의 기존 조건이나 runtime observe/legacy 정책을 확대하지 않는다.
+- 정상 종료 근거/한계: F3 `TRAY_COMPLETE` ACK 뒤 relay가 새 `APP_CLOSE` delta만 보내는 경로와 동결 서버의 raw 분류는 [정적 소스 대조](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/PREPARATION.md)로 확인했다. Main이 수용한 [ProducerClose 실제 50/150 PASS](operations.md#producer-close-evidence)는 동결 receipt·로컬 session double을 통한 uploader/retention/runtime 회귀다. raw 수신은 이전 tray receipt·새 F3·포장 명령 ACK·업무 projection을 대체하지 않는다. 비업무 catalog 전체로 예외를 넓히지 않았으며 실제 서버·native F3/종료·재개 연동은 **NOT TESTED / UNPROVEN**이다.
 - cursor/중복: 일반 물류 command에 공통 consumer cursor가 있는 것은 아니다. 이 전송은 source range/prefix와 immutable fingerprint, producer/key/endpoint binding으로 중복을 판단한다. `client_batch_id` 변경만으로 새 내용으로 취급하지 않으며 runtime lease/fencing은 attempt 상태다. 손상/없는 spool은 source range 재평가 대상이다.
 - 오류/보존: deterministic jitter·유효 Retry-After(0 포함)를 유지한다. missing/unreadable spool은 `failed_permanent`, 이미 commit한 non-2xx는 검토로 분리한다. `operator_review/failed_permanent`의 동일 prefix·spool을 보존하며 미수신 구간을 0-byte delta로 바꿔 진행시키지 않는다. ACKED retention 후보도 삭제 승인이 아니다.
 - 소비: `normalize_legacy_csv_row/ingest_label_match_csv_file`이 event/detail alias를 처리하고 common projection이 세트·취소 의미를 계산한다. `PROJECTION_API_READ_ENABLED`와 source readiness에 따라 operations_flow가 제한될 수 있다. 브라우저는 operations_flow를 요청하고 포장을 세트로 표시한다. 실제 배포 flag·조회 결과·신선도는 미입증이다.

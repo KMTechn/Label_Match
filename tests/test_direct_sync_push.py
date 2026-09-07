@@ -1,13 +1,16 @@
+import csv
 import hashlib
 import json
 import sqlite3
 import typing
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 import direct_sync_push as direct_sync_push_module
+import producer_runtime_client as runtime_client
 from producer_runtime_client import RuntimePreparation
 from direct_sync_push import (
     DEFAULT_ENDPOINT_PATH,
@@ -1674,6 +1677,182 @@ def test_committed_noncomplete_projection_never_acks_and_preserves_evidence(
     assert persisted["next_attempt_at"] is None
     assert persisted["last_error_code"] == expected_error_code
     assert json.loads(persisted["receipt_json"])["committed"] is True
+
+
+def _lifecycle_batch(tmp_path, events=("APP_CLOSE",)):
+    _manifest, manifest_path = make_manifest(tmp_path)
+    path = tmp_path / "lifecycle.csv"
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["timestamp", "worker_name", "event", "details"])
+        for event in events:
+            writer.writerow(["2026-09-08T01:00:00", "worker", event,
+                             json.dumps({"message": "Application closed.", "close_attempt_id": "close-1"})])
+    row = enqueue_source_file_for_relay(
+        db_path=tmp_path / "relay.sqlite3", spool_dir=tmp_path / "spool",
+        source_file_path=path, producer_manifest_path=manifest_path,
+        credentials=make_credentials(),
+    )
+    return row
+
+
+def _raw_lifecycle_receipt(row, events=("APP_CLOSE",)):
+    """Frozen producer _receipt_payload + SyncResult observation wire shape."""
+    source_id = f"label-host-1/label_match/label_match_events/{row.relative_path}"
+    scope = "producer-install/install-label-1/label-host-1/label_match/label_match_events"
+    count = len(events)
+    return {
+        "request_id": "request-close", "upload_id": "upload-close",
+        "producer_install_id": "install-label-1", "client_batch_id": row.relay_id,
+        "server_source_file_id": source_id,
+        "source_file_identity": {"contract_version": "install-scoped-source-file-v2",
+                                 "producer_install_id": "install-label-1", "server_source_file_id": source_id},
+        "source_system": "label_match", "source_transport": "legacy_packaging_csv",
+        "source_scope_key": scope, "source_scope_key_sha256": hashlib.sha256(scope.encode()).hexdigest(),
+        "source_file": {"content_sha256": row.content_sha256, "byte_length": row.byte_length,
+                        "declared_row_count": count, "declared_first_row_number": 2,
+                        "declared_last_row_number": count + 1},
+        "committed": True, "status": "accepted", "retryable": False, "next_retry_after": None,
+        "totals": {"inserted": count, "replayed": 0, "quarantined": 0, "errors": 0},
+        "projection_disposition": "RAW_LEGITIMATE",
+        "projection_observation": {
+            "contract_version": "producer-receipt-projection-observation-v1", "observation_only": True,
+            "status": "OBSERVED", "projection_required": False, "observed_event_count": count,
+            "projected_event_count": 0, "not_projected_event_count": count,
+            "projection_required_event_count": 0, "projection_required_not_projected_event_count": 0,
+            "projection_not_required_event_count": count, "classification_unknown_event_count": 0,
+            "projection_status_unknown_event_count": 0,
+            "event_classifications": [
+                {"raw_event_name": name, "projection_required": False, "projection_status": "NOT_PROJECTED",
+                 "event_projection_class": "RAW_EVIDENCE_ONLY", "raw_only_reason_code": "NO_STAGE1_REDUCER",
+                 "count": amount} for name, amount in sorted(Counter(events).items())
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize("events", [
+    pytest.param(("APP_CLOSE",), id="close-delta"),
+    pytest.param(("APP_START", "APP_CLOSE"), id="reopen-close"),
+    pytest.param(("SCAN_ATTEMPT", "APP_CLOSE"), id="scan-close"),
+])
+@pytest.mark.parametrize("replayed", [False, True], ids=["inserted", "replayed"])
+def test_raw_lifecycle_receipt_acks_exact_spool_and_retention(tmp_path, events, replayed):
+    row = _lifecycle_batch(tmp_path, events)
+    receipt = _raw_lifecycle_receipt(row, events)
+    if replayed:
+        receipt["totals"].update(inserted=0, replayed=len(events))
+    result = drain_one_relay_batch(
+        db_path=tmp_path / "relay.sqlite3", credentials=make_credentials(),
+        session=FakeSession(FakeResponse(200, receipt)), status_dir=tmp_path / "status",
+    )
+    assert result.success is True and result.committed is True and result.retryable is False
+    assert result.receipt["projection_disposition"] == "RAW_LEGITIMATE"
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_ACKED] == 1
+    candidates = acked_relay_retention_candidates(tmp_path / "relay.sqlite3")
+    assert [candidate.relay_id for candidate in candidates] == [row.relay_id]
+    assert hashlib.sha256(Path(row.spooled_file_path).read_bytes()).hexdigest() == row.content_sha256
+    assert Path(result.status_path).is_file()
+
+
+@pytest.mark.parametrize("path,value", [
+    pytest.param(("client_batch_id",), "prior-tray-key", id="wrong-key"),
+    pytest.param(("server_source_file_id",), "other/source", id="wrong-source"),
+    pytest.param(("producer_install_id",), "other-install", id="wrong-install"),
+    pytest.param(("source_scope_key",), "other/scope", id="wrong-scope"),
+    pytest.param(("source_file", "content_sha256"), "0" * 64, id="wrong-hash"),
+    pytest.param(("source_file", "byte_length"), 1, id="wrong-bytes"),
+    pytest.param(("projection_observation",), None, id="missing-observation"),
+    pytest.param(("projection_observation", "projection_required"), True, id="projection-required"),
+    pytest.param(("projection_observation", "observed_event_count"), True, id="boolean-count"),
+    pytest.param(("projection_observation", "not_projected_event_count"), 0, id="incomplete-count"),
+    pytest.param(("projection_observation", "event_classifications", 0, "projection_required"), True, id="required-event"),
+    pytest.param(("projection_observation", "event_classifications", 0, "raw_event_name"), "TRAY_COMPLETE", id="business-event"),
+    pytest.param(("projection_observation", "event_classifications", 0, "raw_event_name"), [], id="malformed-event"),
+    pytest.param(("projection_observation", "event_classifications", 0, "count"), 2, id="event-count-mismatch"),
+    pytest.param(("projection_observation", "event_classifications", 0, "raw_only_reason_code"), "MISSING_TARGET", id="failed-reducer"),
+    pytest.param(("totals", "errors"), 1, id="error-total"),
+    pytest.param(("totals", "quarantined"), 1, id="quarantine-total"),
+    pytest.param(("status",), "rejected", id="rejected"),
+    pytest.param(("retryable",), True, id="retryable"),
+    pytest.param(("error",), {"code": "REJECTED"}, id="error-detail"),
+])
+def test_raw_lifecycle_invalid_receipt_never_acks(tmp_path, path, value):
+    row = _lifecycle_batch(tmp_path)
+    receipt = _raw_lifecycle_receipt(row)
+    target = receipt
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    result = drain_one_relay_batch(
+        db_path=tmp_path / "relay.sqlite3", credentials=make_credentials(),
+        session=FakeSession(FakeResponse(200, receipt)), status_dir=tmp_path / "status",
+    )
+    assert result.success is False and result.committed is True and result.retryable is False
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
+    assert acked_relay_retention_candidates(tmp_path / "relay.sqlite3") == ()
+    assert hashlib.sha256(Path(row.spooled_file_path).read_bytes()).hexdigest() == row.content_sha256
+    assert Path(result.status_path).is_file()
+
+
+@pytest.mark.parametrize("event", ["TRAY_COMPLETE", "SET_DELETED", "TRAY_COMPLETION_CANCELLED", "LABEL_MATCHED"])
+def test_raw_lifecycle_observation_cannot_ack_business_upload(tmp_path, event):
+    row = _lifecycle_batch(tmp_path, (event,))
+    # Even an APP_CLOSE-shaped observation with matching file hash cannot replace
+    # COMPLETE for uploaded business rows.
+    result = drain_one_relay_batch(
+        db_path=tmp_path / "relay.sqlite3", credentials=make_credentials(),
+        session=FakeSession(FakeResponse(200, _raw_lifecycle_receipt(row))),
+        status_dir=tmp_path / "status",
+    )
+    assert result.success is False and result.error_code == "producer_projection_incomplete"
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
+    assert Path(row.spooled_file_path).is_file()
+
+
+@pytest.mark.parametrize("status,committed", [
+    pytest.param(200, False, id="not-committed"),
+    pytest.param(200, "true", id="nonboolean-commit"),
+    pytest.param(503, True, id="committed-503"),
+    pytest.param(409, True, id="committed-409"),
+])
+def test_raw_lifecycle_does_not_relax_http_commit_contract(tmp_path, status, committed):
+    row = _lifecycle_batch(tmp_path)
+    receipt = _raw_lifecycle_receipt(row)
+    receipt["committed"] = committed
+    result = drain_one_relay_batch(
+        db_path=tmp_path / "relay.sqlite3", credentials=make_credentials(),
+        session=FakeSession(FakeResponse(status, receipt)), status_dir=tmp_path / "status",
+    )
+    assert result.success is False and result.retryable is False
+    assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
+    assert Path(row.spooled_file_path).is_file()
+
+
+@pytest.mark.parametrize("runtime_status,fence,success", [
+    pytest.param("consumed", 1, True, id="consumed"),
+    pytest.param("consumed", 2, False, id="wrong-fence"),
+    pytest.param("observed_rejected", 1, False, id="stale-token"),
+    pytest.param("observed", 1, False, id="observe-in-enforce"),
+])
+def test_raw_lifecycle_preserves_runtime_receipt_fence(tmp_path, monkeypatch, runtime_status, fence, success):
+    row = _lifecycle_batch(tmp_path)
+    plan = direct_sync_push_module._source_file_plan_from_relay_row(row)
+    plan.metadata.update(runtime_instance_id="runtime-close", runtime_public_jwk=runtime_client.generate_public_jwk(),
+                         runtime_fence=1, runtime_request_token="A" * 43, runtime_request_sequence=1)
+    monkeypatch.setattr(direct_sync_push_module, "client_runtime_lease_mode", lambda _credentials: "enforce")
+    receipt = _raw_lifecycle_receipt(row)
+    receipt["runtime_lease"] = {
+        "contract_version": "producer-runtime-lease.v1", "validation_status": runtime_status,
+        "lease_id": "lease-close", "fence": fence, "next_request_token": "R" * 43,
+        "next_request_sequence": 2, "expires_at": "2099-09-08T00:00:00Z",
+    }
+    if runtime_status == "observed":
+        receipt["runtime_lease"]["reason_code"] = "RUNTIME_LEASE_MISSING_OBSERVED"
+    result = upload_source_file(plan, make_credentials(), session=FakeSession(FakeResponse(200, receipt)))
+    assert result.success is success and result.committed is True and result.retryable is False
+    assert "A" * 43 not in json.dumps(result.receipt) and "R" * 43 not in json.dumps(result.receipt)
+    assert (result._runtime_lease is not None) is success
 
 
 def test_drain_uses_enqueued_metadata_snapshot_after_manifest_changes(tmp_path):
