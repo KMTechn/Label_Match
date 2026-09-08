@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import current_user_scheduled_task
 import user_relay
 
@@ -142,6 +144,101 @@ class _Lease:
 
     def close(self):
         self.closed = True
+
+
+@pytest.mark.parametrize("mode", ["persistent", "scheduled"])
+@pytest.mark.parametrize(
+    "source_case",
+    ["custom-default", "custom-env", "explicit", "empty", "null", "missing", "invalid"],
+)
+def test_relay_restart_discovers_csv_in_effective_data_root(
+    monkeypatch, tmp_path, mode, source_case
+):
+    from tools.direct_sync_relay_runner import _scan_source_files
+
+    local_root = tmp_path / "LocalAppData"
+    default_data = local_root / "KMTech" / "Label_Match" / "data"
+    custom_data = tmp_path / "existing-custom-data"
+    explicit_data = tmp_path / "explicit-scan-data"
+    fallback_data = tmp_path / "env-data" if source_case == "custom-env" else default_data
+    settings_path = local_root / "KMTech" / "Label_Match" / "config" / "app_settings.json"
+    direct_root = local_root / "KMTech" / "DirectSync" / "label_match"
+    app_root = tmp_path / "app"
+    (app_root / "runtime").mkdir(parents=True)
+    (app_root / "app").mkdir()
+    (app_root / "runtime" / "python.exe").write_bytes(b"runtime")
+    (app_root / "app" / "main.py").write_text("pass\n", encoding="utf-8")
+    settings_path.parent.mkdir(parents=True)
+    if source_case != "missing":
+        value = "" if source_case == "empty" else None if source_case == "null" else str(custom_data)
+        settings_path.write_text(
+            "{" if source_case == "invalid" else json.dumps({"custom_save_path": value}),
+            encoding="utf-8",
+        )
+    settings_before = settings_path.read_bytes() if settings_path.exists() else None
+    expected_data = (
+        explicit_data if source_case == "explicit"
+        else custom_data if source_case.startswith("custom-")
+        else fallback_data
+    )
+    for directory in (expected_data, fallback_data, direct_root / "spool"):
+        directory.mkdir(parents=True, exist_ok=True)
+    retained_spool = direct_root / "spool" / "existing.csv"
+    retained_spool.write_text("existing queued payload\n", encoding="utf-8")
+    spool_before = retained_spool.read_bytes()
+    first_csv = expected_data / "포장실작업이벤트로그_first_20260908.csv"
+    first_csv.write_text("timestamp,worker_name,event,details\n", encoding="utf-8")
+    monkeypatch.setattr(current_user_scheduled_task, "CANONICAL_ROOT", app_root)
+    monkeypatch.setattr(
+        "logistics_runtime_profile.load_logistics_runtime_profile",
+        lambda **_kwargs: SimpleNamespace(tls_ca_bundle_path=""),
+    )
+    monkeypatch.setattr(user_relay, "_acquire_relay_lease", lambda _key: _Lease())
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(tmp_path / "writer-control"))
+    observed = []
+
+    def child_scan(command, _timeout_seconds):
+        # Exercise the real command builder and scanner without a child process or transport.
+        source = Path(command[command.index("--scan-source-dir") + 1])
+        files, deferred = _scan_source_files(
+            str(source), [command[command.index("--source-glob") + 1]], 100
+        )
+        observed.append((source, set(files), command[command.index("--db-path") + 1]))
+        assert deferred == 0
+        status_path = Path(command[command.index("--runtime-status-path") + 1])
+        status_path.write_text('{"status": "idle"}\n', encoding="utf-8")
+        return {"status": "PASS", "returncode": 0}
+
+    monkeypatch.setattr(user_relay, "_run_command", child_scan)
+    arguments = ["--app-root", str(app_root)]
+    if source_case == "explicit":
+        arguments += ["--scan-source-dir", str(explicit_data)]
+    if mode == "persistent":
+        arguments.append("--once")
+    entry = user_relay.main if mode == "persistent" else user_relay.scheduled_main
+    for attempt in range(2):
+        # A fresh login does not inherit the GUI process's environment changes.
+        monkeypatch.setenv("LOCALAPPDATA", str(local_root))
+        for name in (
+            "LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_SETTINGS_PATH", "LABEL_MATCH_DIRECT_SYNC_ROOT",
+            "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT", "KM_LOGISTICS_PROFILE_PATH",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        if source_case == "custom-env":
+            monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(fallback_data))
+        if attempt:
+            late_csv = expected_data / "포장실작업이벤트로그_late_20260908.csv"
+            late_csv.write_text("timestamp,worker_name,event,details\n", encoding="utf-8")
+        assert entry(arguments) == 0
+
+    assert [item[0] for item in observed] == [expected_data.resolve()] * 2
+    assert observed[0][1] == {first_csv.resolve()}
+    assert observed[1][1] == {first_csv.resolve(), late_csv.resolve()}
+    expected_db = str((direct_root / "queue" / "direct_sync_relay.sqlite3").resolve())
+    assert [item[2] for item in observed] == [expected_db] * 2
+    assert retained_spool.read_bytes() == spool_before
+    assert (settings_path.read_bytes() if settings_path.exists() else None) == settings_before
 
 
 def test_stop_request_proves_single_instance_absence(tmp_path):

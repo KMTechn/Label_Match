@@ -2,7 +2,7 @@
 
 [제품·기능](README.md) · [데이터·통합 계약](contracts.md) · [남은 일](BACKLOG.md) · [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)
 
-최초 기준일은 **2026-09-07**, 잔여 소스 종결·증거 갱신은 **2026-09-08**이며 소스와 네 판단 축은 [README](README.md#기준과-판정-범위)를 따른다. 문서 작성·후속 종결에서는 앱·테스트·VM·프린터를 실행하지 않았다. Main이 별도로 수행·수용한 [M3/N6](#residual-source-evidence), [ProducerClose](#producer-close-evidence), [SaveRoot13](#saveroot13-evidence)의 각 실제 결과를 연결하며 나머지 복구·수용 항목을 실행 결과로 간주하지 않는다.
+최초 기준일은 **2026-09-07**, 후속 갱신은 **2026-09-08**이며 소스와 네 판단 축은 [README](README.md#기준과-판정-범위)를 따른다. 기존 문서 기준선·잔여 소스 종결에서는 앱·테스트·VM·프린터를 실행하지 않았다. 이후 이번 [relay custom 경로 교정](#relay-custom-root-evidence)은 격리된 호스트 headless 검증 26 PASS를 직접 기록했다. Main이 별도로 수행·수용한 [M3/N6](#residual-source-evidence), [ProducerClose](#producer-close-evidence), [SaveRoot13](#saveroot13-evidence)는 각각 원래 소스·환경에 남으며 나머지 복구·수용 항목을 실행 결과로 간주하지 않는다.
 
 ## 실행 구성과 소유 경계
 
@@ -27,6 +27,7 @@
 | onboarding 데이터 | 명시 `LABEL_MATCH_SAVE_DIR` → `%LOCALAPPDATA%\KMTech\Label_Match\data`; 선택값을 process 환경에 적용 | [onboarding 경로·환경 적용](../../current_user_onboarding.py). 기존 사용자 settings는 재사용하며 내용이 자동으로 이 경로와 같아지는 것은 아님 |
 | 앱의 실제 데이터·GUI mutex | 기존 settings의 nonempty `custom_save_path` → `LABEL_MATCH_SAVE_DIR` → `%ProgramData%\KMTech\Label_Match\data`. null/빈 값/공백 custom은 fallback | [앱 resolver](../../Label_Match.py)의 기존 선택은 보존하고 [guard](../../label_match_single_instance.py)의 순서만 맞춘 소스 교정. [SaveRoot13](#saveroot13-evidence)의 실제 resolver 대조·단일 process native 중복 callback 제외는 **PROVEN**; 두 GUI writer·설치본 복구는 [LM-B10](BACKLOG.md#lm-b10)에 남음 |
 | producer 상태 | onboarding은 `LABEL_MATCH_DIRECT_SYNC_ROOT` 또는 호환 `LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT` → `%LOCALAPPDATA%\KMTech\DirectSync\label_match`를 선택 | [onboarding](../../current_user_onboarding.py). 앱의 오래된 ProgramData bootstrap 상수만 보고 현재 relay 상태 위치를 정하지 않음 |
+| relay의 CSV 발견 위치 | 명시 `--scan-source-dir` → 기존 사용자 settings의 nonempty `custom_save_path` → onboarding `data_root` | [user_relay `_resolve_scan_source_dir`](../../user_relay.py)가 상주·예약 진입에서 [GUI guard의 resolver](../../label_match_single_instance.py)를 재사용한다. 설정이 없거나 읽기 실패·invalid JSON·null/빈 custom이면 fallback한다. queue/spool·identity·profile 위치는 변경하지 않음; [검증 한계](#relay-custom-root-evidence) |
 | logistics Machine anchor | 일반 Windows 경로에서 Machine `KM_LOGISTICS_PROFILE_PATH`/`KM_LOGISTICS_REQUIRED` 중 하나라도 있으면 두 process 값보다 Machine 쌍을 우선 | [logistics_runtime_profile._runtime_environment](../../logistics_runtime_profile.py), [프로필 안내](../LOGISTICS_RUNTIME_PROFILE.md). 테스트 전용 엄격한 TEST1 분기는 일반 운영 override가 아님 |
 | logistics 프로필 위치 | onboarding은 명시 경로 또는 `%LOCALAPPDATA%\KMTech\Logistics\profiles\Label_Match\runtime-profile.json`을 적용. 일반 resolver 기본은 `%ProgramData%\KMTech\Logistics\profiles\Label_Match\runtime-profile.json`; 앱별 파일이 없고 옛 공통 파일이 있으면 `...\Logistics\runtime-profile.json` 호환 선택 | [selected_logistics_runtime_profile_path](../../logistics_runtime_profile.py). explicit path·Machine anchor·legacy 공통 경로 재선택을 함께 대조. 설치된 최종 선택은 미확인 |
 | 권한·비밀 범위 | 현행 current-user 계약은 사용자 DPAPI와 AUTHORITATIVE profile을 사용. 기존 Machine profile의 machine-scope DPAPI/ACL 계약은 별도 구성 | [onboarding](../../current_user_onboarding.py), [릴리스 계약](../../RELEASE_GATE_CONTRACT.md), [프로필 안내](../LOGISTICS_RUNTIME_PROFILE.md). 프로필 JSON의 secret reference와 실제 비밀을 혼동하지 않음 |
@@ -36,7 +37,27 @@
 활성 프로필의 scope/epoch/plane·device/source identity, 서버 capability, 실제 endpoint 및 `PROJECTION_API_READ_ENABLED`를 후보별로 대조해야 한다. 토큰의 존재만으로 호출 권한이나 소비 화면 반영을 입증하지 않는다([C-00](contracts.md#c-00), [C-05](contracts.md#c-05)).
 
 <a id="storage-root-residual"></a>
-**남은 onboarding/relay 분리:** env override 없는 packaged 시작도 기존 custom 경로 C가 있으면 onboarding은 기본 사용자 경로 A의 ledger를 준비하고 settings를 재사용한다([current_user_onboarding](../../current_user_onboarding.py) `resolve_current_user_onboarding_paths/_ensure_user_settings`, 268–294/378/805–834/1068–1074). 교정된 GUI guard와 writer는 C를 선택하지만 persistent relay의 기본 scan source는 A다([user_relay](../../user_relay.py) 879–919). A와 C가 다르면 새 C CSV의 자동 발견·중단 후 전송 지속성에 영향을 줄 수 있다. 앱 내 session sync는 실제 `save_directory` C를 전달하므로 모든 전송이 실패한다고 단정하지 않는다([Label_Match](../../Label_Match.py) 6254–6266/1178–1179/1272–1276/14322–14338). 이미 queue/spool에 들어간 파일과 아직 발견되지 않은 CSV의 후속 처리는 별도로 대조해야 한다. 이 잔여 항목, guard 이전 ledger 쓰기, 누락 settings의 template 복사 시점, relative/alias 경로의 실제 동일성은 이번 교정으로 해결하지 않았으며 **OPEN / runtime NOT TESTED**다. 다음 bounded source 대조는 A/C의 registration sync-dir → persistent/session scan → queue binding·재시작 연결만 추적한다. 현재 데이터 이동·프로필 재설계는 승인하지 않는다.
+**relay 발견 경로는 좁게 교정 / onboarding 분리는 남음:** 기존 custom 경로 C가 있어도 onboarding은 기본 사용자 경로 A의 ledger를 준비하고 settings를 재사용한다([current_user_onboarding](../../current_user_onboarding.py) `resolve_current_user_onboarding_paths/_ensure_user_settings`). 종전 상주·예약 relay도 A만 스캔해 C의 미발견 CSV를 놓쳤으며, 이번 [실제 재현·교정](#relay-custom-root-evidence)으로 두 진입점이 기존 settings의 C를 선택한다. 앱 내 session sync는 원래 실제 `save_directory` C를 전달했다([Label_Match](../../Label_Match.py) `_label_match_direct_sync_context/_label_match_start_session_direct_sync`). 이미 queue/spool에 들어간 파일의 저장 위치나 producer identity/manifest를 옮기지 않는다.
+
+onboarding의 ledger·registration `--sync-dir` 선택은 여전히 A이며, guard 이전 ledger 쓰기, 누락 settings의 template 복사 시점, relative/alias 경로의 실제 동일성도 **OPEN**이다. 실행 중인 relay가 나중의 설정 변경을 다시 읽는 기능은 이번 수정에 포함하지 않았다. native 로그인·앱 종료/재시작, 기존 queue의 실제 전송과 새 CSV의 enqueue/서버 receipt 연결은 **NOT TESTED / UNPROVEN**이다. 데이터 이동·프로필 재설계는 하지 않는다.
+
+<a id="relay-custom-root-evidence"></a>
+### 2026-09-08 · relay custom 경로의 재시작 후 발견
+
+[변경·실행 보고](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-ready-improvement/CHANGE.md)는 clean parent `394c21fd535ae565d862a77aeeb680f463496cdb`와 후속 working source를 구분한다. 수정 전 [Baseline02](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-ready-improvement/evidence/Baseline02.xml)는 **custom 4 FAIL / 나머지 10 PASS**다. 최종 [Final02](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-ready-improvement/evidence/Final02.xml)는 **26 PASS, failure/error/skip 0**: relay 모듈 23개(신규 14개 포함)와 기존 writer inventory 검사 3개다. 별도 cohort와 합산하지 않는다.
+
+Windows 호스트 CPython **3.12.10**, pytest **9.0.2**에서 실제 두 relay 진입점·command builder·CSV scanner를 사용했다. 상주/예약 × custom 기본·env 충돌/명시 scan override/empty/null/missing/invalid JSON을 확인하며, 각 사례는 두 번의 진입 사이에 CSV를 추가하고 process 환경을 되돌려 다음 발견을 대조한다. child process/transport와 profile loader·relay lease는 대체물이다. 같은 queue 경로와 기존 spool 파일·settings bytes 보존을 확인했지만 실제 queue enqueue/ACK나 OS 재부팅의 증거는 아니다. TEMP/TMP·pytest·상태·로그는 지정 E 작업 루트에 격리하고 bytecode/cache와 외부 pytest plugin 자동 로딩을 비활성화했다. 최초 Baseline의 14 FAIL은 긴 E 경로의 Win32 파일 열기 실패이며 원본을 보존했다; 이후 시험은 같은 E 루트의 extended-length 경로를 사용했다.
+
+기존 inventory pin은 수정 전부터 실제 clean source와 달랐다(`a3852e…` vs `f3f9bc…`). 같은 [기존 scanner](../../writer_sink_inventory.py)로 후속 source를 계산해 [Python](../../writer_session_fence.py)과 [PowerShell](../../tools/label_writer_fence.ps1)의 pin을 `852dd0a0a0cb8377bf4e7ff5bd261806ab878100848bcb0cb0df0ad59c299e12`로 맞췄다. [대조 원본](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-ready-improvement/evidence/Writer-Inventory.json)은 45개 source 식별자·위치·qualified name·guard 종류가 동일함을 확인한다. pin/coverage 검사 3개와 PS5 구문 오류 0은 **PROVEN**이며 설치 시 실제 fence 동작·qualification을 입증하지 않는다.
+
+원래 `label-clean-full-prepare`의 Stage/MainStage **9,445파일·issues 0** 수용은 `394c21f`의 역사 근거로 보존한다. 이 후속 소스에는 상속하지 않는다. [추가 source 입력과 다음 단계](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-ready-improvement/CHANGE.md)를 수용하고 successor source/host bindings를 새로 결속한 뒤 Main이 CA 정리 후 VM01을 배정해야 한다. Setup/FULL·native F3/F4·설치·실제 backend는 이번에 실행하지 않았고 Ready **0/6**을 유지한다.
+
+<a id="relay-successor-preparation"></a>
+### relay 독립 소스 종결·후속 FULL 준비
+
+[독립 검토·소스/후속 입력 결속 보고](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-relay-closure-review/REVIEW-PREPARE.md)가 이 작업의 exact commit, 원래 394c21f와 새 후보의 차이, 새 host/guest bindings 및 정적 검증 범위를 기록한다. 최종 26 PASS를 만든 product/test bytes를 보존하고 45개 writer identity·guard 종류와 두 pin의 일치를 독립 대조했다. 이번 검토에서 앱·pytest·VM을 실행하지 않았으며 기존 Baseline/Baseline02 실패도 보존한다. 기존 `label-clean-full-prepare`와 `label-full-host-reader-fix`의 verified entry 경로를 통해 새 후보별 Stage → 별도 MainStage → Setup → ExportSetup → MainSetup → Full → ExportFull → MainFull을 분리한다.
+
+VM01은 현재 Defect 파일 Stage 다음 Inspection 보조 runtime 순서로 Main이 관리하며 Label의 guest 조회·실행 권한은 없다. Main의 후속 packet 수용과 VM 소유권 배정이 있어야 새 Stage를 시작한다. 새 Setup/FULL·native 로그인/재시작·실제 queue/producer receipt·F3/F4·설치/cold boot/재설치/제거/rollback·통합 E2E는 **NOT TESTED / UNPROVEN**이고 Ready **0/6**을 유지한다.
 
 <a id="devices"></a>
 ## 스캔·포커스·사운드·출력

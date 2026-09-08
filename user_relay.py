@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping, Sequence
 import uuid
 
 from current_user_scheduled_task import build_current_user_task_spec
-from label_match_single_instance import acquire_data_scope_mutex
+from label_match_single_instance import acquire_data_scope_mutex, resolve_data_scope
 from user_relay_stop_marker import (
     STOP_MARKER_V1,
     StopMarkerLineageError,
@@ -487,6 +487,18 @@ def run_persistent_relay_loop(
     return final
 
 
+def _resolve_scan_source_dir(
+    explicit: str, *, data_root: Path, settings_path: Path
+) -> Path:
+    # A new login must discover CSVs in the same existing custom root as the GUI.
+    # Keep onboarding identity/queue paths and explicit relay overrides unchanged.
+    selected = explicit or resolve_data_scope(
+        environment={"LABEL_MATCH_SAVE_DIR": str(data_root)},
+        settings_path=settings_path,
+    )
+    return Path(selected).expanduser().resolve()
+
+
 def _runtime_cycle(
     *,
     app_root: Path,
@@ -772,10 +784,10 @@ def scheduled_main(argv: list[str] | None = None) -> int:
         if args.direct_sync_root
         else paths.direct_sync_root
     )
-    scan_source_dir = (
-        Path(args.scan_source_dir).expanduser().resolve()
-        if args.scan_source_dir
-        else paths.data_root
+    scan_source_dir = _resolve_scan_source_dir(
+        args.scan_source_dir,
+        data_root=paths.data_root,
+        settings_path=paths.settings_path,
     )
     runtime_status_path = (
         direct_sync_root / "status" / "scheduled_direct_sync_relay_status.json"
@@ -890,10 +902,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.direct_sync_root
         else paths.direct_sync_root
     )
-    scan_source_dir = (
-        Path(args.scan_source_dir).expanduser().resolve()
-        if args.scan_source_dir
-        else paths.data_root
+    scan_source_dir = _resolve_scan_source_dir(
+        args.scan_source_dir,
+        data_root=paths.data_root,
+        settings_path=paths.settings_path,
     )
     for directory in (
         direct_sync_root / "queue",
