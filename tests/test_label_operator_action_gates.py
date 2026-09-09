@@ -192,18 +192,13 @@ def test_completion_snapshot_keeps_raw_display_and_parsed_business_identity_sepa
     )
     parsed = ("ITEM-001",) * 5
     app = _render_app(raw, parsed)
-    before = deepcopy(app.current_set_info)
+    # The capture interface supplies detached completion fields directly.
+    # Keep raw/parsed rendering coverage without the retired publisher seam.
+    app._workflow_completion_kind = "full"
+    app._workflow_display_scans = raw
+    app._workflow_display_parsed_scans = parsed
 
-    assert app._publish_workflow_completion("full") == "full"
-
-    assert app.current_set_info == before
-    assert app._workflow_display_scans == raw
-    assert app._workflow_display_parsed_scans == parsed
-    assert app._workflow_item_snapshot["item_code"] == "ITEM-001"
-
-    # Business finalization resets current_set_info after publishing.  The
-    # detached view-only snapshot must keep accepted raw detail while the list
-    # renders compact values, without writing either back into the new set.
+    # Rendering this snapshot must not write its values into the next set.
     app.current_set_info = _current_state()
     reset_before = deepcopy(app.current_set_info)
     view = app._render_operator_workbench()

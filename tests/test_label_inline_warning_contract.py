@@ -143,23 +143,6 @@ def test_enter_and_escape_acknowledge_inline_error_before_failed_set_is_reset(ke
     assert app._finalize_calls == [(app.Results.FAIL_INPUT_ERROR, "BAD-SCAN", {})]
 
 
-def test_full_and_partial_completion_publish_distinct_view_kinds():
-    app = _error_app(
-        "MASTER-001",
-        "PRODUCT-001",
-        "PRODUCT-002",
-        "PRODUCT-003",
-        "FINAL-001",
-    )
-    published = []
-    app._publish_workflow_completion = lambda kind: published.append(kind)
-
-    Label_Match._publish_finalize_completion(app, is_manual_complete=False)
-    Label_Match._publish_finalize_completion(app, is_manual_complete=True)
-
-    assert published == ["full", "partial"]
-
-
 def test_durable_completion_clears_transient_status_and_returns_to_idle():
     app = _error_app(
         "MASTER-001",

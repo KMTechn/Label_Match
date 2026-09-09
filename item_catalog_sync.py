@@ -1226,12 +1226,3 @@ def refresh_item_catalog(
         )
         logger.warning("Item catalog sync skipped; using %s", fallback)
         return fallback
-
-
-def is_shared_catalog_cache(path: str | Path) -> bool:
-    try:
-        candidate = Path(path).resolve(strict=False)
-        default = default_cache_path().resolve(strict=False)
-        return candidate in {default, _last_good_cache_path(default)}
-    except OSError:
-        return False

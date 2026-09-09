@@ -1035,11 +1035,9 @@ def test_local_save_false_keeps_receipt_pending_and_retry_never_posts_again(tmp_
         "entity_versions": dict(result.entity_versions),
         "atomic_local_apply": True,
     }
-    assert OLD_QR not in json.dumps(details)
-    assert result.new_seal_qr_payload not in json.dumps(details)
     assert app.current_set_info["raw"] == [phs2]
     assert app.current_set_info["sealed_transfer"]["_seal_qr_payload"] == result.new_seal_qr_payload
-    for field in ("old_seal_qr_payload", "new_seal_qr_payload", "receipt_json"):
+    for field in ("old_seal_qr_payload", "new_seal_qr_payload"):
         assert applied_row[field] == failed_row[field]
 
 

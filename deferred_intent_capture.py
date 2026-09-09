@@ -1403,17 +1403,6 @@ class DeferredIntentCaptureStore:
         finally:
             ctypes.windll.kernel32.LocalFree(decrypted.pbData)
 
-    @staticmethod
-    def _payload_entropy_from_row(row: Mapping[str, Any]) -> bytes:
-        return payload_protection_entropy(
-            app_id=str(row.get("app_id") or ""),
-            authority_scope_id=str(row.get("authority_scope_id") or ""),
-            capture_key=str(row.get("capture_key") or ""),
-            contract_version=str(row.get("contract_version") or ""),
-            intent_kind=str(row.get("intent_kind") or ""),
-            producer_install_id=str(row.get("producer_install_id") or ""),
-        )
-
     def unprotect_payload_for_common_reader(
         self,
         row: Mapping[str, Any],

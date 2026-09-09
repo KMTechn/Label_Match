@@ -289,7 +289,6 @@ LABEL_MATCH_ENABLE_FIRST_RUN_ONBOARDING_ENV = (
     "LABEL_MATCH_ENABLE_FIRST_RUN_ONBOARDING"
 )
 LABEL_MATCH_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_ROOT"
-LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV = "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP"
 LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV = "LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL"
 LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID_ENV = "LABEL_MATCH_DIRECT_SYNC_SOURCE_HOST_ID"
 LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
@@ -439,11 +438,6 @@ def _label_match_local_log_id():
         _label_match_machine_identity().encode("utf-8")
     ).hexdigest()[:16]
     return f"local-{digest}"
-
-
-def _label_match_direct_sync_bootstrap_enabled():
-    value = os.environ.get(LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP_ENV, "on").strip().lower()
-    return value not in {"0", "false", "no", "off", "disabled"}
 
 
 def _label_match_session_sync_trigger_enabled():
@@ -995,12 +989,6 @@ def _label_match_write_json(path, payload, *, raise_on_error=False):
         print(f"direct-sync bootstrap status write failed: {exc}")
         if raise_on_error:
             raise
-
-
-def _label_match_subprocess_creationflags():
-    if os.name == "nt":
-        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return 0
 
 
 def _label_match_load_in_process_tool(script_path):
@@ -3467,7 +3455,6 @@ UPDATE_REQUIRED_PRESERVE_PATHS = (
 )
 UPDATE_DEFAULT_RESTART_EXECUTABLE = "Label_Match.exe"
 UPDATER_BATCH_UNSAFE_CHARS = set('%"&|<>^\r\n')
-UPDATE_DIRECT_GITHUB_ARTIFACT_HOSTS = {"objects.githubusercontent.com", "github-releases.githubusercontent.com"}
 UPDATE_GITHUB_UPDATE_HOSTS = {"api.github.com", "github.com", "www.github.com"}
 UPDATE_SECRET_QUERY_KEYS = {
     "access_token",
@@ -3630,17 +3617,6 @@ def _assert_https_update_url(url, *, require_zip=False):
         normalized_key = key.lower().replace("-", "_")
         if normalized_key in UPDATE_SECRET_QUERY_KEYS or normalized_key.startswith(UPDATE_SECRET_QUERY_PREFIXES):
             raise ValueError("Update URL must not contain raw token query parameters")
-
-
-def _is_direct_github_artifact_url(url):
-    parsed = urlparse(str(url or ""))
-    host = (parsed.hostname or "").lower()
-    path = parsed.path.lower()
-    if host in {"github.com", "www.github.com"} and "/releases/download/" in path:
-        return True
-    if host == "api.github.com" and "/releases/assets/" in path:
-        return True
-    return host in UPDATE_DIRECT_GITHUB_ARTIFACT_HOSTS
 
 
 def _is_github_hosted_update_url(url):
@@ -9211,45 +9187,6 @@ class Label_Match(tk.Tk):
                 source.get("remainder_transfer_bundle_ids") or []
             )
         return result
-
-    @staticmethod
-    def _deferred_operation_lease_evidence(
-        physical_qr,
-        operation_lease,
-        snapshot,
-    ):
-        return {
-            "contract_version": "label-validation-evidence-v1",
-            "authority_scope_id": str(
-                (snapshot or {}).get("authority_scope_id") or ""
-            ),
-            "authority_epoch": int(
-                (snapshot or {}).get("authority_epoch") or 0
-            ),
-            "ledger_plane": str(
-                (snapshot or {}).get("ledger_plane") or ""
-            ).upper(),
-            "plane_epoch": int((snapshot or {}).get("plane_epoch") or 0),
-            "operation": "CREATE_PACKAGE",
-            "lease_id": str((operation_lease or {}).get("lease_id") or ""),
-            "fence": int((operation_lease or {}).get("fence") or 0),
-            "snapshot_hash": str(
-                (operation_lease or {}).get("snapshot_hash") or ""
-            ).lower(),
-            "status": str((operation_lease or {}).get("status") or ""),
-            "physical_qr_sha256": hashlib.sha256(
-                str(physical_qr or "").encode("utf-8")
-            ).hexdigest(),
-            "issued_at": str(
-                (operation_lease or {}).get("issued_at") or ""
-            ),
-            "expires_at": str(
-                (operation_lease or {}).get("expires_at") or ""
-            ),
-            "observed_at": datetime.now(timezone.utc).isoformat().replace(
-                "+00:00", "Z"
-            ),
-        }
 
     def _prepare_deferred_intent_validation(self, intent_id):
         store = self.__dict__.get("deferred_intent_capture")
@@ -14887,28 +14824,6 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
         return True
 
-    def _show_completion_progress(self, result, *, scan_count=None):
-        if result != self.Results.PASS:
-            return
-        if not getattr(self, "history_view_updates_active_state", True):
-            return
-        completed = int(scan_count or self.TOTAL_SCAN_COUNT)
-        if "progress_bar" in self.__dict__:
-            try:
-                self.progress_bar.configure(maximum=completed)
-            except (AttributeError, TclError):
-                pass
-            self.progress_bar['value'] = completed
-        self._update_step_rail(
-            completed,
-            central_inherit_all=(completed == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT),
-        )
-        if "status_label" in self.__dict__:
-            self.status_label.config(
-                text=f"{completed}/{completed} 통과 완료 | 다음 현품표 스캔 대기",
-                style="Status.TLabel",
-            )
-
     def _close_popup(self, popup, result, error_details):
         if popup.winfo_exists():
             popup.grab_release()
@@ -16111,19 +16026,6 @@ class Label_Match(tk.Tk):
         if column == "Input1":
             return str(value or "")
         return self._middle_ellipsis(value, self._barcode_cell_display_limit(column))
-
-    def _summary_code_display_limit(self):
-        profile_name = self.__dict__.get("ui_profile_name", "standard")
-        profile_limit = self.BARCODE_DISPLAY_LIMITS.get(profile_name, self.BARCODE_DISPLAY_LIMITS["standard"])
-        if "summary_tree" not in self.__dict__:
-            return profile_limit
-        try:
-            width = int(self.summary_tree.column("Code", "width"))
-        except Exception:
-            return profile_limit
-        font_size = max(8, int(self.__dict__.get("_current_tree_body_font_size", self.__dict__.get("tree_font_size", 13))))
-        pixel_limit = max(8, int(width / max(7, font_size * 0.72)))
-        return max(8, min(profile_limit, pixel_limit))
 
     def _format_summary_code_cell(self, value):
         text = str(value or "")
@@ -17954,43 +17856,6 @@ class Label_Match(tk.Tk):
                 pass
         return True
 
-    def _publish_workflow_completion(self, kind):
-        normalized = str(kind or "").strip().lower()
-        if normalized not in {"full", "partial", "failed"}:
-            raise ValueError(f"unsupported workflow completion kind: {kind}")
-        raw_scans = tuple((self.current_set_info.get("raw") or ()))
-        parsed_scans = tuple((self.current_set_info.get("parsed") or ()))
-        self._workflow_completion_kind = normalized
-        self._workflow_display_scans = raw_scans
-        self._workflow_display_parsed_scans = parsed_scans
-        self._workflow_display_central_inherit_all = self._central_inherit_all_active()
-        self._workflow_display_active_label_qr = str(
-            self.current_set_info.get("active_label_qr_payload") or ""
-        ).strip()
-        self._workflow_last_normal_override = raw_scans[-1] if raw_scans else ""
-        self._workflow_blocking_notice = None
-        self._workflow_notice = None
-        self._workflow_notice_action = None
-        self._workflow_recovered = False
-        item_code = str(parsed_scans[0] if parsed_scans else "")
-        item_info = self.__dict__.get("items_data", {}).get(item_code, {}) if item_code else {}
-        self._workflow_item_snapshot = {
-            "item_code": item_code,
-            "item_name_override": self.current_set_info.get("item_name_override"),
-            "spec": item_info.get("Spec", ""),
-            "phase": self.current_set_info.get("phase"),
-            "set_id": self.current_set_info.get("id"),
-        }
-        self._render_operator_workbench()
-        return normalized
-
-    def _publish_finalize_completion(self, *, is_manual_complete=False, result=None):
-        if result is not None and result != self.Results.PASS:
-            kind = "failed"
-        else:
-            kind = "partial" if is_manual_complete else "full"
-        return self._publish_workflow_completion(kind)
-
     def _clear_workflow_completion(self):
         self._workflow_completion_kind = None
         self._workflow_display_scans = ()
@@ -19169,244 +19034,6 @@ class Label_Match(tk.Tk):
         self.operator_workbench_ready = True
         self._update_step_rail(0)
         self._render_operator_workbench()
-        self._apply_responsive_layout()
-
-    def _create_legacy_widgets(self):
-        profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
-        self.main_frame = ttk.Frame(self, padding=profile["outer_padding"])
-        main_frame = self.main_frame
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        main_frame.grid_rowconfigure(1, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
-        self.top_card = ttk.Frame(main_frame, style="Card.TFrame", padding=profile["card_padding"])
-        self.top_card.grid(row=0, column=0, sticky="ew", pady=(0, profile["section_gap"]))
-        self.top_card.grid_columnconfigure(0, weight=1)
-        self.big_display_label = ttk.Label(self.top_card, text=self._idle_instruction_text(), anchor="center", wraplength=1400, font=(self.default_font_name, 50, "bold"))
-        self.big_display_label.grid(row=0, column=0, sticky="ew", pady=profile["big_display_pady"], ipady=profile["big_display_ipady"])
-
-        top_right_frame = ttk.Frame(self.top_card, style="Borderless.TFrame")
-        self.top_right_frame = top_right_frame
-        top_right_frame.place(relx=1.0, rely=0.0, x=-profile["card_padding"], y=profile["card_padding"], anchor='ne')
-
-        about_button = ttk.Button(top_right_frame, text="정보", command=self._show_about_window, style='Control.TButton')
-        about_button.pack(side=tk.RIGHT, padx=(5, 0))
-        self.settings_button = ttk.Button(top_right_frame, text="설정", command=self.open_settings_window, style='Control.TButton')
-        self.settings_button.pack(side=tk.RIGHT)
-
-        input_frame = ttk.Frame(self.top_card, style='Borderless.TFrame')
-        input_frame.grid(row=1, column=0, sticky="ew")
-        input_frame.grid_columnconfigure(1, weight=1)
-        ttk.Label(input_frame, text="바코드 입력:", style="TLabel", background=self.colors["card_background"]).grid(row=0, column=0, padx=(0, 15), sticky='w')
-        self.entry = ttk.Entry(input_frame, style="TEntry", state='disabled', font=(self.default_font_name, 18))
-        self.entry.grid(row=0, column=1, sticky="ew")
-        self.entry.bind("<Return>", self.process_input)
-        self.progress_frame = ttk.Frame(self.top_card, style='Borderless.TFrame')
-        progress_frame = self.progress_frame
-        progress_frame.grid(row=2, column=0, sticky="ew", pady=(profile["content_gap"], 0))
-        progress_frame.grid_columnconfigure(0, weight=1)
-        self.status_label = ttk.Label(progress_frame, text="첫 번째 바코드를 스캔하세요...", style="Status.TLabel", background=self.colors["card_background"])
-        self.status_label.grid(row=0, column=0, sticky="w", padx=15)
-        self.step_rail_frame = ttk.Frame(progress_frame, style="Borderless.TFrame")
-        self.step_rail_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        self.step_labels = []
-        for index, step_name in enumerate(self.STEP_NAMES):
-            self.step_rail_frame.grid_columnconfigure(index, weight=1, uniform="scan_steps")
-            step_label = tk.Label(
-                self.step_rail_frame,
-                text=f"{index + 1}. {step_name}",
-                font=(self.default_font_name, 11, "bold"),
-                padx=8,
-                pady=5,
-                bd=1,
-                relief="solid",
-                anchor="center",
-            )
-            step_label.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
-            self.step_labels.append(step_label)
-        self.progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', length=200, mode='determinate', maximum=self.TOTAL_SCAN_COUNT, style="green.Horizontal.TProgressbar")
-        self.progress_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        self.view_mode_label = ttk.Label(self.top_card, text="", style="ViewMode.TLabel", anchor="center")
-        self.view_mode_label.grid(row=3, column=0, sticky="ew", pady=(profile["content_gap"], 0))
-        self.view_mode_label.grid_remove()
-        self.content_pane = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
-        self.content_pane.grid(row=1, column=0, sticky="nsew", pady=(profile["content_gap"], 0))
-        history_card = ttk.Frame(self.content_pane, style="Card.TFrame", padding=profile["card_padding"])
-        self.history_card = history_card
-        self.content_pane.add(history_card, weight=3)
-        history_card.grid_rowconfigure(1, weight=1)
-        history_card.grid_columnconfigure(0, weight=1)
-        hist_header_frame = ttk.Frame(history_card, style="Borderless.TFrame")
-        self.hist_header_frame = hist_header_frame
-        hist_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, profile["content_gap"]))
-        hist_header_frame.grid_columnconfigure(1, weight=1)
-
-        self._history_header_full_text = "스캔 기록"
-        self.hist_header_label = ttk.Label(hist_header_frame, text=self._history_header_full_text, style="Header.TLabel", background=self.colors["card_background"])
-        self.hist_header_label.grid(row=0, column=0, sticky="w")
-
-        self.hist_control_frame = ttk.Frame(hist_header_frame, style="Borderless.TFrame")
-        hist_control_frame = self.hist_control_frame
-        hist_control_frame.grid(row=0, column=2, sticky="e")
-
-        self.today_button = ttk.Button(hist_control_frame, text="오늘", style="Control.TButton", command=self._reload_today_history)
-        self.today_button.pack(side=tk.LEFT, padx=(0, 5))
-        self.date_search_button = ttk.Button(hist_control_frame, text="날짜 조회", style="Control.TButton", command=self._prompt_for_date_and_reload)
-        self.date_search_button.pack(side=tk.LEFT, padx=(0, 15))
-
-        self.decrease_font_button = ttk.Button(hist_control_frame, text="-", style="Control.TButton", command=self._decrease_tree_font)
-        self.decrease_font_button.pack(side=tk.LEFT, padx=(0, 0))
-        self.increase_font_button = ttk.Button(hist_control_frame, text="+", style="Control.TButton", command=self._increase_tree_font)
-        self.increase_font_button.pack(side=tk.LEFT)
-
-        tree_frame_hist = ttk.Frame(history_card, style="Card.TFrame")
-        tree_frame_hist.grid(row=1, column=0, sticky='nsew')
-        tree_frame_hist.grid_rowconfigure(0, weight=1)
-        tree_frame_hist.grid_columnconfigure(0, weight=1)
-        hist_cols = list(self.hist_proportions.keys())
-        v_scroll_hist = ttk.Scrollbar(tree_frame_hist, orient=tk.VERTICAL)
-        h_scroll_hist = ttk.Scrollbar(tree_frame_hist, orient=tk.HORIZONTAL)
-        self.history_tree = ttk.Treeview(tree_frame_hist, columns=hist_cols, show="headings", yscrollcommand=v_scroll_hist.set, xscrollcommand=h_scroll_hist.set, selectmode="extended")
-        v_scroll_hist.config(command=self.history_tree.yview)
-        h_scroll_hist.config(command=self.history_tree.xview)
-        for col, labels in self.HISTORY_HEADING_LABELS.items():
-            name = labels[0]
-            self.history_tree.heading(col, text=name, anchor="center", command=lambda c=col: self._treeview_sort_column(self.history_tree, c, False))
-            self.history_tree.column(col, anchor="center", minwidth=70, stretch=False)
-        v_scroll_hist.pack(side=tk.RIGHT, fill=tk.Y)
-        h_scroll_hist.pack(side=tk.BOTTOM, fill=tk.X)
-        self.history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.history_tree.bind("<Configure>", self._resize_all_columns)
-        self.history_tree.bind("<ButtonRelease-1>", self._on_history_tree_resize_release)
-        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_selection_changed)
-        self.history_tree.bind("<Double-1>", self._show_selected_history_detail_window)
-
-        detail_frame = ttk.Frame(history_card, style="Borderless.TFrame")
-        self.history_detail_frame = detail_frame
-        detail_frame.grid(row=2, column=0, sticky="ew", pady=(profile["content_gap"], 0))
-        detail_frame.grid_columnconfigure(0, weight=1)
-
-        detail_header_frame = ttk.Frame(detail_frame, style="Borderless.TFrame")
-        detail_header_frame.grid(row=0, column=0, sticky="ew")
-        detail_header_frame.grid_columnconfigure(1, weight=1)
-        ttk.Label(detail_header_frame, text="선택 세트 상세", style="Status.TLabel").grid(row=0, column=0, sticky="w")
-        self.history_detail_modal_button = ttk.Button(detail_header_frame, text="원문 보기", style="Control.TButton", command=self._show_selected_history_detail_window, state="disabled")
-        self.history_detail_modal_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
-        self.history_detail_copy_button = ttk.Button(detail_header_frame, text="복사", style="Control.TButton", command=self._copy_selected_history_barcodes, state="disabled")
-        self.history_detail_copy_button.grid(row=0, column=3, sticky="e", padx=(6, 0))
-
-        self.history_detail_text = tk.Text(
-            detail_frame,
-            height=4,
-            wrap="word",
-            font=("Consolas", 10),
-            bg=self.colors["card_background"],
-            fg=self.colors["text"],
-            relief="solid",
-            bd=1,
-            padx=8,
-            pady=6,
-        )
-        self.history_detail_text.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        self.history_detail_text.insert("1.0", "기록을 선택하면 현품표와 제품 바코드 원문이 여기에 표시됩니다.")
-        self.history_detail_text.configure(state="disabled")
-
-        self.history_context_menu = tk.Menu(self, tearoff=0, font=(self.default_font_name, 14))
-        self.history_context_menu.add_command(label="바코드 원문 보기", command=self._show_selected_history_detail_window)
-        self.history_context_menu.add_command(label="바코드 원문 복사", command=self._copy_selected_history_barcodes)
-        self.history_context_menu.add_separator()
-        self.history_context_menu.add_command(label=self.HISTORY_DELETE_ACTION_TEXT, command=self._delete_selected_row)
-        self.history_tree.bind("<Button-3>", self._show_history_context_menu)
-
-        summary_card = ttk.Frame(self.content_pane, style="Card.TFrame", padding=profile["card_padding"])
-        self.summary_card = summary_card
-        self.content_pane.add(summary_card, weight=1)
-        summary_card.grid_rowconfigure(1, weight=1)
-        summary_card.grid_columnconfigure(0, weight=1)
-        self.summary_header_frame = ttk.Frame(summary_card, style="Borderless.TFrame")
-        self.summary_header_frame.grid(row=0, column=0, sticky='ew', pady=(0, profile["content_gap"]))
-        self.summary_header_frame.grid_columnconfigure(0, weight=1)
-        self.summary_header_label = ttk.Label(self.summary_header_frame, text="누적 통과 코드", style="Header.TLabel")
-        self.summary_header_label.grid(row=0, column=0, sticky='w')
-        self.summary_date_label = ttk.Label(self.summary_header_frame, text="날짜 -", style="SummaryDate.TLabel", anchor="center")
-        self.summary_date_label.grid(row=0, column=1, sticky='e', padx=(8, 0))
-        tree_frame_sum = ttk.Frame(summary_card, style="Card.TFrame")
-        tree_frame_sum.grid(row=1, column=0, sticky='nsew')
-        tree_frame_sum.grid_rowconfigure(0, weight=1)
-        tree_frame_sum.grid_columnconfigure(0, weight=1)
-
-        summary_cols = list(self.summary_proportions.keys())
-        v_scroll_sum = ttk.Scrollbar(tree_frame_sum, orient=tk.VERTICAL)
-        self.summary_tree = ttk.Treeview(tree_frame_sum, columns=summary_cols, show="headings", yscrollcommand=v_scroll_sum.set)
-        v_scroll_sum.config(command=self.summary_tree.yview)
-        self.summary_tree.heading("Code", text=self.SUMMARY_HEADING_LABELS["Code"][0], anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Code", False))
-        self.summary_tree.heading("Phase", text=self.SUMMARY_HEADING_LABELS["Phase"][0], anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Phase", False))
-        self.summary_tree.heading("Count", text=self.SUMMARY_HEADING_LABELS["Count"][0], anchor="center", command=lambda: self._treeview_sort_column(self.summary_tree, "Count", False))
-        v_scroll_sum.pack(side=tk.RIGHT, fill=tk.Y)
-        self.summary_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.summary_tree.column("Code", anchor="w", minwidth=180, stretch=False)
-        self.summary_tree.column("Phase", anchor="center", minwidth=60, stretch=False)
-        self.summary_tree.column("Count", anchor="center", minwidth=70, stretch=False)
-
-        self.summary_tree.bind("<Configure>", self._resize_all_columns)
-        self.summary_tree.bind("<ButtonRelease-1>", self._on_summary_tree_resize_release)
-
-        bottom_frame = ttk.Frame(main_frame)
-        self.bottom_frame = bottom_frame
-        bottom_frame.grid(row=2, column=0, sticky="ew", pady=(profile["bottom_gap"], 0))
-        bottom_frame.grid_columnconfigure(4, weight=1)
-
-        reset_button = ttk.Button(bottom_frame, text=self.CURRENT_SET_CANCEL_BUTTON_TEXT, command=lambda: self._reset_current_set(full_reset=True), style=self.CURRENT_SET_CANCEL_BUTTON_STYLE)
-        self.reset_button = reset_button
-        reset_button.grid(row=0, column=0, sticky="w")
-        self.bind("<F1>", lambda e: self._reset_current_set(full_reset=True))
-
-        cancel_tray_button = ttk.Button(bottom_frame, text=self.COMPLETED_TRAY_CANCEL_BUTTON_TEXT, command=self._prompt_and_cancel_completed_tray, style=self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE)
-        self.cancel_tray_button = cancel_tray_button
-        cancel_tray_button.grid(row=0, column=1, sticky="w", padx=(20, 0))
-        self.bind("<F2>", lambda e: self._prompt_and_cancel_completed_tray())
-        
-        self.manual_complete_button = ttk.Button(
-            bottom_frame,
-            text=(
-                "포장 완료 (F3)"
-                if self._standard_phs2_workflow_expected()
-                else self.MANUAL_COMPLETE_BUTTON_TEXT
-            ),
-            command=self._prompt_manual_complete,
-            style=self.MANUAL_COMPLETE_BUTTON_STYLE,
-            state="disabled",
-        )
-        self.manual_complete_button.grid(row=0, column=2, sticky="w", padx=(20, 0))
-        self.bind("<F3>", lambda e: self._prompt_manual_complete())
-
-        self.exact_rescan_button = ttk.Button(
-            bottom_frame,
-            text=(
-                "제품 교체 (F4)"
-                if self._standard_phs2_workflow_expected()
-                else self.EXACT_RESCAN_BUTTON_TEXT
-            ),
-            command=self._handle_f4_action,
-            style=self.MANUAL_COMPLETE_BUTTON_STYLE,
-            state="disabled",
-        )
-        self.exact_rescan_button.grid(row=0, column=3, sticky="w", padx=(20, 0))
-        self.bind("<F4>", lambda e: self._handle_f4_action())
-
-        self.bind("<Delete>", self._delete_selected_row_from_shortcut)
-
-        self.save_status_label = ttk.Label(bottom_frame, text="", style="Save.Success.TLabel", background=self.colors["background"])
-        self.save_status_label.grid(row=0, column=4, sticky="w", padx=30)
-        self.clock_label = ttk.Label(bottom_frame, text="", style="TLabel", background=self.colors["background"])
-        self.clock_label.grid(row=0, column=5, sticky="e", padx=30)
-        self.loading_overlay = ttk.Frame(main_frame, style="Overlay.TFrame")
-        loading_content_frame = ttk.Frame(self.loading_overlay, style="Overlay.TFrame")
-        loading_content_frame.pack(expand=True)
-        loading_label = ttk.Label(loading_content_frame, text="데이터를 불러오는 중입니다...", style="Loading.TLabel")
-        loading_label.pack(pady=(0, 15))
-        self.loading_progressbar = ttk.Progressbar(loading_content_frame, mode='indeterminate', length=400)
-        self.loading_progressbar.pack(pady=15)
-        self._update_step_rail(0)
         self._apply_responsive_layout()
 
     def _prompt_for_date_and_reload(self):

@@ -1,5 +1,11 @@
 # Label_Match 기술 명세
 
+## 2026-09-09 · S05 승인 소스 단순화
+
+Main의 독립 `SIX-PROGRAM-COMPOSITION-REVIEW.md`로 선택된 여섯 프로그램 qualification은 종결되었다. 아래의 과거 Ready 0/6·대기·실패 기록은 당시 후보와 범위의 이력이며 S05의 새 실행 gate가 아니다.
+
+S05는 Main이 기존 변경을 commit한 원본 `C:\company\program\Label_Match`에서 진행하며, 초기 E: checkpoint의 delta는 한 번만 반영했다. 호출되지 않는 옛 UI builder와 보조 함수, 소비되지 않는 전환기 Pillow/GDI 비교 도구, 기존 취소·교체 테스트의 중복 assertion을 제거했다. 현재 `_create_widgets`와 F1/F4/F3, private durable payload, resident lifecycle 및 44개 writer identity/guard는 유지한다. [검증 범위](operations.md#s05-simplification)와 [후속 독립 검토](BACKLOG.md#lm-s05)를 따른다.
+
 포장실 작업자가 원본 PHS2로 현재 제품 구성을 확인하고, 필요한 제품 교체와 실물 랩핑 후 포장 완료를 기록하는 Windows 앱이다. 앱은 입력·로컬 보존·명령 재전송을, 중앙 서버는 멤버십·재고·명령 확정을, 웹은 관측 이벤트의 집계·표시를 소유한다. 근거: [CODEX](../../CODEX.md), [앱 main](../../Label_Match.py), [물류 클라이언트](../../package_logistics.py).
 
 [전체 허브](../../../Program_Spec_Hub/README.md) · [계약](contracts.md) · [운영](operations.md) · [남은 일](BACKLOG.md) · [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)

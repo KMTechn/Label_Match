@@ -1,5 +1,24 @@
 # Label_Match release gate contract
 
+## Current verification scope (S05, 2026-09-09)
+
+Main closed the selected six-program qualification by independent review and
+approved source simplification. Label_Match continues in its original source
+repository after Main committed the inherited baseline. A new source SHA
+does not by itself require Full, a native rebuild, reinstall, business replay,
+or server updates. Use existing focused checks for changed behavior and reuse
+unchanged proven inputs; broaden verification only for a changed contract,
+provider, deployment scope, failure, or concrete uncovered risk. Keep required
+independent review and actual deployment, security, data, and resource controls.
+
+The version-specific v2.0.94 sequence and its Phase/Stage/receipt records below
+are historical evidence, not automatic gates for S05. Do not regenerate their
+receipts or rebuild their frozen bytes. Exact artifact identity and integrity
+checks still apply when placing or publishing code under applicable authority.
+Select the relevant verification once; do not repeat the same source proof in
+multiple receipt wrappers. Actual package-context or runtime differences still
+need their own relevant checks.
+
 ## Factory Contract adoption status
 
 `RETIRE_CANONICAL_ADOPTION_LAYER` is the governing compatibility decision. The
@@ -19,13 +38,13 @@ canonical adoption.
 | Gate | Accident prevented | Unique signal | Timing | Failure decision |
 | --- | --- | --- | --- | --- |
 | quick-check | Changed-area contract breakage | Focused pytest node; release identity tool only for version/release changes | During development, before final candidate freeze | Fix the affected area; do not advance the candidate |
-| full-ci | Application regression and relevant UI geometry | Hash-locked Python 3.12.10 local environment, non-physical pytest once, and one conditional retry-UI node; physical DISPLAY2 remains field-only | Locally for the final candidate SHA before the isolated-mirror build; Hosted CI is factual supplemental evidence only | Make a focused fix and validate the new SHA locally; record unused or unavailable Hosted CI as `WAIVED_NOT_TESTED` |
+| full-ci | Broad application regression and relevant UI geometry | Existing non-physical pytest and applicable UI checks in the assigned environment | Only when changed behavior/provider/deployment scope or unresolved risk needs broader coverage; Hosted CI is supplemental evidence | Fix and recheck the affected failure; a new SHA alone does not trigger another Full |
 | release-gate | Wrong identity or publication of bytes other than the qualified candidate | one final canonical annotated tag object recorded in the isolated mirror before identity/build, one fully qualified frozen ZIP/checksum pair built before any push, and later checksum/CRC/safe-path/exact-manifest/evidence verification without rebuilding | Qualify exact local bytes, push `main`, factually record Hosted CI, prove the same local tag object and candidate bytes are unchanged, then push that tag object and publish the same bytes | Any byte or identity mismatch leaves the prerelease quarantined; never recreate/move the tag or rebuild, reseal, or recompress the candidate |
-| test1-e2e | Physical PHS2/scanner/display/direct-sync/update rollback failure | Exact artifact SHA, non-primary DISPLAY2, real scanner, relay receipt, local durable state, update and rollback preservation | Candidate rehearsal before final CI and the identical release artifact before stable rollout | Keep rollout 0; quarantine artifact |
+| test1-e2e | Physical PHS2/scanner/display/direct-sync/update rollback failure | Exact artifact SHA, non-primary DISPLAY2, real scanner, relay receipt, local durable state, update and rollback preservation | Assigned physical/integration/lifecycle scope whose changed inputs need this evidence; reuse unchanged candidate evidence | Preserve any failed result and resolve the affected rollout scope |
 
 ## Exact commands
 
-Exact-SHA local CI (Hosted execution of the same commands is supplemental only):
+Historical full-CI command set; use only when the current verification scope requires it (Hosted execution is supplemental):
 
 ```powershell
 python -I -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes --no-deps -r requirements-release.txt
@@ -116,7 +135,7 @@ restart/persistence, removal, and exact rollback qualification. The checked-in
 one-shot runner parses itself, the official builder, and the sole public
 bootstrap with the PowerShell AST before launch.
 
-### Frozen-byte publication sequence (v2.0.94 current candidate)
+### Historical frozen-byte publication sequence (v2.0.94 candidate)
 
 The v2.0.89 and v2.0.92 tags and frozen ZIPs remain immutable and are invalid
 for the current source. v2.0.89 predates the catalog startup fallback and

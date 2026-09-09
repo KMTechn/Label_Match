@@ -1,5 +1,13 @@
 # Label_Match 진행·공백·추가 제안
 
+<a id="lm-s05"></a>
+## 2026-09-09 · S05 승인 단순화
+
+- 소스 결과: 미사용 UI builder·보조 함수 11개와 전환기 비교 도구 1개 제거, 기존 취소/교체 scenario를 보존한 assertion 중복 정리, 같은44 writer identity/guard pin 갱신. [기존 focused 선택217 PASS와 범위](operations.md#s05-simplification).
+- 보존: 현재 UI/legacy 입력 호환, F1/F4/F3·private payload와 복구, resident lifecycle, 실제 capture의 동적 refresh hook, shared vendored contract/zero-PE provider. Phase G의 lost-ACK·process-kill·backpressure regression과 물리 인쇄·liveness 조사 도구는 유지한다.
+- 원본 저장소 계속 작업: Main이 기존 C: 변경을 `a57d50b52695030bc91eb2094469c9e3fd730a7c`로 commit하고 E:의 S05 delta만 한 번 반영했다. 후속 검토·명세·commit은 원본 `C:\company\program\Label_Match`에서 수행한다. E: source/checkpoint와 frozen receipt12 source·원 artifact는 보존한다. 남은 일은 Main의 S05 독립 검토, shared hub 및 실제 후속 작업의 writer pin 참조 정렬, 같은 기준의 전후 codebase 크기 비교와 향후 배포 범위 선택이다. 과거 frozen receipt의 pin을 새 값으로 고치지 않고 실제 후속 입력만 새 source에 맞춘다. push하지 않는다.
+- 아래의 과거 Ready 0/6·VM 대기·Full 요구는 당시 근거의 범위다. Main이 종결한 선택 여섯 프로그램 qualification을 S05의 반복 gate로 다시 열지 않는다.
+
 [제품·기능](README.md) · [계약](contracts.md) · [운영](operations.md) · [공통 백로그](../../../Program_Spec_Hub/BACKLOG.md) · [실제 준비도](../../../Program_Spec_Hub/READINESS.md)
 
 최초 기준일: **2026-09-07**, 후속 갱신: **2026-09-08**. 최초 5문서 명세 기준선의 독립/Main 교차 검토와 승인된 LM-B10 guard·회귀 테스트·spec 소스 단위, 후속 **SaveRoot13 실제 13 PASS/39 ordered phase PASS** 수용을 반영했다. 2026-09-08 후속 소스 종결은 Main이 수용한 ProducerClose 실제 50 PASS/150 ordered phase PASS와 승인된 두 소스·네 명세를 연결했으며 이번 검토에서 runtime을 재실행하지 않았다. 후속 [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md)은 승인된 잔여 다섯 경로와 네 명세를 묶고 [M3/N6 사례·소스 매핑](operations.md#residual-source-evidence)을 완료했다. 문서·소스 단위 완료나 이 한정 PASS로 제품 Ready를 판정하지 않는다. P1은 필수 업무/계약·검증 공백의 우선순위, P2는 추가 요구 후보다. 담당은 책임 역할이며 실명·기한·목표 릴리스는 미지정이다. 실제 순서는 Main의 현행 지시를 따른다.

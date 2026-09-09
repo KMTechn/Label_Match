@@ -5812,32 +5812,6 @@ def test_auto_simulation_scenarios_scan_final_label_at_final_position(monkeypatc
             assert final_positions == [module.LABEL_MATCH_TOTAL_SCAN_COUNT]
 
 
-def test_completion_progress_keeps_all_packaging_steps_filled_after_pass():
-    module = load_label_match_module()
-    app = object.__new__(module.Label_Match)
-    app.Results = module.Label_Match.Results
-    app.TOTAL_SCAN_COUNT = module.Label_Match.TOTAL_SCAN_COUNT
-    app.history_view_updates_active_state = True
-    app.current_set_info = {"id": None, "parsed": [], "raw": [], "has_error_or_reset": False}
-    app.progress_bar = _FakeProgressBar()
-    app.status_label = _FakeLabel()
-    app.colors = {
-        "danger": "#dc2626",
-        "success_light": "#dcfce7",
-        "success": "#15803d",
-        "primary": "#1d4ed8",
-        "background": "#ffffff",
-        "text_subtle": "#64748b",
-    }
-    app.step_labels = [_FakeLabel() for _ in range(module.Label_Match.TOTAL_SCAN_COUNT)]
-
-    module.Label_Match._show_completion_progress(app, module.Label_Match.Results.PASS)
-
-    assert app.progress_bar["value"] == module.LABEL_MATCH_TOTAL_SCAN_COUNT
-    assert app.status_label.kwargs["text"].startswith(f"{module.LABEL_MATCH_TOTAL_SCAN_COUNT}/{module.LABEL_MATCH_TOTAL_SCAN_COUNT} 통과 완료")
-    assert all(label.kwargs["background"] == app.colors["success_light"] for label in app.step_labels)
-
-
 def test_idle_instruction_resets_completion_progress_when_no_active_set():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)

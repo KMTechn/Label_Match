@@ -6,7 +6,7 @@
 
 ## 프로젝트 목적
 
-`Label_Match`는 포장실 바코드 검증 및 중앙 포장 완료 처리용 Windows Tkinter 앱이다. v2.0.39의 중앙 표준 작업은 **물리 PHS2 현품표 1회 스캔 → 필요 시 F4로 동일 품목 제품 1~2개 원자 교체 → F3 포장 완료 → 로컬 durable 완료 후 중앙 자동 전송**이다. 원본 PHS2가 이적 멤버십 전체를 대표하므로 제품 3개, 최종 라벨, 전량 제품을 추가로 스캔하지 않는다. 과거의 `현품표 + 제품 3개 + 최종 라벨` 5단계는 레거시 입력 호환 경로일 뿐 중앙 PHS2 운영 절차가 아니다. 최신 기본 저장소는 `%ProgramData%\KMTech\Label_Match\data`이며, `LABEL_MATCH_SAVE_DIR`로 override할 수 있다.
+`Label_Match`는 포장실 바코드 검증 및 중앙 포장 완료 처리용 Windows Tkinter 앱이다. 중앙 표준 작업은 **물리 PHS2 현품표 1회 스캔 → 필요 시 F4로 동일 품목 제품 1~2개 원자 교체 → F3 포장 완료 → 로컬 durable 완료 후 중앙 자동 전송**이다. 원본 PHS2가 이적 멤버십 전체를 대표하므로 제품 3개, 최종 라벨, 전량 제품을 추가로 스캔하지 않는다. 과거의 `현품표 + 제품 3개 + 최종 라벨` 5단계는 레거시 입력 호환 경로일 뿐 중앙 PHS2 운영 절차가 아니다. 최신 기본 저장소는 `%ProgramData%\KMTech\Label_Match\data`이며, `LABEL_MATCH_SAVE_DIR`로 override할 수 있다.
 
 ## 주요 기능
 
@@ -37,7 +37,7 @@ python Label_Match.py
 python -m pytest -q -p no:cacheprovider <changed-test-node>
 ```
 
-배포 후보는 GitHub Actions workflow 기준으로 PyInstaller `--onedir --windowed` 빌드다.
+승인된 현재 배포 경로와 과거 PyInstaller 경로는 `RELEASE_GATE_CONTRACT.md` 및 `docs/spec/operations.md`에서 구분한다. 개발 검증은 바뀐 동작의 기존 focused test와 diff/reference 검토를 사용하며, 새 SHA만으로 Full·빌드·설치·업무 replay를 반복하지 않는다. TEMP/TMP, bytecode/cache와 test output은 실행 전에 지정 E: 작업 루트로 격리한다. 실제 제품·native 대상·서버 작업은 해당 작업의 권한과 소유 범위를 따른다.
 
 ## 주요 파일
 
@@ -63,6 +63,7 @@ python -m pytest -q -p no:cacheprovider <changed-test-node>
 - `README.txt`는 `validation_rules.csv` 기반 규칙을 설명하지만 현재 폴더에는 해당 파일이 없고 실제 코드는 `assets/Item.csv` 중심이다.
 - GUI 실행은 사운드 장치, `%ProgramData%\KMTech\Label_Match\data` 쓰기 권한, GitHub 업데이트 네트워크 접근의 영향을 받는다.
 - 단일 대형 파일이므로 기능 수정 전 관련 메서드와 상태 변수 흐름을 먼저 찾아야 한다.
+- S05에서 호출되지 않는 옛 UI builder와 보조 함수를 제거했다. 현재 `main` → guarded application → `_create_widgets` 경로 및 F1/F4/F3 계약을 유지하며, 작업 결과와 범위는 `docs/spec/operations.md#s05-simplification`을 따른다.
 - 중앙 표준 경로에서 첫 입력은 compact PHS2만 허용한다. sealed transfer QR을 첫 물리 입력으로 쓰거나 제품 3개·최종 라벨·F4 전량 재스캔을 요구하는 변경은 현재 계약의 역행이다.
 - F4 교체, F3 로컬 commit, outbox 재전송, 중앙 ACK, 충돌 격리는 하나의 완료 계약이다. outbox intent와 로컬 이벤트의 durable write보다 성공 표시가 앞서면 안 되며, 중앙 ACK 실패 때문에 이미 commit된 로컬 완료를 취소해서도 안 된다.
 - PHS2 작업과 outbox는 날짜가 바뀌어도 보존·복구해야 한다. 여러 PC가 같은 PHS2를 동시에 제출하면 중앙 CAS/idempotency 판정에 따라 한 작업만 완료되고 나머지는 충돌로 격리되어야 한다.

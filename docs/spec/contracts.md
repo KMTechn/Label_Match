@@ -1,5 +1,11 @@
 # Label_Match 데이터·통합 계약
 
+## S05 단순화의 계약 경계
+
+호출되지 않는 `_deferred_operation_lease_evidence`와 `_payload_entropy_from_row` 삭제는 lease evidence·payload 저장 형식을 변경하지 않는다. 실제 검증·암호화 경로의 `payload_protection_entropy`, `common_reader_v2_entropy`, owned payload reader와 F1 cancellation transaction은 유지한다. 사용되지 않는 catalog 경로 판별 함수도 삭제하며 실제 authenticated cache 선택·복구는 유지한다.
+
+공개 취소/APPLIED payload의 exact equality는 기존 테스트에 남고, 그 equality가 이미 포함하는 문자열 부재 assertion과 같은 `receipt_json`의 두 번째 비교만 제거한다. private seal/receipt 보존, durable write 순서, 저장 실패 후 같은 intent 재시도·no-repost 사례는 유지한다. writer inventory는 같은 44개 identity/guard에 새 소스 위치·해시를 결속하며 Python/PowerShell pin을 함께 갱신한다([실제 소스 검증](operations.md#s05-simplification)).
+
 [제품·기능](README.md) · [운영·복구](operations.md) · [백로그](BACKLOG.md) · [중앙 통합](../../../Program_Spec_Hub/INTEGRATIONS.md) · [공통 용어](../../../Program_Spec_Hub/GLOSSARY.md)
 
 최초 기준일·후속 소스 종결·증거 적용 범위는 [README 기준](README.md#기준과-판정-범위)과 같다. 다음은 2026-09-07 source-backed 정적 계약 대조이며 실제 설치본의 호출·권한·서버 설정·화면 반영 입증이 아니다. `L`은 `/logistics/api/v1`이다. 서버 상세 계약을 복제해 새 정본으로 만들지 않고 클라이언트의 소비·검증 책임을 기록한다.

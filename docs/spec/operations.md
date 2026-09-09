@@ -1,5 +1,14 @@
 # Label_Match 운영·복구·검증
 
+<a id="s05-simplification"></a>
+## 2026-09-09 · S05 소스 단순화와 한정 검증
+
+Main이 선택된 여섯 프로그램 qualification을 독립 종결한 뒤 승인한 소스 작업이다. 새 commit 자체로 Full, native rebuild/reinstall, F1/F4/F3·출고 replay 또는 서버 갱신을 요구하지 않는다. 아래 Stage/Setup/Full·당시 배정/대기 기록은 역사 근거다. 필요한 추가 검증은 바뀐 동작·공급자·배포 범위와 남은 구체적 위험에 따라 정하고, 변경 없는 입력의 기존 근거를 재사용한다. 새 대상·실제 설치·보안/데이터/공유 자원 작업의 권한과 독립 검토는 유지한다.
+
+`Label_Match.py`에서 옛 `_create_legacy_widgets`와 미사용 보조 함수 8개, `deferred_intent_capture.py`의 미사용 entropy wrapper, `item_catalog_sync.py`의 미사용 cache 판별 함수를 제거했다. 실제 시작은 `main`/portable entry → guarded application → `_create_widgets`이며 그 builder와 F1/F4/F3 처리 함수의 동작은 변경하지 않았다. `tools/measure_zero_pe_label_parity.py`는 전환기 Git/Pillow 비교 출력만 생성하고 현행 package closure·installer·runtime·test·runbook 소비자가 없어 제거했다. 기존 출력과 base commit의 원본은 보존한다.
+
+**PROVEN (소스·격리 host CPython 3.12.10):** 기존 cancellation, sealed-transfer, operator action gate, workflow snapshot/presenter, inline warning/idle 및 entropy/cache/writer focused 선택 **217 PASS**. 직접 호출만 남았던 옛 completion helper 검사 두 개는 제거했으며 raw/parsed snapshot 렌더링, full/partial 구분과 durable 완료 뒤 idle 복귀 시나리오는 유지했다. 실제 Tk/설치 제품·서버·VM을 시작하지 않았고 temporary data와 JUnit/log는 E: 작업 루트에만 기록했다. 동일44 writer identity/guard의 새 양쪽 pin은 `7205c9ac726db320fdb7ea79b8b28bf7024d6cca0eed1a37d8107e40fab94e04`다. [RESULT 및 정확한 실행/한계](E:/KMTech/s05-simplification-20260909/Label_Match/RESULT.md)를 정본으로 한다. 시험은 E: editable clone에서 완료했다. 사용자 지시에 따라 Main이 기존 C: 변경을 `a57d50b52695030bc91eb2094469c9e3fd730a7c`로 먼저 commit하고 S05 delta만 원본 C: 저장소에 한 번 반영했다. 원본 C:에서 같은44 inventory record/pin과 세 production module의 retained AST 일치를 직접 확인하여 변경 없는 시험 근거를 재사용했다. E: source는 checkpoint로 보존하며 후속 편집·commit은 원본 C:에서 수행한다. 이 결과는 S05 artifact의 native/배포 수용을 추가하지 않는다.
+
 [제품·기능](README.md) · [데이터·통합 계약](contracts.md) · [남은 일](BACKLOG.md) · [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)
 
 최초 기준일은 **2026-09-07**, 후속 갱신은 **2026-09-08**이며 소스와 네 판단 축은 [README](README.md#기준과-판정-범위)를 따른다. 기존 문서 기준선·잔여 소스 종결에서는 앱·테스트·VM·프린터를 실행하지 않았다. 이후 이번 [relay custom 경로 교정](#relay-custom-root-evidence)은 격리된 호스트 headless 검증 26 PASS를 직접 기록했다. Main이 별도로 수행·수용한 [M3/N6](#residual-source-evidence), [ProducerClose](#producer-close-evidence), [SaveRoot13](#saveroot13-evidence)는 각각 원래 소스·환경에 남으며 나머지 복구·수용 항목을 실행 결과로 간주하지 않는다.

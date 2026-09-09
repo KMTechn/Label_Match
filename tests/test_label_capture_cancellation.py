@@ -83,7 +83,6 @@ def test_normal_read_only_f1_cancels_before_ui_clear_and_unblocks_next_source(tm
         assert _row(db_path, first.intent_id)["state"] == "CANCELLED"
         assert event == app.Events.SET_CANCELLED
         assert value == {"set_id": before["local_work_identity"]}
-        assert "fixture-private-cancellation-seal" not in json.dumps(value)
         app.events.append((event, copy.deepcopy(value)))
 
     app.data_manager.log_event = log_event
