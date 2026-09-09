@@ -55,6 +55,101 @@ def test_label_exports_canonical_ui_lane_contract():
     assert label_module.UI_LANE_SPEC == "kmtech-tk-ui-lane-v1"
 
 
+@pytest.mark.parametrize("outcome", ["success", "failure", "stale"])
+def test_terminal_lane_restores_scan_admission_after_actual_idle(outcome):
+    app = _render_app()
+    root = FakeTkRoot()
+    gate = threading.Event()
+    app._ui_lane_generation = 0
+    app._ui_lane_busy_label = ""
+    app._ui_lane_busy_task = ""
+    app._app_close_in_progress = False
+    app.entry.cget = lambda name: app.entry.options.get(name)
+    app.ui_lane = TkSerialUiLane(
+        root, poll_ms=1, generation_provider=lambda: app._ui_lane_generation
+    )
+    terminal_calls = []
+    idle_observations = []
+
+    def work():
+        assert gate.wait(timeout=2.0)
+        if outcome == "failure":
+            raise RuntimeError("ordinary work failed")
+        return "finished"
+
+    try:
+        admission = app._submit_ui_lane_task(
+            name="scan-admission",
+            busy_text="처리 중",
+            work=work,
+            finish=lambda value: terminal_calls.append(("success", value)),
+            fail=lambda error: terminal_calls.append(("failure", error.cause_type)),
+            on_idle=lambda: idle_observations.append(
+                (app.ui_lane.state, app.entry.options["state"], app._ui_lane_busy_task)
+            ),
+        )
+        assert admission.accepted
+        assert app.entry.options["state"] == "disabled"
+        if outcome == "stale":
+            app._advance_ui_lane_generation()
+        gate.set()
+        root.run_until(lambda: not app.ui_lane.is_busy())
+
+        assert app.ui_lane.state == LaneState.IDLE
+        assert app.entry.options["state"] == "normal"
+        assert app.entry.focused is True
+        assert idle_observations == [(LaneState.IDLE, "normal", "")]
+        assert terminal_calls == {
+            "success": [("success", "finished")],
+            "failure": [("failure", "RuntimeError")],
+            "stale": [],
+        }[outcome]
+    finally:
+        gate.set()
+        _close_lane(app, root)
+
+
+@pytest.mark.parametrize("remaining_gate", ["notice", "closing", "history", "staged"])
+def test_terminal_lane_preserves_remaining_scan_admission_gate(remaining_gate):
+    app = _render_app()
+    root = FakeTkRoot()
+    gate = threading.Event()
+    app._ui_lane_generation = 0
+    app._ui_lane_busy_label = ""
+    app._ui_lane_busy_task = ""
+    app._app_close_in_progress = False
+    app.ui_lane = TkSerialUiLane(
+        root, poll_ms=1, generation_provider=lambda: app._ui_lane_generation
+    )
+    try:
+        assert app._submit_ui_lane_task(
+            name="remaining-gate",
+            busy_text="처리 중",
+            work=lambda: gate.wait(timeout=2.0),
+            finish=lambda _value: None,
+            fail=pytest.fail,
+        ).accepted
+        if remaining_gate == "notice":
+            app._workflow_blocking_notice = label_module.WorkflowNotice(
+                title="확인 필요", message="현재 상태 확인", kind="blocked", tone="warning"
+            )
+        elif remaining_gate == "closing":
+            app._app_close_in_progress = True
+        elif remaining_gate == "history":
+            app.history_view_updates_active_state = False
+        else:
+            app.current_set_info.update(
+                raw=["STAGED-PHS2"], parsed=["ITEM-001"], central_inherit_all=True
+            )
+        gate.set()
+        root.run_until(lambda: not app.ui_lane.is_busy())
+        assert app.ui_lane.state == LaneState.IDLE
+        assert app.entry.options["state"] == "disabled"
+    finally:
+        gate.set()
+        _close_lane(app, root)
+
+
 def test_phs2_capture_validation_runs_off_tk_and_materializes_on_tk():
     app, root = _app_with_lane()
     owner = root.owner_thread_id

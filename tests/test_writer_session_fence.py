@@ -287,7 +287,7 @@ def test_code_derived_inventory_is_exactly_bound_and_covers_all_sink_families() 
     assert sources.issuperset(
         {
             "canonical_placement",
-            "scheduled_relay",
+            "scheduled_task_remove",
             "persistent_relay_cycle",
             "raw_relay_runner",
             "gui_direct_sync",

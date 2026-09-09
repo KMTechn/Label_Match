@@ -87,9 +87,11 @@ def test_portable_builder_requires_an_empty_native_application_closure() -> None
     assert portable_builder.EXPECTED_PYTHON == (3, 12, 10)
     assert portable_builder.ALLOWED_APP_NATIVE_NAMES == set()
     assert portable_builder.EXTERNAL_TOOL_MODULES == (
+        "tools.direct_sync_relay_operator",
         "tools.label_auth_recovery_canary",
         "tools.label_exact_clone_resolution_receipt",
         "tools.label_legacy_task_quiescence",
+        "tools.label_server_initializer_rehearsal",
     )
     for forbidden in ("cffi", "cryptography", "pillow", "pygame", "pycparser"):
         assert forbidden not in portable_builder.THIRD_PARTY
@@ -105,6 +107,8 @@ def test_portable_builder_derives_complete_tool_dependency_closure() -> None:
         "tools/label_auth_recovery_canary.py",
         "tools/label_exact_clone_resolution_receipt.py",
         "tools/label_legacy_task_quiescence.py",
+        "tools/label_server_initializer_rehearsal.py",
+        "tools/direct_sync_relay_operator.py",
         "tools/register_label_match_worker_pc.py",
     }
     native_imports: list[tuple[str, str]] = []

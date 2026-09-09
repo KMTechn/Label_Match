@@ -1169,7 +1169,8 @@ function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$I
         }
         $actions = @($task.Actions)
         $expectedArguments = '-I -B ' + (Arg (Join-Path $Installed 'app\main.py')) +
-            ' --label-match-scheduled-relay --app-root ' + (Arg $Installed)
+            ' --label-match-scheduled-relay --app-root ' + (Arg $Installed) +
+            ' --log-path ' + (Arg (Join-Path $defaultDirectSyncRoot 'logs\scheduled_direct_sync_relay.jsonl'))
         if ($actions.Count -ne 1 -or
             -not (Same ([string]$actions[0].Execute) (Join-Path $Installed 'runtime\python.exe')) -or
             [string]$actions[0].Arguments -cne $expectedArguments -or
@@ -1466,7 +1467,7 @@ $restoreSources = @(
     'relay_queue_schema',
     'relay_spool_enqueue',
     'relay_stale_lease_reset',
-    'scheduled_task_install',
+    'scheduled_task_remove',
     'user_relay_autostart_install',
     'user_relay_process_start',
     'user_relay_stop_release',

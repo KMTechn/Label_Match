@@ -140,8 +140,6 @@ def _relay_start(_app_root):
     return {"status": "ALIVE", "process_id": 123, "survival_seconds": 2.0}
 
 
-def _scheduled_task(_app_root):
-    return {"status": "PASS", "action": "REUSED"}
 
 
 def _scheduled_task_absent(_app_root):
@@ -253,7 +251,7 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
         "credential_loader": _credential_loader,
         "ledger_factory": _ledger_factory,
         "autostart_installer": _autostart,
-        "scheduled_task_installer": _scheduled_task,
+        "scheduled_task_remover": _scheduled_task_absent,
         "legacy_task_quiescence_reader": _legacy_task_quiescent,
         "relay_launcher": _relay_start,
     }
@@ -295,7 +293,7 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
     assert paths.ledger_path.is_file()
     assert first["operation_lease_store"] == "AUTHORITATIVE_SNAPSHOT_PRESERVED"
     assert first["system_scheduled_task_required"] is False
-    assert first["current_user_scheduled_task_required"] is True
+    assert first["current_user_scheduled_task_required"] is False
     assert environment["LABEL_MATCH_DIRECT_SYNC_ROOT"] == str(paths.direct_sync_root)
     assert code_after == code_before
 
@@ -340,7 +338,7 @@ def test_enabled_legacy_task_blocks_before_enrollment_or_persistence(tmp_path):
             ledger_factory=called("ledger", None),
             settings_factory=called("settings", {"status": "CREATED"}),
             autostart_installer=called("autostart", {"status": "PASS"}),
-            scheduled_task_installer=called("scheduled-task", {"status": "PASS"}),
+            scheduled_task_remover=called("scheduled-task", {"status": "ABSENT"}),
             relay_launcher=called("relay", {"status": "ALIVE"}),
         )
 
@@ -461,7 +459,7 @@ def test_ready_profile_adds_configured_ca_without_registration(tmp_path, monkeyp
         credential_loader=_credential_loader,
         ledger_factory=_ledger_factory,
         autostart_installer=_autostart,
-        scheduled_task_installer=_scheduled_task,
+        scheduled_task_remover=_scheduled_task_absent,
         legacy_task_quiescence_reader=_legacy_task_quiescent,
         relay_launcher=_relay_start,
     )
@@ -486,7 +484,7 @@ def test_missing_registration_result_is_unknown_not_success(tmp_path):
             credential_loader=_credential_loader,
             ledger_factory=_ledger_factory,
             autostart_installer=_autostart,
-            scheduled_task_installer=_scheduled_task,
+            scheduled_task_remover=_scheduled_task_absent,
             legacy_task_quiescence_reader=_legacy_task_quiescent,
             relay_launcher=_relay_start,
         )
@@ -514,7 +512,7 @@ def test_stop_marker_is_preserved_until_canonical_portable_install(tmp_path):
             credential_loader=_credential_loader,
             ledger_factory=_ledger_factory,
             autostart_installer=_autostart,
-            scheduled_task_installer=_scheduled_task,
+            scheduled_task_remover=_scheduled_task_absent,
             legacy_task_quiescence_reader=_legacy_task_quiescent,
             relay_launcher=_relay_start,
         )
@@ -620,7 +618,7 @@ def test_stop_marker_remains_when_canonical_task_binding_fails(monkeypatch, tmp_
             credential_loader=_credential_loader,
             ledger_factory=_ledger_factory,
             autostart_installer=_autostart,
-            scheduled_task_installer=lambda _root: {"status": "FAIL"},
+            scheduled_task_remover=lambda _root: {"status": "FAIL"},
             legacy_task_quiescence_reader=_legacy_task_quiescent,
             relay_launcher=_relay_start,
         )
@@ -832,16 +830,22 @@ def test_public_remove_clears_relay_but_preserves_identity_profile_and_ledger(
     _ready_state(paths)
     paths.ledger_path.parent.mkdir(parents=True, exist_ok=True)
     paths.ledger_path.write_bytes(b"preserve")
+    events = []
+
+    def completed_step(name):
+        events.append(name)
+        return {"status": "ABSENT"}
 
     report = remove_current_user_setup(
         app_root,
         environ=environment,
-        autostart_remover=lambda: {"status": "ABSENT"},
-        scheduled_task_remover=_scheduled_task_absent,
-        relay_stopper=lambda _root: {"status": "ABSENT"},
+        autostart_remover=lambda: completed_step("autostart"),
+        scheduled_task_remover=lambda _root: completed_step("task-retirement"),
+        relay_stopper=lambda _root: completed_step("relay-stopped"),
     )
 
     assert report["status"] == "PASS_DATA_PRESERVED"
+    assert events == ["autostart", "relay-stopped", "task-retirement"]
     assert paths.identity_path.is_file()
     assert paths.logistics_profile_path.is_file()
     assert paths.ledger_path.read_bytes() == b"preserve"
@@ -850,12 +854,15 @@ def test_public_remove_clears_relay_but_preserves_identity_profile_and_ledger(
 def test_public_remove_does_not_downgrade_unknown_relay_result(tmp_path):
     app_root = tmp_path / "app"
     app_root.mkdir()
+
+    def must_not_retire(_root):
+        raise AssertionError("Task retirement preceded proven relay quiescence")
     with pytest.raises(CurrentUserOnboardingError) as caught:
         remove_current_user_setup(
             app_root,
             environ=_environment(tmp_path),
             autostart_remover=lambda: {"status": "ABSENT"},
-            scheduled_task_remover=_scheduled_task_absent,
+            scheduled_task_remover=must_not_retire,
             relay_stopper=lambda _root: {"status": "UNKNOWN"},
         )
 
@@ -940,7 +947,7 @@ def test_onboarding_forwards_server_base_url_to_registration_and_keeps_ready_pro
             "credential_loader": _credential_loader,
             "ledger_factory": _ledger_factory,
             "autostart_installer": _autostart,
-            "scheduled_task_installer": _scheduled_task,
+            "scheduled_task_remover": _scheduled_task_absent,
             "legacy_task_quiescence_reader": _legacy_task_quiescent,
             "relay_launcher": _relay_start,
         }

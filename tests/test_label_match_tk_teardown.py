@@ -33,6 +33,7 @@ def _isolated_env(data_root):
             "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
+    env.pop("KM_LOGISTICS_PROFILE_PATH", None)
     for key in tuple(env):
         if key.startswith("LABEL_MATCH_LOGISTICS_") or key.startswith(
             "WORKER_ANALYSIS_LOGISTICS_"
@@ -55,6 +56,8 @@ def test_direct_destroy_joins_writer_and_tk_workers_in_fresh_process(tmp_path):
                 "-m",
                 "pytest",
                 "-q",
+                "-p",
+                "no:cacheprovider",
                 node_id,
                 "--basetemp",
                 os.fspath(tmp_path / "child-pytest-temp"),
@@ -146,6 +149,8 @@ def test_active_audio_siren_and_simulation_workers_never_outlive_tcl(
                 "-m",
                 "pytest",
                 "-q",
+                "-p",
+                "no:cacheprovider",
                 node_id,
                 "--basetemp",
                 os.fspath(tmp_path / "active-child-pytest-temp"),

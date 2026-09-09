@@ -165,6 +165,10 @@ LABEL_VALIDATION_STEPS = (
         "label-package-source-resolution-v1",
         "READ_ONLY",
     ),
+)
+# Preserve verification of already stored plans from earlier candidates.
+# New initial validation plans never request the exclusive F3 capability.
+LEGACY_LABEL_VALIDATION_STEPS = LABEL_VALIDATION_STEPS + (
     (
         "label-operation-lease",
         "OPERATION_LEASE",
@@ -204,6 +208,7 @@ _OPERATOR_REASON_CODE_ALLOWLIST = frozenset(
         "LABEL-OPERATION-LEASE_VERIFIED",
         "LABEL_VALIDATION_PLAN_PERSISTED",
         "LEGACY_PATH_OWNS_SUBMISSION",
+        "OPERATOR_CANCELLED_LOCAL_CAPTURE",
         "LOCAL_BINDING_INVALID",
         "LOCAL_DPAPI_INVALID",
         "LOCAL_IDENTITY_INVALID",
@@ -852,7 +857,8 @@ WHEN OLD.receipt_hash IS NOT NULL AND (
 BEGIN
     SELECT RAISE(ABORT, 'deferred intent receipt is immutable');
 END;
-CREATE TRIGGER IF NOT EXISTS trg_deferred_intent_state_edge_guard
+DROP TRIGGER IF EXISTS trg_deferred_intent_state_edge_guard;
+CREATE TRIGGER trg_deferred_intent_state_edge_guard
 BEFORE UPDATE OF state ON deferred_intents
 WHEN NEW.state <> OLD.state AND NOT (
     (OLD.state='CAPTURED_UNVERIFIED' AND NEW.state IN ('VALIDATING','BLOCKED_INVALID','CANCELLED','SUPERSEDED')) OR
@@ -861,7 +867,7 @@ WHEN NEW.state <> OLD.state AND NOT (
     (OLD.state='WAITING_DEPENDENCY' AND NEW.state IN ('VALIDATING','CANCELLED','SUPERSEDED','OPERATOR_REVIEW')) OR
     (OLD.state='BLOCKED_INVALID' AND NEW.state IN ('CANCELLED','SUPERSEDED','OPERATOR_REVIEW')) OR
     (OLD.state='RECONCILE_PENDING_VALIDATION' AND NEW.state IN ('VALIDATING','BLOCKED_INVALID','OPERATOR_REVIEW')) OR
-    (OLD.state='VALIDATED' AND NEW.state IN ('READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW','SUPERSEDED')) OR
+    (OLD.state='VALIDATED' AND NEW.state IN ('READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW','SUPERSEDED','CANCELLED')) OR
     (OLD.state='READY_TO_SUBMIT' AND NEW.state IN ('SUBMITTING','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW')) OR
     (OLD.state='SUBMITTING' AND NEW.state IN ('ACKED','RETRY_WAIT_SUBMIT','RECONCILE_PENDING_SUBMIT','OPERATOR_REVIEW')) OR
     (OLD.state='RETRY_WAIT_SUBMIT' AND NEW.state IN ('SUBMITTING','OPERATOR_REVIEW')) OR
@@ -994,11 +1000,12 @@ def ensure_deferred_intent_schema_compatibility(conn: sqlite3.Connection) -> boo
         and PAYLOAD_PROTECTION in existing_table_sql
         and coupled_envelopes in compact_table_sql
         and "T1D_DUPLICATE_SUPPRESSED" in existing_audit_sql
-        and (
+        and any(fragment in compact_trigger_sql for fragment in (
             "OLD.state='VALIDATED'ANDNEW.stateIN("
-            "'READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW','SUPERSEDED')"
-        )
-        in compact_trigger_sql
+            "'READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW','SUPERSEDED')",
+            "OLD.state='VALIDATED'ANDNEW.stateIN("
+            "'READY_TO_SUBMIT','RETRY_WAIT_VALIDATION','OPERATOR_REVIEW','SUPERSEDED','CANCELLED')",
+        ))
     ):
         return False
     if conn.in_transaction:
@@ -2444,7 +2451,7 @@ class DeferredIntentCaptureStore:
         *,
         now: str | None = None,
     ) -> tuple[dict[str, Any], ...]:
-        """Persist Label's ordered read and idempotent-mutation validation plan."""
+        """Persist read-only initial source validation; F3 acquires its lease."""
 
         observed_at = str(now or utc_now())
         payload = dict(claim.payload)
@@ -3259,10 +3266,15 @@ class DeferredIntentCaptureStore:
                             ORDER BY step_ordinal""",
                         (claim.intent_id, claim.validation_generation),
                     ).fetchall()
-                    if [str(row["step_id"]) for row in step_rows] != [
-                        "label-package-source",
-                        "label-operation-lease",
-                    ]:
+                    definitions = tuple(
+                        (str(row["step_id"]), str(row["step_kind"]),
+                         str(row["validator_contract"]), str(row["step_effect"]))
+                        for row in step_rows
+                    )
+                    if definitions not in {
+                        LABEL_VALIDATION_STEPS,
+                        LEGACY_LABEL_VALIDATION_STEPS,
+                    }:
                         raise DeferredIntentCaptureError(
                             "VALIDATION_PLAN_INCOMPLETE",
                             "the exact ordered Label validation plan is incomplete",
@@ -3785,6 +3797,189 @@ class DeferredIntentCaptureStore:
             )
         finally:
             conn.close()
+
+    def _owned_capture_row(self, row, *, local_work_identity, physical_qr_payload):
+        if row is None:
+            raise DeferredIntentCaptureError("CANCEL_CAPTURE_MISSING", "the current capture is unavailable")
+        current = dict(row)
+        identity = {
+            "app_id": LABEL_APP_ID, "intent_kind": LABEL_INTENT_KIND,
+            "producer_id": self.binding.producer_id,
+            "producer_install_id": self.binding.producer_install_id,
+            "source_host_id": self.binding.source_host_id,
+            "manifest_hash": self.binding.manifest_hash,
+            "authority_scope_id": self.binding.authority_scope_id,
+            "local_work_identity": str(local_work_identity or "").strip(),
+        }
+        if not identity["local_work_identity"] or any(current.get(key) != value for key, value in identity.items()):
+            raise DeferredIntentCaptureError("CANCEL_CAPTURE_BINDING", "the current capture identity differs")
+        payload_bytes = self._unprotect_label_owned_payload(current)
+        payload = json.loads(payload_bytes)
+        binding = self._seal_binding(
+            self.binding, capture_key=current["capture_key"], intent_id=current["intent_id"],
+            payload_hash=current["payload_hash"], partition_seq=current["partition_seq"],
+            contract_version=current["contract_version"],
+        )
+        binding_bytes = canonical_json_bytes(binding)
+        if (hashlib.sha256(payload_bytes).hexdigest() != current["payload_hash"]
+                or hashlib.sha256(binding_bytes).hexdigest() != current["binding_hash"]
+                or not hmac.compare_digest(bytes(current["authenticated_seal"]),
+                    hmac.new(self._load_existing_seal_key(), binding_bytes, hashlib.sha256).digest())
+                or payload.get("local_work_identity") != identity["local_work_identity"]
+                or payload.get("physical_qr_payload") != str(physical_qr_payload or "").strip()):
+            raise DeferredIntentCaptureError("CANCEL_CAPTURE_INTEGRITY", "the current capture evidence differs")
+        return current
+
+    def get_owned_capture(self, *, intent_id, local_work_identity, physical_qr_payload):
+        """Read exact owned capture status without reclaiming or changing it."""
+        return self._owned_capture_row(
+            self.get(str(intent_id or "").strip()),
+            local_work_identity=local_work_identity, physical_qr_payload=physical_qr_payload,
+        )
+
+    def cancel_unsubmitted(
+        self, *, intent_id, local_work_identity, physical_qr_payload, operator_id,
+        expected_row_version, issue_request_fingerprint="", expected_operation_lease_id="",
+    ):
+        """Abandon one local capture; issued leases and domain evidence are retained."""
+        selected_id = str(intent_id or "").strip()
+        actor = str(operator_id or "").strip()
+        if not selected_id or not actor:
+            raise DeferredIntentCaptureError("CANCEL_CAPTURE_BINDING", "cancellation identity is incomplete")
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                current = self._owned_capture_row(
+                    conn.execute("SELECT * FROM deferred_intents WHERE intent_id=?", (selected_id,)).fetchone(),
+                    local_work_identity=local_work_identity, physical_qr_payload=physical_qr_payload,
+                )
+                if current["state"] == "CANCELLED":
+                    conn.commit()
+                    return current
+                if (current["row_version"] != expected_row_version
+                        or current["state"] not in {"CAPTURED_UNVERIFIED", "RETRY_WAIT_VALIDATION", "WAITING_DEPENDENCY", "BLOCKED_INVALID", "VALIDATED"}
+                        or current["claim_owner"] or current["claim_expires_at"]
+                        or current["command_hash"] or current["command_json"] or current["server_idempotency_key"]
+                        or current["receipt_hash"] or current["receipt_json"]
+                        or current["downstream_outbox_ref"] or current["submit_attempt_count"]
+                        or current["local_effect_state"] != "NONE"):
+                    raise DeferredIntentCaptureError("CANCEL_CAPTURE_REVIEW_REQUIRED", "capture processing is not safely cancellable")
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "package_command_outbox" in tables and conn.execute(
+                    "SELECT 1 FROM package_command_outbox WHERE set_id=? LIMIT 1", (current["local_work_identity"],)
+                ).fetchone():
+                    raise DeferredIntentCaptureError("CANCEL_PACKAGE_PENDING", "a package operation owns this work")
+                if "sealed_transfer_exchange_intents" in tables and conn.execute(
+                    "SELECT 1 FROM sealed_transfer_exchange_intents WHERE set_id=? AND "
+                    "(status IN ('PREPARED','COMMAND_READY','RETRY_WAIT','OPERATOR_REVIEW') OR "
+                    "(status='ACKED' AND (seal_verification_status!='VERIFIED' OR local_apply_status!='APPLIED'))) LIMIT 1",
+                    (current["local_work_identity"],),
+                ).fetchone():
+                    raise DeferredIntentCaptureError("CANCEL_EXCHANGE_PENDING", "a product exchange result is unresolved")
+                physical_hash = hashlib.sha256(str(physical_qr_payload).strip().encode('utf-8')).hexdigest()
+                known_leases = {}
+
+                def confirmed_prefetch(lease_id):
+                    if not lease_id or "package_operation_leases" not in tables:
+                        raise DeferredIntentCaptureError("CANCEL_LEASE_UNKNOWN", "issued lease result is unavailable")
+                    lease_row = conn.execute("SELECT * FROM package_operation_leases WHERE lease_id=?", (lease_id,)).fetchone()
+                    lease = dict(lease_row) if lease_row else {}
+                    binding = json.loads(str(lease.get("binding_json") or "{}"))
+                    artifact = json.loads(str(lease.get("artifact_json") or "{}"))
+                    claims = artifact.get("claims") or {}
+                    if (lease.get("status") != "PREFETCHED"
+                            or lease.get("set_id") not in {None, current["local_work_identity"]}
+                            or any(lease.get(key) for key in ("operation_result_id", "operation_completed_at", "consume_idempotency_key", "consume_claimed_at", "consume_receipt_json"))
+                            or binding.get("program") != "Label_Match"
+                            or binding.get("source_host_id") != self.binding.source_host_id
+                            or binding.get("operation") != "CREATE_PACKAGE"
+                            or binding.get("authority_scope_id") != self.binding.authority_scope_id
+                            or binding.get("physical_qr_sha256") != physical_hash
+                            or any(claims.get(key) != lease.get(key) for key in ("lease_id", "fence", "snapshot_hash"))):
+                        raise DeferredIntentCaptureError("CANCEL_LEASE_UNKNOWN", "issued lease is unresolved or owns a business result")
+                    known_leases[lease_id] = lease
+                    return lease
+
+                if expected_operation_lease_id:
+                    confirmed_prefetch(str(expected_operation_lease_id))
+                if "package_operation_leases" in tables:
+                    for lease_row in conn.execute("SELECT lease_id FROM package_operation_leases WHERE set_id=?", (current["local_work_identity"],)):
+                        confirmed_prefetch(str(lease_row[0]))
+                if "package_operation_lease_issue_attempts" in tables and issue_request_fingerprint:
+                    attempt = conn.execute(
+                        "SELECT * FROM package_operation_lease_issue_attempts WHERE request_fingerprint=? AND status='ACTIVE'",
+                        (str(issue_request_fingerprint),),
+                    ).fetchone()
+                    if attempt is not None:
+                        lease = confirmed_prefetch(str(attempt["lease_id"] or ""))
+                        if lease["issue_idempotency_key"] != attempt["issue_idempotency_key"]:
+                            raise DeferredIntentCaptureError("CANCEL_LEASE_UNKNOWN", "lease issue result identity differs")
+                elif "package_operation_lease_issue_attempts" in tables and conn.execute(
+                    "SELECT 1 FROM package_operation_lease_issue_attempts WHERE status='ACTIVE' AND lease_id IS NULL LIMIT 1"
+                ).fetchone():
+                    raise DeferredIntentCaptureError("CANCEL_LEASE_UNKNOWN", "the current issue identity cannot be checked")
+                for step in conn.execute("SELECT * FROM deferred_intent_validation_steps WHERE intent_id=?", (selected_id,)):
+                    if step["step_effect"] != "IDEMPOTENT_MUTATION":
+                        if step["status"] in {"REQUEST_RECORDED", "RECONCILE_PENDING", "OPERATOR_REVIEW"}:
+                            raise DeferredIntentCaptureError("CANCEL_VALIDATION_UNKNOWN", "validation outcome requires review")
+                        continue
+                    if step["status"] != "VERIFIED" or step["validation_outcome"] != "VALID":
+                        raise DeferredIntentCaptureError("CANCEL_VALIDATION_UNKNOWN", "validation mutation is unresolved")
+                    evidence = json.loads(str(step["evidence_json"] or "{}"))
+                    expected_request = {
+                        "authority_scope_id": self.binding.authority_scope_id,
+                        "operation": "CREATE_PACKAGE", "physical_qr_sha256": physical_hash,
+                    }
+                    issue_request_hash = canonical_sha256({
+                        "authority_scope_id": self.binding.authority_scope_id,
+                        "operation": "CREATE_PACKAGE", "scan_payload": str(physical_qr_payload).strip(),
+                    })
+                    if (step["step_id"] != "label-operation-lease"
+                            or not step["request_json"] or not step["request_hash"]
+                            or json.loads(step["request_json"]) != expected_request
+                            or step["request_hash"] != issue_request_hash
+                            or canonical_sha256(evidence) != step["evidence_hash"]
+                            or evidence.get("operation") != "CREATE_PACKAGE"
+                            or evidence.get("authority_scope_id") != self.binding.authority_scope_id
+                            or evidence.get("physical_qr_sha256") != physical_hash):
+                        raise DeferredIntentCaptureError("CANCEL_VALIDATION_UNKNOWN", "verified issue evidence identity differs")
+                    self._validate_verified_step_evidence(
+                        step_id=str(step["step_id"]), request_json=str(step["request_json"]),
+                        evidence_json=str(step["evidence_json"]),
+                    )
+                    lease = confirmed_prefetch(str(evidence.get("lease_id") or ""))
+                    if (step["idempotency_key"] != lease["issue_idempotency_key"]
+                            or any(evidence.get(key) != lease.get(key) for key in ("fence", "snapshot_hash"))):
+                        raise DeferredIntentCaptureError("CANCEL_VALIDATION_UNKNOWN", "verified issue result differs from retained lease")
+                now = utc_now()
+                cursor = conn.execute(
+                    "UPDATE deferred_intents SET state='CANCELLED',next_attempt_at=NULL,"
+                    "last_reason_code='OPERATOR_CANCELLED_LOCAL_CAPTURE',last_error_code=NULL,"
+                    "row_version=row_version+1,updated_at=? WHERE intent_id=? AND state=? "
+                    "AND row_version=? AND fence=? AND validation_generation=?",
+                    (now, selected_id, current["state"], expected_row_version, current["fence"], current["validation_generation"]),
+                )
+                if cursor.rowcount != 1:
+                    raise DeferredIntentCaptureError("CANCEL_CAPTURE_RACE", "capture changed before cancellation committed")
+                append_transition_audit(
+                    conn, intent_id=selected_id, from_state=current["state"], to_state="CANCELLED",
+                    transition_code="TC_CANCEL", reason_code="OPERATOR_CANCELLED_LOCAL_CAPTURE",
+                    occurred_at=now, worker_id=actor, fence=current["fence"],
+                    evidence_hash=canonical_sha256({"intent_id": selected_id, "local_work_identity": current["local_work_identity"],
+                        "operator_id": actor, "row_version": expected_row_version, "physical_qr_sha256": physical_hash,
+                        "retained_lease_ids": sorted(known_leases), "lease_release": False}),
+                )
+                conn.commit()
+                return {**current, "state": "CANCELLED", "row_version": expected_row_version + 1}
+            except DeferredIntentCaptureError:
+                conn.rollback()
+                raise
+            except Exception as exc:
+                conn.rollback()
+                raise DeferredIntentCaptureError("CANCEL_CAPTURE_FAILED", "local capture cancellation could not be committed") from exc
+            finally:
+                conn.close()
 
     def next_materialization_candidate(self) -> str | None:
         """Return the oldest FIFO row whose validation awaits local materialization."""

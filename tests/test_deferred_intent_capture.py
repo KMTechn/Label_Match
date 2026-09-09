@@ -1618,7 +1618,13 @@ def _claim_and_plan(store, intent_id, *, worker="validator-1", now="2026-08-29T0
     assert isinstance(claim, DeferredValidationClaim)
     verified = store.verify_local_integrity(claim, now=now)
     assert isinstance(verified, DeferredValidationClaim)
-    plan = store.plan_label_validation(verified, now=now)
+    # These storage/recovery cases retain the exact two-step plan emitted by
+    # earlier candidates; the current GUI and default plan tests use no patch.
+    import deferred_intent_capture as capture_module
+    with pytest.MonkeyPatch.context() as legacy_plan:
+        legacy_plan.setattr(capture_module, "LABEL_VALIDATION_STEPS",
+                            capture_module.LEGACY_LABEL_VALIDATION_STEPS)
+        plan = store.plan_label_validation(verified, now=now)
     assert [step["step_id"] for step in plan] == [
         "label-package-source",
         "label-operation-lease",
@@ -2216,7 +2222,7 @@ def test_pending_grant_requires_exact_mutating_step_and_definite_noncommit():
     )["outcome"] == "UNKNOWN_COMMIT"
 
 
-def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
+def test_initial_gui_validation_does_not_require_create_package_grant(
     tmp_path,
 ):
     db_path, _outbox, store = _store(tmp_path)
@@ -2279,33 +2285,28 @@ def test_real_gui_path_maps_pending_grant_to_waiting_dependency_without_effect(
 
     app._resolve_central_phs2_scan_overlay = resolve
     app._acquire_operation_lease = pending_lease
-    app._accept_resolved_central_phs2_scan = lambda *_args: pytest.fail(
-        "validator must not promote or apply the scan"
-    )
+    def accept(*args, **kwargs):
+        calls.append("materialize")
+        assert not args[3]
+        app.current_set_info.update(
+            raw=["PHS2-ONLINE-PENDING-GRANT"], parsed=["ITEM-LABEL-1"],
+            deferred_intent_id=kwargs["deferred_intent_id"],
+        )
+        return True
+
+    app._accept_resolved_central_phs2_scan = accept
     assert app._begin_central_phs2_scan_overlay(
         "PHS2-ONLINE-PENDING-GRANT", "ITEM-LABEL-1"
     ) is True
     intent_id = app.current_set_info["deferred_intent_id"]
     row = _row(db_path, intent_id)
-    assert calls == ["package_source", "operation_lease"]
-    assert row["state"] == "WAITING_DEPENDENCY"
-    assert row["next_attempt_at"] is None
+    assert calls == ["package_source", "materialize"]
+    assert row["state"] == "VALIDATED"
     assert row["command_json"] is None
     assert row["receipt_json"] is None
     assert row["downstream_outbox_ref"] is None
-    assert app.current_set_info["raw"] == []
-    assert app.current_set_info["parsed"] == []
-    assert app._deferred_capture_ui["status"] == "저장됨-선행조건대기"
-    assert app._deferred_capture_ui["automatic_retry"] is False
-    assert (
-        app._deferred_capture_ui["dependency_identity"]
-        == "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기"
-    )
-    assert app._deferred_capture_ui["last_checked_at"]
-    notice = app._deferred_capture_pending_notice()
-    assert notice.title == "저장됨-선행조건대기"
-    assert "마지막 확인:" in notice.message
-    assert "자동 재시도하지 않습니다" in notice.message
+    assert app.current_set_info["raw"] == ["PHS2-ONLINE-PENDING-GRANT"]
+    assert app.current_set_info["parsed"] == ["ITEM-LABEL-1"]
     with sqlite3.connect(db_path) as conn:
         assert _count(conn, "package_command_outbox") == 0
 
@@ -2379,7 +2380,8 @@ def test_real_gui_validated_path_materializes_current_set(tmp_path):
         "PHS2-ONLINE-MATERIALIZE", "ITEM-LABEL-1"
     ) is True
     intent_id = app.current_set_info["deferred_intent_id"]
-    assert persistence == [True]
+    assert persistence == []
+    assert not accepted[0][0][3]
     assert len(accepted) == 1
     assert accepted[0][1]["deferred_intent_id"] == intent_id
     assert accepted[0][1]["local_work_identity"]
@@ -2387,7 +2389,10 @@ def test_real_gui_validated_path_materializes_current_set(tmp_path):
     assert app.current_set_info["raw"] == ["PHS2-MATERIALIZED"]
 
 
-def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_id):
+def _b1_local_lease(
+    db_path, physical_qr, snapshot, *, lease_id, item_id, label_id, persist=True,
+    issue_idempotency_key=None, source_host_id="HOST-B1", expires_at="2099-08-29T01:05:00Z",
+):
     """Admit explicit locally verified input; no server/signature claim here."""
     import hashlib
     from contextlib import contextmanager
@@ -2407,10 +2412,10 @@ def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_
     lease = {
         "lease_id": lease_id, "resource_id": "transfer:" + snapshot["bundle_id"],
         "fence": 4, "snapshot_hash": "c" * 64, "status": "PREFETCHED",
-        "issued_at": "2026-08-29T01:00:00Z", "expires_at": "2099-08-29T01:05:00Z",
+        "issued_at": "2026-08-29T01:00:00Z", "expires_at": expires_at,
     }
     binding = {
-        "program": "Label_Match", "device_id": "B1", "source_host_id": "HOST-B1",
+        "program": "Label_Match", "device_id": "B1", "source_host_id": source_host_id,
         "authority_scope_id": snapshot["authority_scope_id"],
         "ledger_plane": snapshot["ledger_plane"], "plane_epoch": snapshot["plane_epoch"],
         "operation": "CREATE_PACKAGE", "resource_id": lease["resource_id"],
@@ -2419,10 +2424,11 @@ def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_
         "item_id": item_id, "quantity": 4, "member_count": 4,
         "membership_hash": "d" * 64, "expected_versions": {"bundle:" + snapshot["bundle_id"]: 7},
     }
-    store.save_prefetched(
-        artifact={"claims": lease, "token": "local-boundary-token", "operation_snapshot": snapshot},
-        binding=binding, issue_idempotency_key="issue-" + lease_id,
-    )
+    if persist:
+        store.save_prefetched(
+            artifact={"claims": lease, "token": "local-boundary-token", "operation_snapshot": snapshot},
+            binding=binding, issue_idempotency_key=issue_idempotency_key or "issue-" + lease_id,
+        )
     return store, lease
 
 
@@ -2464,8 +2470,10 @@ def test_validated_materializer_flows_through_f3_durable_completion(
     }
     lease_store, operation_lease = _b1_local_lease(
         db_path, physical_qr, snapshot, lease_id="lease-materialize-f3",
-        item_id="ITEM-LABEL-1", label_id="LBL-MATERIALIZE-F3",
+        item_id="ITEM-LABEL-1", label_id="LBL-MATERIALIZE-F3", persist=False,
     )
+    lease_acquisitions = []
+    f3_started = False
     evidence = SimpleNamespace(
         replaced_scan=False,
         canonical_input_tag_qr=physical_qr,
@@ -2575,12 +2583,18 @@ def test_validated_materializer_flows_through_f3_durable_completion(
             None,
             None,
         )
-        app._acquire_operation_lease = lambda *_args, **_kwargs: (
-            evidence,
-            snapshot,
-            None,
-            operation_lease,
-        )
+        def acquire_at_f3(*args, **kwargs):
+            assert f3_started, "initial PHS2 validation must not acquire a lease"
+            assert args == (physical_qr,)
+            assert kwargs == {"expected_snapshot": snapshot}
+            lease_acquisitions.append(physical_qr)
+            _b1_local_lease(
+                db_path, physical_qr, snapshot, lease_id="lease-materialize-f3",
+                item_id="ITEM-LABEL-1", label_id="LBL-MATERIALIZE-F3",
+            )
+            return evidence, snapshot, None, operation_lease
+
+        app._acquire_operation_lease = acquire_at_f3
         app._load_reusable_operation_lease = lambda *_args, **_kwargs: (
             evidence, snapshot, None, operation_lease,
         )
@@ -2718,10 +2732,12 @@ def test_validated_materializer_flows_through_f3_durable_completion(
         assert app.current_set_info["raw"] == [physical_qr]
         with closing(sqlite3.connect(db_path)) as conn:
             assert conn.execute("SELECT state FROM deferred_intents WHERE intent_id=?", (intent_id,)).fetchall() == [("VALIDATED",)]
-            assert conn.execute("SELECT status,set_id FROM package_operation_leases").fetchall() == [
-                ("PREFETCHED", "materialize-f3-set"),
-            ]
+            assert conn.execute("SELECT status,set_id FROM package_operation_leases").fetchall() == []
+            assert conn.execute("SELECT COUNT(*) FROM package_operation_lease_issue_attempts").fetchone()[0] == 0
+        assert lease_acquisitions == []
+        assert not app.current_set_info.get("operation_lease_id")
         before = dict(app.current_set_info)
+        f3_started = True
         app.run_tests = False
         app._play_sound = first_success
         app._start_package_outbox_drain = lambda: drains.append(True)
@@ -2744,6 +2760,7 @@ def test_validated_materializer_flows_through_f3_durable_completion(
         assert app._begin_central_package_submission() is True
         assert successes == ["pass"] and drains == [True]
         assert app._reconcile_active_package_submission() is True
+        assert lease_acquisitions == [physical_qr]
         read_completion(committed=True)
     finally:
         primary = __import__("sys").exc_info()[1]
@@ -3314,3 +3331,47 @@ def test_per_intent_operator_status_contract_is_complete(
     )
     assert app._deferred_capture_ui["status"] == expected_status
     assert app._deferred_capture_ui["operator_complete_signal"] is complete
+
+
+def test_initial_validation_plan_is_read_only_package_source(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    captured = _capture(store)
+    claim = store.claim_validation(
+        captured.intent_id, worker_id="initial-reader", now="2026-08-29T01:00:00Z"
+    )
+    verified = store.verify_local_integrity(claim, now="2026-08-29T01:00:00Z")
+    plan = store.plan_label_validation(verified, now="2026-08-29T01:00:00Z")
+    assert [(step["step_id"], step["step_effect"], step["idempotency_key"])
+            for step in plan] == [("label-package-source", "READ_ONLY", None)]
+    result = store.finish_validation(
+        verified, step_id="label-package-source", outcome="VALID",
+        reason_code="ORDERED_LABEL_VALIDATION_VALID", evidence=_source_evidence(),
+        expires_at=verified.claim_expires_at,
+        now="2026-08-29T01:00:01Z",
+    )
+    assert result.state == "VALIDATED"
+    with sqlite3.connect(db_path) as conn:
+        assert _count(conn, "package_command_outbox") == 0
+        assert conn.execute("SELECT COUNT(*) FROM deferred_intent_validation_steps WHERE step_effect='IDEMPOTENT_MUTATION'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("lease_status,attempt_status,blocked", [
+    ("PREFETCHED", None, True),
+    ("LOCAL_COMPLETED", None, True),
+    (None, "ACTIVE", True),
+    (None, None, False),
+])
+def test_initial_validation_timing_keeps_existing_f4_lease_guards(
+    lease_status, attempt_status, blocked,
+):
+    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    current = {"operation_lease_id": "existing-lease" if lease_status else "",
+               "physical_scanned_qr_payload": "PHS2-EXISTING", "raw": []}
+    app.package_operation_lease_store = SimpleNamespace(
+        get=lambda **_kwargs: {"status": lease_status, "expires_at": "2000-01-01T00:00:00Z"},
+        get_issue_attempt=lambda **_kwargs: (
+            {"status": attempt_status} if attempt_status else None
+        ),
+    )
+    app._operation_lease_request_context = lambda _physical: ("scope", "fingerprint")
+    assert app._operation_lease_blocks_f4(current) is blocked

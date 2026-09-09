@@ -948,7 +948,7 @@ def _receipt_identity_error(plan: SourceFilePlan, receipt: Mapping[str, Any]) ->
 
 
 def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) -> bool:
-    """Accept only the server's nonprojecting Label lifecycle contract.
+    """Accept only the server's nonprojecting Label lifecycle/scan contract.
 
     A close delta can follow an already acknowledged TRAY_COMPLETE prefix.
     Its receipt acknowledges raw evidence; it must not stand in for business
@@ -1014,7 +1014,7 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
     if not isinstance(entries, list) or not entries:
         return False
     observed_names: Counter[str] = Counter()
-    lifecycle_names = {"APP_START", "APP_CLOSE", "SCAN_ATTEMPT"}
+    lifecycle_names = {"APP_START", "APP_CLOSE", "SCAN_ATTEMPT", "SCAN_OK", "ERROR_INPUT", "SET_RESTORED", "SET_CANCELLED", "SEALED_TRANSFER_EXCHANGE_APPLIED"}
     for entry in entries:
         if (not isinstance(entry, dict)
             or not isinstance(entry.get("raw_event_name"), str)

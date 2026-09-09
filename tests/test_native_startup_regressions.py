@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 import current_user_onboarding as onboarding
-import current_user_scheduled_task as scheduled
 import label_match_product_host as host
 import user_relay as relay
 
@@ -229,91 +228,8 @@ def test_pid_probe_keeps_live_child_alive_and_rejects_dead_pid():
     assert relay._pid_exists(-1) is False
 
 
-@pytest.mark.parametrize("observer_console", [False, True])
-def test_scheduled_handler_recognizes_real_persistent_writer(inventory_tree, tmp_path, monkeypatch, observer_console):
-    root, _ = inventory_tree
-    (root / "runtime/python.exe").write_bytes(b"fixture")
-    monkeypatch.setattr(scheduled, "CANONICAL_ROOT", root)
-    monkeypatch.setattr("logistics_runtime_profile.load_logistics_runtime_profile",
-                        lambda **k: SimpleNamespace(tls_ca_bundle_path=""))
-    paths = onboarding.resolve_current_user_onboarding_paths(root)
-    script = tmp_path / "owned-relay.py"
-    script.write_text(
-        "import sys\nfrom types import SimpleNamespace\nsys.path.insert(0, " + repr(str(ROOT)) + ")\n"
-        "import user_relay, logistics_runtime_profile\n"
-        "logistics_runtime_profile.load_logistics_runtime_profile = lambda **k: SimpleNamespace(tls_ca_bundle_path='')\n"
-        "user_relay._runtime_cycle = lambda **k: dict(status='idle', process_status='PASS', process_returncode=0, relay_status='idle')\n"
-        "raise SystemExit(user_relay.main(sys.argv[1:]))\n", encoding="utf-8")
-    with (tmp_path / "child-out.log").open("wb") as out, (tmp_path / "child-err.log").open("wb") as err:
-        child = subprocess.Popen([str(Path(sys.executable).with_name('pythonw.exe')), "-B", str(script), "--app-root", str(root), "--interval-seconds", "1"],
-                                 stdout=out, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
-        try:
-            deadline = time.monotonic() + 10
-            while not relay.user_relay_status_path(paths.direct_sync_root).is_file() and time.monotonic() < deadline:
-                assert child.poll() is None
-                time.sleep(0.05)
-            status = json.loads(relay.user_relay_status_path(paths.direct_sync_root).read_text(encoding="utf-8"))
-            assert status["status"] == "RUNNING" and status["process_id"] == child.pid
-            observer = tmp_path / "scheduled-observer.py"
-            observer.write_text(
-                "import sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\nsys.path.insert(0, " + repr(str(ROOT)) + ")\n"
-                "import user_relay, logistics_runtime_profile, current_user_scheduled_task\n"
-                "logistics_runtime_profile.load_logistics_runtime_profile = lambda **k: SimpleNamespace(tls_ca_bundle_path='')\n"
-                "current_user_scheduled_task.CANONICAL_ROOT = Path(sys.argv[1])\n"
-                "raise SystemExit(user_relay.scheduled_main(['--app-root', sys.argv[1]]))\n", encoding="utf-8")
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = subprocess.SW_HIDE
-            result = subprocess.run([sys.executable, "-B", str(observer), str(root)],
-                                    capture_output=True, timeout=10, startupinfo=startup,
-                                    creationflags=subprocess.CREATE_NEW_CONSOLE if observer_console else subprocess.CREATE_NO_WINDOW)
-            scheduled_status = json.loads((paths.status_dir / "scheduled_direct_sync_relay_status.json").read_text(encoding="utf-8"))
-            assert result.returncode == 0, scheduled_status
-            assert scheduled_status["outcome"] == "existing_healthy_relay"
-            assert scheduled_status["persistent_process_id"] == child.pid
-            time.sleep(0.05)
-            assert child.poll() is None, "scheduled owner probe terminated persistent writer"
-        finally:
-            relay.user_relay_stop_path(paths.direct_sync_root).parent.mkdir(parents=True, exist_ok=True)
-            relay.user_relay_stop_path(paths.direct_sync_root).touch()
-            child.wait(timeout=10)
 
 
-def test_scheduled_argv_preserves_bounded_exception_detail_and_log(inventory_tree, monkeypatch):
-    root, _ = inventory_tree
-    (root / "runtime/python.exe").write_bytes(b"fixture")
-    monkeypatch.setattr(scheduled, "CANONICAL_ROOT", root)
-    spec = scheduled.build_current_user_task_spec(root)
-    import ctypes
-    from ctypes import wintypes
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    shell32.CommandLineToArgvW.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
-    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-    count = ctypes.c_int()
-    parsed = shell32.CommandLineToArgvW('python ' + spec["arguments"], ctypes.byref(count))
-    try:
-        arguments = [parsed[i] for i in range(1, count.value)]
-    finally:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
-        kernel32.LocalFree.restype = ctypes.c_void_p
-        kernel32.LocalFree(parsed)
-    mode = arguments.index(host.SCHEDULED_RELAY_MODE)
-    log_path = onboarding.resolve_current_user_onboarding_paths(root).logs_dir / "scheduled_direct_sync_relay.jsonl"
-    assert host._option_value(arguments, "--log-path") == str(log_path)
-    def fail(argv):
-        relay.build_scheduled_parser().parse_args(argv)
-        raise RuntimeError("owner status unreadable; secret=do-not-store " + "x" * 2000)
-    monkeypatch.setattr(relay, "scheduled_main", fail)
-    assert host.dispatch_product_mode(arguments[mode:]) == 1
-    status_path = onboarding.resolve_current_user_onboarding_paths(root).status_dir / "scheduled_direct_sync_relay_status.json"
-    status = json.loads(status_path.read_text(encoding="utf-8"))
-    event = json.loads(log_path.read_text(encoding="utf-8"))
-    assert status["error_type"] == event["error_type"] == "RuntimeError"
-    for message in (status["error_message"], event["error_message"]):
-        assert "owner status unreadable" in message
-        assert "do-not-store" not in message
-        assert len(message) <= 512
 
 
 def test_hosted_failure_retains_exception_message_without_secret(tmp_path):

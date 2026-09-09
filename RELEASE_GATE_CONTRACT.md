@@ -94,6 +94,18 @@ status, logs, and receipts. Then run `INSTALL_THIS_PC.ps1 -Uninstall` elevated
 to remove hardened code; production code removal refuses while HKCU relay
 persistence is still present.
 
+The approved resident alignment removes the duplicate current-user scheduled
+one-shot creator/runtime. Ordinary startup reuses the existing healthy resident;
+an absent historical task adds no scheduler action. Supported owned-task migration
+disables future starts, observes natural instance completion, rechecks exact
+ownership/definition after zero instances, and removes with absence readback.
+Current-user removal proves resident stop before task retirement. Historical
+SYSTEM-task cleanup remains only in the elevated uninstall consumer with exact
+account/action ownership; neither path force-stops or recreates a retired task.
+The old scheduled argv exits2 instead of opening the GUI. Actual final-candidate
+startup, GUI-independent sync, login/coldboot, single-instance and supported
+remove/reinstall/data-preservation evidence remain distinct from source checks.
+
 The staged v3 report proves this topology with an isolated code-only dry run and
 is classified `STATIC_ISOLATED_DRY_RUN` with
 `dynamic_qualification=NOT_TESTED`. It binds the public bootstrap, the onedir

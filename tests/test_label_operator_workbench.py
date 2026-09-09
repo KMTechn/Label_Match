@@ -1248,6 +1248,7 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
     }
     for key, value in guards.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.delenv("KM_LOGISTICS_PROFILE_PATH", raising=False)
     for key in tuple(os.environ):
         if key.startswith("LABEL_MATCH_LOGISTICS_") or key.startswith(
             "WORKER_ANALYSIS_LOGISTICS_"
@@ -1769,6 +1770,7 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
     }
     for key, value in guards.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.delenv("KM_LOGISTICS_PROFILE_PATH", raising=False)
     for key in tuple(os.environ):
         if key.startswith("LABEL_MATCH_LOGISTICS_") or key.startswith(
             "WORKER_ANALYSIS_LOGISTICS_"
@@ -1865,6 +1867,10 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             data_root.resolve()
         )
         _wait_until_ready(app)
+        # This display-only scenario represents an authoritative workstation.
+        # Its isolated environment intentionally has no live logistics client;
+        # declare the presentation state instead of inheriting host configuration.
+        monkeypatch.setattr(app, "_logistics_authoritative_required", True)
         _apply_scale(app, 1.0)
         app.maxsize(4096, 2160)
         placement = _configure_size(

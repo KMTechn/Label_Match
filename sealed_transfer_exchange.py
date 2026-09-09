@@ -868,18 +868,21 @@ class SealedTransferExchangeCoordinator:
                 ),
                 barcode,
             )
+            # Accounting IIN belongs to each source bundle. The authoritative
+            # sealed replacement route moves/rebinds it to the target's IIN
+            # while preserving immutable origin; cross-source equality is not
+            # an eligibility rule. Keep the shared authority and goods identity.
             if (
                 source["authority_scope_id"] != target["authority_scope_id"]
                 or source["authority_epoch"] != target["authority_epoch"]
                 or source["ledger_plane"] != target["ledger_plane"]
                 or source["plane_epoch"] != target["plane_epoch"]
                 or source["item_id"] != target["item_id"]
-                or source["inbound_iin"] != target["inbound_iin"]
                 or source["uom"] != target["uom"]
                 or source["bundle_id"] == target["bundle_id"]
             ):
                 raise PackageLogisticsError(
-                    "replacement good must have the same lot/item/uom/ledger identity"
+                    "replacement good must have the same item/uom/authority/ledger identity"
                 )
             good_sources.append(source)
         new_units = [source["selected_unit_id"] for source in good_sources]
@@ -1266,7 +1269,43 @@ class SealedTransferExchangeCoordinator:
         command_was_durable = row["command_json"] is not None
         operator_review = row["status"] == "OPERATOR_REVIEW"
         if operator_review and not command_was_durable:
-            return self._attempt(row)
+            # The retired cross-source IIN equality check failed before a
+            # command existed. Revalidate only that exact, untouched stage
+            # through the normal build/bind path, preserving the same intent.
+            legacy_iin_failure = (
+                row["last_error_code"] == "SEALED_TRANSFER_EXCHANGE_ERROR"
+                and row["last_error_message"]
+                == "replacement good must have the same lot/item/uom/ledger identity"
+                and row["seal_verification_status"] == "PENDING"
+                and row["local_apply_status"] == "PENDING"
+                and all(
+                    row[field] is None
+                    for field in (
+                        "command_id", "command_json", "command_hash", "receipt_json",
+                        "new_seal_qr_payload", "seal_verified_at", "local_apply_receipt_json",
+                    )
+                )
+            )
+            if not legacy_iin_failure:
+                return self._attempt(row)
+        instruction_recovery = (
+            operator_review
+            and command_was_durable
+            and row["last_error_code"] == "PHS_REPLACEMENT_INSTRUCTION_CONFLICT"
+            and row["last_error_message"]
+            == "PHS_REPLACEMENT_INSTRUCTION_CONFLICT: "
+            "The PHS work group differs from its completed plan instruction."
+            and row["seal_verification_status"] == "PENDING"
+            and row["local_apply_status"] == "PENDING"
+            and all(
+                row[field] is None
+                for field in (
+                    "receipt_json", "new_seal_qr_payload", "seal_verified_at",
+                    "local_apply_receipt_json",
+                )
+            )
+        )
+        compatibility_post_attempted = False
         try:
             if row["command_json"] is None:
                 row = self.store.bind_command(intent_id, self._build_command(row))
@@ -1274,13 +1313,44 @@ class SealedTransferExchangeCoordinator:
             if self.client is None:
                 raise PackageLogisticsError("central logistics client is not configured")
             if command_was_durable:
-                receipt_lookup = getattr(self.client, "get_receipt_if_exists", None)
+                if instruction_recovery and (
+                    not isinstance(command, Mapping)
+                    or command.get("idempotency_key") != row["command_id"]
+                    or row["command_id"]
+                    != f"label-sealed-transfer-exchange:{row['intent_hash']}"
+                    or command.get("authority_scope_id") != row["authority_scope_id"]
+                    or _json(command) != row["command_json"]
+                    or _hash(command) != row["command_hash"]
+                ):
+                    return self._attempt(row)
+                # The old completed-plan guard rejected inside the atomic
+                # transaction before commit. Only its exact error can use
+                # this compatibility path; generic HTTP 404 is not absence.
+                receipt_lookup = getattr(
+                    self.client,
+                    "get_receipt" if instruction_recovery else "get_receipt_if_exists",
+                    None,
+                )
+                receipt_definitely_absent = False
                 if callable(receipt_lookup):
                     try:
                         receipt = receipt_lookup(
                             str(command["idempotency_key"]),
                             authority_scope_id=str(command["authority_scope_id"]),
                         )
+                    except PackageApiError as exc:
+                        if (
+                            instruction_recovery
+                            and exc.status_code == 404
+                            and exc.code == "RECEIPT_NOT_FOUND"
+                            and exc.committed is False
+                        ):
+                            receipt = None
+                            receipt_definitely_absent = True
+                        elif operator_review:
+                            return self._attempt(row)
+                        else:
+                            raise
                     except Exception:
                         if operator_review:
                             return self._attempt(row)
@@ -1302,13 +1372,32 @@ class SealedTransferExchangeCoordinator:
                         return self._attempt(row)
                 if operator_review:
                     # A review row may represent a committed command whose ACK
-                    # failed exact validation.  Never POST it again; only an
-                    # exact idempotency receipt may move it back to ACKED.
-                    return self._attempt(row)
+                    # failed exact validation. All other reviews remain
+                    # receipt-only, and unknown fresh reads cannot release it.
+                    if not instruction_recovery or not receipt_definitely_absent:
+                        return self._attempt(row)
+                    try:
+                        if _json(self._build_command(row)) != row["command_json"]:
+                            return self._attempt(row)
+                    except Exception:
+                        return self._attempt(row)
+                    # Keep the already-bound command and review row unchanged
+                    # until the existing same-key call returns its outcome.
+                    compatibility_post_attempted = True
             receipt = self.client.replace_and_reseal_transfer(command)
             new_qr = self._validate_receipt(command, receipt)
             row = self.store.record_receipt(intent_id, receipt, new_qr)
         except (PackageLogisticsError, PackageApiError, PackageTransportError) as exc:
+            if (
+                compatibility_post_attempted
+                and isinstance(exc, PackageApiError)
+                and exc.status_code in {400, 403, 409, 412, 422}
+            ):
+                # Preserve the actual rejection detail, but do not repeatedly
+                # reopen this automatic exception after another terminal error.
+                exc = SealedTransferExchangeError(
+                    "SEALED_TRANSFER_EXCHANGE_RECOVERY_REJECTED", str(exc)
+                )
             row = self.store.record_error(intent_id, exc)
         except Exception as exc:
             row = self.store.record_error(

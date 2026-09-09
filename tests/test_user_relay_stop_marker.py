@@ -166,6 +166,7 @@ def test_successor_marker_still_blocks_the_path_only_relay_gate(
         lambda _app_root: SimpleNamespace(
             direct_sync_root=direct_root,
             data_root=data_root,
+            settings_path=tmp_path / "settings.json",
             logistics_profile_path=profile_path,
         ),
     )

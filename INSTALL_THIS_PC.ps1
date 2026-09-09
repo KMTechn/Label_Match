@@ -403,33 +403,76 @@ function Get-LegacyTaskByNameFailClosed([string]$Name) {
     return $taskMatches
 }
 
-function Remove-OwnedLegacyTask([string]$Name, [string]$ExpectedRoot) {
+function Get-OwnedLegacyTaskRetirementSnapshot([string]$Name) {
+    if ($Name -ine 'direct-sync-relay-label-match-current-pc') {
+        throw 'Unsupported historical Label task name.'
+    }
     $taskMatches = @(Get-LegacyTaskByNameFailClosed $Name)
-    if ($taskMatches.Count -eq 0) { return }
+    if ($taskMatches.Count -eq 0) { return $null }
     $task = $taskMatches[0]
     $actions = @($task.Actions)
-    if ($actions.Count -ne 1) {
-        throw "Refusing to remove a legacy task with an ambiguous action: $Name"
-    }
-    $actionText = "$([string]$actions[0].Execute) $([string]$actions[0].Arguments)"
     $ownedVbsLauncher = 'C:\ProgramData\KMTech\DirectSync\label-match-margin-r2\bin\run_direct-sync-relay-label-match-current-pc.vbs'
     $ownedCmdLauncher = 'C:\ProgramData\KMTech\DirectSync\label-match-margin-r2\bin\run_direct-sync-relay-label-match-current-pc.ps1'
-    $owned = (
-        $actionText.IndexOf($ExpectedRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-        $actionText.IndexOf($ownedVbsLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-        $actionText.IndexOf($ownedCmdLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    if (
+        $actions.Count -ne 1 -or [string]$task.TaskPath -cne '\' -or
+        [string]$task.Principal.UserId -notin @('SYSTEM', 'NT AUTHORITY\SYSTEM', 'S-1-5-18') -or
+        [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+        [string]$task.Principal.RunLevel -notin @('Limited', 'Highest') -or
+        $null -eq $task.Settings.Enabled -or
+        -not [string]::IsNullOrEmpty([string]$actions[0].WorkingDirectory)
+    ) { throw "Refusing to remove a historical task with different ownership: $Name" }
+    $execute = [string]$actions[0].Execute
+    $arguments = [string]$actions[0].Arguments
+    $ownedVbs = (
+        $execute -in @('wscript.exe', (Join-Path $env:SystemRoot 'System32\wscript.exe')) -and
+        $arguments -in @("//B //NoLogo $ownedVbsLauncher", ('//B //NoLogo "' + $ownedVbsLauncher + '"'))
     )
-    if (-not $owned) {
-        throw "Refusing to remove a scheduled task not owned by this application: $Name"
+    $ownedPowerShell = (
+        $execute -in @('powershell.exe', (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')) -and
+        $arguments -in @("-NoProfile -ExecutionPolicy Bypass -File $ownedCmdLauncher", ('-NoProfile -ExecutionPolicy Bypass -File "' + $ownedCmdLauncher + '"'))
+    )
+    if (-not ($ownedVbs -or $ownedPowerShell)) {
+        throw "Refusing to remove a historical task with a different command: $Name"
     }
-    $taskPath = [string]$task.TaskPath
-    Stop-ScheduledTask `
-        -TaskName ([string]$task.TaskName) `
-        -TaskPath $taskPath `
-        -ErrorAction SilentlyContinue
+    [xml]$definition = Export-ScheduledTask -TaskName $Name -TaskPath '\' -ErrorAction Stop
+    if ($null -eq $definition.Task.Settings.Enabled) {
+        throw "Historical task enabled state is missing from its definition: $Name"
+    }
+    # Disabling is the sole permitted definition change during retirement.
+    $definition.Task.Settings.Enabled = 'false'
+    return [pscustomobject]@{ Enabled = [bool]$task.Settings.Enabled; Definition = $definition.OuterXml }
+}
+
+function Remove-OwnedLegacyTask([string]$Name) {
+    $before = Get-OwnedLegacyTaskRetirementSnapshot $Name
+    if ($null -eq $before) { return }
+    $service = New-Object -ComObject 'Schedule.Service'
+    $service.Connect()
+    $folder = $service.GetFolder('\')
+    if ($before.Enabled) {
+        Disable-ScheduledTask -TaskName $Name -TaskPath '\' -ErrorAction Stop | Out-Null
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    do {
+        $current = Get-OwnedLegacyTaskRetirementSnapshot $Name
+        if ($null -eq $current -or $current.Enabled -or $current.Definition -cne $before.Definition) {
+            throw "Historical task changed during normal retirement: $Name"
+        }
+        $instances = $folder.GetTask($Name).GetInstances(0)
+        if ($null -eq $instances -or $null -eq $instances.Count -or [int]$instances.Count -lt 0) {
+            throw "Historical task instance absence is unknown: $Name"
+        }
+        if ([int]$instances.Count -eq 0) { break }
+        if ([DateTime]::UtcNow -ge $deadline) { throw "Historical task did not finish naturally: $Name" }
+        Start-Sleep -Milliseconds 200
+    } while ($true)
+    $final = Get-OwnedLegacyTaskRetirementSnapshot $Name
+    if ($null -eq $final -or $final.Enabled -or $final.Definition -cne $before.Definition) {
+        throw "Historical task changed after its last instance finished: $Name"
+    }
     Unregister-ScheduledTask `
-        -TaskName ([string]$task.TaskName) `
-        -TaskPath $taskPath `
+        -TaskName $Name `
+        -TaskPath '\' `
         -Confirm:$false `
         -ErrorAction Stop
     if (@(Get-LegacyTaskByNameFailClosed $Name).Count -ne 0) {
@@ -507,7 +550,7 @@ if ($Uninstall.IsPresent) {
     [void](Get-StrictFullPath $installRootFull "uninstall target")
     Assert-NoReparsePoint $installRootFull "Label_Match code root"
     if (-not $testOverride) {
-        Remove-OwnedLegacyTask $LegacyRelayTaskName $installRootFull
+        Remove-OwnedLegacyTask $LegacyRelayTaskName
     }
     if (Test-Path -LiteralPath $installRootFull) {
         Remove-Item -LiteralPath $installRootFull -Recurse -Force -ErrorAction Stop

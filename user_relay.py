@@ -13,7 +13,6 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 import uuid
 
-from current_user_scheduled_task import build_current_user_task_spec
 from label_match_single_instance import acquire_data_scope_mutex, resolve_data_scope
 from user_relay_stop_marker import (
     STOP_MARKER_V1,
@@ -25,7 +24,6 @@ from writer_session_fence import WriterFencedError, writer_admission, writer_sin
 
 USER_RELAY_MODE = "--label-match-user-relay"
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
-SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
 USER_RELAY_RUN_VALUE = "KMTech.LabelMatch.Relay"
 USER_RELAY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DEFAULT_RETRY_INTERVAL_SECONDS = 30
@@ -34,7 +32,6 @@ USER_RELAY_STATUS_NAME = "label_match_user_relay.json"
 USER_RELAY_STOP_NAME = "label_match_user_relay.stop.json"
 LABEL_MATCH_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 LABEL_MATCH_WORKER_ID = "direct-sync-relay-label-match-current-user"
-LABEL_MATCH_SCHEDULED_WORKER_ID = "direct-sync-relay-label-match-current-user-scheduled"
 
 
 class UserRelayError(RuntimeError):
@@ -351,6 +348,41 @@ def start_user_relay_process(
         return {"status": "START_REQUESTED", "launcher_result": launcher(command)}
     if os.name != "nt":
         return {"status": "NOT_TESTED", "reason": "Windows-only user relay launch"}
+    from current_user_onboarding import resolve_current_user_onboarding_paths
+
+    root = Path(app_root).expanduser().resolve()
+    direct_sync_root = resolve_current_user_onboarding_paths(root).direct_sync_root
+    survival = max(0.0, float(survival_seconds))
+
+    def existing_owner() -> dict[str, Any] | None:
+        if user_relay_stop_path(direct_sync_root).exists():
+            return None
+        lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
+        if lease is not None:
+            lease.close()
+            return None
+        return _fresh_persistent_owner(
+            _read_json(user_relay_status_path(direct_sync_root)),
+            app_root=root,
+            direct_sync_root=direct_sync_root,
+        )
+
+    # A duplicate persistent relay exits cleanly when the instance lease is held.
+    # Reuse only the same fresh live owner across the normal survival window;
+    # zero exit by itself also covers stop-marker and ordinary loop termination.
+    owner = existing_owner()
+    if owner is not None:
+        wait(survival)
+        confirmed_owner = existing_owner()
+        if confirmed_owner is None or confirmed_owner["process_id"] != owner["process_id"]:
+            raise UserRelayError("existing current-user relay ownership changed during survival readback")
+        return {
+            "status": "ALIVE",
+            "process_id": confirmed_owner["process_id"],
+            "survival_seconds": survival,
+            "existing_relay_reused": True,
+            "owner_status_updated_at": confirmed_owner["updated_at"],
+        }
     creation_flags = (
         getattr(subprocess, "CREATE_NO_WINDOW", 0)
         | getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -367,7 +399,7 @@ def start_user_relay_process(
     )
     if process.pid <= 0:
         raise UserRelayError("current-user relay launch did not return a process id")
-    wait(max(0.0, float(survival_seconds)))
+    wait(survival)
     return_code = process.poll()
     if return_code is not None:
         raise UserRelayError(
@@ -376,7 +408,7 @@ def start_user_relay_process(
     return {
         "status": "ALIVE",
         "process_id": process.pid,
-        "survival_seconds": max(0.0, float(survival_seconds)),
+        "survival_seconds": survival,
     }
 
 
@@ -750,119 +782,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_scheduled_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Label_Match current-user scheduled DirectSync relay"
-    )
-    parser.add_argument("--app-root", required=True)
-    parser.add_argument("--direct-sync-root", default="")
-    parser.add_argument("--scan-source-dir", default="")
-    parser.add_argument("--log-path", default="")
-    return parser
 
 
-@writer_sink("scheduled_relay")
-def scheduled_main(argv: list[str] | None = None) -> int:
-    args = build_scheduled_parser().parse_args(argv)
-    app_root = Path(args.app_root).expanduser().resolve()
-    from current_user_onboarding import resolve_current_user_onboarding_paths
-    from logistics_runtime_profile import (
-        load_logistics_runtime_profile,
-        unprotect_current_user_secret,
-    )
-
-    paths = resolve_current_user_onboarding_paths(app_root)
-    profile = load_logistics_runtime_profile(
-        required=True,
-        profile_path=paths.logistics_profile_path,
-        decryptor=unprotect_current_user_secret,
-    )
-    if profile is None:
-        raise UserRelayError("the current-user logistics profile is unavailable")
-    direct_sync_root = (
-        Path(args.direct_sync_root).expanduser().resolve()
-        if args.direct_sync_root
-        else paths.direct_sync_root
-    )
-    scan_source_dir = _resolve_scan_source_dir(
-        args.scan_source_dir,
-        data_root=paths.data_root,
-        settings_path=paths.settings_path,
-    )
-    runtime_status_path = (
-        direct_sync_root / "status" / "scheduled_direct_sync_relay_status.json"
-    )
-    log_path = (
-        Path(args.log_path).expanduser().resolve() if args.log_path
-        else direct_sync_root / "logs" / "scheduled_direct_sync_relay.jsonl"
-    )
-    for directory in (
-        direct_sync_root / "queue",
-        direct_sync_root / "spool",
-        direct_sync_root / "upload_status",
-        direct_sync_root / "status",
-        direct_sync_root / "logs",
-        direct_sync_root / "control",
-        scan_source_dir,
-    ):
-        directory.mkdir(parents=True, exist_ok=True)
-    task_spec = build_current_user_task_spec(app_root)
-    lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
-    if lease is None:
-        owner = _fresh_persistent_owner(
-            _read_json(user_relay_status_path(direct_sync_root)),
-            app_root=app_root,
-            direct_sync_root=direct_sync_root,
-        )
-        report = {
-            "report_version": "label-match-scheduled-relay-v1",
-            "status": "PASS" if owner else "FAIL",
-            "outcome": "existing_healthy_relay" if owner else "lease_owner_unproven",
-            "worker_id": LABEL_MATCH_SCHEDULED_WORKER_ID,
-            "persistent_worker_id": LABEL_MATCH_WORKER_ID,
-            "persistent_process_id": (owner or {}).get("process_id", 0),
-            "app_root": str(app_root),
-            "direct_sync_root": str(direct_sync_root),
-            "queue_dir": str(direct_sync_root / "queue"),
-            "action_sha256": task_spec["action_sha256"],
-            "updated_at": _now(),
-        }
-        _write_json_atomic(runtime_status_path, report)
-        return 0 if owner else 1
-    try:
-        result = _runtime_cycle(
-            app_root=app_root,
-            direct_sync_root=direct_sync_root,
-            scan_source_dir=scan_source_dir,
-            tls_ca_bundle_path=profile.tls_ca_bundle_path,
-            runtime_status_path=runtime_status_path,
-            log_path=log_path,
-            worker_id=LABEL_MATCH_SCHEDULED_WORKER_ID,
-            reason="SCHEDULED_CURRENT_USER",
-        )
-    finally:
-        lease.close()
-    passed = result.get("process_status") == "PASS" and result.get("status") not in {
-        "FAIL",
-        "UNKNOWN",
-        "runtime_error",
-    }
-    _write_json_atomic(
-        runtime_status_path,
-        {
-            "report_version": "label-match-scheduled-relay-v1",
-            "status": "PASS" if passed else "FAIL",
-            "outcome": "bounded_one_cycle",
-            "worker_id": LABEL_MATCH_SCHEDULED_WORKER_ID,
-            "app_root": str(app_root),
-            "direct_sync_root": str(direct_sync_root),
-            "queue_dir": str(direct_sync_root / "queue"),
-            "action_sha256": task_spec["action_sha256"],
-            "cycle": result,
-            "updated_at": _now(),
-        },
-    )
-    return 0 if passed else 1
 
 
 def main(argv: list[str] | None = None) -> int:

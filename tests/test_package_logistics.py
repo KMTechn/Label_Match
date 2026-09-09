@@ -2984,8 +2984,12 @@ def test_offline_retry_fairness_survives_limit_and_restart_without_starvation(
 
     assert first == {"acked": 0, "retry": 20, "conflict": 0}
     assert second == {"acked": 0, "retry": 20, "conflict": 0}
-    assert first_attempts == keys[:20]
-    assert second_attempts[0] == keys[20]
+    # Equal creation timestamps use the stable key tie-breaker, so clock
+    # resolution must not turn the fairness check into an insertion-order check.
+    assert len(set(first_attempts)) == 20
+    unattempted = set(keys) - set(first_attempts)
+    assert len(unattempted) == 1
+    assert second_attempts[0] == next(iter(unattempted))
     assert set(keys).issubset(client.attempted_keys)
 
 

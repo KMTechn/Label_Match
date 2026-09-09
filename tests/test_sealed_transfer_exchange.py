@@ -10,6 +10,7 @@ from package_logistics import (
     PackageCommandDraft,
     PackageLogisticsClient,
     PackageLogisticsError,
+    PackageTransportError,
     barcode_membership_hash,
     membership_hash,
 )
@@ -373,6 +374,536 @@ def test_atomic_replacement_command_and_receipt_are_durable(tmp_path):
     assert store.load(result.intent_id)["receipt_json"]
 
 
+def test_different_current_accounting_iin_preserves_exact_exchange_command(tmp_path):
+    baseline_client = FakeClient()
+    baseline = SealedTransferExchangeCoordinator(
+        SealedTransferExchangeStore(tmp_path / "baseline.db"), baseline_client
+    )
+    assert baseline.attempt(_prepare(baseline).intent_id).status == "ACKED"
+
+    resolved = _good_resolver()
+    resolved["inbound_iin"] = "IIN-DONOR-CURRENT"
+    resolved["source_bundle"]["accounting_inbound_iin"] = "IIN-DONOR-CURRENT"
+    resolved["replacement_evidence"]["inbound_iin"] = "IIN-DONOR-CURRENT"
+    resolved["unit"].update(
+        origin_inbound_iin="IIN-DONOR-ORIGIN",
+        current_inbound_iin="IIN-DONOR-CURRENT",
+    )
+    original_projection = deepcopy(resolved)
+
+    class CrossAccountingClient(FakeClient):
+        def resolve_good_source(self, *, authority_scope_id, barcode):
+            assert (authority_scope_id, barcode) == (SCOPE, "BC-NEW")
+            return resolved
+
+    client = CrossAccountingClient()
+    store = SealedTransferExchangeStore(tmp_path / "cross-accounting.db")
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    result = coordinator.attempt(_prepare(coordinator).intent_id)
+
+    assert result.status == "ACKED"
+    # The server derives each source's accounting IIN and performs the bound
+    # movement/rebind. The client sends the same exact membership/CAS/seal
+    # command, without rewriting the resolver's accounting or origin fields.
+    assert client.commands == baseline_client.commands
+    assert resolved == original_projection
+    assert result.seal_verification_status == "PENDING"
+    assert result.local_apply_status == "PENDING"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("authority_scope_id", "other-scope"),
+        ("authority_epoch", 8),
+        ("ledger_plane", "REHEARSAL"),
+        ("plane_epoch", 4),
+        ("item_id", "OTHER-ITEM"),
+        ("uom", "KG"),
+    ],
+)
+@pytest.mark.parametrize("legacy_review", [False, True])
+def test_cross_accounting_replacement_keeps_real_identity_guards(
+    tmp_path, field, value, legacy_review
+):
+    class MismatchedClient(FakeClient):
+        def resolve_good_source(self, *, authority_scope_id, barcode):
+            resolved = super().resolve_good_source(
+                authority_scope_id=authority_scope_id, barcode=barcode
+            )
+            resolved["inbound_iin"] = "IIN-DONOR-CURRENT"
+            if field in {"item_id", "uom"}:
+                resolved["source_bundle"][field] = value
+            else:
+                resolved[field] = value
+            return resolved
+
+    client = MismatchedClient()
+    store = SealedTransferExchangeStore(tmp_path / "mismatched.db")
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    prepared = _prepare(coordinator)
+    if legacy_review:
+        store.record_error(
+            prepared.intent_id,
+            PackageLogisticsError(
+                "replacement good must have the same lot/item/uom/ledger identity"
+            ),
+        )
+    result = coordinator.attempt(prepared.intent_id)
+
+    assert result.status == "OPERATOR_REVIEW"
+    assert client.commands == []
+    row = store.load(result.intent_id)
+    assert row["command_json"] is None and row["receipt_json"] is None
+    assert row["attempt_count"] == (2 if legacy_review else 1)
+
+
+def test_legacy_iin_review_recovers_original_intent_through_normal_drain(tmp_path):
+    db_path = tmp_path / "legacy-iin.db"
+    first = SealedTransferExchangeCoordinator(
+        SealedTransferExchangeStore(db_path), FakeClient()
+    )
+    intent_id = _prepare(first).intent_id
+    first.store.record_error(
+        intent_id,
+        PackageLogisticsError(
+            "replacement good must have the same lot/item/uom/ledger identity"
+        ),
+    )
+    before = dict(first.store.load(intent_id))
+    calls = []
+
+    class RecoveryClient(FakeClient):
+        def get_capabilities(self):
+            calls.append("capabilities")
+            assert dict(first.store.load(intent_id)) == before
+            return super().get_capabilities()
+
+        def get_bundle(self, bundle_id, *, authority_scope_id=""):
+            calls.append("target")
+            assert dict(first.store.load(intent_id)) == before
+            return super().get_bundle(bundle_id, authority_scope_id=authority_scope_id)
+
+        def resolve_good_source(self, *, authority_scope_id, barcode):
+            calls.append("source")
+            assert dict(first.store.load(intent_id)) == before
+            resolved = super().resolve_good_source(
+                authority_scope_id=authority_scope_id, barcode=barcode
+            )
+            resolved["inbound_iin"] = "IIN-DONOR-CURRENT"
+            return resolved
+
+        def replace_and_reseal_transfer(self, command):
+            calls.append("post")
+            durable = first.store.load(intent_id)
+            assert durable["status"] == "COMMAND_READY"
+            assert json.loads(durable["command_json"]) == command
+            assert durable["command_hash"] == hashlib.sha256(
+                durable["command_json"].encode()
+            ).hexdigest()
+            assert durable["attempt_count"] == 1
+            return super().replace_and_reseal_transfer(command)
+
+    client = RecoveryClient()
+    restarted = SealedTransferExchangeCoordinator(
+        SealedTransferExchangeStore(db_path), client
+    )
+    recovered = restarted.drain_pending()
+
+    assert [(row.intent_id, row.status) for row in recovered] == [(intent_id, "ACKED")]
+    assert calls == ["capabilities", "target", "source", "post"]
+    after = dict(restarted.store.load(intent_id))
+    changed = {key for key in before if before[key] != after[key]}
+    assert changed == {
+        "status", "command_id", "command_json", "command_hash", "receipt_json",
+        "new_seal_qr_payload", "last_error_code", "last_error_message",
+        "attempt_count", "updated_at",
+    }
+    assert after["attempt_count"] == 2
+    assert after["seal_verification_status"] == after["local_apply_status"] == "PENDING"
+    with restarted.store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sealed_transfer_exchange_intents").fetchone()[0] == 1
+    assert restarted.drain_pending() == []
+    assert len(client.commands) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("last_error_code", "HTTP_500"),
+        ("last_error_code", None),
+        ("last_error_message", "network failure before a command was saved"),
+        ("last_error_message", "replacement good must have the same lot/item/uom/ledger identity "),
+        ("receipt_json", "{}"),
+        ("new_seal_qr_payload", ""),
+        ("seal_verified_at", "2026-01-01T00:00:00Z"),
+        ("local_apply_receipt_json", "{}"),
+        ("seal_verification_status", "VERIFIED"),
+        ("local_apply_status", "APPLIED"),
+    ],
+)
+def test_legacy_iin_recovery_refuses_other_errors_and_later_stage_evidence(
+    tmp_path, field, value
+):
+    store = SealedTransferExchangeStore(tmp_path / "blocked.db")
+    coordinator = SealedTransferExchangeCoordinator(store, FakeClient())
+    intent_id = _prepare(coordinator).intent_id
+    store.record_error(
+        intent_id,
+        PackageLogisticsError(
+            "replacement good must have the same lot/item/uom/ledger identity"
+        ),
+    )
+    # Deliberately inconsistent fixture evidence must not become a recovery reset.
+    with store._connect() as conn:
+        conn.execute(
+            f"UPDATE sealed_transfer_exchange_intents SET {field}=? WHERE intent_id=?",
+            (value, intent_id),
+        )
+        conn.commit()
+    before = dict(store.load(intent_id))
+
+    class NoNetworkClient(FakeClient):
+        def get_capabilities(self):
+            raise AssertionError("unrecognized review must not start fresh validation")
+
+    client = NoNetworkClient()
+    restarted = SealedTransferExchangeCoordinator(store, client)
+    assert [row.status for row in restarted.drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == before
+    assert client.commands == []
+
+
+@pytest.mark.parametrize(
+    "stale",
+    ["capability", "target_seal", "target_version", "source_version", "source_membership", "singleton"],
+)
+def test_legacy_iin_recovery_revalidates_current_source_and_seal(tmp_path, stale):
+    class StaleClient(FakeClient):
+        def get_capabilities(self):
+            data = super().get_capabilities()
+            if stale == "capability":
+                data["capability_ids"] = []
+            return data
+
+        def get_bundle(self, bundle_id, *, authority_scope_id=""):
+            data = super().get_bundle(bundle_id, authority_scope_id=authority_scope_id)
+            if stale == "target_seal":
+                data["active_seal"]["seal_state"] = "REVOKED"
+            if stale == "target_version":
+                data["entity_version"] += 1
+            return data
+
+        def resolve_good_source(self, *, authority_scope_id, barcode):
+            data = _good_resolver(multi_member=stale == "singleton")
+            data["inbound_iin"] = "IIN-DONOR-CURRENT"
+            if stale == "source_version":
+                data["source_bundle"]["entity_version"] += 1
+            if stale == "source_membership":
+                data["source_bundle"]["membership_hash"] = "0" * 64
+            return data
+
+    store = SealedTransferExchangeStore(tmp_path / "stale.db")
+    client = StaleClient()
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    intent_id = _prepare(coordinator).intent_id
+    store.record_error(
+        intent_id,
+        PackageLogisticsError(
+            "replacement good must have the same lot/item/uom/ledger identity"
+        ),
+    )
+    before = dict(store.load(intent_id))
+    assert [row.status for row in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+    after = dict(store.load(intent_id))
+    assert after["attempt_count"] == 2
+    assert after["command_json"] is None and after["receipt_json"] is None
+    assert client.commands == []
+    assert {key for key in before if before[key] != after[key]} <= {
+        "last_error_code", "last_error_message", "attempt_count", "updated_at"
+    }
+    assert [row.status for row in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == after
+
+
+def test_legacy_error_with_durable_command_remains_receipt_only(tmp_path):
+    store = SealedTransferExchangeStore(tmp_path / "durable-review.db")
+    client = FakeClient()
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    intent_id = _prepare(coordinator).intent_id
+    store.bind_command(intent_id, coordinator._build_command(store.load(intent_id)))
+    store.record_error(
+        intent_id,
+        PackageLogisticsError(
+            "replacement good must have the same lot/item/uom/ledger identity"
+        ),
+    )
+    before = dict(store.load(intent_id))
+    assert [row.status for row in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == before
+    assert client.commands == []
+
+
+_INSTRUCTION_CONFLICT = "PHS_REPLACEMENT_INSTRUCTION_CONFLICT"
+_INSTRUCTION_DETAIL = "The PHS work group differs from its completed plan instruction."
+
+
+def _instruction_review(tmp_path):
+    class RejectedClient(FakeClient):
+        def replace_and_reseal_transfer(self, command):
+            self.commands.append(command)
+            raise PackageApiError(
+                409, _INSTRUCTION_CONFLICT, _INSTRUCTION_DETAIL, committed=False
+            )
+
+    store = SealedTransferExchangeStore(tmp_path / "instruction-review.db")
+    client = RejectedClient()
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    intent_id = _prepare(coordinator).intent_id
+    store.record_error(
+        intent_id,
+        PackageLogisticsError(
+            "replacement good must have the same lot/item/uom/ledger identity"
+        ),
+    )
+    assert coordinator.attempt(intent_id).status == "OPERATOR_REVIEW"
+    before = dict(store.load(intent_id))
+    assert before["attempt_count"] == 2
+    assert len(client.commands) == 1
+    assert before["last_error_code"] == _INSTRUCTION_CONFLICT
+    return store, intent_id, before
+
+
+class InstructionRecoveryClient(FakeClient):
+    def get_receipt(self, key, *, authority_scope_id):
+        assert key.startswith("label-sealed-transfer-exchange:")
+        assert authority_scope_id == SCOPE
+        raise PackageApiError(
+            404, "RECEIPT_NOT_FOUND", "No committed receipt exists.", committed=False
+        )
+
+
+def test_instruction_review_recovers_same_durable_command_without_rebinding(tmp_path, monkeypatch):
+    store, intent_id, before = _instruction_review(tmp_path)
+    calls = []
+    saved = json.loads(before["command_json"])
+
+    class RecoveryClient(InstructionRecoveryClient):
+        def get_receipt(self, key, *, authority_scope_id):
+            calls.append("receipt")
+            assert key == before["command_id"]
+            assert dict(store.load(intent_id)) == before
+            return super().get_receipt(key, authority_scope_id=authority_scope_id)
+
+        def get_capabilities(self):
+            calls.append("capabilities")
+            assert dict(store.load(intent_id)) == before
+            return super().get_capabilities()
+
+        def get_bundle(self, bundle_id, *, authority_scope_id=""):
+            calls.append("target")
+            return super().get_bundle(bundle_id, authority_scope_id=authority_scope_id)
+
+        def resolve_good_source(self, *, authority_scope_id, barcode):
+            calls.append("source")
+            return super().resolve_good_source(authority_scope_id=authority_scope_id, barcode=barcode)
+
+        def replace_and_reseal_transfer(self, command):
+            calls.append("post")
+            assert dict(store.load(intent_id)) == before
+            assert command == saved
+            return super().replace_and_reseal_transfer(command)
+
+    def no_rebind(*args, **kwargs):
+        raise AssertionError("the original durable command must never be rebound")
+
+    monkeypatch.setattr(store, "bind_command", no_rebind)
+    client = RecoveryClient()
+    restarted = SealedTransferExchangeCoordinator(store, client)
+    assert [(r.intent_id, r.status) for r in restarted.drain_pending()] == [(intent_id, "ACKED")]
+    assert calls == ["receipt", "capabilities", "target", "source", "post"]
+    after = dict(store.load(intent_id))
+    assert {key for key in before if before[key] != after[key]} == {
+        "status", "receipt_json", "new_seal_qr_payload", "last_error_code",
+        "last_error_message", "attempt_count", "updated_at",
+    }
+    assert after["attempt_count"] == 3
+    assert after["seal_verification_status"] == after["local_apply_status"] == "PENDING"
+    assert restarted.drain_pending() == []
+    assert client.commands == [saved]
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sealed_transfer_exchange_intents").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_instruction_review_prefers_exact_receipt_and_never_posts_found_receipt(tmp_path, valid):
+    store, intent_id, before = _instruction_review(tmp_path)
+    receipt = _receipt(json.loads(before["command_json"]))
+    if not valid:
+        receipt["data"]["new_members"][0]["normalized_barcode"] = "WRONG"
+
+    class ReceiptClient(InstructionRecoveryClient):
+        def get_receipt(self, key, *, authority_scope_id):
+            assert (key, authority_scope_id) == (before["command_id"], SCOPE)
+            return receipt
+
+        def get_capabilities(self):
+            raise AssertionError("a found receipt must precede fresh source validation")
+
+    client = ReceiptClient()
+    result = SealedTransferExchangeCoordinator(store, client).drain_pending()
+    assert [r.status for r in result] == ["ACKED" if valid else "OPERATOR_REVIEW"]
+    assert client.commands == []
+    if not valid:
+        assert dict(store.load(intent_id)) == before
+
+
+@pytest.mark.parametrize("lookup", [
+    "generic_404", "wrong_status", "unknown_commit", "committed", "forbidden",
+    "transport", "malformed", "none", "missing",
+])
+def test_instruction_review_requires_authoritative_receipt_absence(tmp_path, lookup):
+    store, intent_id, before = _instruction_review(tmp_path)
+
+    class UnknownClient(InstructionRecoveryClient):
+        def get_receipt(self, key, *, authority_scope_id):
+            failures = {
+                "generic_404": PackageApiError(404, "HTTP_404", "Not found", committed=False),
+                "wrong_status": PackageApiError(500, "RECEIPT_NOT_FOUND", "Unknown", committed=False),
+                "unknown_commit": PackageApiError(404, "RECEIPT_NOT_FOUND", "Unknown", committed=None),
+                "committed": PackageApiError(404, "RECEIPT_NOT_FOUND", "Contradiction", committed=True),
+                "forbidden": PackageApiError(403, "FORBIDDEN", "Denied", committed=False),
+                "transport": PackageTransportError("connection lost"),
+                "malformed": ValueError("malformed receipt response"),
+            }
+            if lookup in failures:
+                raise failures[lookup]
+            return None
+
+        def get_capabilities(self):
+            raise AssertionError("unknown receipt outcome must not permit fresh validation")
+
+    client = UnknownClient()
+    if lookup == "missing":
+        client.get_receipt = None
+    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == before
+    assert client.commands == []
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("last_error_code", "OTHER_REVIEW"),
+    ("last_error_message", _INSTRUCTION_CONFLICT + ": " + _INSTRUCTION_DETAIL + " "),
+    ("receipt_json", "{}"),
+    ("new_seal_qr_payload", ""),
+    ("seal_verified_at", "2026-01-01T00:00:00Z"),
+    ("local_apply_receipt_json", "{}"),
+    ("seal_verification_status", "VERIFIED"),
+    ("local_apply_status", "APPLIED"),
+    ("command_id", "different-key"),
+    ("command_hash", "0" * 64),
+    ("command_json", "noncanonical"),
+])
+def test_instruction_review_refuses_other_states_and_inconsistent_saved_identity(tmp_path, monkeypatch, field, value):
+    store, intent_id, _ = _instruction_review(tmp_path)
+    if value == "noncanonical":
+        value = json.dumps(json.loads(store.load(intent_id)["command_json"]), indent=2)
+    # SQL prevents editing a bound command. Inject only a corrupt read projection
+    # for those fields, retaining the real schema and its immutability trigger.
+    if field.startswith("command_"):
+        projection = dict(store.load(intent_id))
+        projection[field] = value
+        monkeypatch.setattr(store, "load", lambda _intent_id: projection)
+    else:
+        with store._connect() as conn:
+            conn.execute(f"UPDATE sealed_transfer_exchange_intents SET {field}=? WHERE intent_id=?", (value, intent_id))
+            conn.commit()
+    before = dict(store.load(intent_id))
+    client = InstructionRecoveryClient()
+    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == before
+    assert client.commands == []
+
+
+@pytest.mark.parametrize("changed", ["capability", "seal", "source_version", "scope", "singleton", "transport"])
+def test_instruction_review_fresh_validation_cannot_replace_saved_command(tmp_path, changed):
+    store, intent_id, before = _instruction_review(tmp_path)
+
+    class ChangedClient(InstructionRecoveryClient):
+        def get_capabilities(self):
+            if changed == "transport":
+                raise PackageTransportError("fresh read disconnected")
+            data = super().get_capabilities()
+            if changed == "capability":
+                data["capability_ids"] = []
+            return data
+
+        def get_bundle(self, bundle_id, *, authority_scope_id=""):
+            data = super().get_bundle(bundle_id, authority_scope_id=authority_scope_id)
+            if changed == "seal":
+                data["active_seal"]["seal_state"] = "REVOKED"
+            return data
+
+        def resolve_good_source(self, *, authority_scope_id, barcode):
+            data = _good_resolver(multi_member=changed == "singleton")
+            if changed == "source_version":
+                data["source_bundle"]["entity_version"] += 1
+                data["source_bundle_entity_version"] += 1
+                data["replacement_evidence"]["expected_source_bundle_version"] += 1
+            if changed == "scope":
+                data["authority_scope_id"] = "other-scope"
+            return data
+
+    client = ChangedClient()
+    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == before
+    assert client.commands == []
+
+
+def test_instruction_recovery_repeated_terminal_rejection_stops_automatic_exception(tmp_path):
+    store, intent_id, before = _instruction_review(tmp_path)
+
+    class StillRejectedClient(InstructionRecoveryClient):
+        def replace_and_reseal_transfer(self, command):
+            self.commands.append(command)
+            raise PackageApiError(409, _INSTRUCTION_CONFLICT, _INSTRUCTION_DETAIL, committed=False)
+
+        def get_receipt_if_exists(self, key, *, authority_scope_id):
+            assert (key, authority_scope_id) == (before["command_id"], SCOPE)
+            return None
+
+    client = StillRejectedClient()
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    assert [r.status for r in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+    after = dict(store.load(intent_id))
+    assert after["last_error_code"] == "SEALED_TRANSFER_EXCHANGE_RECOVERY_REJECTED"
+    assert _INSTRUCTION_CONFLICT + ": " + _INSTRUCTION_DETAIL in after["last_error_message"]
+    assert after["attempt_count"] == 3
+    for field in ("intent_id", "intent_hash", "created_at", "command_id", "command_json", "command_hash"):
+        assert after[field] == before[field]
+    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == after
+    assert len(client.commands) == 1
+
+
+def test_instruction_recovery_unknown_post_outcome_uses_existing_receipt_recovery(tmp_path):
+    store, intent_id, before = _instruction_review(tmp_path)
+
+    class LostAckClient(InstructionRecoveryClient):
+        def replace_and_reseal_transfer(self, command):
+            self.commands.append(command)
+            raise PackageApiError(500, "HTTP_500", "lost ACK", committed=None)
+
+        def get_receipt_if_exists(self, key, *, authority_scope_id):
+            assert (key, authority_scope_id) == (before["command_id"], SCOPE)
+            return _receipt(json.loads(before["command_json"]))
+
+    client = LostAckClient()
+    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["RETRY_WAIT"]
+    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["ACKED"]
+    assert len(client.commands) == 1
+
+
 def test_new_seal_must_be_scanned_before_atomic_local_apply_and_recovers(tmp_path):
     store = SealedTransferExchangeStore(tmp_path / "package.db")
     coordinator = SealedTransferExchangeCoordinator(store, FakeClient())
@@ -491,6 +1022,25 @@ def test_local_save_false_keeps_receipt_pending_and_retry_never_posts_again(tmp_
     assert applied_row["local_apply_receipt_json"]
     assert len(app.data_manager.events) == 1
     assert len(client.commands) == 1
+    event, details = app.data_manager.events[0]
+    assert event == app.Events.SEALED_TRANSFER_EXCHANGE_APPLIED
+    assert details == {
+        "set_id": result.set_id,
+        "intent_id": result.intent_id,
+        "receipt_id": result.receipt_id,
+        "target_bundle_id": result.target_bundle_id,
+        "damage_bundle_id": result.damage_bundle_id,
+        "old_barcodes": list(result.old_barcodes),
+        "new_barcodes": list(result.new_barcodes),
+        "entity_versions": dict(result.entity_versions),
+        "atomic_local_apply": True,
+    }
+    assert OLD_QR not in json.dumps(details)
+    assert result.new_seal_qr_payload not in json.dumps(details)
+    assert app.current_set_info["raw"] == [phs2]
+    assert app.current_set_info["sealed_transfer"]["_seal_qr_payload"] == result.new_seal_qr_payload
+    for field in ("old_seal_qr_payload", "new_seal_qr_payload", "receipt_json"):
+        assert applied_row[field] == failed_row[field]
 
 
 def test_local_save_and_rollback_false_fail_closed_for_operator_review(tmp_path):

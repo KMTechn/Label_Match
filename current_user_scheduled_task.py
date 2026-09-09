@@ -1,8 +1,8 @@
-"""Current-user Limited TimeTrigger ownership for the Label relay.
+"""Ownership checks and normal retirement of historical Label scheduled tasks.
 
-The canonical installer only places protected code.  This module is called by
-the unelevated ``--onboard-current-user`` product phase and never starts a task
-manually or stops an existing process/task.
+HKCU Run and the resident product relay are the current startup authority.
+Only migration/removal consumers retain the old canonical task specification;
+this module never creates, starts, or force-stops a task or process.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ LEGACY_TASK_REQUIRED_STATE = "ABSENT_OR_DISABLED"
 LEGACY_TASK_REMEDIATION = (
     "Disable or remove root scheduled task "
     r"\direct-sync-relay-label-match-current-pc before Label enrollment; "
-    "the canonical replacement is root scheduled task "
-    r"\direct-sync-relay-label-match using InteractiveToken, Limited, and PT1M."
+    "the supported replacement is HKCU Run KMTech.LabelMatch.Relay and "
+    "the current-user resident product relay."
 )
 SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
 CANONICAL_ROOT = Path(r"C:\KMTech\Apps\Label_Match\current")
@@ -89,6 +89,7 @@ def _same_path(left: Path, right: Path) -> bool:
 def build_current_user_task_spec(
     app_root: str | os.PathLike[str],
 ) -> dict[str, Any]:
+    """Describe the historical task solely to prove migration ownership."""
     root = _resolved(app_root)
     if not _same_path(root, CANONICAL_ROOT):
         raise CurrentUserScheduledTaskError(
@@ -96,10 +97,6 @@ def build_current_user_task_spec(
         )
     execute = root / "runtime" / "python.exe"
     entrypoint = root / "app" / "main.py"
-    if not execute.is_file() or not entrypoint.is_file():
-        raise CurrentUserScheduledTaskError(
-            "canonical scheduled-task runtime or entrypoint is absent"
-        )
     from current_user_onboarding import resolve_current_user_onboarding_paths
 
     log_path = (
@@ -225,6 +222,7 @@ function Get-TaskSnapshot([string]$Name) {
         exists = $true
         name = $Name
         state = [string]$task.State
+        enabled = [bool]$task.Settings.Enabled
         execute = if ($actions.Count -eq 1) { [string]$actions[0].Execute } else { '' }
         arguments = if ($actions.Count -eq 1) { [string]$actions[0].Arguments } else { '' }
         working_directory = if ($actions.Count -eq 1) { [string]$actions[0].WorkingDirectory } else { '' }
@@ -270,129 +268,74 @@ function Test-ExactTask($Snapshot) {
     )
 }
 
-function Restore-TaskSnapshot($Snapshot) {
-    $current = Get-TaskSnapshot ([string]$Snapshot.name)
-    if ([bool]$current.exists -and [string]$current.state -ceq 'Running') {
-        throw "Refusing to stop a running task during restoration: $($Snapshot.name)"
-    }
-    if ([bool]$Snapshot.exists) {
-        Register-ScheduledTask -TaskPath '\' -TaskName ([string]$Snapshot.name) -Xml ([string]$Snapshot.xml) -Force | Out-Null
-    }
-    elseif ([bool]$current.exists) {
-        Unregister-ScheduledTask -TaskPath '\' -TaskName ([string]$Snapshot.name) -Confirm:$false
-    }
-    $after = Get-TaskSnapshot ([string]$Snapshot.name)
-    if ([bool]$after.exists -ne [bool]$Snapshot.exists) { throw 'Task restoration existence readback failed.' }
-    if ([bool]$Snapshot.exists -and [string]$after.xml_sha256 -cne [string]$Snapshot.xml_sha256) {
-        throw 'Task restoration XML readback failed.'
-    }
-}
 
 $beforeCanonical = Get-TaskSnapshot ([string]$spec.task_name)
 $beforeLegacy = Get-TaskSnapshot ([string]$spec.legacy_task_name)
-$operation = [string]$env:KMTECH_LABEL_CURRENT_USER_TASK_OPERATION
-if ($operation -notin @('Apply', 'Remove')) { throw 'Scheduled-task operation is invalid.' }
-$legacyRemediation = 'Disable or remove root scheduled task \direct-sync-relay-label-match-current-pc before Label enrollment; the canonical replacement is root scheduled task \direct-sync-relay-label-match using InteractiveToken, Limited, and PT1M.'
-if (
-    [bool]$beforeLegacy.exists -and
-    [string]$beforeLegacy.state -ine 'Disabled'
-) {
-    [ordered]@{
-        schema = [string]$spec.schema
-        status = 'FAIL'
-        failure = $legacyRemediation
-        reason_code = 'LEGACY_TASK_PRESENT_ENABLED'
-        required_state = 'ABSENT_OR_DISABLED'
-        manual_start = $false
-        process_or_task_stopped = $false
-        preimage = [ordered]@{ canonical = $beforeCanonical; legacy = $beforeLegacy }
-    } | ConvertTo-Json -Depth 20 -Compress
-    exit 2
+$report = [ordered]@{
+    schema = [string]$spec.schema
+    status = 'UNKNOWN'
+    action = 'ALREADY_ABSENT'
+    manual_start = $false
+    process_or_task_stopped = $false
+    task_disabled = $false
+    spec = $spec
+    preimage = [ordered]@{ canonical = $beforeCanonical; legacy = $beforeLegacy }
 }
-foreach ($snapshot in @($beforeCanonical, $beforeLegacy)) {
-    if ([bool]$snapshot.exists -and [string]$snapshot.state -ceq 'Running') {
-        throw "Refusing to stop or replace a running scheduled task: $($snapshot.name)"
-    }
-}
-
 try {
-    if ($operation -ceq 'Apply') {
-        $action = 'REUSED'
-        if (-not (Test-ExactTask $beforeCanonical)) {
-            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-            $taskAction = New-ScheduledTaskAction -Execute ([string]$spec.execute) -Argument ([string]$spec.arguments) -WorkingDirectory ([string]$spec.working_directory)
-            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
-            $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
-            $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
-            Register-ScheduledTask -TaskPath '\' -TaskName ([string]$spec.task_name) -Action $taskAction -Trigger $trigger -Settings $settings -Principal $principal -Description 'KMTech canonical current-user Label DirectSync TimeTrigger' -Force | Out-Null
-            $action = if ([bool]$beforeCanonical.exists) { 'REPLACED' } else { 'CREATED' }
-        }
-        $afterCanonical = Get-TaskSnapshot ([string]$spec.task_name)
-        if (-not (Test-ExactTask $afterCanonical)) { throw 'Canonical current-user task exact readback failed.' }
-        if ([bool]$beforeLegacy.exists) {
-            Unregister-ScheduledTask -TaskPath '\' -TaskName ([string]$spec.legacy_task_name) -Confirm:$false
-        }
-        $afterLegacy = Get-TaskSnapshot ([string]$spec.legacy_task_name)
-        if ([bool]$afterLegacy.exists) { throw 'Legacy Label task survived migration.' }
-        [ordered]@{
-            schema = [string]$spec.schema
-            status = 'PASS'
-            action = $action
-            manual_start = $false
-            process_or_task_stopped = $false
-            spec = $spec
-            legacy_quiescence_before = [ordered]@{
-                status = 'PASS'
-                reason_code = if ([bool]$beforeLegacy.exists) { 'LEGACY_TASK_DISABLED' } else { 'LEGACY_TASK_ABSENT' }
-                required_state = 'ABSENT_OR_DISABLED'
-            }
-            preimage = [ordered]@{ canonical = $beforeCanonical; legacy = $beforeLegacy }
-            canonical = $afterCanonical
-            legacy = $afterLegacy
-        } | ConvertTo-Json -Depth 20 -Compress
-        exit 0
+    # Historical SYSTEM-task cleanup belongs to the elevated public installer.
+    # An unrelated task is never removed just because its name is familiar.
+    if ([bool]$beforeLegacy.exists -and [string]$beforeLegacy.state -ine 'Disabled') {
+        throw 'Enabled historical Label task requires normal owned-task cleanup by the public installer.'
     }
-
-    foreach ($snapshot in @($beforeCanonical, $beforeLegacy)) {
-        if ([bool]$snapshot.exists) {
-            Unregister-ScheduledTask -TaskPath '\' -TaskName ([string]$snapshot.name) -Confirm:$false
+    if ([bool]$beforeCanonical.exists) {
+        if (-not (Test-ExactTask $beforeCanonical)) {
+            throw 'Refusing to retire a current-user task with different ownership or command.'
         }
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $folder = $service.GetFolder('\')
+        if ([bool]$beforeCanonical.enabled) {
+            Disable-ScheduledTask -TaskPath '\' -TaskName ([string]$spec.task_name) -ErrorAction Stop | Out-Null
+            $report.task_disabled = $true
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(120)
+        do {
+            $current = Get-TaskSnapshot ([string]$spec.task_name)
+            if (-not (Test-ExactTask $current) -or [bool]$current.enabled) {
+                throw 'Historical current-user task changed during retirement.'
+            }
+            # Disabled is not proof that an already running instance exited.
+            # Exact current-user/Limited ownership makes GetInstances complete.
+            $instances = $folder.GetTask([string]$spec.task_name).GetInstances(0)
+            if ($null -eq $instances -or $null -eq $instances.Count -or [int]$instances.Count -lt 0) {
+                throw 'Historical current-user task instance absence could not be observed.'
+            }
+            if ([int]$instances.Count -eq 0) { break }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw 'Historical current-user task did not finish naturally before the retirement timeout.'
+            }
+            Start-Sleep -Milliseconds 200
+        } while ($true)
+        $final = Get-TaskSnapshot ([string]$spec.task_name)
+        if (-not (Test-ExactTask $final) -or [bool]$final.enabled) {
+            throw 'Historical current-user task changed after its last instance finished.'
+        }
+        Unregister-ScheduledTask -TaskPath '\' -TaskName ([string]$spec.task_name) -Confirm:$false -ErrorAction Stop
+        $report.action = 'RETIRED'
     }
     $afterCanonical = Get-TaskSnapshot ([string]$spec.task_name)
-    $afterLegacy = Get-TaskSnapshot ([string]$spec.legacy_task_name)
-    if ([bool]$afterCanonical.exists -or [bool]$afterLegacy.exists) {
-        throw 'Current-user Label task removal readback failed.'
-    }
-    [ordered]@{
-        schema = [string]$spec.schema
-        status = 'ABSENT'
-        manual_start = $false
-        process_or_task_stopped = $false
-        spec = $spec
-        preimage = [ordered]@{ canonical = $beforeCanonical; legacy = $beforeLegacy }
-        canonical = $afterCanonical
-        legacy = $afterLegacy
-    } | ConvertTo-Json -Depth 20 -Compress
+    if ([bool]$afterCanonical.exists) { throw 'Historical current-user task absence was not proven.' }
+    $report.status = 'ABSENT'
+    $report.canonical = $afterCanonical
+    $report.legacy = $beforeLegacy
+    $report | ConvertTo-Json -Depth 20 -Compress
     exit 0
 }
 catch {
-    $failure = $_.Exception.Message
-    $rollbackFailure = ''
-    try {
-        Restore-TaskSnapshot $beforeCanonical
-        Restore-TaskSnapshot $beforeLegacy
-    }
-    catch { $rollbackFailure = $_.Exception.Message }
-    [ordered]@{
-        schema = [string]$spec.schema
-        status = if ($rollbackFailure) { 'ROLLBACK_FAILED' } else { 'FAILED_ROLLED_BACK' }
-        failure = $failure
-        rollback_failure = $rollbackFailure
-        manual_start = $false
-        process_or_task_stopped = $false
-        spec = $spec
-        preimage = [ordered]@{ canonical = $beforeCanonical; legacy = $beforeLegacy }
-    } | ConvertTo-Json -Depth 20 -Compress
+    # Keep a failed migration disabled; never recreate/re-enable an obsolete lane.
+    $report.status = 'FAILED'
+    $report.failure = $_.Exception.Message
+    $report | ConvertTo-Json -Depth 20 -Compress
     exit 1
 }
 """
@@ -462,8 +405,7 @@ def read_legacy_system_task_quiescence(
     return evaluate_legacy_task_quiescence(snapshot)
 
 
-def _run_task_operation(
-    operation: str,
+def _run_task_removal(
     spec: Mapping[str, Any],
     *,
     runner: Callable[..., Any] | None = None,
@@ -474,7 +416,6 @@ def _run_task_operation(
             "current-user scheduled-task registration is available only on Windows"
         )
     environment = os.environ.copy()
-    environment["KMTECH_LABEL_CURRENT_USER_TASK_OPERATION"] = operation
     environment["KMTECH_LABEL_CURRENT_USER_TASK_SPEC"] = json.dumps(
         dict(spec), ensure_ascii=True, separators=(",", ":"), sort_keys=True
     )
@@ -494,7 +435,7 @@ def _run_task_operation(
         text=True,
         capture_output=True,
         env=environment,
-        timeout=60,
+        timeout=150,
         check=False,
     )
     output = str(getattr(completed, "stdout", "") or "")
@@ -525,40 +466,6 @@ def _run_task_operation(
     return report
 
 
-@writer_sink("scheduled_task_install")
-def install_current_user_scheduled_task(
-    app_root: str | os.PathLike[str],
-    *,
-    runner: Callable[..., Any] | None = None,
-) -> dict[str, Any]:
-    spec = build_current_user_task_spec(app_root)
-    report = _run_task_operation("Apply", spec, runner=runner)
-    canonical = report.get("canonical") if isinstance(report, dict) else None
-    legacy = report.get("legacy") if isinstance(report, dict) else None
-    legacy_quiescence = (
-        report.get("legacy_quiescence_before") if isinstance(report, dict) else None
-    )
-    if (
-        report.get("schema") != TASK_CONTRACT_VERSION
-        or report.get("status") != "PASS"
-        or report.get("manual_start") is not False
-        or report.get("process_or_task_stopped") is not False
-        or not isinstance(canonical, dict)
-        or canonical.get("execute") != spec["execute"]
-        or canonical.get("arguments") != spec["arguments"]
-        or canonical.get("working_directory") != spec["working_directory"]
-        or canonical.get("repetition_interval") != "PT1M"
-        or canonical.get("principal_run_level") != "Limited"
-        or not isinstance(legacy, dict)
-        or legacy.get("exists") is not False
-        or not isinstance(legacy_quiescence, dict)
-        or legacy_quiescence.get("status") != "PASS"
-        or legacy_quiescence.get("required_state") != LEGACY_TASK_REQUIRED_STATE
-    ):
-        raise CurrentUserScheduledTaskError(
-            "scheduled-task apply evidence failed exact product readback"
-        )
-    return report
 
 
 @writer_sink("scheduled_task_remove")
@@ -568,7 +475,7 @@ def remove_current_user_scheduled_task(
     runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     spec = build_current_user_task_spec(app_root)
-    report = _run_task_operation("Remove", spec, runner=runner)
+    report = _run_task_removal(spec, runner=runner)
     if (
         report.get("schema") != TASK_CONTRACT_VERSION
         or report.get("status") != "ABSENT"

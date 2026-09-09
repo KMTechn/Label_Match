@@ -848,6 +848,7 @@ def test_start_user_relay_process_keeps_real_child_alive_long_enough_to_post(
                     check=False,
                     capture_output=True,
                     text=True,
+                    encoding="oem",
                     timeout=15,
                 )
     assert local_app_data.is_dir()

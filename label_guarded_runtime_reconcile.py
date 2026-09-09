@@ -223,9 +223,9 @@ def verify_client_backup(
     require_live_match: bool = True,
 ) -> dict[str, Any]:
     backup = Path(backup_path).expanduser().resolve(strict=False)
-    if backup.drive.casefold() != "e:" or not backup.is_file():
+    if not backup.is_file():
         raise GuardedRuntimeReconcileError(
-            "client backup must be an existing E: SQLite file"
+            "client backup must be an existing SQLite file"
         )
     live = Path(client_db_path).expanduser().resolve(strict=True)
     if _same_path(backup, live) or os.path.samefile(backup, live):
@@ -604,10 +604,9 @@ def _independent_initializer_replay(
     source_root: Path,
     producer_install_id: str,
 ) -> dict[str, Any]:
-    """Actually rerun the deployed initializers on a new E: snapshot copy."""
+    """Rerun the deployed initializers on a new copy beside the snapshot."""
 
-    if snapshot.drive.casefold() != "e:":
-        raise GuardedRuntimeReconcileError("independent initializer replay must stay on E:")
+    snapshot = snapshot.expanduser().resolve(strict=True)
     evidence_root = snapshot.parent / f"independent-initializer-{uuid.uuid4().hex}"
     tool = Path(__file__).resolve().parent / "tools" / "label_server_initializer_rehearsal.py"
     copied_snapshot = evidence_root / "source-snapshot.sqlite3"
@@ -1002,8 +1001,10 @@ def validate_server_initializer_proof(
         proof.get("schema_version") != SERVER_INITIALIZER_PROOF_SCHEMA
         or proof.get("status") != "PASS"
         or not _same_path(proof.get("live_server_db_path", ""), server_db_path)
-        or snapshot.drive.casefold() != "e:"
-        or rehearsal.drive.casefold() != "e:"
+        or _same_path(snapshot, server_db_path)
+        or os.path.samefile(snapshot, server_db_path)
+        or _same_path(rehearsal, server_db_path)
+        or os.path.samefile(rehearsal, server_db_path)
         or not source_root.is_dir()
         or not _same_path(source_root, expected_source_root)
         or len(source_commit) != 40

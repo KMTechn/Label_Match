@@ -6,6 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._possession_fixture import (
+    TEST_POSSESSION_FINGERPRINT,
+    TEST_POSSESSION_JWK,
+    fake_possession_descriptor,
+)
+
 
 TEST_MACHINE_GUID = "00112233-4455-6677-8899-aabbccddeeff"
 TEST_USER_SID = "S-1-5-21-100-200-300-1001"
@@ -25,31 +31,6 @@ def generated_install_id(module, *, user_sid=TEST_USER_SID, app_id=None):
         user_sid=user_sid,
         app_id=app_id or module.INSTALL_IDENTITY_APP_ID,
     )
-
-
-TEST_POSSESSION_JWK = {
-    "kty": "EC",
-    "crv": "P-256",
-    "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-    "y": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-}
-TEST_POSSESSION_FINGERPRINT = "test-possession-fingerprint"
-
-
-def fake_possession_descriptor(*, created=True):
-    return {
-        "contract_version": "producer-machine-possession-key-v1",
-        "provider_name": "Microsoft Software Key Storage Provider",
-        "key_name": "KMTech.DirectSync.Possession.v1",
-        "scope": "current_user",
-        "unique_name": "test-unique-name",
-        "created": created,
-        "public_jwk": dict(TEST_POSSESSION_JWK),
-        "fingerprint": TEST_POSSESSION_FINGERPRINT,
-        "machine_key": False,
-        "export_policy": 0,
-        "key_usage": 2,
-    }
 
 
 def fake_v2_enrollment_response(
@@ -1752,7 +1733,7 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
         credential_loader=lambda p: SimpleNamespace(**json.loads(p.read_text(encoding="utf-8-sig"))),
         ledger_factory=lambda p: p.write_bytes(b"test-ledger"),
         autostart_installer=lambda _root: {"status": "PASS"},
-        scheduled_task_installer=lambda _root: {"status": "PASS"},
+        scheduled_task_remover=lambda _root: {"status": "ABSENT"},
         legacy_task_quiescence_reader=lambda: {
             "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
             "required_state": "ABSENT_OR_DISABLED", "read_only": True,

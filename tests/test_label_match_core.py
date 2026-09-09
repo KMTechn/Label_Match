@@ -1929,6 +1929,7 @@ def test_f3_pending_first_keeps_second_prepared_input_on_reopen(tmp_path, monkey
         "bundle_id": "TRANSFER-B1-SECOND", "package_bundle_id": "PACKAGE-B1-SECOND",
         "authority_scope_id": "SCOPE-B1", "member_count": 4, "membership_hash": "e" * 64,
         "authority_epoch": 1, "ledger_plane": "SHADOW_CANDIDATE", "plane_epoch": 1,
+        "runtime_token": "restoration-private-canary",
     }
     try:
         # Use the real post-completion reset before accepting the next input.
@@ -1964,6 +1965,25 @@ def test_f3_pending_first_keeps_second_prepared_input_on_reopen(tmp_path, monkey
         assert restored.current_set_info["raw"] == [second_raw]
         assert restored.current_set_info["parsed"] == ["ITEM-B1"]
         assert restored.current_set_info["package_source_snapshot"] == snapshot
+        restored.data_manager.flush(timeout=5)
+        restore_events = []
+        for path in tmp_path.glob("포장실작업이벤트로그_B1_*.csv"):
+            with path.open(encoding="utf-8-sig", newline="") as stream:
+                restore_events.extend(
+                    json.loads(row["details"]) for row in csv.DictReader(stream)
+                    if row["event"] == "SET_RESTORED"
+                )
+        assert len(restore_events) == 1
+        restored_event = restore_events[0]
+        assert restored_event["set_id"] == "b1-second"
+        assert restored_event["continued_by"] == "worker-b1"
+        assert restored_event["canonical_event_name"] == "SET_RESTORED"
+        assert "restored_set" not in restored_event
+        assert all(isinstance(value, (str, int, bool, float, type(None)))
+                   for value in restored_event.values())
+        serialized_event = json.dumps(restored_event)
+        assert second_raw not in serialized_event
+        assert "restoration-private-canary" not in serialized_event
         _b1_assert_completion(tmp_path)
     finally:
         _b1_close(restored.data_manager)

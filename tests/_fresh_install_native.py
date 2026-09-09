@@ -10,9 +10,9 @@ if "--onboard-current-user" in sys.argv:
     import current_user_onboarding as onboarding
     from tools import register_label_match_worker_pc as registration
 
-    # Load the existing transport fixture without importing production from the
-    # checkout: the child continues to use the fully placed app modules.
-    fixtures = runpy.run_path(str(Path(__file__).with_name("test_register_label_match_worker_pc.py")))
+    # Only shared key data comes from the checkout; the isolated child uses
+    # placed production modules and does not require pytest.
+    fixtures = runpy.run_path(str(Path(__file__).with_name("_possession_fixture.py")))
     registration._prepare_possession_key = lambda _report: fixtures["fake_possession_descriptor"]()
 
     def enroll(_payload, **_kwargs):

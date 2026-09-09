@@ -27,108 +27,112 @@ def _run_legacy_task_removal_harness(tmp_path: Path, scenario: str):
     installer_text = INSTALLER.read_text(encoding="utf-8")
     start = installer_text.index("function Get-LegacyTaskByNameFailClosed")
     end = installer_text.index("function Test-CurrentUserRelayPersistencePresent")
-    functions = installer_text[start:end]
     harness = tmp_path / f"legacy-task-{scenario}.ps1"
-    harness.write_text(
-        functions
-        + rf"""
-$script:scenario = '{scenario}'
+    harness.write_text(installer_text[start:end] + r"""
+$ErrorActionPreference = 'Stop'
+$scenario = $env:KMTECH_LEGACY_TASK_SCENARIO
 $script:queryCalls = 0
 $script:stopCalls = 0
+$script:disableCalls = 0
 $script:unregisterCalls = 0
+$script:waitCalls = 0
+$script:instanceCalls = 0
 $script:lastRowType = ''
-$script:stopTaskPath = ''
-$script:unregisterTaskPath = ''
-
-function New-SyntheticOwnedTask([string]$TaskPath) {{
-    $row = [ordered]@{{
-        TaskName = 'legacy-label-task'
-        TaskPath = $TaskPath
-        Actions = @([ordered]@{{
-            Execute = 'powershell.exe'
-            Arguments = '-File C:\expected\current\relay.ps1'
-        }})
-    }}
+$script:present = $scenario -ne 'absent'
+$script:enabled = $scenario -ne 'disabled_running'
+$script:drifted = $false
+$taskName = 'direct-sync-relay-label-match-current-pc'
+$launcher = 'C:\ProgramData\KMTech\DirectSync\label-match-margin-r2\bin\run_direct-sync-relay-label-match-current-pc.vbs'
+function New-SyntheticOwnedTask {
+    $row = [ordered]@{
+        TaskName = $taskName; TaskPath = '\'; State = 'Running'
+        Settings = @{Enabled=$script:enabled}
+        Principal = @{UserId='SYSTEM'; LogonType='ServiceAccount'; RunLevel='Limited'}
+        Actions = @(@{Execute='wscript.exe'; Arguments="//B //NoLogo $launcher"; WorkingDirectory=''})
+    }
+    switch ($scenario) {
+        'foreign_folder' { $row.TaskPath = '\Owned\' }
+        'foreign_account' { $row.Principal.UserId = 'unrelated-user' }
+        'foreign_logon' { $row.Principal.LogonType = 'Password' }
+        'foreign_execute' { $row.Actions[0].Execute = 'C:\unexpected\wscript.exe' }
+        'substring_only' { $row.Actions[0].Arguments += ' --extra' }
+        'canonical_substring' { $row.Actions[0].Arguments = '-File C:\expected\current\anything.ps1' }
+        'foreign_cwd' { $row.Actions[0].WorkingDirectory = 'C:\unexpected' }
+        'ambiguous_action' { $row.Actions += $row.Actions[0] }
+        'missing_enabled' { $row.Settings.Enabled = $null }
+        'powershell' {
+            $row.Actions[0].Execute = 'powershell.exe'
+            $row.Actions[0].Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + $launcher.Replace('.vbs', '.ps1')
+        }
+        'sid' { $row.Principal.UserId = 'S-1-5-18' }
+    }
+    if ($script:drifted) { $row.Actions[0].Arguments += ' --changed' }
     $script:lastRowType = $row.GetType().FullName
     return $row
-}}
-
-function Get-ScheduledTask {{
-    param([object]$ErrorAction)
+}
+function Get-ScheduledTask {
+    param($ErrorAction)
     $script:queryCalls++
-    if ($script:scenario -eq 'query_error') {{
+    if ($scenario -eq 'query_error' -or ($scenario -eq 'readback_error' -and $script:unregisterCalls)) {
         throw [InvalidOperationException]::new('synthetic inventory failure')
-    }}
-    if ($script:scenario -eq 'duplicate') {{
-        return @(
-            (New-SyntheticOwnedTask '\One\'),
-            (New-SyntheticOwnedTask '\Two\')
-        )
-    }}
-    if ($script:scenario -eq 'readback_error') {{
-        if ($script:queryCalls -eq 1) {{ return New-SyntheticOwnedTask '\Owned\' }}
-        throw [InvalidOperationException]::new('synthetic readback failure')
-    }}
-    if ($script:scenario -eq 'still_present') {{
-        return New-SyntheticOwnedTask '\Owned\'
-    }}
+    }
+    if ($scenario -eq 'duplicate') { return @((New-SyntheticOwnedTask), (New-SyntheticOwnedTask)) }
+    if ($script:present) { return New-SyntheticOwnedTask }
     return @()
-}}
-
-function Stop-ScheduledTask {{
-    param([string]$TaskName, [string]$TaskPath, [object]$ErrorAction)
-    $script:stopCalls++
-    $script:stopTaskPath = $TaskPath
-}}
-
-function Unregister-ScheduledTask {{
-    param(
-        [string]$TaskName,
-        [string]$TaskPath,
-        [switch]$Confirm,
-        [object]$ErrorAction
-    )
+}
+function Export-ScheduledTask {
+    param($TaskName, $TaskPath, $ErrorAction)
+    $marker = if ($scenario -eq 'definition_drift' -and $script:disableCalls) { 'changed' } else { 'original' }
+    '<Task><Settings><Enabled>' + ([string]$script:enabled).ToLowerInvariant() + '</Enabled></Settings><Description>' + $marker + '</Description></Task>'
+}
+function Disable-ScheduledTask {
+    param($TaskName, $TaskPath, $ErrorAction)
+    if ($TaskName -cne $script:taskName -or $TaskPath -cne '\') { throw 'Wrong disable target' }
+    $script:disableCalls++
+    $script:enabled = $false
+}
+function Stop-ScheduledTask { $script:stopCalls++; throw 'Forbidden forced stop' }
+function Stop-Process { $script:stopCalls++; throw 'Forbidden forced process stop' }
+function Unregister-ScheduledTask {
+    param($TaskName, $TaskPath, $Confirm, $ErrorAction)
+    if ($TaskName -cne $script:taskName -or $TaskPath -cne '\' -or $script:enabled) { throw 'Wrong removal target/state' }
     $script:unregisterCalls++
-    $script:unregisterTaskPath = $TaskPath
-}}
-
+    if ($scenario -ne 'still_present') { $script:present = $false }
+}
+function Start-Sleep { param($Milliseconds); $script:waitCalls++ }
+$script:registered = [pscustomobject]@{}
+$script:registered | Add-Member ScriptMethod GetInstances {
+    param($flags)
+    if ($flags -ne 0) { throw 'Wrong instance visibility' }
+    if ($scenario -eq 'instance_error') { throw 'Synthetic instance failure' }
+    if ($scenario -eq 'instance_null') { return $null }
+    $script:instanceCalls++
+    $count = if ($scenario -in @('running', 'disabled_running') -and $script:instanceCalls -eq 1) { 1 } else { 0 }
+    if ($scenario -eq 'after_instance_drift') { $script:drifted = $true }
+    return [pscustomobject]@{Count=$count}
+}
+$script:folder = [pscustomobject]@{}
+$script:folder | Add-Member ScriptMethod GetTask { param($name); return $script:registered }
+$script:service = [pscustomobject]@{}
+$script:service | Add-Member ScriptMethod Connect {}
+$script:service | Add-Member ScriptMethod GetFolder { param($path); return $script:folder }
+function New-Object { param($ComObject); if ($ComObject -cne 'Schedule.Service') { throw 'Unexpected native object' }; return $script:service }
 $status = 'PASS'
 $message = ''
-try {{
-    Remove-OwnedLegacyTask 'legacy-label-task' 'C:\expected\current'
-}}
-catch {{
-    $status = 'FAIL'
-    $message = [string]$_.Exception.Message
-}}
-[pscustomobject]@{{
-    status = $status
-    message = $message
-    query_calls = $script:queryCalls
-    stop_calls = $script:stopCalls
-    unregister_calls = $script:unregisterCalls
-    row_type = $script:lastRowType
-    stop_task_path = $script:stopTaskPath
-    unregister_task_path = $script:unregisterTaskPath
-}} | ConvertTo-Json -Compress
-""",
-        encoding="utf-8-sig",
-    )
+try { Remove-OwnedLegacyTask $taskName }
+catch { $status = 'FAIL'; $message = [string]$_.Exception.Message }
+[pscustomobject]@{
+    status=$status; message=$message; query_calls=$script:queryCalls
+    stop_calls=$script:stopCalls; disable_calls=$script:disableCalls
+    unregister_calls=$script:unregisterCalls; wait_calls=$script:waitCalls
+    row_type=$script:lastRowType; enabled=$script:enabled
+} | ConvertTo-Json -Compress
+""", encoding="utf-8-sig")
     completed = subprocess.run(
-        [
-            _powershell(),
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(harness),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(harness)],
+        env={**os.environ, "KMTECH_LEGACY_TASK_SCENARIO": scenario},
+        check=False, capture_output=True, text=True, encoding="oem", timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
     return json.loads(completed.stdout)
@@ -162,6 +166,7 @@ def _run_installer(
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=timeout,
         env=environment,
     )
@@ -291,55 +296,61 @@ def test_bootstrap_powershell_parses():
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
-@pytest.mark.parametrize(
-    ("scenario", "message_fragment", "expected_unregister_calls"),
-    [
-        ("query_error", "observation failed", 0),
-        ("duplicate", "non-unique", 0),
-        ("readback_error", "observation failed", 1),
-        ("still_present", "removal readback failed", 1),
-    ],
-)
+@pytest.mark.parametrize(("scenario", "message_fragment", "expected_unregister_calls"), [
+    ("query_error", "observation failed", 0),
+    ("duplicate", "non-unique", 0),
+    ("readback_error", "observation failed", 1),
+    ("still_present", "removal readback failed", 1),
+    ("definition_drift", "changed during normal retirement", 0),
+    ("after_instance_drift", "different command", 0),
+    ("instance_error", "Synthetic instance failure", 0),
+    ("instance_null", "instance absence is unknown", 0),
+])
 def test_legacy_task_removal_fails_closed_without_host_mutation(
-    tmp_path,
-    scenario,
-    message_fragment,
-    expected_unregister_calls,
+    tmp_path, scenario, message_fragment, expected_unregister_calls,
 ):
     result = _run_legacy_task_removal_harness(tmp_path, scenario)
-
     assert result["status"] == "FAIL"
     assert message_fragment in result["message"]
     assert result["unregister_calls"] == expected_unregister_calls
-    assert result["stop_calls"] == expected_unregister_calls
+    assert result["stop_calls"] == 0
     if scenario != "query_error":
-        assert result["row_type"] == (
-            "System.Collections.Specialized.OrderedDictionary"
-        )
-    if expected_unregister_calls:
-        assert result["stop_task_path"] == "\\Owned\\"
-        assert result["unregister_task_path"] == "\\Owned\\"
+        assert result["row_type"] == "System.Collections.Specialized.OrderedDictionary"
+
+
+@pytest.mark.parametrize("scenario", [
+    "foreign_folder", "foreign_account", "foreign_logon", "foreign_execute",
+    "substring_only", "canonical_substring", "foreign_cwd", "ambiguous_action", "missing_enabled",
+])
+def test_legacy_task_foreign_binding_has_no_mutation(tmp_path, scenario):
+    result = _run_legacy_task_removal_harness(tmp_path, scenario)
+    assert result["status"] == "FAIL"
+    assert result["disable_calls"] == result["unregister_calls"] == result["stop_calls"] == 0
+
+
+@pytest.mark.parametrize("scenario", ["ready", "running", "disabled_running", "powershell", "sid"])
+def test_owned_legacy_task_finishes_naturally_before_removal(tmp_path, scenario):
+    result = _run_legacy_task_removal_harness(tmp_path, scenario)
+    assert result["status"] == "PASS", result["message"]
+    assert result["stop_calls"] == 0
+    assert result["unregister_calls"] == 1
+    assert result["disable_calls"] == (0 if scenario == "disabled_running" else 1)
+    assert result["wait_calls"] == (1 if scenario in {"running", "disabled_running"} else 0)
+    assert result["enabled"] is False
 
 
 def test_legacy_task_absence_is_the_only_clean_noop(tmp_path):
     result = _run_legacy_task_removal_harness(tmp_path, "absent")
-
-    assert result == {
-        "status": "PASS",
-        "message": "",
-        "query_calls": 1,
-        "stop_calls": 0,
-        "unregister_calls": 0,
-        "row_type": "",
-        "stop_task_path": "",
-        "unregister_task_path": "",
-    }
+    assert result["status"] == "PASS"
+    assert result["query_calls"] == 1
+    assert result["stop_calls"] == result["disable_calls"] == result["unregister_calls"] == 0
 
 
 def test_bootstrap_dry_run_does_not_create_identity_profile_or_target(tmp_path):

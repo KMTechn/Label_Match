@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import current_user_scheduled_task
 import user_relay
 
 
@@ -75,7 +74,7 @@ def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):
         scan_source_dir=tmp_path / "data",
         runtime_status_path=tmp_path / "state" / "status" / "scheduled.json",
         log_path=tmp_path / "state" / "logs" / "scheduled.jsonl",
-        worker_id=user_relay.LABEL_MATCH_SCHEDULED_WORKER_ID,
+        worker_id=user_relay.LABEL_MATCH_WORKER_ID,
     )
 
     assert persistent[:4] == [
@@ -92,7 +91,7 @@ def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):
         "-B",
         str((app_root / "app" / "main.py").resolve()),
     ]
-    assert user_relay.LABEL_MATCH_SCHEDULED_WORKER_ID in scheduled
+    assert user_relay.LABEL_MATCH_WORKER_ID in scheduled
     assert (
         str((tmp_path / "state" / "status" / "scheduled.json").resolve()) in scheduled
     )
@@ -146,13 +145,12 @@ class _Lease:
         self.closed = True
 
 
-@pytest.mark.parametrize("mode", ["persistent", "scheduled"])
 @pytest.mark.parametrize(
     "source_case",
     ["custom-default", "custom-env", "explicit", "empty", "null", "missing", "invalid"],
 )
 def test_relay_restart_discovers_csv_in_effective_data_root(
-    monkeypatch, tmp_path, mode, source_case
+    monkeypatch, tmp_path, source_case
 ):
     from tools.direct_sync_relay_runner import _scan_source_files
 
@@ -188,7 +186,6 @@ def test_relay_restart_discovers_csv_in_effective_data_root(
     spool_before = retained_spool.read_bytes()
     first_csv = expected_data / "포장실작업이벤트로그_first_20260908.csv"
     first_csv.write_text("timestamp,worker_name,event,details\n", encoding="utf-8")
-    monkeypatch.setattr(current_user_scheduled_task, "CANONICAL_ROOT", app_root)
     monkeypatch.setattr(
         "logistics_runtime_profile.load_logistics_runtime_profile",
         lambda **_kwargs: SimpleNamespace(tls_ca_bundle_path=""),
@@ -214,9 +211,8 @@ def test_relay_restart_discovers_csv_in_effective_data_root(
     arguments = ["--app-root", str(app_root)]
     if source_case == "explicit":
         arguments += ["--scan-source-dir", str(explicit_data)]
-    if mode == "persistent":
-        arguments.append("--once")
-    entry = user_relay.main if mode == "persistent" else user_relay.scheduled_main
+    arguments.append("--once")
+    entry = user_relay.main
     for attempt in range(2):
         # A fresh login does not inherit the GUI process's environment changes.
         monkeypatch.setenv("LOCALAPPDATA", str(local_root))
@@ -259,47 +255,9 @@ def test_stop_request_proves_single_instance_absence(tmp_path):
     assert report["stop_marker_schema"] == "label-match-user-relay-stop-v1"
 
 
-def test_scheduled_mode_uses_dedicated_status_and_worker(monkeypatch, tmp_path):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
-    app_root = (tmp_path / "app").resolve()
-    (app_root / "runtime").mkdir(parents=True)
-    (app_root / "app").mkdir()
-    (app_root / "runtime" / "python.exe").write_bytes(b"runtime")
-    (app_root / "app" / "main.py").write_text("pass\n", encoding="utf-8")
-    monkeypatch.setattr(current_user_scheduled_task, "CANONICAL_ROOT", app_root)
-    observed = []
-    monkeypatch.setattr(
-        "logistics_runtime_profile.load_logistics_runtime_profile",
-        lambda **_kwargs: SimpleNamespace(tls_ca_bundle_path="ca.pem"),
-    )
-    monkeypatch.setattr(
-        user_relay,
-        "_runtime_cycle",
-        lambda **kwargs: observed.append(kwargs) or {"process_status": "PASS"},
-    )
-    monkeypatch.setattr(
-        user_relay,
-        "_acquire_relay_lease",
-        lambda _key: SimpleNamespace(close=lambda: None),
-    )
-
-    assert user_relay.scheduled_main(["--app-root", str(app_root)]) == 0
-
-    assert len(observed) == 1
-    call = observed[0]
-    assert call["worker_id"] == user_relay.LABEL_MATCH_SCHEDULED_WORKER_ID
-    assert call["reason"] == "SCHEDULED_CURRENT_USER"
-    assert call["runtime_status_path"].name == "scheduled_direct_sync_relay_status.json"
-    assert call["log_path"].name == "scheduled_direct_sync_relay.jsonl"
-    scheduled_status = json.loads(
-        call["runtime_status_path"].read_text(encoding="utf-8")
-    )
-    assert scheduled_status["status"] == "PASS"
-    assert scheduled_status["outcome"] == "bounded_one_cycle"
-    assert len(scheduled_status["action_sha256"]) == 64
 
 
-def test_scheduled_mode_accepts_only_a_fresh_matching_persistent_owner(tmp_path):
+def test_existing_resident_requires_fresh_matching_owner(tmp_path):
     root = (tmp_path / "canonical").resolve()
     state = (tmp_path / "state").resolve()
     status = {
@@ -328,3 +286,89 @@ def test_scheduled_mode_accepts_only_a_fresh_matching_persistent_owner(tmp_path)
         )
         is None
     )
+
+
+@pytest.fixture
+def existing_relay_start(monkeypatch, tmp_path):
+    import os
+    import current_user_onboarding
+
+    app_root = (tmp_path / "installed").resolve()
+    app_root.mkdir()
+    (app_root / "Label_Match.exe").write_bytes(b"never executed")
+    state = (tmp_path / "current-user-state").resolve()
+    status_path = user_relay.user_relay_status_path(state)
+    status_path.parent.mkdir(parents=True)
+    payload = {
+        "status": "RUNNING", "worker_id": user_relay.LABEL_MATCH_WORKER_ID,
+        "process_id": os.getpid(), "app_root": str(app_root),
+        "direct_sync_root": str(state), "updated_at": user_relay._now(),
+    }
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(tmp_path / "writer-control"))
+    monkeypatch.setattr(current_user_onboarding, "resolve_current_user_onboarding_paths",
+                        lambda _root: SimpleNamespace(direct_sync_root=state))
+    monkeypatch.setattr(user_relay, "_acquire_relay_lease", lambda _key: None)
+    launches = []
+
+    def duplicate_child(*args, **kwargs):
+        launches.append((args, kwargs))
+        return SimpleNamespace(pid=314159, poll=lambda: 0)
+
+    monkeypatch.setattr(user_relay.subprocess, "Popen", duplicate_child)
+    return SimpleNamespace(app=app_root, state=state, path=status_path,
+                           payload=payload, launches=launches)
+
+
+def test_start_reuses_matching_live_relay_instead_of_rejecting_duplicate_exit_zero(
+    existing_relay_start,
+):
+    fixture = existing_relay_start
+    waits = []
+    result = user_relay.start_user_relay_process(
+        fixture.app, survival_seconds=2, wait=waits.append,
+    )
+    assert result["status"] == "ALIVE"
+    assert result["process_id"] == fixture.payload["process_id"]
+    assert result["existing_relay_reused"] is True
+    assert waits == [2]
+    assert fixture.launches == []
+
+
+@pytest.mark.parametrize("invalid", ["stopped", "wrong_app", "wrong_state", "stale", "dead", "stop_marker", "free_lease"])
+def test_start_does_not_turn_clean_child_exit_into_unproven_relay_readiness(
+    monkeypatch, existing_relay_start, invalid,
+):
+    fixture = existing_relay_start
+    payload = dict(fixture.payload)
+    if invalid == "stopped":
+        payload["status"] = "STOPPED"
+    elif invalid == "wrong_app":
+        payload["app_root"] = str(fixture.app / "other")
+    elif invalid == "wrong_state":
+        payload["direct_sync_root"] = str(fixture.state / "other")
+    elif invalid == "stale":
+        payload["updated_at"] = "2000-01-01T00:00:00+00:00"
+    elif invalid == "dead":
+        payload["process_id"] = 0xFFFFFFFF
+    elif invalid == "stop_marker":
+        marker = user_relay.user_relay_stop_path(fixture.state)
+        marker.parent.mkdir()
+        marker.write_text("{}", encoding="utf-8")
+    elif invalid == "free_lease":
+        monkeypatch.setattr(user_relay, "_acquire_relay_lease", lambda _key: _Lease())
+    fixture.path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(user_relay.UserRelayError):
+        user_relay.start_user_relay_process(fixture.app, wait=lambda _seconds: None)
+
+
+def test_existing_relay_must_still_match_after_survival_window(existing_relay_start):
+    fixture = existing_relay_start
+
+    def owner_stops(_seconds):
+        fixture.path.write_text(json.dumps({**fixture.payload, "status": "STOPPED"}), encoding="utf-8")
+
+    with pytest.raises(user_relay.UserRelayError):
+        user_relay.start_user_relay_process(fixture.app, wait=owner_stops)
+    assert fixture.launches == []

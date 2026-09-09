@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove on an E: SQLite snapshot that deployed server initializers are no-ops."""
+"""Prove on a separate SQLite snapshot that server initializers are no-ops."""
 
 from __future__ import annotations
 
@@ -74,9 +74,11 @@ def main() -> int:
     snapshot = args.snapshot.expanduser().resolve(strict=False)
     rehearsal = args.rehearsal.expanduser().resolve(strict=False)
     output = args.output.expanduser().resolve(strict=False)
+    if len({snapshot, rehearsal, output}) != 3:
+        raise RuntimeError("snapshot, rehearsal and output paths must be distinct")
     for selected in (snapshot, rehearsal, output):
-        if selected.drive.casefold() != "e:" or selected.exists():
-            raise RuntimeError("outputs must be new E: paths")
+        if selected.exists():
+            raise RuntimeError("outputs must be new paths")
         selected.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(f"file:{live.as_posix()}?mode=ro", uri=True) as source:
         source.execute("PRAGMA query_only=ON")

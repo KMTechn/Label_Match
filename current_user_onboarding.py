@@ -17,7 +17,6 @@ import uuid
 from current_user_scheduled_task import (
     LEGACY_TASK_QUIESCENCE_VERSION,
     LEGACY_TASK_REQUIRED_STATE,
-    install_current_user_scheduled_task,
     read_legacy_system_task_quiescence,
     remove_current_user_scheduled_task,
 )
@@ -851,9 +850,9 @@ def onboard_current_user(
     autostart_installer: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = install_user_relay_autostart,
-    scheduled_task_installer: Callable[
+    scheduled_task_remover: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
-    ] = install_current_user_scheduled_task,
+    ] = remove_current_user_scheduled_task,
     legacy_task_quiescence_reader: Callable[
         [], Mapping[str, Any]
     ] = read_legacy_system_task_quiescence,
@@ -1088,18 +1087,18 @@ def onboard_current_user(
             )
         if autostart_status != "PASS":
             raise ValueError("current-user relay autostart was not proven")
-        report["scheduled_task"] = dict(scheduled_task_installer(paths.app_root))
-        scheduled_task_status = str(report["scheduled_task"].get("status") or "")
-        if scheduled_task_status in {"", "UNKNOWN"}:
+        report["scheduled_task_migration"] = dict(scheduled_task_remover(paths.app_root))
+        migration_status = str(report["scheduled_task_migration"].get("status") or "")
+        if migration_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
-                "current-user scheduled-task result is UNKNOWN",
+                "historical scheduled-task retirement result is UNKNOWN",
                 report_path=paths.onboarding_report_path,
                 status="UNKNOWN",
             )
-        if scheduled_task_status != "PASS":
-            raise ValueError("current-user scheduled task was not proven")
+        if migration_status != "ABSENT":
+            raise ValueError("historical current-user scheduled task retirement was not proven")
         # The marker is a safety fence.  It is released only after canonical
-        # install ownership, HKCU, and Limited PT1M task bindings all read back.
+        # install ownership, HKCU, and historical task absence all read back.
         if report["stop_marker_release"].get("marker_present"):
             release = release_user_relay_stop_marker(
                 paths.direct_sync_root,
@@ -1136,7 +1135,7 @@ def onboard_current_user(
                 "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
                 "persistent_relay_principal": "current_user",
                 "system_scheduled_task_required": False,
-                "current_user_scheduled_task_required": True,
+                "current_user_scheduled_task_required": False,
                 "completed_at": _now(),
             }
         )
@@ -1217,8 +1216,16 @@ def remove_current_user_setup(
     }
     try:
         report["relay_autostart"] = dict(autostart_remover())
-        report["scheduled_task"] = dict(scheduled_task_remover(paths.app_root))
         report["relay_process"] = dict(relay_stopper(paths.direct_sync_root))
+        if str(report["relay_process"].get("status") or "") in {"", "UNKNOWN"}:
+            raise CurrentUserOnboardingError(
+                "current-user relay removal result is UNKNOWN",
+                report_path=paths.removal_report_path,
+                status="UNKNOWN",
+            )
+        if report["relay_process"].get("status") != "ABSENT":
+            raise ValueError("current-user relay process absence is UNKNOWN")
+        report["scheduled_task"] = dict(scheduled_task_remover(paths.app_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
         scheduled_task_status = str(report["scheduled_task"].get("status") or "")
         relay_status = str(report["relay_process"].get("status") or "")

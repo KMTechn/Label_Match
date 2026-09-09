@@ -87,9 +87,9 @@ from tools.capture_label_operator_ui import (
 
 
 _ADMITTED_BUSY_PRODUCT_CALLS = {
-    "phs2_admitted_busy": ("phs2-capture-validation", 10439),
-    "f4_admitted_busy": ("f4-central-source-lookup", 11497),
-    "f3_admitted_busy": ("f3-package-completion", 14124),
+    "phs2_admitted_busy": "phs2-capture-validation",
+    "f4_admitted_busy": "f4-central-source-lookup",
+    "f3_admitted_busy": "f3-package-completion",
 }
 
 
@@ -97,9 +97,7 @@ _ADMITTED_BUSY_PRODUCT_CALLS = {
 def _product_admitted_busy_seam_literals():
     product_source = (capture.ROOT / "Label_Match.py").read_text(encoding="utf-8")
     product_tree = ast.parse(product_source)
-    expected_tasks = {
-        task_name for task_name, _line in _ADMITTED_BUSY_PRODUCT_CALLS.values()
-    }
+    expected_tasks = set(_ADMITTED_BUSY_PRODUCT_CALLS.values())
     prefixes_by_task = {}
     for node in ast.walk(product_tree):
         if not (
@@ -118,7 +116,6 @@ def _product_admitted_busy_seam_literals():
         assert task_node.value not in prefixes_by_task
         prefixes_by_task[task_node.value] = {
             "text": prefix_node.value,
-            "line": prefix_node.lineno,
         }
 
     label_class = next(
@@ -150,20 +147,16 @@ def _product_admitted_busy_seam_literals():
                 for suffix_node in suffix_nodes
             )
             templates.append(
-                (
-                    "".join(suffix_node.value for suffix_node in suffix_nodes),
-                    node.lineno,
-                )
+                "".join(suffix_node.value for suffix_node in suffix_nodes)
             )
 
     assert set(prefixes_by_task) == expected_tasks
     assert len(templates) == 1
     prefixes_by_state = {
         state_id: prefixes_by_task[task_name]
-        for state_id, (task_name, _line) in _ADMITTED_BUSY_PRODUCT_CALLS.items()
+        for state_id, task_name in _ADMITTED_BUSY_PRODUCT_CALLS.items()
     }
-    suffix, suffix_line = templates[0]
-    return prefixes_by_state, suffix, suffix_line
+    return prefixes_by_state, templates[0]
 
 
 def test_default_capture_matrix_covers_required_sizes_states_and_scale():
@@ -627,14 +620,12 @@ def test_only_the_state_selected_live_scan_tree_is_mapping_critical():
 
 
 def test_admitted_busy_strings_use_exact_product_literals_and_are_absent_from_tools():
-    prefixes, suffix, suffix_line = _product_admitted_busy_seam_literals()
+    prefixes, suffix = _product_admitted_busy_seam_literals()
 
-    assert suffix_line == 5383
-    for state_id, (task_name, prefix_line) in _ADMITTED_BUSY_PRODUCT_CALLS.items():
+    for state_id, task_name in _ADMITTED_BUSY_PRODUCT_CALLS.items():
         spec = M7_STATE_CONTRACT[state_id]
         product_prefix = prefixes[state_id]
 
-        assert product_prefix["line"] == prefix_line
         assert product_prefix["text"] == spec["busy_text"]
         assert spec["task_name"] == task_name
         assert spec["expected_headline"] == product_prefix["text"]
@@ -790,7 +781,7 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
             MethodType(getattr(Label_Match, method_name), app),
         )
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
-    product_prefixes, product_suffix, _suffix_line = (
+    product_prefixes, product_suffix = (
         _product_admitted_busy_seam_literals()
     )
 
@@ -3214,7 +3205,7 @@ def _valid_capture_record(state_id: str = "qa_progress"):
     status_text = str(m7_spec.get("expected_status") or "")
     production_busy_seam_output = None
     if m7_spec.get("expected_status_source") == "production_busy_seam":
-        product_prefixes, product_suffix, _suffix_line = (
+        product_prefixes, product_suffix = (
             _product_admitted_busy_seam_literals()
         )
         product_prefix = product_prefixes[state_id]["text"]
@@ -4094,8 +4085,12 @@ def test_source_identity_requires_exact_clean_commit_and_tree(monkeypatch, tmp_p
 
 
 def test_actual_unchecked_hash_poisoned_pyc_is_rejected_before_source_import(
+    monkeypatch,
     tmp_path,
 ):
+    # This case poisons source-local bytecode; the next case covers an external
+    # cache prefix. Keep the fixture independent of the invoking interpreter.
+    monkeypatch.setattr(sys, "pycache_prefix", None)
     source = tmp_path / "source"
     source.mkdir()
     app_path = source / "Label_Match.py"

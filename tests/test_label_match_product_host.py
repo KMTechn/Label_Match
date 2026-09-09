@@ -78,6 +78,8 @@ def test_frozen_hosted_relay_warns_and_continues_when_record_is_absent(
     monkeypatch, capsys, tmp_path
 ):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_ROOT", raising=False)
+    monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT", raising=False)
     monkeypatch.setattr(
         product_host,
         "_verify_frozen_host_integrity",
@@ -106,6 +108,8 @@ def test_windowed_host_persists_absent_integrity_warning_without_stderr(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_ROOT", raising=False)
+    monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT", raising=False)
     monkeypatch.setattr(
         product_host,
         "_verify_frozen_host_integrity",
@@ -204,11 +208,6 @@ def test_user_relay_onboarding_and_removal_modes_dispatch_in_process(monkeypatch
         lambda arguments: observed.append(("relay", list(arguments))) or 0,
     )
     monkeypatch.setattr(
-        user_relay,
-        "scheduled_main",
-        lambda arguments: observed.append(("scheduled", list(arguments))) or 0,
-    )
-    monkeypatch.setattr(
         current_user_onboarding,
         "onboarding_main",
         lambda arguments: observed.append(("onboard", list(arguments))) or 0,
@@ -225,12 +224,6 @@ def test_user_relay_onboarding_and_removal_modes_dispatch_in_process(monkeypatch
     )
     assert (
         product_host.dispatch_product_mode(
-            [product_host.SCHEDULED_RELAY_MODE, "--app-root", "app"]
-        )
-        == 0
-    )
-    assert (
-        product_host.dispatch_product_mode(
             [product_host.ONBOARD_CURRENT_USER_MODE, "--app-root", "app"]
         )
         == 0
@@ -243,7 +236,17 @@ def test_user_relay_onboarding_and_removal_modes_dispatch_in_process(monkeypatch
     )
     assert observed == [
         ("relay", ["--once"]),
-        ("scheduled", ["--app-root", "app"]),
         ("onboard", ["--app-root", "app"]),
         ("remove", ["--app-root", "app"]),
     ]
+
+
+def test_retired_scheduled_argv_never_dispatches_a_relay_or_falls_through_to_gui(monkeypatch):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("Retired task started an active product path")
+    monkeypatch.setattr(user_relay, "main", unexpected)
+    monkeypatch.setattr(product_host, "_verify_frozen_host_integrity", unexpected)
+    assert product_host.dispatch_product_mode([
+        product_host.RETIRED_SCHEDULED_RELAY_MODE, "--app-root", "old-task-root",
+    ]) == 2
+    assert product_host.RETIRED_SCHEDULED_RELAY_MODE not in product_host.PRODUCT_MODES

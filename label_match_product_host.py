@@ -14,14 +14,13 @@ import uuid
 
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
 USER_RELAY_MODE = "--label-match-user-relay"
-SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
+RETIRED_SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
 ONBOARD_CURRENT_USER_MODE = "--onboard-current-user"
 REMOVE_CURRENT_USER_MODE = "--remove-current-user-setup"
 PRODUCT_MODES = frozenset(
     {
         DIRECT_SYNC_RELAY_MODE,
         USER_RELAY_MODE,
-        SCHEDULED_RELAY_MODE,
         ONBOARD_CURRENT_USER_MODE,
         REMOVE_CURRENT_USER_MODE,
     }
@@ -166,9 +165,7 @@ def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> 
         "updated_at": captured_at,
     }
     status_path = _option_value(arguments, "--runtime-status-path")
-    if not status_path and (
-        USER_RELAY_MODE in arguments or SCHEDULED_RELAY_MODE in arguments
-    ):
+    if not status_path and USER_RELAY_MODE in arguments:
         try:
             from current_user_onboarding import resolve_current_user_onboarding_paths
 
@@ -182,11 +179,7 @@ def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> 
                     else _default_product_root()
                 )
             )
-            status_name = (
-                "scheduled_direct_sync_relay_status.json"
-                if SCHEDULED_RELAY_MODE in arguments
-                else "label_match_user_relay.json"
-            )
+            status_name = "label_match_user_relay.json"
             status_path = str(
                 resolve_current_user_onboarding_paths(app_root).status_dir / status_name
             )
@@ -233,6 +226,9 @@ def _usable_output_streams() -> Iterator[None]:
 
 def dispatch_product_mode(argv: Sequence[str]) -> int | None:
     arguments = list(argv)
+    # A stale historical trigger must not fall through into a hidden GUI.
+    if arguments and arguments[0] == RETIRED_SCHEDULED_RELAY_MODE:
+        return 2
     if not arguments or arguments[0] not in PRODUCT_MODES:
         return None
     mode = arguments.pop(0)
@@ -241,8 +237,7 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
         if mode in {
             DIRECT_SYNC_RELAY_MODE,
             USER_RELAY_MODE,
-            SCHEDULED_RELAY_MODE,
-        }:
+            }:
             try:
                 integrity = _verify_frozen_host_integrity()
                 if integrity.get("status") == "ABSENT":
@@ -270,14 +265,6 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
                 return int(user_relay_main(arguments))
             except Exception as exc:
                 _record_hosted_relay_failure([USER_RELAY_MODE, *arguments], exc)
-                return HOSTED_RELAY_FAILURE_EXIT_CODE
-        if mode == SCHEDULED_RELAY_MODE:
-            try:
-                from user_relay import scheduled_main
-
-                return int(scheduled_main(arguments))
-            except Exception as exc:
-                _record_hosted_relay_failure([SCHEDULED_RELAY_MODE, *arguments], exc)
                 return HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == ONBOARD_CURRENT_USER_MODE:
             from current_user_onboarding import onboarding_main

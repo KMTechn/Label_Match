@@ -76,8 +76,14 @@ def _fixture(tmp_path, healthy_pair):
     install = tmp_path / "canonical/current"
     shutil.copytree(old, install)
     env = _environment(tmp_path)
-    for name in ("LABEL_MATCH_DIRECT_SYNC_ROOT", "LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_SETTINGS_PATH", "KM_LOGISTICS_PROFILE_PATH"):
-        env.pop(name)
+    for name in (
+        "LABEL_MATCH_DIRECT_SYNC_ROOT",
+        "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT",
+        "LABEL_MATCH_SAVE_DIR",
+        "LABEL_MATCH_SETTINGS_PATH",
+        "KM_LOGISTICS_PROFILE_PATH",
+    ):
+        env.pop(name, None)
     for name in ("KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH", "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256"):
         env.pop(name, None)
     env.update(LM_HEALTHY_LIFECYCLE_FIXTURE="1", LM_HEALTHY_INSTALL_ROOT=str(install), LM_TRANSITION_ACTIVATION_FIXTURE="1")
@@ -424,6 +430,7 @@ def test_healthy_upgrade_failure_restores_exact_code_identity_and_running_relay(
 def test_healthy_admission_rejects_foreign_task_ownership(tmp_path, healthy_pair, foreign):
     install, candidate, env, paths = _fixture(tmp_path, healthy_pair)
     code = _definitions() + f'''
+$defaultDirectSyncRoot = {_quote(paths.direct_sync_root)}
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $task = [pscustomobject]@{{Principal=[pscustomobject]@{{UserId=$(if ({_quote(foreign)} -ceq 'principal') {{ 'S-1-5-18' }} else {{ $sid }}); RunLevel='Limited'; LogonType='Interactive'}}; Actions=@([pscustomobject]@{{Execute='C:\\foreign\\python.exe'; Arguments='foreign'; WorkingDirectory='C:\\foreign'}})}}
 Assert-HealthyLifecycleOwnership ([pscustomobject]@{{exists=$false}}) @() @($task) {_quote(install)}
@@ -431,6 +438,50 @@ Assert-HealthyLifecycleOwnership ([pscustomobject]@{{exists=$false}}) @() @($tas
     result = _ps(tmp_path, code, env)
     assert result.returncode != 0
     assert "Healthy lifecycle task belongs to another" in result.stderr
+
+
+@pytest.mark.parametrize("foreign_log", [False, True])
+def test_healthy_task_admission_matches_normal_creator_log_path(
+    tmp_path, monkeypatch, foreign_log,
+):
+    import current_user_onboarding
+    import current_user_scheduled_task
+
+    # Exercise the real creator and real read-only PowerShell admission function;
+    # no scheduled task, runtime, profile credential or installed tree is changed.
+    install = tmp_path / "canonical path" / "current"
+    (install / "runtime").mkdir(parents=True)
+    (install / "app").mkdir()
+    (install / "runtime" / "python.exe").write_bytes(b"never executed")
+    (install / "app" / "main.py").write_text("raise AssertionError('never run')\n")
+    env = _environment(tmp_path)
+    paths = resolve_current_user_onboarding_paths(install, environ=env)
+    monkeypatch.setattr(current_user_scheduled_task, "CANONICAL_ROOT", install)
+    monkeypatch.setattr(current_user_onboarding, "resolve_current_user_onboarding_paths",
+                        lambda _root: paths)
+    spec = current_user_scheduled_task.build_current_user_task_spec(install)
+    if foreign_log:
+        spec["arguments"] = spec["arguments"].replace(
+            subprocess.list2cmdline([str(paths.logs_dir / "scheduled_direct_sync_relay.jsonl")]),
+            subprocess.list2cmdline([str(tmp_path / "foreign log.jsonl")]),
+        )
+    spec_path = tmp_path / "task-spec.json"
+    _json(spec_path, spec)
+    code = _definitions() + f'''
+$defaultDirectSyncRoot = {_quote(paths.direct_sync_root)}
+$spec = Get-Content -LiteralPath {_quote(spec_path)} -Raw | ConvertFrom-Json
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$task = [pscustomobject]@{{Principal=[pscustomobject]@{{UserId=$sid; RunLevel='Limited'; LogonType='Interactive'}}; Actions=@([pscustomobject]@{{Execute=$spec.execute; Arguments=$spec.arguments; WorkingDirectory=$spec.working_directory}})}}
+Assert-HealthyLifecycleOwnership ([pscustomobject]@{{exists=$false}}) @() @($task) {_quote(install)}
+Write-Output 'OWNERSHIP_PASS'
+'''
+    result = _ps(tmp_path, code, env)
+    if foreign_log:
+        assert result.returncode != 0
+        assert "Healthy lifecycle task belongs to another command" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "OWNERSHIP_PASS" in result.stdout
 
 
 def test_normal_marker_release_requires_active_writer_fence(tmp_path, healthy_pair):
@@ -532,8 +583,14 @@ def _fresh_fixture(tmp_path, healthy_pair, error):
     _old, candidate = healthy_pair
     install = tmp_path / "canonical/current"
     env = _environment(tmp_path)
-    for name in ("LABEL_MATCH_DIRECT_SYNC_ROOT", "LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_SETTINGS_PATH", "KM_LOGISTICS_PROFILE_PATH"):
-        env.pop(name)
+    for name in (
+        "LABEL_MATCH_DIRECT_SYNC_ROOT",
+        "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT",
+        "LABEL_MATCH_SAVE_DIR",
+        "LABEL_MATCH_SETTINGS_PATH",
+        "KM_LOGISTICS_PROFILE_PATH",
+    ):
+        env.pop(name, None)
     env.update(
         LM_HEALTHY_LIFECYCLE_FIXTURE="1", LM_HEALTHY_INSTALL_ROOT=str(install),
         LM_TRANSITION_NATIVE_ADAPTER=str(Path(__file__).with_name("_fresh_install_native.py")),
@@ -548,6 +605,9 @@ def test_fresh_identity_conflict_retains_code_and_reports_recovery_required(tmp_
     install, candidate, env, paths = _fresh_fixture(tmp_path, healthy_pair, "producer_identity_conflict")
     result = _install(tmp_path, install, candidate, env)
     assert result.returncode == 0, result.stderr[-2200:]
+    registration = json.loads(paths.registration_report_path.read_text(encoding="utf-8"))
+    assert registration["server_error_code"] == "producer_identity_conflict"
+    assert registration["server_http_status"] == 409
     audit = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))
     assert audit["status"] == "RECOVERY_REQUIRED"
     assert audit["code_state"] == "PRESENT"
@@ -567,6 +627,9 @@ def test_fresh_genuine_enrollment_failure_restores_actual_code_absence(tmp_path,
     install, candidate, env, paths = _fresh_fixture(tmp_path, healthy_pair, "enrollment_token_invalid")
     result = _install(tmp_path, install, candidate, env)
     assert result.returncode != 0
+    registration = json.loads(paths.registration_report_path.read_text(encoding="utf-8"))
+    assert registration["server_error_code"] == "enrollment_token_invalid"
+    assert registration["server_http_status"] == 401
     audit = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))
     assert audit["status"] == "FAILED_ROLLED_BACK", result.stderr[-2200:]
     assert not install.exists()

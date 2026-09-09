@@ -144,6 +144,7 @@ def _run_clean_install_receipt_gate_harness(
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
         env=environment,
     )
@@ -223,6 +224,7 @@ function Get-ScheduledTask {{ return $null }}
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
@@ -328,6 +330,7 @@ $result = Test-PristineInstallState `
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
@@ -414,6 +417,7 @@ catch {{
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
@@ -473,6 +477,7 @@ catch {{
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
 
@@ -894,6 +899,7 @@ catch {{
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
@@ -984,6 +990,7 @@ catch {{
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
@@ -1166,6 +1173,7 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
@@ -1326,6 +1334,7 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
     )
 
@@ -1444,6 +1453,7 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=30,
         env=environment,
     )
@@ -1532,6 +1542,7 @@ def _run_windows_powershell_file(
         check=False,
         capture_output=True,
         text=True,
+        encoding="oem",
         timeout=timeout,
     )
 

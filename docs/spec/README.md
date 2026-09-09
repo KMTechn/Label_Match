@@ -4,7 +4,20 @@
 
 [전체 허브](../../../Program_Spec_Hub/README.md) · [계약](contracts.md) · [운영](operations.md) · [남은 일](BACKLOG.md) · [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)
 
+[receipt12 최종 native continuation](E:/KMTech/label-install-qualification-20260908/RECEIPT12-NATIVE.md)은 수용 source `da60e05e9bf07855f701fff328df70c10db0a094` / ZIP `782d585bf09396da8c33fbb3f1c3b24afc6a8716f73e0b4983b951a896633d6e` / manifest `829f5f2230add6f0245106c5b4dac40547f56941792c2da46dbf5318effa6111`에 결속된다. 원 assigned VM에서 동일 artifact의 정상 설치 attempt02 native0, exact retained14의 지원 `ack-reviewed` native0, 지원 current-user 제거·code-only 제거, 수용 timing06 prior-code 설치/보존, 최종 receipt12 복귀 설치03:42:16Z/native0와 readback0을 완료했다. GUI13은 기존 resident를 재사용하여 PHS2 대기·이전 완료 이력을 표시하고03:44:40Z/native0으로 정상 종료했다. 실제 정상 shutdown 뒤 Off/uptime0을 관측하고 새 boot03:46:01Z·Explorer4640/session1에서 원 SID의 resident7556이 03:46:22Z에 자동 시작한 것을 확인했다. 수동 product 시작 전 단일 resident·정상 HKCU Run·canonical task0·stop/fence 없음이며 postboot native0은 payload3,391개와 보호 파일25개, 최신 post-review backup의 업무11 tables/40 rows를 확인한다. 전체 상태 메타데이터는 40/51개 동일하며 나머지 11개 status/control/settings/log 변경을 기록했다. app_settings 필드별 차이는 미확인이고 전체 config/DB/schema/hidden-rowid 동일성이나 새 대상 설치를 주장하지 않는다. [최종 보존 readback0](E:/KMTech/label-install-qualification-20260908/RECEIPT12-FINAL-PRESERVATION02.json)은 원 receipt/metadata/spool/attempt1·audit1과 inserted10/quarantined4를 유지하고 queue11ACKED를 기록한다. 원 event CSV prefix 두 개가 동일하며 APP_START1·APP_CLOSE1만 추가됐다. 원 F1/F4/F3·shipping·로컬7 업무나 pre-F3 DB 복원을 반복하지 않았다. 첫 설치 native1/UAC 취소·지원 rollback, 별도 pre-execution policy rejection과 reader 실패는 이력으로 보존한다. [Main의 선택 범위 최종 native 수용](E:/KMTech/resume-after-input-20260908/LABEL-RECEIPT12-FINAL-NATIVE-ACCEPTED.json)은 `PROVEN_SELECTED_LABEL_FINAL_NATIVE_ACCEPTED`이며 Main msg_b42de21979ea 승인에 따른 정상 guest shutdown 뒤 [최종 VM Off/uptime0](E:/KMTech/label-install-qualification-20260908/RECEIPT12-FINAL-VM-OFF.json)을 03:58:51Z에 확인했다. 이 수용은 기존 assigned VM의 선택된 Label 범위에 한정한다. 전체 제품 Ready는 **0/6**이며 여섯 프로그램의 현재 조합 판정과 다음 S05 source workspace 결정은 Main 소유다.
+
+[receipt12 공개 이벤트·strict RAW 교정](E:/KMTech/label-install-qualification-20260908/RECEIPT12-SOURCE.md)은 `SET_CANCELLED`를 공개 `set_id`만 기록하도록 제한하고 `SEALED_TRANSFER_EXCHANGE_APPLIED`에서 `old_seal_qr_payload`·`new_seal_qr_payload`만 제거한다. 공개 set/intent/receipt/bundle·멤버 목록·version과 private 취소·복구·apply 상태는 유지한다. strict RAW allowlist에 정확히 두 이름만 추가하며 receipt/identity/hash/bytes/행·event 합계, `OBSERVED/RAW_EVIDENCE_ONLY/NOT_PROJECTED/NO_STAGE1_REDUCER`, quarantine/errors=0 및 runtime fence를 그대로 요구한다. 저장된 bytes와 근거 hash를 확인하여 focused60·inventory4 PASS와 parent causal6 FAIL을 재실행 없이 재사용했다. 동일44 writer identity/guard의 pin은 `507da9c952a88649cd06c090f45fb6e1bb5129de12260a747741b744ccc1d4cb`다. receipt11 `7c4abfa`/ZIP2094ba6a를 parent/recovery로 보존하고 단 한 번 고정·빌드한 수용 source12는 `da60e05e9bf07855f701fff328df70c10db0a094`다. Web05 normalizer의 기존 공개 형식을 사용하며 reducer/비밀 검증을 변경하지 않는다. [native 완료 근거](E:/KMTech/label-install-qualification-20260908/RECEIPT12-NATIVE.md)와 [최종 source 소유권 지도](E:/KMTech/label-install-qualification-20260908/RECEIPT12-SOURCE-OWNERSHIP.md)를 연결한다. 이 문서의 최종 native 기록만 갱신했으며 고정 artifact는 재빌드하지 않았다. Ready **0/6**이다.
+
+### 2026-09-09 · F1 현재 접수 취소 (source 및 원래 세트 native 검증)
+
+Main의 F1 독립 감사에 따라 cancel07은 현재 세트의 정확한 owned·unsubmitted 접수를 `CANCELLED`와 `TC_CANCEL`로 먼저 commit한 뒤 화면·저장 cache를 비운다. 확인된 과거 lease 발급은 로컬 취소의 일괄 금지 사유가 아니며, payload·검증 이력·PREFETCHED lease·ACTIVE issue attempt·중앙 reservation·receipt는 유지한다. commit과 cache 삭제 사이 중단 뒤 복원 및 늦은 materializer도 CANCELLED를 되살리지 않는다. [계약](contracts.md#f1-capture-cancellation)과 [후보 검증·운영 범위](operations.md#f1-cancel07-qualification)를 함께 따른다.
+
+host 370 PASS와 만료 보존 lease의 최종 22 PASS는 source 범위다. [원래 세트 native F1·정상 재시작](operations.md#f1-cancel07-native)은 해당 후보에서 실제 확인했으며, 새 case04 업무와 최종 artifact lifecycle은 아직 별도 수용 범위다. 실패와 이전 timing06 증거는 각 원래 범위로 보존한다.
+
+
 ## 기준과 판정 범위
+
+2026-09-08 새 VM 수용은 원래 HTTP409·등록 복구 epoch 4·relay 재시작 및 successor 설치 실패를 보존한다. 현재 후보의 실제 설치·입력·상태 보존과 직전 후보의 F3 서버 확정은 위 범위로 구분한다. 앱 READY는 등록 상태이며 전체 업무·운영 수용 완료를 뜻하지 않는다.
 
 - 최초 조사일: **2026-09-07**, 후속 소스 종결·증거 갱신일: **2026-09-08**. 최초 Label HEAD `3f535c97086129862e5c4699f0d4d0b3b69152a7`, 소스의 `APP_VERSION=v2.0.94`를 기준으로 조사했다. 버전 문자열은 설치본의 신원이 아니다.
 - 최초 작업 트리는 `Label_Match.py`, `tests/test_deferred_intent_capture.py`, `tests/test_label_match_core.py`, `tests/test_label_ui_lane_integration.py` 수정 및 `tests/test_completion_csv_durability.py` 미추적 상태였으므로 당시 HEAD만으로 재현할 수 없었다. [작성 전 파일·index 해시](E:/KMTech/spec-hub-build-20260907/Label_Match/PRESTATE.json)와 [문서 검토 보고](E:/KMTech/spec-hub-build-20260907/Label_Match/IMPLEMENTATION.md)는 이력으로 보존한다. 후속 [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md)은 parent `a28e40d9b11cb374b34835b5b94c92fc2ee12071` 위에 다섯 경로의 테스트 당시 working bytes와 네 명세를 묶고, working SHA256과 Git EOL 정규화 blob pins를 별도로 기록한다.
@@ -133,9 +146,9 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 <a id="lm-05"></a>
 ### LM-05 F4 제품 교체·새 전자 QR 확인
 
-- 시작/입력: PACKAGE 생성 전 전체 단일 TRANSFER 작업에서 F4, 기존 제품→새 GOOD 제품 1~2쌍. 중앙 capability와 현재 seal, 같은 lot·품목·UOM, 단품 donor PHS를 대조한다.
+- 시작/입력: PACKAGE 생성 전 전체 단일 TRANSFER 작업에서 F4, 기존 제품→새 GOOD 제품 1~2쌍. 중앙 capability와 현재 seal, 같은 권한·원장·품목·UOM과 bundle 내부 accounting binding, 단품 donor PHS를 대조한다.
 - 쓰기/결과: 중앙은 대상·donor·damage bundle version을 검사해 원자 교체하고 새 seal receipt를 만든다. 앱은 저장된 receipt를 검증한 뒤 새 QR 확인을 요구한다. **원본 물리 PHS2는 유지하고 새 전자 봉인 QR을 화면에서 다시 스캔한다.**
-- 실패/복구: 부분/다중 TRANSFER work-group, 부적합 donor·stale version·불완전 receipt는 차단한다. ACK 유실은 저장 intent/receipt로 복구하고 재확인 전 정상 후속 동작을 제한한다. 일반 F4는 물리 출력 업무가 아니다.
+- 실패/복구: 부분/다중 TRANSFER work-group, 부적합 donor·stale version·불완전 receipt는 차단한다. ACK 유실은 저장 intent/receipt로 복구하고 재확인 전 정상 후속 동작을 제한한다. exact legacy IIN pre-command review는 같은 intent로 fresh validation→durable bind한다. exact precommit PHS instruction rejection의 durable review만 authoritative receipt 부재·원 command/hash 무결성·fresh command 완전 일치 뒤 같은 key로 복구하며, 반복 terminal 거부는 별도 review reason으로 멈춘다. 그 외 durable review는 receipt 조회만 허용한다. 일반 F4는 물리 출력 업무가 아니다.
 - 수용 기준: 1쌍/2쌍 성공 시 제품 수는 보존되고 교체 멤버·seal version이 일치한다. 거부 시 부분 교체가 없고, 새 QR 검증·로컬 저장 중단 후에도 두 번 교체하지 않는다.
 - 근거: [교체 command/attempt](../../sealed_transfer_exchange.py), [QR 확인/gate](../../Label_Match.py), [기존 정책](../MEMBER_EXCHANGE_POLICY.md). [C-03](contracts.md#c-03), [LM-B01](BACKLOG.md#lm-b01), [LM-B05](BACKLOG.md#lm-b05).
 
@@ -189,9 +202,9 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 - 시작/입력: 작업 event CSV와 source-file metadata를 direct-sync spool에 보존하고 HTTPS producer-ingest로 전송한다.
 - 발견/재시작: 상주·예약 relay는 명시 scan 경로가 없으면 기존 사용자 settings의 custom 경로를 사용하고, custom이 없으면 onboarding root로 fallback한다. [두 번의 headless 진입·실제 CSV 발견](operations.md#relay-custom-root-evidence)은 PROVEN이며 native 재시작·실제 enqueue/전송 수용은 별도다.
-- 검증/결과: 업무 projection은 receipt identity·행 합계·accepted/committed·`COMPLETE`를 요구한다. `APP_START/APP_CLOSE/SCAN_ATTEMPT`만 있는 canonical emitter CSV는 [C-05](contracts.md#c-05)의 exact nonprojecting receipt 검증을 통과한 `RAW_LEGITIMATE`도 raw 수신 ACK로 처리한다. 웹의 `total_sets_completed`는 포장 세트이며 raw lifecycle로 증가시키지 않는다.
+- 검증/결과: 업무 projection은 receipt identity·행 합계·accepted/committed·`COMPLETE`를 요구한다. C-05의 명시된 lifecycle allowlist만 있는 canonical emitter CSV는 [C-05](contracts.md#c-05)의 exact nonprojecting receipt 검증을 통과한 `RAW_LEGITIMATE`도 raw 수신 ACK로 처리한다. 웹의 `total_sets_completed`는 포장 세트이며 raw lifecycle로 증가시키지 않는다.
 - 실패/복구: pending·retry·operator review·permanent failure를 보존한다. CSV 수신 ACK를 package command ACK로 사용하지 않으며 누락 spool은 통신 재시도로 복원되지 않는다.
-- 수용 기준: 정상/취소/부분·중복 event의 집계 단위와 수신·투영·화면 반영을 각각 확인한다. F3 ACK 이후 close-only delta와 reopen-close lifecycle batch가 원래 hash/key로 수신되고, 미투영 업무·거부·불완전 receipt는 ACK되지 않아야 한다. 명령 ACK, raw 수신, 업무 projection을 서로 대체하지 않는다.
+- 수용 기준: 정상/취소/부분·중복 event의 집계 단위와 수신·투영·화면 반영을 각각 확인한다. F3 ACK 이후 close-only delta, reopen-close 및 정확히 결속된 입력 오류 raw batch가 원래 hash/key로 수신되고, 미투영 업무·거부·불완전 receipt는 ACK되지 않아야 한다. 명령 ACK, raw 수신, 업무 projection을 서로 대체하지 않는다.
 - 근거: [direct_sync_push](../../direct_sync_push.py), [이벤트 분리](../../event_stream_policy.py). [C-05](contracts.md#c-05), [수량](contracts.md#quantities), [LM-B06](BACKLOG.md#lm-b06).
 
 <a id="lm-12"></a>

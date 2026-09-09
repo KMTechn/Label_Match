@@ -113,13 +113,18 @@ def portable_pair(tmp_path_factory):
     old = root / "old"
     old.mkdir()
     builder._copy_application(ROOT, old / "app")
+    # Isolated installer children use the shipped dependency layout, even when
+    # pytest itself runs in a venv whose base interpreter has no packages.
+    site_packages = old / "app/site-packages"
+    site_packages.mkdir()
+    builder._copy_third_party(site_packages)
     runtime = old / "runtime"
     runtime.mkdir()
     home = Path(sys.base_prefix)
     for name in builder.RUNTIME_ROOT_FILES:
         shutil.copy2(home / name, runtime / name)
-    # A fixture venv reads the existing stdlib/dependencies and writes only under
-    # pytest's E: root; shipped candidates still use the real curated builder.
+    # A fixture venv borrows the existing stdlib and writes under pytest's
+    # assigned temporary root; application dependencies above are copied.
     (runtime / "pyvenv.cfg").write_text(f"home = {home}\ninclude-system-site-packages = true\n", encoding="utf-8")
     for relative in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1", "tools/bootstrap_integrity.ps1", "tools/label_writer_fence.ps1", "tools/label_writer_fence_contract.json"):
         target = old / relative

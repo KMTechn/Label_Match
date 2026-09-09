@@ -5524,6 +5524,13 @@ class Label_Match(tk.Tk):
                 ) != task_generation:
                     self._clear_ui_lane_busy(task_name)
 
+        def idle_on_tk():
+            # Terminal callbacks run while the lane still owns the task.
+            # Re-evaluate input admission after that ownership is released.
+            self._clear_ui_lane_busy(task_name)
+            if on_idle is not None:
+                on_idle()
+
         admission = lane.submit(
             LaneTask(
                 name=task_name,
@@ -5531,7 +5538,7 @@ class Label_Match(tk.Tk):
                 work=work,
                 finish=finish_on_tk,
                 fail=fail_on_tk,
-                on_idle=on_idle,
+                on_idle=idle_on_tk,
                 settle=settle_on_tk,
                 failure_adapter=failure_adapter,
                 shutdown_policy=shutdown_policy,
@@ -7994,6 +8001,10 @@ class Label_Match(tk.Tk):
                 return
         saved_set_info = dict(state_data.get("current_set_info") or {})
         saved_set_id = str(saved_set_info.get("id") or "").strip()
+        capture = self._owned_deferred_capture_for_set(saved_set_info)
+        if capture is not None and capture["state"] == "CANCELLED":
+            self.data_manager.delete_current_state()
+            return
         package_row = (
             package_outbox.get_by_set_id(saved_set_id)
             if package_outbox is not None and saved_set_id
@@ -8091,7 +8102,10 @@ class Label_Match(tk.Tk):
 
             if self.current_set_info.get('start_time') and isinstance(self.current_set_info['start_time'], str):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
-            self.data_manager.log_event(self.Events.SET_RESTORED, {"restored_set": self.current_set_info, "continued_by": self.worker_name})
+            self.data_manager.log_event(
+                self.Events.SET_RESTORED,
+                {"set_id": self.current_set_info.get("id"), "continued_by": self.worker_name},
+            )
             self.progress_bar['value'] = len(self.current_set_info['raw'])
             if self.current_set_info.get("exact_rescan_active"):
                 completed = len(self.current_set_info.get("exact_rescan_barcodes") or [])
@@ -9278,52 +9292,24 @@ class Label_Match(tk.Tk):
         physical_qr = str(payload.get("physical_qr_payload") or "")
         item_code = str(payload.get("item_code") or "")
         current_step = "label-package-source"
-        dispatch_record = None
         try:
             evidence, snapshot, sealed, operation_lease = (
                 self._resolve_central_phs2_scan_overlay(physical_qr, item_code)
             )
-            store.record_validation_step_valid(
+            # Initial validation establishes source membership only. F3 owns
+            # CREATE_PACKAGE lease acquisition after any optional F4 exchange.
+            result = store.finish_validation(
                 claim,
                 step_id=current_step,
+                outcome="VALID",
+                reason_code="ORDERED_LABEL_VALIDATION_VALID",
                 evidence=self._deferred_package_source_evidence(
                     physical_qr,
                     payload.get("local_work_identity"),
                     evidence,
                     snapshot,
                 ),
-            )
-            current_step = "label-operation-lease"
-            if not operation_lease:
-                dispatch_record = store.record_validation_mutation_attempt(
-                    claim,
-                    step_id=current_step,
-                )
-                evidence, snapshot, sealed, operation_lease = (
-                    self._acquire_operation_lease(
-                        physical_qr,
-                        expected_snapshot=snapshot,
-                        issue_idempotency_key=dispatch_record[
-                            "idempotency_key"
-                        ],
-                        expected_issue_request_hash=dispatch_record[
-                            "request_hash"
-                        ],
-                        reuse_allowed=False,
-                        persist_artifact=True,
-                    )
-                )
-            lease_evidence = self._deferred_operation_lease_evidence(
-                physical_qr, operation_lease, snapshot
-            )
-            result = store.finish_validation(
-                claim,
-                step_id=current_step,
-                outcome="VALID",
-                reason_code="ORDERED_LABEL_VALIDATION_VALID",
-                evidence=lease_evidence,
-                expires_at=str((operation_lease or {}).get("expires_at") or "")
-                or None,
+                expires_at=claim.claim_expires_at,
             )
             materialization = {
                 "intent_id": result.intent_id,
@@ -9345,7 +9331,6 @@ class Label_Match(tk.Tk):
             classified = self._classify_deferred_validation_error(
                 exc,
                 step_id=current_step,
-                dispatch_record=dispatch_record,
             )
             classified_result = store.finish_validation(
                 claim,
@@ -9369,6 +9354,11 @@ class Label_Match(tk.Tk):
         if not isinstance(pending, dict) or str(
             pending.get("intent_id") or ""
         ).strip() != intent_id:
+            return False
+        store = self.__dict__.get("deferred_intent_capture")
+        durable = store.get(intent_id) if store is not None else None
+        if durable is None or durable["state"] != "VALIDATED":
+            self.__dict__.pop("_deferred_label_materialization", None)
             return False
         current = self.__dict__.get("current_set_info") or {}
         current_raw = list(current.get("raw") or [])
@@ -11099,8 +11089,6 @@ class Label_Match(tk.Tk):
                     "damage_bundle_id": attempt.damage_bundle_id,
                     "old_barcodes": list(attempt.old_barcodes),
                     "new_barcodes": list(attempt.new_barcodes),
-                    "old_seal_qr_payload": attempt.old_seal_qr_payload,
-                    "new_seal_qr_payload": attempt.new_seal_qr_payload,
                     "entity_versions": dict(attempt.entity_versions),
                     "atomic_local_apply": True,
                 },
@@ -14737,6 +14725,41 @@ class Label_Match(tk.Tk):
             messagebox.showwarning("작업 진행 중", message, parent=parent or self)
         return True
 
+    def _owned_deferred_capture_for_set(self, current):
+        intent_id = str(current.get("deferred_intent_id") or "").strip()
+        if not intent_id:
+            return None
+        store = self.__dict__.get("deferred_intent_capture")
+        if store is None:
+            raise DeferredIntentCaptureError("CANCEL_CAPTURE_MISSING", "the current capture store is unavailable")
+        raw = list(current.get("raw") or [])
+        physical_qr = str(current.get("physical_scanned_qr_payload") or (raw[0] if raw else "") or "").strip()
+        return store.get_owned_capture(
+            intent_id=intent_id, local_work_identity=str(current.get("id") or ""),
+            physical_qr_payload=physical_qr,
+        )
+
+    @writer_sink("gui_deferred_capture_cancel")
+    def _cancel_deferred_capture_for_set(self, current, *, dismissed_package_conflict=False):
+        row = self._owned_deferred_capture_for_set(current)
+        if row is None:
+            return
+        if dismissed_package_conflict and row["state"] == "SUPERSEDED":
+            return  # The existing exact prewrite-conflict handoff already owns this terminal row.
+        raw = list(current.get("raw") or [])
+        physical_qr = str(current.get("physical_scanned_qr_payload") or (raw[0] if raw else "") or "").strip()
+        fingerprint = ""
+        if self.__dict__.get("package_logistics_client") is not None:
+            scope, fingerprint = self._operation_lease_request_context(physical_qr)
+            if scope != row["authority_scope_id"]:
+                raise DeferredIntentCaptureError("CANCEL_CAPTURE_BINDING", "the active scope differs from the current capture")
+        self.deferred_intent_capture.cancel_unsubmitted(
+            intent_id=row["intent_id"], local_work_identity=str(current.get("id") or ""),
+            physical_qr_payload=physical_qr, operator_id=persistent_operator_name(self.worker_name),
+            expected_row_version=row["row_version"], issue_request_fingerprint=fingerprint,
+            expected_operation_lease_id=str(current.get("operation_lease_id") or ""),
+        )
+
     def _reset_current_set(self, full_reset=False, from_finalize=False):
         if self.is_blinking: return False
         if (
@@ -14788,8 +14811,22 @@ class Label_Match(tk.Tk):
                         )
                     return False
                 dismissed_package_conflict = True
+        if full_reset and not from_finalize:
+            try:
+                self._cancel_deferred_capture_for_set(
+                    self.current_set_info, dismissed_package_conflict=dismissed_package_conflict,
+                )
+            except Exception as exc:
+                print(f"현재 세트 취소 보류: {getattr(exc, 'code', type(exc).__name__)}")
+                if not self.run_tests:
+                    messagebox.showwarning(
+                        "현재 세트 취소 보류",
+                        "저장된 작업의 처리 결과를 확인할 수 없어 현재 세트를 유지합니다. 관리자와 확인하세요.",
+                        parent=self,
+                    )
+                return False
         if full_reset and self.current_set_info.get('id'):
-            self.data_manager.log_event(self.Events.SET_CANCELLED, {"set_id": self.current_set_info['id'], "cancelled_set": self.current_set_info})
+            self.data_manager.log_event(self.Events.SET_CANCELLED, {"set_id": self.current_set_info['id']})
             if self.history_tree.exists(str(self.current_set_info['id'])):
                 self.history_tree.delete(str(self.current_set_info['id']))
             self.__dict__.setdefault("history_row_details_map", {}).pop(str(self.current_set_info['id']), None)

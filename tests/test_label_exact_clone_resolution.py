@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import label_exact_clone_resolution as resolution_module
+import label_guarded_runtime_reconcile as reconcile_module
 from label_exact_clone_resolution import (
     CONFLICT_CODE,
     PORTABLE_REBIND_ALLOWED_PATHS,
@@ -36,6 +37,7 @@ from label_guarded_runtime_reconcile import (
 )
 from producer_runtime_client import RuntimePreparation, init_runtime_schema
 from user_relay_stop_marker import build_successor_marker, canonical_marker_bytes
+from tools import label_server_initializer_rehearsal as initializer_tool
 
 
 INSTALL_ID = "install-label-fixture"
@@ -178,6 +180,86 @@ def _fixture_initializer_replay(*, snapshot: Path, **_kwargs) -> dict:
         "before_logical_digest": logical,
         "after_logical_digest": logical,
     }
+
+
+def test_initializer_replay_uses_separate_files_and_preserves_live_database(tmp_path):
+    live = tmp_path / "live.sqlite3"
+    _create_server_db(live)
+    proof = json.loads(_server_initializer_proof(tmp_path, live).read_text())
+    source = Path(proof["server_source_root"])
+    # Execute the real subprocess/tool against deterministic no-op server modules.
+    for name, function in (
+        ("producer_ingest.py", "init_producer_ingest_schema"),
+        ("producer_self_enrollment.py", "init_self_enrollment_schema"),
+    ):
+        (source / name).write_text(
+            f"def {function}(connection):\n    return None\n", encoding="utf-8"
+        )
+    before = sqlite_logical_digest(live)
+    result = reconcile_module._independent_initializer_replay(
+        snapshot=live, source_root=source, producer_install_id=INSTALL_ID
+    )
+    assert result["status"] == "PASS"
+    assert result["before_logical_digest"] == result["after_logical_digest"] == before
+    assert sqlite_logical_digest(live) == before
+    actual = json.loads(Path(result["proof_path"]).read_text())
+    assert len({actual["snapshot_path"], actual["rehearsal_path"], str(live)}) == 3
+    assert actual["total_changes"] == 0
+
+
+@pytest.mark.parametrize("alias", ("live", "hardlink"))
+def test_client_backup_rejects_live_file_identity(tmp_path, alias):
+    live = tmp_path / "live.sqlite3"
+    _create_client_db(live)
+    backup = live
+    if alias == "hardlink":
+        backup = tmp_path / "backup.sqlite3"
+        backup.hardlink_to(live)
+    before = sqlite_logical_digest(live)
+    with pytest.raises(GuardedRuntimeReconcileError, match="differ from the live DB"):
+        reconcile_module.verify_client_backup(
+            backup_path=backup, client_db_path=live, preimage={},
+            expected_sha256=hashlib.sha256(backup.read_bytes()).hexdigest(),
+        )
+    assert sqlite_logical_digest(live) == before
+
+
+@pytest.mark.parametrize("collision", ("snapshot", "live"))
+def test_initializer_tool_refuses_colliding_or_existing_output(tmp_path, monkeypatch, collision):
+    live = tmp_path / "live.sqlite3"
+    _create_server_db(live)
+    snapshot = tmp_path / "snapshot.sqlite3"
+    rehearsal = snapshot if collision == "snapshot" else live
+    output = tmp_path / "proof.json"
+    monkeypatch.setattr(initializer_tool, "_args", lambda: SimpleNamespace(
+        live_server_db=live, server_source_root=tmp_path,
+        snapshot=snapshot, rehearsal=rehearsal, output=output,
+        producer_install_id=INSTALL_ID,
+    ))
+    before = sqlite_logical_digest(live)
+    with pytest.raises(RuntimeError, match="paths must be distinct|outputs must be new"):
+        initializer_tool.main()
+    assert not snapshot.exists()
+    assert not output.exists()
+    assert sqlite_logical_digest(live) == before
+
+
+@pytest.mark.parametrize("field", ("snapshot", "rehearsal"))
+def test_initializer_proof_refuses_live_database_alias(tmp_path, field):
+    live = tmp_path / "live.sqlite3"
+    _create_server_db(live)
+    proof = json.loads(_server_initializer_proof(tmp_path, live).read_text())
+    proof[f"{field}_path"] = str(live)
+    proof[f"{field}_sha256"] = hashlib.sha256(live.read_bytes()).hexdigest()
+    before = sqlite_logical_digest(live)
+    with pytest.raises(GuardedRuntimeReconcileError, match="not a no-op"):
+        reconcile_module.validate_server_initializer_proof(
+            proof, server_db_path=live, producer_install_id=INSTALL_ID,
+            expected_source_root=proof["server_source_root"],
+            expected_source_commit=proof["server_source_commit"],
+            initializer_replayer=_fixture_initializer_replay,
+        )
+    assert sqlite_logical_digest(live) == before
 
 
 def _fixture_endpoint_binding(**_kwargs) -> dict:

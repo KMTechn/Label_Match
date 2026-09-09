@@ -1735,6 +1735,13 @@ def _raw_lifecycle_receipt(row, events=("APP_CLOSE",)):
     pytest.param(("APP_CLOSE",), id="close-delta"),
     pytest.param(("APP_START", "APP_CLOSE"), id="reopen-close"),
     pytest.param(("SCAN_ATTEMPT", "APP_CLOSE"), id="scan-close"),
+    pytest.param(("ERROR_INPUT",), id="input-error"),
+    pytest.param(("SCAN_ATTEMPT", "ERROR_INPUT"), id="scan-input-error"),
+    pytest.param(("SCAN_OK",), id="scan-ok"),
+    pytest.param(("SCAN_ATTEMPT", "SCAN_OK"), id="scan-attempt-ok"),
+    pytest.param(("SET_RESTORED",), id="set-restored"),
+    pytest.param(("SET_CANCELLED",), id="set-cancelled"),
+    pytest.param(("SEALED_TRANSFER_EXCHANGE_APPLIED",), id="sealed-exchange-applied"),
 ])
 @pytest.mark.parametrize("replayed", [False, True], ids=["inserted", "replayed"])
 def test_raw_lifecycle_receipt_acks_exact_spool_and_retention(tmp_path, events, replayed):
@@ -1763,6 +1770,8 @@ def test_raw_lifecycle_receipt_acks_exact_spool_and_retention(tmp_path, events, 
     pytest.param(("source_file", "content_sha256"), "0" * 64, id="wrong-hash"),
     pytest.param(("source_file", "byte_length"), 1, id="wrong-bytes"),
     pytest.param(("projection_observation",), None, id="missing-observation"),
+    pytest.param(("projection_disposition",), "UNKNOWN", id="unknown-disposition"),
+    pytest.param(("projection_observation", "status"), "NO_EVENT_OUTCOME", id="no-event-outcome"),
     pytest.param(("projection_observation", "projection_required"), True, id="projection-required"),
     pytest.param(("projection_observation", "observed_event_count"), True, id="boolean-count"),
     pytest.param(("projection_observation", "not_projected_event_count"), 0, id="incomplete-count"),
@@ -1777,9 +1786,14 @@ def test_raw_lifecycle_receipt_acks_exact_spool_and_retention(tmp_path, events, 
     pytest.param(("retryable",), True, id="retryable"),
     pytest.param(("error",), {"code": "REJECTED"}, id="error-detail"),
 ])
-def test_raw_lifecycle_invalid_receipt_never_acks(tmp_path, path, value):
-    row = _lifecycle_batch(tmp_path)
-    receipt = _raw_lifecycle_receipt(row)
+@pytest.mark.parametrize("events", [
+    ("APP_CLOSE",), ("SCAN_ATTEMPT", "ERROR_INPUT"), ("SCAN_ATTEMPT", "SCAN_OK"),
+    ("SET_RESTORED",),
+    ("SET_CANCELLED",), ("SEALED_TRANSFER_EXCHANGE_APPLIED",),
+], ids=["close", "input-error", "scan-success", "set-restored", "set-cancelled", "sealed-exchange-applied"])
+def test_raw_lifecycle_invalid_receipt_never_acks(tmp_path, path, value, events):
+    row = _lifecycle_batch(tmp_path, events)
+    receipt = _raw_lifecycle_receipt(row, events)
     target = receipt
     for key in path[:-1]:
         target = target[key]
@@ -1796,13 +1810,15 @@ def test_raw_lifecycle_invalid_receipt_never_acks(tmp_path, path, value):
 
 
 @pytest.mark.parametrize("event", ["TRAY_COMPLETE", "SET_DELETED", "TRAY_COMPLETION_CANCELLED", "LABEL_MATCHED"])
-def test_raw_lifecycle_observation_cannot_ack_business_upload(tmp_path, event):
-    row = _lifecycle_batch(tmp_path, (event,))
+@pytest.mark.parametrize("prefix", [(), ("ERROR_INPUT",), ("SET_CANCELLED",), ("SEALED_TRANSFER_EXCHANGE_APPLIED",)],
+                         ids=["business-only", "input-error-mixed", "set-cancelled-mixed", "sealed-exchange-applied-mixed"])
+def test_raw_lifecycle_observation_cannot_ack_business_upload(tmp_path, event, prefix):
+    row = _lifecycle_batch(tmp_path, prefix + (event,))
     # Even an APP_CLOSE-shaped observation with matching file hash cannot replace
     # COMPLETE for uploaded business rows.
     result = drain_one_relay_batch(
         db_path=tmp_path / "relay.sqlite3", credentials=make_credentials(),
-        session=FakeSession(FakeResponse(200, _raw_lifecycle_receipt(row))),
+        session=FakeSession(FakeResponse(200, _raw_lifecycle_receipt(row, prefix + ("APP_CLOSE",)))),
         status_dir=tmp_path / "status",
     )
     assert result.success is False and result.error_code == "producer_projection_incomplete"
