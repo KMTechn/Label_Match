@@ -289,6 +289,15 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 
 VM `76a3f7a6-efc0-452c-ab73-f40ccd33594c`, Windows 11 build 26200 / Python 3.12.10 / Tcl·Tk 8.6.15 / vista / scaling 1.33489 / kmadmin session1의 1366×768 화면에서 1000×700 이력·집계·세션·입력 위젯이 mapped 상태였다. 다른 workbench 위젯과 적응 글자 맞춤은 fake이며 실제 앱 시작·PHS2/F4/F3·중앙 ACK·출고 및 Computer Use 전체 업무는 아직 **NOT TESTED**다. 측정 후 버전 조회 2회 실패와 교정을 보존했고, [정리 readback](E:/KMTech/optimization-implementation-20260909/Label_Match/native/CLEANUP.json)은 Label task/Python process 0·자체 PSSession 종료를 확인한다. tkcalendar 미설치는 전체 업무용 client 준비에서 Main이 해결할 항목이다. 제품 최적화 전체 완료는 남은 실제 업무 검증으로 판단한다.
 
+<a id="history-render-dedup"></a>
+### LM-A2 · 상태 갱신 뒤 중복 render 추가 제거
+
+`fa147df` 기준에서 [구현 전 work/state 목표](E:/KMTech/optimization-implementation-20260909/Label_Match/lm-a2/BASELINE-AND-TARGETS.md)를 고정한 뒤 `_prompt_exact_rescan`, `_process_exact_rescan_product`, 오늘 분기의 `_apply_history_view_mode`에서 `_update_status_label` 직후 같은 workbench를 다시 그리는 호출 3줄만 제거했다. 앞 두 곳은 중앙 PHS2 표준 교체가 아닌 호환 전체 재스캔 경로다. timer/복구에서 도달할 수 있는 `_apply_acked_sealed_transfer_exchange`의 명시 render와 메서드 AST는 보존했다. init 이전을 꾸민 테스트, A1 polling 변경, A4 날짜 기반 CSV 범위 축소 및 새 helper/state는 없다.
+
+**PROVEN — 결정적 work/state:** 기존 기록 위젯·실제 status/presenter/render 메서드의 [before/after 비교](E:/KMTech/optimization-implementation-20260909/Label_Match/lm-a2/COMPARISON.json)에서 0/1,000행 오늘 render는 loading 요청 포함 3→2, 과거는 2 유지, 재스캔 시작·첫 제품·완료는 각각 2→1이다. 열 너비 조회 0/800과 행/집계/입력 gate, 모든 재스캔 단계의 current state·view·QA/exact 행·tab·status/button·log·save digest가 동일하다. 사전 기존 선택 7 PASS, 강화한 기존 실제 DataManager/render 테스트의 변경 전 1 PASS, 변경 후 선택 7개+기존 pin 2개 **9 PASS**다. 동일 44개 writer identity/guard에 파생 pin만 갱신했다.
+
+이 후속 단위는 product 3줄과 기존 테스트 1줄을 줄이며 새로운 실행 시간·native 화면 수치를 주장하지 않는다. 위 native 측정과 당시 render 3/2 기준은 `0077412`의 보존된 증거다. LM-A2의 work 기준 2/2를 과거 native 결과에 소급 적용하지 않으며, 최신 source의 전체 Computer Use 업무는 후속 배정에서 확인한다.
+
 | 항목 | 요구 목표 | 코드·계약에서 확인한 값 | 실제 측정 |
 | --- | --- | --- | --- |
 | 입력 간격·처리량·최대 membership | 미정; ERPnext 제한 전용 금지 | 표준 PHS2 1회, F4 1~2쌍은 업무 입력 규칙이며 처리량 SLA가 아님 | 이 작업 NOT TESTED |

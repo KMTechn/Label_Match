@@ -575,32 +575,31 @@ def test_external_label_without_structured_lineage_is_rejected():
 
 
 def test_exact_rescan_operational_input_is_durably_recoverable(tmp_path):
+    from tests.test_label_operator_action_gates import FakeWidget, _render_app
+
     manager = label_module.DataManager(str(tmp_path), "포장실", "tester", "PC")
-    app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app = _render_app(
+        ("ITEM000000001",), ("ITEM000000001",), id="SET-RECOVER",
+        exact_rescan_target_count=2, exact_rescan_source_bundle_id=TRANSFER,
+    )
     app.run_tests = True
-    app.initialized_successfully = True
-    app.current_set_info = {
-        "id": "SET-RECOVER",
-        "raw": ["ITEM000000001"],
-        "parsed": ["ITEM000000001"],
-        "exact_rescan_target_count": 2,
-        "exact_rescan_source_bundle_id": TRANSFER,
-        "exact_rescan_barcodes": [],
-    }
     app.data_manager = manager
-    app.update_big_display = lambda *args: None
-    app._update_status_label = lambda: None
+    app.status_label = FakeWidget()
     app._handle_input_error = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError(kwargs))
     assert label_module.Label_Match._prompt_exact_rescan(app)
+    assert app._last_workflow_view.exact_rescan.status == "active"
     assert label_module.Label_Match._process_exact_rescan_product(app, "ITEM000000001-A")
     saved = manager.load_current_state()["current_set_info"]
     assert saved["exact_rescan_active"] is True
     assert saved["exact_rescan_barcodes"] == ["ITEM000000001-A"]
+    assert app.live_scan_notebook.selected == "exact"
     assert label_module.Label_Match._process_exact_rescan_product(app, "ITEM000000001-B")
     saved = manager.load_current_state()["current_set_info"]
     assert saved["exact_rescan_complete"] is True
     assert saved["exact_rescan_active"] is False
     assert saved["exact_rescan_barcodes"] == ["ITEM000000001-A", "ITEM000000001-B"]
+    assert app._last_workflow_view.exact_rescan.status == "complete"
+    assert app.current_set_info["raw"] == ["ITEM000000001"]
     manager.close(timeout=5)
 
 

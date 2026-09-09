@@ -13254,7 +13254,6 @@ class Label_Match(tk.Tk):
         self._save_current_set_state()
         self.update_big_display(f"전체 제품 재스캔 0/{int(target)}", "primary")
         self._update_status_label()
-        self._render_operator_workbench()
         return True
 
     def _process_exact_rescan_product(self, raw_input):
@@ -13311,7 +13310,6 @@ class Label_Match(tk.Tk):
             self.update_big_display(f"전체 제품 재스캔 {len(members)}/{target}", "primary")
         self._save_current_set_state()
         self._update_status_label()
-        self._render_operator_workbench()
         return True
 
     def _extract_production_date(self, raw_input):
@@ -19425,7 +19423,6 @@ class Label_Match(tk.Tk):
             if not current.get("id") and not current.get("parsed"):
                 self.update_big_display(self._next_action_text(0), "")
             self._update_status_label()
-            self._render_operator_workbench()
             return
         self.entry.config(state='disabled')
         message = "과거 기록 조회 중 - 스캔 입력 비활성. 오늘 버튼으로 복귀하세요."

@@ -218,7 +218,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 - 시작/입력: 현재/과거 날짜 조회, 히스토리·집계, 스캔 Enter와 업무 버튼/단축키. F1–F4는 날짜·busy·교체/복구 상태의 공통 action gate를 사용하며 F5 교환·조정은 해당 진입 조건을 검사한다.
 - 효과: 업무 비동기는 UI lane, 이력 읽기는 별도 worker/queue를 사용하며 오래된 generation의 결과 적용을 차단한다. 이력의 논리 상태 설치와 전체 화면 적용은 같은 callback에서 끝낸다. busy 거절 시 입력칸 값을 보존하며 과거 조회에서 F3를 차단한다.
-- 이력 적용 최적화: 빈 보조 스캔 셀은 열 너비를 조회하지 않고, 날짜 모드에서 이미 반영한 workbench를 결과 callback 끝에서 다시 그리지 않는다. 현품표 원문·비어 있지 않은 셀의 축약, 과거 조회 details와 오늘의 중복 색인은 보존한다. [합성·실제 Tk 측정과 남은 VM 업무 검증](operations.md#history-optimization).
+- 이력 적용 최적화: 빈 보조 스캔 셀은 열 너비를 조회하지 않고, 날짜 모드에서 이미 반영한 workbench를 결과 callback 끝에서 다시 그리지 않는다. 후속 LM-A2는 오늘 모드와 호환 전체 재스캔의 상태 갱신 직후 중복 render 3곳을 추가 제거하며, 복구 ACK 반영의 명시 render는 유지한다. 현품표 원문·비어 있지 않은 셀의 축약, 과거 조회 details와 오늘의 중복 색인은 보존한다. [합성·실제 Tk 측정과 남은 VM 업무 검증](operations.md#history-optimization).
 - 실패/취소/종료: BROKEN lane은 추가 입력을 차단한다. 처리 중 종료 요청은 drain 후 종료하며 타임아웃의 강제 중단을 정상 저장 증거로 삼지 않는다.
 - 수용 기준: 버튼/키보드 gate가 일치하고 busy 입력 보존·idle 재제출·stale 결과 무시·종료 경계가 대응한다. 실장비 입력과 화면 배율의 가독성은 별도 확인한다.
 - 근거: [앱 workflow handlers](../../Label_Match.py), [TkSerialUiLane](../../tk_serial_ui_lane.py), [관련 테스트 설계](../../tests/test_label_ui_lane_integration.py). [LM-B04](BACKLOG.md#lm-b04), [LM-B05](BACKLOG.md#lm-b05).
