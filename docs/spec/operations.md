@@ -274,6 +274,17 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 <a id="performance"></a>
 ## 처리량·동시성·최신성
 
+<a id="history-optimization"></a>
+### 2026-09-09 이력 적용의 반복 작업 제거
+
+기준 소스 `a7e57b7f7c3d815ad5aff945e302b916c5e68f4e`에서 [구현 전 기준·목표](E:/KMTech/optimization-implementation-20260909/Label_Match/BASELINE-AND-TARGETS.md)를 고정했다. 새 helper로 옮기는 LM-S1 추출은 실질 제거가 없어 채택하지 않고, 빈 셀의 열 너비 조회와 날짜 모드 적용 뒤 중복 workbench 호출만 제거했다. 기존 dict·상태 공유·generation·pending, 한 callback의 논리 설치/전체 적용 및 F3/F4·durable 순서는 유지한다. 새 cache/queue/timer/DTO/batching은 없다.
+
+**PROVEN — 한정된 합성 component 측정:** Windows 11 build 26200 / CPython 3.12.10, 같은 E-only CSV와 fake widget으로 오늘/과거 각각 30회. 1,000행(80% 중앙 1스캔·20% 호환 5스캔)의 열 너비 조회는 4,000→800회, loading 요청 포함 workbench 호출은 오늘 4→3회·과거 3→2회다. 첫 after의 전체 결과 callback 중앙값은 오늘 7.0007→3.7152 ms, 과거 7.4433→3.7997 ms이며 행/집계 표시 digest와 오늘/과거 상태·입력 보존 assertion이 일치한다. Python allocation peak 증가는 모든 사례에서 8 bytes 이하로 측정 한계 내다. 파일 파싱·worker 자체는 변경하지 않았으며 그 시간 차이를 최적화 효과로 주장하지 않는다.
+
+**실패·한계 유지:** 첫 after의 빈 과거 이력 total 중앙값 1.2662 ms는 고정 상한 0.8755 ms를 초과했다. 변경하지 않은 요청/thread 시작 구간에서 증가했고, 별도 paired control은 baseline 0.4979 / candidate 0.4463 ms였으나 첫 실패를 지우지 않는다. 후속 confirmation은 Main의 07:26:59Z 공유 디스크 복사 구간과 겹쳐 worker 증가 및 1,000행 과거 total 45.2078 ms를 기록했다. 이는 같은 부하 조건의 비교가 아니며 원 결과와 시간 창을 보존한다. Main의 07:29:55Z 복사 종료 확인 뒤 같은 driver를 새 process에서 각30회 실행한 결과는 **고정 component 제한 전부 PASS**다. 빈 과거 total은 0.5772 ms, 1,000행 callback은 오늘 3.5365 / 과거 3.9916 ms, total은 19.9540 / 22.2102 ms다. 실제 Tk/VM Computer Use 전체 업무 검증 전에는 프로그램 최적화 완료나 실제 화면 응답 개선으로 판정하지 않는다. [결과·잔여 작업](E:/KMTech/optimization-implementation-20260909/Label_Match/RESULT.md), [VM 행동·기대 결과](E:/KMTech/optimization-implementation-20260909/Label_Match/VM-WORKFLOW.md).
+
+소스 회귀는 기존 history/summary/gate/F3/F4/lane 종료 선택 **64 PASS**, 명시 snapshot-adapter와 기존 writer pin 소비자 **3 PASS**다. 파생 pin은 변경 파일 hash에 맞추며 **44개 writer identity/guard 종류**는 동일하다. 이 증거를 실제 Tcl painting·스캐너·중앙 ACK·VM 업무 또는 설치 증거로 확대하지 않는다.
+
 | 항목 | 요구 목표 | 코드·계약에서 확인한 값 | 실제 측정 |
 | --- | --- | --- | --- |
 | 입력 간격·처리량·최대 membership | 미정; ERPnext 제한 전용 금지 | 표준 PHS2 1회, F4 1~2쌍은 업무 입력 규칙이며 처리량 SLA가 아님 | 이 작업 NOT TESTED |

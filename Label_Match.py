@@ -8300,7 +8300,6 @@ class Label_Match(tk.Tk):
             self._apply_history_view_mode()
             self._render_history_detail()
             self._refresh_session_tree()
-            self._render_operator_workbench()
             print("비동기 기록 로드 및 UI 적용 완료.")
         except queue.Empty:
             if (
@@ -16023,7 +16022,7 @@ class Label_Match(tk.Tk):
         return max(9, min(profile_limit, pixel_limit))
 
     def _format_barcode_cell(self, value, column=None):
-        if column == "Input1":
+        if column == "Input1" or not value:
             return str(value or "")
         return self._middle_ellipsis(value, self._barcode_cell_display_limit(column))
 

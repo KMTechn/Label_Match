@@ -1296,6 +1296,7 @@ def test_history_display_keeps_master_label_full_text_when_narrow():
     assert display_values[1] == "AAA2270730100"
     assert display_values[2] != product_barcode
     assert "..." in display_values[2]
+    assert display_values[3:6] == ("", "", "")
 
 
 def test_partial_manual_pass_updates_duplicates_without_summary_count():
@@ -3502,6 +3503,7 @@ def test_view_only_history_load_does_not_replace_live_scan_state():
     assert app.history_load_pending is False
     assert app.global_scanned_set == {"TODAY_PRODUCT"}
     assert app.set_details_map == {"today-set": {"item_code": "TODAY"}}
+    assert app.history_row_details_map == {"past-set": {"item_code": "PAST"}}
     assert app.scan_count["2026-06-23"][("TODAY", "-")] == 1
     assert "2026-06-22" not in app.scan_count
     assert app.history_tree.rows["past-set"]["values"][0] == 1
