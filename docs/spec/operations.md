@@ -9,6 +9,10 @@ Main의95b 실제027(200프레임/29.969s)은 입력 없이 `저장된 현품표
 
 소스 기준선 **13 PASS/7.34s**, 첫 선택 **19 PASS/3 fixture setup ERROR**를 보존한다. 실제 Tk가 없는 시험의 글꼴 측정 stub을 정리한 뒤 **27 PASS/8.40s**, 마지막 열린 세트 조회 생략/도중 입력 보호 보정 뒤 해당 scheduler8+writer3은 **11 PASS/6.84s**다. 새 시험 파일은 없고 기존 scheduler 시험에 idle/실제 검증/복원/기존 입력/읽기 실패/종료 취소 사례를 넣었다. 동일44개 writer identity/guard이며 네 Label source digest와 세 source 위치가 바뀌고 최종 pin은 `61589c2cdc1393a6936a188ae8e18d873a7d3a04adbc65b823a68a8a45eae8d2`다. [기준·정확한 diff·소스 화면 점검·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/root-ui-20260910/RESULT.md)에 결속한다.
 
+**94c 후속 검토 교정:** 대기 상세 render의 예상 밖 예외는 그대로 노출하면서 후보 접수/재예약을 `finally`에서 계속한다. background 검증의 예상된 busy 거절만 작업자 입력 거절 화면을 생략하고, 기존 coalescing 재시도와 실제 작업자·broken·closing 거절은 유지한다. `retry_schedule`이 비어 있지 않을 때 기존 다섯 줄 상세에 `자동 재시도가 예정되어 있습니다.`를 덧붙인다. 이 목록은 최대100개의 시각 지정 retry로 제한되므로 전체 retry 건수로 표시하지 않으며 SQL/readback 계약은 그대로다.
+
+교정 전 기존 시험 확장에서 **2 FAIL/2.78s**, 교정 뒤 scheduler9·busy/입력·남은 gate·상세2·readback·writer 선택은 **24 PASS/13.35s, 정상 종료0**다. 기준선 실패 시 정리 누락으로 남은 독립 host 시험 thread/process만 식별해 종료하고 시험 정리를 보정했으며, 실패 출력과 종료 근거를 보존했다. 실제 앱/guest 종료가 아니다. native 시험의 잘못된 font module 별칭도 바로잡았지만 실제 Tk 시험은 실행하지 않았다. 동일44개 writer identity/guard의 후속 pin은 `704866984db7afc430902bb8aa605b22752df7f7e05e02ab56a450a54c5412b3`이며 [후속 기준·실패·diff·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/root-ui-20260910/followup/RESULT.md)에 결속한다.
+
 실제95b는 Main이 입력을 소유하며 F4 닫힘/Submit0을 보존한다. worker는 host/guest 입력·정상 닫기·source copy를 하지 않았다. 최종 글꼴/화면의 무잘림, 30초 이상 실제 idle 관찰, 실제 작업의 busy/입력 유지와 F4 적용·QR·F3/ACK·후속 업무는 정상 적용 뒤 Main이 확인한다. 소스 점검으로 모든 native 창이나 Today 전후 성능을 수용하지 않으며, 새 증거와 무관한 RedrawWindow 플래그는 변경하지 않았다.
 
 <a id="f4-editable-list"></a>

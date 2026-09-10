@@ -16,6 +16,7 @@ from deferred_intent_capture import (
 from tests.test_label_operator_action_gates import FakeWidget, _render_app
 from tests.test_tk_serial_ui_lane import FakeTkRoot
 from tk_serial_ui_lane import (
+    Admission,
     CoalescingTrigger,
     Failure,
     LaneState,
@@ -242,7 +243,7 @@ def test_phs2_capture_validation_runs_off_tk_and_materializes_on_tk():
 
 
 @pytest.mark.parametrize("mode", [
-    "validation", "idle", "materialize", "materialized", "filled_during_probe", "readback_error", "candidate_error", "close_cancel",
+    "validation", "idle", "materialize", "materialized", "filled_during_probe", "readback_error", "candidate_error", "render_error", "close_cancel",
 ])
 def test_deferred_scheduler_candidate_and_prepare_run_off_tk(mode):
     app, root = _app_with_lane()
@@ -257,7 +258,7 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk(mode):
     )
 
     class Store:
-        ready = mode == "validation"
+        ready = mode in {"validation", "render_error"}
 
         def status_readback(self, **_kwargs):
             trace.append(("readback", threading.get_ident()))
@@ -297,9 +298,13 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk(mode):
     app._show_deferred_validation_result = lambda _value: trace.append(
         ("render", threading.get_ident())
     )
-    app._render_deferred_observability = lambda _value: trace.append(
-        ("observe", threading.get_ident())
-    )
+    def render_readback(_value):
+        first = not any(name == "observe" for name, _thread_id in trace)
+        trace.append(("observe", threading.get_ident()))
+        if mode == "render_error" and first:
+            raise RuntimeError("unexpected display failure")
+
+    app._render_deferred_observability = render_readback
     app._schedule_deferred_validation_worker = (
         lambda _delay: trace.append(("schedule", threading.get_ident()))
     )
@@ -322,6 +327,14 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk(mode):
         app.current_set_info["raw"] = ["preserved-accepted-scan"]
     assert not app.ui_lane.is_busy()
     assert app._ui_lane_busy_label == ""
+    if mode == "render_error":
+        try:
+            with pytest.raises(RuntimeError, match="unexpected display failure"):
+                root.run_until(lambda: ("schedule", owner) in trace)
+            assert app.ui_lane.is_busy(), "display failure must not strand eligible validation"
+        except BaseException:
+            _close_lane(app, root)
+            raise
     if mode == "close_cancel":
         app._app_close_in_progress = True
         app._suspend_deferred_validation_for_close()
@@ -343,7 +356,7 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk(mode):
     assert all(thread_id != owner for name, thread_id in trace if name in {
         "candidate", "readback", "materialization-candidate", "requeue", "prepare",
     })
-    if mode in {"validation", "materialize"}:
+    if mode in {"validation", "materialize", "render_error"}:
         assert ("candidate", app.ui_lane.worker_thread_id) in trace
         assert ("prepare", app.ui_lane.worker_thread_id) in trace
         assert ("render", owner) in trace
@@ -889,6 +902,7 @@ def test_scan_is_not_cleared_while_lane_is_busy():
     gate = threading.Event()
     deleted = []
     rejected = []
+    background_finished = []
     app._app_close_in_progress = False
     app.entry = SimpleNamespace(
         get=lambda: "PHS2-PRESERVE",
@@ -905,13 +919,28 @@ def test_scan_is_not_cleared_while_lane_is_busy():
         )
     ).accepted
 
+    deferred_task = LaneTask(
+        "deferred-validation", 0, lambda: True,
+        lambda _value: background_finished.append(True), pytest.fail,
+    )
+    trigger = CoalescingTrigger(
+        app.ui_lane, lambda: deferred_task,
+        submit_task=app._submit_deferred_validation_lane_task,
+    )
+    assert trigger.trigger().reason == "busy"
+    assert trigger.pending_count == 1
+    background_rejections = list(rejected)
     app.process_input()
-
-    assert deleted == []
-    assert rejected == ["busy"]
     gate.set()
-    root.run_until(lambda: not app.ui_lane.is_busy())
+    root.run_until(lambda: bool(background_finished) and not app.ui_lane.is_busy())
     _close_lane(app, root)
+    assert deleted == []
+    assert background_rejections == []
+    assert rejected == ["busy"]
+    for reason in ("broken", "closing"):
+        app.ui_lane = SimpleNamespace(submit=lambda _task: Admission(False, reason=reason))
+        app._submit_deferred_validation_lane_task(deferred_task)
+        assert rejected[-1] == reason
 
 
 def test_broken_lane_keeps_critical_warning_and_scan_entry_fail_closed():

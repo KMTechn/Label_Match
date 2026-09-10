@@ -19,6 +19,7 @@ from deferred_intent_capture import (
     DEFERRED_OPERATOR_STATUS_GROUPS,
     DeferredIntentStatusReadback,
     DeferredOperatorStatusGroup,
+    DeferredRetrySchedule,
     DeferredValidationResult,
 )
 
@@ -482,8 +483,10 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
     )
 
 
+@pytest.mark.parametrize("retry_count", [0, 2])
 def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
     operator_workbench,
+    retry_count,
 ):
     app = operator_workbench
     deferred_tab = _required_widget(app, "deferred_observability_tab")
@@ -523,6 +526,14 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
     readback = replace(
         readback,
         state_counts=readback.state_counts + ((secret_shaped_state, 9),),
+        retry_schedule=tuple(
+            DeferredRetrySchedule(
+                intent_id=f"retry-{index}", state="RETRY_WAIT_VALIDATION",
+                partition_key="test-partition", partition_seq=index,
+                next_attempt_at="2099-01-01T12:00:00Z", reason_code="RETRYABLE_UNAVAILABLE",
+            )
+            for index in range(retry_count)
+        ),
     )
     app._render_deferred_observability(readback)
 
@@ -533,6 +544,8 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
     assert "완료 1건" in rendered and "종결-미완료 2건" in rendered
     assert "outbox:layout-proof" not in rendered
     assert all(state not in rendered for state in DEFERRED_INTENT_STATES)
+    assert ("자동 재시도가 예정되어 있습니다." in rendered) is bool(retry_count)
+    assert "2099-01-01T12:00:00Z" not in rendered
     assert secret_shaped_state not in rendered
     assert detail_text.cget("state") == "disabled"
 
@@ -2167,7 +2180,7 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             contains(app.deferred_observability_tab, widget)
             for widget in deferred_widgets
         )
-        detail_font = label_module.tkFont.Font(
+        detail_font = label_match_module.tkFont.Font(
             root=app, font=app.deferred_observability_detail_text.cget("font"),
         )
         assert app.deferred_observability_detail_frame.winfo_height() >= (

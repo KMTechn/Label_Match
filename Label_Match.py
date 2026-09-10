@@ -5465,6 +5465,7 @@ class Label_Match(tk.Tk):
         settle=None,
         failure_adapter=None,
         shutdown_policy="DRAIN_TO_TERMINAL",
+        quiet_busy_rejection=False,
     ):
         lane = self.__dict__.get("ui_lane")
         if lane is None:
@@ -5524,7 +5525,7 @@ class Label_Match(tk.Tk):
         )
         if admission.accepted:
             self._set_ui_lane_busy(task_name, busy_text)
-        else:
+        elif not (quiet_busy_rejection and admission.reason == "busy"):
             self._show_ui_lane_rejection(admission.reason)
         return admission
 
@@ -5540,6 +5541,7 @@ class Label_Match(tk.Tk):
             settle=task.settle,
             failure_adapter=task.failure_adapter,
             shutdown_policy=task.shutdown_policy,
+            quiet_busy_rejection=True,
         )
 
     def _start_package_outbox_drain(self):
@@ -9429,17 +9431,19 @@ class Label_Match(tk.Tk):
             # Keep the lower watermark while a newly increased backlog remains
             # unresolved, so the alert does not disappear after one refresh.
             self._deferred_observability_review_baseline = review_count
-        self._render_deferred_observability(readback)
-        if candidates is not None and not self.__dict__.get("_app_close_in_progress", False):
-            validation_ready, materialization_ready = candidates
-            current_is_empty = not list((self.__dict__.get("current_set_info") or {}).get("raw") or [])
-            trigger = self.__dict__.get("_deferred_validation_lane_trigger")
-            if trigger is not None and (validation_ready or (materialization_ready and current_is_empty)):
-                # The serial task rechecks eligibility and retains every claim,
-                # generation and input guard; an idle local poll never owns it.
-                trigger.trigger()
-            else:
-                self._schedule_deferred_validation_worker(5000)
+        try:
+            self._render_deferred_observability(readback)
+        finally:
+            if candidates is not None and not self.__dict__.get("_app_close_in_progress", False):
+                validation_ready, materialization_ready = candidates
+                current_is_empty = not list((self.__dict__.get("current_set_info") or {}).get("raw") or [])
+                trigger = self.__dict__.get("_deferred_validation_lane_trigger")
+                if trigger is not None and (validation_ready or (materialization_ready and current_is_empty)):
+                    # The serial task rechecks eligibility and retains every claim,
+                    # generation and input guard; an idle local poll never owns it.
+                    trigger.trigger()
+                else:
+                    self._schedule_deferred_validation_worker(5000)
         return readback
 
     def _render_deferred_observability(self, readback):
@@ -9511,6 +9515,8 @@ class Label_Match(tk.Tk):
             f"완료 {int(state_counts.get('COMPLETED', 0))}건 · "
             f"종결-미완료 {readback.closed_incomplete_count}건"
         )
+        if readback.retry_schedule:
+            detail_text += "\n자동 재시도가 예정되어 있습니다."
         detail_widget = self.__dict__.get(
             "deferred_observability_detail_text"
         ) or self.__dict__.get("deferred_observability_detail_label")
