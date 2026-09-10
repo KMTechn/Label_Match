@@ -198,8 +198,8 @@ def _run_command(command: list[str], timeout_seconds: int) -> dict[str, Any]:
         completed = subprocess.run(
             command,
             check=False,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=max(10, int(timeout_seconds)),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -212,8 +212,6 @@ def _run_command(command: list[str], timeout_seconds: int) -> dict[str, Any]:
     return {
         "status": "PASS" if completed.returncode == 0 else "FAIL",
         "returncode": completed.returncode,
-        "stdout_tail": completed.stdout[-2000:],
-        "stderr_tail": completed.stderr[-2000:],
     }
 
 

@@ -3,7 +3,8 @@
 ## 2026-09-10 · relay 예외 위치 기록 — 원인 확인 중
 
 - 기존 UNKNOWN 예외 기록에 가장 안쪽8개 basename/function/line만 추가하고 메시지·인자·locals·payload는 제외한다. 기존 실패→성공 시험의 기준1 FAIL/1 PASS와 후속 loop/writer6 PASS, 동일44개 writer와 정확한 소스는 [운영 근거](operations.md#relay-exception-location-20260910)를 따른다.
-- 남은 일: 지원 정상 보존 적용 뒤 다음 자연 실패의 정확한 위치를 확인한 후에만 원인 동작을 교정한다. 무해한 child probe는 가설을 재현하지 못했으며 UNKNOWN은 전송 부재의 증거가 아니다. 강제 종료·수동 cycle·업무 replay는 하지 않는다.
+- 자연 실패: 정상395113e 적용/복구 뒤 첫 cycle에서 `_run_command:215` stdout slicing을 확인했다. 유일한 소비자가 읽지 않는 text capture/tail을 제거해 Windows reader thread 두 개도 없앴다. 실제 무해한 undecodable child0/2 기준2 FAIL/4경고, 후속 loop/writer 포함8 PASS와 동일44개 writer를 [운영 근거](operations.md#relay-exception-location-20260910)에 기록했다.
+- 남은 일: 후속 정상 보존 적용과 자연 cycle에서 TypeError 제거를 확인한다. 실제 child `existing_terminal_blocked`는 별도 업무 blocker로 보존하며 UNKNOWN은 전송 부재의 증거가 아니다. 강제 종료·수동 cycle·업무 replay는 하지 않는다.
 
 ## 2026-09-10 · 루트 화면 깜박임·잘림 — 소스 교정, 실제 수용 대기
 

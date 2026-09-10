@@ -1,5 +1,7 @@
 import json
+import locale
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -57,6 +59,27 @@ def test_session_relay_command_reuses_product_host_and_explicit_user_roots(tmp_p
     assert "direct-sync-relay-label-match-current-user" in command
     assert "--source-host-id" not in command
     assert command[command.index("--tls-ca-bundle-path") + 1] == str(ca_bundle)
+
+
+@pytest.mark.parametrize("returncode", [0, 2])
+def test_child_exit_status_survives_undecodable_output(monkeypatch, returncode):
+    monkeypatch.setattr(locale, "getencoding", lambda: "ascii")
+    result = user_relay._run_command(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import os; os.write(1, b'\\x81'); os.write(2, b'\\x81'); "
+            f"raise SystemExit({returncode})",
+        ],
+        timeout_seconds=10,
+    )
+
+    assert result == {
+        "status": "PASS" if returncode == 0 else "FAIL",
+        "returncode": returncode,
+    }
 
 
 def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):

@@ -3,9 +3,13 @@
 <a id="relay-exception-location-20260910"></a>
 ## 2026-09-10 · 상주 relay 예외 위치의 제한된 기록
 
+**자연 실패 확인과 후속 교정:** 정상 a70→`395113e`의 세 파일 적용·own fresh marker CAS release0 뒤 같은 계정/session1에서 GUI12572·relay12440을 정상 시작했다. after-close DB/상태·identity를 보존했고 GUI 복구는 원본 PHS2 한 스캔을 재사용했다. 첫 자연 cycle은 `user_relay.py:_run_command:215`의 `completed.stdout[-2000:]`에서 TypeError가 난 것을 일곱 안전한 frame으로 확인했다. guest cp949/UTF8mode0, launcher의 UTF8 child 출력 및 non-ASCII 실패 파일명은 decode 가설과 맞지만 실제 버려진 reader 예외 자체는 관측하지 않았다. [정확한 정상 적용·자연 실패](E:/KMTech/optimization-implementation-20260909/Label_Match/relay-location-20260910/RESULT.md)를 따른다.
+
+유일한 유지 소비자는 child status/returncode와 기존 UTF8 JSON 상태 파일만 사용하므로 쓰이지 않는 stdout/stderr 텍스트 capture·tail slicing을 제거하고 두 출력은 DEVNULL로 보낸다. timeout/no-window·exit code 판정·UNKNOWN launch 오류·writer/retry·안전한 frame 기록은 유지한다. Windows의 두 pipe reader thread와 두 tail 생성이 없어지며 처리 시간 향상은 측정하지 않았다. 같은 실패를 일으키는 무해한 실제 child0/2 시험은 교정 전 **2 FAIL/4 decode 경고/1.05s**, 교정 뒤 기존 loop/diagnostic/writer 포함 **8 PASS/5.97s, 정상 종료0**다. 동일44개 writer의 pin은 `15531452475b8340ebad713dedbd4e2e855823f253af4c973a4367c6ca7ea6cc`이고 [기준·diff·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/relay-child-output-20260910/RESULT.md)에 결속한다. 실제 child의 별도 `existing_terminal_blocked`와 enqueued0/attempted1/terminal1을 성공으로 바꾸거나 지우지 않는다. 후속 native 적용/자연 cycle 확인은 별도이며 원래 F4/F3 연결 흐름은 미완료다.
+
 실제95b와 a70 상주 relay의 `UNKNOWN/TypeError`에는 실패 위치가 없었다. 기존 `run_persistent_relay_loop` 예외 기록에 가장 안쪽 여덟 frame의 파일명·함수명·행 번호만 덧붙인다. 기존 status/reason/error_type, 30초 정상 재시도와 상태 파일은 유지하고 메시지·locals·인자·소스 본문·child payload나 새 logger를 기록하지 않는다. 원인이나 전송 여부는 UNKNOWN만으로 판단하지 않는다.
 
-기존 실패→성공 시험에 예외 사례를 추가한 기준선은 **1 FAIL/1 PASS, 0.33s**이며 후속 기존 loop/writer 선택은 **6 PASS/6.01s, 정상 종료0**다. 안전한 위치 기록의 상한·비밀 모양 메시지/payload 부재와 다음 성공 재시도를 확인했다. 동일44개 writer identity/guard의 source pin은 `cdce2579483fa9c166cc3d1ddd4f77971735a2175bdd3c20ec23aa188ace0313`이다. [기준·diff·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/relay-location-20260910/RESULT.md)를 따른다. 무해한 별도 child probe는 TypeError를 재현하지 못했으며 stream 가설에 따른 동작 교정은 하지 않았다. 실제 원인은 정상 보존 적용 뒤 다음 자연 실패의 위치로 확인하며 수동 full cycle·업무 replay·live hook·강제 종료를 쓰지 않는다.
+기존 실패→성공 시험에 예외 사례를 추가한 기준선은 **1 FAIL/1 PASS, 0.33s**이며 후속 기존 loop/writer 선택은 **6 PASS/6.01s, 정상 종료0**다. 안전한 위치 기록의 상한·비밀 모양 메시지/payload 부재와 다음 성공 재시도를 확인했다. 당시 동일44개 writer identity/guard의 source pin은 `cdce2579483fa9c166cc3d1ddd4f77971735a2175bdd3c20ec23aa188ace0313`이다. [기준·diff·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/relay-location-20260910/RESULT.md)를 따른다. 초기 무해한 ASCII child probe는 TypeError를 재현하지 못했으며 그때는 동작 교정을 하지 않았다. 이후 실제 자연 실패 위치와 별도 undecodable-output 회귀를 위 후속 근거에 연결한다. 수동 full cycle·업무 replay·live hook·강제 종료는 쓰지 않는다.
 
 <a id="root-ui-20260910"></a>
 ## 2026-09-10 · 대기 중 화면 깜박임·작업 화면 잘림 교정
