@@ -11801,7 +11801,6 @@ class Label_Match(tk.Tk):
         scan_entry = ttk.Entry(frame, font=(self.default_font_name, 16))
         scan_entry.pack(fill="x", pady=(8, 6))
         rows_frame = ttk.Frame(frame)
-        rows_frame.pack(fill="both", expand=True)
         rows = ttk.Treeview(rows_frame, columns=("old", "new"), show="headings", selectmode="browse", height=8)
         rows.heading("old", text="교체 대상")
         rows.heading("new", text="새 양품")
@@ -11812,7 +11811,6 @@ class Label_Match(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         rows.pack(side="left", fill="both", expand=True)
         status_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=status_var, wraplength=700).pack(anchor="w", pady=(8, 0))
         state = {"locked": False, "dispatching": False}
         mutable_controls = []
 
@@ -11837,7 +11835,7 @@ class Label_Match(tk.Tk):
                 rows.delete(*children)
             for index, pair in enumerate(draft.pairs):
                 rows.insert("", "end", iid=str(index), values=pair)
-            count_var.set(f"교체 목록 {len(draft.pairs)}건 / 대상 제품 {draft.target_member_count}개")
+            count_var.set(f"교체 목록 {len(draft.pairs)}건 / 제출 시 {len(draft.pairs)}건 반영")
             prefix = f"{draft.edit_index + 1}번 수정 · " if draft.edit_index is not None else ""
             title_var.set(prefix + ("새 양품 스캔" if draft.pending_old else "교체 대상 제품 스캔"))
             if draft.pending_old:
@@ -11996,7 +11994,7 @@ class Label_Match(tk.Tk):
                 status_var.set("다른 작업을 처리 중입니다. 목록을 유지했으니 잠시 후 다시 적용하세요.")
 
         buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(10, 0))
+        buttons.pack(side="bottom", fill="x", pady=(10, 0))
         for text, command in (
             ("선택 수정", edit_selected), ("선택 삭제", remove_selected),
             ("입력 취소", cancel_input), ("교체 적용", submit_to_server),
@@ -12007,6 +12005,8 @@ class Label_Match(tk.Tk):
         mutable_controls.append(scan_entry)
         close_button = ttk.Button(buttons, text="닫기", command=close_popup)
         close_button.pack(side="right")
+        ttk.Label(frame, textvariable=status_var, wraplength=700).pack(side="bottom", anchor="w", pady=(8, 0))
+        rows_frame.pack(fill="both", expand=True)
         render_rows()
         scan_entry.bind("<Return>", accept_scan)
         popup.protocol("WM_DELETE_WINDOW", close_popup)

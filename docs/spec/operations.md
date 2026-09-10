@@ -3,6 +3,10 @@
 <a id="f4-editable-list"></a>
 ## 2026-09-10 · F4 편집 목록·대상 멤버 수 교체
 
+**후속 실제 footer 실패·최소 교정:** Claude25는 실제 `16b6050`의 760×500 화면에서 아래/오른쪽 테두리는 보이지만 다섯 footer 버튼이 모두 가려지는 실패를 확인했다. 기존 버튼·상태를 먼저 아래에 배치하고 목록이 남은 높이를 쓰게 하는 4줄 교체와 `교체 목록 N건 / 제출 시 N건 반영` 문구로 바로잡았다. 기존 창 크기·8행·스타일·검증·제출 callback은 유지한다. [사전 기준·원 실패·한정 결과](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/footer-fix/RESULT.md)에 결속한다.
+
+**PROVEN — 이 교정의 소스 범위:** 기존 F4/draft/writer 선택 **11 PASS/10.06s**, 새 시험 파일 없음. 동일44개 writer identity/guard의 source pin만 `59220bd71cd92f21794ce5224aff5aac87434d0b6336f7cbd8619c9edb32a400`으로 갱신했다. **UNPROVEN — 교정 후 실제 화면·입력:** 실행 중인 guest16b는 old 입력 수용/new 입력 미확정·목록0건·Submit0을 보존한다. 07:13:18Z 읽기 전용 확인에서 원본 PHS2/멤버/봉인1과 저장 상태 hash가 같고 exchange/package/lease 모두0이다. Host 입력은 중단했으며 live source 교체·정상 재개·새 화면 수용은 이 source 확인에 포함되지 않는다. 아래 5f 정상 종료·native 미실행 기록은 선행 단계의 보존 이력이다.
+
 Main의 후속 empty-members 검토는 3bdd의 count-only 초안이 가능한 실제 분기를 확인했다. [한정 후속 교정](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/missing-members/RESULT.md)은 exact nonempty 목록을 요구하고, 명시적 레거시 direct-seal만 기존 worker의 실제 target/seal 조회로 목록을 공급한다. 기존 팝업 회귀의 missing-members **1 FAIL→PASS**, 한정 F4 **7 PASS/3.23s**와 기존 draft/writer **4 PASS/5.97s**이며 전체 suite/GUI는 재실행하지 않았다. 동일44개 guard/identity를 유지하고 pin을 `75278d9927e13288dc967e0a2112f3e65f45abd31c03810b2b077576253bd933`으로 갱신했다. 아래 130/66과 원래 pin은 선행3bdd의 보존된 결과다.
 
 Main의 최종 추가 capability 합의와 원본 C 저장소 구현 GO 뒤, 깨끗한 parent `945e126d7ec76fd517c8011e0ecc8eab4acbb1cb`에서 [사전 구현 기준](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/IMPLEMENTATION-CRITERIA.md)을 고정했다. 기존 5f 설계·baseline, 945 이력표 교정과 모든 과거 실패를 보존한다. 수량 대화상자·자동 제출을 old→new 목록과 명시적 단일 적용으로 바꾸고, 기존 모듈 안의 작은 메모리 초안과 정상 SQLite migration으로 [C-03](contracts.md#c-03)을 구현했다. 상세 변화·커밋·파일 크기는 [RESULT](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/RESULT.md)에 결속한다.
