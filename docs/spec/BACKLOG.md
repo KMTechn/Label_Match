@@ -3,6 +3,7 @@
 <a id="lm-f4-list"></a>
 ## 2026-09-10 · F4 교체 목록 — 소스 구현, 실제 수용 대기
 
+- 안내 문구 후속: Claude28/Main 합의로 단일 목록 건수, 대상→양품 반복·단일 적용·적용 전 닫기 소실과 실제 대기/오류 안내를 정리했다. 기존12 PASS와 마지막 문장 뒤 writer3 PASS, 동일44개 writer이며 동작 변경·새 시험은 없다. Main의95b 실제 목록 추가/편집 취소/삭제/닫기와 최종 소스의 native 미수용을 [운영 근거](operations.md#f4-editable-list)에서 구분한다.
 - 실제 footer 후속: 95b 화면에서 목록/제출 건수와 세로 배치는 확인했지만 닫기 버튼과 안내 끝의 가로 잘림이 남았다. 두 생성문에 `width=0`, 안내에 `wraplength=700`만 추가하고 최종 기존 선택11 PASS/9.70s·동일44개 writer를 확인했다. [원 실패·정상95b 적용·Main 입력 인계와 후속 전체 버튼/안내 수용](operations.md#f4-editable-list)을 분리한다.
 - 후속 교정: 빈 members+양수 QT 초안의 실제 admission gap을 닫았다. 표준 PHS2는 정확한 목록 부재를 거부하고 레거시 direct-seal은 실제 target/seal worker 조회로 호환한다. [한정 11 PASS와 남은 수용](operations.md#f4-editable-list)을 분리한다.
 - 구현: 수량 선입력·개수 도달 자동 제출을 없애고 old→new 목록의 확인·수정·삭제·입력 취소와 명시적 단일 적용을 제공한다. 실제 대상 멤버 수, 추가 capability, 기존 원자 명령/복구/전자 seal·물리 PHS2 보존 계약을 유지한다.

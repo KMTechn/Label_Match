@@ -92,7 +92,7 @@ def validate_exchange_pairs(old_barcodes, new_barcodes, target_member_count):
         or set(old) & set(new)
     ):
         raise PackageLogisticsError(
-            "replacement requires unique complete pairs within the target membership"
+            "교체 쌍이 올바르지 않습니다. 목록을 확인하세요."
         )
     return old, new
 
@@ -124,11 +124,11 @@ class SealedTransferExchangeDraft:
             if value not in self.target_barcodes:
                 raise PackageLogisticsError("현재 현품표에 포함된 교체 대상을 스캔하세요.")
             if self.edit_index is None and len(self.pairs) >= self.target_member_count:
-                raise PackageLogisticsError("현재 현품표의 모든 교체 대상이 목록에 있습니다.")
+                raise PackageLogisticsError(f"현재 현품표의 제품 {self.target_member_count}개가 모두 목록에 있습니다.")
             self.pending_old = value
             return False
         if value in self.target_barcodes:
-            raise PackageLogisticsError("현재 묶음에 포함된 제품은 새 양품으로 사용할 수 없습니다.")
+            raise PackageLogisticsError("현재 현품표에 포함된 제품은 새 양품으로 사용할 수 없습니다.")
         pair = (self.pending_old, value)
         if self.edit_index is None:
             self.pairs.append(pair)
@@ -153,7 +153,7 @@ class SealedTransferExchangeDraft:
 
     def snapshot(self):
         if self.pending_old or self.edit_index is not None:
-            raise PackageLogisticsError("입력 중인 교체 쌍을 완성하거나 입력 취소를 누르세요.")
+            raise PackageLogisticsError("입력 중인 교체 쌍을 완료하거나 [입력 취소]를 누르세요.")
         if not self.pairs:
             raise PackageLogisticsError("교체할 제품을 목록에 추가하세요.")
         validate_exchange_pairs(

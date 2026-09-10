@@ -11779,7 +11779,7 @@ class Label_Match(tk.Tk):
             )
         except (PackageLogisticsError, KeyError, TypeError):
             messagebox.showerror(
-                "제품 교체 불가", "교체 대상의 전체 구성을 확인할 수 없습니다.", parent=self
+                "제품 교체 불가", "교체 대상 목록을 확인하지 못했습니다. 잠시 후 다시 시도하거나 관리자에게 알려 주세요.", parent=self
             )
             return False
         captured_set_id = str(self.current_set_info.get("id") or "")
@@ -11794,7 +11794,7 @@ class Label_Match(tk.Tk):
         title_var = tk.StringVar(value="교체 대상 제품 스캔")
         ttk.Label(frame, textvariable=title_var, font=(self.default_font_name, 16, "bold")).pack(anchor="w")
         ttk.Label(
-            frame, text="교체 대상 → 새 양품을 추가한 뒤 목록을 확인하고 교체 적용을 누르세요.", wraplength=700
+            frame, text="교체 대상 → 새 양품 순서로 필요한 만큼 스캔하세요.\n목록을 확인한 뒤 [교체 적용]을 한 번 누르면 목록 그대로 교체됩니다.\n적용 전에 창을 닫으면 목록은 사라집니다.", wraplength=700
         ).pack(anchor="w", pady=(8, 6))
         count_var = tk.StringVar(value="")
         ttk.Label(frame, textvariable=count_var).pack(anchor="w")
@@ -11835,7 +11835,7 @@ class Label_Match(tk.Tk):
                 rows.delete(*children)
             for index, pair in enumerate(draft.pairs):
                 rows.insert("", "end", iid=str(index), values=pair)
-            count_var.set(f"교체 목록 {len(draft.pairs)}건 / 제출 시 {len(draft.pairs)}건 반영")
+            count_var.set(f"교체 목록 {len(draft.pairs)}건")
             prefix = f"{draft.edit_index + 1}번 수정 · " if draft.edit_index is not None else ""
             title_var.set(prefix + ("새 양품 스캔" if draft.pending_old else "교체 대상 제품 스캔"))
             if draft.pending_old:
@@ -11849,7 +11849,7 @@ class Label_Match(tk.Tk):
             if state["locked"]:
                 return
             if draft.pending_old or draft.edit_index is not None or scan_entry.get().strip():
-                status_var.set("입력 중인 내용을 완료하거나 입력 취소를 누르세요.")
+                status_var.set("입력 중인 교체 쌍을 완료하거나 [입력 취소]를 누르세요.")
                 return
             index = selected_index()
             if index is not None:
@@ -11862,7 +11862,7 @@ class Label_Match(tk.Tk):
             if state["locked"]:
                 return
             if draft.pending_old or draft.edit_index is not None:
-                status_var.set("입력 중인 교체 쌍을 완료하거나 입력 취소를 누르세요.")
+                status_var.set("입력 중인 교체 쌍을 완료하거나 [입력 취소]를 누르세요.")
                 return
             index = selected_index()
             if index is not None:
@@ -11955,10 +11955,10 @@ class Label_Match(tk.Tk):
                 if kind == "admission_rejected":
                     lock_draft(False)
                     render_rows()
-                    status_var.set("교체 준비를 확인하지 못했습니다. 목록을 유지했으니 수량과 중앙 연결을 확인하세요.")
+                    status_var.set("교체를 시작하지 못했습니다. 목록은 그대로 있습니다. 잠시 후 다시 누르거나 관리자에게 알려 주세요.")
                     return
                 if kind == "preserve":
-                    status_var.set("교체 결과 확인이 필요합니다. 기존 목록을 유지하고 관리자에게 확인을 요청하세요.")
+                    status_var.set("교체 결과 확인이 필요합니다. 목록은 그대로 있습니다. 관리자에게 확인을 요청하세요.")
                     return
                 if result.status == "ACKED":
                     self.data_manager.log_event(
@@ -11977,9 +11977,9 @@ class Label_Match(tk.Tk):
                     self._prompt_new_seal_verification(result)
                     return
                 status_var.set(
-                    "중앙 결과 확인 대기. 기존 교체 목록을 유지합니다."
+                    "중앙 결과를 기다리는 중입니다. 목록은 그대로 있습니다."
                     if result.retryable
-                    else "교체 결과 확인이 필요합니다. 목록을 유지하고 관리자에게 확인을 요청하세요."
+                    else "교체 결과 확인이 필요합니다. 목록은 그대로 있습니다. 관리자에게 확인을 요청하세요."
                 )
 
             admission = self._submit_ui_lane_task(
@@ -11991,7 +11991,7 @@ class Label_Match(tk.Tk):
                 close_button.configure(state="normal")
                 lock_draft(False)
                 render_rows()
-                status_var.set("다른 작업을 처리 중입니다. 목록을 유지했으니 잠시 후 다시 적용하세요.")
+                status_var.set("다른 작업을 처리 중입니다. 목록은 그대로 있습니다. 잠시 후 다시 적용하세요.")
 
         buttons = ttk.Frame(frame)
         buttons.pack(side="bottom", fill="x", pady=(10, 0))

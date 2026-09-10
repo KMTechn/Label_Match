@@ -1192,7 +1192,7 @@ def test_more_pairs_than_target_members_are_rejected_before_network(tmp_path):
     coordinator = SealedTransferExchangeCoordinator(
         SealedTransferExchangeStore(tmp_path / "package.db"), client
     )
-    with pytest.raises(PackageLogisticsError, match="pair|target"):
+    with pytest.raises(PackageLogisticsError, match="교체 쌍"):
         coordinator.prepare(
             set_id="set-1",
             old_seal_qr_payload=OLD_QR,

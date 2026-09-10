@@ -3,6 +3,10 @@
 <a id="f4-editable-list"></a>
 ## 2026-09-10 · F4 편집 목록·대상 멤버 수 교체
 
+**조작자 안내 문구 후속:** Claude28과 Main이 검수한 문구로 `교체 목록 N건`만 표시하고, 대상→새 양품 순서의 반복 입력·목록 전체의 단일 `[교체 적용]`·적용 전 닫기의 목록 소실을 기존 안내 라벨에서 알린다. 상한에 닿았을 때만 현재 현품표의 실제 제품 수를 표시한다. 오류/대기와 미완성 입력 문구도 실제 상태와 조작에 맞췄다. `입력 취소`는 편집을 취소해도 기존 쌍을 유지하고, 적용 후 이미 생긴 durable 작업은 닫기로 취소되지 않는다. 버튼·callback·검증·업무 계약과 b6의 폭/줄바꿈 교정은 유지한다.
+
+**문구 교정 검증:** 기존 F4/draft/writer와 네트워크 전 수량 거부 선택 **12 PASS/7.96s**, 마지막 W3 문장 정렬 뒤 writer binding **3 PASS/4.81s**다. 기존 시험의 영문 오류 match 한 곳만 한국어로 맞췄고 새 시험은 없다. 동일44개 writer identity/guard/위치, 일곱 source digest와 두 pin만 갱신했으며 최종 pin은 `85f7e8174c100b56f06cd92ca5a36efceb375a79a0a94a8232a9ca1719fd42ff`다. [사전 기준·최종 diff·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/wording/RESULT.md)를 보존한다. Main의95b 실제018–024는 추가·수정 진입·입력 취소·삭제·정상 닫기를 확인했고 Submit/F3는0이다. 최종 문구/전체 버튼의 native 수용은 Main의 정상 적용 뒤 확인하며 배포 기준은 미적용b6가 아닌 현재95b다.
+
 **95b 실제 화면·가로 폭 후속:** 정상 적용·복구 뒤 08:17Z 기본 760×500 화면은 `교체 목록 0건 / 제출 시 0건 반영`과 네 버튼의 세로 배치를 확인했지만, 다섯째 `닫기`와 안내 문구 끝이 오른쪽에서 잘렸다. [원본 화면·무입력 Main 인계](E:/KMTech/optimization-implementation-20260909/Label_Match/business/ui-f4-95b7a85-01/F4-95B-NATIVE-HANDBACK.md)를 보존한다. 기존 네 동작 버튼 생성문과 닫기 생성문에만 `width=0`, 안내 라벨에는 기존 상태 라벨과 같은 `wraplength=700`을 지정한다. 창 크기·글꼴·padding·pack·callback·초안/제출 검증은 유지한다.
 
 **소스 검증과 남은 실제 수용:** 최종 세 옵션 교정의 기존 F4/draft/writer 선택은 **11 PASS/9.70s**, 동일44개 writer identity/guard/위치이며 새 source pin은 `71edccc784ac31424448cf1587000beef9d87976a93536d39ad6184424dbc9ea`이다. [사전 기준·정확한 diff·한정 결과](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/footer-natural-width/RESULT.md)를 따른다. Main이 guest 입력을 소유하며 이 worker는 source copy·guest 수명주기·입력을 하지 않는다. 다섯 버튼과 안내 문구의 실제 전체 가독성/조작 및 목록 편집·제출 성공은 후속 native 증거가 필요하다.
