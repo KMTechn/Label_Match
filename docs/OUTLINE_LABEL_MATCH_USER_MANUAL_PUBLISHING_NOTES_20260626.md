@@ -31,7 +31,7 @@
 - 별도 계약 사본을 두지 않으며 정본은
   `E:/KMTech/production-readiness-20260830/HANDOVER/CAPTURE-BUNDLE-V1-CONTRACT.md`
 - schema: `M7 external capture bundle v1`, 앱 식별자: `app=Label_Match`
-- 외부 승인 위치: `E:/requal-evidence/capture-bundle-v1/Label_Match/`
+- 외부 승인 위치: `D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/`
   (앱 저장소·release packet 밖)
 - 필수 state ID:
   `phs2_admitted_busy`, `phs2_rejected_input_preserved`,
@@ -42,7 +42,7 @@
 - 조회:
   `E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md` → 그 문서가
   게시한 immutable
-  `E:/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
+  `D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
   → `app=Label_Match` → `Label_Match/<bundle-id>/manifest.json` →
   `captures[].state_id`
 - 승인 조건은 위 정본과 external manifest/receipt에서 판정하며 이 문서에 다시

@@ -502,11 +502,11 @@ def test_m7_external_bundle_manifest_schema_releases_fixed_l5_l6_gate():
         "start_at": M7_HANDOVER_INDEX,
         "select": "app=Label_Match",
         "external_index": (
-            "E:/requal-evidence/capture-bundle-v1/indexes/"
+            "D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/indexes/"
             "handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json"
         ),
         "manifest": (
-            "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+            "D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/"
             "<bundle-id>/manifest.json"
         ),
         "state_selector": "captures[].state_id",

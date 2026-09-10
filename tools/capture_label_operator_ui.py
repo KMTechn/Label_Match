@@ -39,7 +39,7 @@ from PIL import Image, ImageGrab, ImageStat
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_OUTPUT_BASE = Path(
-    "E:/requal-evidence/capture-bundle-v1/Label_Match"
+    "D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match"
 )
 DEFAULT_SOURCE_ROOT = Path(
     os.environ.get("LABEL_MATCH_CAPTURE_SOURCE_ROOT", ROOT)
@@ -93,7 +93,7 @@ DEFAULT_STATE_IDS = (*BASELINE_STATE_IDS, *M7_REQUIRED_STATE_IDS)
 APP_SPECIFIC_CAPTURE_GATE_SCHEMA_VERSION = 7
 M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA = "M7 external capture bundle v1"
 M7_EXTERNAL_CAPTURE_APPROVAL_LOCATION = (
-    "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+    "D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/"
 )
 M7_HANDOVER_INDEX = (
     "E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md"
@@ -954,11 +954,11 @@ def build_m7_external_capture_bundle_contract() -> dict[str, Any]:
                 "start_at": M7_HANDOVER_INDEX,
                 "select": "app=Label_Match",
                 "external_index": (
-                    "E:/requal-evidence/capture-bundle-v1/indexes/"
+                    "D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/indexes/"
                     "handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json"
                 ),
                 "manifest": (
-                    "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+                    "D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/"
                     "<bundle-id>/manifest.json"
                 ),
                 "state_selector": "captures[].state_id",

@@ -31,7 +31,7 @@ DEFAULT_DOCUMENT_ID = "4115be8b-488a-4934-80af-f0f9e4ee721b"
 DEFAULT_TITLE = "Label_Match(포장실 프로그램)"
 M7_EXTERNAL_CAPTURE_BUNDLE_SCHEMA = "M7 external capture bundle v1"
 M7_APP_ID = "Label_Match"
-M7_EXTERNAL_CAPTURE_ROOT = "E:/requal-evidence/capture-bundle-v1/Label_Match/"
+M7_EXTERNAL_CAPTURE_ROOT = "D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/"
 M7_HANDOVER_INDEX = (
     "E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md"
 )

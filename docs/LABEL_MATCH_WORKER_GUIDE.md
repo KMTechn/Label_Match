@@ -88,7 +88,7 @@
 이 저장소는 별도 계약 사본을 정의하지 않습니다. 정본은
 `E:/KMTech/production-readiness-20260830/HANDOVER/CAPTURE-BUNDLE-V1-CONTRACT.md`이며,
 schema는 `M7 external capture bundle v1`, 앱 식별자는 `app=Label_Match`, 외부 앱
-root는 `E:/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 저장소의 기존
+root는 `D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 저장소의 기존
 tracked 이미지는 삭제하지 않고 이력 자료로 보존하며, 현행 화면 증거는 승인된
 external bundle로 대체 예정입니다.
 
@@ -107,7 +107,7 @@ external bundle로 대체 예정입니다.
 조회는
 `E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md`에서
 시작합니다. 그 문서가 게시한 immutable
-`E:/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
+`D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
 receipt에서 `app=Label_Match`를 고르고, 항목이 가리키는
 `Label_Match/<bundle-id>/manifest.json`의 `captures[].state_id`로 화면을
 선택합니다. 승인 또는 custody가 미정이면 게시·교육·인계 화면으로 사용하지

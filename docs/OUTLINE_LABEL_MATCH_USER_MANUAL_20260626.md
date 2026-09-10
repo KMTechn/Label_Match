@@ -189,7 +189,7 @@ F3는 현재 표준 포장 완료 버튼입니다. 샘플 출고용 예외 완�
 이 이력 원고는 별도 화면 계약을 정의하지 않습니다. 현행 정본은
 `E:/KMTech/production-readiness-20260830/HANDOVER/CAPTURE-BUNDLE-V1-CONTRACT.md`이고,
 schema는 `M7 external capture bundle v1`, 앱 식별자는 `app=Label_Match`, 외부 앱
-root는 `E:/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 필수 state ID는
+root는 `D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 필수 state ID는
 다음과 같습니다.
 
 1. `phs2_admitted_busy`
@@ -204,7 +204,7 @@ root는 `E:/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 필수 sta
 
 조회는 `E:/KMTech/production-readiness-20260830/HANDOVER/HANDOVER-INDEX.md`에서
 시작합니다. 그 문서가 게시한 immutable
-`E:/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
+`D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/indexes/handover-index__<YYYYMMDDTHHMMSSZ>__<nonce8>.json`
 receipt에서 `app=Label_Match`를 선택하고, 해당
 `Label_Match/<bundle-id>/manifest.json`의 `captures[].state_id`로 필요한 화면을
 찾습니다. 이 문서에는 raster, bundle-id 또는 나중에 생성된 digest 값을 다시
