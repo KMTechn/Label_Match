@@ -1,5 +1,12 @@
 # Label_Match 운영·복구·검증
 
+<a id="relay-exception-location-20260910"></a>
+## 2026-09-10 · 상주 relay 예외 위치의 제한된 기록
+
+실제95b와 a70 상주 relay의 `UNKNOWN/TypeError`에는 실패 위치가 없었다. 기존 `run_persistent_relay_loop` 예외 기록에 가장 안쪽 여덟 frame의 파일명·함수명·행 번호만 덧붙인다. 기존 status/reason/error_type, 30초 정상 재시도와 상태 파일은 유지하고 메시지·locals·인자·소스 본문·child payload나 새 logger를 기록하지 않는다. 원인이나 전송 여부는 UNKNOWN만으로 판단하지 않는다.
+
+기존 실패→성공 시험에 예외 사례를 추가한 기준선은 **1 FAIL/1 PASS, 0.33s**이며 후속 기존 loop/writer 선택은 **6 PASS/6.01s, 정상 종료0**다. 안전한 위치 기록의 상한·비밀 모양 메시지/payload 부재와 다음 성공 재시도를 확인했다. 동일44개 writer identity/guard의 source pin은 `cdce2579483fa9c166cc3d1ddd4f77971735a2175bdd3c20ec23aa188ace0313`이다. [기준·diff·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/relay-location-20260910/RESULT.md)를 따른다. 무해한 별도 child probe는 TypeError를 재현하지 못했으며 stream 가설에 따른 동작 교정은 하지 않았다. 실제 원인은 정상 보존 적용 뒤 다음 자연 실패의 위치로 확인하며 수동 full cycle·업무 replay·live hook·강제 종료를 쓰지 않는다.
+
 <a id="root-ui-20260910"></a>
 ## 2026-09-10 · 대기 중 화면 깜박임·작업 화면 잘림 교정
 
@@ -13,7 +20,7 @@ Main의95b 실제027(200프레임/29.969s)은 입력 없이 `저장된 현품표
 
 교정 전 기존 시험 확장에서 **2 FAIL/2.78s**, 교정 뒤 scheduler9·busy/입력·남은 gate·상세2·readback·writer 선택은 **24 PASS/13.35s, 정상 종료0**다. 기준선 실패 시 정리 누락으로 남은 독립 host 시험 thread/process만 식별해 종료하고 시험 정리를 보정했으며, 실패 출력과 종료 근거를 보존했다. 실제 앱/guest 종료가 아니다. native 시험의 잘못된 font module 별칭도 바로잡았지만 실제 Tk 시험은 실행하지 않았다. 동일44개 writer identity/guard의 후속 pin은 `704866984db7afc430902bb8aa605b22752df7f7e05e02ab56a450a54c5412b3`이며 [후속 기준·실패·diff·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/root-ui-20260910/followup/RESULT.md)에 결속한다.
 
-실제95b는 Main이 입력을 소유하며 F4 닫힘/Submit0을 보존한다. worker는 host/guest 입력·정상 닫기·source copy를 하지 않았다. 최종 글꼴/화면의 무잘림, 30초 이상 실제 idle 관찰, 실제 작업의 busy/입력 유지와 F4 적용·QR·F3/ACK·후속 업무는 정상 적용 뒤 Main이 확인한다. 소스 점검으로 모든 native 창이나 Today 전후 성능을 수용하지 않으며, 새 증거와 무관한 RedrawWindow 플래그는 변경하지 않았다.
+**a70 실제 부분 확인:** Main의 guest 소유권 반환 후 정상95b→a70 적용/복구를 했다. 실제 idle241프레임/36.016s에서 다섯 버튼·제목 각각 단일 pixel hash를 확인했고, 좌우/루트와 네 탭의 선택 영역을 확인했다. F4 기본776×539 창의 `교체 목록 0건`·안내·다섯 footer 버튼도 잘리지 않는다. 007의 실제 F4 열기121프레임/15.672s는 클릭/modal 전환만 포착해 짧은 busy 구간의 native 입력 보호는 **UNPROVEN**이다. Apply/F3/새 바코드 입력은0이며 원본 PHS2·세트·멤버901/902/903·seal1·네 durable 표0을 보존했다. [정확한 적용·실패·보존·화면 근거](E:/KMTech/optimization-implementation-20260909/Label_Match/business/ui-root-a70d993-01/NATIVE-RESULT.md)에 preclose/afterclose hash 비교 오류와 caller의 잘못된 후속 실행, 별도 relay 자연 종료1/TypeError를 보존한다. 설정/날짜/원문/오류/F5 창, 실제 busy 입력 유지, F4 적용·QR·F3/ACK·후속 업무와 Today 전후 성능은 미완료다. Host 입력은 없으며, 새 증거와 무관한 RedrawWindow 플래그는 변경하지 않았다.
 
 <a id="f4-editable-list"></a>
 ## 2026-09-10 · F4 편집 목록·대상 멤버 수 교체

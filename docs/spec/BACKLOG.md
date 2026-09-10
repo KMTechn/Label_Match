@@ -1,11 +1,16 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-10 · relay 예외 위치 기록 — 원인 확인 중
+
+- 기존 UNKNOWN 예외 기록에 가장 안쪽8개 basename/function/line만 추가하고 메시지·인자·locals·payload는 제외한다. 기존 실패→성공 시험의 기준1 FAIL/1 PASS와 후속 loop/writer6 PASS, 동일44개 writer와 정확한 소스는 [운영 근거](operations.md#relay-exception-location-20260910)를 따른다.
+- 남은 일: 지원 정상 보존 적용 뒤 다음 자연 실패의 정확한 위치를 확인한 후에만 원인 동작을 교정한다. 무해한 child probe는 가설을 재현하지 못했으며 UNKNOWN은 전송 부재의 증거가 아니다. 강제 종료·수동 cycle·업무 replay는 하지 않는다.
+
 ## 2026-09-10 · 루트 화면 깜박임·잘림 — 소스 교정, 실제 수용 대기
 
 - Main의95b 실제027에서 무입력 중 busy 제목/회색 버튼의 순간 표시를 확인했다. 주기 readback이 실제 후보를 찾은 뒤 기존 lane에 접수하도록 교정하고, 열린 세트의 불필요한 복원 조회·도중 입력·읽기 실패·종료 취소를 기존 시험에서 확인했다.
 - 단계/상태·최근 완료 열의 실제 폭, 좌측 줄바꿈, 대기 상세의 한국어/줄 높이, 두 F5 footer를 바로잡았다. 기준13 PASS, 보정27 PASS와 마지막 변경의 scheduler/writer11 PASS 및 보존한 fixture 오류는 [운영 근거](operations.md#root-ui-20260910)를 따른다. 원본44개 writer와 업무 계약은 같다.
 - 94c 후속 검토: render 예외 뒤 검증 접수/재예약을 보장하고 예상된 background busy 거절만 조용히 재시도한다. 비어 있지 않은 retry 목록은 기존 상세에 `자동 재시도가 예정되어 있습니다.`로 표시한다. 교정 전2 FAIL과 독립 host 시험 정리 보정, 후속24 PASS/13.35s·동일44개 writer는 [운영 근거](operations.md#root-ui-20260910)와 E 보고서에 기록했다. guest95b는 그대로이며 94c 중간 적용은 보류했다.
-- 남은 일: Main의 정상 적용 뒤 실제 root/F4/F5·탭·설정/날짜/원문/오류 창의 글꼴·가독성·입력과 idle 관찰을 확인한다. source 전수 점검은 native 전수 통과가 아니며, 원래 F4 적용·F3/ACK/후속 업무와 Today 전후 비교는 미완료다.
+- a70 실제 부분 확인: 정상95b→a70 적용/복구 후 idle241프레임/36.016s의 버튼·제목 불변, 루트/네 탭과 F4 목록0건·안내·다섯 footer의 무잘림을 확인했다. [정상 lifecycle과 보존한 실패·정확한 native 범위](operations.md#root-ui-20260910)를 따른다. 설정/날짜/원문/오류/F5·실제 busy 입력 유지, 원래 F4 적용·F3/ACK/후속 업무와 Today 전후 비교는 미완료다.
 
 <a id="lm-f4-list"></a>
 ## 2026-09-10 · F4 교체 목록 — 소스 구현, 실제 수용 대기

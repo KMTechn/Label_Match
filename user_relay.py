@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import traceback
 from typing import Any, Callable, Mapping, Sequence
 import uuid
 
@@ -465,6 +466,14 @@ def run_persistent_relay_loop(
                         "status": "UNKNOWN",
                         "reason": "relay cycle did not return a result",
                         "error_type": exc.__class__.__name__,
+                        "exception_frames": [
+                            {
+                                "file": Path(frame.filename).name,
+                                "function": frame.name,
+                                "line": frame.lineno,
+                            }
+                            for frame in traceback.extract_tb(exc.__traceback__, limit=-8)
+                        ],
                     }
                 last_cycle = cycle
                 _write_json_atomic(

@@ -124,15 +124,53 @@ def test_persistent_loop_maps_missing_cycle_value_to_unknown(tmp_path):
     assert persisted["persistent_retry"] is True
 
 
-def test_persistent_loop_retries_failure_then_records_success(tmp_path):
+@pytest.mark.parametrize("raise_exception", [False, True])
+def test_persistent_loop_retries_failure_then_records_success(tmp_path, raise_exception):
     outcomes = iter(({"status": "FAIL"}, {"status": "acked"}))
+    status_path = tmp_path / "status.json"
+    observed = []
+
+    def fail_nested(depth, payload):
+        if depth:
+            return fail_nested(depth - 1, payload)
+        raise TypeError("private-cycle-message", payload)
+
+    def run_cycle():
+        result = next(outcomes)
+        if raise_exception and result["status"] == "FAIL":
+            fail_nested(12, {"secret": "private-cycle-payload"})
+        return result
+
     result = user_relay.run_persistent_relay_loop(
-        lambda: next(outcomes),
-        status_path=tmp_path / "status.json",
-        interval_seconds=0,
+        run_cycle,
+        status_path=status_path,
+        interval_seconds=1,
+        wait=lambda _: observed.append(
+            json.loads(status_path.read_text(encoding="utf-8"))
+        ),
         max_cycles=2,
     )
 
+    assert len(observed) == 1
+    first = observed[0]["last_cycle"]
+    assert observed[0]["persistent_retry"] is True
+    if raise_exception:
+        assert first["status"] == "UNKNOWN"
+        assert first["reason"] == "relay cycle did not return a result"
+        assert first["error_type"] == "TypeError"
+        assert set(first) == {"status", "reason", "error_type", "exception_frames"}
+        frames = first["exception_frames"]
+        assert len(frames) == 8
+        assert all(set(frame) == {"file", "function", "line"} for frame in frames)
+        assert all(frame["file"] == Path(__file__).name for frame in frames)
+        assert all(frame["function"] == "fail_nested" for frame in frames)
+        assert all(
+            isinstance(frame["line"], int) and frame["line"] > 0 for frame in frames
+        )
+        assert "private-cycle" not in json.dumps(observed)
+        assert str(Path(__file__).parent) not in json.dumps(observed)
+    else:
+        assert first == {"status": "FAIL"}
     assert result["cycle_count"] == 2
     assert result["last_cycle"]["status"] == "acked"
 
