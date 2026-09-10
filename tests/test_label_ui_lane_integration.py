@@ -526,7 +526,7 @@ def test_f4_lease_and_pending_exchange_gate_runs_off_tk(legacy_direct_seal):
     _close_lane(app, root)
 
 
-@pytest.mark.parametrize("outcome", ["pending", "post_prepare_load_error", "admission_error", "missing_members"])
+@pytest.mark.parametrize("outcome", ["pending", "post_prepare_load_error", "prepare_error", "admission_error", "missing_members"])
 def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypatch, tmp_path, outcome):
     from copy import deepcopy
     import sqlite3
@@ -562,6 +562,12 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
     tree.pack = tree.column = tree.heading = tree.yview = Mock()
     tree.selection = lambda: content["selection"]
     buttons = {}
+    variables = []
+
+    def variable(**_kwargs):
+        value = Mock()
+        variables.append(value)
+        return value
 
     def button(*_args, **kwargs):
         widget = Mock()
@@ -571,7 +577,7 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
     monkeypatch.setattr(label_module.simpledialog, "askinteger", lambda *_a, **_k: pytest.fail("upfront quantity dialog"))
     monkeypatch.setattr(label_module.messagebox, "showerror", Mock())
     monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
-    monkeypatch.setattr(label_module.tk, "StringVar", lambda **_: Mock())
+    monkeypatch.setattr(label_module.tk, "StringVar", variable)
     for name in ("Frame", "Label", "Scrollbar"):
         monkeypatch.setattr(label_module.ttk, name, lambda *_a, **_k: Mock())
     monkeypatch.setattr(label_module.ttk, "Entry", lambda *_a, **_k: entry)
@@ -584,6 +590,8 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
 
     def prepare(**kwargs):
         assert worker_gate.wait(2)
+        if outcome == "prepare_error":
+            raise OSError("prepare outcome unavailable")
         result = coordinator.prepare(**kwargs)
         captured.append(deepcopy(kwargs))
         if outcome == "post_prepare_load_error":
@@ -631,7 +639,7 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
         scan("UNEXPECTED")
         worker_gate.set()
         root.run_until(lambda: not app.ui_lane.is_busy())
-        expected_intents = 0 if outcome == "admission_error" else 1
+        expected_intents = 0 if outcome in {"admission_error", "prepare_error"} else 1
         assert len(captured) == expected_intents
         if captured:
             assert captured[0]["old_barcodes"] == ("OLD-0", "OLD-2", "OLD-1")
@@ -645,6 +653,8 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
         assert len(tree.get_children()) == (2 if outcome == "admission_error" else 3)
         buttons["교체 적용"][1]()
         assert len(captured) == expected_intents and not app.ui_lane.is_busy()
+        if outcome in {"prepare_error", "post_prepare_load_error"}:
+            assert "접수되었을 수 있습니다" in variables[1].set.call_args.args[0]
     finally:
         worker_gate.set()
         _close_lane(app, root)
@@ -652,11 +662,11 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
 
 @pytest.mark.parametrize("outcome", [
     "success", "uncertain", "cancel", "changed_set", "drain_busy", "lease",
-    "receipt_refused", "fresh_refused", "replay_invalid",
+    "receipt_refused", "fresh_refused", "replay_invalid", "sibling_review",
 ])
 def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monkeypatch, tmp_path, outcome):
     from copy import deepcopy
-    from package_logistics import PackageTransportError
+    from package_logistics import PackageApiError, PackageTransportError
     from sealed_transfer_exchange import SealedTransferExchangeCoordinator
     from tests.test_label_operator_action_gates import FakeTree
     from tests.test_sealed_transfer_exchange import (
@@ -697,6 +707,9 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
             if outcome == "uncertain":
                 self.commands.append(command)
                 raise PackageTransportError("uncertain response")
+            if outcome == "sibling_review":
+                self.commands.append(command)
+                raise PackageApiError(409, "PHS_REPLACEMENT_TARGET_CONFLICT", "Target state changed", committed=False)
             return super().replace_and_reseal_transfer(command)
 
     client = Client()
@@ -751,6 +764,7 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
     monkeypatch.setattr(label_module.messagebox, "askyesno", confirmation)
     replay_error = Mock()
     monkeypatch.setattr(label_module.messagebox, "showerror", replay_error)
+    monkeypatch.setattr(label_module.messagebox, "showwarning", Mock())
     monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
     monkeypatch.setattr(label_module.tk, "StringVar", variable)
     for name in ("Frame", "Scrollbar"):
@@ -783,7 +797,7 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
         assert len(tree.get_children()) == 1
         callback = buttons["교체 적용"][1]
         callback()
-        if outcome in {"success", "uncertain", "lease", "receipt_refused", "fresh_refused"}:
+        if outcome in {"success", "uncertain", "lease", "receipt_refused", "fresh_refused", "sibling_review"}:
             assert app.ui_lane.is_busy()
             callback()
             content["text"] = "UNEXPECTED"
@@ -791,13 +805,13 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
             gate.set()
             root.run_until(lambda: not app.ui_lane.is_busy())
         assert confirmation.call_count == 1
-        assert len(calls) == (1 if outcome in {"success", "uncertain", "receipt_refused", "fresh_refused"} else 0)
+        assert len(calls) == (1 if outcome in {"success", "uncertain", "receipt_refused", "fresh_refused", "sibling_review"} else 0)
         if calls:
             assert calls[0] == (intent_id, True, app.ui_lane.worker_thread_id)
         if outcome == "success":
             assert store.load(intent_id)["status"] == "ACKED"
             app._prompt_new_seal_verification.assert_called_once()
-        elif outcome == "uncertain":
+        elif outcome in {"uncertain", "sibling_review"}:
             assert store.load(intent_id)["status"] == "OPERATOR_REVIEW"
             assert "확인 필요" in variables[0].set.call_args.args[0]
             buttons["교체 적용"][0].configure.assert_called_with(text="교체 적용", state="disabled")
@@ -821,7 +835,11 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
                 assert "재시도 보류" in variables[0].get()
                 assert ("중앙 교체 결과" if outcome == "receipt_refused" else "현재 제품 상태") in variables[-1].get()
                 assert "않았습니다" in variables[-1].get()
-        assert len(client.commands) == (1 if outcome in {"success", "uncertain"} else 0)
+            if outcome == "lease":
+                assert "보류했습니다" in variables[-1].get()
+                assert "할 수 없습니다" not in variables[-1].get()
+                buttons["교체 적용"][0].configure.assert_called_with(text="같은 교체 재시도", state="normal")
+        assert len(client.commands) == (1 if outcome in {"success", "uncertain", "sibling_review"} else 0)
         for field in ("intent_id", "intent_hash", "created_at", "command_id", "command_json", "command_hash"):
             assert store.load(intent_id)[field] == saved[field]
         if outcome != "changed_set":

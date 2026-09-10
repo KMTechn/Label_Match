@@ -10966,12 +10966,10 @@ class Label_Match(tk.Tk):
         attempt = self._current_sealed_transfer_exchange_attempt()
         if attempt is None:
             return False
-        if str(action or "") == "제품 교체" and (
-            getattr(attempt, "operator_retry_available", False)
-            or (
-                attempt.status == "OPERATOR_REVIEW"
-                and getattr(attempt, "error_code", "") == "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN"
-            )
+        if (
+            str(action or "") == "제품 교체"
+            and attempt.status == "OPERATOR_REVIEW"
+            and bool(getattr(attempt, "idempotency_key", ""))
         ):
             return False
         if attempt.status == "ACKED" and attempt.seal_verification_status == "PENDING":
@@ -12023,12 +12021,12 @@ class Label_Match(tk.Tk):
                     return
                 if kind == "preserve":
                     title_var.set("제품 교체 결과 확인 필요")
-                    guidance_var.set("교체 결과를 확인하지 못했습니다. 제품과 목록을 그대로 두고 관리자에게 확인을 요청하세요.\n창을 닫아도 이미 접수된 교체 요청은 취소되지 않습니다.")
+                    guidance_var.set("교체 요청이 이미 접수되었을 수 있습니다.\n창을 닫아도 취소된 것으로 볼 수 없으니 제품과 목록을 그대로 두고 관리자에게 확인을 요청하세요.")
                     status_var.set("교체 결과 확인이 필요합니다. 목록은 그대로 있습니다. 관리자에게 확인을 요청하세요.")
                     return
                 if kind == "retry_blocked":
                     render_attempt(result)
-                    status_var.set("포장 완료 준비가 진행되어 교체를 재시도할 수 없습니다. 관리자에게 확인을 요청하세요.")
+                    status_var.set("포장 완료 준비가 진행 중이라 교체 재시도를 보류했습니다. 작업 상태를 확인한 뒤 다시 시도하세요.")
                     return
                 if result.status == "ACKED":
                     self.data_manager.log_event(
