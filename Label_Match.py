@@ -7429,6 +7429,7 @@ class Label_Match(tk.Tk):
             or self.__dict__.get(
                 "_deferred_validation_worker_in_progress", False
             )
+            or self.__dict__.get("_deferred_validation_probe_in_progress", False)
             or int(getattr(trigger, "pending_count", 0) or 0)
         )
         self._app_close_resume_deferred_validation = bool(
@@ -9347,7 +9348,7 @@ class Label_Match(tk.Tk):
     def _deferred_state_count(readback, state):
         return int(dict(getattr(readback, "state_counts", ()) or ()).get(state, 0))
 
-    def _refresh_deferred_observability(self):
+    def _refresh_deferred_observability(self, *, validate_pending=False):
         """Start one coalesced local read without blocking the Tk event loop."""
 
         store = self.__dict__.get("deferred_intent_capture")
@@ -9363,15 +9364,26 @@ class Label_Match(tk.Tk):
             result_queue = queue.Queue(maxsize=1)
             self._deferred_observability_read_queue = result_queue
         self._deferred_observability_read_in_progress = True
+        self._deferred_validation_probe_in_progress = bool(validate_pending)
+        current_is_empty = not list((self.__dict__.get("current_set_info") or {}).get("raw") or [])
 
         def worker():
             try:
                 value = store.status_readback(
                     previous_operator_review_count=review_baseline,
                 )
-                result_queue.put((True, value, review_baseline))
+                candidates = None
+                if validate_pending:
+                    validation_ready = bool(store.next_validation_candidate())
+                    next_materialization = getattr(store, "next_materialization_candidate", None)
+                    candidates = (
+                        validation_ready,
+                        current_is_empty and not validation_ready and callable(next_materialization)
+                        and bool(next_materialization()),
+                    )
+                result_queue.put((True, value, review_baseline, candidates))
             except Exception as exc:
-                result_queue.put((False, exc, review_baseline))
+                result_queue.put((False, exc, review_baseline, () if validate_pending else None))
 
         threading.Thread(
             target=worker,
@@ -9389,10 +9401,11 @@ class Label_Match(tk.Tk):
         self._deferred_observability_poll_after_id = None
         if self.__dict__.get("_tk_shutdown_requested", False):
             self._deferred_observability_read_in_progress = False
+            self._deferred_validation_probe_in_progress = False
             return None
         result_queue = self.__dict__.get("_deferred_observability_read_queue")
         try:
-            ok, value, review_baseline = result_queue.get_nowait()
+            ok, value, review_baseline, candidates = result_queue.get_nowait()
         except (AttributeError, queue.Empty):
             self._deferred_observability_poll_after_id = self.after(
                 25,
@@ -9400,11 +9413,14 @@ class Label_Match(tk.Tk):
             )
             return None
         self._deferred_observability_read_in_progress = False
+        self._deferred_validation_probe_in_progress = False
         if not ok:
             print(
                 "Deferred observability local readback diagnostic: "
                 f"{getattr(value, 'code', value.__class__.__name__)}"
             )
+            if candidates is not None:
+                self._schedule_deferred_validation_worker(5000)
             return None
         readback = value
         self._deferred_observability_status = readback
@@ -9414,6 +9430,16 @@ class Label_Match(tk.Tk):
             # unresolved, so the alert does not disappear after one refresh.
             self._deferred_observability_review_baseline = review_count
         self._render_deferred_observability(readback)
+        if candidates is not None and not self.__dict__.get("_app_close_in_progress", False):
+            validation_ready, materialization_ready = candidates
+            current_is_empty = not list((self.__dict__.get("current_set_info") or {}).get("raw") or [])
+            trigger = self.__dict__.get("_deferred_validation_lane_trigger")
+            if trigger is not None and (validation_ready or (materialization_ready and current_is_empty)):
+                # The serial task rechecks eligibility and retains every claim,
+                # generation and input guard; an idle local poll never owns it.
+                trigger.trigger()
+            else:
+                self._schedule_deferred_validation_worker(5000)
         return readback
 
     def _render_deferred_observability(self, readback):
@@ -9432,14 +9458,14 @@ class Label_Match(tk.Tk):
                     if tree.exists(iid):
                         tree.item(
                             iid,
-                            values=(group.operator_status, group.count, oldest_text),
+                            values=(group.operator_status.replace("dependency대기", "선행조건 대기"), group.count, oldest_text),
                         )
                     else:
                         tree.insert(
                             "",
                             "end",
                             iid=iid,
-                            values=(group.operator_status, group.count, oldest_text),
+                            values=(group.operator_status.replace("dependency대기", "선행조건 대기"), group.count, oldest_text),
                         )
                 selected = next(
                     (group for group in readback.operator_groups if group.count),
@@ -9467,62 +9493,23 @@ class Label_Match(tk.Tk):
             if readback.nonterminal_count
             else "-"
         )
-        retry_text = (
-            readback.retry_schedule[0].next_attempt_at
-            if readback.retry_schedule
-            else "없음"
-        )
-        blocked_text = "없음"
-        if readback.blocked_partitions:
-            blocked = readback.blocked_partitions[0]
-            blocked_text = (
-                f"{blocked.partition_key} #{blocked.head_partition_seq} 뒤 "
-                f"{blocked.blocked_count}건"
-            )
-        downstream_text = (
-            readback.downstream_outbox_refs[0]
-            if readback.downstream_outbox_refs
-            else "없음"
-        )
-        dependency_text = readback.dependency_identity or "없음"
         exact_status_labels = dict(DEFERRED_OPERATOR_STATE_LABELS)
         state_counts = dict(readback.state_counts)
-        exact_status_items = []
-        if readback.oldest_state:
-            exact_status_items.append(
-                f"최장={exact_status_labels.get(readback.oldest_state, readback.oldest_state)}"
-                f" ({readback.oldest_state})"
-            )
+        oldest_status = exact_status_labels.get(
+            readback.oldest_state,
+            "상태 확인 필요" if readback.nonterminal_count else "대기 없음",
+        )
         server_confirmed_count = sum(
             int(state_counts.get(state, 0))
             for state in ("ACKED", "LOCAL_EFFECT_PENDING")
         )
-        if server_confirmed_count:
-            exact_status_items.append(
-                f"서버확정-로컬반영대기={server_confirmed_count}건"
-            )
-        if readback.closed_incomplete_count:
-            exact_status_items.append(
-                f"종결-미완료={readback.closed_incomplete_count}건"
-            )
-        exact_status_text = " · ".join(exact_status_items) or "없음"
-        exact_state_count_items = []
-        for state, _operator_label in DEFERRED_OPERATOR_STATE_LABELS:
-            count = int(state_counts.get(state, 0))
-            if count > 0:
-                exact_state_count_items.append(f"{state}={count}")
-        exact_state_count_text = " · ".join(exact_state_count_items) or "없음"
         detail_text = (
-            f"전체 {readback.total_count}건 · 미종결 {readback.nonterminal_count}건 · "
+            f"전체 {readback.total_count}건 · 처리 대기 {readback.nonterminal_count}건 · "
             f"최장 {oldest_text}\n"
-            f"exact 상태 {exact_status_text}\n"
-            f"state별 {exact_state_count_text}\n"
-            f"dependency {dependency_text} · 마지막 확인 "
-            f"{readback.dependency_checked_at or '-'}\n"
-            f"다음 재시도 {retry_text} · 마지막 이유 "
-            f"{readback.last_reason_code or '-'}\n"
-            f"막힌 partition {blocked_text} · downstream {downstream_text} · "
-            f"quarantine {readback.quarantine_count}건"
+            f"최장 대기 상태: {oldest_status}\n"
+            f"서버확정-로컬반영대기 {server_confirmed_count}건\n"
+            f"완료 {int(state_counts.get('COMPLETED', 0))}건 · "
+            f"종결-미완료 {readback.closed_incomplete_count}건"
         )
         detail_widget = self.__dict__.get(
             "deferred_observability_detail_text"
@@ -9553,11 +9540,11 @@ class Label_Match(tk.Tk):
                     pass
 
         alert_names = {
-            "OLDEST_RETRY_WAIT_SLA_EXCEEDED": "retry 대기 SLA 초과",
-            "WAITING_DEPENDENCY_SLA_EXCEEDED": "dependency 대기 SLA 초과",
-            "OPERATOR_REVIEW_INCREASE": "관리자확인 증가",
-            "REPEATED_SEAL_FAILURE": "seal 검증 반복 실패",
-            "PARTITION_STARVATION": "partition starvation",
+            "OLDEST_RETRY_WAIT_SLA_EXCEEDED": "재시도 대기 시간 초과",
+            "WAITING_DEPENDENCY_SLA_EXCEEDED": "선행조건 대기 시간 초과",
+            "OPERATOR_REVIEW_INCREASE": "관리자 확인 증가",
+            "REPEATED_SEAL_FAILURE": "봉인 검증 반복 실패",
+            "PARTITION_STARVATION": "처리 순서 지연",
         }
         alert_text = (
             "경보 "
@@ -9759,7 +9746,7 @@ class Label_Match(tk.Tk):
                 "_deferred_validation_lane_trigger"
             )
             if trigger is not None:
-                trigger.trigger()
+                self._refresh_deferred_observability(validate_pending=True)
                 return
         if self.__dict__.get("_tk_shutdown_requested", False):
             return
@@ -12467,6 +12454,8 @@ class Label_Match(tk.Tk):
             ),
             wraplength=790,
         ).pack(anchor="w", pady=(6, 12))
+        buttons = ttk.Frame(frame)
+        buttons.pack(side="bottom", fill="x", pady=(12, 0))
         text = tk.Text(
             frame,
             height=16,
@@ -12506,8 +12495,6 @@ class Label_Match(tk.Tk):
             )
             return "break"
 
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(12, 0))
         ttk.Button(
             buttons,
             text="실행 (Enter)",
@@ -12781,6 +12768,8 @@ class Label_Match(tk.Tk):
             ),
             wraplength=670,
         ).pack(anchor="w", pady=(6, 14))
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(side="bottom", fill="x", pady=(12, 0))
         listbox = tk.Listbox(
             frame,
             font=(self.default_font_name, 15),
@@ -12819,8 +12808,6 @@ class Label_Match(tk.Tk):
             self._start_phs_label_exchange(target)
             return "break"
 
-        button_frame = ttk.Frame(frame)
-        button_frame.pack(fill="x", pady=(12, 0))
         ttk.Button(
             button_frame,
             text="선택 (Enter)",
@@ -16620,12 +16607,13 @@ class Label_Match(tk.Tk):
                 wraplength=max(300, panes.center_width - 30),
             )
             self.operator_last_scan_label.grid_remove()
-            left_wrap = max(120, panes.left_width - card_padding * 2)
+            left_wrap = max(100, panes.left_width - card_padding * 2 - 8)
             for name in (
                 "operator_item_stage_label",
                 "operator_item_code_label",
                 "operator_item_name_label",
                 "operator_item_spec_label",
+                "operator_item_phase_label",
                 "operator_set_id_label",
                 "operator_membership_label",
                 "operator_badges_label",
@@ -16633,7 +16621,7 @@ class Label_Match(tk.Tk):
             ):
                 widget = self.__dict__.get(name)
                 if widget is not None:
-                    widget.configure(wraplength=left_wrap)
+                    widget.configure(wraplength=left_wrap, justify=tk.LEFT)
             left_body_size = min(
                 tokens.fonts.sidebar_body,
                 17 if constrained_large_text else tokens.fonts.sidebar_body,
@@ -16752,7 +16740,11 @@ class Label_Match(tk.Tk):
                 "deferred_observability_detail_frame"
             )
             if deferred_detail_frame is not None:
-                deferred_detail_frame.configure(height=64)
+                detail_font = (self.default_font_name, min(12, operator_caption_size))
+                self.deferred_observability_detail_text.configure(font=detail_font, height=5)
+                deferred_detail_frame.configure(
+                    height=self._operator_tree_font_linespace(detail_font, detail_font[1]) * 5 + 4,
+                )
             deferred_detail_wrap = max(180, right_inner_width - 24)
             for name in (
                 "deferred_observability_alert_label",
@@ -16810,14 +16802,18 @@ class Label_Match(tk.Tk):
                 style="Operator.Session.Treeview"
             )
             center_inner_width = max(320, panes.center_width - card_padding * 2)
-            if compact_large_text:
-                stage_width = 180
-            elif scale >= 1.25:
-                stage_width = min(180, max(165, int(center_inner_width * 0.28)))
-            else:
-                stage_width = min(146, max(132, int(center_inner_width * 0.21)))
-            state_width = min(92, max(72, int(center_inner_width * 0.14)))
-            value_width = max(150, center_inner_width - stage_width - state_width - 12)
+            scan_heading_font = self.style.lookup("Operator.Treeview.Heading", "font") or operator_tree_font
+            stage_width = max(
+                132, self._text_pixel_width("1. PHS2 현품표", operator_tree_font) + 20,
+                self._text_pixel_width("단계", scan_heading_font) + 20,
+            )
+            state_width = max(
+                72, self._text_pixel_width("완료", operator_tree_font) + 20,
+                self._text_pixel_width("상태", scan_heading_font) + 20,
+            )
+            scan_width = self._operator_scan_tree_viewport_width(self.qa_scan_tree) if settle else 0
+            scan_width = scan_width if scan_width > 1 else center_inner_width - 8
+            value_width = max(140, scan_width - stage_width - state_width - 4)
             self.qa_scan_tree.configure(style="Operator.Treeview", height=5)
             self.qa_scan_tree.column("Stage", width=stage_width, minwidth=80, stretch=False)
             self.qa_scan_tree.column("Value", width=value_width, minwidth=140, stretch=True)
@@ -16883,8 +16879,9 @@ class Label_Match(tk.Tk):
                 minsize=live_list_height,
                 weight=1,
             )
+            session_width = int(self.session_tree.winfo_width()) if settle and self.session_tree.winfo_ismapped() else 0
             session_widths = self._fit_session_display_widths(
-                max(180, right_inner_width - 4),
+                max(168, session_width - 4 if session_width > 1 else right_inner_width - 28),
                 session_font_size,
             )
             self.session_tree.column(
@@ -18201,34 +18198,34 @@ class Label_Match(tk.Tk):
             style="Header.TLabel",
             wraplength=max(150, panes.left_width - 44),
         )
-        self.operator_item_code_label.grid(row=0, column=0, sticky="w")
+        self.operator_item_code_label.grid(row=0, column=0, sticky="ew")
         self.operator_item_name_label = ttk.Label(
             self.operator_item_card,
             text="품목 -",
             style="Status.TLabel",
             wraplength=max(150, panes.left_width - 44),
         )
-        self.operator_item_name_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.operator_item_name_label.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.operator_item_spec_label = ttk.Label(
             self.operator_item_card,
             text="규격 -",
             style="Status.TLabel",
             wraplength=max(150, panes.left_width - 44),
         )
-        self.operator_item_spec_label.grid(row=2, column=0, sticky="w", pady=(5, 0))
+        self.operator_item_spec_label.grid(row=2, column=0, sticky="ew", pady=(5, 0))
         self.operator_item_phase_label = ttk.Label(
             self.operator_item_card,
             text="차수 -",
             style="Status.TLabel",
         )
-        self.operator_item_phase_label.grid(row=3, column=0, sticky="w", pady=(5, 0))
+        self.operator_item_phase_label.grid(row=3, column=0, sticky="ew", pady=(5, 0))
         self.operator_set_id_label = ttk.Label(
             self.operator_item_card,
             text="세트 -",
             style="Status.TLabel",
             wraplength=max(150, panes.left_width - 44),
         )
-        self.operator_set_id_label.grid(row=4, column=0, sticky="w", pady=(5, 0))
+        self.operator_set_id_label.grid(row=4, column=0, sticky="ew", pady=(5, 0))
 
         self.operator_left_divider = ttk.Frame(
             self.operator_left_pane,
@@ -18667,7 +18664,7 @@ class Label_Match(tk.Tk):
         )
         self.deferred_observability_heading_label = ttk.Label(
             self.deferred_observability_tab,
-            text="deferred intent · 로컬 readback",
+            text="저장된 작업 확인",
             style="Header.TLabel",
         )
         self.deferred_observability_heading_label.grid(
@@ -18712,12 +18709,12 @@ class Label_Match(tk.Tk):
                 "",
                 "end",
                 iid=f"deferred-{group_key}",
-                values=(operator_status, 0, "-"),
+                values=(operator_status.replace("dependency대기", "선행조건 대기"), 0, "-"),
             )
         self.deferred_observability_detail_frame = ttk.Frame(
             self.deferred_observability_tab,
             style="Borderless.TFrame",
-            height=64,
+            height=self._operator_tree_font_linespace((self.default_font_name, 11), 11) * 5 + 4,
         )
         self.deferred_observability_detail_frame.grid_propagate(False)
         self.deferred_observability_detail_frame.grid_rowconfigure(0, weight=1)
@@ -18730,7 +18727,7 @@ class Label_Match(tk.Tk):
         )
         self.deferred_observability_detail_text = tk.Text(
             self.deferred_observability_detail_frame,
-            height=3,
+            height=5,
             wrap="word",
             state="normal",
             relief="flat",
@@ -18740,7 +18737,7 @@ class Label_Match(tk.Tk):
             pady=2,
             background=self.colors["card_background"],
             foreground=self.colors["text_subtle"],
-            font=(self.default_font_name, 10),
+            font=(self.default_font_name, 11),
             takefocus=True,
         )
         self.deferred_observability_detail_scrollbar = ttk.Scrollbar(
@@ -18789,13 +18786,13 @@ class Label_Match(tk.Tk):
         self.deferred_observability_threshold_label = ttk.Label(
             self.deferred_observability_tab,
             text=(
-                "경보 기준 · retry "
+                "경보 기준 · 재시도 "
                 f"{deferred_thresholds['oldest_retry_wait_seconds'] // 60}분 · "
-                "dependency "
+                "선행조건 "
                 f"{deferred_thresholds['waiting_dependency_seconds'] // 3600}시간 · "
                 "관리자 +"
-                f"{deferred_thresholds['operator_review_increase']} · seal "
-                f"{deferred_thresholds['repeated_seal_failure_count']}건 · FIFO "
+                f"{deferred_thresholds['operator_review_increase']} · 봉인 검증 "
+                f"{deferred_thresholds['repeated_seal_failure_count']}회 · 순서 지연 "
                 f"{deferred_thresholds['partition_starvation_seconds'] // 60}분"
             ),
             style="Status.TLabel",

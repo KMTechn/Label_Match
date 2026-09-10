@@ -120,7 +120,7 @@ def test_sealed_transfer_marks_inherited_membership_and_enables_prepackage_excha
     assert view.exact_rescan.progress_text == "서버 상속"
     assert view.f4_enabled is True
     assert view.f4_hint == "포장 확정 전 제품 1~2개 교체"
-    assert "sealed 멤버십" in view.badges
+    assert "중앙 멤버십" in view.badges
 
 
 def test_error_marks_current_slot_and_preserves_last_successful_scan():

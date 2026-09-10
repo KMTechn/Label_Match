@@ -1,5 +1,16 @@
 # Label_Match 운영·복구·검증
 
+<a id="root-ui-20260910"></a>
+## 2026-09-10 · 대기 중 화면 깜박임·작업 화면 잘림 교정
+
+Main의95b 실제027(200프레임/29.969s)은 입력 없이 `저장된 현품표 · 중앙 확인 중` 제목과 회색 업무 버튼이 잠깐 나타나는 현상을 포착했다. 원인은 주기 작업이 후보를 확인하기 전에 UI lane을 점유하고, 후보가 없어도 busy 화면을 그리는 경로다. 기존 로컬 readback worker/queue에서 같은 후보 selector를 먼저 확인하고 실제 작업만 기존 lane에 접수한다. 열린 세트에서는 materialization 후보 조회를 생략하며 접수 직전의 현재 세트 확인, 실제 claim/세대/입력 guard, 정상 종료 취소 뒤 재예약은 유지한다. SQLite를 Tk로 옮기거나 별도 scheduler를 만들지 않았다.
+
+단계·상태 열은 실제 본문/머리글 글꼴 폭을 사용하고, 최근 완료 열은 보이는 tree 폭 또는 탭 내부 여백을 뺀 폭을 사용한다. 좌측 현재 작업은 테두리 안에서 줄바꿈한다. 대기 상세는 전체/대기 건수·최장 시간·정확한 한국어 상태·서버확정 후 로컬반영 대기·완료/미완료 종결을 남기고 내부 식별자 덤프를 제외한다. 원래 readback의 상세 필드는 유지하며, 기존 Text/scrollbar는 읽을 수 있는 글꼴의 다섯 줄 높이를 사용한다. 영문 혼합 badge/경보도 한국어로 표시한다. 소스 전수 점검에서 같은 확장 영역 우선 배치를 발견한 두 F5 확인/선택 창은 기존 footer를 먼저 아래에 할당했다. callback·QR·인쇄·업무 상태는 변경하지 않았다.
+
+소스 기준선 **13 PASS/7.34s**, 첫 선택 **19 PASS/3 fixture setup ERROR**를 보존한다. 실제 Tk가 없는 시험의 글꼴 측정 stub을 정리한 뒤 **27 PASS/8.40s**, 마지막 열린 세트 조회 생략/도중 입력 보호 보정 뒤 해당 scheduler8+writer3은 **11 PASS/6.84s**다. 새 시험 파일은 없고 기존 scheduler 시험에 idle/실제 검증/복원/기존 입력/읽기 실패/종료 취소 사례를 넣었다. 동일44개 writer identity/guard이며 네 Label source digest와 세 source 위치가 바뀌고 최종 pin은 `61589c2cdc1393a6936a188ae8e18d873a7d3a04adbc65b823a68a8a45eae8d2`다. [기준·정확한 diff·소스 화면 점검·결과](E:/KMTech/optimization-implementation-20260909/Label_Match/root-ui-20260910/RESULT.md)에 결속한다.
+
+실제95b는 Main이 입력을 소유하며 F4 닫힘/Submit0을 보존한다. worker는 host/guest 입력·정상 닫기·source copy를 하지 않았다. 최종 글꼴/화면의 무잘림, 30초 이상 실제 idle 관찰, 실제 작업의 busy/입력 유지와 F4 적용·QR·F3/ACK·후속 업무는 정상 적용 뒤 Main이 확인한다. 소스 점검으로 모든 native 창이나 Today 전후 성능을 수용하지 않으며, 새 증거와 무관한 RedrawWindow 플래그는 변경하지 않았다.
+
 <a id="f4-editable-list"></a>
 ## 2026-09-10 · F4 편집 목록·대상 멤버 수 교체
 

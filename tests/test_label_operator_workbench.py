@@ -407,6 +407,7 @@ def operator_workbench(monkeypatch):
     app.winfo_height = lambda: 900
     app.winfo_screenwidth = lambda: 1440
     app._apply_responsive_layout = lambda: None
+    app._operator_tree_font_linespace = lambda _font, size: size * 2
 
     app._create_widgets()
     return app
@@ -501,14 +502,14 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
     assert tree.cget("height") == 6
     assert tree.cget("style") == "Deferred.Treeview"
     assert len(tree.get_children()) == len(DEFERRED_OPERATOR_STATUS_GROUPS) == 6
-    assert detail_frame.cget("height") == 64
+    assert detail_frame.cget("height") >= 5 * 11 + 4
     assert detail_frame.grid_propagate() is False
     assert detail_frame.grid_rows[0]["weight"] == 1
     assert detail_frame.grid_columns[0]["weight"] == 1
     assert detail_text.master is detail_frame
     assert detail_scrollbar.master is detail_frame
     assert detail_text.kind == "tk.Text"
-    assert detail_text.cget("height") == 3
+    assert detail_text.cget("height") == 5
     assert detail_text.cget("wrap") == "word"
     assert detail_text.cget("state") == "disabled"
     assert detail_text.cget("takefocus") is True
@@ -527,10 +528,11 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
 
     rendered = detail_text.options["inserted"]
     assert "전체 17건" in rendered
-    assert "서버확정-로컬반영대기=2건" in rendered
-    assert "종결-미완료=2건" in rendered
-    assert "downstream outbox:layout-proof" in rendered
-    assert all(f"{state}=1" in rendered for state in DEFERRED_INTENT_STATES)
+    assert "처리 대기 13건" in rendered and "최장 1시간 0분" in rendered
+    assert "서버확정-로컬반영대기 2건" in rendered
+    assert "완료 1건" in rendered and "종결-미완료 2건" in rendered
+    assert "outbox:layout-proof" not in rendered
+    assert all(state not in rendered for state in DEFERRED_INTENT_STATES)
     assert secret_shaped_state not in rendered
     assert detail_text.cget("state") == "disabled"
 
@@ -2165,7 +2167,12 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
             contains(app.deferred_observability_tab, widget)
             for widget in deferred_widgets
         )
-        assert app.deferred_observability_detail_frame.winfo_height() == 64
+        detail_font = label_module.tkFont.Font(
+            root=app, font=app.deferred_observability_detail_text.cget("font"),
+        )
+        assert app.deferred_observability_detail_frame.winfo_height() >= (
+            detail_font.metrics("linespace") * 5 + 4
+        )
         deferred_rows = tuple(app.deferred_observability_tree.get_children())
         assert len(deferred_rows) == len(DEFERRED_OPERATOR_STATUS_GROUPS) == 6
         deferred_last_row_box = app.deferred_observability_tree.bbox(

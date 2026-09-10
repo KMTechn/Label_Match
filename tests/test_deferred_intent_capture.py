@@ -2982,7 +2982,9 @@ def test_operator_groups_are_exact_six_and_ui_preserves_exact_statuses(
         for row in app.deferred_observability_tree.rows.values()
         for value in row
     ) + " " + str(app.deferred_observability_detail_label.values)
-    assert "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기" in rendered
+    assert "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기" not in rendered
+    assert readback.dependency_identity == "CREATE_PACKAGE grant · SCOPE-LABEL-MEASURED · 승인 대기"
+    assert "선행조건 대기" in rendered
     assert "저장됨-선행조건대기" in rendered
     assert "PHS2-TOP-SECRET-SHOULD-NOT-RENDER" not in rendered
     assert "payload_ciphertext" not in rendered

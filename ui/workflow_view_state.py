@@ -628,7 +628,7 @@ def _badges(snapshot: WorkflowSnapshot, exact_rescan: ExactRescanView) -> tuple[
     if snapshot.recovered:
         badges.append("복구됨")
     if snapshot.sealed_transfer:
-        badges.append("sealed 멤버십")
+        badges.append("중앙 멤버십")
     elif snapshot.central_inherit_all:
         badges.append("PHS2 서버 멤버십")
     if exact_rescan.status == "active":

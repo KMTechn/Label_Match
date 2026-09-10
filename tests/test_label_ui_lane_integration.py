@@ -241,7 +241,10 @@ def test_phs2_capture_validation_runs_off_tk_and_materializes_on_tk():
     _close_lane(app, root)
 
 
-def test_deferred_scheduler_candidate_and_prepare_run_off_tk():
+@pytest.mark.parametrize("mode", [
+    "validation", "idle", "materialize", "materialized", "filled_during_probe", "readback_error", "candidate_error", "close_cancel",
+])
+def test_deferred_scheduler_candidate_and_prepare_run_off_tk(mode):
     app, root = _app_with_lane()
     owner = root.owner_thread_id
     trace = []
@@ -254,10 +257,28 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk():
     )
 
     class Store:
-        @staticmethod
-        def next_validation_candidate():
+        ready = mode == "validation"
+
+        def status_readback(self, **_kwargs):
+            trace.append(("readback", threading.get_ident()))
+            if mode == "readback_error":
+                raise RuntimeError("local read temporarily unavailable")
+            return SimpleNamespace(state_counts=())
+
+        def next_validation_candidate(self):
             trace.append(("candidate", threading.get_ident()))
-            return "intent-scheduler"
+            if mode == "candidate_error":
+                raise RuntimeError("candidate read temporarily unavailable")
+            return "intent-scheduler" if self.ready else None
+
+        def next_materialization_candidate(self):
+            trace.append(("materialization-candidate", threading.get_ident()))
+            return "intent-scheduler" if mode in {"materialize", "materialized", "filled_during_probe", "close_cancel"} else None
+
+        def requeue_validated_for_materialization(self, intent_id):
+            assert intent_id == "intent-scheduler"
+            trace.append(("requeue", threading.get_ident()))
+            self.ready = True
 
     def prepare(intent_id):
         assert intent_id == "intent-scheduler"
@@ -265,6 +286,10 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk():
         return result
 
     app.run_tests = False
+    app.after = root.after
+    app.after_cancel = root.after_cancel
+    if mode == "materialized":
+        app.current_set_info["raw"] = ["preserved-accepted-scan"]
     app.deferred_intent_capture = Store()
     app._deferred_observability_read_in_progress = False
     app._prepare_deferred_intent_validation = prepare
@@ -272,7 +297,7 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk():
     app._show_deferred_validation_result = lambda _value: trace.append(
         ("render", threading.get_ident())
     )
-    app._refresh_deferred_observability = lambda: trace.append(
+    app._render_deferred_observability = lambda _value: trace.append(
         ("observe", threading.get_ident())
     )
     app._schedule_deferred_validation_worker = (
@@ -282,16 +307,55 @@ def test_deferred_scheduler_candidate_and_prepare_run_off_tk():
         app.ui_lane,
         app._build_deferred_validation_lane_task,
         on_admitted=app._on_deferred_validation_lane_admitted,
+        submit_task=app._submit_deferred_validation_lane_task,
     )
+    set_busy = app._set_ui_lane_busy
+
+    def record_busy(*args):
+        trace.append(("busy", threading.get_ident()))
+        set_busy(*args)
+
+    app._set_ui_lane_busy = record_busy
 
     app._run_deferred_validation_worker_once()
-    root.run_until(lambda: not app.ui_lane.is_busy())
+    if mode == "filled_during_probe":
+        app.current_set_info["raw"] = ["preserved-accepted-scan"]
+    assert not app.ui_lane.is_busy()
+    assert app._ui_lane_busy_label == ""
+    if mode == "close_cancel":
+        app._app_close_in_progress = True
+        app._suspend_deferred_validation_for_close()
+        assert app._app_close_resume_deferred_validation is True
+        root.run_until(lambda: not app._deferred_observability_read_in_progress)
+        assert not app.ui_lane.is_busy()
+        app._app_close_in_progress = False
+        app.__dict__.pop("_schedule_deferred_validation_worker")
+        assert app._resume_deferred_validation_after_close_cancel()
+        assert app._deferred_validation_after_id is not None
+        root.after_cancel(app._deferred_validation_after_id)
+    else:
+        root.run_until(lambda: (
+            ("schedule", owner) in trace
+            and not app.ui_lane.is_busy()
+            and not app._deferred_observability_read_in_progress
+        ))
 
-    assert ("candidate", app.ui_lane.worker_thread_id) in trace
-    assert ("prepare", app.ui_lane.worker_thread_id) in trace
-    assert ("render", owner) in trace
-    assert ("observe", owner) in trace
-    assert ("schedule", owner) in trace
+    assert all(thread_id != owner for name, thread_id in trace if name in {
+        "candidate", "readback", "materialization-candidate", "requeue", "prepare",
+    })
+    if mode in {"validation", "materialize"}:
+        assert ("candidate", app.ui_lane.worker_thread_id) in trace
+        assert ("prepare", app.ui_lane.worker_thread_id) in trace
+        assert ("render", owner) in trace
+        assert ("busy", owner) in trace
+    else:
+        assert not any(name in {"busy", "prepare", "requeue", "render"} for name, _thread_id in trace)
+    if mode not in {"readback_error", "candidate_error"}:
+        assert ("observe", owner) in trace
+    if mode == "materialized":
+        assert not any(name == "materialization-candidate" for name, _thread_id in trace)
+    if mode in {"materialized", "filled_during_probe"}:
+        assert app.current_set_info["raw"] == ["preserved-accepted-scan"]
     assert app._ui_lane_busy_label == ""
     _close_lane(app, root)
 
