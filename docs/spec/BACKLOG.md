@@ -3,11 +3,11 @@
 <a id="lm-f4-list"></a>
 ## 2026-09-10 · F4 교체 목록 — 소스 구현, 실제 수용 대기
 
-- 실제 footer 후속: Claude25가 확인한 16b 기본 화면의 버튼 잘림을 기존 footer 우선 배치로 교정하고, 총 대상 수 대신 실제 목록 건수와 제출 결과만 표시한다. 기존 선택11 PASS이며 [원 실패·현재 초안 보존과 수정 후 실제 화면의 남은 수용](operations.md#f4-editable-list)을 분리한다.
+- 실제 footer 후속: 95b 화면에서 목록/제출 건수와 세로 배치는 확인했지만 닫기 버튼과 안내 끝의 가로 잘림이 남았다. 두 생성문에 `width=0`, 안내에 `wraplength=700`만 추가하고 최종 기존 선택11 PASS/9.70s·동일44개 writer를 확인했다. [원 실패·정상95b 적용·Main 입력 인계와 후속 전체 버튼/안내 수용](operations.md#f4-editable-list)을 분리한다.
 - 후속 교정: 빈 members+양수 QT 초안의 실제 admission gap을 닫았다. 표준 PHS2는 정확한 목록 부재를 거부하고 레거시 direct-seal은 실제 target/seal worker 조회로 호환한다. [한정 11 PASS와 남은 수용](operations.md#f4-editable-list)을 분리한다.
 - 구현: 수량 선입력·개수 도달 자동 제출을 없애고 old→new 목록의 확인·수정·삭제·입력 취소와 명시적 단일 적용을 제공한다. 실제 대상 멤버 수, 추가 capability, 기존 원자 명령/복구/전자 seal·물리 PHS2 보존 계약을 유지한다.
 - 근거: [LM-05](README.md#lm-05), [C-03](contracts.md#c-03), [정책](../MEMBER_EXCHANGE_POLICY.md), [사전 기준·실제 소스 검증](operations.md#f4-editable-list). 정상 저장소 migration은 기존 row/JSON/rowid/index/trigger 보존 및 rollback을 검증했다.
-- 남은 일: 보존된 guest16b의 미제출 부분 입력에서 정상 개발 적용·재개 뒤 수정 화면과 목록 편집·일괄 교체·새 전자 QR 확인·원 세트 보존·F3/ACK 복구와 후속 연결 흐름을 검증한다. Host 입력은 금지이며 source PASS는 실제 교체 성공이나 최종 GUI/성능 수용이 아니다.
+- 남은 일: Main에 인계한 guest95b의 목록0건·Submit0 상태에서, Main의 정상 적용 뒤 다섯 버튼과 목록 편집·일괄 교체·새 전자 QR 확인·원 세트 보존·F3/ACK 복구 및 후속 연결 흐름을 검증한다. Host 입력은 금지이며 source PASS는 실제 교체 성공이나 최종 GUI/성능 수용이 아니다.
 
 ## 2026-09-10 · 이력표 잘림 교정 — 실제 화면 검증 대기
 

@@ -11794,7 +11794,7 @@ class Label_Match(tk.Tk):
         title_var = tk.StringVar(value="교체 대상 제품 스캔")
         ttk.Label(frame, textvariable=title_var, font=(self.default_font_name, 16, "bold")).pack(anchor="w")
         ttk.Label(
-            frame, text="교체 대상 → 새 양품을 추가한 뒤 목록을 확인하고 교체 적용을 누르세요."
+            frame, text="교체 대상 → 새 양품을 추가한 뒤 목록을 확인하고 교체 적용을 누르세요.", wraplength=700
         ).pack(anchor="w", pady=(8, 6))
         count_var = tk.StringVar(value="")
         ttk.Label(frame, textvariable=count_var).pack(anchor="w")
@@ -11999,11 +11999,11 @@ class Label_Match(tk.Tk):
             ("선택 수정", edit_selected), ("선택 삭제", remove_selected),
             ("입력 취소", cancel_input), ("교체 적용", submit_to_server),
         ):
-            button = ttk.Button(buttons, text=text, command=command)
+            button = ttk.Button(buttons, text=text, command=command, width=0)
             button.pack(side="left", padx=(0, 8))
             mutable_controls.append(button)
         mutable_controls.append(scan_entry)
-        close_button = ttk.Button(buttons, text="닫기", command=close_popup)
+        close_button = ttk.Button(buttons, text="닫기", command=close_popup, width=0)
         close_button.pack(side="right")
         ttk.Label(frame, textvariable=status_var, wraplength=700).pack(side="bottom", anchor="w", pady=(8, 0))
         rows_frame.pack(fill="both", expand=True)

@@ -3,9 +3,13 @@
 <a id="f4-editable-list"></a>
 ## 2026-09-10 · F4 편집 목록·대상 멤버 수 교체
 
+**95b 실제 화면·가로 폭 후속:** 정상 적용·복구 뒤 08:17Z 기본 760×500 화면은 `교체 목록 0건 / 제출 시 0건 반영`과 네 버튼의 세로 배치를 확인했지만, 다섯째 `닫기`와 안내 문구 끝이 오른쪽에서 잘렸다. [원본 화면·무입력 Main 인계](E:/KMTech/optimization-implementation-20260909/Label_Match/business/ui-f4-95b7a85-01/F4-95B-NATIVE-HANDBACK.md)를 보존한다. 기존 네 동작 버튼 생성문과 닫기 생성문에만 `width=0`, 안내 라벨에는 기존 상태 라벨과 같은 `wraplength=700`을 지정한다. 창 크기·글꼴·padding·pack·callback·초안/제출 검증은 유지한다.
+
+**소스 검증과 남은 실제 수용:** 최종 세 옵션 교정의 기존 F4/draft/writer 선택은 **11 PASS/9.70s**, 동일44개 writer identity/guard/위치이며 새 source pin은 `71edccc784ac31424448cf1587000beef9d87976a93536d39ad6184424dbc9ea`이다. [사전 기준·정확한 diff·한정 결과](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/footer-natural-width/RESULT.md)를 따른다. Main이 guest 입력을 소유하며 이 worker는 source copy·guest 수명주기·입력을 하지 않는다. 다섯 버튼과 안내 문구의 실제 전체 가독성/조작 및 목록 편집·제출 성공은 후속 native 증거가 필요하다.
+
 **후속 실제 footer 실패·최소 교정:** Claude25는 실제 `16b6050`의 760×500 화면에서 아래/오른쪽 테두리는 보이지만 다섯 footer 버튼이 모두 가려지는 실패를 확인했다. 기존 버튼·상태를 먼저 아래에 배치하고 목록이 남은 높이를 쓰게 하는 4줄 교체와 `교체 목록 N건 / 제출 시 N건 반영` 문구로 바로잡았다. 기존 창 크기·8행·스타일·검증·제출 callback은 유지한다. [사전 기준·원 실패·한정 결과](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/footer-fix/RESULT.md)에 결속한다.
 
-**PROVEN — 이 교정의 소스 범위:** 기존 F4/draft/writer 선택 **11 PASS/10.06s**, 새 시험 파일 없음. 동일44개 writer identity/guard의 source pin만 `59220bd71cd92f21794ce5224aff5aac87434d0b6336f7cbd8619c9edb32a400`으로 갱신했다. **UNPROVEN — 교정 후 실제 화면·입력:** 실행 중인 guest16b는 old 입력 수용/new 입력 미확정·목록0건·Submit0을 보존한다. 07:13:18Z 읽기 전용 확인에서 원본 PHS2/멤버/봉인1과 저장 상태 hash가 같고 exchange/package/lease 모두0이다. Host 입력은 중단했으며 live source 교체·정상 재개·새 화면 수용은 이 source 확인에 포함되지 않는다. 아래 5f 정상 종료·native 미실행 기록은 선행 단계의 보존 이력이다.
+**PROVEN — 선행95b의 소스 범위:** 기존 F4/draft/writer 선택 **11 PASS/10.06s**, 새 시험 파일 없음. 동일44개 writer identity/guard의 source pin만 `59220bd71cd92f21794ce5224aff5aac87434d0b6336f7cbd8619c9edb32a400`으로 갱신했다. **당시 실제 화면·입력 미검증:** 해당 소스 확인 시점의 guest16b는 old 입력 수용/new 입력 미확정·목록0건·Submit0을 보존했다. 07:13:18Z 읽기 전용 확인에서 원본 PHS2/멤버/봉인1과 저장 상태 hash가 같고 exchange/package/lease 모두0이었다. Host 입력은 중단했고 live source 교체·정상 재개·새 화면 수용은 그 source 확인에 포함되지 않았다. 위95b 실제 화면과 아래5f 정상 종료·native 미실행 기록을 각 단계의 증거로 구분한다.
 
 Main의 후속 empty-members 검토는 3bdd의 count-only 초안이 가능한 실제 분기를 확인했다. [한정 후속 교정](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/missing-members/RESULT.md)은 exact nonempty 목록을 요구하고, 명시적 레거시 direct-seal만 기존 worker의 실제 target/seal 조회로 목록을 공급한다. 기존 팝업 회귀의 missing-members **1 FAIL→PASS**, 한정 F4 **7 PASS/3.23s**와 기존 draft/writer **4 PASS/5.97s**이며 전체 suite/GUI는 재실행하지 않았다. 동일44개 guard/identity를 유지하고 pin을 `75278d9927e13288dc967e0a2112f3e65f45abd31c03810b2b077576253bd933`으로 갱신했다. 아래 130/66과 원래 pin은 선행3bdd의 보존된 결과다.
 
