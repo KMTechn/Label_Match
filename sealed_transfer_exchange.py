@@ -46,6 +46,17 @@ PENDING_STATUSES = (
     "RETRY_WAIT",
     "OPERATOR_REVIEW",
 )
+_INSTRUCTION_REJECTION = (
+    "PHS_REPLACEMENT_INSTRUCTION_CONFLICT: "
+    "The PHS work group differs from its completed plan instruction."
+)
+_RECOVERY_REJECTED = "SEALED_TRANSFER_EXCHANGE_RECOVERY_REJECTED"
+
+
+def _is_rejected_instruction(code, message):
+    return code == _RECOVERY_REJECTED and message == (
+        _RECOVERY_REJECTED + ": " + _INSTRUCTION_REJECTION
+    )
 
 
 class SealedTransferExchangeError(PackageLogisticsError):
@@ -336,6 +347,16 @@ class SealedTransferExchangeAttempt:
     def retryable(self) -> bool:
         return self.status == "RETRY_WAIT"
 
+    @property
+    def operator_retry_available(self) -> bool:
+        return (
+            self.status == "OPERATOR_REVIEW"
+            and self.seal_verification_status == self.local_apply_status == "PENDING"
+            and bool(self.idempotency_key)
+            and not self.receipt_id and not self.new_seal_qr_payload
+            and _is_rejected_instruction(self.error_code, self.error_message)
+        )
+
 
 class SealedTransferExchangeStore:
     def __init__(self, db_path: str | Path):
@@ -606,7 +627,7 @@ class SealedTransferExchangeStore:
                 """UPDATE sealed_transfer_exchange_intents
                       SET status=?,last_error_code=?,last_error_message=?,
                           attempt_count=attempt_count+1,updated_at=?
-                    WHERE intent_id=?""",
+                    WHERE intent_id=? AND status!='ACKED'""",
                 (status, code, str(error), _now(), intent_id),
             )
             row = conn.execute(
@@ -1438,12 +1459,23 @@ class SealedTransferExchangeCoordinator:
         return qr
 
     @writer_sink("sealed_transfer_attempt")
-    def attempt(self, intent_id: str) -> SealedTransferExchangeAttempt:
+    def attempt(self, intent_id: str, *, operator_retry: bool = False) -> SealedTransferExchangeAttempt:
         row = self.store.load(intent_id)
         if row["status"] == "ACKED":
             return self._attempt(row)
         command_was_durable = row["command_json"] is not None
         operator_review = row["status"] == "OPERATOR_REVIEW"
+        operator_retry = operator_retry is True
+        if operator_retry and not (
+            operator_review and command_was_durable
+            and _is_rejected_instruction(row["last_error_code"], row["last_error_message"])
+            and row["seal_verification_status"] == row["local_apply_status"] == "PENDING"
+            and all(row[field] is None for field in (
+                "receipt_json", "new_seal_qr_payload", "seal_verified_at",
+                "local_apply_receipt_json",
+            ))
+        ):
+            return self._attempt(row)
         if operator_review and not command_was_durable:
             # The retired cross-source IIN equality check failed before a
             # command existed. Revalidate only that exact, untouched stage
@@ -1468,9 +1500,7 @@ class SealedTransferExchangeCoordinator:
             operator_review
             and command_was_durable
             and row["last_error_code"] == "PHS_REPLACEMENT_INSTRUCTION_CONFLICT"
-            and row["last_error_message"]
-            == "PHS_REPLACEMENT_INSTRUCTION_CONFLICT: "
-            "The PHS work group differs from its completed plan instruction."
+            and row["last_error_message"] == _INSTRUCTION_REJECTION
             and row["seal_verification_status"] == "PENDING"
             and row["local_apply_status"] == "PENDING"
             and all(
@@ -1480,7 +1510,7 @@ class SealedTransferExchangeCoordinator:
                     "local_apply_receipt_json",
                 )
             )
-        )
+        ) or operator_retry
         compatibility_post_attempted = False
         try:
             if row["command_json"] is None:
@@ -1557,6 +1587,9 @@ class SealedTransferExchangeCoordinator:
                             return self._attempt(row)
                     except Exception:
                         return self._attempt(row)
+                    current = self.store.load(intent_id)
+                    if dict(current) != dict(row):
+                        return self._attempt(current)
                     # Keep the already-bound command and review row unchanged
                     # until the existing same-key call returns its outcome.
                     compatibility_post_attempted = True
@@ -1572,16 +1605,20 @@ class SealedTransferExchangeCoordinator:
                 # Preserve the actual rejection detail, but do not repeatedly
                 # reopen this automatic exception after another terminal error.
                 exc = SealedTransferExchangeError(
-                    "SEALED_TRANSFER_EXCHANGE_RECOVERY_REJECTED", str(exc)
+                    _RECOVERY_REJECTED, str(exc)
+                )
+            elif operator_retry:
+                # A user retry never grants the scheduled drain another POST.
+                exc = SealedTransferExchangeError(
+                    "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN", str(exc)
                 )
             row = self.store.record_error(intent_id, exc)
         except Exception as exc:
-            row = self.store.record_error(
-                intent_id,
-                PackageTransportError(
-                    f"local sealed transfer exchange failed: {exc.__class__.__name__}"
-                ),
-            )
+            message = f"local sealed transfer exchange failed: {exc.__class__.__name__}"
+            error = (SealedTransferExchangeError(
+                "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN", message
+            ) if operator_retry else PackageTransportError(message))
+            row = self.store.record_error(intent_id, error)
         return self._attempt(row)
 
     @writer_sink("sealed_transfer_drain")

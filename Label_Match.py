@@ -5578,7 +5578,10 @@ class Label_Match(tk.Tk):
                 exchange_coordinator = self.__dict__.get(
                     "sealed_transfer_exchange_coordinator"
                 )
-                if exchange_coordinator is not None:
+                if (
+                    exchange_coordinator is not None
+                    and self.__dict__.get("_ui_lane_busy_task") != "f4-atomic-replacement"
+                ):
                     exchange_coordinator.drain_pending()
             except Exception as exc:
                 print(f"포장 물류 outbox 처리 오류: {exc}")
@@ -10963,6 +10966,8 @@ class Label_Match(tk.Tk):
         attempt = self._current_sealed_transfer_exchange_attempt()
         if attempt is None:
             return False
+        if str(action or "") == "제품 교체" and getattr(attempt, "operator_retry_available", False):
+            return False
         if attempt.status == "ACKED" and attempt.seal_verification_status == "PENDING":
             message = (
                 "중앙 제품 교체가 완료되어 새 봉인 QR 확인이 필요합니다.\n"
@@ -11654,10 +11659,9 @@ class Label_Match(tk.Tk):
                 if pending.status == "ACKED":
                     self._prompt_new_seal_verification(pending)
                 else:
-                    messagebox.showwarning(
-                        "제품 교체 처리 중",
-                        "이전 교체 명령의 중앙 처리 결과를 확인 중입니다.",
-                        parent=self,
+                    self._prompt_sealed_transfer_exchange(
+                        _lease_gate_checked=True, _pending_checked=True,
+                        _review_attempt=pending,
                     )
                 return
             self._prompt_sealed_transfer_exchange(
@@ -11692,6 +11696,7 @@ class Label_Match(tk.Tk):
         _lease_gate_checked=False,
         _pending_checked=False,
         _target_barcodes=None,
+        _review_attempt=None,
     ):
         """Start F4 only with the online replace-and-reseal authority.
 
@@ -11745,13 +11750,10 @@ class Label_Match(tk.Tk):
             if pending is not None:
                 if pending.status == "ACKED":
                     return self._prompt_new_seal_verification(pending)
-                if not self.run_tests:
-                    messagebox.showwarning(
-                        "제품 교체 처리 중",
-                        "이전 교체 명령의 중앙 처리 결과를 확인 중입니다.",
-                        parent=self,
-                    )
-                return False
+                return self._prompt_sealed_transfer_exchange(
+                    _lease_gate_checked=True, _pending_checked=True,
+                    _review_attempt=pending,
+                )
         if self.package_logistics_client is None:
             if not self.run_tests:
                 messagebox.showerror(
@@ -11770,7 +11772,13 @@ class Label_Match(tk.Tk):
                 else (member["normalized_barcode"] for member in members),
                 target_member_count=sealed.get("QT"),
             )
-        except (PackageLogisticsError, KeyError, TypeError):
+            if _review_attempt is not None:
+                if _review_attempt.set_id != str(self.current_set_info.get("id") or ""):
+                    raise PackageLogisticsError("saved replacement belongs to another set")
+                for old, new in zip(_review_attempt.old_barcodes, _review_attempt.new_barcodes, strict=True):
+                    draft.accept(old)
+                    draft.accept(new)
+        except (PackageLogisticsError, KeyError, TypeError, ValueError):
             messagebox.showerror(
                 "제품 교체 불가", "교체 대상 목록을 확인하지 못했습니다. 잠시 후 다시 시도하거나 관리자에게 알려 주세요.", parent=self
             )
@@ -11804,7 +11812,7 @@ class Label_Match(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         rows.pack(side="left", fill="both", expand=True)
         status_var = tk.StringVar(value="")
-        state = {"locked": False, "dispatching": False}
+        state = {"locked": False, "dispatching": False, "attempt": _review_attempt}
         mutable_controls = []
 
         def lock_draft(locked):
@@ -11892,8 +11900,26 @@ class Label_Match(tk.Tk):
             render_rows()
             return "break"
 
+        def render_attempt(result):
+            state["attempt"] = result
+            lock_draft(True)
+            if getattr(result, "operator_retry_available", False):
+                title_var.set("제품 교체 거부 · 목록 보관 중")
+                status_var.set("작업 지시 정보가 맞지 않아 교체가 거부되었습니다. 관리자 조치 후 같은 목록으로 재시도하세요.")
+                apply_button.configure(text="같은 교체 재시도", state="normal")
+            elif result.status == "OPERATOR_REVIEW":
+                title_var.set("제품 교체 결과 확인 필요")
+                status_var.set("교체 결과를 확인하지 못했습니다. 목록을 보관 중입니다. 관리자에게 확인을 요청하세요.")
+            else:
+                title_var.set("제품 교체 결과 확인 중")
+                status_var.set("중앙 결과를 확인 중입니다. 목록은 그대로 보관됩니다.")
+
         def submit_to_server():
-            if state["locked"]:
+            if state["dispatching"]:
+                return
+            pending = state["attempt"]
+            operator_retry = state["locked"] and getattr(pending, "operator_retry_available", False)
+            if state["locked"] and not operator_retry:
                 return
             if scan_entry.get().strip():
                 status_var.set("입력한 바코드를 Enter로 확인하거나 입력 취소를 누르세요.")
@@ -11909,6 +11935,27 @@ class Label_Match(tk.Tk):
             ):
                 status_var.set("현재 작업이 변경되었습니다. 창을 닫고 작업을 확인하세요.")
                 return
+            if operator_retry:
+                if not messagebox.askyesno(
+                    "같은 교체 재시도",
+                    "이전 교체 요청이 거부되어 목록을 보관 중입니다.\n"
+                    "제품을 그대로 두고 관리자 조치를 확인한 뒤 진행하세요.\n"
+                    f"저장된 교체 목록 {len(pairs)}건을 확인하고 같은 요청으로 한 번 재시도할까요?",
+                    parent=popup, default=messagebox.NO,
+                ):
+                    return
+                current_drain = self.__dict__.get("package_outbox_thread")
+                if current_drain is not None and current_drain.is_alive():
+                    status_var.set("중앙 결과 확인이 진행 중입니다. 완료된 뒤 재시도하세요.")
+                    return
+                if (
+                    self._ui_lane_is_busy()
+                    or str(self.current_set_info.get("id") or "") != captured_set_id
+                    or tuple(self.current_set_info.get("raw") or ()) != captured_raw
+                ):
+                    status_var.set("현재 작업 상태가 변경되었습니다. 작업을 확인한 뒤 재시도하세요.")
+                    return
+            captured_current = copy.deepcopy(self.current_set_info)
             old_qr = str(sealed.get("_seal_qr_payload") or _label_match_decode_possible_base64_label(raw[0]))
             captured_sealed = copy.deepcopy(sealed)
             captured_old = tuple(old for old, _new in pairs)
@@ -11921,6 +11968,12 @@ class Label_Match(tk.Tk):
             status_var.set("목록 전체를 한 번에 적용합니다.")
 
             def work():
+                if operator_retry:
+                    if self._operation_lease_blocks_f4(captured_current):
+                        return "retry_blocked", pending
+                    return "result", self.sealed_transfer_exchange_coordinator.attempt(
+                        pending.intent_id, operator_retry=True,
+                    )
                 try:
                     prepared = self.sealed_transfer_exchange_coordinator.prepare(
                         set_id=captured_set_id, old_seal_qr_payload=old_qr,
@@ -11951,7 +12004,12 @@ class Label_Match(tk.Tk):
                     status_var.set("교체를 시작하지 못했습니다. 목록은 그대로 있습니다. 잠시 후 다시 누르거나 관리자에게 알려 주세요.")
                     return
                 if kind == "preserve":
+                    title_var.set("제품 교체 결과 확인 필요")
                     status_var.set("교체 결과 확인이 필요합니다. 목록은 그대로 있습니다. 관리자에게 확인을 요청하세요.")
+                    return
+                if kind == "retry_blocked":
+                    render_attempt(result)
+                    status_var.set("포장 완료 준비가 진행되어 교체를 재시도할 수 없습니다. 관리자에게 확인을 요청하세요.")
                     return
                 if result.status == "ACKED":
                     self.data_manager.log_event(
@@ -11969,11 +12027,7 @@ class Label_Match(tk.Tk):
                     close_popup()
                     self._prompt_new_seal_verification(result)
                     return
-                status_var.set(
-                    "중앙 결과를 기다리는 중입니다. 목록은 그대로 있습니다."
-                    if result.retryable
-                    else "교체 결과 확인이 필요합니다. 목록은 그대로 있습니다. 관리자에게 확인을 요청하세요."
-                )
+                render_attempt(result)
 
             admission = self._submit_ui_lane_task(
                 name="f4-atomic-replacement", busy_text="제품 교체 · 중앙 처리 중",
@@ -11982,8 +12036,11 @@ class Label_Match(tk.Tk):
             if admission is None or not admission.accepted:
                 state["dispatching"] = False
                 close_button.configure(state="normal")
-                lock_draft(False)
-                render_rows()
+                if operator_retry:
+                    render_attempt(pending)
+                else:
+                    lock_draft(False)
+                    render_rows()
                 status_var.set("다른 작업을 처리 중입니다. 목록은 그대로 있습니다. 잠시 후 다시 적용하세요.")
 
         buttons = ttk.Frame(frame)
@@ -11995,12 +12052,16 @@ class Label_Match(tk.Tk):
             button = ttk.Button(buttons, text=text, command=command, width=0)
             button.pack(side="left", padx=(0, 8))
             mutable_controls.append(button)
+            if text == "교체 적용":
+                apply_button = button
         mutable_controls.append(scan_entry)
         close_button = ttk.Button(buttons, text="닫기", command=close_popup, width=0)
         close_button.pack(side="right")
         ttk.Label(frame, textvariable=status_var, wraplength=700).pack(side="bottom", anchor="w", pady=(8, 0))
         rows_frame.pack(fill="both", expand=True)
         render_rows()
+        if _review_attempt is not None:
+            render_attempt(_review_attempt)
         scan_entry.bind("<Return>", accept_scan)
         popup.protocol("WM_DELETE_WINDOW", close_popup)
         scan_entry.focus_set()

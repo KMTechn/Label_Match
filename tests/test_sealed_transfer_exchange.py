@@ -17,6 +17,7 @@ from package_logistics import (
 )
 from sealed_transfer_exchange import (
     SealedTransferExchangeCoordinator,
+    SealedTransferExchangeError,
     SealedTransferExchangeStore,
 )
 from Label_Match import (
@@ -650,7 +651,7 @@ _INSTRUCTION_CONFLICT = "PHS_REPLACEMENT_INSTRUCTION_CONFLICT"
 _INSTRUCTION_DETAIL = "The PHS work group differs from its completed plan instruction."
 
 
-def _instruction_review(tmp_path):
+def _instruction_review(tmp_path, *, operator_retry=False):
     class RejectedClient(FakeClient):
         def replace_and_reseal_transfer(self, command):
             self.commands.append(command)
@@ -673,6 +674,12 @@ def _instruction_review(tmp_path):
     assert before["attempt_count"] == 2
     assert len(client.commands) == 1
     assert before["last_error_code"] == _INSTRUCTION_CONFLICT
+    if operator_retry:
+        store.record_error(intent_id, SealedTransferExchangeError(
+            "SEALED_TRANSFER_EXCHANGE_RECOVERY_REJECTED",
+            _INSTRUCTION_CONFLICT + ": " + _INSTRUCTION_DETAIL,
+        ))
+        before = dict(store.load(intent_id))
     return store, intent_id, before
 
 
@@ -685,8 +692,9 @@ class InstructionRecoveryClient(FakeClient):
         )
 
 
-def test_instruction_review_recovers_same_durable_command_without_rebinding(tmp_path, monkeypatch):
-    store, intent_id, before = _instruction_review(tmp_path)
+@pytest.mark.parametrize("operator_retry", [False, True])
+def test_instruction_review_recovers_same_durable_command_without_rebinding(tmp_path, monkeypatch, operator_retry):
+    store, intent_id, before = _instruction_review(tmp_path, operator_retry=operator_retry)
     calls = []
     saved = json.loads(before["command_json"])
 
@@ -722,14 +730,16 @@ def test_instruction_review_recovers_same_durable_command_without_rebinding(tmp_
     monkeypatch.setattr(store, "bind_command", no_rebind)
     client = RecoveryClient()
     restarted = SealedTransferExchangeCoordinator(store, client)
-    assert [(r.intent_id, r.status) for r in restarted.drain_pending()] == [(intent_id, "ACKED")]
+    results = ([restarted.attempt(intent_id, operator_retry=True)]
+               if operator_retry else restarted.drain_pending())
+    assert [(r.intent_id, r.status) for r in results] == [(intent_id, "ACKED")]
     assert calls == ["receipt", "capabilities", "target", "source", "post"]
     after = dict(store.load(intent_id))
     assert {key for key in before if before[key] != after[key]} == {
         "status", "receipt_json", "new_seal_qr_payload", "last_error_code",
         "last_error_message", "attempt_count", "updated_at",
     }
-    assert after["attempt_count"] == 3
+    assert after["attempt_count"] == before["attempt_count"] + 1
     assert after["seal_verification_status"] == after["local_apply_status"] == "PENDING"
     assert restarted.drain_pending() == []
     assert client.commands == [saved]
@@ -738,8 +748,9 @@ def test_instruction_review_recovers_same_durable_command_without_rebinding(tmp_
 
 
 @pytest.mark.parametrize("valid", [True, False])
-def test_instruction_review_prefers_exact_receipt_and_never_posts_found_receipt(tmp_path, valid):
-    store, intent_id, before = _instruction_review(tmp_path)
+@pytest.mark.parametrize("operator_retry", [False, True])
+def test_instruction_review_prefers_exact_receipt_and_never_posts_found_receipt(tmp_path, valid, operator_retry):
+    store, intent_id, before = _instruction_review(tmp_path, operator_retry=operator_retry)
     receipt = _receipt(json.loads(before["command_json"]))
     if not valid:
         receipt["data"]["new_members"][0]["normalized_barcode"] = "WRONG"
@@ -753,7 +764,9 @@ def test_instruction_review_prefers_exact_receipt_and_never_posts_found_receipt(
             raise AssertionError("a found receipt must precede fresh source validation")
 
     client = ReceiptClient()
-    result = SealedTransferExchangeCoordinator(store, client).drain_pending()
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    result = ([coordinator.attempt(intent_id, operator_retry=True)]
+              if operator_retry else coordinator.drain_pending())
     assert [r.status for r in result] == ["ACKED" if valid else "OPERATOR_REVIEW"]
     assert client.commands == []
     if not valid:
@@ -764,8 +777,9 @@ def test_instruction_review_prefers_exact_receipt_and_never_posts_found_receipt(
     "generic_404", "wrong_status", "unknown_commit", "committed", "forbidden",
     "transport", "malformed", "none", "missing",
 ])
-def test_instruction_review_requires_authoritative_receipt_absence(tmp_path, lookup):
-    store, intent_id, before = _instruction_review(tmp_path)
+@pytest.mark.parametrize("operator_retry", [False, True])
+def test_instruction_review_requires_authoritative_receipt_absence(tmp_path, lookup, operator_retry):
+    store, intent_id, before = _instruction_review(tmp_path, operator_retry=operator_retry)
 
     class UnknownClient(InstructionRecoveryClient):
         def get_receipt(self, key, *, authority_scope_id):
@@ -788,7 +802,10 @@ def test_instruction_review_requires_authoritative_receipt_absence(tmp_path, loo
     client = UnknownClient()
     if lookup == "missing":
         client.get_receipt = None
-    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["OPERATOR_REVIEW"]
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    results = ([coordinator.attempt(intent_id, operator_retry=True)]
+               if operator_retry else coordinator.drain_pending())
+    assert [r.status for r in results] == ["OPERATOR_REVIEW"]
     assert dict(store.load(intent_id)) == before
     assert client.commands == []
 
@@ -806,8 +823,9 @@ def test_instruction_review_requires_authoritative_receipt_absence(tmp_path, loo
     ("command_hash", "0" * 64),
     ("command_json", "noncanonical"),
 ])
-def test_instruction_review_refuses_other_states_and_inconsistent_saved_identity(tmp_path, monkeypatch, field, value):
-    store, intent_id, _ = _instruction_review(tmp_path)
+@pytest.mark.parametrize("operator_retry", [False, True])
+def test_instruction_review_refuses_other_states_and_inconsistent_saved_identity(tmp_path, monkeypatch, field, value, operator_retry):
+    store, intent_id, _ = _instruction_review(tmp_path, operator_retry=operator_retry)
     if value == "noncanonical":
         value = json.dumps(json.loads(store.load(intent_id)["command_json"]), indent=2)
     # SQL prevents editing a bound command. Inject only a corrupt read projection
@@ -822,14 +840,18 @@ def test_instruction_review_refuses_other_states_and_inconsistent_saved_identity
             conn.commit()
     before = dict(store.load(intent_id))
     client = InstructionRecoveryClient()
-    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["OPERATOR_REVIEW"]
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    results = ([coordinator.attempt(intent_id, operator_retry=True)]
+               if operator_retry else coordinator.drain_pending())
+    assert [r.status for r in results] == ["OPERATOR_REVIEW"]
     assert dict(store.load(intent_id)) == before
     assert client.commands == []
 
 
 @pytest.mark.parametrize("changed", ["capability", "seal", "source_version", "scope", "singleton", "transport"])
-def test_instruction_review_fresh_validation_cannot_replace_saved_command(tmp_path, changed):
-    store, intent_id, before = _instruction_review(tmp_path)
+@pytest.mark.parametrize("operator_retry", [False, True])
+def test_instruction_review_fresh_validation_cannot_replace_saved_command(tmp_path, changed, operator_retry):
+    store, intent_id, before = _instruction_review(tmp_path, operator_retry=operator_retry)
 
     class ChangedClient(InstructionRecoveryClient):
         def get_capabilities(self):
@@ -857,7 +879,10 @@ def test_instruction_review_fresh_validation_cannot_replace_saved_command(tmp_pa
             return data
 
     client = ChangedClient()
-    assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["OPERATOR_REVIEW"]
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    results = ([coordinator.attempt(intent_id, operator_retry=True)]
+               if operator_retry else coordinator.drain_pending())
+    assert [r.status for r in results] == ["OPERATOR_REVIEW"]
     assert dict(store.load(intent_id)) == before
     assert client.commands == []
 
@@ -904,6 +929,69 @@ def test_instruction_recovery_unknown_post_outcome_uses_existing_receipt_recover
     assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["RETRY_WAIT"]
     assert [r.status for r in SealedTransferExchangeCoordinator(store, client).drain_pending()] == ["ACKED"]
     assert len(client.commands) == 1
+
+
+@pytest.mark.parametrize("error", [
+    PackageApiError(500, "HTTP_500", "unknown outcome", committed=None),
+    PackageTransportError("connection lost"),
+    OSError("local response read failed"),
+])
+def test_operator_retry_uncertainty_keeps_review_until_exact_receipt(tmp_path, error):
+    store, intent_id, before = _instruction_review(tmp_path, operator_retry=True)
+    receipt_available = False
+
+    class UncertainClient(InstructionRecoveryClient):
+        def replace_and_reseal_transfer(self, command):
+            self.commands.append(command)
+            raise error
+
+        def get_receipt_if_exists(self, key, *, authority_scope_id):
+            assert (key, authority_scope_id) == (before["command_id"], SCOPE)
+            return _receipt(json.loads(before["command_json"])) if receipt_available else None
+
+    client = UncertainClient()
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    result = coordinator.attempt(intent_id, operator_retry=True)
+    assert result.status == "OPERATOR_REVIEW" and not result.operator_retry_available
+    assert result.error_code == "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN"
+    after = dict(store.load(intent_id))
+    assert [r.status for r in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+    assert dict(store.load(intent_id)) == after and len(client.commands) == 1
+    receipt_available = True
+    assert [r.status for r in coordinator.drain_pending()] == ["ACKED"]
+    assert len(client.commands) == 1
+    for field in ("intent_id", "intent_hash", "created_at", "command_id", "command_json", "command_hash"):
+        assert store.load(intent_id)[field] == before[field]
+
+
+@pytest.mark.parametrize("when", ["fresh_read", "post_error"])
+def test_operator_retry_preserves_concurrent_exact_ack(tmp_path, when):
+    store, intent_id, before = _instruction_review(tmp_path, operator_retry=True)
+    saved = json.loads(before["command_json"])
+    receipt = _receipt(saved)
+    acknowledged = None
+
+    class ConcurrentClient(InstructionRecoveryClient):
+        def ack(self):
+            nonlocal acknowledged
+            qr = SealedTransferExchangeCoordinator._validate_receipt(saved, receipt)
+            acknowledged = dict(store.record_receipt(intent_id, receipt, qr))
+
+        def resolve_good_source(self, **kwargs):
+            data = super().resolve_good_source(**kwargs)
+            if when == "fresh_read":
+                self.ack()
+            return data
+
+        def replace_and_reseal_transfer(self, command):
+            self.commands.append(command)
+            self.ack()
+            raise PackageTransportError("late failure after another exact ACK")
+
+    client = ConcurrentClient()
+    assert SealedTransferExchangeCoordinator(store, client).attempt(intent_id, operator_retry=True).status == "ACKED"
+    assert dict(store.load(intent_id)) == acknowledged
+    assert len(client.commands) == (0 if when == "fresh_read" else 1)
 
 
 def test_new_seal_must_be_scanned_before_atomic_local_apply_and_recovers(tmp_path):

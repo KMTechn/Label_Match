@@ -4372,7 +4372,8 @@ def test_existing_cancellation_conflicts_refresh_without_configured_client():
     assert refresh_calls == [True]
 
 
-def test_package_worker_never_calls_tk_after_from_background_thread():
+@pytest.mark.parametrize("busy_task", ["", "f4-atomic-replacement", "history-query"])
+def test_package_worker_never_calls_tk_after_from_background_thread(busy_task):
     module = load_label_match_module()
     main_thread_id = threading.get_ident()
     worker_thread_ids = []
@@ -4387,6 +4388,12 @@ def test_package_worker_never_calls_tk_after_from_background_thread():
     app.package_outbox_processor = Processor()
     app.package_cancellation_outbox_processor = None
     app.package_outbox_thread = None
+    app._ui_lane_busy_task = busy_task
+    exchange_calls = []
+    app.sealed_transfer_exchange_coordinator = type("Exchange", (), {
+        "drain_pending": staticmethod(lambda: exchange_calls.append(threading.get_ident())),
+    })()
+    app._reconcile_pending_sealed_transfer_exchanges = lambda **kwargs: None
     app.package_outbox_after_id = None
     app.package_outbox_poll_after_id = None
     app.run_tests = False
@@ -4404,6 +4411,7 @@ def test_package_worker_never_calls_tk_after_from_background_thread():
 
     assert not thread.is_alive()
     assert worker_thread_ids and worker_thread_ids[0] != main_thread_id
+    assert exchange_calls == ([] if busy_task == "f4-atomic-replacement" else worker_thread_ids)
     assert [(thread_id, delay) for thread_id, delay, _callback in after_calls] == [
         (main_thread_id, 100)
     ]

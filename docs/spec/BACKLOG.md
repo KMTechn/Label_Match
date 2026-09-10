@@ -102,6 +102,7 @@
 <a id="lm-b04"></a>
 ## LM-B04 · 실제 설치 구성·권한·장비 수용 연결
 
+- 2026-09-10 F4 실제 단일 Apply는 instruction-conflict/OPERATOR_REVIEW·attempt2로 보존 중이다. [기존 창의 명시적 같은 요청 재시도](operations.md#f4-explicit-retry-20260910)는 원 C에서142 PASS로 검증했으며, live source 적용·실제 retry/새 QR·F3와 Today 전체 GUI 전후 비교는 미실행이다. 별도 검토 CSV acknowledgment 뒤 자연 relay PASS/idle·13 ACKED는 transport에 한정하며 이 업무 잔여를 닫지 않는다.
 - 유형/우선: **구성·검증 공백 · P1**. 소스의 정상 경로와 설치 PC의 선택 프로필/장비가 다를 수 있다.
 - 근거: [운영 구성·설정](operations.md#configuration), [장비](operations.md#devices), [LM-01/02/05/10/12](README.md#lm-01). Machine anchor, current-user profile/DPAPI, packaged settings와 실제 쓰기 위치, F4 capability, F5 driver·spool을 구분한다.
 - 상태/다음: **실제 조합 미확인**. 릴리스·Label·현장 담당이 기존 후보 근거에서 artifact/source/test 식별, 실제 module/provider/overlay·Python/라이브러리, 비밀 없는 profile identity·권한·flags, scanner·프린터·사운드·화면 조건을 연결한다.

@@ -1,5 +1,16 @@
 # Label_Match 운영·복구·검증
 
+<a id="f4-explicit-retry-20260910"></a>
+## 2026-09-10 · 저장 F4 거부 목록의 명시적 같은 요청 재시도
+
+실제 cad3b68 GUI의 단일 F4 적용12:25:48Z 뒤 원 intent는 attempt2, exact instruction-conflict를 감싼 `SEALED_TRANSFER_EXCHANGE_RECOVERY_REJECTED`/OPERATOR_REVIEW이며 receipt·새 seal은 없다. 자동 drain은 이 결과를 재전송하지 않으므로 backend 교정만으로 진행되지 않는다. [원 실제 실패](E:/KMTech/optimization-implementation-20260909/Label_Match/business/ui-relay-cad3b68-01/F4-FAILURE-TRACE.md)와 901→904 한 쌍·원 물리 PHS2·멤버901/902/903·seal1을 보존한다.
+
+Main GO 뒤 원 C의 기존 F4 창과 coordinator에 [C-03](contracts.md#c-03)의 명시적 `operator_retry=True`를 추가했다. 저장 목록은 잠그고 정확한 거부에서만 `같은 교체 재시도`를 열어 실제 건수·관리자 조치 확인을 받는다. 기존 background thread/lane과 lease gate를 확인하고 원 command/key를 receipt-first로 검증한다. 불확정은 review에 남아 다음 자동 POST를 허용하지 않으며, fresh 조회 중 exact ACK 또는 POST 이후 늦은 오류에도 ACKED를 보존한다. 새 잠금 framework·CLI·timer·저장소는 없다.
+
+**PROVEN — 소스·격리 fake/SQLite:** 변경 전 해당 명시적 호출은 예상한 **1 FAIL/1 PASS**, 중간 coordinator **65 PASS/63 deselected**, UI **12 PASS/47 deselected**, 실제 public F4 진입·daemon 선택 **9 PASS**다. 최종 sealed-exchange 전체와 영향 F4/UI/daemon·writer 네 사례는 **142 PASS/20.88s, 정상 종료0**다. 같은44개 writer identity/guard를 보존하고 source pin을 `f4c17894484634f9a15a63577da19880f3aad85ca76d4105f2a69e8bcca9595d`로 갱신했다. [정확한 diff·기준·검증·문구·한계](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-explicit-retry-20260910/RESULT.md)를 따른다.
+
+**별도 실제 transport:** Main이 각각 검토한 CSV 두 행의 지원 acknowledgment 뒤 자연 cycle183은13:22:14Z PASS/native0·idle, queue13 ACKED였다. 두 번째의 UNKNOWN receipt·6 raw inserts/3 quarantines·spool과 원 F4/저장 상태 hash는 보존됐다([정확한 두 번째 ACK](E:/KMTech/optimization-implementation-20260909/Label_Match/business/ui-relay-cad3b68-01/TRANSPORT-SECOND-ACK-RESULT.md)). 이는 F4 업무 성공이나 quarantine 해소가 아니다. 후보 source의 독립 검토·정상 적용, 명시적 재시도의 실제 화면·입력·backend 수용, 새 QR·F3/ACK·후속 업무 및 full-GUI Today 전후 비교는 **UNPROVEN / NOT TESTED**다. 이번 소스 단위에서 live source·GUI/VM lifecycle·guest 업무 입력과 host 입력을 변경하지 않았다.
+
 <a id="relay-exception-location-20260910"></a>
 ## 2026-09-10 · 상주 relay 예외 위치의 제한된 기록
 

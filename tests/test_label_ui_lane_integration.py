@@ -650,6 +650,135 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
         _close_lane(app, root)
 
 
+@pytest.mark.parametrize("outcome", ["success", "uncertain", "cancel", "changed_set", "drain_busy", "lease"])
+def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monkeypatch, tmp_path, outcome):
+    from copy import deepcopy
+    from package_logistics import PackageTransportError
+    from sealed_transfer_exchange import SealedTransferExchangeCoordinator
+    from tests.test_label_operator_action_gates import FakeTree
+    from tests.test_sealed_transfer_exchange import (
+        InstructionRecoveryClient, OLD_QR, OLD_IDS, OLD_BARCODES, _fields, _instruction_review,
+    )
+
+    store, intent_id, saved = _instruction_review(tmp_path, operator_retry=True)
+    app, root = _app_with_lane()
+    app.current_set_info = {
+        "id": saved["set_id"], "raw": ["original-physical-phs2"], "parsed": ["ITEM-001"],
+        "sealed_transfer": {**_fields(), "_seal_qr_payload": OLD_QR},
+        "package_source_snapshot": {"work_group_source": {"members": [
+            {"unit_id": uid, "normalized_barcode": barcode}
+            for uid, barcode in zip(OLD_IDS, OLD_BARCODES, strict=True)
+        ]}},
+    }
+    original = deepcopy(app.current_set_info)
+    app.run_tests = False
+    app.default_font_name = "Test Font"
+    app.worker_name = "packer"
+    app.data_manager = SimpleNamespace(log_event=Mock())
+    app._prompt_new_seal_verification = Mock()
+    app._operation_lease_blocks_f4 = Mock(return_value=False)
+    app.package_outbox_thread = SimpleNamespace(is_alive=lambda: outcome == "drain_busy")
+
+    class Client(InstructionRecoveryClient):
+        def replace_and_reseal_transfer(self, command):
+            if outcome == "uncertain":
+                self.commands.append(command)
+                raise PackageTransportError("uncertain response")
+            return super().replace_and_reseal_transfer(command)
+
+    client = Client()
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    app.package_logistics_client = client
+    app.sealed_transfer_exchange_store = store
+    pending = coordinator._attempt(store.load(intent_id))
+    assert pending.operator_retry_available
+    gate = threading.Event()
+    calls = []
+
+    def retry(selected, *, operator_retry=False):
+        calls.append((selected, operator_retry, threading.get_ident()))
+        assert gate.wait(2)
+        return coordinator.attempt(selected, operator_retry=operator_retry)
+
+    app.sealed_transfer_exchange_coordinator = SimpleNamespace(
+        attempt=retry, prepare=Mock(side_effect=AssertionError("retry must not prepare")),
+        _attempt=coordinator._attempt,
+    )
+    monkeypatch.setattr(store, "bind_command", Mock(side_effect=AssertionError("retry must not rebind")))
+    popup, entry = Mock(), Mock()
+    content = {"text": "", "scan": None}
+    entry.get.side_effect = lambda: content["text"]
+    entry.bind.side_effect = lambda _key, callback: content.update(scan=callback)
+    tree = FakeTree()
+    tree.pack = tree.column = tree.heading = tree.yview = Mock()
+    tree.selection = lambda: ()
+    buttons, variables = {}, []
+
+    def button(*_args, **kwargs):
+        widget = Mock()
+        buttons[kwargs["text"]] = (widget, kwargs["command"])
+        return widget
+
+    def variable(**kwargs):
+        var = Mock()
+        variables.append(var)
+        return var
+
+    def confirm(*_args, **_kwargs):
+        if outcome == "changed_set":
+            app.current_set_info["id"] = "different-set"
+        return outcome != "cancel"
+
+    confirmation = Mock(side_effect=confirm)
+    monkeypatch.setattr(label_module.messagebox, "askyesno", confirmation)
+    monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
+    monkeypatch.setattr(label_module.tk, "StringVar", variable)
+    for name in ("Frame", "Label", "Scrollbar"):
+        monkeypatch.setattr(label_module.ttk, name, lambda *_a, **_k: Mock())
+    monkeypatch.setattr(label_module.ttk, "Entry", lambda *_a, **_k: entry)
+    monkeypatch.setattr(label_module.ttk, "Treeview", lambda *_a, **_k: tree)
+    monkeypatch.setattr(label_module.ttk, "Button", button)
+    try:
+        assert app._handle_f4_action()
+        root.run_until(lambda: not app.ui_lane.is_busy())
+        app._operation_lease_blocks_f4.return_value = outcome == "lease"
+        assert len(tree.get_children()) == 1
+        assert "거부" in variables[0].set.call_args.args[0]
+        buttons["교체 적용"][0].configure.assert_called_with(text="같은 교체 재시도", state="normal")
+        buttons["선택 삭제"][1]()
+        assert len(tree.get_children()) == 1
+        callback = buttons["교체 적용"][1]
+        callback()
+        if outcome in {"success", "uncertain", "lease"}:
+            assert app.ui_lane.is_busy()
+            callback()
+            content["text"] = "UNEXPECTED"
+            content["scan"]()
+            gate.set()
+            root.run_until(lambda: not app.ui_lane.is_busy())
+        assert confirmation.call_count == 1
+        assert len(calls) == (1 if outcome in {"success", "uncertain"} else 0)
+        if calls:
+            assert calls[0] == (intent_id, True, app.ui_lane.worker_thread_id)
+        if outcome == "success":
+            assert store.load(intent_id)["status"] == "ACKED"
+            app._prompt_new_seal_verification.assert_called_once()
+        elif outcome == "uncertain":
+            assert store.load(intent_id)["status"] == "OPERATOR_REVIEW"
+            assert "확인 필요" in variables[0].set.call_args.args[0]
+            assert [r.status for r in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+        else:
+            assert dict(store.load(intent_id)) == saved
+        assert len(client.commands) == (1 if outcome in {"success", "uncertain"} else 0)
+        for field in ("intent_id", "intent_hash", "created_at", "command_id", "command_json", "command_hash"):
+            assert store.load(intent_id)[field] == saved[field]
+        if outcome != "changed_set":
+            assert app.current_set_info == original
+    finally:
+        gate.set()
+        _close_lane(app, root)
+
+
 def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_id):
     """Admit explicit locally verified input; no server/signature claim here."""
     import hashlib
