@@ -771,6 +771,7 @@ def test_instruction_review_prefers_exact_receipt_and_never_posts_found_receipt(
     assert client.commands == []
     if not valid:
         assert dict(store.load(intent_id)) == before
+    assert bool(result[0].operator_retry_refusal) == (operator_retry and not valid)
 
 
 @pytest.mark.parametrize("lookup", [
@@ -808,6 +809,7 @@ def test_instruction_review_requires_authoritative_receipt_absence(tmp_path, loo
     assert [r.status for r in results] == ["OPERATOR_REVIEW"]
     assert dict(store.load(intent_id)) == before
     assert client.commands == []
+    assert bool(results[0].operator_retry_refusal) == operator_retry
 
 
 @pytest.mark.parametrize(("field", "value"), [
@@ -846,6 +848,7 @@ def test_instruction_review_refuses_other_states_and_inconsistent_saved_identity
     assert [r.status for r in results] == ["OPERATOR_REVIEW"]
     assert dict(store.load(intent_id)) == before
     assert client.commands == []
+    assert bool(results[0].operator_retry_refusal) == operator_retry
 
 
 @pytest.mark.parametrize("changed", ["capability", "seal", "source_version", "scope", "singleton", "transport"])
@@ -885,6 +888,7 @@ def test_instruction_review_fresh_validation_cannot_replace_saved_command(tmp_pa
     assert [r.status for r in results] == ["OPERATOR_REVIEW"]
     assert dict(store.load(intent_id)) == before
     assert client.commands == []
+    assert bool(results[0].operator_retry_refusal) == operator_retry
 
 
 def test_instruction_recovery_repeated_terminal_rejection_stops_automatic_exception(tmp_path):
@@ -964,7 +968,7 @@ def test_operator_retry_uncertainty_keeps_review_until_exact_receipt(tmp_path, e
         assert store.load(intent_id)[field] == before[field]
 
 
-@pytest.mark.parametrize("when", ["fresh_read", "post_error"])
+@pytest.mark.parametrize("when", ["fresh_read", "post_error", "receipt_error", "fresh_error"])
 def test_operator_retry_preserves_concurrent_exact_ack(tmp_path, when):
     store, intent_id, before = _instruction_review(tmp_path, operator_retry=True)
     saved = json.loads(before["command_json"])
@@ -979,9 +983,17 @@ def test_operator_retry_preserves_concurrent_exact_ack(tmp_path, when):
 
         def resolve_good_source(self, **kwargs):
             data = super().resolve_good_source(**kwargs)
-            if when == "fresh_read":
+            if when in {"fresh_read", "fresh_error"}:
                 self.ack()
+                if when == "fresh_error":
+                    raise PackageTransportError("late fresh read failure after exact ACK")
             return data
+
+        def get_receipt(self, key, *, authority_scope_id):
+            if when == "receipt_error":
+                self.ack()
+                raise PackageTransportError("late receipt lookup failure after exact ACK")
+            return super().get_receipt(key, authority_scope_id=authority_scope_id)
 
         def replace_and_reseal_transfer(self, command):
             self.commands.append(command)
@@ -989,9 +1001,10 @@ def test_operator_retry_preserves_concurrent_exact_ack(tmp_path, when):
             raise PackageTransportError("late failure after another exact ACK")
 
     client = ConcurrentClient()
-    assert SealedTransferExchangeCoordinator(store, client).attempt(intent_id, operator_retry=True).status == "ACKED"
+    result = SealedTransferExchangeCoordinator(store, client).attempt(intent_id, operator_retry=True)
+    assert result.status == "ACKED" and not result.operator_retry_refusal
     assert dict(store.load(intent_id)) == acknowledged
-    assert len(client.commands) == (0 if when == "fresh_read" else 1)
+    assert len(client.commands) == (1 if when == "post_error" else 0)
 
 
 def test_new_seal_must_be_scanned_before_atomic_local_apply_and_recovers(tmp_path):

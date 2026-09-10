@@ -10966,7 +10966,13 @@ class Label_Match(tk.Tk):
         attempt = self._current_sealed_transfer_exchange_attempt()
         if attempt is None:
             return False
-        if str(action or "") == "제품 교체" and getattr(attempt, "operator_retry_available", False):
+        if str(action or "") == "제품 교체" and (
+            getattr(attempt, "operator_retry_available", False)
+            or (
+                attempt.status == "OPERATOR_REVIEW"
+                and getattr(attempt, "error_code", "") == "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN"
+            )
+        ):
             return False
         if attempt.status == "ACKED" and attempt.seal_verification_status == "PENDING":
             message = (
@@ -11780,7 +11786,11 @@ class Label_Match(tk.Tk):
                     draft.accept(new)
         except (PackageLogisticsError, KeyError, TypeError, ValueError):
             messagebox.showerror(
-                "제품 교체 불가", "교체 대상 목록을 확인하지 못했습니다. 잠시 후 다시 시도하거나 관리자에게 알려 주세요.", parent=self
+                "제품 교체 불가",
+                ("저장된 교체 목록을 현재 작업에서 확인하지 못했습니다. 요청과 목록은 보관 중입니다. 관리자에게 확인을 요청하세요."
+                 if _review_attempt is not None else
+                 "교체 대상 목록을 확인하지 못했습니다. 잠시 후 다시 시도하거나 관리자에게 알려 주세요."),
+                parent=self,
             )
             return False
         captured_set_id = str(self.current_set_info.get("id") or "")
@@ -11794,9 +11804,9 @@ class Label_Match(tk.Tk):
         frame.pack(fill="both", expand=True)
         title_var = tk.StringVar(value="교체 대상 제품 스캔")
         ttk.Label(frame, textvariable=title_var, font=(self.default_font_name, 16, "bold")).pack(anchor="w")
-        ttk.Label(
-            frame, text="교체 대상 → 새 양품 순서로 필요한 만큼 스캔하세요.\n목록을 확인한 뒤 [교체 적용]을 한 번 누르면 목록 그대로 교체됩니다.\n적용 전에 창을 닫으면 목록은 사라집니다.", wraplength=700
-        ).pack(anchor="w", pady=(8, 6))
+        editable_guidance = "교체 대상 → 새 양품 순서로 필요한 만큼 스캔하세요.\n목록을 확인한 뒤 [교체 적용]을 한 번 누르면 목록 그대로 교체됩니다.\n적용 전에 창을 닫으면 목록은 사라집니다."
+        guidance_var = tk.StringVar(value=editable_guidance)
+        ttk.Label(frame, textvariable=guidance_var, wraplength=700).pack(anchor="w", pady=(8, 6))
         count_var = tk.StringVar(value="")
         ttk.Label(frame, textvariable=count_var).pack(anchor="w")
         scan_entry = ttk.Entry(frame, font=(self.default_font_name, 16))
@@ -11903,6 +11913,8 @@ class Label_Match(tk.Tk):
         def render_attempt(result):
             state["attempt"] = result
             lock_draft(True)
+            guidance_var.set("저장된 교체 목록은 결과 확인을 위해 보관됩니다.\n목록은 수정할 수 없으며, 창을 닫아도 교체 요청과 목록은 그대로 남습니다.")
+            apply_button.configure(text="교체 적용", state="disabled")
             if getattr(result, "operator_retry_available", False):
                 title_var.set("제품 교체 거부 · 목록 보관 중")
                 status_var.set("작업 지시 정보가 맞지 않아 교체가 거부되었습니다. 관리자 조치 후 같은 목록으로 재시도하세요.")
@@ -11913,6 +11925,9 @@ class Label_Match(tk.Tk):
             else:
                 title_var.set("제품 교체 결과 확인 중")
                 status_var.set("중앙 결과를 확인 중입니다. 목록은 그대로 보관됩니다.")
+            if getattr(result, "operator_retry_refusal", ""):
+                title_var.set("제품 교체 재시도 보류")
+                status_var.set(result.operator_retry_refusal)
 
         def submit_to_server():
             if state["dispatching"]:
@@ -11955,7 +11970,7 @@ class Label_Match(tk.Tk):
                 ):
                     status_var.set("현재 작업 상태가 변경되었습니다. 작업을 확인한 뒤 재시도하세요.")
                     return
-            captured_current = copy.deepcopy(self.current_set_info)
+                captured_current = copy.deepcopy(self.current_set_info)
             old_qr = str(sealed.get("_seal_qr_payload") or _label_match_decode_possible_base64_label(raw[0]))
             captured_sealed = copy.deepcopy(sealed)
             captured_old = tuple(old for old, _new in pairs)
@@ -11965,6 +11980,8 @@ class Label_Match(tk.Tk):
             state["dispatching"] = True
             close_button.configure(state="disabled")
             title_var.set("제품 교체 처리 중")
+            guidance_var.set("교체 요청을 확인하고 있습니다.\n처리가 끝날 때까지 제품과 목록을 그대로 두세요.")
+            apply_button.configure(text="교체 적용", state="disabled")
             status_var.set("목록 전체를 한 번에 적용합니다.")
 
             def work():
@@ -12000,11 +12017,13 @@ class Label_Match(tk.Tk):
                     kind, result = value
                 if kind == "admission_rejected":
                     lock_draft(False)
+                    guidance_var.set(editable_guidance)
                     render_rows()
                     status_var.set("교체를 시작하지 못했습니다. 목록은 그대로 있습니다. 잠시 후 다시 누르거나 관리자에게 알려 주세요.")
                     return
                 if kind == "preserve":
                     title_var.set("제품 교체 결과 확인 필요")
+                    guidance_var.set("교체 결과를 확인하지 못했습니다. 제품과 목록을 그대로 두고 관리자에게 확인을 요청하세요.\n창을 닫아도 이미 접수된 교체 요청은 취소되지 않습니다.")
                     status_var.set("교체 결과 확인이 필요합니다. 목록은 그대로 있습니다. 관리자에게 확인을 요청하세요.")
                     return
                 if kind == "retry_blocked":
@@ -12040,6 +12059,7 @@ class Label_Match(tk.Tk):
                     render_attempt(pending)
                 else:
                     lock_draft(False)
+                    guidance_var.set(editable_guidance)
                     render_rows()
                 status_var.set("다른 작업을 처리 중입니다. 목록은 그대로 있습니다. 잠시 후 다시 적용하세요.")
 
@@ -12052,7 +12072,7 @@ class Label_Match(tk.Tk):
             button = ttk.Button(buttons, text=text, command=command, width=0)
             button.pack(side="left", padx=(0, 8))
             mutable_controls.append(button)
-            if text == "교체 적용":
+            if command is submit_to_server:
                 apply_button = button
         mutable_controls.append(scan_entry)
         close_button = ttk.Button(buttons, text="닫기", command=close_popup, width=0)

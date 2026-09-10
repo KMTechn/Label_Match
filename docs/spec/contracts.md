@@ -148,6 +148,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 이 명시적 경로도 exact receipt를 먼저 소비하며, 위 authoritative 부재와 저장 JSON/hash/key/scope 검증, fresh command 완전 일치 뒤 POST 직전에 같은 row를 다시 확인한다. 진행 중 F4 lane에서는 별도 daemon의 exchange drain을 생략하며 다른 package 작업을 바꾸지 않는다. 반복된 terminal 거부는 review로 유지하고, 명시적 요청의 전송/5xx/예상 밖 불확정은 `SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN` review에 남겨 뒤의 자동 drain이 POST를 만들지 못하게 한다. 이후 exact receipt는 자동으로 확인할 수 있으며 늦은 오류는 이미 저장된 ACKED를 덮어쓰지 않는다. [소스 검증·실제 실패 보존·수용 한계](operations.md#f4-explicit-retry-20260910)는 실제 retry/새 seal/F3 성공과 구분한다.
 
+명시적 guard 거부는 durable row/error/attempt를 바꾸지 않고 반환 객체의 일시적인 `operator_retry_refusal`로 이유를 표시한다. 실패한 조회 동안 exact ACK가 기록되었다면 최신 ACK를 반환하며 거부 안내로 덮지 않는다. 저장 목록의 안내는 편집 초안과 구분해 닫아도 요청·목록이 남는다고 알린다. `RETRY_UNCERTAIN`은 같은 F4 목록을 읽기 전용으로 다시 열 수 있지만 재전송 버튼·자동 POST·로컬 DB 초기화를 허용하지 않는다. receipt가 확인되지 않은 불확정 결과는 여전히 해결되지 않은 상태이며 관리자 DB 조작을 지원 복구로 안내하지 않는다.
+
 - 2026-09-08 현행 `eb79e519`의 정상 START가 F3 전에 CREATE_PACKAGE lease를 발급해 [F4 수량 전 경고](E:/KMTech/label-install-qualification-20260908/F4-QUANTITY-DIALOG.json)를 만든 결함을 확인했다. Main의 승인된 교정은 **초기 PHS2 검증·materialization을 읽기 전용 source 확인으로 끝내고 실제 F3가 lease를 발급**하게 하는 것이다. [후속 source 단위](E:/KMTech/label-install-qualification-20260908/TIMING06-SOURCE-CHECK.json)는 F4의 PREFETCHED/LOCAL_COMPLETED·ACTIVE issue attempt gate와 전체 single-transfer·전자 seal 확인·CAS·수량 보존을 유지한다. 기존 발급 fence2는 여전히 포장 소유이며 만료만으로 해제하거나 로컬 status를 지우지 않는다. 새 중앙 API를 이 교정의 전제로 요구하지 않으며 Main이 합법적인 별도 기존 대상 또는 지원 관리 복구를 배정한다. 후속 source의 실제 F4 성공은 아직 미실행이다.
 
 - API: `GET L/replacements/good-source/resolve`, `POST L/transfers/{id}/members/replace-and-reseal`; command `REPLACE_SEALED_TRANSFER_MEMBERS`, capability `sealed_transfer_member_replacement_v1`.

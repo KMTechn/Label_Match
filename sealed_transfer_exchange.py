@@ -342,6 +342,7 @@ class SealedTransferExchangeAttempt:
     entity_versions: dict[str, int] = field(default_factory=dict)
     error_code: str = ""
     error_message: str = ""
+    operator_retry_refusal: str = ""
 
     @property
     def retryable(self) -> bool:
@@ -1466,6 +1467,18 @@ class SealedTransferExchangeCoordinator:
         command_was_durable = row["command_json"] is not None
         operator_review = row["status"] == "OPERATOR_REVIEW"
         operator_retry = operator_retry is True
+
+        def review_result(reason, current=None):
+            # A display-only refusal must not mutate the durable review or hide
+            # an exact receipt acknowledged while the failed check was running.
+            if current is None:
+                current = self.store.load(intent_id) if operator_retry else row
+            return self._attempt(
+                current, operator_retry_refusal=(
+                    reason if operator_retry and current["status"] != "ACKED" else ""
+                ),
+            )
+
         if operator_retry and not (
             operator_review and command_was_durable
             and _is_rejected_instruction(row["last_error_code"], row["last_error_message"])
@@ -1475,7 +1488,7 @@ class SealedTransferExchangeCoordinator:
                 "local_apply_receipt_json",
             ))
         ):
-            return self._attempt(row)
+            return review_result("저장된 교체 요청의 상태가 바뀌어 재시도하지 않았습니다. 현재 결과를 확인하세요.")
         if operator_review and not command_was_durable:
             # The retired cross-source IIN equality check failed before a
             # command existed. Revalidate only that exact, untouched stage
@@ -1528,7 +1541,7 @@ class SealedTransferExchangeCoordinator:
                     or _json(command) != row["command_json"]
                     or _hash(command) != row["command_hash"]
                 ):
-                    return self._attempt(row)
+                    return review_result("저장된 교체 요청을 확인하지 못해 다시 보내지 않았습니다. 관리자에게 확인을 요청하세요.")
                 # The old completed-plan guard rejected inside the atomic
                 # transaction before commit. Only its exact error can use
                 # this compatibility path; generic HTTP 404 is not absence.
@@ -1554,12 +1567,12 @@ class SealedTransferExchangeCoordinator:
                             receipt = None
                             receipt_definitely_absent = True
                         elif operator_review:
-                            return self._attempt(row)
+                            return review_result("중앙 교체 결과를 확인하지 못해 요청을 다시 보내지 않았습니다. 잠시 후 다시 확인하세요.")
                         else:
                             raise
                     except Exception:
                         if operator_review:
-                            return self._attempt(row)
+                            return review_result("중앙 교체 결과를 확인하지 못해 요청을 다시 보내지 않았습니다. 잠시 후 다시 확인하세요.")
                         raise
                     if receipt is not None:
                         if operator_review:
@@ -1569,7 +1582,7 @@ class SealedTransferExchangeCoordinator:
                                     intent_id, receipt, new_qr
                                 )
                             except Exception:
-                                return self._attempt(row)
+                                return review_result("중앙 응답을 확인하지 못해 요청을 다시 보내지 않았습니다. 관리자에게 확인을 요청하세요.")
                         else:
                             new_qr = self._validate_receipt(command, receipt)
                             row = self.store.record_receipt(
@@ -1581,15 +1594,15 @@ class SealedTransferExchangeCoordinator:
                     # failed exact validation. All other reviews remain
                     # receipt-only, and unknown fresh reads cannot release it.
                     if not instruction_recovery or not receipt_definitely_absent:
-                        return self._attempt(row)
+                        return review_result("이전 교체 요청이 처리되지 않았는지 확인하지 못해 재시도하지 않았습니다. 관리자에게 확인을 요청하세요.")
                     try:
                         if _json(self._build_command(row)) != row["command_json"]:
-                            return self._attempt(row)
+                            return review_result("현재 제품 상태가 저장된 교체 요청과 달라 재시도하지 않았습니다. 관리자에게 확인을 요청하세요.")
                     except Exception:
-                        return self._attempt(row)
+                        return review_result("현재 제품 상태를 확인하지 못해 재시도하지 않았습니다. 잠시 후 다시 확인하세요.")
                     current = self.store.load(intent_id)
                     if dict(current) != dict(row):
-                        return self._attempt(current)
+                        return review_result("교체 요청 상태가 바뀌어 다시 보내지 않았습니다. 현재 결과를 확인하세요.", current)
                     # Keep the already-bound command and review row unchanged
                     # until the existing same-key call returns its outcome.
                     compatibility_post_attempted = True
@@ -1631,7 +1644,7 @@ class SealedTransferExchangeCoordinator:
         return [self._attempt(row) for row in self.store.pending_local(set_id=set_id)]
 
     @staticmethod
-    def _attempt(row: sqlite3.Row) -> SealedTransferExchangeAttempt:
+    def _attempt(row: sqlite3.Row, *, operator_retry_refusal: str = "") -> SealedTransferExchangeAttempt:
         command = json.loads(row["command_json"]) if row["command_json"] else {}
         payload = command.get("payload") if isinstance(command.get("payload"), Mapping) else {}
         receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else {}
@@ -1659,6 +1672,7 @@ class SealedTransferExchangeCoordinator:
             },
             error_code=str(row["last_error_code"] or ""),
             error_message=str(row["last_error_message"] or ""),
+            operator_retry_refusal=operator_retry_refusal,
         )
 
 

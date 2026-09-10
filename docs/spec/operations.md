@@ -9,6 +9,10 @@ Main GO 뒤 원 C의 기존 F4 창과 coordinator에 [C-03](contracts.md#c-03)�
 
 **PROVEN — 소스·격리 fake/SQLite:** 변경 전 해당 명시적 호출은 예상한 **1 FAIL/1 PASS**, 중간 coordinator **65 PASS/63 deselected**, UI **12 PASS/47 deselected**, 실제 public F4 진입·daemon 선택 **9 PASS**다. 최종 sealed-exchange 전체와 영향 F4/UI/daemon·writer 네 사례는 **142 PASS/20.88s, 정상 종료0**다. 같은44개 writer identity/guard를 보존하고 source pin을 `f4c17894484634f9a15a63577da19880f3aad85ca76d4105f2a69e8bcca9595d`로 갱신했다. [정확한 diff·기준·검증·문구·한계](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-explicit-retry-20260910/RESULT.md)를 따른다.
 
+**Claude ee73 후속:** 위142 PASS와 실제 Claude 검토를 보존하고, 잘못된 정적 안내를 먼저 기존 UI 시험의 **1 FAIL/1.39s**로 확인했다. 저장 목록 안내·guard 거부 이유·불확정 목록의 읽기 전용 재열기·저장 목록 재구성 실패 안내·비활성 적용 버튼 문구를 보정했다. widget은 문구 대신 기존 submit callback으로 결속하고 새 deepcopy는 재시도 경로에서만 수행한다. guard 거부 이유는 메모리 반환값이며 DB schema/row/error/attempt를 바꾸지 않는다. receipt/fresh 조회 실패 중 이미 기록된 exact ACK도 최신 row로 보존한다. 기존 자동 receipt-only와 명시적 불확정의 재전송 금지는 유지한다.
+
+최종 후속은 coordinator 전체·F4 draft/review **137 PASS/13.54s**와 기존 lookup/lease/daemon/writer **10 PASS/9.61s**, 각각 정상 종료0이다. 두 선택은 중복 없는 **147개** 소스 사례이며 native 화면·업무 수용이 아니다. 동일44개 identity/guard의 후속 pin은 `32fcd7537f9c961233247e83e00ba99b403a5cd52d057ad78b501c31ea4ef587`이고 [정확한 교정·문구·증거](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-explicit-retry-20260910/claude-followup/RESULT.md)를 따른다. ee73 E-only packet은 과거 후보로 보존하며 후속 source의 배포 증거로 쓰지 않는다. 최종 Claude/paired backend 수용과 정상 guest 적용·실제 재시도는 아직 남는다.
+
 **별도 실제 transport:** Main이 각각 검토한 CSV 두 행의 지원 acknowledgment 뒤 자연 cycle183은13:22:14Z PASS/native0·idle, queue13 ACKED였다. 두 번째의 UNKNOWN receipt·6 raw inserts/3 quarantines·spool과 원 F4/저장 상태 hash는 보존됐다([정확한 두 번째 ACK](E:/KMTech/optimization-implementation-20260909/Label_Match/business/ui-relay-cad3b68-01/TRANSPORT-SECOND-ACK-RESULT.md)). 이는 F4 업무 성공이나 quarantine 해소가 아니다. 후보 source의 독립 검토·정상 적용, 명시적 재시도의 실제 화면·입력·backend 수용, 새 QR·F3/ACK·후속 업무 및 full-GUI Today 전후 비교는 **UNPROVEN / NOT TESTED**다. 이번 소스 단위에서 live source·GUI/VM lifecycle·guest 업무 입력과 host 입력을 변경하지 않았다.
 
 <a id="relay-exception-location-20260910"></a>

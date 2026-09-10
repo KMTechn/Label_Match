@@ -650,7 +650,10 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
         _close_lane(app, root)
 
 
-@pytest.mark.parametrize("outcome", ["success", "uncertain", "cancel", "changed_set", "drain_busy", "lease"])
+@pytest.mark.parametrize("outcome", [
+    "success", "uncertain", "cancel", "changed_set", "drain_busy", "lease",
+    "receipt_refused", "fresh_refused", "replay_invalid",
+])
 def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monkeypatch, tmp_path, outcome):
     from copy import deepcopy
     from package_logistics import PackageTransportError
@@ -680,6 +683,16 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
     app.package_outbox_thread = SimpleNamespace(is_alive=lambda: outcome == "drain_busy")
 
     class Client(InstructionRecoveryClient):
+        def get_receipt(self, key, *, authority_scope_id):
+            if outcome == "receipt_refused":
+                raise PackageTransportError("receipt lookup unavailable")
+            return super().get_receipt(key, authority_scope_id=authority_scope_id)
+
+        def get_capabilities(self):
+            if outcome == "fresh_refused":
+                raise PackageTransportError("current source unavailable")
+            return super().get_capabilities()
+
         def replace_and_reseal_transfer(self, command):
             if outcome == "uncertain":
                 self.commands.append(command)
@@ -692,6 +705,8 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
     app.sealed_transfer_exchange_store = store
     pending = coordinator._attempt(store.load(intent_id))
     assert pending.operator_retry_available
+    if outcome == "replay_invalid":
+        app.current_set_info["package_source_snapshot"]["work_group_source"]["members"] = []
     gate = threading.Event()
     calls = []
 
@@ -712,7 +727,7 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
     tree = FakeTree()
     tree.pack = tree.column = tree.heading = tree.yview = Mock()
     tree.selection = lambda: ()
-    buttons, variables = {}, []
+    buttons, variables, labels = {}, [], []
 
     def button(*_args, **kwargs):
         widget = Mock()
@@ -721,6 +736,9 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
 
     def variable(**kwargs):
         var = Mock()
+        var.value = kwargs.get("value", "")
+        var.set.side_effect = lambda value: setattr(var, "value", value)
+        var.get.side_effect = lambda: var.value
         variables.append(var)
         return var
 
@@ -731,25 +749,41 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
 
     confirmation = Mock(side_effect=confirm)
     monkeypatch.setattr(label_module.messagebox, "askyesno", confirmation)
+    replay_error = Mock()
+    monkeypatch.setattr(label_module.messagebox, "showerror", replay_error)
     monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
     monkeypatch.setattr(label_module.tk, "StringVar", variable)
-    for name in ("Frame", "Label", "Scrollbar"):
+    for name in ("Frame", "Scrollbar"):
         monkeypatch.setattr(label_module.ttk, name, lambda *_a, **_k: Mock())
+    monkeypatch.setattr(label_module.ttk, "Label", lambda *_a, **kwargs: labels.append(kwargs) or Mock())
     monkeypatch.setattr(label_module.ttk, "Entry", lambda *_a, **_k: entry)
     monkeypatch.setattr(label_module.ttk, "Treeview", lambda *_a, **_k: tree)
     monkeypatch.setattr(label_module.ttk, "Button", button)
     try:
         assert app._handle_f4_action()
         root.run_until(lambda: not app.ui_lane.is_busy())
+        if outcome == "replay_invalid":
+            assert "저장된 교체 목록" in replay_error.call_args.args[1]
+            assert "보관 중" in replay_error.call_args.args[1]
+            assert "잠시 후" not in replay_error.call_args.args[1]
+            assert dict(store.load(intent_id)) == saved and not calls and not client.commands
+            confirmation.assert_not_called()
+            return
         app._operation_lease_blocks_f4.return_value = outcome == "lease"
         assert len(tree.get_children()) == 1
         assert "거부" in variables[0].set.call_args.args[0]
+        visible_text = "\n".join(
+            label["textvariable"].get() if "textvariable" in label else label.get("text", "")
+            for label in labels
+        )
+        assert "창을 닫아도" in visible_text and "목록" in visible_text
+        assert "스캔하세요" not in visible_text and "목록은 사라집니다" not in visible_text
         buttons["교체 적용"][0].configure.assert_called_with(text="같은 교체 재시도", state="normal")
         buttons["선택 삭제"][1]()
         assert len(tree.get_children()) == 1
         callback = buttons["교체 적용"][1]
         callback()
-        if outcome in {"success", "uncertain", "lease"}:
+        if outcome in {"success", "uncertain", "lease", "receipt_refused", "fresh_refused"}:
             assert app.ui_lane.is_busy()
             callback()
             content["text"] = "UNEXPECTED"
@@ -757,7 +791,7 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
             gate.set()
             root.run_until(lambda: not app.ui_lane.is_busy())
         assert confirmation.call_count == 1
-        assert len(calls) == (1 if outcome in {"success", "uncertain"} else 0)
+        assert len(calls) == (1 if outcome in {"success", "uncertain", "receipt_refused", "fresh_refused"} else 0)
         if calls:
             assert calls[0] == (intent_id, True, app.ui_lane.worker_thread_id)
         if outcome == "success":
@@ -766,9 +800,27 @@ def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monke
         elif outcome == "uncertain":
             assert store.load(intent_id)["status"] == "OPERATOR_REVIEW"
             assert "확인 필요" in variables[0].set.call_args.args[0]
+            buttons["교체 적용"][0].configure.assert_called_with(text="교체 적용", state="disabled")
             assert [r.status for r in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+            retained = dict(store.load(intent_id))
+            buttons["닫기"][1]()
+            content["text"] = ""
+            confirmation.reset_mock()
+            assert app._handle_f4_action()
+            root.run_until(lambda: not app.ui_lane.is_busy())
+            assert len(tree.get_children()) == 1
+            assert "확인 필요" in variables[-4].get()
+            assert "교체 결과를 확인하지 못했습니다" in variables[-1].get()
+            buttons["교체 적용"][0].configure.assert_called_with(text="교체 적용", state="disabled")
+            buttons["교체 적용"][1]()
+            confirmation.assert_not_called()
+            assert len(calls) == 1 and dict(store.load(intent_id)) == retained
         else:
             assert dict(store.load(intent_id)) == saved
+            if outcome in {"receipt_refused", "fresh_refused"}:
+                assert "재시도 보류" in variables[0].get()
+                assert ("중앙 교체 결과" if outcome == "receipt_refused" else "현재 제품 상태") in variables[-1].get()
+                assert "않았습니다" in variables[-1].get()
         assert len(client.commands) == (1 if outcome in {"success", "uncertain"} else 0)
         for field in ("intent_id", "intent_hash", "created_at", "command_id", "command_json", "command_hash"):
             assert store.load(intent_id)[field] == saved[field]
