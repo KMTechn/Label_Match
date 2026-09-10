@@ -3,6 +3,7 @@
 <a id="lm-f4-list"></a>
 ## 2026-09-10 · F4 교체 목록 — 소스 구현, 실제 수용 대기
 
+- 후속 교정: 빈 members+양수 QT 초안의 실제 admission gap을 닫았다. 표준 PHS2는 정확한 목록 부재를 거부하고 레거시 direct-seal은 실제 target/seal worker 조회로 호환한다. [한정 11 PASS와 남은 수용](operations.md#f4-editable-list)을 분리한다.
 - 구현: 수량 선입력·개수 도달 자동 제출을 없애고 old→new 목록의 확인·수정·삭제·입력 취소와 명시적 단일 적용을 제공한다. 실제 대상 멤버 수, 추가 capability, 기존 원자 명령/복구/전자 seal·물리 PHS2 보존 계약을 유지한다.
 - 근거: [LM-05](README.md#lm-05), [C-03](contracts.md#c-03), [정책](../MEMBER_EXCHANGE_POLICY.md), [사전 기준·실제 소스 검증](operations.md#f4-editable-list). 정상 저장소 migration은 기존 row/JSON/rowid/index/trigger 보존 및 rollback을 검증했다.
 - 남은 일: Main의 exact 후보 수용·실제 화면 및 서버 capability 배정 뒤 목록 편집·일괄 교체·새 전자 QR 확인·원 세트 보존·F3/ACK 복구와 후속 연결 흐름을 검증한다. 원 guest 세트는 교체/F3 없이 정상 종료해 보존했고 source PASS는 live 3쌍 이상 성공이나 최종 GUI/성능 수용이 아니다.

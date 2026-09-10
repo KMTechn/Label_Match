@@ -386,7 +386,8 @@ def test_f4_central_lookup_runs_off_tk_and_applies_on_tk():
     _close_lane(app, root)
 
 
-def test_f4_lease_and_pending_exchange_gate_runs_off_tk():
+@pytest.mark.parametrize("legacy_direct_seal", [False, True])
+def test_f4_lease_and_pending_exchange_gate_runs_off_tk(legacy_direct_seal):
     app, root = _app_with_lane()
     owner = root.owner_thread_id
     trace = []
@@ -395,6 +396,24 @@ def test_f4_lease_and_pending_exchange_gate_runs_off_tk():
         "raw": ["PHS2-F4-GATE"],
         "parsed": ["ITEM-F4-GATE"],
     }
+    expected_barcodes = None
+    if legacy_direct_seal:
+        from sealed_transfer_exchange import SealedTransferExchangeCoordinator
+        from tests.test_sealed_transfer_exchange import BatchClient, _fields
+
+        client = BatchClient()
+        captured["raw"] = [client.qr]
+        captured["sealed_transfer"] = _fields(client.qr)
+        captured["package_source_snapshot"] = {"member_count": 3}
+        get_bundle = client.get_bundle
+
+        def read_bundle(*args, **kwargs):
+            trace.append(("exact-target", threading.get_ident(), captured["id"]))
+            return get_bundle(*args, **kwargs)
+
+        client.get_bundle = read_bundle
+        app.sealed_transfer_exchange_coordinator = SealedTransferExchangeCoordinator(Mock(), client)
+        expected_barcodes = client.old_barcodes
     app.current_set_info = dict(captured)
     app._operation_lease_blocks_f4 = lambda value: (
         trace.append(("lease-gate", threading.get_ident(), value["id"]))
@@ -416,19 +435,21 @@ def test_f4_lease_and_pending_exchange_gate_runs_off_tk():
     assert trace == [
         ("lease-gate", worker_id, "set-f4-gate"),
         ("pending-gate", worker_id, "set-f4-gate"),
+        *([("exact-target", worker_id, "set-f4-gate")] if legacy_direct_seal else []),
         (
             "prompt",
             owner,
             {
                 "_lease_gate_checked": True,
                 "_pending_checked": True,
+                "_target_barcodes": expected_barcodes,
             },
         ),
     ]
     _close_lane(app, root)
 
 
-@pytest.mark.parametrize("outcome", ["pending", "post_prepare_load_error", "admission_error"])
+@pytest.mark.parametrize("outcome", ["pending", "post_prepare_load_error", "admission_error", "missing_members"])
 def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypatch, tmp_path, outcome):
     from copy import deepcopy
     import sqlite3
@@ -471,6 +492,7 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
         return widget
 
     monkeypatch.setattr(label_module.simpledialog, "askinteger", lambda *_a, **_k: pytest.fail("upfront quantity dialog"))
+    monkeypatch.setattr(label_module.messagebox, "showerror", Mock())
     monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
     monkeypatch.setattr(label_module.tk, "StringVar", lambda **_: Mock())
     for name in ("Frame", "Label", "Scrollbar"):
@@ -498,8 +520,15 @@ def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypa
         attempt=(coordinator.attempt if outcome == "post_prepare_load_error"
                  else lambda _intent: SimpleNamespace(status="RETRY_WAIT", retryable=True)),
     )
+    if outcome == "missing_members":
+        app.current_set_info["package_source_snapshot"]["work_group_source"]["members"] = []
     before = deepcopy(app.current_set_info)
     try:
+        if outcome == "missing_members":
+            assert not app._prompt_sealed_transfer_exchange(_lease_gate_checked=True, _pending_checked=True)
+            assert app.current_set_info == before and captured == [] and not buttons
+            label_module.messagebox.showerror.assert_called_once()
+            return
         assert app._prompt_sealed_transfer_exchange(_lease_gate_checked=True, _pending_checked=True)
 
         def scan(value):

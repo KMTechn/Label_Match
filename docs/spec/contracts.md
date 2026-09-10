@@ -133,6 +133,8 @@ HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`,
 <a id="c-03"></a>
 ## C-03 F4 교체·재봉인
 
+F4 초안은 비어 있지 않은 정확한 barcode 목록과 seal QT의 일치를 항상 요구한다. 표준 PHS2의 accepted work-group members가 없으면 팝업/intent 전에 거부한다. scalar count/hash만 남는 명시적 레거시 direct-seal QR은 기존 F4 worker preflight에서 현재 target bundle·active seal을 검증해 얻은 barcode 목록을 사용한다. 이 조회는 Tk 밖에서 수행하며 lease/pending gate와 제출 시 fresh server 검증을 유지한다.
+
 실제 cancel07 case04 첫 실패와 원 입력은 보존한다. `source_iin`/resolver `inbound_iin`은 현재·frozen accounting IIN이며 immutable origin과 구분한다. 각 bundle의 current member binding은 그 bundle의 accounting IIN과 일치해야 하지만 donor와 target 사이 equality는 필요하지 않다. 수용된 중앙 sealed replacement는 donor→target accounting 이동/rebind와 origin·receipt·movement·membership 계보 보존을 같은 transaction에서 수행한다. Main/Web의 실제 필드·서버 source 비교에 따라 iin08은 클라이언트 equality만 제거한다. 다른 권한·원장·품목·UOM, 다품목 donor, stale seal/version과 불완전 receipt guard는 유지한다.
 
 지원 복구는 `OPERATOR_REVIEW` + exact `SEALED_TRANSFER_EXCHANGE_ERROR` + exact legacy detail `replacement good must have the same lot/item/uom/ledger identity`, seal/local-apply 모두 `PENDING`, command_id/json/hash·receipt_json·new_seal_qr_payload·seal_verified_at·local_apply_receipt_json 모두 `NULL`인 pre-command row만 기존 normal drain에서 다시 검증한다. 동일 intent/input/hash/created_at/attempt 이력을 유지하며 capability·target/seal·donor를 GET/검증한 뒤 기존 atomic bind가 command를 먼저 저장하고 POST한다. 일반 error/NULL command만으로 review를 열거나 상태를 초기화하지 않는다. durable command review의 기본 동작은 exact receipt 조회이며 아래의 한정된 precommit 호환 복구만 예외다. 원래 4개 입력을 다시 스캔하는 복구가 아니며, corrected client 시작 자체가 복구 command를 보낼 수 있어 공유 서버·후보 수용과 현재 정상 grant가 먼저 필요하다. [소스·48 PASS·실제 pause와 한계](E:/KMTech/label-install-qualification-20260908/IIN08-SOURCE-RECOVERY.md)는 native F4 성공이나 새 seal/F3를 대신하지 않는다.

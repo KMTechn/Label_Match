@@ -3,6 +3,8 @@
 <a id="f4-editable-list"></a>
 ## 2026-09-10 · F4 편집 목록·대상 멤버 수 교체
 
+Main의 후속 empty-members 검토는 3bdd의 count-only 초안이 가능한 실제 분기를 확인했다. [한정 후속 교정](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/missing-members/RESULT.md)은 exact nonempty 목록을 요구하고, 명시적 레거시 direct-seal만 기존 worker의 실제 target/seal 조회로 목록을 공급한다. 기존 팝업 회귀의 missing-members **1 FAIL→PASS**, 한정 F4 **7 PASS/3.23s**와 기존 draft/writer **4 PASS/5.97s**이며 전체 suite/GUI는 재실행하지 않았다. 동일44개 guard/identity를 유지하고 pin을 `75278d9927e13288dc967e0a2112f3e65f45abd31c03810b2b077576253bd933`으로 갱신했다. 아래 130/66과 원래 pin은 선행3bdd의 보존된 결과다.
+
 Main의 최종 추가 capability 합의와 원본 C 저장소 구현 GO 뒤, 깨끗한 parent `945e126d7ec76fd517c8011e0ecc8eab4acbb1cb`에서 [사전 구현 기준](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/IMPLEMENTATION-CRITERIA.md)을 고정했다. 기존 5f 설계·baseline, 945 이력표 교정과 모든 과거 실패를 보존한다. 수량 대화상자·자동 제출을 old→new 목록과 명시적 단일 적용으로 바꾸고, 기존 모듈 안의 작은 메모리 초안과 정상 SQLite migration으로 [C-03](contracts.md#c-03)을 구현했다. 상세 변화·커밋·파일 크기는 [RESULT](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/RESULT.md)에 결속한다.
 
 **PROVEN — 소스·격리 fake/SQLite:** 기존 기준선 **115 PASS**, 새 요구의 변경 전 **13 FAIL**을 보존했다. 첫 구현 확인은 **11 PASS/2 FAIL**이며 두 실패는 새 테스트 donor fixture의 identity 변경 뒤 membership hash 미갱신이었다. fixture만 바로잡은 두 사례 **2 PASS**와 전체 영향 선택 **130 PASS/9.17s**를 기록했다. 3쌍 전체/부분 대상·기존 base-only 2쌍, 추가 capability 거부 시 intent 0건, 목록 편집·미완성 입력·자동 제출 부재·한 번 제출·prepare 뒤 첫 load 실패의 잠금, 같은 저장 명령/receipt의 ACK 유실·재시작 및 물리 PHS2 보존을 검증했다.

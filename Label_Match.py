@@ -11618,7 +11618,7 @@ class Label_Match(tk.Tk):
         captured_raw = tuple(captured.get("raw") or ())
 
         def work():
-            return {
+            preflight = {
                 "lease_blocked": self._operation_lease_blocks_f4(
                     captured
                 ),
@@ -11626,6 +11626,17 @@ class Label_Match(tk.Tk):
                     self._current_sealed_transfer_exchange_attempt(captured)
                 ),
             }
+            raw = captured.get("raw") or ()
+            if (
+                not preflight["lease_blocked"] and preflight["pending_exchange"] is None
+                and raw and _label_match_parse_sealed_transfer_qr(raw[0])
+            ):
+                sealed = captured["sealed_transfer"]
+                preflight["target_barcodes"] = self.sealed_transfer_exchange_coordinator.target_barcodes(
+                    old_seal_qr_payload=str(sealed.get("_seal_qr_payload") or _label_match_decode_possible_base64_label(raw[0])),
+                    old_seal_fields=sealed,
+                )
+            return preflight
 
         def finish(preflight):
             if (
@@ -11659,6 +11670,7 @@ class Label_Match(tk.Tk):
             self._prompt_sealed_transfer_exchange(
                 _lease_gate_checked=True,
                 _pending_checked=True,
+                _target_barcodes=preflight.get("target_barcodes"),
             )
 
         def fail(error):
@@ -11686,6 +11698,7 @@ class Label_Match(tk.Tk):
         *,
         _lease_gate_checked=False,
         _pending_checked=False,
+        _target_barcodes=None,
     ):
         """Start F4 only with the online replace-and-reseal authority.
 
@@ -11760,7 +11773,8 @@ class Label_Match(tk.Tk):
         members = (snapshot.get("work_group_source") or {}).get("members") or ()
         try:
             draft = SealedTransferExchangeDraft(
-                (member["normalized_barcode"] for member in members),
+                _target_barcodes if _target_barcodes is not None
+                else (member["normalized_barcode"] for member in members),
                 target_member_count=sealed.get("QT"),
             )
         except (PackageLogisticsError, KeyError, TypeError):

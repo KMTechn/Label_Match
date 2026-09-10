@@ -100,13 +100,13 @@ def validate_exchange_pairs(old_barcodes, new_barcodes, target_member_count):
 class SealedTransferExchangeDraft:
     """An unsubmitted operator list; no storage or network side effects."""
 
-    def __init__(self, target_barcodes=(), *, target_member_count=None):
+    def __init__(self, target_barcodes, *, target_member_count=None):
         self.target_barcodes = canonical_barcodes(target_barcodes)
         self.target_member_count = _positive_int(
             len(self.target_barcodes) if target_member_count is None else target_member_count,
             "target_member_count",
         )
-        if self.target_barcodes and len(self.target_barcodes) != self.target_member_count:
+        if len(self.target_barcodes) != self.target_member_count:
             raise PackageLogisticsError("exact target barcode count differs")
         self.pairs = []
         self.pending_old = ""
@@ -121,7 +121,7 @@ class SealedTransferExchangeDraft:
         if value in used or value == self.pending_old:
             raise PackageLogisticsError("중복된 제품은 교체할 수 없습니다.")
         if not self.pending_old:
-            if self.target_barcodes and value not in self.target_barcodes:
+            if value not in self.target_barcodes:
                 raise PackageLogisticsError("현재 현품표에 포함된 교체 대상을 스캔하세요.")
             if self.edit_index is None and len(self.pairs) >= self.target_member_count:
                 raise PackageLogisticsError("현재 현품표의 모든 교체 대상이 목록에 있습니다.")
@@ -990,6 +990,21 @@ class SealedTransferExchangeCoordinator:
         source["selected_unit_id"] = unit_id
         source["selected_barcode"] = requested
         return source
+
+    def target_barcodes(self, *, old_seal_qr_payload, old_seal_fields):
+        """Read exact legacy direct-seal members before opening an F4 draft."""
+        if self.client is None:
+            raise PackageLogisticsError("central logistics client is not configured")
+        target = _exact_bundle(
+            self.client.get_bundle(
+                old_seal_fields["BND"], authority_scope_id=old_seal_fields["AUTH_SCOPE"]
+            ),
+            bundle_type="TRANSFER", location="TRANSFER",
+        )
+        self._validate_active_seal(
+            target, old_qr=old_seal_qr_payload, old_fields=old_seal_fields
+        )
+        return tuple(target["by_barcode"])
 
     def _build_command(self, row: sqlite3.Row) -> dict[str, Any]:
         old_barcodes = tuple(json.loads(row["old_barcodes_json"]))
