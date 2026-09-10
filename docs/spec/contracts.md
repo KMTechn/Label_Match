@@ -89,7 +89,7 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 | --- | --- | --- |
 | source `member_count` | 현재 유효 TRANSFER/work-group 제품 구성원 수. PHS2 한 번의 스캔 수와 다름; `INHERIT_ALL`은 그 집합 전체 | 현재 source snapshot/version 기준. unit와 barcode hash를 각각 대조 |
 | QA 표본 3개 | 명시 호환 경로의 검증 표본. 포장 전체 멤버십 수나 중앙 표준 필수 입력 수가 아님 | 표준 PHS2 입력은 1회; 표본을 제품 총량으로 합산하지 않음 |
-| F4 1~2쌍 | 교체 쌍 수. 유효 교체는 기존 멤버를 새 멤버로 치환 | 중앙 원자 처리·같은 key 재생. 전체 구성 수 보존 |
+| F4 교체 목록 | 1쌍 이상 실제 대상 멤버 수 이내. 3쌍 이상은 추가 capability 필요 | 명시적 단일 제출·중앙 원자 처리·같은 key 재생. 전체 구성 수 보존 |
 | 포장 세트 | `PACKAGING_SET_COUNT`, 웹 `total_sets_completed`. 포장 완료 세트 수이며 제품 개수와 환산하지 않음 | 취소·부분 제출 등을 제외하는 projection 규칙. 원본 PHS2/최종 라벨은 제품 barcode에서 제외 |
 | CSV row / accepted row | event 전달·투영 처리 건수. 포장 세트나 제품 개수와 다름 | 중복·quarantine·처리 행 합계와 source identity로 ACK 검증 |
 
@@ -145,10 +145,13 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 - 2026-09-08 현행 `eb79e519`의 정상 START가 F3 전에 CREATE_PACKAGE lease를 발급해 [F4 수량 전 경고](E:/KMTech/label-install-qualification-20260908/F4-QUANTITY-DIALOG.json)를 만든 결함을 확인했다. Main의 승인된 교정은 **초기 PHS2 검증·materialization을 읽기 전용 source 확인으로 끝내고 실제 F3가 lease를 발급**하게 하는 것이다. [후속 source 단위](E:/KMTech/label-install-qualification-20260908/TIMING06-SOURCE-CHECK.json)는 F4의 PREFETCHED/LOCAL_COMPLETED·ACTIVE issue attempt gate와 전체 single-transfer·전자 seal 확인·CAS·수량 보존을 유지한다. 기존 발급 fence2는 여전히 포장 소유이며 만료만으로 해제하거나 로컬 status를 지우지 않는다. 새 중앙 API를 이 교정의 전제로 요구하지 않으며 Main이 합법적인 별도 기존 대상 또는 지원 관리 복구를 배정한다. 후속 source의 실제 F4 성공은 아직 미실행이다.
 
 - API: `GET L/replacements/good-source/resolve`, `POST L/transfers/{id}/members/replace-and-reseal`; command `REPLACE_SEALED_TRANSFER_MEMBERS`, capability `sealed_transfer_member_replacement_v1`.
-- payload: `target_bundle_id`, `damage_bundle_id`, target evidence, `pairs`, 예상 대상/donor/damage version. 1~2쌍, 같은 권한·원장·품목·UOM과 bundle 내부 accounting binding, 활성 제품 1개 donor PHS를 검사한다. 예상 damage version 0도 명령에 결속한다.
+- payload: `target_bundle_id`, `damage_bundle_id`, target evidence, `pairs`, 예상 대상/donor/damage version. 쌍 수는 양의 정수이며 실제 대상 membership 수를 넘지 않는다. 같은 권한·원장·품목·UOM과 bundle 내부 accounting binding, 활성 제품 1개 donor PHS를 검사한다. 예상 damage version 0도 명령에 결속한다.
+- 호환 capability: 기존 `sealed_transfer_member_replacement_v1`와 `max_pairs: 2`를 유지한다. 3쌍 이상에는 `capability_ids`의 `sealed_transfer_member_replacement_target_members_v1` 및 같은 이름의 object가 추가로 필요하며, `enabled: true`, `base_capability: sealed_transfer_member_replacement_v1`, `pair_limit_basis: TARGET_MEMBER_COUNT`, 정수 `min_pairs: 1`을 모두 확인한다. receipt/command/QR schema는 v1을 유지한다.
+- 목록·접수 경계: 수량 대화상자와 개수 도달 자동 제출을 없애고 old→new 목록의 수정·삭제·입력 취소 및 명시적 단일 제출을 제공한다. 비어 있거나 미완성인 입력, 중복·양쪽 교차 barcode, 현재 대상 밖 old 또는 대상 안 new, 실제 대상 수 초과는 차단한다. 3쌍 이상 미지원은 `store.prepare` 전에 거부해 durable intent 없이 목록을 보존한다. `prepare` 이후 첫 `attempt.load` 예외까지 모두 같은 intent와 잠긴 목록을 유지하며 새 identity나 일반 오류에 의한 재제출을 만들지 않는다.
+- 저장소 호환: 기존 initializer의 정상 transaction에서 obsolete `pair_count BETWEEN 1 AND 2` CHECK만 양수 조건으로 옮긴다. ordered rowid·모든 row 값/JSON bytes·기존 index/trigger SQL을 보존하고 실패 시 rollback하며 재시작은 no-op이다. 외부 view/FK dependency는 원본 보존 상태로 거부한다. live DB 수동 변경·reset은 수행하지 않는다([소스 검증 범위](operations.md#f4-editable-list)).
 - 원자 효과: 대상·donor·damage CAS, 손상품 `PROCESS_DAMAGE_HOLD` 이동, 양품 TRANSFER 편입, 이전 전자 seal 무효화·새 revision 발급이 한 중앙 transaction이다. 이 중앙 성공과 앱의 QR 확인·로컬 반영은 별도 경계다.
 - 중복/복구: 같은 intent hash key와 저장 command를 사용하며 receipt의 매핑·잔량·damage membership·version까지 비교한다. ACK 유실 또는 로컬 적용 실패는 intent/receipt에서 복구한다. 새 전자 QR 확인 전 제한은 앱 gate가 소유한다.
-- 양쪽 근거: [교체 workflow](../../sealed_transfer_exchange.py) `_build_command/attempt`, [서버 replace_sealed_transfer_members](../../../WorkerAnalysisGUI-web/logistics_ledger/service.py), [앱 QR 확인](../../Label_Match.py). [기존 교체 정책](../MEMBER_EXCHANGE_POLICY.md)은 seal 기반 설명과 물리 PHS2 유지의 구별이 필요하다([LM-B01](BACKLOG.md#lm-b01)).
+- 양쪽 근거: [교체 workflow](../../sealed_transfer_exchange.py) `_build_command/attempt`, [서버 replace_sealed_transfer_members](../../../WorkerAnalysisGUI-web/logistics_ledger/service.py), [앱 QR 확인](../../Label_Match.py), [교체 정책](../MEMBER_EXCHANGE_POLICY.md). 작업자 정본의 후속 QR 안내 갱신은 [LM-B01](BACKLOG.md#lm-b01)에 남는다.
 
 <a id="c-04"></a>
 ## C-04 F3 포장 명령·lease·outbox

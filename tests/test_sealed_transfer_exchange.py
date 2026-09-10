@@ -1,6 +1,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import sqlite3
 
 import pytest
 
@@ -68,10 +69,11 @@ def _fields(qr=OLD_QR):
     }
 
 
-def _target_projection(*, qr=OLD_QR, seal_id="seal-1", token="token-1", revision=1):
+def _target_projection(*, qr=OLD_QR, seal_id="seal-1", token="token-1", revision=1,
+                       ids=OLD_IDS, barcodes=OLD_BARCODES):
     members = [
         {"unit_id": unit_id, "normalized_barcode": barcode}
-        for unit_id, barcode in zip(OLD_IDS, OLD_BARCODES, strict=True)
+        for unit_id, barcode in zip(ids, barcodes, strict=True)
     ]
     return {
         "authority_scope_id": SCOPE,
@@ -85,11 +87,11 @@ def _target_projection(*, qr=OLD_QR, seal_id="seal-1", token="token-1", revision
         "item_id": ITEM,
         "source_iin": "IIN-001",
         "uom": "EA",
-        "member_ids": list(OLD_IDS),
-        "member_count": len(OLD_IDS),
-        "membership_hash": membership_hash(OLD_IDS),
-        "barcode_member_count": len(OLD_BARCODES),
-        "barcode_membership_hash": barcode_membership_hash(OLD_BARCODES),
+        "member_ids": list(ids),
+        "member_count": len(ids),
+        "membership_hash": membership_hash(ids),
+        "barcode_member_count": len(barcodes),
+        "barcode_membership_hash": barcode_membership_hash(barcodes),
         "entity_version": 1,
         "members": members,
         "active_seal": {
@@ -102,12 +104,12 @@ def _target_projection(*, qr=OLD_QR, seal_id="seal-1", token="token-1", revision
             "seal_qr_payload": qr,
             "sealed_bundle_id": TARGET,
             "sealed_bundle_version": 1,
-            "sealed_member_ids": list(OLD_IDS),
+            "sealed_member_ids": list(ids),
             "sealed_members": members,
-            "sealed_member_count": len(OLD_IDS),
-            "sealed_membership_hash": membership_hash(OLD_IDS),
-            "sealed_normalized_barcodes": list(OLD_BARCODES),
-            "sealed_barcode_membership_hash": barcode_membership_hash(OLD_BARCODES),
+            "sealed_member_count": len(ids),
+            "sealed_membership_hash": membership_hash(ids),
+            "sealed_normalized_barcodes": list(barcodes),
+            "sealed_barcode_membership_hash": barcode_membership_hash(barcodes),
         },
     }
 
@@ -1185,12 +1187,12 @@ def test_orphan_package_command_recovers_the_original_physical_phs2_slot():
     assert state["package_submission_status"] == "ACKED"
 
 
-def test_more_than_two_pairs_are_rejected_before_network(tmp_path):
+def test_more_pairs_than_target_members_are_rejected_before_network(tmp_path):
     client = FakeClient()
     coordinator = SealedTransferExchangeCoordinator(
         SealedTransferExchangeStore(tmp_path / "package.db"), client
     )
-    with pytest.raises(PackageLogisticsError, match="one or two"):
+    with pytest.raises(PackageLogisticsError, match="pair|target"):
         coordinator.prepare(
             set_id="set-1",
             old_seal_qr_payload=OLD_QR,
@@ -1358,3 +1360,412 @@ def test_multi_member_donor_is_rejected_before_reseal_command(tmp_path):
     assert result.status == "OPERATOR_REVIEW"
     assert result.error_code == "REPLACEMENT_SOURCE_NOT_SINGLETON"
     assert client.commands == []
+
+
+class BatchClient(FakeClient):
+    """Three singleton donors, with optional unchanged target membership."""
+
+    def __init__(self, *, keep=False, extension=True, pair_count=3):
+        super().__init__()
+        self.pair_count = pair_count
+        self.old_ids = tuple(f"unit-old-{i}" for i in range(pair_count))
+        self.old_barcodes = tuple(f"OLD-{i}" for i in range(pair_count))
+        self.new_ids = tuple(f"unit-new-{i}" for i in range(pair_count))
+        self.new_barcodes = tuple(f"NEW-{i}" for i in range(pair_count))
+        self.keep = ("unit-keep",) if keep else ()
+        self.keep_barcodes = ("KEEP",) if keep else ()
+        self.qr = _qr(ids=self.old_ids + self.keep)
+        self.extension = extension
+        self.saved_receipt = None
+        self.lose_ack = False
+
+    def get_capabilities(self):
+        result = super().get_capabilities()
+        if self.extension:
+            name = "sealed_transfer_member_replacement_target_members_v1"
+            result["capability_ids"].append(name)
+            result["capabilities"][name] = {
+                "enabled": True,
+                "base_capability": "sealed_transfer_member_replacement_v1",
+                "pair_limit_basis": "TARGET_MEMBER_COUNT",
+                "min_pairs": 1,
+            }
+        return result
+
+    def get_bundle(self, bundle_id, *, authority_scope_id=""):
+        assert (bundle_id, authority_scope_id) == (TARGET, SCOPE)
+        return _target_projection(
+            qr=self.qr, ids=self.old_ids + self.keep,
+            barcodes=self.old_barcodes + self.keep_barcodes,
+        )
+
+    def resolve_good_source(self, *, authority_scope_id, barcode):
+        assert authority_scope_id == SCOPE
+        index = self.new_barcodes.index(barcode)
+        # Reuse the exact existing singleton fixture with distinct identities.
+        text = json.dumps(_good_resolver())
+        result = json.loads(text.replace(SOURCE, f"PHS-NEW-{index}")
+                            .replace("unit-new", f"unit-new-{index}")
+                            .replace("BC-NEW", barcode))
+        digest = membership_hash([self.new_ids[index]])
+        result["source_bundle"]["membership_hash"] = digest
+        result["replacement_evidence"]["source_membership_hash"] = digest
+        return result
+
+    def replace_and_reseal_transfer(self, command):
+        self.commands.append(deepcopy(command))
+        receipt = _receipt(command)
+        data = receipt["data"]
+        members = lambda ids, codes: [
+            {"unit_id": uid, "normalized_barcode": code}
+            for uid, code in zip(ids, codes, strict=True)
+        ]
+        for prefix, ids, codes in (
+            ("old_", self.old_ids + self.keep, self.old_barcodes + self.keep_barcodes),
+            ("new_", self.new_ids + self.keep, self.new_barcodes + self.keep_barcodes),
+            ("", self.new_ids + self.keep, self.new_barcodes + self.keep_barcodes),
+            ("sealed_", self.new_ids + self.keep, self.new_barcodes + self.keep_barcodes),
+        ):
+            data.update({
+                prefix + "member_ids": list(ids),
+                prefix + "members": members(ids, codes),
+                prefix + "member_count": len(ids),
+                prefix + "membership_hash": membership_hash(ids),
+                prefix + "normalized_barcodes": list(codes),
+                prefix + "barcode_membership_hash": barcode_membership_hash(codes),
+            })
+        data["old_seal_qr_payload"] = self.qr
+        new_qr = _qr(ids=self.new_ids + self.keep, revision=2,
+                     seal_id="seal-2", token="token-2")
+        data["seal_qr_payload"] = data["new_seal_qr_payload"] = new_qr
+        data["pairs"] = [{k: p[k] for k in (
+            "old_unit_id", "new_unit_id", "new_source_bundle_id"
+        )} for p in command["payload"]["pairs"]]
+        data["pair_count"] = self.pair_count
+        template = data["sources"][0]
+        data["sources"] = []
+        for index in range(self.pair_count):
+            source = json.loads(json.dumps(template)
+                                .replace(SOURCE, f"PHS-NEW-{index}")
+                                .replace("unit-new", f"unit-new-{index}")
+                                .replace("BC-NEW", f"NEW-{index}"))
+            source["source_membership_hash_before"] = membership_hash([self.new_ids[index]])
+            source["source_barcode_membership_hash_before"] = barcode_membership_hash([self.new_barcodes[index]])
+            data["sources"].append(source)
+        data["damage_member_ids"] = list(self.old_ids)
+        data["damage_members"] = members(self.old_ids, self.old_barcodes)
+        data["damage_membership_hash"] = membership_hash(self.old_ids)
+        data["movement_ids"] = [f"move-{i}" for i in range(2 * self.pair_count)]
+        receipt["entity_versions"] = {
+            f"bundle:{TARGET}": 2,
+            **{f"bundle:PHS-NEW-{i}": 6 for i in range(self.pair_count)},
+            f"bundle:{data['damage_bundle_id']}": 1,
+        }
+        self.saved_receipt = deepcopy(receipt)
+        if self.lose_ack:
+            raise PackageTransportError("response lost after commit")
+        return receipt
+
+    def get_receipt_if_exists(self, key, *, authority_scope_id):
+        assert authority_scope_id == SCOPE
+        if self.saved_receipt is not None:
+            assert key == self.saved_receipt["idempotency_key"]
+        return deepcopy(self.saved_receipt)
+
+
+def _prepare_batch(coordinator, client):
+    return coordinator.prepare(
+        set_id="batch-set", old_seal_qr_payload=client.qr,
+        old_seal_fields=_fields(client.qr), operator="packer",
+        old_barcodes=client.old_barcodes, new_barcodes=client.new_barcodes,
+    )
+
+
+def test_base_capability_keeps_two_pair_exchange_compatible(tmp_path):
+    client = BatchClient(pair_count=2, extension=False)
+    store = SealedTransferExchangeStore(tmp_path / "legacy-two.db")
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    result = coordinator.attempt(_prepare_batch(coordinator, client).intent_id)
+    assert result.status == "ACKED"
+    assert len(client.commands) == 1
+    assert client.saved_receipt["data"]["member_count"] == 2
+    assert client.saved_receipt["data"]["pair_count"] == 2
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_three_pair_batch_preserves_membership_and_exact_recovery(tmp_path, keep):
+    client = BatchClient(keep=keep)
+    client.lose_ack = True
+    db_path = tmp_path / "batch.db"
+    store = SealedTransferExchangeStore(db_path)
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    prepared = _prepare_batch(coordinator, client)
+    assert client.commands == []
+    result = coordinator.attempt(prepared.intent_id)
+    assert result.status == "RETRY_WAIT"
+    frozen = dict(store.load(prepared.intent_id))
+    restarted = SealedTransferExchangeCoordinator(
+        SealedTransferExchangeStore(db_path), client
+    )
+    recovered = restarted.attempt(prepared.intent_id)
+    assert recovered.status == "ACKED"
+    assert len(client.commands) == 1
+    row = restarted.store.load(prepared.intent_id)
+    assert tuple(row[k] for k in ("command_id", "command_json", "command_hash")) == tuple(
+        frozen[k] for k in ("command_id", "command_json", "command_hash")
+    )
+    receipt = json.loads(row["receipt_json"])["data"]
+    assert set(receipt["member_ids"]) == {"unit-new-0", "unit-new-1", "unit-new-2", *client.keep}
+    assert set(receipt["damage_member_ids"]) == {"unit-old-0", "unit-old-1", "unit-old-2"}
+    assert receipt["member_count"] == 3 + int(keep)
+    assert len(receipt["sources"]) == receipt["pair_count"] == 3
+    current = {
+        "id": "batch-set", "raw": ["PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-BATCH|CLC=ITEM-001|LBL=LBL-BATCH|HSH=0123456789abcdef"],
+        "parsed": [ITEM], "central_inherit_all": True,
+        "sealed_transfer": {**_fields(client.qr), "_seal_qr_payload": client.qr},
+        "package_source_snapshot": {"retained": True},
+    }
+    updated = _label_match_apply_sealed_exchange_state(
+        current, old_seal_qr_payload=client.qr,
+        new_seal_qr_payload=recovered.new_seal_qr_payload,
+        old_barcodes=client.old_barcodes, new_barcodes=client.new_barcodes,
+    )
+    assert updated["raw"] == current["raw"]
+    assert updated["sealed_transfer"]["SREV"] == 2
+    assert updated["package_source_snapshot"] is None
+
+
+@pytest.mark.parametrize("malformation", ["missing", "disabled", "basis", "minimum", "base"])
+def test_unsupported_dynamic_batch_leaves_no_durable_intent(tmp_path, malformation):
+    from sealed_transfer_exchange import SealedTransferExchangeAdmissionError
+
+    client = BatchClient(extension=malformation != "missing")
+    capabilities = client.get_capabilities()
+    extension = capabilities["capabilities"].get(
+        "sealed_transfer_member_replacement_target_members_v1", {}
+    )
+    if malformation != "missing":
+        key, value = {
+            "disabled": ("enabled", False), "basis": ("pair_limit_basis", "ANY"),
+            "minimum": ("min_pairs", True), "base": ("base_capability", "other"),
+        }[malformation]
+        extension[key] = value
+    client.get_capabilities = lambda: capabilities
+    store = SealedTransferExchangeStore(tmp_path / "unsupported.db")
+    with pytest.raises(SealedTransferExchangeAdmissionError):
+        _prepare_batch(SealedTransferExchangeCoordinator(store, client), client)
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sealed_transfer_exchange_intents").fetchone()[0] == 0
+    assert client.commands == []
+
+
+def test_exchange_draft_edit_remove_and_unfinished_input():
+    from sealed_transfer_exchange import SealedTransferExchangeDraft
+
+    draft = SealedTransferExchangeDraft(("OLD-0", "OLD-1", "OLD-2"))
+    for index in range(3):
+        assert draft.accept(f" old-{index} ") is False
+        with pytest.raises(PackageLogisticsError):
+            draft.snapshot()
+        assert draft.accept(f"NEW-{index}") is True
+    assert len(draft.snapshot()) == 3
+    assert draft.begin_edit(1) == "OLD-1"
+    draft.accept("OLD-1")
+    draft.accept("CORRECTED")
+    draft.remove(0)
+    assert draft.snapshot() == (("OLD-1", "CORRECTED"), ("OLD-2", "NEW-2"))
+    draft.accept("OLD-0")
+    with pytest.raises(PackageLogisticsError):
+        draft.accept("OLD-2")
+    draft.cancel_pending()
+    assert len(draft.snapshot()) == 2
+    with pytest.raises(PackageLogisticsError):
+        draft.accept("NOT-A-TARGET-MEMBER")
+    with pytest.raises(PackageLogisticsError):
+        draft.accept("OLD-1")
+
+
+def _legacy_exchange_db(path):
+    with sqlite3.connect(path) as conn:
+        conn.executescript(_LEGACY_EXCHANGE_SCHEMA)
+        conn.executescript("""
+            CREATE INDEX legacy_pair_lookup ON sealed_transfer_exchange_intents(pair_count);
+            CREATE TRIGGER legacy_operator_guard BEFORE UPDATE OF operator
+            ON sealed_transfer_exchange_intents WHEN NEW.operator='blocked'
+            BEGIN SELECT RAISE(ABORT, 'legacy guard'); END;
+        """)
+        for index, status in enumerate(
+            ("PREPARED", "COMMAND_READY", "RETRY_WAIT", "ACKED", "OPERATOR_REVIEW")
+        ):
+            row = {
+                "rowid": (17, 2, 31, 9, 55)[index], "intent_id": f"legacy-{index}",
+                "schema_version": "label-match-sealed-transfer-exchange-v1",
+                "set_id": f"set-{index}", "status": status,
+                "target_bundle_id": TARGET, "item_id": ITEM, "authority_scope_id": SCOPE,
+                "operator": "legacy operator", "old_seal_qr_payload": OLD_QR,
+                "old_seal_fields_json": json.dumps(_fields()),
+                "old_barcodes_json": '[ "BC-OLD" ]', "new_barcodes_json": '[ "BC-NEW" ]',
+                "pair_count": 1, "intent_hash": f"intent-hash-{index}",
+                "created_at": f"2026-01-0{index+1}T00:00:00Z", "updated_at": "unchanged",
+                "attempt_count": index, "last_error_message": "preserve old detail",
+            }
+            if index:
+                row.update(command_id=f"key-{index}", command_json=' { "frozen": [1, 2] } ',
+                           command_hash=f"hash-{index}")
+            if status == "ACKED":
+                row.update(receipt_json=' { "exact_receipt": true } ',
+                           new_seal_qr_payload="private-new-seal", seal_verified_at="old-time",
+                           local_apply_receipt_json=' { "old_apply": true } ',
+                           seal_verification_status="VERIFIED", local_apply_status="APPLIED")
+            conn.execute(
+                "INSERT INTO sealed_transfer_exchange_intents (" + ",".join(row) + ") VALUES ("
+                + ",".join("?" for _ in row) + ")", tuple(row.values()),
+            )
+        rows = conn.execute("SELECT rowid,* FROM sealed_transfer_exchange_intents ORDER BY rowid").fetchall()
+        dependencies = conn.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE tbl_name='sealed_transfer_exchange_intents' "
+            "AND type IN ('index','trigger') ORDER BY type,name"
+        ).fetchall()
+    return rows, dependencies
+
+
+def test_pair_count_migration_preserves_rows_dependencies_and_reopening(tmp_path):
+    path = tmp_path / "legacy.db"
+    before, dependencies = _legacy_exchange_db(path)
+    store = SealedTransferExchangeStore(path)
+    SealedTransferExchangeStore(path)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT rowid,* FROM sealed_transfer_exchange_intents ORDER BY rowid").fetchall() == before
+        assert conn.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE tbl_name='sealed_transfer_exchange_intents' "
+            "AND type IN ('index','trigger') ORDER BY type,name"
+        ).fetchall() == dependencies
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute("UPDATE sealed_transfer_exchange_intents SET command_json='changed' WHERE intent_id='legacy-1'")
+        with pytest.raises(sqlite3.IntegrityError, match="legacy guard"):
+            conn.execute("UPDATE sealed_transfer_exchange_intents SET operator='blocked' WHERE intent_id='legacy-0'")
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    client = BatchClient()
+    prepared = _prepare_batch(SealedTransferExchangeCoordinator(store, client), client)
+    assert store.load(prepared.intent_id)["pair_count"] == 3
+
+
+def test_pair_count_migration_rolls_back_after_copy_failure(tmp_path, monkeypatch):
+    path = tmp_path / "copy-failure.db"
+    before, dependencies = _legacy_exchange_db(path)
+    original_connect = sqlite3.connect
+
+    class InterruptedCopy(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            result = super().execute(sql, *args, **kwargs)
+            if sql.lstrip().upper().startswith("INSERT INTO") and "SELECT" in sql.upper():
+                raise sqlite3.DatabaseError("interrupted migration copy")
+            return result
+
+    monkeypatch.setattr(
+        sqlite3, "connect",
+        lambda *args, **kwargs: original_connect(*args, **kwargs, factory=InterruptedCopy),
+    )
+    with pytest.raises(sqlite3.DatabaseError, match="interrupted migration copy"):
+        SealedTransferExchangeStore(path)
+    with original_connect(path) as conn:
+        assert conn.execute("SELECT rowid,* FROM sealed_transfer_exchange_intents ORDER BY rowid").fetchall() == before
+        assert conn.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE tbl_name='sealed_transfer_exchange_intents' "
+            "AND type IN ('index','trigger') ORDER BY type,name"
+        ).fetchall() == dependencies
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall() == [("sealed_transfer_exchange_intents",)]
+        assert "BETWEEN 1 AND 2" in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='sealed_transfer_exchange_intents'"
+        ).fetchone()[0]
+
+
+@pytest.mark.parametrize("dependency", ("view", "foreign_key"))
+def test_pair_count_migration_preserves_external_dependencies_on_rejection(tmp_path, dependency):
+    path = tmp_path / "external-dependency.db"
+    before, _dependencies = _legacy_exchange_db(path)
+    with sqlite3.connect(path) as conn:
+        if dependency == "view":
+            conn.execute(
+                "CREATE VIEW exchange_summary AS "
+                "SELECT intent_id,status FROM sealed_transfer_exchange_intents"
+            )
+        else:
+            conn.execute(
+                "CREATE TABLE exchange_reference (intent_id TEXT REFERENCES "
+                "sealed_transfer_exchange_intents(intent_id))"
+            )
+            conn.execute("INSERT INTO exchange_reference VALUES ('legacy-0')")
+        schema = conn.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+        ).fetchall()
+    with pytest.raises(PackageLogisticsError, match="external dependencies"):
+        SealedTransferExchangeStore(path)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT rowid,* FROM sealed_transfer_exchange_intents ORDER BY rowid"
+        ).fetchall() == before
+        assert conn.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+        ).fetchall() == schema
+        if dependency == "foreign_key":
+            assert conn.execute("SELECT * FROM exchange_reference").fetchall() == [("legacy-0",)]
+        else:
+            assert conn.execute("SELECT count(*) FROM exchange_summary").fetchone() == (len(before),)
+
+
+# Frozen legacy DDL from parent945e126; do not derive from the upgraded initializer.
+_LEGACY_EXCHANGE_SCHEMA = """
+                CREATE TABLE IF NOT EXISTS sealed_transfer_exchange_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    schema_version TEXT NOT NULL,
+                    set_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'PREPARED','COMMAND_READY','RETRY_WAIT','ACKED','OPERATOR_REVIEW'
+                    )),
+                    seal_verification_status TEXT NOT NULL DEFAULT 'PENDING'
+                        CHECK(seal_verification_status IN ('PENDING','VERIFIED','OPERATOR_REVIEW')),
+                    local_apply_status TEXT NOT NULL DEFAULT 'PENDING'
+                        CHECK(local_apply_status IN ('PENDING','APPLIED','OPERATOR_REVIEW')),
+                    target_bundle_id TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    authority_scope_id TEXT NOT NULL,
+                    operator TEXT NOT NULL,
+                    old_seal_qr_payload TEXT NOT NULL,
+                    old_seal_fields_json TEXT NOT NULL,
+                    old_barcodes_json TEXT NOT NULL,
+                    new_barcodes_json TEXT NOT NULL,
+                    pair_count INTEGER NOT NULL CHECK(pair_count BETWEEN 1 AND 2),
+                    intent_hash TEXT NOT NULL UNIQUE,
+                    command_id TEXT UNIQUE,
+                    command_json TEXT,
+                    command_hash TEXT,
+                    receipt_json TEXT,
+                    new_seal_qr_payload TEXT,
+                    seal_verified_at TEXT,
+                    local_apply_receipt_json TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK((command_json IS NULL) = (command_id IS NULL)),
+                    CHECK((command_json IS NULL) = (command_hash IS NULL))
+                );
+                CREATE INDEX IF NOT EXISTS ix_sealed_transfer_exchange_pending
+                    ON sealed_transfer_exchange_intents(status,seal_verification_status,
+                                                        local_apply_status,created_at);
+                CREATE INDEX IF NOT EXISTS ix_sealed_transfer_exchange_set
+                    ON sealed_transfer_exchange_intents(set_id,created_at);
+                CREATE TRIGGER IF NOT EXISTS trg_sealed_transfer_exchange_command_immutable
+                BEFORE UPDATE OF command_id,command_json,command_hash
+                ON sealed_transfer_exchange_intents
+                WHEN OLD.command_json IS NOT NULL AND (
+                    NEW.command_id <> OLD.command_id OR
+                    NEW.command_json <> OLD.command_json OR
+                    NEW.command_hash <> OLD.command_hash
+                )
+                BEGIN SELECT RAISE(ABORT, 'sealed transfer exchange command is immutable'); END;
+                """

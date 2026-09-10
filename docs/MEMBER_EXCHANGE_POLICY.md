@@ -1,8 +1,20 @@
 # 포장 제품 교체 정책
 
-포장 프로그램은 중앙에서 봉인된 `TRANSFER` 현품표를 읽은 뒤, 아직 `CREATE_PACKAGE`가
-커밋되지 않은 현재 세트에서만 제품 1~2개 교체를 허용한다. 작업자는 **제품 교체(F4)** 에서
-교체 대상과 새 양품을 차례로 스캔한다.
+포장 프로그램은 원본 물리 PHS2를 한 번 읽어 전체 단일 `TRANSFER` 멤버십을 확인한 뒤,
+아직 `CREATE_PACKAGE`가 커밋되지 않은 현재 세트에서 **제품 교체(F4)** 를 허용한다.
+작업자는 수량을 먼저 정하지 않고 교체 대상과 새 양품을 차례로 스캔해 목록에 추가한다.
+실제 대상 멤버 수 이내에서 목록을 확인·수정·삭제하고, 미완성 입력은 취소할 수 있다.
+목록을 완성해도 자동 제출하지 않으며 **교체 적용** 한 번으로 전체 쌍을 원자 제출한다.
+비어 있거나 미완성인 목록, 중복·양쪽 교차 barcode와 대상 수 초과는 제출할 수 없다.
+
+기존 `sealed_transfer_member_replacement_v1`와 `max_pairs: 2`는 그대로 유지한다.
+3쌍 이상은 `capability_ids`의 `sealed_transfer_member_replacement_target_members_v1`과
+동일 이름의 object에서 `enabled: true`,
+`base_capability: sealed_transfer_member_replacement_v1`,
+`pair_limit_basis: TARGET_MEMBER_COUNT`, 정수 `min_pairs: 1`을 모두 확인해야 한다.
+이 확인 실패는 durable intent 생성 전에 거부하므로 작업자가 목록을 고칠 수 있다.
+접수 후 pending·오류는 전체 목록을 잠근 상태로 같은 저장 intent/명령을 복구한다.
+`prepare` 성공 직후 첫 `attempt.load` 실패도 새 제출을 허용하지 않는다.
 
 중앙 명령 `REPLACE_SEALED_TRANSFER_MEMBERS`는 다음을 한 트랜잭션으로 수행한다.
 
@@ -23,10 +35,12 @@ receipt의 unit↔barcode 매핑, source 잔여품, damage membership, 모든 ve
 정확히 일치해야만 ACK로 인정한다. ACK 후 프로그램은 새 QR을 화면에 표시하며, 작업자가
 그 새 QR을 다시 스캔하기 전에는 다음 제품 스캔·현재 세트 취소를 막는다.
 정상 프로그램 종료는 durable journal을 보존하며, 재시작 후 미완료 확인·적용을 복구한다.
-재스캔이 끝나면 현품표 QR과 이미 읽은 QA 표본 중 교체 대상만 한꺼번에 바꾼다.
+재스캔이 끝나면 active 전자 seal과 현재 멤버십을 함께 반영하고 source 확인을 갱신한다.
+원본 물리 PHS2는 그대로 보존하며, 레거시 QA 표본이 있으면 교체 대상만 함께 바꾼다.
 
 중앙 ACK와 로컬 상태 저장 사이에 프로그램이 중단돼도 SQLite intent/receipt에서 복구한다.
-기존 QR은 active seal 검증에서 즉시 거부되며 새 QR만 `CREATE_PACKAGE`에 사용할 수 있다.
+이전 전자 seal은 active seal 검증에서 거부되며 `CREATE_PACKAGE`는 새 seal에 결속한다.
+원본 물리 PHS2를 다시 인쇄하거나 전체 제품을 재스캔하는 절차를 추가하지 않는다.
 
 다음 경우는 계속 fail-closed다.
 
@@ -34,7 +48,8 @@ receipt의 unit↔barcode 매핑, source 잔여품, damage membership, 모든 ve
 - 이미 PACKAGE가 생성됐거나 TRANSFER가 소비된 경우
 - 현재 QR에 `SID/SREV/STK` 중앙 seal 증거가 없는 경우
 - 새 양품이 다품목 PHS에 들어 있어 `REPLACEMENT_SOURCE_NOT_SINGLETON`인 경우
-- 3개 이상 교체, 권한·원장·품목·UOM 또는 bundle 내부 accounting binding 불일치,
+- 실제 대상 수 초과 또는 3쌍 이상에 필요한 추가 capability 부재
+- 권한·원장·품목·UOM 또는 bundle 내부 accounting binding 불일치,
   stale version 또는 불완전 receipt
 
 정확한 구버전 IIN equality 오류로 command 생성 전에 멈춘 review는
@@ -44,3 +59,9 @@ fresh source/seal 검증 후 command를 먼저 durable bind한다. 다른 review
 정확한 precommit PHS instruction 거부만 같은 계약의 strict receipt 부재·저장 command/hash
 무결성·fresh command 완전 일치 뒤 같은 key로 복구할 수 있다. 반복 terminal 거부는
 별도 review reason으로 멈추며 상태 reset·command 재bind·새 intent는 허용하지 않는다.
+
+기존 SQLite 저장소는 정상 initializer의 한 transaction으로 오래된 2쌍 CHECK만
+양수 조건으로 옮긴다. ordered rowid와 모든 row 값/JSON bytes, 기존 index/trigger SQL을
+보존하고 실패는 rollback하며 재실행은 no-op이다. 외부 view/FK가 있으면 원본을
+보존한 채 거부한다. live DB 수동 migration·reset을 수행하지 않는다.
+[현재 소스 검증과 남은 실제 수용](spec/operations.md#f4-editable-list)을 구분한다.

@@ -232,9 +232,12 @@ from terminal_operation_lease import (
     physical_qr_sha256 as operation_lease_physical_qr_sha256,
 )
 from sealed_transfer_exchange import (
+    SealedTransferExchangeAdmissionError,
     SealedTransferExchangeCoordinator,
+    SealedTransferExchangeDraft,
     SealedTransferExchangeStore,
     normalize_barcode as normalize_exchange_barcode,
+    validate_exchange_pairs,
 )
 from phs_label_workflow import (
     PHSLabelExchangeCoordinator,
@@ -2097,10 +2100,9 @@ def _label_match_apply_sealed_exchange_state(
         or new_fields.get("STK") == old_fields.get("STK")
     ):
         raise PackageLogisticsError("server reseal QR lineage/revision is invalid")
-    old_values = tuple(normalize_exchange_barcode(value) for value in old_barcodes)
-    new_values = tuple(normalize_exchange_barcode(value) for value in new_barcodes)
-    if not 1 <= len(old_values) <= 2 or len(old_values) != len(new_values):
-        raise PackageLogisticsError("local replacement pair count is invalid")
+    old_values, new_values = validate_exchange_pairs(
+        old_barcodes, new_barcodes, old_fields["QT"]
+    )
     replacement_by_barcode = dict(zip(old_values, new_values, strict=True))
     if not keeps_physical_phs2:
         raw[0] = new_qr
@@ -5007,7 +5009,7 @@ class Label_Match(tk.Tk):
 
     def _operator_workflow_hint_text(self, source=None):
         if self._standard_phs2_workflow_expected(source):
-            return "PHS2 1회 스캔 → 필요 시 F4로 1~2개 원자 교체 → 랩핑 후 F3 포장 완료"
+            return "PHS2 1회 스캔 → 필요 시 F4 교체 목록 확인·일괄 적용 → 랩핑 후 F3 포장 완료"
         return "레거시 전용: QA 5단계와 F4 전체 재스캔 절차를 사용합니다."
 
     def _workflow_total_scan_count(self):
@@ -11752,201 +11754,251 @@ class Label_Match(tk.Tk):
                     parent=self,
                 )
             return False
-        quantity = 1 if self.run_tests else simpledialog.askinteger(
-            "제품 교체",
-            "교체할 제품 수량을 입력하세요. (1~2)",
-            parent=self,
-            minvalue=1,
-            maxvalue=2,
-        )
-        if not quantity:
-            return False
         if self.run_tests:
             return True
+        snapshot = self.current_set_info.get("package_source_snapshot") or {}
+        members = (snapshot.get("work_group_source") or {}).get("members") or ()
+        try:
+            draft = SealedTransferExchangeDraft(
+                (member["normalized_barcode"] for member in members),
+                target_member_count=sealed.get("QT"),
+            )
+        except (PackageLogisticsError, KeyError, TypeError):
+            messagebox.showerror(
+                "제품 교체 불가", "교체 대상의 전체 구성을 확인할 수 없습니다.", parent=self
+            )
+            return False
+        captured_set_id = str(self.current_set_info.get("id") or "")
+        captured_raw = tuple(raw)
         popup = tk.Toplevel(self)
-        popup.title("sealed transfer 제품 교체")
+        popup.title("제품 교체")
+        popup.geometry("760x500")
         popup.transient(self)
         popup.grab_set()
-        popup.geometry("680x420")
-        frame = ttk.Frame(popup, padding=20)
+        frame = ttk.Frame(popup, padding=16)
         frame.pack(fill="both", expand=True)
-        title_var = tk.StringVar(value=f"교체 대상 제품 1/{quantity} 스캔")
-        ttk.Label(frame, textvariable=title_var, style="Title.TLabel").pack(anchor="w")
+        title_var = tk.StringVar(value="교체 대상 제품 스캔")
+        ttk.Label(frame, textvariable=title_var, font=(self.default_font_name, 16, "bold")).pack(anchor="w")
         ttk.Label(
-            frame,
-            text="교체 대상 → 새 양품 순서로 스캔합니다. 중앙에서 1~2개를 한 트랜잭션으로 처리합니다.",
-            wraplength=620,
-        ).pack(anchor="w", pady=(8, 18))
-        rows_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=rows_var, justify="left").pack(
-            fill="x", pady=(0, 12)
-        )
+            frame, text="교체 대상 → 새 양품을 추가한 뒤 목록을 확인하고 교체 적용을 누르세요."
+        ).pack(anchor="w", pady=(8, 6))
+        count_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=count_var).pack(anchor="w")
         scan_entry = ttk.Entry(frame, font=(self.default_font_name, 16))
-        scan_entry.pack(fill="x")
+        scan_entry.pack(fill="x", pady=(8, 6))
+        rows_frame = ttk.Frame(frame)
+        rows_frame.pack(fill="both", expand=True)
+        rows = ttk.Treeview(rows_frame, columns=("old", "new"), show="headings", selectmode="browse", height=8)
+        rows.heading("old", text="교체 대상")
+        rows.heading("new", text="새 양품")
+        for column in ("old", "new"):
+            rows.column(column, width=280, minwidth=160, stretch=True)
+        scrollbar = ttk.Scrollbar(rows_frame, orient="vertical", command=rows.yview)
+        rows.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        rows.pack(side="left", fill="both", expand=True)
         status_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=status_var).pack(anchor="w", pady=(8, 0))
-        old_values = []
-        new_values = []
-        stage = {"value": "old"}
+        ttk.Label(frame, textvariable=status_var, wraplength=700).pack(anchor="w", pady=(8, 0))
+        state = {"locked": False, "dispatching": False}
+        mutable_controls = []
+
+        def lock_draft(locked):
+            state["locked"] = locked
+            for widget in mutable_controls:
+                widget.configure(state="disabled" if locked else "normal")
 
         def close_popup():
+            if state["dispatching"]:
+                status_var.set("중앙 처리가 끝난 뒤 창을 닫을 수 있습니다.")
+                return
             try:
                 popup.grab_release()
-            except TclError:
-                pass
-            try:
                 popup.destroy()
             except TclError:
                 pass
 
         def render_rows():
-            lines = []
-            for index in range(quantity):
-                old = old_values[index] if index < len(old_values) else "-"
-                new = new_values[index] if index < len(new_values) else "-"
-                lines.append(f"{index + 1}. 교체 대상: {old}  →  새 양품: {new}")
-            rows_var.set("\n".join(lines))
+            children = rows.get_children()
+            if children:
+                rows.delete(*children)
+            for index, pair in enumerate(draft.pairs):
+                rows.insert("", "end", iid=str(index), values=pair)
+            count_var.set(f"교체 목록 {len(draft.pairs)}건 / 대상 제품 {draft.target_member_count}개")
+            prefix = f"{draft.edit_index + 1}번 수정 · " if draft.edit_index is not None else ""
+            title_var.set(prefix + ("새 양품 스캔" if draft.pending_old else "교체 대상 제품 스캔"))
+            if draft.pending_old:
+                status_var.set(f"입력 중인 교체 대상: {draft.pending_old}")
 
-        def poll_result(result_queue):
-            try:
-                result = result_queue.get_nowait()
-            except queue.Empty:
-                popup.after(100, poll_result, result_queue)
+        def selected_index():
+            selection = rows.selection()
+            return int(selection[0]) if selection else None
+
+        def edit_selected():
+            if state["locked"]:
                 return
-            if isinstance(result, Exception):
-                print(f"제품 교체 준비 기술 진단: {result}")
-                status_var.set(
-                    "교체를 준비하지 못했습니다. 다시 시도하고 계속 실패하면 "
-                    "관리자에게 확인을 요청하세요."
-                )
-                scan_entry.configure(state="normal")
+            if draft.pending_old or draft.edit_index is not None or scan_entry.get().strip():
+                status_var.set("입력 중인 내용을 완료하거나 입력 취소를 누르세요.")
                 return
-            if result.status == "ACKED":
-                self.data_manager.log_event(
-                    self.Events.SEALED_TRANSFER_EXCHANGE_ACKED,
-                    {
-                        "set_id": result.set_id,
-                        "intent_id": result.intent_id,
-                        "receipt_id": result.receipt_id,
-                        "target_bundle_id": result.target_bundle_id,
-                        "damage_bundle_id": result.damage_bundle_id,
-                        "old_barcodes": list(result.old_barcodes),
-                        "new_barcodes": list(result.new_barcodes),
-                        "new_seal_qr_payload": result.new_seal_qr_payload,
-                    },
-                )
-                popup.grab_release()
-                popup.destroy()
-                self._prompt_new_seal_verification(result)
+            index = selected_index()
+            if index is not None:
+                scan_entry.insert(0, draft.begin_edit(index))
+                scan_entry.selection_range(0, tk.END)
+                render_rows()
+                scan_entry.focus_set()
+
+        def remove_selected():
+            if state["locked"]:
                 return
-            if result.retryable:
-                status_var.set("중앙 결과 확인 대기")
-            else:
-                print(
-                    "제품 교체 차단 기술 진단: "
-                    f"error_code={result.error_code} error_message={result.error_message}"
-                )
-                status_var.set(
-                    "교체를 완료하지 못했습니다. 스캔 내용을 확인하고 다시 시도하세요. "
-                    "계속 실패하면 관리자에게 확인을 요청하세요."
-                )
-            if not result.retryable:
-                scan_entry.configure(state="normal")
+            if draft.pending_old or draft.edit_index is not None:
+                status_var.set("입력 중인 교체 쌍을 완료하거나 입력 취소를 누르세요.")
+                return
+            index = selected_index()
+            if index is not None:
+                draft.remove(index)
+                status_var.set("")
+                render_rows()
 
-        def submit_to_server():
-            scan_entry.configure(state="disabled")
-            title_var.set("중앙 원자 교체 및 재봉인 처리 중")
-            status_var.set("창을 닫지 마세요.")
-            popup.protocol(
-                "WM_DELETE_WINDOW",
-                lambda: status_var.set(
-                    "중앙 처리가 끝난 뒤 창을 닫을 수 있습니다."
-                ),
-            )
-            old_qr = str(
-                sealed.get("_seal_qr_payload")
-                or _label_match_decode_possible_base64_label(raw[0])
-            )
-            captured_set_id = str(
-                self.current_set_info.get("id") or ""
-            )
-            captured_sealed = copy.deepcopy(sealed)
-            captured_old_values = tuple(old_values)
-            captured_new_values = tuple(new_values)
-            captured_operator = persistent_operator_name(self.worker_name)
-
-            def work():
-                prepared = self.sealed_transfer_exchange_coordinator.prepare(
-                    set_id=captured_set_id,
-                    old_seal_qr_payload=old_qr,
-                    old_seal_fields=captured_sealed,
-                    operator=captured_operator,
-                    old_barcodes=captured_old_values,
-                    new_barcodes=captured_new_values,
-                )
-                return self.sealed_transfer_exchange_coordinator.attempt(
-                    prepared.intent_id
-                )
-
-            def apply_value(value):
-                try:
-                    popup.protocol("WM_DELETE_WINDOW", close_popup)
-                except TclError:
-                    return
-                result_queue = queue.Queue(maxsize=1)
-                result_queue.put_nowait(value)
-                poll_result(result_queue)
-
-            admission = self._submit_ui_lane_task(
-                name="f4-atomic-replacement",
-                busy_text="제품 교체 · 중앙 처리 중",
-                work=work,
-                finish=apply_value,
-                fail=apply_value,
-            )
-            if admission is None or not admission.accepted:
-                popup.protocol("WM_DELETE_WINDOW", close_popup)
-                scan_entry.configure(state="normal")
+        def cancel_input():
+            if state["locked"]:
+                return
+            draft.cancel_pending()
+            scan_entry.delete(0, tk.END)
+            status_var.set("")
+            render_rows()
+            scan_entry.focus_set()
 
         def accept_scan(event=None):
+            if state["locked"]:
+                return "break"
             value = normalize_exchange_barcode(scan_entry.get())
-            scan_entry.delete(0, tk.END)
             if not value:
                 return "break"
-            if stage["value"] == "old":
-                if value in old_values or value in new_values:
-                    status_var.set("중복된 제품은 교체할 수 없습니다.")
-                    return "break"
-                old_values.append(value)
-                stage["value"] = "new"
-                title_var.set(f"새 양품 {len(old_values)}/{quantity} 스캔")
-            else:
-                if value in old_values or value in new_values:
-                    status_var.set("교체 대상과 새 양품은 서로 달라야 합니다.")
-                    return "break"
-                current_samples = {
-                    normalize_exchange_barcode(sample)
-                    for sample in raw[1:4]
-                }
-                if value in current_samples:
-                    status_var.set("이미 현재 QA 표본으로 스캔된 제품은 새 양품으로 사용할 수 없습니다.")
-                    return "break"
-                new_values.append(value)
-                stage["value"] = "old"
-                if len(new_values) == quantity:
-                    render_rows()
-                    submit_to_server()
-                    return "break"
-                title_var.set(f"교체 대상 제품 {len(old_values) + 1}/{quantity} 스캔")
+            try:
+                if draft.pending_old and value in {
+                    normalize_exchange_barcode(sample) for sample in raw[1:4]
+                }:
+                    raise PackageLogisticsError("현재 QA 표본은 새 양품으로 사용할 수 없습니다.")
+                draft.accept(value)
+            except PackageLogisticsError as error:
+                status_var.set(str(error))
+                return "break"
+            scan_entry.delete(0, tk.END)
             status_var.set("")
             render_rows()
             return "break"
 
+        def submit_to_server():
+            if state["locked"]:
+                return
+            if scan_entry.get().strip():
+                status_var.set("입력한 바코드를 Enter로 확인하거나 입력 취소를 누르세요.")
+                return
+            try:
+                pairs = draft.snapshot()
+            except PackageLogisticsError as error:
+                status_var.set(str(error))
+                return
+            if (
+                str(self.current_set_info.get("id") or "") != captured_set_id
+                or tuple(self.current_set_info.get("raw") or ()) != captured_raw
+            ):
+                status_var.set("현재 작업이 변경되었습니다. 창을 닫고 작업을 확인하세요.")
+                return
+            old_qr = str(sealed.get("_seal_qr_payload") or _label_match_decode_possible_base64_label(raw[0]))
+            captured_sealed = copy.deepcopy(sealed)
+            captured_old = tuple(old for old, _new in pairs)
+            captured_new = tuple(new for _old, new in pairs)
+            captured_operator = persistent_operator_name(self.worker_name)
+            lock_draft(True)
+            state["dispatching"] = True
+            close_button.configure(state="disabled")
+            title_var.set("제품 교체 처리 중")
+            status_var.set("목록 전체를 한 번에 적용합니다.")
+
+            def work():
+                try:
+                    prepared = self.sealed_transfer_exchange_coordinator.prepare(
+                        set_id=captured_set_id, old_seal_qr_payload=old_qr,
+                        old_seal_fields=captured_sealed, operator=captured_operator,
+                        old_barcodes=captured_old, new_barcodes=captured_new,
+                    )
+                except SealedTransferExchangeAdmissionError as error:
+                    return "admission_rejected", error
+                except Exception as error:
+                    return "preserve", error
+                try:
+                    return "result", self.sealed_transfer_exchange_coordinator.attempt(prepared.intent_id)
+                except Exception as error:
+                    # prepare may already have committed. Its first load can
+                    # fail; never reopen a submitted list on a generic error.
+                    return "preserve", error
+
+            def apply_value(value):
+                state["dispatching"] = False
+                close_button.configure(state="normal")
+                if isinstance(value, Failure):
+                    kind, result = "preserve", value
+                else:
+                    kind, result = value
+                if kind == "admission_rejected":
+                    lock_draft(False)
+                    render_rows()
+                    status_var.set("교체 준비를 확인하지 못했습니다. 목록을 유지했으니 수량과 중앙 연결을 확인하세요.")
+                    return
+                if kind == "preserve":
+                    status_var.set("교체 결과 확인이 필요합니다. 기존 목록을 유지하고 관리자에게 확인을 요청하세요.")
+                    return
+                if result.status == "ACKED":
+                    self.data_manager.log_event(
+                        self.Events.SEALED_TRANSFER_EXCHANGE_ACKED,
+                        {
+                            "set_id": result.set_id, "intent_id": result.intent_id,
+                            "receipt_id": result.receipt_id,
+                            "target_bundle_id": result.target_bundle_id,
+                            "damage_bundle_id": result.damage_bundle_id,
+                            "old_barcodes": list(result.old_barcodes),
+                            "new_barcodes": list(result.new_barcodes),
+                            "new_seal_qr_payload": result.new_seal_qr_payload,
+                        },
+                    )
+                    close_popup()
+                    self._prompt_new_seal_verification(result)
+                    return
+                status_var.set(
+                    "중앙 결과 확인 대기. 기존 교체 목록을 유지합니다."
+                    if result.retryable
+                    else "교체 결과 확인이 필요합니다. 목록을 유지하고 관리자에게 확인을 요청하세요."
+                )
+
+            admission = self._submit_ui_lane_task(
+                name="f4-atomic-replacement", busy_text="제품 교체 · 중앙 처리 중",
+                work=work, finish=apply_value, fail=apply_value,
+            )
+            if admission is None or not admission.accepted:
+                state["dispatching"] = False
+                close_button.configure(state="normal")
+                lock_draft(False)
+                render_rows()
+                status_var.set("다른 작업을 처리 중입니다. 목록을 유지했으니 잠시 후 다시 적용하세요.")
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(10, 0))
+        for text, command in (
+            ("선택 수정", edit_selected), ("선택 삭제", remove_selected),
+            ("입력 취소", cancel_input), ("교체 적용", submit_to_server),
+        ):
+            button = ttk.Button(buttons, text=text, command=command)
+            button.pack(side="left", padx=(0, 8))
+            mutable_controls.append(button)
+        mutable_controls.append(scan_entry)
+        close_button = ttk.Button(buttons, text="닫기", command=close_popup)
+        close_button.pack(side="right")
         render_rows()
         scan_entry.bind("<Return>", accept_scan)
         popup.protocol("WM_DELETE_WINDOW", close_popup)
         scan_entry.focus_set()
         return True
+
 
     def _phs_label_exchange_enabled_for_current(self):
         coordinator = self.__dict__.get(

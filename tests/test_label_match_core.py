@@ -426,7 +426,7 @@ def test_standard_operator_copy_describes_one_phs2_and_atomic_replacement():
     assert app._standard_phs2_workflow_expected() is True
     hint = app._operator_workflow_hint_text()
     assert "PHS2 1회 스캔" in hint
-    assert "F4로 1~2개 원자 교체" in hint
+    assert "F4 교체 목록 확인·일괄 적용" in hint
     assert "F3 포장 완료" in hint
     assert "전체 재스캔" not in hint
     presentation_source = app._workflow_view_source()

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Iterable, Mapping
 import unicodedata
@@ -37,7 +38,8 @@ COMMAND_TYPE = "REPLACE_SEALED_TRANSFER_MEMBERS"
 CAPABILITY_ID = "sealed_transfer_member_replacement_v1"
 RECEIPT_CONTRACT_VERSION = "sealed-transfer-member-replacement-v1"
 SEAL_QR_CONTRACT_VERSION = "transfer-seal-qr-v1"
-MAX_PAIRS = 2
+LEGACY_MAX_PAIRS = 2
+TARGET_MEMBERS_CAPABILITY_ID = "sealed_transfer_member_replacement_target_members_v1"
 PENDING_STATUSES = (
     "PREPARED",
     "COMMAND_READY",
@@ -51,6 +53,10 @@ class SealedTransferExchangeError(PackageLogisticsError):
         self.code = str(code or "SEALED_TRANSFER_EXCHANGE_ERROR")
         self.message = str(message or "sealed transfer exchange failed")
         super().__init__(f"{self.code}: {self.message}")
+
+
+class SealedTransferExchangeAdmissionError(PackageLogisticsError):
+    """Rejected before creating any durable exchange intent."""
 
 
 def _now() -> str:
@@ -73,6 +79,89 @@ def _hash(value: Any) -> str:
 
 def normalize_barcode(value: Any) -> str:
     return unicodedata.normalize("NFKC", str(value or "")).strip().upper()
+
+
+def validate_exchange_pairs(old_barcodes, new_barcodes, target_member_count):
+    count = _positive_int(target_member_count, "target_member_count")
+    old = tuple(normalize_barcode(value) for value in old_barcodes)
+    new = tuple(normalize_barcode(value) for value in new_barcodes)
+    if (
+        not 1 <= len(old) <= count or len(old) != len(new)
+        or not all(old) or not all(new)
+        or len(set(old)) != len(old) or len(set(new)) != len(new)
+        or set(old) & set(new)
+    ):
+        raise PackageLogisticsError(
+            "replacement requires unique complete pairs within the target membership"
+        )
+    return old, new
+
+
+class SealedTransferExchangeDraft:
+    """An unsubmitted operator list; no storage or network side effects."""
+
+    def __init__(self, target_barcodes=(), *, target_member_count=None):
+        self.target_barcodes = canonical_barcodes(target_barcodes)
+        self.target_member_count = _positive_int(
+            len(self.target_barcodes) if target_member_count is None else target_member_count,
+            "target_member_count",
+        )
+        if self.target_barcodes and len(self.target_barcodes) != self.target_member_count:
+            raise PackageLogisticsError("exact target barcode count differs")
+        self.pairs = []
+        self.pending_old = ""
+        self.edit_index = None
+
+    def accept(self, value):
+        value = normalize_barcode(value)
+        if not value:
+            raise PackageLogisticsError("제품 바코드를 입력하세요.")
+        other_pairs = [pair for i, pair in enumerate(self.pairs) if i != self.edit_index]
+        used = {barcode for pair in other_pairs for barcode in pair}
+        if value in used or value == self.pending_old:
+            raise PackageLogisticsError("중복된 제품은 교체할 수 없습니다.")
+        if not self.pending_old:
+            if self.target_barcodes and value not in self.target_barcodes:
+                raise PackageLogisticsError("현재 현품표에 포함된 교체 대상을 스캔하세요.")
+            if self.edit_index is None and len(self.pairs) >= self.target_member_count:
+                raise PackageLogisticsError("현재 현품표의 모든 교체 대상이 목록에 있습니다.")
+            self.pending_old = value
+            return False
+        if value in self.target_barcodes:
+            raise PackageLogisticsError("현재 묶음에 포함된 제품은 새 양품으로 사용할 수 없습니다.")
+        pair = (self.pending_old, value)
+        if self.edit_index is None:
+            self.pairs.append(pair)
+        else:
+            self.pairs[self.edit_index] = pair
+        self.cancel_pending()
+        return True
+
+    def begin_edit(self, index):
+        old, _new = self.pairs[index]
+        self.cancel_pending()
+        self.edit_index = index
+        return old
+
+    def remove(self, index):
+        del self.pairs[index]
+        self.cancel_pending()
+
+    def cancel_pending(self):
+        self.pending_old = ""
+        self.edit_index = None
+
+    def snapshot(self):
+        if self.pending_old or self.edit_index is not None:
+            raise PackageLogisticsError("입력 중인 교체 쌍을 완성하거나 입력 취소를 누르세요.")
+        if not self.pairs:
+            raise PackageLogisticsError("교체할 제품을 목록에 추가하세요.")
+        validate_exchange_pairs(
+            (old for old, _new in self.pairs),
+            (new for _old, new in self.pairs),
+            self.target_member_count,
+        )
+        return tuple(self.pairs)
 
 
 def _qr_fields(payload: str) -> dict[str, str]:
@@ -268,6 +357,60 @@ class SealedTransferExchangeStore:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
+            table = "sealed_transfer_exchange_intents"
+            legacy_check = r"pair_count\s+BETWEEN\s+1\s+AND\s+2"
+            schema = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if schema and re.search(legacy_check, schema[0], re.IGNORECASE):
+                # Stay in this existing writer boundary. Preserve opaque rows and
+                # rowids using SQL copy, with one rollback-safe schema transaction.
+                with conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    schema = conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                    ).fetchone()[0]
+                    if re.search(legacy_check, schema, re.IGNORECASE):
+                        views = conn.execute(
+                            "SELECT sql FROM sqlite_master WHERE type='view'"
+                        ).fetchall()
+                        tables = conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        ).fetchall()
+                        if any(table in str(row[0]).lower() for row in views) or any(
+                            fk[2].lower() == table
+                            for row in tables
+                            for fk in conn.execute(
+                                'PRAGMA foreign_key_list("' + row[0].replace('"', '""') + '")'
+                            )
+                        ):
+                            raise PackageLogisticsError(
+                                "exchange schema has external dependencies; existing data preserved"
+                            )
+                        dependencies = conn.execute(
+                            "SELECT sql FROM sqlite_master WHERE tbl_name=? "
+                            "AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name",
+                            (table,),
+                        ).fetchall()
+                        temporary = table + "__pair_count_migration"
+                        columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+                        names = ",".join('"'+name.replace('"', '""')+'"' for name in columns)
+                        definition = re.sub(legacy_check, "pair_count >= 1", schema, flags=re.IGNORECASE)
+                        conn.execute(f'CREATE TABLE "{temporary}" ' + definition[definition.index("("):])
+                        conn.execute(
+                            f'INSERT INTO "{temporary}" (rowid,{names}) '
+                            f'SELECT rowid,{names} FROM "{table}" ORDER BY rowid'
+                        )
+                        for left, right in ((table, temporary), (temporary, table)):
+                            if conn.execute(
+                                f'SELECT rowid,{names} FROM "{left}" EXCEPT '
+                                f'SELECT rowid,{names} FROM "{right}" LIMIT 1'
+                            ).fetchone() is not None:
+                                raise PackageLogisticsError("exchange migration changed a preserved row")
+                        conn.execute(f'DROP TABLE "{table}"')
+                        conn.execute(f'ALTER TABLE "{temporary}" RENAME TO "{table}"')
+                        for dependency in dependencies:
+                            conn.execute(dependency[0])
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sealed_transfer_exchange_intents (
@@ -289,7 +432,7 @@ class SealedTransferExchangeStore:
                     old_seal_fields_json TEXT NOT NULL,
                     old_barcodes_json TEXT NOT NULL,
                     new_barcodes_json TEXT NOT NULL,
-                    pair_count INTEGER NOT NULL CHECK(pair_count BETWEEN 1 AND 2),
+                    pair_count INTEGER NOT NULL CHECK(pair_count >= 1),
                     intent_hash TEXT NOT NULL UNIQUE,
                     command_id TEXT UNIQUE,
                     command_json TEXT,
@@ -336,18 +479,9 @@ class SealedTransferExchangeStore:
         old_barcodes: Iterable[str],
         new_barcodes: Iterable[str],
     ) -> sqlite3.Row:
-        old_values = tuple(normalize_barcode(value) for value in old_barcodes)
-        new_values = tuple(normalize_barcode(value) for value in new_barcodes)
-        if (
-            not 1 <= len(old_values) <= MAX_PAIRS
-            or len(old_values) != len(new_values)
-            or len(set(old_values)) != len(old_values)
-            or len(set(new_values)) != len(new_values)
-            or set(old_values) & set(new_values)
-        ):
-            raise PackageLogisticsError(
-                "sealed transfer exchange requires one or two unique barcode pairs"
-            )
+        old_values, new_values = validate_exchange_pairs(
+            old_barcodes, new_barcodes, old_seal_fields.get("QT")
+        )
         material = {
             "set_id": _identifier(set_id, "set_id"),
             "target_bundle_id": _identifier(target_bundle_id, "target_bundle_id"),
@@ -646,6 +780,16 @@ class SealedTransferExchangeCoordinator:
         old_barcodes: Iterable[str],
         new_barcodes: Iterable[str],
     ) -> SealedTransferExchangeAttempt:
+        # A rejected new batch remains editable because no intent exists yet.
+        # Never turn an exception after store.prepare into this admission type.
+        try:
+            old_barcodes, new_barcodes = validate_exchange_pairs(
+                old_barcodes, new_barcodes, old_seal_fields.get("QT")
+            )
+            if len(old_barcodes) > LEGACY_MAX_PAIRS:
+                self._require_capability(pair_count=len(old_barcodes))
+        except Exception as exc:
+            raise SealedTransferExchangeAdmissionError(str(exc)) from exc
         row = self.store.prepare(
             set_id=set_id,
             target_bundle_id=str(old_seal_fields.get("BND") or ""),
@@ -659,7 +803,7 @@ class SealedTransferExchangeCoordinator:
         )
         return self._attempt(row)
 
-    def _require_capability(self) -> None:
+    def _require_capability(self, *, pair_count=1) -> None:
         if self.client is None:
             raise PackageLogisticsError("central logistics client is not configured")
         raw = self.client.get_capabilities()
@@ -682,7 +826,7 @@ class SealedTransferExchangeCoordinator:
             != RECEIPT_CONTRACT_VERSION
             or capability.get("seal_qr_contract_version")
             != SEAL_QR_CONTRACT_VERSION
-            or capability.get("max_pairs") != MAX_PAIRS
+            or capability.get("max_pairs") != LEGACY_MAX_PAIRS
             or capability.get("atomic") is not True
             or capability.get("fail_closed_when_unavailable") is not True
             or capability.get("disabled_server_behavior")
@@ -699,6 +843,20 @@ class SealedTransferExchangeCoordinator:
             raise PackageLogisticsError(
                 "server does not advertise controlled sealed-transfer replacement"
             )
+        if pair_count > LEGACY_MAX_PAIRS:
+            extension = capabilities.get(TARGET_MEMBERS_CAPABILITY_ID)
+            if (
+                TARGET_MEMBERS_CAPABILITY_ID not in ids
+                or not isinstance(extension, Mapping)
+                or extension.get("enabled") is not True
+                or extension.get("base_capability") != CAPABILITY_ID
+                or extension.get("pair_limit_basis") != "TARGET_MEMBER_COUNT"
+                or type(extension.get("min_pairs")) is not int
+                or extension.get("min_pairs") != 1
+            ):
+                raise PackageLogisticsError(
+                    "server does not advertise target-member replacement batches"
+                )
 
     @staticmethod
     def _validate_active_seal(
@@ -834,7 +992,11 @@ class SealedTransferExchangeCoordinator:
         return source
 
     def _build_command(self, row: sqlite3.Row) -> dict[str, Any]:
-        self._require_capability()
+        old_barcodes = tuple(json.loads(row["old_barcodes_json"]))
+        new_barcodes = tuple(json.loads(row["new_barcodes_json"]))
+        if row["pair_count"] != len(old_barcodes):
+            raise PackageLogisticsError("stored replacement pair count differs")
+        self._require_capability(pair_count=len(old_barcodes))
         assert self.client is not None
         old_fields = json.loads(row["old_seal_fields_json"])
         target = _exact_bundle(
@@ -850,8 +1012,7 @@ class SealedTransferExchangeCoordinator:
             old_qr=row["old_seal_qr_payload"],
             old_fields=old_fields,
         )
-        old_barcodes = tuple(json.loads(row["old_barcodes_json"]))
-        new_barcodes = tuple(json.loads(row["new_barcodes_json"]))
+        validate_exchange_pairs(old_barcodes, new_barcodes, len(target["member_ids"]))
         old_units: list[str] = []
         for barcode in old_barcodes:
             target_row = target["by_barcode"].get(normalize_barcode(barcode))
@@ -1452,7 +1613,10 @@ class SealedTransferExchangeCoordinator:
 __all__ = [
     "CAPABILITY_ID",
     "COMMAND_TYPE",
-    "MAX_PAIRS",
+    "LEGACY_MAX_PAIRS",
+    "SealedTransferExchangeAdmissionError",
+    "SealedTransferExchangeDraft",
+    "validate_exchange_pairs",
     "SealedTransferExchangeAttempt",
     "SealedTransferExchangeCoordinator",
     "SealedTransferExchangeStore",

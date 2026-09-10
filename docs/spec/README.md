@@ -71,7 +71,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 | 지원 상태 | 진입점·조건 | 현행 의미·설치본 확인 |
 | --- | --- | --- |
 | 기본 중앙 업무 | `Label_Match.py:main` → onboarding/guard → Tk, [portable/main.py:main](../../portable/main.py)도 같은 앱 진입 | 원본 compact PHS2 1회 → 필요 시 F4 → 랩핑 → F3. 중앙 프로필·멤버십 확인 필요; 설치 형태·활성 설정 미확인 |
-| 조건부 F4 | 전체 단일 TRANSFER를 대표하는 현재 작업, 교체 capability·버전·적합 donor | 1~2쌍 원자 교체 후 새 **전자** 봉인 QR 확인. 부분/복수 transfer work-group은 F3 가능해도 F4 불가 |
+| 조건부 F4 | 전체 단일 TRANSFER를 대표하는 현재 작업, 교체 capability·버전·적합 donor | 대상 멤버 수 이내의 목록을 확인·일괄 적용 후 새 **전자** 봉인 QR 확인. 부분/복수 transfer work-group은 F3 가능해도 F4 불가 |
 | 조건부 F5 | 현품표 교환·reconciliation 대상과 중앙 API, Windows 프린터 | 출력·ACK·활성화 journal을 가진 별도 업무. 일반 F4에 물리 재인쇄를 요구하지 않음 |
 | 호환 | 명시적으로 분류된 과거 입력 및 membership mode | 현품표+제품 표본 3개+최종 라벨, F4 전체 재스캔 분기가 남아 있음. 미분류 중앙 입력의 자동 fallback 아님 |
 | 현재 사용하는 이름 | `legacy_packaging_csv` | producer 전송 dataset 식별자. `legacy`라는 이름 때문에 폐기로 분류하지 않음 |
@@ -83,7 +83,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 1. 시작 시 작업자·품목 캐시·저장 위치와 복구 안내를 확인한다. 복구할 이전 세트가 있으면 그 작업의 identity를 유지한다.
 2. 원본 PHS2를 한 번 제출한다. 서버가 라벨 identity와 현재 제품 멤버십을 확인한다. 표준 업무에 제품 3개·최종 라벨을 추가하지 않는다.
-3. 교체가 필요하면 F4에서 대상→새 양품을 1~2쌍 입력한다. 중앙 교체 ACK 뒤 화면의 새 전자 QR을 스캐너로 다시 확인한다. 원본 물리 PHS2는 유지한다.
+3. 교체가 필요하면 F4에서 대상→새 양품 쌍을 목록에 추가하고 확인·수정·삭제 후 **교체 적용**을 누른다. 중앙 교체 ACK 뒤 화면의 새 전자 QR을 스캐너로 다시 확인한다. 원본 물리 PHS2는 유지한다.
 4. 현재 멤버십과 실물을 대조하고 실제로 랩핑한 뒤 F3 확인을 확정한다. current-state, intent, CSV flush/fsync, 완료 marker·lease 처리가 끝나야 로컬 성공을 표시한다.
 5. 같은 키로 중앙 확정을 재시도하며 다음 준비 작업으로 돌아간다. 로컬 완료 후 단순 전송 대기와, 복구 미완료/중앙 충돌로 작업이 차단된 상태를 구분한다.
 
@@ -156,10 +156,10 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 <a id="lm-05"></a>
 ### LM-05 F4 제품 교체·새 전자 QR 확인
 
-- 시작/입력: PACKAGE 생성 전 전체 단일 TRANSFER 작업에서 F4, 기존 제품→새 GOOD 제품 1~2쌍. 중앙 capability와 현재 seal, 같은 권한·원장·품목·UOM과 bundle 내부 accounting binding, 단품 donor PHS를 대조한다.
+- 시작/입력: PACKAGE 생성 전 전체 단일 TRANSFER 작업에서 F4, 기존 제품→새 GOOD 제품 쌍을 목록에 추가한다. 수량을 먼저 정하지 않으며 실제 대상 멤버 수 이내에서 확인·수정·삭제 후 **교체 적용** 한 번으로 제출한다. 중앙 capability와 현재 seal, 같은 권한·원장·품목·UOM과 bundle 내부 accounting binding, 단품 donor PHS를 대조하며 3쌍 이상은 [추가 capability](contracts.md#c-03)가 필요하다.
 - 쓰기/결과: 중앙은 대상·donor·damage bundle version을 검사해 원자 교체하고 새 seal receipt를 만든다. 앱은 저장된 receipt를 검증한 뒤 새 QR 확인을 요구한다. **원본 물리 PHS2는 유지하고 새 전자 봉인 QR을 화면에서 다시 스캔한다.**
 - 실패/복구: 부분/다중 TRANSFER work-group, 부적합 donor·stale version·불완전 receipt는 차단한다. ACK 유실은 저장 intent/receipt로 복구하고 재확인 전 정상 후속 동작을 제한한다. exact legacy IIN pre-command review는 같은 intent로 fresh validation→durable bind한다. exact precommit PHS instruction rejection의 durable review만 authoritative receipt 부재·원 command/hash 무결성·fresh command 완전 일치 뒤 같은 key로 복구하며, 반복 terminal 거부는 별도 review reason으로 멈춘다. 그 외 durable review는 receipt 조회만 허용한다. 일반 F4는 물리 출력 업무가 아니다.
-- 수용 기준: 1쌍/2쌍 성공 시 제품 수는 보존되고 교체 멤버·seal version이 일치한다. 거부 시 부분 교체가 없고, 새 QR 검증·로컬 저장 중단 후에도 두 번 교체하지 않는다.
+- 수용 기준: 유효한 1쌍/2쌍/3쌍 이상, 전체·일부 대상 교체에서 제품 수와 교체 멤버·seal version이 일치한다. 목록 완성만으로 제출하지 않으며 미완성·중복·대상 초과 입력을 차단한다. durable 접수 전 거부만 목록 편집을 재개하고, 접수 후 pending·오류는 같은 명령과 잠긴 목록을 보존한다. 거부 시 부분 교체가 없고, 새 QR 검증·로컬 저장 중단 후에도 두 번 교체하지 않는다.
 - 근거: [교체 command/attempt](../../sealed_transfer_exchange.py), [QR 확인/gate](../../Label_Match.py), [기존 정책](../MEMBER_EXCHANGE_POLICY.md). [C-03](contracts.md#c-03), [LM-B01](BACKLOG.md#lm-b01), [LM-B05](BACKLOG.md#lm-b05).
 
 <a id="lm-06"></a>

@@ -1,5 +1,16 @@
 # Label_Match 운영·복구·검증
 
+<a id="f4-editable-list"></a>
+## 2026-09-10 · F4 편집 목록·대상 멤버 수 교체
+
+Main의 최종 추가 capability 합의와 원본 C 저장소 구현 GO 뒤, 깨끗한 parent `945e126d7ec76fd517c8011e0ecc8eab4acbb1cb`에서 [사전 구현 기준](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/IMPLEMENTATION-CRITERIA.md)을 고정했다. 기존 5f 설계·baseline, 945 이력표 교정과 모든 과거 실패를 보존한다. 수량 대화상자·자동 제출을 old→new 목록과 명시적 단일 적용으로 바꾸고, 기존 모듈 안의 작은 메모리 초안과 정상 SQLite migration으로 [C-03](contracts.md#c-03)을 구현했다. 상세 변화·커밋·파일 크기는 [RESULT](E:/KMTech/optimization-implementation-20260909/Label_Match/f4-draft-list/RESULT.md)에 결속한다.
+
+**PROVEN — 소스·격리 fake/SQLite:** 기존 기준선 **115 PASS**, 새 요구의 변경 전 **13 FAIL**을 보존했다. 첫 구현 확인은 **11 PASS/2 FAIL**이며 두 실패는 새 테스트 donor fixture의 identity 변경 뒤 membership hash 미갱신이었다. fixture만 바로잡은 두 사례 **2 PASS**와 전체 영향 선택 **130 PASS/9.17s**를 기록했다. 3쌍 전체/부분 대상·기존 base-only 2쌍, 추가 capability 거부 시 intent 0건, 목록 편집·미완성 입력·자동 제출 부재·한 번 제출·prepare 뒤 첫 load 실패의 잠금, 같은 저장 명령/receipt의 ACK 유실·재시작 및 물리 PHS2 보존을 검증했다.
+
+후속 **66 PASS/2 deselected/6.29s**는 기존 비 GUI layout/workbench, writer binding/POST guard 3개와 migration 외부 view/FK 거부 2개다. 정상 migration의 다섯 상태·ordered rowid·opaque JSON·index/trigger 보존·재실행 및 copy 이후 예외 rollback도 앞선 영향 선택에 포함된다. writer identity/guard **44개 동일**, 기존 두 source pin만 `c506e8f8e91a8dadb402dde42848fa7b7ea2e73cf8cf099de7caea00cb8d7a0a`로 갱신했다. TEMP/TMP·pytest DB/output은 E 아래이며 새 테스트 파일·실행 framework는 없다. 시간은 테스트 실행 시간이다.
+
+**UNPROVEN — 실제 수용:** 760×500 새 F4 화면의 실제 가독성/입력, 현재 paired server 후보의 배포·3쌍 이상 실제 원자 교체, 전자 seal 확인·F3/ACK 장애 복구·후속 출고, 최종 Claude F4/native layout 검토와 full-GUI Today before-a7→5f 비교는 남는다. 원 guest는 5f에서 원 PHS2 세트를 교체/F3 없이 정상 종료했고 [PAUSE-RESULT](E:/KMTech/optimization-implementation-20260909/Label_Match/business/ui-fault-pass-20260910-01/PAUSE-RESULT.md)의 identity/데이터 보존을 유지한다. 이 소스 단위에서 guest·서버·relay·grant·live DB를 실행하거나 변경하지 않았다. live 086에 3쌍 이상을 제출하지 않으며 후속 Main 배정에서 exact 후보와 새 실제 증거를 연결한다.
+
 <a id="history-layout-20260910"></a>
 ## 2026-09-10 · 이력표·우측 폭 최소 교정
 
@@ -307,7 +318,7 @@ VM `76a3f7a6-efc0-452c-ab73-f40ccd33594c`, Windows 11 build 26200 / Python 3.12.
 
 | 항목 | 요구 목표 | 코드·계약에서 확인한 값 | 실제 측정 |
 | --- | --- | --- | --- |
-| 입력 간격·처리량·최대 membership | 미정; ERPnext 제한 전용 금지 | 표준 PHS2 1회, F4 1~2쌍은 업무 입력 규칙이며 처리량 SLA가 아님 | 이 작업 NOT TESTED |
+| 입력 간격·처리량·최대 membership | 미정; ERPnext 제한 전용 금지 | 표준 PHS2 1회, F4는 실제 대상 멤버 수 이내의 교체 목록을 한 번에 적용. 처리량 SLA가 아님 | 이 작업 NOT TESTED |
 | 물류 요청 시간 | 운영 응답 목표 미정 | 일반 profile timeout 기본 10초, 허용 0.1~60초; legacy client 기본 8초([profile](../../logistics_runtime_profile.py), [client](../../package_logistics.py)) | 설치값·지연 분포 미확인 |
 | 전송 claim 회수 | 업무 lease 허용 기간과 별도 | outbox stale SENDING 300초, due-time/last-attempt 순서 선택([C-04](contracts.md#c-04)) | 장애 후 회복시간 미측정 |
 | relay/종료 | RTO·허용 대기 미정 | 릴리스 사용자 relay 30초 retry loop; 앱 종료 총 예산 상수 105초/로그 10초([릴리스](../../RELEASE_GATE_CONTRACT.md), [앱 상수](../../Label_Match.py)) | 최대 소요 보장 또는 측정 p95로 해석하지 않음 |

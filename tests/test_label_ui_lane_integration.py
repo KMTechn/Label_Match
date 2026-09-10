@@ -428,6 +428,122 @@ def test_f4_lease_and_pending_exchange_gate_runs_off_tk():
     _close_lane(app, root)
 
 
+@pytest.mark.parametrize("outcome", ["pending", "post_prepare_load_error", "admission_error"])
+def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypatch, tmp_path, outcome):
+    from copy import deepcopy
+    import sqlite3
+    from sealed_transfer_exchange import SealedTransferExchangeCoordinator, SealedTransferExchangeStore
+    from tests.test_label_operator_action_gates import FakeTree
+    from tests.test_sealed_transfer_exchange import BatchClient, _fields
+
+    app, root = _app_with_lane()
+    client = BatchClient(extension=outcome != "admission_error")
+    app.current_set_info = {
+        "id": "batch-set", "raw": ["original-physical-phs2"], "parsed": ["ITEM-001"],
+        "sealed_transfer": {**_fields(client.qr), "_seal_qr_payload": client.qr},
+        "package_source_snapshot": {
+            "full_single_transfer": True,
+            "work_group_source": {"members": [
+                {"unit_id": uid, "normalized_barcode": barcode}
+                for uid, barcode in zip(client.old_ids, client.old_barcodes, strict=True)
+            ]},
+        },
+    }
+    app.default_font_name = "Test Font"
+    app.run_tests = False
+    app.worker_name = "packer"
+    app.package_logistics_client = client
+    popup = Mock()
+    entry = Mock()
+    content = {"text": "", "scan": None, "selection": ()}
+    entry.get.side_effect = lambda: content["text"]
+    entry.delete.side_effect = lambda *_: content.update(text="")
+    entry.insert.side_effect = lambda _index, value: content.update(text=value)
+    entry.bind.side_effect = lambda _key, callback: content.update(scan=callback)
+    tree = FakeTree()
+    tree.pack = tree.column = tree.heading = tree.yview = Mock()
+    tree.selection = lambda: content["selection"]
+    buttons = {}
+
+    def button(*_args, **kwargs):
+        widget = Mock()
+        buttons[kwargs["text"]] = (widget, kwargs["command"])
+        return widget
+
+    monkeypatch.setattr(label_module.simpledialog, "askinteger", lambda *_a, **_k: pytest.fail("upfront quantity dialog"))
+    monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
+    monkeypatch.setattr(label_module.tk, "StringVar", lambda **_: Mock())
+    for name in ("Frame", "Label", "Scrollbar"):
+        monkeypatch.setattr(label_module.ttk, name, lambda *_a, **_k: Mock())
+    monkeypatch.setattr(label_module.ttk, "Entry", lambda *_a, **_k: entry)
+    monkeypatch.setattr(label_module.ttk, "Treeview", lambda *_a, **_k: tree)
+    monkeypatch.setattr(label_module.ttk, "Button", button)
+    captured = []
+    worker_gate = threading.Event()
+    store = SealedTransferExchangeStore(tmp_path / "ui-batch.db")
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+
+    def prepare(**kwargs):
+        assert worker_gate.wait(2)
+        result = coordinator.prepare(**kwargs)
+        captured.append(deepcopy(kwargs))
+        if outcome == "post_prepare_load_error":
+            def failed_load(_intent):
+                raise OSError("first load failed after durable prepare")
+            monkeypatch.setattr(store, "load", failed_load)
+        return result
+
+    app.sealed_transfer_exchange_coordinator = SimpleNamespace(
+        prepare=prepare,
+        attempt=(coordinator.attempt if outcome == "post_prepare_load_error"
+                 else lambda _intent: SimpleNamespace(status="RETRY_WAIT", retryable=True)),
+    )
+    before = deepcopy(app.current_set_info)
+    try:
+        assert app._prompt_sealed_transfer_exchange(_lease_gate_checked=True, _pending_checked=True)
+
+        def scan(value):
+            content["text"] = value
+            content["scan"]()
+
+        for i in range(3):
+            scan(f"OLD-{i}")
+            scan(f"NEW-{i}")
+        assert len(tree.get_children()) == 3
+        assert captured == [] and not app.ui_lane.is_busy()
+        content["selection"] = ("1",)
+        buttons["선택 삭제"][1]()
+        assert len(tree.get_children()) == 2
+        scan("OLD-1")
+        buttons["교체 적용"][1]()
+        assert captured == [] and not app.ui_lane.is_busy()
+        scan("CORRECTED")
+        buttons["교체 적용"][1]()
+        buttons["교체 적용"][1]()
+        assert app.ui_lane.is_busy()
+        # Even synthetic events cannot mutate the captured draft during dispatch.
+        scan("UNEXPECTED")
+        worker_gate.set()
+        root.run_until(lambda: not app.ui_lane.is_busy())
+        expected_intents = 0 if outcome == "admission_error" else 1
+        assert len(captured) == expected_intents
+        if captured:
+            assert captured[0]["old_barcodes"] == ("OLD-0", "OLD-2", "OLD-1")
+            assert captured[0]["new_barcodes"] == ("NEW-0", "NEW-2", "CORRECTED")
+        with sqlite3.connect(store.db_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sealed_transfer_exchange_intents").fetchone()[0] == expected_intents
+        assert content["text"] == "UNEXPECTED"
+        assert app.current_set_info == before
+        content["selection"] = ("0",)
+        buttons["선택 삭제"][1]()
+        assert len(tree.get_children()) == (2 if outcome == "admission_error" else 3)
+        buttons["교체 적용"][1]()
+        assert len(captured) == expected_intents and not app.ui_lane.is_busy()
+    finally:
+        worker_gate.set()
+        _close_lane(app, root)
+
+
 def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_id):
     """Admit explicit locally verified input; no server/signature claim here."""
     import hashlib
