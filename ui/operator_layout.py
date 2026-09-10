@@ -112,7 +112,6 @@ class _PaneRule:
     left_min: int
     left_max: int
     right_min: int
-    right_max: int
     center_min: int
 
 
@@ -135,7 +134,7 @@ class _CenterBase:
 # 1440: 248 + 26 + 704 + 26 + 436
 # 1920: 300 + 34 + 980 + 34 + 572
 _PANE_RULES: Final[dict[LayoutProfileName, _PaneRule]] = {
-    "small": _PaneRule(18, 0.170, 0.300, 190, 240, 330, 410, 540),
+    "small": _PaneRule(18, 0.170, 0.300, 190, 240, 330, 540),
     "compact": _PaneRule(
         22,
         232 / 1366,
@@ -143,7 +142,6 @@ _PANE_RULES: Final[dict[LayoutProfileName, _PaneRule]] = {
         210,
         280,
         370,
-        480,
         600,
     ),
     "standard": _PaneRule(
@@ -153,7 +151,6 @@ _PANE_RULES: Final[dict[LayoutProfileName, _PaneRule]] = {
         230,
         360,
         390,
-        560,
         650,
     ),
     "wide": _PaneRule(
@@ -163,10 +160,10 @@ _PANE_RULES: Final[dict[LayoutProfileName, _PaneRule]] = {
         260,
         420,
         470,
-        720,
         760,
     ),
 }
+_RIGHT_PANE_MAX_WIDTH: Final[int] = 720
 
 
 _CENTER_BASES: Final[dict[LayoutProfileName, _CenterBase]] = {
@@ -275,7 +272,9 @@ def pane_metrics(
     available = max(3, width - gap * 2)
 
     left = max(rule.left_min, min(rule.left_max, int(round(width * rule.left_ratio))))
-    right = max(rule.right_min, min(rule.right_max, int(round(width * rule.right_ratio))))
+    # A short work area compacts rows, but its spare width still belongs to
+    # history. Keep the existing ratio and widest-pane bound at every height.
+    right = max(rule.right_min, min(_RIGHT_PANE_MAX_WIDTH, int(round(width * rule.right_ratio))))
 
     # Keep the center at least as large as its content contract permits.  When
     # the physical width is smaller than all preferred minima, preserve a

@@ -1,5 +1,12 @@
 # Label_Match 운영·복구·검증
 
+<a id="history-layout-20260910"></a>
+## 2026-09-10 · 이력표·우측 폭 최소 교정
+
+`5f19ce3`의 사용자 crop과 실제 최대화 `014-refreshed-layout.png`에서 시간 머리글 잘림을 확인했다. 구현 전 기준과 원래 실패는 [RESULT](E:/KMTech/optimization-implementation-20260909/Label_Match/ui-layout-fix/RESULT.md)에 보존한다. 기존240/311px 열 측정과1366/1440/1920 설계 앵커를 사용하며, 실제 guest DPI를 추정하지 않았다. 본문 전체 최소폭 대신 머리글 우선 폭을 배분하고, 짧은 창의 우측410px 상한을 기존 최대720px로 통일했다. 우측 Notebook 스타일·선택 원문 요청 높이만 함께 교정하고 날짜 도구열의 반응형 줄바꿈·선택/복사·원문과 업무 상태는 유지했다.
+
+**PROVEN (소스·CPython 3.12 비 GUI):** 구현 전4 FAIL→같은4 PASS, 추가 원문 높이 상한1 FAIL 보존, 최종 기존 focused **64 PASS/실제 Tk 2개 제외**. 동일44개 writer identity/guard의 정규화 source·line 파생 pin만 양쪽에서 `5457ddb4bca2d097ebe498599e7bcaaa35e42a841f3b826c926ff320e334e750`로 갱신했다. 새 검사 파일·실행 도구는 없다. **UNPROVEN:** 수정 후보의 실제 VM 화면, +/-·창 크기 왕복/탭·도구열 비겹침과 실제 원문 높이 포함 관계, 최종 Claude 수용. Main의 배정된 GUI 슬롯에서 확인한다. 이 결과는 성능 개선이나 F4 목록 제출이라는 별도 새 요구의 완료를 주장하지 않는다.
+
 <a id="s05-simplification"></a>
 ## 2026-09-09 · S05 소스 단순화와 한정 검증
 

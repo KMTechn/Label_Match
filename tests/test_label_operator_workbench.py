@@ -462,6 +462,7 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
     summary_tab = _required_widget(app, "operator_summary_tab")
 
     assert _is_descendant(notebook, right)
+    assert notebook.cget("style") == "Operator.TNotebook"
     assert [page for page, _ in notebook.notebook_pages] == [
         session_tab,
         deferred_tab,
@@ -623,7 +624,7 @@ def test_deferred_validator_refreshes_only_after_immediate_result_is_rendered():
     ]
 
 
-def test_history_display_widths_prioritize_full_item_result_and_time():
+def test_history_display_widths_keep_headings_visible_and_full_cells_when_possible():
     app = Label_Match.__new__(Label_Match)
     app.default_font_name = "Malgun Gothic"
     app.tree_font_size = 13
@@ -650,16 +651,16 @@ def test_history_display_widths_prioritize_full_item_result_and_time():
     assert widths["Result"] >= 79
     assert widths["Timestamp"] >= 78
 
-    overflow_widths = app._fit_history_display_widths(
+    compact_widths = app._fit_history_display_widths(
         240,
         {"Input1": 190, "Result": 86, "Timestamp": 100},
     )
-    assert overflow_widths == {
-        "Input1": 139,
-        "Result": 79,
-        "Timestamp": 78,
-    }
-    assert sum(overflow_widths.values()) > 240
+    assert sum(compact_widths.values()) == 240
+    for column, heading in (("Input1", "현품표"), ("Result", "결과"), ("Timestamp", "시간")):
+        assert compact_widths[column] >= measured[heading] + 14
+    assert app._fit_history_display_widths(
+        311, {"Input1": 190, "Result": 86, "Timestamp": 100}
+    ) == widths
 
 
 def test_operator_tree_linespace_fallback_is_conservative(monkeypatch):
@@ -764,7 +765,7 @@ def test_renderer_populates_actual_accepted_qa_rows_and_keeps_f4_rows_separate(o
     assert app.exact_rescan_frame.winfo_ismapped() is True
 
 
-def test_live_qa_list_exposes_readonly_wrapped_selected_raw_detail(operator_workbench):
+def test_live_qa_list_exposes_readonly_wrapped_selected_raw_detail(operator_workbench, monkeypatch):
     app = operator_workbench
     detail_frame = _required_widget(app, "qa_scan_detail_frame")
     detail_text = _required_widget(app, "qa_scan_detail_text")
@@ -780,6 +781,24 @@ def test_live_qa_list_exposes_readonly_wrapped_selected_raw_detail(operator_work
         sequence == "<<TreeviewSelect>>"
         for sequence, _callback, _add in app.qa_scan_tree.bindings
     )
+
+    def unavailable_font(*_args, **_kwargs):
+        raise label_match_module.TclError("no native font in this fixture")
+
+    monkeypatch.setattr(label_match_module.tkFont, "Font", unavailable_font)
+    app.tk = None
+    app.scale_factor = 1.0
+    app.style = FakeWidget()
+    app.style.configure = lambda *_args, **_kwargs: None
+    for prefix in ("qa_scan", "exact_rescan"):
+        app.__dict__[f"{prefix}_detail_title_label"].winfo_reqheight = lambda: 30
+        app.__dict__[f"{prefix}_detail_metadata_label"].winfo_reqheight = lambda: 30
+        app.__dict__[f"{prefix}_detail_text"].winfo_reqheight = lambda: 80
+
+    app._apply_operator_responsive_layout()
+
+    assert detail_frame.cget("height") >= 30 + 80 + 16
+    assert app.exact_rescan_detail_frame.cget("height") == detail_frame.cget("height")
 
 
 def test_selected_qa_detail_keeps_full_raw_value_and_selection_across_rerender(

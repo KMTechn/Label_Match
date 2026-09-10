@@ -6676,19 +6676,24 @@ class Label_Match(tk.Tk):
             "Result": self.Results.IN_PROGRESS,
             "Timestamp": "23:59:59",
         }
+        heading_widths = {
+            column: max(42, self._text_pixel_width(heading_samples[column], heading_font) + 14)
+            for column in columns
+        }
         minimum_widths = {
             column: max(
-                42,
-                self._text_pixel_width(heading_samples[column], heading_font) + 19,
+                heading_widths[column],
                 self._text_pixel_width(body_samples[column], body_font) + 16,
             )
             for column in columns
         }
         if sum(minimum_widths.values()) > total_width:
-            # Preserve readable cells and let the existing horizontal
-            # scrollbar expose the overflow.  Compressing below these measured
-            # minima would recreate the glyph clipping this helper prevents.
-            return minimum_widths
+            # Keep all headings in view before reserving full cell text.
+            # Selected-row detail/copy retains every unabridged value.
+            preferred_widths = minimum_widths
+            minimum_widths = heading_widths
+            if sum(minimum_widths.values()) > total_width:
+                return minimum_widths
 
         widths = dict(minimum_widths)
         remaining = total_width - sum(widths.values())
@@ -16783,7 +16788,7 @@ class Label_Match(tk.Tk):
                 detail_height = detail_header_height + detail_text_height + 16
             except (TclError, AttributeError, TypeError, ValueError):
                 detail_height = 90
-            detail_height = max(90, min(112, detail_height))
+            detail_height = max(90, detail_height)
             for prefix in ("qa_scan", "exact_rescan"):
                 detail_frame = self.__dict__[f"{prefix}_detail_frame"]
                 detail_frame.configure(height=detail_height)
@@ -18549,7 +18554,9 @@ class Label_Match(tk.Tk):
         self.right_activity_card = self.operator_right_pane
         self.operator_right_pane.grid_rowconfigure(0, weight=1)
         self.operator_right_pane.grid_columnconfigure(0, weight=1)
-        self.operator_notebook = ttk.Notebook(self.operator_right_pane)
+        self.operator_notebook = ttk.Notebook(
+            self.operator_right_pane, style="Operator.TNotebook"
+        )
         self.operator_notebook.grid(row=0, column=0, sticky="nsew")
         self.operator_history_notebook = self.operator_notebook
 
@@ -19190,6 +19197,11 @@ class Label_Match(tk.Tk):
         self.style.configure("ViewMode.TLabel", font=status_bold_font)
         self.style.configure("Save.Success.TLabel", font=save_status_font)
         self.style.configure("Control.TButton", font=(self.default_font_name, control_size, "bold"), padding=profile["control_padding"])
+        self.style.configure(
+            "Operator.TNotebook.Tab",
+            font=(self.default_font_name, control_size),
+            padding=profile["control_padding"],
+        )
         action_font = (self.default_font_name, action_size, "bold")
         self.style.configure("Action.TButton", font=action_font, padding=profile["action_padding"])
         self.style.configure("Danger.Action.TButton", font=action_font, padding=profile["action_padding"])

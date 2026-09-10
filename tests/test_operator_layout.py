@@ -137,6 +137,17 @@ def test_scaled_ultrawide_short_work_area_stays_standard(height):
     assert profile.effective_height < 1040
 
 
+@pytest.mark.parametrize(("width", "right"), [(1920, 576), (2560, 720)])
+def test_short_wide_workbench_uses_spare_width_for_history(width, right):
+    layout = build_operator_layout(width, 768, 1.4)
+
+    assert layout.profile.name == "small"
+    assert layout.panes.right_width == right
+    assert layout.panes.center_width >= 760
+    assert layout.panes.occupied_width == width
+    assert build_operator_layout(width, 768, 1.4) == layout
+
+
 def test_wide_effective_height_boundary_is_stable():
     assert select_layout_profile(1920, 1039, 1.0).name == "standard"
     assert select_layout_profile(1920, 1040, 1.0).name == "wide"
