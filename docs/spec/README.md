@@ -1,5 +1,11 @@
 # Label_Match 기술 명세
 
+## 2026-09-11 · 원래 F4 같은 요청 복구·F3 완료
+
+원 VM/runtime8df에서 Main의 정상 공유 전환·grant 뒤 저장 F4의 같은 key/command 재시도 한 번으로 중앙 교체1건·새 seal2를 확인했다. 실제 화면 QR 해독·정상 guest 입력 뒤 VERIFIED/APPLIED, 원 PHS2/raw1의 일반 F3에서 완료 event1·local marker1·ACKED/COMMITTED 저장 receipt와 fresh lease1을 기록했다. Web 독립 검증은 같은 package/receipt의 중앙 효과1건·lease 소비와 JSON 표현별 hash 일치를 수용했다. 실물 스캐너·후속 고유 업무·lost-ACK·Today30/30의 범위는 [이번 운영 근거](operations.md#original-f4-f3-continuation-20260911)와 [남은 일](BACKLOG.md)을 따른다. Today case03은 상태 게시·종료 시 열 너비 guard 실패로 미입증이며, 원 데이터 보존과 정상 릴레이 정지 뒤 Main/Defect에 VM을 인계했다. 제품 소스 변경은 없다.
+
+후속 [호스트 제어 교정](operations.md#today-host-repair-20260911)은 고유 진행 파일 게시와 Input1 실제 렌더링 너비의 명시적 기록·종료 저장 대조를 준비했다. 다른 설정·업무 guard, 수치 기준과 실제11행 입력은 보존하며 guest 적용·새30/30은 아직 미실행이다.
+
 ## 2026-09-10 · 이력표 가시성과 우측 패널
 
 이력표는 세 머리글이 들어가는 폭에서 `현품표/결과/시간`을 함께 표시하고, 남는 폭으로 본문을 넓힌다. 셀 원문은 기존 선택 행 상세·복사 경로에 보존한다. 높이가 짧은 넓은 창에서도 기존 비율과 최대720px 범위에서 우측 공간을 쓰며, 우측 탭만 기존 조작 글꼴·간격을 적용한다. 선택 원문 영역은 측정된 요청 높이를112px로 자르지 않는다. [한정 검증과 실제 화면의 남은 수용](operations.md#history-layout-20260910)을 따른다.

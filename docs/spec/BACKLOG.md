@@ -1,11 +1,21 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-11 · 원래 F4 복구·F3 실제 진행
+
+- Main의 Web78 전환·정상 grant 뒤 같은 runtime8df·원 VM에서 저장 F4를 같은 key/2953B command로 한 번 재시도하여 ACKED/attempt3, 중앙 receipt1·새902/903/904·seal2를 확인했다. 화면 QR 해독값을 정상 guest 입력으로 확인해 VERIFIED/APPLIED가 됐으며 물리 스캐너 장비 수용과는 구분한다.
+- 원 PHS2/raw1을 유지한 일반 F3에서 완료 event1·local marker1·outbox ACKED/attempt1, fresh lease1/ACKED와 저장 COMMITTED receipt를 확인했다. 화면은 다음 PHS2로 복귀했다. Web 독립 readback은 중앙 효과1건·원902/903/904의 AVAILABLE package·lease 소비1건을 확인했다. 저장 JSON 기본 공백 hash와 compact canonical hash의 차이도 실제 원문 재계산으로 해소했다.
+- Today 첫 시도: 같은 baseline a7e57b7/current8df의123-file export, 실제 당일11행/완료 세트1건 snapshot, 정상 READY·아홉 업무 대기 count0을 확인했다. Main은 실제 profile CA 보존 guard 교정과 실행을 수용했다. 기존 GUI 정상 종료0 뒤 정상 UI 설정 저장이 이전 fingerprint와 달라 첫 baseline observer가 GUI 초기화 전 종료1로 중단됐다. [실제 실패·수정한 준비 순서](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/today-current8df/FIRST-INVALID-RESULT.md)는 업무 DB·기존 원문 prefix·다른 보안 파일 불변과 APP_CLOSE1건을 확인한다. 관측0/0이며 성능은 미입증이다. 원 실패를 보존하고 정상 종료 후 실제 설정 hash를 공통으로 고정한 당시 새 case02만 준비하고 다른 worker 자원 창 동안 재실행하지 않았다.
+- 후속 Today case03은 개별 정상 응답23회 뒤24번째 상태 파일 게시 PermissionError로 중단했다. 저장 결과24행은 보존 확인 후 게시 실패를 구분하는 근거이며 수용된30회가 아니다. 정상 종료 때 Input1 열 너비253→191도 고정 guard와 충돌해 observer 종료1을 보존했다. current 관측·재시도·수치 수용은 없고, 제어 파일 게시 수정 후보만 호스트에서 검증했다. [실패·후보·원 VM 인계](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/today-current8df/CASE03-FAILURE-AND-HANDOFF.md)에 따라 원 업무·보안 보존, 릴레이 정상 정지와 helper31개 해제를 끝내 Main/Defect에14:11:57Z 인계했으며 열 너비 문제와 새30/30 검증은 남는다.
+- 후속 호스트 교정은 Input1이 두 소스 모두 렌더러가 계산·저장하는 출력임을 확인해 원 settings/실제 layout/종료 저장값을 명시적으로 대조한다. 고유 진행 파일 probe를 재사용하고 guard21개가 통과했으며 다른 설정·업무·수치·실제11행 입력은 유지한다. [한정 준비와 남은 조건](operations.md#today-host-repair-20260911)에 따라 실제 Claude 검토와 Main의 새 자원 창 뒤 새30/30이 필요하다. guest 호출·marker 소비·업무 replay는 없고, 자정 후에는 원9월11일 Today case를 다른 날짜로 바꾸지 않는다.
+- Main은 후속 실제 당일 입력을 예정된 정상 M06 또는 이미 승인된 실제 업무에서 얻는 준비 절차를 지시했다. 새 날짜·행/세트 수·event 구성 차이를 기록하고 실제 입력 생성 뒤에만 새 공통 case를 고정한다. 두 arm은 동일 snapshot과 기존 수치 기준식을 사용하며 다른 workload의 limits를 전용하지 않는다. 새 입력·case·실행은 아직 없다.
+- 기존 relay terminal review/lastcycleFAIL과 실패 근거는 보존한다. post-F4 snapshot을 즉시 가정한 기존 reader의 실패도 제품의 정상 F3 refresh와 구분한다. 후속 고유 업무·lost-ACK 복구·full-GUI Today30/30은 남으며 [정확한 실행·제한](operations.md#original-f4-f3-continuation-20260911)을 따른다.
+
 ## 2026-09-11 · 저장된 교체 요청의 주 화면 안내
 
 - 실제 0c73 복원 화면에서 F3 비활성 상태와 `포장 준비`/F3 안내의 불일치를 확인했다. 저장 F4 목록 자체는 원 쌍·거부·읽기 전용 안내를 보존하며 1920×1080에서 잘리지 않았다.
 - 기존 exchange attempt 한 번의 관측으로 안내와 버튼을 맞췄다. 격리 회귀91 PASS와 기존 writer4 PASS/native0, 동일44개 identity/guard 및 새 pin을 확인했고, 실제 Claude의 정확한8dfcee7 소스 검토는 필수 수정 없는 PASS다.
 - 정상5파일 적용·123파일 readback과 실제1920×1080 주 화면/F4 확인을 마쳤다. 포장 보류 안내·F3 비활성/F4 활성, 원901→904 목록·거절·읽기 전용 상태를 확인했으며 새 재시도·F3는 없다. 초기 제목 녹색·일반 절차 힌트의 잘림은 비차단 표시 한계로 남긴다. 원 relay 종료1/terminal review와 이전 실패는 보존했다.
-- Main/Web backend·정상 grant 뒤 동일 요청 F4 재시도/새 seal, F3 durable 복구와 연결 업무, 최종 Today30/30은 남는다. [현재 근거와 정확한 미완료 범위](operations.md#restored-exchange-guidance-20260911)를 따른다.
+- 위 UI 전환 이후 Main/Web backend·정상 grant 뒤 원 F4 같은 요청/새 seal과 일반 F3를 실제 진행했다. [후속 근거](operations.md#original-f4-f3-continuation-20260911)와 [당시 UI 근거](operations.md#restored-exchange-guidance-20260911)를 구분하며, 후속 고유 업무·lost-ACK 복구·최종 Today30/30은 남는다.
 
 ## 2026-09-10 · relay 예외 위치 기록 — 원인 확인 중
 

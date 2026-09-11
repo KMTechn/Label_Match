@@ -1,5 +1,33 @@
 # Label_Match 운영·복구·검증
 
+<a id="original-f4-f3-continuation-20260911"></a>
+## 2026-09-11 · 원래 F4 같은 요청 복구와 F3 완료
+
+**PROVEN — 원 VM·정상 제품 경로:** [이번 실행과 한계](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/BUSINESS-CONTINUATION-RESULT.md)는 runtime `8dfcee754b0cf32138462c49fb88c5fd393ca8fe`, Main이 수용한 Web78 전환·정상 grant에 결속된다. 원 GUI1240을 정상 종료0, relay10504를 정상 STOPPED/실제 종료1로 정지하고 업무 표·원 command·identity를 보존했다. own marker만 제품 API로 해제0한 뒤 같은 kmadmin/session1의 GUI3164·relay4416으로 복귀했다. relay의 기존 FAIL/종료1과 timeout-zero UNKNOWN은 보존한다.
+
+저장된901→904 목록에서 같은 요청 재시도를 한 번 확인했다. 원 intent `3890d945…`, key와2953B command/SHA `315bda91343a641365f89ba91c72d2575143fa4a78187661a1c6da735a44cd20`은 그대로이며 ACKED/attempt3가 됐다. Web 독립 readback과 Main의 한정 수용은 같은 COMMITTED receipt1·멤버902/903/904·seal2·QT3, 원901의 damage hold와 donor 소비·원 receiving/ownership 보존을 확인한다. 화면의 새 QR을 실제 이미지에서 해독해 저장된316B/hash와 대조하고 정상 guest scanner 입력칸·Enter로 확인하여 VERIFIED/APPLIED를 기록했다. 실물 스캐너 장비 수용은 아니다. 원 물리 PHS2·raw scan1을 유지했고 원901–904를 재스캔하지 않았다.
+
+일반 F3 확인 한 번 뒤 원 set `1789011023139836600`의 TRAY_COMPLETE/통과1건과 local_completion_committed1, outbox ACKED/attempt1, fresh lease issue1·lease1/ACKED를 확인했다. key `label-package-cmd-0ca6f7fb9dd8b4ab71528f0d`, package `PACKAGE-WORK-01BB376E8ABD4E9D57360DF8`의 저장 receipt는 COMMITTED이며902/903/904·SHIPPING-WAIT·exact_rescan_count0이다. 화면은 다음 PHS2 대기로 복귀했고 저장 active-state 파일은 정상 완료로 없어졌다. 이벤트의 packaging_set_count는1, packaging_piece_qty는null이며 중앙 receipt의 member_count3과 구분한다. [실제 outbox/event](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/030-read-f3-result.json), [lease·identity·관측 큐](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/031-completion-preservation.json)를 따른다. Web의 [독립 중앙 결과](D:/KMTech/optimization-implementation-20260909/WorkerAnalysisGUI-web/continuation-20260911/f3-central-after01/RESULT.md)는 같은 package/receipt의 효과1건·AVAILABLE 멤버3개·lease 소비1건을 확인했다. 실제 로컬 receipt_json은 기본 JSON 공백을 포함한8896B/SHA e647d1e0…이며 compact canonical 표현8562B/SHA 60b575c6…는 Web 중앙 hash와 정확히 같다. [원문 표현 readback](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/032-receipt-representation.json)과 Web의 독립 재계산으로 차이를 해소했으며 재실행은 없다.
+
+기존 post-F4 pure reader의26번 실패는 현재 제품이 교체 후 `package_source_snapshot=None`으로 무효화하는데 reader가 즉시 snapshot을 가정한 제어 한계다. 제품은 F3에서 fresh PACKAGE_SOURCE/lease를 얻었으며 수동 상태 편집은 없다. 별도 relay14 acked·기존 producer_projection_incomplete review1/lastcycleFAIL은 그대로다. 후속 고유 업무·f3-ack-fault·최종 full-GUI Today30/30은 **UNPROVEN/미완료**이며 이번 일반 F3로 장애 복구나 성능 수용을 대체하지 않는다. 제품 소스 변경은 없다.
+
+**Today case03 — UNPROVEN:** Main의 다음 독점 자원 창에서 정상 baseline GUI8140·warm Today1회와 개별 관측을 진행했다. 정상 응답23회 뒤24번째는 `PermissionError:PRESERVATION_READBACK`으로 중단했다. 원 결과의24행/current=null은 보존 확인 뒤 상태 게시 단계의 실패임을 보여 주지만 원 WinError·파일 경로는 기존 catch가 기록하지 않았다. 재시도·current 관측·기준 완화는 없다. 정상 종료 때 Input1 열 너비253→191과 허용된 worker clock 변경을 확인했고, 열 너비 guard 때문에 observer 종료1을 보존했다. [원 실패·호스트 제어 수정 후보·인계 근거](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/today-current8df/CASE03-FAILURE-AND-HANDOFF.md)를 따른다. 당시 남은 열 너비 guard의 후속 호스트 교정은 [아래](#today-host-repair-20260911)와 구분하며 guest 적용·재측정은 없다.
+
+<a id="today-host-repair-20260911"></a>
+### Today 호스트 제어 교정·한정 준비
+
+baseline `a7e57b7f7c3d815ad5aff945e302b916c5e68f4e`와 current `8dfcee754b0cf32138462c49fb88c5fd393ca8fe`는 저장 Input1 너비를 렌더링에 사용하지 않는다. 두 소스의 `_resize_all_columns`는 실제 Treeview 폭·프로필·글꼴로 열을 정하고, `_save_app_settings`는 실제 열 폭을 저장한다. 기존253→191은 실제 출력 변화이며 이전 저장 폭 불변을 요구한 harness 가정이 잘못됐다. 앱·사용자 설정은 수정하지 않았다.
+
+[정확한 후보·독립 검토 요청](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/today-current8df/repair-ctx65f638/REVIEW-PACKET.md)은 같은 실제 외곽1920×1032·Tk1904×993·정상 설정을 공통 입력으로 유지한다. Input1만 렌더링 출력으로 분리해 원 settings hash/값, 실제 widget·sash·열 폭·표시 열·가로 view를 기록하고 각 arm 내 변화를 거부한다. 종료 저장 Input1은 관측된 실제 폭과 같아야 하며 before/rendered/after와 변경 경로를 남긴다. 다른 모든 설정은 기존 active worker 종료 시각 예외 외에는 동일해야 하고, 각 arm 중 raw settings는 byte-exact다. 버전별 렌더링 결과 차이는 숨기지 않으며 기존 analyzer의 full-view 값·환경 일치 요구도 유지한다.
+
+**PROVEN — 호스트 한정:** 원 고유 진행 파일 게시·열린 reader/오류 진단 probe native0을 재사용했고, 후속 guard21개·Python 구문 검사는 통과했다. 실제 보호 설정 전후와 정확한 두 소스를 대조하며 잘못된 폭·다른 설정·시각 역행·arm 내 geometry 변경을 거부했다. 이 검사의 가상 widget191은 native case03 geometry 증거가 아니다. timing callback·sample driver·수치 기준·analyzer·실제11-event/완료 세트1건 snapshot은 유지한다. 최초 공유 전용 후보 native1과 원 실패 자료는 그대로 보존했다. 실제 Claude 독립 검토는 Main에 요청한 상태다.
+
+**UNPROVEN/미실행:** guest 적용·새 baseline/current30/30·성능 수용과 M06/lost-ACK은 남는다. [지원 launcher·실행 준비](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/today-current8df/repair-ctx65f638/STAGING-AND-EXECUTION.md)는 Main의 새 전체 자원 창, fresh 실제 relay/설정 readback, 정상 공개 main·개별 관측·정상 종료·before limits 고정 순서를 따른다. 원 VM76a3은 Main/Defect 소유이며 Label marker45da842c…를 소비하지 않았다. 2026-09-11 실제11행 Today 입력은 같은 guest local day에서만 유효하며 자정을 넘겨 날짜·snapshot을 조작하거나 같은 case로 재사용하지 않는다.
+
+Main msg_f9c0bd9fe07e의 [후속 실제 당일 입력 절차](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/transition-continuation-20260911-ctx8980/today-current8df/repair-ctx65f638/CURRENT-DAY-SUCCESSOR.md)는 예정된 정상 M06 또는 이미 승인된 실제 당일 업무가 만든 eligible history가 있을 때만 새 공통 case를 결속한다. 실제 날짜·행/세트 수·event 구성 차이를 명시하고 같은 새 snapshot으로 baseline/current 각각30회를 측정한다. 통계·수치 기준식은 유지하고 수치 limits는 새 baseline30에서만 고정한다. 현재 새 입력·case는 없으며 이 미래 의존성은 유한한 호스트 교정 준비의 완료와 구분한다.
+
+원 relay4416은 지원 stop 요청/native0 뒤14:08:52Z에 자연 종료1/STOPPED가 됐다. 전후 snapshot 동일, 원 업무 DB·보안9개·HKCU·123 소스·기존 CSV prefix·기존 review1을 보존했다. 31개 완료 helper 등록 해제와 Python0/소유 task0을14:11:57Z에 확인해 Main/Defect에 원 VM을 인계했다. 원 stop marker는 Label 소유로 남으며 Defect가 소비하지 않는다. 이후 Label의 guest 실행은 없다.
+
 <a id="restored-exchange-guidance-20260911"></a>
 ## 2026-09-11 · 복원된 제품 교체 요청과 주 화면 안내
 
@@ -13,7 +41,7 @@ Inspection 성능 측정 보류가 해제된 뒤 기존 presenter/adapter, 복�
 
 실제 열어 본 같은1920×1080 [주 화면011](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/011-acknowledge-candidate.png)은 `작업 확인 필요`·`작업 보류`, 주황색 제품 교체 확인 안내와 F3 비활성/F4 활성을 함께 표시한다. [저장 F4 창013](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/013-candidate-f4-readback.png)은 원901→904 한 쌍·거절 사유·잠긴 목록과 같은 요청 재시도/닫기를 잘림 없이 표시했다. 010–013은 모두 native0이며 실제 재시도·새 스캔·F3를 실행하지 않았다. Claude의 비차단 관찰처럼 초기 제목 녹색과 일반 PHS2→F4→F3 절차 힌트는 남고,011에서 힌트 마지막 줄은 잘린다. 현재 행동 안내는 포장 보류를 명시하므로 이 관찰을 추가 소스 gate로 만들지 않는다.
 
-[사전 기준](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/RESTORED-UI-CRITERIA.md)과 [현재 checkpoint](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/CHECKPOINT.md)를 따른다. 별도 기존 relay terminal review와 Main/Web의 backend·정상 grant 선행 조건은 남는다. F4 동일 요청 재시도/새 seal, F3 durable 복구·연결 업무·Today30/30 실제 사용자 지연 비교는 여전히 미완료다.
+[사전 기준](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/RESTORED-UI-CRITERIA.md)과 [당시 checkpoint](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/CHECKPOINT.md)를 따른다. 이 UI 전환 기록 시점에는 별도 relay terminal review와 Main/Web의 backend·정상 grant, F4 동일 요청 재시도/새 seal·F3·연결 업무·Today30/30이 남았다. 이후 원 F4/일반 F3의 실제 진행과 여전히 남은 장애·성능 범위는 [후속 실행](#original-f4-f3-continuation-20260911)에서 구분한다.
 
 <a id="f4-explicit-retry-20260910"></a>
 ## 2026-09-10 · 저장 F4 거부 목록의 명시적 같은 요청 재시도
