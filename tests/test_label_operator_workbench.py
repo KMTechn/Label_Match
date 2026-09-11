@@ -8,6 +8,8 @@ import sys
 import textwrap
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -730,6 +732,96 @@ def test_workbench_renderer_uses_snapshot_adapter_then_pure_presenter():
     assert "adapt_workflow_snapshot(" in source
     assert "present_workflow(" in source
     assert source.index("adapt_workflow_snapshot(") < source.index("present_workflow(")
+
+
+@pytest.mark.parametrize(
+    ("status", "command_key", "seal_status", "title", "f4_enabled"),
+    [
+        ("OPERATOR_REVIEW", "saved-command", "PENDING", "제품 교체 확인 필요", True),
+        ("OPERATOR_REVIEW", "", "PENDING", "제품 교체 관리자 확인 필요", False),
+        ("COMMAND_READY", "saved-command", "PENDING", "제품 교체 결과 확인 중", False),
+        ("ACKED", "saved-command", "PENDING", "새 봉인 QR 확인 필요", True),
+    ],
+)
+def test_restored_exchange_guidance_matches_blocked_actions(
+    operator_workbench, status, command_key, seal_status, title, f4_enabled,
+):
+    app = operator_workbench
+    app.current_set_info.update(
+        id="retained-set", raw=["ORIGINAL-PHS2"], parsed=["ITEM-001"],
+        central_inherit_all=True, sealed_transfer={"BND": "original-bundle"},
+    )
+    app._workflow_recovered = True
+    original = copy.deepcopy(app.current_set_info)
+    attempt = SimpleNamespace(
+        status=status, idempotency_key=command_key,
+        seal_verification_status=seal_status, local_apply_status="PENDING",
+    )
+    app._current_sealed_transfer_exchange_attempt = Mock(return_value=attempt)
+
+    view = app._render_operator_workbench()
+
+    assert view.current_stage == "blocked"
+    assert view.notice.title == title
+    assert app.big_display_label.cget("text") == "작업 확인 필요"
+    assert "랩핑 후 F3" not in view.next_action
+    assert view.f3_enabled is False
+    assert app.manual_complete_button.cget("state") == "disabled"
+    assert view.f4_enabled is f4_enabled
+    assert app.exact_rescan_button.cget("state") == (
+        "normal" if f4_enabled else "disabled"
+    )
+    assert app.entry.cget("state") == "disabled"
+    assert app.reset_button.cget("state") == "disabled"
+    app._current_sealed_transfer_exchange_attempt.assert_called_once_with()
+    assert app.current_set_info == original
+
+
+def test_exchange_guidance_preserves_existing_blocking_notice(operator_workbench):
+    app = operator_workbench
+    app.current_set_info.update(
+        id="retained-set", raw=["ORIGINAL-PHS2"], parsed=["ITEM-001"],
+        central_inherit_all=True,
+    )
+    notice = label_match_module.WorkflowNotice("저장 복구 필요", "저장 상태를 확인하세요.")
+    app._workflow_blocking_notice = notice
+    app._current_sealed_transfer_exchange_attempt = Mock(return_value=SimpleNamespace(
+        status="OPERATOR_REVIEW", idempotency_key="saved-command",
+        seal_verification_status="PENDING", local_apply_status="PENDING",
+    ))
+
+    view = app._render_operator_workbench()
+
+    assert view.notice == notice
+    assert app.big_display_label.cget("text") == "작업 확인 필요"
+    assert app.exact_rescan_button.cget("state") == "disabled"
+    app._current_sealed_transfer_exchange_attempt.assert_called_once_with()
+
+
+def test_exchange_guidance_clears_when_existing_attempt_no_longer_blocks(operator_workbench):
+    app = operator_workbench
+    app.current_set_info.update(
+        id="retained-set", raw=["ORIGINAL-PHS2"], parsed=["ITEM-001"],
+        central_inherit_all=True,
+    )
+    original = copy.deepcopy(app.current_set_info)
+    app._current_sealed_transfer_exchange_attempt = Mock(side_effect=[
+        SimpleNamespace(
+            status="OPERATOR_REVIEW", idempotency_key="saved-command",
+            seal_verification_status="PENDING", local_apply_status="PENDING",
+        ),
+        None,
+    ])
+
+    assert app._render_operator_workbench().f3_enabled is False
+    view = app._render_operator_workbench()
+
+    assert view.current_stage == "package_ready"
+    assert view.notice is None
+    assert view.next_action == "랩핑 후 F3 포장 완료"
+    assert app.manual_complete_button.cget("state") == "normal"
+    assert app._current_sealed_transfer_exchange_attempt.call_count == 2
+    assert app.current_set_info == original
 
 
 def test_responsive_layout_does_not_drain_tk_events_from_configure_callback():

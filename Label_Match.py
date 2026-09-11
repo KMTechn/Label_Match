@@ -17504,10 +17504,40 @@ class Label_Match(tk.Tk):
         ):
             return None
         source = self._workflow_view_source()
+        exchange_attempt = self._current_sealed_transfer_exchange_attempt()
         blocking_notice = (
             self.__dict__.get("_workflow_blocking_notice")
             or self.__dict__.get("_workflow_notice")
         )
+        if blocking_notice is None and exchange_attempt is not None:
+            saved_review = bool(
+                exchange_attempt.status == "OPERATOR_REVIEW"
+                and exchange_attempt.idempotency_key
+            )
+            seal_pending = bool(
+                exchange_attempt.status == "ACKED"
+                and exchange_attempt.seal_verification_status == "PENDING"
+            )
+            if saved_review:
+                title = "제품 교체 확인 필요"
+                message = "F4에서 저장된 교체 목록을 확인하세요. 관리자 조치 전에는 포장 완료를 보류하세요."
+            elif seal_pending:
+                title = "새 봉인 QR 확인 필요"
+                message = "F4에서 새 봉인 QR을 확인한 뒤 포장을 계속하세요."
+            elif "OPERATOR_REVIEW" in (
+                exchange_attempt.status,
+                exchange_attempt.local_apply_status,
+                exchange_attempt.seal_verification_status,
+            ):
+                title = "제품 교체 관리자 확인 필요"
+                message = "현재 제품과 목록을 유지하고 관리자와 중앙 처리 결과를 확인하세요."
+            else:
+                title = "제품 교체 결과 확인 중"
+                message = "현재 제품과 목록을 그대로 두고 중앙 처리 결과를 기다리세요."
+            blocking_notice = WorkflowNotice(
+                title, message, kind="exchange_recovery", tone="warning",
+                allow_exchange_recovery=saved_review or seal_pending,
+            )
         snapshot = adapt_workflow_snapshot(
             source,
             initialized=bool(self.__dict__.get("initialized_successfully", False)),
@@ -17764,7 +17794,7 @@ class Label_Match(tk.Tk):
                 and not self.__dict__.get(
                     "_app_close_in_progress", False
                 )
-                and self._current_sealed_transfer_exchange_attempt() is None
+                and exchange_attempt is None
                 and not self.__dict__.get(
                     "_central_seal_lookup_in_progress", False
                 )
@@ -17846,7 +17876,7 @@ class Label_Match(tk.Tk):
                     ):
                         enabled = False
                     elif (
-                        self._current_sealed_transfer_exchange_attempt() is not None
+                        exchange_attempt is not None
                         and name != "exact_rescan_button"
                     ):
                         enabled = False

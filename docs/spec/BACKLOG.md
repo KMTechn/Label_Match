@@ -1,5 +1,10 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-11 · 저장된 교체 요청의 주 화면 안내
+
+- 실제 0c73 복원 화면에서 F3 비활성 상태와 `포장 준비`/F3 안내의 불일치를 확인했다. 저장 F4 목록 자체는 원 쌍·거부·읽기 전용 안내를 보존하며 1920×1080에서 잘리지 않았다.
+- 기존 exchange attempt 한 번의 관측으로 안내와 버튼을 맞췄다. 보류 해제 뒤 격리 회귀91 PASS와 기존 writer4 PASS/native0, 동일44개 identity/guard 및 새 pin을 확인했다. 후속 guest 화면·Claude 검토와 실제 F4/F3/Today 흐름은 남는다. [현재 근거와 정확한 미완료 범위](operations.md#restored-exchange-guidance-20260911)를 따른다.
+
 ## 2026-09-10 · relay 예외 위치 기록 — 원인 확인 중
 
 - 기존 UNKNOWN 예외 기록에 가장 안쪽8개 basename/function/line만 추가하고 메시지·인자·locals·payload는 제외한다. 기존 실패→성공 시험의 기준1 FAIL/1 PASS와 후속 loop/writer6 PASS, 동일44개 writer와 정확한 소스는 [운영 근거](operations.md#relay-exception-location-20260910)를 따른다.

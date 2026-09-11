@@ -133,6 +133,8 @@ HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`,
 <a id="c-03"></a>
 ## C-03 F4 교체·재봉인
 
+복원된 현재 세트에 차단 중인 교체 요청이 있으면 주 화면 안내도 포장 완료 보류 상태를 나타내야 한다. 저장 command가 있는 review의 읽기 전용 F4 목록과 ACKED 뒤 새 봉인 확인 경로는 유지하되, F3·새 스캔·취소나 재시도 권한을 새로 열지 않는다. 안내와 버튼은 같은 기존 요청 관측을 사용하며 이력 조회·로딩·오류·완료·busy·종료의 기존 제한을 존중한다. [2026-09-11 실제 불일치와 수정 상태](operations.md#restored-exchange-guidance-20260911)를 요구와 검증 범위로 구분한다.
+
 F4 초안은 비어 있지 않은 정확한 barcode 목록과 seal QT의 일치를 항상 요구한다. 표준 PHS2의 accepted work-group members가 없으면 팝업/intent 전에 거부한다. scalar count/hash만 남는 명시적 레거시 direct-seal QR은 기존 F4 worker preflight에서 현재 target bundle·active seal을 검증해 얻은 barcode 목록을 사용한다. 이 조회는 Tk 밖에서 수행하며 lease/pending gate와 제출 시 fresh server 검증을 유지한다.
 
 실제 cancel07 case04 첫 실패와 원 입력은 보존한다. `source_iin`/resolver `inbound_iin`은 현재·frozen accounting IIN이며 immutable origin과 구분한다. 각 bundle의 current member binding은 그 bundle의 accounting IIN과 일치해야 하지만 donor와 target 사이 equality는 필요하지 않다. 수용된 중앙 sealed replacement는 donor→target accounting 이동/rebind와 origin·receipt·movement·membership 계보 보존을 같은 transaction에서 수행한다. Main/Web의 실제 필드·서버 source 비교에 따라 iin08은 클라이언트 equality만 제거한다. 다른 권한·원장·품목·UOM, 다품목 donor, stale seal/version과 불완전 receipt guard는 유지한다.

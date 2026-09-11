@@ -101,6 +101,7 @@ class WorkflowNotice:
     kind: str = "blocking"
     tone: str = "danger"
     allow_current_set_cancel: bool = False
+    allow_exchange_recovery: bool = False
 
 
 @dataclass(frozen=True)
@@ -237,8 +238,11 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     inherited_membership = bool(
         snapshot.sealed_transfer or snapshot.central_inherit_all
     )
+    f4_gate_reason = _action_gate_reason(
+        snapshot, completion_kind, exchange_recovery=True
+    )
     f4_enabled = (
-        action_gate_reason is None
+        f4_gate_reason is None
         and (
             (
                 snapshot.central_inherit_all
@@ -262,7 +266,7 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
         central_inherit_all=snapshot.central_inherit_all,
         exact_rescan_active=snapshot.exact_rescan_active,
         exact_rescan_complete=snapshot.exact_rescan_complete,
-        gate_reason=action_gate_reason,
+        gate_reason=f4_gate_reason,
     )
 
     exact_rescan = _exact_rescan_view(
@@ -671,12 +675,15 @@ def _normalized_notice(notice: WorkflowNotice) -> WorkflowNotice:
         kind=kind,
         tone=str(notice.tone or "danger").strip().lower() or "danger",
         allow_current_set_cancel=bool(notice.allow_current_set_cancel),
+        allow_exchange_recovery=bool(notice.allow_exchange_recovery),
     )
 
 
 def _action_gate_reason(
     snapshot: WorkflowSnapshot,
     completion_kind: str | None,
+    *,
+    exchange_recovery: bool = False,
 ) -> str | None:
     if not snapshot.initialized:
         return "초기화 완료 후 가능"
@@ -686,7 +693,9 @@ def _action_gate_reason(
         return "과거 기록 조회 중에는 불가"
     if snapshot.history_loading:
         return "오늘 기록 로딩 중에는 불가"
-    if snapshot.blocking_notice is not None:
+    if snapshot.blocking_notice is not None and not (
+        exchange_recovery and snapshot.blocking_notice.allow_exchange_recovery
+    ):
         return "차단 사유 해결 후 가능"
     if snapshot.has_error:
         return "오류 세트는 불가"

@@ -601,6 +601,33 @@ def test_central_inherit_all_presents_one_phs2_stage_with_explicit_actions():
     assert view.f4_enabled is True
 
 
+@pytest.mark.parametrize(
+    "other_gate",
+    [
+        {}, {"initialized": False}, {"loading": True},
+        {"history_readonly": True}, {"history_loading": True},
+        {"has_error": True}, {"completion_kind": "full"},
+    ],
+)
+def test_exchange_recovery_notice_only_reopens_f4_under_normal_gates(other_gate):
+    snapshot = WorkflowSnapshot(
+        qa_scans=("ORIGINAL-PHS2",), central_inherit_all=True,
+        blocking_notice=WorkflowNotice(
+            "제품 교체 확인 필요", "F4에서 저장된 교체 목록을 확인하세요.",
+            allow_exchange_recovery=True,
+        ),
+        **other_gate,
+    )
+
+    view = present_workflow(snapshot)
+
+    assert view.f4_enabled is (not other_gate)
+    assert view.f3_enabled is False
+    assert view.scan_input_enabled is False
+    assert view.cancel_current_enabled is False
+    assert view.cancel_completed_enabled is False
+
+
 def test_invalid_completion_kind_and_empty_blocking_notice_fail_fast():
     with pytest.raises(ValueError, match="completion_kind"):
         present_workflow(WorkflowSnapshot(completion_kind="unknown"))

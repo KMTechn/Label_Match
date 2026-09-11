@@ -148,4 +148,5 @@ def _detached_notice(
         allow_current_set_cancel=bool(
             value.get("allow_current_set_cancel", False)
         ),
+        allow_exchange_recovery=bool(value.get("allow_exchange_recovery", False)),
     )

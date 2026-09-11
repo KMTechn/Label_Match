@@ -1,5 +1,14 @@
 # Label_Match 운영·복구·검증
 
+<a id="restored-exchange-guidance-20260911"></a>
+## 2026-09-11 · 복원된 제품 교체 요청과 주 화면 안내
+
+**실제 관측 — 0c73e13:** 원 VM의 정상 시작·복구 뒤 1920×1080 최대화 주 화면은 저장된 F4 거부 요청 때문에 F3를 막으면서도 `포장 준비`와 `랩핑 후 F3 포장 완료`를 표시했다. [주 화면 원본004](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/004-acknowledge-recovery.png)와 [저장 목록006](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/006-saved-f4-readback.png)을 실제 열어 확인했다. F4 목록의 901→904 한 쌍·거부 안내·읽기 전용 상태·재시도/닫기는 잘림 없이 보였다. 원 PHS2·멤버901/902/903·seal1, OPERATOR_REVIEW/attempt2와 저장 command는 그대로이며 새 Apply·재시도·F3는 실행하지 않았다.
+
+**PROVEN — 소스·격리 mock/SQLite:** 기존 current exchange attempt를 workbench render당 한 번 읽어 안내와 버튼 gate에 함께 사용한다. 저장 command가 있는 review는 F4 목록 확인, ACKED/새 seal 확인 대기는 F4 봉인 확인으로 안내하고 그동안 포장 준비·F3 완료를 지시하지 않는다. 기존 notice와 초기화·이력 조회·오류·완료·busy·종료 gate, 원 command와 실제 retry 조건을 유지한다. 대기 패널은 별도 `deferred_intents` 집계이므로 F4 표의 상태를 그 패널의 오분류로 간주하지 않는다.
+
+Inspection 성능 측정 보류가 해제된 뒤 기존 presenter/adapter, 복원 안내·정상 복귀·우선 notice와 실제 public F4 saved-list 경로의 격리 회귀는 [91 PASS/18.66s/native0](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/restored-ui-tests01/NATIVE.json)다. 기존 writer 정적 네 사례도 [4 PASS/5.21s/native0](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/restored-ui-writer02/NATIVE.json)이며, 동일44개 identity/path/qualified-name/guard와 새 pin `fc2a6d47c1b04eb4e42ff4921e80dd4570468bf36ce3bff3feabaf4b310a5e88`을 확인했다. [사전 기준](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/RESTORED-UI-CRITERIA.md)과 [진행 checkpoint 및 보존 실패](D:/KMTech/optimization-implementation-20260909/GOAL-RESUME-20260911/Label_Match/CHECKPOINT.md)를 따른다. 후속 guest 적용·같은 실제 화면·Claude 검토, F4 동일 요청 재시도/새 seal, F3 durable 복구·연결 업무·Today 실제 사용자 지연 비교는 미완료다.
+
 <a id="f4-explicit-retry-20260910"></a>
 ## 2026-09-10 · 저장 F4 거부 목록의 명시적 같은 요청 재시도
 
