@@ -3,7 +3,9 @@
 ## 2026-09-11 · 저장된 교체 요청의 주 화면 안내
 
 - 실제 0c73 복원 화면에서 F3 비활성 상태와 `포장 준비`/F3 안내의 불일치를 확인했다. 저장 F4 목록 자체는 원 쌍·거부·읽기 전용 안내를 보존하며 1920×1080에서 잘리지 않았다.
-- 기존 exchange attempt 한 번의 관측으로 안내와 버튼을 맞췄다. 보류 해제 뒤 격리 회귀91 PASS와 기존 writer4 PASS/native0, 동일44개 identity/guard 및 새 pin을 확인했다. 후속 guest 화면·Claude 검토와 실제 F4/F3/Today 흐름은 남는다. [현재 근거와 정확한 미완료 범위](operations.md#restored-exchange-guidance-20260911)를 따른다.
+- 기존 exchange attempt 한 번의 관측으로 안내와 버튼을 맞췄다. 격리 회귀91 PASS와 기존 writer4 PASS/native0, 동일44개 identity/guard 및 새 pin을 확인했고, 실제 Claude의 정확한8dfcee7 소스 검토는 필수 수정 없는 PASS다.
+- 정상5파일 적용·123파일 readback과 실제1920×1080 주 화면/F4 확인을 마쳤다. 포장 보류 안내·F3 비활성/F4 활성, 원901→904 목록·거절·읽기 전용 상태를 확인했으며 새 재시도·F3는 없다. 초기 제목 녹색·일반 절차 힌트의 잘림은 비차단 표시 한계로 남긴다. 원 relay 종료1/terminal review와 이전 실패는 보존했다.
+- Main/Web backend·정상 grant 뒤 동일 요청 F4 재시도/새 seal, F3 durable 복구와 연결 업무, 최종 Today30/30은 남는다. [현재 근거와 정확한 미완료 범위](operations.md#restored-exchange-guidance-20260911)를 따른다.
 
 ## 2026-09-10 · relay 예외 위치 기록 — 원인 확인 중
 
