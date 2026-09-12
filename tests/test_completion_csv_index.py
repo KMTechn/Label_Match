@@ -1,10 +1,8 @@
 """The optional index must never turn stale coverage into a missing completion."""
-import builtins
 from contextlib import closing
 import csv
 import json
 import os
-from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
@@ -27,20 +25,19 @@ def write_csv(directory, name="20260912", identities=("existing",)):
     return path
 
 
-def test_complete_index_covers_new_set_without_reopening_csv_and_survives_restart(tmp_path, monkeypatch):
+def test_complete_index_hashes_csv_without_reparsing_and_rebuilds_after_restart(tmp_path, monkeypatch):
     write_csv(tmp_path)
     index = CompletionCsvIndex(tmp_path, PREFIX)
     assert index.candidates("new") == []
-    original_open = builtins.open
-
-    def no_csv(file, *args, **kwargs):
-        assert Path(file).suffix != ".csv", "covered lookup reread archive CSV"
-        return original_open(file, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", no_csv)
-    assert index.candidates("another-new") == []
+    with monkeypatch.context() as warm:
+        warm.setattr(csv, "DictReader", lambda *a, **k: pytest.fail("covered lookup reparsed CSV"))
+        assert index.candidates("another-new") == []
     restarted = CompletionCsvIndex(tmp_path, PREFIX)
+    rebuilds = []
+    original = restarted._rebuild
+    monkeypatch.setattr(restarted, "_rebuild", lambda sources: rebuilds.append(True) or original(sources))
     assert restarted.candidates("another-new") == []
+    assert rebuilds == [True], "persisted coverage must be certified from CSV"
     assert restarted.candidates("existing") == [str(tmp_path / f"{PREFIX}20260912.csv")]
     assert CompletionCsvIndex(tmp_path, PREFIX.replace("PC1", "PC2")).path != index.path
 

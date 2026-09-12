@@ -1513,11 +1513,22 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
         index = CompletionCsvIndex(save_directory, prefix)
         data_manager._completion_csv_index = index
     indexed_candidates = index.candidates(identity)
-    # Missing/corrupt/changed coverage falls back to the full archive. A
-    # covered negative is safe only while every CSV signature still matches.
+    # Today's and the previous two days' rows always bypass negative cache
+    # coverage. Unknown/future filenames are also scanned conservatively.
+    recent = []
+    today = date.today()
+    for path in candidates:
+        try:
+            source_date = datetime.strptime(Path(path).name[len(prefix):-4], "%Y%m%d").date()
+            if (today - source_date).days < 3:
+                recent.append(path)
+        except ValueError:
+            recent.append(path)
     search_paths = candidates if indexed_candidates is None else indexed_candidates
     if indexed_candidates:
         search_paths = indexed_candidates + sorted(set(candidates) - set(indexed_candidates), reverse=True)
+    else:
+        search_paths = sorted(set(search_paths) | set(recent), reverse=True)
     def contains_completion(handle):
         for row in csv.DictReader(handle):
             if row.get("event") != "TRAY_COMPLETE":

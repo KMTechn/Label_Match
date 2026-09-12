@@ -2,11 +2,11 @@
 
 ## LM-W2 · 감사 응답성 개선
 
-- 최종 host 검증: 감사331+Wave1 새19 누락0을 포함한428 PASS, 후속 cache 경계와 영향 내구/복구58 PASS, 고유432 PASS. 새 봉인 적용 뒤 stale 경고와 선택적 index stat 실패도 차단했다. [JUnit·전후표·원 실패·잔여 범위](operations.md#responsiveness-w2)를 보존한다.
+- 최종 w2fix host 검증: 기존 W2 focused432+R1–R3 신규29 **461 PASS**, 기존 선택/원 reviewer11 누락0이다. 감사331·Wave1 새19·내구33·이력40과 봉인 복구를 포함한다. [JUnit·전후표·원 실패·잔여 범위](operations.md#responsiveness-w2)를 보존한다.
 
 - LM-B03 한정 완료: 완전 이력의 논리 상태 설치와 표시 배치를 분리해 오늘 적용 중 입력을 허용한다. after 배치는 generation과 종료를 확인하고 새 완료·취소·집계 갱신을 보존한다. 기존 history40·새4 PASS. D03의 별도 read-only 이력 창과 읽기/과거 조회 gate 제거는 후속이며 [한계](operations.md#responsiveness-w2)를 유지한다.
 
-- LM-B02: 완전한 파일 coverage를 검증한 prefix별 완료 위치 색인을 추가했다. 없음·손상·누락/외부 변경은 전체 CSV 검색·재구축이며 CSV 적중의 flush→재대조→fsync는 유지한다. index12 PASS(재구축 fsync 실패 보존 포함), cold rebuild와 실제 운영 성능의 한계는 [운영](operations.md#responsiveness-w2)을 따른다.
+- LM-B02: 독립 검토 R1–R3의 거짓 부재를 교정했다. 최근3일 직접 검색, 보관 CSV 전체 바이트 검증, 재시작 시 재구축, 검증한 DB 바이트 대조, durable append 후 변경 파일 전체 재색인을 적용했다. 기존 metadata만으로 안전한 부재라는 설명은 폐기한다. CSV 적중의 flush→재대조→fsync는 유지하며 추가 I/O·재시작 재구축 비용과 검증은 [운영](operations.md#responsiveness-w2)을 따른다.
 
 - LM-B01: package review 정리·조회와 workbench F4 상태 표시를 기존 worker의 불변 snapshot으로 이동했다. set·generation·업무 epoch가 달라진 결과는 무시하며 authoritative action guard는 유지한다. headless review20 PASS와 [검증 경계](operations.md#responsiveness-w2)를 따른다. 실제 GUI·운영 지연은 미검증이다.
 
