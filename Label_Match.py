@@ -4,6 +4,7 @@ import json
 import traceback
 from collections.abc import Mapping
 from collections import namedtuple
+from completion_csv_index import CompletionCsvIndex
 from datetime import datetime, date, timezone
 from pathlib import Path
 
@@ -1507,6 +1508,16 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
         ]
     except OSError:
         return False
+    index = getattr(data_manager, "_completion_csv_index", None)
+    if index is None or index.directory != Path(save_directory) or index.prefix != prefix:
+        index = CompletionCsvIndex(save_directory, prefix)
+        data_manager._completion_csv_index = index
+    indexed_candidates = index.candidates(identity)
+    # Missing/corrupt/changed coverage falls back to the full archive. A
+    # covered negative is safe only while every CSV signature still matches.
+    search_paths = candidates if indexed_candidates is None else indexed_candidates
+    if indexed_candidates:
+        search_paths = indexed_candidates + sorted(set(candidates) - set(indexed_candidates), reverse=True)
     def contains_completion(handle):
         for row in csv.DictReader(handle):
             if row.get("event") != "TRAY_COMPLETE":
@@ -1522,7 +1533,7 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
                 return True
         return False
 
-    for path in sorted(candidates, reverse=True):
+    for path in search_paths if indexed_candidates else sorted(search_paths, reverse=True):
         try:
             with open(path, "r", encoding="utf-8-sig", newline="") as handle:
                 matched = contains_completion(handle)
@@ -4652,6 +4663,8 @@ class DataManager:
                 got_item = True
                 if log_item is None: break
                 filepath = self._get_log_filepath_for_item(log_item)
+                completion_index = getattr(self, "_completion_csv_index", None)
+                previous_signature = completion_index.signature(filepath) if completion_index is not None else None
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 with open(filepath, 'a', newline='', encoding='utf-8-sig') as f:
@@ -4662,6 +4675,8 @@ class DataManager:
                     if str(log_item[2] or "") in LABEL_MATCH_DURABLE_EVENT_TYPES:
                         f.flush()
                         os.fsync(f.fileno())
+                if completion_index is not None:
+                    completion_index.note_append(filepath, previous_signature, log_item[2], log_item[3])
             except queue.Empty:
                 continue
             except Exception as e:

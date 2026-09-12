@@ -199,6 +199,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 쓰기/결과: current-state 보존 → outbox intent → `TRAY_COMPLETE` CSV flush/fsync → `local_completion_committed=1` 및 operation lease transaction → 성공음·이력·다음 준비. marker=0인 PENDING은 로컬 완료가 아니다.
 - 표시: F3 lane은 `권한 확인 및 로컬 완료 저장 중`, durable 성공 뒤 `로컬 완료 저장됨 · 중앙 전송 대기`, 확인된 ACKED는 `중앙 확정`으로 구별한다. 충돌·전송 실패·복구 안내와 수량은 유지한다.
 - 실패/취소/복구: 유효한 재사용 lease 없이 오프라인 완료하지 않는다. CSV·marker 실패는 성공을 표시하지 않고 같은 작업으로 복구한다. 서버 ACK 실패로 이미 durable한 로컬 완료를 취소하지 않는다.
+- 완료 존재 조회는 PC prefix별 재구축 가능한 SQLite 위치 색인을 사용한다. 실제 CSV 파일 집합·size·mtime·ctime이 모두 일치한 완전 coverage만 부재 판정에 쓰며, 색인 없음·손상·불일치는 전체 CSV 검색으로 재구축한다. 기존 완료의 flush→재대조→fsync는 유지한다.
 - 수용 기준: 각 쓰기 경계의 중단에서 거짓 성공이 없고, 재시작·자정 변경 뒤 완료 이벤트와 중앙 효과가 중복되지 않는다. 로컬 확정 후 전송 pending은 다음 준비를 막지 않는다.
 - 근거: [ `_queue_authoritative_package`, `_commit_finalized_set_durable`](../../Label_Match.py), [mark_local_completion_committed](../../package_logistics.py). [C-04](contracts.md#c-04), [LM-B02](BACKLOG.md#lm-b02), [LM-B05](BACKLOG.md#lm-b05).
 

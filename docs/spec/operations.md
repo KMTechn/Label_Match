@@ -484,6 +484,8 @@ portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 
 <a id="responsiveness-w2"></a>
 ### 감사 Wave 2 · Tk callback 응답성
 
+F3 완료 존재 조회는 데이터 루트의 PC prefix별 `_completion_index_<hash>.sqlite3`를 사용한다. index 파일은 삭제·손상·crash 후 CSV에서 재구축할 수 있으며 CSV가 정본이다. 전체 파일 집합·size·mtime·ctime coverage를 대조하고 불일치 시 전체 CSV를 다시 읽는다. 처음 재구축은 보관 행 수에 비례하지만 이후 신규 set 조회는 CSV JSON을 다시 읽지 않는다. writer의 일반 append는 메모리 coverage만, durable 완료는 CSV fsync 후 SQLite transaction으로 위치까지 갱신한다. 재시작은 저장 signature와 실제 CSV를 다시 대조한다. index11 PASS(재시작·손상·파일 추가/크기/역행 mtime·갱신 실패·fsync 순서), [JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/b02-index-final.xml). 최초 coverage 누락 시험의 열린 test 연결로 인한 Windows replace 실패는 원 로그에 보존했다.
+
 주기 package review의 SQLite 정리·조회와 workbench F4 표시 조회는 기존 package worker에서 수행한다. Tk poll은 현재 set·generation·업무 epoch가 같은 불변 결과만 경고에 적용한다. 행동 직전 검사·복구 적용 경로는 유지한다. 격리 headless review20 PASS(200ms 실제 SQLite writer lock·stale 결과·기존 경고 회귀), [로그와 JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/b01-new.xml). 실제 GUI·스캐너·운영 p95는 미검증이다.
 
 <a id="history-optimization"></a>

@@ -182,6 +182,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 <a id="c-04"></a>
 ## C-04 F3 포장 명령·lease·outbox
 
+- 완료 CSV 위치 색인은 정본이 아니다. 같은 데이터 루트의 PC prefix별 `_completion_index_<hash>.sqlite3`에 set→파일과 파일 집합·size·mtime·ctime coverage를 보관한다. coverage가 완전히 일치할 때만 신규 set의 부재를 판정하고, 없음·손상·coverage 누락/변경은 전체 CSV 검색·재구축으로 복구한다. writer는 CSV fsync 뒤 completion 위치와 signature를 한 색인 transaction으로 갱신한다. 색인 갱신 실패는 CSV 완료를 취소하지 않으며 다음 조회에서 불일치로 재구축한다. 적중 CSV의 flush→재대조→fsync가 local marker보다 먼저다.
+
 - 주기 review 정리·조회 및 F4 표시 상태는 package worker의 불변 snapshot이다. Tk는 set·generation·업무 epoch를 확인한 결과만 적용하며 조회 실패 시 마지막 경고를 보존한다. 표시 snapshot은 F3/F4 직전 authoritative guard를 대체하지 않는다.
 
 - 2026-09-12 회귀 정합: 초기 source의 `VALIDATED`는 lease 발급·F3 완료 신호가 아니다. 현재 F3의 future-issued 응답은 서명 검증 뒤에도 `issued_at` 전에는 거부하고 동일 durable issue key로만 다시 요청한다. expiry 경계·서명·단말/source binding·snapshot hash·artifact fence 오류는 package enqueue와 완료를 차단한다. 보존된 과거 2단계 plan에서 signed clock 대기 및 definite service 실패는 원 요청을 유지하지만 unknown issue는 `RECONCILE_PENDING_VALIDATION`, API 오류 문구만의 clock 주장은 `BLOCKED_INVALID`다. [32개 회귀와 기존38개 계약 검사](operations.md#clock-recovery-tests-20260912)는 host 증거이며 이 계약의 제품 변경은 없다.
