@@ -2,7 +2,7 @@
 
 ## 2026-09-12 · 수락 입력 정리와 실제 package 대기 표시
 
-durable capture 후 비활성 Entry의 원문이 남던 원인과 실제 package PENDING이 deferred handoff 뒤 누락되던 집계를 교정한다. 스캔 원문·저장 명령은 보존하고, read-only operator view에서 같은 작업의 capture와 package를 중복 없이 표시한다. Main은 기존 한 번의 M06/F3 lost-ACK 복구를 수용했으며 재실행하지 않는다. [호스트 검증·native/Today 경계](operations.md#package-waiting-display-20260912)를 따른다.
+durable capture 후 비활성 Entry의 원문이 남던 원인과 실제 package PENDING이 deferred handoff 뒤 누락되던 집계를 교정한다. 스캔 원문·저장 명령은 보존하고, read-only operator view에서 같은 작업의 capture와 package를 중복 없이 표시한다. 최종8d의 원 VM 격리 native8장면과 지원 local review ACK1을 Main이 수용했다. 후속 정상 producer 한 재시도는 committed APP_CLOSE receipt와 STALE_RUNTIME_FENCE review를 남겨 Today를 시작하지 않았고 원 VM을 Saved/0으로 반환했다. 원 M06/F3는 재실행하지 않으며 [현재 검증·복구 경계](operations.md#package-waiting-display-20260912)를 따른다.
 
 ## 2026-09-12 · M06 lost-ACK 복구와 계정 전환 인계
 

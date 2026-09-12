@@ -1,10 +1,12 @@
 # Label_Match 진행·공백·추가 제안
 
-## 2026-09-12 · M06 표시 교정과 남은 native/Today
+## 2026-09-12 · M06 표시 교정·격리 native와 남은 producer/Today
 
 - 호스트 수정: durable capture 후 disabled 입력 정리와 deferred→package 실제 대기 readback. 이미 dismiss된 prewrite conflict의 종결과 원 queue/receipt/audit·수량·멤버십·F-key·focus를 유지하며 [검증/실행 경계](operations.md#package-waiting-display-20260912)를 따른다.
 - Main은 원 M06 한-F3/same-key ACKED와 보호 shipping handoff를 수용했다. 이 Label lane에서는 재입력/F3/shipping을 반복하지 않는다.
-- 남은 일: Main의 원76a3 정확한 배정, producer의 독립 disposition에 따른 지원 복구, 영향 native 확인과 최종 후보/실제 당일 history를 결속한 Today30/30. 원23+1 실패는 보존하며 이 호스트 교정은 성능/전체 Goal 종결이 아니다.
+- 완료된 제한 실행: 최종8d의 격리 native8장면·정상 close/native0, Main 결정에 따른 원 REVIEW 한 건의 지원 local ACK·감사1과21ACKED/3RETRY_WAIT, 근거 반출·자체 task2 제거 뒤 원76a3 Saved/0을 Main이 수용했다. 정상 설치1ac·원 marker/owner와 모든 실패 근거를 보존했다.
+- 후속 정상 복구 실패: Main 배정의 원590b 한 재시도는 accepted/committed APP_CLOSE receipt와 STALE_RUNTIME_FENCE review를 함께 남겼다. 제품의 terminal authority/token 정리와 정상 CSV 발견을 보존해 최종21ACKED/1REVIEW/3RETRY_WAIT이며 지원 stop·Python0·자체 task 제거 뒤 원 VM09:47:29Z Saved/0이다. package preflight9개0과 실제 당일10행은 확인했으나 Today는 시작하지 않았다.
+- 남은 일: Main/Web의 실제 receipt·runtime disposition과 기존 consumer에 없는 post-review authority 복구의 한정 제품 결정, producer settlement 후 최종 후보/실제 당일 history를 결속한 Today30/30. 원23+1 실패는 보존하며 격리 native/local ACK는 성능/전체 Goal 종결이 아니다.
 
 ## 2026-09-12 · M06 복구 후 계정 전환 checkpoint
 
