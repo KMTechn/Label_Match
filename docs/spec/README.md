@@ -4,7 +4,7 @@
 
 원 VM/runtime8df에서 Main의 정상 공유 전환·grant 뒤 저장 F4의 같은 key/command 재시도 한 번으로 중앙 교체1건·새 seal2를 확인했다. 실제 화면 QR 해독·정상 guest 입력 뒤 VERIFIED/APPLIED, 원 PHS2/raw1의 일반 F3에서 완료 event1·local marker1·ACKED/COMMITTED 저장 receipt와 fresh lease1을 기록했다. Web 독립 검증은 같은 package/receipt의 중앙 효과1건·lease 소비와 JSON 표현별 hash 일치를 수용했다. 실물 스캐너·후속 고유 업무·lost-ACK·Today30/30의 범위는 [이번 운영 근거](operations.md#original-f4-f3-continuation-20260911)와 [남은 일](BACKLOG.md)을 따른다. Today case03은 상태 게시·종료 시 열 너비 guard 실패로 미입증이며, 원 데이터 보존과 정상 릴레이 정지 뒤 Main/Defect에 VM을 인계했다. 제품 소스 변경은 없다.
 
-후속 [호스트 제어 교정](operations.md#today-host-repair-20260911)은 고유 진행 파일 게시와 Input1 실제 렌더링 너비의 명시적 기록·종료 저장 대조를 준비했다. 다른 설정·업무 guard, 수치 기준과 실제11행 입력은 보존하며 guest 적용·새30/30은 아직 미실행이다.
+2026-09-12 [호스트 observer·문서 종결](operations.md#today-host-repair-20260911)은 최종 `f92a8671`의 실제 세 operator pane·선택적 legacy pane 결속과 기존27개 host 검사 결과를 반영한다. 이전 a4의 없는 pane 실패와 실제 `read_layout`을 대체한21개 검사의 한계는 보존한다. Main의 직접 소스 대조를 반영했으며 Claude는 USER-ENDED/NOT COMPLETED다. reader·제품8df·기준a7e·설정·수치 기준·원9월11일 입력은 유지하고 합성 host geometry를 native 수용으로 간주하지 않는다. 기존 M06 receiving → CA → Label 일반 F3/lost-ACK 조정 → quiescent 실제 당일 이력 → 배정 Today 측정이 남는다. 새 Today 입력은 없고 원901–904/F4/F3/shipping은 재실행하지 않으며, 이 종결은 Label native·성능·전체 Goal 완료가 아니다.
 
 ## 2026-09-10 · 이력표 가시성과 우측 패널
 
