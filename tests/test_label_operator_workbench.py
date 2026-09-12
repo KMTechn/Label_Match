@@ -147,6 +147,12 @@ class FakeWidget:
     def get_children(self, item=""):
         return tuple(self._row_order)
 
+    def exists(self, iid):
+        return str(iid) in self.rows
+
+    def see(self, iid):
+        self.options["seen"] = str(iid)
+
     def item(self, iid, option=None, **kwargs):
         row = self.rows.setdefault(str(iid), {})
         row.update(kwargs)
@@ -2403,6 +2409,37 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     app.operator_details_button.cget("command")()
     app.operator_details_button.cget("command")()
     assert app.entry.focused
+
+
+@pytest.mark.parametrize(("status", "group_key"), [
+    ("PENDING", "transmission_wait"),
+    ("SENDING", "result_checking"),
+    ("CONFLICT", "admin_review"),
+    ("ACKED", "completed"),
+])
+def test_waiting_view_follows_actual_package_after_capture_handoff(
+    operator_workbench, tmp_path, status, group_key,
+):
+    import sqlite3
+    from tests.test_deferred_intent_capture import _store, _capture, _draft
+
+    app = operator_workbench
+    db_path, outbox, store = _store(tmp_path)
+    capture = _capture(store, set_id="SET-WAITING-VIEW")
+    outbox.enqueue(_draft("SET-WAITING-VIEW"), captured_intent_id=capture.intent_id)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE package_command_outbox SET status=?,local_completion_committed=1",
+            (status,),
+        )
+    current = copy.deepcopy(app.current_set_info)
+    focus_before = app.entry.focused
+    app._render_deferred_observability(store.status_readback())
+    rows = app.deferred_observability_tree.rows
+    assert rows[f"deferred-{group_key}"]["values"][1] == 1
+    assert bool(app.operator_footer_label.cget("text")) == (status != "ACKED")
+    assert app.current_set_info == current
+    assert app.entry.focused == focus_before
 
 
 @pytest.mark.parametrize("notice", [

@@ -1,5 +1,11 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-12 · M06 표시 교정과 남은 native/Today
+
+- 호스트 수정: durable capture 후 disabled 입력 정리와 deferred→package 실제 대기 readback. 원 queue/receipt/audit·수량·멤버십·F-key·focus를 유지하며 [검증/실행 경계](operations.md#package-waiting-display-20260912)를 따른다.
+- Main은 원 M06 한-F3/same-key ACKED와 보호 shipping handoff를 수용했다. 이 Label lane에서는 재입력/F3/shipping을 반복하지 않는다.
+- 남은 일: Main의 원76a3 정확한 배정, producer의 독립 disposition에 따른 지원 복구, 영향 native 확인과 최종 후보/실제 당일 history를 결속한 Today30/30. 원23+1 실패는 보존하며 이 호스트 교정은 성능/전체 Goal 종결이 아니다.
+
 ## 2026-09-12 · M06 복구 후 계정 전환 checkpoint
 
 - 실제 한 멤버 F3/lost-ACK는 같은 key의 로컬 PENDING→정상 재시작 ACKED와 중앙 단일 COMMITTED 효과로 확인했다. shipping은 Main이 보호 원 PHS2와 실제 package handoff를 수용·배정해야 한다.

@@ -1346,6 +1346,64 @@ def test_online_legacy_outbox_and_supersede_handoff_commit_together(tmp_path):
             )
 
 
+@pytest.mark.parametrize(("status", "local_committed", "operator_state"), [
+    ("PENDING", 1, "READY_TO_SUBMIT"),
+    ("SENDING", 1, "RECONCILE_PENDING_SUBMIT"),
+    ("CONFLICT", 1, "OPERATOR_REVIEW"),
+    ("ACKED", 0, "LOCAL_EFFECT_PENDING"),
+    ("ACKED", 1, "COMPLETED"),
+])
+def test_status_readback_follows_package_handoff_without_mutating_evidence(
+    tmp_path, status, local_committed, operator_state,
+):
+    db_path, outbox, store = _store(tmp_path)
+    captured = _capture(store, set_id="SET-STATUS-HANDOFF")
+    queued = outbox.enqueue(
+        _draft("SET-STATUS-HANDOFF"), captured_intent_id=captured.intent_id,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE package_command_outbox SET status=?,local_completion_committed=?",
+            (status, local_committed),
+        )
+    before = hashlib.sha256(db_path.read_bytes()).hexdigest()
+    readback = store.status_readback(now="2099-01-01T00:00:00Z")
+    assert dict(readback.state_counts)["SUPERSEDED"] == 1
+    assert dict(readback.package_state_counts) == {status: 1}
+    assert dict(readback.operator_state_counts)[operator_state] == 1
+    assert readback.package_handoff_count == 1
+    assert readback.total_count == 1
+    assert readback.closed_incomplete_count == 0
+    assert readback.nonterminal_count == (0 if operator_state == "COMPLETED" else 1)
+    if readback.nonterminal_count:
+        assert readback.oldest_intent_id == queued["idempotency_key"]
+        assert readback.oldest_state == operator_state
+        assert readback.oldest_age_seconds > 0
+    groups = {group.key: group.count for group in readback.operator_groups}
+    if status == "PENDING":
+        assert groups["transmission_wait"] == 1
+    elif status == "SENDING":
+        assert groups["result_checking"] == 1
+    elif status == "CONFLICT":
+        assert groups["admin_review"] == 1
+    assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before
+
+
+def test_status_readback_counts_standalone_package_without_hiding_other_work(tmp_path):
+    db_path, outbox, store = _store(tmp_path)
+    captured = _capture(store, set_id="SET-STILL-VALIDATING")
+    outbox.enqueue(_draft("SET-PACKAGE-ONLY"))
+    with sqlite3.connect(db_path) as conn:
+        _insert_status_fixture(conn, index="unbound", state="SUPERSEDED")
+    readback = store.status_readback()
+    assert readback.total_count == 3
+    assert readback.nonterminal_count == 2
+    assert readback.package_handoff_count == 0
+    assert readback.closed_incomplete_count == 1
+    assert dict(readback.state_counts)["CAPTURED_UNVERIFIED"] == 1
+    assert store.get(captured.intent_id)["state"] == "CAPTURED_UNVERIFIED"
+
+
 def test_validated_materialization_handoff_unblocks_fifo_atomically(tmp_path):
     db_path, outbox, store = _store(tmp_path)
     first = _capture(store, set_id="SET-VALIDATED-HANDOFF-1")

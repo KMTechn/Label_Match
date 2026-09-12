@@ -1142,6 +1142,63 @@ def test_scan_is_not_cleared_while_lane_is_busy():
         assert rejected[-1] == reason
 
 
+@pytest.mark.parametrize("capture_succeeds", [True, False])
+def test_phs2_capture_clears_disabled_entry_only_after_durable_acceptance(capture_succeeds):
+    from tests.test_label_match_core import _FakeEntry
+
+    app, root = _app_with_lane()
+    raw = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=INPUT-1|CLC=ITEM-1|LBL=LABEL-1|HSH=0123456789abcdef"
+    app.operator_workbench_ready = True
+    app.entry = _FakeEntry(raw)
+    app.package_logistics_client = object()
+    app._app_close_in_progress = False
+    app.initialized_successfully = True
+    app.is_blinking = False
+    app.run_tests = False
+    app.global_scanned_set = set()
+    app.data_manager = SimpleNamespace(log_event=lambda *_args: None)
+    app._sealed_transfer_exchange_blocks_local_action = lambda *_args: False
+    app._block_view_only_action = lambda *_args: False
+    app._block_active_history_load_action = lambda *_args: False
+    app._show_deferred_capture_failure = lambda *_args: None
+    app._show_deferred_capture_pending = lambda *_args, **_kwargs: None
+    app._materialize_validated_deferred_label = lambda *_args: False
+    app._show_deferred_validation_result = lambda *_args: None
+    captured = []
+
+    def prepare(*_args):
+        assert app.entry.get() == ""
+        assert app.entry.cget("state") == "disabled"
+        return None
+
+    def capture(payload, item, set_id):
+        assert app.entry.get() == raw
+        assert app.entry.cget("state") == "disabled"
+        if not capture_succeeds:
+            raise RuntimeError("isolated durable capture failure")
+        captured.append((payload, item, set_id))
+        return SimpleNamespace(intent_id="isolated-capture")
+
+    def render():
+        # Match Tk's actual scan-admission gate during the serial task.
+        app.entry.configure(state="disabled" if app._ui_lane_busy_label else "normal")
+
+    app._capture_central_phs2_scan = capture
+    app._prepare_deferred_label_validation = prepare
+    app._render_operator_workbench = render
+    try:
+        assert app.process_input() is True
+        root.run_until(lambda: not app.ui_lane.is_busy())
+        assert app.entry.get() == ("" if capture_succeeds else raw)
+        assert app.entry.cget("state") == "normal"
+        assert len(captured) == int(capture_succeeds)
+        if captured:
+            assert captured[0] == (raw, "ITEM-1", "set-1")
+            assert app.current_set_info["deferred_intent_id"] == "isolated-capture"
+    finally:
+        _close_lane(app, root)
+
+
 def test_broken_lane_keeps_critical_warning_and_scan_entry_fail_closed():
     app = _render_app()
     root = FakeTkRoot()

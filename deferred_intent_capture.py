@@ -431,6 +431,11 @@ class DeferredIntentStatusReadback:
     alert_thresholds: tuple[tuple[str, int], ...]
     read_duration_ms: float
     auto_prune_enabled: bool = False
+    # Raw storage counts stay available separately from the deduplicated
+    # operator view of capture -> package submission -> local completion.
+    operator_state_counts: tuple[tuple[str, int], ...] = ()
+    package_state_counts: tuple[tuple[str, int], ...] = ()
+    package_handoff_count: int = 0
 
 
 def _validate_jcs_subset(value: Any, *, path: str = "$") -> None:
@@ -3437,6 +3442,63 @@ class DeferredIntentCaptureStore:
                 )
                 for state in DEFERRED_INTENT_STATES
             )
+            package_state_counts = ()
+            package_handoff_count = 0
+            package_oldest = None
+            package_table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='package_command_outbox'"
+            ).fetchone()
+            if package_table_exists:
+                package_view = """SELECT idempotency_key, status, created_at,
+                        CASE status
+                          WHEN 'PENDING' THEN 'READY_TO_SUBMIT'
+                          WHEN 'SENDING' THEN 'RECONCILE_PENDING_SUBMIT'
+                          WHEN 'CONFLICT' THEN 'OPERATOR_REVIEW'
+                          WHEN 'ACKED' THEN CASE local_completion_committed
+                            WHEN 1 THEN 'COMPLETED'
+                            ELSE 'LOCAL_EFFECT_PENDING' END
+                        END AS state
+                      FROM package_command_outbox"""
+                package_rows = conn.execute(
+                    f"""SELECT status,state,COUNT(*) AS row_count,
+                               MIN(created_at) AS oldest_at
+                          FROM ({package_view}) GROUP BY status,state"""
+                ).fetchall()
+                package_counts = {}
+                for row in package_rows:
+                    count = int(row['row_count'])
+                    status = str(row['status'])
+                    package_counts[status] = package_counts.get(status, 0) + count
+                    aggregate = aggregates.setdefault(str(row['state']), {
+                        'count': 0, 'oldest_at': '', 'oldest_state_at': '',
+                    })
+                    aggregate['count'] += count
+                    aggregate['oldest_at'] = min(filter(None, (
+                        aggregate['oldest_at'], str(row['oldest_at']),
+                    )))
+                package_state_counts = tuple(sorted(package_counts.items()))
+                # An immutable SUPERSEDED capture is a handoff, not a failed
+                # package. Only deduplicate an existing exact same-set target.
+                package_handoff_count = int(conn.execute(
+                    """SELECT COUNT(*) FROM deferred_intents AS capture
+                         JOIN package_command_outbox AS package
+                           ON capture.downstream_outbox_ref =
+                              'package_command_outbox:' || package.idempotency_key
+                          AND capture.local_work_identity = package.set_id
+                        WHERE capture.state='SUPERSEDED'"""
+                ).fetchone()[0])
+                if package_handoff_count:
+                    aggregates['SUPERSEDED']['count'] -= package_handoff_count
+                package_oldest = conn.execute(
+                    f"""SELECT idempotency_key AS intent_id,state,created_at
+                          FROM ({package_view}) WHERE state<>'COMPLETED'
+                         ORDER BY created_at,idempotency_key LIMIT 1"""
+                ).fetchone()
+            operator_state_counts = tuple(
+                (state, int((aggregates.get(state) or {}).get('count') or 0))
+                for state in DEFERRED_INTENT_STATES
+            )
             operator_groups = []
             for key, operator_status, states in DEFERRED_OPERATOR_STATUS_GROUPS:
                 oldest_values = tuple(
@@ -3459,9 +3521,9 @@ class DeferredIntentCaptureStore:
                     )
                 )
 
-            total_count = sum(count for _state, count in state_counts)
+            total_count = sum(count for _state, count in operator_state_counts)
             nonterminal_count = sum(
-                count for state, count in state_counts if state not in _TERMINAL_STATES
+                count for state, count in operator_state_counts if state not in _TERMINAL_STATES
             )
             closed_incomplete_count = sum(
                 int((aggregates.get(state) or {}).get("count") or 0)
@@ -3474,6 +3536,10 @@ class DeferredIntentCaptureStore:
                       ORDER BY created_at,intent_id LIMIT 1""",
                 tuple(sorted(_TERMINAL_STATES)),
             ).fetchone()
+            if package_oldest is not None and (
+                oldest is None or package_oldest['created_at'] < oldest['created_at']
+            ):
+                oldest = package_oldest
 
             retry_rows = conn.execute(
                 """SELECT intent_id,state,partition_key,partition_seq,
@@ -3696,6 +3762,9 @@ class DeferredIntentCaptureStore:
             return DeferredIntentStatusReadback(
                 observed_at=observed_at,
                 state_counts=state_counts,
+                operator_state_counts=operator_state_counts,
+                package_state_counts=package_state_counts,
+                package_handoff_count=package_handoff_count,
                 operator_groups=tuple(operator_groups),
                 total_count=total_count,
                 nonterminal_count=nonterminal_count,

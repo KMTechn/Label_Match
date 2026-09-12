@@ -1,5 +1,9 @@
 # Label_Match 기술 명세
 
+## 2026-09-12 · 수락 입력 정리와 실제 package 대기 표시
+
+durable capture 후 비활성 Entry의 원문이 남던 원인과 실제 package PENDING이 deferred handoff 뒤 누락되던 집계를 교정한다. 스캔 원문·저장 명령은 보존하고, read-only operator view에서 같은 작업의 capture와 package를 중복 없이 표시한다. Main은 기존 한 번의 M06/F3 lost-ACK 복구를 수용했으며 재실행하지 않는다. [호스트 검증·native/Today 경계](operations.md#package-waiting-display-20260912)를 따른다.
+
 ## 2026-09-12 · M06 lost-ACK 복구와 계정 전환 인계
 
 실제 CA handoff의 한 PHS2로 source1ac 일반 F3를 한 번 실행했다. 중앙 package1/COMMITTED receipt1·member1과 로컬 PENDING/marker1을 독립 확인한 뒤 같은 key/command로 정상 재시작 ACKED를 확인했다. 원 package/lease 행과 실패 근거를 보존했으며 shipping handoff는 Main 수용 대기다. 최신 사용자 지시에 따라 account347 작업을 안전 종료하고 blackdwarfian 후속 작업자에게 넘긴다. producer 원 REVIEW1·RETRY_WAIT3, routine 입력/대기 표시 문제와 Today30/30은 남으며 [실제 경계와 인계](operations.md#m06-account-handoff-20260912)를 따른다.

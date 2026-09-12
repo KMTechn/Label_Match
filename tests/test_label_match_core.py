@@ -6151,12 +6151,22 @@ class _FakeEntry:
     def __init__(self, text):
         self.text = text
         self.deleted = False
+        self.state = "normal"
+
+    def cget(self, name):
+        assert name == "state"
+        return self.state
+
+    def configure(self, **kwargs):
+        self.state = kwargs.get("state", self.state)
 
     def get(self):
         return self.text
 
     def delete(self, start, end):
-        self.deleted = True
+        if self.state == "normal":
+            self.deleted = True
+            self.text = ""
 
 
 class _FailingDataManager:

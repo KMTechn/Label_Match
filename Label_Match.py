@@ -9352,7 +9352,9 @@ class Label_Match(tk.Tk):
 
     @staticmethod
     def _deferred_state_count(readback, state):
-        return int(dict(getattr(readback, "state_counts", ()) or ()).get(state, 0))
+        counts = (getattr(readback, "operator_state_counts", ())
+                  or getattr(readback, "state_counts", ()) or ())
+        return int(dict(counts).get(state, 0))
 
     def _refresh_deferred_observability(self, *, validate_pending=False):
         """Start one coalesced local read without blocking the Tk event loop."""
@@ -9517,7 +9519,7 @@ class Label_Match(tk.Tk):
             else "-"
         )
         exact_status_labels = dict(DEFERRED_OPERATOR_STATE_LABELS)
-        state_counts = dict(readback.state_counts)
+        state_counts = dict(readback.operator_state_counts or readback.state_counts)
         oldest_status = exact_status_labels.get(
             readback.oldest_state,
             "상태 확인 필요" if readback.nonterminal_count else "대기 없음",
@@ -10583,7 +10585,14 @@ class Label_Match(tk.Tk):
             nonlocal input_consumed
             if input_consumed:
                 return
-            self.entry.delete(0, tk.END)
+            # The durable-capture callback runs while the lane has disabled
+            # scanning. Tk ignores delete() on a disabled/readonly Entry.
+            entry_state = self.entry.cget("state")
+            try:
+                self.entry.configure(state="normal")
+                self.entry.delete(0, tk.END)
+            finally:
+                self.entry.configure(state=entry_state)
             input_consumed = True
 
         if self._ui_lane_is_busy():
