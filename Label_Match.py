@@ -5009,7 +5009,7 @@ class Label_Match(tk.Tk):
 
     def _operator_workflow_hint_text(self, source=None):
         if self._standard_phs2_workflow_expected(source):
-            return "PHS2 1회 스캔 → 필요 시 F4 교체 목록 확인·일괄 적용 → 랩핑 후 F3 포장 완료"
+            return "현품표 1회 스캔 → 필요 시 제품 교체 (F4) → 랩핑 후 포장 완료 (F3). 교체 후 새 전자 QR을 확인하며 원본 현품표는 유지합니다."
         return "레거시 전용: QA 5단계와 F4 전체 재스캔 절차를 사용합니다."
 
     def _workflow_total_scan_count(self):
@@ -9452,6 +9452,12 @@ class Label_Match(tk.Tk):
     def _render_deferred_observability(self, readback):
         if not isinstance(readback, DeferredIntentStatusReadback):
             return None
+        footer = self.__dict__.get("operator_footer_label")
+        if footer is not None:
+            footer.configure(text=(
+                f"처리 대기 {readback.nonterminal_count}건 · 대기 현황에서 확인"
+                if readback.nonterminal_count else ""
+            ))
         tree = self.__dict__.get("deferred_observability_tree")
         if tree is not None:
             try:
@@ -10012,15 +10018,11 @@ class Label_Match(tk.Tk):
                 tone="warning",
             )
         if state.get("status") == "저장됨-선행조건대기":
-            dependency = str(state.get("dependency_identity") or "").strip()
-            checked_at = str(state.get("last_checked_at") or "").strip()
             return WorkflowNotice(
                 title="저장됨-선행조건대기",
                 message=(
-                    f"intent {str(state.get('intent_id') or '').strip()}\n"
-                    f"대기 항목: {dependency}\n"
-                    f"마지막 확인: {checked_at}\n"
-                    "승인이 완료될 때까지 자동 재시도하지 않습니다."
+                    "현품표를 저장했습니다. 선행 작업의 승인 상태를 확인하세요.\n"
+                    "승인 전에는 자동 재시도하지 않습니다. 대기 항목은 작업 상세에서 확인하세요."
                 ),
                 kind="deferred_dependency_wait",
                 tone="warning",
@@ -10035,10 +10037,14 @@ class Label_Match(tk.Tk):
         }:
             return WorkflowNotice(
                 title=str(state.get("status")),
-                message=(
-                    f"intent {str(state.get('intent_id') or '').strip()}\n"
-                    f"상태 코드: {str(state.get('reason_code') or '').strip()}"
-                ),
+                message={
+                    "관리자확인": "현재 작업과 실물을 유지하고 관리자에게 확인을 요청하세요.",
+                    "결과확인중": "처리 결과를 확인 중입니다. 같은 작업을 다시 제출하지 마세요.",
+                    "검증완료-전송대기": "검증을 마쳤습니다. 중앙 전송을 기다리며 자동으로 다시 확인합니다.",
+                    "서버확정-로컬반영대기": "중앙 처리는 확정됐습니다. 이 장비의 기록 반영을 기다리세요.",
+                    "완료": "작업을 완료했습니다. 다음 현품표를 스캔하세요.",
+                    "종결-미완료": "이 작업은 완료되지 않았습니다. 관리자와 처리 방법을 확인하세요.",
+                }[state["status"]],
                 kind="deferred_validation_state",
                 tone=(
                     "danger"
@@ -10050,7 +10056,6 @@ class Label_Match(tk.Tk):
             )
         if state.get("status") != "저장됨-검증대기":
             return None
-        intent_id = str(state.get("intent_id") or "").strip()
         pending_count = int(state.get("pending_count") or 0)
         oldest_age = int(state.get("oldest_age_seconds") or 0)
         next_step = (
@@ -10061,7 +10066,6 @@ class Label_Match(tk.Tk):
         return WorkflowNotice(
             title="저장됨-검증대기",
             message=(
-                f"intent {intent_id}\n"
                 f"대기 {pending_count}건 · 최장 {oldest_age}초\n"
                 f"{next_step}"
             ),
@@ -16699,10 +16703,8 @@ class Label_Match(tk.Tk):
                 "operator_item_name_label",
                 "operator_item_spec_label",
                 "operator_item_phase_label",
-                "operator_set_id_label",
                 "operator_membership_label",
                 "operator_badges_label",
-                "operator_left_hint_label",
             ):
                 widget = self.__dict__.get(name)
                 if widget is not None:
@@ -16728,7 +16730,6 @@ class Label_Match(tk.Tk):
                 "operator_item_name_label",
                 "operator_item_spec_label",
                 "operator_item_phase_label",
-                "operator_set_id_label",
                 "operator_badges_label",
             ):
                 widget = self.__dict__.get(name)
@@ -16755,11 +16756,9 @@ class Label_Match(tk.Tk):
             if constrained_large_text:
                 self.operator_left_divider.grid_remove()
                 self.operator_membership_heading_label.grid_remove()
-                self.operator_left_hint_label.grid_remove()
             else:
                 self.operator_left_divider.grid()
                 self.operator_membership_heading_label.grid()
-                self.operator_left_hint_label.grid()
             action_font_size = min(
                 tokens.fonts.button,
                 15 if panes.right_width < 480 else tokens.fonts.button,
@@ -16959,11 +16958,10 @@ class Label_Match(tk.Tk):
                 width=center_inner_width,
                 height=live_list_height,
             )
-            self.operator_center_pane.grid_rowconfigure(
-                4,
-                minsize=live_list_height,
-                weight=1,
+            self.operator_task_detail_text.configure(
+                font=(self.default_font_name, detail_font_size), height=4,
             )
+            self._set_operator_details_visibility()
             session_width = int(self.session_tree.winfo_width()) if settle and self.session_tree.winfo_ismapped() else 0
             session_widths = self._fit_session_display_widths(
                 max(168, session_width - 4 if session_width > 1 else right_inner_width - 28),
@@ -17451,17 +17449,22 @@ class Label_Match(tk.Tk):
         phase = str(source.get("phase") or snapshot.get("phase") or "-")
         set_id = str(source.get("id") or snapshot.get("set_id") or "-")
         display_item_code = self._middle_ellipsis(item_code, 14)
-        display_set_id = self._middle_ellipsis(set_id, 10)
         stage_text = self._workflow_left_stage_text(view)
         if self.__dict__.get("_operator_hide_left_badges") and "복구됨" in view.badges:
             stage_text = f"{stage_text} · 복구됨"
+        detail_lines = [f"세트 {set_id}"]
+        deferred = self.__dict__.get("_deferred_capture_ui") or {}
+        for field, label in (("intent_id", "접수"), ("reason_code", "상태 코드"),
+                             ("error_code", "오류 코드"), ("dependency_identity", "대기 항목"),
+                             ("last_checked_at", "마지막 확인")):
+            if deferred.get(field):
+                detail_lines.append(f"{label}: {deferred[field]}")
         updates = {
             "operator_item_stage_label": stage_text,
             "operator_item_code_label": f"현품표 {display_item_code or '-'}",
             "operator_item_name_label": f"품목 {item_name}",
             "operator_item_spec_label": f"규격 {spec}",
             "operator_item_phase_label": f"차수 {phase}",
-            "operator_set_id_label": f"세트 {display_set_id}",
         }
         for name, text in updates.items():
             widget = self.__dict__.get(name)
@@ -17471,10 +17474,32 @@ class Label_Match(tk.Tk):
                 except (TclError, AttributeError):
                     pass
 
+        task_details = self.__dict__.get("operator_task_detail_text")
+        if task_details is not None:
+            detail_text = "\n".join(detail_lines + ["", self._operator_workflow_hint_text(source)])
+            if detail_text != self.__dict__.get("_operator_task_detail_text_value"):
+                task_details.configure(state="normal")
+                task_details.delete("1.0", tk.END)
+                task_details.insert("1.0", detail_text)
+                task_details.configure(state="disabled")
+                self._operator_task_detail_text_value = detail_text
+
         standard_phs2 = self._standard_phs2_workflow_expected(source)
-        membership = "PHS2 1장 · 중앙 멤버십 상속" if standard_phs2 else "레거시 QA 5단계"
-        if view.exact_rescan.status == "sealed":
-            membership = "서버 멤버십 상속"
+        membership = "레거시 QA 5단계"
+        if standard_phs2:
+            # Counts come from the resolved source or verified seal, never the
+            # one physical scan or the number of rows in the history table.
+            package_source = source.get("package_source_snapshot") or {}
+            seal = source.get("sealed_transfer") or {}
+            count = package_source.get("member_count") or seal.get("QT")
+            try:
+                count = int(count)
+            except (TypeError, ValueError):
+                count = 0
+            membership = (
+                f"제품 {count:,}개" if count > 0 else
+                "제품 수량 확인 중" if source.get("raw") else "제품 수량 -"
+            )
         elif view.exact_rescan.status == "active":
             membership = f"F4 재스캔 {view.exact_rescan.progress_text}"
         elif view.exact_rescan.status == "complete":
@@ -17488,13 +17513,49 @@ class Label_Match(tk.Tk):
         badges_label = self.__dict__.get("operator_badges_label")
         if badges_label is not None:
             try:
-                if view.badges and not self.__dict__.get("_operator_hide_left_badges"):
-                    badges_label.configure(text=" · ".join(view.badges))
+                badges = tuple(badge for badge in view.badges if badge not in {
+                    "중앙 멤버십", "PHS2 서버 멤버십",
+                })
+                if badges and not self.__dict__.get("_operator_hide_left_badges"):
+                    badges_label.configure(text=" · ".join(badges))
                     badges_label.grid()
                 else:
                     badges_label.grid_remove()
             except (TclError, AttributeError):
                 pass
+
+    def _set_operator_details_visibility(self, source=None):
+        """Disclose scan evidence without changing workflow state or admission."""
+        expanded = bool(self.__dict__.get("_operator_details_expanded", False))
+        standard = self._standard_phs2_workflow_expected(source)
+        notebook = self.__dict__.get("live_scan_notebook")
+        if notebook is not None:
+            if expanded or not standard:
+                notebook.grid()
+            else:
+                notebook.grid_remove()
+        for name in ("qa_scan_detail_frame", "exact_rescan_detail_frame",
+                     "operator_task_detail_frame"):
+            widget = self.__dict__.get(name)
+            if widget is not None:
+                if expanded:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+        button = self.__dict__.get("operator_details_button")
+        if button is not None:
+            button.configure(text="작업 상세 닫기 ▴" if expanded else "작업 상세 보기 ▾")
+        center = self.__dict__.get("operator_center_pane")
+        if center is not None:
+            center.grid_rowconfigure(5, minsize=0, weight=1)
+
+    def _toggle_operator_details(self):
+        self._operator_details_expanded = not bool(
+            self.__dict__.get("_operator_details_expanded", False)
+        )
+        self._set_operator_details_visibility(self._workflow_view_source())
+        if not self._operator_details_expanded:
+            self._focus_scan_entry_if_available()
 
     def _render_operator_workbench(self):
         """Render the current runtime through adapter -> pure presenter."""
@@ -17579,7 +17640,12 @@ class Label_Match(tk.Tk):
                         deferred_capture_notice.title
                         if deferred_capture_notice is not None
                         else self._workflow_headline_text(view)
-                    )
+                    ),
+                    foreground={
+                        "warning": "#92400E", "danger": self.colors.get("danger", "#B91C1C"),
+                        "success": self.colors.get("success", "#047857"),
+                        "muted": self.colors.get("text_subtle", "#6B7280"),
+                    }.get(view.tone, self.colors.get("primary", "#2563EB")),
                 )
             except (TclError, AttributeError):
                 pass
@@ -17593,12 +17659,6 @@ class Label_Match(tk.Tk):
                     progress.configure(value=view.qa_completed)
                 except (TclError, AttributeError):
                     pass
-        hint_label = self.__dict__.get("operator_left_hint_label")
-        if hint_label is not None:
-            try:
-                hint_label.configure(text=self._operator_workflow_hint_text(source))
-            except (TclError, AttributeError):
-                pass
         if "step_labels" in self.__dict__:
             try:
                 self._update_step_rail(
@@ -17763,6 +17823,36 @@ class Label_Match(tk.Tk):
             display_notice,
             "" if deferred_capture_notice is not None else view.next_action,
         )
+        # The standard one-scan flow needs one next action.  Keep the full
+        # notice surface for every exception, uncertain result and recovery.
+        if self._standard_phs2_workflow_expected(source):
+            routine = display_notice is None
+            if routine and headline is not None:
+                headline.grid()
+                headline.configure(text=(
+                    "현품표를 스캔하세요" if not source.get("raw") else view.next_action
+                ))
+            elif headline is not None:
+                headline.grid_remove()
+            progress_frame = self.__dict__.get("progress_frame")
+            if progress_frame is not None:
+                progress_frame.grid_remove()
+            notice_frame = self.__dict__.get("workflow_notice_frame")
+            if notice_frame is not None:
+                if routine:
+                    notice_frame.grid_remove()
+                else:
+                    notice_frame.grid()
+        else:
+            if headline is not None:
+                headline.grid()
+            progress_frame = self.__dict__.get("progress_frame")
+            if progress_frame is not None:
+                progress_frame.grid()
+            notice_frame = self.__dict__.get("workflow_notice_frame")
+            if notice_frame is not None:
+                notice_frame.grid()
+        self._set_operator_details_visibility(source)
         last_scan_label = self.__dict__.get("operator_last_scan_label")
         if last_scan_label is None:
             last_scan_label = self.__dict__.get("status_label")
@@ -18196,9 +18286,9 @@ class Label_Match(tk.Tk):
     def _create_widgets(self):
         """Create the work-focused three-column operator surface.
 
-        The legacy history widgets and their data contracts remain intact,
-        but they now live in right-side tabs so the active five-scan set stays
-        visible throughout normal, error, completion, and recovery states.
+        Routine PHS2 work shows the item/count, scan and next action. Accepted
+        scans and technical context are available through the work disclosure;
+        legacy multi-scan progress and exception notices remain visible.
         """
         profile = getattr(self, "ui_profile", self.UI_PROFILES["standard"])
         outer_padding = int(profile["outer_padding"])
@@ -18334,14 +18424,6 @@ class Label_Match(tk.Tk):
             style="Status.TLabel",
         )
         self.operator_item_phase_label.grid(row=3, column=0, sticky="ew", pady=(5, 0))
-        self.operator_set_id_label = ttk.Label(
-            self.operator_item_card,
-            text="세트 -",
-            style="Status.TLabel",
-            wraplength=max(150, panes.left_width - 44),
-        )
-        self.operator_set_id_label.grid(row=4, column=0, sticky="ew", pady=(5, 0))
-
         self.operator_left_divider = ttk.Frame(
             self.operator_left_pane,
             style="TFrame",
@@ -18350,7 +18432,7 @@ class Label_Match(tk.Tk):
         self.operator_left_divider.grid(row=3, column=0, sticky="ew", pady=16)
         self.operator_membership_heading_label = ttk.Label(
             self.operator_left_pane,
-            text="작업 상태",
+            text="포장 수량",
             style="Status.TLabel",
         )
         self.operator_membership_heading_label.grid(row=4, column=0, sticky="w")
@@ -18373,15 +18455,6 @@ class Label_Match(tk.Tk):
         )
         self.operator_badges_label.grid(row=6, column=0, sticky="ew", pady=(12, 0))
         self.operator_badges_label.grid_remove()
-        self.operator_left_hint_label = ttk.Label(
-            self.operator_left_pane,
-            text=self._operator_workflow_hint_text(),
-            style="Status.TLabel",
-            wraplength=max(150, panes.left_width - 40),
-            justify=tk.LEFT,
-        )
-        self.operator_left_hint_label.grid(row=7, column=0, sticky="sew", pady=(18, 0))
-        self.operator_left_pane.grid_rowconfigure(7, weight=1)
 
         self.operator_center_pane = ttk.Frame(
             self.operator_workbench_frame,
@@ -18396,7 +18469,7 @@ class Label_Match(tk.Tk):
         )
         self.top_card = self.operator_center_pane
         self.operator_center_pane.grid_columnconfigure(0, weight=1)
-        self.operator_center_pane.grid_rowconfigure(4, weight=1)
+        self.operator_center_pane.grid_rowconfigure(5, weight=1)
 
         self.big_display_label = ttk.Label(
             self.operator_center_pane,
@@ -18521,8 +18594,15 @@ class Label_Match(tk.Tk):
         self.entry.grid(row=0, column=1, sticky="ew", ipady=8)
         self.entry.bind("<Return>", self._handle_scan_enter)
 
+        self.operator_details_button = ttk.Button(
+            self.operator_center_pane,
+            text="작업 상세 보기 ▾",
+            command=self._toggle_operator_details,
+            style="Control.TButton",
+        )
+        self.operator_details_button.grid(row=4, column=0, sticky="w", pady=(0, 8))
         self.live_scan_notebook = ttk.Notebook(self.operator_center_pane)
-        self.live_scan_notebook.grid(row=4, column=0, sticky="nsew")
+        self.live_scan_notebook.grid(row=5, column=0, sticky="nsew")
         self.qa_scan_frame = ttk.Frame(self.live_scan_notebook, style="Card.TFrame")
         self.qa_scan_frame.grid_rowconfigure(0, weight=1)
         self.qa_scan_frame.grid_columnconfigure(0, weight=1)
@@ -18619,6 +18699,22 @@ class Label_Match(tk.Tk):
             "현재 세트 행을 선택하면 수락된 스캔 원문을 확인할 수 있습니다.",
         )
         self.qa_scan_detail_text.configure(state="disabled")
+
+        self.operator_task_detail_frame = ttk.Frame(self.qa_scan_frame, padding=(6, 4))
+        self.operator_task_detail_frame.grid(row=2, column=0, sticky="ew")
+        self.operator_task_detail_frame.grid_columnconfigure(0, weight=1)
+        self.operator_task_detail_text = tk.Text(
+            self.operator_task_detail_frame, height=4, wrap="word",
+            font=(self.default_font_name, 10), relief="flat",
+            bg=self.colors["card_background"], fg=self.colors["text"],
+        )
+        task_detail_scrollbar = ttk.Scrollbar(
+            self.operator_task_detail_frame, orient=tk.VERTICAL,
+            command=self.operator_task_detail_text.yview,
+        )
+        self.operator_task_detail_text.configure(yscrollcommand=task_detail_scrollbar.set, state="disabled")
+        self.operator_task_detail_text.grid(row=0, column=0, sticky="nsew")
+        task_detail_scrollbar.grid(row=0, column=1, sticky="ns")
 
         self.exact_rescan_frame = ttk.Frame(self.live_scan_notebook, style="Card.TFrame")
         self.exact_rescan_frame.grid_rowconfigure(0, weight=1)
@@ -18720,7 +18816,7 @@ class Label_Match(tk.Tk):
             anchor="w",
             wraplength=max(380, panes.center_width - 30),
         )
-        self.operator_last_scan_label.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.operator_last_scan_label.grid(row=6, column=0, sticky="ew", pady=(8, 0))
         self.status_label = self.operator_last_scan_label
 
         self.operator_right_pane = ttk.Frame(
@@ -19196,7 +19292,7 @@ class Label_Match(tk.Tk):
         self.save_status_label.grid(row=0, column=0, sticky="w")
         self.operator_footer_label = ttk.Label(
             self.operator_status_frame,
-            text="상태는 문구와 색상으로 함께 표시됩니다.",
+            text="",
             style="Status.TLabel",
         )
         self.operator_footer_label.grid(row=0, column=1, sticky="e")

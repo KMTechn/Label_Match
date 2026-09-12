@@ -1,5 +1,14 @@
 # Label_Match 운영·복구·검증
 
+<a id="routine-details-20260912"></a>
+## 2026-09-12 · 일상 포장 화면 단순화
+
+표준 PHS2에서 반복되던 단계표·일반 안내와 스캔 원문 상시 노출을 줄였다. 원문·세트·접수/진단 코드·절차는 `작업 상세 보기`의 읽기 전용 스크롤 영역에서 확인한다. 품목·제품 수량과 다음 행동은 기본 화면에 남으며, 대기·실패·충돌·교체 복구 안내는 접히지 않는다. 기존 세 pane과 이력 위젯은 유지한다. 이전 left `operator_set_id_label`/`operator_left_hint_label`은 `operator_task_detail_text`로 합쳤다. Today observer의 제품/레이아웃 pin은 이전 후보의 증거이며 이번 UI나 성능 증거로 상속하지 않는다.
+
+**PROVEN — 격리 host, Python 3.12.10:** workbench/presenter/adapter/action-gate와 closed-port 접수 UI를 실제 실행해 **151 PASS / 2 native 검사 제외**다. 상세 왕복의 입력·원문·상태·action gate 보존, source48개·seal12개 표시, 수량 미확인, 복구 경고 및 ID의 상세 이동을 확인했다. 기존 layout fake가 `Style.lookup`을 구현하지 않아 중간에 빠지던 실패를 원 HEAD에서도 확인하고 fixture를 보완했다. **FAILED, 기존 소스에서도 동일:** 별도 clock 회귀의14개는 UI 도달 전 `VALIDATED`/`ORDERED_LABEL_VALIDATION_VALID`와 과거 lease 기대값이 달라 실패했고 baseline에서도 재현했다. 원 로그를 보존하며 이번 UI PASS에 합치지 않는다.
+
+정확한 후보·전후 화면표·로그·VM 준비는 [이번 보고서](D:/KMTech/optimization-implementation-20260909/UI-IMPROVEMENT-20260912-1318/Label_Match/RESULT.md)를 따른다. 현재 **native 화면·스캐너·업무 receipt·Today 성능은 NOT TESTED**이며 Main의 배정 VM에서 격리 대표 화면·상세·경고·축소/확대·focus를 확인한다. 원901–904/M06/F4/F3/shipping과 live DB는 재실행하지 않는다.
+
 <a id="original-f4-f3-continuation-20260911"></a>
 ## 2026-09-11 · 원래 F4 같은 요청 복구와 F3 완료
 

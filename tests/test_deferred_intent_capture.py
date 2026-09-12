@@ -1564,7 +1564,7 @@ def test_label_closed_port_flow_captures_before_remote_and_shows_pending(tmp_pat
     assert app._deferred_capture_ui["operator_complete_signal"] is False
     notice = app._deferred_capture_pending_notice()
     assert notice.title == "저장됨-검증대기"
-    assert app._deferred_capture_ui["intent_id"] in notice.message
+    assert app._deferred_capture_ui["intent_id"] not in notice.message
     assert "대기 1건" in notice.message
     assert "중앙 연결 복구 후 검증됩니다." in notice.message
     assert app.current_set_info["raw"] == []

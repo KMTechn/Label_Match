@@ -1,5 +1,9 @@
 # Label_Match 기술 명세
 
+## 2026-09-12 · 일상 포장 화면과 작업 상세
+
+표준 PHS2 화면은 품목·규격·차수, 조회된 제품 수량, 스캔 입력과 다음 행동을 우선 표시한다. `작업 상세 보기`에서 수락된 스캔 원문과 세트·접수·상태 코드·대기 항목·절차를 확인하며 긴 상세는 스크롤할 수 있다. 단일 스캔 단계표와 중복 일반 안내는 접고, 경고·미완료·중앙 충돌은 상세를 닫아도 표시한다. 제품 수량은 source `member_count` 또는 교체 후 검증된 seal `QT`를 사용하며 스캔 1회를 제품 1개로 취급하지 않는다. F1/F4/F3와 복구·durable 확정은 유지한다. [검증 범위와 남은 native 확인](operations.md#routine-details-20260912)을 따른다.
+
 ## 2026-09-11 · 원래 F4 같은 요청 복구·F3 완료
 
 원 VM/runtime8df에서 Main의 정상 공유 전환·grant 뒤 저장 F4의 같은 key/command 재시도 한 번으로 중앙 교체1건·새 seal2를 확인했다. 실제 화면 QR 해독·정상 guest 입력 뒤 VERIFIED/APPLIED, 원 PHS2/raw1의 일반 F3에서 완료 event1·local marker1·ACKED/COMMITTED 저장 receipt와 fresh lease1을 기록했다. Web 독립 검증은 같은 package/receipt의 중앙 효과1건·lease 소비와 JSON 표현별 hash 일치를 수용했다. 실물 스캐너·후속 고유 업무·lost-ACK·Today30/30의 범위는 [이번 운영 근거](operations.md#original-f4-f3-continuation-20260911)와 [남은 일](BACKLOG.md)을 따른다. Today case03은 상태 게시·종료 시 열 너비 guard 실패로 미입증이며, 원 데이터 보존과 정상 릴레이 정지 뒤 Main/Defect에 VM을 인계했다. 제품 소스 변경은 없다.

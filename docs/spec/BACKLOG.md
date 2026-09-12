@@ -1,5 +1,11 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-12 · 일상 화면 최소화와 상세 열기
+
+- 구현: PHS2의 중복 안내·단계표·원문을 줄이고 제품 수량·다음 행동을 표시한다. `작업 상세 보기`는 전체 원문·세트/접수·대기 항목·진단 코드·절차를 제공하며 대기·실패·복구 안내와 기존 키/상태 계약은 유지한다.
+- 검증: 격리 host151 PASS, native2 제외. 기존 clock14 FAIL과 layout fake의 baseline 실패/보완을 [운영 근거](operations.md#routine-details-20260912)와 D 보고서에 구분한다.
+- 남은 일: Main 배정 개발 VM의 실제 화면·상세 스크롤·경고·큰 글자/축소·focus 확인. 기존 Today/업무 receipt 수용과 혼동하지 않으며 원 업무를 반복하지 않는다.
+
 ## 2026-09-11 · 원래 F4 복구·F3 실제 진행
 
 - Main의 Web78 전환·정상 grant 뒤 같은 runtime8df·원 VM에서 저장 F4를 같은 key/2953B command로 한 번 재시도하여 ACKED/attempt3, 중앙 receipt1·새902/903/904·seal2를 확인했다. 화면 QR 해독값을 정상 guest 입력으로 확인해 VERIFIED/APPLIED가 됐으며 물리 스캐너 장비 수용과는 구분한다.

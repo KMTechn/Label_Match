@@ -897,6 +897,7 @@ def test_live_qa_list_exposes_readonly_wrapped_selected_raw_detail(operator_work
     app.scale_factor = 1.0
     app.style = FakeWidget()
     app.style.configure = lambda *_args, **_kwargs: None
+    app.style.lookup = lambda *_args: ""
     for prefix in ("qa_scan", "exact_rescan"):
         app.__dict__[f"{prefix}_detail_title_label"].winfo_reqheight = lambda: 30
         app.__dict__[f"{prefix}_detail_metadata_label"].winfo_reqheight = lambda: 30
@@ -970,6 +971,7 @@ def test_f4_list_exposes_selected_full_raw_without_stealing_scan_focus(
     assert detail_text.cget("wrap") == "char"
     assert detail_text.cget("takefocus") == 0
     assert detail_text.cget("state") == "disabled"
+
     assert any(
         sequence == "<<TreeviewSelect>>"
         for sequence, _callback, _add in app.exact_rescan_tree.bindings
@@ -2363,3 +2365,88 @@ def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
                 project_settings_path.parent.mkdir(parents=True, exist_ok=True)
                 project_settings_path.write_bytes(project_settings_before)
             assert project_settings_after == project_settings_before
+
+
+def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operator_workbench):
+    app = operator_workbench
+    raw = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=fixture|CLC=ITEM-001|LBL=fixture|HSH=0123456789abcdef"
+    app.current_set_info.update(
+        id="isolated-quantity-fixture", raw=[raw], parsed=["ITEM-001"],
+        central_inherit_all=True, package_source_snapshot={"member_count": 48},
+    )
+    original = copy.deepcopy(app.current_set_info)
+    view = app._render_operator_workbench()
+    assert app.operator_membership_label.cget("text") == "제품 48개"
+    assert app.big_display_label.cget("text") == "랩핑 후 F3 포장 완료"
+    assert not app.workflow_notice_frame.winfo_ismapped()
+    assert not app.live_scan_notebook.winfo_ismapped()
+    assert not app.operator_task_detail_frame.winfo_ismapped()
+
+    app.operator_details_button.cget("command")()
+    assert app.live_scan_notebook.winfo_ismapped()
+    assert app.qa_scan_detail_frame.winfo_ismapped()
+    assert app.qa_scan_detail_text.options["inserted"] == raw
+    assert app.operator_task_detail_text.options["inserted"].startswith("세트 isolated-quantity-fixture\n")
+    assert app._render_operator_workbench() == view
+
+    app.operator_details_button.cget("command")()
+    assert not app.live_scan_notebook.winfo_ismapped()
+    assert app.current_set_info == original
+    assert app._last_workflow_view == view
+    assert app.entry.cget("state") == "disabled"
+    assert not app.entry.focused
+
+    app.current_set_info.update(raw=[], parsed=[], package_source_snapshot=None)
+    app._render_operator_workbench()
+    app.operator_details_button.cget("command")()
+    app.operator_details_button.cget("command")()
+    assert app.entry.focused
+
+
+@pytest.mark.parametrize("notice", [
+    label_match_module.WorkflowNotice("중앙 전송 대기", "로컬 완료는 저장됐습니다. 자동 재전송 중입니다.", tone="warning"),
+    label_match_module.WorkflowNotice("중앙 포장 충돌 확인 필요", "실물을 구분 보관하고 관리자에게 확인하세요.", tone="danger"),
+])
+def test_collapsed_phs2_details_keep_pending_and_review_notice_visible(operator_workbench, notice):
+    app = operator_workbench
+    app.current_set_info["central_inherit_all"] = True
+    app._package_create_review_notice = notice
+    app._render_operator_workbench()
+    assert not app.live_scan_notebook.winfo_ismapped()
+    assert app.workflow_notice_frame.winfo_ismapped()
+    assert app.workflow_notice_title_label.cget("text") == notice.title
+    assert app.workflow_notice_label.cget("text").startswith(notice.message)
+
+
+def test_phs2_quantity_uses_verified_seal_after_exchange_and_never_scan_count(operator_workbench):
+    app = operator_workbench
+    app.current_set_info.update(
+        raw=["ORIGINAL-PHS2"], parsed=["ITEM-001"], central_inherit_all=True,
+        package_source_snapshot=None, sealed_transfer={"QT": 12},
+    )
+    app._render_operator_workbench()
+    assert app.operator_membership_label.cget("text") == "제품 12개"
+    app.current_set_info["sealed_transfer"] = None
+    app._render_operator_workbench()
+    assert app.operator_membership_label.cget("text") == "제품 수량 확인 중"
+
+
+def test_deferred_notice_keeps_action_and_exposes_identifiers_only_in_details(operator_workbench):
+    app = operator_workbench
+    app.current_set_info["central_inherit_all"] = True
+    app._deferred_capture_ui = {
+        "status": "저장됨-선행조건대기", "intent_id": "retained-intent-id",
+        "dependency_identity": "approval-identity", "reason_code": "WAITING_APPROVAL",
+        "last_checked_at": "2026-09-12T04:00:00Z",
+    }
+    original = copy.deepcopy(app._deferred_capture_ui)
+    app._render_operator_workbench()
+    message = app.workflow_notice_label.cget("text")
+    assert "승인 전에는 자동 재시도하지 않습니다" in message
+    assert "retained-intent-id" not in message
+    assert "WAITING_APPROVAL" not in message
+    app.operator_details_button.cget("command")()
+    assert "retained-intent-id" in app.operator_task_detail_text.options["inserted"]
+    assert "approval-identity" in app.operator_task_detail_text.options["inserted"]
+    assert "WAITING_APPROVAL" in app.operator_task_detail_text.options["inserted"]
+    assert app._deferred_capture_ui == original

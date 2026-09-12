@@ -58,8 +58,9 @@ class FakeTree(FakeWidget):
         return row_id
 
 
-class FakeNotebook:
+class FakeNotebook(FakeWidget):
     def __init__(self, *tabs, selected=None):
+        super().__init__()
         self._tabs = [str(tab) for tab in tabs]
         self.selected = str(selected) if selected is not None else None
         self.tab_options = {}

@@ -1,5 +1,9 @@
 # Label_Match 데이터·통합 계약
 
+## 일상 화면의 정보 경계 · 2026-09-12
+
+`작업 상세 보기/닫기`는 위젯 가시성만 바꾸며 accepted raw, 원 PHS2, 수량, 명령·receipt·lease·복구 상태나 F-key 허용 조건을 바꾸지 않는다. 표준 PHS2의 제품 수량은 `package_source_snapshot.member_count`를 우선하고 교체 후 snapshot 재조회 전에는 검증된 `sealed_transfer.QT`를 사용한다. 양수 근거가 없으면 수량 확인 상태를 표시하며 스캔 횟수나 이력 행 수를 수량으로 대체하지 않는다. 중앙 대기·관리자 확인과 로컬 완료의 의미는 그대로 유지하며 접수 ID·상태 코드·선행조건 identity만 상세로 이동한다. 긴 상세는 읽기 전용 스크롤 영역에 보존한다. [한정 근거](operations.md#routine-details-20260912).
+
 ## S05 단순화의 계약 경계
 
 호출되지 않는 `_deferred_operation_lease_evidence`와 `_payload_entropy_from_row` 삭제는 lease evidence·payload 저장 형식을 변경하지 않는다. 실제 검증·암호화 경로의 `payload_protection_entropy`, `common_reader_v2_entropy`, owned payload reader와 F1 cancellation transaction은 유지한다. 사용되지 않는 catalog 경로 판별 함수도 삭제하며 실제 authenticated cache 선택·복구는 유지한다.
