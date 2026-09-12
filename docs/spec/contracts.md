@@ -28,6 +28,8 @@ durable PHS2 capture가 완료된 입력만 scan Entry에서 지운다. serial l
 
 앱은 업데이트 후보·서명/manifest·archive 검증을 유지하며 코드 배치는 외부 installer만 담당한다. 도달 불가 self-update apply/batch/prompt와 전용 시험은 제거했고 receipt·writer·복구 계약은 보존한다.
 
+5단계(현품표 + 제품 3개 + 최종 라벨), `CLC|SPC|PHS`, 생산일자 `6D` 호환 입력은 **확장 축 ②(제품·양식) 정책 adapter 대상이며 현장 발생 확인 전 제거 금지**다. 현행 입력·검증 코드를 보존하고 이후 adapter 이행도 중앙 PHS2의 멤버십·수량·입력 순서 계약을 유지한다.
+
 ## 엔터티와 identity
 
 | 항목 | 발급·유일성·의미 | 소유 근거 |
