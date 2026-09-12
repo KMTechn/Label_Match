@@ -550,6 +550,8 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
     assert "2099-01-01T12:00:00Z" not in rendered
     assert secret_shaped_state not in rendered
     assert detail_text.cget("state") == "disabled"
+    assert "미완료 13건" in app.operator_footer_label.cget("text")
+    assert "관리자 확인 2건" in app.operator_footer_label.cget("text")
 
 
 def test_deferred_validator_waits_for_active_observability_readback():

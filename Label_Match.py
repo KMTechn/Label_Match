@@ -9455,10 +9455,19 @@ class Label_Match(tk.Tk):
             return None
         footer = self.__dict__.get("operator_footer_label")
         if footer is not None:
-            footer.configure(text=(
+            review_count = sum(
+                group.count for group in readback.operator_groups if group.key == "admin_review"
+            )
+            pending_text = (
+                f"미완료 {readback.nonterminal_count}건 · 관리자 확인 {review_count}건"
+                if review_count else
                 f"처리 대기 {readback.nonterminal_count}건 · 대기 현황에서 확인"
                 if readback.nonterminal_count else ""
-            ))
+            )
+            footer.configure(
+                text=pending_text,
+                style="Error.TLabel" if review_count else "Status.TLabel",
+            )
         tree = self.__dict__.get("deferred_observability_tree")
         if tree is not None:
             try:
