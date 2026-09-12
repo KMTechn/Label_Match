@@ -7767,6 +7767,7 @@ class Label_Match(tk.Tk):
             "_app_close_recovery_after_id",
             "package_outbox_after_id",
             "package_outbox_poll_after_id",
+            "_history_apply_after_id",
             "_audio_init_after_id",
             "_simulation_after_id",
             "_siren_after_id",
@@ -8225,8 +8226,8 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
         # Keep the last complete indexes until a full read succeeds. A failed
         # reload must not erase cancellation or duplicate-detection evidence.
-        self.history_tree.delete(*self.history_tree.get_children())
-        self.summary_tree.delete(*self.summary_tree.get_children())
+        # Keep the last display during the read. Deletion is chunked with
+        # result application, and the read gate still protects active indexes.
 
         if target_date:
             date_str = target_date.strftime('%Y-%m-%d')
@@ -8240,7 +8241,8 @@ class Label_Match(tk.Tk):
         self._apply_adaptive_header_fitting()
 
         loading_values = ("", "기록을 불러오는 중입니다...", *[""] * (self.TOTAL_SCAN_COUNT - 1), "", "")
-        self.history_tree.insert("", "end", iid="loading", values=loading_values, tags=("in_progress",))
+        if not self.history_tree.exists("loading"):
+            self.history_tree.insert("", "end", iid="loading", values=loading_values, tags=("in_progress",))
         loader_thread = threading.Thread(
             target=self._async_load_history_task,
             args=(self.history_queue, target_date, updates_active_state, load_generation),
@@ -8350,6 +8352,7 @@ class Label_Match(tk.Tk):
             result_queue.put({
                 'sorted_sets': sorted_final_sets,
                 'scan_count': temp_scan_count,
+                'summary_items': self._summary_items(temp_scan_count),
                 'global_scanned_set': temp_global_scanned_set,
                 'set_details_map': temp_set_details_map,
                 'updates_active_state': updates_active_state,
@@ -8388,10 +8391,7 @@ class Label_Match(tk.Tk):
                 if result.get('updates_active_state', True):
                     self._history_active_load_error = result
                 self.history_row_details_map = {}
-                self.history_tree.insert("", "end", iid="history-error", values=(
-                    "", result['error'], *[""] * (self.TOTAL_SCAN_COUNT - 1), "", "",
-                ), tags=("error",))
-                self._render_history_detail()
+                self._start_history_display_apply(result)
                 self._render_operator_workbench()
                 if not self.run_tests:
                     messagebox.showerror(
@@ -8410,17 +8410,10 @@ class Label_Match(tk.Tk):
                 self.global_scanned_set = result['global_scanned_set']
                 self.set_details_map = result['set_details_map']
             self.history_row_details_map = result.get('set_details_map', {})
-            sorted_final_sets = result['sorted_sets']
-            for index, (set_id, data) in enumerate(sorted_final_sets, 1):
-                values = list(data['values'])
-                values[0] = index
-                display_values = self._history_values_for_display(values)
-                self.history_tree.insert("", "end", iid=str(set_id), values=display_values, tags=data['tags'])
-            self._render_summary_tree(result['scan_count'] if not updates_active_state else self.scan_count)
+            # The complete logical state is authoritative now. Painting the
+            # same snapshot must not keep today's input gate closed.
             self._apply_history_view_mode()
-            self._render_history_detail()
-            self._refresh_session_tree()
-            print("비동기 기록 로드 및 UI 적용 완료.")
+            self._start_history_display_apply(result)
         except queue.Empty:
             if (
                 not self.__dict__.get("_tk_shutdown_requested", False)
@@ -8441,6 +8434,89 @@ class Label_Match(tk.Tk):
                     "기록을 화면에 표시하지 못했습니다. 프로그램을 다시 시작해주세요. "
                     "계속 실패하면 관리자에게 확인을 요청하세요.",
                 )
+
+    def _start_history_display_apply(self, result):
+        generation = self.__dict__.get("history_load_generation", 0)
+        self._history_display_applying = True
+        self._apply_history_display_chunk(generation, self._history_display_steps(result))
+
+    def _history_display_steps(self, result):
+        updates_active = result.get('updates_active_state', True)
+        initial_ids = frozenset(str(key) for key in result.get('set_details_map', {}))
+        summary_generation = self.__dict__.get('_summary_render_generation', 0)
+        # Capture only rows that predate this application. Live scans and
+        # completions inserted between callbacks must survive later deletion.
+        for iid in self.history_tree.get_children():
+            current_id = str((self.__dict__.get('current_set_info') or {}).get('id') or '')
+            live_details = self.__dict__.get('set_details_map', {})
+            new_completion = updates_active and str(iid) not in initial_ids and iid in live_details
+            current_scan = updates_active and str(iid) == current_id
+            if not current_scan and not new_completion:
+                self.history_tree.delete(iid)
+            yield
+        for iid in self.summary_tree.get_children():
+            if summary_generation == self.__dict__.get('_summary_render_generation', 0):
+                self.summary_tree.delete(iid)
+            yield
+        if 'error' in result:
+            self.history_tree.insert("", "end", iid="history-error", values=(
+                "", result['error'], *[""] * (self.TOTAL_SCAN_COUNT - 1), "", "",
+            ), tags=("error",))
+            yield
+            return
+        for index, (set_id, data) in enumerate(result['sorted_sets'], 1):
+            # A cancellation during painting removes the logical row first;
+            # never resurrect it from the older display snapshot.
+            removed = updates_active and str(set_id) in initial_ids and set_id not in self.set_details_map
+            if not removed and not self.history_tree.exists(str(set_id)):
+                values = list(data['values'])
+                values[0] = index
+                self.history_tree.insert("", "end", iid=str(set_id),
+                                         values=self._history_values_for_display(values), tags=data['tags'])
+            yield
+        if not self.__dict__.get('initialized_successfully', False):
+            return
+        counts = result['scan_count']
+        items = result.get('summary_items')
+        if items is None:
+            items = self._summary_items(counts)
+        date_text = self._summary_date_text(counts)
+        if summary_generation == self.__dict__.get('_summary_render_generation', 0):
+            self.summary_row_raw_values = {}
+            self._set_summary_date_label(counts)
+        for (code, phase), count in items:
+            # Normal completion/cancellation refreshes the live summary and
+            # advances this revision. Stop painting the stale summary then.
+            if summary_generation != self.__dict__.get('_summary_render_generation', 0):
+                break
+            iid = self.summary_tree.insert("", "end", values=(self._format_summary_code_cell(code), phase, count))
+            self.summary_row_raw_values[iid] = (date_text, code, phase, count)
+            yield
+
+    def _apply_history_display_chunk(self, generation, steps):
+        if self.__dict__.get('_tk_shutdown_requested', False) or generation != self.__dict__.get('history_load_generation', 0):
+            return
+        self._history_apply_after_id = None
+        deadline = time.perf_counter() + .008
+        try:
+            for _ in range(100):
+                next(steps)
+                if time.perf_counter() >= deadline:
+                    break
+        except StopIteration:
+            self._history_display_applying = False
+            self._render_history_detail()
+            self._refresh_session_tree()
+            return
+        except Exception as exc:
+            self._history_display_applying = False
+            print(f"이력 화면 적용 오류: {exc}")
+            if not self.run_tests:
+                messagebox.showerror("UI 업데이트 오류", "기록을 화면에 표시하지 못했습니다. 다시 조회하세요.")
+            return
+        self._history_apply_after_id = self.after(
+            1, lambda: self._apply_history_display_chunk(generation, steps)
+        )
 
     def _parse_new_format_label(self, raw_input):
         return _label_match_parse_new_format_fields(raw_input)
@@ -19773,9 +19849,17 @@ class Label_Match(tk.Tk):
 
     def _render_summary_tree(self, scan_count):
         if not self.initialized_successfully: return
+        self._summary_render_generation = self.__dict__.get('_summary_render_generation', 0) + 1
         self.summary_tree.delete(*self.summary_tree.get_children())
         self.summary_row_raw_values = {}
         self._set_summary_date_label(scan_count)
+        date_text = self._summary_date_text(scan_count)
+        for (code, phase), count in self._summary_items(scan_count):
+            item_id = self.summary_tree.insert("", "end", values=(self._format_summary_code_cell(code), phase, count))
+            self.summary_row_raw_values[item_id] = (date_text, code, phase, count)
+
+    @staticmethod
+    def _summary_items(scan_count):
         summary_counts = defaultdict(int)
         for date_str, items in (scan_count or {}).items():
             try:
@@ -19786,11 +19870,7 @@ class Label_Match(tk.Tk):
             for (code, phase), count in (items or {}).items():
                 if count > 0:
                     summary_counts[(code, phase or "-")] += count
-        sorted_items = sorted(summary_counts.items(), key=lambda item: (-item[1], str(item[0][0]), str(item[0][1])))
-        date_text = self._summary_date_text(scan_count)
-        for (code, phase), count in sorted_items:
-            item_id = self.summary_tree.insert("", "end", values=(self._format_summary_code_cell(code), phase, count))
-            self.summary_row_raw_values[item_id] = (date_text, code, phase, count)
+        return sorted(summary_counts.items(), key=lambda item: (-item[1], str(item[0][0]), str(item[0][1])))
 
 
     def _next_action_text(self, num_scans=None):

@@ -237,6 +237,7 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 ## C-08 이력 읽기 완전성
 
 - 이력 reload 시작 시 활성 `scan_count`, `global_scanned_set`, `set_details_map`을 지우지 않는다. 같은 generation의 완전한 오늘 결과만 세 색인을 교체한다. 과거 날짜 결과는 조회 전용이다.
+- 완전 결과 수신 후 논리 색인을 설치하고 오늘 읽기 gate를 해제한다. 화면 삭제·삽입·집계는 callback당 최대100회 연산 또는8ms 경과 후 after로 양보하며, 단일 위젯 연산·OS 스케줄링 시간을 강제 제한하는 계약은 아니다. 새 generation/종료는 남은 배치를 무시하고, 적용 중 들어온 완료·취소·집계 갱신을 오래된 화면 snapshot으로 덮지 않는다. 읽기 중/과거 조회 gate와 별도 read-only 창 분리는 유지/후속 범위다.
 - timestamp·JSON syntax/객체 shape·CSV/파일 읽기 오류가 있으면 부분 집계를 적용하지 않는다. 손상 행 수와 파일·행 위치(최대 20개)를 이력 상세에 남기고 오늘 조회 오류는 재조회 성공 전까지 작업을 차단한다. 로그 파일이 없는 날짜만 정상 빈 결과다.
 - 근거: [이력 회귀](../../tests/test_label_match_core.py) `test_history_reload_requires_complete_read_before_replacing_active_indexes`, `test_history_file_errors_are_not_confirmed_empty_history`; 취소·삭제·stale generation·과거 조회 계약을 유지한다.
 
