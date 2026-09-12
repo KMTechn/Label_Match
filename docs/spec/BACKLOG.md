@@ -1,5 +1,11 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-12 · M06 lost-ACK·Today 후속 — 호스트 준비, 실제 배정 대기
+
+- 완료된 준비: 실제 제품1ac의123파일 입력·새 observer/ref·한 멤버 fault 출력 경로, 기존 함수/통계/criteria 보존과 두 소스의 관측 widget 결속을 [호스트 근거](operations.md#m06-today-preparation-20260912)에 기록했다. 제품 변경·clock 회귀 재실행은 없다.
+- 실제 의존: CA 정상 seal/보호된 PHS2 handoff → Main의 원76a3 정확한 interval → 일반 F3 한 command lost-ACK/같은 key 복구 → quiescent 실제 당일 history → 별도 배정 Today30/30. 호스트에서 실제 binding·입력·PASS preflight·limits를 만들지 않는다.
+- 유지: 원901–904/F4/F3/shipping은 재실행하지 않으며 case03의23 ACK+게시 실패와 만료 입력은 보존한다. 원래 수치 기준을 유지하고 business/성능/전체 Goal은 각각 실제 결과로 판정한다.
+
 ## 2026-09-12 · clock14 실패 진단·회귀 정합 완료
 
 - 원인/교정: 초기 PHS2에서 lease를 요구하던 과거14검사를 현행 read-only admission과 실제 F3 발급 경로로 정렬했다. 제품 코드는 유지하며 과거2단계 plan의 원 요청/key·signed clock·unknown/definite 실패 구분도 별도 회귀로 남겼다.

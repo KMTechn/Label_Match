@@ -1,5 +1,14 @@
 # Label_Match 운영·복구·검증
 
+<a id="m06-today-preparation-20260912"></a>
+## 2026-09-12 · M06 lost-ACK·새 Today 비교 준비
+
+**PREPARED — host only:** active `task_f95347b741be/ctx_f7cfcb72507d`는 Main이 수용한 clock6b348ea/제품1ac를 유지한다. [호스트 packet과 정확한 후속 절차](D:/KMTech/optimization-implementation-20260909/Label_Match/M06-Today-continuation-20260912/HOST-PREPARATION.md)는 실제 수용1ac archive에서123파일을 골라 전부 대조했다. 새 candidate archive는 `cffa8655637edd346d98347bdc335760f2c45671effc30bac081c3d4ecba9633`, manifest는 `060a6f64a5e6c28283e76a337b68b02466424d759a2d5d0191e9092fefc30e29`다. 옛8df export와52파일 byte hash가 다르지만51개는 BOM/newline 표현만 다르고 정규화 비교의 유일한 코드 변화는 제품 main이다. archive/main과 checkout의 실제 hash를 별도로 보존하며 source bytes를 재정규화하지 않았다.
+
+새 observer는 after ref만1ac로, reader와 한 멤버 fault는 새 task 경로로 결속했다. 함수/class AST는 기존 최종본과 동일하고 두 소스의 관측 widget8개 구성을 확인했다. 숨긴 작업 상세를 observer 때문에 열지 않는다. Python compile·기존 launcher parse와 원본 hash 대조는 PASS이며 기존 host27·clock32+38·native UI는 각 변경 없는 원래 범위로 재사용하고 재실행하지 않았다. 첫 ZipInfo readback 오류와 다음 byte-equality 가정 실패를 보존하고 실제 archive/표현 차이로 진단했다.
+
+**WAITING / UNPROVEN:** CA가 원76a3의 실제 정상 중앙 seal과 Label handoff를 완료하고 Main이 배정하기 전 guest/VM/profile/업무 동작은 없다. 실제 pre-F3 state와 순수 draft/key로만 fault binding을 만들고 기존 한 command의 central COMMITTED·package1/receipt1·membership1, client pending·local marker1·same-key 정상 복구를 독립 대조해야 한다. M06 조정 후 실제 당일 history와9개 preflight count0이 확보된 경우에만 새 `baseline a7e / candidate1ac` 입력·환경·방법을 sampling 전에 결속한다. 원 case03은23 ACK+게시 실패/30·30 미달로 보존하고 새 numerical limits는 실제 baseline30에서만 정한다. 실제 F3/shipping·성능·전체 Goal 완료는 아직 아니다.
+
 <a id="clock-recovery-tests-20260912"></a>
 ## 2026-09-12 · clock 회귀의 현재 발급 시점 교정
 

@@ -1,5 +1,9 @@
 # Label_Match 기술 명세
 
+## 2026-09-12 · M06 lost-ACK·Today 후속 호스트 준비
+
+M06의 실제 CA seal/Label handoff와 Main의 원76a3 배정 전까지 호스트 준비만 수행한다. 제품1ac의 실제123파일 입력, 한 멤버/한 command fault와 새 `a7e → 1ac` Today observer 결속을 준비했으며 기존 함수·통계·수치 기준은 유지한다. 실제 binding·당일 history·case·30/30·limits는 아직 없고 원 case03의23 ACK+게시 실패는 보존한다. [준비·현재 의존성](operations.md#m06-today-preparation-20260912)을 따른다.
+
 ## 2026-09-12 · 초기 검증과 F3 clock 회귀 정합
 
 기존 clock14 FAIL은 초기 PHS2가 lease를 발급하던 과거 테스트와 현행 읽기 전용 admission의 불일치였다. 제품 변경 없이 회귀를 실제 F3 발급 경로로 옮겨 원 요청/key 재사용, 서명·만료·binding·snapshot·fence 거부를 확인했다. 보존된 2단계 validation plan의 clock/read/service 재시도와 unknown 결과 격리는 별도로 검증했다. host **32 PASS + 기존 계약38 PASS**이며 [진단·원 실패·한계](operations.md#clock-recovery-tests-20260912)를 따른다. 성능·실제 업무·전체 Goal 종결은 아니다.
