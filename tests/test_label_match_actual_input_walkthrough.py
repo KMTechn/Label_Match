@@ -4,12 +4,72 @@ import copy
 import csv
 import json
 import os
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image, ImageDraw
 
 from tools import label_match_actual_input_walkthrough as walkthrough
+from tests.test_label_match_core import load_label_match_module
+
+
+def test_walkthrough_workbench_can_render_before_review_snapshot(tmp_path):
+    module = load_label_match_module()
+    owner = threading.get_ident()
+    readers, callbacks, integration_calls = [], [], []
+
+    def read_exchange(**kwargs):
+        readers.append(threading.get_ident())
+        return []
+
+    def forbidden_drain(**kwargs):
+        integration_calls.append({"name": "unexpected_drain"})
+
+    class HeadlessConstructor(module.Label_Match):
+        def __init__(self, run_tests=False):
+            self.run_tests = run_tests
+            self.current_set_info = {"id": "set", "raw": ["MASTER"], "parsed": ["ITEM"]}
+            self.operator_workbench_ready = True
+            self.initialized_successfully = True
+            self.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=read_exchange)
+            self.sealed_transfer_exchange_coordinator = SimpleNamespace(drain_pending=forbidden_drain)
+            self.package_outbox_processor = SimpleNamespace(drain=forbidden_drain)
+            self.package_cancellation_outbox_processor = SimpleNamespace(drain=forbidden_drain)
+            self.package_cancellation_outbox = SimpleNamespace(list_conflicts=lambda **kwargs: [
+                {"idempotency_key": "review-conflict"},
+            ])
+            self.after = lambda delay, callback: callbacks.append((delay, callback)) or len(callbacks)
+            self._selected_qa_scan_iid = lambda: None
+            self._selected_exact_rescan_iid = lambda: None
+            self._render_qa_scan_detail = lambda *args: None
+            self._render_exact_rescan_detail = lambda *args: None
+            self._set_exact_rescan_tab_visible = lambda *args, **kwargs: None
+            self._update_operator_item_panel = lambda *args: None
+            self._set_workflow_notice_ui = lambda *args: None
+            self._reconcile_pending_sealed_transfer_exchanges = lambda **kwargs: None
+            self._reconcile_active_package_submission = lambda: None
+
+    app = walkthrough._make_app(
+        SimpleNamespace(Label_Match=HeadlessConstructor), tmp_path, "REVIEW-CONSUMER", integration_calls,
+    )
+    assert type(app).__name__ == "WalkthroughLabelMatch"
+    assert app._render_operator_workbench() is not None
+    worker = app.package_outbox_thread
+    assert isinstance(worker, threading.Thread)
+    worker.join(5)
+    assert not worker.is_alive()
+    assert readers and all(reader != owner for reader in readers)
+    assert "_package_review_snapshot" not in app.__dict__
+    _, poll = callbacks.pop(0)
+    assert poll() is None
+    assert isinstance(app._package_review_snapshot, module.PackageReviewSnapshot)
+    assert app._package_cancellation_review_rows[0]["idempotency_key"] == "review-conflict"
+    assert "1건" in app._package_cancellation_review_notice.message
+    assert integration_calls == []
+    assert app._start_package_outbox_drain() is None
+    assert integration_calls == [{"name": "package_outbox_drain_suppressed"}]
 
 
 def test_synthetic_fixture_is_real_five_step_parser_input():

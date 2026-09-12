@@ -2,13 +2,13 @@
 
 ## LM-W2 · 감사 응답성 개선
 
-- 최종 w2fix2 host 검증은 **469 PASS**, 두 검토 R1–R5의 전체 검색 전환 재현 **28 PASS**다. W1 감사331+추가19=350·내구33·이력40 누락0, B01/B03 응답성10 PASS다. 원 w2fix의 461 PASS 뒤 발견된 R4/R5 실패는 보존한다. [최종 JUnit·전후표·원 실패·잔여 범위](operations.md#responsiveness-w2)를 따른다.
+- 최종 w2fix3 host 검증은 **469 PASS**, R1–R5 재현 **28 PASS**, walkthrough/원 R6 **21 PASS**·소비자 집합 **1 PASS**·추가 호출자 **3 PASS**다. 기존469 노드 누락0으로 W1 감사350·내구33·이력40·B01/B03 응답성10을 유지한다. R4/R5와 수정 전 R6 실패는 보존하며 [최종 JUnit·원 실패·잔여 범위](operations.md#responsiveness-w2)를 따른다.
 
 - LM-B03 한정 완료: 완전 이력의 논리 상태 설치와 표시 배치를 분리해 오늘 적용 중 입력을 허용한다. after 배치는 generation과 종료를 확인하고 새 완료·취소·집계 갱신을 보존한다. 기존 history40·새4 PASS. D03의 별도 read-only 이력 창과 읽기/과거 조회 gate 제거는 후속이며 [한계](operations.md#responsiveness-w2)를 유지한다.
 
 - LM-B02 철회: 두 차례 검토의 R1–R4 거짓 부재·중복 완료 위험과 전체 바이트 검증 비용 때문에 위치 색인을 제거하고 같은 PC prefix의 전체 CSV 직접 검색을 유지한다. flush→재대조→fsync와 rename 시 재열거/중단을 보존한다. **보류:** 완료 존재 확인의 비용은 보관 파일 수에 비례하며 보관 정책으로 관리한다. [철회 근거·검증](operations.md#responsiveness-w2).
 
-- LM-B01 유지: package review 정리·조회와 workbench F4 상태 표시는 기존 worker의 불변 snapshot이다. set·generation·업무 epoch guard와 행동 직전 정본 guard를 유지한다. R5 capture 소비자도 worker 완료 snapshot을 적용해 개수·경고를 검증하며 원 reviewer2+편입2+기존 renderer1 PASS다. 실제 GUI·운영 지연은 [미검증 범위](operations.md#responsiveness-w2)다.
+- LM-B01 유지: package review 정리·조회와 workbench F4 상태 표시는 기존 worker의 불변 snapshot이다. set·generation·업무 epoch guard와 행동 직전 정본 guard를 유지한다. R5 capture는 worker 완료 snapshot으로 개수·경고를 검증하고 R6 walkthrough도 review-only worker와 poll을 연결한다. 새 소비자 집합 검사는 앱·도구·테스트의 호출/override/동적 바인딩 변경 시 재검토를 요구한다. 실제 GUI·운영 지연은 [미검증 범위](operations.md#responsiveness-w2)다.
 
 <a id="lm-w1"></a>
 ## LM-W1 · 감사 실패 처리·의존성·안내 정합

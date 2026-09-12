@@ -796,7 +796,9 @@ def _make_app(
             integration_calls.append({"name": "direct_sync_bootstrap_suppressed"})
             return None
 
-        def _start_package_outbox_drain(self) -> None:
+        def _start_package_outbox_drain(self, *, review_only: bool = False) -> Any:
+            if review_only:
+                return super()._start_package_outbox_drain(review_only=True)
             integration_calls.append({"name": "package_outbox_drain_suppressed"})
             return None
 
