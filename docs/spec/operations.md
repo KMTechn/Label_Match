@@ -467,6 +467,8 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 
 ## 설치·업그레이드·제거·백업·롤백
 
+portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 hash lock과 [자동 대조](../../tests/test_zero_pe_conversion.py)한다. `chardet==5.2.0`의 pure Python wheel을 명시하고 source runtime에는 계속 chardet을 복사한다. lock의 charset-normalizer는 다른 build/test closure를 위해 유지하며 portable zero-PE 대체 의도는 바뀌지 않는다. 이 입력 정합 검사는 clean 설치·portable build 실행 증거와 별개다.
+
 현행 [릴리스 계약](../../RELEASE_GATE_CONTRACT.md)의 코드 배치와 첫 사용자 등록을 구분한다. `--remove-current-user-setup`은 정확한 사용자 persistence 제거·relay 종료와 lock 부재를 확인하면서 identity/profile/settings/ledger/queue/spool/status/logs/receipts를 보존하는 계약이다. 이후 elevated `INSTALL_THIS_PC.ps1 -Uninstall`이 코드를 제거하며 relay persistence가 남아 있으면 거부한다. 이 명세에서 설치·제거 명령을 실행하지 않았다.
 
 업데이트 후보·서명/manifest 조회 코드가 있어도 현재 앱 내부 적용 gate는 닫혀 있다. 코드 교체와 integrity 재생성은 별도 installer의 책임이며, 이전 릴리스/현재 dirty 소스의 결과를 서로 자동 상속하지 않는다. 실제 업그레이드·재설치·rollback 뒤 기존 identity, current-state, 미전송/검토 row, F5 journal, receipt 정합성은 [LM-B07](BACKLOG.md#lm-b07)의 남은 수용 범위다.

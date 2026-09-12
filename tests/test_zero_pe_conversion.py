@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 from pathlib import Path
 import sys
 
@@ -81,6 +82,19 @@ def test_low_difficulty_native_dependencies_are_absent_from_runtime_requirements
     for forbidden in ("cffi", "cryptography", "pygame", "pillow"):
         assert all(not line.startswith(forbidden) for line in requirements)
     assert any(line.startswith("charset-normalizer==3.4.9") for line in release)
+
+
+def test_portable_builder_pinned_inputs_match_release_lock() -> None:
+    locked = {}
+    for line in (ROOT / "requirements-release.txt").read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        name, version = line.split()[0].split("==")
+        locked[re.sub(r"[-_.]+", "-", name).lower()] = (version, line)
+    for name, (expected_version, _packages) in portable_builder.THIRD_PARTY.items():
+        version, line = locked[re.sub(r"[-_.]+", "-", name).lower()]
+        assert version == expected_version, name
+        assert re.search(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)", line), name
 
 
 def test_portable_builder_requires_an_empty_native_application_closure() -> None:

@@ -5,6 +5,8 @@
 # reuse it for another Python version, ABI, operating system, or architecture.
 
 # Application dependencies.
+# Portable source runtime uses chardet instead of charset-normalizer's native wheel.
+chardet==5.2.0 --hash=sha256:e1cf59446890a00105fe7b7912492ea04b6e6f06d4b742b2c788469e34c82970
 qrcode==8.2 --hash=sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f
 requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
 tkcalendar==1.6.1 --hash=sha256:9d3a80816a7b32d64fab696fa3d2a007fb23c87953267d5e343a38ff4cd7c15c
