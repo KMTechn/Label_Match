@@ -290,13 +290,11 @@ def test_standalone_default_root_selection_preserves_existing_data(monkeypatch, 
     legacy.mkdir(parents=True)
     csv = legacy / "existing.csv"
     csv.write_bytes(b"existing standalone completion")
+    settings = tmp_path / "local/KMTech/Label_Match/config/app_settings.json"
     for _ in range(2):
-        paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=environment)
-        assert paths.data_root == paths.ledger_path.parent == legacy
-        assert not paths.identity_path.exists()
         assert app._resolve_configured_save_path() == str(legacy)
-        assert resolve_data_scope(environment=environment, settings_path=paths.settings_path) == str(legacy)
-        assert _resolve_scan_source_dir("", data_root=paths.data_root, settings_path=paths.settings_path) == legacy
+        assert resolve_data_scope(environment=environment, settings_path=settings) == str(legacy)
+        assert _resolve_scan_source_dir("", data_root=legacy, settings_path=settings) == legacy
     assert csv.read_bytes() == b"existing standalone completion"
     assert sorted(path for path in tmp_path.rglob("*") if path.is_file()) == [csv]
 

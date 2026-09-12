@@ -105,7 +105,7 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 <a id="quantities"></a>
 ## 수량·시각·로컬 파일
 
-저장 루트는 onboarding·GUI/guard·relay의 공통 resolver로 선택한다. custom → env → onboarding 상태가 있으면 LOCALAPPDATA → 상태가 없으면 구형 ProgramData fallback 순서를 지킨다. onboarding 상태가 있으면 ProgramData 과거 파일은 무시한다. 상태와 ProgramData 업무 파일이 모두 없는 새 PC는 최초 onboarding부터 LOCALAPPDATA를 쓴다([현재 감지 규칙](operations.md#configuration)). 신규 custom onboarding/ledger는 C로 통일하고, 기존 C의 업무 CSV/DB와 A의 onboarding ledger가 갈린 설치는 각각 보존·기본 로그 수준에서 진단한다. 자동 이동/병합·identity 재등록을 하지 않으며 producer/key/endpoint에 결속된 queue·spool의 원 bytes와 미확정 상태는 경로 정리를 이유로 변경·종결하지 않는다.
+저장 루트는 onboarding·GUI/guard·relay의 공통 resolver로 선택한다. custom → env를 우선하며, 둘 다 없으면 등록 수명주기(진입·진행 중·등록 직후 환경 적용·relay 시작·재시작)와 기존 onboarding 상태에서 항상 LOCALAPPDATA(A)를 쓴다. ProgramData(P) 업무 파일 유무는 이 선택에 영향을 주지 않으며 P fallback은 onboarding 문맥·상태가 전혀 없는 순수 standalone 실행 전용이다([현재 감지 규칙](operations.md#configuration)). 등록 후에도 P 데이터를 계속 쓰려면 운영자가 `custom_save_path`를 수동 설정해야 한다. 신규 custom onboarding/ledger는 C로 통일하고, 기존 C의 업무 CSV/DB와 A의 onboarding ledger가 갈린 설치는 각각 보존·기본 로그 수준에서 진단한다. 설정 자동 기록·데이터 이동/병합·identity 재등록을 하지 않으며 producer/key/endpoint에 결속된 queue·spool의 원 bytes와 미확정 상태는 경로 정리를 이유로 변경·종결하지 않는다.
 
 | 값 | 단위·모집단·포함/제외 | 시간·집계·중복 |
 | --- | --- | --- |

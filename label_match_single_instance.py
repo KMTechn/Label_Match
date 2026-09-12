@@ -54,7 +54,7 @@ def resolve_data_scope(
     """Resolve the business root for onboarding, GUI, guard and relay, read-only.
 
     Custom settings precede the environment. Existing default locations are
-    detected without moving data; new onboarding starts in current-user storage.
+    detected without moving data; onboarding always starts in current-user storage.
     A missing user file can use the same template that startup will later copy;
     an existing invalid file never falls back to that template.
     """
@@ -98,7 +98,7 @@ def resolve_data_scope(
         program_data = str(env.get("ProgramData", env.get("PROGRAMDATA", r"C:\ProgramData")) or "").strip()
         legacy_root = Path(program_data) / "KMTech" / "Label_Match" / "data" if program_data else None
         legacy_data_exists = False
-        if legacy_root is not None and not (local_app_data and onboarding_exists):
+        if legacy_root is not None and not (local_app_data and (onboarding_exists or for_onboarding)):
             legacy_root = legacy_root.expanduser().resolve(strict=False)
             try:
                 with os.scandir(legacy_root) as entries:
@@ -113,16 +113,14 @@ def resolve_data_scope(
                 pass
             except OSError as exc:
                 raise SingleInstanceError("Unable to inspect legacy Label Match data root") from exc
-        if local_app_data and onboarding_exists:
-            # Old ProgramData files do not override an established user store.
+        if local_app_data and (onboarding_exists or for_onboarding):
+            # Registration and its later consumers share the current-user root,
+            # including before the first identity/report exists.
             selected = str(Path(local_app_data) / "KMTech" / "Label_Match" / "data")
-            rule = "onboarding_state"
+            rule = "onboarding_state" if onboarding_exists else "new_current_user_onboarding"
         elif legacy_data_exists:
-            # Preserve the fallback only while there is no current-user state.
+            # Preserve the fallback only for standalone use without onboarding.
             selected, rule = str(legacy_root), "existing_program_data"
-        elif local_app_data and for_onboarding:
-            selected = str(Path(local_app_data) / "KMTech" / "Label_Match" / "data")
-            rule = "new_current_user_onboarding"
         elif legacy_root is not None:
             selected, rule = str(legacy_root), "legacy_standalone_default"
         else:

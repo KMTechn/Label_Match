@@ -233,8 +233,12 @@ def test_legacy_root_read_failure_is_not_treated_as_absent(monkeypatch, tmp_path
     with pytest.raises(SingleInstanceError, match="Unable to inspect legacy"):
         resolve_data_scope(
             environment={"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(program)},
-            for_onboarding=True,
         )
+    # Onboarding never reads ProgramData, even before registration state exists.
+    assert resolve_data_scope(
+        environment={"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(program)},
+        for_onboarding=True,
+    ) == str(tmp_path / "local/KMTech/Label_Match/data")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="real Windows two-process mutex contract")

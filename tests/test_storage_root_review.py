@@ -15,6 +15,48 @@ from label_match_single_instance import resolve_data_scope
 from user_relay import _resolve_scan_source_dir
 
 
+def test_legacy_registration_matches_baseline_through_environment_and_restart(tmp_path):
+    # Run the reviewer reproduction unchanged, with its work directory supplied
+    # by pytest. Only registration/OS/transport dependencies are fixture doubles.
+    script = r'''
+import json, runpy, sys, types
+from pathlib import Path
+review_run = types.ModuleType("review_run")
+review_run.ROOT = Path(sys.argv[1])
+review_run.REPO = Path(sys.argv[2])
+sys.modules["review_run"] = review_run
+runpy.run_path(str(review_run.REPO / "tests/_storage_root_registration_probe.py"))
+results = json.loads((review_run.ROOT / "registration-comparison.json").read_text(encoding="utf-8"))
+for row in results.values():
+    assert row["report_status"] == "READY"
+    for key in ("registration_argument", "report_data_root", "ledger", "fresh_restart_ledger"):
+        assert row[key] == "A", (key, row)
+
+# Exercise the actual GUI method after applying the READY report environment,
+# and in a fresh process environment with only registration state on disk.
+import os
+from unittest.mock import patch
+import Label_Match
+from current_user_onboarding import apply_current_user_runtime_environment, resolve_current_user_onboarding_paths
+root = review_run.ROOT / "registration-fixtures/head"
+environment = {"LOCALAPPDATA": str(root / "local"), "ProgramData": str(root / "program")}
+paths = resolve_current_user_onboarding_paths(root / "app", environ=environment)
+for runtime in (dict(environment), environment):
+    if runtime is environment:
+        apply_current_user_runtime_environment(paths, environ=runtime)
+    with patch.dict(os.environ, runtime, clear=True):
+        app = object.__new__(Label_Match.Label_Match)
+        app.app_settings = {}
+        assert Path(app._resolve_configured_save_path()) == paths.data_root
+'''
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script, str(tmp_path), str(repo)], cwd=tmp_path,
+        env=dict(os.environ, PYTHONPATH=str(repo)), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("case", [
     "standalone", "onboarded", "custom-env-a", "custom-env-b", "env",
     "split-defaults", "onboarded-with-stale-programdata",
@@ -60,9 +102,11 @@ def test_review_path_fixtures_preserve_roots_and_bytes(tmp_path, case):
     }
 
     runtime = dict(env)
+    if case == "standalone":
+        # Before entering onboarding, a direct standalone guard still uses P.
+        assert Path(resolve_data_scope(environment=runtime, settings_path=settings)) == pd
     paths = onboarding.resolve_current_user_onboarding_paths(root / "app", environ=runtime)
-    if case != "standalone":
-        onboarding.apply_current_user_runtime_environment(paths, environ=runtime)
+    onboarding.apply_current_user_runtime_environment(paths, environ=runtime)
     with patch.dict(os.environ, runtime, clear=True):
         app = object.__new__(Label_Match.Label_Match)
         app.app_settings = payload
@@ -75,11 +119,11 @@ def test_review_path_fixtures_preserve_roots_and_bytes(tmp_path, case):
         }
     # e45ec3e: onboarded/default-split roots and ledger are A; env-only is E;
     # GUI/guard/relay custom is C. W3 intentionally aligns new custom ledgers
-    # E -> C and preserves the no-onboarding standalone ProgramData fallback.
+    # E -> C. Entering onboarding selects A even with legacy ProgramData files.
     expected = (
         custom if case.startswith("custom-") else
         root / "env-a" if case == "env" else
-        pd if case == "standalone" else la
+        la
     )
     assert actual == {
         "onboarding": expected,
