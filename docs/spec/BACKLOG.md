@@ -2,6 +2,8 @@
 
 ## LM-W2 · 감사 응답성 개선
 
+- 최종 host 검증: 감사331+Wave1 새19 누락0을 포함한428 PASS, 후속 cache 경계와 영향 내구/복구58 PASS, 고유432 PASS. 새 봉인 적용 뒤 stale 경고와 선택적 index stat 실패도 차단했다. [JUnit·전후표·원 실패·잔여 범위](operations.md#responsiveness-w2)를 보존한다.
+
 - LM-B03 한정 완료: 완전 이력의 논리 상태 설치와 표시 배치를 분리해 오늘 적용 중 입력을 허용한다. after 배치는 generation과 종료를 확인하고 새 완료·취소·집계 갱신을 보존한다. 기존 history40·새4 PASS. D03의 별도 read-only 이력 창과 읽기/과거 조회 gate 제거는 후속이며 [한계](operations.md#responsiveness-w2)를 유지한다.
 
 - LM-B02: 완전한 파일 coverage를 검증한 prefix별 완료 위치 색인을 추가했다. 없음·손상·누락/외부 변경은 전체 CSV 검색·재구축이며 CSV 적중의 flush→재대조→fsync는 유지한다. index12 PASS(재구축 fsync 실패 보존 포함), cold rebuild와 실제 운영 성능의 한계는 [운영](operations.md#responsiveness-w2)을 따른다.

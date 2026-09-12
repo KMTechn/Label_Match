@@ -58,7 +58,7 @@ def test_package_review_writer_lock_does_not_block_tk_callback(tmp_path):
     assert all(isinstance(rows, (str, type(None))) for _, _, rows in app._package_review_snapshot.reviews)
 
 
-@pytest.mark.parametrize("change", ["generation", "set", "action"])
+@pytest.mark.parametrize("change", ["generation", "set", "action", "seal-apply"])
 def test_package_review_snapshot_ignores_stale_context(change):
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
@@ -71,8 +71,14 @@ def test_package_review_snapshot_ignores_stale_context(change):
         app._ui_lane_generation = 1
     elif change == "set":
         app.current_set_info = {"id": "new"}
-    else:
+    elif change == "action":
         app._package_status_epoch = 1
+    else:
+        app.sealed_transfer_exchange_store = SimpleNamespace(
+            load=lambda intent: (_ for _ in ()).throw(RuntimeError('unavailable authoritative row')),
+        )
+        with pytest.raises(RuntimeError, match='unavailable authoritative row'):
+            app._apply_acked_sealed_transfer_exchange('verified-seal')
     assert app._refresh_package_cancellation_review_notice(snapshot) is None
     assert "_package_create_review_notice" not in app.__dict__
     app._refresh_package_cancellation_review_notice(app._read_package_review_snapshot())

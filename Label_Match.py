@@ -4664,7 +4664,13 @@ class DataManager:
                 if log_item is None: break
                 filepath = self._get_log_filepath_for_item(log_item)
                 completion_index = getattr(self, "_completion_csv_index", None)
-                previous_signature = completion_index.signature(filepath) if completion_index is not None else None
+                previous_signature = None
+                if completion_index is not None:
+                    try:
+                        previous_signature = completion_index.signature(filepath)
+                    except OSError:
+                        # Optional index metadata must not fail a CSV write.
+                        self._completion_csv_index = completion_index = None
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 with open(filepath, 'a', newline='', encoding='utf-8-sig') as f:
@@ -11204,6 +11210,9 @@ class Label_Match(tk.Tk):
         return True
 
     def _apply_acked_sealed_transfer_exchange(self, intent_id):
+        # QR verification also reaches this path without a lane admission.
+        # Fence the prior display snapshot on both successful and failed apply.
+        self._package_status_epoch = self.__dict__.get("_package_status_epoch", 0) + 1
         store = self.sealed_transfer_exchange_store
         row = store.load(intent_id)
         attempt = self.sealed_transfer_exchange_coordinator._attempt(row)

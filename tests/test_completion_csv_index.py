@@ -108,6 +108,22 @@ def test_rebuild_sync_failure_preserves_previous_index_until_complete_publicatio
         assert conn.execute('PRAGMA synchronous').fetchone()[0] == 2
 
 
+def test_index_stat_failure_cannot_fail_a_durable_csv_write(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    manager = module.DataManager(str(tmp_path), 'AUDIT', 'WORKER', 'PC1')
+    try:
+        assert module._label_match_local_completion_event_exists(manager, 'durable') is False
+        with monkeypatch.context() as failure:
+            failure.setattr(manager._completion_csv_index, 'signature',
+                            lambda path: (_ for _ in ()).throw(OSError('index metadata unavailable')))
+            manager.log_event('TRAY_COMPLETE', {'set_id': 'durable'})
+            assert manager.flush(5)
+        assert manager._writer_errors == []
+        assert module._label_match_local_completion_event_exists(manager, 'durable') is True
+    finally:
+        manager.close(5)
+
+
 @pytest.mark.parametrize("index_failure", [False, True])
 def test_writer_updates_index_after_csv_fsync_and_failure_rebuilds(tmp_path, monkeypatch, index_failure):
     module = load_label_match_module()

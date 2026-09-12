@@ -484,6 +484,8 @@ portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 
 <a id="responsiveness-w2"></a>
 ### 감사 Wave 2 · Tk callback 응답성
 
+최종 격리 host 실행은 기존407+새21의 **428 PASS**([main JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/final-focused.xml))다. 감사331·Wave1 새19·내구33·이력40의 누락0을 대조했다. 후속 cache 경계(봉인 적용의 epoch 무효화·선택적 metadata 실패 격리)는 내구33·응답성10·index13·기존 봉인 복구2의 **58 PASS**([edge JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/final-edges.xml))로 확인했으며 두 실행의 고유 사례는432개다. [정확한 전후표·실패·한계](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/RESULT.md)를 따른다. GUI·서버·전체 suite·운영 p95 수용은 아니다.
+
 이력은 완전 결과의 활성 색인을 먼저 설치한 뒤 삭제·삽입·집계 표시를 최대100회 연산/8ms 작업 예산의 after 배치로 나눈다. 오늘 결과 적용 중에도 스캔이 가능하고 새 조회는 이전 배치를 중단한다. 활성 완료/취소와 새 집계의 revision을 보존하며 과거 조회는 활성 행을 표시하지 않는다. 기존 history40 PASS와 신규4 PASS(5,000행 삭제+5,000행 삽입+집계2,000, 적용 중 실제 입력 admission·generation 취소·완료/취소·과거 조회), [신규 JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/b03-final.xml). 기존 읽기 중/과거 조회 gate 자체와 D03의 별도 조회 창 분리는 후속이다.
 
 F3 완료 존재 조회는 데이터 루트의 PC prefix별 `_completion_index_<hash>.sqlite3`를 사용한다. index 파일은 삭제·손상·crash 후 CSV에서 재구축할 수 있으며 CSV가 정본이다. 전체 파일 집합·size·mtime·ctime coverage를 대조하고 불일치 시 전체 CSV를 다시 읽는다. 처음 재구축은 보관 행 수에 비례하지만 이후 신규 set 조회는 CSV JSON을 다시 읽지 않는다. writer의 일반 append는 메모리 coverage만, durable 완료는 CSV fsync 후 SQLite transaction으로 위치까지 갱신한다. 재시작은 저장 signature와 실제 CSV를 다시 대조한다. index12 PASS(재시작·손상·파일 추가/크기/역행 mtime·갱신 실패·fsync 순서·재구축 sync 실패 보존), [JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/b02-sync-final.xml). 재구축은 임시 DB 단일 transaction→파일 fsync→원자 교체로 공개한다. 최초 coverage 누락 시험의 열린 test 연결로 인한 Windows replace 실패는 원 로그에 보존했다.
