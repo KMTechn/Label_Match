@@ -187,6 +187,7 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 - writer는 기존 CSV append와 durable event의 flush/fsync를 유지한다. 완료 존재 확인 비용은 보관 파일 수에 비례하며 보관 정책으로 관리한다. 최종 검색 뒤의 다중 프로세스 동시 쓰기를 직렬화하는 계약은 추가하지 않는다.
 
 - 주기 review 정리·조회 및 F4 표시 상태는 package worker의 불변 snapshot이다. Tk는 set·generation·업무 epoch를 확인한 결과만 적용하며 조회 실패 시 마지막 경고를 보존한다. 표시 snapshot은 F3/F4 직전 authoritative guard를 대체하지 않는다.
+- capture fixture 소비자는 반환된 worker를 최대5초 기다린 뒤 완성 snapshot을 같은 guard로 적용하고 conflict 개수를 대조한다. worker 미완료·snapshot 누락·거부는 capture 실패이며 경고 assertion을 생략하지 않는다. 이 대기는 capture 도구에만 있고 제품 Tk callback의 DB 읽기는 worker에 유지한다.
 - lane 외부의 새 봉인 적용도 표시 epoch를 갱신한다.
 
 - 2026-09-12 회귀 정합: 초기 source의 `VALIDATED`는 lease 발급·F3 완료 신호가 아니다. 현재 F3의 future-issued 응답은 서명 검증 뒤에도 `issued_at` 전에는 거부하고 동일 durable issue key로만 다시 요청한다. expiry 경계·서명·단말/source binding·snapshot hash·artifact fence 오류는 package enqueue와 완료를 차단한다. 보존된 과거 2단계 plan에서 signed clock 대기 및 definite service 실패는 원 요청을 유지하지만 unknown issue는 `RECONCILE_PENDING_VALIDATION`, API 오류 문구만의 clock 주장은 `BLOCKED_INVALID`다. [32개 회귀와 기존38개 계약 검사](operations.md#clock-recovery-tests-20260912)는 host 증거이며 이 계약의 제품 변경은 없다.

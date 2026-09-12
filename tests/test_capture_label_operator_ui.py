@@ -700,9 +700,14 @@ def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
         _workflow_widgets_ready=False,
         _refresh_operator_workbench=lambda: None,
     )
-    app._refresh_package_cancellation_review_notice = lambda: (
-        Label_Match._refresh_package_cancellation_review_notice(app)
-    )
+    app.after = lambda *args: "scheduled"
+    app._poll_package_outbox_drain = lambda: None
+    app._ui_lane_is_busy = lambda: False
+    for name in (
+        "_refresh_package_cancellation_review_notice", "_start_package_outbox_drain",
+        "_package_review_context", "_read_package_review_snapshot", "_schedule_package_outbox_poll",
+    ):
+        setattr(app, name, MethodType(getattr(Label_Match, name), app))
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
 
     view, _method = apply_state_fixture(app, fixtures["cancellation_conflict"])

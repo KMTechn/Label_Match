@@ -494,6 +494,8 @@ LM-B02 위치 색인은 철회했다. 첫 검토의 동일 metadata 변경·외�
 
 주기 package review의 SQLite 정리·조회와 workbench F4 표시 조회는 기존 package worker에서 수행한다. Tk poll은 현재 set·generation·업무 epoch가 같은 불변 결과만 경고에 적용한다. 행동 직전 검사·복구 적용 경로는 유지한다. 격리 headless review20 PASS(200ms 실제 SQLite writer lock·stale 결과·기존 경고 회귀), [로그와 JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/b01-new.xml). 실제 GUI·스캐너·운영 p95는 미검증이다.
 
+R5 capture 소비자는 `int(Thread)` 대신 worker 완료 snapshot을 받아 기존 guard로 적용하고 conflict 개수·경고를 확인한다. waiting/취소 conflict 원 reviewer2와 편입2·기존 warning renderer1은 **5 PASS**다([JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2fix2/logs/r5-02.xml)). capture 도구의 제한된 대기만 추가했으며 제품 B01 worker·행동 직전 정본 guard는 변경하지 않았다. headless 가짜 presenter 검증이며 실제 화면 capture는 미실행이다.
+
 <a id="history-optimization"></a>
 ### 2026-09-09 이력 적용의 반복 작업 제거
 

@@ -30,6 +30,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping, Sequence
@@ -2989,7 +2990,23 @@ def apply_state_fixture(app: Any, fixture: StateFixture) -> tuple[Any, str]:
         app, "_refresh_package_cancellation_review_notice", None
     )
     if callable(review_refresh):
-        observed_count = int(review_refresh())
+        # Capture fixtures must settle before their presenter is measured.
+        # SQLite reads still run on the production worker; this bounded wait
+        # belongs only to the scripted capture harness, not a Tk callback.
+        pending = getattr(app, "package_outbox_thread", None)
+        if pending is not None and pending.is_alive():
+            pending.join(5.0)
+            if pending.is_alive():
+                raise RuntimeError("previous package review worker did not finish")
+        observed_count = review_refresh()
+        if isinstance(observed_count, threading.Thread):
+            observed_count.join(5.0)
+            if observed_count.is_alive():
+                raise RuntimeError("capture package review worker did not finish")
+            snapshot = app.__dict__.pop("_package_review_result", None)
+            if snapshot is None:
+                raise RuntimeError("capture package review snapshot is missing")
+            observed_count = review_refresh(snapshot)
         if observed_count != len(conflict_rows):
             raise RuntimeError(
                 "cancellation conflict fixture count did not reach the renderer"
