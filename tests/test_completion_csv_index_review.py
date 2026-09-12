@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from contextlib import closing
 import csv
+import hashlib
 import json
 import os
 import sqlite3
@@ -13,7 +14,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from completion_csv_index import CompletionCsvIndex
 from tests.test_label_match_core import load_label_match_module
 
 PREFIX = 'AUDIT작업이벤트로그_PC1_'
@@ -46,6 +46,35 @@ def manager(root):
     return SimpleNamespace(save_directory=str(root), process_name='AUDIT', unique_id='PC1', flush=lambda **kwargs: True)
 
 
+def signature(path):
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def obsolete_index(root, identities=('real-set',)):
+    """Leave the retired SQLite layout on disk as an untrusted upgrade artifact."""
+    scope = hashlib.sha256(PREFIX.encode('utf-8')).hexdigest()[:24]
+    path = root / f'_completion_index_{scope}.sqlite3'
+    with closing(sqlite3.connect(path)) as conn:
+        with conn:
+            conn.execute('CREATE TABLE completions (set_id TEXT, source_id INTEGER, PRIMARY KEY (set_id, source_id))')
+            conn.executemany('INSERT INTO completions VALUES (?, 0)', ((value,) for value in identities))
+    return path
+
+
+def commit(module, data, identity):
+    app = object.__new__(module.Label_Match)
+    app.data_manager = data
+    markers = []
+    app.package_outbox = SimpleNamespace(mark_local_completion_committed=lambda *a, **k: markers.append(a))
+    app._queue_authoritative_package = lambda **kwargs: {'idempotency_key': 'same-key', 'membership_mode': 'INHERIT_ALL'}
+    app._commit_finalized_set_durable(
+        details={'set_id': identity}, item_code='ITEM', is_manual_complete=False,
+        result=app.Results.PASS, central_inherit_all=True, set_id_for_log=identity,
+    )
+    assert markers == [('same-key',)]
+
+
 @pytest.mark.parametrize('restart', [False, True])
 def test_same_length_csv_repair_preserving_mtime_cannot_hide_completion(tmp_path, restart):
     module = load_label_match_module()
@@ -53,12 +82,12 @@ def test_same_length_csv_repair_preserving_mtime_cannot_hide_completion(tmp_path
     data = manager(tmp_path)
     assert module._label_match_local_completion_event_exists(data, 'new-set') is False
     before = path.stat()
-    signature = CompletionCsvIndex.signature(path)
+    before_signature = signature(path)
     # In-place copy/repair preserves creation time on Windows; restore mtime,
     # as timestamp-preserving file tools do. Length stays identical.
     csv_file(tmp_path, ['new-set'])
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert CompletionCsvIndex.signature(path) == signature
+    assert signature(path) == before_signature
     assert truth(path) == ['new-set']
     if restart:
         data = manager(tmp_path)
@@ -85,7 +114,7 @@ def test_lost_completion_rows_with_valid_sqlite_structure_are_not_proof_of_absen
     path = csv_file(tmp_path, ['real-set'])
     data = manager(tmp_path)
     assert module._label_match_local_completion_event_exists(data, 'new-set') is False
-    with closing(sqlite3.connect(data._completion_csv_index.path)) as conn:
+    with closing(sqlite3.connect(obsolete_index(tmp_path))) as conn:
         with conn:
             conn.execute('DELETE FROM completions')
         assert conn.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
@@ -99,13 +128,8 @@ def test_external_append_between_writer_stat_and_publication_is_not_covered(tmp_
     path = csv_file(tmp_path, ['old-set'])
     data = manager(tmp_path)
     assert module._label_match_local_completion_event_exists(data, 'external') is False
-    index = data._completion_csv_index
-    # Deterministic scheduling of DataManager's stat -> write -> note_append:
-    # an external writer appends after the saved pre-write signature.
-    before = index.signature(path)
     append_event(path, 'external')
     append_event(path, 'own-set', own_event)
-    index.note_append(path, before, own_event, json.dumps({'set_id': 'own-set'}))
     assert 'external' in truth(path)
     assert module._label_match_local_completion_event_exists(data, 'external') is True
 
@@ -180,7 +204,7 @@ def test_single_byte_lookup_index_damage_falls_back_to_csv(tmp_path):
     path = csv_file(tmp_path, ['real-set'])
     data = manager(tmp_path)
     assert module._label_match_local_completion_event_exists(data, 'new-set') is False
-    index_path = data._completion_csv_index.path
+    index_path = obsolete_index(tmp_path)
     content = bytearray(index_path.read_bytes())
     # The final occurrence is in the completions PK lookup b-tree. Keep
     # schema, file length and source coverage untouched; corrupt one key byte.
@@ -196,33 +220,34 @@ def test_single_byte_lookup_index_damage_falls_back_to_csv(tmp_path):
     assert module._label_match_local_completion_event_exists(data, 'real-set') is True
 
 
-@pytest.mark.parametrize('age', [0, 1, 2, -1, None])
-def test_recent_and_unknown_dates_are_scanned_even_if_index_returns_absence(tmp_path, monkeypatch, age):
+@pytest.mark.parametrize('age', [0, 1, 2, 3, 4, -1, None])
+def test_all_dates_are_scanned_despite_empty_obsolete_index(tmp_path, age):
     module = load_label_match_module()
     path = csv_file(tmp_path, ['real-set'])
     suffix = 'unknown' if age is None else (date.today() - timedelta(days=age)).strftime('%Y%m%d')
     path.rename(tmp_path / f'{PREFIX}{suffix}.csv')
     data = manager(tmp_path)
-    monkeypatch.setattr(CompletionCsvIndex, 'candidates', lambda *a: [])
+    obsolete_index(tmp_path, identities=())
     assert module._label_match_local_completion_event_exists(data, 'real-set') is True
 
 
 @pytest.mark.parametrize('restart', [False, True])
 def test_archive_middle_repair_with_identical_metadata_and_tail_is_detected(tmp_path, restart):
+    module = load_label_match_module()
     path = csv_file(tmp_path, ['old-set'] + [f'filler-{i:04d}' for i in range(200)])
     path = path.rename(tmp_path / f'{PREFIX}20000101.csv')
-    index = CompletionCsvIndex(tmp_path, PREFIX)
-    assert index.candidates('new-set') == []
+    data = manager(tmp_path)
+    assert module._label_match_local_completion_event_exists(data, 'new-set') is False
     before = path.stat()
     content = path.read_bytes()
     changed = content.replace(b'old-set', b'new-set', 1)
     assert changed[-4096:] == content[-4096:]
     path.write_bytes(changed)
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert index.signature(path) == (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+    assert signature(path) == (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
     if restart:
-        index = CompletionCsvIndex(tmp_path, PREFIX)
-    assert index.candidates('new-set') == [str(path)]
+        data = manager(tmp_path)
+    assert module._label_match_local_completion_event_exists(data, 'new-set') is True
 
 
 @pytest.mark.parametrize('restart', [False, True])
@@ -234,117 +259,108 @@ def test_archive_cache_damage_cannot_duplicate_completion(tmp_path, restart, dam
     data._get_log_filepath_for_item = lambda item: str(path)
     try:
         assert module._label_match_local_completion_event_exists(data, 'new-set') is False
-        index = data._completion_csv_index
-        before = index.path.stat()
+        index_path = obsolete_index(tmp_path)
+        before = index_path.stat()
         if damage == 'deleted-row':
-            with closing(sqlite3.connect(index.path)) as conn:
+            with closing(sqlite3.connect(index_path)) as conn:
                 with conn:
                     conn.execute('DELETE FROM completions')
                 assert conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
         else:
-            content = bytearray(index.path.read_bytes())
+            content = bytearray(index_path.read_bytes())
             if damage == 'lookup-byte':
-                content[content.rfind(b'real-set')] = ord('f')
+                offset = content.rfind(b'real-set')
+                assert offset >= 0
+                content[offset] = ord('f')
             else:
                 content[len(content) // 2:] = b'\0' * (len(content) - len(content) // 2)
-            index.path.write_bytes(content)
-        os.utime(index.path, ns=(before.st_atime_ns, before.st_mtime_ns))
-        assert index.signature(index.path) == (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            index_path.write_bytes(content)
+        os.utime(index_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert signature(index_path) == (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        damaged = index_path.read_bytes()
         if restart:
-            data._completion_csv_index = CompletionCsvIndex(tmp_path, PREFIX)
-        app = object.__new__(module.Label_Match)
-        app.data_manager = data
-        markers = []
-        app.package_outbox = SimpleNamespace(mark_local_completion_committed=lambda *a, **k: markers.append(a))
-        app._queue_authoritative_package = lambda **kwargs: {'idempotency_key': 'same-key', 'membership_mode': 'INHERIT_ALL'}
-        app._commit_finalized_set_durable(
-            details={'set_id': 'real-set'}, item_code='ITEM', is_manual_complete=False,
-            result=app.Results.PASS, central_inherit_all=True, set_id_for_log='real-set',
-        )
-        assert markers == [('same-key',)]
+            assert data.close(5)
+            data = module.DataManager(str(tmp_path), 'AUDIT', 'WORKER', 'PC1')
+            data._get_log_filepath_for_item = lambda item: str(path)
+        commit(module, data, 'real-set')
         assert truth(path) == ['real-set']
-        with closing(sqlite3.connect(data._completion_csv_index.path)) as conn:
-            assert conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
-            assert conn.execute('SELECT set_id FROM completions').fetchall() == [('real-set',)]
+        assert not data._writer_errors
+        assert index_path.read_bytes() == damaged, 'retired index must be ignored, not rebuilt'
     finally:
         data.close(5)
 
 
 @pytest.mark.parametrize('stage', ['partial-temp', 'after-replace'])
-def test_process_exit_during_index_publication_recovers_from_csv(tmp_path, stage):
+def test_process_exit_after_durable_csv_with_partial_obsolete_index_recovers(tmp_path, stage):
     path = csv_file(tmp_path, ['old-set']).rename(tmp_path / f'{PREFIX}20000101.csv')
+    index_path = obsolete_index(tmp_path, identities=('old-set',))
     code = '''
-import csv, json, os, sys
+import os, sys
 from pathlib import Path
-from completion_csv_index import CompletionCsvIndex
-root, prefix, stage = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-path = root / (prefix + '20000101.csv')
-index = CompletionCsvIndex(root, prefix)
-assert index.candidates('new-set') == []
-previous = index.signature(path)
-with open(path, 'a', encoding='utf-8-sig', newline='') as handle:
-    csv.writer(handle).writerow(['2026-09-12T10:00:00', 'AUDIT', 'TRAY_COMPLETE', json.dumps({'set_id': 'new-set'})])
-    handle.flush()
-    os.fsync(handle.fileno())
-publish = index._publish
-def stop(temporary):
-    if stage == 'partial-temp':
-        Path(temporary).write_bytes(b'partial index publication')
-    else:
-        publish(temporary)
-    os._exit(23)
-index._publish = stop
-index.note_append(path, previous, 'TRAY_COMPLETE', json.dumps({'set_id': 'new-set'}))
+from tests.test_label_match_core import load_label_match_module
+root, path, index_path, stage = map(Path, sys.argv[1:])
+module = load_label_match_module()
+data = module.DataManager(str(root), 'AUDIT', 'WORKER', 'PC1')
+data._get_log_filepath_for_item = lambda item: str(path)
+data.log_event('TRAY_COMPLETE', {'set_id': 'new-set'})
+assert data.flush(5)
+temporary = index_path.with_suffix('.sqlite3.partial')
+temporary.write_bytes(b'partial obsolete index publication')
+if str(stage) == 'after-replace':
+    os.replace(temporary, index_path)
+os._exit(23)
 '''
-    result = subprocess.run([sys.executable, '-c', code, str(tmp_path), PREFIX, stage],
+    result = subprocess.run([sys.executable, '-c', code, str(tmp_path), str(path), str(index_path), stage],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 23, result.stderr
     assert truth(path) == ['old-set', 'new-set']
-    index = CompletionCsvIndex(tmp_path, PREFIX)
-    rebuilds = []
-    original = index._rebuild
-    index._rebuild = lambda sources: rebuilds.append(True) or original(sources)
-    assert index.candidates('new-set') == [str(path)]
-    assert rebuilds == [True]
-    assert truth(path).count('new-set') == 1
+    module = load_label_match_module()
+    data = module.DataManager(str(tmp_path), 'AUDIT', 'WORKER', 'PC1')
+    data._get_log_filepath_for_item = lambda item: str(path)
+    try:
+        assert module._label_match_local_completion_event_exists(data, 'new-set') is True
+        commit(module, data, 'new-set')
+        assert not data._writer_errors
+        assert truth(path).count('new-set') == 1
+    finally:
+        data.close(5)
 
 
 @pytest.mark.parametrize('own_event', ['SCAN_ATTEMPT', 'TRAY_COMPLETE'])
-def test_archive_append_coverage_includes_external_rows(tmp_path, own_event):
+def test_archive_append_search_includes_external_rows(tmp_path, own_event):
+    module = load_label_match_module()
     path = csv_file(tmp_path, ['old-set']).rename(tmp_path / f'{PREFIX}20000101.csv')
-    index = CompletionCsvIndex(tmp_path, PREFIX)
-    assert index.candidates('external') == []
-    before = index.signature(path)
+    data = manager(tmp_path)
+    assert module._label_match_local_completion_event_exists(data, 'external') is False
     append_event(path, 'external')
     append_event(path, 'own-set', own_event)
-    index.note_append(path, before, own_event, json.dumps({'set_id': 'own-set'}))
-    assert index.candidates('external') == [str(path)]
-    assert index.candidates('old-set') == [str(path)]
-    assert CompletionCsvIndex(tmp_path, PREFIX).candidates('external') == [str(path)]
+    assert module._label_match_local_completion_event_exists(data, 'external') is True
+    assert module._label_match_local_completion_event_exists(data, 'old-set') is True
+    assert module._label_match_local_completion_event_exists(manager(tmp_path), 'external') is True
 
 
-def test_failed_append_publication_preserves_index_and_durable_csv(tmp_path, monkeypatch):
+def test_unavailable_obsolete_index_cannot_fail_durable_csv_write(tmp_path, monkeypatch):
     module = load_label_match_module()
     path = csv_file(tmp_path, ['old-set']).rename(tmp_path / f'{PREFIX}20000101.csv')
     data = module.DataManager(str(tmp_path), 'AUDIT', 'WORKER', 'PC1')
     data._get_log_filepath_for_item = lambda item: str(path)
+    index_path = obsolete_index(tmp_path)
+    previous = index_path.read_bytes()
+    real_open = builtins.open
+    def reject_index(file, *args, **kwargs):
+        if Path(file) == index_path:
+            pytest.fail('retired index must not be opened')
+        return real_open(file, *args, **kwargs)
+    monkeypatch.setattr(module, 'open', reject_index, raising=False)
     try:
         assert module._label_match_local_completion_event_exists(data, 'new-set') is False
-        index = data._completion_csv_index
-        previous = index.path.read_bytes()
-        def fail_publication(temporary):
-            Path(temporary).write_bytes(b'partial cache write')
-            raise OSError('cache publication failed')
-        monkeypatch.setattr(index, '_publish', fail_publication)
         data.log_event('TRAY_COMPLETE', {'set_id': 'new-set'})
         assert data.flush(5)
         assert not data._writer_errors
-        assert index.path.read_bytes() == previous
+        assert index_path.read_bytes() == previous
         assert truth(path) == ['old-set', 'new-set']
-        # Same-instance fallback remains safe even while rebuilding fails.
         assert module._label_match_local_completion_event_exists(data, 'new-set') is True
-        data._completion_csv_index = CompletionCsvIndex(tmp_path, PREFIX)
-        assert module._label_match_local_completion_event_exists(data, 'new-set') is True
+        assert module._label_match_local_completion_event_exists(manager(tmp_path), 'new-set') is True
         assert truth(path).count('new-set') == 1
     finally:
         data.close(5)

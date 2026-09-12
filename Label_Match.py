@@ -4,7 +4,6 @@ import json
 import traceback
 from collections.abc import Mapping
 from collections import namedtuple
-from completion_csv_index import CompletionCsvIndex
 from datetime import datetime, date, timezone
 from pathlib import Path
 
@@ -1500,35 +1499,6 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
     if not identity or not save_directory or not os.path.isdir(save_directory):
         return False
     prefix = f"{process_name}작업이벤트로그_{unique_id}_"
-    try:
-        candidates = [
-            os.path.join(save_directory, name)
-            for name in os.listdir(save_directory)
-            if name.startswith(prefix) and name.lower().endswith(".csv")
-        ]
-    except OSError:
-        return False
-    index = getattr(data_manager, "_completion_csv_index", None)
-    if index is None or index.directory != Path(save_directory) or index.prefix != prefix:
-        index = CompletionCsvIndex(save_directory, prefix)
-        data_manager._completion_csv_index = index
-    indexed_candidates = index.candidates(identity)
-    # Today's and the previous two days' rows always bypass negative cache
-    # coverage. Unknown/future filenames are also scanned conservatively.
-    recent = []
-    today = date.today()
-    for path in candidates:
-        try:
-            source_date = datetime.strptime(Path(path).name[len(prefix):-4], "%Y%m%d").date()
-            if (today - source_date).days < 3:
-                recent.append(path)
-        except ValueError:
-            recent.append(path)
-    search_paths = candidates if indexed_candidates is None else indexed_candidates
-    if indexed_candidates:
-        search_paths = indexed_candidates + sorted(set(candidates) - set(indexed_candidates), reverse=True)
-    else:
-        search_paths = sorted(set(search_paths) | set(recent), reverse=True)
     def contains_completion(handle):
         for row in csv.DictReader(handle):
             if row.get("event") != "TRAY_COMPLETE":
@@ -1544,39 +1514,55 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
                 return True
         return False
 
-    for path in search_paths if indexed_candidates else sorted(search_paths, reverse=True):
+    # A disappeared CSV cannot establish absence from a stale file list.
+    # Retry once from the directory, then stop a continuously moving input.
+    for attempt in range(2):
         try:
-            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
-                matched = contains_completion(handle)
-        except (OSError, UnicodeError, csv.Error):
-            continue
-        if not matched:
-            continue
+            candidates = [
+                os.path.join(save_directory, name)
+                for name in os.listdir(save_directory)
+                if name.startswith(prefix) and name.lower().endswith(".csv")
+            ]
+        except OSError as exc:
+            raise PackageLogisticsError("local completion CSV files could not be enumerated") from exc
+        for path in sorted(candidates, reverse=True):
+            try:
+                with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                    matched = contains_completion(handle)
+            except FileNotFoundError:
+                # Rotation invalidated this file list; enumerate again.
+                break
+            except (OSError, UnicodeError, csv.Error):
+                continue
+            if not matched:
+                continue
 
-        # A readable row can survive a failed writer fsync. Drain/check the
-        # writer before reopening, but a fresh manager's empty queue alone
-        # cannot establish durability of a file written by its predecessor.
-        try:
-            flush = getattr(data_manager, "flush", None)
-            if callable(flush):
-                flush(timeout=5.0)
-            # Windows fsync requires write access. r+ neither creates nor
-            # truncates the existing history; revalidate on the descriptor
-            # that will actually be synchronized.
-            with open(path, "r+", encoding="utf-8-sig", newline="") as handle:
-                if not contains_completion(handle):
-                    raise PackageLogisticsError(
-                        "matched local completion row changed before synchronization"
-                    )
-                os.fsync(handle.fileno())
-            return True
-        except (OSError, UnicodeError, csv.Error, RuntimeError) as exc:
-            # Known completion synchronization failures must not fall through
-            # as absence, append another physical event, or authorize a marker.
-            raise PackageLogisticsError(
-                "existing local completion CSV could not be synchronized"
-            ) from exc
-    return False
+            # A readable row can survive a failed writer fsync. Drain/check the
+            # writer before reopening, but a fresh manager's empty queue alone
+            # cannot establish durability of a file written by its predecessor.
+            try:
+                flush = getattr(data_manager, "flush", None)
+                if callable(flush):
+                    flush(timeout=5.0)
+                # Windows fsync requires write access. r+ neither creates nor
+                # truncates the existing history; revalidate on the descriptor
+                # that will actually be synchronized.
+                with open(path, "r+", encoding="utf-8-sig", newline="") as handle:
+                    if not contains_completion(handle):
+                        raise PackageLogisticsError(
+                            "matched local completion row changed before synchronization"
+                        )
+                    os.fsync(handle.fileno())
+                return True
+            except (OSError, UnicodeError, csv.Error, RuntimeError) as exc:
+                # Known completion synchronization failures must not fall through
+                # as absence, append another physical event, or authorize a marker.
+                raise PackageLogisticsError(
+                    "existing local completion CSV could not be synchronized"
+                ) from exc
+        else:
+            return False
+    raise PackageLogisticsError("local completion CSV files kept moving during search")
 
 
 def _label_match_replacement_waiting_event_exists(data_manager, dedupe_key):
@@ -4674,14 +4660,6 @@ class DataManager:
                 got_item = True
                 if log_item is None: break
                 filepath = self._get_log_filepath_for_item(log_item)
-                completion_index = getattr(self, "_completion_csv_index", None)
-                previous_signature = None
-                if completion_index is not None:
-                    try:
-                        previous_signature = completion_index.signature(filepath)
-                    except OSError:
-                        # Optional index metadata must not fail a CSV write.
-                        self._completion_csv_index = completion_index = None
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 with open(filepath, 'a', newline='', encoding='utf-8-sig') as f:
@@ -4692,8 +4670,6 @@ class DataManager:
                     if str(log_item[2] or "") in LABEL_MATCH_DURABLE_EVENT_TYPES:
                         f.flush()
                         os.fsync(f.fileno())
-                if completion_index is not None:
-                    completion_index.note_append(filepath, previous_signature, log_item[2], log_item[3])
             except queue.Empty:
                 continue
             except Exception as e:
