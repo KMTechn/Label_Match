@@ -7,6 +7,7 @@
 - LM-A02 소스 교정 완료: 생성·취소 조회 실패에서 마지막 경고·목록을 유지하고 오래됨/미확인을 표시한다. 격리 host review12 PASS(실제 SQLite 잠금 새4 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/review-01.xml). Tk 동기 조회 지연 개선은 이번 범위 밖이다.
 - LM-A03 소스 교정 완료: 중앙 캐시의 timestamp 오류는 원본을 보존한 수리 잠금이다. 격리 host 복구15 PASS(새5·기존 midnight2 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/recovery-01.xml). 실제 손상 캐시 지원 수리·화면은 미확인이다.
 - LM-C02 입력 정합 완료: portable chardet5.2.0 wheel을 hash lock에 추가하고 builder9개 version/hash 입력을 자동 대조한다. zero-PE11 PASS(새1 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/dependency-01.xml). wheel SHA256은 PyPI 및 격리 다운로드로 확인했으며 clean 설치·전체 빌드는 미실행이다.
+- LM-D02 문구 교정 완료: F3 권한 확인·로컬 완료 저장과 중앙 전송 대기·확정·충돌·로컬 복구를 구별한다. 기존 F3/제출/충돌26 PASS, [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/f3-copy-01.xml). 로컬 내구 단계 전 성공 금지와 입력 보존 검사를 유지했으며 새 문구의 native 가독성은 미확인이다.
 
 ## 2026-09-12 · Committed stale-runtime 복구의 호스트 교정
 

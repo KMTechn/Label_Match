@@ -454,7 +454,7 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 | 디스크/CSV/marker 실패 | 성공을 선행 표시하지 않고 현재 세트·intent·기존 CSV를 유지. writer 오류를 정상 flush로 오인하지 않음 | 같은 작업으로 복구해 이미 있는 완료 event를 대조하고 marker와 lease 경계를 연결; 새 set/key로 우회하지 않음([LM-06/08](README.md#lm-06)) |
 | 이력 조회 불완전 | 마지막 완전한 활성 색인을 유지하며 손상 행 수를 경고. 이력 상세에서 파일·행 위치를 확인하고 원본을 보존해 지원 담당에게 인계 | 오늘 기록을 완전하게 다시 읽어야 작업 차단 해제. 부분 집계나 빈 표를 정상 수량으로 사용하지 않음([C-08](contracts.md#c-08)) |
 | 관리자 경고 조회 실패 | 생성·취소 경고와 마지막 확인 목록을 보존하며 `조회 실패 · 오래됨` 표시. 실물 구분·반출 보류 안내를 계속 따른다 | 정상 조회로 현재 상태를 확인한다. 확인된 빈 목록만 경고를 해제하며 DB 오류를 사건 종결로 간주하지 않음 |
-| 로컬 완료 후 전송 대기 | marker=1 완료를 유지하며 due 재시도; 다음 준비 작업 가능. ACK 유실은 저장 명령의 receipt부터 조회 | 중앙 COMMITTED receipt와 원래 명령 identity 검증. 오래된 pending 실물 인계 기준은 [LM-B02](BACKLOG.md#lm-b02) |
+| 로컬 완료 후 전송 대기 | `로컬 완료 저장됨 · 중앙 전송 대기`는 marker=1 로컬 완료이며 due 재시도; 다음 준비 작업 가능. ACK 유실은 저장 명령의 receipt부터 조회 | `중앙 확정`은 중앙 COMMITTED receipt와 원래 명령 identity 검증 뒤의 상태. 오래된 pending 실물 인계 기준은 [LM-B02](BACKLOG.md#lm-b02) |
 | 중앙 충돌/다중 PC 경합 | marker=1 conflict는 로컬 완료를 보존하고 검토 사건으로 격리. marker=0을 완료로 승격하지 않음 | 작업자는 원본 PHS2·실물 구분을 유지하고 리더/지원 담당이 set/key·중앙 결과·원인을 대조. 사건 종결 권한·실물 처리 기준은 미확정([LM-B06](BACKLOG.md#lm-b06)) |
 | 자정·재시작 | 미확정 PHS2/outbox를 날짜만으로 삭제하지 않음. 중앙 캐시 timestamp 파싱 실패도 원본을 보존한 복구 잠금이며 관리자에게 확인·수리 요청 | 작업일 변경과 관계없이 기존 identity로 완료/검토 상태에 수렴. 시각을 현재 값으로 수동 치환하거나 원본 삭제로 우회하지 않음 |
 | F1/F2 | F1은 gate가 허용하는 미완료 초기화. F2 취소는 CREATE ACK dependency와 별도 취소 key 사용 | 취소·중복 요청이 원래 PACKAGE에 연결되고 SHIPPING-WAIT 재고 유지. 실물 해체·재고 반환으로 해석하지 않음([C-06](contracts.md#c-06)) |

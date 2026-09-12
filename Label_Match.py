@@ -5392,7 +5392,7 @@ class Label_Match(tk.Tk):
             try:
                 status_label.config(
                     text=(
-                        f"{self._ui_lane_busy_label} · 통신 완료 전 추가 입력은 받지 않습니다."
+                        f"{self._ui_lane_busy_label} · 처리 완료 전 추가 입력은 받지 않습니다."
                     ),
                     style="Status.TLabel",
                 )
@@ -5424,7 +5424,7 @@ class Label_Match(tk.Tk):
                 status_text = (
                     "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요." if broken else
                     "새 작업은 받지 않습니다. 처리 완료 후 종료합니다." if closing else
-                    "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+                    "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
                 )
                 status_label.config(text=status_text, style="Error.TLabel" if broken else "Status.TLabel")
                 if broken: status_label.grid()
@@ -5673,7 +5673,7 @@ class Label_Match(tk.Tk):
             self._workflow_notice_action_text = "확인"
         else:
             notice = WorkflowNotice(
-                title="중앙 포장 확정 대기",
+                title="로컬 포장 완료 복구 중",
                 message=(
                     "저장된 포장 완료 기록을 복구하고 있습니다. "
                     "복구가 끝날 때까지 PHS2를 이동하거나 다음 포장을 시작하지 마세요."
@@ -14292,7 +14292,7 @@ class Label_Match(tk.Tk):
 
         admission = self._submit_ui_lane_task(
             name="f3-package-completion",
-            busy_text="포장 완료 · 중앙 저장 중",
+            busy_text="포장 완료 · 권한 확인 및 로컬 완료 저장 중",
             work=work,
             finish=finish,
             fail=fail,
@@ -14496,7 +14496,14 @@ class Label_Match(tk.Tk):
             self.history_tree.item(set_id_for_log, values=values_to_update, tags=("success" if result == self.Results.PASS else "error",))
             self._render_history_detail(set_id_for_log)
 
-        self.save_status_label.config(text=f"✓ 기록됨 ({datetime.now().strftime('%H:%M:%S')})")
+        saved_text = "기록됨"
+        if package_logistics and package_logistics.get("idempotency_key"):
+            central_text = {
+                "ACKED": "중앙 확정",
+                "CONFLICT": "중앙 충돌 · 관리자 확인",
+            }.get(str(package_logistics.get("status") or "").upper(), "중앙 전송 대기")
+            saved_text = f"로컬 완료 저장됨 · {central_text}"
+        self.save_status_label.config(text=f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
         return self._return_to_idle_after_finalized_set()
