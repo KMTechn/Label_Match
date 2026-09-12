@@ -4,7 +4,7 @@
 
 durable PHS2 capture가 완료된 입력만 scan Entry에서 지운다. serial lane이 Entry를 비활성화한 동안에도 지울 수 있도록 위젯 상태를 잠시 전환하고 즉시 원래 상태로 돌린다. 실패·busy·미수락 입력과 F-key/focus 조건은 보존한다.
 
-대기 화면의 read-only SQLite snapshot은 deferred capture와 실제 `package_command_outbox`를 함께 조회한다. 원 `state_counts`와 package status는 그대로 노출하며 operator 집계에서만 같은 set·정확한 downstream ref의 `SUPERSEDED` handoff를 중복 제외한다. package PENDING은 전송 대기, SENDING은 결과 확인, CONFLICT는 관리자 확인이며 ACKED도 로컬 completion marker가 있어야 완료로 센다. 실제 대상이 없는 SUPERSEDED와 CANCELLED는 미완료로 남긴다. producer relay의 별도 settlement를 이 집계로 판정하지 않는다.
+대기 화면의 read-only SQLite snapshot은 deferred capture와 실제 `package_command_outbox`를 함께 조회한다. 원 `state_counts`와 package status는 그대로 노출하며 operator 집계에서만 같은 set·정확한 downstream ref의 `SUPERSEDED` handoff를 중복 제외한다. package PENDING은 전송 대기, SENDING은 결과 확인, CONFLICT는 관리자 확인이며 ACKED도 로컬 completion marker가 있어야 완료로 센다. 지원 복구에서 이미 dismiss된 prewrite CONFLICT는 종결-미완료로 표시하며 관리자 확인/최장 대기를 다시 열지 않는다. 실제 대상이 없는 SUPERSEDED와 CANCELLED는 미완료로 남긴다. producer relay의 별도 settlement를 이 집계로 판정하지 않는다.
 
 `작업 상세 보기/닫기`는 위젯 가시성만 바꾸며 accepted raw, 원 PHS2, 수량, 명령·receipt·lease·복구 상태나 F-key 허용 조건을 바꾸지 않는다. 표준 PHS2의 제품 수량은 `package_source_snapshot.member_count`를 사용하며 snapshot이 없거나 `None`인 교체 후 재조회 구간에만 검증된 `sealed_transfer.QT`를 사용한다. 기존 logistics 정수 검증으로 bool·실수·문자열·0/음수·누락을 거부하고, 양쪽 근거가 있으면 같은 양수 정수인지 확인한다. 명시적 invalid snapshot을 과거 seal로 대체하거나 소수를 잘라 수량으로 표시하지 않는다. 근거가 없거나 상충하면 수량 확인 상태를 표시하며 스캔 횟수나 이력 행 수를 수량으로 대체하지 않는다. 중앙 대기·관리자 확인과 로컬 완료의 의미는 그대로 유지하며 접수 ID·상태 코드·선행조건 identity만 상세로 이동한다. 긴 상세는 읽기 전용 스크롤 영역에 보존한다. [한정 근거](operations.md#routine-details-20260912).
 

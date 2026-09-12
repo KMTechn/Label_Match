@@ -1346,15 +1346,16 @@ def test_online_legacy_outbox_and_supersede_handoff_commit_together(tmp_path):
             )
 
 
-@pytest.mark.parametrize(("status", "local_committed", "operator_state"), [
-    ("PENDING", 1, "READY_TO_SUBMIT"),
-    ("SENDING", 1, "RECONCILE_PENDING_SUBMIT"),
-    ("CONFLICT", 1, "OPERATOR_REVIEW"),
-    ("ACKED", 0, "LOCAL_EFFECT_PENDING"),
-    ("ACKED", 1, "COMPLETED"),
+@pytest.mark.parametrize(("status", "local_committed", "dismissed", "operator_state"), [
+    ("PENDING", 1, 0, "READY_TO_SUBMIT"),
+    ("SENDING", 1, 0, "RECONCILE_PENDING_SUBMIT"),
+    ("CONFLICT", 1, 0, "OPERATOR_REVIEW"),
+    ("CONFLICT", 0, 1, "CANCELLED"),
+    ("ACKED", 0, 0, "LOCAL_EFFECT_PENDING"),
+    ("ACKED", 1, 0, "COMPLETED"),
 ])
 def test_status_readback_follows_package_handoff_without_mutating_evidence(
-    tmp_path, status, local_committed, operator_state,
+    tmp_path, status, local_committed, dismissed, operator_state,
 ):
     db_path, outbox, store = _store(tmp_path)
     captured = _capture(store, set_id="SET-STATUS-HANDOFF")
@@ -1363,8 +1364,8 @@ def test_status_readback_follows_package_handoff_without_mutating_evidence(
     )
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "UPDATE package_command_outbox SET status=?,local_completion_committed=?",
-            (status, local_committed),
+            "UPDATE package_command_outbox SET status=?,local_completion_committed=?,local_recovery_dismissed=?",
+            (status, local_committed, dismissed),
         )
     before = hashlib.sha256(db_path.read_bytes()).hexdigest()
     readback = store.status_readback(now="2099-01-01T00:00:00Z")
@@ -1373,8 +1374,8 @@ def test_status_readback_follows_package_handoff_without_mutating_evidence(
     assert dict(readback.operator_state_counts)[operator_state] == 1
     assert readback.package_handoff_count == 1
     assert readback.total_count == 1
-    assert readback.closed_incomplete_count == 0
-    assert readback.nonterminal_count == (0 if operator_state == "COMPLETED" else 1)
+    assert readback.closed_incomplete_count == int(bool(dismissed))
+    assert readback.nonterminal_count == int(operator_state not in {"COMPLETED", "CANCELLED"})
     if readback.nonterminal_count:
         assert readback.oldest_intent_id == queued["idempotency_key"]
         assert readback.oldest_state == operator_state
@@ -1385,7 +1386,10 @@ def test_status_readback_follows_package_handoff_without_mutating_evidence(
     elif status == "SENDING":
         assert groups["result_checking"] == 1
     elif status == "CONFLICT":
-        assert groups["admin_review"] == 1
+        assert groups["admin_review"] == int(not dismissed)
+    if dismissed:
+        assert not readback.oldest_intent_id
+        assert not readback.oldest_state
     assert hashlib.sha256(db_path.read_bytes()).hexdigest() == before
 
 

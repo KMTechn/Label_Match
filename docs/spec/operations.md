@@ -7,6 +7,8 @@
 
 **PROVEN — host:** source/readback·UI lane·workbench의 headless **238 PASS / Tk2 제외**, 짧은 D 경로에서 원 경로 오류6개 **6 PASS**다. 새 회귀는 capture 실패/성공과 비활성 gate 복구, package PENDING/SENDING/CONFLICT/ACKED·marker 유무, 독립 package와 연결 없는 SUPERSEDED, 실제 readback→대기 tree/footer·focus/업무 상태 보존을 다룬다. 초기 broad 선택이 이름에 native가 없는 기존 Tk2개를 잘못 포함한 사실, 원19 FAIL/392 PASS, 긴 D basetemp 경로 실패와 fixture 교정은 D 근거에 보존한다. 해당 Tk2개는 이전 숨김 상세를 전제로 한 오래된 layout 기대 실패이며 native 수용으로 사용하지 않는다. 원19 중 변경 없는 문구 literal 기대1개도 보존하고 이 수정 범위로 고치지 않았다. 종료 후 남은 own pytest37536은 정확히 확인해 정지했다.
 
+후속 consumer 검토에서 기존 `list_conflicts`/`dismiss_recoverable_prewrite_conflict`의 종결 의미를 보존했다. 이미 dismiss된 prewrite CONFLICT는 raw 상태를 유지한 채 operator view에서 종결-미완료로 분류하고 관리자 확인·최장 대기를 다시 열지 않는다. 실제051은 ACKED2이며 원 업무에는 이런 행을 만들지 않았다. 이 경계와 handoff·coherent snapshot·실제 renderer의 명시적 headless node **12 PASS / native exit0**를 확인했으며 첫 bf8fe59 packet은 원본대로 보존하고 최종 후보를 새로 결속한다.
+
 **UNPROVEN:** Main 소유 원76a3 guest는 아직 수정하지 않았다. producer REVIEW1/RETRY_WAIT3는 Main/Web의 독립 disposition과 지원 복구가 필요하다. 최종 source 동결 후 별도 native 검증·실제 당일 input·전체 Today30/30 interval을 사전 결속해야 한다. 새 case·limits·samples와 성능 PASS는 없으며 원23 ACK+게시 실패와 수용 M06 single effect는 유지한다. [진행 근거](D:/KMTech/optimization-implementation-20260909/Label_Match/M06-Today-continuation-20260912/display-fixes-ctx3683d7f00e96/RESULT.md).
 
 <a id="m06-account-handoff-20260912"></a>

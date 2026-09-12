@@ -3454,7 +3454,9 @@ class DeferredIntentCaptureStore:
                         CASE status
                           WHEN 'PENDING' THEN 'READY_TO_SUBMIT'
                           WHEN 'SENDING' THEN 'RECONCILE_PENDING_SUBMIT'
-                          WHEN 'CONFLICT' THEN 'OPERATOR_REVIEW'
+                          WHEN 'CONFLICT' THEN CASE local_recovery_dismissed
+                            WHEN 1 THEN 'CANCELLED'
+                            ELSE 'OPERATOR_REVIEW' END
                           WHEN 'ACKED' THEN CASE local_completion_committed
                             WHEN 1 THEN 'COMPLETED'
                             ELSE 'LOCAL_EFFECT_PENDING' END
@@ -3492,7 +3494,8 @@ class DeferredIntentCaptureStore:
                     aggregates['SUPERSEDED']['count'] -= package_handoff_count
                 package_oldest = conn.execute(
                     f"""SELECT idempotency_key AS intent_id,state,created_at
-                          FROM ({package_view}) WHERE state<>'COMPLETED'
+                          FROM ({package_view})
+                         WHERE state NOT IN ('COMPLETED','CANCELLED')
                          ORDER BY created_at,idempotency_key LIMIT 1"""
                 ).fetchone()
             operator_state_counts = tuple(
