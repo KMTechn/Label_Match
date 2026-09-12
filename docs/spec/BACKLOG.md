@@ -1,5 +1,10 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-12 · Committed stale-runtime 복구의 호스트 교정
+
+- Main/Web의 실제 APP_CLOSE75 승인·만료 fence6 판정에 따라 기존 ack-reviewed에 정확한 만료 authority 복구 옵션을 추가했다. 새 focused19·기존 선택13 PASS와 보존·거부 범위는 [운영 근거](operations.md#committed-stale-runtime-recovery-20260912)를 따른다. 서버/fencing/기존 receipt는 바꾸지 않는다.
+- 다음은 Main의 최종 source/정상 command 검토와 한 번의 배정에서 원590b disposition·정상 forward acquisition·남은 원 batch settlement다. producer 종결 뒤 실제 같은 날 history와 새 최종 후보를 고정한 Today30/30을 수행한다. 현재 VM Saved/0, live recovery와 Today samples0이며 원23+게시 실패를 보존한다.
+
 ## 2026-09-12 · M06 표시 교정·격리 native와 남은 producer/Today
 
 - 호스트 수정: durable capture 후 disabled 입력 정리와 deferred→package 실제 대기 readback. 이미 dismiss된 prewrite conflict의 종결과 원 queue/receipt/audit·수량·멤버십·F-key·focus를 유지하며 [검증/실행 경계](operations.md#package-waiting-display-20260912)를 따른다.

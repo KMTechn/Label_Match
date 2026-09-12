@@ -1359,6 +1359,103 @@ def mark_runtime_operator_review_in_transaction(
     )
 
 
+def reopen_reviewed_runtime_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    relay_row: sqlite3.Row,
+    metadata: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    expected_runtime_instance_id: str,
+    expected_runtime_fence: int,
+    expected_runtime_lease_id: str,
+    expected_runtime_expires_at: str,
+    now: str,
+) -> Dict[str, Any]:
+    """Reopen only a disposed, expired stale scope for normal authenticated issue.
+
+    The caller validates the exact committed receipt and spool, ACKs its row,
+    and durably audits the returned preimage before committing this transaction.
+    This does not issue authority or change any source request metadata.
+    """
+    if not conn.in_transaction:
+        raise RuntimeError("reviewed runtime recovery requires an open transaction")
+    rows = conn.execute("SELECT * FROM direct_sync_runtime_authority").fetchall()
+    if len(rows) != 1:
+        raise ValueError("runtime_recovery_requires_one_authority")
+    state = rows[0]
+    scope = {key: str(relay_row[key] or "") for key in ("endpoint_url", "producer_id", "key_id")}
+    scope["producer_install_id"] = str(metadata.get("producer_install_id") or "")
+    if (not all(scope.values()) or not _state_scope_matches(state, scope)
+            or state["authority_scope"] != _scope_key(scope)
+            or receipt.get("producer_install_id") != scope["producer_install_id"]):
+        raise ValueError("runtime_recovery_scope_mismatch")
+    if (not expected_runtime_instance_id or not expected_runtime_lease_id
+            or not expected_runtime_expires_at or type(expected_runtime_fence) is not int
+            or expected_runtime_fence < 1
+            or state["runtime_instance_id"] != expected_runtime_instance_id
+            or state["fence"] != expected_runtime_fence
+            or state["lease_id"] != expected_runtime_lease_id
+            or state["expires_at"] != expected_runtime_expires_at
+            or metadata.get("runtime_instance_id") != expected_runtime_instance_id
+            or type(metadata.get("runtime_fence")) is not int
+            or metadata.get("runtime_fence") != expected_runtime_fence):
+        raise ValueError("runtime_recovery_preimage_mismatch")
+    if (state["status"] != "OPERATOR_REVIEW"
+            or state["last_error_code"] != "STALE_RUNTIME_FENCE"
+            or relay_row["last_error_code"] != "STALE_RUNTIME_FENCE"):
+        raise ValueError("runtime_recovery_review_cause_mismatch")
+    runtime_receipt = receipt.get("runtime_lease")
+    if (not isinstance(runtime_receipt, Mapping)
+            or runtime_receipt.get("contract_version") != CONTRACT_VERSION
+            or runtime_receipt.get("validation_status") != "observed_rejected"
+            or runtime_receipt.get("reason_code") != "STALE_RUNTIME_FENCE"):
+        raise ValueError("runtime_recovery_receipt_mismatch")
+    expiry, current = _parse_time(state["expires_at"]), _parse_time(now)
+    if expiry is None or current is None or expiry > current:
+        raise ValueError("runtime_recovery_grant_not_expired")
+    if any(state[key] is not None for key in (
+        "assigned_relay_id", "pending_request_json", "pending_issue_idempotency_key",
+        "next_request_token", "next_request_sequence",
+    )):
+        raise ValueError("runtime_recovery_authority_in_flight")
+    try:
+        public_jwk = json.loads(state["runtime_public_jwk_json"])
+        metadata_jwk = metadata["runtime_public_jwk"]
+        jwk_matches = canonical_json(public_jwk) == canonical_json(metadata_jwk)
+    except (KeyError, TypeError, ValueError):
+        jwk_matches = False
+    token_digest = metadata.get("runtime_request_token_sha256")
+    if (not jwk_matches or "runtime_request_token" in metadata
+            or not isinstance(token_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", token_digest) is None):
+        raise ValueError("runtime_recovery_terminal_metadata_mismatch")
+    for other in conn.execute(
+        "SELECT metadata_json FROM direct_sync_relay_batches WHERE relay_id<>? AND status<>'acked'",
+        (relay_row["relay_id"],),
+    ):
+        try:
+            other_metadata = json.loads(other["metadata_json"] or "{}")
+        except (TypeError, ValueError):
+            raise ValueError("runtime_recovery_other_metadata_invalid") from None
+        if not isinstance(other_metadata, dict):
+            raise ValueError("runtime_recovery_other_metadata_invalid")
+        if any(key in other_metadata for key in (*METADATA_FIELDS, "runtime_request_token_sha256")):
+            raise ValueError("runtime_recovery_other_bound_row")
+    before = {key: state[key] for key in (
+        "authority_scope", "endpoint_url", "producer_id", "key_id", "producer_install_id",
+        "runtime_instance_id", "lease_id", "fence", "expires_at", "status",
+        "last_error_code", "created_at", "updated_at", "assigned_relay_id",
+        "pending_request_json", "pending_issue_idempotency_key", "next_request_token",
+        "next_request_sequence",
+    )}
+    before["public_jwk_sha256"] = hashlib.sha256(canonical_json(public_jwk).encode()).hexdigest()
+    conn.execute(
+        "UPDATE direct_sync_runtime_authority SET status='EXPIRED',updated_at=? WHERE authority_scope=?",
+        (now, state["authority_scope"]),
+    )
+    return {"authority_before": before, "new_status": "EXPIRED", "normal_acquisition_required": True}
+
+
 def release_runtime_request_in_transaction(
     conn: sqlite3.Connection,
     *,

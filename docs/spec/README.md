@@ -1,5 +1,9 @@
 # Label_Match 기술 명세
 
+## 2026-09-12 · Committed stale-runtime review 지원 복구
+
+정상 재시도에서 raw APP_CLOSE는 committed였지만 만료 runtime 거부로 authority가 review에 남았다. Main/Web의 독립 판정에 따라 기존 ack-reviewed에 단일 만료 authority의 명시적 복구를 추가하고 새19·기존13 focused host 검사를 통과했다. 현재 원 VM은 Saved/0이며 실제 복구·Today30/30은 [최종 candidate 검토와 배정 경계](operations.md#committed-stale-runtime-recovery-20260912)를 따른다.
+
 ## 2026-09-12 · 수락 입력 정리와 실제 package 대기 표시
 
 durable capture 후 비활성 Entry의 원문이 남던 원인과 실제 package PENDING이 deferred handoff 뒤 누락되던 집계를 교정한다. 스캔 원문·저장 명령은 보존하고, read-only operator view에서 같은 작업의 capture와 package를 중복 없이 표시한다. 최종8d의 원 VM 격리 native8장면과 지원 local review ACK1을 Main이 수용했다. 후속 정상 producer 한 재시도는 committed APP_CLOSE receipt와 STALE_RUNTIME_FENCE review를 남겨 Today를 시작하지 않았고 원 VM을 Saved/0으로 반환했다. 원 M06/F3는 재실행하지 않으며 [현재 검증·복구 경계](operations.md#package-waiting-display-20260912)를 따른다.

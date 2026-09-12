@@ -91,6 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     ack_parser.add_argument("--expected-content-sha256", default="")
     ack_parser.add_argument("--expected-request-id", default="")
     ack_parser.add_argument("--expected-error-code", default="")
+    ack_parser.add_argument("--recover-expired-runtime", action="store_true", help="Reopen only the matched committed stale-runtime review for normal authenticated acquisition")
+    ack_parser.add_argument("--expected-runtime-instance-id", default="")
+    ack_parser.add_argument("--expected-runtime-fence", type=int, default=0)
+    ack_parser.add_argument("--expected-runtime-lease-id", default="")
+    ack_parser.add_argument("--expected-runtime-expires-at", default="")
     ack_parser.add_argument("--audit-log-path", default="")
     ack_parser.add_argument("--report-path", default="")
 
@@ -127,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
                     expected_request_id=args.expected_request_id,
                     expected_error_code=args.expected_error_code,
                     audit_log_path=args.audit_log_path,
+                    recover_expired_runtime=args.recover_expired_runtime,
+                    expected_runtime_instance_id=args.expected_runtime_instance_id,
+                    expected_runtime_fence=args.expected_runtime_fence,
+                    expected_runtime_lease_id=args.expected_runtime_lease_id,
+                    expected_runtime_expires_at=args.expected_runtime_expires_at,
                 ),
                 args.report_path,
             )

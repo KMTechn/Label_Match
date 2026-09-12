@@ -1,5 +1,13 @@
 # Label_Match 데이터·통합 계약
 
+## Committed stale-runtime review의 명시적 복구 · 2026-09-12
+
+기존 `ack-reviewed --recover-expired-runtime`만 독립 검토된 committed `STALE_RUNTIME_FENCE` 수신의 local ACK와 만료 authority 재개를 같은 SQLite transaction에서 처리한다. 기존 source/request/hash/byte/count·receipt 검증을 유지하고 실제 보존 spool도 대조한다. 단일 authority의 scope/install·runtime ID·fence·lease ID·expiry와 terminal public key/token audit digest를 결속하며, future expiry·다른 review 원인·assignment/pending/token·다른 미종결 runtime-bound row가 있으면 변경 없이 거부한다. 현재 producer credential·원 relay/metadata/spool/receipt는 바꾸지 않는다.
+
+필수 audit 경로에 이전 authority와 receipt/metadata hash의 PREPARED 근거를 먼저 fsync한다. 실패하면 ACK와 authority 변경을 rollback하며, 성공 시 authority의 status만 EXPIRED로 바꾸고 원 lease/fence/evidence를 남긴다. 후속 정상 `ensure_runtime_authority`가 기존 expiration 경로로 새 ephemeral runtime과 인증된 forward grant를 취득한다. 이 로컬 명령 자체는 HTTP 요청이나 원 source 재전송을 하지 않는다. 재호출은 이미 ACKED인 행을 거부해 authority를 다시 초기화하지 않고, 정상 acquire의 실패는 기존 persisted issue idempotency로 재시도한다.
+
+`observed_rejected`를 정상 회전으로 인정하지 않으며 `retry-dead`의 review 제외와 다른 fail-closed 조건을 유지한다. 원 APP_CLOSE raw 승인·fence 거부와 projection 의미도 바꾸지 않는다. [실제 실패·호스트 교정과 실행 경계](operations.md#committed-stale-runtime-recovery-20260912).
+
 ## 일상 화면의 정보 경계 · 2026-09-12
 
 durable PHS2 capture가 완료된 입력만 scan Entry에서 지운다. serial lane이 Entry를 비활성화한 동안에도 지울 수 있도록 위젯 상태를 잠시 전환하고 즉시 원래 상태로 돌린다. 실패·busy·미수락 입력과 F-key/focus 조건은 보존한다.

@@ -15,6 +15,7 @@ import pytest
 
 import direct_sync_push
 import producer_runtime_client as runtime_client
+from direct_sync_operator import ack_reviewed_relay_batch
 from direct_sync_push import ProducerCredentials, canonical_json, init_relay_queue_schema
 
 
@@ -411,6 +412,209 @@ def _assert_signed_lease_call(call) -> None:
         _credentials().secret, canonical.encode("utf-8"), hashlib.sha256
     ).hexdigest()
     assert hmac.compare_digest(expected, headers["X-Producer-Signature"])
+
+
+def _committed_stale_recovery_case(tmp_path):
+    db = tmp_path / "recovery.sqlite3"
+    for relay in ("relay-reviewed", "relay-next"):
+        _make_pending_relay(db, tmp_path, relay)
+        spool = tmp_path / f"{relay}.csv"
+        spool.write_bytes(b"event\nAPP_CLOSE\n")
+        metadata = _metadata(relay)
+        metadata.update(content_sha256=hashlib.sha256(spool.read_bytes()).hexdigest(),
+                        byte_length=spool.stat().st_size, row_count=1, last_row_number=1,
+                        source_system="test-role")
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE direct_sync_relay_batches SET content_sha256=?,byte_length=?,metadata_json=? WHERE relay_id=?",
+                         (metadata["content_sha256"], metadata["byte_length"], canonical_json(metadata), relay))
+    # A real reservation persisted before a lost transport response/restart.
+    row = direct_sync_push.claim_next_relay_batch(db_path=db, worker_id="seed", target_relay_id="relay-reviewed")
+    prepared = runtime_client.prepare_runtime_metadata(
+        db_path=db, relay_id=row.relay_id, metadata=row.metadata, credentials=_credentials(),
+        expected_lease_owner=row.lease_owner, expected_attempt_count=row.attempt_count,
+        session=_LeaseSession(), now="2026-08-06T00:00:00Z")
+    assert prepared.metadata is not None
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE direct_sync_relay_batches SET status='retry_wait',lease_owner=NULL,lease_expires_at=NULL WHERE relay_id='relay-reviewed'")
+        conn.execute("UPDATE direct_sync_runtime_authority SET expires_at='2000-01-01T00:00:00Z'")
+
+    class RecoverySession(_RelaySession):
+        def post(self, url, **kwargs):
+            response = super().post(url, **kwargs)
+            if str(url).endswith(runtime_client.ENDPOINT_PATH):
+                response.payload["fence"] = 2
+                return response
+            uploaded = self.source_calls[-1][0]
+            response.payload["totals"]["inserted"] = 1
+            response.payload["source_file"] = {
+                "content_sha256": uploaded["content_sha256"],
+                "byte_length": uploaded["byte_length"], "declared_row_count": 1,
+            }
+            if uploaded["client_batch_id"] == "relay-reviewed":
+                response.payload["runtime_lease"] = {
+                    "contract_version": runtime_client.CONTRACT_VERSION,
+                    "validation_status": "observed_rejected", "reason_code": "STALE_RUNTIME_FENCE",
+                }
+            return response
+
+    session = RecoverySession()
+    liveness = runtime_client.ensure_runtime_authority(
+        db_path=db, credentials=_credentials(), producer_install_id="install-test", session=session)
+    assert liveness.receipt["request_in_flight"] and not session.calls
+    result = direct_sync_push.drain_one_relay_batch(
+        db_path=db, credentials=_credentials(), session=session, target_relay_id="relay-reviewed")
+    assert result.committed and not result.success and result.error_code == "STALE_RUNTIME_FENCE"
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        state = dict(conn.execute("SELECT * FROM direct_sync_runtime_authority").fetchone())
+        row = dict(conn.execute("SELECT * FROM direct_sync_relay_batches WHERE relay_id='relay-reviewed'").fetchone())
+    args = dict(db_path=db, relay_id="relay-reviewed", operator_id="operator-test",
+                reason="Independent receipt review confirms this committed source and expired grant",
+                review_evidence_ref="evidence://committed-stale-source",
+                expected_content_sha256=row["content_sha256"], expected_request_id="request-relay-a",
+                expected_error_code="STALE_RUNTIME_FENCE", audit_log_path=tmp_path / "operator.jsonl",
+                recover_expired_runtime=True, expected_runtime_instance_id=state["runtime_instance_id"],
+                expected_runtime_fence=state["fence"], expected_runtime_lease_id=state["lease_id"],
+                expected_runtime_expires_at=state["expires_at"])
+    return db, session, args, state, row
+
+
+def _recovery_database_rows(db):
+    with sqlite3.connect(db) as conn:
+        return tuple(tuple(conn.execute(f"SELECT * FROM {table} ORDER BY 1")) for table in
+                     ("direct_sync_runtime_authority", "direct_sync_relay_batches"))
+
+
+@pytest.mark.parametrize("lease_failures", [0, 1])
+def test_reviewed_stale_recovery_uses_normal_authenticated_issue_without_source_replay(tmp_path, lease_failures):
+    from tools.direct_sync_relay_operator import main
+    db, session, args, old_state, original = _committed_stale_recovery_case(tmp_path)
+    untouched_before = _recovery_database_rows(db)[1][0]
+    spool_before = {p.name: p.read_bytes() for p in tmp_path.glob("*.csv")}
+    report_path = tmp_path / "recovery-report.json"
+    command = ["ack-reviewed"]
+    for key, value in args.items():
+        flag = "--" + key.replace("_", "-")
+        command.extend([flag] if value is True else [flag, str(value)])
+    command.extend(["--report-path", str(report_path)])
+    assert main(command) == 0
+    report = json.loads(report_path.read_text())
+    assert report["runtime_recovery"]["new_status"] == "EXPIRED"
+    assert report["runtime_recovery"]["authority_before"]["lease_id"] == old_state["lease_id"]
+    assert _recovery_database_rows(db)[1][0] == untouched_before
+    after_ack = _recovery_database_rows(db)
+    assert ack_reviewed_relay_batch(**args)["error_code"] == "relay_status_not_ackable_by_operator"
+    assert _recovery_database_rows(db) == after_ack
+    audit = [json.loads(line) for line in args["audit_log_path"].read_text().splitlines()]
+    assert [e["action"] for e in audit[:2]] == ["ack-reviewed-runtime-prepared", "ack-reviewed"]
+    assert audit[0]["runtime_recovery"]["authority_before"]["runtime_instance_id"] == old_state["runtime_instance_id"]
+    assert "runtime_request_token\"" not in args["audit_log_path"].read_text()
+    session.failures = lease_failures
+    first = runtime_client.ensure_runtime_authority(
+        db_path=db, credentials=_credentials(), producer_install_id="install-test", session=session)
+    if lease_failures:
+        assert first.retryable and first.error_code
+        with sqlite3.connect(db) as conn:
+            pending = conn.execute("SELECT pending_request_json FROM direct_sync_runtime_authority").fetchone()[0]
+        assert pending
+        pending_rows = _recovery_database_rows(db)
+        assert ack_reviewed_relay_batch(**args)["status"] == "BLOCKED"
+        assert _recovery_database_rows(db) == pending_rows
+        first = runtime_client.ensure_runtime_authority(
+            db_path=db, credentials=_credentials(), producer_install_id="install-test", session=session)
+        assert session.calls[0][1] == session.calls[1][1] == json.loads(pending)
+    assert not first.error_code and first.receipt["fence"] == 2
+    assert session.calls[-1][1]["runtime_instance_id"] != old_state["runtime_instance_id"]
+    for call in session.calls:
+        _assert_signed_lease_call(call)
+    # The committed source is never made pending or posted again; only the next
+    # preserved row receives fresh metadata through the ordinary drain.
+    result = direct_sync_push.drain_one_relay_batch(db_path=db, credentials=_credentials(), session=session)
+    assert result.success
+    assert [v[0]["client_batch_id"] for v in session.source_calls] == ["relay-reviewed", "relay-next"]
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.csv")} == spool_before
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        saved = dict(conn.execute("SELECT * FROM direct_sync_relay_batches WHERE relay_id='relay-reviewed'").fetchone())
+    for key in ("metadata_json", "receipt_json", "content_sha256", "byte_length", "attempt_count", "spooled_file_path"):
+        assert saved[key] == original[key]
+    assert saved["status"] == "acked"
+
+
+@pytest.mark.parametrize("mutation,error", [
+    ("scope", "runtime_recovery_scope_mismatch"),
+    ("runtime", "runtime_recovery_preimage_mismatch"),
+    ("fence", "runtime_recovery_preimage_mismatch"),
+    ("lease", "runtime_recovery_preimage_mismatch"),
+    ("live", "runtime_recovery_grant_not_expired"),
+    ("assigned", "runtime_recovery_authority_in_flight"),
+    ("pending", "runtime_recovery_authority_in_flight"),
+    ("token", "runtime_recovery_authority_in_flight"),
+    ("other_bound", "runtime_recovery_other_bound_row"),
+    ("cause", "runtime_recovery_review_cause_mismatch"),
+    ("spool", "runtime_recovery_spool_mismatch"),
+    ("receipt_install", "runtime_recovery_scope_mismatch"),
+    ("second_scope", "runtime_recovery_requires_one_authority"),
+    ("receipt_runtime", "runtime_recovery_receipt_mismatch"),
+    ("token_digest", "runtime_recovery_terminal_metadata_mismatch"),
+    ("audit_missing", "runtime_recovery_audit_path_required"),
+])
+def test_reviewed_stale_recovery_refuses_mismatched_or_live_authority(tmp_path, mutation, error):
+    db, session, args, state, row = _committed_stale_recovery_case(tmp_path)
+    with sqlite3.connect(db) as conn:
+        if mutation in ("scope", "runtime", "fence", "lease", "cause", "assigned", "pending", "token"):
+            field, value = {
+                "scope": ("key_id", "different-key"), "runtime": ("runtime_instance_id", "other-runtime"),
+                "fence": ("fence", 3), "lease": ("lease_id", "other-lease"),
+                "cause": ("last_error_code", "RUNTIME_CLONE_CONFLICT"),
+                "assigned": ("assigned_relay_id", "relay-next"), "pending": ("pending_request_json", "{}"),
+                "token": ("next_request_token", "fixture-in-flight-token"),
+            }[mutation]
+            conn.execute(f"UPDATE direct_sync_runtime_authority SET {field}=?", (value,))
+        elif mutation == "live":
+            args["expected_runtime_expires_at"] = "2099-01-01T00:00:00Z"
+            conn.execute("UPDATE direct_sync_runtime_authority SET expires_at=?", (args["expected_runtime_expires_at"],))
+        elif mutation == "other_bound":
+            metadata = json.loads(conn.execute("SELECT metadata_json FROM direct_sync_relay_batches WHERE relay_id='relay-next'").fetchone()[0])
+            metadata["runtime_instance_id"] = state["runtime_instance_id"]
+            conn.execute("UPDATE direct_sync_relay_batches SET metadata_json=? WHERE relay_id='relay-next'", (canonical_json(metadata),))
+        elif mutation == "receipt_install":
+            receipt = json.loads(row["receipt_json"]); receipt["producer_install_id"] = "other-install"
+            conn.execute("UPDATE direct_sync_relay_batches SET receipt_json=? WHERE relay_id='relay-reviewed'", (canonical_json(receipt),))
+        elif mutation == "spool":
+            Path(row["spooled_file_path"]).write_bytes(b"changed\n")
+        elif mutation == "second_scope":
+            conn.row_factory = sqlite3.Row
+            other = dict(conn.execute("SELECT * FROM direct_sync_runtime_authority").fetchone())
+            other["authority_scope"] = "another-scope"
+            names = list(other)
+            conn.execute(f"INSERT INTO direct_sync_runtime_authority ({','.join(names)}) VALUES ({','.join('?' for _ in names)})", tuple(other.values()))
+        elif mutation == "receipt_runtime":
+            receipt = json.loads(row["receipt_json"])
+            receipt["runtime_lease"]["validation_status"] = "consumed"
+            conn.execute("UPDATE direct_sync_relay_batches SET receipt_json=? WHERE relay_id='relay-reviewed'", (canonical_json(receipt),))
+        elif mutation == "token_digest":
+            metadata = json.loads(row["metadata_json"]); metadata.pop("runtime_request_token_sha256")
+            conn.execute("UPDATE direct_sync_relay_batches SET metadata_json=? WHERE relay_id='relay-reviewed'", (canonical_json(metadata),))
+        elif mutation == "audit_missing":
+            args["audit_log_path"] = ""
+    before = _recovery_database_rows(db)
+    report = ack_reviewed_relay_batch(**args)
+    assert report["status"] == "BLOCKED" and report["error_code"] == error
+    assert _recovery_database_rows(db) == before
+    assert len(session.source_calls) == 1 and not session.calls
+
+
+def test_reviewed_stale_recovery_rolls_back_when_preimage_audit_fails(tmp_path, monkeypatch):
+    import direct_sync_operator
+    db, session, args, state, row = _committed_stale_recovery_case(tmp_path)
+    before = _recovery_database_rows(db)
+    def fail_audit(*args, **kwargs):
+        raise OSError("audit disk unavailable")
+    monkeypatch.setattr(direct_sync_operator, "_append_operator_audit", fail_audit)
+    with pytest.raises(OSError, match="audit disk unavailable"):
+        ack_reviewed_relay_batch(**args)
+    assert _recovery_database_rows(db) == before
 
 
 def test_lease_is_hmac_signed_and_runtime_metadata_is_persisted_all_or_none(tmp_path):

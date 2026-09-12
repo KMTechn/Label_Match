@@ -1,5 +1,16 @@
 # Label_Match 운영·복구·검증
 
+<a id="committed-stale-runtime-recovery-20260912"></a>
+## 2026-09-12 · Committed stale-runtime의 지원 복구 교정
+
+Main/Web은 원590b의 APP_CLOSE75·accepted/committed/RAW_LEGITIMATE/inserted1/errors0/quarantine0와 기존 observe mode의 STALE_RUNTIME_FENCE, lease6 expired·active0/maxfence6을 독립 확인했다. 정상 회전 거부는 유지하되 검토 후 authority를 재개하는 지원 consumer가 없던 공백을 Main의 `MAIN-COMMITTED-STALE-RECOVERY-FIX.md`에 따라 교정한다. 서버 변경·재등록은 없다.
+
+기존 CLI `tools/direct_sync_relay_operator.py ack-reviewed`에 `--recover-expired-runtime`, `--expected-runtime-instance-id`, `--expected-runtime-fence`, `--expected-runtime-lease-id`, `--expected-runtime-expires-at`를 추가했다. 기존 exact receipt 입력과 필수 audit 경로도 함께 사용한다. 일치하는 원 수신·spool과 단일 만료 authority만 ACK/EXPIRED로 원자 변경하고 이전 grant를 기존 audit에 fsync한다. 실제 grant는 후속 정상 relay의 기존 인증 acquisition이 맡는다. 단순 `ack-reviewed`의 기존 동작은 같으며 미확정 request/다른 runtime-bound row가 있으면 명시 복구를 거부한다.
+
+**PROVEN — host Python3.12.10:** 새 focused19 PASS는 실제 client SQLite·CLI·기존 signed-HTTP session double로 committed observed_rejected→review→정확한 명시 복구→정상 새 fence 취득과 다음 원 batch 전송을 확인한다. 원 source POST는1회, 원 receipt/metadata/attempt·spool과 다른 행의 초기 bytes/identity는 보존한다. 재호출 거부, lease 요청 timeout 후 같은 issue body 재사용, 다른 scope/runtime/fence/lease·live grant·in-flight 상태·다른 bound row·잘못된 receipt/digest·없는 audit·audit 쓰기 실패 rollback을 포함한다. 기존 선택13 PASS는 lost-ACK exact metadata, stale terminal scrub, 정상 unassigned renewal, raw lifecycle fence4와 기존 review/retry-dead guard다. 초기 focused15 PASS 뒤 추가4 refusal와 timeout 중 재호출을 검증해19가 됐으며 수를 합산하지 않는다. 로그는 D task root의 `pytest-runtime-recovery-01/02.log`, `pytest-runtime-existing-guards.log`다.
+
+**PREP ONLY / NOT EXECUTED:** 최종 후보·지원 command를 Main 검토에 넘긴 뒤 하나의 guest disposition/recovery/settlement 배정이 필요하다. 원76a3은 Saved/0이며 원21ACKED/1REVIEW/3RETRY_WAIT·marker297d1465와 모든 이전 실패를 보존했다. 명시 recovery와 새 grant의 실제 서버 실행, producer settlement와 Today30/30은 아직 미입증이다. 원8d native UI 수용은 변경 없는 UI 범위로 재사용하며 observer/수치 방법은 유지하고 어떠한 sample 전에 최종 candidate만 새로 고정한다.
+
 <a id="package-waiting-display-20260912"></a>
 ## 2026-09-12 · 실제 M06 관측의 두 표시 결함 교정
 

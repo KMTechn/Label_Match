@@ -22,7 +22,10 @@ from direct_sync_push import (
     restore_raw_artifact_to_file,
     utc_now_text,
 )
-from producer_runtime_client import METADATA_FIELDS as RUNTIME_METADATA_FIELDS
+from producer_runtime_client import (
+    METADATA_FIELDS as RUNTIME_METADATA_FIELDS,
+    reopen_reviewed_runtime_in_transaction,
+)
 
 
 PAUSE_SCHEMA_VERSION = "direct-sync-relay-operator-pause-v1"
@@ -537,6 +540,11 @@ def ack_reviewed_relay_batch(
     expected_request_id: str = "",
     expected_error_code: str = "",
     audit_log_path: str | os.PathLike[str] = "",
+    recover_expired_runtime: bool = False,
+    expected_runtime_instance_id: str = "",
+    expected_runtime_fence: int = 0,
+    expected_runtime_lease_id: str = "",
+    expected_runtime_expires_at: str = "",
 ) -> dict[str, Any]:
     relay = _require_text(relay_id, field_name="relay_id", max_length=128)
     operator = _require_text(operator_id, field_name="operator_id", max_length=128)
@@ -572,14 +580,17 @@ def ack_reviewed_relay_batch(
         return blocked("expected_request_id_required")
     if not expected_error:
         return blocked("expected_error_code_required")
+    if recover_expired_runtime and not str(audit_log_path or "").strip():
+        return blocked("runtime_recovery_audit_path_required")
     now = utc_now_text()
+    runtime_recovery: dict[str, Any] | None = None
     conn = _connect_relay_db(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT relay_id, status, content_sha256, byte_length, receipt_json,
-                   relative_path, metadata_json,
+                   relative_path, metadata_json, spooled_file_path, producer_id, key_id, endpoint_url,
                    upload_status_path, last_error_code, last_error_message,
                    lease_owner, lease_expires_at
             FROM direct_sync_relay_batches
@@ -716,6 +727,46 @@ def ack_reviewed_relay_batch(
                 receipt_server_source_file_id=str(receipt.get("server_source_file_id") or ""),
                 expected_server_source_file_id=expected_source_file_id,
             )
+        if recover_expired_runtime:
+            if (any(type(totals.get(key)) is not int or totals[key] < 0
+                    for key in ("inserted", "replayed", "quarantined", "errors"))
+                    or metadata.get("content_sha256") != content_sha256
+                    or type(metadata.get("byte_length")) is not int
+                    or metadata["byte_length"] != int(row["byte_length"])):
+                conn.rollback()
+                return blocked("runtime_recovery_source_shape_mismatch")
+            try:
+                actual_hash, actual_bytes = _read_file_digest(Path(row["spooled_file_path"]))
+            except OSError:
+                conn.rollback()
+                return blocked("runtime_recovery_spool_unreadable")
+            if actual_hash != content_sha256 or actual_bytes != int(row["byte_length"]):
+                conn.rollback()
+                return blocked("runtime_recovery_spool_mismatch")
+            if quarantined or inserted + replayed != row_count:
+                conn.rollback()
+                return blocked("runtime_recovery_receipt_not_fully_disposed")
+            try:
+                runtime_recovery = reopen_reviewed_runtime_in_transaction(
+                    conn, relay_row=row, metadata=metadata, receipt=receipt,
+                    expected_runtime_instance_id=expected_runtime_instance_id,
+                    expected_runtime_fence=expected_runtime_fence,
+                    expected_runtime_lease_id=expected_runtime_lease_id,
+                    expected_runtime_expires_at=expected_runtime_expires_at, now=now,
+                )
+            except ValueError as exc:
+                conn.rollback()
+                return blocked(str(exc))
+            # Preserve the old grant before the later normal acquisition replaces
+            # it. Audit failure rolls back both the local ACK and the reopening.
+            _append_operator_audit(audit_log_path, action="ack-reviewed-runtime-prepared", report={
+                "status": "PREPARED", "relay_id": relay, "operator_id": operator,
+                "review_evidence_ref": evidence_ref, **reason_fields,
+                "content_sha256": content_sha256, "receipt_request_id": expected_request,
+                "receipt_sha256": hashlib.sha256(str(row["receipt_json"]).encode()).hexdigest(),
+                "metadata_sha256": hashlib.sha256(str(row["metadata_json"]).encode()).hexdigest(),
+                "runtime_recovery": runtime_recovery,
+            })
         cursor = conn.execute(
             """
             UPDATE direct_sync_relay_batches
@@ -758,5 +809,7 @@ def ack_reviewed_relay_batch(
         "upload_status_path": str(row["upload_status_path"] or ""),
         "queue": read_relay_queue_status_read_only(db_path),
     }
+    if runtime_recovery is not None:
+        report["runtime_recovery"] = runtime_recovery
     _append_operator_audit(audit_log_path, action="ack-reviewed", report=report)
     return report
