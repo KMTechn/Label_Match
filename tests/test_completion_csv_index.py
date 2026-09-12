@@ -92,6 +92,22 @@ def test_failed_index_rebuild_falls_back_to_csv_and_keeps_sync_barrier(tmp_path,
         assert len(list(csv.DictReader(handle))) == 1
 
 
+def test_rebuild_sync_failure_preserves_previous_index_until_complete_publication(tmp_path, monkeypatch):
+    write_csv(tmp_path)
+    index = CompletionCsvIndex(tmp_path, PREFIX)
+    assert index.candidates('new') == []
+    previous = index.path.read_bytes()
+    path = write_csv(tmp_path, '20260913', identities=('new',))
+    with monkeypatch.context() as failure:
+        failure.setattr(os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError('index sync failed')))
+        assert index.candidates('new') is None
+    assert index.path.read_bytes() == previous
+    assert index.candidates('new') == [str(path)]
+    with closing(sqlite3.connect(index.path)) as conn:
+        assert conn.execute('PRAGMA journal_mode').fetchone()[0] == 'delete'
+        assert conn.execute('PRAGMA synchronous').fetchone()[0] == 2
+
+
 @pytest.mark.parametrize("index_failure", [False, True])
 def test_writer_updates_index_after_csv_fsync_and_failure_rebuilds(tmp_path, monkeypatch, index_failure):
     module = load_label_match_module()

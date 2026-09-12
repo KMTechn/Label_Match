@@ -43,6 +43,12 @@ class CompletionCsvIndex:
         os.close(descriptor)
         try:
             with closing(sqlite3.connect(temporary)) as conn:
+                # This private build is never read as coverage. Publish only
+                # after closing and fsyncing the entire completed database;
+                # per-statement durable schema commits merely delay cold F3.
+                conn.execute("PRAGMA journal_mode=OFF")
+                conn.execute("PRAGMA synchronous=OFF")
+                conn.execute("BEGIN")
                 conn.execute("CREATE TABLE sources (id INTEGER PRIMARY KEY, name TEXT UNIQUE, size INTEGER, mtime INTEGER, ctime INTEGER)")
                 conn.execute("CREATE TABLE completions (set_id TEXT, source_id INTEGER, PRIMARY KEY (set_id, source_id))")
                 for number, (name, signature) in enumerate(sorted(sources.items())):
@@ -67,6 +73,8 @@ class CompletionCsvIndex:
                     raise OSError("completion CSV coverage changed during indexing")
                 conn.execute("PRAGMA user_version=1")
                 conn.commit()
+            with open(temporary, "r+b") as handle:
+                os.fsync(handle.fileno())
             os.replace(temporary, self.path)
         finally:
             if os.path.exists(temporary):
