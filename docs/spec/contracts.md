@@ -217,6 +217,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 <a id="c-06"></a>
 ## C-06 포장 취소
 
+- 생성·취소 관리자 경고의 조회 실패는 빈 결과가 아니다. 마지막 확인 목록·안내를 보존하며 오래됨을 표시하고 확인된 빈 조회만 해제한다. 로컬 완료 marker나 중앙 취소 결과를 조회 실패로 변경하지 않는다.
+
 `POST L/packages/cancel` / `CANCEL_PACKAGE`는 package ID·사유·비어 있지 않은 evidence와 예상 version을 요구한다. 로컬 취소 outbox는 원래 CREATE 명령 ACK에 의존하며 동일 취소 command/key로 재시도한다. 서버는 포장 완료 유효성을 취소하고 **재고는 SHIPPING-WAIT에 유지**한다. 이를 TRANSFER 재고 반환이나 실제 포장 해체라고 해석하지 않는다. 집계의 취소 제외는 별도 projection 소비 결과다. 근거: [PackageCancellationOutbox/processor](../../package_logistics.py), [API](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py), [service.cancel_package](../../../WorkerAnalysisGUI-web/logistics_ledger/service.py). [LM-09](README.md#lm-09), [LM-B05](BACKLOG.md#lm-b05).
 
 <a id="c-07"></a>

@@ -5,6 +5,7 @@ import csv
 import importlib.util
 import json
 import queue
+import sqlite3
 import threading
 import time
 from collections import defaultdict
@@ -4480,6 +4481,68 @@ def test_historical_package_review_reconciliation_never_blocks_scanning(
     assert calls == ["reconcile", "list"]
     assert app._package_create_review_notice is None
     assert app._package_create_review_rows == ()
+
+
+@pytest.mark.parametrize("kind", ["package_create", "package_cancellation"])
+@pytest.mark.parametrize("read_before_failure", [True, False])
+def test_package_review_query_failure_retains_warning_until_confirmed_refresh(
+    tmp_path, kind, read_before_failure,
+):
+    module = load_label_match_module()
+    database = tmp_path / "review.sqlite3"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE conflicts (idempotency_key TEXT, local_completion_committed INTEGER)")
+        conn.execute("INSERT INTO conflicts VALUES ('review-one', 1)")
+
+    def read_conflicts(*, limit):
+        with sqlite3.connect(database, timeout=0.01) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute("SELECT * FROM conflicts LIMIT ?", (limit,))]
+
+    app = object.__new__(module.Label_Match)
+    app.package_outbox = SimpleNamespace(list_conflicts=lambda **_kwargs: [])
+    app.package_cancellation_outbox = SimpleNamespace(list_conflicts=lambda **_kwargs: [])
+    setattr(app, "package_outbox" if kind == "package_create" else "package_cancellation_outbox",
+            SimpleNamespace(list_conflicts=read_conflicts))
+    app.operator_workbench_ready = True
+    renders = []
+    app._render_operator_workbench = lambda: renders.append(True)
+    notice_name = f"_{kind}_review_notice"
+    rows_name = f"_{kind}_review_rows"
+    stale_name = f"_{kind}_review_stale"
+    if read_before_failure:
+        app._refresh_package_cancellation_review_notice()
+        assert len(getattr(app, rows_name)) == 1
+        previous_notice = getattr(app, notice_name)
+        previous_rows = getattr(app, rows_name)
+
+    with sqlite3.connect(database) as lock:
+        lock.execute("BEGIN EXCLUSIVE")
+        for _ in range(2):
+            app._refresh_package_cancellation_review_notice()
+            notice = getattr(app, notice_name)
+            assert "조회 실패" in notice.message
+            assert notice.message.count("조회 실패") == 1
+            assert getattr(app, stale_name) is True
+            if read_before_failure:
+                assert "오래됨" in notice.message
+                assert previous_notice.message in notice.message
+                assert getattr(app, rows_name) is previous_rows
+            else:
+                assert "현재 상태를 확인하지 못했습니다" in notice.message
+                assert getattr(app, rows_name) == ()
+        lock.rollback()
+    assert renders
+
+    app._refresh_package_cancellation_review_notice()
+    assert len(getattr(app, rows_name)) == 1
+    assert getattr(app, stale_name) is False
+    assert "조회 실패" not in getattr(app, notice_name).message
+    with sqlite3.connect(database) as conn:
+        conn.execute("DELETE FROM conflicts")
+    app._refresh_package_cancellation_review_notice()
+    assert getattr(app, notice_name) is None
+    assert getattr(app, rows_name) == ()
 
 
 def test_existing_cancellation_conflicts_refresh_without_configured_client():

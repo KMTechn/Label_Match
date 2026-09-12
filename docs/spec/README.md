@@ -207,6 +207,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 시작/입력: marker=1인 due PENDING row를 claim하고 저장 명령 또는 draft를 전송한다. key는 같은 set/package identity에서 유지한다.
 - 효과: 저장 명령이 있으면 receipt부터 조회한다. 검증된 중앙 COMMITTED만 ACKED로 저장한다. due-time·마지막 시도 시각으로 후속 준비 row도 진행한다.
 - 실패/복구: transport/일시 오류는 retry, 409/412 및 비재시도 오류·불일치 receipt는 conflict다. marker=1 충돌은 로컬 완료를 보존하며 `OPERATOR_REVIEW` 사건으로 인계한다. marker=0 충돌을 PASS로 복구하지 않는다.
+- 관리자 경고 조회가 실패하면 생성·취소의 마지막 확인 목록과 경고를 유지하고 `조회 실패 · 오래됨`을 표시한다. 성공적으로 읽은 빈 목록만 경고를 해제한다.
 - 수용 기준: 동일 key 재요청은 중앙 효과 1회, 첫 실패가 뒤 작업을 굶기지 않음, 다중 PC 경합의 승자/충돌이 중앙 CAS 결과와 일치함. 검토 종결·실물 처리는 운영 요구 확정이 필요하다.
 - 근거: [claim_next/drain/mark_conflict](../../package_logistics.py). [C-04](contracts.md#c-04), [LM-B02](BACKLOG.md#lm-b02), [LM-B06](BACKLOG.md#lm-b06).
 

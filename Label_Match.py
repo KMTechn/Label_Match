@@ -5894,88 +5894,82 @@ class Label_Match(tk.Tk):
         return True
 
     def _refresh_package_cancellation_review_notice(self):
-        """Keep terminal central-cancellation conflicts visible to the operator."""
+        """Keep last confirmed conflicts visible until a successful refresh."""
 
-        package_outbox = self.__dict__.get("package_outbox")
-        if package_outbox is None or not hasattr(package_outbox, "list_conflicts"):
-            package_conflicts = ()
-        else:
-            reconcile_superseded = getattr(
-                package_outbox,
-                "dismiss_superseded_recoverable_prewrite_conflicts",
-                None,
-            )
-            if callable(reconcile_superseded):
+        cancellation_count = 0
+        for prefix, outbox_name, label in (
+            ("package_create", "package_outbox", "포장"),
+            ("package_cancellation", "package_cancellation_outbox", "취소"),
+        ):
+            rows_name = f"_{prefix}_review_rows"
+            notice_name = f"_{prefix}_review_notice"
+            stale_name = f"_{prefix}_review_stale"
+            previous_notice = self.__dict__.get(notice_name)
+            outbox = self.__dict__.get(outbox_name)
+            if outbox is None or not hasattr(outbox, "list_conflicts"):
+                if previous_notice is None and not self.__dict__.get(rows_name):
+                    continue
+            reconcile = getattr(outbox, "dismiss_superseded_recoverable_prewrite_conflicts", None)
+            if prefix == "package_create" and callable(reconcile):
                 try:
-                    reconcile_superseded()
+                    reconcile()
                 except Exception as exc:
-                    # Review projection maintenance must never stop scanning.
-                    # Keep the evidence visible and retry on the next poll.
+                    # Maintenance failure must not suppress a readable warning.
                     print(f"과거 중앙 포장 충돌 정리 오류: {exc}")
-            try:
-                package_conflicts = tuple(package_outbox.list_conflicts(limit=21))
-            except Exception as exc:
-                print(f"중앙 포장 충돌 상태 조회 오류: {exc}")
-                package_conflicts = ()
-        self._package_create_review_rows = package_conflicts[:20]
-        if package_conflicts:
-            first_package = package_conflicts[0]
-            package_count = (
-                "20건 이상" if len(package_conflicts) > 20 else f"{len(package_conflicts)}건"
-            )
-            local_committed = bool(
-                int(first_package.get("local_completion_committed") or 0)
-            )
-            self._package_create_review_notice = WorkflowNotice(
-                title="중앙 포장 충돌 확인 필요",
-                message=(
-                    f"관리자 확인이 필요한 포장이 {package_count} 있습니다. "
-                    + (
-                        "로컬 포장 완료 기록은 유지됩니다. "
-                        if local_committed
-                        else "현재 포장 기록은 자동 확정되지 않았습니다. "
-                    )
-                    + "해당 PHS2 실물을 구분 보관하고 관리자에게 확인을 요청하세요."
-                ),
-                kind="package_create_review",
-                tone="danger",
-            )
-        else:
-            self._package_create_review_notice = None
-
-        outbox = self.__dict__.get("package_cancellation_outbox")
-        if outbox is None or not hasattr(outbox, "list_conflicts"):
-            conflicts = ()
-        else:
             try:
                 conflicts = tuple(outbox.list_conflicts(limit=21))
             except Exception as exc:
-                print(f"중앙 취소 확인 상태 조회 오류: {exc}")
-                return 0
+                print(f"중앙 {label} 확인 상태 조회 오류: {exc}")
+                if not self.__dict__.get(stale_name):
+                    self.__dict__[notice_name] = WorkflowNotice(
+                        title=previous_notice.title if previous_notice else f"중앙 {label} 상태 조회 실패",
+                        message=(
+                            previous_notice.message + " 조회 실패 · 오래됨: 마지막 확인 결과입니다. "
+                            if previous_notice else "조회 실패: 현재 상태를 확인하지 못했습니다. "
+                        ) + "관리자에게 현재 상태 확인을 요청하세요.",
+                        kind=f"{prefix}_review",
+                        tone=previous_notice.tone if previous_notice else "warning",
+                    )
+                self.__dict__.setdefault(rows_name, ())
+                self.__dict__[stale_name] = True
+                continue
 
-        has_more_conflicts = len(conflicts) > 20
-        visible_conflicts = conflicts[:20]
-        self._package_cancellation_review_rows = visible_conflicts
-        if conflicts:
-            count_text = "20건 이상" if has_more_conflicts else f"{len(conflicts)}건"
-            self._package_cancellation_review_notice = WorkflowNotice(
-                title="중앙 취소 확인 필요",
-                message=(
+            self.__dict__[rows_name] = conflicts[:20]
+            self.__dict__[stale_name] = False
+            if prefix == "package_cancellation":
+                cancellation_count = len(conflicts)
+            if not conflicts:
+                self.__dict__[notice_name] = None
+                continue
+
+            count_text = "20건 이상" if len(conflicts) > 20 else f"{len(conflicts)}건"
+            if prefix == "package_create":
+                title = "중앙 포장 충돌 확인 필요"
+                message = (
+                    f"관리자 확인이 필요한 포장이 {count_text} 있습니다. "
+                    + (
+                        "로컬 포장 완료 기록은 유지됩니다. "
+                        if int(conflicts[0].get("local_completion_committed") or 0)
+                        else "현재 포장 기록은 자동 확정되지 않았습니다. "
+                    )
+                    + "해당 PHS2 실물을 구분 보관하고 관리자에게 확인을 요청하세요."
+                )
+            else:
+                title = "중앙 취소 확인 필요"
+                message = (
                     f"관리자 확인이 필요한 취소가 {count_text} 있습니다. "
                     "해당 트레이는 반출하지 말고 관리자에게 중앙 취소 상태 확인을 요청하세요."
-                ),
-                kind="package_cancellation_review",
-                tone="danger",
+                )
+            self.__dict__[notice_name] = WorkflowNotice(
+                title=title, message=message, kind=f"{prefix}_review", tone="danger",
             )
-        else:
-            self._package_cancellation_review_notice = None
 
         if bool(
             self.__dict__.get("operator_workbench_ready")
             or self.__dict__.get("_workflow_widgets_ready")
         ):
             self._render_operator_workbench()
-        return len(conflicts)
+        return cancellation_count
 
     def _start_audio_initialization(self):
         if self.run_tests or _label_match_automated_test_mode() or self.audio_init_started or not _label_match_audio_enabled():
