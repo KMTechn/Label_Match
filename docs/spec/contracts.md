@@ -105,7 +105,7 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 <a id="quantities"></a>
 ## 수량·시각·로컬 파일
 
-저장 루트는 onboarding·GUI/guard·relay의 공통 resolver로 선택한다. custom → env 우선과 [기존 ProgramData/current-user 기본 위치 감지](operations.md#configuration)를 유지하며 새 onboarding도 등록 전후 같은 루트를 쓴다. 갈린 설치는 기존 업무 CSV/DB와 onboarding ledger 위치를 각각 보존·진단하고 자동 이동/병합·identity 재등록을 하지 않는다. producer/key/endpoint에 결속된 queue·spool의 원 bytes와 미확정 상태는 경로 정리를 이유로 변경·종결하지 않는다.
+저장 루트는 onboarding·GUI/guard·relay의 공통 resolver로 선택한다. custom → env → onboarding 상태가 있으면 LOCALAPPDATA → 상태가 없으면 구형 ProgramData fallback 순서를 지킨다. onboarding 상태가 있으면 ProgramData 과거 파일은 무시한다. 상태와 ProgramData 업무 파일이 모두 없는 새 PC는 최초 onboarding부터 LOCALAPPDATA를 쓴다([현재 감지 규칙](operations.md#configuration)). 신규 custom onboarding/ledger는 C로 통일하고, 기존 C의 업무 CSV/DB와 A의 onboarding ledger가 갈린 설치는 각각 보존·기본 로그 수준에서 진단한다. 자동 이동/병합·identity 재등록을 하지 않으며 producer/key/endpoint에 결속된 queue·spool의 원 bytes와 미확정 상태는 경로 정리를 이유로 변경·종결하지 않는다.
 
 | 값 | 단위·모집단·포함/제외 | 시간·집계·중복 |
 | --- | --- | --- |

@@ -154,7 +154,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 - 시작/입력: source 또는 portable 진입, 현재 사용자 설정·작업자 이름. onboarding, factory wire 계약, 데이터 범위 mutex를 거쳐 앱을 시작한다.
 - 효과: 작업자 정규화 후 CSV·현재 상태에 귀속한다. 보호 관리자 인증 값은 표시·지속 저장용 identity와 분리한다.
-- 실패/복구: 필수 profile·catalog·onboarding 실패는 시작을 차단한다. onboarding·GUI/guard·relay는 [공통 resolver](operations.md#configuration)의 custom → env → 기존 설치 감지와 두 기본 위치 보존 규칙을 사용한다. split 설치는 업무 저장소와 기존 onboarding ledger를 각각 유지하고 진단한다. headless 회귀는 두 process의 같은 custom 저장소 writer callback 제외·해제와 원 bytes 보존을 검증했으며, 실제 GUI·pending 복구 수용은 [LM-B10](BACKLOG.md#lm-b10)에 남는다. 이전 작업자가 다르면 복원 확인을 거친다.
+- 실패/복구: 필수 profile·catalog·onboarding 실패는 시작을 차단한다. onboarding·GUI/guard·relay는 [공통 resolver](operations.md#configuration)의 custom → env → onboarding 상태 우선 LOCALAPPDATA → 상태 없는 standalone ProgramData 규칙을 사용한다. onboarding 상태가 있으면 ProgramData 과거 파일을 무시하며 새 PC는 최초 onboarding부터 LOCALAPPDATA를 쓴다. split 설치는 업무 저장소와 기존 onboarding ledger를 각각 유지하고 기본 WARNING 로그 채널에 선택 규칙·분리를 기록한다. headless 회귀는 두 process의 같은 custom 저장소 writer callback 제외·해제와 원 bytes 보존을 검증했으며, 실제 GUI·pending 복구 수용은 [LM-B10](BACKLOG.md#lm-b10)에 남는다. 이전 작업자가 다르면 복원 확인을 거친다.
 - 수용 기준: 같은 실제 저장소에서 중복 GUI writer callback을 차단하고 첫 소유자 종료 후 같은 저장소를 복구한다. conflicting env/custom 및 null/빈 설정 fallback을 실제 writer resolver와 대조하며, 인증 실패가 일반 완료로 내려가지 않고 관리자 비밀이 로그/히스토리에 남지 않는다.
 - 근거: [main](../../Label_Match.py), [run_guarded_entrypoint](../../label_match_single_instance.py), [canonical_operator_id/persistent_operator_name](../../protected_admin.py). [운영 구성](operations.md#configuration), [LM-B04](BACKLOG.md#lm-b04).
 

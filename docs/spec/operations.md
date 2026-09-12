@@ -345,7 +345,7 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 | 항목 | 현행 선택 규칙 | 근거·주의 |
 | --- | --- | --- |
 | 사용자 설정 | `LABEL_MATCH_SETTINGS_PATH` → `%LOCALAPPDATA%\KMTech\Label_Match\config\app_settings.json`. 파일이 없으면 packaged `config/app_settings.json`을 template로 복사 | [앱 `_default_label_match_settings_path/_setup_paths`](../../Label_Match.py). CODEX의 packaged 경로를 일반 사용자 쓰기 위치로 해석하지 않음 |
-| onboarding 데이터 | GUI·guard·relay와 같은 `resolve_data_scope`로 settings custom → env → 기존 기본 위치 감지. 새 PC의 최초 onboarding은 등록 전부터 LOCALAPPDATA로 고정 | 기존 ProgramData 업무 파일이 있으면 그 위치를 보존한다. 기존 onboarding ledger만 다른 루트에 있으면 `ledger_path`를 유지하고 `SPLIT_PRESERVED`로 진단한다 |
+| onboarding 데이터 | GUI·guard·relay와 같은 `resolve_data_scope`로 settings custom → env → onboarding 상태가 있으면 LOCALAPPDATA → 상태가 없으면 구형 ProgramData fallback | 상태 없는 새 PC에 ProgramData 업무 파일도 없으면 최초 onboarding부터 LOCALAPPDATA를 쓴다. 기존 onboarding ledger만 다른 루트에 있으면 `ledger_path`를 유지하고 `SPLIT_PRESERVED`로 진단한다 |
 | 앱의 실제 데이터·GUI mutex | nonempty `custom_save_path` → `LABEL_MATCH_SAVE_DIR`; 둘 다 없으면 아래 기존 설치 감지 규칙 | [공통 resolver](../../label_match_single_instance.py)를 앱·onboarding·relay가 소비한다. null/빈 설정 fallback과 settings template 복사 전 선택도 같은 규칙이며 두 process의 native writer callback 제외·해제를 headless 검증했다 |
 | producer 상태 | onboarding은 `LABEL_MATCH_DIRECT_SYNC_ROOT` 또는 호환 `LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT` → `%LOCALAPPDATA%\KMTech\DirectSync\label_match`를 선택 | [onboarding](../../current_user_onboarding.py). 앱의 오래된 ProgramData bootstrap 상수만 보고 현재 relay 상태 위치를 정하지 않음 |
 | relay의 CSV 발견 위치 | 명시 `--scan-source-dir` → 공통 business root | 명시 scan override와 producer queue/spool·identity·profile 위치·producer/key/endpoint binding은 유지한다. 기존 미전송 payload를 이동·재작성·종결하지 않는다 |
@@ -358,11 +358,23 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 활성 프로필의 scope/epoch/plane·device/source identity, 서버 capability, 실제 endpoint 및 `PROJECTION_API_READ_ENABLED`를 후보별로 대조해야 한다. 토큰의 존재만으로 호출 권한이나 소비 화면 반영을 입증하지 않는다([C-00](contracts.md#c-00), [C-05](contracts.md#c-05)).
 
 <a id="storage-root-residual"></a>
-**LM-C03 공통 resolver와 기존 위치 보존:** settings custom → env를 먼저 사용한다. 둘 다 없으면 기존 current-user onboarding 상태(identity·manifest·등록/onboarding report 파일)를 감지해 LOCALAPPDATA를 쓰고, onboarding 없는 standalone의 ProgramData fallback도 유지한다. 호환 예외로 ProgramData의 기존 업무 CSV/SQLite DB/current-state 파일이 있으면 등록 전후 그 위치를 보존한다. 새 PC에 그런 파일이 없으면 최초 onboarding 문맥에서 LOCALAPPDATA를 선택해 등록·첫 ledger·relay 시작 전후 루트가 바뀌지 않는다. 감지는 매번 실제 파일 존재를 읽으며 부재 캐시를 쓰지 않고, 디렉터리 읽기 실패는 부재로 바꾸지 않는다.
+**LM-C03 공통 resolver와 기존 위치 보존:** settings custom → env를 먼저 사용한다. 둘 다 없으면 기존 current-user onboarding 상태(identity·manifest·등록/onboarding report 파일)가 LOCALAPPDATA 선택에 우선한다. 이때 ProgramData의 과거 업무 파일은 검사하거나 선택하지 않는다. onboarding 상태가 없는 standalone만 ProgramData fallback을 사용한다. 상태도 ProgramData 업무 CSV/SQLite DB/current-state 파일도 없는 새 PC는 최초 onboarding부터 LOCALAPPDATA를 선택해 등록·첫 ledger·relay 시작 전후 루트가 바뀌지 않는다. 필요한 감지는 매번 실제 파일 존재를 읽으며 부재 캐시를 쓰지 않고, 구형 디렉터리의 읽기 실패는 부재로 바꾸지 않는다.
 
-기존 custom C와 onboarding ledger A가 갈린 설치에서는 업무 CSV/DB·GUI mutex·relay는 C, onboarding ledger는 기존 A를 계속 쓴다. 환경을 적용하거나 다음 실행의 env가 달라져도 기존 onboarding report의 ledger 경로를 재사용한다. 기존 ProgramData 업무 저장소와 LOCALAPPDATA onboarding ledger의 분리도 같은 호환 경로다. identity·profile·설정·등록 manifest·queue/spool의 위치/내용을 옮기거나 identity를 재등록하지 않는다. `INFO storage_root_selected`는 선택 규칙·경로 한 줄, `WARNING storage_root_split_preserved`는 두 위치를 알리며 onboarding report의 `storage_root_compatibility`에도 `SPLIT_PRESERVED`를 남긴다.
+구형 standalone의 ProgramData 데이터는 자동 이동하거나 `custom_save_path`에 자동 기록하지 않는다. current-user 등록으로 전환한 뒤에도 ProgramData를 계속 쓰려면 운영자가 `custom_save_path`를 수동 설정해야 한다. 최초 legacy 등록 전이·데이터 이관은 이번 수정의 수용 범위 밖이며 standalone 읽기 전용 선택과 새 current-user 등록 안정성을 별도로 검증한다.
 
-현재 headless 수용: [Wave 3 RESULT](D:/KMTech/program-improvement-20260912/work/Label_Match/w3/RESULT.md). 기존 custom/env 및 두 기본값, 최초 등록 중·relay 시작 시점, 두 process callback 제외/소유권 해제, split fixture의 기존 데이터·identity·미전송 bytes 보존을 검증했다. guard 이전 onboarding ledger 초기화의 순서는 유지한다. 실행 중 설정 변경의 race·모든 filesystem alias·실제 Tk/설치/서버 enqueue/ACK는 별도 수용이며 데이터 migration은 제공하지 않는다.
+기존 custom C와 onboarding ledger A가 갈린 설치에서는 업무 CSV/DB·GUI mutex·relay는 C, onboarding ledger는 기존 A를 계속 쓴다. 환경을 적용하거나 다음 실행의 env가 달라져도 기존 onboarding report의 ledger 경로를 재사용한다. custom/env가 명시적으로 ProgramData를 선택한 갈린 설치도 같은 호환 경로다. identity·profile·설정·등록 manifest·queue/spool의 위치/내용을 옮기거나 identity를 재등록하지 않는다. `WARNING storage_root_selected`는 선택 규칙·경로 한 줄, `WARNING storage_root_split_preserved`는 두 위치를 같은 Python startup 로그 채널에 남긴다. 기본 effective level WARNING에서도 기록되며 전역 로그 수준은 변경하지 않는다. onboarding report의 `storage_root_compatibility`에도 `SPLIT_PRESERVED`를 남긴다.
+
+현재 headless 수용: [Wave 3 수정 RESULT](D:/KMTech/program-improvement-20260912/work/Label_Match/w3fix/RESULT.md). 검토의 일곱 fixture를 같은 입력·원 bytes로 편입하고 `e45ec3e` 경로와 대조한다. A의 기존 완료 CSV/pending ledger/onboarding report와 P의 과거 CSV가 함께 있어도 onboarding·GUI·guard·relay·ledger 모두 A다. custom/env 및 두 process callback 제외/소유권 해제, split fixture의 기존 데이터·identity·미전송 bytes 보존도 검증한다. guard 이전 onboarding ledger 초기화 순서는 유지한다. 실행 중 설정 변경의 race·모든 filesystem alias·실제 Tk/설치/서버 enqueue/ACK는 별도 수용이며 데이터 migration은 제공하지 않는다.
+
+A=LOCALAPPDATA, P=ProgramData, E=SAVE_DIR env, C=settings custom. 기존 custom/env 통일의 의도된 변화는 다음과 같다.
+
+| 같은 입력 | `e45ec3e` | 현재 |
+| --- | --- | --- |
+| custom C + env A/B, 신규 onboarding/ledger | E | C |
+| custom C + env A/B, GUI/guard/relay | C | C |
+| onboarding 상태 + A/P 업무 파일, 모든 소비자·ledger | A | A |
+| env만 지정, 모든 소비자·ledger | E | E |
+| onboarding 없는 standalone, 직접 GUI/guard | P | P |
 
 <a id="relay-custom-root-evidence"></a>
 ### 2026-09-08 · relay custom 경로의 재시작 후 발견

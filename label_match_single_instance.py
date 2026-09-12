@@ -81,24 +81,6 @@ def resolve_data_scope(
     rule = "settings.custom_save_path" if configured else "environment.LABEL_MATCH_SAVE_DIR"
     if not selected:
         local_app_data = str(env.get("LOCALAPPDATA", "") or "").strip()
-        program_data = str(env.get("ProgramData", env.get("PROGRAMDATA", r"C:\ProgramData")) or "").strip()
-        legacy_root = Path(program_data) / "KMTech" / "Label_Match" / "data" if program_data else None
-        legacy_data_exists = False
-        if legacy_root is not None:
-            legacy_root = legacy_root.expanduser().resolve(strict=False)
-            try:
-                with os.scandir(legacy_root) as entries:
-                    legacy_data_exists = any(
-                        entry.is_file() and (
-                            entry.name.casefold().endswith((".csv", ".sqlite3", ".db"))
-                            or entry.name == "_current_set_state_packaging.json"
-                        )
-                        for entry in entries
-                    )
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                raise SingleInstanceError("Unable to inspect legacy Label Match data root") from exc
         direct_root = str(
             env.get("LABEL_MATCH_DIRECT_SYNC_ROOT")
             or env.get("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT") or ""
@@ -113,18 +95,40 @@ def resolve_data_scope(
                 "status/label_match_worker_pc_registration.json",
             )
         )
-        if legacy_data_exists:
-            # Registration must not redirect an existing standalone store.
-            selected, rule = str(legacy_root), "existing_program_data"
-        elif local_app_data and (onboarding_exists or for_onboarding):
+        program_data = str(env.get("ProgramData", env.get("PROGRAMDATA", r"C:\ProgramData")) or "").strip()
+        legacy_root = Path(program_data) / "KMTech" / "Label_Match" / "data" if program_data else None
+        legacy_data_exists = False
+        if legacy_root is not None and not (local_app_data and onboarding_exists):
+            legacy_root = legacy_root.expanduser().resolve(strict=False)
+            try:
+                with os.scandir(legacy_root) as entries:
+                    legacy_data_exists = any(
+                        entry.is_file() and (
+                            entry.name.casefold().endswith((".csv", ".sqlite3", ".db"))
+                            or entry.name == "_current_set_state_packaging.json"
+                        )
+                        for entry in entries
+                    )
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise SingleInstanceError("Unable to inspect legacy Label Match data root") from exc
+        if local_app_data and onboarding_exists:
+            # Old ProgramData files do not override an established user store.
             selected = str(Path(local_app_data) / "KMTech" / "Label_Match" / "data")
-            rule = "onboarding_state" if onboarding_exists else "new_current_user_onboarding"
+            rule = "onboarding_state"
+        elif legacy_data_exists:
+            # Preserve the fallback only while there is no current-user state.
+            selected, rule = str(legacy_root), "existing_program_data"
+        elif local_app_data and for_onboarding:
+            selected = str(Path(local_app_data) / "KMTech" / "Label_Match" / "data")
+            rule = "new_current_user_onboarding"
         elif legacy_root is not None:
             selected, rule = str(legacy_root), "legacy_standalone_default"
         else:
             raise SingleInstanceError("ProgramData is empty")
     resolved = str(Path(selected).expanduser().resolve(strict=False))
-    logging.getLogger(__name__).info("storage_root_selected: rule=%s data_root=%s", rule, resolved)
+    logging.getLogger(__name__).warning("storage_root_selected: rule=%s data_root=%s", rule, resolved)
     return resolved
 
 

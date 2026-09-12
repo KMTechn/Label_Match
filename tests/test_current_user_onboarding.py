@@ -270,38 +270,66 @@ def test_explicit_settings_custom_root_does_not_require_default_environment(tmp_
     assert not custom.exists()
 
 
-@pytest.mark.parametrize("installation", ["new", "onboarded", "standalone", "split-defaults"])
-def test_default_root_stays_stable_through_registration_and_relay_start(
-    monkeypatch, tmp_path, caplog, installation
-):
-    import logging
+def test_standalone_default_root_selection_preserves_existing_data(monkeypatch, tmp_path):
     import Label_Match as app_module
     from label_match_single_instance import resolve_data_scope
     from user_relay import _resolve_scan_source_dir
 
-    caplog.set_level(logging.INFO, logger="label_match_single_instance")
+    environment = {"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(tmp_path / "program")}
+    legacy = tmp_path / "program/KMTech/Label_Match/data"
+    for key in ("LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_DIRECT_SYNC_ROOT", "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+    app = object.__new__(app_module.Label_Match)
+    app.app_settings = {}
+    assert app._resolve_configured_save_path() == str(legacy)
+    assert resolve_data_scope(environment=environment, settings={}) == str(legacy)
+    assert not legacy.exists()
+
+    legacy.mkdir(parents=True)
+    csv = legacy / "existing.csv"
+    csv.write_bytes(b"existing standalone completion")
+    for _ in range(2):
+        paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=environment)
+        assert paths.data_root == paths.ledger_path.parent == legacy
+        assert not paths.identity_path.exists()
+        assert app._resolve_configured_save_path() == str(legacy)
+        assert resolve_data_scope(environment=environment, settings_path=paths.settings_path) == str(legacy)
+        assert _resolve_scan_source_dir("", data_root=paths.data_root, settings_path=paths.settings_path) == legacy
+    assert csv.read_bytes() == b"existing standalone completion"
+    assert sorted(path for path in tmp_path.rglob("*") if path.is_file()) == [csv]
+
+
+@pytest.mark.parametrize("installation", ["new", "onboarded", "split-defaults"])
+def test_default_root_stays_stable_through_registration_and_relay_start(
+    monkeypatch, tmp_path, caplog, installation
+):
+    import Label_Match as app_module
+    from label_match_single_instance import resolve_data_scope
+    from user_relay import _resolve_scan_source_dir
+
     local = tmp_path / "local"
     program = tmp_path / "program-data"
     environment = {"LOCALAPPDATA": str(local), "ProgramData": str(program)}
     app_root = tmp_path / "app"
     local_data = local / "KMTech" / "Label_Match" / "data"
     legacy_data = program / "KMTech" / "Label_Match" / "data"
-    expected = legacy_data if installation in {"standalone", "split-defaults"} else local_data
-    if expected == legacy_data:
+    expected = local_data
+    if installation == "split-defaults":
         legacy_data.mkdir(parents=True)
         (legacy_data / "existing.csv").write_bytes(b"existing standalone completion")
-    if installation == "split-defaults":
         local_data.mkdir(parents=True)
         (local_data / "package_logistics_outbox.sqlite3").write_bytes(b"existing onboarding ledger")
-    paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
     if installation in {"onboarded", "split-defaults"}:
-        _ready_state(paths)
+        _ready_state(resolve_current_user_onboarding_paths(app_root, environ=environment))
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
     assert paths.data_root == expected
-    assert paths.ledger_path.parent == (local_data if installation == "split-defaults" else expected)
+    assert paths.ledger_path.parent == expected
     registration_roots = []
 
     def register(selected):
-        assert installation in {"new", "standalone"}
+        assert installation == "new"
         registration_roots.append(selected.data_root)
         _ready_state(selected)
         # Identity has appeared but registration is not yet finished: no switch.
@@ -324,7 +352,7 @@ def test_default_root_stays_stable_through_registration_and_relay_start(
         legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=relay,
     )
     assert report["data_root"] == str(expected)
-    assert registration_roots == ([expected] if installation in {"new", "standalone"} else [])
+    assert registration_roots == ([expected] if installation == "new" else [])
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
     app = object.__new__(app_module.Label_Match)
@@ -337,12 +365,10 @@ def test_default_root_stays_stable_through_registration_and_relay_start(
     assert resolve_data_scope(environment=fresh, settings_path=paths.settings_path) == str(expected)
     if ledger_before is not None:
         assert paths.ledger_path.read_bytes() == ledger_before
-    if expected == legacy_data:
-        assert (legacy_data / "existing.csv").read_bytes() == b"existing standalone completion"
-        assert "rule=existing_program_data" in caplog.text
     if installation == "split-defaults":
-        assert report["storage_root_compatibility"] == "SPLIT_PRESERVED"
-        assert "storage_root_split_preserved" in caplog.text
+        assert (legacy_data / "existing.csv").read_bytes() == b"existing standalone completion"
+    assert report["storage_root_compatibility"] == "UNIFIED"
+    assert "rule=onboarding_state" in caplog.text
     assert "storage_root_selected:" in caplog.text
 
 
