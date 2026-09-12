@@ -452,6 +452,7 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 | 시작/품목 실패 | 중앙 등록은 검증된 이전 cache 복구 가능; 유효 cache가 없으면 시작 차단. 표시된 profile·catalog 진단을 확인 | 임의 Item.csv 성공으로 바꾸지 않고 정상 snapshot 또는 검증 cache가 선택됐는지 확인([LM-02](README.md#lm-02)) |
 | 미검증 접수·오프라인 | `CAPTURED_UNVERIFIED`는 저장 접수다. F3는 현재 snapshot과 일치하는 유효 lease가 필요. 재사용 lease 없는 단절에서는 완료 차단 | 재연결 뒤 같은 capture/set identity의 검증·중앙 결과·로컬 적용 상태가 일치([C-04](contracts.md#c-04)) |
 | 디스크/CSV/marker 실패 | 성공을 선행 표시하지 않고 현재 세트·intent·기존 CSV를 유지. writer 오류를 정상 flush로 오인하지 않음 | 같은 작업으로 복구해 이미 있는 완료 event를 대조하고 marker와 lease 경계를 연결; 새 set/key로 우회하지 않음([LM-06/08](README.md#lm-06)) |
+| 이력 조회 불완전 | 마지막 완전한 활성 색인을 유지하며 손상 행 수를 경고. 이력 상세에서 파일·행 위치를 확인하고 원본을 보존해 지원 담당에게 인계 | 오늘 기록을 완전하게 다시 읽어야 작업 차단 해제. 부분 집계나 빈 표를 정상 수량으로 사용하지 않음([C-08](contracts.md#c-08)) |
 | 로컬 완료 후 전송 대기 | marker=1 완료를 유지하며 due 재시도; 다음 준비 작업 가능. ACK 유실은 저장 명령의 receipt부터 조회 | 중앙 COMMITTED receipt와 원래 명령 identity 검증. 오래된 pending 실물 인계 기준은 [LM-B02](BACKLOG.md#lm-b02) |
 | 중앙 충돌/다중 PC 경합 | marker=1 conflict는 로컬 완료를 보존하고 검토 사건으로 격리. marker=0을 완료로 승격하지 않음 | 작업자는 원본 PHS2·실물 구분을 유지하고 리더/지원 담당이 set/key·중앙 결과·원인을 대조. 사건 종결 권한·실물 처리 기준은 미확정([LM-B06](BACKLOG.md#lm-b06)) |
 | 자정·재시작 | 미확정 PHS2/outbox를 날짜만으로 삭제하지 않음. 복원에서 기존 이벤트·작업자·중앙 migration을 확인 | 작업일 변경과 관계없이 기존 identity로 완료/검토 상태에 수렴. 자동 복구 불가 상태는 증거를 유지해 인계 |

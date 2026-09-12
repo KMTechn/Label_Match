@@ -8147,10 +8147,8 @@ class Label_Match(tk.Tk):
             # Apply the loading/read-only gate before the worker starts so a
             # cached enabled view cannot accept a scan or function key.
             self._render_operator_workbench()
-        if updates_active_state:
-            self.scan_count.clear()
-            self.global_scanned_set.clear()
-            self.set_details_map.clear()
+        # Keep the last complete indexes until a full read succeeds. A failed
+        # reload must not erase cancellation or duplicate-detection evidence.
         self.history_tree.delete(*self.history_tree.get_children())
         self.summary_tree.delete(*self.summary_tree.get_children())
 
@@ -8183,6 +8181,10 @@ class Label_Match(tk.Tk):
         loader_thread.start()
 
     def _async_load_history_task(self, result_queue, target_date=None, updates_active_state=None, load_generation=None):
+        log_filepath = None
+        reader = None
+        damaged_rows = 0
+        row_errors = []
         try:
             if updates_active_state is None:
                 updates_active_state = self._history_load_updates_active_state(target_date)
@@ -8192,26 +8194,26 @@ class Label_Match(tk.Tk):
 
             log_filepath = self.data_manager._get_log_filepath(target_date)
 
-            if os.path.exists(log_filepath):
-                try:
-                    with open(log_filepath, 'r', encoding='utf-8-sig') as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
+            try:
+                with open(log_filepath, 'r', encoding='utf-8-sig', newline='') as f:
+                    reader = csv.DictReader(f, strict=True)
+                    if not {'timestamp', 'event', 'details'}.issubset(reader.fieldnames or ()):
+                        raise ValueError("기록 파일 머리글이 올바르지 않습니다")
+                    for row in reader:
+                        line_number = reader.line_num
+                        try:
                             event = row.get('event')
-                            details_str = row.get('details', '{}')
-                            if not details_str: continue
-                            try:
-                                details = json.loads(details_str)
-                            except json.JSONDecodeError:
-                                print(f"경고: JSON 파싱 오류. 건너뜁니다: {details_str}")
-                                continue
+                            details = json.loads(row.get('details') or '')
+                            if not isinstance(details, dict):
+                                raise ValueError("details must be an object")
+                            timestamp_str = datetime.fromisoformat(row.get('timestamp', '')).strftime('%H:%M:%S')
 
                             set_id = details.get('set_id')
-                            if event == self.Events.SET_DELETED and details.get('set_id'):
-                                voided_set_ids.add(details['set_id'])
+                            if event == self.Events.SET_DELETED and set_id:
+                                voided_set_ids.add(set_id)
                                 continue
                             if event == self.Events.TRAY_COMPLETION_CANCELLED and details.get('cancelled_set_id'):
-                                cancelled_set_ids.add(details.get('cancelled_set_id'))
+                                cancelled_set_ids.add(details['cancelled_set_id'])
                                 continue
 
                             if set_id is None: continue
@@ -8221,7 +8223,6 @@ class Label_Match(tk.Tk):
                                 first_scan = displays[0] if displays else "N/A"
                                 other_scans = displays[1:self.TOTAL_SCAN_COUNT]
 
-                                timestamp_str = datetime.fromisoformat(row.get('timestamp', '')).strftime('%H:%M:%S')
                                 result_display = _label_match_tray_complete_result(details)
                                 values_to_display = (
                                     set_id,
@@ -8232,9 +8233,18 @@ class Label_Match(tk.Tk):
                                 )
 
                                 completed_sets[set_id] = {'values': values_to_display, 'tags': ("success" if _label_match_tray_complete_passed(details) else "error",), 'details': details}
+                        except (ValueError, TypeError, AttributeError, KeyError) as exc:
+                            damaged_rows += 1
+                            if len(row_errors) < 20:
+                                row_errors.append(f"행 {line_number}: timestamp/details 형식 오류 ({type(exc).__name__})")
 
-                except Exception as e:
-                    print(f"기록 파일 로드 오류 ({log_filepath}): {e}")
+            except FileNotFoundError:
+                # A day with no log has no completed sets; other read failures
+                # are errors, never a confirmed empty history.
+                if reader is not None:
+                    raise
+            if damaged_rows:
+                raise ValueError("\n".join(row_errors))
 
             final_sets = {sid: data for sid, data in completed_sets.items() if sid not in voided_set_ids and sid not in cancelled_set_ids}
             def _history_sort_key(item):
@@ -8270,8 +8280,19 @@ class Label_Match(tk.Tk):
                 'load_generation': load_generation,
             })
         except Exception as e:
-            print(f"백그라운드 기록 로딩 오류: {e}")
-            result_queue.put({'error': str(e), 'load_generation': load_generation})
+            error = (
+                f"기록 조회 불완전 · 손상 행 {damaged_rows}개"
+                if damaged_rows else "기록 파일을 읽지 못했습니다"
+            )
+            location = f"파일: {log_filepath}\n행: {getattr(reader, 'line_num', 0)}"
+            detail = "\n".join(row_errors) if row_errors else type(e).__name__
+            result_queue.put({
+                'error': error,
+                'error_detail': f"{location}\n손상 행: {damaged_rows}개 (위치 최대 20개)\n{detail}",
+                'damaged_rows': damaged_rows,
+                'updates_active_state': updates_active_state,
+                'load_generation': load_generation,
+            })
 
     def _process_history_queue(self):
         self._history_after_id = None
@@ -8287,19 +8308,28 @@ class Label_Match(tk.Tk):
             if 'error' in result:
                 self.history_load_pending = False
                 self.history_active_load_pending = False
-                print(f"기록 로딩 기술 진단: {result['error']}")
+                self._history_load_error = result
+                if result.get('updates_active_state', True):
+                    self._history_active_load_error = result
+                self.history_row_details_map = {}
+                self.history_tree.insert("", "end", iid="history-error", values=(
+                    "", result['error'], *[""] * (self.TOTAL_SCAN_COUNT - 1), "", "",
+                ), tags=("error",))
+                self._render_history_detail()
+                self._render_operator_workbench()
                 if not self.run_tests:
                     messagebox.showerror(
                         "기록 로딩 오류",
-                        "작업 기록을 불러오지 못했습니다. 다시 시도하고 계속 실패하면 "
-                        "관리자에게 확인을 요청하세요.",
+                        result['error'] + ". 이력 상세를 확인하고 다시 조회하세요.",
                     )
                 return
             updates_active_state = result.get('updates_active_state', True)
             self.history_view_updates_active_state = updates_active_state
             self.history_load_pending = False
             self.history_active_load_pending = False
+            self._history_load_error = None
             if updates_active_state:
+                self._history_active_load_error = None
                 self.scan_count = result['scan_count']
                 self.global_scanned_set = result['global_scanned_set']
                 self.set_details_map = result['set_details_map']
@@ -14788,14 +14818,18 @@ class Label_Match(tk.Tk):
 
     def _block_active_history_load_action(self, action_name, parent=None):
         state = self.__dict__
-        if not state.get('history_active_load_pending', False):
+        error = state.get('_history_active_load_error')
+        if not (state.get('history_active_load_pending', False) or error):
             return False
-        message = f"오늘 기록을 불러오는 중에는 {action_name}할 수 없습니다.\n기록 로딩이 끝난 뒤 다시 시도하세요."
+        message = (
+            f"오늘 기록 조회가 불완전하여 {action_name}할 수 없습니다.\n이력 상세를 확인하고 오늘 기록을 다시 조회하세요."
+            if error else f"오늘 기록을 불러오는 중에는 {action_name}할 수 없습니다.\n기록 로딩이 끝난 뒤 다시 시도하세요."
+        )
         status_label = state.get('status_label')
         if status_label is not None:
             status_label.config(text=f"❌ {message.splitlines()[0]}", style="Error.TLabel")
         if not state.get('run_tests', False):
-            messagebox.showwarning("기록 로딩 중", message, parent=parent or self)
+            messagebox.showwarning("기록 조회 오류" if error else "기록 로딩 중", message, parent=parent or self)
         return True
 
     def _block_duplicate_history_load(self, parent=None):
@@ -15863,7 +15897,11 @@ class Label_Match(tk.Tk):
             return
         iid = iid or self._selected_history_iid()
         details = self._history_details_for_iid(iid)
-        text = self._barcode_inline_detail_text(details)
+        error = self.__dict__.get('_history_load_error')
+        text = (
+            error.get('error_detail', error['error'])
+            if error else self._barcode_inline_detail_text(details)
+        )
         self.history_detail_text.configure(state="normal")
         self.history_detail_text.delete("1.0", tk.END)
         self.history_detail_text.insert("1.0", text)
@@ -17609,6 +17647,14 @@ class Label_Match(tk.Tk):
             self.__dict__.get("_workflow_blocking_notice")
             or self.__dict__.get("_workflow_notice")
         )
+        history_error = self.__dict__.get('_history_active_load_error')
+        if blocking_notice is None and history_error:
+            blocking_notice = WorkflowNotice(
+                title=history_error['error'],
+                message="이력 상세를 확인하고 오늘 기록을 다시 조회하세요. 확인 전에는 작업할 수 없습니다.",
+                kind="history_load_error",
+                tone="danger",
+            )
         if blocking_notice is None and exchange_attempt is not None:
             saved_review = bool(
                 exchange_attempt.status == "OPERATOR_REVIEW"

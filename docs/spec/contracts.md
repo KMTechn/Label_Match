@@ -224,6 +224,13 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 `L/phs-label-exchanges/prepare`, exchange별 status/`prints`/print-attempt complete/`activate`와 reconciliation 경로가 준비·출력·활성화를 분리한다. 로컬 `label-match-phs-label-exchange-v1` journal과 `execute_single`, `recover_current`, `recover_reconciliation`은 서버 결과·물리 출력 증거·로컬 적용을 조정한다. Windows proof의 `proof_kind=WINDOWS_GDI_SPOOL`, printer/job/document/submitted_at와 `windows_gdi_end_doc=true`는 큐 접수 증거이며 종이 배출·QR 가독성 측정이 아니다. 상세 분기 payload와 설치 capability 조합의 전수 검증은 미완료다. 양쪽 근거: [phs_label_workflow](../../phs_label_workflow.py), [서버 phs-label-exchanges API](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py). [LM-10](README.md#lm-10), [LM-B04](BACKLOG.md#lm-b04).
 
+<a id="c-08"></a>
+## C-08 이력 읽기 완전성
+
+- 이력 reload 시작 시 활성 `scan_count`, `global_scanned_set`, `set_details_map`을 지우지 않는다. 같은 generation의 완전한 오늘 결과만 세 색인을 교체한다. 과거 날짜 결과는 조회 전용이다.
+- timestamp·JSON syntax/객체 shape·CSV/파일 읽기 오류가 있으면 부분 집계를 적용하지 않는다. 손상 행 수와 파일·행 위치(최대 20개)를 이력 상세에 남기고 오늘 조회 오류는 재조회 성공 전까지 작업을 차단한다. 로그 파일이 없는 날짜만 정상 빈 결과다.
+- 근거: [이력 회귀](../../tests/test_label_match_core.py) `test_history_reload_requires_complete_read_before_replacing_active_indexes`, `test_history_file_errors_are_not_confirmed_empty_history`; 취소·삭제·stale generation·과거 조회 계약을 유지한다.
+
 ## 계약 유지·검증 연결
 
 기능 기준은 [README 카드](README.md#기능-카드), 실행 설계는 [운영 수용 시나리오](operations.md#verification)에서 연결한다. 서명·권한·version/capability와 source identity가 달라지면 해당 계약의 실제 양쪽 evidence를 재대조한다. 현재 설치 provider/overlay, 서버 flag, upstream 입력 발행과 downstream 출고·화면의 전체 연결은 [LM-B04](BACKLOG.md#lm-b04)·[LM-B06](BACKLOG.md#lm-b06)·[LM-B08](BACKLOG.md#lm-b08)의 확인 과제이며 코드 존재를 연동 성공으로 집계하지 않는다.

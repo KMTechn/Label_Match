@@ -1,5 +1,10 @@
 # Label_Match 진행·공백·추가 제안
 
+<a id="lm-w1"></a>
+## LM-W1 · 감사 실패 처리·의존성·안내 정합
+
+- LM-A01 소스 교정 완료: 이력 부분 성공을 거부하고 이전 활성 색인·행 위치를 보존한다. 격리 host 이력40 PASS(새9 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/history-01.xml). 실제 손상 이력 화면·현장 데이터는 미확인이다.
+
 ## 2026-09-12 · Committed stale-runtime 복구의 호스트 교정
 
 - Main/Web의 실제 APP_CLOSE75 승인·만료 fence6 판정에 따라 기존 ack-reviewed에 정확한 만료 authority 복구 옵션을 추가했다. 새 focused19·기존 선택13 PASS와 보존·거부 범위는 [운영 근거](operations.md#committed-stale-runtime-recovery-20260912)를 따른다. 서버/fencing/기존 receipt는 바꾸지 않는다.

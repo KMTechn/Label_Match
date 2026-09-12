@@ -10,6 +10,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -3460,6 +3461,129 @@ def test_history_reload_filters_deleted_cancelled_and_keeps_injection_payload_as
     assert malicious_product in detail_text
     assert "<script" in detail_text
     assert "DROP TABLE" in inline_text
+
+
+@pytest.mark.parametrize("corruption", [None, "timestamp", "shape", "syntax", "multiple"])
+def test_history_reload_requires_complete_read_before_replacing_active_indexes(
+    tmp_path, monkeypatch, corruption,
+):
+    module = load_label_match_module()
+    log_path = tmp_path / "events.csv"
+    rows = [
+        _event_row(module, "2026-09-12T10:00:00", _completed_details(
+            set_id=sid, master_code="ITEM", end_time="2026-09-12T10:00:00",
+            raw_scans=[f"MASTER-{sid}", f"PRODUCT-{sid}"],
+        ))
+        for sid in ("one", "two", "three")
+    ]
+    rows.append({
+        "timestamp": "2026-09-12T10:00:01", "worker_name": "tester",
+        "event": module.Label_Match.Events.TRAY_COMPLETION_CANCELLED,
+        "details": json.dumps({"cancelled_set_id": "one"}),
+    })
+    damaged = copy.deepcopy(rows)
+    if corruption in ("timestamp", "multiple"):
+        damaged[1]["timestamp"] = "not-a-date"
+    if corruption == "shape":
+        damaged[1]["details"] = "[]"
+    if corruption == "syntax":
+        damaged[1]["details"] = "{broken"
+    if corruption == "multiple":
+        damaged[2]["details"] = "[]"
+
+    app = object.__new__(module.Label_Match)
+    app.run_tests = True
+    app.data_manager = _FakeDataManager(log_path)
+    app.history_tree = _RecordingTree()
+    app.summary_tree = _RecordingTree()
+    app.hist_header_label = _FakeLabel()
+    app.history_queue = queue.Queue()
+    app.history_load_generation = 0
+    previous = ({"old-date": {("OLD", "-"): 3}}, {"OLD-PRODUCT"}, {"old": {"item_code": "OLD"}})
+    app.scan_count, app.global_scanned_set, app.set_details_map = previous
+    app._set_summary_date_label = lambda **_kwargs: None
+    app._apply_adaptive_header_fitting = lambda: None
+    app._history_values_for_display = lambda values: values
+    app._render_summary_tree = lambda counts: None
+    app._apply_history_view_mode = lambda: None
+    app._refresh_session_tree = lambda: None
+    detail_text = []
+    app.history_detail_text = SimpleNamespace(
+        configure=lambda **_kwargs: None, delete=lambda *_args: detail_text.clear(),
+        insert=lambda _index, text: detail_text.append(text),
+    )
+    app.history_detail_copy_button = _FakeLabel()
+    app.history_detail_modal_button = _FakeLabel()
+    app._selected_history_iid = lambda: None
+    monkeypatch.setattr(module.threading, "Thread", lambda **_kwargs: SimpleNamespace(
+        start=lambda: None, is_alive=lambda: False,
+    ))
+
+    for input_rows in (damaged, rows):
+        with log_path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["timestamp", "worker_name", "event", "details"])
+            writer.writeheader()
+            writer.writerows(input_rows)
+        app._load_history_and_rebuild_summary()
+        assert (app.scan_count, app.global_scanned_set, app.set_details_map) == previous
+        app._async_load_history_task(app.history_queue, updates_active_state=True,
+                                     load_generation=app.history_load_generation)
+        result = app.history_queue.get_nowait()
+        app.history_queue.put(result)
+        app._process_history_queue()
+        assert not app.history_load_pending
+        if corruption and input_rows is damaged:
+            assert result["damaged_rows"] == (2 if corruption == "multiple" else 1)
+            assert "set_details_map" not in result
+            assert "scan_count" not in result and "global_scanned_set" not in result
+            assert str(log_path) in detail_text[0] and "행 3:" in detail_text[0]
+            if corruption == "multiple":
+                assert "행 4:" in detail_text[0]
+            assert "not-a-date" not in detail_text[0] and "{broken" not in detail_text[0]
+            assert "손상 행" in app.history_tree.rows["history-error"]["values"][1]
+            assert app.scan_count is previous[0]
+            assert app.global_scanned_set is previous[1]
+            assert app.set_details_map is previous[2]
+            assert app._block_active_history_load_action("완료") is True
+            assert app._block_duplicate_history_load() is False
+        else:
+            assert "error" not in result
+            assert set(app.set_details_map) == {"two", "three"}
+            assert "PRODUCT-one" not in app.global_scanned_set
+            assert {"PRODUCT-two", "PRODUCT-three"} <= app.global_scanned_set
+            assert sum(sum(counts.values()) for counts in app.scan_count.values()) == 2
+            assert app._history_active_load_error is None
+            assert app._history_load_error is None
+            assert app._block_active_history_load_action("완료") is False
+            previous = (app.scan_count, app.global_scanned_set, app.set_details_map)
+
+
+@pytest.mark.parametrize("failure", [None, "permission", "header", "csv"])
+def test_history_file_errors_are_not_confirmed_empty_history(tmp_path, monkeypatch, failure):
+    module = load_label_match_module()
+    log_path = tmp_path / "events.csv"
+    app = object.__new__(module.Label_Match)
+    app.data_manager = _FakeDataManager(log_path)
+    if failure == "permission":
+        def refuse_open(*_args, **_kwargs):
+            raise PermissionError("synthetic read failure")
+        monkeypatch.setattr(module, "open", refuse_open, raising=False)
+    elif failure == "header":
+        log_path.write_text("timestamp,details\n", encoding="utf-8-sig")
+    elif failure == "csv":
+        log_path.write_text('timestamp,event,details\n"unterminated', encoding="utf-8-sig")
+    result_queue = queue.Queue()
+    app._async_load_history_task(result_queue, updates_active_state=True, load_generation=4)
+    result = result_queue.get_nowait()
+    assert result["load_generation"] == 4
+    assert result["updates_active_state"] is True
+    if failure:
+        assert result["error"]
+        assert str(log_path) in result["error_detail"]
+        assert "set_details_map" not in result
+    else:
+        assert "error" not in result
+        assert result["set_details_map"] == {}
 
 
 def test_view_only_history_load_does_not_replace_live_scan_state():
