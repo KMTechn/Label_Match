@@ -780,7 +780,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     import Label_Match as label_match_module
 
-    label_match_module.threaded_update_check = lambda: None
 
     width, height, x, y = _parse_geometry(args.geometry)
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")

@@ -94,6 +94,8 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 구현 분기·도달 가능성은 **PROVEN(정적)**이며, 독립/Main 소스·packet 검토 후 Main이 [ProducerClose 실제 50 collected/50 PASS·150 ordered phase PASS](operations.md#producer-close-evidence)를 수용했다. `Label112-ProducerClose-20260908`의 동결 receipt·로컬 session double 회귀에 한정하며 native close/F3·실제 서버 연동은 **NOT TESTED / UNPROVEN**이다. [소스 종결 근거](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md)는 테스트 당시 uploader·회귀 두 파일과 네 명세의 커밋·parent·해시를 결속한다. 당시 보존한 다른 dirty 다섯 파일은 위 후속 소스 종결에 연결하며 과거 packet·Main hash pins는 보존한다. Modules3 313/939와 SaveRoot13 13/39는 각 원래 소스 범위로 유지하며 합산·상속하지 않는다. Ready **0/6** 유지.
 
+업데이트 조회·서명 검증은 유지하며 앱 내부 apply/batch/prompt는 제거했다. 코드 배치와 integrity 재생성은 [외부 installer](operations.md)의 책임이다.
+
 ## 사용자·경계·지원 경로
 
 포장 작업자는 이름 귀속, 스캔, 실물 대조·랩핑, 완료·취소를 수행한다. 작업 리더/관리자는 충돌 실물과 복구 사건을 인계받는다. 기계 API 권한과 작업자 표시명은 다르다([protected_admin](../../protected_admin.py), [계약 C-00](contracts.md#c-00)). ERPNext는 별도 제품이며 그 스캔 한도를 이 앱의 업무 제한으로 적용하지 않는다. 상류 PHS 발행·검사·이적 전체 구현은 본 앱 소유가 아니다([공정 계약](../../../WorkerAnalysisGUI-web/docs/PHS2_RESIDUAL_PROCESS_CONTRACT.md)).

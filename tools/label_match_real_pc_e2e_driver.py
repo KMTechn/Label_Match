@@ -212,7 +212,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     label_match_module.messagebox.showinfo = lambda *a, **kw: None
     label_match_module.messagebox.showwarning = lambda *a, **kw: None
     label_match_module.messagebox.showerror = lambda *a, **kw: None
-    label_match_module.threaded_update_check = lambda: None
 
     width, height, x, y = _parse_geometry(args.geometry)
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")

@@ -271,7 +271,6 @@ def test_update_worker_never_constructs_tk_or_prompts_off_main_thread(monkeypatc
     app.after = lambda _delay, callback: scheduled.append(callback) or "after-update"
 
     monkeypatch.setattr(module, "_check_update_candidate", lambda: candidate)
-    monkeypatch.setattr(module, "_can_apply_updates", lambda: True)
     monkeypatch.setattr(
         module.tk,
         "Tk",
@@ -283,8 +282,8 @@ def test_update_worker_never_constructs_tk_or_prompts_off_main_thread(monkeypatc
         lambda *args, **kwargs: prompt_threads.append(threading.get_ident()) or True,
     )
     monkeypatch.setattr(
-        module,
-        "download_and_apply_update",
+        module.subprocess,
+        "Popen",
         lambda *args, **kwargs: apply_calls.append((args, kwargs)),
     )
 
@@ -296,17 +295,8 @@ def test_update_worker_never_constructs_tk_or_prompts_off_main_thread(monkeypatc
 
     scheduled.pop()()
 
-    assert prompt_threads == [threading.main_thread().ident]
-    assert apply_calls == [
-        (
-            (candidate["url"],),
-            {
-                    "expected_sha256": candidate["sha256"],
-                    "archive_policy": candidate["archive"],
-                    "install_policy": candidate["install"],
-                },
-        )
-    ]
+    assert prompt_threads == []
+    assert apply_calls == []
 
 
 def test_legacy_update_worker_refuses_background_tk_root(monkeypatch):
@@ -317,7 +307,6 @@ def test_legacy_update_worker_refuses_background_tk_root(monkeypatch):
     }
     prompts = []
     monkeypatch.setattr(module, "_check_update_candidate", lambda: candidate)
-    monkeypatch.setattr(module, "_can_apply_updates", lambda: True)
     monkeypatch.setattr(
         module.tk,
         "Tk",

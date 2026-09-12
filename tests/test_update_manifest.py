@@ -1,8 +1,6 @@
-﻿import hashlib
+import hashlib
 import importlib.util
 import json
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -31,14 +29,6 @@ class FakeResponse:
 
     def json(self):
         return self.payload
-
-
-class FakeTk:
-    def withdraw(self):
-        return None
-
-    def destroy(self):
-        return None
 
 
 def valid_manifest():
@@ -197,7 +187,6 @@ def test_frozen_release_disables_in_process_code_root_updater(monkeypatch):
     monkeypatch.setattr(module.sys, "frozen", True, raising=False)
     monkeypatch.setattr(module, "_load_update_settings", lambda: {})
 
-    assert module._can_apply_updates() is False
     assert module._get_update_provider() == "off"
     assert module._get_update_manifest_url() == module.UPDATE_BOOTSTRAP_MANIFEST_URL
     assert (
@@ -553,45 +542,6 @@ def test_github_provider_uses_release_asset_digest_when_present(monkeypatch):
     assert candidate["install"] == module._default_update_install_policy()
 
 
-def test_source_mode_cannot_apply_updates():
-    module = load_label_match_module()
-
-    assert module._can_apply_updates() is False
-
-
-def test_threaded_update_check_passes_private_manifest_archive_policy_to_apply(monkeypatch):
-    module = load_label_match_module()
-    candidate = module._update_candidate_from_manifest(valid_manifest(), "stable")
-    captured = {}
-
-    monkeypatch.setattr(module, "_check_update_candidate", lambda: candidate)
-    monkeypatch.setattr(module, "_can_apply_updates", lambda: True)
-    monkeypatch.setattr(module.tk, "Tk", lambda: FakeTk())
-    monkeypatch.setattr(module.messagebox, "askyesno", lambda *args, **kwargs: True)
-
-    def fake_apply(
-        url,
-        expected_sha256=None,
-        archive_policy=None,
-        install_policy=None,
-    ):
-        captured["url"] = url
-        captured["expected_sha256"] = expected_sha256
-        captured["archive_policy"] = archive_policy
-        captured["install_policy"] = install_policy
-
-    monkeypatch.setattr(module, "download_and_apply_update", fake_apply)
-
-    module.threaded_update_check()
-
-    assert captured == {
-        "url": candidate["url"],
-        "expected_sha256": candidate["sha256"],
-        "archive_policy": candidate["archive"],
-        "install_policy": candidate["install"],
-    }
-
-
 def test_threaded_update_check_source_mode_skips_prompt_and_apply(monkeypatch):
     module = load_label_match_module()
     candidate = module._update_candidate_from_manifest(valid_manifest(), "stable")
@@ -599,167 +549,13 @@ def test_threaded_update_check_source_mode_skips_prompt_and_apply(monkeypatch):
     apply_calls = []
 
     monkeypatch.setattr(module, "_check_update_candidate", lambda: candidate)
-    monkeypatch.setattr(module, "_can_apply_updates", lambda: False)
     monkeypatch.setattr(module.messagebox, "askyesno", lambda *args, **kwargs: prompts.append((args, kwargs)) or True)
-    monkeypatch.setattr(module, "download_and_apply_update", lambda *args, **kwargs: apply_calls.append((args, kwargs)))
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: apply_calls.append((args, kwargs)))
 
     module.threaded_update_check()
 
     assert prompts == []
     assert apply_calls == []
-
-
-def test_download_and_apply_update_source_mode_aborts_before_network_or_batch(monkeypatch, tmp_path):
-    module = load_label_match_module()
-    network_calls = []
-    popen_calls = []
-    errors = []
-
-    monkeypatch.setenv("TEMP", str(tmp_path))
-    monkeypatch.setattr(module, "_can_apply_updates", lambda: False)
-    monkeypatch.setattr(module.tk, "Tk", lambda: FakeTk())
-    monkeypatch.setattr(module.messagebox, "showerror", lambda *args, **kwargs: errors.append((args, kwargs)))
-
-    def fake_get(*args, **kwargs):
-        network_calls.append((args, kwargs))
-        raise AssertionError("network should not start in source mode")
-
-    def fake_popen(*args, **kwargs):
-        popen_calls.append((args, kwargs))
-        raise AssertionError("updater batch should not start in source mode")
-
-    monkeypatch.setattr(module.requests, "get", fake_get)
-    monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
-
-    with pytest.raises(SystemExit) as exc_info:
-        module.download_and_apply_update(
-            "https://updates.example/label_match/Label_Match-v2.0.24.zip",
-            expected_sha256="b" * 64,
-            archive_policy={"top_level": "Label_Match", "required_files": ["Label_Match/Label_Match.exe"]},
-        )
-
-    assert exc_info.value.code == 1
-    assert network_calls == []
-    assert popen_calls == []
-    assert errors
-    assert not (tmp_path / "update.zip").exists()
-
-
-def test_updater_script_is_backup_mirror_preserve_rollback_fail_closed(tmp_path):
-    module = load_label_match_module()
-    application_path = tmp_path / "Label_Match"
-    update_root = tmp_path / ".label_match_update_test"
-    new_path = update_root / "extracted" / "Label_Match"
-    log_path = tmp_path / ".label_match_update_logs" / "update.log"
-
-    script = module._build_updater_script(
-        application_path=str(application_path),
-        new_program_folder_path=str(new_path),
-        update_temp_root=str(update_root),
-        log_path=str(log_path),
-        current_pid=1234,
-        install_policy=module._default_update_install_policy(),
-    )
-
-    assert "xcopy " not in script.lower()
-    assert script.index('call :LOG "BACKUP_BEGIN"') < script.index(
-        'call :LOG "MIRROR_BEGIN"'
-    )
-    assert script.index('call :LOG "BACKUP_VERIFIED"') < script.index(
-        'call :LOG "MIRROR_BEGIN"'
-    )
-    assert "robocopy \"%APP_PATH%\" \"%BACKUP_PATH%\" /MIR" in script
-    assert "robocopy \"%NEW_PATH%\" \"%APP_PATH%\" /MIR" in script
-    assert script.count("/MIR /IS /IT") == 3
-    assert "/XF \"%NEW_PATH%\\config\\app_settings.json\"" in script
-    assert '"%NEW_PATH%\\_internal\\config\\app_settings.json"' in script
-    assert 'if not exist "%APP_PATH%\\config\\app_settings.json"' in script
-    assert 'if not exist "%APP_PATH%\\_internal\\config\\app_settings.json"' in script
-    assert 'fc /B "%PRESERVE_PATH%\\config\\app_settings.json"' in script
-    assert 'fc /B "%PRESERVE_PATH%\\_internal\\config\\app_settings.json"' in script
-    rollback = script[script.index("\n:ROLLBACK\n") : script.index("\n:PRESERVE_REQUIRED_MISSING\n")]
-    assert "ROLLBACK_VERIFIED_RESTART_BLOCKED" in rollback
-    assert 'start ""' not in rollback
-    assert script.index('call :LOG "RESTORE_VERIFIED"') < script.index(
-        'call :LOG "RESTART_BEGIN"'
-    )
-    assert "if errorlevel 1 goto ROLLBACK" in script
-    assert "ROLLBACK_FAILED_RESTART_BLOCKED_MANUAL_RECOVERY_REQUIRED" in script
-
-
-@pytest.mark.skipif(shutil.which("robocopy") is None, reason="robocopy is Windows-only")
-def test_robocopy_mirror_excludes_both_existing_settings_files(tmp_path):
-    source = tmp_path / "new" / "Label_Match"
-    destination = tmp_path / "installed" / "Label_Match"
-    for root in (source, destination):
-        (root / "config").mkdir(parents=True)
-        (root / "_internal" / "config").mkdir(parents=True)
-    (source / "Label_Match.exe").write_bytes(b"new executable")
-    (source / "config" / "app_settings.json").write_bytes(b"new source settings")
-    (source / "_internal" / "config" / "app_settings.json").write_bytes(
-        b"new runtime settings"
-    )
-    (destination / "Label_Match.exe").write_bytes(b"old executable")
-    (destination / "config" / "app_settings.json").write_bytes(
-        b"existing source settings"
-    )
-    (destination / "_internal" / "config" / "app_settings.json").write_bytes(
-        b"existing runtime settings"
-    )
-
-    completed = subprocess.run(
-        [
-            "robocopy",
-            str(source),
-            str(destination),
-            "/MIR",
-            "/IS",
-            "/IT",
-            "/R:0",
-            "/W:0",
-            "/XJ",
-            "/XF",
-            str(source / "config" / "app_settings.json"),
-            str(source / "_internal" / "config" / "app_settings.json"),
-            "/NFL",
-            "/NDL",
-            "/NJH",
-            "/NJS",
-            "/NP",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-
-    assert completed.returncode < 8, completed.stdout + completed.stderr
-    assert (destination / "Label_Match.exe").read_bytes() == b"new executable"
-    assert (destination / "config" / "app_settings.json").read_bytes() == (
-        b"existing source settings"
-    )
-    assert (
-        destination / "_internal" / "config" / "app_settings.json"
-    ).read_bytes() == b"existing runtime settings"
-
-
-def test_update_workspace_keeps_backup_on_application_volume(tmp_path):
-    module = load_label_match_module()
-    application_path = tmp_path / "install" / "Label_Match"
-    application_path.mkdir(parents=True)
-
-    workspace = module._prepare_update_workspace(str(application_path))
-    try:
-        assert Path(workspace["update_temp_root"]).parent == application_path.parent
-        assert (
-            Path(workspace["log_path"]).parent
-            == application_path.parent / ".label_match_update_logs"
-        )
-    finally:
-        import shutil
-
-        shutil.rmtree(workspace["update_temp_root"], ignore_errors=True)
-        shutil.rmtree(workspace["log_root"], ignore_errors=True)
 
 
 def test_default_install_policy_requires_both_settings_paths():

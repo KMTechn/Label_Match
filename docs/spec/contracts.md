@@ -26,6 +26,8 @@ durable PHS2 capture가 완료된 입력만 scan Entry에서 지운다. serial l
 
 최초 기준일·후속 소스 종결·증거 적용 범위는 [README 기준](README.md#기준과-판정-범위)과 같다. 다음은 2026-09-07 source-backed 정적 계약 대조이며 실제 설치본의 호출·권한·서버 설정·화면 반영 입증이 아니다. `L`은 `/logistics/api/v1`이다. 서버 상세 계약을 복제해 새 정본으로 만들지 않고 클라이언트의 소비·검증 책임을 기록한다.
 
+앱은 업데이트 후보·서명/manifest·archive 검증을 유지하며 코드 배치는 외부 installer만 담당한다. 도달 불가 self-update apply/batch/prompt와 전용 시험은 제거했고 receipt·writer·복구 계약은 보존한다.
+
 ## 엔터티와 identity
 
 | 항목 | 발급·유일성·의미 | 소유 근거 |

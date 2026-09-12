@@ -813,16 +813,12 @@ def _install_external_guards(module: Any, integration_calls: list[dict[str, Any]
         def join(self, timeout: float | None = None) -> None:
             return None
 
-    def update_suppressed() -> None:
-        integration_calls.append({"name": "update_check_suppressed"})
-
     def session_sync_suppressed(context: Any, *, reason: str = "TRAY_COMPLETE") -> Any:
         integration_calls.append(
             {"name": "session_direct_sync_suppressed", "reason": reason}
         )
         return SuppressedThread()
 
-    module.threaded_update_check = update_suppressed
     module._label_match_start_session_direct_sync = session_sync_suppressed
 
 

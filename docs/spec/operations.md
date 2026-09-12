@@ -353,7 +353,7 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 | logistics 프로필 위치 | onboarding은 명시 경로 또는 `%LOCALAPPDATA%\KMTech\Logistics\profiles\Label_Match\runtime-profile.json`을 적용. 일반 resolver 기본은 `%ProgramData%\KMTech\Logistics\profiles\Label_Match\runtime-profile.json`; 앱별 파일이 없고 옛 공통 파일이 있으면 `...\Logistics\runtime-profile.json` 호환 선택 | [selected_logistics_runtime_profile_path](../../logistics_runtime_profile.py). explicit path·Machine anchor·legacy 공통 경로 재선택을 함께 대조. 설치된 최종 선택은 미확인 |
 | 권한·비밀 범위 | 현행 current-user 계약은 사용자 DPAPI와 AUTHORITATIVE profile을 사용. 기존 Machine profile의 machine-scope DPAPI/ACL 계약은 별도 구성 | [onboarding](../../current_user_onboarding.py), [릴리스 계약](../../RELEASE_GATE_CONTRACT.md), [프로필 안내](../LOGISTICS_RUNTIME_PROFILE.md). 프로필 JSON의 secret reference와 실제 비밀을 혼동하지 않음 |
 | 필수 물류 | required 모드의 프로필·HTTPS·authority·인증 실패는 중앙 업무를 차단한다. 비필수 legacy 환경 fallback은 별도 호환 분기 | [package_client_from_env](../../package_logistics.py), [load_logistics_runtime_profile](../../logistics_runtime_profile.py). 필수 모드를 임의로 해제해 완료하지 않음 |
-| 업데이트 | `LABEL_MATCH_UPDATE_PROVIDER` → packaged `update_settings.provider` → 코드 기본. 현재 `_can_apply_updates()`는 `False`이며 provider 미지정 기본은 `off`; `github/private_manifest` 조회 코드 존재와 앱 내부 코드 교체 허용은 다름 | [앱 update 함수](../../Label_Match.py). 명시 channel/manifest 설정도 별도 선택; 운영 값·원격 feed를 조회하지 않음. 기존 CODEX와 차이는 [LM-B09](BACKLOG.md#lm-b09) |
+| 업데이트 | `LABEL_MATCH_UPDATE_PROVIDER` → packaged `update_settings.provider` → 코드 기본. provider 미지정 기본은 `off`; `github/private_manifest` 후보·서명 조회를 보존하고 도달 불가 앱 내부 apply/batch/prompt는 제거했다 | [앱 update 함수](../../Label_Match.py). 명시 channel/manifest 설정도 별도 선택; 운영 값·원격 feed를 조회하지 않음. 기존 CODEX와 차이는 [LM-B09](BACKLOG.md#lm-b09) |
 
 활성 프로필의 scope/epoch/plane·device/source identity, 서버 capability, 실제 endpoint 및 `PROJECTION_API_READ_ENABLED`를 후보별로 대조해야 한다. 토큰의 존재만으로 호출 권한이나 소비 화면 반영을 입증하지 않는다([C-00](contracts.md#c-00), [C-05](contracts.md#c-05)).
 
@@ -474,7 +474,7 @@ portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 
 
 현행 [릴리스 계약](../../RELEASE_GATE_CONTRACT.md)의 코드 배치와 첫 사용자 등록을 구분한다. `--remove-current-user-setup`은 정확한 사용자 persistence 제거·relay 종료와 lock 부재를 확인하면서 identity/profile/settings/ledger/queue/spool/status/logs/receipts를 보존하는 계약이다. 이후 elevated `INSTALL_THIS_PC.ps1 -Uninstall`이 코드를 제거하며 relay persistence가 남아 있으면 거부한다. 이 명세에서 설치·제거 명령을 실행하지 않았다.
 
-업데이트 후보·서명/manifest 조회 코드가 있어도 현재 앱 내부 적용 gate는 닫혀 있다. 코드 교체와 integrity 재생성은 별도 installer의 책임이며, 이전 릴리스/현재 dirty 소스의 결과를 서로 자동 상속하지 않는다. 실제 업그레이드·재설치·rollback 뒤 기존 identity, current-state, 미전송/검토 row, F5 journal, receipt 정합성은 [LM-B07](BACKLOG.md#lm-b07)의 남은 수용 범위다.
+업데이트 후보·서명/manifest 및 archive 검증은 유지하며, 앱 내부 코드 적용·batch workspace·레거시 prompt는 제거했다. `threaded_update_check`와 GUI worker/poll은 조회 결과만 알린다. `tools/sign_release_executables.ps1`은 외부 수동 운영 소비 여부가 미확인이므로 보존한다. 코드 교체와 integrity 재생성은 별도 installer의 책임이며, 이전 릴리스/현재 dirty 소스의 결과를 서로 자동 상속하지 않는다. 실제 업그레이드·재설치·rollback 뒤 기존 identity, current-state, 미전송/검토 row, F5 journal, receipt 정합성은 [LM-B07](BACKLOG.md#lm-b07)의 남은 수용 범위다.
 
 백업·복원은 데이터와 미전송 효과를 함께 다뤄야 한다. 현행 [보존 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md)은 미확정 spool/status 삭제 금지와 ACKED retention의 read-only 후보 판정을 제공하지만, 완전한 운영 백업 도구·주기·RPO/RTO·검증된 복원본을 이 조사에서 확인하지 않았다. DB 단독 복사나 코드 rollback만으로 앱 CSV/queue/keyring/F5 journal까지 일관된 시점으로 복원됐다고 할 수 없다. 서로 다른 PC의 DPAPI/identity를 단순 파일 이동으로 복구할 수 있다고 가정하지 않는다. 실제 복원 방식·중앙 receipt 대조·중복 방지 확인을 소유 운영 절차에 확정할 필요가 있다.
 

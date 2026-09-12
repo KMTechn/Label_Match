@@ -206,7 +206,6 @@ from item_catalog_sync import (
     write_item_catalog_startup_diagnostic,
 )
 _label_match_startup_trace("after_requests_import")
-import zipfile
 import subprocess
 import uuid
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -3527,8 +3526,6 @@ def _get_update_provider():
         provider = settings.get("provider")
     if provider is not None:
         return str(provider).strip().lower() or UPDATE_PROVIDER_OFF
-    if _can_apply_updates():
-        return UPDATE_PROVIDER_PRIVATE_MANIFEST
     return UPDATE_PROVIDER_OFF
 
 
@@ -3614,12 +3611,6 @@ def _load_packaged_update_manifest_public_key():
 
 def _is_sha256(value):
     return isinstance(value, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", value.strip()) is not None
-
-
-def _can_apply_updates():
-    # The packaged code root is immutable. Updates require the separately
-    # elevated installer to replace code and regenerate its integrity record.
-    return False
 
 
 def _assert_https_update_url(url, *, require_zip=False):
@@ -4189,325 +4180,8 @@ def _safe_extract_update_zip(zip_ref, destination_path, archive_policy=None):
             shutil.copyfileobj(source, target)
 
 
-def _validate_updater_batch_value(name, value):
-    text = str(value or "")
-    if not text:
-        raise ValueError(f"Updater script {name} must not be empty")
-    if any(char in UPDATER_BATCH_UNSAFE_CHARS for char in text):
-        raise ValueError(f"Updater script {name} contains an unsafe batch character")
-    return text
-
-
-def _prepare_update_workspace(application_path):
-    application_path = os.path.abspath(application_path)
-    application_parent = os.path.dirname(application_path)
-    if not application_parent or application_parent == application_path:
-        raise ValueError("Automatic update requires an application directory with a parent")
-    update_id = uuid.uuid4().hex
-    update_temp_root = os.path.join(
-        application_parent, f".label_match_update_{update_id}"
-    )
-    log_root = os.path.join(application_parent, ".label_match_update_logs")
-    os.makedirs(update_temp_root, exist_ok=False)
-    os.makedirs(log_root, exist_ok=True)
-    application_drive = os.path.splitdrive(application_path)[0].casefold()
-    backup_drive = os.path.splitdrive(update_temp_root)[0].casefold()
-    if application_drive != backup_drive:
-        shutil.rmtree(update_temp_root, ignore_errors=True)
-        raise ValueError("Update backup must be created on the application volume")
-    return {
-        "update_id": update_id,
-        "update_temp_root": update_temp_root,
-        "log_root": log_root,
-        "log_path": os.path.join(log_root, f"Label_Match-update-{update_id}.log"),
-        "updater_script_path": os.path.join(
-            log_root, f"Label_Match-update-{update_id}.bat"
-        ),
-    }
-
-
-def _build_updater_script(
-    *,
-    application_path,
-    new_program_folder_path,
-    update_temp_root,
-    log_path,
-    current_pid,
-    install_policy,
-):
-    policy = _normalize_update_install_policy(install_policy)
-    application_path = _validate_updater_batch_value(
-        "application_path", os.path.abspath(application_path)
-    )
-    new_program_folder_path = _validate_updater_batch_value(
-        "new_program_folder_path", os.path.abspath(new_program_folder_path)
-    )
-    update_temp_root = _validate_updater_batch_value(
-        "update_temp_root", os.path.abspath(update_temp_root)
-    )
-    log_path = _validate_updater_batch_value("log_path", os.path.abspath(log_path))
-    current_pid = int(current_pid)
-    if current_pid < 1:
-        raise ValueError("Updater script current_pid must be positive")
-
-    application_drive = os.path.splitdrive(application_path)[0].casefold()
-    update_drive = os.path.splitdrive(update_temp_root)[0].casefold()
-    if application_drive != update_drive:
-        raise ValueError("Updater backup and application must be on the same volume")
-
-    preserve_blocks = []
-    restore_blocks = []
-    exclude_paths = []
-    for index, relative_path in enumerate(policy["preserve_paths"], start=1):
-        relative_path = _validate_updater_batch_value(
-            f"preserve_path_{index}", relative_path.replace("/", "\\")
-        )
-        parent_path = relative_path.rsplit("\\", 1)[0]
-        preserve_blocks.extend(
-            [
-                f'if not exist "%APP_PATH%\\{relative_path}" goto PRESERVE_REQUIRED_MISSING',
-                f'if not exist "%PRESERVE_PATH%\\{parent_path}" mkdir "%PRESERVE_PATH%\\{parent_path}"',
-                "if errorlevel 1 goto PRESERVE_FAILED",
-                f'copy /B /Y "%APP_PATH%\\{relative_path}" "%PRESERVE_PATH%\\{relative_path}" > nul',
-                "if errorlevel 1 goto PRESERVE_FAILED",
-                f'fc /B "%APP_PATH%\\{relative_path}" "%PRESERVE_PATH%\\{relative_path}" > nul',
-                "if errorlevel 1 goto PRESERVE_FAILED",
-            ]
-        )
-        restore_blocks.extend(
-            [
-                f'if not exist "%APP_PATH%\\{parent_path}" mkdir "%APP_PATH%\\{parent_path}"',
-                "if errorlevel 1 goto ROLLBACK",
-                f'copy /B /Y "%PRESERVE_PATH%\\{relative_path}" "%APP_PATH%\\{relative_path}" > nul',
-                "if errorlevel 1 goto ROLLBACK",
-                f'fc /B "%PRESERVE_PATH%\\{relative_path}" "%APP_PATH%\\{relative_path}" > nul',
-                "if errorlevel 1 goto ROLLBACK",
-            ]
-        )
-        exclude_paths.append(f'"%NEW_PATH%\\{relative_path}"')
-
-    preserve_commands = "\n".join(preserve_blocks)
-    restore_commands = "\n".join(restore_blocks)
-    exclude_arguments = " ".join(exclude_paths)
-    restart_relative = _validate_updater_batch_value(
-        "restart_executable", policy["restart_executable"].replace("/", "\\")
-    )
-    backup_path = _validate_updater_batch_value(
-        "backup_path", os.path.join(update_temp_root, "backup")
-    )
-    preserve_path = _validate_updater_batch_value(
-        "preserve_path", os.path.join(update_temp_root, "preserve")
-    )
-
-    return f"""@echo off
-setlocal EnableExtensions DisableDelayedExpansion
-chcp 65001 > nul
-set "APP_PATH={application_path}"
-set "NEW_PATH={new_program_folder_path}"
-set "UPDATE_TEMP_ROOT={update_temp_root}"
-set "BACKUP_PATH={backup_path}"
-set "PRESERVE_PATH={preserve_path}"
-set "LOG_PATH={log_path}"
-set "CURRENT_PID={current_pid}"
-set "RESTART_PATH=%APP_PATH%\\{restart_relative}"
-call :LOG "SCRIPT_BEGIN"
-timeout /t 3 /nobreak > nul
-taskkill /F /PID %CURRENT_PID% > nul 2> nul
-
-call :LOG "BACKUP_BEGIN"
-if exist "%BACKUP_PATH%" rmdir /s /q "%BACKUP_PATH%"
-robocopy "%APP_PATH%" "%BACKUP_PATH%" /MIR /IS /IT /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
-set "ROBOCOPY_RC=%ERRORLEVEL%"
-if %ROBOCOPY_RC% GEQ 8 goto BACKUP_FAILED
-robocopy "%APP_PATH%" "%BACKUP_PATH%" /MIR /L /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
-set "ROBOCOPY_RC=%ERRORLEVEL%"
-if not "%ROBOCOPY_RC%"=="0" goto BACKUP_VERIFY_FAILED
-call :LOG "BACKUP_VERIFIED"
-
-call :LOG "PRESERVE_BEGIN"
-if exist "%PRESERVE_PATH%" rmdir /s /q "%PRESERVE_PATH%"
-{preserve_commands}
-call :LOG "PRESERVE_VERIFIED"
-
-call :LOG "MIRROR_BEGIN"
-robocopy "%NEW_PATH%" "%APP_PATH%" /MIR /IS /IT /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /XF {exclude_arguments} /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
-set "ROBOCOPY_RC=%ERRORLEVEL%"
-if %ROBOCOPY_RC% GEQ 8 goto ROLLBACK
-robocopy "%NEW_PATH%" "%APP_PATH%" /MIR /L /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /XF {exclude_arguments} /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
-set "ROBOCOPY_RC=%ERRORLEVEL%"
-if not "%ROBOCOPY_RC%"=="0" goto ROLLBACK
-call :LOG "MIRROR_VERIFIED"
-
-call :LOG "RESTORE_BEGIN"
-{restore_commands}
-call :LOG "RESTORE_VERIFIED"
-if not exist "%RESTART_PATH%" goto ROLLBACK
-
-call :LOG "RESTART_BEGIN"
-start "" "%RESTART_PATH%"
-if errorlevel 1 goto ROLLBACK
-call :LOG "UPDATE_SUCCESS"
-rmdir /s /q "%UPDATE_TEMP_ROOT%" > nul 2> nul
-del "%~f0" > nul 2> nul
-exit /b 0
-
-:ROLLBACK
-call :LOG "UPDATE_FAILED_ROLLBACK_BEGIN_RESTART_BLOCKED"
-robocopy "%BACKUP_PATH%" "%APP_PATH%" /MIR /IS /IT /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
-set "ROBOCOPY_RC=%ERRORLEVEL%"
-if %ROBOCOPY_RC% GEQ 8 goto ROLLBACK_FAILED
-robocopy "%BACKUP_PATH%" "%APP_PATH%" /MIR /L /COPY:DAT /DCOPY:DAT /R:0 /W:0 /XJ /LOG+:"%LOG_PATH%" /NFL /NDL /NJH /NJS /NP
-set "ROBOCOPY_RC=%ERRORLEVEL%"
-if not "%ROBOCOPY_RC%"=="0" goto ROLLBACK_FAILED
-call :LOG "ROLLBACK_VERIFIED_RESTART_BLOCKED"
-echo 업데이트 적용에 실패하여 기존 버전을 복원했습니다. 프로그램을 직접 확인한 뒤 실행하세요.
-echo 로그: %LOG_PATH%
-pause
-exit /b 1
-
-:PRESERVE_REQUIRED_MISSING
-call :LOG "PRESERVE_REQUIRED_PATH_MISSING_RESTART_BLOCKED"
-goto ROLLBACK
-
-:PRESERVE_FAILED
-call :LOG "PRESERVE_FAILED_RESTART_BLOCKED"
-goto ROLLBACK
-
-:BACKUP_FAILED
-call :LOG "BACKUP_FAILED_RESTART_BLOCKED"
-echo 전체 백업에 실패하여 업데이트를 적용하지 않았습니다.
-echo 로그: %LOG_PATH%
-pause
-exit /b 1
-
-:BACKUP_VERIFY_FAILED
-call :LOG "BACKUP_VERIFY_FAILED_RESTART_BLOCKED"
-echo 전체 백업 검증에 실패하여 업데이트를 적용하지 않았습니다.
-echo 로그: %LOG_PATH%
-pause
-exit /b 1
-
-:ROLLBACK_FAILED
-call :LOG "ROLLBACK_FAILED_RESTART_BLOCKED_MANUAL_RECOVERY_REQUIRED"
-echo 자동 복원에 실패했습니다. 백업 폴더와 로그를 보존하고 수동 복구하세요.
-echo 백업: %BACKUP_PATH%
-echo 로그: %LOG_PATH%
-pause
-exit /b 1
-
-:LOG
->>"%LOG_PATH%" echo [%date% %time%] %~1
-exit /b 0
-"""
-
-
-def download_and_apply_update(
-    url,
-    expected_sha256=None,
-    archive_policy=None,
-    install_policy=None,
-    tls_ca_bundle_path="",
-):
-    """검증된 ZIP을 같은 볼륨에 준비하고 원자적 updater를 실행합니다."""
-    workspace = None
-    updater_launched = False
-    try:
-        if not _can_apply_updates():
-            raise RuntimeError("Automatic update apply is only allowed from the packaged executable.")
-        _assert_https_update_url(url, require_zip=True)
-        if not _is_sha256(str(expected_sha256 or "").strip()):
-            raise ValueError("Automatic update apply requires an expected SHA256 hash")
-        policy = _normalize_update_install_policy(
-            install_policy or _default_update_install_policy()
-        )
-        application_path = os.path.dirname(os.path.abspath(sys.executable))
-        workspace = _prepare_update_workspace(application_path)
-        update_temp_root = workspace["update_temp_root"]
-        zip_path = os.path.join(update_temp_root, "update.zip")
-        temp_update_folder = os.path.join(update_temp_root, "extracted")
-        with open(workspace["log_path"], "a", encoding="utf-8") as log_file:
-            log_file.write(
-                f"{datetime.now(timezone.utc).isoformat()} PREPARE_BEGIN "
-                f"strategy={policy['strategy']}\n"
-            )
-
-        request_kwargs = {"stream": True, "timeout": 120}
-        selected_ca = str(tls_ca_bundle_path or "").strip()
-        if selected_ca and not _is_github_hosted_update_url(url):
-            request_kwargs["verify"] = selected_ca
-        response = requests.get(url, **request_kwargs)
-        response.raise_for_status()
-        with open(zip_path, "wb") as target:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    target.write(chunk)
-        _verify_update_file_hash(zip_path, expected_sha256)
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            _safe_extract_update_zip(
-                zip_ref, temp_update_folder, archive_policy=archive_policy
-            )
-        os.remove(zip_path)
-        extracted_content = os.listdir(temp_update_folder)
-        if len(extracted_content) == 1 and os.path.isdir(
-            os.path.join(temp_update_folder, extracted_content[0])
-        ):
-            new_program_folder_path = os.path.join(
-                temp_update_folder, extracted_content[0]
-            )
-        else:
-            new_program_folder_path = temp_update_folder
-
-        updater_script = _build_updater_script(
-            application_path=application_path,
-            new_program_folder_path=new_program_folder_path,
-            update_temp_root=update_temp_root,
-            log_path=workspace["log_path"],
-            current_pid=os.getpid(),
-            install_policy=policy,
-        )
-        with open(
-            workspace["updater_script_path"], "w", encoding="utf-8", newline="\r\n"
-        ) as bat_file:
-            bat_file.write(updater_script)
-        subprocess.Popen(
-            [workspace["updater_script_path"]],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-        )
-        updater_launched = True
-        sys.exit(0)
-    except Exception as e:
-        print(f"업데이트 준비 기술 진단: {e}")
-        if workspace is not None and not updater_launched:
-            try:
-                with open(workspace["log_path"], "a", encoding="utf-8") as log_file:
-                    log_file.write(
-                        f"{datetime.now(timezone.utc).isoformat()} PREPARE_FAILED "
-                        f"error={e.__class__.__name__}\n"
-                    )
-            except OSError:
-                pass
-            shutil.rmtree(workspace["update_temp_root"], ignore_errors=True)
-            try:
-                os.remove(workspace["updater_script_path"])
-            except FileNotFoundError:
-                pass
-        root_alert = getattr(tk, "_default_root", None)
-        owns_alert_root = root_alert is None
-        if owns_alert_root:
-            root_alert = tk.Tk()
-            root_alert.withdraw()
-        messagebox.showerror(
-            "업데이트 실패",
-            "업데이트를 안전하게 준비하지 못해 기존 프로그램을 변경하지 않았습니다.\n"
-            "프로그램을 다시 시작하여 업데이트를 재시도해주세요.",
-            parent=root_alert,
-        )
-        if owns_alert_root:
-            root_alert.destroy()
-        sys.exit(1)
-
 def threaded_update_check(*, tls_ca_bundle_path=""):
-    """백그라운드에서 업데이트를 확인하고 필요한 경우 UI에 프롬프트를 표시합니다."""
+    """Check for a verified update; code placement belongs to the installer."""
     print("백그라운드 업데이트 확인 시작...")
     selected_ca = str(tls_ca_bundle_path or "").strip()
     candidate = (
@@ -4516,40 +4190,7 @@ def threaded_update_check(*, tls_ca_bundle_path=""):
         else _check_update_candidate()
     )
     if candidate:
-        if not _can_apply_updates():
-            print(f"업데이트 {candidate['version']} 확인됨. 소스 실행 모드에서는 자동 업데이트 적용을 건너뜁니다.")
-            return
-        if threading.current_thread() is not threading.main_thread():
-            # Tk roots and message boxes may only be created by the process
-            # main thread.  Label_Match itself uses its queue-based update
-            # poller; this guard keeps legacy callers fail-safe as well.
-            print("업데이트 프롬프트를 생략했습니다: Tk main thread가 아닙니다.")
-            return
-        download_url = candidate["url"]
-        new_version = candidate["version"]
-        root_alert = getattr(tk, "_default_root", None)
-        owns_alert_root = root_alert is None
-        if owns_alert_root:
-            root_alert = tk.Tk()
-            root_alert.withdraw()
-        if messagebox.askyesno("업데이트 발견", f"새로운 버전({new_version})이 있습니다.\n지금 업데이트하시겠습니까? (현재 버전: {APP_VERSION})", parent=root_alert):
-            if owns_alert_root:
-                root_alert.destroy()
-            apply_kwargs = {
-                "expected_sha256": candidate.get("sha256"),
-                "archive_policy": candidate.get("archive"),
-                "install_policy": candidate.get("install"),
-            }
-            candidate_ca = str(
-                candidate.get("tls_ca_bundle_path", "") or ""
-            ).strip()
-            if candidate_ca:
-                apply_kwargs["tls_ca_bundle_path"] = candidate_ca
-            download_and_apply_update(download_url, **apply_kwargs)
-        else:
-            print("사용자가 업데이트를 거부했습니다.")
-            if owns_alert_root:
-                root_alert.destroy()
+        print(f"업데이트 {candidate['version']} 확인됨. 적용은 외부 설치기를 사용하세요.")
     else:
         print("업데이트 확인 완료. 최신 버전이거나 확인 중 오류가 발생했습니다.")
 
@@ -6264,34 +5905,7 @@ class Label_Match(tk.Tk):
         if not candidate:
             print("업데이트 확인 완료. 최신 버전이거나 확인 중 오류가 발생했습니다.")
             return None
-        if not _can_apply_updates():
-            print(
-                f"업데이트 {candidate['version']} 확인됨. "
-                "소스 실행 모드에서는 자동 업데이트 적용을 건너뜁니다."
-            )
-            return candidate
-        should_apply = messagebox.askyesno(
-            "업데이트 발견",
-            (
-                f"새로운 버전({candidate['version']})이 있습니다.\n"
-                f"지금 업데이트하시겠습니까? (현재 버전: {APP_VERSION})"
-            ),
-            parent=self,
-        )
-        if should_apply and not self.__dict__.get("_tk_shutdown_requested", False):
-            apply_kwargs = {
-                "expected_sha256": candidate.get("sha256"),
-                "archive_policy": candidate.get("archive"),
-                "install_policy": candidate.get("install"),
-            }
-            candidate_ca = str(
-                candidate.get("tls_ca_bundle_path", "") or ""
-            ).strip()
-            if candidate_ca:
-                apply_kwargs["tls_ca_bundle_path"] = candidate_ca
-            download_and_apply_update(candidate["url"], **apply_kwargs)
-        elif not should_apply:
-            print("사용자가 업데이트를 거부했습니다.")
+        print(f"업데이트 {candidate['version']} 확인됨. 적용은 외부 설치기를 사용하세요.")
         return candidate
 
     def _start_direct_sync_auto_bootstrap(self):

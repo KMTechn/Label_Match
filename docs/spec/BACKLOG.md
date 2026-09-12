@@ -232,7 +232,7 @@
 ## LM-B09 · 설정·프로필·업데이트의 오래된 안내 정합
 
 - 유형/우선: **확인된 문서/현행 소스 차이 · P1**. packaged 설정이나 공통 Machine profile을 모든 설치의 정본 위치로 잘못 안내할 수 있다.
-- 근거: [CODEX](../../CODEX.md)의 설정/GitHub 자동 업데이트 요약, [프로필 안내](../LOGISTICS_RUNTIME_PROFILE.md)의 공통 경로와 [현재 설정 선택](operations.md#configuration), [릴리스 사용자 상태 계약](../../RELEASE_GATE_CONTRACT.md). 현재 앱의 `_can_apply_updates()`는 False이고 일반 fallback·onboarding·Machine 우선권을 구별해야 한다.
+- 근거: [CODEX](../../CODEX.md)의 설정/GitHub 자동 업데이트 요약, [프로필 안내](../LOGISTICS_RUNTIME_PROFILE.md)의 공통 경로와 [현재 설정 선택](operations.md#configuration), [릴리스 사용자 상태 계약](../../RELEASE_GATE_CONTRACT.md). 앱 내부 updater apply는 LM-F01에서 제거했으며 후보·manifest 조회와 외부 installer 책임을 구별한다. 일반 fallback·onboarding·Machine 우선권도 구별해야 한다.
 - 상태/다음: **기준선에 차이 반영 / 오래된 안내 수정 남음**. Label 문서·릴리스 담당이 현재 지원 배포 topology와 소스 근거를 대조해 적용 조건을 명시한다. 기존 문서는 이번 허용 5경로 밖이므로 보존했다.
 - 완료 기준: 사용자 설정 vs packaged template, current-user vs Machine profile, ProgramData fallback vs 실제 데이터 위치, update 조회 vs installer 적용 책임이 안내와 일치한다. 기본 `off`나 코드 적용 차단을 실제 installed provider 관찰로 확대하지 않는다.
 - 의존/병렬: LM-B04/08 및 중앙 구성 요약. 기존 안내 대조는 실제 실행 없이 가능.

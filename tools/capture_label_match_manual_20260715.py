@@ -1365,7 +1365,6 @@ def run(
         isolation = _configure_isolation(temp_root)
         isolation.update(_redirect_config_resources(label_module, temp_root))
 
-        label_module.threaded_update_check = lambda: None
         label_module._label_match_start_session_direct_sync = lambda *args, **kwargs: threading.Thread()
 
         marker = time.strftime("CAP%Y%m%d%H%M%S")
