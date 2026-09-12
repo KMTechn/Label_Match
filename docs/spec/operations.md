@@ -1,5 +1,18 @@
 # Label_Match 운영·복구·검증
 
+<a id="clock-recovery-tests-20260912"></a>
+## 2026-09-12 · clock 회귀의 현재 발급 시점 교정
+
+**진단:** clean HEAD `f97c0cff8dbe46ea8b6d0af9ecf05a20bb0aa7fd` / 제품 `1ac57294ea278b699936b6606d36e166a2e99608`에서 원 clock 파일은 **14 FAIL / 13 PASS**다. 초기 검증은 이미 C-04대로 `label-package-source/READ_ONLY`만 실행하므로 과거 first-scan lease assertion이 실제 검증 경로에 도달하지 않았다. 이 결과는 UI 단위에서 보존한 같은14실패와 일치한다. 제품 결함으로 판단해 초기 lease 발급을 되살리지 않았다.
+
+**PROVEN — host Python3.12.10, 격리 SQLite·합성 서명:** `tests/test_deferred_lease_clock_retry.py`의 **32 PASS**는 읽기 전용 admission/정상 merged·split source, F3 발급의 signed issuance 1초 전 거부·정확한 시작 경계 허용·정확한 expiry 거부, 재개·service 실패 후 같은 요청/key, signature/binding/snapshot/artifact fence 차단, outbox marker0·중복 enqueue 방지, 기존13개 absent-destination version guard를 포함한다. UI acceptance만 대체하고 source validator·F3 queue·서명·durable store는 실제 코드를 사용한다. 별도5개는 기존 legacy-plan fixture로 보존 2단계 plan만 seed해 read 실패·1/2회 definite service 실패 뒤 원 key/hash, unknown reconcile·API clock 문구 거부 및 저장 backoff 전/정시의 scheduler 경계를 확인한다. 이5개는32개 안에 포함된다.
+
+**PROVEN — 기존 계약38 PASS:** lease/keyring/issue/receipt/원자 marker 회귀 모듈과 선택된 read-only admission·F4 guard·offline F3·legacy freeze/unknown·materializer durable 완료 사례다. 전체 suite·VM·공유 backend·live profile·실제 입력은 실행하지 않았다. F3 clock 회귀는 enqueue/marker0까지이며 실제 F3 성공·전송 receipt 근거가 아니다.
+
+**FAILED, 보존:** 새 legacy fixture의 첫 실행은 저장 backoff보다 이른 재시도로2실패였다. 다음5실패는 과거 fixture가 production `utc_now()`의 `Z` 대신 `+00:00` 문자열을 반환해 exact-due SQL 비교를 바꾼 탓이다. 현재 fixture는 실제 formatter와 저장 `next_attempt_at`을 사용한다. 실제 시계·보안 gate·retry 정책은 변경하지 않았다. 원 실패와 중간 실행·최종 소스/환경 결속은 [RESULT](D:/KMTech/optimization-implementation-20260909/Label_Match/clock-recovery-20260912/RESULT.md) 및 그 evidence에 보존한다.
+
+**범위:** test와 명세만 변경했다. 따라서 [기존 격리 native UI 근거](#routine-details-20260912)는 동일 제품 범위로 재사용하며 새 native 실행으로 표시하지 않는다. Web/CA/hub/API 계약 변경은 없고 Main에 회귀 정합 종결만 인계한다. Label 성능·real F3/shipping·lost-ACK·전체 Goal은 기존 미입증/배정 범위를 유지한다.
+
 <a id="routine-details-20260912"></a>
 ## 2026-09-12 · 일상 포장 화면 단순화
 

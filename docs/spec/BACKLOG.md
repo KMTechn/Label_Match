@@ -1,11 +1,17 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-12 · clock14 실패 진단·회귀 정합 완료
+
+- 원인/교정: 초기 PHS2에서 lease를 요구하던 과거14검사를 현행 read-only admission과 실제 F3 발급 경로로 정렬했다. 제품 코드는 유지하며 과거2단계 plan의 원 요청/key·signed clock·unknown/definite 실패 구분도 별도 회귀로 남겼다.
+- 근거: [격리 host32 PASS와 기존 계약38 PASS](operations.md#clock-recovery-tests-20260912). 원 baseline14 FAIL과 신규 fixture backoff/UTC 표현 실패는 D 보고서에 보존한다. 원13개 version-zero guard는 모두 유지했다.
+- 종결/잔여: 이 한정 clock 회귀 단위는 완료다. 변경 없는 제품의 기존 native UI 근거를 재사용하며 성능·실제 F3/shipping·전체 Goal과 중앙 계약 변경은 포함하지 않는다.
+
 ## 2026-09-12 · 일상 화면 최소화와 상세 열기
 
 - 구현: PHS2의 중복 안내·단계표·원문을 줄이고 제품 수량·다음 행동을 표시한다. `작업 상세 보기`는 전체 원문·세트/접수·대기 항목·진단 코드·절차를 제공하며 대기·실패·복구 안내와 기존 키/상태 계약은 유지한다.
 - 검증: 격리 host151 PASS, native2 제외. Main 검토 뒤 명시적 invalid/상충 수량의 falsey fallback·실수 절삭을 제거했고 후속88 PASS로 정상48/12와13개 수량 경계를 확인했다. 기존 clock14 FAIL과 layout fake의 baseline 실패/보완을 [운영 근거](operations.md#routine-details-20260912)와 D 보고서에 구분한다.
 - 완료: 제품1ac5729의 배정 VM 격리 native13상태/14PNG를 실제 확인했다. Space 상세 왕복·입력/focus, 경고·수량 미확인·이력의 관리자 확인,1366×768/글자1.4배를 포함하며 native03 정상 종료0이다. 선택적 pywin32 helper 실패2회와 UTF8 reader 실패를 보존하고 기존 Win32 API adapter/명시 UTF8으로 한정 교정했다.
-- 반환/한계: own462파일을 D에 SHA 대조 보존하고 임시 guest root·task·process를 정리해 원76a3를06:33:15Z Saved/0으로 반환했다. 이번 UI 단위는 완료이며 실물 스캐너·업무 receipt·설치·Today 성능은 미검사다. 기존 clock14 FAIL과 원 업무는 그대로 유지하며 [정확한 한정 근거](operations.md#routine-details-20260912)를 따른다.
+- 반환/한계: own462파일을 D에 SHA 대조 보존하고 임시 guest root·task·process를 정리해 원76a3를06:33:15Z Saved/0으로 반환했다. 이번 UI 단위는 완료이며 실물 스캐너·업무 receipt·설치·Today 성능은 미검사다. 당시 clock14 FAIL은 원 근거로 보존하며 후속 진단은 위 clock 회귀 항목을 따른다. 원 업무의 [한정 근거](operations.md#routine-details-20260912)는 유지한다.
 
 ## 2026-09-11 · 원래 F4 복구·F3 실제 진행
 

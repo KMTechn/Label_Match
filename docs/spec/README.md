@@ -1,5 +1,9 @@
 # Label_Match 기술 명세
 
+## 2026-09-12 · 초기 검증과 F3 clock 회귀 정합
+
+기존 clock14 FAIL은 초기 PHS2가 lease를 발급하던 과거 테스트와 현행 읽기 전용 admission의 불일치였다. 제품 변경 없이 회귀를 실제 F3 발급 경로로 옮겨 원 요청/key 재사용, 서명·만료·binding·snapshot·fence 거부를 확인했다. 보존된 2단계 validation plan의 clock/read/service 재시도와 unknown 결과 격리는 별도로 검증했다. host **32 PASS + 기존 계약38 PASS**이며 [진단·원 실패·한계](operations.md#clock-recovery-tests-20260912)를 따른다. 성능·실제 업무·전체 Goal 종결은 아니다.
+
 ## 2026-09-12 · 일상 포장 화면과 작업 상세
 
 표준 PHS2 화면은 품목·규격·차수, 조회된 제품 수량, 스캔 입력과 다음 행동을 우선 표시한다. `작업 상세 보기`에서 수락된 스캔 원문과 세트·접수·상태 코드·대기 항목·절차를 확인하며 긴 상세는 스크롤할 수 있다. 단일 스캔 단계표와 중복 일반 안내는 접고, 경고·미완료·중앙 충돌은 상세를 닫아도 표시한다. 제품 수량은 source `member_count` 또는 교체 후 검증된 seal `QT`를 사용하며 스캔 1회를 제품 1개로 취급하지 않는다. F1/F4/F3와 복구·durable 확정은 유지한다. [검증 범위와 한계](operations.md#routine-details-20260912)을 따른다.
