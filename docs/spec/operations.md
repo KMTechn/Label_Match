@@ -465,6 +465,9 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 
 지원 인계에는 비밀 없는 set/package/key·발생 시각과 업무일·로컬 marker/status·중앙 receipt 또는 오류 코드·producer 상태·관련 산출물 경로·실물 구분을 연결한다. 원본 로그 전문을 복사하거나 DB/status를 수동 편집해 복구 성공을 만들지 않는다. 요구 RPO/RTO·재시도 후 인계 시점·최종 승인 역할은 아직 미정이다([LM-B02](BACKLOG.md#lm-b02), [LM-B07](BACKLOG.md#lm-b07)).
 
+<a id="wave1-failure-handling-validation"></a>
+LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer45/lane66의299 PASS와 직렬 내구33 PASS(기존32+새 CSV1), 새 회귀19의 PASS를 [JUnit node 대조](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/acceptance-summary.json)로 연결한다. 감사 필수331개 누락은0이며 새 회귀 포함350개다. 최초 병행 내구 실행의2 FAIL/31 PASS는 원인 미확정으로 보존했고 진단2/직렬33 PASS에서 재현되지 않았다. [RESULT](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/RESULT.md)의 전후 probe와 한계를 따르며 GUI·VM·서버·clean build 증거는 아니다.
+
 ## 설치·업그레이드·제거·백업·롤백
 
 portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 hash lock과 [자동 대조](../../tests/test_zero_pe_conversion.py)한다. `chardet==5.2.0`의 pure Python wheel을 명시하고 source runtime에는 계속 chardet을 복사한다. lock의 charset-normalizer는 다른 build/test closure를 위해 유지하며 portable zero-PE 대체 의도는 바뀌지 않는다. 이 입력 정합 검사는 clean 설치·portable build 실행 증거와 별개다.
