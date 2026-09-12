@@ -1,5 +1,14 @@
 # Label_Match 운영·복구·검증
 
+<a id="m06-account-handoff-20260912"></a>
+## 2026-09-12 · M06 업무 복구·계정 전환 경계
+
+**PROVEN:** Main의 실제 CA handoff와 원76a3 배정 뒤 제품1ac의123파일을 확인하고 원 kmadmin/READY identity·profile·runtime을 유지했다. 실제 PHS2를 한 번 수락한 저장 snapshot에서만 한 멤버 fault를 결속했다. F3 한 번 뒤 set1789200370748249000/key `label-package-cmd-12a5e0bab5cdf51c4e421ed1`의 로컬 marker1/PENDING과 중앙 `receipt_48ceef1afdf749ecab63e0c95892191f` COMMITTED/package `PACKAGE-WORK-9BFF9D4E70D69D6E4B16FA9E` AVAILABLE/v1/member1·SHIPPING-WAIT를 독립 확인했다. 정상 재시작 후08:15:52Z ACKED/attempt7이며 command SHAe75776ef·local completion은 같고 원 package/lease 행도 정확히 보존됐다. 실제 현재 중앙 현품표 조회는 원 보호144B PHS2와 일치하며 새 QR을 만들지 않았다.
+
+**CHECKPOINT:** 최신 Main 지시msg25e1ac8a에 따라 account347/gpt-6-astra/xhigh에서 종료한다. Main이08:13Z에 FastOFF로 변경·확인했고 작업자는 토글하지 않았다. 최종 GUI 정상 종료0, relay 정상 정지 관측/exit1, Python0·자체 task0 뒤 원76a3은08:27:36Z Saved/assigned0이다. relay stop marker와 guest task root는 후속 작업자를 위해 보존했고 공개 근거178파일은 D archive의 모든 bytes/SHA를 대조했다. [ACCOUNT-HANDOFF](D:/KMTech/optimization-implementation-20260909/Label_Match/M06-Today-continuation-20260912/ACCOUNT-HANDOFF.md), [RESULT](D:/KMTech/optimization-implementation-20260909/Label_Match/M06-Today-continuation-20260912/RESULT.md)를 따른다.
+
+**UNFINISHED:** package readiness9개는0이나 producer는20ACKED·원 REVIEW1·RETRY_WAIT3이다. 원 SET_RESTORED 수신1fc08b49는 accepted/committed·quarantined1·UNKNOWN/NO_EVENT_OUTCOME이며 Main이 독립 서버 판정을 소유한다. review/authority를 지우거나 재전송하지 않았다. source-ready의 긴 원문 입력과 SUPERSEDED deferred 항목만 집계하는 대기 표시의 package PENDING 누락을 보존했고 제품 수정은 없다. Today 공통 입력·새 case·수치 limits·관측은 없고 원23 ACK+게시 실패는 그대로다. 이 계정 전환 checkpoint는 원 continuation·전체 Goal 완료가 아니다.
+
 <a id="m06-today-preparation-20260912"></a>
 ## 2026-09-12 · M06 lost-ACK·새 Today 비교 준비
 

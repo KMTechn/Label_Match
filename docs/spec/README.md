@@ -1,5 +1,9 @@
 # Label_Match 기술 명세
 
+## 2026-09-12 · M06 lost-ACK 복구와 계정 전환 인계
+
+실제 CA handoff의 한 PHS2로 source1ac 일반 F3를 한 번 실행했다. 중앙 package1/COMMITTED receipt1·member1과 로컬 PENDING/marker1을 독립 확인한 뒤 같은 key/command로 정상 재시작 ACKED를 확인했다. 원 package/lease 행과 실패 근거를 보존했으며 shipping handoff는 Main 수용 대기다. 최신 사용자 지시에 따라 account347 작업을 안전 종료하고 blackdwarfian 후속 작업자에게 넘긴다. producer 원 REVIEW1·RETRY_WAIT3, routine 입력/대기 표시 문제와 Today30/30은 남으며 [실제 경계와 인계](operations.md#m06-account-handoff-20260912)를 따른다.
+
 ## 2026-09-12 · M06 lost-ACK·Today 후속 호스트 준비
 
 M06의 실제 CA seal/Label handoff와 Main의 원76a3 배정 전까지 호스트 준비만 수행한다. 제품1ac의 실제123파일 입력, 한 멤버/한 command fault와 새 `a7e → 1ac` Today observer 결속을 준비했으며 기존 함수·통계·수치 기준은 유지한다. 실제 binding·당일 history·case·30/30·limits는 아직 없고 원 case03의23 ACK+게시 실패는 보존한다. [준비·현재 의존성](operations.md#m06-today-preparation-20260912)을 따른다.

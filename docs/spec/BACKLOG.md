@@ -1,5 +1,13 @@
 # Label_Match 진행·공백·추가 제안
 
+## 2026-09-12 · M06 복구 후 계정 전환 checkpoint
+
+- 실제 한 멤버 F3/lost-ACK는 같은 key의 로컬 PENDING→정상 재시작 ACKED와 중앙 단일 COMMITTED 효과로 확인했다. shipping은 Main이 보호 원 PHS2와 실제 package handoff를 수용·배정해야 한다.
+- Main의 blackdwarfian 계정 후속 작업자에게 원76a3 Saved/0·정상 profile/runtime/source1ac·자체 stop marker·모든 실패 근거를 인계한다. account347 작업자의 유한 checkpoint이며 원 continuation은 미완료다.
+- producer 원 quarantined SET_RESTORED REVIEW1과 RETRY_WAIT3의 실제 서버 판정/지원 복구가 남는다. package readiness9개0을 producer settlement로 간주하지 않는다.
+- 긴 원문 입력이 wrapping-ready 동안 노출되는 문제와 deferred SUPERSEDED 집계가 실제 package PENDING을 누락하는 일상 대기 표시를 Main이 후속 범위로 정한다. 제품/observer를 조용히 바꾸거나 원 F3를 재실행하지 않는다.
+- 실제 settled 당일 history와 최종 후보를 사전 결속하고 별도 전체 Today30/30 배정이 필요하다. 새 snapshot·case·limits·samples는 없으며 기존 실패와 기준을 유지한다. [정확한 인계](operations.md#m06-account-handoff-20260912)를 따른다.
+
 ## 2026-09-12 · M06 lost-ACK·Today 후속 — 호스트 준비, 실제 배정 대기
 
 - 완료된 준비: 실제 제품1ac의123파일 입력·새 observer/ref·한 멤버 fault 출력 경로, 기존 함수/통계/criteria 보존과 두 소스의 관측 widget 결속을 [호스트 근거](operations.md#m06-today-preparation-20260912)에 기록했다. 제품 변경·clock 회귀 재실행은 없다.
