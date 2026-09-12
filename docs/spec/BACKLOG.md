@@ -4,7 +4,8 @@
 
 - 구현: PHS2의 중복 안내·단계표·원문을 줄이고 제품 수량·다음 행동을 표시한다. `작업 상세 보기`는 전체 원문·세트/접수·대기 항목·진단 코드·절차를 제공하며 대기·실패·복구 안내와 기존 키/상태 계약은 유지한다.
 - 검증: 격리 host151 PASS, native2 제외. Main 검토 뒤 명시적 invalid/상충 수량의 falsey fallback·실수 절삭을 제거했고 후속88 PASS로 정상48/12와13개 수량 경계를 확인했다. 기존 clock14 FAIL과 layout fake의 baseline 실패/보완을 [운영 근거](operations.md#routine-details-20260912)와 D 보고서에 구분한다.
-- 남은 일: Main 배정 개발 VM의 실제 화면·상세 스크롤·경고·큰 글자/축소·focus 확인. 기존 Today/업무 receipt 수용과 혼동하지 않으며 원 업무를 반복하지 않는다.
+- 완료: 제품1ac5729의 배정 VM 격리 native13상태/14PNG를 실제 확인했다. Space 상세 왕복·입력/focus, 경고·수량 미확인·이력의 관리자 확인,1366×768/글자1.4배를 포함하며 native03 정상 종료0이다. 선택적 pywin32 helper 실패2회와 UTF8 reader 실패를 보존하고 기존 Win32 API adapter/명시 UTF8으로 한정 교정했다.
+- 반환/한계: own462파일을 D에 SHA 대조 보존하고 임시 guest root·task·process를 정리해 원76a3를06:33:15Z Saved/0으로 반환했다. 이번 UI 단위는 완료이며 실물 스캐너·업무 receipt·설치·Today 성능은 미검사다. 기존 clock14 FAIL과 원 업무는 그대로 유지하며 [정확한 한정 근거](operations.md#routine-details-20260912)를 따른다.
 
 ## 2026-09-11 · 원래 F4 복구·F3 실제 진행
 

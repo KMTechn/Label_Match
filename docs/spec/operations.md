@@ -11,7 +11,11 @@ Main의 `52bddfd` 검토에서 falsey source를 과거 seal로 대체하거나 `
 
 대기 현황 외의 탭에서도 footer에 미완료 수를 유지하고 관리자 확인이 있으면 해당 건수를 경고 색으로 함께 표시한다. 기존 대기 상세의 두 레이아웃 검사는 **2 PASS**이며 관리자 확인2건/미완료13건을 확인했다. 자동 처리 대기와 별도 조치 필요를 구분하며 상태 전이는 변경하지 않는다.
 
-정확한 후보·전후 화면표·로그·VM 준비는 [이번 보고서](D:/KMTech/optimization-implementation-20260909/UI-IMPROVEMENT-20260912-1318/Label_Match/RESULT.md)를 따른다. 현재 **native 화면·스캐너·업무 receipt·Today 성능은 NOT TESTED**이며 Main의 배정 VM에서 격리 대표 화면·상세·경고·축소/확대·focus를 확인한다. 원901–904/M06/F4/F3/shipping과 live DB는 재실행하지 않는다.
+**PROVEN — 배정 VM의 격리 native UI:** 제품 `1ac57294ea278b699936b6606d36e166a2e99608`과 기존 Python3.12.10 runtime으로 실제13개 widget 상태를 확인하고14개 PNG를 모두 열어 검토했다. 최대화 client1920×1009에서 대기/48개 준비·수량 미확인·상세·F4 복구·선행조건 대기·중앙 충돌·성공·이력/관리자 확인·정보 창, client1366×768/앱 글자1.4배에서 펼친 상세와 접힌 경고가 읽히며 필요한 입력/버튼/스크롤 영역이 남는다. Space로 상세를 열고 닫을 때 입력문과 focus를 보존했다. 수량 미확인은 표시 상태이며 기존 F3/F4 admission은 바꾸지 않았다.
+
+**FAILED 이력 보존:** native01은 helper의 선택적 `win32gui` 부재, native02는 layout까지 유지하지 않은 adapter의 `win32con` 부재로 종료1이었다. native03은 기존 Win32 `GetAncestor`/`IsWindowVisible`을 ctypes로 실제 호출하는 한정 adapter로 확인했으며 허용 결과를 반환하는 fake나 dependency 설치는 없다. native03 자체는 정상 종료0/closed이며 한 PowerShell reader가 UTF8을 지정하지 않아 실패한 `09-native03-result.json`도 보존했다. 명시 UTF8 reader로 실제 성공·PID11032 소멸을 읽었으며 앱을 재실행하지 않았다.
+
+**PROVEN — 자원 반환:** Main 배정 원76a3/kmadmin session1에서 own task3개와 process를 정상 정리했다. guest root 전체462파일/34,040,916B를 D에 보존하고 모든 SHA를 대조한 뒤 literal 임시 root만 제거했다. manifest `98DD2A7E073E7F22260A67DE23BE54FBEEE8408A4572FF11B19389EF04733ADC`, 기존 runtime 해시 불변, own session 종료와06:33:15Z Saved/0 반환을 [이번 보고서](D:/KMTech/optimization-implementation-20260909/UI-IMPROVEMENT-20260912-1318/Label_Match/RESULT.md)에 결속했다. 원901–904/M06/F4/F3/shipping과 live DB는 재실행하지 않았다. 실물 스캐너·업무 receipt·설치·Today 성능은 **NOT TESTED**이며 대표 UI 검사로 대체하지 않는다.
 
 <a id="original-f4-f3-continuation-20260911"></a>
 ## 2026-09-11 · 원래 F4 같은 요청 복구와 F3 완료
