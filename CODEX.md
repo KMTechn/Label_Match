@@ -12,7 +12,7 @@
 
 - 엄격한 compact `PHS=2` 현품표를 한 번 스캔해 중앙 이적 멤버십을 조회하고 포장 준비 상태로 만든다.
 - 필요할 때만 F4에서 교체 대상과 같은 품목의 양품을 차례로 스캔한다. 실제 대상 멤버 수 이내의 목록을 확인·수정·삭제한 뒤 **교체 적용** 한 번으로 서버에서 원자 교체하며, 3쌍 이상은 추가 capability가 필요하다. 원본 PHS2는 유지하며 재봉인 QR은 화면에서 확인하는 전자 증거다.
-- F3으로 랩핑 완료를 확정하면 durable outbox intent와 로컬 완료 이벤트를 먼저 flush한 뒤 성공을 표시한다. 중앙 ACK는 같은 idempotency key로 FIFO 자동 재전송하며, pending은 다음 준비 작업을 막지 않고 conflict는 로컬 완료를 되돌리지 않은 채 `OPERATOR_REVIEW`로 격리한다.
+- F3으로 랩핑 완료를 확정하면 durable outbox intent와 로컬 완료 이벤트를 먼저 flush한 뒤 성공을 표시한다. 중앙 ACK는 같은 idempotency key로 due/공정 자동 재시도하며, pending은 다음 준비 작업을 막지 않고 conflict는 로컬 완료를 되돌리지 않은 채 `OPERATOR_REVIEW`로 격리한다.
 - 중앙에서 분류되지 않은 입력은 fail-closed로 거부한다. 과거 5단계 입력은 명시적인 레거시 호환 경로에서만 처리한다.
 - `assets/Item.csv`를 기준으로 품목명/규격 정보를 조회한다.
 - 신규 `CLC|SPC|PHS` 형식과 생산일자 `6D` 필드 중심의 레거시 검증 로직도 호환용으로 포함한다.

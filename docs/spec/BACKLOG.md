@@ -8,6 +8,7 @@
 - LM-A03 소스 교정 완료: 중앙 캐시의 timestamp 오류는 원본을 보존한 수리 잠금이다. 격리 host 복구15 PASS(새5·기존 midnight2 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/recovery-01.xml). 실제 손상 캐시 지원 수리·화면은 미확인이다.
 - LM-C02 입력 정합 완료: portable chardet5.2.0 wheel을 hash lock에 추가하고 builder9개 version/hash 입력을 자동 대조한다. zero-PE11 PASS(새1 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/dependency-01.xml). wheel SHA256은 PyPI 및 격리 다운로드로 확인했으며 clean 설치·전체 빌드는 미실행이다.
 - LM-D02 문구 교정 완료: F3 권한 확인·로컬 완료 저장과 중앙 전송 대기·확정·충돌·로컬 복구를 구별한다. 기존 F3/제출/충돌26 PASS, [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/f3-copy-01.xml). 로컬 내구 단계 전 성공 금지와 입력 보존 검사를 유지했으며 새 문구의 native 가독성은 미확인이다.
+- LM-A05/LM-D01 문서 교정 완료: due/공정 재시도 요약을 통일하고 F4 목록·일괄 적용·추가 capability·새 전자 QR 절차를 작업자 정본에 반영했다. 소스/diff·참조 확인이며 앱 실행·설치 버전 확인 증거로 확대하지 않는다.
 
 ## 2026-09-12 · Committed stale-runtime 복구의 호스트 교정
 
@@ -139,11 +140,11 @@
 
 
 <a id="lm-b01"></a>
-## LM-B01 · F4 작업 안내의 후속 QR 확인 누락
+## LM-B01 · F4 작업 안내와 후속 QR 확인
 
-- 유형/우선: **확인된 문서 불일치 · P1**. 작업자가 교체 ACK 뒤 확인 단계를 모르고 멈출 수 있다.
+- 유형/우선: **소스 기준 문서 정합 완료**. 목록 편집·일괄 적용·새 전자 QR 확인을 작업자 정본에 반영했다.
 - 근거: [앱 `_prompt_new_seal_verification`](../../Label_Match.py)와 [작업자 정본의 기본 순서](../LABEL_MATCH_WORKER_GUIDE.md); [LM-05](README.md#lm-05), [C-03](contracts.md#c-03). 원본 물리 PHS2 유지와 새 전자 QR 확인은 동시에 성립한다.
-- 상태/다음: 기준선에는 현행 순서 반영 완료, 기존 정본 수정은 **남음**. Label 문서·교육 담당이 정본의 F4 문구·관련 화면/기존 캡처 적용 범위를 대조한다. 이번 5문서 소유 범위 밖의 정본은 수정하지 않았다.
+- 상태/다음: LM-D01에서 정본의 수량 선입력·1~2개 고정 안내를 현재 목록 절차로 교정했다. 3쌍 이상 추가 capability와 원본 물리 PHS2 유지·새 전자 QR 확인을 명시했다. 실제 설치 버전·화면/기존 캡처 적용 범위는 LM-B04의 남은 확인이다.
 - 완료 기준: 허용 F4→중앙 교체→새 전자 QR 확인→랩핑/F3의 순서와 실패/재시작 안내가 일치한다. 일반 F4에 물리 인쇄나 전량 제품 재스캔을 추가하지 않는다.
 - 의존/병렬: 중앙 [S02](../../../Program_Spec_Hub/BACKLOG.md#specification)와 연결. 문구 대조는 장비 검증과 독립 진행 가능; 실물 판독 증거는 LM-B04.
 

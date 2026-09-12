@@ -117,7 +117,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 4. 현재 멤버십과 실물을 대조하고 실제로 랩핑한 뒤 F3 확인을 확정한다. current-state, intent, CSV flush/fsync, 완료 marker·lease 처리가 끝나야 로컬 성공을 표시한다.
 5. 같은 키로 중앙 확정을 재시도하며 다음 준비 작업으로 돌아간다. 로컬 완료 후 단순 전송 대기와, 복구 미완료/중앙 충돌로 작업이 차단된 상태를 구분한다.
 
-근거: [앱 `_commit_finalized_set_durable`, `_return_to_idle_after_finalized_set`, `_prompt_new_seal_verification`](../../Label_Match.py), [완료 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md). [작업자 정본](../LABEL_MATCH_WORKER_GUIDE.md)의 F4 요약에는 전자 QR 후속 확인이 누락되어 있다. 이 기준선은 코드 차이를 명시하며 기존 정본 수정은 [LM-B01](BACKLOG.md#lm-b01)로 남긴다.
+근거: [앱 `_commit_finalized_set_durable`, `_return_to_idle_after_finalized_set`, `_prompt_new_seal_verification`](../../Label_Match.py), [완료 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md), [작업자 정본](../LABEL_MATCH_WORKER_GUIDE.md). F4 목록·일괄 적용·3쌍 이상 추가 capability·새 전자 QR 확인 안내는 소스와 대조해 갱신했다([LM-B01](BACKLOG.md#lm-b01)). 실제 설치 버전과 화면 수용은 별도다.
 
 | 예외 | 관측·다음 행동 | 기능 |
 | --- | --- | --- |

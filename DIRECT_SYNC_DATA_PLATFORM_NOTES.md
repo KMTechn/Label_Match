@@ -12,8 +12,8 @@
 
 ## 이 프로그램의 역할
 
-- `Label_Match`의 중앙 표준 경로는 원본 compact PHS2 한 번으로 이적 완료 멤버십을 조회하고, 필요 시 F4로 동일 품목 1~2개를 원자 교체한 뒤 F3 포장 완료 명령을 만든다. 제품 3개와 최종 라벨 scan set은 명시적으로 분류된 레거시 입력에만 적용한다.
-- 중앙 PHS2 포장은 durable outbox intent와 로컬 `TRAY_COMPLETE` 이벤트를 먼저 flush한 뒤 완료로 표시한다. `PENDING/SENDING`은 같은 idempotency key로 FIFO 재전송하며 다음 준비 작업을 막지 않는다. `CONFLICT`는 `OPERATOR_REVIEW`로 투영하되 이미 commit된 로컬 완료를 취소하지 않는다.
+- `Label_Match`의 중앙 표준 경로는 원본 compact PHS2 한 번으로 이적 완료 멤버십을 조회하고, 필요 시 F4로 동일 품목 교체 목록을 확인·일괄 적용하고 새 전자 QR을 확인한 뒤 F3 포장 완료 명령을 만든다. 교체 목록은 현재 대상 멤버 수 이내이며 3쌍 이상은 추가 capability가 필요하다. 제품 3개와 최종 라벨 scan set은 명시적으로 분류된 레거시 입력에만 적용한다.
+- 중앙 PHS2 포장은 durable outbox intent와 로컬 `TRAY_COMPLETE` 이벤트를 먼저 flush한 뒤 완료로 표시한다. `PENDING/SENDING`은 같은 idempotency key로 due/공정 재시도하며, 한 drain에서 이미 시도한 key를 제외해 뒤의 준비 작업도 진행한다. pending은 다음 준비 작업을 막지 않는다. `CONFLICT`는 `OPERATOR_REVIEW`로 투영하되 이미 commit된 로컬 완료를 취소하지 않는다.
 - 이벤트는 로컬 저장소와 direct-sync spool을 거쳐 서버로 올라간다.
 - 포장 데이터는 서버 projection에서 원본 PHS2, 현재 제품 멤버십, F4 교체 이력과 포장 ACK를 맞추는 핵심 입력이다.
 
