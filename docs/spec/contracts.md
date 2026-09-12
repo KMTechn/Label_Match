@@ -105,6 +105,8 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 <a id="quantities"></a>
 ## 수량·시각·로컬 파일
 
+저장 루트는 onboarding·GUI/guard·relay의 공통 resolver로 선택한다. custom → env 우선과 [기존 ProgramData/current-user 기본 위치 감지](operations.md#configuration)를 유지하며 새 onboarding도 등록 전후 같은 루트를 쓴다. 갈린 설치는 기존 업무 CSV/DB와 onboarding ledger 위치를 각각 보존·진단하고 자동 이동/병합·identity 재등록을 하지 않는다. producer/key/endpoint에 결속된 queue·spool의 원 bytes와 미확정 상태는 경로 정리를 이유로 변경·종결하지 않는다.
+
 | 값 | 단위·모집단·포함/제외 | 시간·집계·중복 |
 | --- | --- | --- |
 | source `member_count` | 현재 유효 TRANSFER/work-group 제품 구성원 수. PHS2 한 번의 스캔 수와 다름; `INHERIT_ALL`은 그 집합 전체 | 현재 source snapshot/version 기준. unit와 barcode hash를 각각 대조 |

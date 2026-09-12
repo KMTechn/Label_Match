@@ -212,9 +212,78 @@ def test_data_scope_resolution_uses_config_then_program_data(tmp_path):
 
     settings.write_text("{broken", encoding="utf-8")
     assert resolve_data_scope(
-        environment={"ProgramData": r"C:\ProgramData"},
+        environment={"ProgramData": str(tmp_path / "program-data")},
         settings_path=settings,
-    ) == r"C:\ProgramData\KMTech\Label_Match\data"
+    ) == str(tmp_path / "program-data" / "KMTech" / "Label_Match" / "data")
+
+
+def test_legacy_root_read_failure_is_not_treated_as_absent(monkeypatch, tmp_path):
+    import label_match_single_instance as guard
+
+    program = tmp_path / "program-data"
+    legacy = program / "KMTech" / "Label_Match" / "data"
+    original = os.scandir
+
+    def denied(path):
+        if Path(path) == legacy:
+            raise PermissionError("synthetic unreadable legacy root")
+        return original(path)
+
+    monkeypatch.setattr(guard.os, "scandir", denied)
+    with pytest.raises(SingleInstanceError, match="Unable to inspect legacy"):
+        resolve_data_scope(
+            environment={"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(program)},
+            for_onboarding=True,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows two-process mutex contract")
+def test_two_processes_share_custom_root_and_release_writer_ownership(tmp_path):
+    import subprocess
+    import sys
+
+    settings = tmp_path / "settings.json"
+    custom = tmp_path / "custom-c"
+    settings.write_text(json.dumps({"custom_save_path": str(custom)}), encoding="utf-8")
+    parent_environment = {
+        "LABEL_MATCH_SAVE_DIR": str(tmp_path / "env-a"),
+        "LOCALAPPDATA": str(tmp_path / "local"),
+    }
+    scope = resolve_data_scope(environment=parent_environment, settings_path=settings)
+    child_environment = dict(os.environ, LABEL_MATCH_SAVE_DIR=str(tmp_path / "env-b"))
+    child_environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    child = """
+import json
+from pathlib import Path
+import sys
+from label_match_single_instance import ActivationResult, resolve_data_scope, run_guarded_entrypoint
+scope = resolve_data_scope(settings_path=sys.argv[1])
+events = []
+def writer():
+    events.append('writer')
+    Path(sys.argv[2]).write_text('owned', encoding='utf-8')
+    return 0
+result = run_guarded_entrypoint(writer, data_scope=scope,
+    activate=lambda: events.append('duplicate') or ActivationResult(found=True, foreground=True))
+print(json.dumps({'scope': scope, 'events': events, 'result': result}))
+"""
+    marker = tmp_path / "writer.txt"
+
+    def run_child():
+        completed = subprocess.run(
+            [sys.executable, "-c", child, str(settings), str(marker)],
+            env=child_environment, cwd=tmp_path, capture_output=True, text=True,
+            timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return json.loads(completed.stdout.splitlines()[-1])
+
+    with acquire_data_scope_mutex(scope) as lease:
+        assert lease.owner
+        assert run_child() == {"scope": str(custom), "events": ["duplicate"], "result": 0}
+        assert not marker.exists()
+    assert run_child() == {"scope": str(custom), "events": ["writer"], "result": 0}
+    assert marker.read_text(encoding="utf-8") == "owned"
 
 
 def test_first_mutex_owner_holds_handle_until_close():

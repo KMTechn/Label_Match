@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import stat
@@ -25,6 +26,7 @@ from enrollment_mutex import EnrollmentMutex, EnrollmentMutexError
 from direct_sync_runtime import load_credentials_from_json
 from label_exact_clone_resolution import read_pinned_json, validate_resolution_receipt
 from label_match_product_host import _default_product_root, requires_bootstrap_integrity
+from label_match_single_instance import SingleInstanceError, resolve_data_scope
 from logistics_runtime_profile import (
     PROFILE_PATH_ENV,
     REQUIRED_ENV,
@@ -265,19 +267,6 @@ def resolve_current_user_onboarding_paths(
     selected_app_root = _resolved(app_root)
     local_app_data = str(values.get("LOCALAPPDATA") or "").strip()
     explicit_data_root = str(values.get(LABEL_MATCH_DATA_ROOT_ENV) or "").strip()
-    if explicit_data_root:
-        data_root = _resolved(explicit_data_root)
-    elif local_app_data:
-        data_root = _resolved(local_app_data) / "KMTech" / "Label_Match" / "data"
-    else:
-        raise CurrentUserOnboardingError(
-            "LOCALAPPDATA is unavailable for current-user onboarding",
-            report_path=(
-                selected_app_root / "current-user-onboarding-unavailable.json"
-            ),
-            status="UNKNOWN",
-        )
-
     explicit_settings = str(values.get(LABEL_MATCH_SETTINGS_PATH_ENV) or "").strip()
     if explicit_settings:
         settings_path = _resolved(explicit_settings)
@@ -289,8 +278,38 @@ def resolve_current_user_onboarding_paths(
             / "config"
             / "app_settings.json"
         )
+    elif explicit_data_root:
+        settings_path = _resolved(explicit_data_root).parent / "config" / "app_settings.json"
     else:
-        settings_path = data_root.parent / "config" / "app_settings.json"
+        raise CurrentUserOnboardingError(
+            "LOCALAPPDATA is unavailable for current-user onboarding",
+            report_path=selected_app_root / "current-user-onboarding-unavailable.json",
+            status="UNKNOWN",
+        )
+
+    templates = (
+        selected_app_root / "_internal" / "config" / "app_settings.json",
+        selected_app_root / "config" / "app_settings.json",
+    )
+    try:
+        data_root = Path(resolve_data_scope(
+            environment=values,
+            settings_path=settings_path,
+            settings_template_path=next((path for path in templates if path.is_file()), None),
+            for_onboarding=True,
+        ))
+    except SingleInstanceError as exc:
+        raise CurrentUserOnboardingError(
+            str(exc), report_path=selected_app_root / "current-user-onboarding-unavailable.json",
+            status="UNKNOWN",
+        ) from exc
+    # Keep old state anchors independently of the business root.  Source setups
+    # without LOCALAPPDATA historically anchor them beside the environment root.
+    default_data_root = (
+        _resolved(explicit_data_root) if explicit_data_root else
+        _resolved(local_app_data) / "KMTech" / "Label_Match" / "data" if local_app_data else
+        data_root
+    )
 
     explicit_direct_sync_root = str(
         values.get(LABEL_MATCH_DIRECT_SYNC_ROOT_ENV)
@@ -304,7 +323,7 @@ def resolve_current_user_onboarding_paths(
             _resolved(local_app_data) / "KMTech" / "DirectSync" / "label_match"
         )
     else:
-        direct_sync_root = data_root.parent / "direct_sync"
+        direct_sync_root = default_data_root.parent / "direct_sync"
 
     explicit_profile = str(values.get(PROFILE_PATH_ENV) or "").strip()
     if explicit_profile:
@@ -320,7 +339,7 @@ def resolve_current_user_onboarding_paths(
         )
     else:
         logistics_profile_path = (
-            data_root.parent / "logistics-profile" / "runtime-profile.json"
+            default_data_root.parent / "logistics-profile" / "runtime-profile.json"
         )
     bootstrap_tls_ca_bundle_path = (
         _resolved(local_app_data)
@@ -329,11 +348,12 @@ def resolve_current_user_onboarding_paths(
         / "Label_Match"
         / "ca-bundle.pem"
         if local_app_data
-        else data_root.parent / "Bootstrap" / "Label_Match" / "ca-bundle.pem"
+        else default_data_root.parent / "Bootstrap" / "Label_Match" / "ca-bundle.pem"
     )
 
     for candidate in (
         data_root,
+        default_data_root,
         settings_path,
         direct_sync_root,
         logistics_profile_path,
@@ -347,6 +367,30 @@ def resolve_current_user_onboarding_paths(
             )
 
     status_dir = direct_sync_root / "status"
+    ledger_path = data_root / "package_logistics_outbox.sqlite3"
+    legacy_ledger = default_data_root / ledger_path.name
+    previous_report = status_dir / "current_user_onboarding.json"
+    if previous_report.is_file():
+        try:
+            previous = _read_json(previous_report, "previous onboarding report")
+            recorded = Path(str(previous.get("ledger_path") or ""))
+            if recorded.is_absolute() and recorded.name == ledger_path.name and recorded.is_file():
+                legacy_ledger = _resolved(recorded)
+        except ValueError:
+            logging.getLogger(__name__).warning("storage_root_previous_report_unreadable")
+    if legacy_ledger != ledger_path and legacy_ledger.is_file():
+        # Preserve the existing onboarding ledger even when GUI CSV/outbox
+        # already live in a custom root.  Never move or merge either store.
+        ledger_path = legacy_ledger
+        logging.getLogger(__name__).warning(
+            "storage_root_split_preserved: data_root=%s onboarding_ledger=%s",
+            data_root, ledger_path,
+        )
+    if _is_legacy_sync_path(ledger_path):
+        raise CurrentUserOnboardingError(
+            "current-user onboarding state must not use the legacy Sync root",
+            report_path=status_dir / "current_user_onboarding.json",
+        )
     return CurrentUserOnboardingPaths(
         app_root=selected_app_root,
         data_root=data_root,
@@ -374,7 +418,7 @@ def resolve_current_user_onboarding_paths(
             logistics_profile_path.parent / "secrets" / "bearer-token.dpapi"
         ),
         bootstrap_tls_ca_bundle_path=bootstrap_tls_ca_bundle_path,
-        ledger_path=data_root / "package_logistics_outbox.sqlite3",
+        ledger_path=ledger_path,
         bootstrap_integrity_path=selected_app_root / "bootstrap-integrity.json",
     )
 
@@ -892,6 +936,9 @@ def onboard_current_user(
         "direct_sync_root": str(paths.direct_sync_root),
         "logistics_profile_path": str(paths.logistics_profile_path),
         "ledger_path": str(paths.ledger_path),
+        "storage_root_compatibility": (
+            "SPLIT_PRESERVED" if paths.ledger_path.parent != paths.data_root else "UNIFIED"
+        ),
         "tls_ca_bundle_source_configured": bool(tls_ca_source),
         "server_registration_verified": False,
         "failure": "",

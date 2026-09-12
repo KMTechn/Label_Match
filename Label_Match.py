@@ -375,11 +375,7 @@ def _label_match_sanitize_worker_settings(payload):
 
 
 def _default_label_match_save_path():
-    env_save_dir = os.environ.get(LABEL_MATCH_SAVE_DIR_ENV, "").strip()
-    if env_save_dir:
-        return env_save_dir
-    program_data_root = os.environ.get("ProgramData", r"C:\ProgramData")
-    return os.path.join(program_data_root, *LABEL_MATCH_DEFAULT_SAVE_SUBDIR)
+    return resolve_data_scope(settings={})
 
 
 def _default_label_match_settings_path():
@@ -5975,8 +5971,7 @@ class Label_Match(tk.Tk):
         os.makedirs(self.save_directory, exist_ok=True)
 
     def _resolve_configured_save_path(self):
-        configured_path = str(self.app_settings.get("custom_save_path", "") or "").strip()
-        return configured_path or _default_label_match_save_path()
+        return resolve_data_scope(settings=self.app_settings)
 
     def _load_app_settings(self):
         try:
@@ -20036,7 +20031,10 @@ def main(argv=None):
                 _show_first_run_onboarding_error(exc)
                 return ONBOARDING_EXIT_CODE
         settings_path = _default_label_match_settings_path()
-        data_scope = resolve_data_scope(settings_path=settings_path)
+        data_scope = resolve_data_scope(
+            settings_path=settings_path,
+            settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
+        )
         return run_guarded_entrypoint(
             _run_label_match_application,
             data_scope=data_scope,

@@ -154,7 +154,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 - 시작/입력: source 또는 portable 진입, 현재 사용자 설정·작업자 이름. onboarding, factory wire 계약, 데이터 범위 mutex를 거쳐 앱을 시작한다.
 - 효과: 작업자 정규화 후 CSV·현재 상태에 귀속한다. 보호 관리자 인증 값은 표시·지속 저장용 identity와 분리한다.
-- 실패/복구: 필수 profile·catalog·onboarding 실패는 시작을 차단한다. guard는 앱과 같은 기존 nonempty `custom_save_path` → `LABEL_MATCH_SAVE_DIR` → ProgramData 순서로 GUI writer 범위를 선택하도록 소스 교정했다. 실제 writer resolver의 null/빈 설정 fallback과 서로 다른 env·같은 custom 저장소의 **단일 process native mutex callback 제외·해제 후 재진입은 PROVEN**이다([SaveRoot13](operations.md#saveroot13-evidence)). 두 GUI writer와 같은 pending identity 복구는 미입증이다. relay의 기존 custom CSV 발견은 [좁게 교정](operations.md#relay-custom-root-evidence)했으며, guard 이전 onboarding ledger·template/alias 한계는 [LM-B10](BACKLOG.md#lm-b10)에 남긴다. 이전 작업자가 다르면 복원 확인을 거친다.
+- 실패/복구: 필수 profile·catalog·onboarding 실패는 시작을 차단한다. onboarding·GUI/guard·relay는 [공통 resolver](operations.md#configuration)의 custom → env → 기존 설치 감지와 두 기본 위치 보존 규칙을 사용한다. split 설치는 업무 저장소와 기존 onboarding ledger를 각각 유지하고 진단한다. headless 회귀는 두 process의 같은 custom 저장소 writer callback 제외·해제와 원 bytes 보존을 검증했으며, 실제 GUI·pending 복구 수용은 [LM-B10](BACKLOG.md#lm-b10)에 남는다. 이전 작업자가 다르면 복원 확인을 거친다.
 - 수용 기준: 같은 실제 저장소에서 중복 GUI writer callback을 차단하고 첫 소유자 종료 후 같은 저장소를 복구한다. conflicting env/custom 및 null/빈 설정 fallback을 실제 writer resolver와 대조하며, 인증 실패가 일반 완료로 내려가지 않고 관리자 비밀이 로그/히스토리에 남지 않는다.
 - 근거: [main](../../Label_Match.py), [run_guarded_entrypoint](../../label_match_single_instance.py), [canonical_operator_id/persistent_operator_name](../../protected_admin.py). [운영 구성](operations.md#configuration), [LM-B04](BACKLOG.md#lm-b04).
 
@@ -249,7 +249,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 ### LM-11 관측 전송·포장 세트 집계
 
 - 시작/입력: 작업 event CSV와 source-file metadata를 direct-sync spool에 보존하고 HTTPS producer-ingest로 전송한다.
-- 발견/재시작: 상주·예약 relay는 명시 scan 경로가 없으면 기존 사용자 settings의 custom 경로를 사용하고, custom이 없으면 onboarding root로 fallback한다. [두 번의 headless 진입·실제 CSV 발견](operations.md#relay-custom-root-evidence)은 PROVEN이며 native 재시작·실제 enqueue/전송 수용은 별도다.
+- 발견/재시작: 상주·예약 relay는 명시 scan 경로가 없으면 onboarding·GUI/guard와 같은 공통 resolver를 사용한다. custom/env와 기존 설치의 두 기본 위치 및 split 보존은 [현재 구성](operations.md#configuration)을 따른다. [두 번의 headless 진입·실제 CSV 발견](operations.md#relay-custom-root-evidence)은 PROVEN이며 native 재시작·실제 enqueue/전송 수용은 별도다.
 - 검증/결과: 업무 projection은 receipt identity·행 합계·accepted/committed·`COMPLETE`를 요구한다. C-05의 명시된 lifecycle allowlist만 있는 canonical emitter CSV는 [C-05](contracts.md#c-05)의 exact nonprojecting receipt 검증을 통과한 `RAW_LEGITIMATE`도 raw 수신 ACK로 처리한다. 웹의 `total_sets_completed`는 포장 세트이며 raw lifecycle로 증가시키지 않는다.
 - 실패/복구: pending·retry·operator review·permanent failure를 보존한다. CSV 수신 ACK를 package command ACK로 사용하지 않으며 누락 spool은 통신 재시도로 복원되지 않는다.
 - 수용 기준: 정상/취소/부분·중복 event의 집계 단위와 수신·투영·화면 반영을 각각 확인한다. F3 ACK 이후 close-only delta, reopen-close 및 정확히 결속된 입력 오류 raw batch가 원래 hash/key로 수신되고, 미투영 업무·거부·불완전 receipt는 ACK되지 않아야 한다. 명령 ACK, raw 수신, 업무 projection을 서로 대체하지 않는다.

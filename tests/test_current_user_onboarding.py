@@ -20,7 +20,7 @@ from direct_sync_push import manifest_hash
 
 
 def test_recovery_required_onboarding_is_visible_and_does_not_repeat_enrollment(tmp_path):
-    env = {"LOCALAPPDATA": str(tmp_path / "local")}
+    env = {"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(tmp_path / "program-data")}
     paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=env)
     attempts = []
 
@@ -165,7 +165,7 @@ def test_paths_separate_code_and_current_user_state(tmp_path):
     app_root = tmp_path / "hardened-code"
     paths = resolve_current_user_onboarding_paths(
         app_root,
-        environ={"LOCALAPPDATA": str(tmp_path / "local-app-data")},
+        environ={"LOCALAPPDATA": str(tmp_path / "local-app-data"), "ProgramData": str(tmp_path / "program-data")},
     )
 
     assert paths.app_root == app_root.resolve()
@@ -193,6 +193,234 @@ def test_paths_separate_code_and_current_user_state(tmp_path):
     )
     assert paths.ledger_path.name == "package_logistics_outbox.sqlite3"
     assert paths.app_root not in paths.data_root.parents
+
+
+@pytest.mark.parametrize("launch", ["env-a", "env-b"])
+def test_custom_root_is_shared_by_onboarding_gui_guard_relay_and_registration(
+    monkeypatch, tmp_path, launch
+):
+    import Label_Match as app_module
+    from label_match_single_instance import resolve_data_scope
+    from tools import register_label_match_worker_pc
+    from user_relay import _resolve_scan_source_dir
+
+    custom = tmp_path / "custom-c"
+    settings = tmp_path / "settings.json"
+    payload = {"custom_save_path": str(custom)}
+    _write_json(settings, payload)
+    environment = {
+        "LOCALAPPDATA": str(tmp_path / "local"),
+        "LABEL_MATCH_SAVE_DIR": str(tmp_path / launch),
+        "LABEL_MATCH_SETTINGS_PATH": str(settings),
+    }
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+    paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=environment)
+    app = object.__new__(app_module.Label_Match)
+    app.app_settings = payload
+    args = []
+    monkeypatch.setattr(register_label_match_worker_pc, "main", lambda argv: args.extend(argv) or 0)
+    assert _registration_runner(paths, server_base_url="https://example.invalid", environ=environment) == 0
+
+    assert paths.data_root == custom
+    assert paths.ledger_path == custom / "package_logistics_outbox.sqlite3"
+    assert app._resolve_configured_save_path() == str(custom)
+    assert resolve_data_scope(environment=environment, settings_path=settings) == str(custom)
+    assert _resolve_scan_source_dir("", data_root=paths.data_root, settings_path=settings) == custom
+    assert args[args.index("--sync-dir") + 1] == str(custom)
+    assert not custom.exists()  # Resolution and argument construction are read-only.
+
+
+def test_first_onboarding_uses_settings_template_before_registration(tmp_path):
+    app_root = tmp_path / "app"
+    custom = tmp_path / "custom-c"
+    _write_json(app_root / "config" / "app_settings.json", {"custom_save_path": str(custom)})
+    environment = {"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(tmp_path / "program-data")}
+    registrations = []
+
+    def register(paths):
+        assert not paths.settings_path.exists()
+        registrations.append(paths.data_root)
+        _ready_state(paths)
+        return 0
+
+    report = onboard_current_user(
+        app_root, environ=environment, require_bootstrap_integrity=False,
+        registration_runner=register, profile_loader=_profile_loader,
+        credential_loader=_credential_loader, ledger_factory=_ledger_factory,
+        autostart_installer=_autostart, scheduled_task_remover=_scheduled_task_absent,
+        legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=_relay_start,
+    )
+    assert registrations == [custom]
+    assert report["data_root"] == str(custom)
+    assert report["ledger_path"] == str(custom / "package_logistics_outbox.sqlite3")
+    assert report["storage_root_compatibility"] == "UNIFIED"
+    assert resolve_current_user_onboarding_paths(app_root, environ=environment).data_root == custom
+
+
+def test_explicit_settings_custom_root_does_not_require_default_environment(tmp_path):
+    settings = tmp_path / "settings.json"
+    custom = tmp_path / "custom"
+    _write_json(settings, {"custom_save_path": str(custom)})
+    paths = resolve_current_user_onboarding_paths(
+        tmp_path / "app", environ={"LABEL_MATCH_SETTINGS_PATH": str(settings)},
+    )
+    assert paths.data_root == custom
+    assert paths.settings_path == settings
+    assert not custom.exists()
+
+
+@pytest.mark.parametrize("installation", ["new", "onboarded", "standalone", "split-defaults"])
+def test_default_root_stays_stable_through_registration_and_relay_start(
+    monkeypatch, tmp_path, caplog, installation
+):
+    import logging
+    import Label_Match as app_module
+    from label_match_single_instance import resolve_data_scope
+    from user_relay import _resolve_scan_source_dir
+
+    caplog.set_level(logging.INFO, logger="label_match_single_instance")
+    local = tmp_path / "local"
+    program = tmp_path / "program-data"
+    environment = {"LOCALAPPDATA": str(local), "ProgramData": str(program)}
+    app_root = tmp_path / "app"
+    local_data = local / "KMTech" / "Label_Match" / "data"
+    legacy_data = program / "KMTech" / "Label_Match" / "data"
+    expected = legacy_data if installation in {"standalone", "split-defaults"} else local_data
+    if expected == legacy_data:
+        legacy_data.mkdir(parents=True)
+        (legacy_data / "existing.csv").write_bytes(b"existing standalone completion")
+    if installation == "split-defaults":
+        local_data.mkdir(parents=True)
+        (local_data / "package_logistics_outbox.sqlite3").write_bytes(b"existing onboarding ledger")
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
+    if installation in {"onboarded", "split-defaults"}:
+        _ready_state(paths)
+    assert paths.data_root == expected
+    assert paths.ledger_path.parent == (local_data if installation == "split-defaults" else expected)
+    registration_roots = []
+
+    def register(selected):
+        assert installation in {"new", "standalone"}
+        registration_roots.append(selected.data_root)
+        _ready_state(selected)
+        # Identity has appeared but registration is not yet finished: no switch.
+        assert resolve_data_scope(environment=environment, settings_path=selected.settings_path) == str(expected)
+        return 0
+
+    def relay(_root):
+        # The real relay starts before onboarding applies its process environment.
+        selected = resolve_current_user_onboarding_paths(app_root, environ=environment)
+        assert _resolve_scan_source_dir("", data_root=selected.data_root, settings_path=selected.settings_path) == expected
+        return _relay_start(_root)
+
+    ledger_before = paths.ledger_path.read_bytes() if paths.ledger_path.exists() else None
+    report = onboard_current_user(
+        app_root, environ=environment, require_bootstrap_integrity=False,
+        registration_runner=register, profile_loader=_profile_loader,
+        credential_loader=_credential_loader,
+        ledger_factory=lambda path: _ledger_factory(path) if not path.exists() else None,
+        autostart_installer=_autostart, scheduled_task_remover=_scheduled_task_absent,
+        legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=relay,
+    )
+    assert report["data_root"] == str(expected)
+    assert registration_roots == ([expected] if installation in {"new", "standalone"} else [])
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+    app = object.__new__(app_module.Label_Match)
+    app.app_settings = {}
+    assert app._resolve_configured_save_path() == str(expected)
+    assert resolve_data_scope(environment=environment, settings_path=paths.settings_path) == str(expected)
+    # A fresh process has no onboarding-applied SAVE_DIR override.
+    fresh = {"LOCALAPPDATA": str(local), "ProgramData": str(program)}
+    assert resolve_current_user_onboarding_paths(app_root, environ=fresh).data_root == expected
+    assert resolve_data_scope(environment=fresh, settings_path=paths.settings_path) == str(expected)
+    if ledger_before is not None:
+        assert paths.ledger_path.read_bytes() == ledger_before
+    if expected == legacy_data:
+        assert (legacy_data / "existing.csv").read_bytes() == b"existing standalone completion"
+        assert "rule=existing_program_data" in caplog.text
+    if installation == "split-defaults":
+        assert report["storage_root_compatibility"] == "SPLIT_PRESERVED"
+        assert "storage_root_split_preserved" in caplog.text
+    assert "storage_root_selected:" in caplog.text
+
+
+@pytest.mark.parametrize("legacy_override", [False, True], ids=["local-default", "env-a"])
+def test_split_installation_preserves_both_stores_and_identity_after_restart(
+    tmp_path, caplog, legacy_override
+):
+    from current_user_onboarding import apply_current_user_runtime_environment
+    from user_relay import _resolve_scan_source_dir
+
+    environment = {"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(tmp_path / "program-data")}
+    if legacy_override:
+        environment["LABEL_MATCH_SAVE_DIR"] = str(tmp_path / "env-a")
+    app_root = tmp_path / "app"
+    old = resolve_current_user_onboarding_paths(app_root, environ=environment)
+    old.ledger_path.parent.mkdir(parents=True)
+    old.ledger_path.write_bytes(b"existing onboarding ledger")
+    custom = tmp_path / "custom-c"
+    custom.mkdir()
+    business_ledger = custom / "package_logistics_outbox.sqlite3"
+    business_ledger.write_bytes(b"existing pending business identity")
+    csv = custom / "existing.csv"
+    csv.write_bytes(b"existing completion CSV")
+    _write_json(old.settings_path, {"custom_save_path": str(custom)})
+    _ready_state(old)
+    queued = old.queue_dir / "pending.json"
+    _write_json(queued, {"key": "same-key", "endpoint": "https://example.invalid", "pending": True})
+    spool = old.spool_dir / "pending.csv"
+    spool.parent.mkdir(parents=True)
+    spool.write_bytes(b"pending producer payload")
+    preserved = {
+        path: path.read_bytes() for path in (
+            old.ledger_path, business_ledger, csv, old.settings_path, old.identity_path,
+            old.producer_manifest_path, old.credential_path, old.registration_report_path,
+            old.logistics_profile_path, old.logistics_secret_path, queued, spool,
+        )
+    }
+    ledgers = []
+    for launch in (None, "env-b"):
+        if launch:
+            environment["LABEL_MATCH_SAVE_DIR"] = str(tmp_path / launch)
+        paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
+        assert paths.data_root == custom
+        assert paths.ledger_path == old.ledger_path
+        assert paths.direct_sync_root == old.direct_sync_root
+        report = onboard_current_user(
+            app_root, environ=environment, require_bootstrap_integrity=False,
+            registration_runner=lambda _paths: pytest.fail("existing identity re-enrolled"),
+            profile_loader=_profile_loader, credential_loader=_credential_loader,
+            ledger_factory=lambda path: ledgers.append(path), autostart_installer=_autostart,
+            scheduled_task_remover=_scheduled_task_absent,
+            legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=_relay_start,
+        )
+        assert report["action"] == "REUSED"
+        assert report["storage_root_compatibility"] == "SPLIT_PRESERVED"
+        apply_current_user_runtime_environment(paths, environ=environment)
+        assert resolve_current_user_onboarding_paths(app_root, environ=environment).ledger_path == old.ledger_path
+        assert _resolve_scan_source_dir("", data_root=paths.data_root, settings_path=paths.settings_path) == custom
+    assert ledgers == [old.ledger_path, old.ledger_path]
+    assert {path: path.read_bytes() for path in preserved} == preserved
+    assert "storage_root_split_preserved" in caplog.text
+
+
+def test_preserved_ledger_cannot_bypass_existing_legacy_sync_path_rejection(monkeypatch, tmp_path):
+    import current_user_onboarding as onboarding
+
+    environment = _environment(tmp_path)
+    paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=environment)
+    redirected = tmp_path / "forbidden" / "package_logistics_outbox.sqlite3"
+    redirected.parent.mkdir()
+    redirected.write_bytes(b"preserved legacy ledger")
+    _write_json(paths.onboarding_report_path, {"ledger_path": str(redirected)})
+    original = onboarding._is_legacy_sync_path
+    monkeypatch.setattr(onboarding, "_is_legacy_sync_path", lambda path: path == redirected or original(path))
+    with pytest.raises(CurrentUserOnboardingError, match="must not use the legacy Sync root"):
+        resolve_current_user_onboarding_paths(tmp_path / "app", environ=environment)
+    assert redirected.read_bytes() == b"preserved legacy ledger"
+    assert not paths.ledger_path.exists()
 
 
 def test_state_absent_partial_and_ready_are_distinguished(tmp_path):
@@ -392,7 +620,7 @@ def test_registration_runner_forwards_bootstrap_tls_ca_bundle(tmp_path, monkeypa
     app_root = tmp_path / "app"
     app_root.mkdir()
     local_app_data = tmp_path / "LocalAppData"
-    environment = {"LOCALAPPDATA": str(local_app_data)}
+    environment = {"LOCALAPPDATA": str(local_app_data), "ProgramData": str(tmp_path / "program-data")}
     paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
     paths.bootstrap_tls_ca_bundle_path.parent.mkdir(parents=True)
     paths.bootstrap_tls_ca_bundle_path.write_bytes(b"private-ca-fixture")

@@ -529,8 +529,8 @@ def run_persistent_relay_loop(
 def _resolve_scan_source_dir(
     explicit: str, *, data_root: Path, settings_path: Path
 ) -> Path:
-    # A new login must discover CSVs in the same existing custom root as the GUI.
-    # Keep onboarding identity/queue paths and explicit relay overrides unchanged.
+    # Share the business-root resolver; the explicit per-run scan override and
+    # the separately anchored producer identity/queue remain unchanged.
     selected = explicit or resolve_data_scope(
         environment={"LABEL_MATCH_SAVE_DIR": str(data_root)},
         settings_path=settings_path,

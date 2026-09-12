@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import ctypes
 import hashlib
 import json
+import logging
 import ntpath
 import os
 from pathlib import Path
@@ -46,34 +47,85 @@ def resolve_data_scope(
     *,
     environment: Mapping[str, str] | None = None,
     settings_path: str | os.PathLike[str] | None = None,
+    settings: Mapping[str, object] | None = None,
+    settings_template_path: str | os.PathLike[str] | None = None,
+    for_onboarding: bool = False,
 ) -> str:
-    """Resolve the same durable root used by the application without writing."""
+    """Resolve the business root for onboarding, GUI, guard and relay, read-only.
+
+    Custom settings precede the environment. Existing default locations are
+    detected without moving data; new onboarding starts in current-user storage.
+    A missing user file can use the same template that startup will later copy;
+    an existing invalid file never falls back to that template.
+    """
 
     env = os.environ if environment is None else environment
-    # Preserve the application's existing custom-root precedence.
-    if settings_path:
+    payload = settings
+    if payload is None and settings_path:
+        selected_path = Path(settings_path)
+        if not selected_path.exists() and settings_template_path:
+            selected_path = Path(settings_template_path)
         try:
-            with open(settings_path, "r", encoding="utf-8") as handle:
+            with selected_path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-            configured = str(
-                (payload.get("custom_save_path", "") or "")
-                if isinstance(payload, dict) else ""
-            ).strip()
-            if configured:
-                return configured
         except (OSError, UnicodeError, json.JSONDecodeError):
-            # Invalid settings are handled by the normal app startup.  The
-            # guard still owns the default state before that code can run.
+            # Normal startup diagnoses invalid settings after owning the root.
             pass
 
+    configured = str(
+        (payload.get("custom_save_path", "") or "")
+        if isinstance(payload, Mapping) else ""
+    ).strip()
     override = str(env.get("LABEL_MATCH_SAVE_DIR", "") or "").strip()
-    if override:
-        return override
-
-    program_data = str(env.get("ProgramData", r"C:\ProgramData") or "").strip()
-    if not program_data:
-        raise SingleInstanceError("ProgramData is empty")
-    return ntpath.join(program_data, "KMTech", "Label_Match", "data")
+    selected = configured or override
+    rule = "settings.custom_save_path" if configured else "environment.LABEL_MATCH_SAVE_DIR"
+    if not selected:
+        local_app_data = str(env.get("LOCALAPPDATA", "") or "").strip()
+        program_data = str(env.get("ProgramData", env.get("PROGRAMDATA", r"C:\ProgramData")) or "").strip()
+        legacy_root = Path(program_data) / "KMTech" / "Label_Match" / "data" if program_data else None
+        legacy_data_exists = False
+        if legacy_root is not None:
+            legacy_root = legacy_root.expanduser().resolve(strict=False)
+            try:
+                with os.scandir(legacy_root) as entries:
+                    legacy_data_exists = any(
+                        entry.is_file() and (
+                            entry.name.casefold().endswith((".csv", ".sqlite3", ".db"))
+                            or entry.name == "_current_set_state_packaging.json"
+                        )
+                        for entry in entries
+                    )
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise SingleInstanceError("Unable to inspect legacy Label Match data root") from exc
+        direct_root = str(
+            env.get("LABEL_MATCH_DIRECT_SYNC_ROOT")
+            or env.get("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT") or ""
+        ).strip()
+        if not direct_root and local_app_data:
+            direct_root = str(Path(local_app_data) / "KMTech" / "DirectSync" / "label_match")
+        onboarding_exists = bool(direct_root) and any(
+            (Path(direct_root) / name).is_file()
+            for name in (
+                "producer_identity.json", "producer_manifest.json",
+                "status/current_user_onboarding.json",
+                "status/label_match_worker_pc_registration.json",
+            )
+        )
+        if legacy_data_exists:
+            # Registration must not redirect an existing standalone store.
+            selected, rule = str(legacy_root), "existing_program_data"
+        elif local_app_data and (onboarding_exists or for_onboarding):
+            selected = str(Path(local_app_data) / "KMTech" / "Label_Match" / "data")
+            rule = "onboarding_state" if onboarding_exists else "new_current_user_onboarding"
+        elif legacy_root is not None:
+            selected, rule = str(legacy_root), "legacy_standalone_default"
+        else:
+            raise SingleInstanceError("ProgramData is empty")
+    resolved = str(Path(selected).expanduser().resolve(strict=False))
+    logging.getLogger(__name__).info("storage_root_selected: rule=%s data_root=%s", rule, resolved)
+    return resolved
 
 
 @dataclass
