@@ -3,7 +3,7 @@
 ## 2026-09-12 · 일상 화면 최소화와 상세 열기
 
 - 구현: PHS2의 중복 안내·단계표·원문을 줄이고 제품 수량·다음 행동을 표시한다. `작업 상세 보기`는 전체 원문·세트/접수·대기 항목·진단 코드·절차를 제공하며 대기·실패·복구 안내와 기존 키/상태 계약은 유지한다.
-- 검증: 격리 host151 PASS, native2 제외. 기존 clock14 FAIL과 layout fake의 baseline 실패/보완을 [운영 근거](operations.md#routine-details-20260912)와 D 보고서에 구분한다.
+- 검증: 격리 host151 PASS, native2 제외. Main 검토 뒤 명시적 invalid/상충 수량의 falsey fallback·실수 절삭을 제거했고 후속88 PASS로 정상48/12와13개 수량 경계를 확인했다. 기존 clock14 FAIL과 layout fake의 baseline 실패/보완을 [운영 근거](operations.md#routine-details-20260912)와 D 보고서에 구분한다.
 - 남은 일: Main 배정 개발 VM의 실제 화면·상세 스크롤·경고·큰 글자/축소·focus 확인. 기존 Today/업무 receipt 수용과 혼동하지 않으며 원 업무를 반복하지 않는다.
 
 ## 2026-09-11 · 원래 F4 복구·F3 실제 진행

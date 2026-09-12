@@ -2,7 +2,7 @@
 
 ## 일상 화면의 정보 경계 · 2026-09-12
 
-`작업 상세 보기/닫기`는 위젯 가시성만 바꾸며 accepted raw, 원 PHS2, 수량, 명령·receipt·lease·복구 상태나 F-key 허용 조건을 바꾸지 않는다. 표준 PHS2의 제품 수량은 `package_source_snapshot.member_count`를 우선하고 교체 후 snapshot 재조회 전에는 검증된 `sealed_transfer.QT`를 사용한다. 양수 근거가 없으면 수량 확인 상태를 표시하며 스캔 횟수나 이력 행 수를 수량으로 대체하지 않는다. 중앙 대기·관리자 확인과 로컬 완료의 의미는 그대로 유지하며 접수 ID·상태 코드·선행조건 identity만 상세로 이동한다. 긴 상세는 읽기 전용 스크롤 영역에 보존한다. [한정 근거](operations.md#routine-details-20260912).
+`작업 상세 보기/닫기`는 위젯 가시성만 바꾸며 accepted raw, 원 PHS2, 수량, 명령·receipt·lease·복구 상태나 F-key 허용 조건을 바꾸지 않는다. 표준 PHS2의 제품 수량은 `package_source_snapshot.member_count`를 사용하며 snapshot이 없거나 `None`인 교체 후 재조회 구간에만 검증된 `sealed_transfer.QT`를 사용한다. 기존 logistics 정수 검증으로 bool·실수·문자열·0/음수·누락을 거부하고, 양쪽 근거가 있으면 같은 양수 정수인지 확인한다. 명시적 invalid snapshot을 과거 seal로 대체하거나 소수를 잘라 수량으로 표시하지 않는다. 근거가 없거나 상충하면 수량 확인 상태를 표시하며 스캔 횟수나 이력 행 수를 수량으로 대체하지 않는다. 중앙 대기·관리자 확인과 로컬 완료의 의미는 그대로 유지하며 접수 ID·상태 코드·선행조건 identity만 상세로 이동한다. 긴 상세는 읽기 전용 스크롤 영역에 보존한다. [한정 근거](operations.md#routine-details-20260912).
 
 ## S05 단순화의 계약 경계
 

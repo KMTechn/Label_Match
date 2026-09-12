@@ -2431,6 +2431,33 @@ def test_phs2_quantity_uses_verified_seal_after_exchange_and_never_scan_count(op
     assert app.operator_membership_label.cget("text") == "제품 수량 확인 중"
 
 
+@pytest.mark.parametrize("package_source,seal", [
+    ({"member_count": 0}, {"QT": 12}),
+    ({"member_count": None}, {"QT": 12}),
+    ({"member_count": False}, {"QT": 12}),
+    ({"member_count": True}, {"QT": 12}),
+    ({"member_count": 1.5}, {"QT": 12}),
+    ({"member_count": "48"}, {"QT": 48}),
+    ({"member_count": -1}, {"QT": 12}),
+    ({}, {"QT": 12}),
+    ([], {"QT": 12}),
+    ({"member_count": 48}, {"QT": 12}),
+    ({"member_count": 48}, {"QT": True}),
+    (None, {"QT": 1.5}),
+    (None, {"QT": "12"}),
+])
+def test_ambiguous_quantity_never_promotes_or_truncates_evidence(operator_workbench, package_source, seal):
+    app = operator_workbench
+    app.current_set_info.update(
+        raw=["ORIGINAL-PHS2"], parsed=["ITEM-001"], central_inherit_all=True,
+        package_source_snapshot=package_source, sealed_transfer=seal,
+    )
+    original = copy.deepcopy(app.current_set_info)
+    app._render_operator_workbench()
+    assert app.operator_membership_label.cget("text") == "제품 수량 확인 중"
+    assert app.current_set_info == original
+
+
 def test_deferred_notice_keeps_action_and_exposes_identifiers_only_in_details(operator_workbench):
     app = operator_workbench
     app.current_set_info["central_inherit_all"] = True

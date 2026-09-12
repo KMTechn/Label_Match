@@ -7,6 +7,8 @@
 
 **PROVEN — 격리 host, Python 3.12.10:** workbench/presenter/adapter/action-gate와 closed-port 접수 UI를 실제 실행해 **151 PASS / 2 native 검사 제외**다. 상세 왕복의 입력·원문·상태·action gate 보존, source48개·seal12개 표시, 수량 미확인, 복구 경고 및 ID의 상세 이동을 확인했다. 기존 layout fake가 `Style.lookup`을 구현하지 않아 중간에 빠지던 실패를 원 HEAD에서도 확인하고 fixture를 보완했다. **FAILED, 기존 소스에서도 동일:** 별도 clock 회귀의14개는 UI 도달 전 `VALIDATED`/`ORDERED_LABEL_VALIDATION_VALID`와 과거 lease 기대값이 달라 실패했고 baseline에서도 재현했다. 원 로그를 보존하며 이번 UI PASS에 합치지 않는다.
 
+Main의 `52bddfd` 검토에서 falsey source를 과거 seal로 대체하거나 `int()`가 실수를 자를 수 있는 UI 수량 공백을 확인했다. 후속은 기존 `package_logistics._strict_int`를 사용하고 명시적 invalid snapshot·잘못된 seal·양쪽 수량 불일치를 수량 확인 상태로 표시한다. snapshot 없음/`None`일 때만 seal fallback을 허용한다. 수량 관련13사례와 기존 workbench/action-gate를 합친 **88 PASS / native2 제외**이며 정상48/12와 raw/state·기존 action gate는 유지한다. backend·멤버십·lease 검증은 변경하지 않았다.
+
 정확한 후보·전후 화면표·로그·VM 준비는 [이번 보고서](D:/KMTech/optimization-implementation-20260909/UI-IMPROVEMENT-20260912-1318/Label_Match/RESULT.md)를 따른다. 현재 **native 화면·스캐너·업무 receipt·Today 성능은 NOT TESTED**이며 Main의 배정 VM에서 격리 대표 화면·상세·경고·축소/확대·focus를 확인한다. 원901–904/M06/F4/F3/shipping과 live DB는 재실행하지 않는다.
 
 <a id="original-f4-f3-continuation-20260911"></a>

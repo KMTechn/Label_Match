@@ -208,6 +208,7 @@ import unittest
 import copy
 
 from package_logistics import (
+    _strict_int as _package_strict_int,
     PackageCancellationIntent,
     PackageCancellationOutbox,
     PackageCancellationOutboxProcessor,
@@ -17436,6 +17437,29 @@ class Label_Match(tk.Tk):
         except (TclError, AttributeError, KeyError, TypeError, ValueError):
             return
 
+    @staticmethod
+    def _operator_package_quantity(source):
+        """Use only unambiguous positive integer evidence for the display."""
+        package_source = source.get("package_source_snapshot")
+        seal = source.get("sealed_transfer")
+        try:
+            if package_source is not None:
+                if not isinstance(package_source, dict):
+                    return None
+                count = _package_strict_int(package_source.get("member_count"), "member_count", minimum=1)
+                if seal is not None:
+                    if not isinstance(seal, dict):
+                        return None
+                    seal_count = _package_strict_int(seal.get("QT"), "QT", minimum=1)
+                    if seal_count != count:
+                        return None
+                return count
+            if isinstance(seal, dict):
+                return _package_strict_int(seal.get("QT"), "QT", minimum=1)
+        except PackageLogisticsError:
+            pass
+        return None
+
     def _update_operator_item_panel(self, view, source):
         scans = list(source.get("parsed") or [])
         item_code = str(scans[0] if scans else "")
@@ -17465,6 +17489,9 @@ class Label_Match(tk.Tk):
             "operator_item_name_label": f"품목 {item_name}",
             "operator_item_spec_label": f"규격 {spec}",
             "operator_item_phase_label": f"차수 {phase}",
+            "operator_membership_heading_label": (
+                "포장 수량" if self._standard_phs2_workflow_expected(source) else "작업 상태"
+            ),
         }
         for name, text in updates.items():
             widget = self.__dict__.get(name)
@@ -17489,15 +17516,9 @@ class Label_Match(tk.Tk):
         if standard_phs2:
             # Counts come from the resolved source or verified seal, never the
             # one physical scan or the number of rows in the history table.
-            package_source = source.get("package_source_snapshot") or {}
-            seal = source.get("sealed_transfer") or {}
-            count = package_source.get("member_count") or seal.get("QT")
-            try:
-                count = int(count)
-            except (TypeError, ValueError):
-                count = 0
+            count = self._operator_package_quantity(source)
             membership = (
-                f"제품 {count:,}개" if count > 0 else
+                f"제품 {count:,}개" if count is not None else
                 "제품 수량 확인 중" if source.get("raw") else "제품 수량 -"
             )
         elif view.exact_rescan.status == "active":
