@@ -3,8 +3,16 @@ import sys
 import json
 import traceback
 from collections.abc import Mapping
+from collections import namedtuple
 from datetime import datetime, date, timezone
 from pathlib import Path
+
+
+PackageReviewSnapshot = namedtuple("PackageReviewSnapshot", "context reviews exchange")
+ExchangeReviewSnapshot = namedtuple(
+    "ExchangeReviewSnapshot",
+    "status idempotency_key local_apply_status seal_verification_status",
+)
 
 from kmtech_zero_pe import RasterCanvas
 from kmtech_zero_pe.release_signature import (
@@ -5525,6 +5533,7 @@ class Label_Match(tk.Tk):
             )
         )
         if admission.accepted:
+            self._package_status_epoch = self.__dict__.get("_package_status_epoch", 0) + 1
             self._set_ui_lane_busy(task_name, busy_text)
         elif not (quiet_busy_rejection and admission.reason == "busy"):
             self._show_ui_lane_rejection(admission.reason)
@@ -5545,53 +5554,55 @@ class Label_Match(tk.Tk):
             quiet_busy_rejection=True,
         )
 
-    def _start_package_outbox_drain(self):
+    def _start_package_outbox_drain(self, *, review_only=False):
         package_processor = self.__dict__.get("package_outbox_processor")
         cancellation_processor = self.__dict__.get("package_cancellation_outbox_processor")
+        if all(self.__dict__.get(name) is None for name in (
+            "package_outbox", "package_cancellation_outbox",
+            "sealed_transfer_exchange_store", "sealed_transfer_exchange_coordinator",
+            "package_outbox_processor", "package_cancellation_outbox_processor",
+        )):
+            return None
         post_review_recovery = getattr(
             self.__dict__.get("package_outbox"),
             "list_post_review_csv_pending",
             None,
         )
-        if self.__dict__.get("run_tests", False):
-            self._refresh_package_cancellation_review_notice()
-            return None
-        if (
-            package_processor is None
-            and cancellation_processor is None
-            and not callable(post_review_recovery)
-        ):
-            self._refresh_package_cancellation_review_notice()
-            return None
         current = self.__dict__.get("package_outbox_thread")
         if current is not None and current.is_alive():
             self._schedule_package_outbox_poll()
             return current
+        context = self._package_review_context()
+        review_only = review_only or self.__dict__.get("run_tests", False)
 
         def worker():
             try:
                 # CREATE_PACKAGE always drains first so a cancellation recorded
                 # before its ACK can be promoted and sent in the same cycle.
-                if package_processor is not None:
+                if package_processor is not None and not review_only:
                     package_processor.drain(limit=20)
-                if cancellation_processor is not None:
+                if cancellation_processor is not None and not review_only:
                     cancellation_processor.drain(limit=20)
                 exchange_coordinator = self.__dict__.get(
                     "sealed_transfer_exchange_coordinator"
                 )
                 if (
                     exchange_coordinator is not None
+                    and not review_only
                     and self.__dict__.get("_ui_lane_busy_task") != "f4-atomic-replacement"
                 ):
                     exchange_coordinator.drain_pending()
             except Exception as exc:
                 print(f"포장 물류 outbox 처리 오류: {exc}")
             try:
-                self._reconcile_post_review_required_events()
+                if not review_only and callable(post_review_recovery):
+                    self._reconcile_post_review_required_events()
             except Exception as exc:
                 # SQLite remains the durable source of truth. Preserve local
                 # completion and retry only this CSV projection next cycle.
                 print(f"포장 확인 필요 이벤트 투영 오류: {exc}")
+            # Only immutable values cross the worker/Tk boundary.
+            self._package_review_result = self._read_package_review_snapshot(context)
 
         thread = threading.Thread(target=worker, name="label-match-package-outbox", daemon=True)
         self.package_outbox_thread = thread
@@ -5618,7 +5629,9 @@ class Label_Match(tk.Tk):
         if current is not None and current.is_alive():
             self._schedule_package_outbox_poll()
             return current
-        self._refresh_package_cancellation_review_notice()
+        snapshot = self.__dict__.pop("_package_review_result", None)
+        if snapshot is not None:
+            self._refresh_package_cancellation_review_notice(snapshot)
         self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
         self._reconcile_active_package_submission()
         if self.__dict__.get("package_outbox_after_id") is None:
@@ -5893,33 +5906,69 @@ class Label_Match(tk.Tk):
         self.after(100, poll)
         return True
 
-    def _refresh_package_cancellation_review_notice(self):
-        """Keep last confirmed conflicts visible until a successful refresh."""
+    def _package_review_context(self):
+        return (
+            self.__dict__.get("_ui_lane_generation", 0),
+            self.__dict__.get("_package_status_epoch", 0),
+            str((self.__dict__.get("current_set_info") or {}).get("id") or ""),
+        )
 
-        cancellation_count = 0
-        for prefix, outbox_name, label in (
-            ("package_create", "package_outbox", "포장"),
-            ("package_cancellation", "package_cancellation_outbox", "취소"),
+    def _read_package_review_snapshot(self, context=None):
+        """Read/maintain SQLite on the package worker; return an immutable DTO."""
+        context = context if context is not None else self._package_review_context()
+        reviews = []
+        for prefix, outbox_name in (
+            ("package_create", "package_outbox"),
+            ("package_cancellation", "package_cancellation_outbox"),
         ):
-            rows_name = f"_{prefix}_review_rows"
-            notice_name = f"_{prefix}_review_notice"
-            stale_name = f"_{prefix}_review_stale"
-            previous_notice = self.__dict__.get(notice_name)
             outbox = self.__dict__.get(outbox_name)
-            if outbox is None or not hasattr(outbox, "list_conflicts"):
-                if previous_notice is None and not self.__dict__.get(rows_name):
-                    continue
+            available = outbox is not None and hasattr(outbox, "list_conflicts")
             reconcile = getattr(outbox, "dismiss_superseded_recoverable_prewrite_conflicts", None)
             if prefix == "package_create" and callable(reconcile):
                 try:
                     reconcile()
                 except Exception as exc:
-                    # Maintenance failure must not suppress a readable warning.
                     print(f"과거 중앙 포장 충돌 정리 오류: {exc}")
             try:
-                conflicts = tuple(outbox.list_conflicts(limit=21))
+                rows = json.dumps(list(outbox.list_conflicts(limit=21))) if available else None
             except Exception as exc:
-                print(f"중앙 {label} 확인 상태 조회 오류: {exc}")
+                print(f"중앙 확인 상태 조회 오류: {exc}")
+                rows = None
+            reviews.append((prefix, available, rows))
+        exchange = None
+        store = self.__dict__.get("sealed_transfer_exchange_store")
+        if store is not None and context[2]:
+            try:
+                rows = store.blocking_rows(set_id=context[2])
+                coordinator = self.__dict__.get("sealed_transfer_exchange_coordinator")
+                if rows and coordinator is not None:
+                    attempt = coordinator._attempt(rows[-1])
+                    exchange = ExchangeReviewSnapshot(*(
+                        str(getattr(attempt, key) or "") for key in ExchangeReviewSnapshot._fields
+                    ))
+            except Exception as exc:
+                print(f"제품 교체 확인 상태 조회 오류: {exc}")
+                exchange = ExchangeReviewSnapshot("OPERATOR_REVIEW", "", "", "")
+        return PackageReviewSnapshot(context, tuple(reviews), exchange)
+
+    def _refresh_package_cancellation_review_notice(self, snapshot=None):
+        """Request worker refresh, or apply its current result only on Tk."""
+        if snapshot is None:
+            return self._start_package_outbox_drain(review_only=True)
+        if snapshot.context != self._package_review_context() or self._ui_lane_is_busy():
+            return None
+        self._package_review_snapshot = snapshot
+        cancellation_count = 0
+        for prefix, available, rows in snapshot.reviews:
+            label = "포장" if prefix == "package_create" else "취소"
+            rows_name = f"_{prefix}_review_rows"
+            notice_name = f"_{prefix}_review_notice"
+            stale_name = f"_{prefix}_review_stale"
+            previous_notice = self.__dict__.get(notice_name)
+            if not available:
+                if previous_notice is None and not self.__dict__.get(rows_name):
+                    continue
+            if rows is None:
                 if not self.__dict__.get(stale_name):
                     self.__dict__[notice_name] = WorkflowNotice(
                         title=previous_notice.title if previous_notice else f"중앙 {label} 상태 조회 실패",
@@ -5934,6 +5983,7 @@ class Label_Match(tk.Tk):
                 self.__dict__[stale_name] = True
                 continue
 
+            conflicts = tuple(json.loads(rows))
             self.__dict__[rows_name] = conflicts[:20]
             self.__dict__[stale_name] = False
             if prefix == "package_cancellation":
@@ -17660,7 +17710,12 @@ class Label_Match(tk.Tk):
         ):
             return None
         source = self._workflow_view_source()
-        exchange_attempt = self._current_sealed_transfer_exchange_attempt()
+        review_snapshot = self.__dict__.get("_package_review_snapshot")
+        exchange_attempt = None
+        if review_snapshot is not None and review_snapshot.context == self._package_review_context():
+            exchange_attempt = review_snapshot.exchange
+        elif self.__dict__.get("sealed_transfer_exchange_store") is not None and not self._ui_lane_is_busy():
+            self._refresh_package_cancellation_review_notice()
         blocking_notice = (
             self.__dict__.get("_workflow_blocking_notice")
             or self.__dict__.get("_workflow_notice")

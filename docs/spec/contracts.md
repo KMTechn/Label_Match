@@ -182,6 +182,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 <a id="c-04"></a>
 ## C-04 F3 포장 명령·lease·outbox
 
+- 주기 review 정리·조회 및 F4 표시 상태는 package worker의 불변 snapshot이다. Tk는 set·generation·업무 epoch를 확인한 결과만 적용하며 조회 실패 시 마지막 경고를 보존한다. 표시 snapshot은 F3/F4 직전 authoritative guard를 대체하지 않는다.
+
 - 2026-09-12 회귀 정합: 초기 source의 `VALIDATED`는 lease 발급·F3 완료 신호가 아니다. 현재 F3의 future-issued 응답은 서명 검증 뒤에도 `issued_at` 전에는 거부하고 동일 durable issue key로만 다시 요청한다. expiry 경계·서명·단말/source binding·snapshot hash·artifact fence 오류는 package enqueue와 완료를 차단한다. 보존된 과거 2단계 plan에서 signed clock 대기 및 definite service 실패는 원 요청을 유지하지만 unknown issue는 `RECONCILE_PENDING_VALIDATION`, API 오류 문구만의 clock 주장은 `BLOCKED_INVALID`다. [32개 회귀와 기존38개 계약 검사](operations.md#clock-recovery-tests-20260912)는 host 증거이며 이 계약의 제품 변경은 없다.
 - 초기 검증과 권한 시점: 새 `LABEL_PACKAGE_SOURCE` plan은 `label-package-source/READ_ONLY` 1단계이며 source membership·authority/version 증거를 VALIDATED로 동결한다. 초기 검증에서 CREATE_PACKAGE 발급·mutation attempt를 만들지 않는다. 이 읽기 증거의 expiry는 기존 validation claim의 만료시각(기본 claim 300초)에 결속하고, bounded expiry·claim/fence·snapshot 검증을 유지한다. 과거 2단계 plan의 정확한 step 정의·signed evidence·미확정 mutation 복구는 보존하며 새 기본 plan으로 발급하지 않는다. 실제 F3는 lease가 없으면 기존 `_acquire_operation_lease`를 호출하고 expected snapshot·서명·현재 set·fence·local marker를 원래 순서로 검증한다. [111 deferred](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/timing06-deferred-green03.xml), [218 lane/package/lease](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/timing06-boundaries.xml), [writer static 4](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/timing06-inventory.xml)는 host 회귀이며 새 설치 수용은 별도다.
 

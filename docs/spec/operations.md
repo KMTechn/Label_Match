@@ -481,6 +481,11 @@ portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 
 <a id="performance"></a>
 ## 처리량·동시성·최신성
 
+<a id="responsiveness-w2"></a>
+### 감사 Wave 2 · Tk callback 응답성
+
+주기 package review의 SQLite 정리·조회와 workbench F4 표시 조회는 기존 package worker에서 수행한다. Tk poll은 현재 set·generation·업무 epoch가 같은 불변 결과만 경고에 적용한다. 행동 직전 검사·복구 적용 경로는 유지한다. 격리 headless review20 PASS(200ms 실제 SQLite writer lock·stale 결과·기존 경고 회귀), [로그와 JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w2/logs/b01-new.xml). 실제 GUI·스캐너·운영 p95는 미검증이다.
+
 <a id="history-optimization"></a>
 ### 2026-09-09 이력 적용의 반복 작업 제거
 

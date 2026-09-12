@@ -1,5 +1,9 @@
 # Label_Match 진행·공백·추가 제안
 
+## LM-W2 · 감사 응답성 개선
+
+- LM-B01: package review 정리·조회와 workbench F4 상태 표시를 기존 worker의 불변 snapshot으로 이동했다. set·generation·업무 epoch가 달라진 결과는 무시하며 authoritative action guard는 유지한다. headless review20 PASS와 [검증 경계](operations.md#responsiveness-w2)를 따른다. 실제 GUI·운영 지연은 미검증이다.
+
 <a id="lm-w1"></a>
 ## LM-W1 · 감사 실패 처리·의존성·안내 정합
 

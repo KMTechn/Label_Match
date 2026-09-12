@@ -4435,7 +4435,7 @@ def test_terminal_cancellation_conflict_stays_in_separate_operator_review_notice
     render_calls = []
     app._render_operator_workbench = lambda: render_calls.append(True)
 
-    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 1
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app, app._read_package_review_snapshot()) == 1
     notice = app._package_cancellation_review_notice
     assert notice.title == "중앙 취소 확인 필요"
     assert "PACKAGE_ALREADY_SHIPPED" not in notice.message
@@ -4453,12 +4453,12 @@ def test_terminal_cancellation_conflict_stays_in_separate_operator_review_notice
         }
         for index in range(21)
     ]
-    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 21
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app, app._read_package_review_snapshot()) == 21
     assert "20건 이상" in app._package_cancellation_review_notice.message
     assert len(app._package_cancellation_review_rows) == 20
 
     app.package_cancellation_outbox.rows = []
-    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 0
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app, app._read_package_review_snapshot()) == 0
     assert app._package_cancellation_review_notice is None
     assert len(render_calls) == 3
 
@@ -4487,7 +4487,7 @@ def test_locally_committed_package_conflict_preserves_success_and_hides_internal
     app.package_cancellation_outbox = None
     app.operator_workbench_ready = False
 
-    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 0
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app, app._read_package_review_snapshot()) == 0
     notice = app._package_create_review_notice
     assert "로컬 포장 완료 기록은 유지" in notice.message
     assert "관리자" in notice.message
@@ -4539,7 +4539,7 @@ def test_historical_package_review_reconciliation_never_blocks_scanning(
     app._package_create_review_notice = object()
     app._package_create_review_rows = (object(),)
 
-    assert module.Label_Match._refresh_package_cancellation_review_notice(app) == 0
+    assert module.Label_Match._refresh_package_cancellation_review_notice(app, app._read_package_review_snapshot()) == 0
     assert calls == ["reconcile", "list"]
     assert app._package_create_review_notice is None
     assert app._package_create_review_rows == ()
@@ -4573,7 +4573,7 @@ def test_package_review_query_failure_retains_warning_until_confirmed_refresh(
     rows_name = f"_{kind}_review_rows"
     stale_name = f"_{kind}_review_stale"
     if read_before_failure:
-        app._refresh_package_cancellation_review_notice()
+        app._refresh_package_cancellation_review_notice(app._read_package_review_snapshot())
         assert len(getattr(app, rows_name)) == 1
         previous_notice = getattr(app, notice_name)
         previous_rows = getattr(app, rows_name)
@@ -4581,7 +4581,7 @@ def test_package_review_query_failure_retains_warning_until_confirmed_refresh(
     with sqlite3.connect(database) as lock:
         lock.execute("BEGIN EXCLUSIVE")
         for _ in range(2):
-            app._refresh_package_cancellation_review_notice()
+            app._refresh_package_cancellation_review_notice(app._read_package_review_snapshot())
             notice = getattr(app, notice_name)
             assert "조회 실패" in notice.message
             assert notice.message.count("조회 실패") == 1
@@ -4596,13 +4596,13 @@ def test_package_review_query_failure_retains_warning_until_confirmed_refresh(
         lock.rollback()
     assert renders
 
-    app._refresh_package_cancellation_review_notice()
+    app._refresh_package_cancellation_review_notice(app._read_package_review_snapshot())
     assert len(getattr(app, rows_name)) == 1
     assert getattr(app, stale_name) is False
     assert "조회 실패" not in getattr(app, notice_name).message
     with sqlite3.connect(database) as conn:
         conn.execute("DELETE FROM conflicts")
-    app._refresh_package_cancellation_review_notice()
+    app._refresh_package_cancellation_review_notice(app._read_package_review_snapshot())
     assert getattr(app, notice_name) is None
     assert getattr(app, rows_name) == ()
 
@@ -4615,9 +4615,16 @@ def test_existing_cancellation_conflicts_refresh_without_configured_client():
     app.package_outbox_thread = None
     app.run_tests = False
     refresh_calls = []
-    app._refresh_package_cancellation_review_notice = lambda: refresh_calls.append(True)
+    app._refresh_package_cancellation_review_notice = lambda snapshot: refresh_calls.append(True)
 
-    assert module.Label_Match._start_package_outbox_drain(app) is None
+    app.package_cancellation_outbox = SimpleNamespace(list_conflicts=lambda **kwargs: [])
+    app.after = lambda delay, callback: 'scheduled'
+    app.current_set_info = {}
+    thread = module.Label_Match._start_package_outbox_drain(app)
+    thread.join(5)
+    assert not thread.is_alive()
+    assert refresh_calls == []
+    app._poll_package_outbox_drain()
     assert refresh_calls == [True]
 
 
@@ -4647,7 +4654,7 @@ def test_package_worker_never_calls_tk_after_from_background_thread(busy_task):
     app.package_outbox_poll_after_id = None
     app.run_tests = False
     refresh_calls = []
-    app._refresh_package_cancellation_review_notice = lambda: refresh_calls.append(True)
+    app._refresh_package_cancellation_review_notice = lambda snapshot: refresh_calls.append(True)
     after_calls = []
 
     def after(delay, callback):
@@ -5047,6 +5054,9 @@ def test_recoverable_conflict_reset_preserves_evidence_and_dismisses_warning():
         key: app.package_outbox.row[key] for key in durable_row
     } == durable_row
     assert app.package_outbox.row["local_recovery_dismissed"] == 1
+    app.package_outbox_thread.join(5)
+    assert not app.package_outbox_thread.is_alive()
+    app._poll_package_outbox_drain()
     assert app._package_create_review_notice is None
     assert app.data_manager.events[0][0] == module.Label_Match.Events.SET_CANCELLED
 
