@@ -456,7 +456,7 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 | 관리자 경고 조회 실패 | 생성·취소 경고와 마지막 확인 목록을 보존하며 `조회 실패 · 오래됨` 표시. 실물 구분·반출 보류 안내를 계속 따른다 | 정상 조회로 현재 상태를 확인한다. 확인된 빈 목록만 경고를 해제하며 DB 오류를 사건 종결로 간주하지 않음 |
 | 로컬 완료 후 전송 대기 | marker=1 완료를 유지하며 due 재시도; 다음 준비 작업 가능. ACK 유실은 저장 명령의 receipt부터 조회 | 중앙 COMMITTED receipt와 원래 명령 identity 검증. 오래된 pending 실물 인계 기준은 [LM-B02](BACKLOG.md#lm-b02) |
 | 중앙 충돌/다중 PC 경합 | marker=1 conflict는 로컬 완료를 보존하고 검토 사건으로 격리. marker=0을 완료로 승격하지 않음 | 작업자는 원본 PHS2·실물 구분을 유지하고 리더/지원 담당이 set/key·중앙 결과·원인을 대조. 사건 종결 권한·실물 처리 기준은 미확정([LM-B06](BACKLOG.md#lm-b06)) |
-| 자정·재시작 | 미확정 PHS2/outbox를 날짜만으로 삭제하지 않음. 복원에서 기존 이벤트·작업자·중앙 migration을 확인 | 작업일 변경과 관계없이 기존 identity로 완료/검토 상태에 수렴. 자동 복구 불가 상태는 증거를 유지해 인계 |
+| 자정·재시작 | 미확정 PHS2/outbox를 날짜만으로 삭제하지 않음. 중앙 캐시 timestamp 파싱 실패도 원본을 보존한 복구 잠금이며 관리자에게 확인·수리 요청 | 작업일 변경과 관계없이 기존 identity로 완료/검토 상태에 수렴. 시각을 현재 값으로 수동 치환하거나 원본 삭제로 우회하지 않음 |
 | F1/F2 | F1은 gate가 허용하는 미완료 초기화. F2 취소는 CREATE ACK dependency와 별도 취소 key 사용 | 취소·중복 요청이 원래 PACKAGE에 연결되고 SHIPPING-WAIT 재고 유지. 실물 해체·재고 반환으로 해석하지 않음([C-06](contracts.md#c-06)) |
 | F4 응답/로컬 확인 실패 | 저장 intent/receipt부터 복구; 중앙 성공 후 새 QR 확인·로컬 적용은 별도 단계 | 중복 교체 없이 현재 membership/seal을 확인한 뒤 후속 gate 해제([C-03](contracts.md#c-03)) |
 | F5 출력 결과 불명 | `recover_current/recover_reconciliation`과 journal·서버 status·출력 evidence를 먼저 대조 | 재출력 여부를 결정하고 prepare/print/activate를 조정. 새로운 출력부터 반복하지 않음([C-07](contracts.md#c-07)) |

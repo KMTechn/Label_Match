@@ -8020,6 +8020,23 @@ class Label_Match(tk.Tk):
                     self.data_manager.delete_current_state()
                     return
         except (ValueError, TypeError) as e:
+            if durable_central_state:
+                print(f"중앙 작업 타임스탬프 오류: {type(e).__name__}. 원본 복구 상태를 보존합니다.")
+                notice = WorkflowNotice(
+                    title="중앙 포장 복구 잠금",
+                    message=(
+                        "저장된 작업 시각을 읽지 못했습니다. 원본 복구 기록은 유지됩니다. "
+                        "새 포장을 시작하지 말고 관리자에게 저장 상태 확인·수리를 요청하세요."
+                    ),
+                    kind="submission_blocked",
+                    tone="danger",
+                )
+                self._workflow_blocking_notice = notice
+                self._workflow_notice = notice
+                self._workflow_notice_action = None
+                self._workflow_notice_action_text = "확인"
+                self._render_operator_workbench()
+                return
             print(f"저장된 타임스탬프 파싱 오류: {e}. 이전 작업을 무시합니다.")
             self.data_manager.delete_current_state()
             return

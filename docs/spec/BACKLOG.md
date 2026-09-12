@@ -5,6 +5,7 @@
 
 - LM-A01 소스 교정 완료: 이력 부분 성공을 거부하고 이전 활성 색인·행 위치를 보존한다. 격리 host 이력40 PASS(새9 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/history-01.xml). 실제 손상 이력 화면·현장 데이터는 미확인이다.
 - LM-A02 소스 교정 완료: 생성·취소 조회 실패에서 마지막 경고·목록을 유지하고 오래됨/미확인을 표시한다. 격리 host review12 PASS(실제 SQLite 잠금 새4 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/review-01.xml). Tk 동기 조회 지연 개선은 이번 범위 밖이다.
+- LM-A03 소스 교정 완료: 중앙 캐시의 timestamp 오류는 원본을 보존한 수리 잠금이다. 격리 host 복구15 PASS(새5·기존 midnight2 포함), [로그·JUnit](D:/KMTech/program-improvement-20260912/work/Label_Match/w1/logs/recovery-01.xml). 실제 손상 캐시 지원 수리·화면은 미확인이다.
 
 ## 2026-09-12 · Committed stale-runtime 복구의 호스트 교정
 

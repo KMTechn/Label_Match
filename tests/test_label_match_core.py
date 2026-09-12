@@ -2049,6 +2049,68 @@ def test_f3_crash_recovery_keeps_one_completion_across_midnight(tmp_path, monkey
         _b1_close(app.data_manager)
 
 
+@pytest.mark.parametrize("case", ["invalid", "invalid-type", "yesterday", "missing", "legacy-invalid"])
+def test_current_state_timestamp_failure_preserves_central_recovery_cache(tmp_path, case):
+    module = load_label_match_module()
+    path = tmp_path / "current-state.json"
+    central = case != "legacy-invalid"
+    state = {
+        "timestamp": 123 if case == "invalid-type" else (
+            "2020-01-01T10:00:00" if case == "yesterday" else "broken"
+        ),
+        "worker_name": "tester",
+        "current_set_info": {
+            "id": "central-cache", "central_inherit_all": central,
+            "raw": ["SAVED-MASTER"], "parsed": ["ITEM"],
+        },
+    }
+    if case != "missing":
+        path.write_text(json.dumps(state), encoding="utf-8")
+    original = path.read_bytes() if path.exists() else None
+    deleted = []
+    def delete_state():
+        deleted.append(True)
+        path.unlink()
+    app = object.__new__(module.Label_Match)
+    app.run_tests = True
+    app.worker_name = "tester"
+    app.current_set_info = {}
+    app.package_outbox = SimpleNamespace(get_by_set_id=lambda _set_id: None)
+    app._owned_deferred_capture_for_set = lambda _state: None
+    app.data_manager = SimpleNamespace(
+        load_current_state=lambda: json.loads(path.read_text(encoding="utf-8")) if path.exists() else None,
+        delete_current_state=delete_state, log_event=lambda *_args: None,
+    )
+    app.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **_kwargs: [])
+    app._migrate_restored_central_package_state = lambda saved: saved
+    app.progress_bar = {}
+    app.update_big_display = lambda *_args: None
+    app._next_action_text = lambda _count: "restored"
+    app._update_status_label = lambda: None
+    app._update_history_tree_in_progress = lambda: None
+    app._reconcile_pending_sealed_transfer_exchanges = lambda **_kwargs: None
+    app._reconcile_active_package_submission = lambda: None
+    app._load_current_set_state()
+
+    if case == "legacy-invalid":
+        assert deleted == [True] and not path.exists()
+    else:
+        assert deleted == []
+        assert (path.read_bytes() if path.exists() else None) == original
+    if case in ("invalid", "invalid-type"):
+        notice = app._workflow_blocking_notice
+        assert notice.kind == "submission_blocked"
+        assert "원본 복구 기록은 유지" in notice.message and "수리" in notice.message
+        assert not notice.allow_current_set_cancel
+        assert app.current_set_info == {}
+    elif case == "yesterday":
+        assert app.current_set_info == state["current_set_info"]
+        assert app._workflow_recovered is True
+    elif case == "missing":
+        assert app.current_set_info == {}
+        assert not app.__dict__.get("_workflow_blocking_notice")
+
+
 def test_central_finalize_durable_intent_write_failure_never_shows_success():
     module = load_label_match_module()
     actions = []

@@ -216,6 +216,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 - 시작/입력: 시작 시 `_current_set_state_packaging.json`, outbox marker, 기존 완료 이벤트·교체/접수 journal을 확인한다.
 - 검증/효과: 작업자 변경·중앙 상태 migration·이미 기록된 이벤트를 대조해 같은 set를 복원한다. 날짜가 달라도 미확정 PHS2/outbox를 폐기하지 않는다.
+- 중앙 current-state의 timestamp 파싱 실패는 원본 파일을 보존한 복구 잠금이다. 자동 삭제·현재 시각 치환 없이 관리자 확인·수리를 요청한다.
 - 실패/취소: 읽기 손상·writer 오류·marker 경계 불일치를 정상 완료로 취급하지 않는다. 상태·DB를 수동 편집해 복구했다고 판단하지 않는다.
 - 수용 기준: CSV 기록 직후/marker 직전/성공 표시 직전 중단과 날짜 변경을 구분해 중복 없이 복구하며 미확정 증거를 유지한다.
 - 근거: [DataManager, `_load_current_set_state`, `_label_match_local_completion_event_exists`](../../Label_Match.py), [완료 내구성 테스트 설계](../../tests/test_completion_csv_durability.py). [복구 운영](operations.md#recovery), [LM-B05](BACKLOG.md#lm-b05), [LM-B07](BACKLOG.md#lm-b07).
