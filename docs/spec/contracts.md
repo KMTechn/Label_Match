@@ -182,7 +182,7 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 <a id="c-04"></a>
 ## C-04 F3 포장 명령·lease·outbox
 
-- LM-B02 완료 CSV 위치 색인은 철회했다. 같은 데이터 루트·PC prefix의 모든 CSV를 날짜와 무관하게 직접 검색하며, 캐시·색인·metadata로 부재를 판정하지 않는다. 기존 색인·임시 파일은 조회·갱신·재구축하지 않는다.
+- LM-B02 완료 CSV 위치 색인은 거짓 부재·중복 완료 위험 때문에 철회했다. 같은 데이터 루트·PC prefix의 모든 CSV를 날짜와 무관하게 직접 검색하며, 캐시·색인·metadata로 부재를 판정하지 않는다. 기존 색인·임시 파일은 조회·갱신·재구축하지 않는다.
 - 적중 CSV는 writer flush→동일 파일 재대조→fsync를 끝낸 뒤에만 local marker를 허용한다. 조회 중 파일 소실은 현재 파일 목록으로 한 번 재검색하며, 계속 이동하거나 목록 열거가 실패하면 부재 대신 오류로 중단한다.
 - writer는 기존 CSV append와 durable event의 flush/fsync를 유지한다. 완료 존재 확인 비용은 보관 파일 수에 비례하며 보관 정책으로 관리한다. 최종 검색 뒤의 다중 프로세스 동시 쓰기를 직렬화하는 계약은 추가하지 않는다.
 
