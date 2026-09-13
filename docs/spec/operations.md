@@ -9,6 +9,8 @@
 
 `package_outbox_processor.py`는 claim→저장 명령/receipt 조회→전송→receipt 검증→ACK/retry/conflict의 기존 순서를 소유한다. `package_logistics.PackageOutboxProcessor`가 원 writer admission과 call-time client/receipt 검증 경계를 유지하며 취소 processor는 기존 파일에 남는다.
 
+`package_validation.py`는 client의 static source projection·work-group·transfer seal 검증만 소유한다. 세 메서드는 client 상태·HTTP·저장에 접근하지 않으며 기존 signature의 façade가 위임한다. work-group의 seal 검증은 기존 class 메서드를 호출 시 전달한다. 요청 순서·transport·API 오류 변환·command 조립은 client에 남겨 LM-3에서 별도 판단한다.
+
 검증은 [LM-2 실행 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm2/RESULT.md)의 AST·동일 입력 전후 벡터·기존 focused 시험에 한정한다. GUI·설치·프린터·실물 모니터·relay 실서버는 별도 검증 대상이다.
 
 <a id="module-boundaries-lm1"></a>
