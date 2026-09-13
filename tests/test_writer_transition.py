@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 
 import pytest
@@ -60,7 +62,7 @@ def _environment(root: Path) -> dict[str, str]:
     return env
 
 
-def _ps(root: Path, code: str, env: dict[str, str], *, timeout: int = 120):
+def _ps(root: Path, code: str, env: dict[str, str], *, timeout: int = 120, engine: str = "powershell.exe"):
     script = root / ("probe-" + str(time.time_ns()) + ".ps1")
     script.write_text(code, encoding="utf-8-sig")
     stdout = script.with_suffix(".stdout.log")
@@ -69,7 +71,7 @@ def _ps(root: Path, code: str, env: dict[str, str], *, timeout: int = 120):
     # PowerShell. Files let us wait for the installer alone, as Product does.
     with stdout.open("w", encoding="utf-8") as out, stderr.open("w", encoding="utf-8") as err:
         completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            [engine, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
             env=env, cwd=root, stdout=out, stderr=err, text=True, timeout=timeout,
         )
     assert stdout.stat().st_size < 1024 * 1024 and stderr.stat().st_size < 1024 * 1024
@@ -156,6 +158,144 @@ def test_validated_transition_accepts_only_matching_derived_pins_and_unchanged_s
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload == {"installed_inventory_sha256": old_pin, "candidate_inventory_sha256": new_pin, "compatibility": "UNCHANGED_PRODUCTION_AST_AND_CONTRACTS"}
+
+
+@pytest.fixture(scope="module")
+def shared_upgrade_pair(tmp_path_factory):
+    """Real 57f52e1 application bytes, with only a borrowed synthetic runtime."""
+    root = tmp_path_factory.mktemp("shared-upgrade")
+    candidate = root / "candidate"
+    builder._copy_application(ROOT, candidate / "app")
+    (candidate / "runtime").mkdir()
+    for name in builder.RUNTIME_ROOT_FILES:
+        shutil.copy2(Path(sys.base_prefix) / name, candidate / "runtime" / name)
+    (candidate / "runtime/pyvenv.cfg").write_text(
+        f"home = {sys.base_prefix}\ninclude-system-site-packages = true\n", encoding="utf-8")
+    source_paths = {"app/" + p.relative_to(candidate / "app").as_posix():
+                    p.relative_to(candidate / "app").as_posix()
+                    for p in (candidate / "app").rglob("*") if p.is_file()}
+    source_paths["app/main.py"] = "portable/main.py"
+    for name in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1",
+                 "tools/bootstrap_integrity.ps1", "tools/label_writer_fence.ps1",
+                 "tools/label_writer_fence_contract.json", "launch-label-match.cmd"):
+        source_paths[name] = "portable/" + name if name.endswith(".cmd") else name
+        target = candidate / name
+        target.parent.mkdir(exist_ok=True)
+        target.write_bytes((ROOT / source_paths[name]).read_bytes())
+    addition = "app/kmtech_shared/powershell/portable.ps1"
+    old = root / "old"
+    shutil.copytree(candidate, old)
+    (old / addition).unlink()
+    before = subprocess.check_output([
+        "git", "-C", str(ROOT), "archive", "--format=tar", "57f52e10f3f1f740f88020ebb3e45b718a587a5b",
+        "--", *(name for relative, name in source_paths.items() if relative != addition),
+    ])
+    with tarfile.open(fileobj=io.BytesIO(before)) as archive:
+        for relative, name in source_paths.items():
+            if relative == addition:
+                continue
+            member = archive.getmember(name)
+            assert member.isfile()
+            raw = archive.extractfile(member).read()
+            (old / relative).write_bytes(raw)
+            # git archive honors this Windows checkout's CRLF attributes. Keep
+            # unchanged files in that same serialization on both fixture sides.
+            path = candidate / relative
+            current = path.read_bytes()
+            if current.replace(b"\r\n", b"\n") == raw.replace(b"\r\n", b"\n"):
+                path.write_bytes(raw)
+    _manifest(old, "57f52e10f3f1f740f88020ebb3e45b718a587a5b")
+    _manifest(candidate, "2" * 40)
+    return old, candidate
+
+
+def _upgrade_preflight(candidate: Path, installed: Path) -> str:
+    source = INSTALLER.read_text(encoding="utf-8")
+    start = source.index("$placement = 'INSTALL_REQUIRED'")
+    end = source.index("if (-not $conflictReceiptSupplied -and -not $pristineInstall)", start)
+    return f"""
+$source = {_quote(candidate)}
+$install = {_quote(installed)}
+$SkipSignatureValidationForTest = $true
+$sourceManifest = Manifest $source $true
+$receiptSource = PortableInventory $source
+{source[start:end]}
+"""
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_shared_leaf_upgrade_preflight_and_replacement_integrity(tmp_path, shared_upgrade_pair, engine):
+    old, candidate = shared_upgrade_pair
+    installed = tmp_path / "installed"
+    shutil.copytree(old, installed)
+    env = _environment(tmp_path)
+    code = _definitions() + f"""
+. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
+[void](Write-BootstrapIntegrityRecord -Root {_quote(installed)} -CodeRoot {_quote(installed)})
+$before = PortableInventory {_quote(installed)}
+$oldSelf = Assert-WriterTransition {_quote(installed)} {_quote(installed)}
+$newSelf = Assert-WriterTransition {_quote(candidate)} {_quote(candidate)}
+if ($oldSelf.compatibility -cne 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS' -or
+    $newSelf.compatibility -cne 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS') {{ throw 'Invalid same-version control' }}
+{_upgrade_preflight(candidate, installed)}
+if ($writerTransition.compatibility -cne 'X13B_PINNED_SHARED_LEAF_ADOPTION') {{ throw 'Missing declared transition' }}
+if ($before.sha256 -cnotmatch '^[0-9a-f]{{64}}$' -or
+    (PortableInventory {_quote(installed)}).sha256 -cne $before.sha256) {{ throw 'Preflight mutated installed bytes' }}
+$writerTransition | ConvertTo-Json -Compress
+"""
+    result = _ps(tmp_path, code, env, engine=engine)
+    assert result.returncode == 0, result.stdout + result.stderr
+    # Synthetic replacement only; no native installation or lifecycle actions.
+    replacement = tmp_path / "replacement"
+    shutil.copytree(candidate, replacement)
+    result = _ps(tmp_path, _definitions() + f"""
+. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
+[void](Write-BootstrapIntegrityRecord -Root {_quote(replacement)} -CodeRoot {_quote(replacement)})
+{_upgrade_preflight(candidate, replacement)}
+if ($writerTransition.compatibility -cne 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS') {{ throw 'Invalid replacement transition' }}
+if (-not (Test-Path -LiteralPath {_quote(replacement / 'app/kmtech_shared/powershell/portable.ps1')})) {{ throw 'Missing replacement leaf' }}
+Write-Output 'PASS replaced full tree'
+""", env, engine=engine)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS replaced full tree" in result.stdout
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("change", ["extra", "missing", "tampered", "declared-tampered", "new-leaf-missing", "link"])
+def test_shared_leaf_upgrade_rejects_unrelated_or_invalid_trees(tmp_path, shared_upgrade_pair, engine, change):
+    old, candidate = shared_upgrade_pair
+    installed = tmp_path / "installed"
+    shutil.copytree(candidate if change == "new-leaf-missing" else old, installed)
+    if change == "extra":
+        (installed / "app/unrelated.txt").write_text("unexpected", encoding="utf-8")
+    elif change == "missing":
+        (installed / "app/assets/Item.csv").unlink()
+    elif change == "tampered":
+        with (installed / "app/assets/Item.csv").open("ab") as stream:
+            stream.write(b"tampered")
+    elif change == "declared-tampered":
+        with (installed / "app/kmtech_shared.lock.json").open("ab") as stream:
+            stream.write(b" ")
+    elif change == "new-leaf-missing":
+        (installed / "app/kmtech_shared/powershell/portable.ps1").unlink()
+    env = _environment(tmp_path)
+    link = installed / "app/linked"
+    link_setup = f"[void](New-Item -ItemType Junction -Path {_quote(link)} -Target {_quote(old / 'app/assets')})" if change == "link" else ""
+    code = _definitions() + f"""
+. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
+[void](Write-BootstrapIntegrityRecord -Root {_quote(installed)} -CodeRoot {_quote(installed)})
+{link_setup}
+{_upgrade_preflight(candidate, installed)}
+"""
+    try:
+        result = _ps(tmp_path, code, env, engine=engine)
+        assert result.returncode != 0, result.stdout
+        reason = "reparse point" if change == "link" else (
+            "WRITER_TRANSITION_SEMANTICS_DIFFER" if change == "tampered" else "WRITER_TRANSITION_SOURCE_SET_DIFFERS")
+        assert reason in result.stderr, result.stdout + result.stderr
+    finally:
+        if link.exists():
+            link.rmdir()  # Remove the junction itself, preserving its target.
 
 
 @pytest.mark.parametrize("change,reason", [

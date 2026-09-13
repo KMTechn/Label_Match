@@ -3,6 +3,8 @@
 <a id="shared-powershell-x13b"></a>
 ## X13-B · 설치기 PowerShell leaf
 
+57f52e1(shared 0.2.0, leaf 없음) → X13-B 교체는 설치된 파일 집합 + 선언된 leaf 한 파일을 예상 집합으로 사용한다. shared 버전·manifest·lock·vendor provenance 및 placement/bootstrap helper 여섯 파일의 전/후 고정 SHA256 쌍이 모두 일치해야만 이 전환을 인정한다(Git LF 또는 CRLF checkout 표현). 그 외 파일·writer pin/멤버십·runtime·계약 동일성은 기존 정책을 유지하며, 새→새 트리에서 leaf를 빼는 것은 전환이 아니다. `X13B_PINNED_SHARED_LEAF_ADOPTION` receipt로 이 경로를 구별한다. 실제 57f52e1 Git bytes의 합성 설치본으로 PS5.1/PS7 preflight·교체 후 전체 integrity와 거부 벡터를 검사하며 [R1 결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x13bfix/RESULT.md)에 실행 근거를 남긴다. 실제 lifecycle은 NOT VERIFIED다.
+
 **FAILED / 정본 0.3.0 결함:** `Read-KmtechPortableManifest`가 PS5 `[manifest]`·PS7 `[[manifest]]`를 열거하여 원본 앱의 거부와 달리 수용한다. `test_array_manifest_keeps_original_rejection`은 원본 거부 기대값을 유지한 채 두 engine에서 FAIL이다. coordinator 공지 `msg_aae96c43d98e`에 따라 0.3.0 byte 충실성을 보존하고 별도 0.3.1 bump 레인에서 교정한다. 나머지 leaf 벡터의 PASS와 구별한다.
 
 `Sha`/`Full`, bootstrap strict/relative/aggregate와 Manifest의 required/reparse·parse·signature 블록만 고정 0.3.0 leaf에 위임한다. 기존 wrapper의 mandatory/type/default와 LM Manifest schema/hash 순서는 유지하며 LM inventory framing·critical 3파일·ordinal 정렬·task migration·receipt·복원 함수는 변경하지 않는다. `INSTALL_THIS_PC.ps1`의 변경은 기존 bootstrap 로드에 `-SharedCodeRoot $PSScriptRoot`를 전달하는 한 줄뿐이다.

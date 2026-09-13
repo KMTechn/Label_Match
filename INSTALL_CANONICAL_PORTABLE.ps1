@@ -444,15 +444,59 @@ def syntax(path, relative):
                     del node.body[1]
     return ast.dump(tree, include_attributes=False)
 
+# X13-B explicitly supports the 57f52e1 shared 0.2.0 preimage. Only these
+# release-declared replacements and the read-only leaf addition may differ.
+# Pins below hash Git LF text; CRLF checkout serialization is also supported.
+shared_replacements = {
+    'app/kmtech_shared/__init__.py': (
+        'b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455',
+        'efd292d1146ffa56af6b57691c2affc0e2e5dc1826745cf3d5dfac6a5f810b0d'),
+    'app/kmtech_shared.manifest.json': (
+        '465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee',
+        '78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2'),
+    'app/kmtech_shared.lock.json': (
+        '6807ed97f7d734c5d8bdb0e23c141916cc5f013bd2392a46b98849d285d54fcd',
+        'd927aa08b86c12b5b78d70a4ec334415140009880a2c77db3dd28a4eabf235b5'),
+    'app/kmtech_zero_pe.vendor.json': (
+        'e7dac78746db6efbccedcba5c3b44b58b77bc44e8d25a2dbaea6dc1ac01e307c',
+        '8c3107cad611b7c3f60c027bdb8d0487d8ce1f175a1cfbbdaa44414d5bed8bdd'),
+    'INSTALL_THIS_PC.ps1': (
+        '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
+        '2401e30f7d7c5965360bfcb1e1ebc3ef71fe30491eb8ee7e9f84dd2a8e1e5770'),
+    'tools/bootstrap_integrity.ps1': (
+        '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
+        '1c90bc5863ef547bb5bc990d4975e3e2fd9113f1ee23be6ea48f4ca22f0c1999'),
+}
+shared_additions = {
+    'app/kmtech_shared/powershell/portable.ps1':
+        '995c78f13b1c6b62c55d4111f1a80aa6f2bf4c63ee78619f077d9b042e0c3ccd',
+}
+
+def release_digest(path):
+    return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+
+shared_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file() and
+    release_digest(installed / relative) == before and release_digest(source / relative) == after
+    for relative, (before, after) in shared_replacements.items()
+) and all(
+    not (installed / relative).exists() and (source / relative).is_file() and
+    release_digest(source / relative) == expected
+    for relative, expected in shared_additions.items()
+)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
 if candidate_sources != installed_sources:
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 for directory in ('app', 'runtime'):
     left, right = files(source, directory), files(installed, directory)
-    if left.keys() != right.keys():
+    additions = set(shared_additions) if shared_transition and directory == 'app' else set()
+    if left.keys() != right.keys() | additions:
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     for relative, path in left.items():
+        if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
+            continue
         other = right[relative]
         if digest(path) == digest(other):
             continue
@@ -461,9 +505,11 @@ for directory in ('app', 'runtime'):
                 continue
         raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: ' + relative)
 for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence_contract.json'):
+    if shared_transition and relative in shared_replacements:
+        continue
     if (source / relative).read_bytes() != (installed / relative).read_bytes():
         raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: ' + relative)
-print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility='UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')))
+print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS'))))
 '@
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = Join-Path $Source 'runtime\python.exe'

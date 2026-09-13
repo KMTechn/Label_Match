@@ -2,6 +2,8 @@
 
 ## X13-B · PowerShell leaf 채택
 
+R1의 구 설치본→X13-B 지원 전환은 57f52e1 shared preimage와 이번 release의 추가/교체 파일 pin에 한정한다. 양 엔진의 합성 upgrade/교체 후 검증과 변조·누락·링크 거부는 [현재 결과](operations.md#shared-powershell-x13b)를 따르며, 실제 설치 lifecycle 수용은 별도다.
+
 정본 0.3.0의 배열 manifest 수용 결함을 재현하는 두 회귀는 FAIL로 보존한다. coordinator 지시에 따른 별도 0.3.1 bump가 남으며, 앱 복사본에서 정본 bytes를 먼저 수정하거나 기대값을 완화하지 않는다.
 
 0.3.0/5파일과 standalone checker·패키징을 채택하고, 신뢰 확인 뒤 설치기 leaf만 위임한다. LM task migration·conflict receipt·ordinal inventory/복원은 앱에 유지한다. [검증·잔여 범위](operations.md#shared-powershell-x13b)의 합성 PS5/PS7·lifecycle 회귀와 실제 배정 대상의 설치/제거/복원 수용을 구별하며, 실제 lifecycle/GUI/전체 build는 이번 레인에서 수행하지 않는다.

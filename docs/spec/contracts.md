@@ -2,6 +2,8 @@
 
 ## 고정 PowerShell leaf와 bootstrap 신뢰
 
+writer 전환은 설치된 파일 집합을 기준으로 한다. 57f52e1의 shared 0.2.0에서 X13-B로 전환할 때만 `app/kmtech_shared/powershell/portable.ps1` 한 파일 추가와 명시한 여섯 파일(shared 버전·manifest·lock·vendor provenance, placement/bootstrap)의 전/후 SHA256 쌍을 허용한다. 선언의 text pin은 Git LF bytes 기준이며 해당 파일의 CRLF checkout 표현도 인정한다. writer pin 파생·멤버십, 나머지 Python AST와 runtime bytes·launcher/fence 계약 검사는 그대로다. 새 트리에서 leaf 누락, 무관한 파일 추가/삭제/변조, reparse는 거부한다.
+
 알려진 0.3.0 결함: `Read-KmtechPortableManifest`의 pipeline 배열 열거로 PS5 `[manifest]`·PS7 `[[manifest]]`가 원본의 거부와 달리 수용된다. 원본 거부 기대값의 회귀를 FAIL로 유지하며, vendored bytes를 임의 수정하지 않고 coordinator의 별도 0.3.1 bump에서 교정한다.
 
 canonical/placement 설치기는 자체 bootstrap으로 source 또는 portable `app/` root와 상위 경로의 reparse를 거부하고, 고정 0.3.0 consumer pin → manifest bytes → PowerShell leaf SHA256 순서로 확인한 뒤 dot-source한다. bootstrap 무결성 helper는 `-SharedCodeRoot`를 받은 inventory 소비자에서만 shared를 초기화하며, 초기 native SHA는 module auto-loading 없이 동작한다. 신뢰 확인에 shared 함수나 준비 전 Python checker를 사용하지 않는다.
