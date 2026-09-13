@@ -36,12 +36,14 @@ def test_pinned_shared_source_and_packaging_inputs():
     for name in ("kmtech_shared.manifest.json", "kmtech_shared.lock.json"):
         assert f'"--add-data", "$(Join-Path $repoRoot \'{name}\');."' in frozen
         assert f'--expected-file {name} `' in frozen
+    assert '"--add-data", "$(Join-Path $repoRoot \'kmtech_shared/powershell/portable.ps1\');kmtech_shared/powershell"' in frozen
+    assert '--expected-file kmtech_shared/powershell/portable.ps1 `' in frozen
     provenance = json.loads((ROOT / "kmtech_zero_pe.vendor.json").read_bytes())
     for name, digest in provenance["files"].items():
         assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == digest
 
 
-@pytest.mark.parametrize("mutation", ["missing", "extra", "changed", "manifest"])
+@pytest.mark.parametrize("mutation", ["missing", "extra", "changed", "manifest", "leaf_missing", "leaf_changed", "leaf_extra"])
 def test_local_checker_rejects_shared_source_drift(tmp_path, mutation):
     shutil.copytree(ROOT / "kmtech_shared", tmp_path / "kmtech_shared")
     for name in ("kmtech_shared.manifest.json", "kmtech_shared.lock.json"):
@@ -53,6 +55,13 @@ def test_local_checker_rejects_shared_source_drift(tmp_path, mutation):
     elif mutation == "changed":
         with (tmp_path / "kmtech_shared/catalog.py").open("ab") as stream:
             stream.write(b"\n# unexpected drift\n")
+    elif mutation == "leaf_missing":
+        (tmp_path / builder.SHARED_POWERSHELL_LEAF).unlink()
+    elif mutation == "leaf_changed":
+        with (tmp_path / builder.SHARED_POWERSHELL_LEAF).open("ab") as stream:
+            stream.write(b"\nthrow 'unexpected shared code'\n")
+    elif mutation == "leaf_extra":
+        (tmp_path / "kmtech_shared/powershell/extra.ps1").write_text("throw 'extra'", encoding="utf-8")
     else:
         path = tmp_path / "kmtech_shared.manifest.json"
         path.write_bytes(path.read_bytes() + b"\n")
@@ -118,7 +127,7 @@ raise SystemExit(result)
         cwd=app, capture_output=True, text=True, check=False, timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "5 passed" in result.stdout
+    assert "8 passed" in result.stdout
     collected = subprocess.run(
         [*command, "--collect-only", "tests"], cwd=app,
         capture_output=True, text=True, check=False, timeout=120,

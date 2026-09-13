@@ -1,11 +1,12 @@
 {
   "files": {
-    "kmtech_shared/__init__.py": "b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455",
+    "kmtech_shared/__init__.py": "efd292d1146ffa56af6b57691c2affc0e2e5dc1826745cf3d5dfac6a5f810b0d",
     "kmtech_shared/catalog.py": "0575ac3a0a46012af75600a9c5d61dc432c71b69ec0008e123badee775619896",
+    "kmtech_shared/powershell/portable.ps1": "995c78f13b1c6b62c55d4111f1a80aa6f2bf4c63ee78619f077d9b042e0c3ccd",
     "kmtech_shared/raster.py": "17c3d10498f9f5b845858861e671fff4715820b0e48719864d8dec4b9743f244",
     "kmtech_shared/runtime.py": "94bb864d4bd57fa903efb49cd58a054cdb1baf452885ca3b4030bb50013b8f84"
   },
   "schema": "kmtech.shared.source.v1",
-  "source_commit": "24d234327f72c52a505d8215cb0c68b52b0f12e5",
-  "version": "0.2.0"
+  "source_commit": "227219c63ab4814d701d635398da80113196feea",
+  "version": "0.3.0"
 }

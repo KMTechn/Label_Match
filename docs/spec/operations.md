@@ -3,9 +3,9 @@
 <a id="shared-core-x04b"></a>
 ## X04-B · 고정 shared core
 
-정본 `kmtech_shared` HEAD `c067d38`의 package 4개(`__init__`, catalog, raster, runtime)를 byte 그대로 포함한다. code pin은 `24d234327f72c52a505d8215cb0c68b52b0f12e5`, version은 `0.2.0`, manifest SHA256은 `465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
+정본 `kmtech_shared` HEAD `f2baa68`의 package 5개(`__init__`, catalog, raster, runtime, `powershell/portable.ps1`)를 byte 그대로 포함한다. code pin은 `227219c63ab4814d701d635398da80113196feea`, version은 `0.3.0`, manifest SHA256은 `78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
 
-`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 4파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `c067d38`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
+`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 5파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `f2baa68`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
 
 정본 checkout을 함께 가진 개발자는 `python -B -m pytest -q -p no:cacheprovider tests/integration/check_kmtech_shared_canonical.py`를 명시 실행한다. 이 노드는 검사 함수 source·상수·manifest bytes를 대조하고 정본 checker에 앱 lock의 고정 hash를 전달한다. 파일명으로 기본 수집에서 제외하며, 명시 실행에서 형제가 없으면 skip 없이 실패한다.
 
@@ -20,7 +20,7 @@ PROVEN: 기존 baseline83 PASS, renderer/packaging/writer49 PASS, 정본 50개 R
 <a id="shared-runtime-x05b"></a>
 ## X05-B · producer runtime facade
 
-0.2.0 pin의 runtime 25함수에 JSON/HMAC framing·시각·retry·scope·redaction, metadata/grant/receipt/liveness binding, schema/state 및 caller-transaction SQL을 위임한다. `RuntimePreparation`과 나머지 11개 adapter 함수는 AST 불변이다. identity 생성·CNG 검증 callback은 현재 앱 함수를 전달하며 transport/TLS·connection·writer admission과 LM `reopen_reviewed_runtime_in_transaction` 정책을 유지한다. 정본 대응 함수/남긴 adapter 전체는 [결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x05b/RESULT.md)에 기록한다.
+0.3.0 pin의 변경 없는 runtime 25함수에 JSON/HMAC framing·시각·retry·scope·redaction, metadata/grant/receipt/liveness binding, schema/state 및 caller-transaction SQL을 위임한다. `RuntimePreparation`과 나머지 11개 adapter 함수는 AST 불변이다. identity 생성·CNG 검증 callback은 현재 앱 함수를 전달하며 transport/TLS·connection·writer admission과 LM `reopen_reviewed_runtime_in_transaction` 정책을 유지한다. 정본 대응 함수/남긴 adapter 전체는 [결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x05b/RESULT.md)에 기록한다.
 
 Windows Python3.12.10 headless: 기존 `tests/test_producer_runtime_client.py` **45 PASS, bytes 무수정**, 새 facade 회귀 **7 PASS**. 실제 앱 ACK transaction에서 core rotation 후 외부 reader에는 이전 상태만 보이고, 강제 중단 시 ACK/token 모두 rollback하며 같은 예약으로 재개한다. issue 재시도·만료 교체·terminal fallback에서 현재 앱 identity/JWK callback을 사용한다. 기존 lost-ACK·두 worker 한 token·scope/owner·stale/expiry·reviewed 복구 성공/거부·audit 실패 회귀를 유지한다.
 

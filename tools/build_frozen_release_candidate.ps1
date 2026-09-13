@@ -823,6 +823,8 @@ $pythonFacts = & $resolvedPython -I -c `
     "import json,platform,sys; print(json.dumps({'version': platform.python_version(), 'system': platform.system(), 'machine': platform.machine(), 'bits': platform.architecture()[0]}))" |
     ConvertFrom-Json
 Assert-LastExitCode "Python runtime inspection"
+& $resolvedPython -I -B (Join-Path $repoRoot "qualification\check_kmtech_shared.py") --check --root $repoRoot
+Assert-LastExitCode "Pinned shared source inspection"
 if (
     $pythonFacts.version -cne $ExpectedPythonVersion -or
     $pythonFacts.system -cne "Windows" -or
@@ -971,6 +973,7 @@ $mainArguments = @($nativeFreePyInstallerArguments) + @(
     "--add-data", "$(Join-Path $repoRoot 'contract.lock.json');.",
     "--add-data", "$(Join-Path $repoRoot 'kmtech_shared.manifest.json');.",
     "--add-data", "$(Join-Path $repoRoot 'kmtech_shared.lock.json');.",
+    "--add-data", "$(Join-Path $repoRoot 'kmtech_shared/powershell/portable.ps1');kmtech_shared/powershell",
     "--hidden-import", "kmtech_shared.catalog",
     "--hidden-import", "kmtech_shared.raster",
     "--hidden-import", "kmtech_shared.runtime",
@@ -1116,6 +1119,7 @@ $copies = [ordered]@{
     (Join-Path $factoryIdentityRoot "contract.lock.json") = (Join-Path $packageRoot "contract.lock.json")
     (Join-Path $repoRoot "kmtech_shared.manifest.json") = (Join-Path $packageRoot "kmtech_shared.manifest.json")
     (Join-Path $repoRoot "kmtech_shared.lock.json") = (Join-Path $packageRoot "kmtech_shared.lock.json")
+    (Join-Path $repoRoot "kmtech_shared\powershell\portable.ps1") = (Join-Path $packageRoot "kmtech_shared\powershell\portable.ps1")
     (Join-Path $repoRoot "direct_sync_push.py") = (Join-Path $packageRoot "direct_sync_push.py")
     (Join-Path $repoRoot "direct_sync_runtime.py") = (Join-Path $packageRoot "direct_sync_runtime.py")
     (Join-Path $repoRoot "producer_runtime_client.py") = (Join-Path $packageRoot "producer_runtime_client.py")
@@ -1213,6 +1217,7 @@ $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
     --expected-file contract.lock.json `
     --expected-file kmtech_shared.manifest.json `
     --expected-file kmtech_shared.lock.json `
+    --expected-file kmtech_shared/powershell/portable.ps1 `
     --expected-file build-identity.json `
     --expected-file build-compatibility.json `
     --built-at-utc $builtAtUtc

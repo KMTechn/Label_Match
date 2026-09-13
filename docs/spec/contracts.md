@@ -2,7 +2,7 @@
 
 ## 고정 renderer core
 
-`kmtech_shared` 0.2.0은 앱 안에 고정 복사하며 `kmtech_shared.lock.json`이 manifest SHA256을 고정한다. 기존 factory `contract.lock.json`과 독립이다. `kmtech_zero_pe`의 `RasterImage`/`RasterCanvas` class와 import 경로는 facade로 유지하고 모든 image factory는 앱 class를 반환한다. PNG signature·bytes·GDI 픽셀·QR은 보존하며 제품 PNG 출력은 기존 PHS 교환·복구의 writer admission 아래에 있다. core에서 별도 writer 권한이나 앱 상태를 만들지 않는다.
+`kmtech_shared` 0.3.0은 앱 안에 고정 복사하며 `kmtech_shared.lock.json`이 manifest SHA256을 고정한다. 기존 factory `contract.lock.json`과 독립이다. `kmtech_zero_pe`의 `RasterImage`/`RasterCanvas` class와 import 경로는 facade로 유지하고 모든 image factory는 앱 class를 반환한다. PNG signature·bytes·GDI 픽셀·QR은 보존하며 제품 PNG 출력은 기존 PHS 교환·복구의 writer admission 아래에 있다. core에서 별도 writer 권한이나 앱 상태를 만들지 않는다.
 
 ## 고정 runtime core와 앱 transaction
 

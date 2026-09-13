@@ -6,7 +6,7 @@ catalog 8개 leaf·renderer 호환 facade·고정 package·manifest/lock·portab
 
 단독 checkout의 pin 검사는 앱 QA 진입점에서 자급하며 정본 교차 대조는 명시 실행 노드로 분리한다. 정본 checker 갱신 시 [검사 절차](operations.md#shared-core-x04b)로 복사된 검증 함수의 동등성을 확인한다.
 
-X05-B package pin은 0.2.0/4파일로 갱신했으며 catalog/raster 계산 bytes는 유지한다. portable의 기존 package 포함과 frozen runtime hidden import에 결속하고 factory lock은 변경하지 않는다.
+X13-B package pin은 0.3.0/5파일이며 catalog/raster/runtime 계산 bytes는 유지한다. PowerShell leaf도 portable 및 실제 frozen data/배포 목록에 명시한다. portable의 기존 package 포함과 frozen runtime hidden import에 결속하고 factory lock은 변경하지 않는다.
 
 ## X05-B · producer runtime 공통화
 

@@ -57,6 +57,7 @@ LEGACY_INSTALLER_FILENAME = "INSTALL_THIS_PC.ps1"
 BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
 WRITER_FENCE_HELPER = Path("tools/label_writer_fence.ps1")
 WRITER_FENCE_CONTRACT = Path("tools/label_writer_fence_contract.json")
+SHARED_POWERSHELL_LEAF = Path("kmtech_shared/powershell/portable.ps1")
 THIRD_PARTY = {
     "babel": ("2.18.0", ("babel",)),
     "certifi": ("2026.6.17", ("certifi",)),
@@ -287,6 +288,8 @@ def _copy_application(repo_root: Path, app_root: Path) -> list[Path]:
         shutil.copy2(source, app_root / source.name)
     for name in APP_PACKAGE_DIRS:
         _copy_tree(repo_root / name, app_root / name)
+    if not (app_root / SHARED_POWERSHELL_LEAF).is_file():
+        raise PortableBuildError("shared PowerShell leaf is missing from application payload")
     for name in APP_DATA_DIRS:
         _copy_tree(repo_root / name, app_root / name)
     for name in APP_DATA_FILES:
@@ -454,6 +457,13 @@ def build(
     python_home = python_home.resolve()
     output = output.resolve()
     _assert_clean_source(repo_root)
+    shared_check = subprocess.run(
+        [sys.executable, "-I", "-B", str(repo_root / "qualification/check_kmtech_shared.py"),
+         "--check", "--root", str(repo_root)],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    if shared_check.returncode != 0:
+        raise PortableBuildError("shared source pin check failed: " + shared_check.stderr)
     if output.exists():
         raise PortableBuildError(f"portable output already exists: {output}")
     output.mkdir(parents=True)
