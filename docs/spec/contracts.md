@@ -2,6 +2,8 @@
 
 `Label_Match.DataManager`는 [저장 구현](../../label_data_manager.py)에 위임한다. clock·open·이벤트 투영·현재 세트 파일명은 호출 시점의 앱 callback으로 결속하며 A/C/P 저장 루트 우선순위, CSV flush/fsync·원자 JSON 교체와 기존 save/load 결과는 유지한다([LM-1](operations.md#module-boundaries-lm1)).
 
+`label_history.py`의 read/summary snapshot은 기존 `sorted_sets`, `scan_count`, `summary_items`, 중복·완료 색인, `updates_active_state`, `load_generation`과 오류 payload를 유지한다. 앱 façade는 기존 read·summary 이름과 clock/open/해석 callback을 유지하고 complete snapshot의 gate 해제·stale 결과 거부 및 화면 적용은 원 owner에서 수행한다.
+
 ## 고정 PowerShell leaf와 bootstrap 신뢰
 
 writer 전환은 설치된 파일 집합을 기준으로 한다. 57f52e1의 shared 0.2.0에서 X13-B로 전환할 때만 `app/kmtech_shared/powershell/portable.ps1` 한 파일 추가와 명시한 여섯 파일(shared 버전·manifest·lock·vendor provenance, placement/bootstrap)의 전/후 SHA256 쌍을 허용한다. 선언의 text pin은 Git LF bytes 기준이며 해당 파일의 CRLF checkout 표현도 인정한다. writer pin 파생·멤버십, 나머지 Python AST와 runtime bytes·launcher/fence 계약 검사는 그대로다. 새 트리에서 leaf 누락, 무관한 파일 추가/삭제/변조, reparse는 거부한다.

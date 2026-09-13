@@ -5,6 +5,8 @@
 
 `label_data_manager.py`는 기존 queue writer·원자 current-state 저장을 소유하고 `Label_Match.DataManager`가 동일 생성자로 live callback을 전달한다. 새 모듈은 앱을 역으로 import하지 않는다. 경로 resolver·복구·durable 완료와 성공 표시·중앙 ACK의 순서는 기존 앱에 유지한다.
 
+`label_history.py`로 이동한 것은 read worker와 summary 날짜·행 계산뿐이다. `_async_load_history_task`, `_summary_items`, `_label_match_summary_date`는 기존 앱 진입점으로 계속 노출된다. 로더 시작·queue 처리·generation/활성 입력 gate와 `_history_display_steps`/`_apply_history_display_chunk`는 앱에 유지하며 carrier parsing·error 순서는 재구성하지 않는다.
+
 검증은 [LM-1 실행 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm1/RESULT.md)의 AST 대조·동일 입력 전후 벡터·기존 focused 시험에 한정한다. GUI·설치·프린터·실물 모니터 검증은 별도다.
 
 <a id="carrier-identity-w5b2"></a>

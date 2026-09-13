@@ -208,4 +208,3 @@ class DataManager:
         if os.path.exists(state_path):
             try: os.remove(state_path)
             except Exception as e: print(f"임시 상태 파일 삭제 실패: {e}")
-

@@ -223,7 +223,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="lm-b05"></a>
 ## LM-B05 · 기존 PASS 적용 범위와 남은 수용 검증 매핑
 
-- LM-1의 저장 모듈 분리는 기존 API·root·내구 저장 계약을 유지하는 소스 변경이다. [동등성·회귀 범위](operations.md#module-boundaries-lm1)와 실제 설치·화면 수용을 구분한다.
+- LM-1의 저장·이력 계산 모듈 분리는 기존 API·root·내구 저장 계약을 유지하는 소스 변경이다. [동등성·회귀 범위](operations.md#module-boundaries-lm1)와 실제 설치·화면 수용을 구분한다.
 
 - 유형/우선: **증거 매핑·승인된 잔여 소스 종결 완료 / native·통합 수용 공백 OPEN · P1**. 한정 실행 수를 전체 제품 완료로 해석하지 않는다.
 - 근거/완료 범위: [독립 전체 diff·증거 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-review/REVIEW.md), [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md), [M3/N6 사례·소스 매핑](operations.md#residual-source-evidence)에서 `Label_Match.py`와 deferred/core/lane/신규 completion CSV 테스트의 다섯 경로를 원래 P109/PC112 exact working pins에 결속했다. M3 **313/939** 안의 변경 **13사례**는 V03 실제 저장 거부·중단/자정·materializer 및 V07 worker/Tk 적용 경계를, 별도 N6 **6/18**은 기존 CSV 재동기화·writer 오류·재대조를 입증한다. Main이 승인한 한 소스 단위에 다섯 경로와 네 명세를 포함하며 테스트 당시 working bytes와 Git 정규화 blob pins를 구분했다.
