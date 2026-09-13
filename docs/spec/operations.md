@@ -5,9 +5,9 @@
 
 57f52e1(shared 0.2.0, leaf 없음) → X13-B 교체는 설치된 파일 집합 + 선언된 leaf 한 파일을 예상 집합으로 사용한다. shared 버전·manifest·lock·vendor provenance 및 placement/bootstrap helper 여섯 파일의 전/후 고정 SHA256 쌍이 모두 일치해야만 이 전환을 인정한다(Git LF 또는 CRLF checkout 표현). 그 외 파일·writer pin/멤버십·runtime·계약 동일성은 기존 정책을 유지하며, 새→새 트리에서 leaf를 빼는 것은 전환이 아니다. `X13B_PINNED_SHARED_LEAF_ADOPTION` receipt로 이 경로를 구별한다. 실제 57f52e1 Git bytes의 합성 설치본으로 PS5.1/PS7 preflight·교체 후 전체 integrity와 거부 벡터를 검사하며 [R1 결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x13bfix/RESULT.md)에 실행 근거를 남긴다. 실제 lifecycle은 NOT VERIFIED다.
 
-**FAILED / 정본 0.3.0 결함:** `Read-KmtechPortableManifest`가 PS5 `[manifest]`·PS7 `[[manifest]]`를 열거하여 원본 앱의 거부와 달리 수용한다. `test_array_manifest_keeps_original_rejection`은 원본 거부 기대값을 유지한 채 두 engine에서 FAIL이다. coordinator 공지 `msg_aae96c43d98e`에 따라 0.3.0 byte 충실성을 보존하고 별도 0.3.1 bump 레인에서 교정한다. 나머지 leaf 벡터의 PASS와 구별한다.
+**0.3.1 재채택:** reviewed 정본 `1555dea`의 5파일을 전부 재복사하고 독립 manifest pin·lock·bootstrap/전환 선언·vendor provenance를 갱신했다. 0.3.0의 PS5 `[manifest]`·PS7 `[[manifest]]` 두 FAIL 원본은 보존한다. 0.3.1은 singleton·2/3중 배열·빈/중첩빈 배열의 원본 수용·거부를 양 엔진에서 검사하며 PS7의 기존 singleton 수용은 유지한다. [R1/R2 결과·실패 이력](D:/KMTech/program-improvement-20260912/work/Label_Match/x13bfix/RESULT.md)을 따른다.
 
-`Sha`/`Full`, bootstrap strict/relative/aggregate와 Manifest의 required/reparse·parse·signature 블록만 고정 0.3.0 leaf에 위임한다. 기존 wrapper의 mandatory/type/default와 LM Manifest schema/hash 순서는 유지하며 LM inventory framing·critical 3파일·ordinal 정렬·task migration·receipt·복원 함수는 변경하지 않는다. `INSTALL_THIS_PC.ps1`의 변경은 기존 bootstrap 로드에 `-SharedCodeRoot $PSScriptRoot`를 전달하는 한 줄뿐이다.
+`Sha`/`Full`, bootstrap strict/relative/aggregate와 Manifest의 required/reparse·parse·signature 블록만 고정 0.3.1 leaf에 위임한다. 기존 wrapper의 mandatory/type/default와 LM Manifest schema/hash 순서는 유지하며 LM inventory framing·critical 3파일·ordinal 정렬·task migration·receipt·복원 함수는 변경하지 않는다. `INSTALL_THIS_PC.ps1`의 변경은 기존 bootstrap 로드에 `-SharedCodeRoot $PSScriptRoot`를 전달하는 한 줄뿐이다.
 
 신뢰된 installer/helper의 로컬 bootstrap은 root/상위 경로/reparse → consumer lock의 고정 manifest pin → manifest bytes → leaf hash 순서로 검증한다. source/frozen은 `kmtech_shared/powershell/portable.ps1`, portable은 `app/kmtech_shared/powershell/portable.ps1`을 선택한다. UAC/복원 probe는 복사한 manifest/lock/leaf를 기존 helper ACL에 함께 결속하며, caller가 pinned in-memory integrity helper에 frozen root를 명시한다. 복원 probe의 짧은 child launcher는 Windows 명령줄 길이 제한 안에서 frozen helper bytes를 다시 hash 확인한 뒤 평가한다. 초기 `Get-BootstrapFileSha256`은 module auto-loading 없이 쓸 수 있도록 기존 native 구현을 유지한다.
 
@@ -18,9 +18,9 @@ portable/frozen builder는 Python 준비 뒤 로컬 checker를 실행하고 실�
 <a id="shared-core-x04b"></a>
 ## X04-B · 고정 shared core
 
-정본 `kmtech_shared` HEAD `f2baa68`의 package 5개(`__init__`, catalog, raster, runtime, `powershell/portable.ps1`)를 byte 그대로 포함한다. code pin은 `227219c63ab4814d701d635398da80113196feea`, version은 `0.3.0`, manifest SHA256은 `78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
+정본 `kmtech_shared` HEAD `1555dea`의 package 5개(`__init__`, catalog, raster, runtime, `powershell/portable.ps1`)를 byte 그대로 포함한다. code pin은 `1be471f04b40bc2feef6d5a9f1478ddbb2336050`, version은 `0.3.1`, manifest SHA256은 `feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
 
-`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 5파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `f2baa68`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard는 유지하며 Python/PowerShell pin은 X13-B 설치기 source 변경에 맞춰 재생성한다.
+`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 5파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `1555dea`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard는 유지하며 Python/PowerShell pin은 X13-B 설치기 source 변경에 맞춰 재생성한다.
 
 정본 checkout을 함께 가진 개발자는 `python -B -m pytest -q -p no:cacheprovider tests/integration/check_kmtech_shared_canonical.py`를 명시 실행한다. 이 노드는 검사 함수 source·상수·manifest bytes를 대조하고 정본 checker에 앱 lock의 고정 hash를 전달한다. 파일명으로 기본 수집에서 제외하며, 명시 실행에서 형제가 없으면 skip 없이 실패한다.
 
@@ -35,7 +35,7 @@ PROVEN: 기존 baseline83 PASS, renderer/packaging/writer49 PASS, 정본 50개 R
 <a id="shared-runtime-x05b"></a>
 ## X05-B · producer runtime facade
 
-0.3.0 pin의 변경 없는 runtime 25함수에 JSON/HMAC framing·시각·retry·scope·redaction, metadata/grant/receipt/liveness binding, schema/state 및 caller-transaction SQL을 위임한다. `RuntimePreparation`과 나머지 11개 adapter 함수는 AST 불변이다. identity 생성·CNG 검증 callback은 현재 앱 함수를 전달하며 transport/TLS·connection·writer admission과 LM `reopen_reviewed_runtime_in_transaction` 정책을 유지한다. 정본 대응 함수/남긴 adapter 전체는 [결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x05b/RESULT.md)에 기록한다.
+0.3.1 pin의 변경 없는 runtime 25함수에 JSON/HMAC framing·시각·retry·scope·redaction, metadata/grant/receipt/liveness binding, schema/state 및 caller-transaction SQL을 위임한다. `RuntimePreparation`과 나머지 11개 adapter 함수는 AST 불변이다. identity 생성·CNG 검증 callback은 현재 앱 함수를 전달하며 transport/TLS·connection·writer admission과 LM `reopen_reviewed_runtime_in_transaction` 정책을 유지한다. 정본 대응 함수/남긴 adapter 전체는 [결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x05b/RESULT.md)에 기록한다.
 
 Windows Python3.12.10 headless: 기존 `tests/test_producer_runtime_client.py` **45 PASS, bytes 무수정**, 새 facade 회귀 **7 PASS**. 실제 앱 ACK transaction에서 core rotation 후 외부 reader에는 이전 상태만 보이고, 강제 중단 시 ACK/token 모두 rollback하며 같은 예약으로 재개한다. issue 재시도·만료 교체·terminal fallback에서 현재 앱 identity/JWK callback을 사용한다. 기존 lost-ACK·두 worker 한 token·scope/owner·stale/expiry·reviewed 복구 성공/거부·audit 실패 회귀를 유지한다.
 

@@ -12,9 +12,9 @@
   "source_name": "seq259-zero-pe-contract+seq275-possession-key-adapter+seq281-release-signature+x04b-label-raster-facade",
   "raster_core": {
     "package": "kmtech_shared.raster",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "manifest": "kmtech_shared.manifest.json",
     "lock": "kmtech_shared.lock.json",
-    "source_commit": "227219c63ab4814d701d635398da80113196feea"
+    "source_commit": "1be471f04b40bc2feef6d5a9f1478ddbb2336050"
   }
 }

@@ -86,7 +86,9 @@ function Read-KmtechPortableManifest([string]$Root) {
     $path = Join-Path $Root 'portable-manifest.json'
     if ((Get-Item $path).Length -gt 65536) { throw 'Portable manifest is oversized.' }
     $value = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
-    return $value
+    # Keep the parser's assigned shape across this extra function boundary.
+    # The app's original schema/property checks must see arrays and null intact.
+    return ,$value
 }
 
 function Assert-KmtechCPythonSignature([string]$Root, [bool]$UnsignedOk) {

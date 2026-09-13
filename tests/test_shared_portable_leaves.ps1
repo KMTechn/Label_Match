@@ -82,14 +82,20 @@ $manifest = [ordered]@{schema='label-match-portable-tree-v1'; entrypoint='runtim
 $valid = $manifest | ConvertTo-Json -Compress
 [IO.File]::WriteAllText($manifestPath, $valid)
 if ($ArrayManifestCase) {
-    # Preserve the original rejection; canonical 0.3.0 unwraps pipeline arrays.
-    # The coordinator assigns its correction to the separate 0.3.1 bump lane.
-    $wrapped = if ($PSVersionTable.PSVersion.Major -eq 5) { "[$valid]" } else { "[[$valid]]" }
-    [IO.File]::WriteAllText($manifestPath, $wrapped)
-    $originalRejection = Result 'OriginalManifest' @($tree, $true) | ConvertFrom-Json
-    Assert (-not $originalRejection.ok -and $originalRejection.message -ceq 'Portable manifest readback failed.') 'original rejects array manifest'
-    Parity 'Manifest' @($tree, $true)
-    Write-Output "PASS PowerShell $($PSVersionTable.PSVersion): array manifest rejection"
+    # PS7 originally accepts a singleton; all other shapes here are rejected.
+    # Check the original caller's result before comparing across the leaf boundary.
+    foreach ($wrapped in @("[$valid]", "[[$valid]]", "[[[$valid]]]", '[]', '[[]]')) {
+        [IO.File]::WriteAllText($manifestPath, $wrapped)
+        $originalResult = Result 'OriginalManifest' @($tree, $true) | ConvertFrom-Json
+        $accepted = $PSVersionTable.PSVersion.Major -ge 7 -and $wrapped -ceq "[$valid]"
+        if ($accepted) {
+            Assert $originalResult.ok 'original PS7 singleton acceptance'
+        } else {
+            Assert (-not $originalResult.ok -and $originalResult.message -ceq 'Portable manifest readback failed.') 'original rejects array manifest'
+        }
+        Parity 'Manifest' @($tree, $true)
+    }
+    Write-Output "PASS PowerShell $($PSVersionTable.PSVersion): 5 array manifest shapes"
     exit 0
 }
 Parity 'Manifest' @($tree, $true)
@@ -146,7 +152,7 @@ $forged.files.'kmtech_shared/powershell/portable.ps1' = Sha $leaf
 Denied { . (Get-LabelSharedPortableLeafPath $source) } 'Shared manifest pin mismatch.'
 $lockPath = Join-Path $source 'kmtech_shared.lock.json'
 $lockBytes = [IO.File]::ReadAllBytes($lockPath)
-[IO.File]::WriteAllText($lockPath, ('{"version":"0.3.0","manifest_sha256":"' + (Sha $sharedManifestPath) + '"}'))
+[IO.File]::WriteAllText($lockPath, ('{"version":"0.3.1","manifest_sha256":"' + (Sha $sharedManifestPath) + '"}'))
 Denied { . (Get-LabelSharedPortableLeafPath $source) } 'Shared consumer manifest pin mismatch.'
 [IO.File]::WriteAllBytes($lockPath, $lockBytes)
 [IO.File]::WriteAllBytes($sharedManifestPath, $manifestBytes)

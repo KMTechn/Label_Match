@@ -91,11 +91,11 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
             throw "Shared PowerShell path contains a reparse point: $path"
         }
     }
-    $expectedManifestSha = '78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2'
+    $expectedManifestSha = 'feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117'
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$lock.version -cne '0.3.0' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+    if ([string]$lock.version -cne '0.3.1' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
         throw 'Shared consumer manifest pin mismatch.'
     }
     $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
@@ -450,26 +450,26 @@ def syntax(path, relative):
 shared_replacements = {
     'app/kmtech_shared/__init__.py': (
         'b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455',
-        'efd292d1146ffa56af6b57691c2affc0e2e5dc1826745cf3d5dfac6a5f810b0d'),
+        '32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295'),
     'app/kmtech_shared.manifest.json': (
         '465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee',
-        '78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2'),
+        'feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117'),
     'app/kmtech_shared.lock.json': (
         '6807ed97f7d734c5d8bdb0e23c141916cc5f013bd2392a46b98849d285d54fcd',
-        'd927aa08b86c12b5b78d70a4ec334415140009880a2c77db3dd28a4eabf235b5'),
+        '87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9'),
     'app/kmtech_zero_pe.vendor.json': (
         'e7dac78746db6efbccedcba5c3b44b58b77bc44e8d25a2dbaea6dc1ac01e307c',
-        '8c3107cad611b7c3f60c027bdb8d0487d8ce1f175a1cfbbdaa44414d5bed8bdd'),
+        'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
         '2401e30f7d7c5965360bfcb1e1ebc3ef71fe30491eb8ee7e9f84dd2a8e1e5770'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
-        '1c90bc5863ef547bb5bc990d4975e3e2fd9113f1ee23be6ea48f4ca22f0c1999'),
+        '7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3'),
 }
 shared_additions = {
     'app/kmtech_shared/powershell/portable.ps1':
-        '995c78f13b1c6b62c55d4111f1a80aa6f2bf4c63ee78619f077d9b042e0c3ccd',
+        'fb2e506d2194eb54f526f4aa73515ebd226278a3f4f44cbc3854de91186781d1',
 }
 
 def release_digest(path):

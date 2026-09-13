@@ -4,9 +4,9 @@
 
 R1의 구 설치본→X13-B 지원 전환은 57f52e1 shared preimage와 이번 release의 추가/교체 파일 pin에 한정한다. 양 엔진의 합성 upgrade/교체 후 검증과 변조·누락·링크 거부는 [현재 결과](operations.md#shared-powershell-x13b)를 따르며, 실제 설치 lifecycle 수용은 별도다.
 
-정본 0.3.0의 배열 manifest 수용 결함을 재현하는 두 회귀는 FAIL로 보존한다. coordinator 지시에 따른 별도 0.3.1 bump가 남으며, 앱 복사본에서 정본 bytes를 먼저 수정하거나 기대값을 완화하지 않는다.
+정본 0.3.1 전체 5파일·manifest·lock을 다시 채택했다. 0.3.0 배열 결함의 두 실패 로그는 보존하며 양 엔진에서 singleton·중첩·빈 배열의 원본 parity를 재검증한다. 실제 lifecycle 수용은 별도다.
 
-0.3.0/5파일과 standalone checker·패키징을 채택하고, 신뢰 확인 뒤 설치기 leaf만 위임한다. LM task migration·conflict receipt·ordinal inventory/복원은 앱에 유지한다. [검증·잔여 범위](operations.md#shared-powershell-x13b)의 합성 PS5/PS7·lifecycle 회귀와 실제 배정 대상의 설치/제거/복원 수용을 구별하며, 실제 lifecycle/GUI/전체 build는 이번 레인에서 수행하지 않는다.
+0.3.1/5파일과 standalone checker·패키징을 채택하고, 신뢰 확인 뒤 설치기 leaf만 위임한다. LM task migration·conflict receipt·ordinal inventory/복원은 앱에 유지한다. [검증·잔여 범위](operations.md#shared-powershell-x13b)의 합성 PS5/PS7·lifecycle 회귀와 실제 배정 대상의 설치/제거/복원 수용을 구별하며, 실제 lifecycle/GUI/전체 build는 이번 레인에서 수행하지 않는다.
 
 ## X04-B · shared core 채택
 
@@ -14,7 +14,7 @@ catalog 8개 leaf·renderer 호환 facade·고정 package·manifest/lock·portab
 
 단독 checkout의 pin 검사는 앱 QA 진입점에서 자급하며 정본 교차 대조는 명시 실행 노드로 분리한다. 정본 checker 갱신 시 [검사 절차](operations.md#shared-core-x04b)로 복사된 검증 함수의 동등성을 확인한다.
 
-X13-B package pin은 0.3.0/5파일이며 catalog/raster/runtime 계산 bytes는 유지한다. PowerShell leaf도 portable 및 실제 frozen data/배포 목록에 명시한다. portable의 기존 package 포함과 frozen runtime hidden import에 결속하고 factory lock은 변경하지 않는다.
+X13-B package pin은 0.3.1/5파일이며 catalog/raster/runtime 계산 bytes는 유지한다. PowerShell leaf도 portable 및 실제 frozen data/배포 목록에 명시한다. portable의 기존 package 포함과 frozen runtime hidden import에 결속하고 factory lock은 변경하지 않는다.
 
 ## X05-B · producer runtime 공통화
 
