@@ -157,6 +157,8 @@ HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`,
 <a id="c-01"></a>
 ## C-01 중앙 품목 → 앱 표시
 
+- Item Code는 정확한 dictionary key로 조회한다. [carrier·legacy·lookup 규칙 표](carrier_identity.md)의 반환·오류 차이를 유지한다.
+
 - 방향/형식: 서버 `GET /inbound/api/item-catalog.csv` → `refresh_item_catalog` → 인증 cache/snapshot → 품목 표시. `Item Code,Item Name,Spec,Tray Image` 열을 사용한다.
 - 권한/오류: 서버 reader 권한·cache 방지 응답, 클라이언트 중앙 등록 identity에 따른 인증 cache 복구. 등록 상태에서 인증 cache가 없으면 요청 실패를 bundled 파일 성공으로 숨기지 않는다.
 - shared core 위임은 정확 4열 gate/오류 문구와 HMAC v2·sidecar 이름/bytes를 보존한다. program·URL 정규화·동일 authority 판정은 앱에서 전달하며 LM의 빈 port 거부와 profile 신원·진단 redaction 차이를 유지한다. authenticated read/write/recover와 snapshot 상태, `_atomic_write` seam 및 recovery→CSV→authority 내구 순서는 앱 소유다. 새 부재 판정 cache/index/flag나 공용 cache root는 만들지 않는다.

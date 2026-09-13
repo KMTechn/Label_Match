@@ -181,6 +181,8 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 <a id="lm-03"></a>
 ### LM-03 PHS2 접수·현재 구성 조회
 
+- parser의 현행 raw/인코딩·legacy 차이와 오류 계약은 [carrier 규칙 표](carrier_identity.md)에 고정한다.
+
 - 시작/입력: idle 작업 화면에서 원본 PHS2 1회. `PHS,SRC,ITG,CLC,LBL,HSH` 여섯 필드의 순서·빈 값·중복·16자리 hex를 검사한다.
 - 검증/효과: `PACKAGE_SOURCE` 조회로 중앙 라벨 계보, unit↔barcode, 멤버십 hash·version·work-group topology를 대조해 현재 세트 snapshot을 만든다. 수량은 현재 멤버십에서 얻는다.
 - 실패/취소: 오형식·불일치는 포장 준비로 승격하지 않는다. 정상 미완료 작업의 F1과 중앙 미확정/교체 중 작업의 차단 조건은 별도 gate를 따른다.
