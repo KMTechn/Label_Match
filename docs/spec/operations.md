@@ -1,5 +1,12 @@
 # Label_Match 운영·복구·검증
 
+<a id="module-boundaries-lm1"></a>
+## LM-1 · 저장과 이력 모듈 경계
+
+`label_data_manager.py`는 기존 queue writer·원자 current-state 저장을 소유하고 `Label_Match.DataManager`가 동일 생성자로 live callback을 전달한다. 새 모듈은 앱을 역으로 import하지 않는다. 경로 resolver·복구·durable 완료와 성공 표시·중앙 ACK의 순서는 기존 앱에 유지한다.
+
+검증은 [LM-1 실행 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm1/RESULT.md)의 AST 대조·동일 입력 전후 벡터·기존 focused 시험에 한정한다. GUI·설치·프린터·실물 모니터 검증은 별도다.
+
 <a id="carrier-identity-w5b2"></a>
 ## W5-B2 · carrier·legacy·Item Code 경계
 

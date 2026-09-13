@@ -1,5 +1,7 @@
 # Label_Match 기술 명세
 
+`DataManager`의 이벤트 writer·현재 세트 저장은 [label_data_manager.py](../../label_data_manager.py)에 있고 기존 `Label_Match.DataManager` 생성·save/load API를 유지한다. 저장 루트 선택과 중단·자정 복구는 앱이 소유하며 [LM-1 경계](operations.md#module-boundaries-lm1)를 따른다.
+
 설치기는 고정 `kmtech_shared` 0.3.1 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다. LM ordinal inventory·task migration·conflict receipt·복원 경계는 [X13-B](operations.md#shared-powershell-x13b)를 따른다.
 
 57f52e1 설치본에서 X13-B로의 교체는 선언된 shared leaf 추가와 여섯 release 파일의 전/후 pin이 모두 일치할 때 지원한다. 그 외 파일 집합·writer 멤버십·runtime·계약 검사는 유지한다.
