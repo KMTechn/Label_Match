@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 import pytest
+from tests._shared_portable_fixture import shared_bootstrap_files
 
 
 MODULE_PATH = (
@@ -41,6 +42,10 @@ def _package(tmp_path: Path) -> Path:
     (root / "contract.lock.json").write_text("{}\n", encoding="utf-8")
     (internal / "app_settings.json").write_text("{}\n", encoding="utf-8")
     (root / "_internal" / "python312.dll").write_bytes(b"runtime")
+    for name, data in shared_bootstrap_files().items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
     return root
 
 
@@ -107,6 +112,14 @@ def test_verifier_requires_onedir_runtime(tmp_path):
         verifier.StagedInstallerVerificationError,
         match="required staged members",
     ):
+        verifier.verify_staged_package(package)
+
+
+@pytest.mark.parametrize("relative", sorted(shared_bootstrap_files()))
+def test_verifier_requires_complete_shared_bootstrap_closure(tmp_path, relative):
+    package = _package(tmp_path)
+    (package / relative).unlink()
+    with pytest.raises(verifier.StagedInstallerVerificationError, match="required staged members"):
         verifier.verify_staged_package(package)
 
 

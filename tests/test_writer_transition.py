@@ -31,7 +31,7 @@ def _quote(value: object) -> str:
 
 def _definitions() -> str:
     source = INSTALLER.read_text(encoding="utf-8")
-    return source[: source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
+    return source[: source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")] + "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
 
 
 def _environment(root: Path) -> dict[str, str]:
@@ -188,7 +188,7 @@ $install = {_quote(altered)}
 $SkipSignatureValidationForTest = $true
 $sourceManifest = Manifest $source $true
 $receiptSource = PortableInventory $source
-. (Join-Path $source 'tools/bootstrap_integrity.ps1')
+. (Join-Path $source 'tools/bootstrap_integrity.ps1') -SharedCodeRoot $source
 [void](Write-BootstrapIntegrityRecord -Root $install -CodeRoot $install)
 {preflight}
 """
@@ -364,7 +364,7 @@ $sourceManifest = Manifest $source $true
 $receiptSource = PortableInventory $source
 $frozenPlacement | Add-Member helper_sha256 ([string]$receiptSource.critical_file_sha256.placement_helper)
 $frozenPlacement | Add-Member helper_path (Join-Path $source 'INSTALL_THIS_PC.ps1')
-. (Join-Path $source 'tools/bootstrap_integrity.ps1')
+. (Join-Path $source 'tools/bootstrap_integrity.ps1') -SharedCodeRoot $source
 [void](Write-BootstrapIntegrityRecord -Root $install -CodeRoot $install)
 $installedPreimageInventory = PortableInventory $install
 $before = [ordered]@{{exists=$true; kind='String'; data={_quote(old_command)}}}

@@ -83,7 +83,7 @@ def test_real_ps51_inventory_writer_is_accepted_by_python(inventory_tree, tmp_pa
     root, rows = inventory_tree
     output = _ps(tmp_path, f"""
 [Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('{culture}')
-. {_quote(ROOT / 'tools/bootstrap_integrity.ps1')}
+. {_quote(ROOT / 'tools/bootstrap_integrity.ps1')} -SharedCodeRoot {_quote(ROOT)}
 if ($PSVersionTable.PSVersion.Major -ne 5) {{ throw 'requires stock PS5.1' }}
 $record = Write-BootstrapIntegrityRecord -Root {_quote(root)} -CodeRoot {_quote(root)}
 [void](Assert-BootstrapIntegrityRecord -Root {_quote(root)})
@@ -116,7 +116,7 @@ def test_ps51_verifier_rejects_self_consistent_noncanonical_order(inventory_tree
     root, rows = inventory_tree
     _record(root, list(reversed(rows)))
     output = _ps(tmp_path, f"""
-. {_quote(ROOT / 'tools/bootstrap_integrity.ps1')}
+. {_quote(ROOT / 'tools/bootstrap_integrity.ps1')} -SharedCodeRoot {_quote(ROOT)}
 try {{ [void](Assert-BootstrapIntegrityRecord -Root {_quote(root)}) }}
 catch {{ Write-Output 'rejected'; exit 0 }}
 Write-Output 'accepted'
@@ -137,7 +137,7 @@ foreach ($name in @('Full', 'Sha', 'UInt64BE', 'HexBytes', 'PortableInventory'))
     $node = $ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name}}, $false)
     Invoke-Expression $node.Extent.Text
 }}
-. {_quote(ROOT / 'tools/bootstrap_integrity.ps1')}
+. {_quote(ROOT / 'tools/bootstrap_integrity.ps1')} -SharedCodeRoot {_quote(ROOT)}
 $expected = (PortableInventory {_quote(root)}).bootstrap_aggregate_sha256
 $record = Write-BootstrapIntegrityRecord -Root {_quote(root)} -CodeRoot {_quote(root)}
 if ($expected -cne $record.aggregate_sha256) {{ throw 'installer aggregate mismatch' }}

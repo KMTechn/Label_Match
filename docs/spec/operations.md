@@ -1,11 +1,24 @@
 # Label_Match 운영·복구·검증
 
+<a id="shared-powershell-x13b"></a>
+## X13-B · 설치기 PowerShell leaf
+
+**FAILED / 정본 0.3.0 결함:** `Read-KmtechPortableManifest`가 PS5 `[manifest]`·PS7 `[[manifest]]`를 열거하여 원본 앱의 거부와 달리 수용한다. `test_array_manifest_keeps_original_rejection`은 원본 거부 기대값을 유지한 채 두 engine에서 FAIL이다. coordinator 공지 `msg_aae96c43d98e`에 따라 0.3.0 byte 충실성을 보존하고 별도 0.3.1 bump 레인에서 교정한다. 나머지 leaf 벡터의 PASS와 구별한다.
+
+`Sha`/`Full`, bootstrap strict/relative/aggregate와 Manifest의 required/reparse·parse·signature 블록만 고정 0.3.0 leaf에 위임한다. 기존 wrapper의 mandatory/type/default와 LM Manifest schema/hash 순서는 유지하며 LM inventory framing·critical 3파일·ordinal 정렬·task migration·receipt·복원 함수는 변경하지 않는다. `INSTALL_THIS_PC.ps1`의 변경은 기존 bootstrap 로드에 `-SharedCodeRoot $PSScriptRoot`를 전달하는 한 줄뿐이다.
+
+신뢰된 installer/helper의 로컬 bootstrap은 root/상위 경로/reparse → consumer lock의 고정 manifest pin → manifest bytes → leaf hash 순서로 검증한다. source/frozen은 `kmtech_shared/powershell/portable.ps1`, portable은 `app/kmtech_shared/powershell/portable.ps1`을 선택한다. UAC/복원 probe는 복사한 manifest/lock/leaf를 기존 helper ACL에 함께 결속하며, caller가 pinned in-memory integrity helper에 frozen root를 명시한다. 복원 probe의 짧은 child launcher는 Windows 명령줄 길이 제한 안에서 frozen helper bytes를 다시 hash 확인한 뒤 평가한다. 초기 `Get-BootstrapFileSha256`은 module auto-loading 없이 쓸 수 있도록 기존 native 구현을 유지한다.
+
+portable/frozen builder는 Python 준비 뒤 로컬 checker를 실행하고 실제 leaf data/배포 목록을 포함한다. staged verifier도 leaf/manifest/lock을 필수 closure로 검사한다. 기존 writer 생성기는 44개 identity/guard를 유지하며 변경된 placement source 한 행에 따라 양쪽 pin을 `d7eb573ed3792ce03cef8dd2e8472e19c007407c346208955acc33ebfc864a48`로 재생성한다. factory lock·runtime facade/계산 bytes는 불변이다.
+
+동일 입력 원본/위임 leaf와 unsigned 거부·서명 spy 순서는 PS5.1/PS7 양쪽에서 검증한다. canonical/placement·code/current-user 복원·task/receipt·ordinal 회귀는 합성 트리와 기존 native/transport double 범위이며 [실행 결과와 실패 이력](D:/KMTech/program-improvement-20260912/work/Label_Match/x13b/RESULT.md)에 기록한다. 실제 설치·제거·복원, GUI/VM/서버, 실제 서명된 CPython 신뢰, 전체 portable/PyInstaller binary build는 NOT VERIFIED다.
+
 <a id="shared-core-x04b"></a>
 ## X04-B · 고정 shared core
 
 정본 `kmtech_shared` HEAD `f2baa68`의 package 5개(`__init__`, catalog, raster, runtime, `powershell/portable.ps1`)를 byte 그대로 포함한다. code pin은 `227219c63ab4814d701d635398da80113196feea`, version은 `0.3.0`, manifest SHA256은 `78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
 
-`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 5파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `f2baa68`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
+`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 5파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `f2baa68`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard는 유지하며 Python/PowerShell pin은 X13-B 설치기 source 변경에 맞춰 재생성한다.
 
 정본 checkout을 함께 가진 개발자는 `python -B -m pytest -q -p no:cacheprovider tests/integration/check_kmtech_shared_canonical.py`를 명시 실행한다. 이 노드는 검사 함수 source·상수·manifest bytes를 대조하고 정본 checker에 앱 lock의 고정 hash를 전달한다. 파일명으로 기본 수집에서 제외하며, 명시 실행에서 형제가 없으면 skip 없이 실패한다.
 

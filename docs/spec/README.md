@@ -1,5 +1,9 @@
 # Label_Match 기술 명세
 
+설치기는 고정 `kmtech_shared` 0.3.0 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다. LM ordinal inventory·task migration·conflict receipt·복원 경계는 [X13-B](operations.md#shared-powershell-x13b)를 따른다.
+
+0.3.0의 배열 manifest 수용 결함은 실패 회귀로 보존하며 별도 0.3.1 bump가 남는다([현재 실패·후속](operations.md#shared-powershell-x13b)).
+
 `kmtech_zero_pe` renderer는 앱 호환 class를 유지하며 고정 `kmtech_shared.raster` 계산을 사용한다. PNG·QR·저장 경계와 배포 pin은 [X04-B](operations.md#shared-core-x04b)를 따른다.
 
 `producer_runtime_client`의 25개 leaf/binding/transaction 함수는 고정 `kmtech_shared.runtime`을 호출한다. LM transport·writer admission·신원 callback·명시 reviewed 복구와 caller ACK transaction은 [X05-B](operations.md#shared-runtime-x05b) 경계에 유지한다.

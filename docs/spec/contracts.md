@@ -1,5 +1,13 @@
 # Label_Match 데이터·통합 계약
 
+## 고정 PowerShell leaf와 bootstrap 신뢰
+
+알려진 0.3.0 결함: `Read-KmtechPortableManifest`의 pipeline 배열 열거로 PS5 `[manifest]`·PS7 `[[manifest]]`가 원본의 거부와 달리 수용된다. 원본 거부 기대값의 회귀를 FAIL로 유지하며, vendored bytes를 임의 수정하지 않고 coordinator의 별도 0.3.1 bump에서 교정한다.
+
+canonical/placement 설치기는 자체 bootstrap으로 source 또는 portable `app/` root와 상위 경로의 reparse를 거부하고, 고정 0.3.0 consumer pin → manifest bytes → PowerShell leaf SHA256 순서로 확인한 뒤 dot-source한다. bootstrap 무결성 helper는 `-SharedCodeRoot`를 받은 inventory 소비자에서만 shared를 초기화하며, 초기 native SHA는 module auto-loading 없이 동작한다. 신뢰 확인에 shared 함수나 준비 전 Python checker를 사용하지 않는다.
+
+Manifest는 기존 required-file 순서 → bounded parse → LM schema/field/hash → CPython signature 순서를 유지한다. `PortableInventory`의 domain framing·critical 3파일·ordinal UTF-16 정렬, task migration/conflict receipt·code/current-user 복원 정책은 앱 소유다. 고정 UAC helper closure는 기존 3개 helper 외 manifest/lock/leaf도 복사·검증·쓰기 거부하며, source 교체 후에도 같은 closure로 검사한다. [검증 범위](operations.md#shared-powershell-x13b).
+
 ## 고정 renderer core
 
 `kmtech_shared` 0.3.0은 앱 안에 고정 복사하며 `kmtech_shared.lock.json`이 manifest SHA256을 고정한다. 기존 factory `contract.lock.json`과 독립이다. `kmtech_zero_pe`의 `RasterImage`/`RasterCanvas` class와 import 경로는 facade로 유지하고 모든 image factory는 앱 class를 반환한다. PNG signature·bytes·GDI 픽셀·QR은 보존하며 제품 PNG 출력은 기존 PHS 교환·복구의 writer admission 아래에 있다. core에서 별도 writer 권한이나 앱 상태를 만들지 않는다.

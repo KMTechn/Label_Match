@@ -22,6 +22,9 @@ REQUIRED_MEMBERS = {
     "contract.lock.json",
     "_internal/config/app_settings.json",
     "tools/bootstrap_integrity.ps1",
+    "kmtech_shared.lock.json",
+    "kmtech_shared.manifest.json",
+    "kmtech_shared/powershell/portable.ps1",
 }
 FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS = {
     "install_label_match_direct_sync.ps1",

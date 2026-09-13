@@ -194,7 +194,7 @@ def _hashes(paths):
 
 
 def _prepare_installed(tmp_path, install, candidate, env):
-    return _ps(tmp_path, f". {_quote(candidate / 'tools/bootstrap_integrity.ps1')}\n[void](Write-BootstrapIntegrityRecord -Root {_quote(install)} -CodeRoot {_quote(install)})", env)
+    return _ps(tmp_path, f". {_quote(candidate / 'tools/bootstrap_integrity.ps1')} -SharedCodeRoot {_quote(candidate)}\n[void](Write-BootstrapIntegrityRecord -Root {_quote(install)} -CodeRoot {_quote(install)})", env)
 
 
 def _stop_fixture(tmp_path, install, env):

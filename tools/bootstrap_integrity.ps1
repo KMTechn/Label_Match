@@ -1,3 +1,5 @@
+param([string]$SharedCodeRoot = "")
+
 $BootstrapIntegrityFileName = "bootstrap-integrity.json"
 $BootstrapIntegritySchema = "label-match-bootstrap-integrity-v1"
 $BootstrapPortableCodeRoot = "."
@@ -44,13 +46,7 @@ function Get-BootstrapStrictFullPath {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Purpose
     )
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
-        throw "$Purpose must be an absolute path."
-    }
-    if ($Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
-        throw "$Purpose must not use a device path."
-    }
-    return [IO.Path]::GetFullPath($Path).TrimEnd([char[]]"\/")
+    return Get-KmtechBootstrapStrictFullPath $Path $Purpose
 }
 
 function Get-BootstrapFileSha256 {
@@ -71,12 +67,7 @@ function Get-BootstrapRelativeCodePath {
         [Parameter(Mandatory = $true)][string]$Root,
         [Parameter(Mandatory = $true)][string]$Path
     )
-    $rootFull = (Get-BootstrapStrictFullPath $Root "inventory root") + '\'
-    $pathFull = [IO.Path]::GetFullPath($Path)
-    if (-not $pathFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Inventory path escaped its root."
-    }
-    return $pathFull.Substring($rootFull.Length).Replace('\', '/')
+    return Get-KmtechBootstrapRelativeCodePath $Root $Path
 }
 
 function Get-BootstrapCodeInventory {
@@ -102,15 +93,7 @@ function Get-BootstrapCodeInventory {
 
 function Get-BootstrapInventoryAggregate {
     param([Parameter(Mandatory = $true)][object[]]$Inventory)
-    $lines = @($Inventory | ForEach-Object { "$($_.sha256) $($_.size) $($_.path)" })
-    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($lines -join "`n") + "`n")
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha.Dispose()
-    }
+    return Get-KmtechBootstrapInventoryAggregate -Inventory $Inventory
 }
 
 function Write-BootstrapUtf8Json {
@@ -259,3 +242,64 @@ function Assert-BootstrapIntegrityRecord {
         aggregate_sha256 = $aggregate
     }
 }
+
+# This small trust bootstrap is intentionally local to both standalone loaders.
+# Never use shared code (or start Python) to establish its own execution authority.
+function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
+    if ([string]::IsNullOrWhiteSpace($CodeRoot) -or -not [IO.Path]::IsPathRooted($CodeRoot) -or
+        $CodeRoot.StartsWith('\\?\') -or $CodeRoot.StartsWith('\\.\')) {
+        throw 'Shared PowerShell code root must be an ordinary absolute path.'
+    }
+    $root = [IO.Path]::GetFullPath($CodeRoot)
+    # Inspect ancestors before probing app/, including links above the code root.
+    $ancestor = $root
+    while ($ancestor) {
+        $item = Get-Item -LiteralPath $ancestor -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Shared PowerShell path contains a reparse point: $ancestor"
+        }
+        $ancestor = Split-Path -Path $ancestor -Parent
+    }
+    $appRoot = if (Test-Path -LiteralPath (Join-Path $root 'app') -PathType Container) {
+        Join-Path $root 'app'
+    } else { $root }
+    foreach ($relative in @('', 'kmtech_shared', 'kmtech_shared\powershell',
+        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1')) {
+        $path = if ($relative) { Join-Path $appRoot $relative } else { $appRoot }
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Shared PowerShell path contains a reparse point: $path"
+        }
+    }
+    $expectedManifestSha = '78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2'
+    $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
+    if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
+    $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$lock.version -cne '0.3.0' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+        throw 'Shared consumer manifest pin mismatch.'
+    }
+    $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
+    if ((Get-Item -LiteralPath $manifestPath).Length -gt 65536) { throw 'Shared manifest is oversized.' }
+    [byte[]]$manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $actualManifestSha = ([BitConverter]::ToString($hash.ComputeHash($manifestBytes))).Replace('-', '').ToLowerInvariant()
+    } finally { $hash.Dispose() }
+    if ($actualManifestSha -cne $expectedManifestSha) { throw 'Shared manifest pin mismatch.' }
+    $pinnedSharedManifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($manifestBytes) | ConvertFrom-Json
+    $sharedLeaf = Join-Path $appRoot 'kmtech_shared\powershell\portable.ps1'
+    $expectedLeafSha = $pinnedSharedManifest.files.'kmtech_shared/powershell/portable.ps1'
+    $stream = [IO.File]::OpenRead($sharedLeaf)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $actualLeafSha = ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally { $hash.Dispose(); $stream.Dispose() }
+    if ($actualLeafSha -cne $expectedLeafSha) {
+        throw 'Shared PowerShell leaf pin mismatch.'
+    }
+    return $sharedLeaf
+}
+
+# The native early SHA remains usable without module auto-loading. Full inventory
+# consumers explicitly provide their trusted helper closure's code root.
+if ($SharedCodeRoot) { . (Get-LabelSharedPortableLeafPath $SharedCodeRoot) }

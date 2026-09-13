@@ -93,7 +93,7 @@ elseif (-not (Test-Path -LiteralPath $BootstrapIntegrityFunctions -PathType Leaf
     throw "Bootstrap integrity producer is unavailable."
 }
 else {
-    . $BootstrapIntegrityFunctions
+    . $BootstrapIntegrityFunctions -SharedCodeRoot $PSScriptRoot
 }
 if ($WriterFenceFunctionsPreloaded.IsPresent) {
     foreach ($functionName in @(

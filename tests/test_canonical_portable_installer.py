@@ -16,6 +16,7 @@ from current_user_onboarding import (
 from label_exact_clone_resolution import capture_conflict_preimage
 from tools import build_portable_release_candidate as portable_builder
 from tests.test_label_exact_clone_resolution import _paths as _exact_clone_paths
+from tests._shared_portable_fixture import shared_bootstrap_files
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,7 @@ def _run_clean_install_receipt_gate_harness(
         "INSTALL_THIS_PC.ps1": b"throw 'placement helper must not run'\n",
         "tools/bootstrap_integrity.ps1": b"throw 'integrity helper must not run'\n",
         "tools/label_writer_fence.ps1": b"throw 'writer fence must not run'\n",
+        **shared_bootstrap_files("app/"),
     }
     for relative, content in files.items():
         target = source_root / relative
@@ -759,11 +761,12 @@ def test_code_helper_owns_privileged_placement_and_exact_rollback() -> None:
 
 def _freeze_helper_functions() -> str:
     source = _source()
+    loader = source[source.index("function Get-LabelSharedPortableLeafPath"):source.index("function Full(")]
     sha_start = source.index("function Sha([string]$Path) {")
     sha_end = source.index("function UInt64BE([uint64]$Value)")
     freeze_start = source.index("function FreezePlacementHelper(")
     freeze_end = source.index("\nfunction InvokeFrozenIntegrityProbe")
-    return source[sha_start:sha_end] + source[freeze_start:freeze_end]
+    return loader + source[sha_start:sha_end] + source[freeze_start:freeze_end]
 
 
 def _run_freeze_placement_helper_harness(tmp_path: Path) -> dict[str, object]:
@@ -777,6 +780,10 @@ def _run_freeze_placement_helper_harness(tmp_path: Path) -> dict[str, object]:
         "tools/label_writer_fence.ps1": WRITER_FENCE_HELPER,
     }
     hashes: dict[str, str] = {}
+    for relative, data in shared_bootstrap_files().items():
+        target = source_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
     for relative, original in helpers.items():
         target = source_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -792,6 +799,7 @@ def _run_freeze_placement_helper_harness(tmp_path: Path) -> dict[str, object]:
 $ErrorActionPreference = 'Stop'
 {_freeze_helper_functions()}
 $source = '{str(source_root).replace("'", "''")}'
+. (Get-LabelSharedPortableLeafPath $source)
 $audit = '{str(audit_root).replace("'", "''")}'
 $expected = [pscustomobject]@{{
     placement_helper = '{hashes["INSTALL_THIS_PC.ps1"]}'
@@ -863,6 +871,9 @@ try {{
         [string]$frozen.helper_path,
         (Join-Path ([string]$frozen.root) 'tools\bootstrap_integrity.ps1'),
         [string]$frozen.writer_fence_path
+        (Join-Path ([string]$frozen.root) 'kmtech_shared.lock.json')
+        (Join-Path ([string]$frozen.root) 'kmtech_shared.manifest.json')
+        (Join-Path ([string]$frozen.root) 'kmtech_shared\powershell\portable.ps1')
     )
 }}
 catch {{
@@ -911,7 +922,7 @@ def test_frozen_placement_helper_denies_current_user_write(tmp_path: Path) -> No
     assert result["status"] == "OK", result
     assert result["current_user_writable"] is False, result
     files = result["files"]
-    assert len(files) == 3, result
+    assert len(files) == 6, result
     for frozen in files:
         assert frozen["write_probe_succeeded"] is False, frozen
         assert frozen["has_current_user_deny_write"] is True, frozen

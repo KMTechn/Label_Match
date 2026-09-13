@@ -63,13 +63,65 @@ function Test-RelayPersistentRetry($Relay) {
     return Get-RequiredExternalBoolean $Relay 'persistent_retry'
 }
 
-function Full([string]$Value, [string]$Purpose) {
-    if (-not [IO.Path]::IsPathRooted($Value) -or $Value.StartsWith('\\?\')) {
-        throw "$Purpose must be an ordinary absolute path."
+# This small trust bootstrap is intentionally local to both standalone loaders.
+# Never use shared code (or start Python) to establish its own execution authority.
+function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
+    if ([string]::IsNullOrWhiteSpace($CodeRoot) -or -not [IO.Path]::IsPathRooted($CodeRoot) -or
+        $CodeRoot.StartsWith('\\?\') -or $CodeRoot.StartsWith('\\.\')) {
+        throw 'Shared PowerShell code root must be an ordinary absolute path.'
     }
-    $result = [IO.Path]::GetFullPath($Value).TrimEnd('\')
-    if ($result -eq [IO.Path]::GetPathRoot($result)) { throw "$Purpose is too broad." }
-    return $result
+    $root = [IO.Path]::GetFullPath($CodeRoot)
+    # Inspect ancestors before probing app/, including links above the code root.
+    $ancestor = $root
+    while ($ancestor) {
+        $item = Get-Item -LiteralPath $ancestor -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Shared PowerShell path contains a reparse point: $ancestor"
+        }
+        $ancestor = Split-Path -Path $ancestor -Parent
+    }
+    $appRoot = if (Test-Path -LiteralPath (Join-Path $root 'app') -PathType Container) {
+        Join-Path $root 'app'
+    } else { $root }
+    foreach ($relative in @('', 'kmtech_shared', 'kmtech_shared\powershell',
+        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1')) {
+        $path = if ($relative) { Join-Path $appRoot $relative } else { $appRoot }
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Shared PowerShell path contains a reparse point: $path"
+        }
+    }
+    $expectedManifestSha = '78383a0e962de35e03376ca2a43bbbcc94a1a801d101e8a6493174e9f804a9b2'
+    $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
+    if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
+    $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$lock.version -cne '0.3.0' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+        throw 'Shared consumer manifest pin mismatch.'
+    }
+    $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
+    if ((Get-Item -LiteralPath $manifestPath).Length -gt 65536) { throw 'Shared manifest is oversized.' }
+    [byte[]]$manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $actualManifestSha = ([BitConverter]::ToString($hash.ComputeHash($manifestBytes))).Replace('-', '').ToLowerInvariant()
+    } finally { $hash.Dispose() }
+    if ($actualManifestSha -cne $expectedManifestSha) { throw 'Shared manifest pin mismatch.' }
+    $pinnedSharedManifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($manifestBytes) | ConvertFrom-Json
+    $sharedLeaf = Join-Path $appRoot 'kmtech_shared\powershell\portable.ps1'
+    $expectedLeafSha = $pinnedSharedManifest.files.'kmtech_shared/powershell/portable.ps1'
+    $stream = [IO.File]::OpenRead($sharedLeaf)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $actualLeafSha = ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally { $hash.Dispose(); $stream.Dispose() }
+    if ($actualLeafSha -cne $expectedLeafSha) {
+        throw 'Shared PowerShell leaf pin mismatch.'
+    }
+    return $sharedLeaf
+}
+
+function Full([string]$Value, [string]$Purpose) {
+    return ConvertTo-KmtechFullPath $Value $Purpose
 }
 
 function Same([string]$Left, [string]$Right) {
@@ -77,15 +129,7 @@ function Same([string]$Left, [string]$Right) {
 }
 
 function Sha([string]$Path) {
-    $stream = [IO.File]::OpenRead($Path)
-    $hash = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $hash.Dispose()
-        $stream.Dispose()
-    }
+    return Get-KmtechFileSha $Path
 }
 
 function ByteSha([byte[]]$Bytes) {
@@ -322,7 +366,7 @@ function OnboardingArguments([string]$ServerBaseUrlValue) {
 }
 
 function Manifest([string]$Root, [bool]$UnsignedOk) {
-    foreach ($relative in @(
+    Assert-KmtechPortableTree $Root @(
         'portable-manifest.json',
         'runtime\python.exe',
         'runtime\pythonw.exe',
@@ -332,19 +376,8 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
         'INSTALL_THIS_PC.ps1',
         'tools\bootstrap_integrity.ps1',
         'tools\label_writer_fence.ps1'
-    )) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) {
-            throw "Portable tree is missing $relative."
-        }
-    }
-    foreach ($item in @((Get-Item $Root -Force)) + @(Get-ChildItem $Root -Force -Recurse)) {
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Portable tree contains a reparse point: $($item.FullName)"
-        }
-    }
-    $path = Join-Path $Root 'portable-manifest.json'
-    if ((Get-Item $path).Length -gt 65536) { throw 'Portable manifest is oversized.' }
-    $value = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    )
+    $value = Read-KmtechPortableManifest $Root
     if (
         [string]$value.schema -cne 'label-match-portable-tree-v1' -or
         [string]$value.entrypoint -cne 'runtime/pythonw.exe app/main.py' -or
@@ -358,13 +391,7 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
     ) {
         throw 'Portable manifest readback failed.'
     }
-    if (-not $UnsignedOk) {
-        foreach ($relative in @('runtime\python.exe', 'runtime\pythonw.exe')) {
-            if ([string](Get-AuthenticodeSignature (Join-Path $Root $relative)).Status -cne 'Valid') {
-                throw "Signed CPython readback failed: $relative"
-            }
-        }
-    }
+    Assert-KmtechCPythonSignature $Root $UnsignedOk
     return $value
 }
 
@@ -642,6 +669,17 @@ function FreezePlacementHelper(
         (Sha $frozenWriterFence) -cne $writerFenceSha256
     ) { throw 'Frozen placement helper readback differs.' }
 
+    $sourceSharedLeaf = Get-LabelSharedPortableLeafPath $Source
+    $sourceSharedApp = Split-Path (Split-Path (Split-Path $sourceSharedLeaf -Parent) -Parent) -Parent
+    $frozenSharedPaths = @()
+    foreach ($relative in @('kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1')) {
+        $target = Join-Path $frozenRoot $relative
+        [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)
+        [IO.File]::WriteAllBytes($target, [IO.File]::ReadAllBytes((Join-Path $sourceSharedApp $relative)))
+        $frozenSharedPaths += $target
+    }
+    [void](Get-LabelSharedPortableLeafPath $frozenRoot)
+
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $systemSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
     $adminSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
@@ -683,7 +721,7 @@ function FreezePlacementHelper(
         )))
     }
     Set-Acl -LiteralPath $frozenRoot -AclObject $acl
-    foreach ($frozenPath in @($frozenHelper, $frozenIntegrity, $frozenWriterFence)) {
+    foreach ($frozenPath in (@($frozenHelper, $frozenIntegrity, $frozenWriterFence) + $frozenSharedPaths)) {
         $fileAcl = [IO.File]::GetAccessControl($frozenPath)
         [void]$fileAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
             $userSid,
@@ -711,6 +749,7 @@ function FreezePlacementHelper(
         (Sha $frozenIntegrity) -cne $integritySha256 -or
         (Sha $frozenWriterFence) -cne $writerFenceSha256
     ) { throw 'Frozen placement helper changed while its ACL was applied.' }
+    [void](Get-LabelSharedPortableLeafPath $frozenRoot)
     return [pscustomobject][ordered]@{
         root = $frozenRoot
         helper_path = $frozenHelper
@@ -724,17 +763,27 @@ function FreezePlacementHelper(
 
 function InvokeFrozenIntegrityProbe($Frozen, [string]$Root) {
     $integrityPath = Join-Path ([string]$Frozen.root) 'tools\bootstrap_integrity.ps1'
-    [byte[]]$integrityBytes = PinnedFileBytes $integrityPath ([string]$Frozen.integrity_sha256)
-    $integrityText = (New-Object Text.UTF8Encoding($false, $true)).GetString(
-        $integrityBytes
-    )
+    [void](PinnedFileBytes $integrityPath ([string]$Frozen.integrity_sha256))
     $rootBase64 = [Convert]::ToBase64String(
         (New-Object Text.UTF8Encoding($false)).GetBytes($Root)
     )
-    $probeScript = $integrityText + "`n" +
-        "`$probeRoot = (New-Object Text.UTF8Encoding(`$false, `$true)).GetString(" +
-        "[Convert]::FromBase64String('$rootBase64'))`n" +
-        "[void](Assert-BootstrapIntegrityRecord `$probeRoot)`n"
+    # Keep the command below Windows' command-line limit as the pinned helper
+    # grows. The child rechecks its frozen bytes before evaluating any helper.
+    $probeScript = @'
+$ErrorActionPreference = 'Stop'
+[byte[]]$bytes = [IO.File]::ReadAllBytes('@@integrity-path@@')
+$hash = [Security.Cryptography.SHA256]::Create()
+try { $actual = ([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+finally { $hash.Dispose() }
+if ($actual -cne '@@integrity-sha@@') { throw 'Frozen integrity helper byte pin differs.' }
+$utf8 = New-Object Text.UTF8Encoding($false, $true)
+. ([ScriptBlock]::Create($utf8.GetString($bytes))) -SharedCodeRoot '@@shared-root@@'
+$probeRoot = $utf8.GetString([Convert]::FromBase64String('@@root-base64@@'))
+[void](Assert-BootstrapIntegrityRecord $probeRoot)
+'@.Replace('@@integrity-path@@', $integrityPath.Replace("'", "''")).Replace(
+        '@@integrity-sha@@', [string]$Frozen.integrity_sha256).Replace(
+        '@@shared-root@@', ([string]$Frozen.root).Replace("'", "''")).Replace(
+        '@@root-base64@@', $rootBase64)
     $encodedProbe = [Convert]::ToBase64String(
         [Text.Encoding]::Unicode.GetBytes($probeScript)
     )
@@ -813,7 +862,7 @@ function Get-RequiredExternalInteger($Object, [string]$Name) {
 [byte[]]$writerFenceBytes = PinnedBytes ([string]$payload.writer_fence_path) ([string]$payload.writer_fence_sha256)
 [byte[]]$helperBytes = PinnedBytes ([string]$payload.helper_path) ([string]$payload.helper_sha256)
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
-. ([ScriptBlock]::Create($utf8.GetString($integrityBytes)))
+. ([ScriptBlock]::Create($utf8.GetString($integrityBytes))) -SharedCodeRoot (Split-Path (Split-Path ([string]$payload.integrity_path) -Parent) -Parent)
 . ([ScriptBlock]::Create($utf8.GetString($writerFenceBytes)))
 $helper = [ScriptBlock]::Create($utf8.GetString($helperBytes))
 $parameterNames = @(
@@ -1201,6 +1250,7 @@ function Test-PristineInstallState(
 }
 
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
+. (Get-LabelSharedPortableLeafPath $SourceRoot)
 $source = Full $SourceRoot 'SourceRoot'
 $install = Full $InstallRoot 'InstallRoot'
 if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
