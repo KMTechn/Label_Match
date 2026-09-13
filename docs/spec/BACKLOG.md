@@ -6,7 +6,7 @@
 
 H-LM에서 `test_standard_operator_copy_describes_one_phs2_and_atomic_replacement`를 현행 요구와 대조했다. 제품 문구는 PHS2 1회 → 선택 F4 교체 → 랩핑 후 F3 완료에 맞으며, F4 목록의 일괄 적용 안내와 F3 로컬 내구 완료·중앙 ACK 표시는 각 화면에 유지한다. 제품 변경 없이 시험을 순서·선택 조건·새 전자 QR 확인·원본 유지·레거시 단계 배제 검사로 정정했다. W5-B2 fresh baseline의 문구 1 FAIL과 기본 경로 1 PASS는 별개 관찰로 보존하며, 재사용 환경의 기본 경로 실패는 synthetic onboarding 상태의 영향이다. [요구 대조·현재 focused 검증](D:/KMTech/program-improvement-20260912/work/Label_Match/w6hlm/RESULT.md)과 [원 검증·격리 근거](operations.md#carrier-identity-w5b2)를 따른다.
 
-**기존 실패(H-LM 범위 밖, 후속 분류):** 확장 검사의 restored-F4 workbench 6건은 변경 전 `428a3b7` Git archive와 현 작업 트리에서 같은 조건으로 재현했다. 시험은 `_current_sealed_transfer_exchange_attempt`를 mock하지만 renderer는 `_package_review_snapshot`을 읽는 차이가 있다. 원 실패와 입력·대조 근거는 위 H-LM 보고에 보존하며 시험·제품은 수정하지 않는다. 기존 여섯 모듈 Label pack의 **531 PASS**와 이 여섯 FAIL은 별개 결과다.
+**H-LM2 · restored-F4 workbench 6건 정합:** `aa12be1`의 의도된 worker snapshot 전환 뒤에도 옛 동기 accessor를 mock하던 시험으로 분류했다. 현재 context의 `_package_review_snapshot`을 입력으로 사용하며 네 blocked-action 벡터의 원 안내·F3/F4/입력/F1 상태, 기존 blocking notice 우선, 후속 빈 관측에서만 해제되는 조건과 원 세트 보존을 검증한다. 렌더의 동기 accessor 조회는 없어야 한다. 제품·계약·pin과 기존 기대값은 유지하며 skip/xfail은 추가하지 않았다. [분류표·도입 근거·현재 검증](D:/KMTech/program-improvement-20260912/work/Label_Match/w6hlm2/RESULT.md)을 따른다. H-LM의 `428a3b7` archive, LM-1/LM-2 전후의 동일 6 FAIL 및 이번 수정 전 6 FAIL은 보존한다. 당시 여섯 모듈 **531 PASS**는 해당 버전·선택의 별도 결과다.
 
 ## X13-B · PowerShell leaf 채택
 

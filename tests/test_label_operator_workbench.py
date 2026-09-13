@@ -761,9 +761,12 @@ def test_restored_exchange_guidance_matches_blocked_actions(
     )
     app._workflow_recovered = True
     original = copy.deepcopy(app.current_set_info)
-    attempt = SimpleNamespace(
+    attempt = label_match_module.ExchangeReviewSnapshot(
         status=status, idempotency_key=command_key,
         seal_verification_status=seal_status, local_apply_status="PENDING",
+    )
+    app._package_review_snapshot = label_match_module.PackageReviewSnapshot(
+        context=app._package_review_context(), reviews=(), exchange=attempt,
     )
     app._current_sealed_transfer_exchange_attempt = Mock(return_value=attempt)
 
@@ -781,7 +784,7 @@ def test_restored_exchange_guidance_matches_blocked_actions(
     )
     assert app.entry.cget("state") == "disabled"
     assert app.reset_button.cget("state") == "disabled"
-    app._current_sealed_transfer_exchange_attempt.assert_called_once_with()
+    app._current_sealed_transfer_exchange_attempt.assert_not_called()
     assert app.current_set_info == original
 
 
@@ -793,17 +796,21 @@ def test_exchange_guidance_preserves_existing_blocking_notice(operator_workbench
     )
     notice = label_match_module.WorkflowNotice("저장 복구 필요", "저장 상태를 확인하세요.")
     app._workflow_blocking_notice = notice
-    app._current_sealed_transfer_exchange_attempt = Mock(return_value=SimpleNamespace(
+    attempt = label_match_module.ExchangeReviewSnapshot(
         status="OPERATOR_REVIEW", idempotency_key="saved-command",
         seal_verification_status="PENDING", local_apply_status="PENDING",
-    ))
+    )
+    app._package_review_snapshot = label_match_module.PackageReviewSnapshot(
+        context=app._package_review_context(), reviews=(), exchange=attempt,
+    )
+    app._current_sealed_transfer_exchange_attempt = Mock(return_value=attempt)
 
     view = app._render_operator_workbench()
 
     assert view.notice == notice
     assert app.big_display_label.cget("text") == "작업 확인 필요"
     assert app.exact_rescan_button.cget("state") == "disabled"
-    app._current_sealed_transfer_exchange_attempt.assert_called_once_with()
+    app._current_sealed_transfer_exchange_attempt.assert_not_called()
 
 
 def test_exchange_guidance_clears_when_existing_attempt_no_longer_blocks(operator_workbench):
@@ -813,22 +820,26 @@ def test_exchange_guidance_clears_when_existing_attempt_no_longer_blocks(operato
         central_inherit_all=True,
     )
     original = copy.deepcopy(app.current_set_info)
-    app._current_sealed_transfer_exchange_attempt = Mock(side_effect=[
-        SimpleNamespace(
+    app._package_review_snapshot = label_match_module.PackageReviewSnapshot(
+        context=app._package_review_context(), reviews=(),
+        exchange=label_match_module.ExchangeReviewSnapshot(
             status="OPERATOR_REVIEW", idempotency_key="saved-command",
             seal_verification_status="PENDING", local_apply_status="PENDING",
         ),
-        None,
-    ])
+    )
+    app._current_sealed_transfer_exchange_attempt = Mock()
 
     assert app._render_operator_workbench().f3_enabled is False
+    assert app._render_operator_workbench().f3_enabled is False
+    # A fresh worker observation releases the block; rendering alone does not.
+    app._package_review_snapshot = app._package_review_snapshot._replace(exchange=None)
     view = app._render_operator_workbench()
 
     assert view.current_stage == "package_ready"
     assert view.notice is None
     assert view.next_action == "랩핑 후 F3 포장 완료"
     assert app.manual_complete_button.cget("state") == "normal"
-    assert app._current_sealed_transfer_exchange_attempt.call_count == 2
+    app._current_sealed_transfer_exchange_attempt.assert_not_called()
     assert app.current_set_info == original
 
 
