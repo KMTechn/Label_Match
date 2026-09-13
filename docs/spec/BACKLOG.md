@@ -4,7 +4,9 @@
 
 [현행 carrier/legacy/Item Code 포트](carrier_identity.md)는 기존 동작을 명시 인자로 옮긴 경계다. W5-L 공용 leaf는 두 실제 소비자의 입력·반환·오류 의미가 동등하다는 근거 뒤에만 검토한다. raw workflow와 스캔 Base64, compact와 legacy, sample과 exact membership의 차이를 통합하지 않는다. 실제 새 제품 정책·profile/schema 활성화와 PHS2/receipt/hash 변경은 별도 요구·레인 소유이며 이번 작업으로 활성화하지 않는다.
 
-기존 `test_standard_operator_copy_describes_one_phs2_and_atomic_replacement`는 현행 안내 문구와 불일치해 기준 소스에서도 실패한다. UI 문구/테스트 정합은 이 parser 추출 범위 밖 발견으로 남긴다. [검증 범위와 격리 근거](operations.md#carrier-identity-w5b2)를 따른다.
+H-LM에서 `test_standard_operator_copy_describes_one_phs2_and_atomic_replacement`를 현행 요구와 대조했다. 제품 문구는 PHS2 1회 → 선택 F4 교체 → 랩핑 후 F3 완료에 맞으며, F4 목록의 일괄 적용 안내와 F3 로컬 내구 완료·중앙 ACK 표시는 각 화면에 유지한다. 제품 변경 없이 시험을 순서·선택 조건·새 전자 QR 확인·원본 유지·레거시 단계 배제 검사로 정정했다. W5-B2 fresh baseline의 문구 1 FAIL과 기본 경로 1 PASS는 별개 관찰로 보존하며, 재사용 환경의 기본 경로 실패는 synthetic onboarding 상태의 영향이다. [요구 대조·현재 focused 검증](D:/KMTech/program-improvement-20260912/work/Label_Match/w6hlm/RESULT.md)과 [원 검증·격리 근거](operations.md#carrier-identity-w5b2)를 따른다.
+
+**기존 실패(H-LM 범위 밖, 후속 분류):** 확장 검사의 restored-F4 workbench 6건은 변경 전 `428a3b7` Git archive와 현 작업 트리에서 같은 조건으로 재현했다. 시험은 `_current_sealed_transfer_exchange_attempt`를 mock하지만 renderer는 `_package_review_snapshot`을 읽는 차이가 있다. 원 실패와 입력·대조 근거는 위 H-LM 보고에 보존하며 시험·제품은 수정하지 않는다. 기존 여섯 모듈 Label pack의 **531 PASS**와 이 여섯 FAIL은 별개 결과다.
 
 ## X13-B · PowerShell leaf 채택
 

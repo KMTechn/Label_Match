@@ -427,10 +427,16 @@ def test_standard_operator_copy_describes_one_phs2_and_atomic_replacement():
     assert app._idle_instruction_text() == "PHS2 현품표 1장 스캔"
     assert app._standard_phs2_workflow_expected() is True
     hint = app._operator_workflow_hint_text()
-    assert "PHS2 1회 스캔" in hint
-    assert "F4 교체 목록 확인·일괄 적용" in hint
-    assert "F3 포장 완료" in hint
-    assert "전체 재스캔" not in hint
+    scan, replacement, completion = hint.split("→")
+    assert "현품표" in scan and "1회 스캔" in scan
+    assert "필요 시" in replacement and "제품 교체" in replacement
+    assert "F4" in replacement
+    assert "랩핑 후" in completion and "포장 완료" in completion
+    assert "F3" in completion
+    assert "새 전자 QR을 확인" in hint
+    assert "원본 현품표는 유지" in hint
+    for legacy_step in ("5단계", "제품 3개", "최종 라벨", "전체 재스캔"):
+        assert legacy_step not in hint
     presentation_source = app._workflow_view_source()
     assert presentation_source["central_inherit_all"] is True
     assert "central_inherit_all" not in app.current_set_info
