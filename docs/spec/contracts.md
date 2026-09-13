@@ -20,6 +20,8 @@ Manifest는 기존 required-file 순서 → bounded parse → LM schema/field/ha
 
 core는 connection이나 commit/rollback을 소유하지 않는다. 실제 relay `_set_relay_status`의 ACK 변경과 다음 token 저장은 같은 열린 SQLite transaction에서 commit하며, 중단 시 둘 다 rollback한다. LM의 명시 reviewed 복구는 아래 정책 그대로 앱에 남고 자동 만료 초기화 정책으로 대체하지 않는다. [검증과 한계](operations.md#shared-runtime-x05b).
 
+W5-S0의 scope facade·ensure·prepare는 같은 credentials/install 식을 named 인자로 전달하고, profile/legacy factory는 기존 `PackageClientConfig`를 `config=config`로 전달한다. signature·positional 호출·기본값·profile 선택/검증 순서는 유지한다. runtime DB의 endpoint/producer/key/install 해시는 물류 authority scope와 별개이며, 새 관리 필드·scope migration·queued metadata/command/receipt/HMAC 재작성은 없다. [전후 parity](operations.md#named-context-w5s0)를 따른다.
+
 ## Committed stale-runtime review의 명시적 복구 · 2026-09-12
 
 기존 `ack-reviewed --recover-expired-runtime`만 독립 검토된 committed `STALE_RUNTIME_FENCE` 수신의 local ACK와 만료 authority 재개를 같은 SQLite transaction에서 처리한다. 기존 source/request/hash/byte/count·receipt 검증을 유지하고 실제 보존 spool도 대조한다. 단일 authority의 scope/install·runtime ID·fence·lease ID·expiry와 terminal public key/token audit digest를 결속하며, future expiry·다른 review 원인·assignment/pending/token·다른 미종결 runtime-bound row가 있으면 변경 없이 거부한다. 현재 producer credential·원 relay/metadata/spool/receipt는 바꾸지 않는다.

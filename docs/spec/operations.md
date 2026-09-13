@@ -52,13 +52,22 @@ PROVEN: 기존 baseline83 PASS, renderer/packaging/writer49 PASS, 정본 50개 R
 <a id="shared-runtime-x05b"></a>
 ## X05-B · producer runtime facade
 
-0.3.1 pin의 변경 없는 runtime 25함수에 JSON/HMAC framing·시각·retry·scope·redaction, metadata/grant/receipt/liveness binding, schema/state 및 caller-transaction SQL을 위임한다. `RuntimePreparation`과 나머지 11개 adapter 함수는 AST 불변이다. identity 생성·CNG 검증 callback은 현재 앱 함수를 전달하며 transport/TLS·connection·writer admission과 LM `reopen_reviewed_runtime_in_transaction` 정책을 유지한다. 정본 대응 함수/남긴 adapter 전체는 [결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x05b/RESULT.md)에 기록한다.
+0.3.1 pin의 변경 없는 runtime 25함수에 JSON/HMAC framing·시각·retry·scope·redaction, metadata/grant/receipt/liveness binding, schema/state 및 caller-transaction SQL을 위임한다. `RuntimePreparation`과 앱 adapter를 유지하며 W5-S0의 ensure/prepare 변경은 scope 호출의 인자 이름에 한정한다. identity 생성·CNG 검증 callback은 현재 앱 함수를 전달하며 transport/TLS·connection·writer admission과 LM `reopen_reviewed_runtime_in_transaction` 정책을 유지한다. 정본 대응 함수/남긴 adapter 전체는 [결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x05b/RESULT.md)에 기록한다.
 
 Windows Python3.12.10 headless: 기존 `tests/test_producer_runtime_client.py` **45 PASS, bytes 무수정**, 새 facade 회귀 **7 PASS**. 실제 앱 ACK transaction에서 core rotation 후 외부 reader에는 이전 상태만 보이고, 강제 중단 시 ACK/token 모두 rollback하며 같은 예약으로 재개한다. issue 재시도·만료 교체·terminal fallback에서 현재 앱 identity/JWK callback을 사용한다. 기존 lost-ACK·두 worker 한 token·scope/owner·stale/expiry·reviewed 복구 성공/거부·audit 실패 회귀를 유지한다.
 
 최종 W1–4/X04-B 선택은 기존 723개와 새 회귀 7개를 포함한 **730 PASS / 174.80초**, 실패·오류·skip0이다. source 함수/서명·정본 byte 대조와 writer `--check`, 실제 frozen 호출 인자 검증을 통과했다. 격리 C 합성 입력·D 로그/JUnit과 실행 노드는 위 결과에 보존하며 전체 suite/실제 업무 수용으로 확대하지 않는다.
 
-portable의 기존 package 포함 목록은 runtime 파일을 포함하고 실제 frozen builder는 `kmtech_shared.runtime` hidden import를 전달한다. factory lock·catalog/raster bytes와 writer 44개 record/양쪽 pin은 유지한다. GUI·VM·서버·실제 설치·전체 ZIP/실제 PyInstaller build와 성능은 NOT VERIFIED다.
+portable의 기존 package 포함 목록은 runtime 파일을 포함하고 실제 frozen builder는 `kmtech_shared.runtime` hidden import를 전달한다. factory lock·catalog/raster bytes와 writer 44개 identity/guard는 유지한다. GUI·VM·서버·실제 설치·전체 ZIP/실제 PyInstaller build와 성능은 NOT VERIFIED다.
+
+<a id="named-context-w5s0"></a>
+## W5-S0 · 기존 context의 named 전달
+
+runtime scope facade·ensure·prepare의 3호출과 profile/legacy 공통 `PackageLogisticsClient(config=config, ...)` 1호출만 명명했다. profile→config는 이미 named이며 signature·positional 호환·기본값·검증 순서와 X05 정본 bytes는 유지한다. 기존 writer 생성기의 44개 identity/위치/guard는 같고 package 소스 변경에 따른 Python/PowerShell pin만 `93d7055bc94ca3bb21e3d1a817d070c298dd13dc8ba4d52b519529b22ae34574`로 재생성했다.
+
+최종 제품/pin·격리 입력 변경 뒤 Windows headless 기존 runtime45·facade7·profile69·package156·writer4·F3/자정3은 **284 PASS**, 실패/오류/skip0이다. 고정 clock·nonce 시퀀스·JWK의 전후 **10항목 동일**: raw request/metadata JSON·auth/HMAC, receipt·저장 상태, lost ACK, reviewed 만료 복구/복구 lease ACK 유실, scope와 profile/legacy/absent 결과다. 전체 두 모듈 AST는 네 호출 이름을 되돌리면 기준과 같고 기존 generator의 inventory `--check`도 PASS다. [RESULT·정확한 노드/로그·초기 fixture 실패](D:/KMTech/program-improvement-20260912/work/Label_Match/w5s0/RESULT.md)를 따른다.
+
+시험 입력·TEMP/TMP·데이터와 로그/JUnit은 D 작업 루트에 격리했다. 명시 reviewed 복구·F3 durable→성공→ACK·자정 기존 set, queued 결속·carrier port는 유지한다. GUI·VM·서버·실물 출력·설치·성능은 NOT VERIFIED이며, 새 관리 필드·migration·다중 scope 기능으로 확대하지 않는다.
 
 <a id="committed-stale-runtime-recovery-20260912"></a>
 ## 2026-09-12 · Committed stale-runtime의 지원 복구 교정

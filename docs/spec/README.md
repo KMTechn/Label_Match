@@ -10,6 +10,8 @@
 
 `producer_runtime_client`의 25개 leaf/binding/transaction 함수는 고정 `kmtech_shared.runtime`을 호출한다. LM transport·writer admission·신원 callback·명시 reviewed 복구와 caller ACK transaction은 [X05-B](operations.md#shared-runtime-x05b) 경계에 유지한다.
 
+W5-S0는 runtime scope 3호출과 profile/legacy 공통 package-client 생성에 기존 값을 이름 있는 인자로 전달한다. signature·positional 호환·wire·복구는 유지하며 [검증 범위](operations.md#named-context-w5s0)를 따른다.
+
 ## 2026-09-12 · Committed stale-runtime review 지원 복구
 
 정상 재시도에서 raw APP_CLOSE는 committed였지만 만료 runtime 거부로 authority가 review에 남았다. Main/Web의 독립 판정에 따라 기존 ack-reviewed에 단일 만료 authority의 명시적 복구를 추가하고 새19·기존13 focused host 검사를 통과했다. 현재 원 VM은 Saved/0이며 실제 복구·Today30/30은 [최종 candidate 검토와 배정 경계](operations.md#committed-stale-runtime-recovery-20260912)를 따른다.

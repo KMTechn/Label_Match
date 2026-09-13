@@ -28,6 +28,8 @@ X13-B package pin은 0.3.1/5파일이며 catalog/raster/runtime 계산 bytes는 
 
 25개 leaf/binding/transaction 함수를 pinned runtime facade로 채택하고 기존 runtime45·새 callback/ACK 원자성7 회귀를 통과했다. [검증 경계](operations.md#shared-runtime-x05b)의 LM reviewed 복구·transport·writer admission·신원 생성·예약 orchestration은 앱에 남는다. 실제 현장 복구/설치 수용은 기존 업무에 남으며 CA의 자동 복구 정책이나 전체 onboarding/relay 공통화로 확대하지 않는다.
 
+W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달을 적용했다([검증](operations.md#named-context-w5s0)). 다음 DI → IW → RW 확장은 각각 감사 HMAC/replay 권한·return/outbox, ledger/outbox·maintenance admission, 고정 provider·queue/writer identity를 보존하는 별도 소유 단위다. RW 검증은 직렬이며 tenant/customer/line·다중 scope·새 Shared leaf는 이번에 도입하지 않는다.
+
 ## LM-W2 · 감사 응답성 개선
 
 - 최종 w2fix3 host 검증은 **469 PASS**, R1–R5 재현 **28 PASS**, walkthrough/원 R6 **21 PASS**·소비자 집합 **1 PASS**·추가 호출자 **3 PASS**다. 기존469 노드 누락0으로 W1 감사350·내구33·이력40·B01/B03 응답성10을 유지한다. R4/R5와 수정 전 R6 실패는 보존하며 [최종 JUnit·원 실패·잔여 범위](operations.md#responsiveness-w2)를 따른다.

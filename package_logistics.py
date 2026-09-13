@@ -5844,7 +5844,7 @@ def package_client_from_env(
             ).strip(),
         )
     try:
-        client = PackageLogisticsClient(config, transport=transport)
+        client = PackageLogisticsClient(config=config, transport=transport)
     except PackageLogisticsError as exc:
         raise LogisticsRuntimeConfigurationError(
             "Label logistics runtime profile is invalid"
