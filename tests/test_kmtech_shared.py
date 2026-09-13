@@ -16,17 +16,12 @@ from tools import build_portable_release_candidate as builder
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CHECKER = ROOT.parent / "kmtech_shared/manifest/sync_shared.py"
+CHECKER = ROOT / "qualification/check_kmtech_shared.py"
 
 
 def _check(root):
-    lock = json.loads((root / "kmtech_shared.lock.json").read_bytes())
-    manifest = json.loads((root / "kmtech_shared.manifest.json").read_bytes())
-    assert lock["version"] == manifest["version"]
     return subprocess.run(
-        [sys.executable, "-B", str(CHECKER), "--check", "--root", str(root),
-         "--manifest", str(root / "kmtech_shared.manifest.json"),
-         "--expected-sha256", lock["manifest_sha256"]],
+        [sys.executable, "-I", "-B", str(CHECKER), "--check", "--root", str(root)],
         capture_output=True, text=True, check=False, timeout=30,
     )
 
@@ -47,7 +42,7 @@ def test_pinned_shared_source_and_packaging_inputs():
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra", "changed", "manifest"])
-def test_canonical_checker_rejects_shared_source_drift(tmp_path, mutation):
+def test_local_checker_rejects_shared_source_drift(tmp_path, mutation):
     shutil.copytree(ROOT / "kmtech_shared", tmp_path / "kmtech_shared")
     for name in ("kmtech_shared.manifest.json", "kmtech_shared.lock.json"):
         shutil.copyfile(ROOT / name, tmp_path / name)
@@ -64,6 +59,73 @@ def test_canonical_checker_rejects_shared_source_drift(tmp_path, mutation):
     result = _check(tmp_path)
     assert result.returncode == 1
     assert "FAIL:" in result.stderr
+
+
+@pytest.mark.parametrize("mutation", ["version", "hash", "fields", "malformed"])
+def test_local_checker_rejects_invalid_lock(tmp_path, mutation):
+    shutil.copytree(ROOT / "kmtech_shared", tmp_path / "kmtech_shared")
+    shutil.copyfile(ROOT / "kmtech_shared.manifest.json", tmp_path / "kmtech_shared.manifest.json")
+    lock = json.loads((ROOT / "kmtech_shared.lock.json").read_bytes())
+    if mutation == "version":
+        lock["version"] = "0.0.0"
+    elif mutation == "hash":
+        lock["manifest_sha256"] = "0" * 64
+    elif mutation == "fields":
+        lock.pop("manifest_sha256")
+    path = tmp_path / "kmtech_shared.lock.json"
+    path.write_text("{" if mutation == "malformed" else json.dumps(lock), encoding="utf-8")
+    result = _check(tmp_path)
+    assert result.returncode == 1
+    assert "FAIL:" in result.stderr
+
+
+def test_local_checker_tests_pass_without_sibling_checkout(tmp_path):
+    app = tmp_path / "app"
+    builder._copy_application(ROOT, app)
+    for name in ("tests/test_kmtech_shared.py", "tests/integration/check_kmtech_shared_canonical.py",
+                 "qualification/check_kmtech_shared.py", "tools/build_portable_release_candidate.py",
+                 "tools/build_frozen_release_candidate.ps1"):
+        target = app / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    assert not (app.parent / "kmtech_shared").exists()
+    code = """
+import pathlib, sys
+app = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(app))
+def guard(event, args):
+    if event in {'socket.connect', 'socket.bind'}:
+        raise RuntimeError('Standalone pin test forbids network')
+sys.addaudithook(guard)
+import tkinter
+def deny(*args, **kwargs):
+    raise RuntimeError('Standalone pin test forbids GUI')
+tkinter.Tk.__init__ = deny
+tkinter.Toplevel.__init__ = deny
+import pytest
+result = pytest.main(sys.argv[2:])
+for name in ('kmtech_shared', 'kmtech_zero_pe', 'tools.build_portable_release_candidate'):
+    assert pathlib.Path(sys.modules[name].__file__).resolve().is_relative_to(app), name
+raise SystemExit(result)
+"""
+    command = [sys.executable, "-I", "-B", "-c", code, str(app),
+               "-q", "-p", "no:cacheprovider", "--tb=short", "--rootdir", str(app),
+               "--basetemp", str(tmp_path / "child-pytest")]
+    test = str(app / "tests/test_kmtech_shared.py")
+    result = subprocess.run(
+        [*command, test + "::test_pinned_shared_source_and_packaging_inputs",
+         test + "::test_local_checker_rejects_shared_source_drift"],
+        cwd=app, capture_output=True, text=True, check=False, timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "5 passed" in result.stdout
+    collected = subprocess.run(
+        [*command, "--collect-only", "tests"], cwd=app,
+        capture_output=True, text=True, check=False, timeout=120,
+    )
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    assert "test_pinned_shared_source_and_packaging_inputs" in collected.stdout
+    assert "test_canonical_shared_source_matches_app_checker" not in collected.stdout
 
 
 def test_every_image_factory_retains_label_class_signature_and_png_bytes(tmp_path):

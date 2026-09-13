@@ -4,6 +4,8 @@
 
 catalog 8개 leaf·renderer 호환 facade·고정 package·manifest/lock·portable/PyInstaller 생성 입력을 채택했다. [headless 검증](operations.md#shared-core-x04b)에서 v2 bytes/복구·LM profile/URL/진단 adapter, PNG/QR/반환 class와 기존 writer 경계를 확인했다. 인증 I/O·복구·snapshot의 추가 공통화는 이번 pin에 없는 후속 범위이며 실제 GUI·인쇄·설치 수용은 LM-B04에 남는다.
 
+단독 checkout의 pin 검사는 앱 QA 진입점에서 자급하며 정본 교차 대조는 명시 실행 노드로 분리한다. 정본 checker 갱신 시 [검사 절차](operations.md#shared-core-x04b)로 복사된 검증 함수의 동등성을 확인한다.
+
 ## LM-W2 · 감사 응답성 개선
 
 - 최종 w2fix3 host 검증은 **469 PASS**, R1–R5 재현 **28 PASS**, walkthrough/원 R6 **21 PASS**·소비자 집합 **1 PASS**·추가 호출자 **3 PASS**다. 기존469 노드 누락0으로 W1 감사350·내구33·이력40·B01/B03 응답성10을 유지한다. R4/R5와 수정 전 R6 실패는 보존하며 [최종 JUnit·원 실패·잔여 범위](operations.md#responsiveness-w2)를 따른다.

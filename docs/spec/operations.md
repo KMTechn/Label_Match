@@ -5,7 +5,11 @@
 
 정본 `kmtech_shared` HEAD `3c49997`의 package 3개를 byte 그대로 포함한다. code pin은 `c8098202ccb8a34650f9f8f4c40c2a943f1da2e0`, version은 `0.1.0`, manifest SHA256은 `4e4f6eaa138b7702db498c913e1dc7f2aae60a4e52f9976dd6599cec827ac8d4`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
 
-`tests/test_kmtech_shared.py`가 소비자 lock의 고정 hash를 정본 `manifest/sync_shared.py --check --root <앱> --manifest <앱>/kmtech_shared.manifest.json --expected-sha256 <lock 값>`에 전달하고 누락·추가·내용/manifest 변조 거부 및 portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
+`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 3파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `3c49997`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
+
+정본 checkout을 함께 가진 개발자는 `python -B -m pytest -q -p no:cacheprovider tests/integration/check_kmtech_shared_canonical.py`를 명시 실행한다. 이 노드는 검사 함수 source·상수·manifest bytes를 대조하고 정본 checker에 앱 lock의 고정 hash를 전달한다. 파일명으로 기본 수집에서 제외하며, 명시 실행에서 형제가 없으면 skip 없이 실패한다.
+
+[단독 checkout 후속 검증](D:/KMTech/program-improvement-20260912/work/Label_Match/x04bstandalone/RESULT.md)은 형제 없는 동일 5개 시험의 **수정 전 5 FAIL → 수정 후 5 PASS**, 기존 718개와 새 회귀 5개를 포함한 **723 PASS / 179.79초**, 명시 정본 대조 PASS다. QA 진입점·테스트·문서만 변경하며 제품 코드·shared pin·writer pin은 유지한다.
 
 catalog 8개 leaf만 정본에 위임한다. 나머지 46개 함수/class는 baseline과 AST 동일하며 profile/credential·URL 승인·빈 port 거부·넓은 redaction/context·시작 정책·인증 I/O/복구·snapshot은 LM에 남는다. 기존 catalog56개 무수정과 새 shared9개, 합계65 PASS다. baseline에서 고정한 v2 sidecar를 그대로 읽고 동일 bytes로 쓰며 token rotation 거부·last-good 복구·verified snapshot을 검증했다. 독립 baseline 대조는 CSV20/URL10/authenticated payload330과 URL 상호 판정을 통과했다.
 
