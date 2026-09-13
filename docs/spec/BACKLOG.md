@@ -223,6 +223,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="lm-b05"></a>
 ## LM-B05 · 기존 PASS 적용 범위와 남은 수용 검증 매핑
 
+- LM-2의 포장 물류 분리는 [기존 API·동등성 검증](operations.md#module-boundaries-lm2) 범위다. 기존 workbench 6 FAIL과 GUI·설치·실제 transport 수용은 별도이며 분리로 종결하지 않는다.
+
 - LM-1의 저장·이력 계산 모듈 분리는 기존 API·root·내구 저장 계약을 유지하는 소스 변경이다. [동등성·회귀 범위](operations.md#module-boundaries-lm1)와 실제 설치·화면 수용을 구분한다.
 
 - 유형/우선: **증거 매핑·승인된 잔여 소스 종결 완료 / native·통합 수용 공백 OPEN · P1**. 한정 실행 수를 전체 제품 완료로 해석하지 않는다.
