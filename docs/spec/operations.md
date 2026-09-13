@@ -5,6 +5,8 @@
 
 `package_command_draft.py`는 불변 draft·멤버십/명령 증거 계산을, `package_errors.py`는 공유 오류 타입·retry 상한을 소유한다. 기존 `package_logistics` import는 같은 객체를 재노출하며 command key·membership·expected_versions·오류 계약을 유지한다. GUI·relay·취소 caller는 기존 진입점을 사용한다.
 
+`package_outbox.py`는 기존 생성 outbox의 transaction·내구 marker·due retry·review 저장을 소유한다. façade 생성자는 호출 시점의 clock·schema·review helper를 전달하고 취소 outbox와 공유 schema는 기존 파일에 둔다. SQL·commit/rollback·CSV 투영 순서와 저장 bytes는 유지한다.
+
 검증은 [LM-2 실행 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm2/RESULT.md)의 AST·동일 입력 전후 벡터·기존 focused 시험에 한정한다. GUI·설치·프린터·실물 모니터·relay 실서버는 별도 검증 대상이다.
 
 <a id="module-boundaries-lm1"></a>

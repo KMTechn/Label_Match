@@ -1,6 +1,6 @@
 # Label_Match 기술 명세
 
-포장 draft·오류의 구현은 독립 모듈에 두고 기존 `package_logistics` API를 유지한다([LM-2 경계](operations.md#module-boundaries-lm2)).
+포장 draft·오류·생성 outbox의 구현은 독립 모듈에 두고 기존 `package_logistics` API를 유지한다([LM-2 경계](operations.md#module-boundaries-lm2)).
 
 `DataManager`의 이벤트 writer·현재 세트 저장은 [label_data_manager.py](../../label_data_manager.py)에 있고 기존 `Label_Match.DataManager` 생성·save/load API를 유지한다. [label_history.py](../../label_history.py)는 이력 CSV 읽기·집계 계산을 담당하고 generation·활성 입력 gate·화면 chunk 적용은 앱에 남긴다. 저장 루트 선택과 중단·자정 복구는 앱이 소유하며 [LM-1 경계](operations.md#module-boundaries-lm1)를 따른다.
 
