@@ -33,7 +33,7 @@ def create_activity_pane(
     self.operator_notebook.add(self.session_tab, text="이번 세션")
     self.operator_session_heading_label = ttk.Label(
         self.session_tab,
-        text="최근 완료",
+        text="최근 로컬 기록",
         style="Header.TLabel",
     )
     self.operator_session_heading_label.grid(

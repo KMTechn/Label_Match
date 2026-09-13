@@ -36,6 +36,8 @@ W5-S0의 scope facade·ensure·prepare는 같은 credentials/install 식을 name
 
 ## 일상 화면의 정보 경계 · 2026-09-12
 
+`최근 로컬 기록`은 현재 이력표의 최근 30행에서 진행·통과·오류 결과를 그대로 표시한다. 중앙 receipt나 완료 marker를 조회해 선별한 목록이 아니며 중앙 포장 확정·producer 수신을 입증하지 않는다.
+
 durable PHS2 capture가 완료된 입력만 scan Entry에서 지운다. serial lane이 Entry를 비활성화한 동안에도 지울 수 있도록 위젯 상태를 잠시 전환하고 즉시 원래 상태로 돌린다. 실패·busy·미수락 입력과 F-key/focus 조건은 보존한다.
 
 대기 화면의 read-only SQLite snapshot은 deferred capture와 실제 `package_command_outbox`를 함께 조회한다. 원 `state_counts`와 package status는 그대로 노출하며 operator 집계에서만 같은 set·정확한 downstream ref의 `SUPERSEDED` handoff를 중복 제외한다. package PENDING은 전송 대기, SENDING은 결과 확인, CONFLICT는 관리자 확인이며 ACKED도 로컬 completion marker가 있어야 완료로 센다. 지원 복구에서 이미 dismiss된 prewrite CONFLICT는 종결-미완료로 표시하며 관리자 확인/최장 대기를 다시 열지 않는다. 실제 대상이 없는 SUPERSEDED와 CANCELLED는 미완료로 남긴다. producer relay의 별도 settlement를 이 집계로 판정하지 않는다.

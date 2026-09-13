@@ -490,6 +490,22 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
         "Timestamp",
     )
 
+    # Local history can include unfinished and failed rows without a central ACK.
+    results = (app.Results.IN_PROGRESS, app.Results.PASS, app.Results.FAIL_INPUT_ERROR)
+    for index, result in enumerate(results):
+        app.history_tree.insert(
+            "", "end", iid=str(index),
+            values=(index, "LOCAL-PHS2", *([""] * (app.TOTAL_SCAN_COUNT - 1)), result, "12:34:56"),
+        )
+    app._refresh_session_tree()
+    assert tuple(
+        app.session_tree.item(iid, "values")[2]
+        for iid in app.session_tree.get_children()
+    ) == results
+    heading = app.operator_session_heading_label.cget("text")
+    assert "로컬" in heading
+    assert "기록" in heading
+
 
 @pytest.mark.parametrize("retry_count", [0, 2])
 def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
