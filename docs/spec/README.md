@@ -65,6 +65,8 @@ Main의 F1 독립 감사에 따라 cancel07은 현재 세트의 정확한 owned�
 host 370 PASS와 만료 보존 lease의 최종 22 PASS는 source 범위다. [원래 세트 native F1·정상 재시작](operations.md#f1-cancel07-native)은 해당 후보에서 실제 확인했으며, 새 case04 업무와 최종 artifact lifecycle은 아직 별도 수용 범위다. 실패와 이전 timing06 증거는 각 원래 범위로 보존한다.
 
 
+<a id="evidence-scope"></a>
+<a id="기준과-판정-범위"></a>
 ## 기준과 판정 범위
 
 2026-09-08 새 VM 수용은 원래 HTTP409·등록 복구 epoch 4·relay 재시작 및 successor 설치 실패를 보존한다. 현재 후보의 실제 설치·입력·상태 보존과 직전 후보의 F3 서버 확정은 위 범위로 구분한다. 앱 READY는 등록 상태이며 전체 업무·운영 수용 완료를 뜻하지 않는다.
@@ -106,6 +108,8 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 업데이트 조회·서명 검증은 유지하며 앱 내부 apply/batch/prompt는 제거했다. 코드 배치와 integrity 재생성은 [외부 installer](operations.md)의 책임이다.
 
+<a id="supported-workflows"></a>
+<a id="사용자경계지원-경로"></a>
 ## 사용자·경계·지원 경로
 
 포장 작업자는 이름 귀속, 스캔, 실물 대조·랩핑, 완료·취소를 수행한다. 작업 리더/관리자는 충돌 실물과 복구 사건을 인계받는다. 기계 API 권한과 작업자 표시명은 다르다([protected_admin](../../protected_admin.py), [계약 C-00](contracts.md#c-00)). ERPNext는 별도 제품이며 그 스캔 한도를 이 앱의 업무 제한으로 적용하지 않는다. 상류 PHS 발행·검사·이적 전체 구현은 본 앱 소유가 아니다([공정 계약](../../../WorkerAnalysisGUI-web/docs/PHS2_RESIDUAL_PROCESS_CONTRACT.md)).
@@ -140,6 +144,8 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 | busy 중 추가 스캔 | 접수되지 않은 입력칸 값을 보존; idle 뒤 한 번 제출 | [LM-12](#lm-12) |
 | 출력 여부 불명확 | journal·서버 상태를 조정하고 재출력 판단; spool 접수를 실물 출력 증거로 대체하지 않음 | [LM-10](#lm-10) |
 
+<a id="feature-cards"></a>
+<a id="기능-카드"></a>
 ## 기능 카드
 
 아래 ID는 안정적인 탐색 단위다. 12개는 대표 기능 묶음이며 전체 함수 수·개발량·완성도 분모가 아니다. 모든 카드의 확인일·네 판단 축은 위 기준을 공유한다. 수용 기준은 **현행 계약을 보존하기 위한 확인 항목**이며 새 사업 규칙 승인이나 실행 PASS를 뜻하지 않는다. 담당 실명·기한은 미지정이고 역할·다음 행동은 연결한 백로그에서 관리한다.
@@ -279,6 +285,8 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 수용 기준: 버튼/키보드 gate가 일치하고 busy 입력 보존·idle 재제출·stale 결과 무시·종료 경계가 대응한다. 실장비 입력과 화면 배율의 가독성은 별도 확인한다.
 - 근거: [앱 workflow handlers](../../Label_Match.py), [TkSerialUiLane](../../tk_serial_ui_lane.py), [관련 테스트 설계](../../tests/test_label_ui_lane_integration.py). [LM-B04](BACKLOG.md#lm-b04), [LM-B05](BACKLOG.md#lm-b05).
 
+<a id="specification-coverage"></a>
+<a id="명세-진행알려진-미조사-범위"></a>
 ## 명세 진행·알려진 미조사 범위
 
 최초 명세 기준선은 AGENTS·기능·계약·운영·백로그를 정적으로 대조하고 당시 제품 코드·테스트를 보존했으며, [독립 교차 검토](E:/KMTech/spec-hub-build-20260907/cross-review/REVIEW.md)와 Main 대조도 완료했다. 후속 LM-B10 단위에서는 guard와 해당 회귀 테스트, 이 네 spec 문서를 수정했고 SaveRoot13의 한정 runtime 수용까지 연결했다. 앞선 실제 증거 검토·명세 갱신은 문서 작업이었다. 2026-09-08 후속 producer-close 소스 종결은 테스트 당시 uploader·회귀와 이 네 명세를 한 소스 단위로 묶고 실제 50/150 수용을 연결했다. 동결 packet과 과거 Main hash pins는 보존했다. 그때 보존한 잔여 다섯 경로는 2026-09-08 후속 [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md)에서 working bytes 변경 없이 네 명세와 묶고 M3 변경 13사례·N6 6사례의 기존 수용을 매핑했다. 기존 CODEX·작업자 정본은 보존했다. 설정 template/사용자 쓰기 위치, onboarding/기본/Machine 경로와 오래된 안내는 [운영](operations.md#configuration), [LM-B09](BACKLOG.md#lm-b09), [LM-B10](BACKLOG.md#lm-b10)에서 구분한다. 소스 교정·focused runtime 수용·제품 준비도는 별도다.

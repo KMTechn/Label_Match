@@ -271,7 +271,7 @@ Main이 선택된 여섯 프로그램 qualification을 독립 종결한 뒤 승�
 
 [제품·기능](README.md) · [데이터·통합 계약](contracts.md) · [남은 일](BACKLOG.md) · [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)
 
-최초 기준일은 **2026-09-07**, 후속 갱신은 **2026-09-08**이며 소스와 네 판단 축은 [README](README.md#기준과-판정-범위)를 따른다. 기존 문서 기준선·잔여 소스 종결에서는 앱·테스트·VM·프린터를 실행하지 않았다. 이후 이번 [relay custom 경로 교정](#relay-custom-root-evidence)은 격리된 호스트 headless 검증 26 PASS를 직접 기록했다. Main이 별도로 수행·수용한 [M3/N6](#residual-source-evidence), [ProducerClose](#producer-close-evidence), [SaveRoot13](#saveroot13-evidence)는 각각 원래 소스·환경에 남으며 나머지 복구·수용 항목을 실행 결과로 간주하지 않는다.
+최초 기준일은 **2026-09-07**, 후속 갱신은 **2026-09-08**이며 소스와 네 판단 축은 [README](README.md#evidence-scope)를 따른다. 기존 문서 기준선·잔여 소스 종결에서는 앱·테스트·VM·프린터를 실행하지 않았다. 이후 이번 [relay custom 경로 교정](#relay-custom-root-evidence)은 격리된 호스트 headless 검증 26 PASS를 직접 기록했다. Main이 별도로 수행·수용한 [M3/N6](#residual-source-evidence), [ProducerClose](#producer-close-evidence), [SaveRoot13](#saveroot13-evidence)는 각각 원래 소스·환경에 남으며 나머지 복구·수용 항목을 실행 결과로 간주하지 않는다.
 
 <a id="task10-current-user-reuse"></a>
 <a id="resident10-alignment"></a>
@@ -696,4 +696,4 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 
 **PROVEN은 안정된 settings에서 기존 custom 우선 선택·nullable fallback·동일 lexical 저장 경로의 native callback 제외/해제 범위다.** Tk를 구성하거나 두 process의 실제 GUI writer·파일 쓰기·중단 복구를 실행한 시험은 아니다. source/source 및 packaged/source의 중복 writer 제외, 같은 C의 pending identity 복구, onboarding/relay A/C의 enqueue 이전 CSV 발견, template/alias/settings race는 [LM-B10](BACKLOG.md#lm-b10)에 남는다. VM01 Label 예약은 Main이 해제했고 이 문서는 다음 실행 권한을 부여하지 않는다. `baselinePassClaim=false`, `fullExecuted=false`, `qualification=false`이며 generator/build/FULL/최종 설치 자격·제품 Ready를 입증하지 않는다.
 
-기존 Label Modules3 **313 PASS / 939 ordered phase PASS**의 수탁 수용과 원래 reader의 실패는 [README 증거 경계](README.md#기준과-판정-범위)·[중앙 준비도](../../../Program_Spec_Hub/READINESS.md)에 보존한다. 이 숫자를 새 guard 또는 V01–V08 전체 통과로 바꾸지 않는다. 향후 근거에는 수행 시각, exact 소스·테스트·artifact·provider, 환경/설정·입력/관측, 원본 경로·실패/미실행·적용 한계를 남긴다.
+기존 Label Modules3 **313 PASS / 939 ordered phase PASS**의 수탁 수용과 원래 reader의 실패는 [README 증거 경계](README.md#evidence-scope)·[중앙 준비도](../../../Program_Spec_Hub/READINESS.md)에 보존한다. 이 숫자를 새 guard 또는 V01–V08 전체 통과로 바꾸지 않는다. 향후 근거에는 수행 시각, exact 소스·테스트·artifact·provider, 환경/설정·입력/관측, 원본 경로·실패/미실행·적용 한계를 남긴다.
