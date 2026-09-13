@@ -5,6 +5,8 @@
 
 `label_completion.py`는 F3 current-state snapshot·포장 준비/lease 검증·내구 commit·lane 결과 snapshot의 기존 본문을 소유한다. 앱의 다섯 메서드는 같은 signature로 위임하고 전역 dependency를 호출 시 읽는 callback을 전달한다. `gui_package_enqueue` writer admission은 기존 façade decorator에 남고 DataManager·outbox의 저장/transaction API는 유지한다.
 
+`label_workbench_scan.py`는 중앙 scan pane의 rail·notice·입력·QA/F4 상세 위젯을 구성한다. `_create_widgets`가 호출 시점 Tk/ttk와 scan 상수를 전달하며 두 notice Enter binding은 원래 생성 순서의 owner에 남긴다. widget 생성 순서·owner callback·기존 notice/view-state renderer를 유지한다.
+
 F3 진입/action gate·성공음/이력·중앙 worker dispatch·재시도/자정 복구는 기존 owner를 사용한다. [LM-3 검증 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm3/RESULT.md)은 AST·동일 입력/실패 벡터·기존 headless pack 범위이며 실제 GUI·프린터·모니터·설치 수용은 별도다.
 
 <a id="module-boundaries-lm2"></a>
