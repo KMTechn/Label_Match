@@ -123,7 +123,8 @@ import pathlib, sys
 sys.path.insert(0, sys.argv[1])
 from kmtech_shared import raster, catalog
 from kmtech_zero_pe import raster as facade, gdi_print, RasterImage, RasterCanvas
-import Label_Match, phs_label_workflow
+import Label_Match, phs_label_workflow, item_catalog_sync
+assert item_catalog_sync._catalog_core is catalog
 assert facade.RasterImage.__bases__ == (raster.RasterImage,)
 assert facade.RasterCanvas.__bases__ == (raster.RasterCanvas,)
 assert RasterImage is gdi_print.RasterImage is facade.RasterImage
@@ -142,3 +143,34 @@ print('PASS: portable import closure and single shared module identity')
         capture_output=True, text=True, check=False, timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_pre_adoption_v2_sidecars_read_write_and_recover_unchanged(tmp_path, monkeypatch):
+    import item_catalog_sync as sync
+
+    # Captured from 164b5da before adoption, using only a synthetic identity/token.
+    fixture = json.loads((ROOT / "tests/fixtures/item_catalog_v2_label.json").read_bytes())
+    payload = fixture["catalog_utf8"].encode("utf-8")
+    binding = fixture["binding"]
+    monkeypatch.setattr(sync, "_load_item_catalog_logistics_profile", lambda: None)
+    cache = tmp_path / "Item.csv"
+    cache.write_bytes(payload)
+    authority_path = tmp_path / "Item.csv.authority.json"
+    recovery_path = tmp_path / "Item.csv.recovery.json"
+    authority_path.write_bytes(fixture["authority_json"].encode("utf-8"))
+    recovery_path.write_bytes(fixture["recovery_json"].encode("utf-8"))
+    assert sync._read_authenticated_cache_payload(cache, **binding) == payload
+    rotated = dict(binding, bearer_token="rotated-synthetic-token")
+    assert sync._read_authenticated_cache_payload(cache, **rotated) is None
+    assert sync._read_authenticated_recovery_payload(cache, **rotated) is None
+    sync._write_authenticated_cache(cache, payload, **binding)
+    assert cache.read_bytes() == payload
+    assert authority_path.read_bytes() == fixture["authority_json"].encode("utf-8")
+    assert recovery_path.read_bytes() == fixture["recovery_json"].encode("utf-8")
+    cache.write_bytes(b"interrupted primary write")
+    assert sync._read_authenticated_cache_payload(cache, **binding) is None
+    recovered = sync._recover_authenticated_cache(cache, **binding)
+    assert recovered == tmp_path / "Item.csv.last-good"
+    assert recovered.read_bytes() == payload
+    assert sync.get_verified_catalog_snapshot(recovered) == payload
+    assert cache.read_bytes() == b"interrupted primary write"

@@ -165,6 +165,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 - 시작/입력: 시작 시 중앙 품목 CSV를 갱신하고 품목 코드로 이름·규격을 조회한다.
 - 검증/저장: 중앙 등록 장비는 identity에 결속된 인증 캐시·검증된 snapshot을 사용한다. 비등록 호환 경로의 로컬 cache/bundled `Item.csv` fallback과 다르다.
+- 구현 경계: 4열 검증·canonical JSON·authority HMAC/record·sidecar 이름·authenticated payload 판정의 8개 leaf는 고정 `kmtech_shared.catalog`를 사용한다. profile 신원·빈 port 거부·redaction 진단·인증 I/O/복구·snapshot은 Label_Match adapter가 유지한다([X04-B](operations.md#shared-core-x04b)).
 - 실패/재시작: 중앙 요청 실패 시 인증된 이전 cache 복구가 가능하며, 없으면 중앙 등록 장비 시작을 차단한다. 임의 파일을 중앙 마스터로 인정하지 않는다.
 - 수용 기준: 정상 갱신, 인증 cache 복구, 손상/다른 identity cache 거부를 구분하고 화면에 실제 출처·경고가 대응한다.
 - 근거: [refresh_item_catalog](../../item_catalog_sync.py), [prepare_startup_item_catalog](../../Label_Match.py). [C-01](contracts.md#c-01), [LM-B04](BACKLOG.md#lm-b04).

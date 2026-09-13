@@ -1,0 +1,12 @@
+{
+  "source_commit": "164b5dae536b85ff4918003232929a413f1a743e",
+  "catalog_utf8": "Item Code,Item Name,Spec,Tray Image\nAAA,Synthetic item,Spec A,tray-a.png\n",
+  "binding": {
+    "url": "https://worker.kmtecherp.com/inbound/api/item-catalog.csv",
+    "source_host_id": "synthetic-host",
+    "device_id": "synthetic-device",
+    "bearer_token": "synthetic-v2-token"
+  },
+  "authority_json": "{\"cache_hmac_sha256\":\"e386dc3546c44615e8931bbe0f433f5784826918498d41258c30b7351b38b2b7\",\"catalog_sha256\":\"2564010e6e6407e00d259d2649edb5a42fc2df84cffa89cfd65e9c13b82b2c7b\",\"device_id\":\"synthetic-device\",\"program\":\"Label_Match\",\"schema\":\"kmtech.item-catalog.authority.v2\",\"source_host_id\":\"synthetic-host\",\"url\":\"https://worker.kmtecherp.com/inbound/api/item-catalog.csv\"}\n",
+  "recovery_json": "{\"authority\":{\"cache_hmac_sha256\":\"e386dc3546c44615e8931bbe0f433f5784826918498d41258c30b7351b38b2b7\",\"catalog_sha256\":\"2564010e6e6407e00d259d2649edb5a42fc2df84cffa89cfd65e9c13b82b2c7b\",\"device_id\":\"synthetic-device\",\"program\":\"Label_Match\",\"schema\":\"kmtech.item-catalog.authority.v2\",\"source_host_id\":\"synthetic-host\",\"url\":\"https://worker.kmtecherp.com/inbound/api/item-catalog.csv\"},\"catalog_utf8\":\"Item Code,Item Name,Spec,Tray Image\\nAAA,Synthetic item,Spec A,tray-a.png\\n\",\"schema\":\"kmtech.item-catalog.recovery.v1\"}\n"
+}

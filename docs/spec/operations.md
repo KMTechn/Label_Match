@@ -7,6 +7,10 @@
 
 `tests/test_kmtech_shared.py`가 소비자 lock의 고정 hash를 정본 `manifest/sync_shared.py --check --root <앱> --manifest <앱>/kmtech_shared.manifest.json --expected-sha256 <lock 값>`에 전달하고 누락·추가·내용/manifest 변조 거부 및 portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
 
+catalog 8개 leaf만 정본에 위임한다. 나머지 46개 함수/class는 baseline과 AST 동일하며 profile/credential·URL 승인·빈 port 거부·넓은 redaction/context·시작 정책·인증 I/O/복구·snapshot은 LM에 남는다. 기존 catalog56개 무수정과 새 shared9개, 합계65 PASS다. baseline에서 고정한 v2 sidecar를 그대로 읽고 동일 bytes로 쓰며 token rotation 거부·last-good 복구·verified snapshot을 검증했다. 독립 baseline 대조는 CSV20/URL10/authenticated payload330과 URL 상호 판정을 통과했다.
+
+최종 Windows Python3.12.10 회귀는 기존 W1–3 637개를 모두 포함한 **718 PASS / 179.13초**, 실패·오류·skip·잔류 thread0이다. 합성 입력/TEMP/basetemp는 앞선 D 병목 근거에 따라 이 과제의 C 테스트 root에 격리하고 로그·JUnit·원 실패·RESULT는 D에 보존한다. 제품 및 기존 catalog 시험·factory lock은 지정 위임 외 변경이 없으며 기존 zero-PE 시험의 수정은 facade hash와 검사할 shared package 추가뿐이다.
+
 PROVEN: 기존 baseline83 PASS, renderer/packaging/writer49 PASS, 정본 50개 RGB/RGBA filter 조합·resize/contain·오류·메모리 GDI golden 및 2개 QR payload/실제 PHS label renderer의 baseline/facade 픽셀·PNG bytes·QR 해독 일치. [근거](D:/KMTech/program-improvement-20260912/work/Label_Match/x04b/RESULT.md). GUI·실물 인쇄·VM·서버·전체 ZIP/실제 PyInstaller build는 NOT VERIFIED다.
 
 <a id="committed-stale-runtime-recovery-20260912"></a>

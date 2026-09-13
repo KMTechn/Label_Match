@@ -2,7 +2,7 @@
 
 ## X04-B · shared core 채택
 
-renderer 호환 facade·고정 package·manifest/lock·portable/PyInstaller 생성 입력을 채택했다. [headless 검증](operations.md#shared-core-x04b)에서 PNG/QR/반환 class와 기존 writer 경계를 확인했다. catalog leaf 채택과 기존 W1–3 회귀는 다음 같은 과제 단위이며 실제 GUI·인쇄·설치 수용은 LM-B04에 남는다.
+catalog 8개 leaf·renderer 호환 facade·고정 package·manifest/lock·portable/PyInstaller 생성 입력을 채택했다. [headless 검증](operations.md#shared-core-x04b)에서 v2 bytes/복구·LM profile/URL/진단 adapter, PNG/QR/반환 class와 기존 writer 경계를 확인했다. 인증 I/O·복구·snapshot의 추가 공통화는 이번 pin에 없는 후속 범위이며 실제 GUI·인쇄·설치 수용은 LM-B04에 남는다.
 
 ## LM-W2 · 감사 응답성 개선
 

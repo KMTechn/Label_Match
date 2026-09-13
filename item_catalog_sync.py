@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
-import hashlib
-import hmac
-import io
 import json
 import logging
 import os
@@ -17,6 +14,8 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 import requests
+
+from kmtech_shared import catalog as _catalog_core
 
 from logistics_runtime_profile import (
     DEFAULT_PROFILE_RELATIVE_PATH,
@@ -636,25 +635,7 @@ def _is_trusted_authenticated_catalog_url(url: str, profile: Any | None = None) 
 
 
 def validate_catalog_bytes(payload: bytes) -> None:
-    if payload.startswith(b"\xef\xbb\xbf"):
-        raise ValueError("item catalog must be UTF-8 without BOM")
-    rows = list(csv.reader(io.StringIO(payload.decode("utf-8"), newline="")))
-    if not rows or tuple(rows[0]) != REQUIRED_HEADER:
-        raise ValueError("item catalog header mismatch")
-    if len(rows) < 2:
-        raise ValueError("item catalog has no data rows")
-    item_codes: list[str] = []
-    for row in rows[1:]:
-        if len(row) != len(REQUIRED_HEADER):
-            raise ValueError("item catalog row must contain exactly four columns")
-        item_code = row[0].strip()
-        if not item_code:
-            raise ValueError("item catalog contains an empty item code")
-        item_codes.append(item_code)
-    if len(item_codes) != len(set(item_codes)):
-        raise ValueError("item catalog contains duplicate item codes")
-    if item_codes != sorted(item_codes):
-        raise ValueError("item catalog item codes are not sorted")
+    return _catalog_core.validate_catalog_bytes(payload)
 
 
 def _is_valid_catalog(path: Path) -> bool:
@@ -690,15 +671,15 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 
 
 def _cache_authority_path(cache: Path) -> Path:
-    return cache.with_name(f"{cache.name}.authority.json")
+    return _catalog_core.cache_authority_path(cache)
 
 
 def _last_good_cache_path(cache: Path) -> Path:
-    return cache.with_name(f"{cache.name}.last-good")
+    return _catalog_core.last_good_cache_path(cache)
 
 
 def _cache_recovery_path(cache: Path) -> Path:
-    return cache.with_name(f"{cache.name}.recovery.json")
+    return _catalog_core.cache_recovery_path(cache)
 
 
 def _legacy_cache_path_for(cache: Path) -> Path | None:
@@ -760,6 +741,14 @@ def _mark_catalog_source(
     )
 
 
+def _canonical_catalog_authority_url(url: str) -> str:
+    return (
+        DEFAULT_SERVER_BASE_URL + CATALOG_PATH
+        if _is_trusted_authenticated_catalog_url(url)
+        else url
+    )
+
+
 def _cache_authority_record(
     payload: bytes,
     *,
@@ -767,18 +756,14 @@ def _cache_authority_record(
     source_host_id: str,
     device_id: str,
 ) -> dict[str, object]:
-    return {
-        "schema": CACHE_AUTHORITY_SCHEMA,
-        "catalog_sha256": hashlib.sha256(payload).hexdigest(),
-        "url": (
-            DEFAULT_SERVER_BASE_URL + CATALOG_PATH
-            if _is_trusted_authenticated_catalog_url(url)
-            else url
-        ),
-        "source_host_id": source_host_id,
-        "device_id": device_id,
-        "program": LOGISTICS_PROGRAM,
-    }
+    return _catalog_core.cache_authority_record(
+        payload,
+        url=url,
+        program=LOGISTICS_PROGRAM,
+        canonicalize_url=_canonical_catalog_authority_url,
+        source_host_id=source_host_id,
+        device_id=device_id,
+    )
 
 
 def _same_catalog_cache_authority(stored_url: object, current_url: object) -> bool:
@@ -885,34 +870,17 @@ def _is_valid_authenticated_payload(
     device_id: str,
     bearer_token: str,
 ) -> bool:
-    if not isinstance(authority, dict):
-        return False
-    unsigned_authority = dict(authority)
-    supplied_hmac = unsigned_authority.pop("cache_hmac_sha256", None)
-    expected = _cache_authority_record(
+    return _catalog_core.is_valid_authenticated_payload(
         payload,
+        authority,
         url=url,
+        program=LOGISTICS_PROGRAM,
+        canonicalize_url=_canonical_catalog_authority_url,
         source_host_id=source_host_id,
         device_id=device_id,
-    )
-    stored_url = unsigned_authority.pop("url", None)
-    expected_url = expected.pop("url")
-    if (
-        unsigned_authority != expected
-        or not _same_catalog_cache_authority(stored_url, expected_url)
-        or not isinstance(supplied_hmac, str)
-        or len(supplied_hmac) != 64
-        or any(char not in "0123456789abcdef" for char in supplied_hmac)
-    ):
-        return False
-    signed_authority = dict(unsigned_authority)
-    signed_authority["url"] = stored_url
-    expected_hmac = _cache_authority_hmac(
-        payload,
-        signed_authority,
         bearer_token=bearer_token,
+        same_authority=_same_catalog_cache_authority,
     )
-    return hmac.compare_digest(supplied_hmac, expected_hmac)
 
 
 def _read_authenticated_recovery_payload(
@@ -984,12 +952,7 @@ def _recover_authenticated_cache(
 
 
 def _canonical_json(payload: dict[str, object]) -> str:
-    return json.dumps(
-        payload,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return _catalog_core.canonical_json(payload)
 
 
 def _cache_authority_hmac(
@@ -998,19 +961,9 @@ def _cache_authority_hmac(
     *,
     bearer_token: str,
 ) -> str:
-    token_bytes = bearer_token.encode("utf-8")
-    if not token_bytes:
-        raise ValueError("central item catalog token is empty")
-    key = hmac.new(token_bytes, CACHE_HMAC_KEY_LABEL, hashlib.sha256).digest()
-    authority_bytes = _canonical_json(authority).encode("utf-8")
-    message = (
-        CACHE_HMAC_DOMAIN
-        + len(authority_bytes).to_bytes(8, "big")
-        + authority_bytes
-        + len(payload).to_bytes(8, "big")
-        + payload
+    return _catalog_core.cache_authority_hmac(
+        payload, authority, bearer_token=bearer_token,
     )
-    return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
 def _hardened_get(url: str, **kwargs: object) -> object:
