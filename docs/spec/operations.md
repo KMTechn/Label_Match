@@ -17,6 +17,17 @@ catalog 8개 leaf만 정본에 위임한다. 나머지 46개 함수/class는 bas
 
 PROVEN: 기존 baseline83 PASS, renderer/packaging/writer49 PASS, 정본 50개 RGB/RGBA filter 조합·resize/contain·오류·메모리 GDI golden 및 2개 QR payload/실제 PHS label renderer의 baseline/facade 픽셀·PNG bytes·QR 해독 일치. [근거](D:/KMTech/program-improvement-20260912/work/Label_Match/x04b/RESULT.md). GUI·실물 인쇄·VM·서버·전체 ZIP/실제 PyInstaller build는 NOT VERIFIED다.
 
+<a id="shared-runtime-x05b"></a>
+## X05-B · producer runtime facade
+
+0.2.0 pin의 runtime 25함수에 JSON/HMAC framing·시각·retry·scope·redaction, metadata/grant/receipt/liveness binding, schema/state 및 caller-transaction SQL을 위임한다. `RuntimePreparation`과 나머지 11개 adapter 함수는 AST 불변이다. identity 생성·CNG 검증 callback은 현재 앱 함수를 전달하며 transport/TLS·connection·writer admission과 LM `reopen_reviewed_runtime_in_transaction` 정책을 유지한다. 정본 대응 함수/남긴 adapter 전체는 [결과](D:/KMTech/program-improvement-20260912/work/Label_Match/x05b/RESULT.md)에 기록한다.
+
+Windows Python3.12.10 headless: 기존 `tests/test_producer_runtime_client.py` **45 PASS, bytes 무수정**, 새 facade 회귀 **7 PASS**. 실제 앱 ACK transaction에서 core rotation 후 외부 reader에는 이전 상태만 보이고, 강제 중단 시 ACK/token 모두 rollback하며 같은 예약으로 재개한다. issue 재시도·만료 교체·terminal fallback에서 현재 앱 identity/JWK callback을 사용한다. 기존 lost-ACK·두 worker 한 token·scope/owner·stale/expiry·reviewed 복구 성공/거부·audit 실패 회귀를 유지한다.
+
+최종 W1–4/X04-B 선택은 기존 723개와 새 회귀 7개를 포함한 **730 PASS / 174.80초**, 실패·오류·skip0이다. source 함수/서명·정본 byte 대조와 writer `--check`, 실제 frozen 호출 인자 검증을 통과했다. 격리 C 합성 입력·D 로그/JUnit과 실행 노드는 위 결과에 보존하며 전체 suite/실제 업무 수용으로 확대하지 않는다.
+
+portable의 기존 package 포함 목록은 runtime 파일을 포함하고 실제 frozen builder는 `kmtech_shared.runtime` hidden import를 전달한다. factory lock·catalog/raster bytes와 writer 44개 record/양쪽 pin은 유지한다. GUI·VM·서버·실제 설치·전체 ZIP/실제 PyInstaller build와 성능은 NOT VERIFIED다.
+
 <a id="committed-stale-runtime-recovery-20260912"></a>
 ## 2026-09-12 · Committed stale-runtime의 지원 복구 교정
 

@@ -183,15 +183,16 @@ def test_portable_copy_imports_one_shared_module_identity(tmp_path):
     code = """
 import pathlib, sys
 sys.path.insert(0, sys.argv[1])
-from kmtech_shared import raster, catalog
+from kmtech_shared import raster, catalog, runtime
 from kmtech_zero_pe import raster as facade, gdi_print, RasterImage, RasterCanvas
-import Label_Match, phs_label_workflow, item_catalog_sync
+import Label_Match, phs_label_workflow, item_catalog_sync, producer_runtime_client
+assert producer_runtime_client._runtime_core is runtime
 assert item_catalog_sync._catalog_core is catalog
 assert facade.RasterImage.__bases__ == (raster.RasterImage,)
 assert facade.RasterCanvas.__bases__ == (raster.RasterCanvas,)
 assert RasterImage is gdi_print.RasterImage is facade.RasterImage
 assert Label_Match.RasterCanvas is RasterCanvas is phs_label_workflow.RasterCanvas is facade.RasterCanvas
-for module in (catalog, raster):
+for module in (catalog, raster, runtime):
     origin = pathlib.Path(module.__file__).resolve()
     assert origin.is_relative_to(pathlib.Path(sys.argv[1]).resolve())
     identities = [name for name, loaded in list(sys.modules.items())

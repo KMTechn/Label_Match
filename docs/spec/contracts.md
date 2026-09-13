@@ -4,6 +4,12 @@
 
 `kmtech_shared` 0.2.0은 앱 안에 고정 복사하며 `kmtech_shared.lock.json`이 manifest SHA256을 고정한다. 기존 factory `contract.lock.json`과 독립이다. `kmtech_zero_pe`의 `RasterImage`/`RasterCanvas` class와 import 경로는 facade로 유지하고 모든 image factory는 앱 class를 반환한다. PNG signature·bytes·GDI 픽셀·QR은 보존하며 제품 PNG 출력은 기존 PHS 교환·복구의 writer admission 아래에 있다. core에서 별도 writer 권한이나 앱 상태를 만들지 않는다.
 
+## 고정 runtime core와 앱 transaction
+
+`producer_runtime_client`는 공개/기존 private 함수명을 유지하며 25개 leaf·binding·SQL 연산을 `kmtech_shared.runtime`에 위임한다. `_cng_jwk_thumbprint`, `normalize_public_jwk`, `new_runtime_identity`는 호출 시점의 앱 callback으로 전달한다. native identity 생성·TLS/timeout/endpoint·connection·writer admission과 `ensure_runtime_authority`/`prepare_runtime_metadata`의 예약·재시도·만료 판단은 앱 소유다. endpoint/producer/key/install scope, wire JSON/HMAC·nonce, 검증 오류·terminal redaction은 유지한다.
+
+core는 connection이나 commit/rollback을 소유하지 않는다. 실제 relay `_set_relay_status`의 ACK 변경과 다음 token 저장은 같은 열린 SQLite transaction에서 commit하며, 중단 시 둘 다 rollback한다. LM의 명시 reviewed 복구는 아래 정책 그대로 앱에 남고 자동 만료 초기화 정책으로 대체하지 않는다. [검증과 한계](operations.md#shared-runtime-x05b).
+
 ## Committed stale-runtime review의 명시적 복구 · 2026-09-12
 
 기존 `ack-reviewed --recover-expired-runtime`만 독립 검토된 committed `STALE_RUNTIME_FENCE` 수신의 local ACK와 만료 authority 재개를 같은 SQLite transaction에서 처리한다. 기존 source/request/hash/byte/count·receipt 검증을 유지하고 실제 보존 spool도 대조한다. 단일 authority의 scope/install·runtime ID·fence·lease ID·expiry와 terminal public key/token audit digest를 결속하며, future expiry·다른 review 원인·assignment/pending/token·다른 미종결 runtime-bound row가 있으면 변경 없이 거부한다. 현재 producer credential·원 relay/metadata/spool/receipt는 바꾸지 않는다.
