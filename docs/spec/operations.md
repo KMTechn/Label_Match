@@ -9,6 +9,8 @@
 
 `label_workbench_activity.py`는 오른쪽 session/deferred activity pane을 구성한다. 기존 deferred 상태 그룹·경보 기준과 owner의 줄 높이 계산을 전달받으며 불변 worker snapshot의 조회·적용·notice 갱신은 기존 경계를 유지한다.
 
+`label_workbench_history.py`는 같은 오른쪽 pane의 이력·통과 요약·작업 버튼을 구성한다. 완료 트레이 취소의 danger 버튼 생성자는 owner가 callback으로 전달해 원 생성 시점에 실행한다. 날짜 조회·원문/복사·정렬·취소·F1–F5/Enter/Escape/Delete의 기존 owner callback과 disabled 초기 상태를 유지하며 이력 worker·generation/input gate는 이동하지 않는다.
+
 F3 진입/action gate·성공음/이력·중앙 worker dispatch·재시도/자정 복구는 기존 owner를 사용한다. [LM-3 검증 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm3/RESULT.md)은 AST·동일 입력/실패 벡터·기존 headless pack 범위이며 실제 GUI·프린터·모니터·설치 수용은 별도다.
 
 <a id="module-boundaries-lm2"></a>
