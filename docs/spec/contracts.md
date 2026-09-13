@@ -217,6 +217,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 <a id="c-04"></a>
 ## C-04 F3 포장 명령·lease·outbox
 
+- [LM-3 완료 경계](operations.md#module-boundaries-lm3)는 기존 F3 handler·내구 commit signature와 호출 시점 전역/patch를 보존한다. 실패 뒤 원 작업·command, current-state→intent→CSV flush/fsync→marker→성공→중앙 ACK 순서는 불변이다.
+
 - [LM-2 모듈 경계](operations.md#module-boundaries-lm2)는 기존 façade API·동일 command key·membership/expected_versions를 유지한다. local durable→성공→중앙 ACK, due retry·취소 dependency·reviewed recovery의 순서는 분리 대상의 불변 계약이다.
 
 - LM-B02 완료 CSV 위치 색인은 거짓 부재·중복 완료 위험 때문에 철회했다. 같은 데이터 루트·PC prefix의 모든 CSV를 날짜와 무관하게 직접 검색하며, 캐시·색인·metadata로 부재를 판정하지 않는다. 기존 색인·임시 파일은 조회·갱신·재구축하지 않는다.
