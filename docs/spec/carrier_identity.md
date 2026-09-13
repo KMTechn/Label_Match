@@ -24,3 +24,19 @@
 | HSH 길이/문자 오류 | PHS2 HSH must be a 16-character hexadecimal prefix | 중앙 KMTECH_INPUT_TAG PHS2 형식이 아닙니다. |
 
 기록 벡터는 정상·순서·필드 syntax·HSH 길이/대소문자·SRC·legacy·인코딩 경계·빈/None·날짜를 포함한다. 생성 시험은 전체 720개 필드 순열의 raw/encoded 입력, 고정 seed의 필드 변이·legacy·날짜를 기준 함수와 비교하며 반환값·예외 타입/문구/코드·진단 출력을 함께 대조한다. 이 시험은 장비·실물·서버 수용을 뜻하지 않는다.
+
+## 호출 경계
+
+| 기존 호출 지점 | `carrier_identity_port` 함수 | caller가 계속 소유하는 책임 |
+|---|---|---|
+| 앱 `_label_match_decode_possible_base64_label` | `decode_carrier_scan` | 기존 helper 이름과 표시 소비자 유지 |
+| 앱 `_label_match_parse_compact_phs2` | `parse_compact_carrier` | 중앙 admission·source 조회·복구 |
+| 앱 `_label_match_parse_new_format_fields` / `_parse_new_format_label` | `parse_legacy_fields` | 명시 legacy workflow 선택 |
+| workflow `parse_compact_phs2` | `parse_raw_compact_carrier` | 기존 `PHSLabelWorkflowError` 타입을 명시 인자로 공급; receipt·서명·활성화 검증 |
+| 앱 `_extract_production_date` | `parse_legacy_production_date` | 진단 출력·None fallback |
+| 앱 `_load_items_data` | `item_catalog_view` | 설정/경로·파일·인증 snapshot·CSV decode·예외 UI |
+| 앱 입력·표시·시뮬레이션의 `items_data.get` | `item_lookup` | 기존 default와 표시·입력 순서 |
+| `PackageCommandDraft.build` QA 검사 | `legacy_qa_sample_error` | 같은 위치에서 기존 `PackageLogisticsError` 발생, 그 뒤 canonicalization |
+| 같은 build의 source/exact 검사 | `package_membership_error` | mode 검사와 원 source/receipt exact membership 검증 |
+
+raw workflow parser는 스캔 parser와 오류 생성 방식을 통합하지 않는다. 표시용 `_label_match_display_fields`는 계속 표시만 담당한다. `item_catalog_sync.py`·QR payload·template·크기·hash/HMAC·내구 저장/성공/ACK 순서는 이 추출의 변경 대상이 아니다.

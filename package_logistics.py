@@ -39,6 +39,7 @@ from deferred_intent_capture import (
     supersede_for_legacy_outbox,
 )
 from writer_session_fence import writer_sink
+import carrier_identity_port as carrier_identity
 
 
 OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v10"
@@ -485,19 +486,16 @@ class PackageCommandDraft:
             )
         if mode not in MEMBERSHIP_MODES:
             raise PackageLogisticsError("membership_mode must be INHERIT_ALL or EXACT_RESCAN")
-        if any(not value for value in raw_samples) or len(raw_samples) != len(set(raw_samples)):
-            raise PackageLogisticsError("sample_barcodes must be non-empty and unique")
-        if len(raw_samples) > 3:
-            raise PackageLogisticsError("legacy packaging QA samples cannot exceed three barcodes")
+        sample_error = carrier_identity.legacy_qa_sample_error(raw_samples)
+        if sample_error:
+            raise PackageLogisticsError(sample_error)
         exact = canonical_barcodes(raw_exact)
-        if mode == "INHERIT_ALL" and not (source_id or source_input_tag or source_hint):
-            raise PackageLogisticsError(
-                "INHERIT_ALL requires a sealed transfer QR or structured PHS BND/ITG identity"
-            )
-        if mode == "INHERIT_ALL" and exact:
-            raise PackageLogisticsError("INHERIT_ALL cannot use sample/exact rescan barcodes as membership")
-        if mode == "EXACT_RESCAN" and (not exact or len(exact) != len(raw_exact)):
-            raise PackageLogisticsError("EXACT_RESCAN requires a non-empty unique full rescan")
+        membership_error = carrier_identity.package_membership_error(
+            mode, exact, len(raw_exact),
+            has_source=bool(source_id or source_input_tag or source_hint),
+        )
+        if membership_error:
+            raise PackageLogisticsError(membership_error)
         package_id = str(package_bundle_id or "").strip()
         if resolution_basis:
             if (

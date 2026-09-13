@@ -31,6 +31,7 @@ from kmtech_zero_pe import (
     RasterCanvas,
 )
 from writer_session_fence import writer_sink
+import carrier_identity_port as carrier_identity
 
 
 PHS_LABEL_EXCHANGE_JOURNAL_VERSION = "label-match-phs-label-exchange-v1"
@@ -124,49 +125,9 @@ def _positive_integer(value: Any, field_name: str) -> int:
 
 
 def parse_compact_phs2(raw_value: Any) -> dict[str, str]:
-    value = str(raw_value or "").strip()
-    expected_keys = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
-    parts = value.split("|") if value else []
-    if len(parts) != len(expected_keys):
-        raise PHSLabelWorkflowError(
-            "PHS2_FORMAT_INVALID",
-            "PHS2는 여섯 개의 표준 필드여야 합니다.",
-        )
-    fields: dict[str, str] = {}
-    ordered: list[str] = []
-    for part in parts:
-        if part.count("=") != 1:
-            raise PHSLabelWorkflowError(
-                "PHS2_FORMAT_INVALID",
-                "PHS2 필드 형식이 올바르지 않습니다.",
-            )
-        key, field_value = part.split("=", 1)
-        key = key.strip().upper()
-        field_value = field_value.strip()
-        if not key or not field_value or key in fields:
-            raise PHSLabelWorkflowError(
-                "PHS2_FORMAT_INVALID",
-                "PHS2 필드는 비어 있거나 중복될 수 없습니다.",
-            )
-        ordered.append(key)
-        fields[key] = field_value
-    if tuple(ordered) != expected_keys:
-        raise PHSLabelWorkflowError(
-            "PHS2_FORMAT_INVALID",
-            "PHS2 필드 순서가 표준과 다릅니다.",
-        )
-    if (
-        fields["PHS"] != "2"
-        or fields["SRC"].upper() != "KMTECH_INPUT_TAG"
-        or not re.fullmatch(r"[0-9a-fA-F]{16}", fields["HSH"])
-    ):
-        raise PHSLabelWorkflowError(
-            "PHS2_FORMAT_INVALID",
-            "중앙 KMTECH_INPUT_TAG PHS2 형식이 아닙니다.",
-        )
-    fields["SRC"] = "KMTECH_INPUT_TAG"
-    fields["HSH"] = fields["HSH"].lower()
-    return fields
+    return carrier_identity.parse_raw_compact_carrier(
+        raw_value, error_type=PHSLabelWorkflowError,
+    )
 
 
 class PHSLabelWorkflowError(RuntimeError):

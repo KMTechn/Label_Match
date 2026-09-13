@@ -1,5 +1,20 @@
 # Label_Match 운영·복구·검증
 
+<a id="carrier-identity-w5b2"></a>
+## W5-B2 · carrier·legacy·Item Code 경계
+
+`carrier_identity_port.py`는 순수 명시 인자만 받고 기존 app/workflow/물류 caller의 진입 이름과 오류를 유지한다. [규칙·호출 표](carrier_identity.md)와 [고정 기준·동등성 시험](../../tests/test_carrier_identity_port.py)을 따른다. 설정·CSV·snapshot I/O, 표시용 느슨한 parser, source/receipt 검증, F3 내구 완료·성공·ACK와 F4/재시도/자정 복구는 기존 caller 소유다.
+
+기준 `a6253d1`의 고정 벡터·생성 입력 47 PASS를 `cb7ef7f`에 기록했다. 기존 관련 6개 suite는 변경 전 C: 격리에서 530 PASS다. 기존 UI 안내 문구 assertion 실패는 범위 밖으로 보존하며, ProgramData 기본 경로 시험은 전체 core 시험이 만든 synthetic onboarding state의 영향을 받으므로 독립 실행(1 PASS)한다. 기존 업무 테스트와 기대값은 수정하지 않는다.
+
+기존 writer fixture는 현재 파일 목록으로 과거 `57f52e1`을 archive하여 신규 포트 파일 부재로 14 setup ERROR가 발생했다(동일 run 25 PASS). X13-B의 historical fixture만 실제 `57f52e1`→수용 `a6253d1` bytes에 고정하고 이전/최종 트리에 같은 archive 직렬화를 적용한다. 현재 소스의 writer 전환은 기존 `portable_pair`가 계속 검증한다. positive/negative assertion과 제품 installer 허용 조건은 그대로이며, 최초 실패 로그·fixture 입력을 D:에 보존했다.
+
+마지막 fixture 변경 뒤 두 writer suite 전체는 짧은 `wf` 경로에서 **39 PASS**다. 긴 `final-writer-corrected` 경로에서는 Copy-Item이 주입 지점 전에 실패한 rollback 2건(37 PASS/2 FAIL)을 보존했다. 제품/기대값 변경 없이 경로를 줄인 재실행에서 두 건 모두 실제 `RESTORED_PREIMAGE`를 확인했다. 최종 EOF 공백 정리 후 parser/catalog 51 PASS와 inventory `--check`도 유지했다.
+
+호출자 연결과 최종 inventory pin 이후 scoped pack은 **581 PASS**(기존 530 + 동등성 49 + catalog snapshot 2), ProgramData 독립 시험은 **1 PASS**다. 동등성은 35 기록 carrier 입력과 2,640 생성 carrier 입력, 409 날짜 입력, 800 sample/exact 조합 및 dictionary 객체 보존을 대조한다. 기존 생성기를 작업 로그 경로만 옮겨 재사용한 `--check`는 같은 44 writer identity/guard와 양쪽 pin `f7fc92fa017a3b073b8dc49154ca37b4765cf99bce2c6626f053b26e56f1fc7e`를 확인한다. source AST 비교상 변경은 표의 parser/lookup/QA·exact 검사 호출에 한정되며 portable의 기존 루트 Python 수집은 새 모듈을 포함한다.
+
+기준 D: 실행은 I/O 지연과 실패를 보존한 채 중단했고, 공통 지침의 예외에 따라 전후 scoped 입력·TEMP·basetemp를 `C:/KMTech/Label_Match-w5b2-tests-20260913`의 run별 하위 경로로 격리했다. 로그·JUnit·실패 원본과 [최종 보고](D:/KMTech/program-improvement-20260912/work/Label_Match/w5b2/RESULT.md)는 D: 작업 루트에 보존한다. host GUI·프린터·VM·서버·전체 제품 수용·새 정책 활성화는 NOT VERIFIED다.
+
 <a id="shared-powershell-x13b"></a>
 ## X13-B · 설치기 PowerShell leaf
 

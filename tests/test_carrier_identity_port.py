@@ -11,6 +11,8 @@ import runpy
 import pytest
 
 import Label_Match as app
+import carrier_identity_port as port
+import package_logistics as logistics
 import phs_label_workflow as workflow
 
 
@@ -79,8 +81,16 @@ def assert_parity(raw):
         (app._label_match_parse_new_format_fields, BASELINE['_label_match_parse_new_format_fields']),
         (app._label_match_parse_compact_phs2, BASELINE['_label_match_parse_compact_phs2']),
         (workflow.parse_compact_phs2, BASELINE['parse_compact_phs2']),
+        (port.decode_carrier_scan, BASELINE['_label_match_decode_possible_base64_label']),
+        (port.parse_legacy_fields, BASELINE['_label_match_parse_new_format_fields']),
+        (port.parse_compact_carrier, BASELINE['_label_match_parse_compact_phs2']),
+        (parse_raw_port, BASELINE['parse_compact_phs2']),
     ):
         assert observe(current, raw) == observe(old, raw), (current.__name__, raw)
+
+
+def parse_raw_port(raw):
+    return port.parse_raw_compact_carrier(raw, error_type=workflow.PHSLabelWorkflowError)
 
 
 @pytest.mark.parametrize('raw', VECTORS.values(), ids=VECTORS.keys())
@@ -125,3 +135,33 @@ def test_generated_legacy_date_properties():
         raw = f'x{rng.choice([chr(29), "<GS>", "<gs>", "|"])}6D{rng.randrange(1999, 2030):04}{rng.randrange(15):02}{rng.randrange(35):02}'
         assert observe(app.Label_Match._extract_production_date, None, raw) == observe(
             BASELINE['_extract_production_date'], None, raw)
+
+
+def test_item_lookup_preserves_exact_keys_last_row_and_object_identity():
+    rows = [{'Item Code': key, 'Item Name': str(index)} for index, key in enumerate(
+        ['AAA2270730200', 'aaa2270730200', ' AAA2270730200 ', 'ＡＡＡ2270730200', '', None, 'AAA2270730200'])]
+    view = port.item_catalog_view(iter(rows))
+    assert view == BASELINE['item_catalog_view'](rows)
+    original = view.copy()
+    fallback = {'Item Name': '테스트 품목', 'Spec': 'T-SPEC'}
+    for code in [row['Item Code'] for row in rows] + ['AAA', 'AAA2270730200-A', 'missing', 0]:
+        for default in (None, {}, fallback):
+            assert port.item_lookup(view, code, default) is BASELINE['item_lookup'](view, code, default)
+    assert port.item_lookup(view, 'AAA2270730200') is rows[-1]
+    assert view == original
+    assert observe(port.item_catalog_view, [{}]) == observe(BASELINE['item_catalog_view'], [{}])
+    assert observe(port.item_lookup, view, []) == observe(BASELINE['item_lookup'], view, [])
+
+
+def test_generated_sample_and_exact_membership_properties():
+    rng = random.Random(487493)
+    for _ in range(800):
+        samples = [rng.choice(['', 'A', 'a', 'Ａ', 'B']) for _ in range(rng.randrange(6))]
+        raw_exact = [rng.choice(['', 'A', 'a', 'Ａ', 'B']) for _ in range(rng.randrange(6))]
+        exact = logistics.canonical_barcodes(raw_exact)
+        mode = rng.choice(['INHERIT_ALL', 'EXACT_RESCAN'])
+        source_id, source_itg, source_hint = [rng.choice(['', 'source']) for _ in range(3)]
+        expected = BASELINE['package_checks'](samples, mode, exact, raw_exact, source_id, source_itg, source_hint)
+        actual = port.legacy_qa_sample_error(samples) or port.package_membership_error(
+            mode, exact, len(raw_exact), has_source=bool(source_id or source_itg or source_hint))
+        assert actual == expected

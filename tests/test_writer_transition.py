@@ -162,7 +162,12 @@ def test_validated_transition_accepts_only_matching_derived_pins_and_unchanged_s
 
 @pytest.fixture(scope="module")
 def shared_upgrade_pair(tmp_path_factory):
-    """Real 57f52e1 application bytes, with only a borrowed synthetic runtime."""
+    """Recorded X13-B before/after bytes with a borrowed synthetic runtime.
+
+    Later application additions/refactors belong to portable_pair, not to the
+    exact historical shared-leaf adoption declared by the installer.
+    """
+    accepted = "a6253d1a63cc42723216baa021040af3f6e9c4a1"
     root = tmp_path_factory.mktemp("shared-upgrade")
     candidate = root / "candidate"
     builder._copy_application(ROOT, candidate / "app")
@@ -182,30 +187,30 @@ def shared_upgrade_pair(tmp_path_factory):
         target = candidate / name
         target.parent.mkdir(exist_ok=True)
         target.write_bytes((ROOT / source_paths[name]).read_bytes())
+    accepted_files = set(subprocess.check_output([
+        "git", "-C", str(ROOT), "ls-tree", "-r", "--name-only", accepted,
+    ], text=True).splitlines())
+    for relative, name in list(source_paths.items()):
+        if name not in accepted_files:
+            (candidate / relative).unlink()
+            del source_paths[relative]
     addition = "app/kmtech_shared/powershell/portable.ps1"
     old = root / "old"
     shutil.copytree(candidate, old)
     (old / addition).unlink()
-    before = subprocess.check_output([
-        "git", "-C", str(ROOT), "archive", "--format=tar", "57f52e10f3f1f740f88020ebb3e45b718a587a5b",
-        "--", *(name for relative, name in source_paths.items() if relative != addition),
-    ])
-    with tarfile.open(fileobj=io.BytesIO(before)) as archive:
-        for relative, name in source_paths.items():
-            if relative == addition:
-                continue
-            member = archive.getmember(name)
-            assert member.isfile()
-            raw = archive.extractfile(member).read()
-            (old / relative).write_bytes(raw)
-            # git archive honors this Windows checkout's CRLF attributes. Keep
-            # unchanged files in that same serialization on both fixture sides.
-            path = candidate / relative
-            current = path.read_bytes()
-            if current.replace(b"\r\n", b"\n") == raw.replace(b"\r\n", b"\n"):
-                path.write_bytes(raw)
+    for tree, revision in ((old, "57f52e10f3f1f740f88020ebb3e45b718a587a5b"), (candidate, accepted)):
+        paths = {relative: name for relative, name in source_paths.items()
+                 if tree == candidate or relative != addition}
+        recorded = subprocess.check_output([
+            "git", "-C", str(ROOT), "archive", "--format=tar", revision, "--", *paths.values(),
+        ])
+        with tarfile.open(fileobj=io.BytesIO(recorded)) as archive:
+            for relative, name in paths.items():
+                member = archive.getmember(name)
+                assert member.isfile()
+                (tree / relative).write_bytes(archive.extractfile(member).read())
     _manifest(old, "57f52e10f3f1f740f88020ebb3e45b718a587a5b")
-    _manifest(candidate, "2" * 40)
+    _manifest(candidate, accepted)
     return old, candidate
 
 

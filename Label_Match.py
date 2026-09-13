@@ -2,6 +2,8 @@ import os
 import sys
 import json
 import traceback
+
+import carrier_identity_port as carrier_identity
 from collections.abc import Mapping
 from collections import namedtuple
 from datetime import datetime, date, timezone
@@ -1766,90 +1768,15 @@ def _label_match_phs_reconciliation_display_lines(resolution):
 
 
 def _label_match_decode_possible_base64_label(raw_value):
-    text = str(raw_value or "").strip()
-    if not text or "|" in text or len(text) <= 20:
-        return text
-    try:
-        temp_b64 = text.replace('-', '+').replace('_', '/')
-        padded_b64 = temp_b64 + '=' * (-len(temp_b64) % 4)
-        decoded = base64.b64decode(padded_b64).decode('utf-8')
-        return decoded if '|' in decoded and '=' in decoded else text
-    except (binascii.Error, UnicodeDecodeError):
-        return text
+    return carrier_identity.decode_carrier_scan(raw_value)
 
 
 def _label_match_parse_new_format_fields(raw_value):
-    decoded = _label_match_decode_possible_base64_label(raw_value)
-    if '|' not in decoded or '=' not in decoded:
-        return None
-    try:
-        fields = {
-            key.strip().upper(): value.strip()
-            for key, value in (
-                item.split('=', 1)
-                for item in decoded.split('|')
-                if '=' in item
-            )
-        }
-    except Exception:
-        return None
-    if str(fields.get("SRC") or "").strip().upper() == "KMTECH_INPUT_TAG":
-        item_code = str(fields.get("CLC") or fields.get("ITEM") or fields.get("ITEM_CODE") or "").strip()
-        phase = str(fields.get("PHS") or "").strip()
-        if not item_code or not phase:
-            return None
-        normalized = dict(fields)
-        normalized["CLC"] = item_code
-        normalized.setdefault("SPC", str(fields.get("ITEM_NAME") or fields.get("ITEM") or item_code).strip())
-        fields = normalized
-    if str(fields.get("CLC") or "").strip().upper() == "INSPECTION":
-        item_code = str(fields.get("ITEM") or fields.get("ITEM_CODE") or "").strip()
-        if not item_code:
-            return None
-        normalized = dict(fields)
-        normalized["CLC"] = item_code
-        normalized.setdefault("SPC", str(fields.get("ITEM_NAME") or item_code).strip())
-        normalized.setdefault("PHS", str(fields.get("PHASE") or "INSPECTION").strip())
-        if not normalized.get("QT") and fields.get("QTY"):
-            normalized["QT"] = str(fields["QTY"]).strip()
-        fields = normalized
-    if not all(fields.get(key) for key in ('CLC', 'SPC', 'PHS')):
-        return None
-    return fields
+    return carrier_identity.parse_legacy_fields(raw_value)
 
 
 def _label_match_parse_compact_phs2(raw_value):
-    """Parse the exact six-field central PHS2 physical-label contract."""
-
-    decoded = _label_match_decode_possible_base64_label(raw_value)
-    parts = decoded.split("|") if decoded else []
-    expected_keys = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
-    if len(parts) != len(expected_keys):
-        raise ValueError("PHS2 must contain exactly six canonical fields")
-    fields = {}
-    keys = []
-    for part in parts:
-        if part.count("=") != 1:
-            raise ValueError("PHS2 field syntax is invalid")
-        key, value = part.split("=", 1)
-        key = key.strip().upper()
-        value = value.strip()
-        if not key or not value or key in fields:
-            raise ValueError("PHS2 fields must be non-empty and unique")
-        keys.append(key)
-        fields[key] = value
-    if tuple(keys) != expected_keys:
-        raise ValueError(
-            "PHS2 fields must be ordered PHS,SRC,ITG,CLC,LBL,HSH"
-        )
-    if fields["PHS"] != "2" or fields["SRC"].upper() != "KMTECH_INPUT_TAG":
-        raise ValueError("only central KMTECH_INPUT_TAG PHS=2 is accepted")
-    digest = fields["HSH"].lower()
-    if len(digest) != 16 or any(value not in "0123456789abcdef" for value in digest):
-        raise ValueError("PHS2 HSH must be a 16-character hexadecimal prefix")
-    fields["SRC"] = "KMTECH_INPUT_TAG"
-    fields["HSH"] = digest
-    return fields
+    return carrier_identity.parse_compact_carrier(raw_value)
 
 
 def _label_match_display_fields(raw_value):
@@ -6715,12 +6642,11 @@ class Label_Match(tk.Tk):
                     cause_code=SNAPSHOT_UNAVAILABLE_AFTER_VERIFY,
                 )
             try:
-                return {
-                    row['Item Code']: row
-                    for row in csv.DictReader(
+                return carrier_identity.item_catalog_view(
+                    csv.DictReader(
                         io.StringIO(verified_payload.decode("utf-8"), newline="")
                     )
-                }
+                )
             except (KeyError, UnicodeError, csv.Error) as exc:
                 raise ItemCatalogSyncError(
                     "central item catalog snapshot could not be parsed",
@@ -6732,7 +6658,7 @@ class Label_Match(tk.Tk):
                 ) from exc
         try:
             with open(items_path, 'r', encoding='utf-8-sig') as f:
-                return {row['Item Code']: row for row in csv.DictReader(f)}
+                return carrier_identity.item_catalog_view(csv.DictReader(f))
         except FileNotFoundError:
             if not self.run_tests:
                 messagebox.showwarning("기준 정보 파일 없음", f"품목 정보 파일({self.FILES.ITEMS})이 없어 품목명을 표시할 수 없습니다.\n프로그램 폴더 내 'assets' 폴더를 확인해주세요.")
@@ -10554,7 +10480,7 @@ class Label_Match(tk.Tk):
                     marker in raw_input for marker in ["DEMO", "VALID-", "TEST_"]
                 )
                 
-                if not is_test_code and len(raw_input) != MASTER_LABEL_LENGTH and not self.items_data.get(raw_input):
+                if not is_test_code and len(raw_input) != MASTER_LABEL_LENGTH and not carrier_identity.item_lookup(self.items_data, raw_input):
                     self._handle_input_error(
                         raw_input,
                         title="[현품표 형식 오류]",
@@ -13267,15 +13193,7 @@ class Label_Match(tk.Tk):
 
     def _extract_production_date(self, raw_input):
         try:
-            normalized_input = re.sub(r"<gs>", "\x1D", str(raw_input or ""), flags=re.IGNORECASE)
-            fields = normalized_input.split('\x1D')
-            for field in fields:
-                if field.startswith('6D'):
-                    date_str = field[2:]
-                    if len(date_str) == 8 and date_str.isdigit():
-                        production_date = datetime.strptime(date_str, "%Y%m%d")
-                        return production_date.strftime("%Y-%m-%d")
-            return None
+            return carrier_identity.parse_legacy_production_date(raw_input)
         except Exception as e:
             print(f"생산 날짜 추출 오류: {e}")
             return None
@@ -14062,7 +13980,7 @@ class Label_Match(tk.Tk):
         if item_name_override:
             item_info = {"Item Name": item_name_override, "Spec": ""}
         else:
-            item_info = self.items_data.get(item_code, {})
+            item_info = carrier_identity.item_lookup(self.items_data, item_code, {})
 
         start_time = self.current_set_info.get('start_time')
         work_time_sec = (datetime.now() - start_time).total_seconds() if start_time else 0.0
@@ -15196,7 +15114,7 @@ class Label_Match(tk.Tk):
             "_simulation_stop_event", threading.Event()
         )
         try:
-            item_info = self.items_data.get(master_code, {"Item Name": "테스트 품목", "Spec": "T-SPEC"})
+            item_info = carrier_identity.item_lookup(self.items_data, master_code, {"Item Name": "테스트 품목", "Spec": "T-SPEC"})
 
             for i in range(num_sets):
                 if stop_event.is_set():

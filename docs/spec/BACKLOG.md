@@ -1,5 +1,11 @@
 # Label_Match 진행·공백·추가 제안
 
+## W5-B2 · carrier 경계 이후
+
+[현행 carrier/legacy/Item Code 포트](carrier_identity.md)는 기존 동작을 명시 인자로 옮긴 경계다. W5-L 공용 leaf는 두 실제 소비자의 입력·반환·오류 의미가 동등하다는 근거 뒤에만 검토한다. raw workflow와 스캔 Base64, compact와 legacy, sample과 exact membership의 차이를 통합하지 않는다. 실제 새 제품 정책·profile/schema 활성화와 PHS2/receipt/hash 변경은 별도 요구·레인 소유이며 이번 작업으로 활성화하지 않는다.
+
+기존 `test_standard_operator_copy_describes_one_phs2_and_atomic_replacement`는 현행 안내 문구와 불일치해 기준 소스에서도 실패한다. UI 문구/테스트 정합은 이 parser 추출 범위 밖 발견으로 남긴다. [검증 범위와 격리 근거](operations.md#carrier-identity-w5b2)를 따른다.
+
 ## X13-B · PowerShell leaf 채택
 
 R1의 구 설치본→X13-B 지원 전환은 57f52e1 shared preimage와 이번 release의 추가/교체 파일 pin에 한정한다. 양 엔진의 합성 upgrade/교체 후 검증과 변조·누락·링크 거부는 [현재 결과](operations.md#shared-powershell-x13b)를 따르며, 실제 설치 lifecycle 수용은 별도다.
