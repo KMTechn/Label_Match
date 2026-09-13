@@ -9,7 +9,9 @@
 
 기존 writer fixture는 현재 파일 목록으로 과거 `57f52e1`을 archive하여 신규 포트 파일 부재로 14 setup ERROR가 발생했다(동일 run 25 PASS). X13-B의 historical fixture만 실제 `57f52e1`→수용 `a6253d1` bytes에 고정하고 이전/최종 트리에 같은 archive 직렬화를 적용한다. 현재 소스의 writer 전환은 기존 `portable_pair`가 계속 검증한다. positive/negative assertion과 제품 installer 허용 조건은 그대로이며, 최초 실패 로그·fixture 입력을 D:에 보존했다.
 
-마지막 fixture 변경 뒤 두 writer suite 전체는 짧은 `wf` 경로에서 **39 PASS**다. 긴 `final-writer-corrected` 경로에서는 Copy-Item이 주입 지점 전에 실패한 rollback 2건(37 PASS/2 FAIL)을 보존했다. 제품/기대값 변경 없이 경로를 줄인 재실행에서 두 건 모두 실제 `RESTORED_PREIMAGE`를 확인했다. 최종 EOF 공백 정리 후 parser/catalog 51 PASS와 inventory `--check`도 유지했다.
+마지막 fixture 변경 뒤 두 writer suite 전체는 C:의 짧은 `wf` 경로에서 **39 PASS**다. 긴 `final-writer-corrected` 경로에서는 Copy-Item이 주입 지점 전에 실패한 rollback 2건(37 PASS/2 FAIL)을 보존했다. 제품/기대값 변경 없이 경로를 줄인 재실행에서 두 건 모두 실제 `RESTORED_PREIMAGE`를 확인했다. 최종 EOF 공백 정리 후 parser/catalog 51 PASS와 inventory `--check`도 유지했다.
+
+독립 검토의 D: writer 실행은 **37 PASS/2 timeout**, 같은 rollback 두 건의 직렬 재실행도 **2 timeout**이었다. [W5-B2 후속 진단](D:/KMTech/program-improvement-20260912/work/Label_Match/w5b2fix/RESULT.md)은 같은 두 노드·180초 자식 제한·73자 입력 루트로 최종 `384c04b`의 D: **1 PASS/1 timeout**(452.88초), 기준 `a6253d1`의 D: **2 PASS**(286.84초), 기준/최종 C: **각 2 PASS**(248.51/261.70초)를 확인했다. C: 네 사례 모두 `FAILED_ROLLED_BACK`, `RESTORED_PREIMAGE`, 코드·runtime 복원을 검증했다. D: 지연·낮은 자식 CPU 사용과 별도 flush 측정은 환경성 timeout 판정을 뒷받침하며, 기준 D:에서는 timeout이 재현되지 않았다. 제품·포트·시험·기대값·timeout 변경은 없다. 원 실패는 FAIL로 보존하며 이번 두 노드 결과를 전체 writer suite·실제 설치 수용으로 확대하지 않는다.
 
 호출자 연결과 최종 inventory pin 이후 scoped pack은 **581 PASS**(기존 530 + 동등성 49 + catalog snapshot 2), ProgramData 독립 시험은 **1 PASS**다. 동등성은 35 기록 carrier 입력과 2,640 생성 carrier 입력, 409 날짜 입력, 800 sample/exact 조합 및 dictionary 객체 보존을 대조한다. 기존 생성기를 작업 로그 경로만 옮겨 재사용한 `--check`는 같은 44 writer identity/guard와 양쪽 pin `f7fc92fa017a3b073b8dc49154ca37b4765cf99bce2c6626f053b26e56f1fc7e`를 확인한다. source AST 비교상 변경은 표의 parser/lookup/QA·exact 검사 호출에 한정되며 portable의 기존 루트 Python 수집은 새 모듈을 포함한다.
 
