@@ -7,6 +7,8 @@
 
 `package_outbox.py`는 기존 생성 outbox의 transaction·내구 marker·due retry·review 저장을 소유한다. façade 생성자는 호출 시점의 clock·schema·review helper를 전달하고 취소 outbox와 공유 schema는 기존 파일에 둔다. SQL·commit/rollback·CSV 투영 순서와 저장 bytes는 유지한다.
 
+`package_outbox_processor.py`는 claim→저장 명령/receipt 조회→전송→receipt 검증→ACK/retry/conflict의 기존 순서를 소유한다. `package_logistics.PackageOutboxProcessor`가 원 writer admission과 call-time client/receipt 검증 경계를 유지하며 취소 processor는 기존 파일에 남는다.
+
 검증은 [LM-2 실행 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm2/RESULT.md)의 AST·동일 입력 전후 벡터·기존 focused 시험에 한정한다. GUI·설치·프린터·실물 모니터·relay 실서버는 별도 검증 대상이다.
 
 <a id="module-boundaries-lm1"></a>
