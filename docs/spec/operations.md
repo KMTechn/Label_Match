@@ -11,6 +11,8 @@
 
 `label_workbench_history.py`는 같은 오른쪽 pane의 이력·통과 요약·작업 버튼을 구성한다. 완료 트레이 취소의 danger 버튼 생성자는 owner가 callback으로 전달해 원 생성 시점에 실행한다. 날짜 조회·원문/복사·정렬·취소·F1–F5/Enter/Escape/Delete의 기존 owner callback과 disabled 초기 상태를 유지하며 이력 worker·generation/input gate는 이동하지 않는다.
 
+`label_workbench_context.py`는 공통 frame/header·왼쪽 작업 context와 footer/로딩 표시를 구성한다. profile·main frame·pane metrics를 기존 순서로 전달하고 `_create_widgets`는 pane 순서·notice binding·준비 flag·step rail·기존 renderer/responsive 적용을 소유한다. 버튼/문구/절차·레이아웃 계산·실행 thread는 바꾸지 않는다.
+
 F3 진입/action gate·성공음/이력·중앙 worker dispatch·재시도/자정 복구는 기존 owner를 사용한다. [LM-3 검증 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm3/RESULT.md)은 AST·동일 입력/실패 벡터·기존 headless pack 범위이며 실제 GUI·프린터·모니터·설치 수용은 별도다.
 
 <a id="module-boundaries-lm2"></a>

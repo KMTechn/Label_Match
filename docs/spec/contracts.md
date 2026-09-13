@@ -218,6 +218,7 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 ## C-04 F3 포장 명령·lease·outbox
 
 - [LM-3 완료 경계](operations.md#module-boundaries-lm3)는 기존 F3 handler·내구 commit signature와 호출 시점 전역/patch를 보존한다. 실패 뒤 원 작업·command, current-state→intent→CSV flush/fsync→marker→성공→중앙 ACK 순서는 불변이다.
+- LM-3 pane 구성은 기존 widget 생성·binding 순서와 disabled 초기 상태를 유지한다. notice Enter binding과 danger 취소 버튼 생성자는 owner에 두고 기존 snapshot adapter·action gate를 재사용한다.
 
 - [LM-2 모듈 경계](operations.md#module-boundaries-lm2)는 기존 façade API·동일 command key·membership/expected_versions를 유지한다. local durable→성공→중앙 ACK, due retry·취소 dependency·reviewed recovery의 순서는 분리 대상의 불변 계약이다.
 

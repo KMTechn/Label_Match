@@ -223,7 +223,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="lm-b05"></a>
 ## LM-B05 · 기존 PASS 적용 범위와 남은 수용 검증 매핑
 
-- LM-3의 [F3 완료 분리](operations.md#module-boundaries-lm3)는 원 command·내구 저장·성공/ACK 순서를 보존하는 headless 동등성 범위다. 실제 GUI·장비·설치·중앙 transport 수용을 대신하지 않는다.
+- LM-3의 [F3 완료·pane 분리](operations.md#module-boundaries-lm3)는 원 command·내구 저장·성공/ACK·widget/binding 순서를 보존하는 headless 동등성 범위다. 기존 시험은 변경하지 않으며 실제 GUI·장비·설치·중앙 transport 수용을 대신하지 않는다.
 
 - LM-2의 포장 물류 분리는 [기존 API·동등성 검증](operations.md#module-boundaries-lm2) 범위다. 기존 workbench 6 FAIL과 GUI·설치·실제 transport 수용은 별도이며 분리로 종결하지 않는다.
 
