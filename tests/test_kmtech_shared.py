@@ -31,7 +31,7 @@ def test_pinned_shared_source_and_packaging_inputs():
     assert result.returncode == 0, result.stdout + result.stderr
     # The tracked frozen builder generates its spec; the legacy local .spec is ignored.
     frozen = (ROOT / "tools/build_frozen_release_candidate.ps1").read_text(encoding="utf-8")
-    for module in ("kmtech_shared.catalog", "kmtech_shared.raster"):
+    for module in ("kmtech_shared.catalog", "kmtech_shared.raster", "kmtech_shared.runtime"):
         assert f'"--hidden-import", "{module}"' in frozen
     for name in ("kmtech_shared.manifest.json", "kmtech_shared.lock.json"):
         assert f'"--add-data", "$(Join-Path $repoRoot \'{name}\');."' in frozen

@@ -3,9 +3,9 @@
 <a id="shared-core-x04b"></a>
 ## X04-B · 고정 shared core
 
-정본 `kmtech_shared` HEAD `3c49997`의 package 3개를 byte 그대로 포함한다. code pin은 `c8098202ccb8a34650f9f8f4c40c2a943f1da2e0`, version은 `0.1.0`, manifest SHA256은 `4e4f6eaa138b7702db498c913e1dc7f2aae60a4e52f9976dd6599cec827ac8d4`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
+정본 `kmtech_shared` HEAD `c067d38`의 package 4개(`__init__`, catalog, raster, runtime)를 byte 그대로 포함한다. code pin은 `24d234327f72c52a505d8215cb0c68b52b0f12e5`, version은 `0.2.0`, manifest SHA256은 `465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
 
-`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 3파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `3c49997`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
+`python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 4파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `c067d38`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
 
 정본 checkout을 함께 가진 개발자는 `python -B -m pytest -q -p no:cacheprovider tests/integration/check_kmtech_shared_canonical.py`를 명시 실행한다. 이 노드는 검사 함수 source·상수·manifest bytes를 대조하고 정본 checker에 앱 lock의 고정 hash를 전달한다. 파일명으로 기본 수집에서 제외하며, 명시 실행에서 형제가 없으면 skip 없이 실패한다.
 

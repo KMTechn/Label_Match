@@ -973,6 +973,7 @@ $mainArguments = @($nativeFreePyInstallerArguments) + @(
     "--add-data", "$(Join-Path $repoRoot 'kmtech_shared.lock.json');.",
     "--hidden-import", "kmtech_shared.catalog",
     "--hidden-import", "kmtech_shared.raster",
+    "--hidden-import", "kmtech_shared.runtime",
     "--hidden-import", "tkcalendar",
     "--distpath", $distRoot,
     "--workpath", $mainWorkRoot,
