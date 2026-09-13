@@ -97,9 +97,12 @@ _ADMITTED_BUSY_PRODUCT_CALLS = {
 def _product_admitted_busy_seam_literals():
     product_source = (capture.ROOT / "Label_Match.py").read_text(encoding="utf-8")
     product_tree = ast.parse(product_source)
+    completion_tree = ast.parse(
+        (capture.ROOT / "label_completion.py").read_text(encoding="utf-8")
+    )
     expected_tasks = set(_ADMITTED_BUSY_PRODUCT_CALLS.values())
     prefixes_by_task = {}
-    for node in ast.walk(product_tree):
+    for node in (*ast.walk(product_tree), *ast.walk(completion_tree)):
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
