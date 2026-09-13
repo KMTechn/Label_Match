@@ -29,7 +29,7 @@ def _sha256(relative_path: str) -> str:
 
 def _production_imports(roots: set[str]) -> list[tuple[str, str]]:
     paths = list(ROOT.glob("*.py"))
-    for package in ("kmtech_factory_contracts", "kmtech_zero_pe", "ui"):
+    for package in ("kmtech_factory_contracts", "kmtech_zero_pe", "kmtech_shared", "ui"):
         paths.extend((ROOT / package).rglob("*.py"))
     matches: list[tuple[str, str]] = []
     for path in sorted(paths):
@@ -55,7 +55,7 @@ def test_shared_zero_pe_vendor_files_are_byte_pinned() -> None:
         "48453e70a4bdd2008c2e4565bf647a852f319322458f9dc5a094a064274faece"
     )
     assert _sha256("kmtech_zero_pe/raster.py") == (
-        "1296fc461e349cc02c1379b09096559203d2ec22cdc27c780958a05006d97c48"
+        "b6206d104cd195f36a5c510c173637143ef0d30cf75f1909eccad15f8b2904c1"
     )
     assert _sha256("kmtech_zero_pe/release_signature.py") == (
         "ac21e2bca45899cd1161d89d4d2b6261ccb624bef745f88f5357c402e151cf1e"

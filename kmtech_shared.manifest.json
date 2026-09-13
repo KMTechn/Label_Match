@@ -1,0 +1,10 @@
+{
+  "files": {
+    "kmtech_shared/__init__.py": "6f3a224a8bf51772767a8192c206d3c7e21348749c39c6fc7afc9f23948785b5",
+    "kmtech_shared/catalog.py": "0575ac3a0a46012af75600a9c5d61dc432c71b69ec0008e123badee775619896",
+    "kmtech_shared/raster.py": "17c3d10498f9f5b845858861e671fff4715820b0e48719864d8dec4b9743f244"
+  },
+  "schema": "kmtech.shared.source.v1",
+  "source_commit": "c8098202ccb8a34650f9f8f4c40c2a943f1da2e0",
+  "version": "0.1.0"
+}

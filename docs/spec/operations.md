@@ -1,5 +1,14 @@
 # Label_Match 운영·복구·검증
 
+<a id="shared-core-x04b"></a>
+## X04-B · 고정 shared core
+
+정본 `kmtech_shared` HEAD `3c49997`의 package 3개를 byte 그대로 포함한다. code pin은 `c8098202ccb8a34650f9f8f4c40c2a943f1da2e0`, version은 `0.1.0`, manifest SHA256은 `4e4f6eaa138b7702db498c913e1dc7f2aae60a4e52f9976dd6599cec827ac8d4`다. 별도 manifest/lock을 portable 포함 목록과 실제 PyInstaller spec 생성 진입점 `tools/build_frozen_release_candidate.ps1`에 결속한다. `.spec` 로컬 파일은 기존처럼 ignored 생성물이다. runtime은 sibling import나 온라인 pin 검사를 하지 않는다.
+
+`tests/test_kmtech_shared.py`가 소비자 lock의 고정 hash를 정본 `manifest/sync_shared.py --check --root <앱> --manifest <앱>/kmtech_shared.manifest.json --expected-sha256 <lock 값>`에 전달하고 누락·추가·내용/manifest 변조 거부 및 portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. writer inventory의 44개 identity/guard와 Python/PowerShell pin은 유지한다.
+
+PROVEN: 기존 baseline83 PASS, renderer/packaging/writer49 PASS, 정본 50개 RGB/RGBA filter 조합·resize/contain·오류·메모리 GDI golden 및 2개 QR payload/실제 PHS label renderer의 baseline/facade 픽셀·PNG bytes·QR 해독 일치. [근거](D:/KMTech/program-improvement-20260912/work/Label_Match/x04b/RESULT.md). GUI·실물 인쇄·VM·서버·전체 ZIP/실제 PyInstaller build는 NOT VERIFIED다.
+
 <a id="committed-stale-runtime-recovery-20260912"></a>
 ## 2026-09-12 · Committed stale-runtime의 지원 복구 교정
 

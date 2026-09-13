@@ -1,5 +1,9 @@
 # Label_Match 진행·공백·추가 제안
 
+## X04-B · shared core 채택
+
+renderer 호환 facade·고정 package·manifest/lock·portable/PyInstaller 생성 입력을 채택했다. [headless 검증](operations.md#shared-core-x04b)에서 PNG/QR/반환 class와 기존 writer 경계를 확인했다. catalog leaf 채택과 기존 W1–3 회귀는 다음 같은 과제 단위이며 실제 GUI·인쇄·설치 수용은 LM-B04에 남는다.
+
 ## LM-W2 · 감사 응답성 개선
 
 - 최종 w2fix3 host 검증은 **469 PASS**, R1–R5 재현 **28 PASS**, walkthrough/원 R6 **21 PASS**·소비자 집합 **1 PASS**·추가 호출자 **3 PASS**다. 기존469 노드 누락0으로 W1 감사350·내구33·이력40·B01/B03 응답성10을 유지한다. R4/R5와 수정 전 R6 실패는 보존하며 [최종 JUnit·원 실패·잔여 범위](operations.md#responsiveness-w2)를 따른다.

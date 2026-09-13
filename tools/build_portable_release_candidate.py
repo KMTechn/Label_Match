@@ -35,10 +35,14 @@ RUNTIME_ROOT_FILES = (
 APP_PACKAGE_DIRS = (
     "kmtech_factory_contracts",
     "kmtech_zero_pe",
+    "kmtech_shared",
     "ui",
 )
 APP_DATA_DIRS = ("assets", "config")
-APP_DATA_FILES = ("contract.lock.json", "kmtech_zero_pe.vendor.json")
+APP_DATA_FILES = (
+    "contract.lock.json", "kmtech_zero_pe.vendor.json",
+    "kmtech_shared.manifest.json", "kmtech_shared.lock.json",
+)
 EXTERNAL_TOOL_MODULES = (
     "tools.direct_sync_relay_operator",
     "tools.label_auth_recovery_canary",

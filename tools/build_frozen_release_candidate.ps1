@@ -969,6 +969,10 @@ $mainArguments = @($nativeFreePyInstallerArguments) + @(
     "--add-data", "$(Join-Path $factoryIdentityRoot 'build-identity.json');.",
     "--add-data", "$(Join-Path $factoryIdentityRoot 'build-compatibility.json');.",
     "--add-data", "$(Join-Path $repoRoot 'contract.lock.json');.",
+    "--add-data", "$(Join-Path $repoRoot 'kmtech_shared.manifest.json');.",
+    "--add-data", "$(Join-Path $repoRoot 'kmtech_shared.lock.json');.",
+    "--hidden-import", "kmtech_shared.catalog",
+    "--hidden-import", "kmtech_shared.raster",
     "--hidden-import", "tkcalendar",
     "--distpath", $distRoot,
     "--workpath", $mainWorkRoot,
@@ -1109,6 +1113,8 @@ $copies = [ordered]@{
     (Join-Path $factoryIdentityRoot "build-identity.json") = (Join-Path $packageRoot "build-identity.json")
     (Join-Path $factoryIdentityRoot "build-compatibility.json") = (Join-Path $packageRoot "build-compatibility.json")
     (Join-Path $factoryIdentityRoot "contract.lock.json") = (Join-Path $packageRoot "contract.lock.json")
+    (Join-Path $repoRoot "kmtech_shared.manifest.json") = (Join-Path $packageRoot "kmtech_shared.manifest.json")
+    (Join-Path $repoRoot "kmtech_shared.lock.json") = (Join-Path $packageRoot "kmtech_shared.lock.json")
     (Join-Path $repoRoot "direct_sync_push.py") = (Join-Path $packageRoot "direct_sync_push.py")
     (Join-Path $repoRoot "direct_sync_runtime.py") = (Join-Path $packageRoot "direct_sync_runtime.py")
     (Join-Path $repoRoot "producer_runtime_client.py") = (Join-Path $packageRoot "producer_runtime_client.py")
@@ -1204,6 +1210,8 @@ $env:LABEL_MATCH_REQUIRE_STAGED_INSTALLER_TEST = "1"
     --expected-file KMTechActiveWorkProbe.independent.build-identity.json `
     --expected-file KMTechActiveWorkProbe.integrated.build-identity.json `
     --expected-file contract.lock.json `
+    --expected-file kmtech_shared.manifest.json `
+    --expected-file kmtech_shared.lock.json `
     --expected-file build-identity.json `
     --expected-file build-compatibility.json `
     --built-at-utc $builtAtUtc
