@@ -566,6 +566,23 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 <a id="recovery"></a>
 ## 저장·오프라인·중단 복구
 
+<a id="business-fixtures-w7lmfix"></a>
+### W7 후속 업무 fixture 사용 범위
+
+[business_factory](../../tests/test_business_flow_fixtures.py)와 [지원 코드](../../tests/_business_flow_fixture.py)는 W7-V4의 세 후속 행을 위한 격리 headless 시험이다. 실제 `DataManager`, 공유 SQLite outbox·exchange·lease store, `PackageLogisticsClient`의 주입 transport, 기존 시험 signer/keyring을 사용한다. 제품 source·guard·서명 검증·flush/fsync·marker·receipt 검증은 변경하지 않는다. `run_tests=False`이며 UI·오디오·telemetry 전송·clock만 외부 seam이다.
+
+| 행 | 재사용 진입·상태 | 입증 한계 |
+| --- | --- | --- |
+| F4 저장 목록/원자 교체 | `business_factory(exchange=True)` → `prepare_exchange(case)`. 기존 `BatchClient` 2쌍·target/donor/receipt로 목록 수정·삭제·순서를 검사하고 실제 coordinator/store에 저장한다. 초기 DB 상태는 **PREPARED**이며 audit의 일반적인 pending 표현과 구별한다. 실제 409→OPERATOR_REVIEW, 검증 receipt→ACKED + seal/local PENDING, 잘못된 QR 거부→정확한 QR 확인→로컬 APPLIED와 동일 set/raw 복원을 검사한다. | 기존 단일-source projection과 제품에서 검증한 seal을 결합한 exchange 시험이다. 최신 full-single work-group topology의 첫 PHS2→F4 팝업 진입·widget 목록 편집은 **UNPROVEN**. 3쌍 capability 부재, 기존 F3 lease 및 client 부재 거부는 유지한다. |
+| F3 local/pending/ACK/conflict | `case.accept()` → `_begin_central_package_submission()` → `case.drain()`. 실제 source 조회·서명 lease·current-state→intent→CSV flush/fsync→marker/lease transaction 뒤 로컬 완료 문구와 idle을 검사한다. provider `offline/online/conflict`로 marker=1 PENDING/ACKED/CONFLICT 및 lease LOCAL_COMPLETED/ACKED/OPERATOR_REVIEW를 구분한다. | `_draft/_projection/_receipt`의 기존 단일-source 호환 계약 범위다. marker=0은 전송되지 않고 충돌도 완료 CSV를 지우지 않는다. 실제 서비스 인증·lease 발급, async ACK 화면·native F3 lane은 **NOT TESTED**. |
+| 자정/lost ACK | `provider.mode='lost_ack'`에서 provider 효과 1회·응답 유실 → `case.restart(at=...)`로 23:59 저장/writer 종료 후 00:01 reopen → 같은 intent/command/key의 receipt-first 복구. 별도 marker 쓰기 실패도 같은 signed lease·원 CSV 1행으로 복구한다. | 실제 store와 current-state loader를 사용하지만 Tk `on_closing`·프로세스 재기동·전원 장애는 **NOT TESTED**. provider 효과 1회는 실제 서버 원자 transaction의 증거가 아니다. OS 시계를 바꾸지 않는다. |
+
+다른 pytest에서 `from tests.test_business_flow_fixtures import business_factory, prepare_exchange`로 fixture와 F4 준비 함수를 재사용한다. `case.app`, `case.root`, `case.provider`가 각각 실제 저장 소비자·격리 데이터·외부 응답 제어점이다. `case.restart(at=datetime(..., tzinfo=timezone.utc))`는 저장→writer flush/close→합성 clock 이동→새 store/current-state 복구를 수행한다. 종료 fixture는 writer를 닫고 검사하며 DB/CSV/키 자료는 지정 basetemp에 남긴다. 운영 프로필·데이터를 복사하지 않는다.
+
+실행 전 TEMP/TMP, `LABEL_MATCH_SAVE_DIR`, `LABEL_MATCH_SETTINGS_PATH`, `LABEL_MATCH_DIRECT_SYNC_ROOT`, LOCALAPPDATA/APPDATA/PROGRAMDATA/USERPROFILE을 지정 D: 작업 루트로 격리하고 `PYTHONDONTWRITEBYTECODE=1`을 설정한다. 명령은 `python -m pytest -q -p no:cacheprovider tests/test_business_flow_fixtures.py --basetemp <D: 작업 루트의 새 tmp 경로> --junitxml <D: 로그 경로>`다. 실행 결과·정확한 회귀 노드·실패 원본은 [W7LMFIX RESULT](D:/KMTech/program-improvement-20260912/work/Label_Match/w7lmfix/RESULT.md)에 연결한다. 기존 W7-V4 store 0행·실패 및 표시 DTO ACK 판정은 소급 변경하지 않는다. 새 fixture를 이용한 VM 재장면은 별도 사용자 승인 전 실행하지 않는다.
+
+### 복구 상태와 대응
+
 같은 데이터 루트의 `_current_set_state_packaging.json`, event CSV, `package_logistics_outbox.sqlite3`와 `package_operation_lease_keyring.json`을 업무 identity와 함께 보존한다. 같은 SQLite 파일에 생성·취소·lease·접수·교체 상태가 연결되며, F5는 `phs_label_exchange/phs_label_exchange_recovery.json`과 `labels`를 사용한다. producer의 queue/spool/status/receipt는 별도 root다. 근거: [앱 초기화/DataManager](../../Label_Match.py), [package_logistics](../../package_logistics.py), [보존 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md).
 
 | 사건 | 현행 경계와 작업자/지원 담당의 다음 행동 | 종료·확인 기준 |
