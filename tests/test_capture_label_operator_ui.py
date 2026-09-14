@@ -3541,7 +3541,15 @@ def test_m7_capture_evaluation_blocks_broken_warning_overwrite_and_input_reenabl
     ),
 )
 def test_m7_capture_evaluation_requires_the_rejected_input_to_remain_visible(state_id):
+    from Label_Match import Label_Match
+
     record = _valid_capture_record(state_id)
+    actual_status = {}
+    app = SimpleNamespace(status_label=SimpleNamespace(
+        config=lambda **options: actual_status.update(options), grid=lambda: None,
+    ))
+    Label_Match._show_ui_lane_rejection(app, "busy")
+    assert record["rendered_state"]["status_text"] == actual_status["text"]
     record["rendered_state"]["entry_value"] = ""
     record["rendered_state"]["m7_transition_receipt"][
         "preserved_input_after"

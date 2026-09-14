@@ -4836,6 +4836,7 @@ class Label_Match(tk.Tk):
                     ),
                     style="Status.TLabel",
                 )
+                status_label.grid()
             except (TclError, AttributeError):
                 pass
 
@@ -4867,7 +4868,7 @@ class Label_Match(tk.Tk):
                     "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
                 )
                 status_label.config(text=status_text, style="Error.TLabel" if broken else "Status.TLabel")
-                if broken: status_label.grid()
+                status_label.grid()
             except (TclError, AttributeError):
                 pass
 
@@ -15855,7 +15856,6 @@ class Label_Match(tk.Tk):
                 font=(self.default_font_name, tokens.fonts.detail),
                 wraplength=max(300, panes.center_width - 30),
             )
-            self.operator_last_scan_label.grid_remove()
             left_wrap = max(100, panes.left_width - card_padding * 2 - 8)
             for name in (
                 "operator_item_stage_label",
@@ -17049,7 +17049,11 @@ class Label_Match(tk.Tk):
         last_scan_label = self.__dict__.get("operator_last_scan_label")
         if last_scan_label is None:
             last_scan_label = self.__dict__.get("status_label")
-        if last_scan_label is not None:
+        if last_scan_label is not None and not (
+            self.__dict__.get("_ui_lane_busy_task")
+            or self._ui_lane_is_busy()
+            or self.__dict__.get("_app_close_in_progress")
+        ):
             last_scan = view.last_normal_scan or "-"
             try:
                 # The actual value already remains visible as the final filled

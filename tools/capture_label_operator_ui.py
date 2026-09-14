@@ -148,7 +148,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "preserved_input_profile": "phs2-next",
         "expected_headline": "이전 작업 처리 중 · 입력 보존",
         "expected_status": (
-            "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
         ),
     },
     "f4_admitted_busy": {
@@ -168,7 +168,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "preserved_input_profile": "f4-next",
         "expected_headline": "이전 작업 처리 중 · 입력 보존",
         "expected_status": (
-            "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
         ),
     },
     "f3_admitted_busy": {
@@ -188,7 +188,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "preserved_input_profile": "f3-next",
         "expected_headline": "이전 작업 처리 중 · 입력 보존",
         "expected_status": (
-            "통신이 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
         ),
     },
     "central_submission_wait": {

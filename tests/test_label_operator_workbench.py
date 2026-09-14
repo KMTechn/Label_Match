@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import math
 import os
 import subprocess
 import sys
@@ -2436,6 +2437,118 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     app.operator_details_button.cget("command")()
     app.operator_details_button.cget("command")()
     assert app.entry.focused
+
+
+class _LayoutFont:
+    """Conservative 96-DPI text metrics for the affected headless geometry."""
+
+    def __init__(self, *args, font=None, **kwargs):
+        self.size = font[1] if isinstance(font, tuple) else 14
+
+    def measure(self, text):
+        return math.ceil(sum(self.size * 4 / 3 * (
+            1 if ord(c) > 127 else .35 if c in " ()" else .55
+        ) for c in text))
+
+    def metrics(self, name):
+        return self.size * 2
+
+
+def _configure_narrow_workbench(app, monkeypatch, screen_width, scale, base_font_size):
+    monkeypatch.setattr(label_match_module.tkFont, "Font", _LayoutFont)
+    styles = {}
+
+    def configure(name, **kwargs):
+        styles.setdefault(name, {}).update(kwargs)
+
+    app.style = SimpleNamespace(
+        configure=configure, lookup=lambda name, key: styles.get(name, {}).get(key, ""),
+    )
+    # W7-V4 clients: maximized 1024x697 and windowed 1334x641 at 96 DPI.
+    app.winfo_width = lambda: 1024 if screen_width == 1024 else 1334
+    app.winfo_height = lambda: 697 if screen_width == 1024 else 641
+    app.winfo_screenheight = lambda: 768
+    app.after_cancel = lambda _timer: None
+    app._screen_diagonal_inches = lambda: None
+    app.ui_profile_name = "small"
+    app.scale_factor = scale
+    app.base_font_size = base_font_size
+    app._apply_operator_responsive_layout()
+    assert app.live_scan_notebook.cget("height") > 0  # Layout reached its final rows.
+    return styles
+
+
+def _status_row_geometry(app):
+    """Solve the fixed final row; Tk gives the remaining height to row 5."""
+    label = app.status_label
+    if not label.winfo_ismapped():
+        return (0, 0, 1, 1), [], 0
+    panes = app.operator_layout_metrics.panes
+    budget = app.operator_height_budget
+    padding = app.operator_center_pane.cget("padding")
+    width = panes.center_width - 2 * padding
+    wrap = min(width - 4, label.cget("wraplength"))
+    font = _LayoutFont(font=label.cget("font"))
+    lines = [""]
+    for word in label.cget("text").split():
+        candidate = (lines[-1] + " " + word).strip()
+        if lines[-1] and font.measure(candidate) > wrap:
+            lines.append(word)
+        else:
+            lines[-1] = candidate
+    height = len(lines) * font.metrics("linespace") + 4
+    top = budget["outer_padding"] + budget["header_height"] + budget["section_gap"]
+    x = budget["outer_padding"] + panes.left_width + panes.gap + padding
+    y = top + panes.content_height - padding - height
+    # Two headline lines, entry, details toggle and their external padding.
+    fixed_above = 2 * app.big_display_label.cget("font")[1] * 2 + max(48, app.base_font_size * 3) + 40
+    return (x, y, width, height), lines, top + padding + fixed_above
+
+
+@pytest.mark.parametrize("screen_width", [1024, 1366])
+@pytest.mark.parametrize("scale", [1.0, 1.2, 3.0])
+@pytest.mark.parametrize("base_font_size", [14, 18], ids=["default-text", "large-text"])
+@pytest.mark.parametrize("reason", ["busy", "broken"])
+def test_lane_notice_body_survives_layout_and_clears_after_idle(
+    operator_workbench, monkeypatch, screen_width, scale, base_font_size, reason,
+):
+    from tk_serial_ui_lane import LaneState
+    from tools.capture_label_operator_ui import build_state_fixtures, fixture_parsed_scans, m7_preserved_input_value
+
+    app = operator_workbench
+    fixture = next(f for f in build_state_fixtures() if f.state_id == "f3_rejected_input_preserved")
+    app.current_set_info.update(raw=list(fixture.qa_scans), parsed=list(fixture_parsed_scans(fixture)), central_inherit_all=True)
+    raw = m7_preserved_input_value(fixture.state_id)
+    app.entry.get = lambda: raw
+    original = copy.deepcopy(app.current_set_info)
+    _configure_narrow_workbench(app, monkeypatch, screen_width, scale, base_font_size)
+    app._render_operator_workbench()
+    quiet_geometry = copy.deepcopy(app.operator_center_pane.grid_rows)
+    assert not app.status_label.winfo_ismapped()
+    app._set_ui_lane_busy("f3-package-completion", "권한 확인 및 로컬 완료 저장 중")
+    if reason == "broken":
+        app.ui_lane = SimpleNamespace(state=LaneState.BROKEN, is_busy=lambda: False)
+    app._show_ui_lane_rejection(reason)
+    expected = (
+        "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요."
+        if reason == "broken" else
+        "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+    )
+    for refresh in (lambda: None, app._apply_operator_responsive_layout, app._render_operator_workbench):
+        refresh()
+        assert app.status_label.winfo_ismapped()
+        assert app.status_label.cget("text") == expected
+        assert app.status_label.cget("style") == ("Error.TLabel" if reason == "broken" else "Status.TLabel")
+        (x, y, width, height), lines, fixed_bottom = _status_row_geometry(app)
+        assert " ".join(lines) == expected
+        assert max(_LayoutFont(font=app.status_label.cget("font")).measure(line) for line in lines) <= width - 4
+        assert y >= fixed_bottom
+        assert x + width <= app.winfo_width() and y + height <= app.winfo_height()
+        assert app.entry.get() == raw and app.current_set_info == original
+    if reason == "busy":
+        app._clear_ui_lane_busy("f3-package-completion")
+        assert not app.status_label.winfo_ismapped()
+        assert app.operator_center_pane.grid_rows == quiet_geometry
 
 
 @pytest.mark.parametrize(("status", "group_key"), [
