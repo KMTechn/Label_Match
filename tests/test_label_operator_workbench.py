@@ -2551,6 +2551,48 @@ def test_lane_notice_body_survives_layout_and_clears_after_idle(
         assert app.operator_center_pane.grid_rows == quiet_geometry
 
 
+def _f5_button_geometry(app, styles):
+    frame = app.operator_action_frame
+    button = app.phs_label_exchange_button
+    frame_width = frame.cget("width")
+    start = frame_width * 2 // 3
+    padx = button.grid_options["padx"]
+    width = frame_width - start - sum(padx)
+    height = frame.grid_rows[0]["minsize"] - sum(button.grid_options["pady"])
+    style = dict(styles["Operator.Action.TButton"])
+    style.update(styles[button.cget("style")])
+    font = _LayoutFont(font=style["font"])
+    lines = button.cget("text").splitlines()
+    requested = (max(font.measure(line) for line in lines) + style["padding"][0] * 2 + 6,
+                 len(lines) * font.metrics("linespace") + style["padding"][1] * 2 + 6)
+    return (width, height), requested
+
+
+@pytest.mark.parametrize("screen_width", [1024, 1366])
+@pytest.mark.parametrize("scale", [1.0, 1.2, 3.0])
+@pytest.mark.parametrize("base_font_size", [14, 18], ids=["default-text", "large-text"])
+def test_disabled_f5_caption_fits_without_shrinking_font_or_other_actions(
+    operator_workbench, monkeypatch, screen_width, scale, base_font_size,
+):
+    app = operator_workbench
+    app.current_set_info["central_inherit_all"] = True
+    styles = _configure_narrow_workbench(app, monkeypatch, screen_width, scale, base_font_size)
+    before = copy.deepcopy(app.current_set_info)
+    app._render_operator_workbench()
+    button = app.phs_label_exchange_button
+    assert button.cget("state") == "disabled"
+    assert " ".join(button.cget("text").split()) == "현품표 교체 (F5)"
+    actual, required = _f5_button_geometry(app, styles)
+    assert required[0] <= actual[0] and required[1] <= actual[1], (actual, required)
+    assert styles["Operator.Action.TButton"]["font"] == (
+        app.default_font_name, {1.0: 12, 1.2: 14, 3.0: 15}[scale], "bold",
+    )
+    assert styles[button.cget("style")].get("font", styles["Operator.Action.TButton"]["font"]) == styles["Operator.Action.TButton"]["font"]
+    assert app.manual_complete_button.cget("text") == "포장 완료\n(F3)"
+    assert app.exact_rescan_button.cget("text") == "제품 교체\n(F4)"
+    assert app.current_set_info == before
+
+
 @pytest.mark.parametrize(("status", "group_key"), [
     ("PENDING", "transmission_wait"),
     ("SENDING", "result_checking"),

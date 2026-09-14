@@ -15961,6 +15961,9 @@ class Label_Match(tk.Tk):
                 font=action_font,
                 padding=(4, 6),
             )
+            self.style.configure(
+                "PhsLabel.Operator.Action.TButton", padding=(0, 6),
+            )
             for button_name, (
                 compact_text,
                 compact_style,
@@ -16244,6 +16247,8 @@ class Label_Match(tk.Tk):
             self._central_inherit_all_active()
             or self._standard_phs2_workflow_expected(current)
         )
+        layout = self.__dict__.get("operator_layout_metrics")
+        narrow_f5 = layout is not None and layout.panes.right_width < 360
         return {
             "manual_complete_button": (
                 "포장 완료\n(F3)"
@@ -16258,8 +16263,8 @@ class Label_Match(tk.Tk):
                 "Operator.Action.TButton",
             ),
             "phs_label_exchange_button": (
-                "현품표 교체\n(F5)",
-                "Operator.Action.TButton",
+                "현품표\n교체 (F5)" if narrow_f5 else "현품표 교체\n(F5)",
+                "PhsLabel.Operator.Action.TButton" if narrow_f5 else "Operator.Action.TButton",
             ),
             "reset_button": (
                 "현재 세트\n취소 (F1)",
