@@ -958,6 +958,8 @@ def test_apply_fixture_seeds_real_activity_rows_without_touching_business_maps()
     app.session_tree = MemoryTree()
     app.operator_history_notebook = None
     app.operator_notebook = None
+    app.package_outbox_thread = None
+    app.after = lambda *_args: "scheduled"
     app.ui_profile_name = "standard"
     app.tree_font_size = 13
     app.entry = MemoryEntry()

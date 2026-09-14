@@ -174,8 +174,8 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
     "f3_admitted_busy": {
         "production_call_path": ("_set_ui_lane_busy",),
         "task_name": "f3-package-completion",
-        "busy_text": "포장 완료 · 중앙 저장 중",
-        "expected_headline": "포장 완료 · 중앙 저장 중",
+        "busy_text": "포장 완료 · 권한 확인 및 로컬 완료 저장 중",
+        "expected_headline": "포장 완료 · 권한 확인 및 로컬 완료 저장 중",
         "expected_status_source": "production_busy_seam",
     },
     "f3_rejected_input_preserved": {
@@ -184,7 +184,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
             "_show_ui_lane_rejection",
         ),
         "task_name": "f3-package-completion",
-        "busy_text": "포장 완료 · 중앙 저장 중",
+        "busy_text": "포장 완료 · 권한 확인 및 로컬 완료 저장 중",
         "preserved_input_profile": "f3-next",
         "expected_headline": "이전 작업 처리 중 · 입력 보존",
         "expected_status": (

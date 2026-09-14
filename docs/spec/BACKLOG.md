@@ -6,6 +6,8 @@ U13 문구 대조에서 activity 제목을 `최근 로컬 기록`으로 명확�
 
 LM-3 파생 capture 시험 helper는 F3 busy 문구를 소유한 `label_completion.py`까지 AST 검색 범위를 확장했다. 기존 단일 main 검색의 admitted-busy 3 FAIL은 원 로그로 보존하며 기대 문구·상태·제품 경계는 바꾸지 않는다.
 
+H-LM3는 수용된 `198cad02`의 F3 권한 확인·로컬 완료 저장 문구와 `734160c`의 비동기 review 소비에 capture fixture를 정합한다. Tk 없는 activity fixture에 thread 초기값·timer 대체를 제공하고 기존 assertion·payload·209노드와 제품을 보존한다([4건 분류·검증](D:/KMTech/program-improvement-20260912/work/Label_Match/w6hlm3/RESULT.md)).
+
 [현행 carrier/legacy/Item Code 포트](carrier_identity.md)는 기존 동작을 명시 인자로 옮긴 경계다. W5-L 공용 leaf는 두 실제 소비자의 입력·반환·오류 의미가 동등하다는 근거 뒤에만 검토한다. raw workflow와 스캔 Base64, compact와 legacy, sample과 exact membership의 차이를 통합하지 않는다. 실제 새 제품 정책·profile/schema 활성화와 PHS2/receipt/hash 변경은 별도 요구·레인 소유이며 이번 작업으로 활성화하지 않는다.
 
 H-LM에서 `test_standard_operator_copy_describes_one_phs2_and_atomic_replacement`를 현행 요구와 대조했다. 제품 문구는 PHS2 1회 → 선택 F4 교체 → 랩핑 후 F3 완료에 맞으며, F4 목록의 일괄 적용 안내와 F3 로컬 내구 완료·중앙 ACK 표시는 각 화면에 유지한다. 제품 변경 없이 시험을 순서·선택 조건·새 전자 QR 확인·원본 유지·레거시 단계 배제 검사로 정정했다. W5-B2 fresh baseline의 문구 1 FAIL과 기본 경로 1 PASS는 별개 관찰로 보존하며, 재사용 환경의 기본 경로 실패는 synthetic onboarding 상태의 영향이다. [요구 대조·현재 focused 검증](D:/KMTech/program-improvement-20260912/work/Label_Match/w6hlm/RESULT.md)과 [원 검증·격리 근거](operations.md#carrier-identity-w5b2)를 따른다.
