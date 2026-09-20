@@ -179,6 +179,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 ### LM-01 시작·작업자 귀속
 
 - 시작/입력: source 또는 portable 진입, 현재 사용자 설정·작업자 이름. onboarding, factory wire 계약, 데이터 범위 mutex를 거쳐 앱을 시작한다.
+- 등록/관리자 복구: 네트워크 승인 토큰은 선택 사항이며 비어 있으면 토큰 헤더/필드 없이 서버의 허용 IP 판정을 받는다. 거부 시 등록 도구 CLI·보고서에 IP 등록 또는 토큰 입력 안내를 표시하며, 일회용 복구 승인·manifest·TLS·소유 키 검증은 유지한다([절차](operations.md#enrollment-ip-policy)).
 - 효과: 작업자 정규화 후 CSV·현재 상태에 귀속한다. 보호 관리자 인증 값은 표시·지속 저장용 identity와 분리한다.
 - 실패/복구: 필수 profile·catalog·onboarding 실패는 시작을 차단한다. onboarding·GUI/guard·relay는 [공통 resolver](operations.md#configuration)의 custom → env → 등록 수명주기·onboarding 상태에서 LOCALAPPDATA 규칙을 사용한다. 최초 legacy 등록부터 환경 적용·relay·재시작까지 ProgramData 과거 파일을 무시하며, ProgramData fallback은 onboarding 문맥·상태가 없는 순수 standalone 실행 전용이다. split 설치는 업무 저장소와 기존 onboarding ledger를 각각 유지하고 기본 WARNING 로그 채널에 선택 규칙·분리를 기록한다. headless 회귀는 두 process의 같은 custom 저장소 writer callback 제외·해제와 원 bytes 보존을 검증했으며, 실제 GUI·pending 복구 수용은 [LM-B10](BACKLOG.md#lm-b10)에 남는다. 이전 작업자가 다르면 복원 확인을 거친다.
 - 수용 기준: 같은 실제 저장소에서 중복 GUI writer callback을 차단하고 첫 소유자 종료 후 같은 저장소를 복구한다. conflicting env/custom 및 null/빈 설정 fallback을 실제 writer resolver와 대조하며, 인증 실패가 일반 완료로 내려가지 않고 관리자 비밀이 로그/히스토리에 남지 않는다.

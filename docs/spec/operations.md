@@ -446,6 +446,11 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 
 ## 설정 위치와 우선순위
 
+<a id="enrollment-ip-policy"></a>
+### 등록·관리자 복구의 IP 기준 승인
+
+[등록 도구](../../tools/register_label_match_worker_pc.py)의 정상 등록과 `--admin-recovery-secret-file` 복구는 네트워크 승인 토큰 없이 서버 허용 IP 정책을 사용할 수 있다. 이 PC의 접속 IP를 서버 허용 목록에 등록한 뒤 토큰 인수·파일·`PRODUCER_SELF_ENROLL_TOKEN` 환경 값을 비워 실행한다(환경 값 사용 제외: `--enrollment-token-env ""`). 빈 값은 `X-Producer-Enrollment-Token` 헤더나 등록 토큰 JSON 필드로 전송하지 않는다. 서버가 `enrollment_unauthorized`로 거부하면 HTTP 상태·오류 코드를 보존하고 CLI 출력과 등록 보고서 `blocked_reason`에 `서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요`를 표시한다. 토큰을 제공하면 기존 인증을 유지하며 잘못된 토큰으로 거부된 요청을 자동으로 토큰 없이 재전송하지 않는다. 관리자 복구에는 별도의 일회용 승인 파일(`recovery_token`), 명시 identity·서버 활성 manifest hash·TLS CA와 현재 사용자 소유 키가 계속 필요하다. IP 허용은 이 복구 검증이나 등록 후 업무용 기계 자격증명을 대체하지 않는다.
+
 **코드의 fallback, onboarding이 적용한 위치, 실제 저장 위치를 구분한다.** 비밀 값은 수집·문서화하지 않고 선택 경로·비밀 없는 identity·안정된 오류 코드만 근거에 연결한다.
 
 | 항목 | 현행 선택 규칙 | 근거·주의 |

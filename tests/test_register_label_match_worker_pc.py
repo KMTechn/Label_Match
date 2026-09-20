@@ -490,25 +490,29 @@ def test_label_match_registration_apply_writes_manifest_credential_and_receipt_w
     assert "install-token" not in combined_text
 
 
-def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_token(tmp_path, monkeypatch):
+@pytest.mark.parametrize("token", ["", "   "])
+@pytest.mark.parametrize("allowed_ip", [True, False])
+def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_token(
+    tmp_path, monkeypatch, capsys, token, allowed_ip
+):
     module = load_registration_module()
     data_dir = tmp_path / "DirectSync" / "label_match"
     sync_dir = tmp_path / "Label_Match" / "data"
     report_path = data_dir / "status" / "registration.json"
     secret = "server-issued-secret"
 
-    def fake_enroll(
-        payload,
-        *,
-        enrollment_url,
-        enrollment_token,
-        timeout_seconds,
-        tls_ca_bundle_path="",
-    ):
-        assert enrollment_token == ""
-        return fake_v2_enrollment_response(module, payload, secret)
+    def post(url, **kwargs):
+        assert url.endswith("/api/producer-ingest/v2/enroll")
+        assert kwargs["headers"] == {}
+        payload = kwargs["json"]
+        assert "enrollment_token" not in payload
+        assert "token" not in payload
+        response = fake_v2_enrollment_response(module, payload, secret) if allowed_ip else {
+            "error": {"code": "enrollment_unauthorized", "message": "IP not allowed"}
+        }
+        return SimpleNamespace(status_code=200 if allowed_ip else 401, json=lambda: response)
 
-    monkeypatch.setattr(module, "_enroll", fake_enroll)
+    monkeypatch.setattr(module.requests, "post", post)
     monkeypatch.setattr(
         module,
         "_prepare_possession_key",
@@ -524,6 +528,8 @@ def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_to
             "https://worker.example.invalid",
             "--enrollment-token-env",
             "",
+            "--enrollment-token",
+            token,
             "--sync-dir",
             str(sync_dir),
             "--data-dir",
@@ -533,8 +539,19 @@ def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_to
         ]
     )
 
-    assert result == 0
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    if not allowed_ip:
+        assert result == 2
+        assert report["status"] == "BLOCKED"
+        assert report["server_http_status"] == 401
+        assert report["server_error_code"] == "enrollment_unauthorized"
+        hint = "서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요"
+        assert hint in report["blocked_reason"]
+        assert hint in capsys.readouterr().out
+        assert not (data_dir / module.PRODUCER_IDENTITY_FILENAME).exists()
+        assert not (data_dir / module.DEFAULT_CREDENTIAL_FILENAME).exists()
+        return
+    assert result == 0
     assert report["status"] == "SELF_ENROLLMENT_REGISTERED"
     assert report["token_source"] == "ip_allowlist"
     assert report["manual_pc_approval_required"] is False
@@ -622,7 +639,8 @@ def test_current_user_registration_selects_current_user_dpapi_and_profile_scope(
     assert applied["server_registration_verified"] is True
 
 
-def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path):
+@pytest.mark.parametrize("token", ["", "test-enrollment-token"])
+def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path, token):
     module = load_registration_module()
     ca_bundle = tmp_path / "private-ca.pem"
     ca_bundle.write_bytes(b"private-ca-fixture")
@@ -645,13 +663,17 @@ def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path):
         result = module._enroll(
             {"contract_version": module.ENROLLMENT_CONTRACT_VERSION},
             enrollment_url="https://worker.example.invalid/api/producer-ingest/v2/enroll",
-            enrollment_token="",
+            enrollment_token=token,
             timeout_seconds=30,
             tls_ca_bundle_path=str(ca_bundle),
         )
 
     assert result["status"] == "enrolled"
     assert observed["kwargs"]["verify"] == str(ca_bundle)
+    assert observed["kwargs"]["headers"] == (
+        {"X-Producer-Enrollment-Token": token} if token else {}
+    )
+    assert "enrollment_token" not in observed["kwargs"]["json"]
 
 
 def test_vendored_zero_pe_sources_match_pinned_hash_manifest():
@@ -1093,8 +1115,9 @@ def test_admin_recovery_manifest_mismatch_stops_before_key_or_http(monkeypatch):
 
 
 @pytest.mark.parametrize("authorization_state", ["LOGISTICS_READY", "OPERATION_PENDING"])
+@pytest.mark.parametrize("token", ["", "test-normal-enrollment-token"])
 def test_admin_recovery_executor_signs_exact_manifest_without_network(
-    tmp_path, monkeypatch, authorization_state
+    tmp_path, monkeypatch, authorization_state, token
 ):
     module = load_registration_module()
     manifest, credential, possession_key, response_payload = _admin_recovery_contract(
@@ -1184,7 +1207,7 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
         tls_ca_bundle_path=str(ca_path),
         admin_recovery_secret_file=str(authorization_path),
         admin_recovery_url="",
-        enrollment_token="test-normal-enrollment-token",
+        enrollment_token=token,
         enrollment_token_file="",
         enrollment_token_env="",
         enrollment_timeout_seconds=30,
@@ -1198,7 +1221,7 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
 
     assert response is response_payload
     assert descriptor["fingerprint"] == possession_key["fingerprint"]
-    assert token_source == "argument"
+    assert token_source == ("argument" if token else "ip_allowlist")
     assert returned_path == authorization_path.resolve()
     assert returned_authorization == authorization
     assert calls["key_kwargs"] == {"scope": module.SCOPE_CURRENT_USER}
@@ -1206,6 +1229,12 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
     assert calls["ca_path"] == str(ca_path)
     assert calls["post"]["url"].endswith(module.ADMIN_RECOVERY_PATH)
     assert calls["post"]["allow_redirects"] is False
+    assert calls["post"]["headers"] == (
+        {"X-Producer-Enrollment-Token": token} if token else {}
+    )
+    assert "enrollment_token" not in calls["post"]["json"]
+    assert "token" not in calls["post"]["json"]
+    assert calls["post"]["json"]["recovery_token"] == authorization["recovery_token"]
     assert calls["post"]["json"]["proof"]["manifest_hash"] == module.manifest_hash(
         manifest
     )
@@ -1553,9 +1582,12 @@ def test_successful_local_recovery_finalization_deletes_authorization_last(
     }
 
 
-@pytest.mark.parametrize("rejection", [None, "manifest", "authorization", "expired", "ca", "token"])
+@pytest.mark.parametrize("rejection, token_supplied", [
+    (None, True), (None, False), ("ip", False), ("token", True),
+    ("manifest", True), ("authorization", True), ("expired", True), ("ca", True),
+])
 def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
-    tmp_path, monkeypatch, rejection
+    tmp_path, monkeypatch, capsys, rejection, token_supplied
 ):
     """A re-imaged PC has its old server identity but none of its local files."""
     from contextlib import contextmanager
@@ -1625,10 +1657,20 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
     class Session:
         def post(self, url, **kwargs):
             observed["recovery_http"] += 1
-            assert kwargs["headers"] == {"X-Producer-Enrollment-Token": "test-normal-enrollment-token"}
+            assert kwargs["headers"] == (
+                {"X-Producer-Enrollment-Token": "test-normal-enrollment-token"}
+                if token_supplied else {}
+            )
             assert url.endswith(module.ADMIN_RECOVERY_PATH)
             assert kwargs["allow_redirects"] is False
             assert kwargs["json"]["manifest"] == manifest
+            assert "enrollment_token" not in kwargs["json"]
+            assert "token" not in kwargs["json"]
+            assert kwargs["json"]["recovery_token"] == "test-one-time-token"
+            if rejection in {"ip", "token"}:
+                return SimpleNamespace(status_code=401, json=lambda: {
+                    "error": {"code": "enrollment_unauthorized", "message": "Unauthorized"}
+                })
             response = fake_v2_enrollment_response(module, original, "test-new-secret")
             response["machine_credential_bundle"] = {"test": True}
             for target in (response, response["client_receipt"]):
@@ -1675,13 +1717,14 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
     monkeypatch.setattr(module, "_write_dpapi_secret", protect)
     monkeypatch.setattr(module, "_verify_dpapi_secret", lambda *_a: True)
     recovery_argv = argv + [
-        "--enrollment-token-file", str(token_path),
         "--admin-recovery-secret-file", str(authorization_path),
         "--expected-active-manifest-hash", module.manifest_hash(manifest),
         "--producer-id", rejected["producer_id"],
         "--source-host-id", identity["source_host_id"],
         "--producer-install-id", identity["producer_install_id"],
     ]
+    if token_supplied:
+        recovery_argv += ["--enrollment-token-file", str(token_path)]
     if rejection:
         if rejection == "manifest":
             recovery_argv[recovery_argv.index("--expected-active-manifest-hash") + 1] = "0" * 64
@@ -1691,13 +1734,21 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
                 "another-producer" if rejection == "authorization" else "2000-01-01T00:00:00Z"
             )
             authorization_path.write_text(json.dumps(invalid), encoding="utf-8")
-        elif rejection == "token":
-            recovery_argv.remove(str(token_path))
-            recovery_argv.remove("--enrollment-token-file")
-        else:
+        elif rejection == "ca":
             ca_path.unlink()
         assert module.main(recovery_argv) == 2
-        assert observed["key"] == observed["recovery_http"] == 0
+        assert observed["key"] == observed["recovery_http"] == (
+            1 if rejection in {"ip", "token"} else 0
+        )
+        if rejection in {"ip", "token"}:
+            failure = json.loads(report_path.read_text(encoding="utf-8"))
+            assert failure["status"] == "BLOCKED"
+            assert failure["server_http_status"] == 401
+            assert failure["server_error_code"] == "enrollment_unauthorized"
+            hint = "서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요"
+            assert (hint in failure["blocked_reason"]) is (not token_supplied)
+            assert (hint in capsys.readouterr().out) is (not token_supplied)
+            assert observed["closed"] is True
         assert authorization_path.is_file()
         assert not profile_path.exists()
         assert not (data_dir / module.PRODUCER_IDENTITY_FILENAME).exists()

@@ -156,6 +156,8 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 <a id="c-00"></a>
 ## C-00 공통 명령·권한
 
+최초 등록·관리자 복구의 네트워크 승인 토큰은 선택 사항이다. 빈 토큰은 헤더/JSON 필드에서 생략하고 서버의 허용 IP 판정을 사용하며, 명시 토큰이 있으면 기존 토큰 인증을 유지한다. tokenless `enrollment_unauthorized`는 서버 HTTP 상태·오류 코드와 IP 등록/토큰 입력 안내를 CLI·등록 보고서에 남긴다. 관리자 복구의 별도 일회용 `recovery_token`·manifest·TLS·현재 사용자 소유 키 검증과 아래 업무 명령용 기계 자격증명은 유지한다([운영 절차](operations.md#enrollment-ip-policy)).
+
 명령 envelope는 `contract_version=logistics-v1`, `command_type`, `authority_scope_id`, `authority_epoch`, `ledger_plane`, `plane_epoch`, `idempotency_key`, `expected_versions`, `payload`를 사용한다. payload의 source/package·membership·seal/lease evidence가 중앙 snapshot과 맞아야 한다. 임의 수량을 중앙 멤버십 대신 보내지 않는다. 클라이언트는 JSON boolean `ok` 등 응답 구조와 receipt의 identity·구성·버전을 검증한다([package_logistics.build_create_package_command/_data/_validate_receipt](../../package_logistics.py)).
 
 HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`, `X-Logistics-Device-Id`, `X-Logistics-Program=Label_Match`, 명령 `Idempotency-Key`를 보낸다. 실제 값은 문서에 저장하지 않는다. 서버는 기계 토큰·device·authority scope를 검증하며 사람 이름 입력은 이 권한을 만들지 않는다. 같은 scope+key+fingerprint는 receipt 재생, 다른 fingerprint는 충돌이다. 근거: [클라이언트 `_request`](../../package_logistics.py), [서버 auth](../../../WorkerAnalysisGUI-web/blueprints/logistics/auth.py), [replay_or_conflict](../../../WorkerAnalysisGUI-web/logistics_ledger/idempotency.py).

@@ -59,6 +59,8 @@ python -m pytest -q -p no:cacheprovider <changed-test-node>
 
 ## 작업 시 주의점
 
+- 등록·관리자 복구의 네트워크 승인 토큰은 선택 사항이다. 서버 허용 IP에 이 PC가 포함되어 있으면 `--enrollment-token`, `--enrollment-token-file`과 기본 `PRODUCER_SELF_ENROLL_TOKEN` 환경 값을 비워 실행한다(환경 값 사용을 끄려면 `--enrollment-token-env ""`). 빈 값은 HTTP 헤더/필드로 보내지 않으며 서버 거부 시 `서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요`를 CLI와 등록 보고서에서 확인한다. 토큰을 지정하면 기존 토큰 인증을 사용하고 잘못된 토큰은 IP 허용으로 우회하지 않는다. 관리자 복구의 일회용 승인 파일·기존 manifest hash·TLS CA·현재 사용자 소유 키 검증은 계속 필요하다. [등록·복구 절차](docs/spec/operations.md#enrollment-ip-policy)를 따른다.
+
 - direct-sync 장기 보관/취합 관련 수정 전 `DIRECT_SYNC_DATA_PLATFORM_NOTES.md`를 먼저 확인한다.
 - `README.txt`는 `validation_rules.csv` 기반 규칙을 설명하지만 현재 폴더에는 해당 파일이 없고 실제 코드는 `assets/Item.csv` 중심이다.
 - GUI 실행은 사운드 장치, `%ProgramData%\KMTech\Label_Match\data` 쓰기 권한, GitHub 업데이트 네트워크 접근의 영향을 받는다.

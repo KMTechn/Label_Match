@@ -106,10 +106,14 @@ INSTALL_IDENTITY_HASH_HEX_LENGTH = 32
 class ProducerEnrollmentHTTPError(DirectSyncPushError):
     """A structured server rejection from the enrollment endpoint."""
 
-    def __init__(self, status_code: int, error_code: str, message: str) -> None:
+    def __init__(
+        self, status_code: int, error_code: str, message: str,
+        *, enrollment_token_supplied: bool = True,
+    ) -> None:
         self.status_code = int(status_code)
         self.error_code = str(error_code or status_code)
         self.server_message = str(message or "").strip()
+        self.enrollment_token_supplied = enrollment_token_supplied
         detail = f" ({self.server_message})" if self.server_message else ""
         super().__init__(f"self-enroll failed: {self.error_code}{detail}")
 
@@ -768,7 +772,10 @@ def _enroll(
         error = response_payload.get("error") if isinstance(response_payload, dict) else {}
         code = str(error.get("code") or response.status_code) if isinstance(error, dict) else str(response.status_code)
         message = str(error.get("message") or "").strip() if isinstance(error, dict) else ""
-        raise ProducerEnrollmentHTTPError(response.status_code, code, message)
+        raise ProducerEnrollmentHTTPError(
+            response.status_code, code, message,
+            enrollment_token_supplied=bool(enrollment_token),
+        )
     if not isinstance(response_payload, dict):
         raise DirectSyncPushError("self-enroll response must be a JSON object")
     return response_payload
@@ -1373,8 +1380,6 @@ def _admin_recover(
         str(credential["endpoint_url"]),
     )
     token_source, token = _token_from_sources(args)
-    if not token:
-        raise DirectSyncPushError("admin recovery requires a normal enrollment token")
     try:
         possession_context = PersistentPossessionKey.provision_initial(
             scope=SCOPE_CURRENT_USER
@@ -1438,7 +1443,10 @@ def _admin_recover(
         error = response_payload.get("error") if isinstance(response_payload, dict) else {}
         code = str(error.get("code") or response.status_code) if isinstance(error, dict) else str(response.status_code)
         message = str(error.get("message") or "").strip() if isinstance(error, dict) else ""
-        raise ProducerEnrollmentHTTPError(response.status_code, code, message)
+        raise ProducerEnrollmentHTTPError(
+            response.status_code, code, message,
+            enrollment_token_supplied=bool(token),
+        )
     if not isinstance(response_payload, dict):
         raise DirectSyncPushError("admin recovery response must be a JSON object")
     _validate_admin_recovery_response(
@@ -2041,6 +2049,11 @@ def main(argv: list[str] | None = None) -> int:
                     "server_http_status": exc.status_code,
                 }
             )
+            if exc.error_code == "enrollment_unauthorized" and not exc.enrollment_token_supplied:
+                blocked["blocked_reason"] += (
+                    ": 서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요"
+                )
+                print(blocked["blocked_reason"])
             if exc.error_code == "admin_recovery_required" or (
                 exc.status_code == 409 and exc.error_code == "producer_identity_conflict"
             ):
