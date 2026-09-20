@@ -6,6 +6,8 @@
 
 ## 고정 PowerShell leaf와 bootstrap 신뢰
 
+bootstrap v1 writer와 Python의 현재 파일 열거는 상대 POSIX 경로의 case-sensitive ordinal UTF-16 순서를 사용한다. Python onboarding·canonical stop-marker preflight는 기록 행을 같은 순서로 정렬해 경로·크기·SHA 전체 목록과 대조하므로 과거 기록 순서도 수용한다. aggregate는 기록에 저장된 원래 행 순서로 검증하며 중복·추가·누락·변조·대소문자 경로 변경을 허용하지 않는다. 순서만 다르면 `bootstrap_integrity_inventory_order_differs` 한 줄을 기록하고 파일을 재작성하지 않는다. installer의 canonical 출력·검증과 receipt/stop-marker 권한 검사는 유지한다.
+
 writer 전환은 설치된 파일 집합을 기준으로 한다. 57f52e1의 shared 0.2.0에서 X13-B로 전환할 때만 `app/kmtech_shared/powershell/portable.ps1` 한 파일 추가와 명시한 여섯 파일(shared 버전·manifest·lock·vendor provenance, placement/bootstrap)의 전/후 SHA256 쌍을 허용한다. 선언의 text pin은 Git LF bytes 기준이며 해당 파일의 CRLF checkout 표현도 인정한다. writer pin 파생·멤버십, 나머지 Python AST와 runtime bytes·launcher/fence 계약 검사는 그대로다. 새 트리에서 leaf 누락, 무관한 파일 추가/삭제/변조, reparse는 거부한다.
 
 0.3.1 reader는 원 parser의 배열 형태를 보존한다. PS5 `[manifest]`, 양 엔진의 중첩·빈 배열은 원본처럼 거부하고 PS7의 기존 singleton 수용을 유지한다. 0.3.0의 두 실패 원본과 0.3.1 회귀 결과는 [X13-B](operations.md#shared-powershell-x13b)에 연결한다.

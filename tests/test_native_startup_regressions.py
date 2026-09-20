@@ -78,6 +78,118 @@ def _quote(path):
     return "'" + str(path).replace("'", "''") + "'"
 
 
+@pytest.fixture
+def canonical_inventory(inventory_tree, tmp_path, monkeypatch):
+    root, _ = inventory_tree
+    # These paths also occur in the stock d0e504e portable build (3,417 files).
+    # INSTALL_CANONICAL_PORTABLE.ps1 precedes app/main.py in ordinal order;
+    # casefold reverses them. inventory_tree adds Unicode/punctuation cases.
+    installer = root / "INSTALL_CANONICAL_PORTABLE.ps1"
+    installer.write_bytes(b"canonical installer fixture\n")
+    (root / "portable-manifest.json").write_text(json.dumps(dict(
+        schema="label-match-portable-tree-v1", entrypoint="runtime/pythonw.exe app/main.py",
+        source_commit="a" * 40, source_tree="b" * 40,
+        allowed_unsigned_app_pe=[], forbidden_package_roots=[],
+        canonical_installer=installer.name,
+        canonical_installer_sha256=hashlib.sha256(installer.read_bytes()).hexdigest(),
+        runtime_pythonw_sha256=hashlib.sha256((root / "runtime/pythonw.exe").read_bytes()).hexdigest(),
+    )), encoding="utf-8")
+    rows = [dict(path=path.relative_to(root).as_posix(), size=path.stat().st_size,
+                 sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            for path in root.rglob("*") if path.is_file()]
+    rows.sort(key=lambda row: row["path"].encode("utf-16-be"))
+    paths = onboarding.resolve_current_user_onboarding_paths(root)
+    marker = relay.user_relay_stop_path(paths.direct_sync_root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_bytes(b"stop marker fixture\n")
+    receipt = tmp_path / "conflict-receipt.json"
+    receipt.write_text('{"status": "RESOLVED"}', encoding="utf-8")
+    environment = {
+        onboarding.CONFLICT_RECEIPT_PATH_ENV: str(receipt),
+        onboarding.CONFLICT_RECEIPT_SHA256_ENV: hashlib.sha256(receipt.read_bytes()).hexdigest(),
+    }
+    monkeypatch.setattr(onboarding, "CANONICAL_PORTABLE_ROOT", root)
+    monkeypatch.setattr(onboarding, "validate_resolution_receipt", lambda *a, **k: dict(
+        stop_marker_lineage=dict(current_request_id="fixture-stop", current_sha256="0" * 64)))
+    return root, rows, paths, environment, marker
+
+
+@pytest.mark.parametrize("reader", ["canonical", "onboarding"])
+@pytest.mark.parametrize("order", ["ordinal", "casefold", "reversed"])
+def test_bootstrap_readers_accept_same_files_without_rewriting(canonical_inventory, reader, order, caplog):
+    root, rows, paths, environment, marker = canonical_inventory
+    if order == "casefold":
+        rows = sorted(rows, key=lambda row: row["path"].casefold())
+    elif order == "reversed":
+        rows = list(reversed(rows))
+    record = _record(root, rows)
+    original = record.read_bytes()
+    marker_original = marker.read_bytes()
+    with caplog.at_level("INFO", logger="current_user_onboarding"):
+        if reader == "canonical":
+            result = onboarding._portable_stop_marker_release_preflight(paths, environ=environment)
+            assert result["status"] == "CANONICAL_INSTALL_PROVEN"
+        else:
+            result = onboarding.verify_bootstrap_integrity(paths, required=True)
+            assert result["status"] == "PASS"
+            assert result["aggregate_sha256"] == _aggregate(rows)
+    assert record.read_bytes() == original
+    assert marker.read_bytes() == marker_original
+    order_logs = [entry for entry in caplog.records
+                  if entry.message == "bootstrap_integrity_inventory_order_differs"]
+    assert len(order_logs) == (0 if order == "ordinal" else 1)
+
+
+@pytest.mark.parametrize("reader", ["canonical", "onboarding"])
+@pytest.mark.parametrize("mutation", ["added", "missing", "changed", "size", "duplicate", "path-case", "aggregate", "stale-order", "malformed"])
+def test_bootstrap_readers_reject_integrity_changes_in_legacy_order(canonical_inventory, reader, mutation):
+    root, rows, paths, environment, marker = canonical_inventory
+    rows = list(reversed(rows))
+    record = _record(root, rows)
+    target = root / "app/common-1.txt"
+    if mutation == "added":
+        (root / "app/unrecorded.txt").write_bytes(b"extra")
+    elif mutation == "missing":
+        target.unlink()
+    elif mutation == "changed":
+        target.write_bytes(b"x" * target.stat().st_size)
+    else:
+        payload = json.loads(record.read_text(encoding="utf-8"))
+        if mutation == "size":
+            rows[0]["size"] += 1
+        elif mutation == "duplicate":
+            rows[-1] = rows[0].copy()
+        elif mutation == "path-case":
+            rows[0]["path"] = rows[0]["path"].upper()
+        elif mutation == "stale-order":
+            rows.reverse()
+        elif mutation == "malformed":
+            rows[0] = None
+        payload["files"] = rows
+        if mutation == "aggregate":
+            payload["aggregate_sha256"] = "0" * 64
+        elif mutation not in {"stale-order", "malformed"}:
+            payload["aggregate_sha256"] = _aggregate(rows)
+        record.write_text(json.dumps(payload), encoding="utf-8")
+    original = record.read_bytes()
+    with pytest.raises(ValueError, match="integrity"):
+        if reader == "canonical":
+            onboarding._portable_stop_marker_release_preflight(paths, environ=environment)
+        else:
+            onboarding.verify_bootstrap_integrity(paths, required=True)
+    assert record.read_bytes() == original
+    assert marker.read_bytes() == b"stop marker fixture\n"
+
+
+def test_real_ps51_inventory_writer_is_accepted_by_canonical_preflight(canonical_inventory, tmp_path):
+    root, _, paths, environment, _ = canonical_inventory
+    _ps(tmp_path, f"""
+. {_quote(ROOT / 'tools/bootstrap_integrity.ps1')} -SharedCodeRoot {_quote(ROOT)}
+[void](Write-BootstrapIntegrityRecord -Root {_quote(root)} -CodeRoot '.')
+""")
+    assert onboarding._portable_stop_marker_release_preflight(paths, environ=environment)["status"] == "CANONICAL_INSTALL_PROVEN"
+
+
 @pytest.mark.parametrize("culture", ["en-US", "tr-TR", "ko-KR"])
 def test_real_ps51_inventory_writer_is_accepted_by_python(inventory_tree, tmp_path, culture):
     root, rows = inventory_tree
@@ -96,14 +208,13 @@ Write-Output $record.aggregate_sha256
     assert json.loads((root / "bootstrap-integrity.json").read_text(encoding="utf-8"))["files"] == rows
 
 
-def test_python_inventory_enforces_ordinal_order_and_aggregate(inventory_tree):
+def test_python_inventory_accepts_legacy_order_and_enforces_aggregate(inventory_tree):
     root, rows = inventory_tree
     paths = onboarding.resolve_current_user_onboarding_paths(root)
     path = _record(root, rows)
     assert onboarding.verify_bootstrap_integrity(paths, required=True)["aggregate_sha256"] == _aggregate(rows)
     _record(root, list(reversed(rows)))
-    with pytest.raises(ValueError, match="inventory integrity"):
-        onboarding.verify_bootstrap_integrity(paths, required=True)
+    assert onboarding.verify_bootstrap_integrity(paths, required=True)["aggregate_sha256"] == _aggregate(list(reversed(rows)))
     path = _record(root, rows)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["aggregate_sha256"] = "0" * 64
@@ -153,9 +264,10 @@ def _legacy_clear():
                 read_only=True, task_or_process_mutated=False)
 
 
-def test_portable_cli_rejects_out_of_order_record_before_state_inspection(inventory_tree, monkeypatch):
+def test_portable_cli_rejects_changed_file_before_state_inspection(inventory_tree, monkeypatch):
     root, rows = inventory_tree
     _record(root, list(reversed(rows)))
+    (root / "app/main.py").write_text("changed\n", encoding="utf-8")
     real = onboarding.onboard_current_user
     inspected = []
     monkeypatch.setattr(sys, "frozen", False, raising=False)

@@ -259,6 +259,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="lm-b07"></a>
 ## LM-B07 · 백업·복원·재설치·롤백·보존 정책 수용
 
+- 재시작 무결성 순서 오탐: `w9labelintegrityorder`에서 `d0e504e`의 ordinal/casefold 불일치와 기존 v1 기록 호환을 교정한다. 파일 무결성·receipt 검사는 보존하며 capture6의 수정 후보 재설치·동일 사용자 재시작은 [운영 절차](operations.md#bootstrap-integrity-order)에 따른 미검증 항목이다.
+
 - 유형/우선: **운영 요구·검증 공백 · P1**. 코드 교체/제거 뒤 identity·미전송 업무·검토 증거를 잃으면 중복 효과 또는 복구 불가 위험이 있다.
 - 근거: [운영 복구·설치](operations.md#recovery), [릴리스 계약](../../RELEASE_GATE_CONTRACT.md), [spool 보존 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md). ACKED retention report/candidate는 자동 삭제 권한이 아니다.
 - 상태/다음: **운영 준비 미입증**. Label 릴리스·운영 담당과 Main이 exact 후보의 install/첫 실행/cold boot/제거·재설치/rollback 근거를 연결하고 백업 범위·일관성·DPAPI 재사용 한계·보존 기간·RPO/RTO를 요구로 확정한다.

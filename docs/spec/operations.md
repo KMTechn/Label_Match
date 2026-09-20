@@ -613,6 +613,9 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 
 ## 설치·업그레이드·제거·백업·롤백
 
+<a id="bootstrap-integrity-order"></a>
+`d0e504e` 이하에서 기록·읽기의 ordinal/casefold 순서 차이로 재시작 시 `canonical bootstrap integrity readback differs`가 발생할 수 있다. `w9labelintegrityorder` 수정본은 installer와 같은 ordinal 열거 및 순서 비민감 행 비교를 사용하고, 기존 v1 aggregate는 저장된 순서로 검증하여 원본을 보존한다. 추가·누락·내용·크기·경로·digest 불일치는 계속 차단한다. capture6은 수정 커밋의 stock portable 후보를 정상 설치한 뒤 같은 사용자의 재시작·정상 종료와 기존 stop-marker/receipt 절차를 확인한다. 호스트 headless 검증과 guest 재설치 수용은 구분하며 guest 확인은 아직 NOT VERIFIED다.
+
 portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 hash lock과 [자동 대조](../../tests/test_zero_pe_conversion.py)한다. `chardet==5.2.0`의 pure Python wheel을 명시하고 source runtime에는 계속 chardet을 복사한다. lock의 charset-normalizer는 다른 build/test closure를 위해 유지하며 portable zero-PE 대체 의도는 바뀌지 않는다. 이 입력 정합 검사는 clean 설치·portable build 실행 증거와 별개다.
 
 현행 [릴리스 계약](../../RELEASE_GATE_CONTRACT.md)의 코드 배치와 첫 사용자 등록을 구분한다. `--remove-current-user-setup`은 정확한 사용자 persistence 제거·relay 종료와 lock 부재를 확인하면서 identity/profile/settings/ledger/queue/spool/status/logs/receipts를 보존하는 계약이다. 이후 elevated `INSTALL_THIS_PC.ps1 -Uninstall`이 코드를 제거하며 relay persistence가 남아 있으면 거부한다. 이 명세에서 설치·제거 명령을 실행하지 않았다.

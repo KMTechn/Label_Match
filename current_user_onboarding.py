@@ -78,6 +78,33 @@ class CurrentUserOnboardingError(RuntimeError):
         self.cause_code = cause_code
 
 
+def _verified_bootstrap_inventory_aggregate(
+    record: Mapping[str, Any], rows: list[dict[str, Any]]
+) -> str | None:
+    recorded_rows = record.get("files")
+    if not isinstance(recorded_rows, list) or any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("path"), str)
+        or type(row.get("size")) is not int
+        or not isinstance(row.get("sha256"), str)
+        for row in recorded_rows
+    ):
+        return None
+    # Match the installer's ordinal UTF-16 order without folding path identity.
+    # Keep a list so duplicate rows cannot disappear during comparison.
+    if sorted(recorded_rows, key=lambda row: row["path"].encode("utf-16-be")) != rows:
+        return None
+    # Legacy records bind the aggregate to their original serialized row order.
+    aggregate = hashlib.sha256("".join(
+        f"{row['sha256']} {row['size']} {row['path']}\n" for row in recorded_rows
+    ).encode("utf-8")).hexdigest()
+    if str(record.get("aggregate_sha256") or "").lower() != aggregate:
+        return None
+    if recorded_rows != rows:
+        logging.getLogger(__name__).warning("bootstrap_integrity_inventory_order_differs")
+    return aggregate
+
+
 def _portable_stop_marker_release_preflight(
     paths: CurrentUserOnboardingPaths,
     *,
@@ -128,7 +155,7 @@ def _portable_stop_marker_release_preflight(
     rows: list[dict[str, Any]] = []
     for file_path in sorted(
         (path for path in paths.app_root.rglob("*") if path.is_file()),
-        key=lambda path: path.relative_to(paths.app_root).as_posix().casefold(),
+        key=lambda path: path.relative_to(paths.app_root).as_posix().encode("utf-16-be"),
     ):
         relative = file_path.relative_to(paths.app_root).as_posix()
         if relative.casefold() == integrity_path.name.casefold():
@@ -146,17 +173,13 @@ def _portable_stop_marker_release_preflight(
                 "sha256": _file_sha256(file_path),
             }
         )
-    aggregate_payload = "".join(
-        f"{row['sha256']} {row['size']} {row['path']}\n" for row in rows
-    ).encode("utf-8")
-    aggregate = hashlib.sha256(aggregate_payload).hexdigest()
+    aggregate = _verified_bootstrap_inventory_aggregate(integrity, rows)
     if (
         integrity.get("schema_version") != PORTABLE_BOOTSTRAP_INTEGRITY_VERSION
         or integrity.get("status") != "PASS"
         or str(integrity.get("code_root") or "") not in {".", str(paths.app_root)}
         or integrity.get("file_count") != len(rows)
-        or integrity.get("files") != rows
-        or str(integrity.get("aggregate_sha256") or "").lower() != aggregate
+        or aggregate is None
         or integrity.get("identity_profile_created") is not False
         or integrity.get("state_scope") != "current_user_first_run"
     ):
@@ -596,11 +619,7 @@ def verify_bootstrap_integrity(
                 portable_pythonw_present or folded == "runtime/pythonw.exe"
             )
             portable_main_present = portable_main_present or folded == "app/main.py"
-        aggregate = hashlib.sha256(
-            "".join(
-                f"{row['sha256']} {row['size']} {row['path']}\n" for row in rows
-            ).encode("utf-8")
-        ).hexdigest()
+        aggregate = _verified_bootstrap_inventory_aggregate(record, rows)
         code_root = str(record.get("code_root") or "").strip()
         resolved_code_root = (
             paths.app_root if code_root == "." else _resolved(code_root)
@@ -611,8 +630,7 @@ def verify_bootstrap_integrity(
             or resolved_code_root != paths.app_root
             or type(record.get("file_count")) is not int
             or record.get("file_count") != len(rows)
-            or record.get("files") != rows
-            or str(record.get("aggregate_sha256") or "").lower() != aggregate
+            or aggregate is None
             or record.get("identity_profile_created") is not False
             or record.get("state_scope") != "current_user_first_run"
             or frozen_main_present == portable_layout

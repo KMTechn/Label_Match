@@ -10,6 +10,8 @@ F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completi
 
 설치기는 고정 `kmtech_shared` 0.3.1 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다. LM ordinal inventory·task migration·conflict receipt·복원 경계는 [X13-B](operations.md#shared-powershell-x13b)를 따른다.
 
+`d0e504e` 이하의 canonical 재시작 무결성 순서 오탐은 `w9labelintegrityorder` 수정본에서 교정한다. 기존 v1 기록은 재작성 없이 파일 집합·크기·SHA와 원래 순서의 aggregate를 검증한다([설치·재시작](operations.md#bootstrap-integrity-order)).
+
 57f52e1 설치본에서 X13-B로의 교체는 선언된 shared leaf 추가와 여섯 release 파일의 전/후 pin이 모두 일치할 때 지원한다. 그 외 파일 집합·writer 멤버십·runtime·계약 검사는 유지한다.
 
 0.3.1의 배열 manifest 회귀는 PS5/PS7 원본의 수용·거부 형태를 보존한다([현재 검증·한계](operations.md#shared-powershell-x13b)).
