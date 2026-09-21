@@ -625,13 +625,52 @@ capture8에서 `aa4d59b` 패키지는 `app/assets/Item.csv`에서 거부됐다. 
 
 이전 fixture는 현행 tree에 onboarding만 바꿨고 이전 stock replay의 old/candidate CSV도 모두 CRLF였다. guest LF preimage를 재현하지 못한 PASS는 이 업그레이드의 근거가 아니다. 신규 `tests/test_stock_portable_upgrade.py`는 역사적 d0 stock builder·LF 패키지 설치 → CRLF checkout의 신 빌더 후보 → 전체 canonical transaction → 별도 Python process 무결성 readback 2회를 검사한다. packaged source 파일 전체를 Git blob과 대조하며 사용자 identity/설정/catalog cache/data/queue 및 rollback의 원 bootstrap record를 보존한다. registry/task/UAC/credential/enrollment/relay I/O는 격리 adapter이며 GUI·실제 backend·재부팅 수용은 별도다. [현재 RESULT](D:/KMTech/program-improvement-20260912/work/Label_Match/w9labelwriterupgrade2/RESULT.md).
 
-같은 사용자로 앱을 정상 종료하고 검토된 새 후보의 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <후보 경로> -EvidencePath <새 감사 JSON 경로>`를 실행한다. `-PlanOnly`는 writer 전환 검증을 실행하지 않으므로 성공 근거가 아니다. 기존 conflict 상태는 후보 전체 inventory에 결속된 정상 receipt가 먼저 필요하다. 이전 후보용 receipt 재사용·수동 수정·stop-marker 삭제 또는 code-only 제거로 guard를 우회하지 않는다.
+같은 사용자로 앱을 정상 종료하고 검토된 새 후보의 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <후보 경로> -EvidencePath <새 감사 JSON 경로>`를 실행한다. `-PlanOnly`는 writer 전환 검증을 실행하지 않으므로 성공 근거가 아니다. 마지막 정상 제거 보고서와 유효한 stop marker만 불일치하면 [아래 정상 제거 절차](#abnormal-stop-marker-recovery)를 먼저 수행한다. 그 외 healthy lifecycle 부적격 상태는 후보 전체 inventory에 결속된 정상 receipt가 필요하다. 이전 후보용 receipt 재사용·수동 수정·stop-marker 삭제 또는 code-only 제거로 guard를 우회하지 않는다.
 
 설치 전 사용자 상태의 보존본과 원 설치본을 유지한다. 성공은 감사의 `PASS`·위 compatibility·candidate/installed writer pin과 현재 bootstrap 검증으로 확인하고 같은 사용자의 시작→정상 종료를 두 번 확인한다. 교체는 새 bootstrap record를 생성하고 `.current.rollback.*`에 이전 code/record를 보존하며, 실패 시 기존 transaction이 검증한 preimage로 복원한다. 역방향 설치는 거부한다. 실패 복원된 `d0e504e`에는 원래 재시작 순서 결함이 남으므로 정상화로 간주하지 않는다. bundled CSV/template은 committed bytes로 치환하고 기존 사용자 catalog cache·설정·업무 파일은 병합/덮어쓰지 않는다. 실제 guest 재설치·업무 수용은 capture8의 별도 확인 범위다.
 
 portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 hash lock과 [자동 대조](../../tests/test_zero_pe_conversion.py)한다. `chardet==5.2.0`의 pure Python wheel을 명시하고 source runtime에는 계속 chardet을 복사한다. lock의 charset-normalizer는 다른 build/test closure를 위해 유지하며 portable zero-PE 대체 의도는 바뀌지 않는다. 이 입력 정합 검사는 clean 설치·portable build 실행 증거와 별개다.
 
 현행 [릴리스 계약](../../RELEASE_GATE_CONTRACT.md)의 코드 배치와 첫 사용자 등록을 구분한다. `--remove-current-user-setup`은 정확한 사용자 persistence 제거·relay 종료와 lock 부재를 확인하면서 identity/profile/settings/ledger/queue/spool/status/logs/receipts를 보존하는 계약이다. 이후 elevated `INSTALL_THIS_PC.ps1 -Uninstall`이 코드를 제거하며 relay persistence가 남아 있으면 거부한다. 이 명세에서 설치·제거 명령을 실행하지 않았다.
+
+<a id="abnormal-stop-marker-recovery"></a>
+### 시작 실패 뒤 남은 stop marker 복구
+
+`d0e504e`의 시작 무결성 실패 후 stop marker가 마지막 정상 제거 보고서보다 나중에 생성된 상태에서는 설치기의 `healthy lifecycle stop marker is not the exact normal removal marker` 거부가 정상이다. capture8의 첫 제거 wrapper exit 1은 Windows PowerShell 5.1의 `$ErrorActionPreference='Stop'`와 native `2>`/pipeline 조합이 정상 `storage_root_selected` stderr를 `NativeCommandError`로 승격한 결과다. 제품 exit code는 수집되지 않았으며 제품 제거 실패로 해석하지 않는다. marker의 최초 생성 주체는 이 증거로 확정하지 않는다.
+
+같은 로그인 사용자로 앱을 정상 종료하고 기존 상태·원본 marker/report 및 로그를 보존한다. **코드 제거 없이** 설치된 portable의 사용자 제거를 실행한다. 아래처럼 `Start-Process`로 stdout/stderr를 각각 파일에 보존하고 native exit와 새 보고서를 확인한다. stderr가 비어 있는지를 성공 기준으로 사용하거나 stderr를 삭제하지 않는다.
+
+```powershell
+$installed = 'C:\KMTech\Apps\Label_Match\current'
+$evidence = Join-Path 'C:\KMTech\LabelRecovery' (Get-Date -Format 'yyyyMMdd-HHmmss')
+New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
+$state = Join-Path $env:LOCALAPPDATA 'KMTech\DirectSync\label_match'
+$markerPath = Join-Path $state 'control\label_match_user_relay.stop.json'
+$reportPath = Join-Path $state 'status\current_user_removal.json'
+Copy-Item -LiteralPath $markerPath,$reportPath -Destination $evidence -ErrorAction Stop
+$arguments = '-I -B "{0}" --remove-current-user-setup' -f (Join-Path $installed 'app\main.py')
+$process = Start-Process -FilePath "$installed\runtime\python.exe" -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$evidence\removal.stdout.log" -RedirectStandardError "$evidence\removal.stderr.log"
+if ($process.ExitCode -ne 0) { throw "Removal failed: $($process.ExitCode); inspect $evidence" }
+$report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+$marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+$markerHash = (Get-FileHash -LiteralPath $markerPath -Algorithm SHA256).Hash
+if ($report.status -cne 'PASS_DATA_PRESERVED' -or $report.data_preserved -ne $true -or $report.machine_code_root -ine $installed -or $report.relay_process.status -cne 'ABSENT' -or $report.relay_process.request_id -cne $marker.request_id -or $report.relay_process.stop_request_sha256 -ine $markerHash) { throw 'Removal marker/report readback failed' }
+```
+
+성공하면 원 marker가 successor의 predecessor로 보존되고 새 정상 보고서의 request/hash가 일치한다. 검토된 후보를 지정하여 canonical 설치를 실행한다. installer가 identity/credential·프로세스 소유·bootstrap·writer 전환을 재검증하며, 정상 쌍은 별도 conflict receipt 없이 marker 조건을 통과한다.
+
+```powershell
+$candidate = 'C:\KMTech\W9DocsCapture8\inputs\Label_Match-66c623a'
+$arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -SourceRoot "{1}" -EvidencePath "{2}"' -f "$candidate\INSTALL_CANONICAL_PORTABLE.ps1",$candidate,"$evidence\install.json"
+$process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$evidence\install.stdout.log" -RedirectStandardError "$evidence\install.stderr.log"
+if ($process.ExitCode -ne 0) { throw "Install failed: $($process.ExitCode); inspect $evidence" }
+```
+
+대상 환경에 별도 승인된 서버 주소가 필요하면 기존 설치 명령의 `-ServerBaseUrl`을 유지한다. 감사 `PASS`, 설치 commit, 사용자 데이터 보존을 대조한 뒤 같은 사용자의 시작→정상 종료를 두 번 확인한다. 제거가 실패하거나 marker가 손상·비정규·lineage 한도 초과인 경우 원본과 진단을 보존하여 지원 담당에게 인계한다. 임의 receipt 생성·marker 삭제·코드만 제거로 우회하지 않는다.
+
+`tests/test_stock_portable_upgrade.py::test_stock_d0_abnormal_stop_marker_removal_then_upgrade`는 원 stock `d0e504e`에서 정상 제거보다 나중의 불일치 marker를 만들고 설치 거부/무변경 → 공개 제거의 successor/report → stock `66c623a` 전체 설치 → 별도 process 무결성 readback 두 번과 identity·설정·queue·spool·status·logs·receipt·업무 파일 보존을 검사한다. registry/task/credential/enrollment/relay I/O는 기존 외부 adapter이며 패키지 bytes와 실제 제거·marker·installer guard는 보존한다. GUI/실제 backend·DPAPI/UAC·재부팅은 capture8의 별도 증거 범위다. [판정·실행 결과](D:/KMTech/program-improvement-20260912/work/Label_Match/w9labelremovalrecovery/RESULT.md).
+
+capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/KMTech/program-improvement-20260912/work/program/w9docscapture8/evidence/label-native-removal-result.json), [successor/report 일치·ABSENT](D:/KMTech/program-improvement-20260912/work/program/w9docscapture8/evidence/label-lifecycle-after-native-removal.json), [기존 d0→66c623a canonical 감사 PASS](D:/KMTech/program-improvement-20260912/work/program/w9docscapture8/evidence/label-upgrade-66c623a-retry.json)로 확인했다. 이 설치 감사만으로 GUI 두 번 재시작·전체 업무 수용을 주장하지 않는다.
 
 업데이트 후보·서명/manifest 및 archive 검증은 유지하며, 앱 내부 코드 적용·batch workspace·레거시 prompt는 제거했다. `threaded_update_check`와 GUI worker/poll은 조회 결과만 알린다. `tools/sign_release_executables.ps1`은 외부 수동 운영 소비 여부가 미확인이므로 보존한다. 코드 교체와 integrity 재생성은 별도 installer의 책임이며, 이전 릴리스/현재 dirty 소스의 결과를 서로 자동 상속하지 않는다. 실제 업그레이드·재설치·rollback 뒤 기존 identity, current-state, 미전송/검토 row, F5 journal, receipt 정합성은 [LM-B07](BACKLOG.md#lm-b07)의 남은 수용 범위다.
 

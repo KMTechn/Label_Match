@@ -14,6 +14,8 @@ writer 전환은 설치된 파일 집합을 기준으로 한다. 57f52e1의 shar
 
 portable build는 clean source 확인 후 commit/tree를 고정하고 Git blob snapshot에서 저장소 파일을 복사한다. 소스의 줄바꿈·checkout filter가 산출물 bytes를 바꾸지 않으며 shared pin·import closure·zero-PE gate도 그 snapshot/산출물을 검사한다. 외부 CPython·고정 third-party와 명시 입력으로 생성하는 update-key config/manifest는 이 저장소 bytes 계약과 구분한다. bundled `assets/Item.csv`와 `config/app_settings.json`은 code tree 교체 대상이지만 사용자 catalog cache·설정·업무 data/queue는 별도 경로로 보존한다. 데이터 파일의 전이 예외나 일반 줄바꿈 정규화는 guard에 추가하지 않는다.
 
+유효한 stop marker가 마지막 정상 제거 보고서와 다른 경우 설치기는 계속 거부한다. 같은 사용자의 `--remove-current-user-setup`은 writer admission 아래 기존 marker의 정확한 bytes/hash를 predecessor로 보존하고 relay·persistence·task 부재를 확인한 뒤 successor의 request/hash에 결속된 `PASS_DATA_PRESERVED` 보고서를 쓴다. 이 정상 쌍은 healthy lifecycle의 marker 조건을 충족하지만 나머지 identity/credential/ownership/무결성 조건을 대신하지 않는다. 손상·비정규 marker, lineage 한도 초과 또는 부재 확인 실패는 정상 제거 성공이 아니다([운영](operations.md#abnormal-stop-marker-recovery)).
+
 0.3.1 reader는 원 parser의 배열 형태를 보존한다. PS5 `[manifest]`, 양 엔진의 중첩·빈 배열은 원본처럼 거부하고 PS7의 기존 singleton 수용을 유지한다. 0.3.0의 두 실패 원본과 0.3.1 회귀 결과는 [X13-B](operations.md#shared-powershell-x13b)에 연결한다.
 
 canonical/placement 설치기는 자체 bootstrap으로 source 또는 portable `app/` root와 상위 경로의 reparse를 거부하고, 고정 0.3.1 consumer pin → manifest bytes → PowerShell leaf SHA256 순서로 확인한 뒤 dot-source한다. bootstrap 무결성 helper는 `-SharedCodeRoot`를 받은 inventory 소비자에서만 shared를 초기화하며, 초기 native SHA는 module auto-loading 없이 동작한다. 신뢰 확인에 shared 함수나 준비 전 Python checker를 사용하지 않는다.
