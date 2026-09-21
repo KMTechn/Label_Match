@@ -228,6 +228,102 @@ $receiptSource = PortableInventory $source
 """
 
 
+@pytest.fixture(scope="module")
+def integrity_upgrade_pair(tmp_path_factory, portable_pair):
+    root = tmp_path_factory.mktemp("integrity-upgrade")
+    trees = []
+    for name, revision in (("old", "d0e504e"), ("candidate", "0cf5bf6")):
+        tree = root / name
+        shutil.copytree(portable_pair[0], tree)
+        # Keep the reviewed onboarding bytes exact; runtime/OS adapters live
+        # outside that module and are identical on both sides of the transition.
+        (tree / "app/current_user_onboarding.py").write_bytes(subprocess.check_output(
+            ["git", "-C", str(ROOT), "show", revision + ":current_user_onboarding.py"]))
+        _pin(tree)
+        _manifest(tree, subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", revision], text=True).strip())
+        trees.append(tree)
+    return tuple(trees)
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("crlf", [False, True])
+def test_integrity_order_upgrade_preserves_verified_preimage(tmp_path, integrity_upgrade_pair, engine, crlf):
+    old, candidate = integrity_upgrade_pair
+    installed = tmp_path / "installed"
+    shutil.copytree(old, installed)
+    if crlf:
+        path = installed / "app/current_user_onboarding.py"
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        _pin(installed)
+    env = _environment(tmp_path)
+    result = _ps(tmp_path, _definitions() + f"""
+. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
+[void](Write-BootstrapIntegrityRecord -Root {_quote(installed)} -CodeRoot {_quote(installed)})
+$recordBefore = Sha (Join-Path {_quote(installed)} 'bootstrap-integrity.json')
+$before = PortableInventory {_quote(installed)}
+{_upgrade_preflight(candidate, installed)}
+if ($writerTransition.compatibility -cne 'PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX') {{ throw 'Missing integrity-order transition' }}
+if ((PortableInventory {_quote(installed)}).sha256 -cne $before.sha256 -or
+    (Sha (Join-Path {_quote(installed)} 'bootstrap-integrity.json')) -cne $recordBefore) {{ throw 'Preflight changed the preimage' }}
+$writerTransition | ConvertTo-Json -Compress
+""", env, engine=engine)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["installed_inventory_sha256"] != payload["candidate_inventory_sha256"]
+    assert not Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]).exists()
+
+
+@pytest.mark.parametrize("change,reason", [
+    ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("other-preimage", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("other-candidate", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("unrelated", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("invalid-pin", "WRITER_TRANSITION_PIN_INVALID"),
+    ("damaged-record", "Bootstrap integrity"),
+])
+def test_integrity_order_upgrade_rejects_unreviewed_or_damaged_state(tmp_path, integrity_upgrade_pair, change, reason):
+    old, candidate = integrity_upgrade_pair
+    source, installed = tmp_path / "candidate", tmp_path / "installed"
+    shutil.copytree(old if change == "reverse" else candidate, source)
+    shutil.copytree(candidate if change == "reverse" else old, installed)
+    if change in {"other-preimage", "other-candidate"}:
+        tree = installed if change == "other-preimage" else source
+        with (tree / "app/current_user_onboarding.py").open("a", encoding="utf-8") as stream:
+            stream.write("\nUNREVIEWED_RUNTIME_CHANGE = True\n")
+        _pin(tree)
+    elif change == "unrelated":
+        with (source / "app/user_relay.py").open("a", encoding="utf-8") as stream:
+            stream.write("\nUNREVIEWED_RUNTIME_CHANGE = True\n")
+        _pin(source)
+    elif change == "invalid-pin":
+        path = installed / "app/writer_session_fence.py"
+        path.write_text(re.sub(r'(?m)^WRITER_INVENTORY_SHA256 = "[0-9a-f]{64}"',
+                              'WRITER_INVENTORY_SHA256 = "' + "a" * 64 + '"',
+                              path.read_text(encoding="utf-8")), encoding="utf-8")
+    env = _environment(tmp_path)
+    damage = "[IO.File]::WriteAllText((Join-Path $install 'bootstrap-integrity.json'), '{}')" if change == "damaged-record" else ""
+    result = _ps(tmp_path, _definitions() + f"""
+. (Join-Path {_quote(source)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(source)}
+$install = {_quote(installed)}
+[void](Write-BootstrapIntegrityRecord -Root $install -CodeRoot $install)
+{damage}
+$before = PortableInventory $install
+$recordBefore = Sha (Join-Path $install 'bootstrap-integrity.json')
+try {{
+{_upgrade_preflight(source, installed)}
+throw 'Unexpectedly admitted transition'
+}} catch {{
+    if ((PortableInventory $install).sha256 -cne $before.sha256 -or
+        (Sha (Join-Path $install 'bootstrap-integrity.json')) -cne $recordBefore) {{ throw 'Rejected transition mutated preimage' }}
+    throw
+}}
+""", env)
+    assert result.returncode != 0, result.stdout
+    assert reason.casefold() in result.stderr.casefold(), result.stdout + result.stderr
+    assert not Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]).exists()
+
+
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 def test_shared_leaf_upgrade_preflight_and_replacement_integrity(tmp_path, shared_upgrade_pair, engine):
     old, candidate = shared_upgrade_pair
@@ -442,7 +538,15 @@ def test_compatibility_rejection_precedes_all_persistent_preimage_and_fence_effe
 
 @pytest.mark.parametrize("failure", ["removal", "quiesce", "placement-move", "after-placement", "after-release"])
 def test_real_removal_placement_failure_and_rollback_release_restore_relay(tmp_path, portable_pair, failure):
-    old, candidate, old_pin, new_pin = portable_pair
+    _exercise_failed_transition(tmp_path, portable_pair[:2], failure)
+
+
+def test_integrity_order_upgrade_failure_restores_old_writer_and_relay(tmp_path, integrity_upgrade_pair):
+    _exercise_failed_transition(tmp_path, integrity_upgrade_pair, "after-placement")
+
+
+def _exercise_failed_transition(tmp_path, pair, failure):
+    old, candidate = pair
     install = tmp_path / "canonical/current"
     shutil.copytree(old, install)
     env = _environment(tmp_path)
@@ -585,7 +689,7 @@ function StartRaw([string]$Line) {{
         tick = json.loads((state / "relay-tick.json").read_text(encoding="utf-8"))
         assert restored_pid != process.pid and tick["pid"] == restored_pid
         installed_manifest = json.loads((install / "portable-manifest.json").read_text(encoding="utf-8"))
-        assert installed_manifest["source_commit"] == "1" * 40
+        assert installed_manifest == json.loads((old / "portable-manifest.json").read_text(encoding="utf-8"))
         assert audit["rollback"]["code_restored"] is True
         if failure in {"after-placement", "after-release"}:
             assert audit["rollback"]["code_placement"] == "RESTORED_PREIMAGE"

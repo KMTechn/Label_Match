@@ -397,7 +397,8 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
 
 function Assert-WriterTransition([string]$Source, [string]$Installed) {
     # Run only the attested candidate's scanner. Never import installed code.
-    # AST equality admits comments/line movement, not changed runtime semantics.
+    # Changed semantics require an exact, reviewed directional release pair;
+    # otherwise AST equality admits only comments/line movement.
     $probe = @'
 import ast, hashlib, json, pathlib, re, sys
 source, installed = map(pathlib.Path, sys.argv[1:])
@@ -475,6 +476,21 @@ shared_additions = {
 def release_digest(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
+# d0e504e -> 0cf5bf6 only: bootstrap v1 readers compare the same complete
+# inventory independent of row order and validate its original-order aggregate.
+# No persisted schema/writer changes need migration. The caller verifies the
+# installed bootstrap record before this read-only probe, then retains the
+# code/record preimage for transaction rollback. Downgrade is not admitted.
+integrity_order_path = 'app/current_user_onboarding.py'
+integrity_order_transition = (
+    (installed / integrity_order_path).is_file() and
+    (source / integrity_order_path).is_file() and
+    release_digest(installed / integrity_order_path) ==
+        'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
+    release_digest(source / integrity_order_path) ==
+        '02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7'
+)
+
 shared_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
     release_digest(installed / relative) == before and release_digest(source / relative) == after
@@ -497,6 +513,8 @@ for directory in ('app', 'runtime'):
     for relative, path in left.items():
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
+        if integrity_order_transition and relative == integrity_order_path:
+            continue
         other = right[relative]
         if digest(path) == digest(other):
             continue
@@ -509,7 +527,10 @@ for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstr
         continue
     if (source / relative).read_bytes() != (installed / relative).read_bytes():
         raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: ' + relative)
-print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS'))))
+compatibility = ('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else
+                 'PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX' if integrity_order_transition else
+                 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
+print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = Join-Path $Source 'runtime\python.exe'

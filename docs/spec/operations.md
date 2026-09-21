@@ -616,6 +616,15 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 <a id="bootstrap-integrity-order"></a>
 `d0e504e` 이하에서 기록·읽기의 ordinal/casefold 순서 차이로 재시작 시 `canonical bootstrap integrity readback differs`가 발생할 수 있다. `w9labelintegrityorder` 수정본은 installer와 같은 ordinal 열거 및 순서 비민감 행 비교를 사용하고, 기존 v1 aggregate는 저장된 순서로 검증하여 원본을 보존한다. 추가·누락·내용·크기·경로·digest 불일치는 계속 차단한다. capture6은 수정 커밋의 stock portable 후보를 정상 설치한 뒤 같은 사용자의 재시작·정상 종료와 기존 stop-marker/receipt 절차를 확인한다. 호스트 headless 검증과 guest 재설치 수용은 구분하며 guest 확인은 아직 NOT VERIFIED다.
 
+<a id="bootstrap-integrity-writer-transition"></a>
+### 무결성 순서 수정본으로 writer 업그레이드
+
+`0cf5bf6` 자체의 installer는 `d0e504e`와 onboarding AST가 달라 교체 전에 거부한다. `w9labelwriterupgrade`가 포함된 stock portable을 사용하면 정확한 전/후 onboarding hash 쌍만 `PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX`로 인정한다. 파일 집합·writer/guard·runtime·계약·설치본 bootstrap 검증은 유지한다. 검증 순서만 바뀌고 data/identity/queue/spool/settings/receipt schema는 같으므로 데이터 변환은 필요 없다. 임의 이전/이후 릴리스나 역방향 downgrade를 허용하는 옵션은 없다.
+
+같은 사용자로 앱을 정상 종료하고 검토된 새 후보의 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <후보 경로> -EvidencePath <새 감사 JSON 경로>`를 실행한다. `-PlanOnly`는 writer 전환 검증을 실행하지 않으므로 성공 근거가 아니다. 기존 conflict 상태는 후보 전체 inventory에 결속된 정상 receipt가 먼저 필요하다. 이전 후보용 receipt 재사용·수동 수정·stop-marker 삭제 또는 code-only 제거로 guard를 우회하지 않는다.
+
+설치 전 사용자 상태의 보존본과 원 설치본을 유지한다. 성공은 감사의 `PASS`·위 compatibility·candidate/installed writer pin과 현재 bootstrap 검증으로 확인하고 같은 사용자의 시작→정상 종료를 두 번 확인한다. 교체는 새 bootstrap record를 생성하고 `.current.rollback.*`에 이전 code/record를 보존하며, 실패 시 기존 transaction이 검증한 preimage로 복원한다. 역방향 설치는 거부한다. 실패 복원된 `d0e504e`에는 원래 재시작 순서 결함이 남으므로 정상화로 간주하지 않는다. host 재현·검증은 [RESULT](D:/KMTech/program-improvement-20260912/work/Label_Match/w9labelwriterupgrade/RESULT.md), 실제 guest 재설치·업무 수용은 capture7의 별도 확인 범위다.
+
 portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 hash lock과 [자동 대조](../../tests/test_zero_pe_conversion.py)한다. `chardet==5.2.0`의 pure Python wheel을 명시하고 source runtime에는 계속 chardet을 복사한다. lock의 charset-normalizer는 다른 build/test closure를 위해 유지하며 portable zero-PE 대체 의도는 바뀌지 않는다. 이 입력 정합 검사는 clean 설치·portable build 실행 증거와 별개다.
 
 현행 [릴리스 계약](../../RELEASE_GATE_CONTRACT.md)의 코드 배치와 첫 사용자 등록을 구분한다. `--remove-current-user-setup`은 정확한 사용자 persistence 제거·relay 종료와 lock 부재를 확인하면서 identity/profile/settings/ledger/queue/spool/status/logs/receipts를 보존하는 계약이다. 이후 elevated `INSTALL_THIS_PC.ps1 -Uninstall`이 코드를 제거하며 relay persistence가 남아 있으면 거부한다. 이 명세에서 설치·제거 명령을 실행하지 않았다.

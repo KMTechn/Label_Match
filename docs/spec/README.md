@@ -12,6 +12,8 @@ F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completi
 
 `d0e504e` 이하의 canonical 재시작 무결성 순서 오탐은 `w9labelintegrityorder` 수정본에서 교정한다. 기존 v1 기록은 재작성 없이 파일 집합·크기·SHA와 원래 순서의 aggregate를 검증한다([설치·재시작](operations.md#bootstrap-integrity-order)).
 
+`d0e504e` → `0cf5bf6`의 onboarding 변경은 `w9labelwriterupgrade` installer의 정확한 전/후 module pin 쌍으로 지원한다. 설치본 무결성·writer membership·나머지 코드 검사는 유지하며, 데이터 변환 없이 기존 교체/실패 복원 절차를 사용한다([업그레이드·롤백](operations.md#bootstrap-integrity-writer-transition)).
+
 57f52e1 설치본에서 X13-B로의 교체는 선언된 shared leaf 추가와 여섯 release 파일의 전/후 pin이 모두 일치할 때 지원한다. 그 외 파일 집합·writer 멤버십·runtime·계약 검사는 유지한다.
 
 0.3.1의 배열 manifest 회귀는 PS5/PS7 원본의 수용·거부 형태를 보존한다([현재 검증·한계](operations.md#shared-powershell-x13b)).
