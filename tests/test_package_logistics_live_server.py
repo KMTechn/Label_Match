@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -10,7 +11,7 @@ import pytest
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-WEB_ROOT = WORKSPACE_ROOT / "WorkerAnalysisGUI-web"
+WEB_ROOT = Path(os.environ.get("LABEL_MATCH_TEST_WEB_ROOT", WORKSPACE_ROOT / "WorkerAnalysisGUI-web"))
 if not WEB_ROOT.is_dir():
     pytest.skip(
         "cross-repository WorkerAnalysisGUI-web checkout is unavailable",

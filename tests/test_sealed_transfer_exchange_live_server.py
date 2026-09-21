@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -10,7 +11,7 @@ import pytest
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-WEB_ROOT = WORKSPACE_ROOT / "WorkerAnalysisGUI-web"
+WEB_ROOT = Path(os.environ.get("LABEL_MATCH_TEST_WEB_ROOT", WORKSPACE_ROOT / "WorkerAnalysisGUI-web"))
 if not WEB_ROOT.is_dir():
     pytest.skip(
         "cross-repository WorkerAnalysisGUI-web checkout is unavailable",
@@ -21,10 +22,10 @@ sys.path.insert(0, str(WEB_ROOT))
 sys.path.insert(0, str(WEB_ROOT / "tests"))
 
 from package_logistics import PackageClientConfig, PackageLogisticsClient  # noqa: E402
+from Label_Match import _label_match_parse_sealed_transfer_qr  # noqa: E402
 from sealed_transfer_exchange import (  # noqa: E402
     SealedTransferExchangeCoordinator,
     SealedTransferExchangeStore,
-    _qr_fields,
 )
 from test_logistics_api_v1 import SCOPE, TOKEN, _app, _headers  # noqa: E402
 from test_logistics_p3_transfer_package import _complete_phs  # noqa: E402
@@ -69,7 +70,7 @@ def test_packaging_exchange_traverses_live_capability_resolver_and_reseal(tmp_pa
     prepared = coordinator.prepare(
         set_id="LIVE-LABEL-SET",
         old_seal_qr_payload=old_qr,
-        old_seal_fields=_qr_fields(old_qr),
+        old_seal_fields=_label_match_parse_sealed_transfer_qr(old_qr),
         operator="live-contract-test",
         old_barcodes=[seed["target_evidence"]["normalized_barcodes"][0]],
         new_barcodes=[seed["source_evidence"]["normalized_barcodes"][0]],
@@ -131,7 +132,7 @@ def test_two_pair_live_reseal_accepts_aggregated_movement_receipts(tmp_path):
     prepared = coordinator.prepare(
         set_id="LIVE-LABEL-TWO-PAIR",
         old_seal_qr_payload=old_qr,
-        old_seal_fields=_qr_fields(old_qr),
+        old_seal_fields=_label_match_parse_sealed_transfer_qr(old_qr),
         operator="live-contract-test",
         old_barcodes=seed["target_evidence"]["normalized_barcodes"],
         new_barcodes=[

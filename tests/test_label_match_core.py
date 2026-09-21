@@ -2638,6 +2638,8 @@ def test_default_save_path_uses_programdata_durable_root(monkeypatch, tmp_path):
     module = load_label_match_module()
     program_data = tmp_path / "ProgramData"
     monkeypatch.setenv("ProgramData", str(program_data))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(tmp_path / "direct-sync"))
     monkeypatch.delenv(module.LABEL_MATCH_SAVE_DIR_ENV, raising=False)
     app = object.__new__(module.Label_Match)
     app.app_settings = {"custom_save_path": ""}

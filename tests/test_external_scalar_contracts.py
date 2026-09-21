@@ -227,7 +227,7 @@ def _run_bootstrap_file_count_guard(
         f"""
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. '{_ps_literal(BOOTSTRAP_INTEGRITY)}'
+. '{_ps_literal(BOOTSTRAP_INTEGRITY)}' -SharedCodeRoot '{_ps_literal(ROOT)}'
 $root = '{_ps_literal(root)}'
 $record = Write-BootstrapIntegrityRecord -Root $root -CodeRoot '.'
 $json = (New-Object Text.UTF8Encoding($false, $true)).GetString(

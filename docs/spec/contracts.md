@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+[w9 시험 감사](operations.md#test-audit-w9)는 기존 계약을 그대로 검증한다. bootstrap 전체 inventory는 신뢰된 `SharedCodeRoot`를 명시하고, F4 prepare에는 앱 parser가 검증한 정수 QT를 전달하며, relay ACK는 stdout 대신 durable status·queue·실제 수신 내용으로 확인한다. ProgramData 기본값 시험은 onboarding 상태가 없는 standalone 문맥을 명시한다.
+
 `Label_Match.DataManager`는 [저장 구현](../../label_data_manager.py)에 위임한다. clock·open·이벤트 투영·현재 세트 파일명은 호출 시점의 앱 callback으로 결속하며 A/C/P 저장 루트 우선순위, CSV flush/fsync·원자 JSON 교체와 기존 save/load 결과는 유지한다([LM-1](operations.md#module-boundaries-lm1)).
 
 `label_history.py`의 read/summary snapshot은 기존 `sorted_sets`, `scan_count`, `summary_items`, 중복·완료 색인, `updates_active_state`, `load_generation`과 오류 payload를 유지한다. 앱 façade는 기존 read·summary 이름과 clock/open/해석 callback을 유지하고 complete snapshot의 gate 해제·stale 결과 거부 및 화면 적용은 원 owner에서 수행한다.

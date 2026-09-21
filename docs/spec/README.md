@@ -1,5 +1,7 @@
 # Label_Match 기술 명세
 
+기존 전체 시험의 21 FAIL은 [w9 시험 감사](operations.md#test-audit-w9)의 fixture/API 정합과 저장 루트 격리로 교정했다. 제품 계약·실제 GUI 수용과 호스트 회귀 결과를 구분한다.
+
 F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completion.py)에 있고 기존 앱 API·writer admission·성공 표시·worker dispatch는 [LM-3 경계](operations.md#module-boundaries-lm3)를 유지한다.
 
 작업 화면 구성은 context·scan·activity·history pane 모듈로 나뉜다. `_create_widgets`의 생성 순서와 기존 notice/view-state adapter·버튼/단축키·업무 절차는 같은 [LM-3 경계](operations.md#module-boundaries-lm3)를 따른다.

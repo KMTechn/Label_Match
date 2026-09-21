@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -19,7 +20,9 @@ from direct_sync_operator import ack_reviewed_relay_batch
 from direct_sync_push import ProducerCredentials, canonical_json, init_relay_queue_schema
 
 
-WORKER_ANALYSIS_GUI_ROOT = Path(__file__).resolve().parents[2] / "WorkerAnalysisGUI-web"
+WORKER_ANALYSIS_GUI_ROOT = Path(os.environ.get(
+    "LABEL_MATCH_TEST_WEB_ROOT", Path(__file__).resolve().parents[2] / "WorkerAnalysisGUI-web"
+))
 PRODUCER_RUNTIME_LEASE_MODULE = WORKER_ANALYSIS_GUI_ROOT / "producer_runtime_lease.py"
 
 

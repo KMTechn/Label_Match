@@ -1,5 +1,9 @@
 # Label_Match 진행·공백·추가 제안
 
+## W9 · 기존 시험 실패 감사
+
+기존 전체 suite의 21 FAIL은 제품 변경 없이 fixture/API 16개와 저장 루트 환경 의존 5개로 교정했고 첫 전체 3065 PASS/5 SKIP를 확인했다([분류·현재 검증](operations.md#test-audit-w9)). 마지막 시험 변경 뒤 전체 3회 반복의 결과는 해당 RESULT로 결속하며 실제 GUI 5개·VM·서버·운영 lifecycle 수용은 별도로 남는다.
+
 ## W5-B2 · carrier 경계 이후
 
 U13 문구 대조에서 activity 제목을 `최근 로컬 기록`으로 명확히 했다. 진행·통과·오류를 포함한 로컬 이력이며 중앙 포장 ACK 목록이 아니다. 행·상태·F3/F4 절차는 보존하고 기존 workbench 시험에서 의미와 원 결과를 확인한다. 실제 글자 가독성은 화면 검증 대상으로 남는다([확정 경계](contracts.md#states)).

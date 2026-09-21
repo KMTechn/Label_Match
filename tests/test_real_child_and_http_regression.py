@@ -672,7 +672,8 @@ def test_run_session_direct_sync_once_posts_packaging_csv_to_loopback_https(
         "lease_posts": len(server.lease_requests),
     }
     assert result["returncode"] == 0
-    assert "direct_sync_relay_status=acked" in result["stdout_tail"]
+    assert runtime_status["status"] == "acked", runtime_status
+    assert relay_queue_status(direct_sync_root / "queue" / "direct_sync_relay.sqlite3")["counts"][RELAY_STATUS_ACKED] == 1
     _assert_ingest_received_barcode(server, BARCODE)
     assert roots["control_root"].is_dir()
 

@@ -1,5 +1,14 @@
 # Label_Match 운영·복구·검증
 
+<a id="test-audit-w9"></a>
+## W9 · 기존 21개 시험 실패 감사
+
+`350d5be`의 보존된 전체 결과는 3044 PASS/21 FAIL/5 SKIP이며 보이는 GUI 5개를 제외했다. 실패 원인은 낡은 fixture/API 16개와 합성 onboarding 상태를 상속한 저장 루트 환경 의존 5개다. bootstrap 시험은 검증된 shared helper를 로드하고, F4 취소 시험은 대상 수량을 제공하며 live reseal 시험은 실제 앱의 typed QR parser를 사용한다. relay 시험은 기존 child exit·수신 barcode에 durable ACK status와 queue 검사를 함께 사용한다.
+
+review API inventory의 추가 네 소비자는 업무 fixture의 수동 drain과 restored-F4의 불변 snapshot 세 시험이다. 세 화면 시험은 render 중 동기 store accessor가 호출되지 않음과 상태 보존을 확인하며, 기존 Thread/snapshot inventory의 exact 비교를 유지한다. standalone 기본 경로 시험은 LOCALAPPDATA와 direct-sync root를 시험별 임시 경로로 지정한다.
+
+형제 Web 입력은 `LABEL_MATCH_TEST_WEB_ROOT`로 committed snapshot을 지정할 수 있다. 지정이 없으면 기존 sibling checkout 경로를 사용한다. 이번 격리 입력 SHA는 `8ba7a04d1c0d10a51b3f548fde41b83041051193`이며 외부 서버 연결 없이 Flask test client와 loopback TLS만 사용한다. 제품 변경·assert 완화·시험 삭제·skip 추가는 없다. 변경 후 focused 131 PASS와 첫 전체 3065 PASS/5 SKIP(GUI 5개 제외)를 확인했으며 새 실패·누락·기존 상태 회귀는 0이다. 전체 3회 반복 결과·실패별 file:line 분류·선택과 한계는 [RESULT](D:/KMTech/program-improvement-20260912/work/Label_Match/w9labeltestaudit/RESULT.md)에 기록한다. 기존 GUI 5개 제외와 플랫폼 skip은 새 수용으로 계산하지 않는다.
+
 <a id="module-boundaries-lm3"></a>
 ## LM-3 · F3 완료와 화면 구성 경계
 

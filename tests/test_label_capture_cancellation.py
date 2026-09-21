@@ -201,7 +201,7 @@ def test_committed_exchange_intent_blocks_cancellation_inside_transaction(tmp_pa
         set_id="SET-F1", target_bundle_id="TRANSFER-LABEL-MEASURED",
         item_id="ITEM-LABEL-1", authority_scope_id=store.binding.authority_scope_id,
         operator="Cancellation test operator", old_seal_qr_payload="TEST-OLD-SEAL",
-        old_seal_fields={}, old_barcodes=["OLD-ONE"], new_barcodes=["NEW-ONE"],
+        old_seal_fields={"QT": 1}, old_barcodes=["OLD-ONE"], new_barcodes=["NEW-ONE"],
     )
     before = _row(db_path, captured.intent_id)
     with pytest.raises(DeferredIntentCaptureError, match="product exchange result"):

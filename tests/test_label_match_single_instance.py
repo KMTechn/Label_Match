@@ -128,6 +128,8 @@ def test_data_scope_fallback_matches_app_writer(
     settings = tmp_path / "app_settings.json"
     settings.write_text(json.dumps(settings_payload), encoding="utf-8")
     monkeypatch.setenv("ProgramData", str(tmp_path / "program-data"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(tmp_path / "direct-sync"))
     if with_override:
         expected = tmp_path / "env-data"
         monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(expected))
