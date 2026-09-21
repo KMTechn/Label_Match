@@ -12,6 +12,8 @@ writer 전환은 설치된 파일 집합을 기준으로 한다. 57f52e1의 shar
 
 별도의 `PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX` 전환은 `d0e504e`/`0cf5bf6`의 `app/current_user_onboarding.py` LF-normalized SHA256 쌍 `bfd59326…20a57f` → `02bcbd5b…a73ab7`에만 적용한다. 양쪽의 파생 writer pin·동일 membership/guard와 모든 나머지 파일·runtime·계약을 검증한다. 기존 설치본의 bootstrap 기록 검증이 전환 판정보다 먼저 실행되고 실패는 fence·snapshot·교체 전에 중단한다. 변경은 기존 v1의 읽기 검증뿐이므로 mutable data 변환·기존 record 재작성은 없으며, 후보 record 생성과 기존 코드/record 보존은 원래 placement transaction이 담당한다. 역방향은 지원하지 않고 실패 transaction의 검증된 preimage 복원은 유지한다.
 
+portable build는 clean source 확인 후 commit/tree를 고정하고 Git blob snapshot에서 저장소 파일을 복사한다. 소스의 줄바꿈·checkout filter가 산출물 bytes를 바꾸지 않으며 shared pin·import closure·zero-PE gate도 그 snapshot/산출물을 검사한다. 외부 CPython·고정 third-party와 명시 입력으로 생성하는 update-key config/manifest는 이 저장소 bytes 계약과 구분한다. bundled `assets/Item.csv`와 `config/app_settings.json`은 code tree 교체 대상이지만 사용자 catalog cache·설정·업무 data/queue는 별도 경로로 보존한다. 데이터 파일의 전이 예외나 일반 줄바꿈 정규화는 guard에 추가하지 않는다.
+
 0.3.1 reader는 원 parser의 배열 형태를 보존한다. PS5 `[manifest]`, 양 엔진의 중첩·빈 배열은 원본처럼 거부하고 PS7의 기존 singleton 수용을 유지한다. 0.3.0의 두 실패 원본과 0.3.1 회귀 결과는 [X13-B](operations.md#shared-powershell-x13b)에 연결한다.
 
 canonical/placement 설치기는 자체 bootstrap으로 source 또는 portable `app/` root와 상위 경로의 reparse를 거부하고, 고정 0.3.1 consumer pin → manifest bytes → PowerShell leaf SHA256 순서로 확인한 뒤 dot-source한다. bootstrap 무결성 helper는 `-SharedCodeRoot`를 받은 inventory 소비자에서만 shared를 초기화하며, 초기 native SHA는 module auto-loading 없이 동작한다. 신뢰 확인에 shared 함수나 준비 전 Python checker를 사용하지 않는다.

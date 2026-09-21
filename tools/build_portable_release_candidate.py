@@ -7,12 +7,14 @@ import argparse
 import ast
 import hashlib
 import importlib.metadata
+import io
 import json
 from pathlib import Path
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -457,105 +459,143 @@ def build(
     python_home = python_home.resolve()
     output = output.resolve()
     _assert_clean_source(repo_root)
-    shared_check = subprocess.run(
-        [sys.executable, "-I", "-B", str(repo_root / "qualification/check_kmtech_shared.py"),
-         "--check", "--root", str(repo_root)],
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    if shared_check.returncode != 0:
-        raise PortableBuildError("shared source pin check failed: " + shared_check.stderr)
-    if output.exists():
-        raise PortableBuildError(f"portable output already exists: {output}")
-    output.mkdir(parents=True)
-    _runtime_source(python_home, output / "runtime")
-    app_root = output / "app"
-    tool_sources = _copy_application(repo_root, app_root)
-    update_key_config_sha256 = _write_update_key_config(
-        app_root,
-        update_manifest_public_key_config,
-    )
-    site_packages = app_root / "site-packages"
-    site_packages.mkdir()
-    versions = _copy_third_party(site_packages)
-    shutil.copy2(
-        repo_root / "portable" / "launch-label-match.cmd",
-        output / "launch-label-match.cmd",
-    )
-    installer_source = repo_root / CANONICAL_INSTALLER_FILENAME
-    if not installer_source.is_file():
-        raise PortableBuildError(
-            f"canonical portable installer is missing: {installer_source}"
+    source_commit = _git_value(repo_root, "HEAD^{commit}")
+    source_tree = _git_value(repo_root, source_commit + "^{tree}")
+    # A clean checkout can still contain CRLF/smudge-filter bytes that differ
+    # from its commit. Package the attested commit, including data and scripts,
+    # so the strict installed-tree guard sees the same release on every host.
+    with tempfile.TemporaryDirectory(prefix="label-portable-source-") as temporary:
+        entries = subprocess.check_output(
+            ["git", "ls-tree", "-r", "-z", "--full-tree", source_commit],
+            cwd=repo_root, timeout=30,
+        ).split(b"\0")
+        files = []
+        for entry in filter(None, entries):
+            metadata, relative = entry.split(b"\t", 1)
+            mode, kind, object_id = metadata.split()
+            if kind != b"blob" or mode not in {b"100644", b"100755"}:
+                raise PortableBuildError("committed source must contain only regular files")
+            files.append((relative.decode("utf-8"), object_id))
+        # Unlike archive/checkout, cat-file never applies EOL or smudge filters.
+        blobs = subprocess.run(
+            ["git", "cat-file", "--batch"], cwd=repo_root,
+            input=b"".join(object_id + b"\n" for _, object_id in files),
+            capture_output=True, timeout=60, check=True,
         )
-    shutil.copy2(installer_source, output / CANONICAL_INSTALLER_FILENAME)
-    legacy_installer_source = repo_root / LEGACY_INSTALLER_FILENAME
-    if not legacy_installer_source.is_file():
-        raise PortableBuildError(
-            f"legacy compatibility installer is missing: {legacy_installer_source}"
+        repo_root = Path(temporary).resolve()
+        with io.BytesIO(blobs.stdout) as stream:
+            for relative, object_id in files:
+                header = stream.readline().split()
+                if len(header) != 3 or header[:2] != [object_id, b"blob"]:
+                    raise PortableBuildError("committed source blob readback differs")
+                size = int(header[2])
+                content = stream.read(size)
+                if len(content) != size or stream.read(1) != b"\n":
+                    raise PortableBuildError("committed source blob is incomplete")
+                target = (repo_root / relative).resolve()
+                if not target.is_relative_to(repo_root):
+                    raise PortableBuildError("committed source path escapes snapshot")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+        shared_check = subprocess.run(
+            [sys.executable, "-I", "-B", str(repo_root / "qualification/check_kmtech_shared.py"),
+             "--check", "--root", str(repo_root)],
+            capture_output=True, text=True, timeout=30, check=False,
         )
-    shutil.copy2(legacy_installer_source, output / LEGACY_INSTALLER_FILENAME)
-    bootstrap_helper_source = repo_root / BOOTSTRAP_INTEGRITY_HELPER
-    if not bootstrap_helper_source.is_file():
-        raise PortableBuildError(
-            f"bootstrap integrity helper is missing: {bootstrap_helper_source}"
+        if shared_check.returncode != 0:
+            raise PortableBuildError("shared source pin check failed: " + shared_check.stderr)
+        if output.exists():
+            raise PortableBuildError(f"portable output already exists: {output}")
+        output.mkdir(parents=True)
+        _runtime_source(python_home, output / "runtime")
+        app_root = output / "app"
+        tool_sources = _copy_application(repo_root, app_root)
+        update_key_config_sha256 = _write_update_key_config(
+            app_root,
+            update_manifest_public_key_config,
         )
-    bootstrap_helper_target = output / BOOTSTRAP_INTEGRITY_HELPER
-    bootstrap_helper_target.parent.mkdir()
-    shutil.copy2(bootstrap_helper_source, bootstrap_helper_target)
-    writer_fence_source = repo_root / WRITER_FENCE_HELPER
-    if not writer_fence_source.is_file():
-        raise PortableBuildError(
-            f"writer fence helper is missing: {writer_fence_source}"
+        site_packages = app_root / "site-packages"
+        site_packages.mkdir()
+        versions = _copy_third_party(site_packages)
+        shutil.copy2(
+            repo_root / "portable" / "launch-label-match.cmd",
+            output / "launch-label-match.cmd",
         )
-    writer_fence_target = output / WRITER_FENCE_HELPER
-    shutil.copy2(writer_fence_source, writer_fence_target)
-    writer_fence_contract_source = repo_root / WRITER_FENCE_CONTRACT
-    if not writer_fence_contract_source.is_file():
-        raise PortableBuildError(
-            f"writer fence contract is missing: {writer_fence_contract_source}"
+        installer_source = repo_root / CANONICAL_INSTALLER_FILENAME
+        if not installer_source.is_file():
+            raise PortableBuildError(
+                f"canonical portable installer is missing: {installer_source}"
+            )
+        shutil.copy2(installer_source, output / CANONICAL_INSTALLER_FILENAME)
+        legacy_installer_source = repo_root / LEGACY_INSTALLER_FILENAME
+        if not legacy_installer_source.is_file():
+            raise PortableBuildError(
+                f"legacy compatibility installer is missing: {legacy_installer_source}"
+            )
+        shutil.copy2(legacy_installer_source, output / LEGACY_INSTALLER_FILENAME)
+        bootstrap_helper_source = repo_root / BOOTSTRAP_INTEGRITY_HELPER
+        if not bootstrap_helper_source.is_file():
+            raise PortableBuildError(
+                f"bootstrap integrity helper is missing: {bootstrap_helper_source}"
+            )
+        bootstrap_helper_target = output / BOOTSTRAP_INTEGRITY_HELPER
+        bootstrap_helper_target.parent.mkdir()
+        shutil.copy2(bootstrap_helper_source, bootstrap_helper_target)
+        writer_fence_source = repo_root / WRITER_FENCE_HELPER
+        if not writer_fence_source.is_file():
+            raise PortableBuildError(
+                f"writer fence helper is missing: {writer_fence_source}"
+            )
+        writer_fence_target = output / WRITER_FENCE_HELPER
+        shutil.copy2(writer_fence_source, writer_fence_target)
+        writer_fence_contract_source = repo_root / WRITER_FENCE_CONTRACT
+        if not writer_fence_contract_source.is_file():
+            raise PortableBuildError(
+                f"writer fence contract is missing: {writer_fence_contract_source}"
+            )
+        shutil.copy2(
+            writer_fence_contract_source,
+            output / WRITER_FENCE_CONTRACT,
         )
-    shutil.copy2(
-        writer_fence_contract_source,
-        output / WRITER_FENCE_CONTRACT,
-    )
-    native = _app_native_inventory(app_root)
-    forbidden_roots = [
-        name
-        for name in ("PIL", "pygame", "charset_normalizer", "cryptography", "cffi")
-        if (site_packages / name).exists()
-    ]
-    if forbidden_roots:
-        raise PortableBuildError(
-            "forbidden package roots entered the portable tree: "
-            + ", ".join(forbidden_roots)
+        native = _app_native_inventory(app_root)
+        forbidden_roots = [
+            name
+            for name in ("PIL", "pygame", "charset_normalizer", "cryptography", "cffi")
+            if (site_packages / name).exists()
+        ]
+        if forbidden_roots:
+            raise PortableBuildError(
+                "forbidden package roots entered the portable tree: "
+                + ", ".join(forbidden_roots)
+            )
+        _assert_portable_import_closure(output, repo_root, tool_sources)
+        file_count, byte_count = _tree_metrics(output)
+        manifest = {
+            "schema": PORTABLE_SCHEMA,
+            "source_commit": source_commit,
+            "source_tree": source_tree,
+            "python_version": ".".join(str(value) for value in EXPECTED_PYTHON),
+            "python_home": str(python_home),
+            "runtime_python_sha256": _sha256(output / "runtime" / "python.exe"),
+            "runtime_pythonw_sha256": _sha256(output / "runtime" / "pythonw.exe"),
+            "entrypoint": "runtime/pythonw.exe app/main.py",
+            "launcher": "launch-label-match.cmd",
+            "launcher_sha256": _sha256(output / "launch-label-match.cmd"),
+            "canonical_installer": CANONICAL_INSTALLER_FILENAME,
+            "canonical_installer_sha256": _sha256(output / CANONICAL_INSTALLER_FILENAME),
+            "third_party_versions": versions,
+            "allowed_unsigned_app_pe": native,
+            "update_key_config_sha256": update_key_config_sha256,
+            "forbidden_package_roots": forbidden_roots,
+            "file_count_before_manifest": file_count,
+            "byte_count_before_manifest": byte_count,
+        }
+        (output / "portable-manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
-    _assert_portable_import_closure(output, repo_root, tool_sources)
-    file_count, byte_count = _tree_metrics(output)
-    manifest = {
-        "schema": PORTABLE_SCHEMA,
-        "source_commit": _git_value(repo_root, "HEAD^{commit}"),
-        "source_tree": _git_value(repo_root, "HEAD^{tree}"),
-        "python_version": ".".join(str(value) for value in EXPECTED_PYTHON),
-        "python_home": str(python_home),
-        "runtime_python_sha256": _sha256(output / "runtime" / "python.exe"),
-        "runtime_pythonw_sha256": _sha256(output / "runtime" / "pythonw.exe"),
-        "entrypoint": "runtime/pythonw.exe app/main.py",
-        "launcher": "launch-label-match.cmd",
-        "launcher_sha256": _sha256(output / "launch-label-match.cmd"),
-        "canonical_installer": CANONICAL_INSTALLER_FILENAME,
-        "canonical_installer_sha256": _sha256(output / CANONICAL_INSTALLER_FILENAME),
-        "third_party_versions": versions,
-        "allowed_unsigned_app_pe": native,
-        "update_key_config_sha256": update_key_config_sha256,
-        "forbidden_package_roots": forbidden_roots,
-        "file_count_before_manifest": file_count,
-        "byte_count_before_manifest": byte_count,
-    }
-    (output / "portable-manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    return manifest
+        return manifest
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:

@@ -260,7 +260,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 ## LM-B07 · 백업·복원·재설치·롤백·보존 정책 수용
 
 - 재시작 무결성 순서 오탐: `w9labelintegrityorder`에서 `d0e504e`의 ordinal/casefold 불일치와 기존 v1 기록 호환을 교정한다. 파일 무결성·receipt 검사는 보존하며 capture6의 수정 후보 재설치·동일 사용자 재시작은 [운영 절차](operations.md#bootstrap-integrity-order)에 따른 미검증 항목이다.
-- writer 업그레이드: `w9labelwriterupgrade`는 정확한 `d0e504e` → `0cf5bf6` onboarding hash 쌍을 지원하고 기존 guard·원본 보존·실패 복원을 유지한다. 새 installer 후보로 capture7의 실제 guest 설치·동일 사용자 2회 재시작·보존 상태 수용이 남는다([절차](operations.md#bootstrap-integrity-writer-transition)).
+- writer 업그레이드: 실제 onboarding 의미 변경의 directional pin은 유지한다. capture8의 `aa4d59b` 설치 거부는 checkout CRLF가 bundled CSV/설정에 들어간 빌드 결함이며 `w9labelwriterupgrade2`는 committed snapshot 패키징으로 교정한다. host 회귀는 실제 LF `d0e504e` stock 설치본에서 canonical 교체·2회 headless 무결성 readback·사용자 상태/구 record 보존을 검사한다. 새 stock 후보의 guest 설치·동일 사용자 GUI 2회 재시작 수용은 capture8 소유다([절차](operations.md#bootstrap-integrity-writer-transition)).
 
 - 유형/우선: **운영 요구·검증 공백 · P1**. 코드 교체/제거 뒤 identity·미전송 업무·검토 증거를 잃으면 중복 효과 또는 복구 불가 위험이 있다.
 - 근거: [운영 복구·설치](operations.md#recovery), [릴리스 계약](../../RELEASE_GATE_CONTRACT.md), [spool 보존 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md). ACKED retention report/candidate는 자동 삭제 권한이 아니다.

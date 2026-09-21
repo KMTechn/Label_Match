@@ -14,6 +14,8 @@ F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completi
 
 `d0e504e` → `0cf5bf6`의 onboarding 변경은 `w9labelwriterupgrade` installer의 정확한 전/후 module pin 쌍으로 지원한다. 설치본 무결성·writer membership·나머지 코드 검사는 유지하며, 데이터 변환 없이 기존 교체/실패 복원 절차를 사용한다([업그레이드·롤백](operations.md#bootstrap-integrity-writer-transition)).
 
+stock portable 빌더는 clean checkout의 파일 표현 대신 고정한 Git commit의 격리 snapshot을 패키징한다. `Item.csv`·설정 template을 포함한 저장소 입력은 commit bytes를 보존하며 CRLF 차이를 writer guard 예외로 허용하지 않는다([빌드·실제 이전 설치본 회귀](operations.md#bootstrap-integrity-writer-transition)).
+
 57f52e1 설치본에서 X13-B로의 교체는 선언된 shared leaf 추가와 여섯 release 파일의 전/후 pin이 모두 일치할 때 지원한다. 그 외 파일 집합·writer 멤버십·runtime·계약 검사는 유지한다.
 
 0.3.1의 배열 manifest 회귀는 PS5/PS7 원본의 수용·거부 형태를 보존한다([현재 검증·한계](operations.md#shared-powershell-x13b)).
