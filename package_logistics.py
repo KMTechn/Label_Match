@@ -330,7 +330,12 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             action TEXT NOT NULL,
             manager_id TEXT NOT NULL,
             observed TEXT NOT NULL,
-            recorded_at TEXT NOT NULL
+            recorded_at TEXT NOT NULL,
+            operation_key TEXT NOT NULL DEFAULT '',
+            verification_id TEXT NOT NULL DEFAULT '',
+            pin_action TEXT NOT NULL DEFAULT '',
+            operator_id TEXT NOT NULL DEFAULT '',
+            operator_name TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS phs_label_workbench_holds (
             hold_id TEXT PRIMARY KEY,
@@ -429,6 +434,16 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
         for row in conn.execute("PRAGMA table_info(package_command_outbox)").fetchall()
     }
+    audit_columns = {str(row[1]) for row in conn.execute(
+        "PRAGMA table_info(package_workbench_hold_audit)"
+    )}
+    for name in ("operation_key", "verification_id", "pin_action", "operator_id", "operator_name"):
+        if name not in audit_columns:
+            conn.execute(
+                f"ALTER TABLE package_workbench_hold_audit ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+            )
+    conn.execute("""CREATE INDEX IF NOT EXISTS ix_package_workbench_pin_operation
+        ON package_workbench_hold_audit(operation_key)""")
     if "retry_after_at" not in command_columns:
         conn.execute(
             "ALTER TABLE package_command_outbox ADD COLUMN retry_after_at TEXT"

@@ -75,6 +75,11 @@ from label_match_product_host import (
 from writer_session_fence import writer_sink
 from label_data_manager import DataManager as _DataManager, read_recovery_file
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
+from label_admin_pin import (
+    AdminPinClient, AdminPinError, AdminPinIntentStore,
+    active_pin_operation, fingerprint as admin_pin_fingerprint,
+    operator_message as admin_pin_message, operator_local_id,
+)
 from label_safe_path import (describe_entry, quarantine_entry, read_checked_bytes,
                              replace_checked, unlink_checked, write_checked_bytes)
 
@@ -4580,6 +4585,7 @@ class Label_Match(tk.Tk):
         self.worker_name = str(
             self.app_settings.get("worker_name", self.Worker.PACKAGING)
         ).strip() or self.Worker.PACKAGING
+        self._admin_pin_login_epoch = uuid.uuid4().hex
         self.worker_role = "PACKAGING"
         self._authenticated_protected_admin = False
         self.data_manager = DataManager(
@@ -4591,6 +4597,9 @@ class Label_Match(tk.Tk):
         )
         package_outbox_path = os.path.join(self.save_directory, "package_logistics_outbox.sqlite3")
         self.package_outbox = PackageOutbox(package_outbox_path)
+        self._admin_pin_store = AdminPinIntentStore(
+            os.path.join(self.save_directory, "label_admin_pin_intents.sqlite3")
+        )
         self.package_cancellation_outbox = PackageCancellationOutbox(package_outbox_path)
         self.package_operation_lease_store = OperationLeaseStore(
             package_outbox_path
@@ -7450,6 +7459,25 @@ class Label_Match(tk.Tk):
                                 "current": None, "package": None, "exchange": None,
                                 "held": outbox.get_workbench_hold(set_id),
                                 "unverified": evidence["reason"]}
+        store = self.__dict__.get("_admin_pin_store")
+        for intent in store.list_pending() if store is not None else ():
+            if intent["action"] == "LABEL.F5_HOLD":
+                intent_set_id = "F5:" + intent["target_id"]
+            elif intent["action"] == "LABEL.PHS_LOOKUP":
+                intent_set_id = intent["target_id"]
+            else:
+                intent_set_id = intent["target_id"]
+            row = rows.setdefault(intent_set_id, {
+                "set_id": intent_set_id, "current": None, "package": None,
+                "exchange": None, "held": None,
+            })
+            row.setdefault("pin_intents", []).append(intent)
+            row["pin_intent"] = row["pin_intents"][0]
+        for intent in store.list_handed_off_unknown() if store is not None else ():
+            original_id = ("F5:" + intent["target_id"] if intent["action"] == "LABEL.F5_HOLD"
+                           else intent["target_id"])
+            if original_id in rows:
+                rows[original_id]["prior_pin_unknown"] = True
         return list(rows.values())
 
     def _active_label_recovery_state(self):
@@ -7480,6 +7508,19 @@ class Label_Match(tk.Tk):
             pass
         try:
             held = lookup(source, label_id, input_tag_id)
+            if not held:
+                for unresolved in outbox.list_label_exchange_holds():
+                    if unresolved.get("held_by") != "SYSTEM_PIN_UNVERIFIED":
+                        continue
+                    try:
+                        saved = json.loads(bytes(unresolved["journal_bytes"]).decode("utf-8"))["state"]
+                        claimed = str(saved.get("scan_payload") or "")
+                        claimed_tag = _label_match_parse_compact_phs2(claimed)["ITG"]
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if source == claimed or (input_tag_id and input_tag_id == claimed_tag):
+                        held = unresolved
+                        break
         except Exception as exc:
             print(f"현품표 교환 보류 조회 기술 진단: {exc}")
             self._show_package_recovery_block(
@@ -7493,7 +7534,7 @@ class Label_Match(tk.Tk):
             return True
         return False
 
-    def _finalize_label_recovery_holds(self):
+    def _finalize_label_recovery_holds(self, *, only_hold_id=None):
         outbox = self.__dict__.get("package_outbox")
         coordinator = self.__dict__.get("phs_label_exchange_coordinator")
         listing = getattr(outbox, "list_label_exchange_holds", None)
@@ -7511,6 +7552,8 @@ class Label_Match(tk.Tk):
             return False
         for hold in holds:
             hold_id = str(hold.get("hold_id") or "")
+            if only_hold_id is not None and hold_id != only_hold_id:
+                continue
             try:
                 raw = bytes(hold["journal_bytes"])
                 if hashlib.sha256(raw).hexdigest() != hold["journal_sha256"]:
@@ -7749,23 +7792,581 @@ class Label_Match(tk.Tk):
             )
 
     def _package_recovery_manager(self, code=None):
-        if code is None and not self.run_tests:
-            try:
-                code = simpledialog.askstring(
-                    "관리자 확인", "보호 관리자 코드를 입력하세요.", show="*", parent=self
+        # Recovery writers require a scoped PIN operation or explicit system
+        # quarantine. A legacy code is never an authorization or identity.
+        operation = active_pin_operation.get()
+        return operation[5] if operation else ""
+
+    def _prompt_package_admin_pin(self):
+        """One masked dialog shared by every administrator recovery action."""
+        if self.run_tests:
+            return None
+        window = tk.Toplevel(self)
+        window.title("관리자 본인 확인")
+        window.transient(self)
+        window.grab_set()
+        frame = ttk.Frame(window, padding=14)
+        frame.pack(fill="both", expand=True)
+        admin_id = tk.StringVar()
+        pin = tk.StringVar()
+        ttk.Label(frame, text="관리자 ID").grid(row=0, column=0, sticky="w", pady=4)
+        id_entry = ttk.Entry(frame, textvariable=admin_id, width=24)
+        id_entry.grid(row=0, column=1, pady=4)
+        ttk.Label(frame, text="6자리 PIN").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=pin, show="*", width=24).grid(row=1, column=1, pady=4)
+        result = []
+
+        def accept():
+            result.append((admin_id.get().strip(), pin.get()))
+            pin.set("")
+            window.destroy()
+
+        ttk.Button(frame, text="확인", command=accept).grid(row=2, column=1, sticky="e", pady=8)
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        id_entry.focus_set()
+        self.wait_window(window)
+        return result[0] if result else None
+
+    def _package_pin_operator(self):
+        local_id = str(self.worker_name or "").strip()
+        if not local_id:
+            raise AdminPinError("OPERATOR_MISSING")
+        epoch = self.__dict__.get("_admin_pin_login_epoch")
+        if not epoch:
+            epoch = uuid.uuid4().hex
+            self._admin_pin_login_epoch = epoch
+        return {"local_id": operator_local_id(local_id), "login_epoch": epoch}
+
+    def _package_pin_client(self):
+        client = self.__dict__.get("_admin_pin_client")
+        if client is None:
+            paths = resolve_current_user_onboarding_paths(
+                _label_match_runtime_app_root()
+            )
+            client = AdminPinClient.from_credential_path(
+                paths.credential_path,
+                tls_ca_bundle_path=_label_match_client_tls_ca_bundle_path(
+                    self.__dict__.get("package_logistics_client")
+                ),
+            )
+            self._admin_pin_client = client
+        return client
+
+    def _package_pin_target(self, action, set_id, physical_qr=""):
+        """Read the original local evidence before issue and again before write."""
+        set_id = str(set_id)
+        candidate = next((item for item in self._package_recovery_candidates()
+                          if item["set_id"] == set_id), None)
+        if candidate is None:
+            raise AdminPinError("TARGET_CHANGED")
+        if action != "LABEL.SUPPORT_HANDOFF" and not any(candidate.get(name) for name in (
+            "current", "current_file", "package", "exchange", "held", "label",
+        )):
+            raise AdminPinError("TARGET_CHANGED")
+        outbox = self.package_outbox
+        details = {"set_id": set_id, "action": action}
+        if set_id.startswith("F5:"):
+            hold_id = set_id[3:]
+            held = outbox.get_label_exchange_hold(hold_id)
+            details["journal_sha256"] = str((held or {}).get("journal_sha256") or "")
+            details["exchange_key"] = ""
+            if held:
+                try:
+                    state = json.loads(bytes(held["journal_bytes"]).decode("utf-8"))["state"]
+                    details["exchange_key"] = str(state.get("prepare_idempotency_key") or "")
+                except (ValueError, KeyError, TypeError):
+                    pass
+            else:
+                coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+                if coordinator is not None:
+                    evidence = self._read_package_recovery_file(coordinator.journal.path, journal=True)
+                    details["journal_sha256"] = evidence["sha256"]
+                    state = evidence["value"] if evidence["verified"] else {}
+                    details["exchange_key"] = str(state.get("prepare_idempotency_key") or "")
+            entry_hold = outbox.get_workbench_hold(set_id)
+            if entry_hold:
+                details["hold_sha256"] = hashlib.sha256(
+                    entry_hold["snapshot_json"].encode("utf-8")
+                ).hexdigest()
+            target_id = hold_id
+            kind = "label_f5_recovery"
+        else:
+            package = outbox.get_by_set_id(set_id) or {}
+            held = outbox.get_workbench_hold(set_id) or {}
+            details.update({
+                "package_key": str(package.get("idempotency_key") or ""),
+                "package_phase": str(package.get("status") or ""),
+                "package_command_sha256": hashlib.sha256(
+                    str(package.get("command_json") or "").encode("utf-8")
+                ).hexdigest(),
+                "package_draft_sha256": hashlib.sha256(
+                    str(package.get("draft_json") or "").encode("utf-8")
+                ).hexdigest(),
+                "hold_sha256": hashlib.sha256(
+                    str(held.get("snapshot_json") or "").encode("utf-8")
+                ).hexdigest(),
+            })
+            exchange = dict(candidate.get("exchange") or {})
+            details["exchange_phase"] = str(exchange.get("status") or "")
+            details["exchange_command_sha256"] = hashlib.sha256(
+                str(exchange.get("command_json") or "").encode("utf-8")
+            ).hexdigest()
+            current_file = candidate.get("current_file")
+            if current_file:
+                details["current_file_sha256"] = self._read_package_recovery_file(
+                    current_file
+                )["sha256"]
+            elif candidate.get("current"):
+                details["current_sha256"] = admin_pin_fingerprint(candidate["current"])
+            target_id, kind = set_id, "label_set_recovery"
+        if physical_qr:
+            fields = _label_match_parse_compact_phs2(physical_qr)
+            details["physical_sha256"] = hashlib.sha256(
+                physical_qr.encode("utf-8")
+            ).hexdigest()
+            details["input_tag_id"] = fields["ITG"]
+            target_id = set_id
+            if action == "LABEL.PHS_LOOKUP":
+                if set_id.startswith("F5:"):
+                    held = outbox.get_label_exchange_hold(set_id[3:])
+                    if held is None:
+                        raise AdminPinError("TARGET_CHANGED")
+                    state = json.loads(bytes(held["journal_bytes"]).decode("utf-8"))["state"]
+                    scope = str(state.get("authority_scope_id") or "")
+                    exchange_id = str(state.get("exchange_id") or "")
+                    client = self.phs_label_exchange_coordinator.client
+                    if not scope or not exchange_id:
+                        raise AdminPinError("TARGET_CHANGED")
+                    projection = client.resolve_active_phs_label(
+                        fields["ITG"], authority_scope_id=scope
+                    )
+                    exchange = client.get_phs_label_exchange(
+                        exchange_id, authority_scope_id=scope
+                    )
+                    details["central_projection_sha256"] = admin_pin_fingerprint(projection)
+                    details["central_exchange_sha256"] = admin_pin_fingerprint(exchange)
+                    details["authority_scope_id"] = scope
+                else:
+                    if not outbox.get_workbench_hold(set_id):
+                        raise AdminPinError("TARGET_CHANGED")
+                    _evidence, snapshot, _sealed, _lease = self._resolve_central_phs2_scan_overlay(
+                        physical_qr, fields["CLC"], force_central_read=True
+                    )
+                    details["central_snapshot_sha256"] = admin_pin_fingerprint(snapshot)
+        closing = self.__dict__.get("_admin_pin_closing_intent")
+        if action == "LABEL.SUPPORT_HANDOFF" and closing:
+            details["closed_operation_key"] = closing["operation_key"]
+            details["closed_target_fingerprint"] = closing["target_fingerprint"]
+            details["closed_source_evidence_sha256"] = closing["source_evidence_sha256"]
+            target_id, kind = set_id, "label_pin_handoff"
+        source_sha = admin_pin_fingerprint(details)
+        return {"kind": kind, "id": target_id,
+                "state_fingerprint": source_sha}, source_sha
+
+    def _package_pin_effect(self, intent):
+        rows = self.package_outbox.pin_effect_rows(intent["operation_key"])
+        rows = [row for row in rows if row["verification_id"] == intent["verification_id"]
+                and row["pin_action"] == intent["action"]
+                and row["operator_id"] == intent["operator_id"]]
+        action = intent["action"]
+        set_id = intent["target_id"]
+        if action == "LABEL.F5_HOLD":
+            hold_id = intent["target_id"]
+            held = self.package_outbox.get_label_exchange_hold(hold_id)
+            if held:
+                archive = Path(held["archive_path"])
+                raw = bytes(held["journal_bytes"])
+                complete = (hashlib.sha256(raw).hexdigest() == held["journal_sha256"]
+                            and not self.phs_label_exchange_coordinator.journal.path.exists()
+                            and self._read_package_recovery_file(
+                                archive, journal=True, expected_bytes=raw
+                            )["verified"])
+                if held["set_id"] and not self.package_outbox.get_workbench_hold(held["set_id"]):
+                    complete = False
+                return complete and any(row["action"] in {"HOLD_LABEL", "PIN_REVIEW_HOLD"} for row in rows)
+            entry = self.package_outbox.get_workbench_hold("F5:" + hold_id)
+            if entry:
+                try:
+                    snapshot = json.loads(entry["snapshot_json"])
+                    archive = Path(snapshot["archive_path"])
+                    complete = (snapshot.get("status") == "UNVERIFIED_ENTRY"
+                                and describe_entry(
+                                    archive, allowed_root=self.phs_label_exchange_coordinator.journal.path.parent
+                                ) == snapshot["entry"]
+                                and not os.path.lexists(self.phs_label_exchange_coordinator.journal.path))
+                except Exception:
+                    complete = False
+                return complete and any(row["action"] in {"HOLD", "PIN_REVIEW_HOLD"} for row in rows)
+            return False
+        if action == "LABEL.SET_HOLD":
+            held = self.package_outbox.get_workbench_hold(set_id)
+            if not held:
+                return False
+            active = (str((self.__dict__.get("current_set_info") or {}).get("id") or "") == set_id
+                      or (set_id.startswith("CURRENT:") and
+                          os.path.lexists(self._package_current_state_path() or "")))
+            if set_id.startswith("CURRENT:"):
+                try:
+                    snapshot = json.loads(held["snapshot_json"])
+                    archive = Path(snapshot["archive_path"])
+                    root = Path(self.data_manager.save_directory)
+                    if snapshot.get("status") == "UNVERIFIED_ENTRY":
+                        active = active or (describe_entry(archive, allowed_root=root)
+                                            != snapshot["entry"])
+                    else:
+                        raw = base64.b64decode(snapshot["raw_base64"], validate=True)
+                        active = active or (self._read_package_recovery_file(archive)["raw"] != raw)
+                except Exception:
+                    active = True
+            return not active and any(row["action"] in {"HOLD", "PIN_REVIEW_HOLD"} for row in rows)
+        effects = {
+            "LABEL.RECHECK": {"RECHECK"},
+            "LABEL.PHS_LOOKUP": {"SCAN_PHYSICAL", "BIND_LABEL_SOURCE", "BIND_SOURCE"},
+            "LABEL.SUPPORT_HANDOFF": {"HANDOFF"},
+        }
+        return any(row["action"] in effects.get(action, ())
+                   and row["observed"] != "CENTRAL_MATCH_ATTEMPT" for row in rows)
+
+    def _package_pin_apply(self, action, set_id, physical_qr=""):
+        if action == "LABEL.F5_HOLD":
+            hold_id = str(set_id)[3:]
+            held = self.package_outbox.get_label_exchange_hold(hold_id)
+            entry = self.package_outbox.get_workbench_hold(set_id)
+            if held or entry:
+                if held:
+                    if not self._finalize_label_recovery_holds(only_hold_id=hold_id):
+                        raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+                    raw = bytes(held["journal_bytes"])
+                    if (hashlib.sha256(raw).hexdigest() != held["journal_sha256"]
+                            or not self._read_package_recovery_file(
+                                held["archive_path"], journal=True, expected_bytes=raw
+                            )["verified"]):
+                        raise AdminPinError("TARGET_CHANGED")
+                    linked = str(held.get("set_id") or "")
+                    if linked and not self.package_outbox.get_workbench_hold(linked):
+                        if not self._hold_package_recovery_set(linked):
+                            raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+                self._audit_package_recovery_action(
+                    set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
                 )
-            except Exception as exc:
-                print(f"포장 복구 관리자 인증 기술 진단: {exc}")
-                return ""
-        # The recovery dialog authenticates its own action.  Changing the
-        # operator in Settings is impossible while a broken set is active.
+                return True
+            return self._hold_label_recovery(hold_id)
+        if action == "LABEL.SET_HOLD":
+            held = self.package_outbox.get_workbench_hold(set_id)
+            active = (str((self.__dict__.get("current_set_info") or {}).get("id") or "") == set_id
+                      or (set_id.startswith("CURRENT:") and
+                          os.path.lexists(self._package_current_state_path() or "")))
+            if held and not active:
+                self._audit_package_recovery_action(
+                    set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                )
+                return True
+            return self._hold_package_recovery_set(set_id)
+        if action == "LABEL.RECHECK":
+            return self._recheck_package_recovery_set(set_id)
+        if action == "LABEL.PHS_LOOKUP":
+            return self._recheck_package_recovery_physical(set_id, physical_qr)
+        if action == "LABEL.SUPPORT_HANDOFF":
+            closing = self.__dict__.get("_admin_pin_closing_intent")
+            observed = (json.dumps({
+                "result": "UNKNOWN:NO_KEYED_LEDGER_EFFECT",
+                "original_operation_key": closing["operation_key"],
+                "target_fingerprint": closing["target_fingerprint"],
+                "source_evidence_sha256": closing["source_evidence_sha256"],
+            }, ensure_ascii=False, sort_keys=True) if closing else "UNRESOLVED")
+            self._audit_package_recovery_action(
+                set_id, "HANDOFF", self._package_recovery_manager(), observed
+            )
+            return ("적용 여부 UNKNOWN으로 지원 인계를 기록했습니다. 원본 근거가 돌아오면 새 관리자 확인으로 처리하세요."
+                    if closing else
+                    "지원 담당자에게 이 항목의 ID와 원 요청 키, 실물 분리 보관 상태를 인계하세요.")
+        raise AdminPinError("ACTION_INVALID")
+
+    def _package_pin_unresolved_intent(self, set_id):
+        """Find an intent whose original target is gone or no longer matches."""
+        candidate = next((item for item in self._package_recovery_candidates()
+                          if item["set_id"] == set_id), None)
+        if not candidate:
+            return None
+        for intent in candidate.get("pin_intents", ()):
+            if intent["action"] == "LABEL.SUPPORT_HANDOFF":
+                continue
+            if not any(candidate.get(name) for name in (
+                "current", "current_file", "package", "exchange", "held", "label",
+            )):
+                return intent
+            try:
+                current, _ = self._package_pin_target(intent["action"], set_id)
+            except Exception:
+                return intent
+            if (current["id"] != intent["target_id"]
+                    or current["state_fingerprint"] != intent["target_fingerprint"]):
+                return intent
+            try:
+                operator = self._package_pin_operator()
+            except AdminPinError:
+                return intent
+            if operator != {"local_id": intent["operator_id"],
+                            "login_epoch": intent["login_epoch"]}:
+                return intent
+        return None
+
+    def _prepare_missing_pin_handoff(self, set_id):
+        """Require status and keyed effect readback before unknown closure."""
+        pending = self._package_pin_unresolved_intent(set_id)
+        if pending is None:
+            return None
+        key = pending["operation_key"]
+        if not pending["verification_id"]:
+            return admin_pin_message("VERIFY_UNAVAILABLE")
         try:
-            if not is_protected_admin_code(code):
-                return ""
-            return _current_user_sid()
-        except Exception as exc:
-            print(f"포장 복구 관리자 인증 기술 진단: {exc}")
-            return ""
+            status = self._package_pin_client().status(pending["verification_id"], key)
+        except AdminPinError as exc:
+            return admin_pin_message(exc.code)
+        if self._package_pin_effect(pending):
+            self._admin_pin_store.transition(key, "APPLIED")
+            return "같은 요청의 적용 효과를 확인했습니다. 지원 인계는 필요하지 않습니다."
+        if self.package_outbox.pin_handoff_for(key):
+            for handoff in self._admin_pin_store.list_pending():
+                if (handoff["action"] != "LABEL.SUPPORT_HANDOFF"
+                        or handoff["target_kind"] != "label_pin_handoff"
+                        or handoff["target_id"] != set_id):
+                    continue
+                try:
+                    handoff_status = self._package_pin_client().status(
+                        handoff["verification_id"], handoff["operation_key"]
+                    )
+                except AdminPinError as exc:
+                    return admin_pin_message(exc.code)
+                if handoff_status != "CONSUMED" or not self._package_pin_effect(handoff):
+                    return admin_pin_message("VERIFY_UNAVAILABLE")
+                self._admin_pin_store.transition(handoff["operation_key"], "APPLIED")
+            self._admin_pin_store.transition(key, "HANDED_OFF_UNKNOWN",
+                                             error_code="NO_KEYED_LEDGER_EFFECT")
+            return "이 요청의 UNKNOWN 지원 인계를 확인했습니다."
+        if status != "CONSUMED":
+            self._admin_pin_store.transition(key, "SUPERSEDED", error_code=status)
+            return "서버가 사용되지 않은 관리자 확인을 확인했습니다. 이 요청을 닫았습니다."
+        self._admin_pin_closing_intent = pending
+        return None
+
+    def _reconcile_package_pin_intent(self, pending, set_id, physical_qr=""):
+        """Status, keyed effect readback, then original target comparison."""
+        store = self._admin_pin_store
+        key = pending["operation_key"]
+        if not pending["verification_id"]:
+            # An unverified quarantine never consumed a proof. The old record
+            # remains as evidence; a fresh PIN attempt gets a fresh key.
+            store.transition(key, "SUPERSEDED", error_code="FRESH_CONFIRMATION")
+            return None
+        try:
+            status = self._package_pin_client().status(pending["verification_id"], key)
+        except AdminPinError as exc:
+            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code=exc.code)
+            return admin_pin_message(exc.code)
+        if self._package_pin_effect(pending):
+            store.transition(key, "APPLIED")
+            return "같은 관리자 요청의 로컬 효과를 확인했습니다."
+        if status in {"UNUSED", "EXPIRED"}:
+            store.transition(key, "SUPERSEDED", error_code=status)
+            return None
+        try:
+            target, _source_sha = self._package_pin_target(
+                pending["action"], set_id, physical_qr
+            )
+            operator = self._package_pin_operator()
+        except Exception:
+            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="TARGET_UNAVAILABLE")
+            return admin_pin_message("TARGET_CHANGED")
+        if (target["state_fingerprint"] != pending["target_fingerprint"]
+                or target["id"] != pending["target_id"]
+                or operator != {"local_id": pending["operator_id"],
+                                "login_epoch": pending["login_epoch"]}):
+            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="TARGET_CHANGED")
+            return admin_pin_message("TARGET_CHANGED")
+        try:
+            token = active_pin_operation.set((
+                key, pending["verification_id"], pending["action"],
+                pending["target_id"], pending["operator_id"], pending["admin_id"],
+                str(self.worker_name).strip(),
+            ))
+            try:
+                result = self._package_pin_apply(pending["action"], set_id, physical_qr)
+            finally:
+                active_pin_operation.reset(token)
+            if self._package_pin_effect(pending):
+                store.transition(key, "APPLIED")
+                return result
+            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="EFFECT_UNVERIFIED")
+        except Exception:
+            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="EFFECT_UNVERIFIED")
+        return admin_pin_message("VERIFY_UNAVAILABLE")
+
+    def _run_package_pin_action(self, action, set_id, physical_qr=""):
+        """Authorize one selected recovery item without blocking other items."""
+        store = self._admin_pin_store
+        self.__dict__.pop("_admin_pin_closing_intent", None)
+        if action == "LABEL.SUPPORT_HANDOFF":
+            decision = self._prepare_missing_pin_handoff(set_id)
+            if decision is not None:
+                self._admin_pin_last_message = decision
+                return decision
+        closing = self.__dict__.get("_admin_pin_closing_intent")
+        kind = ("label_pin_handoff" if closing else
+                "label_f5_recovery" if str(set_id).startswith("F5:") else "label_set_recovery")
+        target_id = str(set_id)[3:] if action == "LABEL.F5_HOLD" else str(set_id)
+        pending = store.pending(kind, target_id)
+        if pending:
+            if pending["action"] != action:
+                self._admin_pin_last_message = "이 항목의 앞선 관리자 요청을 먼저 다시 확인하세요."
+                return False
+            result = self._reconcile_package_pin_intent(pending, set_id, physical_qr)
+            if result is not None:
+                self._admin_pin_last_message = str(result)
+                return result
+        try:
+            target, source_sha = self._package_pin_target(action, set_id, physical_qr)
+            operator = self._package_pin_operator()
+        except Exception:
+            self._admin_pin_last_message = admin_pin_message("TARGET_CHANGED")
+            return False
+        credentials = self._prompt_package_admin_pin()
+        if credentials is None:
+            return False
+        admin_id, pin = credentials
+        if not admin_id or not (len(pin) == 6 and pin.isascii() and pin.isdecimal()):
+            self._admin_pin_last_message = admin_pin_message("PIN_INVALID")
+            return False
+        request_id = str(uuid.uuid4())
+        verification_id = ""
+        operation_key = ""
+        try:
+            issued = self._package_pin_client().verify(
+                request_id=request_id, admin_id=admin_id, pin=pin,
+                action=action, target=target, operator=operator,
+            )
+            verification_id = issued["verification_id"]
+            operation_key = str(uuid.uuid4())
+            store.prepare(
+                operation_key=operation_key, verification_id=verification_id,
+                action=action, target=target, operator=operator, admin_id=admin_id,
+                source_evidence_sha256=source_sha,
+            )
+            self.package_outbox.audit_pin_attempt(
+                set_id=set_id, pin_action=action, admin_id=admin_id,
+                operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
+                verification_id=verification_id,
+                operation_key=operation_key, result="PREPARED",
+            )
+            self._package_pin_client().redeem(
+                verification_id=verification_id, proof=issued["proof"],
+                operation_key=operation_key, action=action, target=target,
+                operator=operator,
+            )
+            new_target, _ = self._package_pin_target(action, set_id, physical_qr)
+            if (new_target != target or self._package_pin_operator() != operator):
+                raise AdminPinError("TARGET_CHANGED")
+            store.transition(operation_key, "AUTHORIZED")
+            self.package_outbox.audit_pin_attempt(
+                set_id=set_id, pin_action=action, admin_id=admin_id,
+                operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
+                verification_id=verification_id,
+                operation_key=operation_key, result="AUTHORIZED",
+            )
+            token = active_pin_operation.set((
+                operation_key, verification_id, action, target["id"],
+                operator["local_id"], admin_id, str(self.worker_name).strip(),
+            ))
+            try:
+                result = self._package_pin_apply(action, set_id, physical_qr)
+            finally:
+                active_pin_operation.reset(token)
+            intent = store.pending(target["kind"], target["id"])
+            if intent and self._package_pin_effect(intent):
+                store.transition(operation_key, "APPLIED")
+                if closing:
+                    store.transition(closing["operation_key"], "HANDED_OFF_UNKNOWN",
+                                     error_code="NO_KEYED_LEDGER_EFFECT")
+                self._admin_pin_last_message = str(result)
+                return result
+            raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+        except AdminPinError as exc:
+            code = exc.code
+        except Exception:
+            code = "VERIFY_UNAVAILABLE"
+        if operation_key:
+            try:
+                store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
+            except Exception:
+                code = "AUDIT_UNAVAILABLE"
+        elif code == "VERIFY_UNAVAILABLE":
+            # No proof was issued. Persist the failed item's target before an
+            # explicit operator choice can quarantine it.
+            try:
+                operation_key = str(uuid.uuid4())
+                store.prepare(
+                    operation_key=operation_key, verification_id="", action=action,
+                    target=target, operator=operator, admin_id=admin_id,
+                    source_evidence_sha256=source_sha,
+                )
+                store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
+            except Exception:
+                code = "AUDIT_UNAVAILABLE"
+        try:
+            self.package_outbox.audit_pin_attempt(
+                set_id=set_id, pin_action=action, admin_id=admin_id,
+                operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
+                verification_id=verification_id,
+                operation_key=operation_key, result=code,
+            )
+        except Exception:
+            code = "AUDIT_UNAVAILABLE"
+        self._admin_pin_last_message = admin_pin_message(code)
+        return False
+
+    def _park_unverified_pin_item(self, set_id):
+        """Explicitly quarantine one item when PIN verification is unavailable."""
+        action = "LABEL.F5_HOLD" if str(set_id).startswith("F5:") else "LABEL.SET_HOLD"
+        try:
+            target, _ = self._package_pin_target(action, set_id)
+            pending = self._admin_pin_store.pending(target["kind"], target["id"])
+            if (pending is None or pending["action"] != action
+                    or pending["error_code"] != "VERIFY_UNAVAILABLE"
+                    or pending["target_fingerprint"] != target["state_fingerprint"]):
+                raise AdminPinError("TARGET_CHANGED")
+            # The audit is durable before a single existing hold writer moves
+            # the original evidence. No approval or business completion occurs.
+            self.package_outbox.audit_pin_attempt(
+                set_id=set_id, pin_action=action, admin_id=pending["admin_id"],
+                operator_id=pending["operator_id"], operator_name=str(self.worker_name).strip(),
+                verification_id=pending["verification_id"],
+                operation_key=pending["operation_key"],
+                result="UNVERIFIED_HOLD_REQUEST:PIN_UNAVAILABLE",
+            )
+            token = active_pin_operation.set((
+                pending["operation_key"], pending["verification_id"],
+                "UNVERIFIED_QUARANTINE", target["id"],
+                pending["operator_id"], "SYSTEM_PIN_UNVERIFIED",
+                str(self.worker_name).strip(),
+            ))
+            try:
+                result = (self._hold_label_recovery(str(set_id)[3:])
+                          if action == "LABEL.F5_HOLD"
+                          else self._hold_package_recovery_set(set_id))
+            finally:
+                active_pin_operation.reset(token)
+            if not result:
+                raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+            self._admin_pin_last_message = (
+                "이 건은 관리자 확인 전 보류했습니다. 원본과 요청 키를 보존하며 "
+                "다른 작업을 계속할 수 있습니다. 나중에 관리자 PIN으로 다시 확인하세요."
+            )
+            return True
+        except Exception:
+            self._admin_pin_last_message = (
+                "이 건의 보류 기록을 검증하지 못했습니다. 원본을 유지하고 다시 확인하세요."
+            )
+            return False
 
     @writer_sink("gui_package_recovery_hold")
     def _hold_package_recovery_set(self, set_id, *, manager_code=None):
@@ -8266,6 +8867,10 @@ class Label_Match(tk.Tk):
                 if (item.get("unverified")
                         or self.__dict__.get("_package_recovery_file_issues", {}).get(item["set_id"])):
                     condition += " · 파일 미검증"
+                if item.get("pin_intent"):
+                    condition += f" · 관리자 확인 다시 조회 {len(item['pin_intents'])}건"
+                if item.get("prior_pin_unknown"):
+                    condition += " · 이전 관리자 요청 UNKNOWN 인계"
                 listing.insert(tk.END, f"{item['set_id']} · {condition}")
 
         def selected():
@@ -8276,7 +8881,10 @@ class Label_Match(tk.Tk):
             try:
                 item = selected()
                 if item:
-                    status.set(self._recheck_package_recovery_set(item["set_id"]))
+                    result = self._run_package_pin_action("LABEL.RECHECK", item["set_id"])
+                    status.set(str(result) if result else self.__dict__.get(
+                        "_admin_pin_last_message", "관리자 확인을 마치지 못했습니다."
+                    ))
                     refresh()
             except Exception as exc:
                 print(f"포장 관리자 재확인 진입 기술 진단: {exc}")
@@ -8286,14 +8894,15 @@ class Label_Match(tk.Tk):
             try:
                 item = selected()
                 if item:
-                    held = (self._hold_label_recovery(item["set_id"][3:])
-                            if item["set_id"].startswith("F5:")
-                            else self._hold_package_recovery_set(item["set_id"]))
+                    action = ("LABEL.F5_HOLD" if item["set_id"].startswith("F5:")
+                              else "LABEL.SET_HOLD")
+                    held = self._run_package_pin_action(action, item["set_id"])
                     if held:
                         status.set("해당 세트의 원본·요청 키를 보류하고 다른 세트 작업을 계속할 수 있습니다.")
                         refresh()
                     else:
-                        status.set("선택한 항목을 보류하지 않았습니다. 이미 보류되었거나 현재 요청이 다릅니다. 목록을 다시 확인하세요.")
+                        status.set(self.__dict__.get("_admin_pin_last_message") or
+                                   "선택한 항목을 보류하지 않았습니다. 목록을 다시 확인하세요.")
             except Exception as exc:
                 print(f"포장 관리자 보류 진입 기술 진단: {exc}")
                 self._show_package_recovery_block(
@@ -8306,15 +8915,15 @@ class Label_Match(tk.Tk):
                 item = selected()
                 if not item:
                     return
-                manager_id = self._package_recovery_manager()
-                if not manager_id:
-                    status.set("지원 인계에는 관리자 확인이 필요합니다.")
+                result = self._run_package_pin_action(
+                    "LABEL.SUPPORT_HANDOFF", item["set_id"]
+                )
+                if not result:
+                    status.set(self.__dict__.get("_admin_pin_last_message") or
+                               "지원 인계에는 관리자 확인이 필요합니다.")
                     return
                 package = item.get("package") or {}
                 label = item.get("label") or {}
-                self._audit_package_recovery_action(
-                    item["set_id"], "HANDOFF", manager_id, "UNRESOLVED",
-                )
                 status.set(
                     f"지원 담당자에게 세트 {item['set_id']} / 요청 "
                     f"{package.get('idempotency_key') or label.get('exchange_id') or label.get('hold_id') or '교체 journal'} / "
@@ -8333,7 +8942,12 @@ class Label_Match(tk.Tk):
                     "실물 현품표 확인", "해당 실물 현품표의 PHS2 코드를 스캔하세요.", parent=window
                 )
                 if value:
-                    status.set(self._recheck_package_recovery_physical(item["set_id"], value))
+                    result = self._run_package_pin_action(
+                        "LABEL.PHS_LOOKUP", item["set_id"], value
+                    )
+                    status.set(str(result) if result else self.__dict__.get(
+                        "_admin_pin_last_message", "관리자 확인을 마치지 못했습니다."
+                    ))
                     refresh()
             except Exception as exc:
                 print(f"포장 실물 현품표 복구 창 기술 진단: {exc}")
@@ -8345,6 +8959,33 @@ class Label_Match(tk.Tk):
         ttk.Button(buttons, text="보류 후 계속", command=hold).pack(side="left", padx=4)
         ttk.Button(buttons, text="지원 인계", command=handoff).pack(side="left", padx=4)
         ttk.Button(buttons, text="실물 현품표 스캔·중앙 조회", command=scan_physical).pack(side="left", padx=4)
+        def retry_pin():
+            item = selected()
+            if not item or not item.get("pin_intent"):
+                return
+            intent = item["pin_intent"]
+            if intent["action"] == "LABEL.PHS_LOOKUP":
+                scan_physical()
+                return
+            result = self._run_package_pin_action(intent["action"], item["set_id"])
+            status.set(str(result) if result else self.__dict__.get(
+                "_admin_pin_last_message", "관리자 확인을 마치지 못했습니다."
+            ))
+            refresh()
+
+        def park_unverified():
+            item = selected()
+            if item is None:
+                return
+            parked = self._park_unverified_pin_item(item["set_id"])
+            status.set(self.__dict__.get("_admin_pin_last_message", "보류하지 못했습니다."))
+            if parked:
+                refresh()
+
+        pin_buttons = ttk.Frame(frame)
+        pin_buttons.pack(fill="x", pady=(0, 4))
+        ttk.Button(pin_buttons, text="관리자 확인 다시 조회", command=retry_pin).pack(side="left", padx=4)
+        ttk.Button(pin_buttons, text="이 건만 보류하고 다른 작업 계속", command=park_unverified).pack(side="left", padx=4)
         refresh()
         return window
 
@@ -15989,10 +16630,14 @@ class Label_Match(tk.Tk):
             return
 
         self.worker_name = requested_worker_name
+        self._admin_pin_login_epoch = uuid.uuid4().hex
         self._authenticated_protected_admin = authenticated_admin
         self.worker_role = PROTECTED_ADMIN_ROLE if authenticated_admin else "PACKAGING"
         self._save_app_settings()
         self._update_save_directory()
+        self._admin_pin_store = AdminPinIntentStore(
+            os.path.join(self.save_directory, "label_admin_pin_intents.sqlite3")
+        )
         self.data_manager = DataManager(
             self.save_directory,
             self.Worker.PACKAGING,

@@ -15,6 +15,14 @@ from deferred_intent_capture import supersede_for_legacy_outbox
 from package_command_draft import PackageCommandDraft, canonical_json, stable_id
 from package_errors import PackageLogisticsError, _bounded_retry_after_seconds
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
+from label_admin_pin import active_pin_operation
+from writer_session_fence import writer_sink
+
+
+def _pin_audit_identity() -> tuple[str, str, str, str, str]:
+    operation = active_pin_operation.get()
+    return ((operation[0], operation[1], operation[2], operation[4], operation[6])
+            if operation else ("", "", "", "", ""))
 
 class PackageOutbox:
     def __init__(
@@ -702,6 +710,9 @@ class PackageOutbox:
                 raise PackageLogisticsError("held current bytes are invalid") from exc
             if hashlib.sha256(raw).hexdigest() != digest:
                 raise PackageLogisticsError("held current bytes differ from digest")
+        quarantine = (active_pin_operation.get() or ("", "", ""))[2] == "UNVERIFIED_QUARANTINE"
+        if quarantine:
+            reason = "UNVERIFIED_OPERATOR_HOLD:PIN_UNAVAILABLE"
         encoded = json.dumps(dict(snapshot), ensure_ascii=False, sort_keys=True)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -719,9 +730,11 @@ class PackageOutbox:
                 )
                 conn.execute(
                     """INSERT INTO package_workbench_hold_audit
-                       (set_id,action,manager_id,observed,recorded_at)
-                       VALUES (?,?,?,?,?)""",
-                    (identity, "HOLD", str(held_by), "UNRESOLVED", self._utc_now()),
+                        (set_id,action,manager_id,observed,recorded_at,operation_key,verification_id,pin_action,operator_id,operator_name)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (identity, "HOLD", str(held_by),
+                     "UNVERIFIED_OPERATOR_HOLD" if quarantine else "UNRESOLVED", self._utc_now(),
+                     *_pin_audit_identity()),
                 )
             elif (existing["source_phs2"] != str(source_phs2 or "")
                   or existing["snapshot_json"] != encoded):
@@ -731,7 +744,9 @@ class PackageOutbox:
         held = self.get_workbench_hold(identity)
         if (held is None or held["snapshot_json"] != encoded
                 or not self.has_workbench_audit(
-                    set_id=identity, action="HOLD", observed="UNRESOLVED")):
+                    set_id=identity, action="HOLD", observed=(
+                        "UNVERIFIED_OPERATOR_HOLD" if quarantine else "UNRESOLVED"
+                    ))):
             raise PackageLogisticsError("held set readback failed")
         return held
 
@@ -791,9 +806,10 @@ class PackageOutbox:
             )
             audit = conn.execute(
                 """INSERT INTO package_workbench_hold_audit
-                   (set_id,action,manager_id,observed,recorded_at)
-                   VALUES (?,?,?,?,?)""",
-                (set_id, "BIND_SOURCE", manager_id, audit_observed, self._utc_now()),
+                   (set_id,action,manager_id,observed,recorded_at,operation_key,verification_id,pin_action,operator_id,operator_name)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (set_id, "BIND_SOURCE", manager_id, audit_observed, self._utc_now(),
+                 *_pin_audit_identity()),
             )
             audit_id = audit.lastrowid
             conn.commit()
@@ -834,10 +850,10 @@ class PackageOutbox:
         with self._lock, self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO package_workbench_hold_audit
-                   (set_id,action,manager_id,observed,recorded_at)
-                   VALUES (?,?,?,?,?)""",
+                   (set_id,action,manager_id,observed,recorded_at,operation_key,verification_id,pin_action,operator_id,operator_name)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (str(set_id), str(action), str(manager_id),
-                 str(observed), self._utc_now()),
+                 str(observed), self._utc_now(), *_pin_audit_identity()),
             )
             audit_id = cursor.lastrowid
             conn.commit()
@@ -859,6 +875,49 @@ class PackageOutbox:
                 (str(set_id), str(action), str(observed)),
             ).fetchone()
             return row is not None
+
+    def pin_effect_rows(self, operation_key: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("""SELECT set_id,action,manager_id,observed,verification_id,pin_action,operator_id
+                FROM package_workbench_hold_audit WHERE operation_key=? ORDER BY audit_id""",
+                (operation_key,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def pin_handoff_for(self, original_operation_key: str) -> bool:
+        with self._connect() as conn:
+            rows = conn.execute("""SELECT observed FROM package_workbench_hold_audit
+                WHERE action='HANDOFF' AND pin_action='LABEL.SUPPORT_HANDOFF'
+                ORDER BY audit_id DESC""").fetchall()
+        for row in rows:
+            try:
+                value = json.loads(row["observed"])
+            except (TypeError, ValueError):
+                continue
+            if (isinstance(value, dict)
+                    and value.get("original_operation_key") == original_operation_key
+                    and value.get("result") == "UNKNOWN:NO_KEYED_LEDGER_EFFECT"):
+                return True
+        return False
+
+    @writer_sink("label_admin_pin_attempt_audit")
+    def audit_pin_attempt(self, *, set_id: str, pin_action: str, admin_id: str,
+                          operator_id: str, operator_name: str, verification_id: str, operation_key: str,
+                          result: str) -> None:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("""INSERT INTO package_workbench_hold_audit
+                (set_id,action,manager_id,observed,recorded_at,
+                 operation_key,verification_id,pin_action,operator_id,operator_name)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""", (
+                set_id, "PIN_ATTEMPT", admin_id, result, self._utc_now(),
+                operation_key, verification_id, pin_action, operator_id, operator_name,
+            ))
+            audit_id = cursor.lastrowid
+        with self._connect() as conn:
+            row = conn.execute("""SELECT observed,verification_id,operation_key
+                FROM package_workbench_hold_audit WHERE audit_id=?""", (audit_id,)).fetchone()
+        if row is None or tuple(row) != (result, verification_id, operation_key):
+            raise PackageLogisticsError("admin PIN audit readback failed")
 
     def hold_label_exchange(
         self, *, hold_id: str, set_id: str, label_id: str,
@@ -887,9 +946,12 @@ class PackageOutbox:
                 )
                 conn.execute(
                     """INSERT INTO package_workbench_hold_audit
-                       (set_id,action,manager_id,observed,recorded_at)
-                       VALUES (?,?,?,?,?)""",
-                    ("F5:" + hold_id, "HOLD_LABEL", held_by, "UNRESOLVED", now),
+                       (set_id,action,manager_id,observed,recorded_at,operation_key,verification_id,pin_action,operator_id,operator_name)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    ("F5:" + hold_id, "HOLD_LABEL", held_by,
+                     "UNVERIFIED_OPERATOR_HOLD" if (active_pin_operation.get() or ("", "", ""))[2]
+                     == "UNVERIFIED_QUARANTINE" else "UNRESOLVED", now,
+                     *_pin_audit_identity()),
                 )
             elif (bytes(existing["journal_bytes"]) != journal_bytes
                   or existing["archive_path"] != archive_path):
@@ -900,7 +962,10 @@ class PackageOutbox:
         if (held is None
                 or hashlib.sha256(bytes(held["journal_bytes"])).hexdigest() != digest
                 or not self.has_workbench_audit(
-                    set_id="F5:" + hold_id, action="HOLD_LABEL", observed="UNRESOLVED")):
+                    set_id="F5:" + hold_id, action="HOLD_LABEL", observed=(
+                        "UNVERIFIED_OPERATOR_HOLD" if (active_pin_operation.get() or ("", "", ""))[2]
+                        == "UNVERIFIED_QUARANTINE" else "UNRESOLVED"
+                    ))):
             raise PackageLogisticsError("held label journal readback failed")
         return held
 
@@ -937,10 +1002,10 @@ class PackageOutbox:
             now = self._utc_now()
             audit = conn.execute(
                 """INSERT INTO package_workbench_hold_audit
-                   (set_id,action,manager_id,observed,recorded_at)
-                   VALUES (?,?,?,?,?)""",
+                   (set_id,action,manager_id,observed,recorded_at,operation_key,verification_id,pin_action,operator_id,operator_name)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 ("F5:" + hold_id, "BIND_LABEL_SOURCE", manager_id,
-                 "CENTRAL_PHYSICAL_MATCH", now),
+                 "CENTRAL_PHYSICAL_MATCH", now, *_pin_audit_identity()),
             )
             audit_id = audit.lastrowid
             conn.executemany(

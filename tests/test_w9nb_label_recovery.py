@@ -52,6 +52,9 @@ def _recovery_app(tmp_path, monkeypatch, state):
     app.phs_label_exchange_coordinator = SimpleNamespace(journal=journal)
     app._render_operator_workbench = lambda: None
     app._show_package_recovery_block = lambda *args, **kwargs: None
+    # These legacy tests exercise the existing hold/readback writers directly;
+    # PIN authorization and its audit binding have separate focused coverage.
+    app._package_recovery_manager = lambda code=None: "S-1-5-21-101" if code == "admin" else ""
     return app, journal
 
 
@@ -208,11 +211,14 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
     app, _journal = _recovery_app(tmp_path, monkeypatch, {})
     app.run_tests = False
     app._package_recovery_candidates = lambda: [
-        {"set_id": "F5:old", "held": {"hold_id": "old"}, "label": {}},
+        {"set_id": "F5:old", "held": {"hold_id": "old"}, "label": {},
+         "pin_intent": {"action": "LABEL.F5_HOLD"},
+         "pin_intents": [{"action": "LABEL.F5_HOLD"}]},
         {"set_id": "F5:new", "held": None, "label": {}},
     ]
     passed = []
-    app._hold_label_recovery = lambda hold_id: passed.append(hold_id) or False
+    app._run_package_pin_action = lambda action, set_id: passed.append((action, set_id)) or False
+    app._park_unverified_pin_item = lambda set_id: passed.append(("PARK", set_id)) or True
     widgets = []
 
     class Widget:
@@ -249,7 +255,10 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.tk, "StringVar", TextValue)
     app._show_package_recovery_workbench()
     next(item for item in widgets if item.options.get("text") == "보류 후 계속").options["command"]()
-    assert passed == ["old"]
+    next(item for item in widgets if item.options.get("text") == "관리자 확인 다시 조회").options["command"]()
+    next(item for item in widgets if item.options.get("text") == "이 건만 보류하고 다른 작업 계속").options["command"]()
+    assert passed == [("LABEL.F5_HOLD", "F5:old"),
+                      ("LABEL.F5_HOLD", "F5:old"), ("PARK", "F5:old")]
 
 
 @pytest.mark.parametrize("draft_json,expected", [
@@ -312,19 +321,22 @@ def test_recovery_dialog_authenticates_manager_without_changing_active_operator(
     ]
 
 
-def test_live_recovery_dialog_asks_code_while_operator_has_active_set(tmp_path, monkeypatch):
+def test_legacy_code_and_sid_cannot_authorize_recovery(tmp_path, monkeypatch):
     app, _journal = _recovery_app(tmp_path, monkeypatch, {})
-    app.run_tests = False
+    del app._package_recovery_manager
     app.worker_name = "ordinary-operator"
     app.worker_role = "PACKAGING"
     app._authenticated_protected_admin = False
     app.current_set_info["id"] = "ACTIVE-SET"
-    asked = []
-    monkeypatch.setattr(app_module.simpledialog, "askstring", lambda *args, **kwargs: (
-        asked.append(kwargs) or "admin"
+    assert app._package_recovery_manager("admin") == ""
+    token = app_module.active_pin_operation.set((
+        "operation-key", "verification-id", "LABEL.RECHECK", "ACTIVE-SET",
+        "ordinary-operator", "admin-personal-id", "ordinary-operator",
     ))
-    assert app._package_recovery_manager() == "S-1-5-21-101"
-    assert asked[0]["show"] == "*" and asked[0]["parent"] is app
+    try:
+        assert app._package_recovery_manager("admin") == "admin-personal-id"
+    finally:
+        app_module.active_pin_operation.reset(token)
     assert (app.worker_name, app.worker_role, app._authenticated_protected_admin) == (
         "ordinary-operator", "PACKAGING", False,
     )
@@ -428,10 +440,9 @@ def test_manager_recovery_actions_contain_per_item_read_exceptions(tmp_path, mon
     assert "보류" in app._recheck_package_recovery_set("F5:" + digest, manager_code="admin")
 
 
-def test_manager_authentication_exception_keeps_recovery_closed(tmp_path, monkeypatch):
+def test_missing_pin_context_keeps_recovery_closed(tmp_path, monkeypatch):
     app, _journal = _recovery_app(tmp_path, monkeypatch, {})
-    monkeypatch.setattr(app_module, "is_protected_admin_code", lambda _code: (_ for _ in ()).throw(
-        ValueError("embedded null character")))
+    del app._package_recovery_manager
     assert app._hold_package_recovery_set("SET-A", manager_code="admin") is False
     assert app._recheck_package_recovery_set("SET-A", manager_code="admin") == "관리자 확인이 필요합니다."
 
