@@ -5196,23 +5196,40 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
         "set_id": "set-hold", "current": current, "package": None, "exchange": None,
     }]
     reset = []
-    app._reset_current_set = lambda: reset.append(True)
+    def reset_current():
+        reset.append(True)
+        app.current_set_info = {"id": None, "raw": []}
+    app._reset_current_set = reset_current
     app._show_package_recovery_block = lambda *_args, **_kwargs: None
 
     assert app._hold_package_recovery_set("set-hold", manager_code="wrong") is False
     assert app.package_outbox.get_workbench_hold("set-hold") is None
-    assert app._hold_package_recovery_set("set-hold", manager_code="valid-admin") is False
-    assert app.package_outbox.get_workbench_hold("set-hold") is not None
-    assert path.exists() and reset == []
+    token = module.active_pin_operation.set((
+        "test-hold-key", "test-verification", "LABEL.SET_HOLD", "set-hold",
+        "test-operator", "S-1-5-21-101", "operator",
+    ))
+    try:
+        assert app._hold_package_recovery_set("set-hold") is False
+        assert app.package_outbox.get_workbench_hold("set-hold") is not None
+        assert path.exists() and reset == []
 
-    clear_allowed = True
-    assert app._hold_package_recovery_set("set-hold", manager_code="valid-admin") is True
+        clear_allowed = True
+        assert app._hold_package_recovery_set("set-hold") is True
+    finally:
+        module.active_pin_operation.reset(token)
     assert not path.exists() and reset == [True]
     assert app.package_outbox.get_workbench_hold("set-hold")["held_by"] == "S-1-5-21-101"
     app.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **_kwargs: [])
     app.package_logistics_client = None
     assert "관리자 확인" in app._recheck_package_recovery_set("set-hold", manager_code="wrong")
-    assert "보류" in app._recheck_package_recovery_set("set-hold", manager_code="valid-admin")
+    token = module.active_pin_operation.set((
+        "test-recheck-key", "test-verification", "LABEL.RECHECK", "set-hold",
+        "test-operator", "S-1-5-21-101", "operator",
+    ))
+    try:
+        assert "보류" in app._recheck_package_recovery_set("set-hold")
+    finally:
+        module.active_pin_operation.reset(token)
     assert app.package_outbox.get_workbench_hold("set-hold")["snapshot_json"] == json.dumps(
         saved, ensure_ascii=False, sort_keys=True
     )
