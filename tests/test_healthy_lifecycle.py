@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -31,7 +32,36 @@ from tools.register_label_match_worker_pc import (
 @pytest.fixture
 def tmp_path(tmp_path_factory):
     # Windows PowerShell 5.1 frozen-helper I/O retains MAX_PATH constraints.
-    return tmp_path_factory.mktemp("h")
+    root = tmp_path_factory.mktemp("h")
+    try:
+        yield root
+    finally:
+        # A failed assertion or an installer timeout must not leave this test's
+        # relay visible to another installer's global ownership check.
+        executable = root / "canonical/current/runtime/pythonw.exe"
+        script = f'''
+$ErrorActionPreference='Stop'
+$expected={_quote(executable)}
+function OwnRelays {{
+    @(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
+        Where-Object {{ $_.ExecutablePath -ceq $expected -and
+                        $_.CommandLine -like '*--label-match-user-relay*' }})
+}}
+$relays=@(OwnRelays)
+foreach ($relay in $relays) {{
+    Stop-Process -Id $relay.ProcessId -ErrorAction Stop
+    Wait-Process -Id $relay.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+}}
+if (@(OwnRelays).Count -ne 0) {{ throw 'test relay remained after teardown' }}
+'''
+        powershell = (Path(os.environ["SystemRoot"]) / "System32" /
+                      "WindowsPowerShell" / "v1.0" / "powershell.exe")
+        result = subprocess.run(
+            [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
 
 
 @pytest.fixture(scope="module")
