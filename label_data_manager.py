@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import queue
-import stat
 import threading
 import time
 from pathlib import Path
@@ -24,23 +23,20 @@ from protected_admin import (
 )
 from storage_policy import label_match_local_events_dir
 from label_recovery_schema import require_recovery_record
+from label_safe_path import (describe_entry, entry_digest, read_checked_bytes,
+                             unlink_checked, write_checked_bytes)
 
 
 def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
     """Return raw bytes, digest, and a validated value without modifying evidence."""
     result = {"verified": False, "raw": None, "sha256": "", "value": None,
-              "reason": "missing"}
+              "reason": "missing", "entry": None}
     try:
         path = Path(path)
-        if path.is_symlink():
-            raise ValueError("recovery path is a link")
         try:
-            metadata = path.stat()
+            raw = read_checked_bytes(path)
         except FileNotFoundError:
             return result
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("recovery path is not a regular file")
-        raw = path.read_bytes()
         result["raw"] = raw
         result["sha256"] = hashlib.sha256(raw).hexdigest()
         if len(raw) > 8 * 1024 * 1024:
@@ -63,6 +59,12 @@ def read_recovery_file(path, *, journal_schema=None, current_state=False, expect
         result["reason"] = ""
     except Exception as exc:
         result["reason"] = type(exc).__name__
+        if result["raw"] is None:
+            try:
+                result["entry"] = describe_entry(path)
+                result["sha256"] = entry_digest(path, result["entry"])
+            except Exception:
+                result["sha256"] = entry_digest(path, {})
     return result
 
 
@@ -197,9 +199,7 @@ class DataManager:
         return True
     def save_current_state(self, state_data):
         state_path = os.path.join(self.save_directory, self._current_state_filename())
-        temp_path = f"{state_path}.tmp-{os.getpid()}-{threading.get_ident()}"
         try:
-            os.makedirs(os.path.dirname(state_path), exist_ok=True)
             state_data_with_worker = sanitize_persistent_value(dict(state_data or {}))
             state_data_with_worker['worker_name'] = persistent_operator_name(
                 self.worker_name
@@ -207,18 +207,10 @@ class DataManager:
             encoded = json.dumps(state_data_with_worker, ensure_ascii=False, indent=4,
                                  cls=self._datetime_encoder())
             require_recovery_record("current", json.loads(encoded))
-            with self._open_file(temp_path, 'w', encoding='utf-8') as f:
-                f.write(encoded)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, state_path)
+            write_checked_bytes(state_path, encoded.encode('utf-8'),
+                                allowed_root=self.save_directory)
             return True
         except Exception as e:
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
             print(f"임시 상태 저장 실패: {e}")
             return False
     def load_current_state(self, *, verified_bytes=None):
@@ -240,24 +232,15 @@ class DataManager:
                 safe_state['worker_name'] = safe_worker
                 if safe_state != state:
                     state = safe_state
-                    temp_path = f"{state_path}.migrate-{os.getpid()}-{threading.get_ident()}"
-                    try:
-                        with self._open_file(temp_path, 'w', encoding='utf-8') as handle:
-                            json.dump(state, handle, ensure_ascii=False, indent=4, cls=self._datetime_encoder())
-                            handle.flush()
-                            os.fsync(handle.fileno())
-                        os.replace(temp_path, state_path)
-                    finally:
-                        try:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                        except OSError:
-                            pass
+                    encoded = json.dumps(state, ensure_ascii=False, indent=4,
+                                         cls=self._datetime_encoder()).encode('utf-8')
+                    write_checked_bytes(state_path, encoded,
+                                        allowed_root=self.save_directory)
             return state
         except Exception as e:
             print(f"임시 상태 로드 실패: {e}"); return None
     def delete_current_state(self):
         state_path = os.path.join(self.save_directory, self._current_state_filename())
         if os.path.exists(state_path):
-            try: os.remove(state_path)
+            try: unlink_checked(state_path, allowed_root=self.save_directory)
             except Exception as e: print(f"임시 상태 파일 삭제 실패: {e}")

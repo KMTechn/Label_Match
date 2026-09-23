@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -29,11 +28,13 @@ from kmtech_zero_pe import (
     PaperSpec,
     PrintSpec,
     RasterCanvas,
+    RasterImage,
 )
 from writer_session_fence import writer_sink
 import carrier_identity_port as carrier_identity
 from label_data_manager import read_recovery_file
 from label_recovery_schema import valid_recovery_business_date
+from label_safe_path import read_checked_bytes, write_checked_bytes
 
 
 PHS_LABEL_EXCHANGE_JOURNAL_VERSION = "label-match-phs-label-exchange-v1"
@@ -601,34 +602,10 @@ class PHSLabelExchangeJournal:
         from label_recovery_schema import require_recovery_record
         require_recovery_record("journal", payload,
                                 journal_version=PHS_LABEL_EXCHANGE_JOURNAL_VERSION)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
-            descriptor, temporary = tempfile.mkstemp(
-                prefix=f"{self.path.name}.",
-                suffix=".tmp",
-                dir=str(self.path.parent),
-            )
-            try:
-                with os.fdopen(
-                    descriptor, "w", encoding="utf-8"
-                ) as handle:
-                    json.dump(
-                        payload,
-                        handle,
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    handle.write("\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temporary, self.path)
-            finally:
-                try:
-                    if os.path.exists(temporary):
-                        os.remove(temporary)
-                except OSError:
-                    pass
+            encoded = (json.dumps(payload, ensure_ascii=False, indent=2,
+                                  sort_keys=True) + "\n").encode("utf-8")
+            write_checked_bytes(self.path, encoded, allowed_root=self.path.parent)
         return dict(bounded)
 
 
@@ -661,21 +638,23 @@ class WindowsGDIPhysicalLabelPrinter:
     )
     _MARGINS = MarginsMM(left=12.0, top=12.0, right=12.0, bottom=12.0)
 
+    def __init__(self, output_root: str | os.PathLike[str]):
+        self.output_root = Path(output_root)
+
     def print_png(
         self,
         filepath: str,
         *,
         document_name: str,
     ) -> PhysicalPrintEvidence:
-        path = Path(str(filepath or "")).resolve()
-        if not path.is_file():
-            raise PHSPhysicalPrintError(
-                "출력할 현품표 PNG 파일이 없습니다."
-            )
+        path = Path(str(filepath or ""))
         try:
+            image = RasterImage.from_png_bytes(read_checked_bytes(
+                path, allowed_root=self.output_root
+            ))
             printer = GdiPrinter()
-            receipt = printer.print_png(
-                path,
+            receipt = printer.print_image(
+                image,
                 PrintSpec(
                     document_name=str(document_name or path.stem)[:240],
                     paper=self._PAPER,
@@ -742,7 +721,6 @@ class PHSLabelRenderer:
             / business_date
             / "phs_label_exchange"
         )
-        folder.mkdir(parents=True, exist_ok=True)
         output_path = folder / f"{safe_label}.png"
 
         parsed = list(current_set.get("parsed") or [])
@@ -790,14 +768,15 @@ class PHSLabelRenderer:
                     font=self._font(18),
                 )
                 image = canvas.snapshot()
-            image.save_png(output_path, dpi=(300, 300))
+            write_checked_bytes(output_path, image.to_png_bytes(dpi=(300, 300)),
+                                allowed_root=self.output_root)
         except Exception as exc:
             raise PHSPhysicalPrintError(
                 f"현품표 GDI PNG 생성에 실패했습니다: {exc}"
             ) from exc
-        digest = hashlib.sha256(
-            output_path.read_bytes()
-        ).hexdigest()
+        digest = hashlib.sha256(read_checked_bytes(
+            output_path, allowed_root=self.output_root
+        )).hexdigest()
         return RenderedPHSLabel(str(output_path), digest)
 
 
@@ -825,7 +804,7 @@ class PHSLabelExchangeCoordinator:
         self.client = client
         self.journal = journal
         self.renderer = renderer
-        self.printer = printer or WindowsGDIPhysicalLabelPrinter()
+        self.printer = printer or WindowsGDIPhysicalLabelPrinter(renderer.output_root)
 
     def available(self) -> bool:
         required = (

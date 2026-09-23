@@ -14,6 +14,14 @@ from label_recovery_schema import (
 
 
 VERSION = "label-match-phs-label-exchange-v1"
+PHS2 = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM|"
+        "LBL=LBL-A|HSH=aaaaaaaaaaaaaaaa")
+PHS2_FIELDS = {
+    "canonical_input_tag_qr", "physical_scanned_qr_payload",
+    "active_label_qr_payload", "source_canonical_input_tag_qr",
+    "source_active_label_qr_payload", "scan_payload", "active_qr_payload",
+    "qr_payload",
+}
 
 
 def _sample(rule):
@@ -41,7 +49,11 @@ def _sample(rule):
 def _record(kind):
     schema = RECOVERY_SCHEMAS[kind]
     fields = {**schema["required"], **schema["optional"]}
-    result = {name: ("2026-09-23T00:00:00Z" if name.endswith("_at") else _sample(rule))
+    result = {name: ("2026-09-23T00:00:00Z" if name.endswith("_at")
+                     else PHS2 if name in PHS2_FIELDS
+                     else "ITG-1" if name in {"input_tag_id", "source_input_tag_id"}
+                     else "LBL-A" if kind == "action_source" and name == "source_label_id"
+                     else _sample(rule))
               for name, rule in fields.items()}
     if kind == "journal":
         result["schema_version"] = VERSION
@@ -57,14 +69,18 @@ FIELDS = [
     for kind, schema in RECOVERY_SCHEMAS.items()
     for name, rule in {**schema["required"], **schema["optional"]}.items()
 ]
+FIELD_CASES = [(f"{kind}:{name}:deleted", kind, name, rule, required)
+               for kind, name, rule, required in FIELDS]
+EXECUTED_FIELD_CASES = set()
+EXECUTED_MUTATION_CASES = set()
 
 
 def _valid(kind, value):
     return validate_recovery_record(kind, value, journal_version=VERSION)
 
 
-@pytest.mark.parametrize("kind,name,rule,required", FIELDS)
-def test_every_declared_field_deletion_has_explicit_result(kind, name, rule, required):
+@pytest.mark.parametrize("case_id,kind,name,rule,required", FIELD_CASES)
+def test_every_declared_field_deletion_has_explicit_result(case_id, kind, name, rule, required):
     value = _record(kind)
     assert _valid(kind, value)
     del value[name]
@@ -74,6 +90,7 @@ def test_every_declared_field_deletion_has_explicit_result(kind, name, rule, req
         assert not _valid(kind, value)
     else:
         assert _valid(kind, value) is not required
+    EXECUTED_FIELD_CASES.add(case_id)
 
 
 BAD_VALUES = {
@@ -108,17 +125,19 @@ def _bad_values(rule):
 
 
 MUTATIONS = [
-    (kind, name, bad)
+    (f"{kind}:{name}:{index}", kind, name, bad)
     for kind, name, rule, _required in FIELDS
-    for bad in _bad_values(rule)
+    for index, bad in enumerate(_bad_values(rule))
 ]
 
 
-@pytest.mark.parametrize("kind,name,mutation", MUTATIONS)
-def test_every_declared_field_rejects_type_null_and_format_mutations(kind, name, mutation):
+@pytest.mark.parametrize("case_id,kind,name,mutation", MUTATIONS)
+def test_every_declared_field_rejects_type_null_and_format_mutations(
+        case_id, kind, name, mutation):
     value = _record(kind)
     value[name] = copy.deepcopy(mutation)
     assert not _valid(kind, value)
+    EXECUTED_MUTATION_CASES.add(case_id)
 
 
 @pytest.mark.parametrize("kind", list(RECOVERY_SCHEMAS))
@@ -143,15 +162,15 @@ def test_current_reader_keeps_large_deep_nul_and_bad_utf8_unverified(tmp_path, p
     assert result["verified"] is False
 
 
-def test_recovery_reader_rejects_link_before_reading_target(tmp_path, monkeypatch):
+def test_recovery_reader_rejects_hardlink_before_reading_target(tmp_path, monkeypatch):
     path = tmp_path / "current.json"
-    path.write_bytes(b'{"current_set_info":{"id":"SET-A","raw":[]}}')
-    monkeypatch.setattr(Path, "is_symlink", lambda self: self == path)
-    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(
-        AssertionError(f"unexpected linked target read: {self}")))
+    outside = tmp_path.parent / "current-outside.json"
+    outside.write_bytes(b'{"current_set_info":{"id":"SET-A","raw":[]}}')
+    path.hardlink_to(outside)
     result = read_recovery_file(path, current_state=True)
     assert result["verified"] is False
     assert result["reason"] == "ValueError"
+    assert result["raw"] is None
 
 
 def test_nested_current_values_are_checked_before_conversion():
@@ -170,11 +189,18 @@ def test_nested_current_values_are_checked_before_conversion():
     ("current_set", "canonical_input_tag_qr"),
     ("draft", "source_canonical_input_tag_qr"),
     ("journal_state", "canonical_input_tag_qr"),
+    ("journal_state", "scan_payload"),
+    ("current_set", "physical_scanned_qr_payload"),
+    ("current_set", "active_label_qr_payload"),
 ])
 @pytest.mark.parametrize("bad", [
+    "INVALID-PHS2",
+    "XHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM|LBL=LBL-A|HSH=aaaaaaaaaaaaaaaa",
     "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1",
     "PHS=2|SRC=OTHER|ITG=ITG-1|CLC=ITEM|LBL=LBL-A|HSH=aaaaaaaaaaaaaaaa",
     "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG=1|CLC=ITEM|LBL=LBL-A|HSH=aaaaaaaaaaaaaaaa",
+    "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG 1|CLC=ITEM|LBL=LBL-A|HSH=aaaaaaaaaaaaaaaa",
+    "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM|LBL=LBL-A|HSH=aaaaaaaaaaaaaaaa\n",
 ])
 def test_canonical_phs2_format_is_checked_where_written(kind, name, bad):
     value = _record(kind)
@@ -182,9 +208,40 @@ def test_canonical_phs2_format_is_checked_where_written(kind, name, bad):
     assert not _valid(kind, value)
 
 
+@pytest.mark.parametrize("kind,field", [("draft", "source_input_tag_id"),
+                                         ("journal_state", "input_tag_id")])
+def test_itg_field_must_match_the_raw_canonical_identity(kind, field):
+    value = _record(kind)
+    value[field] = "ITG-DIFFERENT"
+    assert not _valid(kind, value)
+
+
+def test_nested_f5_source_and_target_qr_cannot_claim_another_identity():
+    source = _record("action_source")
+    source["source_label_id"] = "LBL-OTHER"
+    assert not _valid("action_source", source)
+    journal = _record("journal_state")
+    journal["target_label"] = {"qr_payload": PHS2, "label_id": "LBL-OTHER"}
+    assert not _valid("journal_state", journal)
+    journal["target_label"] = {"qr_payload": "INVALID-PHS2"}
+    assert not _valid("journal_state", journal)
+
+
+def test_unprefixed_journal_scan_is_unverified_from_original_json(tmp_path):
+    path = tmp_path / "f5.json"
+    path.write_text('{"schema_version":"' + VERSION +
+                    '","state":{"status":"PREPARED","scan_payload":"INVALID-PHS2"}}',
+                    encoding="utf-8")
+    evidence = read_recovery_file(path, journal_schema=VERSION)
+    assert evidence["raw"] == path.read_bytes()
+    assert evidence["verified"] is False
+
+
 def test_schema_covers_all_declared_record_fields_without_duplicate_cases():
     assert len(FIELDS) == len({(kind, name) for kind, name, _rule, _required in FIELDS})
     assert {kind for kind, *_rest in FIELDS} == set(RECOVERY_SCHEMAS)
+    assert {case[0] for case in FIELD_CASES} == EXECUTED_FIELD_CASES
+    assert {case[0] for case in MUTATIONS} == EXECUTED_MUTATION_CASES
 
 
 def test_schema_fields_cover_each_local_current_draft_and_journal_writer():

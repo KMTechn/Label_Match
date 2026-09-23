@@ -928,8 +928,10 @@ class PackageOutbox:
             row = conn.execute(
                 "SELECT * FROM phs_label_workbench_holds WHERE hold_id=?", (hold_id,)
             ).fetchone()
-            if row is None or any(row[key] for key in
-                                  ("source_label", "label_id", "source_input_tag_id")):
+            if row is None or conn.execute(
+                "SELECT 1 FROM phs_label_workbench_hold_sources WHERE hold_id=? LIMIT 1",
+                (hold_id,),
+            ).fetchone():
                 conn.rollback()
                 raise PackageLogisticsError("label hold source binding changed")
             now = self._utc_now()
@@ -947,16 +949,20 @@ class PackageOutbox:
                    VALUES (?,?,?,?)""",
                 [(hold_id, *source) for source in sources],
             )
-            updated = conn.execute(
-                """UPDATE phs_label_workbench_holds
-                   SET source_label=?,label_id=?,source_input_tag_id=?
-                   WHERE hold_id=? AND source_label='' AND label_id=''
-                     AND source_input_tag_id=''""",
-                (*primary, hold_id),
-            )
-            if updated.rowcount != 1:
-                conn.rollback()
-                raise PackageLogisticsError("label hold source binding changed")
+            # Preserve old unverified claims in the parent row. Only the
+            # audited child identities participate in future hold lookups.
+            if not any(row[key] for key in
+                       ("source_label", "label_id", "source_input_tag_id")):
+                updated = conn.execute(
+                    """UPDATE phs_label_workbench_holds
+                       SET source_label=?,label_id=?,source_input_tag_id=?
+                       WHERE hold_id=? AND source_label='' AND label_id=''
+                         AND source_input_tag_id=''""",
+                    (*primary, hold_id),
+                )
+                if updated.rowcount != 1:
+                    conn.rollback()
+                    raise PackageLogisticsError("label hold source binding changed")
             conn.commit()
         held = self.get_label_exchange_hold(hold_id)
         with self._connect() as conn:
@@ -970,10 +976,7 @@ class PackageOutbox:
                    FROM package_workbench_hold_audit WHERE audit_id=?""",
                 (audit_id,),
             ).fetchone()
-        if (held is None or held["source_label"] != primary[0]
-                or held["label_id"] != primary[1]
-                or held["source_input_tag_id"] != primary[2]
-                or {tuple(row) for row in readback} != set(sources)
+        if (held is None or {tuple(row) for row in readback} != set(sources)
                 or audit_row is None or tuple(audit_row) !=
                 ("F5:" + hold_id, "BIND_LABEL_SOURCE", manager_id,
                  "CENTRAL_PHYSICAL_MATCH")):
@@ -991,18 +994,14 @@ class PackageOutbox:
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT * FROM phs_label_workbench_holds
-                   WHERE (source_label!='' AND source_label=?)
-                      OR (label_id!='' AND label_id=?)
-                      OR (source_input_tag_id!='' AND source_input_tag_id=?)
-                      OR EXISTS (
+                   WHERE EXISTS (
                           SELECT 1 FROM phs_label_workbench_hold_sources AS source
                            WHERE source.hold_id=phs_label_workbench_holds.hold_id
                              AND (source.source_label=? OR source.label_id=?
                                   OR source.source_input_tag_id=?)
                       )
                    ORDER BY held_at LIMIT 1""",
-                (str(source_label or ""), str(label_id or ""), str(input_tag_id or ""),
-                 str(source_label or ""), str(label_id or ""), str(input_tag_id or "")),
+                (str(source_label or ""), str(label_id or ""), str(input_tag_id or "")),
             ).fetchone()
             return dict(row) if row else None
 

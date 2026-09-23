@@ -13,6 +13,27 @@ import Label_Match as app_module
 from phs_label_workflow import PHSLabelExchangeJournal
 
 
+SOURCE_A = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A|CLC=ITEM|"
+            "LBL=LABEL-A|HSH=aaaaaaaaaaaaaaaa")
+SOURCE_B = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-B|CLC=ITEM|"
+            "LBL=LABEL-B|HSH=bbbbbbbbbbbbbbbb")
+SOURCE_OLD = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-OLD|CLC=ITEM|"
+              "LBL=LABEL-OLD|HSH=cccccccccccccccc")
+SOURCE_NEW = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-NEW|CLC=ITEM|"
+              "LBL=LABEL-NEW|HSH=dddddddddddddddd")
+SOURCE_OTHER = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-OTHER|CLC=ITEM|"
+                "LBL=LABEL-OTHER|HSH=eeeeeeeeeeeeeeee")
+
+
+def _operation_key(key, scope="SCOPE-F5"):
+    return hashlib.sha256(json.dumps({
+        "contract_version": "phs-work-control-v1",
+        "authority_scope_id": scope, "idempotency_key": key,
+        "command": "PREPARE_LABEL_EXCHANGE",
+    }, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _recovery_app(tmp_path, monkeypatch, state):
     monkeypatch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
     monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(tmp_path / "fence"))
@@ -53,7 +74,7 @@ def _storage_recovery_app(tmp_path, monkeypatch):
 def test_f5_hold_requires_manager_and_preserves_exact_journal(tmp_path, monkeypatch):
     state = {
         "workflow_mode": "RECONCILIATION", "status": "PREPARE_PENDING",
-        "set_id": "", "scan_payload": "PHS2-SOURCE-A",
+        "set_id": "", "scan_payload": SOURCE_A,
         "active_scan_label_id": "LABEL-A", "authority_scope_id": "SCOPE-A",
         "prepare_idempotency_key": "PREPARE-A", "exchange_id": "",
     }
@@ -71,9 +92,9 @@ def test_f5_hold_requires_manager_and_preserves_exact_journal(tmp_path, monkeypa
     assert held["held_by"] == "S-1-5-21-101"
     assert not journal.path.exists()
     assert (tmp_path / f"label-exchange.json.held-{digest}").read_bytes() == original
-    assert app._label_recovery_source_is_held("PHS2-SOURCE-A") is True
-    assert app._label_recovery_source_is_held("PHS2-SOURCE-B") is False
-    assert app._label_recovery_source_is_held("PHS2-SOURCE-B", "LABEL-A") is True
+    assert app._label_recovery_source_is_held(SOURCE_A) is False
+    assert app._label_recovery_source_is_held(SOURCE_B) is False
+    assert app._label_recovery_source_is_held(SOURCE_B, "LABEL-A") is False
     assert app._recheck_package_recovery_set("F5:" + digest, manager_code="wrong") == "관리자 확인이 필요합니다."
     assert "보류" in app._recheck_package_recovery_set("F5:" + digest, manager_code="admin")
     assert json.loads(bytes(held["journal_bytes"]))["state"]["prepare_idempotency_key"] == "PREPARE-A"
@@ -81,7 +102,7 @@ def test_f5_hold_requires_manager_and_preserves_exact_journal(tmp_path, monkeypa
 
 def test_f5_crash_after_hold_readback_finishes_archive(tmp_path, monkeypatch):
     state = {"workflow_mode": "RECONCILIATION", "status": "PREPARED",
-             "scan_payload": "PHS2-SOURCE-A", "active_scan_label_id": "LABEL-A",
+             "scan_payload": SOURCE_A, "active_scan_label_id": "LABEL-A",
              "prepare_idempotency_key": "PREPARE-A", "exchange_id": "EXCHANGE-A"}
     app, journal = _recovery_app(tmp_path, monkeypatch, state)
     original = journal.path.read_bytes()
@@ -89,7 +110,7 @@ def test_f5_crash_after_hold_readback_finishes_archive(tmp_path, monkeypatch):
     archive = journal.path.with_name(journal.path.name + ".held-" + digest)
     app.package_outbox.hold_label_exchange(
         hold_id=digest, set_id="", label_id="LABEL-A",
-        source_label="PHS2-SOURCE-A", source_input_tag_id="",
+        source_label=SOURCE_A, source_input_tag_id="",
         journal_bytes=original, archive_path=str(archive),
         held_by="protected-admin-local",
     )
@@ -102,29 +123,29 @@ def test_f5_crash_after_hold_readback_finishes_archive(tmp_path, monkeypatch):
 
 def test_f5_archive_failure_blocks_same_label_only(tmp_path, monkeypatch):
     state = {"workflow_mode": "RECONCILIATION", "status": "PREPARED",
-             "scan_payload": "PHS2-SOURCE-A", "active_scan_label_id": "LABEL-A",
+             "scan_payload": SOURCE_A, "active_scan_label_id": "LABEL-A",
              "prepare_idempotency_key": "PREPARE-A", "exchange_id": "EXCHANGE-A"}
     app, journal = _recovery_app(tmp_path, monkeypatch, state)
     original = journal.path.read_bytes()
     digest = hashlib.sha256(original).hexdigest()
-    original_replace = app_module.os.replace
-    monkeypatch.setattr(app_module.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("locked")))
+    original_replace = app_module.replace_checked
+    monkeypatch.setattr(app_module, "replace_checked", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
 
     assert app._hold_label_recovery(digest, manager_code="admin") is False
     assert journal.path.read_bytes() == original
     assert app._active_label_recovery_state()["exchange_id"] == "EXCHANGE-A"
     assert app.package_outbox.get_label_exchange_hold(digest) is not None
-    assert app._begin_phs_reconciliation_lookup("PHS2-SOURCE-A") is False
+    assert app._label_recovery_source_is_held(SOURCE_A) is False
     assert app.__dict__.get("_workflow_blocking_notice") is None
 
-    monkeypatch.setattr(app_module.os, "replace", original_replace)
+    monkeypatch.setattr(app_module, "replace_checked", original_replace)
     assert app._finalize_label_recovery_holds() is True
     assert app._active_label_recovery_state() == {}
 
 
 def test_f5_crash_before_linked_set_hold_keeps_active_journal(tmp_path, monkeypatch):
     state = {"workflow_mode": "SINGLE", "status": "PREPARED",
-             "set_id": "SET-A", "canonical_input_tag_qr": "PHS2-SOURCE-A",
+             "set_id": "SET-A", "canonical_input_tag_qr": SOURCE_A,
              "source_label_id": "LABEL-A", "prepare_idempotency_key": "PREPARE-A"}
     app, journal = _recovery_app(tmp_path, monkeypatch, state)
     raw = journal.path.read_bytes()
@@ -132,7 +153,7 @@ def test_f5_crash_before_linked_set_hold_keeps_active_journal(tmp_path, monkeypa
     archive = journal.path.with_name(journal.path.name + ".held-" + digest)
     app.package_outbox.hold_label_exchange(
         hold_id=digest, set_id="SET-A", label_id="LABEL-A",
-        source_label="PHS2-SOURCE-A", source_input_tag_id="",
+        source_label=SOURCE_A, source_input_tag_id="",
         journal_bytes=raw, archive_path=str(archive),
         held_by="protected-admin-local",
     )
@@ -154,24 +175,24 @@ def test_f5_missing_source_identity_is_held_without_losing_journal(tmp_path, mon
     assert not journal.path.exists()
     assert app.package_outbox.get_label_exchange_hold(digest)["journal_bytes"] == original
     assert (tmp_path / f"label-exchange.json.held-{digest}").read_bytes() == original
-    assert app._label_recovery_source_is_held("PHS2-OTHER") is True
+    assert app._label_recovery_source_is_held(SOURCE_OTHER) is False
     assert app.__dict__.get("_workflow_blocking_notice") is None
 
 
 def test_f5_selected_held_item_cannot_hold_a_different_active_journal(tmp_path, monkeypatch):
     old = {"workflow_mode": "RECONCILIATION", "status": "PREPARED",
-           "scan_payload": "PHS2-SOURCE-OLD", "active_scan_label_id": "LABEL-OLD"}
+           "scan_payload": SOURCE_OLD, "active_scan_label_id": "LABEL-OLD"}
     app, journal = _recovery_app(tmp_path, monkeypatch, old)
     old_bytes = journal.path.read_bytes()
     old_id = hashlib.sha256(old_bytes).hexdigest()
     app.package_outbox.hold_label_exchange(
         hold_id=old_id, set_id="", label_id="LABEL-OLD",
-        source_label="PHS2-SOURCE-OLD", source_input_tag_id="",
+        source_label=SOURCE_OLD, source_input_tag_id="",
         journal_bytes=old_bytes, archive_path=str(journal.path) + ".held-" + old_id,
         held_by="S-1-5-21-101",
     )
     journal.save({"workflow_mode": "RECONCILIATION", "status": "PREPARED",
-                  "scan_payload": "PHS2-SOURCE-NEW", "active_scan_label_id": "LABEL-NEW"})
+                  "scan_payload": SOURCE_NEW, "active_scan_label_id": "LABEL-NEW"})
     new_bytes = journal.path.read_bytes()
     new_id = hashlib.sha256(new_bytes).hexdigest()
     assert {item["set_id"] for item in app._package_recovery_candidates()} == {
@@ -268,7 +289,7 @@ def test_orphan_hold_quarantines_unverified_source_identity(tmp_path, monkeypatc
 def test_recovery_dialog_authenticates_manager_without_changing_active_operator(tmp_path, monkeypatch):
     app, journal = _recovery_app(tmp_path, monkeypatch, {
         "workflow_mode": "RECONCILIATION", "status": "PREPARED",
-        "scan_payload": "PHS2-SOURCE-A", "active_scan_label_id": "LABEL-A",
+        "scan_payload": SOURCE_A, "active_scan_label_id": "LABEL-A",
     })
     digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
     app.worker_name = "ordinary-operator"
@@ -335,7 +356,7 @@ def test_corrupt_orphan_draft_is_quarantined_per_row(tmp_path, monkeypatch, draf
     assert hold["source_phs2"] == "" and "신원 미확인" in hold["reason"]
     assert app.package_outbox.get_by_set_id("SET-BROKEN")["draft_json"] == draft_json
     assert app.package_outbox.list_local_completion_pending() == []
-    assert app.package_outbox.workbench_hold_for_source("PHS2-OTHER", "ITG-OTHER") is None
+    assert app.package_outbox.workbench_hold_for_source(SOURCE_OTHER, "ITG-OTHER") is None
     with app.package_outbox._connect() as conn:
         conn.execute(
             """INSERT INTO package_command_outbox
@@ -359,7 +380,7 @@ def test_corrupt_orphan_draft_is_quarantined_per_row(tmp_path, monkeypatch, draf
 ])
 def test_damaged_f5_archive_remains_item_hold_without_startup_block(tmp_path, monkeypatch, damaged):
     app, journal, _current = _storage_recovery_app(tmp_path, monkeypatch)
-    journal.save({"status": "PREPARED", "scan_payload": "PHS2-SOURCE-A",
+    journal.save({"status": "PREPARED", "scan_payload": SOURCE_A,
                   "active_scan_label_id": "LABEL-A", "exchange_id": "EXCHANGE-A"})
     digest = app._label_recovery_hold_id()
     assert app._hold_label_recovery(digest, manager_code="admin") is True
@@ -375,7 +396,7 @@ def test_damaged_f5_archive_remains_item_hold_without_startup_block(tmp_path, mo
 
 def test_f5_archive_observations_append_without_replacing_earlier_audit(tmp_path, monkeypatch):
     app, journal, _current = _storage_recovery_app(tmp_path, monkeypatch)
-    journal.save({"status": "PREPARED", "scan_payload": "PHS2-SOURCE-A"})
+    journal.save({"status": "PREPARED", "scan_payload": SOURCE_A})
     original = journal.path.read_bytes()
     digest = hashlib.sha256(original).hexdigest()
     assert app._hold_label_recovery(digest, manager_code="admin") is True
@@ -431,7 +452,7 @@ def test_corrupt_active_f5_journal_can_be_quarantined_by_digest(tmp_path, monkey
     assert (tmp_path / f"label-exchange.json.held-{digest}").read_bytes() == damaged
     app._load_current_set_state()
     assert app.__dict__.get("_workflow_blocking_notice") is None
-    assert app._label_recovery_source_is_held("PHS2-OTHER") is True
+    assert app._label_recovery_source_is_held(SOURCE_OTHER) is False
     assert "보류" in app._recheck_package_recovery_set(
         "F5:" + digest, manager_code="admin"
     )
@@ -514,11 +535,12 @@ def test_manager_physical_scan_only_binds_matching_saved_command(tmp_path, monke
     ) == "관리자 확인이 필요합니다."
 
 
-@pytest.mark.parametrize("central_matches,audit_succeeds", [
-    (True, True), (False, True), (True, False),
+@pytest.mark.parametrize("central_matches,audit_succeeds,key_matches", [
+    (True, True, True), (False, True, True), (True, False, True),
+    (True, True, False),
 ])
 def test_unknown_f5_physical_central_binding_is_audited_before_unlock(
-    tmp_path, monkeypatch, central_matches, audit_succeeds,
+    tmp_path, monkeypatch, central_matches, audit_succeeds, key_matches,
 ):
     source = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-F5|CLC=AAA2270730100|"
               "LBL=LBL-F5|HSH=0123456789abcdef")
@@ -536,7 +558,9 @@ def test_unknown_f5_physical_central_binding_is_audited_before_unlock(
             "input_tag": {"qr_payload": source},
         },
         get_phs_label_exchange=lambda *_args, **_kwargs: {
-            "exchange": {"exchange_id": "EX-F5", "state": "PREPARED"},
+            "exchange": {"exchange_id": "EX-F5", "state": "PREPARED",
+                         "operation_key": _operation_key(
+                             "KEY-F5" if key_matches else "KEY-OTHER")},
             "source_labels": [{
                 "qr_payload": source, "label_id": "LBL-F5",
                 "scan_anchor_input_tag_id": "ITG-F5" if central_matches else "ITG-OTHER",
@@ -552,18 +576,18 @@ def test_unknown_f5_physical_central_binding_is_audited_before_unlock(
     held = app.package_outbox.get_label_exchange_hold(digest)
     assert held["journal_bytes"] == original
     assert journal.path.with_name(journal.path.name + ".held-" + digest).read_bytes() == original
-    if central_matches and audit_succeeds:
+    if central_matches and audit_succeeds and key_matches:
         assert "다른 현품표" in result
         assert held["source_input_tag_id"] == "ITG-F5"
         assert app._label_recovery_source_is_held(source) is True
-        assert app._label_recovery_source_is_held("PHS2-OTHER") is False
+        assert app._label_recovery_source_is_held(SOURCE_OTHER) is False
         assert app.package_outbox.has_workbench_audit(
             set_id="F5:" + digest, action="BIND_LABEL_SOURCE",
             observed="CENTRAL_PHYSICAL_MATCH",
         )
     else:
         assert held["source_input_tag_id"] == ""
-        assert app._label_recovery_source_is_held("PHS2-OTHER") is True
+        assert app._label_recovery_source_is_held(SOURCE_OTHER) is False
 
 
 def test_unknown_multi_source_f5_binds_all_central_sources(tmp_path, monkeypatch):
@@ -584,7 +608,8 @@ def test_unknown_multi_source_f5_binds_all_central_sources(tmp_path, monkeypatch
             "input_tag": {"qr_payload": first},
         },
         get_phs_label_exchange=lambda *_args, **_kwargs: {
-            "exchange": {"exchange_id": "EX-MULTI", "state": "PREPARED"},
+            "exchange": {"exchange_id": "EX-MULTI", "state": "PREPARED",
+                         "operation_key": _operation_key("KEY-MULTI")},
             "source_labels": [
                 {"qr_payload": first, "label_id": "LBL-F5-A",
                  "scan_anchor_input_tag_id": "ITG-F5-A"},
@@ -599,7 +624,7 @@ def test_unknown_multi_source_f5_binds_all_central_sources(tmp_path, monkeypatch
     assert "다른 현품표" in result
     assert app._label_recovery_source_is_held(first) is True
     assert app._label_recovery_source_is_held(second) is True
-    assert app._label_recovery_source_is_held("PHS2-OTHER") is False
+    assert app._label_recovery_source_is_held(SOURCE_OTHER) is False
     with app.package_outbox._connect() as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM phs_label_workbench_hold_sources WHERE hold_id=?",
@@ -607,9 +632,38 @@ def test_unknown_multi_source_f5_binds_all_central_sources(tmp_path, monkeypatch
         ).fetchone()[0] == 2
 
 
+def test_valid_but_wrong_journal_scan_does_not_bind_another_central_exchange(
+        tmp_path, monkeypatch):
+    app, _journal = _recovery_app(tmp_path, monkeypatch, {
+        "workflow_mode": "SINGLE", "status": "PREPARED",
+        "scan_payload": SOURCE_A, "exchange_id": "EX-WRONG",
+        "authority_scope_id": "SCOPE-F5", "prepare_idempotency_key": "KEY-WRONG",
+    })
+    digest = app._label_recovery_hold_id()
+    assert app._hold_label_recovery(digest, manager_code="admin") is True
+    app.phs_label_exchange_coordinator.client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-F5"),
+        resolve_active_phs_label=lambda *_args, **_kwargs: {
+            "input_tag": {"qr_payload": SOURCE_B},
+        },
+        get_phs_label_exchange=lambda *_args, **_kwargs: {
+            "exchange": {"exchange_id": "EX-WRONG", "state": "PREPARED",
+                         "operation_key": _operation_key("KEY-WRONG")},
+            "source_labels": [{"qr_payload": SOURCE_B, "label_id": "LABEL-B",
+                               "scan_anchor_input_tag_id": "ITG-B"}],
+        },
+    )
+    result = app._recheck_package_recovery_physical(
+        "F5:" + digest, SOURCE_B, manager_code="admin"
+    )
+    assert "일치하지" in result
+    assert app.package_outbox.get_label_exchange_hold(digest)["source_input_tag_id"] == ""
+    assert app._label_recovery_source_is_held(SOURCE_B) is False
+
+
 def test_f5_archive_audit_failure_is_read_back_and_kept_for_retry(tmp_path, monkeypatch):
     app, journal, _current = _storage_recovery_app(tmp_path, monkeypatch)
-    journal.save({"status": "PREPARED", "scan_payload": "PHS2-SOURCE-A"})
+    journal.save({"status": "PREPARED", "scan_payload": SOURCE_A})
     digest = app._label_recovery_hold_id()
     assert app._hold_label_recovery(digest, manager_code="admin") is True
     archive = journal.path.with_name(journal.path.name + ".held-" + digest)
@@ -649,7 +703,7 @@ def test_recovery_audit_requires_fresh_connection_readback(tmp_path, monkeypatch
 
 def test_f5_archive_path_mutation_never_reads_outside_storage(tmp_path, monkeypatch):
     app, journal, _current = _storage_recovery_app(tmp_path, monkeypatch)
-    journal.save({"status": "PREPARED", "scan_payload": "PHS2-SOURCE-A"})
+    journal.save({"status": "PREPARED", "scan_payload": SOURCE_A})
     digest = app._label_recovery_hold_id()
     assert app._hold_label_recovery(digest, manager_code="admin") is True
     outside = tmp_path.parent / ("outside.held-" + digest)

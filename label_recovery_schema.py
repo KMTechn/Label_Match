@@ -248,8 +248,21 @@ RECOVERY_SCHEMAS = {
 }
 
 _PHS2 = re.compile(
-    r"^PHS=2\|SRC=KMTECH_INPUT_TAG\|ITG=[^|=]+\|CLC=[^|=]+\|LBL=[^|=]+\|HSH=[0-9a-fA-F]{16}$"
+    r"PHS=2\|SRC=KMTECH_INPUT_TAG\|ITG=([^\s|=\x00-\x1f\x7f]+)\|"
+    r"CLC=[^\s|=\x00-\x1f\x7f]+\|LBL=([^\s|=\x00-\x1f\x7f]+)\|"
+    r"HSH=[0-9a-fA-F]{16}"
 )
+_PHS2_FIELDS = {
+    "current_set": {"canonical_input_tag_qr", "physical_scanned_qr_payload",
+                    "active_label_qr_payload"},
+    "draft": {"source_canonical_input_tag_qr", "source_active_label_qr_payload"},
+    "journal_state": {"canonical_input_tag_qr", "scan_payload"},
+    "action_resolution": {"scan_payload"},
+    "action_scan": {"active_qr_payload"},
+    "action_source": {"qr_payload"},
+}
+_ITG_FIELDS = {"current_set": "input_tag_id", "draft": "source_input_tag_id",
+               "journal_state": "input_tag_id"}
 _DATETIME = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$"
 )
@@ -393,9 +406,35 @@ def validate_recovery_record(kind, value, *, journal_version=None):
         if name.endswith("_at") and isinstance(item, str) and item:
             if not _valid(_TIME, item):
                 return False
-        if name in {"canonical_input_tag_qr", "source_canonical_input_tag_qr"} and item:
-            if not isinstance(item, str) or (item.startswith("PHS=2|") and not _PHS2.fullmatch(item)):
+        if name in _PHS2_FIELDS.get(kind, ()) and item:
+            if not isinstance(item, str) or not _PHS2.fullmatch(item):
                 return False
+    if kind == "action_source":
+        source = _PHS2.fullmatch(value["qr_payload"])
+        if source is None or source.group(2) != value["source_label_id"]:
+            return False
+    if kind == "journal_state":
+        labels = ([value["target_label"]] if "target_label" in value else [])
+        labels.extend(value.get("target_labels") or [])
+        for label in labels:
+            qr = label.get("qr_payload")
+            if qr:
+                match = _PHS2.fullmatch(qr) if isinstance(qr, str) else None
+                if (match is None or (label.get("label_id")
+                                      and label["label_id"] != match.group(2))
+                        or (label.get("scan_anchor_input_tag_id")
+                            and label["scan_anchor_input_tag_id"] != match.group(1))):
+                    return False
+    identity_name = _ITG_FIELDS.get(kind)
+    if identity_name and value.get(identity_name):
+        identity = value[identity_name]
+        if (not isinstance(identity, str) or not re.fullmatch(
+                r"[^\s|=\x00-\x1f\x7f]+", identity)):
+            return False
+        canonical = value.get("canonical_input_tag_qr") or value.get(
+            "source_canonical_input_tag_qr")
+        if canonical and _PHS2.fullmatch(canonical).group(1) != identity:
+            return False
     return True
 
 

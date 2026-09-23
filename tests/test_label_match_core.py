@@ -2769,7 +2769,7 @@ def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_
     def failing_replace(*args, **kwargs):
         raise OSError("replace failed")
 
-    monkeypatch.setattr(module.os, "replace", failing_replace)
+    monkeypatch.setattr("label_data_manager.write_checked_bytes", failing_replace)
 
     assert module.DataManager.save_current_state(
         manager, {"current_set_info": {"raw": ["NEW"]}}
@@ -2778,7 +2778,7 @@ def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert saved["worker_name"] == "old-worker"
     assert saved["current_set_info"]["raw"] == ["OLD"]
-    assert list(tmp_path.glob(f"{module.Label_Match.FILES.CURRENT_STATE}.tmp-*")) == []
+    assert list(tmp_path.glob(f".{module.Label_Match.FILES.CURRENT_STATE}.tmp.*")) == []
 
 
 def test_on_closing_replaces_closed_data_manager_after_close_failure(monkeypatch):

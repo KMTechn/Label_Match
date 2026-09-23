@@ -75,6 +75,8 @@ from label_match_product_host import (
 from writer_session_fence import writer_sink
 from label_data_manager import DataManager as _DataManager, read_recovery_file
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
+from label_safe_path import (describe_entry, quarantine_entry, read_checked_bytes,
+                             replace_checked, unlink_checked, write_checked_bytes)
 
 
 if __name__ == "__main__":
@@ -7406,6 +7408,12 @@ class Label_Match(tk.Tk):
                 rows[set_id] = {"set_id": set_id,
                                 "package": outbox.get_by_set_id(set_id),
                                 "exchange": None, "current": None, "held": hold}
+            try:
+                snapshot = json.loads(hold["snapshot_json"])
+                if snapshot.get("status") == "UNVERIFIED_ENTRY":
+                    rows[set_id]["unverified"] = str(snapshot.get("reason") or "ValueError")
+            except (TypeError, ValueError):
+                pass
         list_label_holds = getattr(outbox, "list_label_exchange_holds", None)
         for hold in list_label_holds() if callable(list_label_holds) else ():
             rows["F5:" + hold["hold_id"]] = {
@@ -7425,7 +7433,7 @@ class Label_Match(tk.Tk):
             evidence = self._read_package_recovery_file(
                 self.phs_label_exchange_coordinator.journal.path, journal=True
             )
-            if evidence["raw"] is not None and not evidence["verified"]:
+            if evidence["reason"] != "missing" and not evidence["verified"]:
                 hold_id = evidence["sha256"]
                 if "F5:" + hold_id not in rows:
                     rows["F5:" + hold_id] = {
@@ -7436,7 +7444,7 @@ class Label_Match(tk.Tk):
         current_path = self._package_current_state_path()
         if current_path:
             evidence = self._read_package_recovery_file(current_path)
-            if evidence["raw"] is not None and not evidence["verified"]:
+            if evidence["reason"] != "missing" and not evidence["verified"]:
                 set_id = "CURRENT:" + evidence["sha256"]
                 rows[set_id] = {"set_id": set_id, "current_file": current_path,
                                 "current": None, "package": None, "exchange": None,
@@ -7460,19 +7468,6 @@ class Label_Match(tk.Tk):
 
     def _label_recovery_source_is_held(self, source, label_id=""):
         outbox = self.__dict__.get("package_outbox")
-        list_holds = getattr(outbox, "list_label_exchange_holds", None)
-        if callable(list_holds):
-            try:
-                if any(not (hold.get("source_label") or hold.get("label_id")
-                            or hold.get("source_input_tag_id")) for hold in list_holds()):
-                    self._show_label_recovery_hold_notice(
-                        "신원을 확인할 수 없는 현품표 교환이 보류 중입니다. "
-                        "다른 포장은 계속하고 관리자에게 실물 현품표 확인을 요청하세요."
-                    )
-                    return True
-            except Exception as exc:
-                print(f"현품표 교환 신원 미확인 보류 조회 기술 진단: {exc}")
-                return True
         lookup = getattr(outbox, "label_exchange_hold_for_source", None)
         if not callable(lookup):
             return False
@@ -7537,12 +7532,11 @@ class Label_Match(tk.Tk):
                         "F5:" + hold_id, "FILE_MISSING", "SYSTEM", "ARCHIVE"
                     )
                     if self._read_package_recovery_file(active, journal=True)["raw"] == raw:
-                        os.replace(active, archive)
+                        replace_checked(active, archive, allowed_root=active.parent,
+                                        replace=False)
                     else:
-                        with archive.open("xb") as handle:
-                            handle.write(raw)
-                            handle.flush()
-                            os.fsync(handle.fileno())
+                        write_checked_bytes(archive, raw, allowed_root=active.parent,
+                                            replace=False)
                 if not self._read_package_recovery_file(
                     archive, journal=True, expected_bytes=raw
                 )["verified"]:
@@ -7580,20 +7574,48 @@ class Label_Match(tk.Tk):
             path = coordinator.journal.path
             if self.package_outbox.get_label_exchange_hold(hold_id):
                 return False
+            prior = self.package_outbox.get_workbench_hold("F5:" + hold_id)
+            if prior:
+                snapshot = json.loads(prior["snapshot_json"])
+                archive = Path(snapshot["archive_path"])
+                if (snapshot.get("status") != "UNVERIFIED_ENTRY"
+                        or describe_entry(archive, allowed_root=path.parent)
+                        != snapshot["entry"]):
+                    return False
+                self._audit_package_recovery_action(
+                    "F5:" + hold_id, "FILE_UNVERIFIED", manager_id,
+                    str(snapshot["reason"]),
+                )
+                return True
             evidence = self._read_package_recovery_file(path, journal=True)
             raw = evidence["raw"]
             digest = evidence["sha256"]
-            if raw is None or digest != hold_id:
+            if digest != hold_id:
                 return False
+            if raw is None:
+                if evidence["entry"] is None:
+                    return False
+                archive = path.with_name(path.name + ".held-" + digest)
+                self.package_outbox.hold_workbench_set(
+                    set_id="F5:" + digest, source_phs2="",
+                    source_input_tag_id="",
+                    snapshot={"status": "UNVERIFIED_ENTRY", "entry": evidence["entry"],
+                              "archive_path": str(archive), "reason": evidence["reason"]},
+                    reason="신원 미확인 교환 파일 항목", held_by=manager_id,
+                )
+                quarantine_entry(path, archive, description=evidence["entry"],
+                                 allowed_root=path.parent)
+                self._audit_package_recovery_action(
+                    "F5:" + digest, "FILE_UNVERIFIED", manager_id,
+                    evidence["reason"],
+                )
+                self._render_operator_workbench()
+                return True
             state = evidence["value"] if evidence["verified"] else {}
-            source = str(state.get("canonical_input_tag_qr") or state.get("scan_payload") or "")
-            label_id = str(state.get("source_label_id") or state.get("active_scan_label_id") or "")
-            input_tag_id = str(state.get("input_tag_id") or "")
-            if not input_tag_id and source:
-                try:
-                    input_tag_id = str(_label_match_parse_compact_phs2(source)["ITG"])
-                except ValueError:
-                    pass
+            # A valid-looking journal identity is still only a claim. Keep it
+            # in the exact journal bytes until the manager checks central
+            # evidence with the physical label.
+            source = label_id = input_tag_id = ""
             archive = path.with_name(path.name + ".held-" + digest)
             hold = self.package_outbox.hold_label_exchange(
                 hold_id=digest, set_id=str(state.get("set_id") or ""),
@@ -7619,7 +7641,8 @@ class Label_Match(tk.Tk):
             else:
                 if self._read_package_recovery_file(path, journal=True)["raw"] != raw:
                     raise PackageLogisticsError("active label journal changed")
-                os.replace(path, archive)
+                replace_checked(path, archive, allowed_root=path.parent,
+                                replace=False)
                 if (self._read_package_recovery_file(archive, journal=True)["raw"] != raw
                         or path.exists()):
                     raise PackageLogisticsError("held label archive readback failed")
@@ -7662,7 +7685,7 @@ class Label_Match(tk.Tk):
         for path in paths:
             values.append(path.name)
             try:
-                values.append(path.read_bytes())
+                values.append(read_checked_bytes(path))
             except OSError:
                 continue
         sources = []
@@ -7768,6 +7791,19 @@ class Label_Match(tk.Tk):
                 try:
                     held = candidate["held"]
                     snapshot = json.loads(held["snapshot_json"])
+                    if snapshot.get("status") == "UNVERIFIED_ENTRY":
+                        archive = Path(snapshot["archive_path"])
+                        if (describe_entry(archive,
+                                                  allowed_root=Path(self.data_manager.save_directory))
+                                != snapshot["entry"]):
+                            raise PackageLogisticsError("held current entry changed")
+                        self._audit_package_recovery_action(
+                            str(set_id), "FILE_UNVERIFIED", manager_id,
+                            str(snapshot["reason"]),
+                        )
+                        self._workflow_blocking_notice = None
+                        self._load_current_set_state()
+                        return True
                     digest = snapshot["current_file_sha256"]
                     raw = base64.b64decode(snapshot["raw_base64"], validate=True)
                     current_path = Path(self._package_current_state_path())
@@ -7803,9 +7839,30 @@ class Label_Match(tk.Tk):
             current_file = candidate.get("current_file")
             if current_file:
                 evidence = self._read_package_recovery_file(current_file)
-                if (evidence["raw"] is None
-                        or "CURRENT:" + evidence["sha256"] != str(set_id)):
+                if "CURRENT:" + evidence["sha256"] != str(set_id):
                     raise PackageLogisticsError("current recovery file changed")
+                if evidence["raw"] is None:
+                    if evidence["entry"] is None:
+                        raise PackageLogisticsError("current entry parent is unverified")
+                    archive = Path(current_file).with_name(
+                        Path(current_file).name + ".held-" + evidence["sha256"]
+                    )
+                    outbox.hold_workbench_set(
+                        set_id=str(set_id), source_phs2="", source_input_tag_id="",
+                        snapshot={"status": "UNVERIFIED_ENTRY", "entry": evidence["entry"],
+                                  "archive_path": str(archive), "reason": evidence["reason"]},
+                        reason="신원 미확인 현재 작업 파일 항목", held_by=manager_id,
+                    )
+                    quarantine_entry(current_file, archive,
+                                     description=evidence["entry"],
+                                     allowed_root=Path(self.data_manager.save_directory))
+                    self._audit_package_recovery_action(
+                        str(set_id), "FILE_UNVERIFIED", manager_id,
+                        evidence["reason"],
+                    )
+                    self._workflow_blocking_notice = None
+                    self._load_current_set_state()
+                    return True
                 archive = Path(current_file).with_name(
                     Path(current_file).name + ".held-" + evidence["sha256"]
                 )
@@ -7828,9 +7885,12 @@ class Label_Match(tk.Tk):
                 if archive.exists():
                     if self._read_package_recovery_file(archive)["raw"] != evidence["raw"]:
                         raise PackageLogisticsError("current recovery archive differs")
-                    os.remove(current_file)
+                    unlink_checked(current_file,
+                                   allowed_root=Path(self.data_manager.save_directory))
                 else:
-                    os.replace(current_file, archive)
+                    replace_checked(current_file, archive,
+                                    allowed_root=Path(self.data_manager.save_directory),
+                                    replace=False)
                 if (self._read_package_recovery_file(archive)["raw"] != evidence["raw"]
                         or os.path.exists(current_file)):
                     raise PackageLogisticsError("current recovery archive readback failed")
@@ -7916,6 +7976,16 @@ class Label_Match(tk.Tk):
                     if not isinstance(state, dict):
                         state = {}
                 else:
+                    entry_hold = self.package_outbox.get_workbench_hold(str(set_id))
+                    if entry_hold:
+                        snapshot = json.loads(entry_hold["snapshot_json"])
+                        if snapshot.get("status") == "UNVERIFIED_ENTRY":
+                            self._audit_package_recovery_action(
+                                set_id, "RECHECK", manager_id, "FILE_UNVERIFIED"
+                            )
+                            return ("교환 파일 항목이 미검증입니다: "
+                                    + str(snapshot.get("reason") or "경로 오류")
+                                    + ". 원본 항목은 보관하고 다른 F5를 계속하세요.")
                     state = self._active_label_recovery_state()
             except Exception as exc:
                 print(f"현품표 교환 보류 재확인 기술 진단: {exc}")
@@ -8006,15 +8076,13 @@ class Label_Match(tk.Tk):
                 hold_id = str(set_id)[3:]
                 held = self.package_outbox.get_label_exchange_hold(hold_id)
                 if held is None:
-                    return "먼저 이 현품표 교환 일지를 보류하세요."
-                if held["source_label"] or held["label_id"] or held["source_input_tag_id"]:
-                    if (held["source_label"] == source
-                            or held["source_input_tag_id"] == fields["ITG"]):
-                        observed = "HELD_SOURCE_MATCH"
-                        result = "보류된 교환 현품표와 일치합니다. 이 현품표의 새 F5는 계속 보류됩니다."
-                    else:
-                        observed = "HELD_SOURCE_DIFFERS"
-                        result = "보류된 교환 현품표와 다릅니다. 신원을 바꾸지 않았습니다."
+                    entry_hold = self.package_outbox.get_workbench_hold(str(set_id))
+                    snapshot = json.loads(entry_hold["snapshot_json"]) if entry_hold else {}
+                    if snapshot.get("status") != "UNVERIFIED_ENTRY":
+                        return "먼저 이 현품표 교환 일지를 보류하세요."
+                    observed = "FILE_UNVERIFIED"
+                    result = ("교환 파일 항목을 안전하게 읽을 수 없습니다. "
+                              "원본 항목을 보관하고 이 건은 보류한 채 다른 F5를 계속하세요.")
                     raise StopIteration
                 raw = bytes(held["journal_bytes"])
                 if hashlib.sha256(raw).hexdigest() != held["journal_sha256"]:
@@ -8058,6 +8126,15 @@ class Label_Match(tk.Tk):
                             break
                         verified_sources.append((label_qr, label_fields["LBL"],
                                                  label_fields["ITG"]))
+                prepare_key = state.get("prepare_idempotency_key")
+                expected_operation_key = (hashlib.sha256(json.dumps({
+                    "contract_version": "phs-work-control-v1",
+                    "authority_scope_id": scope,
+                    "idempotency_key": prepare_key,
+                    "command": "PREPARE_LABEL_EXCHANGE",
+                }, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":")).encode("utf-8")).hexdigest()
+                    if prepare_key else "")
                 if (not isinstance(exchange, dict)
                         or exchange.get("exchange_id") != exchange_id
                         or not isinstance(labels, list) or not labels
@@ -8065,9 +8142,16 @@ class Label_Match(tk.Tk):
                         or len({identity[1] for identity in verified_sources}) != len(labels)
                         or (source, fields["LBL"], fields["ITG"]) not in verified_sources
                         or not isinstance(anchor, dict)
+                        or (state.get("scan_payload")
+                            and state["scan_payload"] not in
+                            {identity[0] for identity in verified_sources})
+                        or (state.get("canonical_input_tag_qr")
+                            and state["canonical_input_tag_qr"] != anchor.get("qr_payload"))
+                        or (state.get("input_tag_id")
+                            and state["input_tag_id"] != fields["ITG"])
                         or _label_match_parse_compact_phs2(anchor.get("qr_payload"))["ITG"] != fields["ITG"]
-                        or (exchange.get("prepare_idempotency_key")
-                            and exchange["prepare_idempotency_key"] != state.get("prepare_idempotency_key"))):
+                        or (prepare_key and exchange.get("operation_key")
+                            != expected_operation_key)):
                     observed = "CENTRAL_NO_LINK"
                     result = "중앙 요청·원본·실물 현품표가 일치하지 않습니다. 이 F5 잠금을 유지하세요."
                 else:
@@ -8284,7 +8368,7 @@ class Label_Match(tk.Tk):
         if not self._finalize_label_recovery_holds():
             return
         current_path = self._package_current_state_path()
-        if current_path and os.path.exists(current_path):
+        if current_path and os.path.lexists(current_path):
             evidence = self._read_package_recovery_file(current_path)
             if not evidence["verified"]:
                 self._show_package_recovery_block(
@@ -8308,7 +8392,7 @@ class Label_Match(tk.Tk):
                 # not turn application startup into a fatal error.
                 print(f"과거 중앙 포장 충돌 시작 정리 오류: {exc}")
         state_data = self._load_verified_package_current_state(
-            evidence if current_path and os.path.exists(current_path) else None
+            evidence if current_path and os.path.lexists(current_path) else None
         )
         if state_data:
             held_set_id = str((state_data.get("current_set_info") or {}).get("id") or "")
@@ -8340,7 +8424,7 @@ class Label_Match(tk.Tk):
                 self._workflow_notice = None
                 self._workflow_notice_action = None
                 self._render_operator_workbench()
-        if not state_data and os.path.exists(self._package_current_state_path()):
+        if not state_data and os.path.lexists(self._package_current_state_path()):
             self._show_package_recovery_block(
                 "현재 작업 파일을 읽지 못했습니다. 파일을 지우지 말고 디스크·폴더 권한·파일 잠금을 확인하세요."
             )
