@@ -380,7 +380,7 @@ def test_data_manager_persists_canonical_admin_label_and_business_number(
     manager.log_event("TEST_EVENT", {"item_code": OTHER_SIX_DIGIT_VALUE})
     manager.flush(timeout=5)
     assert manager.save_current_state(
-        {"current_set_info": {"lot": OTHER_SIX_DIGIT_VALUE}}
+        {"current_set_info": {"id": "SET-ADMIN", "raw": [OTHER_SIX_DIGIT_VALUE]}}
     )
     manager.close(timeout=5)
 
