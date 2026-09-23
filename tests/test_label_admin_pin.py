@@ -256,6 +256,41 @@ def test_existing_hold_row_resume_preserves_new_pin_key(tmp_path, monkeypatch):
     assert server.redeem_calls == server.verify_calls == 1
 
 
+@pytest.mark.parametrize("linked", [False, True])
+def test_after_applied_write_keeps_terminal_state_and_single_effect(tmp_path, monkeypatch, linked):
+    app, journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked
+    )
+    action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
+    selected = "F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest() if linked else set_id
+    original_transition = app._admin_pin_store.transition
+    interrupted = False
+
+    def after_applied(key, state, *, error_code=""):
+        nonlocal interrupted
+        original_transition(key, state, error_code=error_code)
+        if state == "APPLIED" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted after APPLIED write")
+
+    app._admin_pin_store.transition = after_applied
+    assert app._run_package_pin_action(action, selected)
+    key = _intent(app)[0]
+    assert interrupted and _intent(app)[2] == "APPLIED"
+    assert app._run_package_pin_action(action, selected)
+    assert _intent(app)[0] == key and _intent(app)[2] == "APPLIED"
+    assert server.verify_calls == server.redeem_calls == 1
+    assert not current.exists() and app.current_set_info["id"] is None
+    with pytest.raises(Exception):
+        app._admin_pin_store.transition(key, "UNVERIFIED_OPERATOR_HOLD")
+    assert _intent(app)[2] == "APPLIED"
+    with app.package_outbox._connect() as conn:
+        count = conn.execute("""SELECT COUNT(*) FROM package_workbench_hold_audit
+            WHERE set_id=? AND action='PIN_REVIEW_HOLD' AND operation_key=?""",
+            (selected, key)).fetchone()[0]
+    assert count == 1
+
+
 @pytest.mark.parametrize("boundary", ["hold_row", "archive_moved"])
 def test_damaged_current_hold_resumes_same_key(tmp_path, monkeypatch, boundary):
     app, journal, server = _pin_app(tmp_path, monkeypatch)

@@ -272,6 +272,15 @@ class AdminPinIntentStore:
                 ORDER BY rowid DESC LIMIT 1""", (kind, target_id)).fetchone()
             return dict(row) if row else None
 
+    def applied(self, kind: str, target_id: str, action: str) -> dict[str, str] | None:
+        if not self.path.exists():
+            return None
+        with self._connect() as conn:
+            row = conn.execute("""SELECT * FROM admin_pin_intents
+                WHERE target_kind=? AND target_id=? AND action=? AND state='APPLIED'
+                ORDER BY rowid DESC LIMIT 1""", (kind, target_id, action)).fetchone()
+            return dict(row) if row else None
+
     def list_pending(self) -> list[dict[str, str]]:
         if not self.path.exists():
             return []
@@ -313,6 +322,14 @@ class AdminPinIntentStore:
         if state not in {"AUTHORIZED", "APPLIED", "UNKNOWN", "UNVERIFIED_OPERATOR_HOLD", "SUPERSEDED", "HANDED_OFF_UNKNOWN"}:
             raise ValueError("invalid PIN intent state")
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            prior = conn.execute(
+                "SELECT state FROM admin_pin_intents WHERE operation_key=?", (operation_key,)
+            ).fetchone()
+            if prior is None:
+                raise AdminPinError("INTENT_MISSING", unknown=True)
+            if prior["state"] == "APPLIED" and state != "APPLIED":
+                raise AdminPinError("INTENT_APPLIED", unknown=True)
             changed = conn.execute(
                 "UPDATE admin_pin_intents SET state=?,error_code=? WHERE operation_key=?",
                 (state, error_code, operation_key),

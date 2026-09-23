@@ -8301,6 +8301,22 @@ class Label_Match(tk.Tk):
             if result is not None:
                 self._admin_pin_last_message = str(result)
                 return result
+        if action in {"LABEL.F5_HOLD", "LABEL.SET_HOLD"}:
+            try:
+                applied = store.applied(kind, target_id, action)
+            except Exception:
+                self._admin_pin_last_message = admin_pin_message("AUDIT_UNAVAILABLE")
+                return False
+            if applied:
+                try:
+                    complete = self._package_pin_effect(applied)
+                except Exception:
+                    complete = False
+                if complete:
+                    self._admin_pin_last_message = "같은 관리자 요청의 보류 완료를 확인했습니다."
+                    return True
+                self._admin_pin_last_message = admin_pin_message("EFFECT_UNVERIFIED")
+                return False
         try:
             target, source_sha = self._package_pin_target(action, set_id, physical_qr)
             operator = self._package_pin_operator()
@@ -8382,6 +8398,21 @@ class Label_Match(tk.Tk):
         except Exception:
             code = "VERIFY_UNAVAILABLE"
         if operation_key:
+            try:
+                applied = store.applied(target["kind"], target["id"], action)
+            except Exception:
+                self._admin_pin_last_message = admin_pin_message("AUDIT_UNAVAILABLE")
+                return False
+            if applied and applied["operation_key"] == operation_key:
+                try:
+                    complete = self._package_pin_effect(applied)
+                except Exception:
+                    complete = False
+                if complete:
+                    self._admin_pin_last_message = "같은 관리자 요청의 로컬 효과를 확인했습니다."
+                    return True
+                self._admin_pin_last_message = admin_pin_message("EFFECT_UNVERIFIED")
+                return False
             try:
                 store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
             except Exception:
