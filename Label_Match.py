@@ -7852,7 +7852,7 @@ class Label_Match(tk.Tk):
             self._admin_pin_client = client
         return client
 
-    def _package_pin_target(self, action, set_id, physical_qr=""):
+    def _package_pin_target(self, action, set_id, physical_qr="", *, resume_intent=None):
         """Read the original local evidence before issue and again before write."""
         set_id = str(set_id)
         candidate = next((item for item in self._package_recovery_candidates()
@@ -7918,6 +7918,34 @@ class Label_Match(tk.Tk):
                 )["sha256"]
             elif candidate.get("current"):
                 details["current_sha256"] = admin_pin_fingerprint(candidate["current"])
+            if action == "LABEL.SET_HOLD" and resume_intent and held:
+                rows = self.package_outbox.pin_effect_rows(resume_intent["operation_key"])
+                authorized = any(
+                    row["set_id"] == set_id and row["action"] == "PIN_ATTEMPT"
+                    and row["observed"] == "AUTHORIZED"
+                    and row["verification_id"] == resume_intent["verification_id"]
+                    and row["pin_action"] == action
+                    and row["operator_id"] == resume_intent["operator_id"]
+                    for row in rows
+                )
+                own_hold = any(
+                    row["set_id"] == set_id and row["action"] == "HOLD"
+                    and row["verification_id"] == resume_intent["verification_id"]
+                    and row["pin_action"] == action
+                    and row["operator_id"] == resume_intent["operator_id"]
+                    for row in rows
+                )
+                if authorized and (not own_hold or held["held_by"] == resume_intent["admin_id"]):
+                    snapshot = json.loads(held["snapshot_json"])
+                    if own_hold:
+                        details["hold_sha256"] = hashlib.sha256(b"").hexdigest()
+                    if set_id.startswith("CURRENT:"):
+                        details["current_file_sha256"] = snapshot.get("current_file_sha256", set_id[8:])
+                    elif not candidate.get("current"):
+                        saved = snapshot.get("current_set_info") or {}
+                        if str(saved.get("id") or "") != set_id:
+                            raise AdminPinError("TARGET_CHANGED")
+                        details["current_sha256"] = admin_pin_fingerprint(saved)
             target_id, kind = set_id, "label_set_recovery"
         if physical_qr:
             fields = _label_match_parse_compact_phs2(physical_qr)
@@ -7963,6 +7991,53 @@ class Label_Match(tk.Tk):
         return {"kind": kind, "id": target_id,
                 "state_fingerprint": source_sha}, source_sha
 
+    def _package_set_hold_complete(self, set_id, held):
+        if not held:
+            return False
+        try:
+            snapshot = json.loads(held["snapshot_json"])
+            current_path = self._package_current_state_path()
+            if set_id.startswith("CURRENT:"):
+                archive = Path(snapshot["archive_path"])
+                if os.path.lexists(current_path or ""):
+                    return False
+                if snapshot.get("status") == "UNVERIFIED_ENTRY":
+                    return describe_entry(
+                        archive, allowed_root=Path(self.data_manager.save_directory)
+                    ) == snapshot["entry"]
+                raw = base64.b64decode(snapshot["raw_base64"], validate=True)
+                return (hashlib.sha256(raw).hexdigest() == snapshot["current_file_sha256"]
+                        and self._read_package_recovery_file(archive)["raw"] == raw)
+            saved = snapshot.get("current_set_info") or {}
+            if str(saved.get("id") or snapshot.get("orphan_set_id") or "") != set_id:
+                return False
+            if str((self.__dict__.get("current_set_info") or {}).get("id") or "") == set_id:
+                return False
+            recovery = self.__dict__.get("_package_recovery_state_data") or {}
+            if str((recovery.get("current_set_info") or {}).get("id") or "") == set_id:
+                return False
+            if current_path and os.path.lexists(current_path):
+                evidence = self._read_package_recovery_file(current_path)
+                if not evidence["verified"]:
+                    return False
+                live = (evidence["value"] or {}).get("current_set_info") or {}
+                if str(live.get("id") or "") == set_id:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def _package_pin_entry_hold_complete(self, entry):
+        try:
+            snapshot = json.loads(entry["snapshot_json"])
+            journal = self.phs_label_exchange_coordinator.journal.path
+            return (snapshot.get("status") == "UNVERIFIED_ENTRY"
+                    and describe_entry(Path(snapshot["archive_path"]),
+                                       allowed_root=journal.parent) == snapshot["entry"]
+                    and not os.path.lexists(journal))
+        except Exception:
+            return False
+
     def _package_pin_effect(self, intent):
         rows = self.package_outbox.pin_effect_rows(intent["operation_key"])
         rows = [row for row in rows if row["verification_id"] == intent["verification_id"]
@@ -7977,48 +8052,31 @@ class Label_Match(tk.Tk):
                 archive = Path(held["archive_path"])
                 raw = bytes(held["journal_bytes"])
                 complete = (hashlib.sha256(raw).hexdigest() == held["journal_sha256"]
-                            and not self.phs_label_exchange_coordinator.journal.path.exists()
+                            and not os.path.lexists(self.phs_label_exchange_coordinator.journal.path)
                             and self._read_package_recovery_file(
                                 archive, journal=True, expected_bytes=raw
                             )["verified"])
-                if held["set_id"] and not self.package_outbox.get_workbench_hold(held["set_id"]):
-                    complete = False
-                return complete and any(row["action"] in {"HOLD_LABEL", "PIN_REVIEW_HOLD"} for row in rows)
+                if held["set_id"]:
+                    linked = self.package_outbox.get_workbench_hold(held["set_id"])
+                    complete = (complete and self._package_set_hold_complete(held["set_id"], linked)
+                                and any(row["set_id"] == held["set_id"]
+                                        and row["action"] in {"HOLD", "PIN_REVIEW_HOLD"}
+                                        for row in rows))
+                return complete and any(row["set_id"] == "F5:" + hold_id
+                                        and row["action"] == "PIN_REVIEW_HOLD" for row in rows)
             entry = self.package_outbox.get_workbench_hold("F5:" + hold_id)
             if entry:
-                try:
-                    snapshot = json.loads(entry["snapshot_json"])
-                    archive = Path(snapshot["archive_path"])
-                    complete = (snapshot.get("status") == "UNVERIFIED_ENTRY"
-                                and describe_entry(
-                                    archive, allowed_root=self.phs_label_exchange_coordinator.journal.path.parent
-                                ) == snapshot["entry"]
-                                and not os.path.lexists(self.phs_label_exchange_coordinator.journal.path))
-                except Exception:
-                    complete = False
-                return complete and any(row["action"] in {"HOLD", "PIN_REVIEW_HOLD"} for row in rows)
+                return (self._package_pin_entry_hold_complete(entry)
+                        and any(row["set_id"] == "F5:" + hold_id
+                                and row["action"] == "PIN_REVIEW_HOLD" for row in rows))
             return False
         if action == "LABEL.SET_HOLD":
             held = self.package_outbox.get_workbench_hold(set_id)
             if not held:
                 return False
-            active = (str((self.__dict__.get("current_set_info") or {}).get("id") or "") == set_id
-                      or (set_id.startswith("CURRENT:") and
-                          os.path.lexists(self._package_current_state_path() or "")))
-            if set_id.startswith("CURRENT:"):
-                try:
-                    snapshot = json.loads(held["snapshot_json"])
-                    archive = Path(snapshot["archive_path"])
-                    root = Path(self.data_manager.save_directory)
-                    if snapshot.get("status") == "UNVERIFIED_ENTRY":
-                        active = active or (describe_entry(archive, allowed_root=root)
-                                            != snapshot["entry"])
-                    else:
-                        raw = base64.b64decode(snapshot["raw_base64"], validate=True)
-                        active = active or (self._read_package_recovery_file(archive)["raw"] != raw)
-                except Exception:
-                    active = True
-            return not active and any(row["action"] in {"HOLD", "PIN_REVIEW_HOLD"} for row in rows)
+            return (self._package_set_hold_complete(set_id, held)
+                    and any(row["set_id"] == set_id
+                            and row["action"] == "PIN_REVIEW_HOLD" for row in rows))
         effects = {
             "LABEL.RECHECK": {"RECHECK"},
             "LABEL.PHS_LOOKUP": {"SCAN_PHYSICAL", "BIND_LABEL_SOURCE", "BIND_SOURCE"},
@@ -8032,36 +8090,53 @@ class Label_Match(tk.Tk):
             hold_id = str(set_id)[3:]
             held = self.package_outbox.get_label_exchange_hold(hold_id)
             entry = self.package_outbox.get_workbench_hold(set_id)
-            if held or entry:
-                if held:
-                    if not self._finalize_label_recovery_holds(only_hold_id=hold_id):
+            if not held and not entry:
+                if not self._hold_label_recovery(hold_id):
+                    return False
+                held = self.package_outbox.get_label_exchange_hold(hold_id)
+                entry = self.package_outbox.get_workbench_hold(set_id)
+            if held:
+                linked = str(held.get("set_id") or "")
+                if linked and not self._package_set_hold_complete(
+                    linked, self.package_outbox.get_workbench_hold(linked)
+                ):
+                    if not self._hold_package_recovery_set(linked):
                         raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
-                    raw = bytes(held["journal_bytes"])
-                    if (hashlib.sha256(raw).hexdigest() != held["journal_sha256"]
-                            or not self._read_package_recovery_file(
-                                held["archive_path"], journal=True, expected_bytes=raw
-                            )["verified"]):
-                        raise AdminPinError("TARGET_CHANGED")
-                    linked = str(held.get("set_id") or "")
-                    if linked and not self.package_outbox.get_workbench_hold(linked):
-                        if not self._hold_package_recovery_set(linked):
-                            raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
-                self._audit_package_recovery_action(
-                    set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
-                )
-                return True
-            return self._hold_label_recovery(hold_id)
+                if linked and not self._package_set_hold_complete(
+                    linked, self.package_outbox.get_workbench_hold(linked)
+                ):
+                    raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+                if linked:
+                    self._audit_package_recovery_action(
+                        linked, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                    )
+                if not self._finalize_label_recovery_holds(only_hold_id=hold_id):
+                    raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+                raw = bytes(held["journal_bytes"])
+                if (hashlib.sha256(raw).hexdigest() != held["journal_sha256"]
+                        or os.path.lexists(self.phs_label_exchange_coordinator.journal.path)
+                        or not self._read_package_recovery_file(
+                            held["archive_path"], journal=True, expected_bytes=raw
+                        )["verified"]):
+                    raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+            elif not entry or not self._package_pin_entry_hold_complete(entry):
+                raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+            self._audit_package_recovery_action(
+                set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+            )
+            return True
         if action == "LABEL.SET_HOLD":
             held = self.package_outbox.get_workbench_hold(set_id)
-            active = (str((self.__dict__.get("current_set_info") or {}).get("id") or "") == set_id
-                      or (set_id.startswith("CURRENT:") and
-                          os.path.lexists(self._package_current_state_path() or "")))
-            if held and not active:
-                self._audit_package_recovery_action(
-                    set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
-                )
-                return True
-            return self._hold_package_recovery_set(set_id)
+            if not self._package_set_hold_complete(set_id, held):
+                if not self._hold_package_recovery_set(set_id):
+                    raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+                held = self.package_outbox.get_workbench_hold(set_id)
+            if not self._package_set_hold_complete(set_id, held):
+                raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+            self._audit_package_recovery_action(
+                set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+            )
+            return True
         if action == "LABEL.RECHECK":
             return self._recheck_package_recovery_set(set_id)
         if action == "LABEL.PHS_LOOKUP":
@@ -8096,7 +8171,9 @@ class Label_Match(tk.Tk):
             )):
                 return intent
             try:
-                current, _ = self._package_pin_target(intent["action"], set_id)
+                current, _ = self._package_pin_target(
+                    intent["action"], set_id, resume_intent=intent
+                )
             except Exception:
                 return intent
             if (current["id"] != intent["target_id"]
@@ -8172,7 +8249,7 @@ class Label_Match(tk.Tk):
             return None
         try:
             target, _source_sha = self._package_pin_target(
-                pending["action"], set_id, physical_qr
+                pending["action"], set_id, physical_qr, resume_intent=pending
             )
             operator = self._package_pin_operator()
         except Exception:
@@ -8235,7 +8312,17 @@ class Label_Match(tk.Tk):
             return False
         admin_id, pin = credentials
         if not admin_id or not (len(pin) == 6 and pin.isascii() and pin.isdecimal()):
-            self._admin_pin_last_message = admin_pin_message("PIN_INVALID")
+            try:
+                self.package_outbox.audit_pin_attempt(
+                    set_id=set_id, pin_action=action, admin_id=admin_id,
+                    operator_id=operator["local_id"],
+                    operator_name=str(self.worker_name).strip(),
+                    verification_id="", operation_key="", result="PIN_INVALID",
+                )
+                code = "PIN_INVALID"
+            except Exception:
+                code = "AUDIT_UNAVAILABLE"
+            self._admin_pin_last_message = admin_pin_message(code)
             return False
         request_id = str(uuid.uuid4())
         verification_id = ""
@@ -8387,6 +8474,38 @@ class Label_Match(tk.Tk):
             return False
         outbox = self.package_outbox
         current = candidate.get("current")
+        held = outbox.get_workbench_hold(str(set_id))
+        if held and not str(set_id).startswith("CURRENT:"):
+            try:
+                snapshot = json.loads(held["snapshot_json"])
+                saved = snapshot.get("current_set_info") or {}
+                if str(saved.get("id") or "") == str(set_id):
+                    if current and current != saved:
+                        raise PackageLogisticsError("held current set changed")
+                    current_path = self._package_current_state_path()
+                    if current_path and os.path.lexists(current_path):
+                        evidence = self._read_package_recovery_file(current_path)
+                        if not evidence["verified"] or evidence["value"] != snapshot:
+                            raise PackageLogisticsError("held current file changed")
+                        self.data_manager.delete_current_state()
+                        if os.path.lexists(current_path):
+                            raise PackageLogisticsError("held current file remains")
+                    if str((self.__dict__.get("current_set_info") or {}).get("id") or "") == str(set_id):
+                        self._reset_current_set()
+                    recovery = self.__dict__.get("_package_recovery_state_data") or {}
+                    if str((recovery.get("current_set_info") or {}).get("id") or "") == str(set_id):
+                        self.__dict__.pop("_package_recovery_state_data", None)
+                    if not self._package_set_hold_complete(str(set_id), held):
+                        raise PackageLogisticsError("held current set remains active")
+                    self._workflow_blocking_notice = None
+                    return True
+            except Exception as exc:
+                print(f"포장 건별 보류 재개 기술 진단: {exc}")
+                self._show_package_recovery_block(
+                    "현재 작업 보류 단계를 확인하지 못했습니다. 원본을 확인하고 다시 시도하세요.",
+                    retry_action=self._show_package_recovery_workbench,
+                )
+                return False
         if candidate.get("held") and not current and not candidate.get("current_file"):
             if str(set_id).startswith("CURRENT:"):
                 try:

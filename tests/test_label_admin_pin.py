@@ -129,6 +129,190 @@ def _intent(app):
         return conn.execute("SELECT operation_key,verification_id,state,error_code FROM admin_pin_intents").fetchone()
 
 
+def _active_set_pin_app(tmp_path, monkeypatch, *, linked):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    set_id = "SET-VALID"
+    if linked:
+        journal.save({
+            "workflow_mode": "RECONCILIATION", "status": "PREPARE_PENDING",
+            "set_id": set_id, "scan_payload": SOURCE_A,
+            "active_scan_label_id": "LABEL-A", "authority_scope_id": "SCOPE-A",
+            "prepare_idempotency_key": "PREPARE-A", "exchange_id": "",
+        })
+    else:
+        journal.path.unlink()
+    app.current_set_info = {"id": set_id, "raw": [SOURCE_A], "parsed": [],
+                            "recovery_operator_review": True}
+    current = tmp_path / "current.json"
+    def save(state):
+        current.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        return True
+    app.data_manager = SimpleNamespace(
+        save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
+        load_current_state=lambda: json.loads(current.read_text(encoding="utf-8")) if current.exists() else None,
+        save_current_state=save, delete_current_state=lambda: current.unlink(missing_ok=True),
+    )
+    app.initialized_successfully = True
+    app.is_blinking = False
+    app._reset_current_set = lambda: setattr(app, "current_set_info", {"id": None, "raw": []})
+    app._load_current_set_state = lambda: None
+    save({"current_set_info": app.current_set_info, "timestamp": "2026-09-24T00:00:00"})
+    assert app._read_package_recovery_file(current)["verified"]
+    return app, journal, current, server, set_id
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("boundary", ["hold_row", "file_deleted", "slot_released", "applied"])
+def test_set_hold_interruptions_resume_same_key(tmp_path, monkeypatch, linked, boundary):
+    app, journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked
+    )
+    action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
+    selected = "F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest() if linked else set_id
+    original_delete = app.data_manager.delete_current_state
+    original_reset = app._reset_current_set
+    original_transition = app._admin_pin_store.transition
+    interrupted = False
+
+    def delete():
+        nonlocal interrupted
+        if boundary == "hold_row" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted after hold row")
+        original_delete()
+        if boundary == "file_deleted" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted after file delete")
+
+    def reset():
+        nonlocal interrupted
+        original_reset()
+        if boundary == "slot_released" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted after slot release")
+
+    def transition(key, state, *, error_code=""):
+        nonlocal interrupted
+        if boundary == "applied" and state == "APPLIED" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted before APPLIED")
+        return original_transition(key, state, error_code=error_code)
+
+    app.data_manager.delete_current_state = delete
+    app._reset_current_set = reset
+    app._admin_pin_store.transition = transition
+    assert app._run_package_pin_action(action, selected) is False
+    assert interrupted
+    key = _intent(app)[0]
+    assert _intent(app)[2] != "APPLIED"
+    if boundary == "hold_row":
+        assert current.exists()
+    if boundary == "file_deleted":
+        assert app.current_set_info["id"] == set_id
+    if boundary != "applied":
+        assert not app._package_pin_effect(app._admin_pin_store.pending(
+            "label_f5_recovery" if linked else "label_set_recovery",
+            selected[3:] if linked else selected,
+        ))
+    assert app._run_package_pin_action(action, selected)
+    assert _intent(app)[0] == key and _intent(app)[2] == "APPLIED"
+    assert not current.exists() and app.current_set_info["id"] is None
+    assert server.redeem_calls == server.verify_calls == 1
+    with app.package_outbox._connect() as conn:
+        rows = conn.execute("""SELECT set_id,action,operation_key FROM package_workbench_hold_audit
+            WHERE action='PIN_REVIEW_HOLD'""").fetchall()
+    assert any(row["set_id"] == set_id and row["operation_key"] == key for row in rows)
+    if linked:
+        assert any(row["set_id"] == selected and row["operation_key"] == key for row in rows)
+        assert not journal.path.exists()
+
+
+def test_existing_hold_row_resume_preserves_new_pin_key(tmp_path, monkeypatch):
+    app, _journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False
+    )
+    app.package_outbox.hold_workbench_set(
+        set_id=set_id, source_phs2="", source_input_tag_id="",
+        snapshot=json.loads(current.read_text(encoding="utf-8")),
+        reason="prior hold", held_by="prior-manager",
+    )
+    original_delete = app.data_manager.delete_current_state
+    interrupted = False
+
+    def delete():
+        nonlocal interrupted
+        original_delete()
+        if not interrupted:
+            interrupted = True
+            raise OSError("interrupted after file delete")
+
+    app.data_manager.delete_current_state = delete
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    key = _intent(app)[0]
+    assert interrupted and not current.exists()
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id)
+    assert _intent(app)[0] == key and _intent(app)[2] == "APPLIED"
+    assert app.current_set_info["id"] is None
+    assert server.redeem_calls == server.verify_calls == 1
+
+
+@pytest.mark.parametrize("boundary", ["hold_row", "archive_moved"])
+def test_damaged_current_hold_resumes_same_key(tmp_path, monkeypatch, boundary):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    journal.path.unlink()
+    current = tmp_path / "current.json"
+    current.write_bytes(b"{broken-current-file")
+    app.data_manager = SimpleNamespace(
+        save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
+        load_current_state=lambda: None, delete_current_state=lambda: current.unlink(missing_ok=True),
+    )
+    app._load_current_set_state = lambda: None
+    digest = hashlib.sha256(current.read_bytes()).hexdigest()
+    set_id = "CURRENT:" + digest
+    original_replace = app_module.replace_checked
+    interrupted = False
+
+    def replace(*args, **kwargs):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            if boundary == "hold_row":
+                raise OSError("interrupted after hold row")
+            original_replace(*args, **kwargs)
+            raise OSError("interrupted after archive move")
+        return original_replace(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "replace_checked", replace)
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    assert interrupted and app.package_outbox.get_workbench_hold(set_id)
+    key = _intent(app)[0]
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id)
+    assert _intent(app)[0] == key and _intent(app)[2] == "APPLIED"
+    assert not current.exists()
+    assert current.with_name(current.name + ".held-" + digest).read_bytes() == b"{broken-current-file"
+    assert server.redeem_calls == server.verify_calls == 1
+    with app.package_outbox._connect() as conn:
+        rows = conn.execute("""SELECT action,operation_key FROM package_workbench_hold_audit
+            WHERE set_id=? AND action='PIN_REVIEW_HOLD'""", (set_id,)).fetchall()
+    assert len(rows) == 1 and rows[0]["operation_key"] == key
+
+
+@pytest.mark.parametrize("admin_id,pin", [("", PIN), ("admin-personal", "12345X")])
+def test_pin_format_rejection_is_audited_without_secret(tmp_path, monkeypatch, admin_id, pin):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    app._prompt_package_admin_pin = lambda: (admin_id, pin)
+    set_id = "F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest()
+    assert app._run_package_pin_action("LABEL.F5_HOLD", set_id) is False
+    assert server.verify_calls == server.redeem_calls == 0
+    with app.package_outbox._connect() as conn:
+        rows = conn.execute("""SELECT set_id,pin_action,manager_id,operator_id,operator_name,
+            observed FROM package_workbench_hold_audit WHERE action='PIN_ATTEMPT'""").fetchall()
+    assert len(rows) == 1
+    assert tuple(rows[0]) == (set_id, "LABEL.F5_HOLD", admin_id,
+                              operator_local_id("홍길동"), "홍길동", "PIN_INVALID")
+    assert pin.encode() not in (tmp_path / "outbox.sqlite3").read_bytes()
+
+
 def test_signed_f5_hold_records_keyed_effect_and_no_secret(tmp_path, monkeypatch, capsys):
     app, journal, server = _pin_app(tmp_path, monkeypatch)
     digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
