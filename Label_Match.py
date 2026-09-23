@@ -35,6 +35,7 @@ from protected_admin import (
     PROTECTED_ADMIN_DISPLAY_NAME,
     PROTECTED_ADMIN_OPERATOR_ID,
     PROTECTED_ADMIN_ROLE,
+    current_process_sid as _current_user_sid,
     display_operator_name,
     is_protected_admin_code,
     is_protected_admin_candidate,
@@ -7479,7 +7480,7 @@ class Label_Match(tk.Tk):
             return False
 
     @writer_sink("gui_label_recovery_hold")
-    def _hold_label_recovery(self, *, manager_code=None):
+    def _hold_label_recovery(self, hold_id, *, manager_code=None):
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return False
@@ -7489,8 +7490,12 @@ class Label_Match(tk.Tk):
             return False
         path = coordinator.journal.path
         try:
+            if self.package_outbox.get_label_exchange_hold(hold_id):
+                return False
             raw = path.read_bytes()
             digest = hashlib.sha256(raw).hexdigest()
+            if digest != hold_id:
+                return False
             source = str(state.get("canonical_input_tag_qr") or state.get("scan_payload") or "")
             label_id = str(state.get("source_label_id") or state.get("active_scan_label_id") or "")
             input_tag_id = str(state.get("input_tag_id") or "")
@@ -7543,28 +7548,50 @@ class Label_Match(tk.Tk):
     def _package_recovery_identity(self, candidate):
         current = candidate.get("current") or {}
         raw = current.get("raw") or []
-        source = str(raw[0] if raw else "").strip()
         draft = {}
         package = candidate.get("package") or {}
         try:
             draft = json.loads(str(package.get("draft_json") or "{}"))
         except (TypeError, ValueError):
             pass
-        source = source or str(draft.get("source_active_label_qr_payload") or
-                               draft.get("source_canonical_input_tag_qr") or "").strip()
-        input_tag_id = str(draft.get("source_input_tag_id") or "").strip()
-        try:
-            input_tag_id = str(_label_match_parse_compact_phs2(source)["ITG"])
-        except ValueError:
-            pass
-        return source, input_tag_id
+        if not isinstance(draft, dict):
+            draft = {}
+        source = str(raw[0] if raw else "").strip()
+        sources = (source, str(draft.get("source_canonical_input_tag_qr") or "").strip(),
+                   str(draft.get("source_active_label_qr_payload") or "").strip())
+        verified = []
+        for value in sources:
+            if not value:
+                continue
+            try:
+                verified.append((value, str(_label_match_parse_compact_phs2(value)["ITG"])))
+            except ValueError:
+                continue
+        if not verified or len({identity for _, identity in verified}) != 1:
+            raise PackageLogisticsError("held package source identity cannot be verified")
+        draft_itg = str(draft.get("source_input_tag_id") or "").strip()
+        if draft_itg and draft_itg != verified[0][1]:
+            raise PackageLogisticsError("held package source identity differs")
+        return verified[0]
 
     def _package_recovery_manager(self, code=None):
+        def current_admin():
+            return (self.__dict__.get("worker_name") == PROTECTED_ADMIN_OPERATOR_ID
+                    and self.__dict__.get("worker_role") == PROTECTED_ADMIN_ROLE
+                    and self.__dict__.get("_authenticated_protected_admin") is True)
+
+        if not current_admin():
+            return ""
         if code is None and not self.run_tests:
             code = simpledialog.askstring(
                 "관리자 확인", "보호 관리자 코드를 입력하세요.", show="*", parent=self
             )
-        return PROTECTED_ADMIN_OPERATOR_ID if is_protected_admin_code(code) else ""
+        if not current_admin() or not is_protected_admin_code(code):
+            return ""
+        try:
+            return _current_user_sid()
+        except Exception:
+            return ""
 
     @writer_sink("gui_package_recovery_hold")
     def _hold_package_recovery_set(self, set_id, *, manager_code=None):
@@ -7593,7 +7620,15 @@ class Label_Match(tk.Tk):
             else:
                 snapshot = {"orphan_set_id": str(set_id),
                             "package_key": str((candidate.get("package") or {}).get("idempotency_key") or "")}
-            source, input_tag_id = self._package_recovery_identity(candidate)
+            try:
+                source, input_tag_id = self._package_recovery_identity(candidate)
+            except PackageLogisticsError:
+                self._show_package_recovery_block(
+                    "이 요청의 현품표를 확인할 수 없어 작업대를 비울 수 없습니다. "
+                    "원본을 유지하고 세트·요청 ID를 지원 담당자에게 인계하세요.",
+                    retry_action=self._show_package_recovery_workbench,
+                )
+                return False
             outbox.hold_workbench_set(
                 set_id=str(set_id), source_phs2=source,
                 source_input_tag_id=input_tag_id, snapshot=snapshot,
@@ -7753,7 +7788,7 @@ class Label_Match(tk.Tk):
             item = selected()
             if item:
                 try:
-                    held = (self._hold_label_recovery()
+                    held = (self._hold_label_recovery(item["set_id"][3:])
                             if item["set_id"].startswith("F5:")
                             else self._hold_package_recovery_set(item["set_id"]))
                 except Exception as exc:
@@ -7766,6 +7801,8 @@ class Label_Match(tk.Tk):
                 if held:
                     status.set("해당 세트의 원본·요청 키를 보류하고 다른 세트 작업을 계속할 수 있습니다.")
                     refresh()
+                else:
+                    status.set("선택한 항목을 보류하지 않았습니다. 이미 보류되었거나 현재 요청이 다릅니다. 목록을 다시 확인하세요.")
 
         def handoff():
             item = selected()

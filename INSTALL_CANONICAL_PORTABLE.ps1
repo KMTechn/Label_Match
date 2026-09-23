@@ -985,6 +985,7 @@ $invokeParameters = @{
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
 }
+$Script:LabelWriterFenceAdmissionProductionRoot = [string]$invokeParameters.WriterFenceControlRoot
 if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
     (Get-RequiredExternalBoolean $payload.parameters 'Uninstall')) {
     if ($invokeParameters.ReplaceExistingVerifiedPortable -or $invokeParameters.DryRun) {
@@ -1352,6 +1353,12 @@ if ($PlanOnly) {
 }
 
 $lad = Full $env:LOCALAPPDATA 'LOCALAPPDATA'
+if (-not $testMode) {
+    $profileLocal = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($profileLocal) -or -not (Same $lad (Full $profileLocal 'profile LOCALAPPDATA'))) {
+        throw 'Current worker profile LOCALAPPDATA differs from the process environment.'
+    }
+}
 $defaultDirectSyncRoot = Join-Path $lad 'KMTech\DirectSync\label_match'
 $defaultDataRoot = Join-Path $lad 'KMTech\Label_Match\data'
 $defaultSettingsPath = Join-Path $lad 'KMTech\Label_Match\config\app_settings.json'
@@ -1382,6 +1389,7 @@ else { Full ([string]$env:KM_LOGISTICS_PROFILE_PATH) 'Label logistics profile pa
 $statusRoot = Join-Path $defaultDirectSyncRoot 'status'
 $stop = Join-Path $defaultDirectSyncRoot 'control\label_match_user_relay.stop.json'
 $writerFenceControlRoot = Join-Path $defaultDirectSyncRoot 'control\writer-session'
+$Script:LabelWriterFenceAdmissionProductionRoot = if ($testMode) { '' } else { $writerFenceControlRoot }
 $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'

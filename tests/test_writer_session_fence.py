@@ -311,13 +311,16 @@ def test_worker_root_keeps_one_mutex_name_when_installer_runs_as_other_account(t
         {"LOCALAPPDATA": str(worker_local), "USER_SID": "S-1-5-21-101"},
         {"LOCALAPPDATA": str(admin_local), "USER_SID": "S-1-5-21-202"},
     ]
-    assert [fence.writer_admission_mutex_name(worker_root, environ=values)
-            for values in scenarios] == [fence.WRITER_MUTEX_NAME] * 2
+    assert fence.writer_admission_mutex_name(worker_root, environ=scenarios[0]) == fence.WRITER_MUTEX_NAME
+    assert fence.writer_admission_mutex_name(worker_root, environ=scenarios[1]).startswith(
+        fence.WRITER_MUTEX_NAME + "."
+    )
 
     completed = _run_powershell_harness(
         tmp_path,
         f"""
 $workerRoot = '{_quote(worker_root)}'
+$Script:LabelWriterFenceAdmissionProductionRoot = $workerRoot
 $env:LOCALAPPDATA = '{_quote(worker_local)}'
 $workerSid = 'S-1-5-21-101'
 $workerName = Get-LabelWriterAdmissionMutexName $workerRoot
@@ -329,6 +332,30 @@ $adminName = Get-LabelWriterAdmissionMutexName $workerRoot
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
     assert json.loads(completed.stdout.splitlines()[-1]) == [fence.WRITER_MUTEX_NAME] * 2
+
+
+def test_two_custom_roots_with_ordinary_suffix_keep_distinct_names(tmp_path: Path) -> None:
+    local = tmp_path / "worker" / "AppData" / "Local"
+    first = tmp_path / "sandbox-A" / "KMTech" / "DirectSync" / "label_match" / "control" / "writer-session"
+    second = tmp_path / "sandbox-B" / "KMTech" / "DirectSync" / "label_match" / "control" / "writer-session"
+    env = {"LOCALAPPDATA": str(local)}
+    names = [fence.writer_admission_mutex_name(root, environ=env) for root in (first, second)]
+    assert names[0] != names[1]
+    assert all(name.startswith(fence.WRITER_MUTEX_NAME + ".") for name in names)
+
+    completed = _run_powershell_harness(
+        tmp_path,
+        f"""
+$env:LOCALAPPDATA = '{_quote(local)}'
+$Script:LabelWriterFenceAdmissionProductionRoot = '{_quote(fence.canonical_control_root(env))}'
+@(
+  (Get-LabelWriterAdmissionMutexName '{_quote(first)}'),
+  (Get-LabelWriterAdmissionMutexName '{_quote(second)}')
+) | ConvertTo-Json -Compress
+""",
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert json.loads(completed.stdout.splitlines()[-1]) == names
 
 
 def test_code_derived_inventory_is_exactly_bound_and_covers_all_sink_families() -> None:

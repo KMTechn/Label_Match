@@ -599,13 +599,15 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 
 같은 데이터 루트의 `_current_set_state_packaging.json`, event CSV, `package_logistics_outbox.sqlite3`와 `package_operation_lease_keyring.json`을 업무 identity와 함께 보존한다. 같은 SQLite 파일에 생성·취소·lease·접수·교체 상태가 연결되며, F5는 `phs_label_exchange/phs_label_exchange_recovery.json`과 `labels`를 사용한다. producer의 queue/spool/status/receipt는 별도 root다. 근거: [앱 초기화/DataManager](../../Label_Match.py), [package_logistics](../../package_logistics.py), [보존 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md).
 
-W9NB 건별 복구는 왼쪽 현재 작업 영역의 `건별 복구`에서 시작한다. 문제 set를 선택해 `같은 요청 다시 확인`(저장 key의 receipt 조회), `보류 후 계속`(보호 관리자 코드 확인·원본/키/봉인과 보류 감사 기록 readback 뒤 현재 작업 슬롯 해제), `지원 인계`(set/key와 분리 보관 실물 전달)를 사용한다. 보류 set와 같은 PHS2/ITG는 재접수하지 않고 자동 package/exchange 재전송에서도 제외한다. 중앙 조회가 불명확하면 보류/UNKNOWN 그대로다. 저장 파일을 비우지 못하거나 디스크 공간·폴더 권한·파일 잠금으로 보류 기록을 쓸 수 없으면 현재 세트를 유지하며 `다시 확인` 또는 `저장 재시도`로 재시도한다. 기존 기록은 남고 정상 종료가 가능하다. 구버전 미완료 행은 시작 시 같은 목록에 건별 표시하며 prewrite F1은 기존처럼 별도 허용한다. 호스트 단위 시험만 실행했으며 실제 화면·실물·서버 결과는 NOT TESTED다.
+건별 복구는 왼쪽 현재 작업 영역의 `건별 복구`에서 시작한다. 문제 set를 선택해 `같은 요청 다시 확인`(저장 key의 receipt 조회), `보류 후 계속`(현재 인증된 관리자 세션·코드 확인, 검증된 PHS2/ITG와 원본/키/봉인 및 보류 감사 기록 readback 뒤 현재 작업 슬롯 해제), `지원 인계`(set/key와 분리 보관 실물 전달)를 사용한다. 실행자 Windows 토큰 SID를 원장에 기록한다. 보류 set와 같은 PHS2/ITG는 재접수하지 않고 자동 package/exchange 재전송에서도 제외한다. draft가 손상되고 다른 내구 원본에서도 현품표 신원을 검증할 수 없으면 요청 원본과 작업대를 유지하며 세트·요청 ID를 지원 인계한다. 중앙 조회가 불명확하면 보류/UNKNOWN 그대로다. 저장 파일을 비우지 못하거나 디스크 공간·폴더 권한·파일 잠금으로 보류 기록을 쓸 수 없으면 현재 세트를 유지하며 `다시 확인` 또는 `저장 재시도`로 재시도한다. 기존 기록은 남고 정상 종료가 가능하다. 구버전 미완료 행은 시작 시 같은 목록에 건별 표시하며 prewrite F1은 기존처럼 별도 허용한다. 실제 화면·실물·서버 결과는 NOT TESTED다.
 
-F5 미완료 교환도 같은 목록에 `F5:<journal SHA256>`로 나타난다. 관리자 확인 뒤 원본 journal bytes와 요청 key를 DB에 보류·readback하고 별도 `.held-<SHA256>` 파일로 옮긴다. 연결된 현재 세트가 있으면 먼저 세트도 보류한다. 같은 현품표는 재교환하지 않으며 다른 현품표의 F5는 계속할 수 있다. `같은 요청 다시 확인`은 저장된 exchange ID에 대한 중앙 읽기 조회만 하고 UNKNOWN/인쇄 결과를 확정하지 않는다. 보관 도중 중단되면 다음 시작에서 원본 DB bytes를 대조해 보관 파일을 완결한다.
+F5 미완료 교환도 같은 목록에 `F5:<journal SHA256>`로 나타난다. 선택 ID가 현재 active journal SHA256과 같고 아직 보류되지 않았을 때만 관리자 확인 뒤 원본 journal bytes와 요청 key를 DB에 보류·readback하고 별도 `.held-<SHA256>` 파일로 옮긴다. 연결된 현재 세트가 있으면 먼저 세트도 보류한다. 같은 현품표는 재교환하지 않으며 다른 현품표의 F5는 계속할 수 있다. `같은 요청 다시 확인`은 저장된 exchange ID에 대한 중앙 읽기 조회만 하고 UNKNOWN/인쇄 결과를 확정하지 않는다. 보관 도중 중단되면 다음 시작에서 원본 DB bytes를 대조해 보관 파일을 완결한다.
 
 시작 시 검증된 품목 목록이 없으면 이유·선택한 중앙 설정·오류 코드를 표시한다. `다시 시도`는 프로그램을 닫지 않고 같은 검증 원본을 다시 조회한다. 검증된 snapshot 또는 cache가 선택된 뒤에만 작업 화면으로 들어간다. 실패가 반복되면 네트워크·설정 확인 후 IT 담당자에게 오류 코드를 전달한다.
 
-writer admission mutex는 정상 `...\\KMTech\\DirectSync\\label_match\\control\\writer-session` root면 호출 계정의 LOCALAPPDATA/SID와 무관하게 기존 literal `Local\\KMTech.LabelMatch.WriterAdmission.v1`을 쓴다. 별도 시험/custom root는 기존 정규화 경로 hash 이름을 쓴다. 설치기가 다른 관리자 계정으로 상승해 작업자 root를 전달해도 실행 중인 작업자와 같은 mutex를 잡는다. 실제 UAC/설치 검증은 별도다.
+writer admission mutex는 현재 작업자 profile LOCALAPPDATA에서 파생·확인된 root에만 기존 literal `Local\\KMTech.LabelMatch.WriterAdmission.v1`을 쓴다. 설치기는 상승 전에 실제 사용자 profile root와 환경 경로를 대조하고, 검증된 작업자 root를 상승 helper에 전달한다. 같은 후미를 가진 별도 custom root도 정규화 경로 hash 이름을 쓴다. 실제 다른 계정 UAC/설치 검증은 별도다.
+
+호스트의 넓은 pytest 선택은 live Tk 두 노드를 기본 건너뛴다. 전용 화면 시험에서만 Windows 환경변수 `LABEL_MATCH_RUN_LIVE_TK_TESTS=1`로 명시 선택한다. 헤드리스 시험은 실제 창의 배치를 입증하지 않는다.
 
 | 사건 | 현행 경계와 작업자/지원 담당의 다음 행동 | 종료·확인 기준 |
 | --- | --- | --- |

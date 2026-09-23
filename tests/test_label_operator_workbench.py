@@ -1373,7 +1373,8 @@ def test_f4_list_hides_reversibly_without_replacing_live_qa_rows(operator_workbe
     assert repr(app.qa_scan_tree.rows) == before
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Label Match is a Windows Tk application")
+@pytest.mark.skipif(os.name != "nt" or os.environ.get("LABEL_MATCH_RUN_LIVE_TK_TESTS") != "1",
+                    reason="Live Windows Tk test requires LABEL_MATCH_RUN_LIVE_TK_TESTS=1")
 def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
     tmp_path,
     monkeypatch,
@@ -1865,7 +1866,8 @@ def test_live_submission_retry_hides_raw_server_error_and_keeps_five_scan_rows(
             assert project_settings_after == project_settings_before
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Label Match is a Windows Tk application")
+@pytest.mark.skipif(os.name != "nt" or os.environ.get("LABEL_MATCH_RUN_LIVE_TK_TESTS") != "1",
+                    reason="Live Windows Tk test requires LABEL_MATCH_RUN_LIVE_TK_TESTS=1")
 def test_display2_1366_scale100_keeps_operator_content_inside_its_regions(
     tmp_path,
     tmp_path_factory,

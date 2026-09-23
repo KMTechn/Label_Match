@@ -40,6 +40,13 @@ TEST_READER = r"TESTHOST\label-match-reader"
 TEST_READER_SID = "S-1-5-21-10-20-30-1101"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows process token is required")
+def test_recovery_audit_actor_reads_current_process_token_sid():
+    from tools.register_label_match_worker_pc import _current_user_sid
+
+    assert protected_admin.current_process_sid() == _current_user_sid()
+
+
 @pytest.fixture
 def provisioned_profile(
     tmp_path: Path,

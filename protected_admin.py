@@ -12,6 +12,8 @@ import hashlib
 import hmac
 import json
 import os
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 import re
 import secrets
@@ -63,6 +65,7 @@ __all__ = [
     "ProtectedAdminProfileError",
     "build_protected_admin_profile",
     "canonical_operator_id",
+    "current_process_sid",
     "default_protected_admin_profile_path",
     "display_operator_name",
     "is_protected_admin_candidate",
@@ -80,6 +83,60 @@ __all__ = [
 
 class ProtectedAdminProfileError(RuntimeError):
     """Raised when the protected-administrator profile is unusable."""
+
+
+def current_process_sid() -> str:
+    """Read the executing Windows token, not a mutable user-name setting."""
+    if os.name != "nt":
+        raise RuntimeError("Windows user token is unavailable")
+
+    class SidAndAttributes(ctypes.Structure):
+        _fields_ = [("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD)]
+
+    class TokenUser(ctypes.Structure):
+        _fields_ = [("user", SidAndAttributes)]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD,
+                                          ctypes.POINTER(wintypes.HANDLE))
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_uint,
+                                               ctypes.c_void_p, wintypes.DWORD,
+                                               ctypes.POINTER(wintypes.DWORD))
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = (ctypes.c_void_p,
+                                                 ctypes.POINTER(wintypes.LPWSTR))
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise RuntimeError("current Windows user token lookup failed")
+    try:
+        required = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(required))
+        if required.value <= 0:
+            raise RuntimeError("current Windows user SID size lookup failed")
+        buffer = ctypes.create_string_buffer(required.value)
+        if not advapi32.GetTokenInformation(token, 1, buffer, required.value,
+                                             ctypes.byref(required)):
+            raise RuntimeError("current Windows user SID lookup failed")
+        user = ctypes.cast(buffer, ctypes.POINTER(TokenUser)).contents
+        sid_text = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(user.user.sid, ctypes.byref(sid_text)):
+            raise RuntimeError("current Windows user SID conversion failed")
+        try:
+            value = str(sid_text.value or "")
+            if not re.fullmatch(r"S-\d+(?:-\d+)+", value):
+                raise RuntimeError("current Windows user SID is invalid")
+            return value
+        finally:
+            kernel32.LocalFree(ctypes.cast(sid_text, ctypes.c_void_p))
+    finally:
+        kernel32.CloseHandle(token)
 
 
 def default_protected_admin_profile_path() -> str:

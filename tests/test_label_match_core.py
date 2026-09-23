@@ -5159,6 +5159,7 @@ def test_central_package_preflight_state_must_be_durable_before_enqueue():
 def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
     module = load_label_match_module()
     monkeypatch.setattr(module, "is_protected_admin_code", lambda value: value == "valid-admin")
+    monkeypatch.setattr(module, "_current_user_sid", lambda: "S-1-5-21-101")
     monkeypatch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
     monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(tmp_path / "fence-control"))
     master = (
@@ -5179,6 +5180,9 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
 
     app = object.__new__(module.Label_Match)
     app.run_tests = True
+    app.worker_name = module.PROTECTED_ADMIN_OPERATOR_ID
+    app.worker_role = module.PROTECTED_ADMIN_ROLE
+    app._authenticated_protected_admin = True
     app.current_set_info = current
     db_path = tmp_path / "outbox.sqlite3"
     app.package_outbox = module.PackageOutbox(db_path)
@@ -5204,7 +5208,7 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
     clear_allowed = True
     assert app._hold_package_recovery_set("set-hold", manager_code="valid-admin") is True
     assert not path.exists() and reset == [True]
-    assert app.package_outbox.get_workbench_hold("set-hold")["held_by"] == "protected-admin-local"
+    assert app.package_outbox.get_workbench_hold("set-hold")["held_by"] == "S-1-5-21-101"
     app.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **_kwargs: [])
     app.package_logistics_client = None
     assert "관리자 확인" in app._recheck_package_recovery_set("set-hold", manager_code="wrong")
