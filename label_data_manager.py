@@ -174,12 +174,15 @@ class DataManager:
                 pass
             print(f"임시 상태 저장 실패: {e}")
             return False
-    def load_current_state(self):
+    def load_current_state(self, *, verified_bytes=None):
         state_path = os.path.join(self.save_directory, self._current_state_filename())
-        if not os.path.exists(state_path): return None
+        if verified_bytes is None and not os.path.exists(state_path): return None
         try:
-            with self._open_file(state_path, 'r', encoding='utf-8') as f:
-                state = json.load(f)
+            if verified_bytes is None:
+                with self._open_file(state_path, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+            else:
+                state = json.loads(verified_bytes.decode('utf-8'))
             if isinstance(state, dict):
                 saved_worker = str(state.get('worker_name') or '').strip()
                 safe_state = sanitize_persistent_value(state)

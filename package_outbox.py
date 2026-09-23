@@ -728,6 +728,43 @@ class PackageOutbox:
             ).fetchone()
             return dict(row) if row else None
 
+    def bind_workbench_hold_source(
+        self, *, set_id: str, source_phs2: str, source_input_tag_id: str,
+        manager_id: str,
+    ) -> dict[str, Any]:
+        """Bind a held unknown row only after its saved command matches central source."""
+        if not all((set_id, source_phs2, source_input_tag_id, manager_id)):
+            raise PackageLogisticsError("held source binding is incomplete")
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM package_workbench_holds WHERE set_id=?", (set_id,)
+            ).fetchone()
+            if row is None or row["source_phs2"] or row["source_input_tag_id"]:
+                conn.rollback()
+                raise PackageLogisticsError("held source binding changed")
+            updated = conn.execute(
+                """UPDATE package_workbench_holds
+                      SET source_phs2=?,source_input_tag_id=?
+                    WHERE set_id=? AND source_phs2='' AND source_input_tag_id=''""",
+                (source_phs2, source_input_tag_id, set_id),
+            )
+            if updated.rowcount != 1:
+                conn.rollback()
+                raise PackageLogisticsError("held source binding changed")
+            conn.execute(
+                """INSERT INTO package_workbench_hold_audit
+                   (set_id,action,manager_id,observed,recorded_at)
+                   VALUES (?,?,?,?,?)""",
+                (set_id, "BIND_SOURCE", manager_id, "CENTRAL_MATCH", self._utc_now()),
+            )
+            conn.commit()
+        held = self.get_workbench_hold(set_id)
+        if (held is None or held["source_phs2"] != source_phs2
+                or held["source_input_tag_id"] != source_input_tag_id):
+            raise PackageLogisticsError("held source binding readback failed")
+        return held
+
     def list_workbench_holds(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -764,7 +801,7 @@ class PackageOutbox:
         archive_path: str, held_by: str,
     ) -> dict[str, Any]:
         digest = hashlib.sha256(journal_bytes).hexdigest()
-        if not hold_id or not journal_bytes or not archive_path or not held_by:
+        if not hold_id or not archive_path or not held_by:
             raise PackageLogisticsError("label hold identity and journal are required")
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

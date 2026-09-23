@@ -265,8 +265,8 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 시작/입력: 시작 시 `_current_set_state_packaging.json`, outbox marker, 기존 완료 이벤트·교체/접수 journal을 확인한다.
 - 검증/효과: 작업자 변경·중앙 상태 migration·이미 기록된 이벤트를 대조해 같은 set를 복원한다. 날짜가 달라도 미확정 PHS2/outbox를 폐기하지 않는다.
 - 중앙 current-state의 timestamp 파싱 실패는 원본 파일을 보존한 복구 잠금이다. 자동 삭제·현재 시각 치환 없이 관리자 확인·수리를 요청한다.
-- 인증된 관리자 세션이 건별 복구에서 원본 current-state와 유효한 PHS2/ITG를 보류·readback하면 해당 세트만 격리하고 다른 세트로 넘어갈 수 있다. 현품표 신원 확인·보류 저장·현재 작업 파일 정리에 실패하면 화면 잠금을 유지한다.
-- F5 미완료 교환은 선택한 journal SHA256이 현재 active journal과 일치할 때만 원본 bytes·키·label ID를 보류·readback한 뒤 별도 보관한다. 이미 보류된 항목을 다시 보류하지 않고, 같은 label은 잠그며 다른 label의 교환을 허용한다. 시작 시 중단된 보관 단계는 원본 대조로 완결한다.
+- 건별 복구 창은 현재 작업자를 바꾸지 않고 동작 시 관리자 코드를 확인하며 실행자 SID를 감사한다. 원본 current-state·draft·F5의 한 항목이 손상되면 그 항목만 보류하고 다른 포장을 계속한다. 신원 불명 원본은 bytes/SHA를 보존해 UNKNOWN으로 두고 실물 PHS2 스캔·중앙 조회가 저장 명령과 연결될 때만 동일 현품표 재접수 차단에 결속한다. 공유 저장소 쓰기 장애에는 화면 잠금을 유지한다.
+- F5 미완료 교환은 선택한 journal SHA256이 현재 active journal과 일치할 때만 원본 bytes·키·label ID를 보류·readback한 뒤 별도 보관한다. 이미 보류된 항목을 다시 보류하지 않고, 같은 label은 잠그며 다른 label의 교환을 허용한다. 신원 불명 F5는 확인 전까지 새 F5를 막는다. archive 형식·SHA 오류는 해당 F5의 파일 미검증으로 보존하고 다른 포장 시작을 막지 않는다.
 - 실패/취소: 읽기 손상·writer 오류·marker 경계 불일치를 정상 완료로 취급하지 않는다. 상태·DB를 수동 편집해 복구했다고 판단하지 않는다.
 - 수용 기준: CSV 기록 직후/marker 직전/성공 표시 직전 중단과 날짜 변경을 구분해 중복 없이 복구하며 미확정 증거를 유지한다.
 - 근거: [DataManager, `_load_current_set_state`, `_label_match_local_completion_event_exists`](../../Label_Match.py), [완료 내구성 테스트 설계](../../tests/test_completion_csv_durability.py). [복구 운영](operations.md#recovery), [LM-B05](BACKLOG.md#lm-b05), [LM-B07](BACKLOG.md#lm-b07).
