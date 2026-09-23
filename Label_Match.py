@@ -74,6 +74,7 @@ from label_match_product_host import (
 )
 from writer_session_fence import writer_sink
 from label_data_manager import DataManager as _DataManager, read_recovery_file
+from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 
 
 if __name__ == "__main__":
@@ -7520,7 +7521,8 @@ class Label_Match(tk.Tk):
                 if hashlib.sha256(raw).hexdigest() != hold["journal_sha256"]:
                     raise PackageLogisticsError("held journal digest differs")
                 archive = Path(hold["archive_path"])
-                if archive != active.with_name(active.name + ".held-" + hold["hold_id"]):
+                if (not valid_recovery_archive_path(str(archive), hold_id)
+                        or archive != active.with_name(active.name + ".held-" + hold["hold_id"])):
                     raise PackageLogisticsError("held journal archive path differs")
                 linked_set_id = str(hold["set_id"] or "")
                 if linked_set_id and not outbox.get_workbench_hold(linked_set_id):
@@ -7554,6 +7556,16 @@ class Label_Match(tk.Tk):
                     )
                 except Exception as audit_exc:
                     print(f"현품표 교환 파일 미검증 감사 기술 진단: {audit_exc}")
+                    try:
+                        recorded = outbox.has_workbench_audit(
+                            set_id="F5:" + hold_id, action="FILE_UNVERIFIED",
+                            observed=type(exc).__name__,
+                        )
+                    except Exception:
+                        recorded = False
+                    self._package_recovery_file_issues["F5:" + hold_id] = (
+                        "AUDIT_FAILED_READBACK_PRESENT" if recorded else "AUDIT_FAILED"
+                    )
         return True
 
     @writer_sink("gui_label_recovery_hold")
@@ -7621,33 +7633,97 @@ class Label_Match(tk.Tk):
             return False
 
     def _package_recovery_identity(self, candidate):
-        current = candidate.get("current") or {}
-        raw = current.get("raw") or []
-        draft = {}
-        package = candidate.get("package") or {}
+        """Re-read all surviving evidence for this set; never trust a cached absence."""
+        set_id = str(candidate.get("set_id") or "")
+        durable = self.package_outbox.recovery_identity_evidence(set_id)
+        values = [candidate.get("current"), durable["package"], durable["hold"],
+                  durable["audit"], candidate.get("package"), candidate.get("held"),
+                  candidate.get("exchange")]
+        exchange_store = self.__dict__.get("sealed_transfer_exchange_store")
+        blocking_rows = getattr(exchange_store, "blocking_rows", None)
+        if callable(blocking_rows):
+            values.extend(dict(row) for row in blocking_rows(set_id=set_id))
+        paths = []
+        current_file = candidate.get("current_file")
+        if current_file:
+            paths.append(Path(current_file))
+        hold = durable["hold"] or {}
         try:
-            draft = json.loads(str(package.get("draft_json") or "{}"))
-        except (TypeError, ValueError):
+            snapshot = json.loads(hold.get("snapshot_json") or "{}")
+            if isinstance(snapshot, dict) and snapshot.get("archive_path"):
+                archive = Path(snapshot["archive_path"])
+                root = Path(self.data_manager.save_directory).resolve()
+                if (valid_recovery_archive_path(str(archive),
+                                                str(snapshot.get("current_file_sha256") or ""))
+                        and archive.resolve().parent == root):
+                    paths.append(archive)
+        except (TypeError, ValueError, OSError):
             pass
-        if not isinstance(draft, dict):
-            draft = {}
-        source = str(raw[0] if raw else "").strip()
-        sources = (source, str(draft.get("source_canonical_input_tag_qr") or "").strip(),
-                   str(draft.get("source_active_label_qr_payload") or "").strip())
-        verified = []
-        for value in sources:
-            if not value:
+        for path in paths:
+            values.append(path.name)
+            try:
+                values.append(path.read_bytes())
+            except OSError:
+                continue
+        sources = []
+        tag_ids = set()
+        stack = list(values)
+        qr_pattern = re.compile(r"PHS=2\|[A-Za-z0-9_|=.-]+")
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for name, item in node.items():
+                    if name in {"source_input_tag_id", "input_tag_id"} and isinstance(item, str) and item:
+                        tag_ids.add(item.strip())
+                    if name == "raw_base64" and isinstance(item, str):
+                        try:
+                            stack.append(base64.b64decode(item, validate=True))
+                        except (ValueError, base64.binascii.Error):
+                            pass
+                    else:
+                        stack.append(item)
+            elif isinstance(node, (list, tuple)):
+                stack.extend(node)
+            elif isinstance(node, bytes):
+                stack.append(node.decode("utf-8", errors="replace"))
+            elif isinstance(node, str):
+                if node.startswith(("{", "[")):
+                    try:
+                        stack.append(json.loads(node))
+                    except (ValueError, RecursionError):
+                        pass
+                for match in qr_pattern.finditer(node):
+                    qr = match.group().rstrip("|")
+                    try:
+                        tag = str(_label_match_parse_compact_phs2(qr)["ITG"])
+                    except (ValueError, TypeError):
+                        continue
+                    sources.append((qr, tag))
+                    tag_ids.add(tag)
+        if len(tag_ids) != 1 or not sources:
+            raise PackageLogisticsError("held package source identity cannot be verified")
+        tag = next(iter(tag_ids))
+        return sources[0][0], tag
+
+    def _recover_unknown_package_hold_identities(self):
+        """Bind a surviving source before the normal PHS2 hold lookup."""
+        listing = getattr(self.package_outbox, "list_workbench_holds", None)
+        if not callable(listing):
+            return
+        for hold in listing():
+            if hold["source_phs2"] or hold["source_input_tag_id"]:
                 continue
             try:
-                verified.append((value, str(_label_match_parse_compact_phs2(value)["ITG"])))
-            except ValueError:
+                source, tag = self._package_recovery_identity(
+                    {"set_id": hold["set_id"], "held": hold}
+                )
+            except Exception:
                 continue
-        if not verified or len({identity for _, identity in verified}) != 1:
-            raise PackageLogisticsError("held package source identity cannot be verified")
-        draft_itg = str(draft.get("source_input_tag_id") or "").strip()
-        if draft_itg and draft_itg != verified[0][1]:
-            raise PackageLogisticsError("held package source identity differs")
-        return verified[0]
+            self.package_outbox.bind_workbench_hold_source(
+                set_id=hold["set_id"], source_phs2=source,
+                source_input_tag_id=tag, manager_id="SYSTEM",
+                observed="DURABLE_EVIDENCE",
+            )
 
     def _package_recovery_manager(self, code=None):
         if code is None and not self.run_tests:
@@ -7660,11 +7736,12 @@ class Label_Match(tk.Tk):
                 return ""
         # The recovery dialog authenticates its own action.  Changing the
         # operator in Settings is impossible while a broken set is active.
-        if not is_protected_admin_code(code):
-            return ""
         try:
+            if not is_protected_admin_code(code):
+                return ""
             return _current_user_sid()
-        except Exception:
+        except Exception as exc:
+            print(f"포장 복구 관리자 인증 기술 진단: {exc}")
             return ""
 
     @writer_sink("gui_package_recovery_hold")
@@ -7687,6 +7764,40 @@ class Label_Match(tk.Tk):
         outbox = self.package_outbox
         current = candidate.get("current")
         if candidate.get("held") and not current and not candidate.get("current_file"):
+            if str(set_id).startswith("CURRENT:"):
+                try:
+                    held = candidate["held"]
+                    snapshot = json.loads(held["snapshot_json"])
+                    digest = snapshot["current_file_sha256"]
+                    raw = base64.b64decode(snapshot["raw_base64"], validate=True)
+                    current_path = Path(self._package_current_state_path())
+                    archive = current_path.with_name(current_path.name + ".held-" + digest)
+                    if (not valid_recovery_archive_path(str(snapshot["archive_path"]), digest)
+                            or str(snapshot["archive_path"]) != str(archive)
+                            or hashlib.sha256(raw).hexdigest() != digest
+                            or self._read_package_recovery_file(archive)["raw"] != raw
+                            or current_path.exists()):
+                        raise PackageLogisticsError("held current archive readback differs")
+                    reason = str(snapshot.get("file_reason") or "UNVERIFIED")
+                    if not outbox.has_workbench_audit(
+                        set_id=str(set_id), action="FILE_UNVERIFIED", observed=reason
+                    ):
+                        self._audit_package_recovery_action(
+                            str(set_id), "FILE_UNVERIFIED", manager_id, reason
+                        )
+                    if not outbox.has_workbench_audit(
+                        set_id=str(set_id), action="FILE_UNVERIFIED", observed=reason
+                    ):
+                        raise PackageLogisticsError("current file audit readback failed")
+                    self._workflow_blocking_notice = None
+                    self._load_current_set_state()
+                    return True
+                except Exception as exc:
+                    print(f"현재 작업 감사 재시도 기술 진단: {exc}")
+                    self._show_package_recovery_block(
+                        "현재 작업 보류 감사 기록을 확인하지 못했습니다. 저장 폴더를 확인하고 다시 시도하세요.",
+                        retry_action=self._show_package_recovery_workbench,
+                    )
             return False
         try:
             current_file = candidate.get("current_file")
@@ -7698,11 +7809,19 @@ class Label_Match(tk.Tk):
                 archive = Path(current_file).with_name(
                     Path(current_file).name + ".held-" + evidence["sha256"]
                 )
+                if not valid_recovery_archive_path(str(archive), evidence["sha256"]):
+                    raise PackageLogisticsError("current archive name is invalid")
+                try:
+                    source, input_tag_id = self._package_recovery_identity(candidate)
+                except Exception:
+                    source, input_tag_id = "", ""
                 outbox.hold_workbench_set(
-                    set_id=str(set_id), source_phs2="", source_input_tag_id="",
+                    set_id=str(set_id), source_phs2=source,
+                    source_input_tag_id=input_tag_id,
                     snapshot={"current_file_sha256": evidence["sha256"],
                               "raw_base64": base64.b64encode(evidence["raw"]).decode("ascii"),
                               "archive_path": str(archive),
+                              "file_reason": evidence["reason"],
                               "status": "UNVERIFIED"},
                     reason="신원 미확인 현재 작업 파일", held_by=manager_id,
                 )
@@ -7749,7 +7868,7 @@ class Label_Match(tk.Tk):
                 source_input_tag_id=input_tag_id, snapshot=snapshot,
                 reason=reason, held_by=manager_id,
             )
-            if not source:
+            if not input_tag_id:
                 self._audit_package_recovery_action(
                     str(set_id), "IDENTITY_UNVERIFIED", manager_id, "UNKNOWN"
                 )
@@ -7877,23 +7996,92 @@ class Label_Match(tk.Tk):
         try:
             source = str(physical_qr or "").strip()
             fields = _label_match_parse_compact_phs2(source)
-        except (ValueError, TypeError):
+        except Exception:
             return "현품표 형식을 확인할 수 없습니다. 실물 현품표를 다시 스캔하세요."
         observed = "UNKNOWN"
+        audit_recorded = False
         result = "원래 요청과 현품표를 연결할 근거가 없습니다. 보류는 유지하고 다른 세트를 진행하세요."
         try:
             if str(set_id).startswith("F5:"):
+                hold_id = str(set_id)[3:]
+                held = self.package_outbox.get_label_exchange_hold(hold_id)
+                if held is None:
+                    return "먼저 이 현품표 교환 일지를 보류하세요."
+                if held["source_label"] or held["label_id"] or held["source_input_tag_id"]:
+                    if (held["source_label"] == source
+                            or held["source_input_tag_id"] == fields["ITG"]):
+                        observed = "HELD_SOURCE_MATCH"
+                        result = "보류된 교환 현품표와 일치합니다. 이 현품표의 새 F5는 계속 보류됩니다."
+                    else:
+                        observed = "HELD_SOURCE_DIFFERS"
+                        result = "보류된 교환 현품표와 다릅니다. 신원을 바꾸지 않았습니다."
+                    raise StopIteration
+                raw = bytes(held["journal_bytes"])
+                if hashlib.sha256(raw).hexdigest() != held["journal_sha256"]:
+                    raise PackageLogisticsError("held label journal digest differs")
+                archive = Path(held["archive_path"])
+                active = self.phs_label_exchange_coordinator.journal.path
+                if (not valid_recovery_archive_path(str(archive), hold_id)
+                        or archive != active.with_name(active.name + ".held-" + hold_id)):
+                    raise PackageLogisticsError("held label journal path differs")
+                evidence = self._read_package_recovery_file(
+                    archive, journal=True, expected_bytes=raw
+                )
+                if not evidence["verified"]:
+                    raise PackageLogisticsError("held label archive is unverified")
+                state = evidence["value"]
+                exchange_id = state.get("exchange_id")
+                scope = state.get("authority_scope_id")
                 coordinator = self.__dict__.get("phs_label_exchange_coordinator")
                 client = getattr(coordinator, "client", None)
-                scope = str(getattr(getattr(client, "config", None), "authority_scope_id", "") or "")
-                if client is None or not scope:
+                configured_scope = str(getattr(getattr(client, "config", None), "authority_scope_id", "") or "")
+                if client is None or not scope or not exchange_id or (configured_scope and configured_scope != scope):
                     raise PackageLogisticsError("central label lookup is unavailable")
                 projection = client.resolve_active_phs_label(
                     fields["ITG"], authority_scope_id=scope
                 )
-                if isinstance(projection, dict):
-                    observed = "CENTRAL_LABEL_READ"
-                    result = "중앙 현품표 상태를 조회했습니다. 원래 교환과 연결 근거가 없으면 보류를 유지하세요."
+                exchange_response = client.get_phs_label_exchange(
+                    exchange_id, authority_scope_id=scope
+                )
+                exchange = exchange_response.get("exchange") if isinstance(exchange_response, dict) else None
+                labels = exchange_response.get("source_labels") if isinstance(exchange_response, dict) else None
+                anchor = projection.get("input_tag") if isinstance(projection, dict) else None
+                verified_sources = []
+                if isinstance(labels, list):
+                    for label in labels:
+                        if not isinstance(label, dict):
+                            break
+                        label_qr = label.get("qr_payload")
+                        label_fields = _label_match_parse_compact_phs2(label_qr)
+                        if (label.get("label_id") != label_fields["LBL"]
+                                or label.get("scan_anchor_input_tag_id") != label_fields["ITG"]):
+                            break
+                        verified_sources.append((label_qr, label_fields["LBL"],
+                                                 label_fields["ITG"]))
+                if (not isinstance(exchange, dict)
+                        or exchange.get("exchange_id") != exchange_id
+                        or not isinstance(labels, list) or not labels
+                        or len(verified_sources) != len(labels)
+                        or len({identity[1] for identity in verified_sources}) != len(labels)
+                        or (source, fields["LBL"], fields["ITG"]) not in verified_sources
+                        or not isinstance(anchor, dict)
+                        or _label_match_parse_compact_phs2(anchor.get("qr_payload"))["ITG"] != fields["ITG"]
+                        or (exchange.get("prepare_idempotency_key")
+                            and exchange["prepare_idempotency_key"] != state.get("prepare_idempotency_key"))):
+                    observed = "CENTRAL_NO_LINK"
+                    result = "중앙 요청·원본·실물 현품표가 일치하지 않습니다. 이 F5 잠금을 유지하세요."
+                else:
+                    self._audit_package_recovery_action(
+                        set_id, "SCAN_PHYSICAL", manager_id, "CENTRAL_MATCH_ATTEMPT"
+                    )
+                    audit_recorded = True
+                    self.package_outbox.bind_label_exchange_hold_sources(
+                        hold_id=hold_id, sources=verified_sources,
+                        scanned_source=source, manager_id=manager_id,
+                    )
+                    observed = "CENTRAL_PHYSICAL_MATCH"
+                    result = ("원본 교환·중앙 요청·실물 현품표 결속을 기록했습니다. "
+                              "이 현품표는 보류하고 다른 현품표의 새 F5를 계속할 수 있습니다.")
             else:
                 held = self.package_outbox.get_workbench_hold(set_id)
                 if held is None:
@@ -7937,19 +8125,29 @@ class Label_Match(tk.Tk):
                     else:
                         observed = "CENTRAL_NO_LINK"
                         result = "중앙 상태를 조회했지만 원래 요청과 연결되지 않았습니다. 신원 미확인 보류를 유지하세요."
+        except StopIteration:
+            pass
         except Exception as exc:
             print(f"포장 실물 현품표 재조회 기술 진단: {exc}")
             observed = "UNKNOWN"
-            result = "중앙 현품표 상태를 확인하지 못했습니다. 신원 미확인 보류를 유지하세요."
+            result = "교환 일지·중앙 현품표 상태를 확인하지 못했습니다. 신원 미확인 보류를 유지하세요."
         try:
-            self._audit_package_recovery_action(set_id, "SCAN_PHYSICAL", manager_id, observed)
+            if not audit_recorded:
+                self._audit_package_recovery_action(set_id, "SCAN_PHYSICAL", manager_id, observed)
         except Exception as exc:
             print(f"포장 실물 현품표 감사 저장 기술 진단: {exc}")
             return "현품표 조회 기록을 저장하지 못했습니다. 보류를 유지하세요."
         return result
 
     def _show_package_recovery_workbench(self):
-        candidates = self._package_recovery_candidates()
+        try:
+            candidates = self._package_recovery_candidates()
+        except Exception as exc:
+            print(f"포장 복구 목록 기술 진단: {exc}")
+            self._show_package_recovery_block(
+                "복구 목록을 확인하지 못했습니다. 저장 폴더를 확인하고 다시 시도하세요."
+            )
+            candidates = []
         if self.run_tests:
             return candidates
         window = tk.Toplevel(self)
@@ -7964,7 +8162,12 @@ class Label_Match(tk.Tk):
 
         def refresh():
             nonlocal candidates
-            candidates = self._package_recovery_candidates()
+            try:
+                candidates = self._package_recovery_candidates()
+            except Exception as exc:
+                print(f"포장 복구 목록 새로고침 기술 진단: {exc}")
+                status.set("복구 목록을 읽지 못했습니다. 저장 폴더를 확인하고 다시 시도하세요.")
+                return
             listing.delete(0, tk.END)
             for item in candidates:
                 package = item.get("package") or {}
@@ -7986,64 +8189,71 @@ class Label_Match(tk.Tk):
             return candidates[indexes[0]] if indexes else None
 
         def recheck():
-            item = selected()
-            if item:
-                status.set(self._recheck_package_recovery_set(item["set_id"]))
-                refresh()
+            try:
+                item = selected()
+                if item:
+                    status.set(self._recheck_package_recovery_set(item["set_id"]))
+                    refresh()
+            except Exception as exc:
+                print(f"포장 관리자 재확인 진입 기술 진단: {exc}")
+                status.set("결과 확인을 끝내지 못했습니다. 해당 보류를 유지하고 다시 시도하세요.")
 
         def hold():
-            item = selected()
-            if item:
-                try:
+            try:
+                item = selected()
+                if item:
                     held = (self._hold_label_recovery(item["set_id"][3:])
                             if item["set_id"].startswith("F5:")
                             else self._hold_package_recovery_set(item["set_id"]))
-                except Exception as exc:
-                    print(f"포장 관리자 보류 진입 기술 진단: {exc}")
-                    self._show_package_recovery_block(
-                        "보류 기록을 저장하지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요.",
-                        retry_action=self._show_package_recovery_workbench,
-                    )
-                    held = False
-                if held:
-                    status.set("해당 세트의 원본·요청 키를 보류하고 다른 세트 작업을 계속할 수 있습니다.")
-                    refresh()
-                else:
-                    status.set("선택한 항목을 보류하지 않았습니다. 이미 보류되었거나 현재 요청이 다릅니다. 목록을 다시 확인하세요.")
+                    if held:
+                        status.set("해당 세트의 원본·요청 키를 보류하고 다른 세트 작업을 계속할 수 있습니다.")
+                        refresh()
+                    else:
+                        status.set("선택한 항목을 보류하지 않았습니다. 이미 보류되었거나 현재 요청이 다릅니다. 목록을 다시 확인하세요.")
+            except Exception as exc:
+                print(f"포장 관리자 보류 진입 기술 진단: {exc}")
+                self._show_package_recovery_block(
+                    "보류 기록을 저장하지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요.",
+                    retry_action=self._show_package_recovery_workbench,
+                )
 
         def handoff():
-            item = selected()
-            if item:
+            try:
+                item = selected()
+                if not item:
+                    return
                 manager_id = self._package_recovery_manager()
                 if not manager_id:
                     status.set("지원 인계에는 관리자 확인이 필요합니다.")
                     return
                 package = item.get("package") or {}
                 label = item.get("label") or {}
-                try:
-                    self._audit_package_recovery_action(
-                        item["set_id"], "HANDOFF", manager_id, "UNRESOLVED",
-                    )
-                except Exception as exc:
-                    print(f"포장 지원 인계 감사 저장 기술 진단: {exc}")
-                    status.set("지원 인계 기록을 저장하지 못했습니다. 저장 폴더를 확인하세요.")
-                    return
+                self._audit_package_recovery_action(
+                    item["set_id"], "HANDOFF", manager_id, "UNRESOLVED",
+                )
                 status.set(
                     f"지원 담당자에게 세트 {item['set_id']} / 요청 "
                     f"{package.get('idempotency_key') or label.get('exchange_id') or label.get('hold_id') or '교체 journal'} / "
                     "실물 분리 보관 상태를 알려 주세요. 원본 기록은 보존됩니다."
                 )
+            except Exception as exc:
+                print(f"포장 지원 인계 감사 저장 기술 진단: {exc}")
+                status.set("지원 인계 기록을 저장하지 못했습니다. 해당 보류를 유지하고 다시 시도하세요.")
 
         def scan_physical():
-            item = selected()
-            if not item:
-                return
-            value = simpledialog.askstring(
-                "실물 현품표 확인", "해당 실물 현품표의 PHS2 코드를 스캔하세요.", parent=window
-            )
-            if value:
-                status.set(self._recheck_package_recovery_physical(item["set_id"], value))
-                refresh()
+            try:
+                item = selected()
+                if not item:
+                    return
+                value = simpledialog.askstring(
+                    "실물 현품표 확인", "해당 실물 현품표의 PHS2 코드를 스캔하세요.", parent=window
+                )
+                if value:
+                    status.set(self._recheck_package_recovery_physical(item["set_id"], value))
+                    refresh()
+            except Exception as exc:
+                print(f"포장 실물 현품표 복구 창 기술 진단: {exc}")
+                status.set("현품표를 확인하지 못했습니다. 해당 보류를 유지하고 다시 시도하세요.")
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=8)
@@ -8055,6 +8265,20 @@ class Label_Match(tk.Tk):
         return window
 
     def _load_current_set_state(self):
+        """Keep a bad durable item from ending application initialization."""
+        try:
+            return self._load_current_set_state_checked()
+        except Exception as exc:
+            print(f"포장 시작 복구 기술 진단: {type(exc).__name__}: {exc}")
+            try:
+                self._show_package_recovery_block(
+                    "복구 항목 한 건을 확인하지 못했습니다. 건별 복구에서 원본을 보류하고 다른 작업을 계속하세요.",
+                    retry_action=self._show_package_recovery_workbench,
+                )
+            except Exception as notice_exc:
+                print(f"포장 복구 안내 기술 진단: {notice_exc}")
+
+    def _load_current_set_state_checked(self):
         completion_sync_error = None
 
         if not self._finalize_label_recovery_holds():
@@ -8134,14 +8358,7 @@ class Label_Match(tk.Tk):
                     continue
                 try:
                     draft = json.loads(str(row.get("draft_json") or "{}"))
-                    if not isinstance(draft, dict):
-                        raise ValueError("saved package draft is not an object")
-                    if any(not isinstance(draft[key], str)
-                           for key in ("membership_mode", "source_input_tag_id",
-                                       "source_input_tag_label_id", "source_input_tag_hash_prefix",
-                                       "source_canonical_input_tag_qr",
-                                       "source_active_label_qr_payload") if key in draft):
-                        raise ValueError("saved package draft field type is invalid")
+                    require_recovery_record("draft", draft)
                 except Exception:
                     invalid.append((row, PackageLogisticsError("saved package draft is unreadable")))
                     continue
@@ -11002,6 +11219,7 @@ class Label_Match(tk.Tk):
             )
             if new_label_data and looks_like_input_tag_label and self.__dict__.get("package_outbox") is not None:
                 try:
+                    self._recover_unknown_package_hold_identities()
                     held = self.package_outbox.workbench_hold_for_source(
                         processed_input, str(new_label_data.get("ITG") or ""),
                     )

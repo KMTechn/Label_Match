@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any, Callable, Iterator, Mapping
 from deferred_intent_capture import supersede_for_legacy_outbox
 from package_command_draft import PackageCommandDraft, canonical_json, stable_id
 from package_errors import PackageLogisticsError, _bounded_retry_after_seconds
+from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 
 class PackageOutbox:
     def __init__(
@@ -63,6 +65,7 @@ class PackageOutbox:
         captured_intent_id: str = "",
     ) -> dict[str, Any]:
         key = f"label-package-{stable_id('cmd', draft.set_id, draft.package_bundle_id)}"
+        require_recovery_record("draft", draft.to_dict())
         fingerprint = draft.fingerprint()
         now = self._utc_now()
         with self._lock, self._connect() as conn:
@@ -689,6 +692,16 @@ class PackageOutbox:
         identity = str(set_id or "").strip()
         if not identity or not str(held_by or "").strip():
             raise PackageLogisticsError("held set and authenticated manager are required")
+        if snapshot.get("status") == "UNVERIFIED" and "current_file_sha256" in snapshot:
+            digest = snapshot.get("current_file_sha256")
+            if not valid_recovery_archive_path(snapshot.get("archive_path"), digest):
+                raise PackageLogisticsError("held current archive path is invalid")
+            try:
+                raw = base64.b64decode(snapshot["raw_base64"], validate=True)
+            except (KeyError, TypeError, ValueError, base64.binascii.Error) as exc:
+                raise PackageLogisticsError("held current bytes are invalid") from exc
+            if hashlib.sha256(raw).hexdigest() != digest:
+                raise PackageLogisticsError("held current bytes differ from digest")
         encoded = json.dumps(dict(snapshot), ensure_ascii=False, sort_keys=True)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -716,7 +729,9 @@ class PackageOutbox:
                 raise PackageLogisticsError("held set evidence changed")
             conn.commit()
         held = self.get_workbench_hold(identity)
-        if held is None or held["snapshot_json"] != encoded:
+        if (held is None or held["snapshot_json"] != encoded
+                or not self.has_workbench_audit(
+                    set_id=identity, action="HOLD", observed="UNRESOLVED")):
             raise PackageLogisticsError("held set readback failed")
         return held
 
@@ -728,12 +743,29 @@ class PackageOutbox:
             ).fetchone()
             return dict(row) if row else None
 
+    def recovery_identity_evidence(self, set_id: str) -> dict[str, Any]:
+        """Read the current durable row and audit for one held set, without an index."""
+        with self._connect() as conn:
+            package = conn.execute(
+                "SELECT * FROM package_command_outbox WHERE set_id=?", (str(set_id),)
+            ).fetchone()
+            hold = conn.execute(
+                "SELECT * FROM package_workbench_holds WHERE set_id=?", (str(set_id),)
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT observed FROM package_workbench_hold_audit WHERE set_id=? ORDER BY audit_id",
+                (str(set_id),),
+            ).fetchall()
+        return {"package": dict(package) if package else None,
+                "hold": dict(hold) if hold else None,
+                "audit": [row["observed"] for row in audit]}
+
     def bind_workbench_hold_source(
         self, *, set_id: str, source_phs2: str, source_input_tag_id: str,
-        manager_id: str,
+        manager_id: str, observed: str = "CENTRAL_MATCH",
     ) -> dict[str, Any]:
         """Bind a held unknown row only after its saved command matches central source."""
-        if not all((set_id, source_phs2, source_input_tag_id, manager_id)):
+        if not all((set_id, source_input_tag_id, manager_id)):
             raise PackageLogisticsError("held source binding is incomplete")
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -752,16 +784,30 @@ class PackageOutbox:
             if updated.rowcount != 1:
                 conn.rollback()
                 raise PackageLogisticsError("held source binding changed")
-            conn.execute(
+            audit_observed = json.dumps(
+                {"result": observed, "source_phs2": source_phs2,
+                 "source_input_tag_id": source_input_tag_id},
+                ensure_ascii=False, sort_keys=True,
+            )
+            audit = conn.execute(
                 """INSERT INTO package_workbench_hold_audit
                    (set_id,action,manager_id,observed,recorded_at)
                    VALUES (?,?,?,?,?)""",
-                (set_id, "BIND_SOURCE", manager_id, "CENTRAL_MATCH", self._utc_now()),
+                (set_id, "BIND_SOURCE", manager_id, audit_observed, self._utc_now()),
             )
+            audit_id = audit.lastrowid
             conn.commit()
         held = self.get_workbench_hold(set_id)
+        with self._connect() as conn:
+            audit_row = conn.execute(
+                """SELECT set_id,action,manager_id,observed
+                   FROM package_workbench_hold_audit WHERE audit_id=?""",
+                (audit_id,),
+            ).fetchone()
         if (held is None or held["source_phs2"] != source_phs2
-                or held["source_input_tag_id"] != source_input_tag_id):
+                or held["source_input_tag_id"] != source_input_tag_id
+                or audit_row is None or tuple(audit_row) !=
+                (set_id, "BIND_SOURCE", manager_id, audit_observed)):
             raise PackageLogisticsError("held source binding readback failed")
         return held
 
@@ -786,14 +832,33 @@ class PackageOutbox:
         self, *, set_id: str, action: str, manager_id: str, observed: str = ""
     ) -> None:
         with self._lock, self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO package_workbench_hold_audit
                    (set_id,action,manager_id,observed,recorded_at)
                    VALUES (?,?,?,?,?)""",
                 (str(set_id), str(action), str(manager_id),
                  str(observed), self._utc_now()),
             )
+            audit_id = cursor.lastrowid
             conn.commit()
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT set_id,action,manager_id,observed
+                   FROM package_workbench_hold_audit WHERE audit_id=?""",
+                (audit_id,),
+            ).fetchone()
+        if (row is None or tuple(row) != (
+                str(set_id), str(action), str(manager_id), str(observed))):
+            raise PackageLogisticsError("package recovery audit readback failed")
+
+    def has_workbench_audit(self, *, set_id: str, action: str, observed: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM package_workbench_hold_audit
+                   WHERE set_id=? AND action=? AND observed=? LIMIT 1""",
+                (str(set_id), str(action), str(observed)),
+            ).fetchone()
+            return row is not None
 
     def hold_label_exchange(
         self, *, hold_id: str, set_id: str, label_id: str,
@@ -801,7 +866,8 @@ class PackageOutbox:
         archive_path: str, held_by: str,
     ) -> dict[str, Any]:
         digest = hashlib.sha256(journal_bytes).hexdigest()
-        if not hold_id or not archive_path or not held_by:
+        if (hold_id != digest or not valid_recovery_archive_path(archive_path, hold_id)
+                or not held_by):
             raise PackageLogisticsError("label hold identity and journal are required")
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -831,7 +897,10 @@ class PackageOutbox:
                 raise PackageLogisticsError("held label journal changed")
             conn.commit()
         held = self.get_label_exchange_hold(hold_id)
-        if held is None or hashlib.sha256(bytes(held["journal_bytes"])).hexdigest() != digest:
+        if (held is None
+                or hashlib.sha256(bytes(held["journal_bytes"])).hexdigest() != digest
+                or not self.has_workbench_audit(
+                    set_id="F5:" + hold_id, action="HOLD_LABEL", observed="UNRESOLVED")):
             raise PackageLogisticsError("held label journal readback failed")
         return held
 
@@ -842,6 +911,74 @@ class PackageOutbox:
                 (str(hold_id),),
             ).fetchone()
             return dict(row) if row else None
+
+    def bind_label_exchange_hold_sources(
+        self, *, hold_id: str, sources: list[tuple[str, str, str]],
+        scanned_source: str, manager_id: str,
+    ) -> dict[str, Any]:
+        """Bind every source in one verified exchange before clearing unknown F5."""
+        if (not hold_id or not manager_id or not sources
+                or any(not all(source) for source in sources)
+                or len({source[1] for source in sources}) != len(sources)
+                or scanned_source not in {source[0] for source in sources}):
+            raise PackageLogisticsError("label hold source binding is incomplete")
+        primary = next(source for source in sources if source[0] == scanned_source)
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM phs_label_workbench_holds WHERE hold_id=?", (hold_id,)
+            ).fetchone()
+            if row is None or any(row[key] for key in
+                                  ("source_label", "label_id", "source_input_tag_id")):
+                conn.rollback()
+                raise PackageLogisticsError("label hold source binding changed")
+            now = self._utc_now()
+            audit = conn.execute(
+                """INSERT INTO package_workbench_hold_audit
+                   (set_id,action,manager_id,observed,recorded_at)
+                   VALUES (?,?,?,?,?)""",
+                ("F5:" + hold_id, "BIND_LABEL_SOURCE", manager_id,
+                 "CENTRAL_PHYSICAL_MATCH", now),
+            )
+            audit_id = audit.lastrowid
+            conn.executemany(
+                """INSERT INTO phs_label_workbench_hold_sources
+                   (hold_id,source_label,label_id,source_input_tag_id)
+                   VALUES (?,?,?,?)""",
+                [(hold_id, *source) for source in sources],
+            )
+            updated = conn.execute(
+                """UPDATE phs_label_workbench_holds
+                   SET source_label=?,label_id=?,source_input_tag_id=?
+                   WHERE hold_id=? AND source_label='' AND label_id=''
+                     AND source_input_tag_id=''""",
+                (*primary, hold_id),
+            )
+            if updated.rowcount != 1:
+                conn.rollback()
+                raise PackageLogisticsError("label hold source binding changed")
+            conn.commit()
+        held = self.get_label_exchange_hold(hold_id)
+        with self._connect() as conn:
+            readback = conn.execute(
+                """SELECT source_label,label_id,source_input_tag_id
+                   FROM phs_label_workbench_hold_sources WHERE hold_id=?""",
+                (hold_id,),
+            ).fetchall()
+            audit_row = conn.execute(
+                """SELECT set_id,action,manager_id,observed
+                   FROM package_workbench_hold_audit WHERE audit_id=?""",
+                (audit_id,),
+            ).fetchone()
+        if (held is None or held["source_label"] != primary[0]
+                or held["label_id"] != primary[1]
+                or held["source_input_tag_id"] != primary[2]
+                or {tuple(row) for row in readback} != set(sources)
+                or audit_row is None or tuple(audit_row) !=
+                ("F5:" + hold_id, "BIND_LABEL_SOURCE", manager_id,
+                 "CENTRAL_PHYSICAL_MATCH")):
+            raise PackageLogisticsError("label hold source binding readback failed")
+        return held
 
     def list_label_exchange_holds(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -857,8 +994,15 @@ class PackageOutbox:
                    WHERE (source_label!='' AND source_label=?)
                       OR (label_id!='' AND label_id=?)
                       OR (source_input_tag_id!='' AND source_input_tag_id=?)
+                      OR EXISTS (
+                          SELECT 1 FROM phs_label_workbench_hold_sources AS source
+                           WHERE source.hold_id=phs_label_workbench_holds.hold_id
+                             AND (source.source_label=? OR source.label_id=?
+                                  OR source.source_input_tag_id=?)
+                      )
                    ORDER BY held_at LIMIT 1""",
-                (str(source_label or ""), str(label_id or ""), str(input_tag_id or "")),
+                (str(source_label or ""), str(label_id or ""), str(input_tag_id or ""),
+                 str(source_label or ""), str(label_id or ""), str(input_tag_id or "")),
             ).fetchone()
             return dict(row) if row else None
 

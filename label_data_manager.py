@@ -23,6 +23,7 @@ from protected_admin import (
     sanitize_persistent_value,
 )
 from storage_policy import label_match_local_events_dir
+from label_recovery_schema import require_recovery_record
 
 
 def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
@@ -31,6 +32,8 @@ def read_recovery_file(path, *, journal_schema=None, current_state=False, expect
               "reason": "missing"}
     try:
         path = Path(path)
+        if path.is_symlink():
+            raise ValueError("recovery path is a link")
         try:
             metadata = path.stat()
         except FileNotFoundError:
@@ -47,34 +50,10 @@ def read_recovery_file(path, *, journal_schema=None, current_state=False, expect
         if not isinstance(decoded, dict):
             raise ValueError("recovery root is not an object")
         if journal_schema is not None:
-            state = decoded.get("state")
-            if (decoded.get("schema_version") != journal_schema
-                    or not isinstance(state, dict)
-                    or any(not isinstance(state[key], str)
-                           for key in ("status", "set_id", "scan_payload",
-                                       "canonical_input_tag_qr", "source_label_id",
-                                       "active_scan_label_id", "exchange_id",
-                                       "input_tag_id", "authority_scope_id",
-                                       "workflow_mode", "prepare_idempotency_key")
-                           if key in state)):
-                raise ValueError("label journal structure is invalid")
-            result["value"] = state
+            require_recovery_record("journal", decoded, journal_version=journal_schema)
+            result["value"] = decoded["state"]
         elif current_state:
-            current = decoded.get("current_set_info")
-            if (not isinstance(current, dict)
-                    or not isinstance(current.get("id"), (str, int))
-                    or not isinstance(current.get("raw", []), list)
-                    or any(not isinstance(value, str)
-                           for value in current.get("raw", []))
-                    or not isinstance(current.get("parsed", []), list)
-                    or any(not isinstance(value, str)
-                           for value in current.get("parsed", []))
-                    or ("start_time" in current
-                        and current["start_time"] is not None
-                        and not isinstance(current["start_time"], str))
-                    or ("timestamp" in decoded
-                        and not isinstance(decoded["timestamp"], str))):
-                raise ValueError("current set structure is invalid")
+            require_recovery_record("current", decoded)
             result["value"] = decoded
         else:
             result["value"] = decoded
@@ -225,8 +204,11 @@ class DataManager:
             state_data_with_worker['worker_name'] = persistent_operator_name(
                 self.worker_name
             )
+            encoded = json.dumps(state_data_with_worker, ensure_ascii=False, indent=4,
+                                 cls=self._datetime_encoder())
+            require_recovery_record("current", json.loads(encoded))
             with self._open_file(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(state_data_with_worker, f, ensure_ascii=False, indent=4, cls=self._datetime_encoder())
+                f.write(encoded)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, state_path)
@@ -243,7 +225,7 @@ class DataManager:
         state_path = os.path.join(self.save_directory, self._current_state_filename())
         try:
             if verified_bytes is None:
-                evidence = read_recovery_file(state_path)
+                evidence = read_recovery_file(state_path, current_state=True)
                 if evidence["reason"] == "missing":
                     return None
                 if not evidence["verified"]:

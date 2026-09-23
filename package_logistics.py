@@ -346,6 +346,15 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_phs_label_workbench_holds_source
             ON phs_label_workbench_holds(label_id,source_input_tag_id);
+        CREATE TABLE IF NOT EXISTS phs_label_workbench_hold_sources (
+            hold_id TEXT NOT NULL REFERENCES phs_label_workbench_holds(hold_id),
+            source_label TEXT NOT NULL,
+            label_id TEXT NOT NULL,
+            source_input_tag_id TEXT NOT NULL,
+            PRIMARY KEY (hold_id,label_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_phs_label_workbench_hold_sources_lookup
+            ON phs_label_workbench_hold_sources(source_input_tag_id,label_id);
         CREATE TABLE IF NOT EXISTS package_cancellation_outbox (
             idempotency_key TEXT PRIMARY KEY,
             cancellation_event_id TEXT NOT NULL UNIQUE,

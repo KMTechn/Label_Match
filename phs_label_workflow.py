@@ -33,6 +33,7 @@ from kmtech_zero_pe import (
 from writer_session_fence import writer_sink
 import carrier_identity_port as carrier_identity
 from label_data_manager import read_recovery_file
+from label_recovery_schema import valid_recovery_business_date
 
 
 PHS_LABEL_EXCHANGE_JOURNAL_VERSION = "label-match-phs-label-exchange-v1"
@@ -597,6 +598,9 @@ class PHSLabelExchangeJournal:
             "schema_version": PHS_LABEL_EXCHANGE_JOURNAL_VERSION,
             "state": bounded,
         }
+        from label_recovery_schema import require_recovery_record
+        require_recovery_record("journal", payload,
+                                journal_version=PHS_LABEL_EXCHANGE_JOURNAL_VERSION)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             descriptor, temporary = tempfile.mkstemp(
@@ -724,6 +728,10 @@ class PHSLabelRenderer:
             raise PHSLabelWorkflowError(
                 "PHS_TARGET_LABEL_INVALID",
                 "중앙 target label의 QR/date/worker-code 증거가 불완전합니다.",
+            )
+        if not valid_recovery_business_date(business_date):
+            raise PHSLabelWorkflowError(
+                "PHS_TARGET_LABEL_INVALID", "중앙 target label 날짜 형식이 올바르지 않습니다."
             )
         parse_compact_phs2(qr_payload)
         safe_label = re.sub(

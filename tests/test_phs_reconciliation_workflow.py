@@ -252,8 +252,9 @@ class _Renderer:
         self.calls = []
 
     def render(self, current_set, target):
-        self.root.mkdir(parents=True, exist_ok=True)
-        path = self.root / f"{target['label_id']}.png"
+        folder = self.root / str(target["business_date"]) / "phs_label_exchange"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{target['label_id']}.png"
         path.write_bytes(b"png")
         self.calls.append(
             (target["label_id"], target["member_count"])

@@ -5224,7 +5224,8 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
 
 def test_restart_keeps_block_when_held_current_file_cannot_be_cleared(tmp_path):
     module = load_label_match_module()
-    saved = {"current_set_info": {"id": "set-held"}, "timestamp": "2026-09-23T00:00:00"}
+    saved = {"current_set_info": {"id": "set-held", "raw": []},
+             "timestamp": "2026-09-23T00:00:00"}
     current_path = tmp_path / "current.json"
     current_path.write_text(json.dumps(saved), encoding="utf-8")
     app = object.__new__(module.Label_Match)
@@ -5272,6 +5273,7 @@ def test_orphan_package_recovery_requires_durable_current_set_authority(
         "updated_at": "2026-08-16T00:00:00Z",
         "draft_json": json.dumps(
             {
+                "set_id": "set-orphan",
                 "membership_mode": "INHERIT_ALL",
                 "source_input_tag_id": "ITG-ORPHAN",
                 "source_input_tag_label_id": "LBL-ORPHAN",
@@ -5337,6 +5339,7 @@ def test_orphan_acked_csv_recovery_commits_operation_lease_with_marker(
         "updated_at": "2026-08-16T00:00:00Z",
         "draft_json": json.dumps(
             {
+                "set_id": "set-acked",
                 "membership_mode": "INHERIT_ALL",
                 "source_input_tag_id": "ITG-ACKED",
                 "source_input_tag_label_id": "LBL-ACKED",

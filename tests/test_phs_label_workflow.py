@@ -6,6 +6,7 @@ import pytest
 from phs_label_workflow import (
     PHSLabelExchangeCoordinator,
     PHSLabelExchangeJournal,
+    PHSLabelRenderer,
     PHSLabelWorkflowError,
     PhysicalPrintEvidence,
     RenderedPHSLabel,
@@ -211,11 +212,25 @@ TARGET_INSTRUCTION = {
 
 class _Renderer:
     def __init__(self, path):
-        self.path = Path(path)
+        candidate = Path(path)
+        self.path = candidate.parent / "2026-07-28" / "phs_label_exchange" / candidate.name
 
     def render(self, current_set, target):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_bytes(b"png")
         return RenderedPHSLabel(str(self.path), "d" * 64)
+
+
+@pytest.mark.parametrize("bad_date", ["../outside", "..\\outside", "CON", "2026-99-99", "bad\x00date"])
+def test_renderer_rejects_unsafe_business_date_before_filesystem_access(tmp_path, bad_date):
+    renderer = PHSLabelRenderer(tmp_path / "root")
+    with pytest.raises(PHSLabelWorkflowError, match="날짜 형식"):
+        renderer.render({}, {
+            "label_id": "LBL-A", "qr_payload": TARGET_QR,
+            "business_date": bad_date, "worker_code": "WORKER-A",
+        })
+    assert not (tmp_path / "root").exists()
+    assert not (tmp_path / "outside").exists()
 
 
 class _Printer:

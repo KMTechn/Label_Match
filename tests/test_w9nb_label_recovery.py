@@ -4,6 +4,7 @@ import hashlib
 import json
 import random
 import base64
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -396,13 +397,22 @@ def test_f5_archive_observations_append_without_replacing_earlier_audit(tmp_path
     ]
 
 
-def test_manager_recovery_actions_contain_per_item_read_exceptions(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", [RecursionError(), ValueError("embedded null character")])
+def test_manager_recovery_actions_contain_per_item_read_exceptions(tmp_path, monkeypatch, failure):
     app, journal = _recovery_app(tmp_path, monkeypatch, {})
-    app._package_recovery_candidates = lambda: (_ for _ in ()).throw(RecursionError())
+    app._package_recovery_candidates = lambda: (_ for _ in ()).throw(failure)
     assert app._hold_package_recovery_set("SET-A", manager_code="admin") is False
     digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
-    app.package_outbox.get_label_exchange_hold = lambda _hold_id: (_ for _ in ()).throw(RecursionError())
+    app.package_outbox.get_label_exchange_hold = lambda _hold_id: (_ for _ in ()).throw(failure)
     assert "보류" in app._recheck_package_recovery_set("F5:" + digest, manager_code="admin")
+
+
+def test_manager_authentication_exception_keeps_recovery_closed(tmp_path, monkeypatch):
+    app, _journal = _recovery_app(tmp_path, monkeypatch, {})
+    monkeypatch.setattr(app_module, "is_protected_admin_code", lambda _code: (_ for _ in ()).throw(
+        ValueError("embedded null character")))
+    assert app._hold_package_recovery_set("SET-A", manager_code="admin") is False
+    assert app._recheck_package_recovery_set("SET-A", manager_code="admin") == "관리자 확인이 필요합니다."
 
 
 @pytest.mark.parametrize("damaged", [
@@ -502,6 +512,343 @@ def test_manager_physical_scan_only_binds_matching_saved_command(tmp_path, monke
     assert app._recheck_package_recovery_physical(
         "SET-RECOVERY", source, manager_code="operator"
     ) == "관리자 확인이 필요합니다."
+
+
+@pytest.mark.parametrize("central_matches,audit_succeeds", [
+    (True, True), (False, True), (True, False),
+])
+def test_unknown_f5_physical_central_binding_is_audited_before_unlock(
+    tmp_path, monkeypatch, central_matches, audit_succeeds,
+):
+    source = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-F5|CLC=AAA2270730100|"
+              "LBL=LBL-F5|HSH=0123456789abcdef")
+    app, journal = _recovery_app(tmp_path, monkeypatch, {
+        "workflow_mode": "SINGLE", "status": "PREPARED", "set_id": "",
+        "exchange_id": "EX-F5", "authority_scope_id": "SCOPE-F5",
+        "prepare_idempotency_key": "KEY-F5",
+    })
+    digest = app._label_recovery_hold_id()
+    assert app._hold_label_recovery(digest, manager_code="admin") is True
+    original = app.package_outbox.get_label_exchange_hold(digest)["journal_bytes"]
+    app.phs_label_exchange_coordinator.client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-F5"),
+        resolve_active_phs_label=lambda *_args, **_kwargs: {
+            "input_tag": {"qr_payload": source},
+        },
+        get_phs_label_exchange=lambda *_args, **_kwargs: {
+            "exchange": {"exchange_id": "EX-F5", "state": "PREPARED"},
+            "source_labels": [{
+                "qr_payload": source, "label_id": "LBL-F5",
+                "scan_anchor_input_tag_id": "ITG-F5" if central_matches else "ITG-OTHER",
+            }],
+        },
+    )
+    if not audit_succeeds:
+        monkeypatch.setattr(app.package_outbox, "audit_workbench_action",
+                            lambda **_kwargs: (_ for _ in ()).throw(OSError("audit disk")))
+    result = app._recheck_package_recovery_physical(
+        "F5:" + digest, source, manager_code="admin"
+    )
+    held = app.package_outbox.get_label_exchange_hold(digest)
+    assert held["journal_bytes"] == original
+    assert journal.path.with_name(journal.path.name + ".held-" + digest).read_bytes() == original
+    if central_matches and audit_succeeds:
+        assert "다른 현품표" in result
+        assert held["source_input_tag_id"] == "ITG-F5"
+        assert app._label_recovery_source_is_held(source) is True
+        assert app._label_recovery_source_is_held("PHS2-OTHER") is False
+        assert app.package_outbox.has_workbench_audit(
+            set_id="F5:" + digest, action="BIND_LABEL_SOURCE",
+            observed="CENTRAL_PHYSICAL_MATCH",
+        )
+    else:
+        assert held["source_input_tag_id"] == ""
+        assert app._label_recovery_source_is_held("PHS2-OTHER") is True
+
+
+def test_unknown_multi_source_f5_binds_all_central_sources(tmp_path, monkeypatch):
+    first = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-F5-A|CLC=AAA2270730100|"
+             "LBL=LBL-F5-A|HSH=0123456789abcdef")
+    second = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-F5-B|CLC=AAA2270730100|"
+              "LBL=LBL-F5-B|HSH=fedcba9876543210")
+    app, _journal = _recovery_app(tmp_path, monkeypatch, {
+        "workflow_mode": "RECONCILIATION", "status": "PREPARED",
+        "exchange_id": "EX-MULTI", "authority_scope_id": "SCOPE-F5",
+        "prepare_idempotency_key": "KEY-MULTI",
+    })
+    digest = app._label_recovery_hold_id()
+    assert app._hold_label_recovery(digest, manager_code="admin") is True
+    app.phs_label_exchange_coordinator.client = SimpleNamespace(
+        config=SimpleNamespace(authority_scope_id="SCOPE-F5"),
+        resolve_active_phs_label=lambda *_args, **_kwargs: {
+            "input_tag": {"qr_payload": first},
+        },
+        get_phs_label_exchange=lambda *_args, **_kwargs: {
+            "exchange": {"exchange_id": "EX-MULTI", "state": "PREPARED"},
+            "source_labels": [
+                {"qr_payload": first, "label_id": "LBL-F5-A",
+                 "scan_anchor_input_tag_id": "ITG-F5-A"},
+                {"qr_payload": second, "label_id": "LBL-F5-B",
+                 "scan_anchor_input_tag_id": "ITG-F5-B"},
+            ],
+        },
+    )
+    result = app._recheck_package_recovery_physical(
+        "F5:" + digest, first, manager_code="admin"
+    )
+    assert "다른 현품표" in result
+    assert app._label_recovery_source_is_held(first) is True
+    assert app._label_recovery_source_is_held(second) is True
+    assert app._label_recovery_source_is_held("PHS2-OTHER") is False
+    with app.package_outbox._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM phs_label_workbench_hold_sources WHERE hold_id=?",
+            (digest,),
+        ).fetchone()[0] == 2
+
+
+def test_f5_archive_audit_failure_is_read_back_and_kept_for_retry(tmp_path, monkeypatch):
+    app, journal, _current = _storage_recovery_app(tmp_path, monkeypatch)
+    journal.save({"status": "PREPARED", "scan_payload": "PHS2-SOURCE-A"})
+    digest = app._label_recovery_hold_id()
+    assert app._hold_label_recovery(digest, manager_code="admin") is True
+    archive = journal.path.with_name(journal.path.name + ".held-" + digest)
+    archive.write_bytes(b"\x00damaged")
+    monkeypatch.setattr(app.package_outbox, "audit_workbench_action",
+                        lambda **_kwargs: (_ for _ in ()).throw(OSError("audit disk")))
+    assert app._finalize_label_recovery_holds() is True
+    assert app._package_recovery_file_issues["F5:" + digest] == "AUDIT_FAILED"
+    assert archive.read_bytes() == b"\x00damaged"
+    assert app.package_outbox.get_label_exchange_hold(digest) is not None
+    assert not app.package_outbox.has_workbench_audit(
+        set_id="F5:" + digest, action="FILE_UNVERIFIED", observed="PackageLogisticsError",
+    )
+
+
+def test_recovery_audit_requires_fresh_connection_readback(tmp_path, monkeypatch):
+    outbox = app_module.PackageOutbox(tmp_path / "outbox.sqlite3")
+    original_connect = outbox._connect
+    calls = 0
+
+    @contextmanager
+    def missing_after_commit():
+        nonlocal calls
+        calls += 1
+        with original_connect() as conn:
+            if calls == 2:
+                conn.execute("DELETE FROM package_workbench_hold_audit")
+                conn.commit()
+            yield conn
+
+    monkeypatch.setattr(outbox, "_connect", missing_after_commit)
+    with pytest.raises(app_module.PackageLogisticsError, match="readback"):
+        outbox.audit_workbench_action(
+            set_id="SET-A", action="RECHECK", manager_id="ADMIN", observed="UNKNOWN",
+        )
+
+
+def test_f5_archive_path_mutation_never_reads_outside_storage(tmp_path, monkeypatch):
+    app, journal, _current = _storage_recovery_app(tmp_path, monkeypatch)
+    journal.save({"status": "PREPARED", "scan_payload": "PHS2-SOURCE-A"})
+    digest = app._label_recovery_hold_id()
+    assert app._hold_label_recovery(digest, manager_code="admin") is True
+    outside = tmp_path.parent / ("outside.held-" + digest)
+    outside.write_bytes(b"outside-sentinel")
+    with app.package_outbox._connect() as conn:
+        conn.execute("UPDATE phs_label_workbench_holds SET archive_path=? WHERE hold_id=?",
+                     (str(tmp_path / ".." / outside.name), digest))
+        conn.commit()
+    assert app._finalize_label_recovery_holds() is True
+    assert outside.read_bytes() == b"outside-sentinel"
+    assert "F5:" + digest in app._package_recovery_file_issues
+
+
+def test_f5_hold_writer_rejects_unbound_archive_path(tmp_path, monkeypatch):
+    app, journal = _recovery_app(tmp_path, monkeypatch, {"status": "PREPARED"})
+    raw = journal.path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    with pytest.raises(app_module.PackageLogisticsError):
+        app.package_outbox.hold_label_exchange(
+            hold_id=digest, set_id="", label_id="", source_label="",
+            source_input_tag_id="", journal_bytes=raw,
+            archive_path=str(tmp_path / ".." / ("outside.held-" + digest)),
+            held_by="S-1-5-21-101",
+        )
+    assert app.package_outbox.get_label_exchange_hold(digest) is None
+    assert journal.path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("field,value", [
+    ("start_time", "not-a-date"),
+    ("exact_rescan_target_count", {"bad": 1}),
+    ("canonical_input_tag_qr", 7),
+])
+def test_current_nested_type_probe_is_item_hold_not_startup_exception(
+    tmp_path, monkeypatch, field, value,
+):
+    app, _journal, current = _storage_recovery_app(tmp_path, monkeypatch)
+    state = {"current_set_info": {"id": "SET-BAD", "raw": [], field: value}}
+    raw = json.dumps(state).encode("utf-8")
+    current.write_bytes(raw)
+    app._load_current_set_state()
+    assert app._workflow_blocking_notice.kind == "submission_blocked"
+    digest = hashlib.sha256(raw).hexdigest()
+    assert app._hold_package_recovery_set("CURRENT:" + digest, manager_code="admin") is True
+    assert current.with_name(current.name + ".held-" + digest).read_bytes() == raw
+    assert app.__dict__.get("_workflow_blocking_notice") is None
+
+
+def test_unverified_current_audit_failure_keeps_retryable_hold(tmp_path, monkeypatch):
+    app, _journal, current = _storage_recovery_app(tmp_path, monkeypatch)
+    raw = b'{"current_set_info":{"id":[],"raw":[]}}'
+    current.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    app._load_current_set_state()
+    original_audit = app.package_outbox.audit_workbench_action
+    monkeypatch.setattr(app.package_outbox, "audit_workbench_action",
+                        lambda **_kwargs: (_ for _ in ()).throw(OSError("audit disk")))
+    assert app._hold_package_recovery_set("CURRENT:" + digest, manager_code="admin") is False
+    archive = current.with_name(current.name + ".held-" + digest)
+    assert archive.read_bytes() == raw
+    assert app.package_outbox.get_workbench_hold("CURRENT:" + digest) is not None
+    assert app._workflow_blocking_notice.kind == "submission_blocked"
+    monkeypatch.setattr(app.package_outbox, "audit_workbench_action", original_audit)
+    assert app._hold_package_recovery_set("CURRENT:" + digest, manager_code="admin") is True
+    assert archive.read_bytes() == raw
+    assert app.package_outbox.has_workbench_audit(
+        set_id="CURRENT:" + digest, action="FILE_UNVERIFIED", observed="ValueError",
+    )
+    assert app.__dict__.get("_workflow_blocking_notice") is None
+
+
+def test_corrupt_draft_recovers_phs2_and_blocks_original_rescan_before_submit(tmp_path, monkeypatch):
+    app, _journal = _recovery_app(tmp_path, monkeypatch, {})
+    source = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-ORIGINAL|CLC=AAA2270730100|"
+              "LBL=LBL-ORIGINAL|HSH=0123456789abcdef")
+    draft = {"set_id": "SET-ORIGINAL", "membership_mode": [],
+             "source_canonical_input_tag_qr": source,
+             "source_input_tag_id": "ITG-ORIGINAL"}
+    with app.package_outbox._connect() as conn:
+        conn.execute(
+            """INSERT INTO package_command_outbox
+               (idempotency_key,set_id,command_fingerprint,draft_json,status,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("KEY-ORIGINAL", "SET-ORIGINAL", "FINGERPRINT", json.dumps(draft),
+             "PENDING", "2026-09-23T00:00:00Z", "2026-09-23T00:00:00Z"),
+        )
+        conn.commit()
+    app._load_current_set_state = lambda: None
+    assert app._hold_package_recovery_set("SET-ORIGINAL", manager_code="admin") is True
+    held = app.package_outbox.get_workbench_hold("SET-ORIGINAL")
+    assert held["source_input_tag_id"] == "ITG-ORIGINAL"
+    assert app.package_outbox.claim_next() is None  # unresolved original cannot be sent
+
+    class Entry:
+        value = source
+        state = "normal"
+
+        def get(self):
+            return self.value
+
+        def cget(self, _name):
+            return self.state
+
+        def configure(self, *, state):
+            self.state = state
+
+        def delete(self, *_args):
+            self.value = ""
+
+    app.entry = Entry()
+    app.data_manager = SimpleNamespace(log_event=lambda *_args, **_kwargs: None)
+    app.package_logistics_client = object()
+    app.current_set_info = {"id": None, "raw": [], "parsed": []}
+    app.is_blinking = False
+    app.initialized_successfully = True
+    app._ui_lane_is_busy = lambda: False
+    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._block_view_only_action = lambda _action: False
+    app._block_active_history_load_action = lambda _action: False
+    app._central_inherit_all_active = lambda: False
+    app._begin_central_phs2_scan_overlay = lambda *_args, **_kwargs: pytest.fail(
+        "held source reached central submission"
+    )
+    app.process_input()
+    assert app.current_set_info["raw"] == []
+    assert app.entry.get() == ""
+
+
+@pytest.mark.parametrize("evidence_location", ["current_file", "command_row", "audit_row"])
+def test_identity_recovery_rechecks_each_surviving_durable_source(
+    tmp_path, monkeypatch, evidence_location,
+):
+    app, _journal, current = _storage_recovery_app(tmp_path, monkeypatch)
+    source = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-EVIDENCE|CLC=AAA2270730100|"
+              "LBL=LBL-EVIDENCE|HSH=0123456789abcdef")
+    set_id = "SET-EVIDENCE"
+    candidate = {"set_id": set_id}
+    if evidence_location == "current_file":
+        current.write_bytes(("{\"current_set_info\":{\"id\":[],\"raw\":[\"" + source + "\"]}}")
+                            .encode("utf-8"))
+        candidate["current_file"] = str(current)
+    else:
+        with app.package_outbox._connect() as conn:
+            conn.execute(
+                """INSERT INTO package_command_outbox
+                   (idempotency_key,set_id,command_fingerprint,draft_json,command_json,
+                    status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)""",
+                ("KEY-EVIDENCE", set_id, "FINGERPRINT", "{broken",
+                 json.dumps({"payload": {"source_canonical_input_tag_qr": source}})
+                 if evidence_location == "command_row" else None,
+                 "PENDING", "2026-09-23T00:00:00Z", "2026-09-23T00:00:00Z"),
+            )
+            if evidence_location == "audit_row":
+                conn.execute(
+                    """INSERT INTO package_workbench_hold_audit
+                       (set_id,action,manager_id,observed,recorded_at) VALUES (?,?,?,?,?)""",
+                    (set_id, "BIND_SOURCE", "SYSTEM",
+                     json.dumps({"result": "CENTRAL_MATCH", "source_phs2": source,
+                                 "source_input_tag_id": "ITG-EVIDENCE"}),
+                     "2026-09-23T00:00:00Z"),
+                )
+            conn.commit()
+    assert app._package_recovery_identity(candidate) == (source, "ITG-EVIDENCE")
+
+
+def test_unknown_hold_suppresses_original_send_and_late_409_is_manager_review(
+    tmp_path, monkeypatch,
+):
+    app, _journal = _recovery_app(tmp_path, monkeypatch, {})
+    with app.package_outbox._connect() as conn:
+        conn.execute(
+            """INSERT INTO package_command_outbox
+               (idempotency_key,set_id,command_fingerprint,draft_json,status,
+                local_completion_committed,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            ("KEY-UNKNOWN", "SET-UNKNOWN", "FINGERPRINT",
+             json.dumps({"package_bundle_id": "PACK-UNKNOWN"}), "PENDING", 1,
+             "2026-09-23T00:00:00Z", "2026-09-23T00:00:00Z"),
+        )
+        conn.commit()
+    app.package_outbox.hold_workbench_set(
+        set_id="SET-UNKNOWN", source_phs2="", source_input_tag_id="",
+        snapshot={"package_key": "KEY-UNKNOWN"}, reason="신원 미확인 보류",
+        held_by="S-1-5-21-101",
+    )
+    assert app.package_outbox.claim_next() is None
+    # The isolated test models a later explicit release; the product never
+    # deletes a hold automatically while its source remains unidentified.
+    with app.package_outbox._connect() as conn:
+        conn.execute("DELETE FROM package_workbench_holds WHERE set_id=?", ("SET-UNKNOWN",))
+        conn.commit()
+    assert app.package_outbox.claim_next()["idempotency_key"] == "KEY-UNKNOWN"
+    conflict = RuntimeError("source consumed by the other request")
+    conflict.code = "PHS_WORK_GROUP_TRANSFER_NOT_READY"
+    app.package_outbox.mark_conflict("KEY-UNKNOWN", conflict)
+    row = app.package_outbox.get_by_set_id("SET-UNKNOWN")
+    assert row["status"] == "CONFLICT"
+    assert row["review_status"] == "OPERATOR_REVIEW"
+    assert row["last_error_code"] == "PHS_WORK_GROUP_TRANSFER_NOT_READY"
 
 
 def test_catalog_retry_uses_verified_startup_path_without_restart(monkeypatch):
