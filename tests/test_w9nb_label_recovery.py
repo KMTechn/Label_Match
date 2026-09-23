@@ -332,6 +332,17 @@ def test_corrupt_orphan_draft_is_quarantined_per_row(tmp_path, monkeypatch, draf
     assert app.package_outbox.get_by_set_id("SET-BROKEN")["draft_json"] == draft_json
     assert app.package_outbox.list_local_completion_pending() == []
     assert app.package_outbox.workbench_hold_for_source("PHS2-OTHER", "ITG-OTHER") is None
+    with app.package_outbox._connect() as conn:
+        conn.execute(
+            """INSERT INTO package_command_outbox
+               (idempotency_key,set_id,command_fingerprint,draft_json,status,
+                local_completion_committed,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            ("KEY-GOOD", "SET-GOOD", "FINGERPRINT-GOOD", "{}", "PENDING", 1,
+             "2026-09-23T00:00:01Z", "2026-09-23T00:00:01Z"),
+        )
+        conn.commit()
+    assert app.package_outbox.claim_next()["set_id"] == "SET-GOOD"
     assert app.__dict__.get("_workflow_blocking_notice") is None
 
 
