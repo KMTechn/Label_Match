@@ -311,6 +311,9 @@ def test_live_recovery_dialog_asks_code_while_operator_has_active_set(tmp_path, 
 @pytest.mark.parametrize("draft_json", [
     "{bad-json", "[]", '{"membership_mode":[]}',
     '{"membership_mode":"INHERIT_ALL","source_input_tag_id":{}}',
+    pytest.param("[" * 3000 + "]" * 3000, id="deep-json"),
+    pytest.param('{"membership_mode":"INHERIT_ALL","padding":"' + "X" * 1_000_000 + '"}', id="large-json"),
+    "\x00invalid",
     "".join(chr(random.Random(712 + index).randrange(32, 127)) for index in range(40)),
 ])
 def test_corrupt_orphan_draft_is_quarantined_per_row(tmp_path, monkeypatch, draft_json):
@@ -348,6 +351,8 @@ def test_corrupt_orphan_draft_is_quarantined_per_row(tmp_path, monkeypatch, draf
 
 @pytest.mark.parametrize("damaged", [
     b"\x00\xff", b'{"schema_version":',
+    pytest.param(b"[" * 3000 + b"]" * 3000, id="deep-json"),
+    b"\x00invalid", b"\xff\xfe",
     b'{"schema_version":"label-match-phs-label-exchange-v1","state":[]}',
     b'{"schema_version":"label-match-phs-label-exchange-v1","state":{}}',
 ])
@@ -367,8 +372,43 @@ def test_damaged_f5_archive_remains_item_hold_without_startup_block(tmp_path, mo
     assert app.package_outbox.get_label_exchange_hold(digest) is not None
 
 
+def test_f5_archive_observations_append_without_replacing_earlier_audit(tmp_path, monkeypatch):
+    app, journal, _current = _storage_recovery_app(tmp_path, monkeypatch)
+    journal.save({"status": "PREPARED", "scan_payload": "PHS2-SOURCE-A"})
+    original = journal.path.read_bytes()
+    digest = hashlib.sha256(original).hexdigest()
+    assert app._hold_label_recovery(digest, manager_code="admin") is True
+    archive = tmp_path / f"label-exchange.json.held-{digest}"
+    archive.unlink()
+    assert app._finalize_label_recovery_holds() is True
+    assert archive.read_bytes() == original
+    damaged = b"\x00new-corruption"
+    archive.write_bytes(damaged)
+    assert app._finalize_label_recovery_holds() is True
+    assert archive.read_bytes() == damaged
+    with app.package_outbox._connect() as conn:
+        rows = conn.execute(
+            "SELECT action FROM package_workbench_hold_audit WHERE set_id=? ORDER BY audit_id",
+            ("F5:" + digest,),
+        ).fetchall()
+    assert [row["action"] for row in rows] == [
+        "HOLD_LABEL", "FILE_MISSING", "FILE_UNVERIFIED",
+    ]
+
+
+def test_manager_recovery_actions_contain_per_item_read_exceptions(tmp_path, monkeypatch):
+    app, journal = _recovery_app(tmp_path, monkeypatch, {})
+    app._package_recovery_candidates = lambda: (_ for _ in ()).throw(RecursionError())
+    assert app._hold_package_recovery_set("SET-A", manager_code="admin") is False
+    digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
+    app.package_outbox.get_label_exchange_hold = lambda _hold_id: (_ for _ in ()).throw(RecursionError())
+    assert "보류" in app._recheck_package_recovery_set("F5:" + digest, manager_code="admin")
+
+
 @pytest.mark.parametrize("damaged", [
     b"", b"\x00\xff", b'{"schema_version":',
+    pytest.param(b"[" * 3000 + b"]" * 3000, id="deep-json"),
+    b"\x00invalid", b"\xff\xfe",
     b'{"schema_version":"label-match-phs-label-exchange-v1","state":null}',
 ])
 def test_corrupt_active_f5_journal_can_be_quarantined_by_digest(tmp_path, monkeypatch, damaged):
@@ -382,10 +422,16 @@ def test_corrupt_active_f5_journal_can_be_quarantined_by_digest(tmp_path, monkey
     app._load_current_set_state()
     assert app.__dict__.get("_workflow_blocking_notice") is None
     assert app._label_recovery_source_is_held("PHS2-OTHER") is True
+    assert "보류" in app._recheck_package_recovery_set(
+        "F5:" + digest, manager_code="admin"
+    )
 
 
 @pytest.mark.parametrize("damaged", [
     b'{"current_set_info":{"id":[]},',
+    pytest.param(b"[" * 3000 + b"]" * 3000, id="deep-json"),
+    b"\x00invalid", b"\xff\xfe",
+    pytest.param(b"\x00" * (8 * 1024 * 1024 + 1), id="oversized-nul"),
     b'{"current_set_info":{"id":[],"raw":[]}}',
     b'{"current_set_info":{"id":"A","raw":[{}]}}',
     b'{"current_set_info":null}',

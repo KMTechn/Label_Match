@@ -7531,6 +7531,9 @@ class Label_Match(tk.Tk):
                         continue
                     raise PackageLogisticsError("linked set hold is missing")
                 if not archive.exists():
+                    self._audit_package_recovery_action(
+                        "F5:" + hold_id, "FILE_MISSING", "SYSTEM", "ARCHIVE"
+                    )
                     if self._read_package_recovery_file(active, journal=True)["raw"] == raw:
                         os.replace(active, archive)
                     else:
@@ -7561,8 +7564,8 @@ class Label_Match(tk.Tk):
         coordinator = self.__dict__.get("phs_label_exchange_coordinator")
         if coordinator is None:
             return False
-        path = coordinator.journal.path
         try:
+            path = coordinator.journal.path
             if self.package_outbox.get_label_exchange_hold(hold_id):
                 return False
             evidence = self._read_package_recovery_file(path, journal=True)
@@ -7648,9 +7651,13 @@ class Label_Match(tk.Tk):
 
     def _package_recovery_manager(self, code=None):
         if code is None and not self.run_tests:
-            code = simpledialog.askstring(
-                "관리자 확인", "보호 관리자 코드를 입력하세요.", show="*", parent=self
-            )
+            try:
+                code = simpledialog.askstring(
+                    "관리자 확인", "보호 관리자 코드를 입력하세요.", show="*", parent=self
+                )
+            except Exception as exc:
+                print(f"포장 복구 관리자 인증 기술 진단: {exc}")
+                return ""
         # The recovery dialog authenticates its own action.  Changing the
         # operator in Settings is impossible while a broken set is active.
         if not is_protected_admin_code(code):
@@ -7665,8 +7672,16 @@ class Label_Match(tk.Tk):
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return False
-        candidate = next((item for item in self._package_recovery_candidates()
-                          if item["set_id"] == str(set_id)), None)
+        try:
+            candidate = next((item for item in self._package_recovery_candidates()
+                              if item["set_id"] == str(set_id)), None)
+        except Exception as exc:
+            print(f"포장 건별 보류 목록 기술 진단: {exc}")
+            self._show_package_recovery_block(
+                "복구 목록을 읽지 못했습니다. 저장 폴더를 확인하고 이 항목을 다시 선택하세요.",
+                retry_action=self._show_package_recovery_workbench,
+            )
+            return False
         if candidate is None:
             return False
         outbox = self.package_outbox
@@ -7775,21 +7790,22 @@ class Label_Match(tk.Tk):
             return "관리자 확인이 필요합니다."
         if str(set_id).startswith("F5:"):
             hold_id = str(set_id)[3:]
-            held = self.package_outbox.get_label_exchange_hold(hold_id)
-            if held:
-                try:
+            try:
+                held = self.package_outbox.get_label_exchange_hold(hold_id)
+                if held:
                     state = json.loads(bytes(held["journal_bytes"]).decode("utf-8"))["state"]
                     if not isinstance(state, dict):
                         state = {}
-                except (ValueError, KeyError, UnicodeDecodeError, TypeError):
-                    state = {}
-            else:
-                state = self._active_label_recovery_state()
-            exchange_id = str(state.get("exchange_id") or "")
-            scope = str(state.get("authority_scope_id") or "")
+                else:
+                    state = self._active_label_recovery_state()
+            except Exception as exc:
+                print(f"현품표 교환 보류 재확인 기술 진단: {exc}")
+                state = {}
             observed = "UNRESOLVED"
             result = "같은 교환 요청의 중앙 결과를 확인할 수 없습니다. 보류를 유지하세요."
             try:
+                exchange_id = str(state.get("exchange_id") or "")
+                scope = str(state.get("authority_scope_id") or "")
                 if exchange_id and scope:
                     response = self.phs_label_exchange_coordinator.client.get_phs_label_exchange(
                         exchange_id, authority_scope_id=scope,
@@ -7807,12 +7823,12 @@ class Label_Match(tk.Tk):
             except Exception:
                 return "결과 확인 기록을 저장하지 못했습니다. 보류를 유지하세요."
             return result
-        outbox = self.package_outbox
-        package = outbox.get_by_set_id(set_id)
-        exchange_rows = self.sealed_transfer_exchange_store.blocking_rows(set_id=set_id)
         result = "저장된 요청의 중앙 확정 결과를 확인하지 못했습니다. 보류를 유지하세요."
         observed = "UNRESOLVED"
         try:
+            outbox = self.package_outbox
+            package = outbox.get_by_set_id(set_id)
+            exchange_rows = self.sealed_transfer_exchange_store.blocking_rows(set_id=set_id)
             if package and package.get("command_json") and self.package_logistics_client:
                 command = json.loads(package["command_json"])
                 receipt = self.package_logistics_client.get_receipt_if_exists(
@@ -8077,7 +8093,7 @@ class Label_Match(tk.Tk):
             if held:
                 try:
                     matching_snapshot = json.loads(held["snapshot_json"]) == state_data
-                except (TypeError, ValueError):
+                except Exception:
                     matching_snapshot = False
                 if not matching_snapshot:
                     self._show_package_recovery_block(
@@ -8126,7 +8142,7 @@ class Label_Match(tk.Tk):
                                        "source_canonical_input_tag_qr",
                                        "source_active_label_qr_payload") if key in draft):
                         raise ValueError("saved package draft field type is invalid")
-                except (TypeError, ValueError, UnicodeError):
+                except Exception:
                     invalid.append((row, PackageLogisticsError("saved package draft is unreadable")))
                     continue
                 is_physical_phs2 = bool(

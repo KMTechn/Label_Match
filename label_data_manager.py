@@ -37,12 +37,12 @@ def read_recovery_file(path, *, journal_schema=None, current_state=False, expect
             return result
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("recovery path is not a regular file")
-        if metadata.st_size > 8 * 1024 * 1024:
-            result["reason"] = "oversized"
-            return result
         raw = path.read_bytes()
         result["raw"] = raw
         result["sha256"] = hashlib.sha256(raw).hexdigest()
+        if len(raw) > 8 * 1024 * 1024:
+            result["reason"] = "oversized"
+            return result
         decoded = json.loads(raw.decode("utf-8"))
         if not isinstance(decoded, dict):
             raise ValueError("recovery root is not an object")
