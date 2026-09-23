@@ -32,6 +32,7 @@ from kmtech_zero_pe import (
 )
 from writer_session_fence import writer_sink
 import carrier_identity_port as carrier_identity
+from label_data_manager import read_recovery_file
 
 
 PHS_LABEL_EXCHANGE_JOURNAL_VERSION = "label-match-phs-label-exchange-v1"
@@ -577,27 +578,17 @@ class PHSLabelExchangeJournal:
 
     def load(self) -> dict[str, Any]:
         with self._lock:
-            if not self.path.is_file():
+            evidence = read_recovery_file(
+                self.path, journal_schema=PHS_LABEL_EXCHANGE_JOURNAL_VERSION
+            )
+            if evidence["reason"] == "missing":
                 return {}
-            try:
-                with self.path.open("r", encoding="utf-8") as handle:
-                    loaded = json.load(handle)
-            except (OSError, json.JSONDecodeError) as exc:
-                raise PHSLabelWorkflowError(
-                    "PHS_LABEL_JOURNAL_CORRUPT",
-                    "현품표 교환 복구 journal을 읽을 수 없습니다.",
-                ) from exc
-        if (
-            not isinstance(loaded, dict)
-            or loaded.get("schema_version")
-            != PHS_LABEL_EXCHANGE_JOURNAL_VERSION
-            or not isinstance(loaded.get("state"), dict)
-        ):
+        if not evidence["verified"]:
             raise PHSLabelWorkflowError(
                 "PHS_LABEL_JOURNAL_CORRUPT",
-                "현품표 교환 복구 journal 형식이 올바르지 않습니다.",
+                "현품표 교환 복구 journal을 확인할 수 없습니다.",
             )
-        return dict(loaded["state"])
+        return dict(evidence["value"])
 
     def save(self, state: Mapping[str, Any]) -> dict[str, Any]:
         bounded = dict(state or {})

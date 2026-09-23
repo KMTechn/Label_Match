@@ -603,6 +603,8 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 
 F5 미완료 교환도 같은 목록에 `F5:<journal SHA256>`로 나타난다. 선택 ID가 현재 active journal SHA256과 같고 아직 보류되지 않았을 때만 관리자 확인 뒤 원본 journal bytes와 요청 key를 DB에 보류·readback하고 별도 `.held-<SHA256>` 파일로 옮긴다. 연결된 현재 세트가 있으면 먼저 세트도 보류한다. 같은 현품표는 재교환하지 않으며 다른 현품표의 F5는 계속할 수 있다. 신원 불명 F5는 항목 보류 후 모든 F5의 새 실행을 막고 다른 포장은 계속한다. `같은 요청 다시 확인`은 저장된 exchange ID에 대한 중앙 읽기 조회만 하고 UNKNOWN/인쇄 결과를 확정하지 않는다. 보관 도중 중단되면 다음 시작에서 원본 DB bytes를 대조한다. 기존 archive가 손상되거나 SHA가 다르면 그 bytes를 보존하고 해당 F5만 `파일 미검증`으로 표시·감사하며 앱 전체 복구를 멈추지 않는다.
 
+current-state와 F5 journal/archive의 복구 읽기는 `label_data_manager.read_recovery_file`에서 바이트·SHA256·JSON 구조를 한 번 검증한다. 실패 결과는 `UNVERIFIED`이며, 파일을 고치거나 성공 상태로 승격하지 않는다.
+
 시작 시 검증된 품목 목록이 없으면 이유·선택한 중앙 설정·오류 코드를 표시한다. `다시 시도`는 프로그램을 닫지 않고 같은 검증 원본을 다시 조회한다. 검증된 snapshot 또는 cache가 선택된 뒤에만 작업 화면으로 들어간다. 실패가 반복되면 네트워크·설정 확인 후 IT 담당자에게 오류 코드를 전달한다.
 
 writer admission mutex는 현재 작업자 profile LOCALAPPDATA에서 파생·확인된 root에만 기존 literal `Local\\KMTech.LabelMatch.WriterAdmission.v1`을 쓴다. 설치기는 상승 전에 실제 사용자 profile root와 환경 경로를 대조하고, 검증된 작업자 root를 상승 helper에 전달한다. 같은 후미를 가진 별도 custom root도 정규화 경로 hash 이름을 쓴다. 실제 다른 계정 UAC/설치 검증은 별도다.

@@ -73,7 +73,7 @@ from label_match_product_host import (
     _default_product_root, dispatch_product_mode, requires_bootstrap_integrity,
 )
 from writer_session_fence import writer_sink
-from label_data_manager import DataManager as _DataManager
+from label_data_manager import DataManager as _DataManager, read_recovery_file
 
 
 if __name__ == "__main__":
@@ -7327,58 +7327,12 @@ class Label_Match(tk.Tk):
 
     def _read_package_recovery_file(self, path, *, journal=False, expected_bytes=None):
         """Read one recovery file without changing it; return UNVERIFIED on bad input."""
-        result = {"verified": False, "raw": None, "sha256": "", "value": None,
-                  "reason": "missing"}
-        try:
-            path = Path(path)
-            if not path.is_file():
-                return result
-            if path.stat().st_size > 8 * 1024 * 1024:
-                result["reason"] = "oversized"
-                return result
-            raw = path.read_bytes()
-            result["raw"] = raw
-            result["sha256"] = hashlib.sha256(raw).hexdigest()
-            decoded = json.loads(raw.decode("utf-8"))
-            if not isinstance(decoded, dict):
-                raise ValueError("recovery root is not an object")
-            if journal:
-                state = decoded.get("state")
-                if (decoded.get("schema_version") != PHS_LABEL_EXCHANGE_JOURNAL_VERSION
-                        or not isinstance(state, dict)
-                        or any(not isinstance(state[key], str)
-                               for key in ("status", "set_id", "scan_payload",
-                                           "canonical_input_tag_qr", "source_label_id",
-                                           "active_scan_label_id", "exchange_id",
-                                           "input_tag_id", "authority_scope_id",
-                                           "workflow_mode", "prepare_idempotency_key")
-                               if key in state)):
-                    raise ValueError("label journal structure is invalid")
-                result["value"] = state
-            else:
-                current = decoded.get("current_set_info")
-                if (not isinstance(current, dict)
-                        or not isinstance(current.get("id"), (str, int))
-                        or not isinstance(current.get("raw", []), list)
-                        or any(not isinstance(value, str)
-                               for value in current.get("raw", []))
-                        or not isinstance(current.get("parsed", []), list)
-                        or any(not isinstance(value, str)
-                               for value in current.get("parsed", []))
-                        or ("start_time" in current
-                            and current["start_time"] is not None
-                            and not isinstance(current["start_time"], str))
-                        or ("timestamp" in decoded
-                            and not isinstance(decoded["timestamp"], str))):
-                    raise ValueError("current set structure is invalid")
-                result["value"] = decoded
-            if expected_bytes is not None and raw != expected_bytes:
-                raise ValueError("recovery bytes differ from durable record")
-            result["verified"] = True
-            result["reason"] = ""
-        except Exception as exc:
-            result["reason"] = type(exc).__name__
-        return result
+        return read_recovery_file(
+            path,
+            journal_schema=PHS_LABEL_EXCHANGE_JOURNAL_VERSION if journal else None,
+            current_state=not journal,
+            expected_bytes=expected_bytes,
+        )
 
     def _load_verified_package_current_state(self, evidence=None):
         manager = self.data_manager

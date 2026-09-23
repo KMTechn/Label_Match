@@ -5,11 +5,14 @@ event projection and file names; this module does not import the Tk application.
 """
 
 import csv
+import hashlib
 import json
 import os
 import queue
+import stat
 import threading
 import time
+from pathlib import Path
 
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
 from protected_admin import (
@@ -20,6 +23,68 @@ from protected_admin import (
     sanitize_persistent_value,
 )
 from storage_policy import label_match_local_events_dir
+
+
+def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
+    """Return raw bytes, digest, and a validated value without modifying evidence."""
+    result = {"verified": False, "raw": None, "sha256": "", "value": None,
+              "reason": "missing"}
+    try:
+        path = Path(path)
+        try:
+            metadata = path.stat()
+        except FileNotFoundError:
+            return result
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("recovery path is not a regular file")
+        if metadata.st_size > 8 * 1024 * 1024:
+            result["reason"] = "oversized"
+            return result
+        raw = path.read_bytes()
+        result["raw"] = raw
+        result["sha256"] = hashlib.sha256(raw).hexdigest()
+        decoded = json.loads(raw.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            raise ValueError("recovery root is not an object")
+        if journal_schema is not None:
+            state = decoded.get("state")
+            if (decoded.get("schema_version") != journal_schema
+                    or not isinstance(state, dict)
+                    or any(not isinstance(state[key], str)
+                           for key in ("status", "set_id", "scan_payload",
+                                       "canonical_input_tag_qr", "source_label_id",
+                                       "active_scan_label_id", "exchange_id",
+                                       "input_tag_id", "authority_scope_id",
+                                       "workflow_mode", "prepare_idempotency_key")
+                           if key in state)):
+                raise ValueError("label journal structure is invalid")
+            result["value"] = state
+        elif current_state:
+            current = decoded.get("current_set_info")
+            if (not isinstance(current, dict)
+                    or not isinstance(current.get("id"), (str, int))
+                    or not isinstance(current.get("raw", []), list)
+                    or any(not isinstance(value, str)
+                           for value in current.get("raw", []))
+                    or not isinstance(current.get("parsed", []), list)
+                    or any(not isinstance(value, str)
+                           for value in current.get("parsed", []))
+                    or ("start_time" in current
+                        and current["start_time"] is not None
+                        and not isinstance(current["start_time"], str))
+                    or ("timestamp" in decoded
+                        and not isinstance(decoded["timestamp"], str))):
+                raise ValueError("current set structure is invalid")
+            result["value"] = decoded
+        else:
+            result["value"] = decoded
+        if expected_bytes is not None and raw != expected_bytes:
+            raise ValueError("recovery bytes differ from durable record")
+        result["verified"] = True
+        result["reason"] = ""
+    except Exception as exc:
+        result["reason"] = type(exc).__name__
+    return result
 
 
 class DataManager:
@@ -176,11 +241,14 @@ class DataManager:
             return False
     def load_current_state(self, *, verified_bytes=None):
         state_path = os.path.join(self.save_directory, self._current_state_filename())
-        if verified_bytes is None and not os.path.exists(state_path): return None
         try:
             if verified_bytes is None:
-                with self._open_file(state_path, 'r', encoding='utf-8') as f:
-                    state = json.load(f)
+                evidence = read_recovery_file(state_path)
+                if evidence["reason"] == "missing":
+                    return None
+                if not evidence["verified"]:
+                    raise ValueError("current state is unverified: " + evidence["reason"])
+                state = evidence["value"]
             else:
                 state = json.loads(verified_bytes.decode('utf-8'))
             if isinstance(state, dict):
