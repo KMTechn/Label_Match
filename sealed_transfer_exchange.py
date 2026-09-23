@@ -435,6 +435,15 @@ class SealedTransferExchangeStore:
                             conn.execute(dependency[0])
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS package_workbench_holds (
+                    set_id TEXT PRIMARY KEY,
+                    source_phs2 TEXT NOT NULL,
+                    source_input_tag_id TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    held_by TEXT NOT NULL,
+                    held_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS sealed_transfer_exchange_intents (
                     intent_id TEXT PRIMARY KEY,
                     schema_version TEXT NOT NULL,
@@ -748,7 +757,11 @@ class SealedTransferExchangeStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""SELECT intent_id FROM sealed_transfer_exchange_intents
-                      WHERE status IN ({placeholders}) ORDER BY created_at""",
+                      WHERE status IN ({placeholders})
+                        AND NOT EXISTS (
+                          SELECT 1 FROM package_workbench_holds AS hold
+                          WHERE hold.set_id=sealed_transfer_exchange_intents.set_id)
+                      ORDER BY created_at""",
                 PENDING_STATUSES,
             ).fetchall()
         return [str(row["intent_id"]) for row in rows]

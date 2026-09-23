@@ -201,7 +201,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 시작/입력: 시작 시 중앙 품목 CSV를 갱신하고 품목 코드로 이름·규격을 조회한다.
 - 검증/저장: 중앙 등록 장비는 identity에 결속된 인증 캐시·검증된 snapshot을 사용한다. 비등록 호환 경로의 로컬 cache/bundled `Item.csv` fallback과 다르다.
 - 구현 경계: 4열 검증·canonical JSON·authority HMAC/record·sidecar 이름·authenticated payload 판정의 8개 leaf는 고정 `kmtech_shared.catalog`를 사용한다. profile 신원·빈 port 거부·redaction 진단·인증 I/O/복구·snapshot은 Label_Match adapter가 유지한다([X04-B](operations.md#shared-core-x04b)).
-- 실패/재시작: 중앙 요청 실패 시 인증된 이전 cache 복구가 가능하며, 없으면 중앙 등록 장비 시작을 차단한다. 임의 파일을 중앙 마스터로 인정하지 않는다.
+- 실패/재시작: 중앙 요청 실패 시 인증된 이전 cache 복구가 가능하며, 없으면 중앙 등록 장비 시작을 차단한다. 화면에 이유·중앙 설정·오류 코드를 표시하고 같은 검증 원본을 프로그램 재시작 없이 다시 확인할 수 있다. 임의 파일을 중앙 마스터로 인정하지 않는다.
 - 수용 기준: 정상 갱신, 인증 cache 복구, 손상/다른 identity cache 거부를 구분하고 화면에 실제 출처·경고가 대응한다.
 - 근거: [refresh_item_catalog](../../item_catalog_sync.py), [prepare_startup_item_catalog](../../Label_Match.py). [C-01](contracts.md#c-01), [LM-B04](BACKLOG.md#lm-b04).
 
@@ -231,6 +231,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 시작/입력: PACKAGE 생성 전 전체 단일 TRANSFER 작업에서 F4, 기존 제품→새 GOOD 제품 쌍을 목록에 추가한다. 수량을 먼저 정하지 않으며 실제 대상 멤버 수 이내에서 확인·수정·삭제 후 **교체 적용** 한 번으로 제출한다. 중앙 capability와 현재 seal, 같은 권한·원장·품목·UOM과 bundle 내부 accounting binding, 단품 donor PHS를 대조하며 3쌍 이상은 [추가 capability](contracts.md#c-03)가 필요하다.
 - 쓰기/결과: 중앙은 대상·donor·damage bundle version을 검사해 원자 교체하고 새 seal receipt를 만든다. 앱은 저장된 receipt를 검증한 뒤 새 QR 확인을 요구한다. **원본 물리 PHS2는 유지하고 새 전자 봉인 QR을 화면에서 다시 스캔한다.**
 - 실패/복구: 부분/다중 TRANSFER work-group, 부적합 donor·stale version·불완전 receipt는 차단한다. ACK 유실은 저장 intent/receipt로 복구하고 재확인 전 정상 후속 동작을 제한한다. exact legacy IIN pre-command review는 같은 intent로 fresh validation→durable bind한다. exact precommit PHS instruction rejection의 durable review만 authoritative receipt 부재·원 command/hash 무결성·fresh command 완전 일치 뒤 같은 key로 복구하며, 반복 terminal 거부는 별도 review reason으로 멈춘다. 그 외 durable review는 receipt 조회만 허용한다. 일반 F4는 물리 출력 업무가 아니다.
+- 미해결 교체·새 봉인 확인은 관리자 건별 보류를 durable 기록한 뒤 현재 작업대를 비울 수 있다. 원 intent/receipt/봉인과 실물은 격리하며 같은 PHS2 재접수와 보류 intent 자동 재전송을 막는다([C-04](contracts.md#c-04)).
 - 수용 기준: 유효한 1쌍/2쌍/3쌍 이상, 전체·일부 대상 교체에서 제품 수와 교체 멤버·seal version이 일치한다. 목록 완성만으로 제출하지 않으며 미완성·중복·대상 초과 입력을 차단한다. durable 접수 전 거부만 목록 편집을 재개하고, 접수 후 pending·오류는 같은 명령과 잠긴 목록을 보존한다. 거부 시 부분 교체가 없고, 새 QR 검증·로컬 저장 중단 후에도 두 번 교체하지 않는다.
 - 근거: [교체 command/attempt](../../sealed_transfer_exchange.py), [QR 확인/gate](../../Label_Match.py), [기존 정책](../MEMBER_EXCHANGE_POLICY.md). [C-03](contracts.md#c-03), [LM-B01](BACKLOG.md#lm-b01), [LM-B05](BACKLOG.md#lm-b05).
 
@@ -251,6 +252,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 시작/입력: marker=1인 due PENDING row를 claim하고 저장 명령 또는 draft를 전송한다. key는 같은 set/package identity에서 유지한다.
 - 효과: 저장 명령이 있으면 receipt부터 조회한다. 검증된 중앙 COMMITTED만 ACKED로 저장한다. due-time·마지막 시도 시각으로 후속 준비 row도 진행한다.
 - 실패/복구: transport/일시 오류는 retry, 409/412 및 비재시도 오류·불일치 receipt는 conflict다. marker=1 충돌은 로컬 완료를 보존하며 `OPERATOR_REVIEW` 사건으로 인계한다. marker=0 충돌을 PASS로 복구하지 않는다.
+- marker=0 미해결 command는 관리자 건별 보류의 원본 저장·readback 뒤 다른 세트를 진행한다. 보류 command는 자동 재전송하지 않고 동일 PHS2는 다시 접수하지 않는다. 기존 exact prewrite F1만 별도 복구 경로로 유지한다.
 - 관리자 경고 조회가 실패하면 생성·취소의 마지막 확인 목록과 경고를 유지하고 `조회 실패 · 오래됨`을 표시한다. 성공적으로 읽은 빈 목록만 경고를 해제한다.
 - 주기 충돌 정리·조회와 workbench의 F4 상태 조회는 package worker에서 읽은 불변 snapshot을 Tk에서 적용한다. 현재 set·generation·업무 시작 또는 봉인 적용 epoch가 바뀐 결과는 무시하며 F3/F4 행동 직전의 정본 검사는 유지한다.
 - actual-input walkthrough도 `review_only=True`를 기존 worker에 위임하고 완료 snapshot을 poll로 적용한다. 일반 outbox 전송 억제는 유지하며 [소비자 검증 범위](operations.md#responsiveness-w2)를 따른다.
@@ -263,6 +265,8 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 시작/입력: 시작 시 `_current_set_state_packaging.json`, outbox marker, 기존 완료 이벤트·교체/접수 journal을 확인한다.
 - 검증/효과: 작업자 변경·중앙 상태 migration·이미 기록된 이벤트를 대조해 같은 set를 복원한다. 날짜가 달라도 미확정 PHS2/outbox를 폐기하지 않는다.
 - 중앙 current-state의 timestamp 파싱 실패는 원본 파일을 보존한 복구 잠금이다. 자동 삭제·현재 시각 치환 없이 관리자 확인·수리를 요청한다.
+- 관리자가 건별 복구에서 원본 current-state를 보류·readback하면 해당 세트만 격리하고 다른 세트로 넘어갈 수 있다. 보류 저장이나 현재 작업 파일 정리에 실패하면 화면 잠금을 유지한다.
+- F5 미완료 교환은 원본 journal bytes·키·label ID를 보류·readback한 뒤 active journal을 별도 보관한다. 같은 label은 잠그고 다른 label의 교환을 허용한다. 시작 시 중단된 보관 단계는 원본 대조로 완결한다.
 - 실패/취소: 읽기 손상·writer 오류·marker 경계 불일치를 정상 완료로 취급하지 않는다. 상태·DB를 수동 편집해 복구했다고 판단하지 않는다.
 - 수용 기준: CSV 기록 직후/marker 직전/성공 표시 직전 중단과 날짜 변경을 구분해 중복 없이 복구하며 미확정 증거를 유지한다.
 - 근거: [DataManager, `_load_current_set_state`, `_label_match_local_completion_event_exists`](../../Label_Match.py), [완료 내구성 테스트 설계](../../tests/test_completion_csv_durability.py). [복구 운영](operations.md#recovery), [LM-B05](BACKLOG.md#lm-b05), [LM-B07](BACKLOG.md#lm-b07).

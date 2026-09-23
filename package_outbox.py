@@ -432,13 +432,19 @@ class PackageOutbox:
             conn.execute(
                 """UPDATE package_command_outbox
                       SET status='PENDING',updated_at=?
-                    WHERE status='SENDING' AND updated_at<=?""",
+                    WHERE status='SENDING' AND updated_at<=?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM package_workbench_holds AS hold
+                          WHERE hold.set_id=package_command_outbox.set_id)""",
                 (now, stale_before),
             )
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING'
                        AND local_completion_committed=1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM package_workbench_holds AS hold
+                           WHERE hold.set_id=package_command_outbox.set_id)
                        AND (retry_after_at IS NULL OR retry_after_at<=?)"""
                 + exclusion_sql
                 + " ORDER BY COALESCE(last_attempt_at,created_at),"
@@ -675,6 +681,150 @@ class PackageOutbox:
             ).fetchone()
             return dict(row) if row else None
 
+    def hold_workbench_set(
+        self, *, set_id: str, source_phs2: str, source_input_tag_id: str,
+        snapshot: Mapping[str, Any], reason: str, held_by: str,
+    ) -> dict[str, Any]:
+        """Preserve one unresolved set before the UI releases its current slot."""
+        identity = str(set_id or "").strip()
+        if not identity or not str(held_by or "").strip():
+            raise PackageLogisticsError("held set and authenticated manager are required")
+        encoded = json.dumps(dict(snapshot), ensure_ascii=False, sort_keys=True)
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM package_workbench_holds WHERE set_id=?", (identity,)
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO package_workbench_holds
+                       (set_id,source_phs2,source_input_tag_id,snapshot_json,
+                        reason,held_by,held_at) VALUES (?,?,?,?,?,?,?)""",
+                    (identity, str(source_phs2 or ""),
+                     str(source_input_tag_id or ""), encoded,
+                     str(reason or ""), str(held_by), self._utc_now()),
+                )
+                conn.execute(
+                    """INSERT INTO package_workbench_hold_audit
+                       (set_id,action,manager_id,observed,recorded_at)
+                       VALUES (?,?,?,?,?)""",
+                    (identity, "HOLD", str(held_by), "UNRESOLVED", self._utc_now()),
+                )
+            elif (existing["source_phs2"] != str(source_phs2 or "")
+                  or existing["snapshot_json"] != encoded):
+                conn.rollback()
+                raise PackageLogisticsError("held set evidence changed")
+            conn.commit()
+        held = self.get_workbench_hold(identity)
+        if held is None or held["snapshot_json"] != encoded:
+            raise PackageLogisticsError("held set readback failed")
+        return held
+
+    def get_workbench_hold(self, set_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM package_workbench_holds WHERE set_id=?",
+                (str(set_id or ""),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_workbench_holds(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM package_workbench_holds ORDER BY held_at,set_id"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def workbench_hold_for_source(self, source_phs2: str, source_input_tag_id: str):
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM package_workbench_holds
+                   WHERE source_phs2=? OR (source_input_tag_id!='' AND source_input_tag_id=?)
+                   ORDER BY held_at LIMIT 1""",
+                (str(source_phs2 or ""), str(source_input_tag_id or "")),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def audit_workbench_action(
+        self, *, set_id: str, action: str, manager_id: str, observed: str = ""
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """INSERT INTO package_workbench_hold_audit
+                   (set_id,action,manager_id,observed,recorded_at)
+                   VALUES (?,?,?,?,?)""",
+                (str(set_id), str(action), str(manager_id),
+                 str(observed), self._utc_now()),
+            )
+            conn.commit()
+
+    def hold_label_exchange(
+        self, *, hold_id: str, set_id: str, label_id: str,
+        source_label: str, source_input_tag_id: str, journal_bytes: bytes,
+        archive_path: str, held_by: str,
+    ) -> dict[str, Any]:
+        digest = hashlib.sha256(journal_bytes).hexdigest()
+        if not hold_id or not journal_bytes or not archive_path or not held_by:
+            raise PackageLogisticsError("label hold identity and journal are required")
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM phs_label_workbench_holds WHERE hold_id=?",
+                (hold_id,),
+            ).fetchone()
+            if existing is None:
+                now = self._utc_now()
+                conn.execute(
+                    """INSERT INTO phs_label_workbench_holds
+                       (hold_id,set_id,label_id,source_label,source_input_tag_id,
+                        journal_bytes,journal_sha256,archive_path,held_by,held_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (hold_id, set_id, label_id, source_label, source_input_tag_id,
+                     journal_bytes, digest, archive_path, held_by, now),
+                )
+                conn.execute(
+                    """INSERT INTO package_workbench_hold_audit
+                       (set_id,action,manager_id,observed,recorded_at)
+                       VALUES (?,?,?,?,?)""",
+                    ("F5:" + hold_id, "HOLD_LABEL", held_by, "UNRESOLVED", now),
+                )
+            elif (bytes(existing["journal_bytes"]) != journal_bytes
+                  or existing["archive_path"] != archive_path):
+                conn.rollback()
+                raise PackageLogisticsError("held label journal changed")
+            conn.commit()
+        held = self.get_label_exchange_hold(hold_id)
+        if held is None or hashlib.sha256(bytes(held["journal_bytes"])).hexdigest() != digest:
+            raise PackageLogisticsError("held label journal readback failed")
+        return held
+
+    def get_label_exchange_hold(self, hold_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM phs_label_workbench_holds WHERE hold_id=?",
+                (str(hold_id),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_label_exchange_holds(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM phs_label_workbench_holds ORDER BY held_at,hold_id"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def label_exchange_hold_for_source(self, source_label: str, label_id: str, input_tag_id: str):
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM phs_label_workbench_holds
+                   WHERE (source_label!='' AND source_label=?)
+                      OR (label_id!='' AND label_id=?)
+                      OR (source_input_tag_id!='' AND source_input_tag_id=?)
+                   ORDER BY held_at LIMIT 1""",
+                (str(source_label or ""), str(label_id or ""), str(input_tag_id or "")),
+            ).fetchone()
+            return dict(row) if row else None
+
     def list_local_completion_pending(self, *, limit: int = 20) -> list[dict[str, Any]]:
         """Return durable package commands whose local completion is unresolved."""
 
@@ -683,6 +833,9 @@ class PackageOutbox:
                 """SELECT * FROM package_command_outbox
                      WHERE local_completion_committed=0
                        AND local_recovery_dismissed=0
+                       AND NOT EXISTS (
+                           SELECT 1 FROM package_workbench_holds AS hold
+                           WHERE hold.set_id=package_command_outbox.set_id)
                      ORDER BY created_at,idempotency_key
                      LIMIT ?""",
                 (max(0, int(limit)),),

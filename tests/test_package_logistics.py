@@ -3242,6 +3242,40 @@ def test_v8_post_local_conflict_is_backfilled_as_pending_review_case(tmp_path):
     ] == 1
 
 
+def test_held_package_keeps_original_command_and_does_not_reenter_sender(tmp_path):
+    db_path = tmp_path / "held-package.sqlite3"
+    outbox = PackageOutbox(db_path)
+    held_draft = _draft_for_set("SET-HELD")
+    good_draft = _draft_for_set("SET-GOOD")
+    held_row = outbox.enqueue(held_draft)
+    good_row = outbox.enqueue(good_draft)
+    outbox.mark_local_completion_committed(held_row["idempotency_key"])
+    outbox.mark_local_completion_committed(good_row["idempotency_key"])
+    original = outbox.get_by_set_id("SET-HELD")
+    snapshot = {"current_set_info": {"id": "SET-HELD", "raw": ["PHS2-HELD"]}}
+
+    outbox.hold_workbench_set(
+        set_id="SET-HELD", source_phs2="PHS2-HELD",
+        source_input_tag_id="ITG-HELD", snapshot=snapshot,
+        reason="central outcome unknown", held_by="protected-admin-local",
+    )
+    restarted = PackageOutbox(db_path)
+    assert restarted.get_workbench_hold("SET-HELD")["snapshot_json"] == json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True
+    )
+    assert restarted.workbench_hold_for_source("PHS2-HELD", "ITG-HELD")
+    assert restarted.list_local_completion_pending() == []
+    assert restarted.claim_next()["idempotency_key"] == good_row["idempotency_key"]
+    assert restarted.claim_next() is None
+    assert restarted.get_by_set_id("SET-HELD") == original
+    with pytest.raises(PackageLogisticsError, match="evidence changed"):
+        restarted.hold_workbench_set(
+            set_id="SET-HELD", source_phs2="PHS2-HELD",
+            source_input_tag_id="ITG-HELD", snapshot={"wrong": True},
+            reason="central outcome unknown", held_by="protected-admin-local",
+        )
+
+
 def test_f1_dismisses_only_local_recovery_and_preserves_conflict_evidence(
     tmp_path,
 ):

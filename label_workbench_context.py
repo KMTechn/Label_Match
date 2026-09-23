@@ -99,14 +99,24 @@ def create_context_pane(
     self.operator_left_pane.grid(row=0, column=0, sticky="nsew")
     self.left_context_card = self.operator_left_pane
     self.operator_left_pane.grid_columnconfigure(0, weight=1)
+    self.operator_left_heading_frame = ttk.Frame(
+        self.operator_left_pane, style="Borderless.TFrame"
+    )
+    self.operator_left_heading_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    self.operator_left_heading_frame.grid_columnconfigure(0, weight=1)
     self.operator_left_heading_label = ttk.Label(
-        self.operator_left_pane,
+        self.operator_left_heading_frame,
         text="현재 작업",
         style="Header.TLabel",
     )
-    self.operator_left_heading_label.grid(
-        row=0, column=0, sticky="w", pady=(0, 12)
+    self.operator_left_heading_label.grid(row=0, column=0, sticky="w")
+    self.package_recovery_button = ttk.Button(
+        self.operator_left_heading_frame,
+        text="건별 복구",
+        command=self._show_package_recovery_workbench,
+        style="Control.TButton",
     )
+    self.package_recovery_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
     self.operator_item_stage_label = ttk.Label(
         self.operator_left_pane,
         text="현품표 대기",

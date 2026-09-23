@@ -273,10 +273,62 @@ def test_explicit_guarded_root_uses_derived_name_without_allocating_production_m
         fence.canonical_control_root(environment)
 
 
+def test_test_mode_ordinary_suffix_remains_path_derived_in_both_languages(tmp_path: Path) -> None:
+    root = (tmp_path / "worker" / "AppData" / "Local" / "KMTech"
+            / "DirectSync" / "label_match" / "control" / "writer-session")
+    environment = {
+        "LOCALAPPDATA": str(tmp_path / "administrator" / "AppData" / "Local"),
+        fence.TEST_MODE_ENV: "1",
+        fence.CONTROL_ROOT_OVERRIDE_ENV: str(root),
+    }
+    expected = fence.writer_admission_mutex_name(root, environ=environment)
+    assert expected.startswith(fence.WRITER_MUTEX_NAME + ".")
+
+    completed = _run_powershell_harness(
+        tmp_path,
+        f"""
+$env:KMTECH_LABEL_WRITER_TEST_MODE = '1'
+$env:KMTECH_LABEL_WRITER_CONTROL_ROOT = '{_quote(root)}'
+$env:LOCALAPPDATA = '{_quote(environment['LOCALAPPDATA'])}'
+Get-LabelWriterAdmissionMutexName '{_quote(root)}'
+""",
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert completed.stdout.strip().splitlines()[-1] == expected
+
+
 def test_ordinary_production_root_keeps_literal_mutex_name_without_allocating_it(tmp_path: Path) -> None:
     environment = {"LOCALAPPDATA": str(tmp_path / "LocalAppData")}
     root = fence.canonical_control_root(environment)
     assert fence.writer_admission_mutex_name(root, environ=environment) == fence.WRITER_MUTEX_NAME
+
+
+def test_worker_root_keeps_one_mutex_name_when_installer_runs_as_other_account(tmp_path: Path) -> None:
+    worker_local = tmp_path / "worker" / "AppData" / "Local"
+    admin_local = tmp_path / "administrator" / "AppData" / "Local"
+    worker_root = worker_local / "KMTech" / "DirectSync" / "label_match" / "control" / "writer-session"
+    scenarios = [
+        {"LOCALAPPDATA": str(worker_local), "USER_SID": "S-1-5-21-101"},
+        {"LOCALAPPDATA": str(admin_local), "USER_SID": "S-1-5-21-202"},
+    ]
+    assert [fence.writer_admission_mutex_name(worker_root, environ=values)
+            for values in scenarios] == [fence.WRITER_MUTEX_NAME] * 2
+
+    completed = _run_powershell_harness(
+        tmp_path,
+        f"""
+$workerRoot = '{_quote(worker_root)}'
+$env:LOCALAPPDATA = '{_quote(worker_local)}'
+$workerSid = 'S-1-5-21-101'
+$workerName = Get-LabelWriterAdmissionMutexName $workerRoot
+$env:LOCALAPPDATA = '{_quote(admin_local)}'
+$adminSid = 'S-1-5-21-202'
+$adminName = Get-LabelWriterAdmissionMutexName $workerRoot
+@($workerName, $adminName) | ConvertTo-Json -Compress
+""",
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert json.loads(completed.stdout.splitlines()[-1]) == [fence.WRITER_MUTEX_NAME] * 2
 
 
 def test_code_derived_inventory_is_exactly_bound_and_covers_all_sink_families() -> None:

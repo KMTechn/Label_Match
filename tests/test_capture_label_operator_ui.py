@@ -778,6 +778,9 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
     app._refresh_operator_workbench = MethodType(
         Label_Match._refresh_operator_workbench, app
     )
+    app._show_package_recovery_workbench = MethodType(
+        Label_Match._show_package_recovery_workbench, app
+    )
     for method_name in {
         name
         for spec in M7_STATE_CONTRACT.values()
@@ -878,6 +881,9 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
     )
     app._refresh_operator_workbench = MethodType(
         Label_Match._refresh_operator_workbench, app
+    )
+    app._show_package_recovery_workbench = MethodType(
+        Label_Match._show_package_recovery_workbench, app
     )
     for method_name in {
         name

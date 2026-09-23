@@ -581,8 +581,8 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     monkeypatch.setattr(app_module, "Label_Match", NoTkLabelMatch)
     monkeypatch.setattr(
         app_module.messagebox,
-        "showerror",
-        lambda title, message: dialogs.append((title, message)),
+        "askretrycancel",
+        lambda title, message: (dialogs.append((title, message)), False)[1],
     )
     monkeypatch.setattr(
         app_module,

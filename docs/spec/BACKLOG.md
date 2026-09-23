@@ -202,6 +202,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="lm-b02"></a>
 ## LM-B02 · 오프라인·지연·충돌 인계 요구 미정
 
+- W9NB는 현재 슬롯을 점유하던 일반 충돌·복수 미완료 command·교체 review를 set별 보류로 분리했다. 관리자 코드 확인과 hold readback 뒤 다른 set 업무는 계속하며, 동일 PHS2와 보류 command 자동 전송은 막는다. 저장소 공통 장애는 durable 보류도 불가능해 현재 세트 유지·원인 안내·재시도·정상 종료로 제한한다. 보류 사건의 실물 해소·종결 권한과 UNKNOWN의 중앙 대조는 이 항목의 P1 잔여다.
 - 유형/우선: **요구·운영 계약 공백 · P1**. 오래된 pending/충돌 실물의 보관·인계 시점과 담당 판단이 불명확하다.
 - 근거: [C-04](contracts.md#c-04)의 검증 lease·due 재시도·marker별 conflict, [복구](operations.md#recovery), [기존 완료 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md). 현행 유효 lease 없는 F3 차단과 marker=1 로컬 완료 보존은 요구 미정 때문에 완화하지 않는다.
 - 상태/다음: **요구 확인 대기**. 포장 운영·Label·서버 담당과 Main이 허용 offline 범위, lease 재사용 한계, pending/검토 인계 시간, 책임 역할·종결 권한, 실제 실물 조치를 정리한다. 시계차·업무일 cutoff·latency/throughput 목표도 확정값 없음.
@@ -263,6 +264,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="lm-b07"></a>
 ## LM-B07 · 백업·복원·재설치·롤백·보존 정책 수용
 
+- W9NB 설치/등록 L08은 배포 파도에 이관한다. 기존 identity·등록 승인·stop marker·writer fence를 앱의 업무 보류 버튼으로 우회하지 않는다. 정상 등록 도구 진입과 실패 원인 안내의 실제 설치 화면 수용은 P1 잔여다.
+- 건별 보류 기록은 공유 outbox SQLite의 `package_workbench_holds`/감사 표에 있으므로 백업·복원 범위에 포함한다. 관리자 코드는 보호 프로필로 검증하지만 현재 사용자 세션과 관리자 ID의 별도 결속 증거는 없어 P1 후속 검증이 필요하다.
 - 비정상 stop marker 복구: capture8의 첫 제거 실패는 PowerShell wrapper가 정상 stderr를 terminating error로 승격한 것이며 제품 제거 결함이 아니다. 기존 제거→정상 marker/report→stock 업그레이드·2회 headless 무결성 readback·데이터 보존 경로를 회귀로 검사하고 [복구 명령과 host/guest 검증 경계](operations.md#abnormal-stop-marker-recovery)를 명시한다. writer/receipt/무결성 guard는 유지한다.
 - 재시작 무결성 순서 오탐: `w9labelintegrityorder`에서 `d0e504e`의 ordinal/casefold 불일치와 기존 v1 기록 호환을 교정한다. 파일 무결성·receipt 검사는 보존하며 capture6의 수정 후보 재설치·동일 사용자 재시작은 [운영 절차](operations.md#bootstrap-integrity-order)에 따른 미검증 항목이다.
 - writer 업그레이드: 실제 onboarding 의미 변경의 directional pin은 유지한다. capture8의 `aa4d59b` 설치 거부는 checkout CRLF가 bundled CSV/설정에 들어간 빌드 결함이며 `w9labelwriterupgrade2`는 committed snapshot 패키징으로 교정한다. host 회귀는 실제 LF `d0e504e` stock 설치본에서 canonical 교체·2회 headless 무결성 readback·사용자 상태/구 record 보존을 검사한다. 새 stock 후보의 guest 설치·동일 사용자 GUI 2회 재시작 수용은 capture8 소유다([절차](operations.md#bootstrap-integrity-writer-transition)).

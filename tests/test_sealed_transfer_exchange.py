@@ -360,6 +360,28 @@ def _prepare(coordinator):
     )
 
 
+def test_held_exchange_is_not_automatically_retried(tmp_path):
+    db_path = tmp_path / "held-exchange.db"
+    client = FakeClient()
+    store = SealedTransferExchangeStore(db_path)
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    prepared = _prepare(coordinator)
+    assert store.pending_ids() == [prepared.intent_id]
+    before = dict(store.load(prepared.intent_id))
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO package_workbench_holds
+               (set_id,source_phs2,source_input_tag_id,snapshot_json,reason,held_by,held_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("set-1", "PHS2-HOLD", "ITG-HOLD", "{}", "review",
+             "protected-admin-local", "2026-09-23T00:00:00Z"),
+        )
+    assert store.pending_ids() == []
+    assert coordinator.drain_pending() == []
+    assert dict(store.load(prepared.intent_id)) == before
+    assert client.commands == []
+
+
 def test_atomic_replacement_command_and_receipt_are_durable(tmp_path):
     client = FakeClient()
     store = SealedTransferExchangeStore(tmp_path / "package.db")

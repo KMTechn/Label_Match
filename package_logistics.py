@@ -313,6 +313,39 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_package_command_outbox_status
             ON package_command_outbox(status, created_at);
+        CREATE TABLE IF NOT EXISTS package_workbench_holds (
+            set_id TEXT PRIMARY KEY,
+            source_phs2 TEXT NOT NULL,
+            source_input_tag_id TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            held_by TEXT NOT NULL,
+            held_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_package_workbench_holds_source
+            ON package_workbench_holds(source_input_tag_id);
+        CREATE TABLE IF NOT EXISTS package_workbench_hold_audit (
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            set_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            manager_id TEXT NOT NULL,
+            observed TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS phs_label_workbench_holds (
+            hold_id TEXT PRIMARY KEY,
+            set_id TEXT NOT NULL,
+            label_id TEXT NOT NULL,
+            source_label TEXT NOT NULL,
+            source_input_tag_id TEXT NOT NULL,
+            journal_bytes BLOB NOT NULL,
+            journal_sha256 TEXT NOT NULL,
+            archive_path TEXT NOT NULL,
+            held_by TEXT NOT NULL,
+            held_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_phs_label_workbench_holds_source
+            ON phs_label_workbench_holds(label_id,source_input_tag_id);
         CREATE TABLE IF NOT EXISTS package_cancellation_outbox (
             idempotency_key TEXT PRIMARY KEY,
             cancellation_event_id TEXT NOT NULL UNIQUE,

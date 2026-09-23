@@ -286,6 +286,39 @@ def test_compact_phs2_stays_one_scan_fail_closed_when_central_client_is_missing(
     assert app._workflow_total_scan_count() == 1
 
 
+@pytest.mark.parametrize("central_client", [True, False])
+def test_held_phs2_is_rejected_before_central_acceptance(central_client):
+    module = load_label_match_module()
+    master = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-HELD|CLC=AAA2270730100|"
+        "LBL=LBL-HELD|HSH=0123456789abcdef"
+    )
+    app = object.__new__(module.Label_Match)
+    app.package_logistics_client = object() if central_client else None
+    app.package_outbox = SimpleNamespace(
+        workbench_hold_for_source=lambda source, itg: {"set_id": "held"}
+        if source == master and itg == "ITG-HELD" else None
+    )
+    app.current_set_info = {"id": None, "raw": [], "parsed": [],
+                            "error_count": 0, "has_error_or_reset": False}
+    app.entry = _FakeEntry(master)
+    app.data_manager = _FakeLoggingDataManager()
+    app.global_scanned_set = set()
+    app.history_view_updates_active_state = True
+    app.history_active_load_pending = False
+    app.run_tests = True
+    app.is_blinking = False
+    app.initialized_successfully = True
+    app._begin_central_phs2_scan_overlay = lambda *_args, **_kwargs: pytest.fail(
+        "held source was submitted"
+    )
+
+    module.Label_Match.process_input(app)
+
+    assert app.current_set_info["raw"] == []
+    assert app.entry.get() == ""
+
+
 def test_transfer_seal_qr_is_rejected_as_packaging_start_label():
     module = load_label_match_module()
     seal_qr = (
@@ -5121,6 +5154,108 @@ def test_central_package_preflight_state_must_be_durable_before_enqueue():
         )
 
     assert app.current_set_info["resolved_transfer_bundle_id"] == "TRANSFER-1"
+
+
+def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    monkeypatch.setattr(module, "is_protected_admin_code", lambda value: value == "valid-admin")
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(tmp_path / "fence-control"))
+    master = (
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-HOLD|CLC=AAA2270730100|"
+        "LBL=LBL-HOLD|HSH=0123456789abcdef"
+    )
+    current = {"id": "set-hold", "raw": [master], "parsed": ["AAA2270730100"],
+               "central_inherit_all": True}
+    saved = {"worker_name": "operator", "timestamp": "2026-09-23T00:00:00",
+             "current_set_info": current}
+    path = tmp_path / "current.json"
+    path.write_text(json.dumps(saved), encoding="utf-8")
+    clear_allowed = False
+
+    def delete_state():
+        if clear_allowed:
+            path.unlink()
+
+    app = object.__new__(module.Label_Match)
+    app.run_tests = True
+    app.current_set_info = current
+    db_path = tmp_path / "outbox.sqlite3"
+    app.package_outbox = module.PackageOutbox(db_path)
+    app.data_manager = SimpleNamespace(
+        save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
+        load_current_state=lambda: json.loads(path.read_text(encoding="utf-8")) if path.exists() else None,
+        delete_current_state=delete_state,
+    )
+    app._save_current_set_state = lambda: True
+    app._package_recovery_candidates = lambda: [{
+        "set_id": "set-hold", "current": current, "package": None, "exchange": None,
+    }]
+    reset = []
+    app._reset_current_set = lambda: reset.append(True)
+    app._show_package_recovery_block = lambda *_args, **_kwargs: None
+
+    assert app._hold_package_recovery_set("set-hold", manager_code="wrong") is False
+    assert app.package_outbox.get_workbench_hold("set-hold") is None
+    assert app._hold_package_recovery_set("set-hold", manager_code="valid-admin") is False
+    assert app.package_outbox.get_workbench_hold("set-hold") is not None
+    assert path.exists() and reset == []
+
+    clear_allowed = True
+    assert app._hold_package_recovery_set("set-hold", manager_code="valid-admin") is True
+    assert not path.exists() and reset == [True]
+    assert app.package_outbox.get_workbench_hold("set-hold")["held_by"] == "protected-admin-local"
+    app.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **_kwargs: [])
+    app.package_logistics_client = None
+    assert "관리자 확인" in app._recheck_package_recovery_set("set-hold", manager_code="wrong")
+    assert "보류" in app._recheck_package_recovery_set("set-hold", manager_code="valid-admin")
+    assert app.package_outbox.get_workbench_hold("set-hold")["snapshot_json"] == json.dumps(
+        saved, ensure_ascii=False, sort_keys=True
+    )
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT action,observed FROM package_workbench_hold_audit ORDER BY audit_id"
+        ).fetchall() == [("HOLD", "UNRESOLVED"), ("RECHECK", "UNRESOLVED")]
+
+
+def test_restart_keeps_block_when_held_current_file_cannot_be_cleared(tmp_path):
+    module = load_label_match_module()
+    saved = {"current_set_info": {"id": "set-held"}, "timestamp": "2026-09-23T00:00:00"}
+    current_path = tmp_path / "current.json"
+    current_path.write_text(json.dumps(saved), encoding="utf-8")
+    app = object.__new__(module.Label_Match)
+    app.package_outbox = SimpleNamespace(
+        get_workbench_hold=lambda _set_id: {"snapshot_json": json.dumps(saved)},
+    )
+    app.data_manager = SimpleNamespace(
+        save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
+        load_current_state=lambda: saved,
+        delete_current_state=lambda: (_ for _ in ()).throw(OSError("locked")),
+    )
+    app._finalize_label_recovery_holds = lambda: True
+    messages = []
+    app._show_package_recovery_block = lambda message, **_kwargs: messages.append(message)
+
+    app._load_current_set_state()
+
+    assert current_path.exists()
+    assert messages and "파일 잠금" in messages[0]
+
+
+def test_storage_block_tells_manager_cause_retry_and_preservation():
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"raw": ["PHS2"]}
+    app._workflow_total_scan_count = lambda: 1
+    app._render_operator_workbench = lambda: None
+    app._retry_blocked_submission = lambda: None
+
+    assert app._publish_durable_commit_block(OSError("disk full")) is False
+    message = app._workflow_blocking_notice.message
+    assert all(part in message for part in (
+        "디스크 공간", "폴더 권한", "파일 잠금", "기존 기록은 보존", "정상 종료"
+    ))
+    assert app._workflow_notice_action_text == "저장 재시도"
 
 
 def test_orphan_package_recovery_requires_durable_current_set_authority(

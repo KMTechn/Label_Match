@@ -5,7 +5,7 @@ $Script:LabelWriterFenceAppId = 'label_match'
 $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority-v1'
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
-$Script:LabelWriterFenceInventorySha256 = 'b545b3ef3c55b12f27bd2fbef9ed0f58bb400c4fc89298a2637bed0301717217'
+$Script:LabelWriterFenceInventorySha256 = '257ee7bcfd51521d57df6ee529db4170d03f11d9c74eab10813bb88069a7ce12'
 $Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
@@ -86,6 +86,16 @@ function Get-LabelWriterFenceNormalizedRoot([string]$ControlRoot) {
 function Get-LabelWriterAdmissionMutexName {
     param([string]$ControlRoot = '')
     $selected = Get-LabelWriterFenceNormalizedRoot (Get-LabelWriterFenceControlRoot $ControlRoot)
+    if ($env:KMTECH_LABEL_WRITER_TEST_MODE -ceq '1' -and
+        -not [string]::IsNullOrWhiteSpace($env:KMTECH_LABEL_WRITER_CONTROL_ROOT)) {
+        return $Script:LabelWriterFenceAdmissionMutexName + '.' + (Get-LabelWriterFenceStringSha256 $selected).Substring(0, 16)
+    }
+    # An installer may be elevated as a different account while writing the
+    # worker's existing control root. Keep the worker's literal mutex name.
+    $ordinarySuffix = '\kmtech\directsync\label_match\control\writer-session'
+    if ($selected.EndsWith($ordinarySuffix, [StringComparison]::Ordinal)) {
+        return $Script:LabelWriterFenceAdmissionMutexName
+    }
     $production = ''
     try { $production = Get-LabelWriterFenceNormalizedRoot (Get-LabelWriterFenceControlRoot) } catch { }
     if (-not [string]::IsNullOrWhiteSpace($production) -and $selected -ceq $production) {

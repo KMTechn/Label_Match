@@ -5115,8 +5115,8 @@ class Label_Match(tk.Tk):
                 tone="danger",
                 allow_current_set_cancel=recoverable_prewrite_conflict,
             )
-            self._workflow_notice_action = None
-            self._workflow_notice_action_text = "확인"
+            self._workflow_notice_action = self._show_package_recovery_workbench
+            self._workflow_notice_action_text = "건별 복구"
         else:
             notice = WorkflowNotice(
                 title="로컬 포장 완료 복구 중",
@@ -5127,8 +5127,8 @@ class Label_Match(tk.Tk):
                 kind="submission_blocked",
                 tone="warning",
             )
-            self._workflow_notice_action = self._retry_blocked_submission
-            self._workflow_notice_action_text = "제출 재시도"
+            self._workflow_notice_action = self._show_package_recovery_workbench
+            self._workflow_notice_action_text = "건별 복구"
         self._workflow_blocking_notice = notice
         self._workflow_notice = notice
         self._render_operator_workbench()
@@ -7313,8 +7313,496 @@ class Label_Match(tk.Tk):
             saved["recovery_operator_review"] = True
         return saved
 
+    def _package_current_state_path(self):
+        if not hasattr(self.data_manager, "save_directory"):
+            return ""
+        return os.path.join(
+            self.data_manager.save_directory,
+            self.data_manager._current_state_filename(),
+        )
+
+    def _show_package_recovery_block(self, message, *, retry_action=None):
+        notice = WorkflowNotice(
+            title="포장 기록 저장 확인 필요",
+            message=(message + " 기존 기록은 보존됩니다. 정상 종료 후 다시 열어도 됩니다."),
+            kind="submission_blocked", tone="danger",
+        )
+        self._workflow_blocking_notice = notice
+        self._workflow_notice = notice
+        self._workflow_notice_action = retry_action or self._load_current_set_state
+        self._workflow_notice_action_text = "다시 확인"
+        self._render_operator_workbench()
+
+    def _package_recovery_candidates(self):
+        outbox = self.__dict__.get("package_outbox")
+        if outbox is None:
+            return []
+        rows = {}
+        current = self.__dict__.get("current_set_info") or {}
+        current_id = str(current.get("id") or "").strip()
+        label_state = self._active_label_recovery_state()
+        if current_id:
+            package = outbox.get_by_set_id(current_id)
+            exchanges = self.sealed_transfer_exchange_store.blocking_rows(set_id=current_id)
+            if (package or exchanges or current.get("recovery_operator_review")
+                    or str(label_state.get("set_id") or "") == current_id):
+                rows[current_id] = {"set_id": current_id, "package": package,
+                                    "exchange": exchanges[-1] if exchanges else None,
+                                    "current": current, "held": outbox.get_workbench_hold(current_id)}
+        recovery_state = self.__dict__.get("_package_recovery_state_data")
+        if recovery_state:
+            saved = recovery_state.get("current_set_info") or {}
+            saved_id = str(saved.get("id") or "").strip()
+            if saved_id and saved_id not in rows:
+                rows[saved_id] = {"set_id": saved_id,
+                                  "package": outbox.get_by_set_id(saved_id),
+                                  "exchange": None, "current": saved,
+                                  "held": outbox.get_workbench_hold(saved_id)}
+        for package in outbox.list_local_completion_pending(limit=1000):
+            set_id = str(package.get("set_id") or "").strip()
+            if set_id and set_id not in rows:
+                rows[set_id] = {"set_id": set_id, "package": package,
+                                "exchange": None, "current": None,
+                                "held": outbox.get_workbench_hold(set_id)}
+        for exchange in self.sealed_transfer_exchange_store.blocking_rows():
+            set_id = str(exchange["set_id"] or "").strip()
+            if set_id and set_id not in rows:
+                rows[set_id] = {"set_id": set_id, "package": None,
+                                "exchange": exchange, "current": None,
+                                "held": outbox.get_workbench_hold(set_id)}
+        for hold in outbox.list_workbench_holds():
+            set_id = hold["set_id"]
+            if set_id not in rows:
+                rows[set_id] = {"set_id": set_id,
+                                "package": outbox.get_by_set_id(set_id),
+                                "exchange": None, "current": None, "held": hold}
+        list_label_holds = getattr(outbox, "list_label_exchange_holds", None)
+        for hold in list_label_holds() if callable(list_label_holds) else ():
+            rows["F5:" + hold["hold_id"]] = {
+                "set_id": "F5:" + hold["hold_id"], "label": hold,
+                "current": None, "package": None, "exchange": None,
+                "held": hold,
+            }
+        if label_state:
+            hold_id = self._label_recovery_hold_id()
+            if hold_id and "F5:" + hold_id not in rows:
+                rows["F5:" + hold_id] = {
+                    "set_id": "F5:" + hold_id, "label": label_state,
+                    "current": None, "package": None, "exchange": None,
+                    "held": None,
+                }
+        return list(rows.values())
+
+    def _active_label_recovery_state(self):
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        if coordinator is None:
+            return {}
+        try:
+            state = coordinator.journal.load()
+        except PHSLabelWorkflowError:
+            return {}
+        return state if str(state.get("status") or "").upper() not in {"COMMITTED", "CANCELLED"} else {}
+
+    def _label_recovery_hold_id(self):
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        if coordinator is None or not coordinator.journal.path.is_file():
+            return ""
+        return hashlib.sha256(coordinator.journal.path.read_bytes()).hexdigest()
+
+    def _label_recovery_source_is_held(self, source, label_id=""):
+        outbox = self.__dict__.get("package_outbox")
+        lookup = getattr(outbox, "label_exchange_hold_for_source", None)
+        if not callable(lookup):
+            return False
+        input_tag_id = ""
+        try:
+            fields = _label_match_parse_compact_phs2(source)
+            input_tag_id = str(fields["ITG"])
+            label_id = label_id or str(fields.get("LBL") or "")
+        except ValueError:
+            pass
+        try:
+            held = lookup(source, label_id, input_tag_id)
+        except Exception as exc:
+            print(f"현품표 교환 보류 조회 기술 진단: {exc}")
+            self._show_package_recovery_block(
+                "보류 목록을 읽지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요."
+            )
+            return True
+        if held:
+            self._show_package_recovery_block(
+                "이 현품표는 교환 결과 확인을 위해 보류 중입니다. 다른 현품표를 사용하고 관리자에게 인계하세요.",
+                retry_action=self._show_package_recovery_workbench,
+            )
+            return True
+        return False
+
+    def _finalize_label_recovery_holds(self):
+        outbox = self.__dict__.get("package_outbox")
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        listing = getattr(outbox, "list_label_exchange_holds", None)
+        if not callable(listing) or coordinator is None:
+            return True
+        active = coordinator.journal.path
+        try:
+            for hold in listing():
+                raw = bytes(hold["journal_bytes"])
+                if hashlib.sha256(raw).hexdigest() != hold["journal_sha256"]:
+                    raise PackageLogisticsError("held journal digest differs")
+                archive = Path(hold["archive_path"])
+                if archive != active.with_name(active.name + ".held-" + hold["hold_id"]):
+                    raise PackageLogisticsError("held journal archive path differs")
+                linked_set_id = str(hold["set_id"] or "")
+                if linked_set_id and not outbox.get_workbench_hold(linked_set_id):
+                    # A crash can occur after the journal hold but before the
+                    # linked current set is held. Keep the active F5 lock so
+                    # normal startup can restore that set and retry the hold.
+                    if active.exists() and active.read_bytes() == raw:
+                        continue
+                    raise PackageLogisticsError("linked set hold is missing")
+                if not archive.exists():
+                    if active.exists() and active.read_bytes() == raw:
+                        os.replace(active, archive)
+                    else:
+                        with archive.open("xb") as handle:
+                            handle.write(raw)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                if archive.read_bytes() != raw:
+                    raise PackageLogisticsError("held journal archive readback differs")
+            return True
+        except Exception as exc:
+            print(f"현품표 교환 보류 시작 확인 기술 진단: {exc}")
+            self._show_package_recovery_block(
+                "교환 보류 일지를 다시 확인하지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요."
+            )
+            return False
+
+    @writer_sink("gui_label_recovery_hold")
+    def _hold_label_recovery(self, *, manager_code=None):
+        manager_id = self._package_recovery_manager(manager_code)
+        if not manager_id:
+            return False
+        state = self._active_label_recovery_state()
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        if not state or coordinator is None:
+            return False
+        path = coordinator.journal.path
+        try:
+            raw = path.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            source = str(state.get("canonical_input_tag_qr") or state.get("scan_payload") or "")
+            label_id = str(state.get("source_label_id") or state.get("active_scan_label_id") or "")
+            input_tag_id = str(state.get("input_tag_id") or "")
+            if not input_tag_id and source:
+                try:
+                    input_tag_id = str(_label_match_parse_compact_phs2(source)["ITG"])
+                except ValueError:
+                    pass
+            if not source or not label_id:
+                raise PackageLogisticsError("label hold source identity is incomplete")
+            archive = path.with_name(path.name + ".held-" + digest)
+            hold = self.package_outbox.hold_label_exchange(
+                hold_id=digest, set_id=str(state.get("set_id") or ""),
+                label_id=label_id, source_label=source,
+                source_input_tag_id=input_tag_id, journal_bytes=raw,
+                archive_path=str(archive), held_by=manager_id,
+            )
+            if bytes(hold["journal_bytes"]) != raw:
+                raise PackageLogisticsError("held label readback differs")
+            set_id = str(state.get("set_id") or "")
+            if set_id and str((self.current_set_info or {}).get("id") or "") == set_id:
+                if not self._hold_package_recovery_set(set_id, manager_code=manager_code):
+                    return False
+            elif set_id and not self.package_outbox.get_workbench_hold(set_id):
+                raise PackageLogisticsError("linked current set is not held")
+            if archive.exists():
+                if archive.read_bytes() != raw:
+                    raise PackageLogisticsError("held label archive differs")
+                if path.exists():
+                    raise PackageLogisticsError("active and held label journals both exist")
+            else:
+                if path.read_bytes() != raw:
+                    raise PackageLogisticsError("active label journal changed")
+                os.replace(path, archive)
+                if archive.read_bytes() != raw or path.exists():
+                    raise PackageLogisticsError("held label archive readback failed")
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            self._workflow_notice_action = None
+            self._render_operator_workbench()
+            return True
+        except Exception as exc:
+            print(f"현품표 교환 보류 기술 진단: {exc}")
+            self._show_package_recovery_block(
+                "교환 일지를 보류하거나 다시 읽지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요.",
+                retry_action=self._show_package_recovery_workbench,
+            )
+            return False
+
+    def _package_recovery_identity(self, candidate):
+        current = candidate.get("current") or {}
+        raw = current.get("raw") or []
+        source = str(raw[0] if raw else "").strip()
+        draft = {}
+        package = candidate.get("package") or {}
+        try:
+            draft = json.loads(str(package.get("draft_json") or "{}"))
+        except (TypeError, ValueError):
+            pass
+        source = source or str(draft.get("source_active_label_qr_payload") or
+                               draft.get("source_canonical_input_tag_qr") or "").strip()
+        input_tag_id = str(draft.get("source_input_tag_id") or "").strip()
+        try:
+            input_tag_id = str(_label_match_parse_compact_phs2(source)["ITG"])
+        except ValueError:
+            pass
+        return source, input_tag_id
+
+    def _package_recovery_manager(self, code=None):
+        if code is None and not self.run_tests:
+            code = simpledialog.askstring(
+                "관리자 확인", "보호 관리자 코드를 입력하세요.", show="*", parent=self
+            )
+        return PROTECTED_ADMIN_OPERATOR_ID if is_protected_admin_code(code) else ""
+
+    @writer_sink("gui_package_recovery_hold")
+    def _hold_package_recovery_set(self, set_id, *, manager_code=None):
+        manager_id = self._package_recovery_manager(manager_code)
+        if not manager_id:
+            return False
+        candidate = next((item for item in self._package_recovery_candidates()
+                          if item["set_id"] == str(set_id)), None)
+        if candidate is None:
+            return False
+        outbox = self.package_outbox
+        current = candidate.get("current")
+        try:
+            if current:
+                if (outbox.get_workbench_hold(str(set_id))
+                        or self.__dict__.get("_package_recovery_state_data")
+                        or current.get("recovery_operator_review")):
+                    state_data = self.data_manager.load_current_state()
+                else:
+                    if not self._save_current_set_state():
+                        raise PackageLogisticsError("current set could not be saved")
+                    state_data = self.data_manager.load_current_state()
+                if not state_data or str((state_data.get("current_set_info") or {}).get("id") or "") != str(set_id):
+                    raise PackageLogisticsError("current set readback failed")
+                snapshot = state_data
+            else:
+                snapshot = {"orphan_set_id": str(set_id),
+                            "package_key": str((candidate.get("package") or {}).get("idempotency_key") or "")}
+            source, input_tag_id = self._package_recovery_identity(candidate)
+            outbox.hold_workbench_set(
+                set_id=str(set_id), source_phs2=source,
+                source_input_tag_id=input_tag_id, snapshot=snapshot,
+                reason="중앙 결과 또는 로컬 복구 확인 필요", held_by=manager_id,
+            )
+            if current:
+                self.data_manager.delete_current_state()
+                if os.path.exists(self._package_current_state_path()):
+                    raise PackageLogisticsError("current set file remains after hold")
+                self._workflow_blocking_notice = None
+                self._workflow_notice = None
+                self._workflow_notice_action = None
+                self._reset_current_set()
+                self.__dict__.pop("_package_recovery_state_data", None)
+            else:
+                self._workflow_blocking_notice = None
+                self._workflow_notice = None
+                self._workflow_notice_action = None
+                self._load_current_set_state()
+            return True
+        except Exception as exc:
+            print(f"포장 건별 보류 기술 진단: {exc}")
+            self._show_package_recovery_block(
+                "보류 기록 또는 현재 작업 파일을 안전하게 확인하지 못했습니다. "
+                "디스크 공간·폴더 권한·파일 잠금을 확인하세요.",
+                retry_action=self._show_package_recovery_workbench,
+            )
+            return False
+
+    @writer_sink("gui_package_recovery_audit")
+    def _audit_package_recovery_action(self, set_id, action, manager_id, observed):
+        self.package_outbox.audit_workbench_action(
+            set_id=set_id, action=action, manager_id=manager_id,
+            observed=observed,
+        )
+
+    def _recheck_package_recovery_set(self, set_id, *, manager_code=None):
+        manager_id = self._package_recovery_manager(manager_code)
+        if not manager_id:
+            return "관리자 확인이 필요합니다."
+        if str(set_id).startswith("F5:"):
+            hold_id = str(set_id)[3:]
+            held = self.package_outbox.get_label_exchange_hold(hold_id)
+            if held:
+                try:
+                    state = json.loads(bytes(held["journal_bytes"]).decode("utf-8"))["state"]
+                except (ValueError, KeyError, UnicodeDecodeError):
+                    state = {}
+            else:
+                state = self._active_label_recovery_state()
+            exchange_id = str(state.get("exchange_id") or "")
+            scope = str(state.get("authority_scope_id") or "")
+            observed = "UNRESOLVED"
+            result = "같은 교환 요청의 중앙 결과를 확인할 수 없습니다. 보류를 유지하세요."
+            try:
+                if exchange_id and scope:
+                    response = self.phs_label_exchange_coordinator.client.get_phs_label_exchange(
+                        exchange_id, authority_scope_id=scope,
+                    )
+                    projection = response.get("exchange") if isinstance(response, dict) else None
+                    if (isinstance(projection, dict)
+                            and str(projection.get("exchange_id") or "") == exchange_id):
+                        observed = str(projection.get("state") or "UNKNOWN").upper()
+                        result = f"같은 교환 요청의 중앙 상태: {observed}. 원본 보류와 실물 확인을 유지하세요."
+            except Exception as exc:
+                print(f"현품표 교환 결과 확인 기술 진단: {exc}")
+                observed = "UNKNOWN"
+            try:
+                self._audit_package_recovery_action(set_id, "RECHECK", manager_id, observed)
+            except Exception:
+                return "결과 확인 기록을 저장하지 못했습니다. 보류를 유지하세요."
+            return result
+        outbox = self.package_outbox
+        package = outbox.get_by_set_id(set_id)
+        exchange_rows = self.sealed_transfer_exchange_store.blocking_rows(set_id=set_id)
+        result = "저장된 요청의 중앙 확정 결과를 확인하지 못했습니다. 보류를 유지하세요."
+        observed = "UNRESOLVED"
+        try:
+            if package and package.get("command_json") and self.package_logistics_client:
+                command = json.loads(package["command_json"])
+                receipt = self.package_logistics_client.get_receipt_if_exists(
+                    package["idempotency_key"],
+                    authority_scope_id=str(command.get("authority_scope_id") or ""),
+                )
+                if receipt is not None:
+                    draft = PackageCommandDraft.from_dict(json.loads(package["draft_json"]))
+                    self.package_outbox_processor._validate_receipt(
+                        draft, str(package.get("resolved_source_bundle_id") or ""),
+                        receipt, command=command,
+                    )
+                    result = "같은 요청의 중앙 완료 증거를 확인했습니다. 원본 보류와 실물 확인은 유지하세요."
+                    observed = "CENTRAL_RECEIPT_VALID"
+            elif exchange_rows:
+                exchange = exchange_rows[-1]
+                if exchange["command_json"] and self.package_logistics_client:
+                    command = json.loads(exchange["command_json"])
+                    receipt = self.package_logistics_client.get_receipt_if_exists(
+                        exchange["command_id"],
+                        authority_scope_id=str(exchange["authority_scope_id"] or ""),
+                    )
+                    if receipt is not None:
+                        self.sealed_transfer_exchange_coordinator._validate_receipt(
+                            command, receipt,
+                        )
+                        result = "같은 제품 교체 요청의 중앙 완료 증거를 확인했습니다. 새 봉인과 원본 보류를 유지하세요."
+                        observed = "CENTRAL_RECEIPT_VALID"
+        except Exception as exc:
+            print(f"포장 결과 다시 확인 기술 진단: {exc}")
+            result = "중앙 결과를 확인하지 못했습니다. 같은 요청은 보류 상태로 유지됩니다."
+            observed = "UNKNOWN"
+        try:
+            self._audit_package_recovery_action(
+                set_id, "RECHECK", manager_id, observed,
+            )
+        except Exception as exc:
+            print(f"포장 결과 확인 감사 저장 기술 진단: {exc}")
+            return "결과 확인 기록을 저장하지 못했습니다. 보류를 유지하고 저장 폴더를 확인하세요."
+        return result
+
+    def _show_package_recovery_workbench(self):
+        candidates = self._package_recovery_candidates()
+        if self.run_tests:
+            return candidates
+        window = tk.Toplevel(self)
+        window.title("포장 건별 복구")
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="문제 세트를 선택하세요. 다른 세트는 보류 기록 확인 후 계속할 수 있습니다.").pack(anchor="w")
+        listing = tk.Listbox(frame, width=85, height=8)
+        listing.pack(fill="both", expand=True, pady=8)
+        status = tk.StringVar(value="같은 요청 다시 확인 · 보류 후 계속 · 지원 담당자에게 ID 인계")
+        ttk.Label(frame, textvariable=status, wraplength=600).pack(anchor="w")
+
+        def refresh():
+            nonlocal candidates
+            candidates = self._package_recovery_candidates()
+            listing.delete(0, tk.END)
+            for item in candidates:
+                package = item.get("package") or {}
+                exchange = item.get("exchange")
+                condition = "보류" if item.get("held") else (
+                    str(package.get("status") or "") or
+                    str(exchange["status"] if exchange is not None else "복구 확인"))
+                listing.insert(tk.END, f"{item['set_id']} · {condition}")
+
+        def selected():
+            indexes = listing.curselection()
+            return candidates[indexes[0]] if indexes else None
+
+        def recheck():
+            item = selected()
+            if item:
+                status.set(self._recheck_package_recovery_set(item["set_id"]))
+                refresh()
+
+        def hold():
+            item = selected()
+            if item:
+                try:
+                    held = (self._hold_label_recovery()
+                            if item["set_id"].startswith("F5:")
+                            else self._hold_package_recovery_set(item["set_id"]))
+                except Exception as exc:
+                    print(f"포장 관리자 보류 진입 기술 진단: {exc}")
+                    self._show_package_recovery_block(
+                        "보류 기록을 저장하지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요.",
+                        retry_action=self._show_package_recovery_workbench,
+                    )
+                    held = False
+                if held:
+                    status.set("해당 세트의 원본·요청 키를 보류하고 다른 세트 작업을 계속할 수 있습니다.")
+                    refresh()
+
+        def handoff():
+            item = selected()
+            if item:
+                manager_id = self._package_recovery_manager()
+                if not manager_id:
+                    status.set("지원 인계에는 관리자 확인이 필요합니다.")
+                    return
+                package = item.get("package") or {}
+                label = item.get("label") or {}
+                try:
+                    self._audit_package_recovery_action(
+                        item["set_id"], "HANDOFF", manager_id, "UNRESOLVED",
+                    )
+                except Exception as exc:
+                    print(f"포장 지원 인계 감사 저장 기술 진단: {exc}")
+                    status.set("지원 인계 기록을 저장하지 못했습니다. 저장 폴더를 확인하세요.")
+                    return
+                status.set(
+                    f"지원 담당자에게 세트 {item['set_id']} / 요청 "
+                    f"{package.get('idempotency_key') or label.get('exchange_id') or label.get('hold_id') or '교체 journal'} / "
+                    "실물 분리 보관 상태를 알려 주세요. 원본 기록은 보존됩니다."
+                )
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=8)
+        ttk.Button(buttons, text="같은 요청 다시 확인", command=recheck).pack(side="left", padx=4)
+        ttk.Button(buttons, text="보류 후 계속", command=hold).pack(side="left", padx=4)
+        ttk.Button(buttons, text="지원 인계", command=handoff).pack(side="left", padx=4)
+        refresh()
+        return window
+
     def _load_current_set_state(self):
         completion_sync_error = None
+
+        if not self._finalize_label_recovery_holds():
+            return
         package_outbox = self.__dict__.get("package_outbox")
         reconcile_superseded = getattr(
             package_outbox,
@@ -7331,6 +7819,41 @@ class Label_Match(tk.Tk):
                 # not turn application startup into a fatal error.
                 print(f"과거 중앙 포장 충돌 시작 정리 오류: {exc}")
         state_data = self.data_manager.load_current_state()
+        if state_data:
+            held_set_id = str((state_data.get("current_set_info") or {}).get("id") or "")
+            get_hold = getattr(package_outbox, "get_workbench_hold", None)
+            held = get_hold(held_set_id) if callable(get_hold) else None
+            if held:
+                try:
+                    matching_snapshot = json.loads(held["snapshot_json"]) == state_data
+                except (TypeError, ValueError):
+                    matching_snapshot = False
+                if not matching_snapshot:
+                    self._show_package_recovery_block(
+                        "보류한 세트와 현재 저장 기록이 다릅니다. 원본을 유지하고 지원 담당자에게 알리세요."
+                    )
+                    return
+                try:
+                    self.data_manager.delete_current_state()
+                    file_remains = os.path.exists(self._package_current_state_path())
+                except OSError as exc:
+                    print(f"보류 현재 작업 파일 정리 기술 진단: {exc}")
+                    file_remains = True
+                if file_remains:
+                    self._show_package_recovery_block(
+                        "보류 기록은 저장됐지만 현재 작업 파일을 비우지 못했습니다. 폴더 권한과 파일 잠금을 확인하고 다시 시도하세요."
+                    )
+                    return
+                state_data = None
+                self._workflow_blocking_notice = None
+                self._workflow_notice = None
+                self._workflow_notice_action = None
+                self._render_operator_workbench()
+        if not state_data and os.path.exists(self._package_current_state_path()):
+            self._show_package_recovery_block(
+                "현재 작업 파일을 읽지 못했습니다. 파일을 지우지 말고 디스크·폴더 권한·파일 잠금을 확인하세요."
+            )
+            return
         if not state_data:
             list_pending = getattr(
                 package_outbox, "list_local_completion_pending", None
@@ -7338,10 +7861,14 @@ class Label_Match(tk.Tk):
             rows = list_pending(limit=21) if callable(list_pending) else []
             recoverable = []
             invalid = []
+            get_hold = getattr(package_outbox, "get_workbench_hold", None)
             for row in rows:
+                if callable(get_hold) and get_hold(str(row.get("set_id") or "")):
+                    continue
                 try:
                     draft = json.loads(str(row.get("draft_json") or "{}"))
                 except (TypeError, ValueError, json.JSONDecodeError):
+                    invalid.append((row, PackageLogisticsError("saved package draft is unreadable")))
                     continue
                 is_physical_phs2 = bool(
                     str(draft.get("membership_mode") or "").strip().upper()
@@ -7413,7 +7940,8 @@ class Label_Match(tk.Tk):
                     self._workflow_blocking_notice = notice
                     self._workflow_notice = notice
                     self._workflow_notice_action = None
-                    self._workflow_notice_action_text = "확인"
+                    self._workflow_notice_action = self._show_package_recovery_workbench
+                    self._workflow_notice_action_text = "건별 복구"
                     self._render_operator_workbench()
                     return
             elif recoverable or invalid:
@@ -7432,11 +7960,22 @@ class Label_Match(tk.Tk):
                 )
                 self._workflow_blocking_notice = notice
                 self._workflow_notice = notice
-                self._workflow_notice_action = None
-                self._workflow_notice_action_text = "확인"
+                self._workflow_notice_action = self._show_package_recovery_workbench
+                self._workflow_notice_action_text = "건별 복구"
                 self._render_operator_workbench()
                 return
             else:
+                exchange_store = self.__dict__.get("sealed_transfer_exchange_store")
+                blocking_rows = getattr(exchange_store, "blocking_rows", None)
+                unheld_exchange = [
+                    row for row in (blocking_rows() if callable(blocking_rows) else [])
+                    if not (callable(get_hold) and get_hold(str(row["set_id"] or "")))
+                ]
+                if unheld_exchange:
+                    self._show_package_recovery_block(
+                        "미완료 제품 교체 요청이 남아 있습니다. 건별 복구에서 결과를 확인하고 보류하세요.",
+                        retry_action=self._show_package_recovery_workbench,
+                    )
                 return
         saved_set_info = dict(state_data.get("current_set_info") or {})
         saved_set_id = str(saved_set_info.get("id") or "").strip()
@@ -7477,6 +8016,7 @@ class Label_Match(tk.Tk):
         except (ValueError, TypeError) as e:
             if durable_central_state:
                 print(f"중앙 작업 타임스탬프 오류: {type(e).__name__}. 원본 복구 상태를 보존합니다.")
+                self._package_recovery_state_data = state_data
                 notice = WorkflowNotice(
                     title="중앙 포장 복구 잠금",
                     message=(
@@ -7488,8 +8028,8 @@ class Label_Match(tk.Tk):
                 )
                 self._workflow_blocking_notice = notice
                 self._workflow_notice = notice
-                self._workflow_notice_action = None
-                self._workflow_notice_action_text = "확인"
+                self._workflow_notice_action = self._show_package_recovery_workbench
+                self._workflow_notice_action_text = "건별 복구"
                 self._render_operator_workbench()
                 return
             print(f"저장된 타임스탬프 파싱 오류: {e}. 이전 작업을 무시합니다.")
@@ -7555,6 +8095,8 @@ class Label_Match(tk.Tk):
                 )
                 self._workflow_blocking_notice = notice
                 self._workflow_notice = notice
+                self._workflow_notice_action = self._show_package_recovery_workbench
+                self._workflow_notice_action_text = "건별 복구"
 
             if self.current_set_info.get('start_time') and isinstance(self.current_set_info['start_time'], str):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
@@ -10177,6 +10719,32 @@ class Label_Match(tk.Tk):
                 and self.__dict__.get("package_logistics_client")
                 is not None
             )
+            if new_label_data and looks_like_input_tag_label and self.__dict__.get("package_outbox") is not None:
+                try:
+                    held = self.package_outbox.workbench_hold_for_source(
+                        processed_input, str(new_label_data.get("ITG") or ""),
+                    )
+                    lookup_label_hold = getattr(
+                        self.package_outbox, "label_exchange_hold_for_source", None
+                    )
+                    label_hold = (lookup_label_hold(
+                        processed_input, str(new_label_data.get("LBL") or ""),
+                        str(new_label_data.get("ITG") or ""),
+                    ) if callable(lookup_label_hold) else None)
+                except Exception as exc:
+                    print(f"보류 현품표 조회 기술 진단: {exc}")
+                    self._show_package_recovery_block(
+                        "보류 현품표 목록을 읽지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요."
+                    )
+                    return
+                if held or label_hold:
+                    consume_input()
+                    if not self.run_tests:
+                        messagebox.showwarning(
+                            "보류 현품표", "이 현품표는 이전 요청의 결과 확인을 위해 보류 중입니다. "
+                            "다른 세트를 진행하고 관리자에게 이 현품표를 인계하세요.", parent=self,
+                        )
+                    return
             if not central_label_candidate:
                 consume_input()
             if transfer_label_data:
@@ -10358,6 +10926,15 @@ class Label_Match(tk.Tk):
             # an active F5 command or a recoverable journal row.
             return False
         if self._app_close_blocks_local_action():
+            return True
+        current_set_id = str(current_state.get("id") or "").strip()
+        outbox = self.__dict__.get("package_outbox")
+        get_hold = getattr(outbox, "get_workbench_hold", None)
+        if current_set_id and callable(get_hold) and get_hold(current_set_id):
+            self._show_package_recovery_block(
+                "이 세트는 관리자 보류 중입니다. 같은 요청을 다시 처리하지 말고 건별 복구에서 확인하세요.",
+                retry_action=self._show_package_recovery_workbench,
+            )
             return True
         if self._ui_lane_is_busy():
             self._show_ui_lane_rejection("busy")
@@ -11923,6 +12500,8 @@ class Label_Match(tk.Tk):
             "_phs_reconciliation_lookup_pending", False
         ):
             return False
+        if self._label_recovery_source_is_held(scan_payload):
+            return False
         captured = _label_match_capture_current_set(self.current_set_info)
         scope = self._phs_reconciliation_scope()
 
@@ -12100,6 +12679,10 @@ class Label_Match(tk.Tk):
         confirm_ambiguous_reprint_target_ids=(),
     ):
         if self.__dict__.get("_phs_label_exchange_pending", False):
+            return False
+        if resolution is not None and self._label_recovery_source_is_held(
+            str(resolution.get("scan_payload") or "")
+        ):
             return False
         if (
             expected_current_set is not None
@@ -12489,6 +13072,11 @@ class Label_Match(tk.Tk):
         confirm_ambiguous_reprint=False,
     ):
         if self.__dict__.get("_phs_label_exchange_pending", False):
+            return False
+        if self._label_recovery_source_is_held(
+            str(self.current_set_info.get("canonical_input_tag_qr") or
+                ((self.current_set_info.get("raw") or [""])[0]))
+        ):
             return False
         captured_set_id = str(
             self.current_set_info.get("id") or ""
@@ -17357,8 +17945,10 @@ class Label_Match(tk.Tk):
             if lease_failure
             else (
                 "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
-                "실물을 이동하거나 다음 작업을 시작하지 말고 저장을 다시 시도하세요. "
-                "계속 실패하면 관리자에게 확인을 요청하세요."
+                "디스크 공간·저장 폴더 권한·파일 잠금을 확인한 뒤 저장 재시도를 누르세요. "
+                "현재 세트와 기존 기록은 보존됩니다. 실물을 이동하지 마세요. "
+                "정상 종료 후 다시 열어 복구할 수 있습니다. "
+                "계속 실패하면 관리자에게 저장 상태 확인을 요청하세요."
             )
         )
         scans = tuple(self.current_set_info.get("raw") or ())
@@ -18281,6 +18871,27 @@ def _show_item_catalog_startup_error(error):
         _label_match_startup_trace("item_catalog_startup_dialog_unavailable")
 
 
+def _offer_item_catalog_startup_retry(error):
+    context = get_catalog_attempt_context_from_error(error)
+    try:
+        retry = messagebox.askretrycancel(
+            "중앙 품목 목록 확인 필요",
+            (
+                "검증된 중앙 품목 목록을 아직 사용할 수 없습니다.\n\n"
+                f"{_item_catalog_profile_details_for_display(context)}\n"
+                f"오류 코드: {error.cause_code}\n\n"
+                "네트워크와 중앙 물류 설정을 확인한 뒤 '다시 시도'를 누르세요. "
+                "같은 신뢰 원본을 다시 확인합니다. 계속 실패하면 IT 담당자에게 오류 코드를 알려 주세요."
+            ),
+        )
+        if not retry:
+            setattr(error, "_catalog_retry_dialog_shown", True)
+        return bool(retry)
+    except Exception:
+        _label_match_startup_trace("item_catalog_retry_dialog_unavailable")
+        return False
+
+
 def _item_catalog_cache_time_for_display(value):
     text = str(value or "").strip()
     if not text or text == "UNKNOWN":
@@ -18346,7 +18957,16 @@ def _item_catalog_diagnostic_path():
 def _run_label_match_application():
     """Start the stateful application after single-instance ownership."""
 
-    active_catalog_path = prepare_startup_item_catalog()
+    while True:
+        try:
+            active_catalog_path = prepare_startup_item_catalog()
+            break
+        except ItemCatalogSyncError as error:
+            _label_match_startup_trace(
+                "item_catalog_retry_available", cause_code=error.cause_code,
+            )
+            if not _offer_item_catalog_startup_retry(error):
+                raise
     if active_catalog_path is not None:
         catalog_context = get_sanitized_catalog_attempt_context()
         _label_match_startup_trace(
@@ -18438,7 +19058,8 @@ def main(argv=None):
             http_status_code=catalog_context.get("http_status_code"),
             **_item_catalog_profile_trace_details(catalog_context),
         )
-        _show_item_catalog_startup_error(exc)
+        if not getattr(exc, "_catalog_retry_dialog_shown", False):
+            _show_item_catalog_startup_error(exc)
         return ITEM_CATALOG_STARTUP_EXIT_CODE
     except Exception as exc:
         _label_match_startup_trace(
