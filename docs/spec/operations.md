@@ -650,6 +650,8 @@ capture8에서 `aa4d59b` 패키지는 `app/assets/Item.csv`에서 거부됐다. 
 
 설치 전 사용자 상태의 보존본과 원 설치본을 유지한다. 성공은 감사의 `PASS`·위 compatibility·candidate/installed writer pin과 현재 bootstrap 검증으로 확인하고 같은 사용자의 시작→정상 종료를 두 번 확인한다. 교체는 새 bootstrap record를 생성하고 `.current.rollback.*`에 이전 code/record를 보존하며, 실패 시 기존 transaction이 검증한 preimage로 복원한다. 역방향 설치는 거부한다. 실패 복원된 `d0e504e`에는 원래 재시작 순서 결함이 남으므로 정상화로 간주하지 않는다. bundled CSV/template은 committed bytes로 치환하고 기존 사용자 catalog cache·설정·업무 파일은 병합/덮어쓰지 않는다. 실제 guest 재설치·업무 수용은 capture8의 별도 확인 범위다.
 
+설치 staging과 실패 복원 source는 `robocopy /E /XJ /MT:16 /R:0 /W:0`로 복사하며 root `bootstrap-integrity.json`을 제외한다. 종료 코드 0–7을 정상 복사 변형으로 받아들이고 음수 또는 8 이상은 기존 실패·감사 경로로 보낸다. 원본·staging·설치본 inventory 및 aggregate 검증과 writer pin 결속은 유지한다.
+
 portable builder의 `THIRD_PARTY` 9개 version은 `requirements-release.txt`의 hash lock과 [자동 대조](../../tests/test_zero_pe_conversion.py)한다. `chardet==5.2.0`의 pure Python wheel을 명시하고 source runtime에는 계속 chardet을 복사한다. lock의 charset-normalizer는 다른 build/test closure를 위해 유지하며 portable zero-PE 대체 의도는 바뀌지 않는다. 이 입력 정합 검사는 clean 설치·portable build 실행 증거와 별개다.
 
 현행 [릴리스 계약](../../RELEASE_GATE_CONTRACT.md)의 코드 배치와 첫 사용자 등록을 구분한다. `--remove-current-user-setup`은 정확한 사용자 persistence 제거·relay 종료와 lock 부재를 확인하면서 identity/profile/settings/ledger/queue/spool/status/logs/receipts를 보존하는 계약이다. 이후 elevated `INSTALL_THIS_PC.ps1 -Uninstall`이 코드를 제거하며 relay persistence가 남아 있으면 거부한다. 이 명세에서 설치·제거 명령을 실행하지 않았다.

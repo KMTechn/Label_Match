@@ -1985,14 +1985,9 @@ catch {
                 $rollbackSource = Join-Path (Split-Path -Parent $auditPath) ($writerTransactionId + '-rollback-source')
                 if (Test-Path -LiteralPath $rollbackSource) { throw 'Rollback source staging already exists.' }
                 [void](New-Item -ItemType Directory -Path $rollbackSource)
-                $backupPrefix = $replacementRollbackRoot.TrimEnd('\') + '\'
-                foreach ($file in @(Get-ChildItem -LiteralPath $replacementRollbackRoot -File -Force -Recurse)) {
-                    $relative = $file.FullName.Substring($backupPrefix.Length)
-                    if ($relative -ieq 'bootstrap-integrity.json') { continue }
-                    $destination = Join-Path $rollbackSource $relative
-                    [void](New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force)
-                    Copy-Item -LiteralPath $file.FullName -Destination $destination
-                }
+                $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
+                & $robocopy $replacementRollbackRoot $rollbackSource /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $replacementRollbackRoot 'bootstrap-integrity.json') | Out-Null
+                if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw "Rollback source copy failed: $LASTEXITCODE" }
                 $restoreParameters = $helperParameters.Clone()
                 $restoreParameters.SourceRoot = $rollbackSource
                 $restoreParameters.ExpectedSourceAggregateSha256 = [string]$installedPreimageInventory.bootstrap_aggregate_sha256

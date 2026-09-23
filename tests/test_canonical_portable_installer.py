@@ -693,6 +693,87 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
         assert token in rollback
 
 
+@pytest.mark.parametrize(
+    ("installer", "source_name", "destination_name"),
+    [
+        (HELPER, "sourceRootFull", "stagingRoot"),
+        (INSTALLER, "replacementRollbackRoot", "rollbackSource"),
+    ],
+)
+def test_robocopy_copy_accepts_success_variants_and_rejects_failure(
+    tmp_path: Path, installer: Path, source_name: str, destination_name: str
+) -> None:
+    source_text = _source(installer)
+    start = source_text.index(
+        "$robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'"
+    )
+    copy_block = "\n".join(source_text[start:].splitlines()[:3])
+    exit_guard = copy_block.splitlines()[2]
+    boundary_harness = tmp_path / "robocopy-exit-guard.ps1"
+    boundary_harness.write_text(
+        "$results = @()\nforeach ($code in 0..8) {\n"
+        "    $global:LASTEXITCODE = $code\n"
+        f"    try {{ {exit_guard}; $results += \"PASS:$code\" }} "
+        "catch { $results += \"FAIL:$code\" }\n}\n"
+        "$results -join ','\n",
+        encoding="utf-8-sig",
+    )
+    boundary = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(boundary_harness)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert boundary.returncode == 0, boundary.stderr
+    assert boundary.stdout.strip() == ",".join(
+        [f"PASS:{code}" for code in range(8)] + ["FAIL:8"]
+    )
+    for scenario, expected_code in (
+        ("unchanged", 0),
+        ("copied", 1),
+        ("extra", 2),
+        ("copied-extra", 3),
+        ("missing-source", 16),
+    ):
+        case = tmp_path / scenario
+        source = case / "source"
+        destination = case / "destination"
+        destination.mkdir(parents=True)
+        if scenario != "missing-source":
+            source.mkdir()
+            (source / "bootstrap-integrity.json").write_text("exclude", encoding="utf-8")
+        if scenario in {"copied", "copied-extra"}:
+            (source / "file.txt").write_text("copy", encoding="utf-8")
+        if scenario in {"extra", "copied-extra"}:
+            (destination / "extra.txt").write_text("retain", encoding="utf-8")
+        qsource = str(source).replace("'", "''")
+        qdestination = str(destination).replace("'", "''")
+        harness = case / "copy.ps1"
+        harness.write_text(
+            f"$ErrorActionPreference = 'Stop'\n"
+            f"${source_name} = '{qsource}'\n"
+            f"${destination_name} = '{qdestination}'\n"
+            "$IntegrityFileName = 'bootstrap-integrity.json'\n"
+            f"try {{\n{copy_block}\nWrite-Output \"PASS:$LASTEXITCODE\"\n}} "
+            "catch { Write-Output \"FAIL:$LASTEXITCODE\" }\n",
+            encoding="utf-8-sig",
+        )
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(harness)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert completed.returncode == 0, completed.stderr
+        expected = "FAIL" if expected_code >= 8 else "PASS"
+        assert completed.stdout.strip() == f"{expected}:{expected_code}", completed
+        if expected == "PASS":
+            assert not (destination / "bootstrap-integrity.json").exists()
+            assert (destination / "file.txt").exists() == (
+                scenario in {"copied", "copied-extra"}
+            )
+
+
 def test_rollback_relay_readback_rejects_query_failure_extra_and_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -881,11 +962,34 @@ catch {{
     $paths = @(Get-ChildItem -LiteralPath $audit -Recurse -File |
         ForEach-Object {{ $_.FullName }})
 }}
-[pscustomobject][ordered]@{{
+$observation = [pscustomobject][ordered]@{{
     status = $status
     current_user_writable = $writable
     files = @($paths | ForEach-Object {{ Inspect $_ }})
-}} | ConvertTo-Json -Depth 6 -Compress
+}}
+$frozenRoot = Join-Path $audit 'canonical-portable-repro-freeze-helper'
+if (Test-Path -LiteralPath $frozenRoot) {{
+    foreach ($file in @(Get-ChildItem -LiteralPath $frozenRoot -File -Force -Recurse)) {{
+        $fileAcl = [IO.File]::GetAccessControl($file.FullName)
+        foreach ($rule in @($fileAcl.GetAccessRules($true, $false, [type][Security.Principal.SecurityIdentifier]))) {{
+            if ([string]$rule.IdentityReference.Value -ceq $userSid -and
+                $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) {{
+                [void]$fileAcl.RemoveAccessRuleSpecific($rule)
+            }}
+        }}
+        [IO.File]::SetAccessControl($file.FullName, $fileAcl)
+    }}
+    $rootAcl = [IO.Directory]::GetAccessControl($frozenRoot)
+    foreach ($rule in @($rootAcl.GetAccessRules($true, $false, [type][Security.Principal.SecurityIdentifier]))) {{
+        if ([string]$rule.IdentityReference.Value -ceq $userSid -and
+            $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) {{
+            [void]$rootAcl.RemoveAccessRuleSpecific($rule)
+        }}
+    }}
+    $rootAcl.SetAccessRuleProtection($false, $false)
+    [IO.Directory]::SetAccessControl($frozenRoot, $rootAcl)
+}}
+$observation | ConvertTo-Json -Depth 6 -Compress
 """,
         encoding="utf-8-sig",
     )

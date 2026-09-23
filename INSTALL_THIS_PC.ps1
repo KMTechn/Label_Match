@@ -634,17 +634,9 @@ if ($applyHardenedAcl) {
 }
 New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 try {
-    foreach ($directory in @(Get-ChildItem -LiteralPath $sourceRootFull -Directory -Force -Recurse | Sort-Object FullName)) {
-        $relative = Get-RelativeCodePath $sourceRootFull $directory.FullName
-        New-Item -ItemType Directory -Path (Join-Path $stagingRoot $relative) -Force | Out-Null
-    }
-    foreach ($file in @(Get-ChildItem -LiteralPath $sourceRootFull -File -Force -Recurse | Sort-Object FullName)) {
-        $relative = Get-RelativeCodePath $sourceRootFull $file.FullName
-        if ($relative.Equals($IntegrityFileName, [StringComparison]::OrdinalIgnoreCase)) { continue }
-        $destination = Join-Path $stagingRoot $relative
-        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-        Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
-    }
+    $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
+    & $robocopy $sourceRootFull $stagingRoot /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $sourceRootFull $IntegrityFileName) | Out-Null
+    if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw "Portable staging copy failed: $LASTEXITCODE" }
     $stagedInventory = @(Get-CodeInventory $stagingRoot)
     $stagedAggregate = Get-InventoryAggregate $stagedInventory
     if ($stagedAggregate -cne $sourceAggregate) {
