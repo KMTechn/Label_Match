@@ -217,9 +217,11 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
         {"set_id": "F5:new", "held": None, "label": {}},
     ]
     passed = []
-    app._run_package_pin_action = lambda action, set_id: passed.append((action, set_id)) or False
+    app._admin_pin_last_message = "관리자 확인 실패"
+    app._run_package_pin_action = lambda action, set_id: passed.append((action, set_id)) or "관리자 확인 실패"
     app._park_unverified_pin_item = lambda set_id: passed.append(("PARK", set_id)) or True
     widgets = []
+    values = []
 
     class Widget:
         def __init__(self, *_args, **options):
@@ -244,6 +246,7 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
     class TextValue:
         def __init__(self, value=""):
             self.value = value
+            values.append(self)
 
         def set(self, value):
             self.value = value
@@ -255,6 +258,8 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.tk, "StringVar", TextValue)
     app._show_package_recovery_workbench()
     next(item for item in widgets if item.options.get("text") == "보류 후 계속").options["command"]()
+    assert any(value.value == "관리자 확인 실패" for value in values)
+    assert not any("다른 세트 작업을 계속" in value.value for value in values)
     next(item for item in widgets if item.options.get("text") == "관리자 확인 다시 조회").options["command"]()
     next(item for item in widgets if item.options.get("text") == "이 건만 보류하고 다른 작업 계속").options["command"]()
     assert passed == [("LABEL.F5_HOLD", "F5:old"),

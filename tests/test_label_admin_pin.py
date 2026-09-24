@@ -509,14 +509,25 @@ def test_after_hold_row_before_archive_finishes_same_effect(tmp_path, monkeypatc
 
 def test_offline_explicit_park_blocks_claimed_f5_and_allows_other(tmp_path, monkeypatch):
     app, journal, server = _pin_app(tmp_path, monkeypatch)
+    prompts = []
+    app._prompt_package_admin_pin = lambda: prompts.append(1) or ("admin-personal", PIN)
     server.offline = True
     digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
     assert app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + digest) is False
     assert journal.path.exists() and app.package_outbox.get_label_exchange_hold(digest) is None
     assert _intent(app)[2] == "UNVERIFIED_OPERATOR_HOLD"
     assert app._park_unverified_pin_item("F5:" + digest) is True
+    assert len(prompts) == 1
     assert app._label_recovery_source_is_held(SOURCE_A) is True
     assert app._label_recovery_source_is_held(SOURCE_B) is False
+    assert app._active_label_recovery_state() == {}
+    started = []
+    app.phs_label_exchange_coordinator.reconciliation_available = lambda: True
+    app.phs_label_exchange_coordinator.has_pending_reconciliation = lambda: False
+    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
+    app._show_phs_reconciliation_scan_window = lambda: started.append("F5")
+    assert app._handle_phs_label_exchange_shortcut() == "break"
+    assert started == ["F5"]
     assert not journal.path.exists()
     journal.save({
         "workflow_mode": "RECONCILIATION", "status": "PREPARE_PENDING",
@@ -534,6 +545,17 @@ def test_offline_explicit_park_blocks_claimed_f5_and_allows_other(tmp_path, monk
         assert conn.execute("SELECT state FROM admin_pin_intents ORDER BY rowid DESC LIMIT 1").fetchone()[0] == "APPLIED"
 
 
+def test_cancelled_pin_prompt_does_not_reprompt_or_write(tmp_path, monkeypatch):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    prompts = []
+    app._prompt_package_admin_pin = lambda: prompts.append(1) or None
+    digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
+    assert app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + digest) is False
+    assert prompts == [1]
+    assert not app._admin_pin_store.path.exists()
+    assert journal.path.exists() and server.verify_calls == 0
+
+
 def test_offline_park_audit_failure_leaves_original_in_place(tmp_path, monkeypatch):
     app, journal, server = _pin_app(tmp_path, monkeypatch)
     server.offline = True
@@ -543,6 +565,83 @@ def test_offline_park_audit_failure_leaves_original_in_place(tmp_path, monkeypat
                         lambda **_kwargs: (_ for _ in ()).throw(OSError("audit unavailable")))
     assert app._park_unverified_pin_item("F5:" + digest) is False
     assert journal.path.exists() and app.package_outbox.get_label_exchange_hold(digest) is None
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_offline_park_releases_active_set_and_linked_f5(tmp_path, monkeypatch, linked):
+    app, journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked
+    )
+    server.offline = True
+    selected = ("F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest()
+                if linked else set_id)
+    action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
+    assert app._run_package_pin_action(action, selected) is False
+    assert app._park_unverified_pin_item(selected) is True
+    assert not current.exists() and app.current_set_info["id"] is None
+    assert not journal.path.exists()
+    assert app._workflow_blocking_notice is None
+    assert app.package_outbox.get_workbench_hold(set_id) is not None
+    with app.package_outbox._connect() as conn:
+        rows = conn.execute("SELECT observed FROM package_workbench_hold_audit "
+                            "WHERE operation_key=? AND action='PIN_ATTEMPT'",
+                            (_intent(app)[0],)).fetchall()
+    assert any(row[0] == "UNVERIFIED_HOLD_COMPLETE:PIN_UNAVAILABLE" for row in rows)
+
+
+def test_offline_park_resumes_f5_after_hold_row(tmp_path, monkeypatch):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    server.offline = True
+    digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
+    assert app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + digest) is False
+    original = app_module.replace_checked
+    interrupted = True
+
+    def fail_once(*args, **kwargs):
+        nonlocal interrupted
+        if interrupted:
+            interrupted = False
+            raise OSError("interrupted after durable hold")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "replace_checked", fail_once)
+    assert app._park_unverified_pin_item("F5:" + digest) is False
+    assert journal.path.exists()
+    assert app._park_unverified_pin_item("F5:" + digest) is True
+    assert not journal.path.exists()
+
+
+def test_offline_park_damaged_current_file_releases_slot(tmp_path, monkeypatch):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    journal.path.unlink()
+    current = tmp_path / "current.json"
+    current.write_bytes(b"{broken-current-file")
+    app.data_manager = SimpleNamespace(
+        save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
+        load_current_state=lambda: None, delete_current_state=lambda: current.unlink(missing_ok=True),
+    )
+    app._load_current_set_state = lambda: None
+    server.offline = True
+    digest = hashlib.sha256(current.read_bytes()).hexdigest()
+    selected = "CURRENT:" + digest
+    assert app._run_package_pin_action("LABEL.SET_HOLD", selected) is False
+    assert app._park_unverified_pin_item(selected) is True
+    assert not current.exists()
+    assert current.with_name(current.name + ".held-" + digest).read_bytes() == b"{broken-current-file"
+
+
+def test_offline_park_missing_source_does_not_report_success(tmp_path, monkeypatch):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    server.offline = True
+    digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
+    selected = "F5:" + digest
+    assert app._run_package_pin_action("LABEL.F5_HOLD", selected) is False
+    journal.path.unlink()
+    assert app._park_unverified_pin_item(selected) is False
+    with app.package_outbox._connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM package_workbench_hold_audit "
+                             "WHERE observed='UNVERIFIED_HOLD_COMPLETE:PIN_UNAVAILABLE'").fetchone()[0]
+    assert count == 0
 
 
 def test_operator_change_after_redemption_applies_zero(tmp_path, monkeypatch):
@@ -683,7 +782,7 @@ def test_handoff_effect_before_applied_closes_both_intents_on_retry(tmp_path, mo
         assert conn.execute("SELECT COUNT(*) FROM package_workbench_hold_audit WHERE action='HANDOFF'").fetchone()[0] == 1
 
 
-def test_consumed_intent_from_prior_login_epoch_closes_by_handoff(tmp_path, monkeypatch):
+def test_consumed_intent_from_prior_login_epoch_resumes_same_key(tmp_path, monkeypatch):
     app, journal, server = _pin_app(tmp_path, monkeypatch)
     digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
     set_id = "F5:" + digest
@@ -695,11 +794,91 @@ def test_consumed_intent_from_prior_login_epoch_closes_by_handoff(tmp_path, monk
     )
     server.consumed = True
     app._admin_pin_login_epoch = uuid.uuid4().hex
-    assert "바뀌었습니다" in app._run_package_pin_action("LABEL.F5_HOLD", set_id)
-    assert _intent(app)[2] == "UNVERIFIED_OPERATOR_HOLD"
-    assert "UNKNOWN" in app._run_package_pin_action("LABEL.SUPPORT_HANDOFF", set_id)
-    assert _intent(app)[2] == "HANDED_OFF_UNKNOWN"
-    assert journal.path.exists() and app.package_outbox.get_label_exchange_hold(digest) is None
+    app._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+    assert app._run_package_pin_action("LABEL.F5_HOLD", set_id) is True
+    assert _intent(app)[2] == "APPLIED"
+    assert not journal.path.exists()
+    with app.package_outbox._connect() as conn:
+        row = conn.execute("SELECT operator_name FROM package_workbench_hold_audit "
+                           "WHERE operation_key='prior-session-key' "
+                           "AND observed='RESUMED:SESSION_CHANGED'").fetchone()
+    assert row[0] == app.worker_name
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_partial_hold_resumes_after_new_login_and_store_reopen(tmp_path, monkeypatch, linked):
+    app, journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked
+    )
+    action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
+    selected = ("F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest()
+                if linked else set_id)
+    original_delete = app.data_manager.delete_current_state
+    interrupted = True
+
+    def fail_once():
+        nonlocal interrupted
+        if interrupted:
+            interrupted = False
+            raise OSError("interrupted after hold row")
+        original_delete()
+
+    app.data_manager.delete_current_state = fail_once
+    assert app._run_package_pin_action(action, selected) is False
+    key = _intent(app)[0]
+    assert app.package_outbox.get_workbench_hold(set_id) is not None
+    app._admin_pin_login_epoch = uuid.uuid4().hex
+    app._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+    assert app._run_package_pin_action(action, selected) is True
+    assert _intent(app)[0] == key and _intent(app)[2] == "APPLIED"
+    assert server.redeem_calls == server.verify_calls == 1
+    assert not current.exists() and app.current_set_info["id"] is None
+
+
+def test_valid_current_file_only_change_is_target_changed(tmp_path, monkeypatch):
+    app, _journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False
+    )
+    original = server.__call__
+
+    def change_file(path, raw, headers):
+        answer = original(path, raw, headers)
+        if path.endswith("/redemptions"):
+            state = json.loads(current.read_text(encoding="utf-8"))
+            current.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            assert app._read_package_recovery_file(current)["verified"]
+        return answer
+
+    app._admin_pin_client.transport = change_file
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    assert _intent(app)[2:] == ("UNVERIFIED_OPERATOR_HOLD", "TARGET_CHANGED")
+    assert current.exists() and app.current_set_info["id"] == set_id
+    assert app.package_outbox.get_workbench_hold(set_id) is None
+
+
+def test_valid_current_file_change_after_own_hold_row_remains_target_changed(tmp_path, monkeypatch):
+    app, _journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False
+    )
+    original_delete = app.data_manager.delete_current_state
+    interrupted = True
+
+    def fail_once():
+        nonlocal interrupted
+        if interrupted:
+            interrupted = False
+            raise OSError("interrupted after hold row")
+        original_delete()
+
+    app.data_manager.delete_current_state = fail_once
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    original = current.read_bytes()
+    current.write_text(json.dumps(json.loads(original), ensure_ascii=False, indent=2), encoding="utf-8")
+    assert app._read_package_recovery_file(current)["verified"]
+    assert "바뀌었습니다" in app._run_package_pin_action("LABEL.SET_HOLD", set_id)
+    assert _intent(app)[2:] == ("UNVERIFIED_OPERATOR_HOLD", "TARGET_CHANGED")
+    assert current.exists() and app.current_set_info["id"] == set_id
+    assert server.redeem_calls == 1
 
 
 def test_set_hold_uses_pin_and_preserves_damaged_current_file(tmp_path, monkeypatch):
