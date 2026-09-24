@@ -7692,6 +7692,8 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
             return True
         except Exception as exc:
+            if isinstance(exc, AdminPinError) and exc.code == "TARGET_CHANGED":
+                raise
             print(f"현품표 교환 보류 기술 진단: {exc}")
             self._show_label_recovery_hold_notice(
                 "이 교환 일지를 보류하거나 다시 읽지 못했습니다. 관리자에게 해당 항목을 확인받고 다른 포장은 계속하세요."
@@ -8005,6 +8007,37 @@ class Label_Match(tk.Tk):
         return {"kind": kind, "id": target_id,
                 "state_fingerprint": source_sha}, source_sha
 
+    def _package_pin_current_file_binding(self, action, set_id):
+        """Identify the current file that this hold may remove, if any."""
+        if action == "LABEL.F5_HOLD":
+            held = self.package_outbox.get_label_exchange_hold(str(set_id)[3:])
+            state = self._active_label_recovery_state() if not held else {}
+            linked_set_id = str((held or state).get("set_id") or "")
+        elif action == "LABEL.SET_HOLD":
+            linked_set_id = str(set_id)
+        else:
+            return "", ""
+        if not linked_set_id:
+            return "", ""
+        current_path = self._package_current_state_path()
+        if not current_path or not os.path.lexists(current_path):
+            return linked_set_id, ""
+        evidence = self._read_package_recovery_file(current_path)
+        if linked_set_id.startswith("CURRENT:"):
+            if evidence["sha256"] != linked_set_id[8:]:
+                raise AdminPinError("TARGET_CHANGED")
+            return linked_set_id, evidence["sha256"]
+        saved = (evidence["value"] or {}).get("current_set_info") if evidence["verified"] else None
+        if isinstance(saved, dict) and str(saved.get("id") or "") == linked_set_id:
+            return linked_set_id, evidence["sha256"]
+        active = self.__dict__.get("current_set_info") or {}
+        recovery = self.__dict__.get("_package_recovery_state_data") or {}
+        recovered = recovery.get("current_set_info") or {}
+        if (str(active.get("id") or "") == linked_set_id
+                or str(recovered.get("id") or "") == linked_set_id):
+            raise AdminPinError("TARGET_CHANGED")
+        return linked_set_id, ""
+
     def _package_set_hold_complete(self, set_id, held):
         if not held:
             return False
@@ -8294,6 +8327,9 @@ class Label_Match(tk.Tk):
                 store.transition(key, "APPLIED")
                 return True if pending["action"] in {"LABEL.F5_HOLD", "LABEL.SET_HOLD"} else result
             store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="EFFECT_UNVERIFIED")
+        except AdminPinError as exc:
+            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code=exc.code)
+            return admin_pin_message(exc.code)
         except Exception:
             store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="EFFECT_UNVERIFIED")
         return admin_pin_message("VERIFY_UNAVAILABLE")
@@ -8337,6 +8373,7 @@ class Label_Match(tk.Tk):
                 self._admin_pin_last_message = admin_pin_message("EFFECT_UNVERIFIED")
                 return False
         try:
+            file_binding = self._package_pin_current_file_binding(action, set_id)
             target, source_sha = self._package_pin_target(action, set_id, physical_qr)
             operator = self._package_pin_operator()
         except Exception:
@@ -8380,13 +8417,27 @@ class Label_Match(tk.Tk):
                 verification_id=verification_id,
                 operation_key=operation_key, result="PREPARED",
             )
+            if file_binding[0]:
+                if self._package_pin_current_file_binding(action, set_id) != file_binding:
+                    raise AdminPinError("TARGET_CHANGED")
+                self.package_outbox.audit_pin_attempt(
+                    set_id=file_binding[0], pin_action=action, admin_id=admin_id,
+                    operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
+                    verification_id=verification_id, operation_key=operation_key,
+                    result=("CURRENT_FILE_SHA256:" + file_binding[1] if file_binding[1]
+                            else "CURRENT_FILE_ABSENT"),
+                )
+            prepared_target, _ = self._package_pin_target(action, set_id, physical_qr)
+            if prepared_target != target or self._package_pin_operator() != operator:
+                raise AdminPinError("TARGET_CHANGED")
             self._package_pin_client().redeem(
                 verification_id=verification_id, proof=issued["proof"],
                 operation_key=operation_key, action=action, target=target,
                 operator=operator,
             )
             new_target, _ = self._package_pin_target(action, set_id, physical_qr)
-            if (new_target != target or self._package_pin_operator() != operator):
+            if (new_target != target or self._package_pin_operator() != operator
+                    or self._package_pin_current_file_binding(action, set_id) != file_binding):
                 raise AdminPinError("TARGET_CHANGED")
             store.transition(operation_key, "AUTHORIZED")
             self.package_outbox.audit_pin_attempt(
@@ -8395,15 +8446,8 @@ class Label_Match(tk.Tk):
                 verification_id=verification_id,
                 operation_key=operation_key, result="AUTHORIZED",
             )
-            if action == "LABEL.SET_HOLD":
-                current_path = self._package_current_state_path()
-                if current_path and os.path.lexists(current_path):
-                    self.package_outbox.audit_pin_attempt(
-                        set_id=set_id, pin_action=action, admin_id=admin_id,
-                        operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
-                        verification_id=verification_id, operation_key=operation_key,
-                        result="CURRENT_FILE_SHA256:" + self._read_package_recovery_file(current_path)["sha256"],
-                    )
+            if self._package_pin_current_file_binding(action, set_id) != file_binding:
+                raise AdminPinError("TARGET_CHANGED")
             token = active_pin_operation.set((
                 operation_key, verification_id, action, target["id"],
                 operator["local_id"], admin_id, str(self.worker_name).strip(),
@@ -8583,6 +8627,52 @@ class Label_Match(tk.Tk):
         outbox = self.package_outbox
         current = candidate.get("current")
         held = outbox.get_workbench_hold(str(set_id))
+        pin_operation = active_pin_operation.get()
+        pinned_current_sha = None
+        if pin_operation and pin_operation[2] in {"LABEL.SET_HOLD", "LABEL.F5_HOLD"}:
+            bindings = {
+                row["observed"] for row in outbox.pin_effect_rows(pin_operation[0])
+                if row["set_id"] == str(set_id) and row["action"] == "PIN_ATTEMPT"
+                and row["verification_id"] == pin_operation[1]
+                and row["pin_action"] == pin_operation[2]
+                and row["operator_id"] == pin_operation[4]
+                and (row["observed"] == "CURRENT_FILE_ABSENT"
+                     or row["observed"].startswith("CURRENT_FILE_SHA256:"))
+            }
+            current_path = self._package_current_state_path()
+            if not bindings and current_path and not os.path.lexists(current_path):
+                pinned_current_sha = ""  # Older consumed intent with no current file.
+            elif len(bindings) != 1:
+                raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+            else:
+                binding = bindings.pop()
+                pinned_current_sha = (binding.split(":", 1)[1]
+                                      if binding.startswith("CURRENT_FILE_SHA256:") else "")
+                if (pinned_current_sha and (len(pinned_current_sha) != 64
+                                            or any(ch not in "0123456789abcdef" for ch in pinned_current_sha))):
+                    raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+
+        def checked_current_file():
+            if pinned_current_sha is None:
+                return None
+            current_path = self._package_current_state_path()
+            if not current_path:
+                raise AdminPinError("TARGET_CHANGED")
+            if not pinned_current_sha:
+                if os.path.lexists(current_path):
+                    raise AdminPinError("TARGET_CHANGED")
+                return None
+            if not os.path.lexists(current_path):
+                raise AdminPinError("TARGET_CHANGED")
+            evidence = self._read_package_recovery_file(current_path)
+            if evidence["sha256"] != pinned_current_sha:
+                raise AdminPinError("TARGET_CHANGED")
+            if not str(set_id).startswith("CURRENT:"):
+                saved = (evidence["value"] or {}).get("current_set_info") if evidence["verified"] else None
+                if not isinstance(saved, dict) or str(saved.get("id") or "") != str(set_id):
+                    raise AdminPinError("TARGET_CHANGED")
+            return evidence
+
         if held and not str(set_id).startswith("CURRENT:"):
             try:
                 snapshot = json.loads(held["snapshot_json"])
@@ -8592,9 +8682,11 @@ class Label_Match(tk.Tk):
                         raise PackageLogisticsError("held current set changed")
                     current_path = self._package_current_state_path()
                     if current_path and os.path.lexists(current_path):
+                        checked_current_file()
                         evidence = self._read_package_recovery_file(current_path)
                         if not evidence["verified"] or evidence["value"] != snapshot:
                             raise PackageLogisticsError("held current file changed")
+                        checked_current_file()
                         self.data_manager.delete_current_state()
                         if os.path.lexists(current_path):
                             raise PackageLogisticsError("held current file remains")
@@ -8608,6 +8700,8 @@ class Label_Match(tk.Tk):
                     self._workflow_blocking_notice = None
                     return True
             except Exception as exc:
+                if isinstance(exc, AdminPinError) and exc.code == "TARGET_CHANGED":
+                    raise
                 print(f"포장 건별 보류 재개 기술 진단: {exc}")
                 self._show_package_recovery_block(
                     "현재 작업 보류 단계를 확인하지 못했습니다. 원본을 확인하고 다시 시도하세요.",
@@ -8666,6 +8760,7 @@ class Label_Match(tk.Tk):
         try:
             current_file = candidate.get("current_file")
             if current_file:
+                checked_current_file()
                 evidence = self._read_package_recovery_file(current_file)
                 if "CURRENT:" + evidence["sha256"] != str(set_id):
                     raise PackageLogisticsError("current recovery file changed")
@@ -8681,6 +8776,7 @@ class Label_Match(tk.Tk):
                                   "archive_path": str(archive), "reason": evidence["reason"]},
                         reason="신원 미확인 현재 작업 파일 항목", held_by=manager_id,
                     )
+                    checked_current_file()
                     quarantine_entry(current_file, archive,
                                      description=evidence["entry"],
                                      allowed_root=Path(self.data_manager.save_directory))
@@ -8713,9 +8809,11 @@ class Label_Match(tk.Tk):
                 if archive.exists():
                     if self._read_package_recovery_file(archive)["raw"] != evidence["raw"]:
                         raise PackageLogisticsError("current recovery archive differs")
+                    checked_current_file()
                     unlink_checked(current_file,
                                    allowed_root=Path(self.data_manager.save_directory))
                 else:
+                    checked_current_file()
                     replace_checked(current_file, archive,
                                     allowed_root=Path(self.data_manager.save_directory),
                                     replace=False)
@@ -8731,16 +8829,29 @@ class Label_Match(tk.Tk):
                 self._load_current_set_state()
                 return True
             if current:
-                if (outbox.get_workbench_hold(str(set_id))
-                        or self.__dict__.get("_package_recovery_state_data")
-                        or current.get("recovery_operator_review")):
-                    state_data = self._load_verified_package_current_state()
+                if pinned_current_sha is not None:
+                    evidence = checked_current_file()
+                    if evidence is not None:
+                        state_data = evidence["value"]
+                    else:
+                        state_data = sanitize_persistent_value({
+                            "current_set_info": current,
+                            "timestamp": datetime.now().isoformat(),
+                            "worker_name": persistent_operator_name(self.worker_name),
+                        })
+                        require_recovery_record("current", state_data)
                 else:
-                    if not self._save_current_set_state():
-                        raise PackageLogisticsError("current set could not be saved")
-                    state_data = self._load_verified_package_current_state()
+                    if (outbox.get_workbench_hold(str(set_id))
+                            or self.__dict__.get("_package_recovery_state_data")
+                            or current.get("recovery_operator_review")):
+                        state_data = self._load_verified_package_current_state()
+                    else:
+                        if not self._save_current_set_state():
+                            raise PackageLogisticsError("current set could not be saved")
+                        state_data = self._load_verified_package_current_state()
                 if not state_data or str((state_data.get("current_set_info") or {}).get("id") or "") != str(set_id):
                     raise PackageLogisticsError("current set readback failed")
+                checked_current_file()
                 snapshot = state_data
             else:
                 snapshot = {"orphan_set_id": str(set_id),
@@ -8761,6 +8872,7 @@ class Label_Match(tk.Tk):
                     str(set_id), "IDENTITY_UNVERIFIED", manager_id, "UNKNOWN"
                 )
             if current:
+                checked_current_file()
                 self.data_manager.delete_current_state()
                 if os.path.exists(self._package_current_state_path()):
                     raise PackageLogisticsError("current set file remains after hold")
@@ -8776,6 +8888,8 @@ class Label_Match(tk.Tk):
                 self._load_current_set_state()
             return True
         except Exception as exc:
+            if isinstance(exc, AdminPinError) and exc.code == "TARGET_CHANGED":
+                raise
             print(f"포장 건별 보류 기술 진단: {exc}")
             self._show_package_recovery_block(
                 "보류 기록 또는 현재 작업 파일을 안전하게 확인하지 못했습니다. "

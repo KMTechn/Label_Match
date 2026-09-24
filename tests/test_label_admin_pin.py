@@ -856,6 +856,119 @@ def test_valid_current_file_only_change_is_target_changed(tmp_path, monkeypatch)
     assert app.package_outbox.get_workbench_hold(set_id) is None
 
 
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("boundary", [
+    "redeemed", "authorized_audit", "before_hold_snapshot", "before_file_remove",
+])
+def test_valid_current_timestamp_changed_during_pin_hold_is_target_changed(
+        tmp_path, monkeypatch, linked, boundary):
+    app, journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked
+    )
+    action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
+    selected = ("F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest()
+                if linked else set_id)
+    state = json.loads(current.read_text(encoding="utf-8"))
+    state["timestamp"] = "2026-09-24T00:00:01"
+    changed_bytes = json.dumps(state, ensure_ascii=False).encode("utf-8")
+    changed = False
+
+    def change_current():
+        nonlocal changed
+        assert not changed
+        current.write_bytes(changed_bytes)
+        assert app._read_package_recovery_file(current)["verified"]
+        changed = True
+
+    if boundary == "redeemed":
+        original = server.__call__
+
+        def transport(path, raw, headers):
+            answer = original(path, raw, headers)
+            if path.endswith("/redemptions"):
+                change_current()
+            return answer
+
+        app._admin_pin_client.transport = transport
+    elif boundary == "authorized_audit":
+        original = app.package_outbox.audit_pin_attempt
+
+        def audit(**kwargs):
+            original(**kwargs)
+            if kwargs["result"] == "AUTHORIZED" and kwargs["set_id"] == selected:
+                change_current()
+
+        app.package_outbox.audit_pin_attempt = audit
+    else:
+        original = app.package_outbox.hold_workbench_set
+
+        def hold(**kwargs):
+            if kwargs["set_id"] == set_id and boundary == "before_hold_snapshot":
+                change_current()
+            result = original(**kwargs)
+            if kwargs["set_id"] == set_id and boundary == "before_file_remove":
+                change_current()
+            return result
+
+        app.package_outbox.hold_workbench_set = hold
+
+    assert app._run_package_pin_action(action, selected) is False
+    assert changed and current.read_bytes() == changed_bytes
+    key, _verification, pin_state, code = _intent(app)
+    assert (pin_state, code) == ("UNVERIFIED_OPERATOR_HOLD", "TARGET_CHANGED")
+    assert app.current_set_info["id"] == set_id
+    held = app.package_outbox.get_workbench_hold(set_id)
+    if held:
+        assert json.loads(held["snapshot_json"])["timestamp"] == "2026-09-24T00:00:00"
+    with app.package_outbox._connect() as conn:
+        assert conn.execute("""SELECT COUNT(*) FROM package_workbench_hold_audit
+            WHERE operation_key=? AND action='PIN_REVIEW_HOLD'""", (key,)).fetchone()[0] == 0
+
+    # A changed item does not make an independent held set wait for its PIN action.
+    app.package_outbox.hold_workbench_set(
+        set_id="SET-OTHER", source_phs2="", source_input_tag_id="",
+        snapshot={"orphan_set_id": "SET-OTHER"}, reason="other held set",
+        held_by="prior-manager",
+    )
+    app._admin_pin_client.transport = SignedPinServer()
+    assert app._run_package_pin_action("LABEL.SET_HOLD", "SET-OTHER") is True, (
+        app._admin_pin_last_message
+    )
+
+
+def test_valid_current_change_during_consumed_hold_resume_stays_target_changed(
+        tmp_path, monkeypatch):
+    app, _journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False
+    )
+    original_delete = app.data_manager.delete_current_state
+
+    def interrupted_delete():
+        raise OSError("interrupted after keyed hold row")
+
+    app.data_manager.delete_current_state = interrupted_delete
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    key = _intent(app)[0]
+    assert app.package_outbox.get_workbench_hold(set_id) is not None
+    app.data_manager.delete_current_state = original_delete
+    state = json.loads(current.read_text(encoding="utf-8"))
+    state["timestamp"] = "2026-09-24T00:00:01"
+    changed_bytes = json.dumps(state, ensure_ascii=False).encode("utf-8")
+    original_hold = app._hold_package_recovery_set
+
+    def change_before_resumed_writer(*args, **kwargs):
+        current.write_bytes(changed_bytes)
+        assert app._read_package_recovery_file(current)["verified"]
+        return original_hold(*args, **kwargs)
+
+    app._hold_package_recovery_set = change_before_resumed_writer
+    assert "바뀌었습니다" in app._run_package_pin_action("LABEL.SET_HOLD", set_id)
+    assert _intent(app)[0] == key
+    assert _intent(app)[2:] == ("UNVERIFIED_OPERATOR_HOLD", "TARGET_CHANGED")
+    assert current.read_bytes() == changed_bytes and app.current_set_info["id"] == set_id
+    assert server.verify_calls == server.redeem_calls == 1
+
+
 def test_valid_current_file_change_after_own_hold_row_remains_target_changed(tmp_path, monkeypatch):
     app, _journal, current, server, set_id = _active_set_pin_app(
         tmp_path, monkeypatch, linked=False
