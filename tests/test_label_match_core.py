@@ -2,6 +2,7 @@ import ast
 import base64
 import copy
 import csv
+import hashlib
 import importlib.util
 import json
 import queue
@@ -5204,6 +5205,13 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
 
     assert app._hold_package_recovery_set("set-hold", manager_code="wrong") is False
     assert app.package_outbox.get_workbench_hold("set-hold") is None
+    original_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    app.package_outbox.audit_pin_attempt(
+        set_id="set-hold", pin_action="LABEL.SET_HOLD", admin_id="S-1-5-21-101",
+        operator_id="test-operator", operator_name="operator",
+        verification_id="test-verification", operation_key="test-hold-key",
+        result="CURRENT_FILE_SHA256:" + original_sha,
+    )
     token = module.active_pin_operation.set((
         "test-hold-key", "test-verification", "LABEL.SET_HOLD", "set-hold",
         "test-operator", "S-1-5-21-101", "operator",
@@ -5236,7 +5244,10 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT action,observed FROM package_workbench_hold_audit ORDER BY audit_id"
-        ).fetchall() == [("HOLD", "UNRESOLVED"), ("RECHECK", "UNRESOLVED")]
+        ).fetchall() == [
+            ("PIN_ATTEMPT", "CURRENT_FILE_SHA256:" + original_sha),
+            ("HOLD", "UNRESOLVED"), ("RECHECK", "UNRESOLVED"),
+        ]
 
 
 def test_restart_keeps_block_when_held_current_file_cannot_be_cleared(tmp_path):
