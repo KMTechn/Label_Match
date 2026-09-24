@@ -90,8 +90,9 @@ def _native_path(path):
     return "\\\\?\\" + value
 
 
-def _open(path, access, disposition=_OPEN_EXISTING, flags=_OPEN_REPARSE_POINT):
-    handle = _create(_native_path(path), access, _SHARE_READ_WRITE, None,
+def _open(path, access, disposition=_OPEN_EXISTING, flags=_OPEN_REPARSE_POINT,
+          share=_SHARE_READ_WRITE):
+    handle = _create(_native_path(path), access, share, None,
                      disposition, flags, None)
     if handle == _INVALID:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -238,6 +239,44 @@ def replace_checked(source, target, *, allowed_root=None, replace=True):
             _rename_handle(handle, target, replace=replace)
         finally:
             _close(handle)
+
+
+def move_checked_matching_bytes(source, target, expected_bytes, *, allowed_root=None):
+    """Move the opened file, then verify its bytes before accepting the move.
+
+    A mismatching file is moved back without replacing a newly created source.
+    If restoration is blocked, the moved file stays at target for review.
+    """
+    source, target = _path(source), _path(target)
+    _inside(source, allowed_root)
+    _inside(target, allowed_root)
+    if not isinstance(expected_bytes, bytes):
+        raise TypeError("expected file bytes must be bytes")
+    with _parents(source), _parents(target):
+        # Refuse existing writers while the source is moved and read. Existing
+        # readers may continue; the open handle prevents another rename.
+        handle = _open(source, _READ | _DELETE, share=0x00000001)
+        try:
+            _checked(handle, source)
+            if os.path.lexists(target):
+                raise FileExistsError(target)
+            _rename_handle(handle, target, replace=False)
+            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+            handle = None
+            with os.fdopen(descriptor, "rb") as stream:
+                moved = stream.read()
+                if moved == expected_bytes:
+                    return True
+                try:
+                    _rename_handle(msvcrt.get_osfhandle(stream.fileno()),
+                                   source, replace=False)
+                except OSError:
+                    # Both entries remain available if another source appeared.
+                    pass
+                return False
+        finally:
+            if handle is not None:
+                _close(handle)
 
 
 def unlink_checked(path, *, allowed_root=None):

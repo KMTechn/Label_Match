@@ -605,6 +605,8 @@ F5 미완료 교환은 같은 목록에 `F5:<journal SHA256>` 또는 읽지 않�
 
 current-state와 F5 journal/archive의 복구 읽기와 PNG 출력은 `label_safe_path.py`에서 부모 구성 요소와 최종 handle의 정션·심볼릭 링크·하드링크를 확인한다. 읽기는 확인한 handle만 사용하고 출력은 허용 루트의 새 임시 파일을 fsync한 뒤 handle에서 원자 이름 변경한다. `label_data_manager.read_recovery_file`은 그 바이트·SHA256·JSON 구조를 검증하며 `label_recovery_schema.py`는 원 JSON 타입·시간·정수 범위·맥락별 PHS2·ITG 형식을 검사한다. 보관 경로는 절대 경로·안전한 basename·digest 접미사와 예상 active 경로를 확인한다. 링크 항목은 대상 bytes를 읽지 않고 항목 자체를 보관하므로 SHA256은 파일 내용이 아니라 path/handle identity의 ID다. 실패 결과는 `UNVERIFIED`이며 성공 상태로 승격하지 않는다.
 
+PIN 보류의 활성 파일은 삭제 대신 보류 경로로 먼저 원자 이동한다. 이동한 handle을 닫기 전에 원 bytes와 대조하고, 다르면 새 활성 파일을 덮지 않고 원위치 복원을 시도한다. 복원할 수 없어도 보류 파일과 새 활성 파일을 모두 남긴다. 유효 CURRENT의 보류 archive는 operation key에 결속되며 APPLIED readback에서 원 SHA·snapshot을 다시 확인한다. F5 journal과 손상 CURRENT도 이동한 원 bytes가 맞아야 성공으로 처리한다.
+
 시작 시 검증된 품목 목록이 없으면 이유·선택한 중앙 설정·오류 코드를 표시한다. `다시 시도`는 프로그램을 닫지 않고 같은 검증 원본을 다시 조회한다. 검증된 snapshot 또는 cache가 선택된 뒤에만 작업 화면으로 들어간다. 실패가 반복되면 네트워크·설정 확인 후 IT 담당자에게 오류 코드를 전달한다.
 
 writer admission mutex는 현재 작업자 profile LOCALAPPDATA에서 파생·확인된 root에만 기존 literal `Local\\KMTech.LabelMatch.WriterAdmission.v1`을 쓴다. 설치기는 상승 전에 실제 사용자 profile root와 환경 경로를 대조하고, 검증된 작업자 root를 상승 helper에 전달한다. 같은 후미를 가진 별도 custom root도 정규화 경로 hash 이름을 쓴다. 실제 다른 계정 UAC/설치 검증은 별도다.

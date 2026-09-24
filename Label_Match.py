@@ -81,7 +81,7 @@ from label_admin_pin import (
     operator_message as admin_pin_message, operator_local_id,
 )
 from label_safe_path import (describe_entry, quarantine_entry, read_checked_bytes,
-                             replace_checked, unlink_checked, write_checked_bytes)
+                             move_checked_matching_bytes, write_checked_bytes)
 
 
 if __name__ == "__main__":
@@ -7337,6 +7337,11 @@ class Label_Match(tk.Tk):
             manager._current_state_filename(),
         )
 
+    def _package_pin_current_archive_path(self, operation_key):
+        current = Path(self._package_current_state_path())
+        digest = hashlib.sha256(str(operation_key).encode("utf-8")).hexdigest()
+        return current.with_name(current.name + ".held-" + digest)
+
     def _read_package_recovery_file(self, path, *, journal=False, expected_bytes=None):
         """Read one recovery file without changing it; return UNVERIFIED on bad input."""
         return read_recovery_file(
@@ -7575,8 +7580,9 @@ class Label_Match(tk.Tk):
                         "F5:" + hold_id, "FILE_MISSING", "SYSTEM", "ARCHIVE"
                     )
                     if self._read_package_recovery_file(active, journal=True)["raw"] == raw:
-                        replace_checked(active, archive, allowed_root=active.parent,
-                                        replace=False)
+                        if not move_checked_matching_bytes(
+                                active, archive, raw, allowed_root=active.parent):
+                            raise AdminPinError("TARGET_CHANGED")
                     else:
                         write_checked_bytes(archive, raw, allowed_root=active.parent,
                                             replace=False)
@@ -7603,6 +7609,8 @@ class Label_Match(tk.Tk):
                     self._package_recovery_file_issues["F5:" + hold_id] = (
                         "AUDIT_FAILED_READBACK_PRESENT" if recorded else "AUDIT_FAILED"
                     )
+                if isinstance(exc, AdminPinError) and exc.code == "TARGET_CHANGED":
+                    raise
         return True
 
     @writer_sink("gui_label_recovery_hold")
@@ -7684,8 +7692,9 @@ class Label_Match(tk.Tk):
             else:
                 if self._read_package_recovery_file(path, journal=True)["raw"] != raw:
                     raise PackageLogisticsError("active label journal changed")
-                replace_checked(path, archive, allowed_root=path.parent,
-                                replace=False)
+                if not move_checked_matching_bytes(
+                        path, archive, raw, allowed_root=path.parent):
+                    raise AdminPinError("TARGET_CHANGED")
                 if (self._read_package_recovery_file(archive, journal=True)["raw"] != raw
                         or path.exists()):
                     raise PackageLogisticsError("held label archive readback failed")
@@ -8074,6 +8083,31 @@ class Label_Match(tk.Tk):
         except Exception:
             return False
 
+    def _package_pin_current_archive_complete(self, set_id, held, intent, rows):
+        if not held or str(set_id).startswith("CURRENT:"):
+            return True
+        bindings = {
+            row["observed"] for row in rows
+            if row["set_id"] == str(set_id) and row["action"] == "PIN_ATTEMPT"
+            and (row["observed"] == "CURRENT_FILE_ABSENT"
+                 or row["observed"].startswith("CURRENT_FILE_SHA256:"))
+        }
+        if len(bindings) != 1:
+            return False
+        binding = bindings.pop()
+        if binding == "CURRENT_FILE_ABSENT":
+            return True
+        digest = binding.split(":", 1)[1]
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            return False
+        try:
+            archive = self._package_pin_current_archive_path(intent["operation_key"])
+            evidence = self._read_package_recovery_file(archive)
+            return (evidence["verified"] and evidence["sha256"] == digest
+                    and evidence["value"] == json.loads(held["snapshot_json"]))
+        except Exception:
+            return False
+
     def _package_pin_entry_hold_complete(self, entry):
         try:
             snapshot = json.loads(entry["snapshot_json"])
@@ -8106,6 +8140,8 @@ class Label_Match(tk.Tk):
                 if held["set_id"]:
                     linked = self.package_outbox.get_workbench_hold(held["set_id"])
                     complete = (complete and self._package_set_hold_complete(held["set_id"], linked)
+                                and self._package_pin_current_archive_complete(
+                                    held["set_id"], linked, intent, rows)
                                 and any(row["set_id"] == held["set_id"]
                                         and row["action"] in {"HOLD", "PIN_REVIEW_HOLD"}
                                         for row in rows))
@@ -8122,6 +8158,7 @@ class Label_Match(tk.Tk):
             if not held:
                 return False
             return (self._package_set_hold_complete(set_id, held)
+                    and self._package_pin_current_archive_complete(set_id, held, intent, rows)
                     and any(row["set_id"] == set_id
                             and row["action"] == "PIN_REVIEW_HOLD" for row in rows))
         effects = {
@@ -8673,6 +8710,25 @@ class Label_Match(tk.Tk):
                     raise AdminPinError("TARGET_CHANGED")
             return evidence
 
+        def move_current_to_hold(evidence):
+            current_path = self._package_current_state_path()
+            archive = self._package_pin_current_archive_path(
+                pin_operation[0] if pin_operation else "SET:" + str(set_id)
+            )
+            raw = evidence["raw"]
+            if raw is None:
+                raise PackageLogisticsError("held current file is unreadable")
+            if archive.exists():
+                # A second active entry cannot be silently removed on resume.
+                raise AdminPinError("TARGET_CHANGED")
+            if not move_checked_matching_bytes(
+                    current_path, archive, raw,
+                    allowed_root=Path(self.data_manager.save_directory)):
+                raise AdminPinError("TARGET_CHANGED")
+            if (self._read_package_recovery_file(archive)["raw"] != raw
+                    or os.path.lexists(current_path)):
+                raise PackageLogisticsError("held current archive readback failed")
+
         if held and not str(set_id).startswith("CURRENT:"):
             try:
                 snapshot = json.loads(held["snapshot_json"])
@@ -8686,8 +8742,7 @@ class Label_Match(tk.Tk):
                         evidence = self._read_package_recovery_file(current_path)
                         if not evidence["verified"] or evidence["value"] != snapshot:
                             raise PackageLogisticsError("held current file changed")
-                        checked_current_file()
-                        self.data_manager.delete_current_state()
+                        move_current_to_hold(checked_current_file() or evidence)
                         if os.path.lexists(current_path):
                             raise PackageLogisticsError("held current file remains")
                     if str((self.__dict__.get("current_set_info") or {}).get("id") or "") == str(set_id):
@@ -8809,14 +8864,14 @@ class Label_Match(tk.Tk):
                 if archive.exists():
                     if self._read_package_recovery_file(archive)["raw"] != evidence["raw"]:
                         raise PackageLogisticsError("current recovery archive differs")
-                    checked_current_file()
-                    unlink_checked(current_file,
-                                   allowed_root=Path(self.data_manager.save_directory))
+                    if os.path.lexists(current_file):
+                        raise AdminPinError("TARGET_CHANGED")
                 else:
                     checked_current_file()
-                    replace_checked(current_file, archive,
-                                    allowed_root=Path(self.data_manager.save_directory),
-                                    replace=False)
+                    if not move_checked_matching_bytes(
+                            current_file, archive, evidence["raw"],
+                            allowed_root=Path(self.data_manager.save_directory)):
+                        raise AdminPinError("TARGET_CHANGED")
                 if (self._read_package_recovery_file(archive)["raw"] != evidence["raw"]
                         or os.path.exists(current_file)):
                     raise PackageLogisticsError("current recovery archive readback failed")
@@ -8872,8 +8927,10 @@ class Label_Match(tk.Tk):
                     str(set_id), "IDENTITY_UNVERIFIED", manager_id, "UNKNOWN"
                 )
             if current:
-                checked_current_file()
-                self.data_manager.delete_current_state()
+                evidence = checked_current_file()
+                current_path = self._package_current_state_path()
+                if current_path and os.path.lexists(current_path):
+                    move_current_to_hold(evidence or self._read_package_recovery_file(current_path))
                 if os.path.exists(self._package_current_state_path()):
                     raise PackageLogisticsError("current set file remains after hold")
                 self._workflow_blocking_notice = None

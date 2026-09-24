@@ -131,8 +131,8 @@ def test_f5_archive_failure_blocks_same_label_only(tmp_path, monkeypatch):
     app, journal = _recovery_app(tmp_path, monkeypatch, state)
     original = journal.path.read_bytes()
     digest = hashlib.sha256(original).hexdigest()
-    original_replace = app_module.replace_checked
-    monkeypatch.setattr(app_module, "replace_checked", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
+    original_move = app_module.move_checked_matching_bytes
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
 
     assert app._hold_label_recovery(digest, manager_code="admin") is False
     assert journal.path.read_bytes() == original
@@ -141,7 +141,7 @@ def test_f5_archive_failure_blocks_same_label_only(tmp_path, monkeypatch):
     assert app._label_recovery_source_is_held(SOURCE_A) is False
     assert app.__dict__.get("_workflow_blocking_notice") is None
 
-    monkeypatch.setattr(app_module, "replace_checked", original_replace)
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", original_move)
     assert app._finalize_label_recovery_holds() is True
     assert app._active_label_recovery_state() == {}
 

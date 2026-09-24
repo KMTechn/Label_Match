@@ -11,6 +11,7 @@ import uuid
 import pytest
 
 import Label_Match as app_module
+import label_safe_path
 from direct_sync_push import canonical_request_string
 from label_admin_pin import AdminPinClient, AdminPinIntentStore, operator_local_id
 from tests.test_w9nb_label_recovery import (
@@ -162,27 +163,28 @@ def _active_set_pin_app(tmp_path, monkeypatch, *, linked):
 
 
 @pytest.mark.parametrize("linked", [False, True])
-@pytest.mark.parametrize("boundary", ["hold_row", "file_deleted", "slot_released", "applied"])
+@pytest.mark.parametrize("boundary", ["hold_row", "file_moved", "slot_released", "applied"])
 def test_set_hold_interruptions_resume_same_key(tmp_path, monkeypatch, linked, boundary):
     app, journal, current, server, set_id = _active_set_pin_app(
         tmp_path, monkeypatch, linked=linked
     )
     action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
     selected = "F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest() if linked else set_id
-    original_delete = app.data_manager.delete_current_state
+    original_move = app_module.move_checked_matching_bytes
     original_reset = app._reset_current_set
     original_transition = app._admin_pin_store.transition
     interrupted = False
 
-    def delete():
+    def move(*args, **kwargs):
         nonlocal interrupted
         if boundary == "hold_row" and not interrupted:
             interrupted = True
             raise OSError("interrupted after hold row")
-        original_delete()
-        if boundary == "file_deleted" and not interrupted:
+        result = original_move(*args, **kwargs)
+        if boundary == "file_moved" and not interrupted:
             interrupted = True
-            raise OSError("interrupted after file delete")
+            raise OSError("interrupted after file move")
+        return result
 
     def reset():
         nonlocal interrupted
@@ -198,7 +200,7 @@ def test_set_hold_interruptions_resume_same_key(tmp_path, monkeypatch, linked, b
             raise OSError("interrupted before APPLIED")
         return original_transition(key, state, error_code=error_code)
 
-    app.data_manager.delete_current_state = delete
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", move)
     app._reset_current_set = reset
     app._admin_pin_store.transition = transition
     assert app._run_package_pin_action(action, selected) is False
@@ -207,7 +209,7 @@ def test_set_hold_interruptions_resume_same_key(tmp_path, monkeypatch, linked, b
     assert _intent(app)[2] != "APPLIED"
     if boundary == "hold_row":
         assert current.exists()
-    if boundary == "file_deleted":
+    if boundary == "file_moved":
         assert app.current_set_info["id"] == set_id
     if boundary != "applied":
         assert not app._package_pin_effect(app._admin_pin_store.pending(
@@ -236,17 +238,18 @@ def test_existing_hold_row_resume_preserves_new_pin_key(tmp_path, monkeypatch):
         snapshot=json.loads(current.read_text(encoding="utf-8")),
         reason="prior hold", held_by="prior-manager",
     )
-    original_delete = app.data_manager.delete_current_state
+    original_move = app_module.move_checked_matching_bytes
     interrupted = False
 
-    def delete():
+    def move(*args, **kwargs):
         nonlocal interrupted
-        original_delete()
+        result = original_move(*args, **kwargs)
         if not interrupted:
             interrupted = True
-            raise OSError("interrupted after file delete")
+            raise OSError("interrupted after file move")
+        return result
 
-    app.data_manager.delete_current_state = delete
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", move)
     assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
     key = _intent(app)[0]
     assert interrupted and not current.exists()
@@ -304,20 +307,20 @@ def test_damaged_current_hold_resumes_same_key(tmp_path, monkeypatch, boundary):
     app._load_current_set_state = lambda: None
     digest = hashlib.sha256(current.read_bytes()).hexdigest()
     set_id = "CURRENT:" + digest
-    original_replace = app_module.replace_checked
+    original_move = app_module.move_checked_matching_bytes
     interrupted = False
 
-    def replace(*args, **kwargs):
+    def move(*args, **kwargs):
         nonlocal interrupted
         if not interrupted:
             interrupted = True
             if boundary == "hold_row":
                 raise OSError("interrupted after hold row")
-            original_replace(*args, **kwargs)
+            original_move(*args, **kwargs)
             raise OSError("interrupted after archive move")
-        return original_replace(*args, **kwargs)
+        return original_move(*args, **kwargs)
 
-    monkeypatch.setattr(app_module, "replace_checked", replace)
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", move)
     assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
     assert interrupted and app.package_outbox.get_workbench_hold(set_id)
     key = _intent(app)[0]
@@ -487,7 +490,7 @@ def test_after_effect_before_applied_recovers_from_keyed_audit(tmp_path, monkeyp
 def test_after_hold_row_before_archive_finishes_same_effect(tmp_path, monkeypatch):
     app, journal, server = _pin_app(tmp_path, monkeypatch)
     digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
-    original_replace = app_module.replace_checked
+    original_replace = app_module.move_checked_matching_bytes
     interrupt_once = True
 
     def interrupted(*args, **kwargs):
@@ -497,7 +500,7 @@ def test_after_hold_row_before_archive_finishes_same_effect(tmp_path, monkeypatc
             raise OSError("interrupted after hold row")
         return original_replace(*args, **kwargs)
 
-    monkeypatch.setattr(app_module, "replace_checked", interrupted)
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", interrupted)
     assert app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + digest) is False
     assert app.package_outbox.get_label_exchange_hold(digest) is not None
     assert journal.path.exists()
@@ -594,7 +597,7 @@ def test_offline_park_resumes_f5_after_hold_row(tmp_path, monkeypatch):
     server.offline = True
     digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
     assert app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + digest) is False
-    original = app_module.replace_checked
+    original = app_module.move_checked_matching_bytes
     interrupted = True
 
     def fail_once(*args, **kwargs):
@@ -604,7 +607,7 @@ def test_offline_park_resumes_f5_after_hold_row(tmp_path, monkeypatch):
             raise OSError("interrupted after durable hold")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(app_module, "replace_checked", fail_once)
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", fail_once)
     assert app._park_unverified_pin_item("F5:" + digest) is False
     assert journal.path.exists()
     assert app._park_unverified_pin_item("F5:" + digest) is True
@@ -813,17 +816,17 @@ def test_partial_hold_resumes_after_new_login_and_store_reopen(tmp_path, monkeyp
     action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
     selected = ("F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest()
                 if linked else set_id)
-    original_delete = app.data_manager.delete_current_state
+    original_move = app_module.move_checked_matching_bytes
     interrupted = True
 
-    def fail_once():
+    def fail_once(*args, **kwargs):
         nonlocal interrupted
         if interrupted:
             interrupted = False
             raise OSError("interrupted after hold row")
-        original_delete()
+        return original_move(*args, **kwargs)
 
-    app.data_manager.delete_current_state = fail_once
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", fail_once)
     assert app._run_package_pin_action(action, selected) is False
     key = _intent(app)[0]
     assert app.package_outbox.get_workbench_hold(set_id) is not None
@@ -936,21 +939,107 @@ def test_valid_current_timestamp_changed_during_pin_hold_is_target_changed(
     )
 
 
+@pytest.mark.parametrize("kind", ["set", "linked", "f5", "damaged_current"])
+def test_changed_file_at_final_move_is_restored_and_not_applied(
+        tmp_path, monkeypatch, kind):
+    if kind in {"set", "linked"}:
+        linked = kind == "linked"
+        app, journal, active, _server, set_id = _active_set_pin_app(
+            tmp_path, monkeypatch, linked=linked)
+        action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
+        selected = ("F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest()
+                    if linked else set_id)
+        changed_state = json.loads(active.read_text(encoding="utf-8"))
+        changed_state["timestamp"] = "2026-09-24T00:00:02"
+        changed_bytes = json.dumps(changed_state, ensure_ascii=False).encode("utf-8")
+    elif kind == "f5":
+        app, journal, _server = _pin_app(tmp_path, monkeypatch)
+        active = journal.path
+        action = "LABEL.F5_HOLD"
+        selected = "F5:" + hashlib.sha256(active.read_bytes()).hexdigest()
+        changed_state = json.loads(active.read_text(encoding="utf-8"))
+        changed_state["state"]["prepare_idempotency_key"] = "PREPARE-CHANGED"
+        changed_bytes = json.dumps(changed_state, ensure_ascii=False).encode("utf-8")
+    else:
+        app, journal, _server = _pin_app(tmp_path, monkeypatch)
+        other_journal = journal.path.read_bytes()
+        journal.path.unlink()
+        active = tmp_path / "current.json"
+        active.write_bytes(b"{broken-current-file")
+        app.data_manager = SimpleNamespace(
+            save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
+            load_current_state=lambda: None,
+        )
+        app._load_current_set_state = lambda: None
+        action = "LABEL.SET_HOLD"
+        selected = "CURRENT:" + hashlib.sha256(active.read_bytes()).hexdigest()
+        changed_bytes = b"{changed-broken-current-file"
+
+    original_open = label_safe_path._open
+    changed = False
+
+    def change_at_move(path, access, *args, **kwargs):
+        nonlocal changed
+        if (not changed and path == active
+                and access == label_safe_path._READ | label_safe_path._DELETE):
+            active.write_bytes(changed_bytes)
+            changed = True
+        return original_open(path, access, *args, **kwargs)
+
+    monkeypatch.setattr(label_safe_path, "_open", change_at_move)
+    assert app._run_package_pin_action(action, selected) is False
+    assert changed and active.read_bytes() == changed_bytes
+    assert _intent(app)[2:] == ("UNVERIFIED_OPERATOR_HOLD", "TARGET_CHANGED")
+    app._admin_pin_client.transport = SignedPinServer()
+    if kind == "damaged_current":
+        journal.path.write_bytes(other_journal)
+        other = "F5:" + hashlib.sha256(other_journal).hexdigest()
+        assert app._run_package_pin_action("LABEL.F5_HOLD", other) is True
+    else:
+        app.package_outbox.hold_workbench_set(
+            set_id="SET-OTHER", source_phs2="", source_input_tag_id="",
+            snapshot={"orphan_set_id": "SET-OTHER"}, reason="other held set",
+            held_by="prior-manager",
+        )
+        assert app._run_package_pin_action("LABEL.SET_HOLD", "SET-OTHER") is True
+
+
+def test_moved_changed_file_and_new_active_file_are_both_preserved(tmp_path, monkeypatch):
+    source = tmp_path / "current.json"
+    target = tmp_path / ("current.json.held-" + "0" * 64)
+    original = b"original"
+    changed = b"changed"
+    replacement = b"new active"
+    source.write_bytes(changed)
+    original_rename = label_safe_path._rename_handle
+
+    def replace_active_after_move(handle, destination, *, replace):
+        original_rename(handle, destination, replace=replace)
+        if destination == target:
+            source.write_bytes(replacement)
+
+    monkeypatch.setattr(label_safe_path, "_rename_handle", replace_active_after_move)
+    assert not label_safe_path.move_checked_matching_bytes(
+        source, target, original, allowed_root=tmp_path)
+    assert source.read_bytes() == replacement
+    assert target.read_bytes() == changed
+
+
 def test_valid_current_change_during_consumed_hold_resume_stays_target_changed(
         tmp_path, monkeypatch):
     app, _journal, current, server, set_id = _active_set_pin_app(
         tmp_path, monkeypatch, linked=False
     )
-    original_delete = app.data_manager.delete_current_state
+    original_move = app_module.move_checked_matching_bytes
 
-    def interrupted_delete():
+    def interrupted_move(*args, **kwargs):
         raise OSError("interrupted after keyed hold row")
 
-    app.data_manager.delete_current_state = interrupted_delete
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", interrupted_move)
     assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
     key = _intent(app)[0]
     assert app.package_outbox.get_workbench_hold(set_id) is not None
-    app.data_manager.delete_current_state = original_delete
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", original_move)
     state = json.loads(current.read_text(encoding="utf-8"))
     state["timestamp"] = "2026-09-24T00:00:01"
     changed_bytes = json.dumps(state, ensure_ascii=False).encode("utf-8")
@@ -973,17 +1062,17 @@ def test_valid_current_file_change_after_own_hold_row_remains_target_changed(tmp
     app, _journal, current, server, set_id = _active_set_pin_app(
         tmp_path, monkeypatch, linked=False
     )
-    original_delete = app.data_manager.delete_current_state
+    original_move = app_module.move_checked_matching_bytes
     interrupted = True
 
-    def fail_once():
+    def fail_once(*args, **kwargs):
         nonlocal interrupted
         if interrupted:
             interrupted = False
             raise OSError("interrupted after hold row")
-        original_delete()
+        return original_move(*args, **kwargs)
 
-    app.data_manager.delete_current_state = fail_once
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", fail_once)
     assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
     original = current.read_bytes()
     current.write_text(json.dumps(json.loads(original), ensure_ascii=False, indent=2), encoding="utf-8")
