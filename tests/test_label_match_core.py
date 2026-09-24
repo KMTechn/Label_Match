@@ -5191,6 +5191,7 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
     app.current_set_info = current
     db_path = tmp_path / "outbox.sqlite3"
     app.package_outbox = module.PackageOutbox(db_path)
+    app._admin_pin_store = module.AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
     app.data_manager = SimpleNamespace(
         save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
         load_current_state=lambda: json.loads(path.read_text(encoding="utf-8")) if path.exists() else None,

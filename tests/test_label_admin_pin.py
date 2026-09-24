@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
@@ -988,8 +989,13 @@ def test_changed_file_at_final_move_is_restored_and_not_applied(
 
     monkeypatch.setattr(label_safe_path, "_open", change_at_move)
     assert app._run_package_pin_action(action, selected) is False
-    assert changed and active.read_bytes() == changed_bytes
-    assert _intent(app)[2:] == ("UNVERIFIED_OPERATOR_HOLD", "TARGET_CHANGED")
+    assert changed
+    key = _intent(app)[0]
+    parked = app._admin_pin_store.changed_hold(key)
+    assert parked["state"] == "QUARANTINED"
+    assert not active.exists()
+    assert Path(parked["archive_path"]).read_bytes() == changed_bytes
+    assert _intent(app)[2:] == ("QUARANTINED_CHANGED", "TARGET_CHANGED_DURING_HOLD")
     app._admin_pin_client.transport = SignedPinServer()
     if kind == "damaged_current":
         journal.path.write_bytes(other_journal)
@@ -1179,17 +1185,21 @@ def test_pin_hold_interrupted_file_move_recovers_after_restart(
     restarted._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
     restarted.current_set_info = {"id": None, "raw": []}
     restarted._recover_pending_package_pin_moves()
-    retry = restarted._run_package_pin_action(action, selected)
     state = _intent(restarted)[2]
     if changed:
-        assert source.read_bytes() == changed_bytes
-        assert state != "APPLIED"
+        changed_hold = restarted._admin_pin_store.changed_hold(key)
+        assert changed_hold is not None
+        assert changed_hold["state"] == "QUARANTINED"
+        assert changed_hold["original_sha256"] == hashlib.sha256(original).hexdigest()
+        assert changed_hold["changed_sha256"] == hashlib.sha256(changed_bytes).hexdigest()
+        assert not source.exists()
+        assert Path(changed_hold["archive_path"]).read_bytes() == changed_bytes
+        assert state == "QUARANTINED_CHANGED"
         assert server.redeem_calls == 1
-        if point == "after_move":
-            assert not archive.exists()
     else:
+        retry = restarted._run_package_pin_action(action, selected)
         assert retry is not False
-        assert state == "APPLIED"
+        assert _intent(restarted)[2] == "APPLIED"
         assert not source.exists()
         assert archive.read_bytes() == original
         assert server.redeem_calls == 1
@@ -1267,6 +1277,209 @@ def test_orphan_pin_hold_file_is_listed_and_preserved(tmp_path, monkeypatch):
     assert app._run_package_pin_action("LABEL.F5_HOLD", selected) is True
     assert server.redeem_calls == 1
     assert orphan.read_bytes() == b"unmatched original evidence"
+
+
+@pytest.mark.parametrize("interrupt_restore", [False, True])
+def test_changed_pin_file_is_parked_then_new_pin_can_hold_and_restore(
+        tmp_path, monkeypatch, interrupt_restore):
+    app, _journal, source, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False)
+    changed_state = json.loads(source.read_text(encoding="utf-8"))
+    changed_state["timestamp"] = "2026-09-24T00:00:03"
+    changed_bytes = json.dumps(changed_state, ensure_ascii=False).encode("utf-8")
+    native_open, native_rename = label_safe_path._open, label_safe_path._rename_handle
+    changed = False
+
+    def open_with_change(path, access, *args, **kwargs):
+        nonlocal changed
+        if (not changed and path == source
+                and access == label_safe_path._READ | label_safe_path._DELETE):
+            source.write_bytes(changed_bytes)
+            changed = True
+        return native_open(path, access, *args, **kwargs)
+
+    def move_then_interrupt(handle, target, *, replace):
+        native_rename(handle, target, replace=replace)
+        raise OSError("interrupted immediately after atomic move")
+
+    with monkeypatch.context() as interruption:
+        interruption.setattr(label_safe_path, "_open", open_with_change)
+        interruption.setattr(label_safe_path, "_rename_handle", move_then_interrupt)
+        assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+
+    key = _intent(app)[0]
+    restarted = object.__new__(app_module.Label_Match)
+    restarted.__dict__.update(app.__dict__)
+    restarted.package_outbox = app_module.PackageOutbox(tmp_path / "outbox.sqlite3")
+    restarted._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+    restarted.current_set_info = {"id": None, "raw": []}
+    restarted._recover_pending_package_pin_moves()
+    changed_hold = restarted._admin_pin_store.changed_hold(key)
+    changed_target = "CURRENT:" + hashlib.sha256(changed_bytes).hexdigest()
+    assert _intent(restarted)[2] == "QUARANTINED_CHANGED"
+    assert changed_hold["state"] == "QUARANTINED"
+    assert not source.exists()
+    assert Path(changed_hold["archive_path"]).read_bytes() == changed_bytes
+    assert restarted.package_outbox.get_workbench_hold(set_id)
+    assert restarted.package_outbox.workbench_hold_for_source(SOURCE_A, "")
+    row = next(item for item in restarted._package_recovery_candidates()
+               if item["set_id"] == changed_target)
+    assert row["changed_hold"]["original_sha256"] != row["changed_hold"]["changed_sha256"]
+    restarted.__dict__.pop("_load_current_set_state", None)
+    blocks = []
+    restarted._show_package_recovery_block = lambda *args, **kwargs: blocks.append(args)
+    restarted._load_current_set_state()
+    assert blocks == []
+
+    server.issued = None
+    server.consumed = False
+    rechecked = restarted._run_package_pin_action("LABEL.RECHECK", changed_target)
+    assert rechecked is not False
+    assert Path(changed_hold["archive_path"]).read_bytes() == changed_bytes
+
+    server.issued = None
+    server.consumed = False
+    assert restarted._run_package_pin_action("LABEL.SET_HOLD", changed_target) is True
+    assert restarted._admin_pin_store.applied(
+        "label_set_recovery", changed_target, "LABEL.SET_HOLD") is not None
+    assert Path(changed_hold["archive_path"]).read_bytes() == changed_bytes
+
+    server.issued = None
+    server.consumed = False
+    if interrupt_restore:
+        original_move = restarted._move_package_pin_file
+
+        def restore_then_interrupt(src, target, raw, *, allowed_root, pin_key=None):
+            moved = original_move(src, target, raw, allowed_root=allowed_root,
+                                  pin_key=pin_key)
+            if Path(src) == Path(changed_hold["archive_path"]):
+                raise OSError("interrupted after changed-file restore readback")
+            return moved
+
+        with monkeypatch.context() as interruption:
+            interruption.setattr(restarted, "_move_package_pin_file", restore_then_interrupt)
+            assert restarted._run_package_pin_action(
+                "LABEL.RECHECK", changed_target, "__RESTORE_CHANGED_PIN_FILE__") is False
+        resumed = object.__new__(app_module.Label_Match)
+        resumed.__dict__.update(restarted.__dict__)
+        resumed.package_outbox = app_module.PackageOutbox(tmp_path / "outbox.sqlite3")
+        resumed._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+        resumed._recover_pending_package_pin_moves()
+        restarted = resumed
+    restored = restarted._run_package_pin_action(
+        "LABEL.RECHECK", changed_target, "__RESTORE_CHANGED_PIN_FILE__")
+    assert "복원" in str(restored)
+    assert restarted._admin_pin_store.changed_hold(key)["state"] == "RESTORED"
+    assert source.read_bytes() == changed_bytes
+    assert not Path(changed_hold["archive_path"]).exists()
+    assert restarted._admin_pin_store.applied(
+        "label_set_recovery", changed_target, "LABEL.RECHECK") is not None
+    notices = []
+    restarted._show_package_pin_changed_notice = lambda **kwargs: notices.append(kwargs)
+    restarted._load_current_set_state()
+    assert blocks == []
+    assert notices == [{"restored": True}]
+
+
+def test_failed_changed_file_quarantine_keeps_active_and_item_notice(tmp_path, monkeypatch):
+    app, _journal, source, _server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False)
+    changed_state = json.loads(source.read_text(encoding="utf-8"))
+    changed_state["timestamp"] = "2026-09-24T00:00:05"
+    changed_bytes = json.dumps(changed_state, ensure_ascii=False).encode("utf-8")
+    native_open = label_safe_path._open
+    native_move = app_module.move_checked_matching_bytes
+    injected = False
+
+    def open_with_change(path, access, *args, **kwargs):
+        nonlocal injected
+        if (not injected and path == source
+                and access == label_safe_path._READ | label_safe_path._DELETE):
+            source.write_bytes(changed_bytes)
+            injected = True
+        return native_open(path, access, *args, **kwargs)
+
+    def block_changed_archive(src, target, raw, *, allowed_root=None):
+        if ".pin-" in Path(target).name:
+            raise OSError("changed archive unavailable")
+        return native_move(src, target, raw, allowed_root=allowed_root)
+
+    monkeypatch.setattr(label_safe_path, "_open", open_with_change)
+    monkeypatch.setattr(app_module, "move_checked_matching_bytes", block_changed_archive)
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    key = _intent(app)[0]
+    assert source.read_bytes() == changed_bytes
+    assert app._admin_pin_store.changed_hold(key)["state"] == "PREPARED"
+
+    restarted = object.__new__(app_module.Label_Match)
+    restarted.__dict__.update(app.__dict__)
+    restarted.package_outbox = app_module.PackageOutbox(tmp_path / "outbox.sqlite3")
+    restarted._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+    restarted.current_set_info = {"id": None, "raw": []}
+    restarted.__dict__.pop("_load_current_set_state", None)
+    blocks = []
+    notices = []
+    restarted._show_package_recovery_block = lambda *args, **kwargs: blocks.append(args)
+    restarted._show_package_pin_changed_notice = lambda **kwargs: notices.append("changed item")
+    restarted._load_current_set_state()
+    assert blocks == []
+    assert source.read_bytes() == changed_bytes
+    assert notices == ["changed item"]
+
+
+def test_changed_f5_journal_can_be_reheld_and_restored_with_new_pin(tmp_path, monkeypatch):
+    app, journal, server = _pin_app(tmp_path, monkeypatch)
+    source = journal.path
+    selected = "F5:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    changed_state = json.loads(source.read_text(encoding="utf-8"))
+    changed_state["state"]["prepare_idempotency_key"] = "PREPARE-CHANGED"
+    changed_bytes = json.dumps(changed_state, ensure_ascii=False).encode("utf-8")
+    native_open, native_rename = label_safe_path._open, label_safe_path._rename_handle
+    changed = False
+
+    def open_with_change(path, access, *args, **kwargs):
+        nonlocal changed
+        if (not changed and path == source
+                and access == label_safe_path._READ | label_safe_path._DELETE):
+            source.write_bytes(changed_bytes)
+            changed = True
+        return native_open(path, access, *args, **kwargs)
+
+    def move_then_interrupt(handle, target, *, replace):
+        native_rename(handle, target, replace=replace)
+        raise OSError("interrupted immediately after atomic move")
+
+    with monkeypatch.context() as interruption:
+        interruption.setattr(label_safe_path, "_open", open_with_change)
+        interruption.setattr(label_safe_path, "_rename_handle", move_then_interrupt)
+        assert app._run_package_pin_action("LABEL.F5_HOLD", selected) is False
+
+    key = _intent(app)[0]
+    restarted = object.__new__(app_module.Label_Match)
+    restarted.__dict__.update(app.__dict__)
+    restarted.package_outbox = app_module.PackageOutbox(tmp_path / "outbox.sqlite3")
+    restarted._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+    restarted.current_set_info = {"id": None, "raw": []}
+    restarted._recover_pending_package_pin_moves()
+    changed_hold = restarted._admin_pin_store.changed_hold(key)
+    changed_target = "F5:" + hashlib.sha256(changed_bytes).hexdigest()
+    assert changed_hold["state"] == "QUARANTINED"
+    assert not source.exists()
+    assert Path(changed_hold["archive_path"]).read_bytes() == changed_bytes
+    assert restarted.package_outbox.get_label_exchange_hold(selected[3:])
+    assert restarted._finalize_label_recovery_holds(only_hold_id=changed_target[3:]) is True
+
+    server.issued = None
+    server.consumed = False
+    assert restarted._run_package_pin_action("LABEL.F5_HOLD", changed_target) is True
+    server.issued = None
+    server.consumed = False
+    restored = restarted._run_package_pin_action(
+        "LABEL.RECHECK", changed_target, "__RESTORE_CHANGED_PIN_FILE__")
+    assert "복원" in str(restored)
+    assert source.read_bytes() == changed_bytes
+    assert not Path(changed_hold["archive_path"]).exists()
+    assert restarted._admin_pin_store.changed_hold(key)["state"] == "RESTORED"
 
 
 def test_set_hold_uses_pin_and_preserves_damaged_current_file(tmp_path, monkeypatch):

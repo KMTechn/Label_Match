@@ -7358,12 +7358,175 @@ class Label_Match(tk.Tk):
             if operation_key is not None:
                 self._admin_pin_store.finish_file_move(operation_key, str(source), "VERIFIED")
             return True
+        if (not moved and operation_key is not None and not os.path.lexists(archive)
+                and os.path.lexists(source)):
+            active = self._read_package_recovery_file(source)
+            if active["raw"] is not None and active["raw"] != raw:
+                self._admin_pin_store.finish_file_move(operation_key, str(source),
+                                                       "RESTORED_CHANGED")
+                intent = self._admin_pin_store.get(operation_key)
+                if intent is not None:
+                    self._stage_changed_pin_hold(intent, source, active["raw"],
+                                                 hashlib.sha256(raw).hexdigest())
         return False
+
+    def _package_pin_changed_archive_path(self, source, operation_key, digest):
+        source = Path(source)
+        key_digest = hashlib.sha256(operation_key.encode("utf-8")).hexdigest()
+        return source.with_name(source.name + ".pin-" + key_digest + ".held-" + digest)
+
+    @writer_sink("gui_package_pin_changed_hold_recovery")
+    def _resume_changed_pin_hold(self, row):
+        """Park only the raced file, leaving the old PIN effect unclaimed."""
+        store = self._admin_pin_store
+        intent = store.get(row["operation_key"])
+        if intent is None or row["target_id"] != intent["target_id"]:
+            return False
+        source = Path(row["source_path"])
+        archive = Path(row["archive_path"])
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        expected = (Path(self._package_current_state_path()) if row["file_kind"] == "current"
+                    else coordinator.journal.path if coordinator is not None else None)
+        digest = row["changed_sha256"]
+        if (source != expected or archive != self._package_pin_changed_archive_path(
+                source, row["operation_key"], digest)
+                or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
+                or row["state"] == "RESTORED"):
+            return False
+        if row["state"] == "RESTORING":
+            return False  # The administrator's separate restore is reconciled by its PIN key.
+        if os.path.lexists(archive):
+            if os.path.lexists(source):
+                return False
+            raw = self._read_package_recovery_file(archive)["raw"]
+            if raw is None or hashlib.sha256(raw).hexdigest() != digest:
+                return False
+        else:
+            if not os.path.lexists(source):
+                return False
+            raw = self._read_package_recovery_file(source)["raw"]
+            if raw is None or hashlib.sha256(raw).hexdigest() != digest:
+                return False
+            if not move_checked_matching_bytes(source, archive, raw,
+                                               allowed_root=source.parent):
+                return False
+        if (self._read_package_recovery_file(archive)["raw"] != raw
+                or os.path.lexists(source)):
+            return False
+        new_target = ("CURRENT:" if row["file_kind"] == "current" else "F5:") + digest
+        snapshot = {
+            "status": "UNVERIFIED", "current_file_sha256": digest,
+            "raw_base64": base64.b64encode(raw).decode("ascii"),
+            "archive_path": str(archive), "file_reason": "TARGET_CHANGED_DURING_HOLD",
+            "original_sha256": row["original_sha256"],
+            "original_target_id": row["target_id"],
+            "original_operation_key": row["operation_key"],
+        }
+        if row["file_kind"] == "journal":
+            self.package_outbox.hold_label_exchange(
+                hold_id=digest, set_id="", label_id="", source_label="",
+                source_input_tag_id="", journal_bytes=raw,
+                archive_path=str(archive), held_by="SYSTEM_PIN_UNVERIFIED",
+            )
+        self.package_outbox.hold_workbench_set(
+            set_id=new_target, source_phs2="", source_input_tag_id="",
+            snapshot=snapshot, reason="TARGET_CHANGED_DURING_HOLD",
+            held_by="SYSTEM_PIN_UNVERIFIED",
+        )
+        if (self.package_outbox.get_workbench_hold(new_target) is None
+                or self._read_package_recovery_file(archive)["raw"] != raw
+                or os.path.lexists(source)):
+            return False
+        store.finish_changed_hold(row["operation_key"], "QUARANTINED")
+        if intent["state"] not in {"APPLIED", "QUARANTINED_CHANGED"}:
+            store.transition(row["operation_key"], "QUARANTINED_CHANGED",
+                             error_code="TARGET_CHANGED_DURING_HOLD")
+        return True
+
+    def _stage_changed_pin_hold(self, intent, source, raw, original_sha):
+        store = self._admin_pin_store
+        source = Path(source)
+        digest = hashlib.sha256(raw).hexdigest()
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        kind = "journal" if coordinator is not None and source == coordinator.journal.path else "current"
+        archive = self._package_pin_changed_archive_path(source, intent["operation_key"], digest)
+        store.stage_changed_hold(
+            operation_key=intent["operation_key"], target_id=intent["target_id"],
+            source_path=str(source), archive_path=str(archive),
+            original_sha256=original_sha, changed_sha256=digest, file_kind=kind,
+        )
+        return self._resume_changed_pin_hold(store.changed_hold(intent["operation_key"]))
+
+    def _package_pin_changed_hold_for_target(self, target_id):
+        store = self.__dict__.get("_admin_pin_store")
+        for row in store.changed_holds() if store is not None else ():
+            prefix = "CURRENT:" if row["file_kind"] == "current" else "F5:"
+            if target_id == prefix + row["changed_sha256"]:
+                return row
+        return None
+
+    @writer_sink("gui_package_pin_changed_restore")
+    def _restore_changed_pin_file(self, target_id):
+        row = self._package_pin_changed_hold_for_target(target_id)
+        if row is None or row["state"] not in {"QUARANTINED", "RESTORING", "RESTORED"}:
+            raise AdminPinError("TARGET_CHANGED")
+        source = Path(row["source_path"])
+        archive = Path(row["archive_path"])
+        digest = row["changed_sha256"]
+        if os.path.lexists(source):
+            operation = active_pin_operation.get()
+            staged = (self._admin_pin_store.file_moves(operation[0])
+                      if operation is not None else [])
+            if (os.path.lexists(archive)
+                    or self._read_package_recovery_file(source)["sha256"] != digest
+                    or not any(move["source_path"] == str(archive)
+                               and move["archive_path"] == str(source)
+                               for move in staged)):
+                raise AdminPinError("TARGET_CHANGED")
+        else:
+            raw = self._read_package_recovery_file(archive)["raw"]
+            if raw is None or hashlib.sha256(raw).hexdigest() != digest:
+                raise AdminPinError("TARGET_CHANGED")
+            self._admin_pin_store.finish_changed_hold(row["operation_key"], "RESTORING")
+            if not self._move_package_pin_file(
+                    archive, source, raw, allowed_root=source.parent):
+                raise AdminPinError("TARGET_CHANGED")
+        if (self._read_package_recovery_file(source)["sha256"] != digest
+                or os.path.lexists(archive)):
+            raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
+        self._admin_pin_store.finish_changed_hold(row["operation_key"], "RESTORED")
+        self._audit_package_recovery_action(
+            target_id, "RECHECK", self._package_recovery_manager(),
+            "RESTORE_CHANGED_FILE:" + digest,
+        )
+        return "변경 파일을 활성 위치에 복원했습니다. 원래 세트 보류와 감사는 유지됩니다."
 
     @writer_sink("gui_package_pin_file_move_recovery")
     def _recover_package_pin_moves(self, intent):
         """Finish an exact interrupted move or restore changed bytes without overwrite."""
         store = self._admin_pin_store
+        if intent["action"] == "LABEL.RECHECK":
+            target = ("F5:" + intent["target_id"]
+                      if intent["target_kind"] == "label_f5_recovery"
+                      else intent["target_id"])
+            changed = self._package_pin_changed_hold_for_target(target)
+            for move in store.file_moves(intent["operation_key"]):
+                if (changed is None or move["source_path"] != changed["archive_path"]
+                        or move["archive_path"] != changed["source_path"]
+                        or move["source_sha256"] != changed["changed_sha256"]):
+                    return False
+                source, restored = Path(move["source_path"]), Path(move["archive_path"])
+                if os.path.lexists(restored):
+                    if (os.path.lexists(source)
+                            or self._read_package_recovery_file(restored)["sha256"]
+                            != changed["changed_sha256"]):
+                        return False
+                    store.finish_file_move(intent["operation_key"], str(source), "VERIFIED")
+                elif (not os.path.lexists(source)
+                      or self._read_package_recovery_file(source)["sha256"]
+                      != changed["changed_sha256"]):
+                    return False
+            return True
         current = Path(self._package_current_state_path())
         coordinator = self.__dict__.get("phs_label_exchange_coordinator")
         journal = coordinator.journal.path if coordinator is not None else None
@@ -7382,17 +7545,24 @@ class Label_Match(tk.Tk):
                     or any(ch not in "0123456789abcdef" for ch in move["source_sha256"])):
                 return False
             if move["state"] == "RESTORED_CHANGED":
+                active = self._read_package_recovery_file(source) if os.path.lexists(source) else {}
+                raw = active.get("raw")
+                if raw is not None and active["sha256"] != move["source_sha256"]:
+                    self._stage_changed_pin_hold(intent, source, raw, move["source_sha256"])
                 return False
-            if move["state"] not in {"MOVING", "VERIFIED"}:
+            if move["state"] not in {"MOVING", "VERIFIED", "RESTORING_CHANGED"}:
                 return False
             if os.path.lexists(archive):
                 evidence = self._read_package_recovery_file(archive)
                 raw = evidence["raw"]
                 if raw is None or os.path.lexists(source):
                     return False
-                if evidence["sha256"] == move["source_sha256"]:
+                if (evidence["sha256"] == move["source_sha256"]
+                        and move["state"] != "RESTORING_CHANGED"):
                     store.finish_file_move(intent["operation_key"], str(source), "VERIFIED")
                     continue
+                store.finish_file_move(intent["operation_key"], str(source),
+                                       "RESTORING_CHANGED")
                 if not move_checked_matching_bytes(
                         archive, source, raw, allowed_root=source.parent):
                     return False
@@ -7400,11 +7570,17 @@ class Label_Match(tk.Tk):
                     return False
                 store.finish_file_move(intent["operation_key"], str(source),
                                        "RESTORED_CHANGED")
+                self._stage_changed_pin_hold(intent, source, raw, move["source_sha256"])
                 return False
             if not os.path.lexists(source):
                 return False
             active = self._read_package_recovery_file(source)
             if active["sha256"] != move["source_sha256"]:
+                if move["state"] == "RESTORING_CHANGED" and active["raw"] is not None:
+                    store.finish_file_move(intent["operation_key"], str(source),
+                                           "RESTORED_CHANGED")
+                    self._stage_changed_pin_hold(intent, source, active["raw"],
+                                                 move["source_sha256"])
                 return False
         return True
 
@@ -7412,8 +7588,15 @@ class Label_Match(tk.Tk):
         store = self.__dict__.get("_admin_pin_store")
         if store is None:
             return
+        for row in store.changed_holds():
+            if row["state"] == "RESTORED":
+                continue
+            try:
+                self._resume_changed_pin_hold(row)
+            except Exception as exc:
+                print(f"포장 변경 파일 보류 복구 기술 진단: {type(exc).__name__}: {exc}")
         for intent in store.list_pending():
-            if intent["action"] not in {"LABEL.SET_HOLD", "LABEL.F5_HOLD"}:
+            if intent["action"] not in {"LABEL.SET_HOLD", "LABEL.F5_HOLD", "LABEL.RECHECK"}:
                 continue
             try:
                 self._recover_package_pin_moves(intent)
@@ -7456,6 +7639,29 @@ class Label_Match(tk.Tk):
             kind="phs_label_exchange", tone="danger",
         )
         self._render_operator_workbench()
+
+    def _show_package_pin_changed_notice(self, *, restored=False):
+        self._workflow_notice = WorkflowNotice(
+            title="변경 파일 건별 보류", message=(
+                "관리자가 변경 파일을 원위치에 복원했습니다. 원래 세트 보류는 유지됩니다. "
+                "건별 복구에서 이 항목을 다시 확인하세요."
+                if restored else
+                "보류 중 바뀐 파일을 안전한 위치로 옮기지 못했습니다. 이 파일은 원위치에 "
+                "보존했습니다. 건별 복구에서 이 항목을 다시 확인하거나 보류하세요."
+            ), kind="submission_blocked", tone="danger",
+        )
+        self._render_operator_workbench()
+
+    def _package_pin_changed_move_pending(self, current_path):
+        store = self.__dict__.get("_admin_pin_store")
+        return any(row["source_path"] == str(current_path)
+                   and row["state"] not in {"QUARANTINED", "RESTORED"}
+                   for row in store.changed_holds()) if store is not None else False
+
+    def _package_pin_changed_restored_active(self, current_path):
+        store = self.__dict__.get("_admin_pin_store")
+        return any(row["source_path"] == str(current_path) and row["state"] == "RESTORED"
+                   for row in store.changed_holds()) if store is not None else False
 
     def _package_recovery_candidates(self):
         outbox = self.__dict__.get("package_outbox")
@@ -7561,9 +7767,22 @@ class Label_Match(tk.Tk):
                            else intent["target_id"])
             if original_id in rows:
                 rows[original_id]["prior_pin_unknown"] = True
+        for changed in store.changed_holds() if store is not None else ():
+            if changed["state"] == "RESTORED":
+                continue
+            prefix = "CURRENT:" if changed["file_kind"] == "current" else "F5:"
+            target_id = prefix + changed["changed_sha256"]
+            row = rows.setdefault(target_id, {
+                "set_id": target_id, "current": None, "package": None,
+                "exchange": None, "held": outbox.get_workbench_hold(target_id),
+            })
+            row["changed_hold"] = changed
+            row["unverified"] = "TARGET_CHANGED_DURING_HOLD"
         # A held file with no durable move/hold record must remain visible;
         # never infer that it is safe to remove from its filename alone.
         known_archives = {row["archive_path"] for row in store.all_file_moves()} if store else set()
+        if store is not None:
+            known_archives.update(row["archive_path"] for row in store.changed_holds())
         for hold in outbox.list_workbench_holds():
             try:
                 known_archives.add(str(json.loads(hold["snapshot_json"])["archive_path"]))
@@ -7666,8 +7885,11 @@ class Label_Match(tk.Tk):
                 if hashlib.sha256(raw).hexdigest() != hold["journal_sha256"]:
                     raise PackageLogisticsError("held journal digest differs")
                 archive = Path(hold["archive_path"])
+                changed_hold = self._package_pin_changed_hold_for_target("F5:" + hold_id)
+                expected_archive = (Path(changed_hold["archive_path"]) if changed_hold
+                                    else active.with_name(active.name + ".held-" + hold["hold_id"]))
                 if (not valid_recovery_archive_path(str(archive), hold_id)
-                        or archive != active.with_name(active.name + ".held-" + hold["hold_id"])):
+                        or archive != expected_archive):
                     raise PackageLogisticsError("held journal archive path differs")
                 linked_set_id = str(hold["set_id"] or "")
                 if linked_set_id and not outbox.get_workbench_hold(linked_set_id):
@@ -7692,9 +7914,11 @@ class Label_Match(tk.Tk):
                     else:
                         write_checked_bytes(archive, raw, allowed_root=active.parent,
                                             replace=False)
-                if not self._read_package_recovery_file(
+                archive_evidence = self._read_package_recovery_file(
                     archive, journal=True, expected_bytes=raw
-                )["verified"]:
+                )
+                if (archive_evidence["raw"] != raw if changed_hold
+                        else not archive_evidence["verified"]):
                     raise PackageLogisticsError("held journal archive readback differs")
             except Exception as exc:
                 print(f"현품표 교환 보류 {hold_id} 파일 미검증 기술 진단: {exc}")
@@ -8069,16 +8293,22 @@ class Label_Match(tk.Tk):
                                 and observed.startswith("CURRENT_FILE_SHA256:")
                                 and "current_file_sha256" not in details):
                             details["current_file_sha256"] = observed.split(":", 1)[1]
-                    if set_id.startswith("CURRENT:"):
+                    if set_id.startswith("CURRENT:") and action == "LABEL.SET_HOLD":
                         details.setdefault("current_file_sha256",
                                            snapshot.get("current_file_sha256", set_id[8:]))
-                    elif not candidate.get("current"):
+                    elif not set_id.startswith("CURRENT:") and not candidate.get("current"):
                         saved = snapshot.get("current_set_info") or {}
                         if str(saved.get("id") or "") != set_id:
                             raise AdminPinError("TARGET_CHANGED")
                         details["current_sha256"] = admin_pin_fingerprint(saved)
             target_id, kind = set_id, "label_set_recovery"
-        if physical_qr:
+        if physical_qr == "__RESTORE_CHANGED_PIN_FILE__" and action == "LABEL.RECHECK":
+            changed = self._package_pin_changed_hold_for_target(set_id)
+            if changed is None or changed["state"] not in {"QUARANTINED", "RESTORING", "RESTORED"}:
+                raise AdminPinError("TARGET_CHANGED")
+            details["local_effect"] = "RESTORE_CHANGED_FILE"
+            details["changed_file_sha256"] = changed["changed_sha256"]
+        elif physical_qr:
             fields = _label_match_parse_compact_phs2(physical_qr)
             details["physical_sha256"] = hashlib.sha256(
                 physical_qr.encode("utf-8")
@@ -8232,17 +8462,37 @@ class Label_Match(tk.Tk):
                 and row["operator_id"] == intent["operator_id"]]
         action = intent["action"]
         set_id = intent["target_id"]
+        if action == "LABEL.RECHECK":
+            changed_target = ("F5:" + set_id if intent["target_kind"] == "label_f5_recovery"
+                              else set_id)
+            changed = self._package_pin_changed_hold_for_target(changed_target)
+            restoration = (any(move["source_path"] == changed["archive_path"]
+                               and move["archive_path"] == changed["source_path"]
+                               for move in self._admin_pin_store.file_moves(intent["operation_key"]))
+                           if changed else False)
+            if changed and restoration:
+                digest = changed["changed_sha256"]
+                active = Path(changed["source_path"])
+                return (changed["state"] == "RESTORED"
+                        and not os.path.lexists(changed["archive_path"])
+                        and self._read_package_recovery_file(active)["sha256"] == digest
+                        and any(row["action"] == "RECHECK"
+                                and row["observed"] == "RESTORE_CHANGED_FILE:" + digest
+                                for row in rows))
         if action == "LABEL.F5_HOLD":
             hold_id = intent["target_id"]
             held = self.package_outbox.get_label_exchange_hold(hold_id)
             if held:
                 archive = Path(held["archive_path"])
                 raw = bytes(held["journal_bytes"])
+                archive_evidence = self._read_package_recovery_file(
+                    archive, journal=True, expected_bytes=raw
+                )
+                changed_hold = self._package_pin_changed_hold_for_target("F5:" + hold_id)
                 complete = (hashlib.sha256(raw).hexdigest() == held["journal_sha256"]
                             and not os.path.lexists(self.phs_label_exchange_coordinator.journal.path)
-                            and self._read_package_recovery_file(
-                                archive, journal=True, expected_bytes=raw
-                            )["verified"])
+                            and (archive_evidence["raw"] == raw if changed_hold
+                                 else archive_evidence["verified"]))
                 if held["set_id"]:
                     linked = self.package_outbox.get_workbench_hold(held["set_id"])
                     complete = (complete and self._package_set_hold_complete(held["set_id"], linked)
@@ -8303,11 +8553,14 @@ class Label_Match(tk.Tk):
                 if not self._finalize_label_recovery_holds(only_hold_id=hold_id):
                     raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
                 raw = bytes(held["journal_bytes"])
+                archive_evidence = self._read_package_recovery_file(
+                    held["archive_path"], journal=True, expected_bytes=raw
+                )
+                changed_hold = self._package_pin_changed_hold_for_target("F5:" + hold_id)
                 if (hashlib.sha256(raw).hexdigest() != held["journal_sha256"]
                         or os.path.lexists(self.phs_label_exchange_coordinator.journal.path)
-                        or not self._read_package_recovery_file(
-                            held["archive_path"], journal=True, expected_bytes=raw
-                        )["verified"]):
+                        or not (archive_evidence["raw"] == raw if changed_hold
+                                else archive_evidence["verified"])):
                     raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
             elif not entry or not self._package_pin_entry_hold_complete(entry):
                 raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
@@ -8328,6 +8581,8 @@ class Label_Match(tk.Tk):
             )
             return True
         if action == "LABEL.RECHECK":
+            if physical_qr == "__RESTORE_CHANGED_PIN_FILE__":
+                return self._restore_changed_pin_file(set_id)
             return self._recheck_package_recovery_set(set_id)
         if action == "LABEL.PHS_LOOKUP":
             return self._recheck_package_recovery_physical(set_id, physical_qr)
@@ -8425,7 +8680,8 @@ class Label_Match(tk.Tk):
         except Exception:
             moves_recovered = False
         if not moves_recovered:
-            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="TARGET_CHANGED")
+            if store.get(key)["state"] != "QUARANTINED_CHANGED":
+                store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="TARGET_CHANGED")
             return admin_pin_message("TARGET_CHANGED")
         if not pending["verification_id"]:
             # An unverified quarantine never consumed a proof. The old record
@@ -8636,7 +8892,10 @@ class Label_Match(tk.Tk):
                 self._admin_pin_last_message = admin_pin_message("EFFECT_UNVERIFIED")
                 return False
             try:
-                store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
+                if store.get(operation_key)["state"] == "QUARANTINED_CHANGED":
+                    code = "TARGET_CHANGED"
+                else:
+                    store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
             except Exception:
                 code = "AUDIT_UNAVAILABLE"
         elif code == "VERIFY_UNAVAILABLE":
@@ -9382,6 +9641,11 @@ class Label_Match(tk.Tk):
                     condition += " · 파일 미검증"
                 if item.get("orphan_path"):
                     condition += " · 이동 의도 없는 보류 파일: " + item["orphan_path"]
+                if item.get("changed_hold"):
+                    changed = item["changed_hold"]
+                    condition += (" · TARGET_CHANGED_DURING_HOLD 원SHA "
+                                  + changed["original_sha256"] + " 변경SHA "
+                                  + changed["changed_sha256"])
                 if item.get("pin_intent"):
                     condition += f" · 관리자 확인 다시 조회 {len(item['pin_intents'])}건"
                 if item.get("prior_pin_unknown"):
@@ -9482,7 +9746,20 @@ class Label_Match(tk.Tk):
             if intent["action"] == "LABEL.PHS_LOOKUP":
                 scan_physical()
                 return
-            result = self._run_package_pin_action(intent["action"], item["set_id"])
+            resume_input = ""
+            if intent["action"] == "LABEL.RECHECK" and item.get("changed_hold"):
+                try:
+                    target, _ = self._package_pin_target(
+                        "LABEL.RECHECK", item["set_id"], "__RESTORE_CHANGED_PIN_FILE__"
+                    )
+                    if target["state_fingerprint"] == intent["target_fingerprint"]:
+                        resume_input = "__RESTORE_CHANGED_PIN_FILE__"
+                except Exception:
+                    pass
+            result = (self._run_package_pin_action(intent["action"], item["set_id"],
+                                                   resume_input)
+                      if resume_input else self._run_package_pin_action(
+                          intent["action"], item["set_id"]))
             status.set(str(result) if result else self.__dict__.get(
                 "_admin_pin_last_message", "관리자 확인을 마치지 못했습니다."
             ))
@@ -9497,10 +9774,24 @@ class Label_Match(tk.Tk):
             if parked:
                 refresh()
 
+        def restore_changed_file():
+            item = selected()
+            if not item or not item.get("changed_hold"):
+                status.set("변경 파일 보류 항목을 선택하세요.")
+                return
+            result = self._run_package_pin_action(
+                "LABEL.RECHECK", item["set_id"], "__RESTORE_CHANGED_PIN_FILE__"
+            )
+            status.set(str(result) if result else self.__dict__.get(
+                "_admin_pin_last_message", "활성 위치 복원을 확인하지 못했습니다."
+            ))
+            refresh()
+
         pin_buttons = ttk.Frame(frame)
         pin_buttons.pack(fill="x", pady=(0, 4))
         ttk.Button(pin_buttons, text="관리자 확인 다시 조회", command=retry_pin).pack(side="left", padx=4)
         ttk.Button(pin_buttons, text="이 건만 보류하고 다른 작업 계속", command=park_unverified).pack(side="left", padx=4)
+        ttk.Button(pin_buttons, text="변경 파일 원위치 복원", command=restore_changed_file).pack(side="left", padx=4)
         refresh()
         return window
 
@@ -9528,6 +9819,11 @@ class Label_Match(tk.Tk):
         if current_path and os.path.lexists(current_path):
             evidence = self._read_package_recovery_file(current_path)
             if not evidence["verified"]:
+                if (self._package_pin_changed_move_pending(current_path)
+                        or self._package_pin_changed_restored_active(current_path)):
+                    self._show_package_pin_changed_notice(
+                        restored=self._package_pin_changed_restored_active(current_path))
+                    return
                 self._show_package_recovery_block(
                     "현재 작업 파일을 확인할 수 없습니다. 건별 복구에서 신원 미확인 보류 후 다른 작업을 계속하세요.",
                     retry_action=self._show_package_recovery_workbench,
@@ -9561,6 +9857,12 @@ class Label_Match(tk.Tk):
                 except Exception:
                     matching_snapshot = False
                 if not matching_snapshot:
+                    if (self._package_pin_changed_move_pending(current_path)
+                            or self._package_pin_changed_restored_active(current_path)):
+                        self.current_set_info = state_data["current_set_info"]
+                        self._show_package_pin_changed_notice(
+                            restored=self._package_pin_changed_restored_active(current_path))
+                        return
                     self._show_package_recovery_block(
                         "보류한 세트와 현재 저장 기록이 다릅니다. 원본을 유지하고 지원 담당자에게 알리세요."
                     )
@@ -9582,6 +9884,11 @@ class Label_Match(tk.Tk):
                 self._workflow_notice_action = None
                 self._render_operator_workbench()
         if not state_data and os.path.lexists(self._package_current_state_path()):
+            if (self._package_pin_changed_move_pending(current_path)
+                    or self._package_pin_changed_restored_active(current_path)):
+                self._show_package_pin_changed_notice(
+                    restored=self._package_pin_changed_restored_active(current_path))
+                return
             self._show_package_recovery_block(
                 "현재 작업 파일을 읽지 못했습니다. 파일을 지우지 말고 디스크·폴더 권한·파일 잠금을 확인하세요."
             )
