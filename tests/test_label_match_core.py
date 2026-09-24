@@ -5174,10 +5174,14 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
     path = tmp_path / "current.json"
     path.write_text(json.dumps(saved), encoding="utf-8")
     clear_allowed = False
+    original_move = module.move_checked_matching_bytes
 
-    def delete_state():
-        if clear_allowed:
-            path.unlink()
+    def move_state(*args, **kwargs):
+        if not clear_allowed:
+            raise OSError("current archive move blocked")
+        return original_move(*args, **kwargs)
+
+    monkeypatch.setattr(module, "move_checked_matching_bytes", move_state)
 
     app = object.__new__(module.Label_Match)
     app.run_tests = True
@@ -5190,7 +5194,6 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
     app.data_manager = SimpleNamespace(
         save_directory=str(tmp_path), _current_state_filename=lambda: "current.json",
         load_current_state=lambda: json.loads(path.read_text(encoding="utf-8")) if path.exists() else None,
-        delete_current_state=delete_state,
     )
     app._save_current_set_state = lambda: True
     app._package_recovery_candidates = lambda: [{
@@ -5226,6 +5229,8 @@ def test_manager_hold_readback_precedes_workbench_clear(tmp_path, monkeypatch):
     finally:
         module.active_pin_operation.reset(token)
     assert not path.exists() and reset == [True]
+    assert app._package_pin_current_archive_path("test-hold-key").read_bytes() == json.dumps(
+        saved).encode("utf-8")
     assert app.package_outbox.get_workbench_hold("set-hold")["held_by"] == "S-1-5-21-101"
     app.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **_kwargs: [])
     app.package_logistics_client = None
