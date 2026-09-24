@@ -7342,6 +7342,84 @@ class Label_Match(tk.Tk):
         digest = hashlib.sha256(str(operation_key).encode("utf-8")).hexdigest()
         return current.with_name(current.name + ".held-" + digest)
 
+    def _move_package_pin_file(self, source, archive, raw, *, allowed_root, pin_key=None):
+        """Persist a PIN rename plan before moving either recovery file."""
+        operation = active_pin_operation.get()
+        operation_key = pin_key or (operation[0] if operation is not None else None)
+        source, archive = Path(source), Path(archive)
+        if operation_key is not None:
+            self._admin_pin_store.stage_file_move(
+                operation_key, str(source), str(archive), hashlib.sha256(raw).hexdigest()
+            )
+        moved = move_checked_matching_bytes(
+            source, archive, raw, allowed_root=allowed_root
+        )
+        if moved and self._read_package_recovery_file(archive)["raw"] == raw:
+            if operation_key is not None:
+                self._admin_pin_store.finish_file_move(operation_key, str(source), "VERIFIED")
+            return True
+        return False
+
+    @writer_sink("gui_package_pin_file_move_recovery")
+    def _recover_package_pin_moves(self, intent):
+        """Finish an exact interrupted move or restore changed bytes without overwrite."""
+        store = self._admin_pin_store
+        current = Path(self._package_current_state_path())
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        journal = coordinator.journal.path if coordinator is not None else None
+        for move in store.file_moves(intent["operation_key"]):
+            source = Path(move["source_path"])
+            archive = Path(move["archive_path"])
+            if source == current:
+                suffix = (intent["target_id"][8:] if intent["target_id"].startswith("CURRENT:")
+                          else hashlib.sha256(intent["operation_key"].encode("utf-8")).hexdigest())
+            elif source == journal and intent["action"] == "LABEL.F5_HOLD":
+                suffix = intent["target_id"]
+            else:
+                return False
+            if (archive != source.with_name(source.name + ".held-" + suffix)
+                    or len(move["source_sha256"]) != 64
+                    or any(ch not in "0123456789abcdef" for ch in move["source_sha256"])):
+                return False
+            if move["state"] == "RESTORED_CHANGED":
+                return False
+            if move["state"] not in {"MOVING", "VERIFIED"}:
+                return False
+            if os.path.lexists(archive):
+                evidence = self._read_package_recovery_file(archive)
+                raw = evidence["raw"]
+                if raw is None or os.path.lexists(source):
+                    return False
+                if evidence["sha256"] == move["source_sha256"]:
+                    store.finish_file_move(intent["operation_key"], str(source), "VERIFIED")
+                    continue
+                if not move_checked_matching_bytes(
+                        archive, source, raw, allowed_root=source.parent):
+                    return False
+                if self._read_package_recovery_file(source)["raw"] != raw:
+                    return False
+                store.finish_file_move(intent["operation_key"], str(source),
+                                       "RESTORED_CHANGED")
+                return False
+            if not os.path.lexists(source):
+                return False
+            active = self._read_package_recovery_file(source)
+            if active["sha256"] != move["source_sha256"]:
+                return False
+        return True
+
+    def _recover_pending_package_pin_moves(self):
+        store = self.__dict__.get("_admin_pin_store")
+        if store is None:
+            return
+        for intent in store.list_pending():
+            if intent["action"] not in {"LABEL.SET_HOLD", "LABEL.F5_HOLD"}:
+                continue
+            try:
+                self._recover_package_pin_moves(intent)
+            except Exception as exc:
+                print(f"포장 보류 파일 이동 복구 기술 진단: {type(exc).__name__}: {exc}")
+
     def _read_package_recovery_file(self, path, *, journal=False, expected_bytes=None):
         """Read one recovery file without changing it; return UNVERIFIED on bad input."""
         return read_recovery_file(
@@ -7483,6 +7561,30 @@ class Label_Match(tk.Tk):
                            else intent["target_id"])
             if original_id in rows:
                 rows[original_id]["prior_pin_unknown"] = True
+        # A held file with no durable move/hold record must remain visible;
+        # never infer that it is safe to remove from its filename alone.
+        known_archives = {row["archive_path"] for row in store.all_file_moves()} if store else set()
+        for hold in outbox.list_workbench_holds():
+            try:
+                known_archives.add(str(json.loads(hold["snapshot_json"])["archive_path"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        for hold in list_label_holds() if callable(list_label_holds) else ():
+            known_archives.add(str(hold["archive_path"]))
+        journal = self.__dict__.get("phs_label_exchange_coordinator")
+        active_paths = [Path(current_path)] if current_path else []
+        if journal is not None:
+            active_paths.append(Path(journal.journal.path))
+        for active in active_paths:
+            for archive in active.parent.glob(active.name + ".held-*"):
+                if str(archive) in known_archives:
+                    continue
+                orphan_id = "ORPHAN:" + hashlib.sha256(str(archive).encode("utf-8")).hexdigest()
+                rows[orphan_id] = {
+                    "set_id": orphan_id, "current": None, "package": None,
+                    "exchange": None, "held": None, "orphan_path": str(archive),
+                    "unverified": "보류 파일의 이동 의도와 원본 연결 기록이 없습니다",
+                }
         return list(rows.values())
 
     def _active_label_recovery_state(self):
@@ -7580,8 +7682,12 @@ class Label_Match(tk.Tk):
                         "F5:" + hold_id, "FILE_MISSING", "SYSTEM", "ARCHIVE"
                     )
                     if self._read_package_recovery_file(active, journal=True)["raw"] == raw:
-                        if not move_checked_matching_bytes(
-                                active, archive, raw, allowed_root=active.parent):
+                        store = self.__dict__.get("_admin_pin_store")
+                        pending = (store.pending("label_f5_recovery", hold_id)
+                                   if store is not None else None)
+                        if not self._move_package_pin_file(
+                                active, archive, raw, allowed_root=active.parent,
+                                pin_key=pending["operation_key"] if pending else None):
                             raise AdminPinError("TARGET_CHANGED")
                     else:
                         write_checked_bytes(archive, raw, allowed_root=active.parent,
@@ -7692,7 +7798,7 @@ class Label_Match(tk.Tk):
             else:
                 if self._read_package_recovery_file(path, journal=True)["raw"] != raw:
                     raise PackageLogisticsError("active label journal changed")
-                if not move_checked_matching_bytes(
+                if not self._move_package_pin_file(
                         path, archive, raw, allowed_root=path.parent):
                     raise AdminPinError("TARGET_CHANGED")
                 if (self._read_package_recovery_file(archive, journal=True)["raw"] != raw
@@ -8314,6 +8420,13 @@ class Label_Match(tk.Tk):
         """Status, keyed effect readback, then original target comparison."""
         store = self._admin_pin_store
         key = pending["operation_key"]
+        try:
+            moves_recovered = self._recover_package_pin_moves(pending)
+        except Exception:
+            moves_recovered = False
+        if not moves_recovered:
+            store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="TARGET_CHANGED")
+            return admin_pin_message("TARGET_CHANGED")
         if not pending["verification_id"]:
             # An unverified quarantine never consumed a proof. The old record
             # remains as evidence; a fresh PIN attempt gets a fresh key.
@@ -8560,6 +8673,8 @@ class Label_Match(tk.Tk):
             pending = self._admin_pin_store.pending(kind, target_id)
             if (pending is None or pending["error_code"] != "VERIFY_UNAVAILABLE"):
                 raise AdminPinError("TARGET_CHANGED")
+            if not self._recover_package_pin_moves(pending):
+                raise AdminPinError("TARGET_CHANGED")
             target, _ = self._package_pin_target(pending["action"], set_id,
                                                   resume_intent=pending)
             if pending["target_fingerprint"] != target["state_fingerprint"]:
@@ -8721,7 +8836,7 @@ class Label_Match(tk.Tk):
             if archive.exists():
                 # A second active entry cannot be silently removed on resume.
                 raise AdminPinError("TARGET_CHANGED")
-            if not move_checked_matching_bytes(
+            if not self._move_package_pin_file(
                     current_path, archive, raw,
                     allowed_root=Path(self.data_manager.save_directory)):
                 raise AdminPinError("TARGET_CHANGED")
@@ -8868,7 +8983,7 @@ class Label_Match(tk.Tk):
                         raise AdminPinError("TARGET_CHANGED")
                 else:
                     checked_current_file()
-                    if not move_checked_matching_bytes(
+                    if not self._move_package_pin_file(
                             current_file, archive, evidence["raw"],
                             allowed_root=Path(self.data_manager.save_directory)):
                         raise AdminPinError("TARGET_CHANGED")
@@ -9265,6 +9380,8 @@ class Label_Match(tk.Tk):
                 if (item.get("unverified")
                         or self.__dict__.get("_package_recovery_file_issues", {}).get(item["set_id"])):
                     condition += " · 파일 미검증"
+                if item.get("orphan_path"):
+                    condition += " · 이동 의도 없는 보류 파일: " + item["orphan_path"]
                 if item.get("pin_intent"):
                     condition += f" · 관리자 확인 다시 조회 {len(item['pin_intents'])}건"
                 if item.get("prior_pin_unknown"):
@@ -9404,6 +9521,7 @@ class Label_Match(tk.Tk):
     def _load_current_set_state_checked(self):
         completion_sync_error = None
 
+        self._recover_pending_package_pin_moves()
         if not self._finalize_label_recovery_holds():
             return
         current_path = self._package_current_state_path()

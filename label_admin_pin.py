@@ -260,7 +260,70 @@ class AdminPinIntentStore:
                 operator_id TEXT NOT NULL, login_epoch TEXT NOT NULL, admin_id TEXT NOT NULL,
                 state TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT ''
             )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS admin_pin_file_moves (
+                operation_key TEXT NOT NULL, source_path TEXT NOT NULL,
+                archive_path TEXT NOT NULL, source_sha256 TEXT NOT NULL,
+                state TEXT NOT NULL, PRIMARY KEY(operation_key, source_path)
+            )""")
         return conn
+
+    @writer_sink("label_admin_pin_file_move")
+    def stage_file_move(self, operation_key: str, source_path: str,
+                        archive_path: str, source_sha256: str) -> None:
+        """Commit the exact rename plan before touching the source file."""
+        with self._connect(initialize=True) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("""SELECT archive_path, source_sha256, state
+                FROM admin_pin_file_moves WHERE operation_key=? AND source_path=?""",
+                (operation_key, source_path)).fetchone()
+            if row:
+                if (row["archive_path"] != archive_path
+                        or row["source_sha256"] != source_sha256
+                        or row["state"] == "RESTORED_CHANGED"):
+                    raise AdminPinError("TARGET_CHANGED")
+            else:
+                conn.execute("""INSERT INTO admin_pin_file_moves VALUES (?,?,?,?,?)""",
+                             (operation_key, source_path, archive_path, source_sha256,
+                              "MOVING"))
+        if not any(row["source_path"] == source_path
+                   and row["archive_path"] == archive_path
+                   and row["source_sha256"] == source_sha256
+                   for row in self.file_moves(operation_key)):
+            raise AdminPinError("INTENT_UNVERIFIED", unknown=True)
+
+    def file_moves(self, operation_key: str) -> list[dict[str, str]]:
+        if not self.path.exists():
+            return []
+        with self._connect() as conn:
+            if not conn.execute("""SELECT 1 FROM sqlite_master WHERE type='table'
+                AND name='admin_pin_file_moves'""").fetchone():
+                return []
+            return [dict(row) for row in conn.execute("""SELECT * FROM admin_pin_file_moves
+                WHERE operation_key=? ORDER BY rowid""", (operation_key,))]
+
+    def all_file_moves(self) -> list[dict[str, str]]:
+        if not self.path.exists():
+            return []
+        with self._connect() as conn:
+            if not conn.execute("""SELECT 1 FROM sqlite_master WHERE type='table'
+                AND name='admin_pin_file_moves'""").fetchone():
+                return []
+            return [dict(row) for row in conn.execute("SELECT * FROM admin_pin_file_moves")]
+
+    @writer_sink("label_admin_pin_file_move_state")
+    def finish_file_move(self, operation_key: str, source_path: str, state: str) -> None:
+        if state not in {"VERIFIED", "RESTORED_CHANGED"}:
+            raise ValueError("invalid file move state")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute("""UPDATE admin_pin_file_moves SET state=?
+                WHERE operation_key=? AND source_path=?""",
+                (state, operation_key, source_path))
+            if changed.rowcount != 1:
+                raise AdminPinError("INTENT_MISSING", unknown=True)
+        if not any(row["source_path"] == source_path and row["state"] == state
+                   for row in self.file_moves(operation_key)):
+            raise AdminPinError("INTENT_UNVERIFIED", unknown=True)
 
     def pending(self, kind: str, target_id: str) -> dict[str, str] | None:
         if not self.path.exists():
