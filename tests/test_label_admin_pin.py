@@ -1482,6 +1482,64 @@ def test_changed_f5_journal_can_be_reheld_and_restored_with_new_pin(tmp_path, mo
     assert restarted._admin_pin_store.changed_hold(key)["state"] == "RESTORED"
 
 
+def test_linked_changed_current_recovers_interrupted_journal_finalization(
+        tmp_path, monkeypatch):
+    app, journal, current, _server, _set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=True)
+    hold_id = hashlib.sha256(journal.path.read_bytes()).hexdigest()
+    changed_state = json.loads(current.read_text(encoding="utf-8"))
+    changed_state["timestamp"] = "2026-09-24T00:00:04"
+    changed_bytes = json.dumps(changed_state, ensure_ascii=False).encode("utf-8")
+    native_open = label_safe_path._open
+    changed = False
+
+    def change_current_at_move(path, access, *args, **kwargs):
+        nonlocal changed
+        if (not changed and path == current
+                and access == label_safe_path._READ | label_safe_path._DELETE):
+            current.write_bytes(changed_bytes)
+            changed = True
+        return native_open(path, access, *args, **kwargs)
+
+    with monkeypatch.context() as interruption:
+        interruption.setattr(label_safe_path, "_open", change_current_at_move)
+        assert app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + hold_id) is False
+    old_key = _intent(app)[0]
+    restarted = object.__new__(app_module.Label_Match)
+    restarted.__dict__.update(app.__dict__)
+    restarted.package_outbox = app_module.PackageOutbox(tmp_path / "outbox.sqlite3")
+    restarted._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+    restarted._recover_pending_package_pin_moves()
+    assert restarted._admin_pin_store.changed_hold(old_key)["state"] == "QUARANTINED"
+    assert restarted._admin_pin_store.get(old_key)["state"] == "QUARANTINED_CHANGED"
+    assert journal.path.exists()
+
+    native_rename = label_safe_path._rename_handle
+    def interrupt_journal_move(handle, target, *, replace):
+        native_rename(handle, target, replace=replace)
+        if target == journal.path.with_name(journal.path.name + ".held-" + hold_id):
+            raise OSError("interrupted after journal move")
+
+    with monkeypatch.context() as interruption:
+        interruption.setattr(label_safe_path, "_rename_handle", interrupt_journal_move)
+        restarted._finalize_label_recovery_holds(only_hold_id=hold_id)
+    moves = restarted._admin_pin_store.file_moves(old_key)
+    journal_move = next(row for row in moves if row["source_path"] == str(journal.path))
+    assert journal_move["state"] == "MOVING"
+    assert not journal.path.exists()
+
+    resumed = object.__new__(app_module.Label_Match)
+    resumed.__dict__.update(restarted.__dict__)
+    resumed.package_outbox = app_module.PackageOutbox(tmp_path / "outbox.sqlite3")
+    resumed._admin_pin_store = AdminPinIntentStore(tmp_path / "admin-pin-intents.sqlite3")
+    resumed._recover_pending_package_pin_moves()
+    journal_move = next(row for row in resumed._admin_pin_store.file_moves(old_key)
+                        if row["source_path"] == str(journal.path))
+    assert journal_move["state"] == "VERIFIED"
+    assert resumed._admin_pin_store.get(old_key)["state"] == "QUARANTINED_CHANGED"
+    assert resumed._finalize_label_recovery_holds(only_hold_id=hold_id) is True
+
+
 def test_set_hold_uses_pin_and_preserves_damaged_current_file(tmp_path, monkeypatch):
     app, _journal, current = _storage_recovery_app(tmp_path, monkeypatch)
     del app._package_recovery_manager

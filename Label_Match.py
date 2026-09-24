@@ -7530,6 +7530,7 @@ class Label_Match(tk.Tk):
         current = Path(self._package_current_state_path())
         coordinator = self.__dict__.get("phs_label_exchange_coordinator")
         journal = coordinator.journal.path if coordinator is not None else None
+        changed_seen = False
         for move in store.file_moves(intent["operation_key"]):
             source = Path(move["source_path"])
             archive = Path(move["archive_path"])
@@ -7545,6 +7546,12 @@ class Label_Match(tk.Tk):
                     or any(ch not in "0123456789abcdef" for ch in move["source_sha256"])):
                 return False
             if move["state"] == "RESTORED_CHANGED":
+                changed_hold = store.changed_hold(intent["operation_key"])
+                if (changed_hold and changed_hold["state"] == "QUARANTINED"
+                        and changed_hold["source_path"] == str(source)
+                        and not os.path.lexists(source)):
+                    changed_seen = True
+                    continue
                 active = self._read_package_recovery_file(source) if os.path.lexists(source) else {}
                 raw = active.get("raw")
                 if raw is not None and active["sha256"] != move["source_sha256"]:
@@ -7582,7 +7589,7 @@ class Label_Match(tk.Tk):
                     self._stage_changed_pin_hold(intent, source, active["raw"],
                                                  move["source_sha256"])
                 return False
-        return True
+        return not changed_seen
 
     def _recover_pending_package_pin_moves(self):
         store = self.__dict__.get("_admin_pin_store")
@@ -7593,6 +7600,9 @@ class Label_Match(tk.Tk):
                 continue
             try:
                 self._resume_changed_pin_hold(row)
+                original = store.get(row["operation_key"])
+                if original and original["state"] == "QUARANTINED_CHANGED":
+                    self._recover_package_pin_moves(original)
             except Exception as exc:
                 print(f"포장 변경 파일 보류 복구 기술 진단: {type(exc).__name__}: {exc}")
         for intent in store.list_pending():
@@ -7907,6 +7917,12 @@ class Label_Match(tk.Tk):
                         store = self.__dict__.get("_admin_pin_store")
                         pending = (store.pending("label_f5_recovery", hold_id)
                                    if store is not None else None)
+                        if pending is None and store is not None:
+                            pending = next((store.get(row["operation_key"])
+                                            for row in store.changed_holds()
+                                            if row["target_id"] == hold_id
+                                            and store.get(row["operation_key"])["action"]
+                                            == "LABEL.F5_HOLD"), None)
                         if not self._move_package_pin_file(
                                 active, archive, raw, allowed_root=active.parent,
                                 pin_key=pending["operation_key"] if pending else None):
