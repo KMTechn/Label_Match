@@ -253,24 +253,37 @@ class AdminPinIntentStore:
         conn.execute("PRAGMA synchronous=FULL")
         if initialize:
             conn.execute("PRAGMA journal_mode=DELETE")
-            conn.execute("""CREATE TABLE IF NOT EXISTS admin_pin_intents (
-                operation_key TEXT PRIMARY KEY, verification_id TEXT NOT NULL,
-                action TEXT NOT NULL, target_kind TEXT NOT NULL, target_id TEXT NOT NULL,
-                target_fingerprint TEXT NOT NULL, source_evidence_sha256 TEXT NOT NULL,
-                operator_id TEXT NOT NULL, login_epoch TEXT NOT NULL, admin_id TEXT NOT NULL,
-                state TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT ''
-            )""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS admin_pin_file_moves (
-                operation_key TEXT NOT NULL, source_path TEXT NOT NULL,
-                archive_path TEXT NOT NULL, source_sha256 TEXT NOT NULL,
-                state TEXT NOT NULL, PRIMARY KEY(operation_key, source_path)
-            )""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS admin_pin_changed_holds (
-                operation_key TEXT PRIMARY KEY, target_id TEXT NOT NULL,
-                source_path TEXT NOT NULL, archive_path TEXT NOT NULL,
-                original_sha256 TEXT NOT NULL, changed_sha256 TEXT NOT NULL,
-                file_kind TEXT NOT NULL, state TEXT NOT NULL
-            )""")
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS admin_pin_intents (
+                    operation_key TEXT PRIMARY KEY, verification_id TEXT NOT NULL,
+                    action TEXT NOT NULL, target_kind TEXT NOT NULL, target_id TEXT NOT NULL,
+                    target_fingerprint TEXT NOT NULL, source_evidence_sha256 TEXT NOT NULL,
+                    operator_id TEXT NOT NULL, login_epoch TEXT NOT NULL, admin_id TEXT NOT NULL,
+                    state TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT ''
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS admin_pin_file_moves (
+                    operation_key TEXT NOT NULL, source_path TEXT NOT NULL,
+                    archive_path TEXT NOT NULL, source_sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL, PRIMARY KEY(operation_key, source_path)
+                )""")
+                primary_key = [row["name"] for row in conn.execute(
+                    "PRAGMA table_info(admin_pin_changed_holds)") if row["pk"]]
+                if primary_key == ["operation_key"]:
+                    conn.execute("ALTER TABLE admin_pin_changed_holds "
+                                 "RENAME TO admin_pin_changed_holds_legacy")
+                conn.execute("""CREATE TABLE IF NOT EXISTS admin_pin_changed_holds (
+                    operation_key TEXT NOT NULL, target_id TEXT NOT NULL,
+                    source_path TEXT NOT NULL, archive_path TEXT NOT NULL,
+                    original_sha256 TEXT NOT NULL, changed_sha256 TEXT NOT NULL,
+                    file_kind TEXT NOT NULL, state TEXT NOT NULL,
+                    PRIMARY KEY(operation_key, file_kind, source_path)
+                )""")
+                if primary_key == ["operation_key"]:
+                    # Copy every state and evidence field in the same full-sync transaction.
+                    conn.execute("INSERT INTO admin_pin_changed_holds "
+                                 "SELECT * FROM admin_pin_changed_holds_legacy ORDER BY rowid")
+                    conn.execute("DROP TABLE admin_pin_changed_holds_legacy")
         return conn
 
     @writer_sink("label_admin_pin_file_move")
@@ -340,8 +353,9 @@ class AdminPinIntentStore:
                   original_sha256, changed_sha256, file_kind)
         with self._connect(initialize=True) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT * FROM admin_pin_changed_holds WHERE operation_key=?",
-                               (operation_key,)).fetchone()
+            row = conn.execute("""SELECT * FROM admin_pin_changed_holds
+                WHERE operation_key=? AND file_kind=? AND source_path=?""",
+                               (operation_key, file_kind, source_path)).fetchone()
             if row:
                 if tuple(row[name] for name in (
                         "operation_key", "target_id", "source_path", "archive_path",
@@ -350,19 +364,28 @@ class AdminPinIntentStore:
             else:
                 conn.execute("INSERT INTO admin_pin_changed_holds VALUES (?,?,?,?,?,?,?,?)",
                              (*values, "PREPARED"))
-        if self.changed_hold(operation_key) is None:
+        if self.changed_hold(operation_key, file_kind=file_kind, source_path=source_path) is None:
             raise AdminPinError("INTENT_UNVERIFIED", unknown=True)
 
-    def changed_hold(self, operation_key: str) -> dict[str, str] | None:
+    def changed_hold(self, operation_key: str, *, file_kind: str | None = None,
+                     source_path: str | None = None) -> dict[str, str] | None:
+        if (file_kind is None) != (source_path is None):
+            raise ValueError("file kind and source path must be selected together")
         if not self.path.exists():
             return None
         with self._connect() as conn:
             if not conn.execute("""SELECT 1 FROM sqlite_master WHERE type='table'
                 AND name='admin_pin_changed_holds'""").fetchone():
                 return None
-            row = conn.execute("SELECT * FROM admin_pin_changed_holds WHERE operation_key=?",
-                               (operation_key,)).fetchone()
-            return dict(row) if row else None
+            query = "SELECT * FROM admin_pin_changed_holds WHERE operation_key=?"
+            parameters = (operation_key,)
+            if file_kind is not None:
+                query += " AND file_kind=? AND source_path=?"
+                parameters += (file_kind, source_path)
+            rows = conn.execute(query, parameters).fetchall()
+            if len(rows) > 1:
+                raise AdminPinError("TARGET_CHANGED")
+            return dict(rows[0]) if rows else None
 
     def changed_holds(self) -> list[dict[str, str]]:
         if not self.path.exists():
@@ -375,16 +398,18 @@ class AdminPinIntentStore:
                 "SELECT * FROM admin_pin_changed_holds ORDER BY rowid")]
 
     @writer_sink("label_admin_pin_changed_hold_state")
-    def finish_changed_hold(self, operation_key: str, state: str) -> None:
+    def finish_changed_hold(self, operation_key: str, state: str, *,
+                            file_kind: str, source_path: str) -> None:
         if state not in {"QUARANTINED", "RESTORING", "RESTORED"}:
             raise ValueError("invalid changed hold state")
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             changed = conn.execute("""UPDATE admin_pin_changed_holds SET state=?
-                WHERE operation_key=?""", (state, operation_key))
+                WHERE operation_key=? AND file_kind=? AND source_path=?""",
+                                   (state, operation_key, file_kind, source_path))
             if changed.rowcount != 1:
                 raise AdminPinError("INTENT_MISSING", unknown=True)
-        if self.changed_hold(operation_key)["state"] != state:
+        if self.changed_hold(operation_key, file_kind=file_kind, source_path=source_path)["state"] != state:
             raise AdminPinError("INTENT_UNVERIFIED", unknown=True)
 
     def get(self, operation_key: str) -> dict[str, str] | None:

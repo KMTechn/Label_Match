@@ -7437,7 +7437,8 @@ class Label_Match(tk.Tk):
                 or self._read_package_recovery_file(archive)["raw"] != raw
                 or os.path.lexists(source)):
             return False
-        store.finish_changed_hold(row["operation_key"], "QUARANTINED")
+        store.finish_changed_hold(row["operation_key"], "QUARANTINED",
+                                  file_kind=row["file_kind"], source_path=row["source_path"])
         if intent["state"] not in {"APPLIED", "QUARANTINED_CHANGED"}:
             store.transition(row["operation_key"], "QUARANTINED_CHANGED",
                              error_code="TARGET_CHANGED_DURING_HOLD")
@@ -7455,7 +7456,8 @@ class Label_Match(tk.Tk):
             source_path=str(source), archive_path=str(archive),
             original_sha256=original_sha, changed_sha256=digest, file_kind=kind,
         )
-        return self._resume_changed_pin_hold(store.changed_hold(intent["operation_key"]))
+        return self._resume_changed_pin_hold(store.changed_hold(
+            intent["operation_key"], file_kind=kind, source_path=str(source)))
 
     def _package_pin_changed_hold_for_target(self, target_id):
         store = self.__dict__.get("_admin_pin_store")
@@ -7464,6 +7466,12 @@ class Label_Match(tk.Tk):
             if target_id == prefix + row["changed_sha256"]:
                 return row
         return None
+
+    def _package_pin_changed_restore_complete(self, row):
+        return (row["state"] == "RESTORED"
+                and not os.path.lexists(row["archive_path"])
+                and self._read_package_recovery_file(Path(row["source_path"]))["sha256"]
+                == row["changed_sha256"])
 
     @writer_sink("gui_package_pin_changed_restore")
     def _restore_changed_pin_file(self, target_id):
@@ -7487,14 +7495,18 @@ class Label_Match(tk.Tk):
             raw = self._read_package_recovery_file(archive)["raw"]
             if raw is None or hashlib.sha256(raw).hexdigest() != digest:
                 raise AdminPinError("TARGET_CHANGED")
-            self._admin_pin_store.finish_changed_hold(row["operation_key"], "RESTORING")
+            self._admin_pin_store.finish_changed_hold(
+                row["operation_key"], "RESTORING",
+                file_kind=row["file_kind"], source_path=row["source_path"])
             if not self._move_package_pin_file(
                     archive, source, raw, allowed_root=source.parent):
                 raise AdminPinError("TARGET_CHANGED")
         if (self._read_package_recovery_file(source)["sha256"] != digest
                 or os.path.lexists(archive)):
             raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
-        self._admin_pin_store.finish_changed_hold(row["operation_key"], "RESTORED")
+        self._admin_pin_store.finish_changed_hold(
+            row["operation_key"], "RESTORED",
+            file_kind=row["file_kind"], source_path=row["source_path"])
         self._audit_package_recovery_action(
             target_id, "RECHECK", self._package_recovery_manager(),
             "RESTORE_CHANGED_FILE:" + digest,
@@ -7546,10 +7558,12 @@ class Label_Match(tk.Tk):
                     or any(ch not in "0123456789abcdef" for ch in move["source_sha256"])):
                 return False
             if move["state"] == "RESTORED_CHANGED":
-                changed_hold = store.changed_hold(intent["operation_key"])
-                if (changed_hold and changed_hold["state"] == "QUARANTINED"
-                        and changed_hold["source_path"] == str(source)
-                        and not os.path.lexists(source)):
+                changed_hold = store.changed_hold(
+                    intent["operation_key"], file_kind="current" if source == current else "journal",
+                    source_path=str(source))
+                if (changed_hold and (changed_hold["state"] in {"RESTORING", "RESTORED"}
+                        or (changed_hold["state"] == "QUARANTINED"
+                            and not os.path.lexists(source)))):
                     changed_seen = True
                     continue
                 active = self._read_package_recovery_file(source) if os.path.lexists(source) else {}
@@ -7778,7 +7792,7 @@ class Label_Match(tk.Tk):
             if original_id in rows:
                 rows[original_id]["prior_pin_unknown"] = True
         for changed in store.changed_holds() if store is not None else ():
-            if changed["state"] == "RESTORED":
+            if self._package_pin_changed_restore_complete(changed):
                 continue
             prefix = "CURRENT:" if changed["file_kind"] == "current" else "F5:"
             target_id = prefix + changed["changed_sha256"]
@@ -7787,7 +7801,8 @@ class Label_Match(tk.Tk):
                 "exchange": None, "held": outbox.get_workbench_hold(target_id),
             })
             row["changed_hold"] = changed
-            row["unverified"] = "TARGET_CHANGED_DURING_HOLD"
+            row["unverified"] = ("RESTORED_FILE_UNVERIFIED" if changed["state"] == "RESTORED"
+                                 else "TARGET_CHANGED_DURING_HOLD")
         # A held file with no durable move/hold record must remain visible;
         # never infer that it is safe to remove from its filename alone.
         known_archives = {row["archive_path"] for row in store.all_file_moves()} if store else set()
@@ -7901,6 +7916,10 @@ class Label_Match(tk.Tk):
                 if (not valid_recovery_archive_path(str(archive), hold_id)
                         or archive != expected_archive):
                     raise PackageLogisticsError("held journal archive path differs")
+                if changed_hold and changed_hold["state"] == "RESTORED":
+                    if not self._package_pin_changed_restore_complete(changed_hold):
+                        raise PackageLogisticsError("restored journal readback differs")
+                    continue  # The manager released this file; keep its hold/audit as evidence.
                 linked_set_id = str(hold["set_id"] or "")
                 if linked_set_id and not outbox.get_workbench_hold(linked_set_id):
                     # A crash can occur after the journal hold but before the
