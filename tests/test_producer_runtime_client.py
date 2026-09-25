@@ -1987,3 +1987,362 @@ def test_row_preparation_after_dead_renewal_attaches_the_next_fence(tmp_path):
     assert server.calls[-2] == renewal and server.audit == [("STALE_RUNTIME_FENCE", 1)]
     row = _authority_row(db_path)
     assert (row["status"], row["assigned_relay_id"]) == ("ACTIVE", "relay-a")
+
+
+class _DataPathServer(_FencedLeaseServer):
+    """Adds the Web source-file consume rules one relay drain meets.
+
+    A live fence and token are consumed and rotated. In observe mode a dead
+    fence (or a spent token) still commits the exact source and answers
+    observed_rejected with its reason; the exact body again returns the
+    stored receipt; the same source under another fence is
+    409 idempotency_conflict. Enforce refuses a dead fence uncommitted.
+    The clock follows the real one because the relay drain reads it.
+    """
+
+    def __init__(self, *, mode: str = "observe"):
+        super().__init__()
+        self.T0 = datetime.now(UTC).replace(microsecond=0)
+        self.now = self.T0
+        self.mode = mode
+        self.stored = {}
+        self.source_calls = []
+        self.lose_source_ack = False
+        self.receipt_mutation = None
+
+    def post(self, url, **kwargs):
+        if str(url).endswith(runtime_client.ENDPOINT_PATH):
+            return super().post(url, **kwargs)
+        uploaded = json.loads(kwargs["data"]["metadata"])
+        self.source_calls.append(uploaded)
+        if self.down:
+            raise ConnectionError("simulated outage")
+        status, payload = self._consume(uploaded)
+        if self.lose_source_ack:
+            raise ConnectionError("simulated lost source ACK after the server committed")
+        return _Response(status, json.loads(json.dumps(payload)), {})
+
+    def _consume(self, uploaded):
+        batch = uploaded["client_batch_id"]
+        if batch in self.stored:
+            body, receipt = self.stored[batch]
+            if body == uploaded:
+                return 200, receipt
+            return 409, {
+                "committed": False,
+                "retryable": False,
+                "status": "rejected",
+                "error": {"code": "idempotency_conflict", "message": "source already committed"},
+            }
+        for lease in self.leases:
+            if lease["status"] == "ACTIVE" and lease["expires_at"] <= self.now:
+                lease["status"] = "EXPIRED"
+        active = next((row for row in self.leases if row["status"] == "ACTIVE"), None)
+        if active is None or active["fence"] != uploaded["runtime_fence"]:
+            code = "STALE_RUNTIME_FENCE"
+        elif (active["sequence"], active["token"]) != (
+            uploaded["runtime_request_sequence"], uploaded["runtime_request_token"]
+        ):
+            code = "STALE_RUNTIME_REQUEST_TOKEN"
+        else:
+            code = ""
+        if code:
+            self.audit.append((code, uploaded["runtime_fence"]))
+            if self.mode == "enforce":
+                return 409, {
+                    "committed": False,
+                    "retryable": False,
+                    "status": "operator_review",
+                    "error": {"code": code, "message": "runtime request refused"},
+                }
+            runtime = {
+                "contract_version": runtime_client.CONTRACT_VERSION,
+                "validation_status": "observed_rejected",
+                "reason_code": code,
+            }
+        else:
+            active["sequence"] += 1
+            active["token"] = f"fenced{active['fence']}x{active['sequence']:04d}" + "y" * 32
+            runtime = {
+                "contract_version": runtime_client.CONTRACT_VERSION,
+                "validation_status": "consumed",
+                "lease_id": f"lease-fence-{active['fence']}",
+                "fence": active["fence"],
+                "next_request_token": active["token"],
+                "next_request_sequence": active["sequence"],
+                "expires_at": active["expires_at"].isoformat().replace("+00:00", "Z"),
+            }
+        receipt = {
+            "request_id": f"request-{batch}",
+            "upload_id": f"request-{batch}",
+            "producer_install_id": "install-test",
+            "client_batch_id": batch,
+            "server_source_file_id": (
+                f"{uploaded['source_host_id']}/{uploaded['producer_role']}/"
+                f"{uploaded['stream_name']}/{uploaded['relative_path']}"
+            ),
+            "committed": True,
+            "status": "accepted",
+            "projection_disposition": "COMPLETE",
+            "retryable": False,
+            "next_retry_after": None,
+            "totals": {"inserted": uploaded["row_count"], "replayed": 0, "quarantined": 0, "errors": 0},
+            "runtime_lease": runtime,
+        }
+        if self.receipt_mutation is not None:
+            self.receipt_mutation(receipt)
+        self.stored[batch] = (uploaded, receipt)
+        return 200, receipt
+
+
+def _data_path_cycle(db_path: Path, server: _DataPathServer, seconds: int, tmp_path: Path, *, mode="observe"):
+    """One relay tick as the runtime runs it: liveness first, drain only when it passes."""
+
+    credentials = _credentials(runtime_lease_mode=mode)
+    live = runtime_client.ensure_runtime_authority(
+        db_path=db_path,
+        credentials=credentials,
+        producer_install_id="install-test",
+        session=server,
+        now=server.at(seconds),
+        ttl_seconds=900,
+    )
+    if live.error_code:
+        return live, None
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE direct_sync_relay_batches SET next_attempt_at='2000-01-01T00:00:00Z' "
+            "WHERE status='retry_wait'"
+        )
+    return live, direct_sync_push.drain_one_relay_batch(
+        db_path=db_path,
+        credentials=credentials,
+        session=server,
+        status_dir=tmp_path / "status",
+        timeout=5,
+    )
+
+
+def _dead_fence_outage(
+    db_path: Path, server: _DataPathServer, tmp_path: Path, *, ticks=(400, 800, 930), mode="observe",
+    lose_ack=False,
+) -> None:
+    """Fence 1; relay-a binds it at t=10 and its source POST fails; the outage runs through the ticks."""
+
+    init_relay_queue_schema(db_path)
+    live, drained = _data_path_cycle(db_path, server, 0, tmp_path, mode=mode)
+    assert live.receipt["fence"] == 1 and drained is None
+    _make_pending_relay(db_path, tmp_path, "relay-a")
+    server.lose_source_ack = lose_ack
+    server.down = not lose_ack
+    assert _data_path_cycle(db_path, server, 10, tmp_path, mode=mode)[1].retryable is True
+    server.lose_source_ack = False
+    server.down = True
+    for seconds in ticks:
+        live, drained = _data_path_cycle(db_path, server, seconds, tmp_path, mode=mode)
+        assert live.error_code == "" and drained.retryable is True
+    server.down = False
+    assert _authority_row(db_path)["assigned_relay_id"] == "relay-a"
+
+
+def _relay_rows(db_path: Path) -> dict:
+    with sqlite3.connect(db_path) as connection:
+        return {
+            relay_id: (status, last_error_code or "")
+            for relay_id, status, last_error_code in connection.execute(
+                "SELECT relay_id, status, last_error_code FROM direct_sync_relay_batches"
+            )
+        }
+
+
+def test_committed_dead_fence_upload_acks_and_the_next_fence_carries_the_next_row(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path)
+    old_runtime_id = _authority_row(db_path)["runtime_instance_id"]
+
+    _, recovered = _data_path_cycle(db_path, server, 960, tmp_path)
+    reissued, idle = _data_path_cycle(db_path, server, 990, tmp_path)
+    _make_pending_relay(db_path, tmp_path, "relay-b")
+    _, next_row = _data_path_cycle(db_path, server, 1000, tmp_path)
+
+    assert recovered.success is True and recovered.committed is True
+    assert reissued.receipt["fence"] == 2 and idle is None
+    assert next_row.success is True
+    assert {relay: row[0] for relay, row in _relay_rows(db_path).items()} == {
+        "relay-a": "acked", "relay-b": "acked"
+    }
+    assert sorted(server.stored) == ["relay-a", "relay-b"]
+    assert {call["runtime_fence"] for call in server.source_calls if call["client_batch_id"] == "relay-a"} == {1}
+    assert server.stored["relay-b"][0]["runtime_fence"] == 2
+    assert server.audit == [("STALE_RUNTIME_FENCE", 1)]
+    assert [lease["status"] for lease in server.leases] == ["EXPIRED", "ACTIVE"]
+    row = _authority_row(db_path)
+    assert (row["status"], row["fence"], row["assigned_relay_id"]) == ("ACTIVE", 2, None)
+    assert row["runtime_instance_id"] != old_runtime_id
+    with sqlite3.connect(db_path) as connection:
+        metadata_json, receipt_json = connection.execute(
+            "SELECT metadata_json, receipt_json FROM direct_sync_relay_batches WHERE relay_id='relay-a'"
+        ).fetchone()
+    assert "runtime_request_token" not in json.loads(metadata_json)
+    assert json.loads(receipt_json)["_local_runtime_lease_status"] == "dead_fence"
+
+
+def test_data_path_recovery_before_expiry_consumes_the_same_fence(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path, ticks=(100, 200))
+
+    _, recovered = _data_path_cycle(db_path, server, 300, tmp_path)
+    _make_pending_relay(db_path, tmp_path, "relay-b")
+    _, next_row = _data_path_cycle(db_path, server, 320, tmp_path)
+
+    assert recovered.success is True and next_row.success is True
+    assert server.audit == [] and len(server.leases) == 1
+    assert [server.stored[relay][0]["runtime_request_sequence"] for relay in ("relay-a", "relay-b")] == [1, 2]
+    assert _authority_row(db_path)["fence"] == 1
+
+
+def test_lost_source_ack_through_the_outage_replays_the_stored_receipt(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path, lose_ack=True)
+
+    _, replayed = _data_path_cycle(db_path, server, 960, tmp_path)
+    reissued, _ = _data_path_cycle(db_path, server, 990, tmp_path)
+    _make_pending_relay(db_path, tmp_path, "relay-b")
+    _, next_row = _data_path_cycle(db_path, server, 1000, tmp_path)
+
+    assert replayed.success is True and reissued.receipt["fence"] == 2 and next_row.success is True
+    assert server.audit == []
+    relay_a_calls = [call for call in server.source_calls if call["client_batch_id"] == "relay-a"]
+    assert len(relay_a_calls) == 5 and all(call == relay_a_calls[0] for call in relay_a_calls)
+    assert {relay: row[0] for relay, row in _relay_rows(db_path).items()} == {
+        "relay-a": "acked", "relay-b": "acked"
+    }
+
+
+def test_live_clone_keeps_its_fence_after_the_dead_fence_release(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path)
+    server.at(940)
+    clone_id, clone_jwk = runtime_client.new_runtime_identity()
+    status, clone_grant = server.acquire({
+        "runtime_instance_id": clone_id,
+        "public_jwk": clone_jwk,
+        "issue_idempotency_key": "clone-issue",
+        "ttl_seconds": 900,
+    })
+    assert (status, clone_grant["fence"]) == (200, 2)
+
+    _, recovered = _data_path_cycle(db_path, server, 960, tmp_path)
+    refused, skipped = _data_path_cycle(db_path, server, 990, tmp_path)
+    _make_pending_relay(db_path, tmp_path, "relay-b")
+    still_refused, still_skipped = _data_path_cycle(db_path, server, 1000, tmp_path)
+
+    assert recovered.success is True
+    assert refused.error_code == still_refused.error_code == "EXACT_CLONE_RUNTIME_CONFLICT"
+    assert skipped is None and still_skipped is None
+    assert server.active_fence() == 2 and server.leases[-1]["identity"][0] == clone_id
+    assert len(server.leases) == 2
+    assert "relay-b" not in {call["client_batch_id"] for call in server.source_calls}
+    rows = _relay_rows(db_path)
+    assert (rows["relay-a"][0], rows["relay-b"][0]) == ("acked", "pending")
+    assert _authority_row(db_path)["status"] == "OPERATOR_REVIEW"
+
+
+def test_observed_stale_token_upload_stays_in_operator_review(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path, ticks=(100,))
+    server.leases[0]["token"] = "clone" + "z" * 38  # a database clone spent relay-a's token
+
+    _, result = _data_path_cycle(db_path, server, 300, tmp_path)
+
+    assert result.committed is True and result.success is False
+    assert result.error_code == "STALE_RUNTIME_REQUEST_TOKEN"
+    assert _relay_rows(db_path)["relay-a"] == ("operator_review", "STALE_RUNTIME_REQUEST_TOKEN")
+    row = _authority_row(db_path)
+    assert (row["status"], row["assigned_relay_id"]) == ("OPERATOR_REVIEW", None)
+    assert _data_path_cycle(db_path, server, 320, tmp_path)[0].operator_review is True
+    assert len(server.leases) == 1 and server.audit == [("STALE_RUNTIME_REQUEST_TOKEN", 1)]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda receipt: receipt["totals"].update(inserted=1),
+        lambda receipt: receipt.update(server_source_file_id="host-other/role/stream/other.csv"),
+        lambda receipt: receipt["runtime_lease"].update(contract_version="producer-runtime-lease.v0"),
+    ],
+    ids=["totals", "identity", "contract-version"],
+)
+def test_dead_fence_receipt_that_fails_verification_stays_in_review(tmp_path, mutation):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path)
+    server.receipt_mutation = mutation
+
+    _, result = _data_path_cycle(db_path, server, 960, tmp_path)
+
+    assert result.committed is True and result.success is False
+    assert _relay_rows(db_path)["relay-a"][0] == "operator_review"
+    row = _authority_row(db_path)
+    assert (row["status"], row["assigned_relay_id"]) == ("OPERATOR_REVIEW", None)
+    assert _data_path_cycle(db_path, server, 990, tmp_path)[0].operator_review is True
+    assert len(server.leases) == 1
+
+
+@pytest.mark.parametrize(
+    "authority_change",
+    [
+        "UPDATE direct_sync_runtime_authority SET assigned_relay_id=NULL",
+        "UPDATE direct_sync_runtime_authority SET fence=fence+1",
+    ],
+    ids=["released", "other-fence"],
+)
+def test_dead_fence_release_requires_the_row_to_still_hold_that_fence(tmp_path, authority_change):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(authority_change)
+        connection.execute("UPDATE direct_sync_relay_batches SET next_attempt_at='2000-01-01T00:00:00Z'")
+    server.at(960)
+
+    result = direct_sync_push.drain_one_relay_batch(
+        db_path=db_path,
+        credentials=_credentials(runtime_lease_mode="observe"),
+        session=server,
+        status_dir=tmp_path / "status",
+        timeout=5,
+    )
+
+    assert result.committed is True and result.success is False
+    assert result.error_code == "STALE_RUNTIME_FENCE"
+    with sqlite3.connect(db_path) as connection:
+        status, error_code, receipt_json = connection.execute(
+            "SELECT status, last_error_code, receipt_json FROM direct_sync_relay_batches "
+            "WHERE relay_id='relay-a'"
+        ).fetchone()
+    assert (status, error_code) == ("operator_review", "STALE_RUNTIME_FENCE")
+    assert "_local_runtime_lease_status" not in json.loads(receipt_json)
+    row = _authority_row(db_path)
+    assert (row["status"], row["last_error_code"], row["assigned_relay_id"]) == (
+        "OPERATOR_REVIEW", "STALE_RUNTIME_FENCE", None
+    )
+    assert list(server.stored) == ["relay-a"] and len(server.leases) == 1
+
+
+def test_enforce_refuses_the_dead_fence_uncommitted_and_stays_in_review(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer(mode="enforce")
+    _dead_fence_outage(db_path, server, tmp_path, mode="enforce")
+
+    _, result = _data_path_cycle(db_path, server, 960, tmp_path, mode="enforce")
+
+    assert result.committed is False and result.error_code == "STALE_RUNTIME_FENCE"
+    assert _relay_rows(db_path)["relay-a"] == ("operator_review", "STALE_RUNTIME_FENCE")
+    assert server.stored == {}
+    assert _authority_row(db_path)["status"] == "OPERATOR_REVIEW"

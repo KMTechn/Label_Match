@@ -1150,3 +1150,42 @@ def disable_runtime_authority_in_transaction(
         now=now,
         new_runtime_identity=new_runtime_identity,
     )
+
+
+def expire_dead_fence_authority_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    relay_id: str,
+    metadata: Mapping[str, Any],
+    now: str,
+) -> bool:
+    """Release the authority a committed dead-fence upload still holds.
+
+    A committed observe receipt with STALE_RUNTIME_FENCE stored the exact
+    source; the server's answer means fence N is not ACTIVE and never will
+    be again. Only an ACTIVE authority bound to this row with the uploaded
+    identity and fence takes the ordinary expiry transition (new identity,
+    proof-less issue; a live clone is refused with EXACT_CLONE_RUNTIME_CONFLICT).
+    Any other state returns False and the caller keeps operator review.
+    """
+    if not conn.in_transaction:
+        raise RuntimeError("dead fence release requires an open transaction")
+    if _metadata_shape_error(metadata) or not all(
+        field_name in metadata for field_name in METADATA_FIELDS
+    ):
+        return False
+    state = conn.execute(
+        "SELECT * FROM direct_sync_runtime_authority WHERE assigned_relay_id=?",
+        (relay_id,),
+    ).fetchone()
+    if (
+        state is None
+        or str(state["status"] or "") != "ACTIVE"
+        or str(state["runtime_instance_id"]) != str(metadata["runtime_instance_id"])
+        or canonical_json(json.loads(str(state["runtime_public_jwk_json"])))
+        != canonical_json(metadata["runtime_public_jwk"])
+        or int(state["fence"] or 0) != int(metadata["runtime_fence"])
+    ):
+        return False
+    _replace_expired_identity(conn, state, now)
+    return True
