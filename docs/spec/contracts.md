@@ -36,6 +36,11 @@ core는 connection이나 commit/rollback을 소유하지 않는다. 실제 relay
 
 W5-S0의 scope facade·ensure·prepare는 같은 credentials/install 식을 named 인자로 전달하고, profile/legacy factory는 기존 `PackageClientConfig`를 `config=config`로 전달한다. signature·positional 호출·기본값·profile 선택/검증 순서는 유지한다. runtime DB의 endpoint/producer/key/install 해시는 물류 authority scope와 별개이며, 새 관리 필드·scope migration·queued metadata/command/receipt/HMAC 재작성은 없다. [전후 parity](operations.md#named-context-w5s0)를 따른다.
 
+<a id="lm-lease-dead-renewal"></a>
+## runtime lease 격리 자동 회복 · 2026-09-25
+
+저장된 갱신 요청(pending, `runtime_fence` 포함)을 같은 issue key로 다시 보내 `STALE_RUNTIME_FENCE`를 받으면 그 fence는 다시 ACTIVE가 되지 않는다는 서버의 확정 답이다. relay 행에 묶인 권한(`assigned_relay_id`)이 없으면 `ensure_runtime_authority`와 `prepare_runtime_metadata` 모두 기존 만료 전이(`_replace_expired_identity`: 새 runtime 신원·새 key의 증명 없는 발급)로 같은 주기에 다시 요청한다. 교정 전 판본이 남긴 같은 조건의 `OPERATOR_REVIEW`도 첫 주기에 풀린다. fence 번호(max+1)와 살아 있는 복제본의 `EXACT_CLONE_RUNTIME_CONFLICT` 거절은 서버가 정하며, 응답을 잃은 갱신은 같은 key 재전송이 저장된 grant를 돌려받는다. `STALE_RUNTIME_REQUEST_TOKEN`·복제본 충돌·묶인 행과 아래의 committed 자료 경로 검토는 자동으로 풀지 않는다. 포장 작업자 화면에는 relay 전송 상태 표시가 없어 이번 교정은 화면을 바꾸지 않았다([LM-W9-LEASE-SCREEN](BACKLOG.md#lm-w9-lease-screen)). 서버 계약·`kmtech_shared.runtime`은 바꾸지 않는다. [producer_runtime_client](../../producer_runtime_client.py)
+
 ## Committed stale-runtime review의 명시적 복구 · 2026-09-12
 
 기존 `ack-reviewed --recover-expired-runtime`만 독립 검토된 committed `STALE_RUNTIME_FENCE` 수신의 local ACK와 만료 authority 재개를 같은 SQLite transaction에서 처리한다. 기존 source/request/hash/byte/count·receipt 검증을 유지하고 실제 보존 spool도 대조한다. 단일 authority의 scope/install·runtime ID·fence·lease ID·expiry와 terminal public key/token audit digest를 결속하며, future expiry·다른 review 원인·assignment/pending/token·다른 미종결 runtime-bound row가 있으면 변경 없이 거부한다. 현재 producer credential·원 relay/metadata/spool/receipt는 바꾸지 않는다.

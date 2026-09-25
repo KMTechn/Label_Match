@@ -64,6 +64,7 @@ _COORDINATE_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 _DEFAULT_TTL_SECONDS = 15 * 60
 _MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
 _BUSY_TIMEOUT_MS = 30000
+DEAD_RENEWAL_CODE = "STALE_RUNTIME_FENCE"
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,26 @@ def _replace_expired_identity(
     )
 
 
+def _dead_renewal_review(state: sqlite3.Row) -> bool:
+    """Whether the stored review is a renewal the server refused as expired.
+
+    STALE_RUNTIME_FENCE on the pending renewal is the server's final answer
+    that its fence is no longer ACTIVE; a new issue gets fence max+1 and the
+    server still refuses a live clone. Only an authority no relay row holds
+    takes the ordinary expiry transition.
+    """
+
+    if (
+        str(state["status"] or "") != "OPERATOR_REVIEW"
+        or str(state["last_error_code"] or "") != DEAD_RENEWAL_CODE
+        or state["assigned_relay_id"]
+        or not state["pending_request_json"]
+    ):
+        return False
+    pending = json.loads(str(state["pending_request_json"]))
+    return isinstance(pending, dict) and "runtime_fence" in pending
+
+
 def _lease_request_value(state: sqlite3.Row, ttl_seconds: int) -> Dict[str, Any]:
     return _runtime_core._lease_request_value(state, ttl_seconds)
 
@@ -419,6 +440,8 @@ def ensure_runtime_authority(
                             "request_sent": False,
                         }
                     )
+                state = _replace_expired_identity(conn, state, now_text)
+            if _dead_renewal_review(state):
                 state = _replace_expired_identity(conn, state, now_text)
             if str(state["status"] or "") == "OPERATOR_REVIEW":
                 code = str(state["last_error_code"] or "runtime_authority_operator_review")
@@ -535,6 +558,12 @@ def ensure_runtime_authority(
                     conn.commit()
                 finally:
                     conn.close()
+            if (
+                request_error.error_code == DEAD_RENEWAL_CODE
+                and "runtime_fence" in request_value
+            ):
+                # The next pass releases this review with a fresh identity.
+                continue
             return request_error
         assert grant is not None
         conn = _connect(db_path)
@@ -713,6 +742,8 @@ def prepare_runtime_metadata(
                     conn.commit()
                     return RuntimePreparation(metadata=live_metadata)
                 state = _replace_expired_identity(conn, state, now_text)
+            if _dead_renewal_review(state):
+                state = _replace_expired_identity(conn, state, now_text)
             if str(state["status"] or "") == "OPERATOR_REVIEW":
                 code = str(state["last_error_code"] or "runtime_authority_operator_review")
                 conn.rollback()
@@ -861,6 +892,12 @@ def prepare_runtime_metadata(
                     conn.commit()
                 finally:
                     conn.close()
+            if (
+                request_error.error_code == DEAD_RENEWAL_CODE
+                and "runtime_fence" in request_value
+            ):
+                # The next pass releases this review with a fresh identity.
+                continue
             return request_error
         assert grant is not None
         conn = _connect(db_path)

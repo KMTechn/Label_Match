@@ -1707,3 +1707,283 @@ def test_cloned_relay_databases_get_one_server_commit_and_one_stale_token(tmp_pa
                 connection.commit()
                 outcomes.append("accepted")
     assert outcomes == ["accepted", STALE_RUNTIME_REQUEST_TOKEN]
+
+
+def _authority_row(db_path: Path) -> sqlite3.Row:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT * FROM direct_sync_runtime_authority").fetchone()
+    assert row is not None
+    return row
+
+
+class _FencedLeaseServer:
+    """Expiry, fence and issue-key anchors of the Web runtime-lease service.
+
+    A renewal whose fence is no longer ACTIVE is refused with
+    STALE_RUNTIME_FENCE and that answer is anchored to its issue key; a
+    proof-less issue gets max(fence)+1 unless another runtime identity still
+    holds an ACTIVE lease (EXACT_CLONE_RUNTIME_CONFLICT).
+    """
+
+    T0 = datetime(2026, 9, 25, 0, 0, tzinfo=UTC)
+
+    def __init__(self):
+        self.now = self.T0
+        self.leases = []
+        self.anchors = {}
+        self.audit = []
+        self.calls = []
+        self.down = False
+        self.lose_ack = False
+
+    def at(self, seconds: int) -> str:
+        self.now = self.T0 + timedelta(seconds=seconds)
+        return self.now.isoformat().replace("+00:00", "Z")
+
+    def _refuse(self, key, code, fence):
+        self.audit.append((code, fence))
+        self.anchors[key] = (409, {
+            "committed": False,
+            "retryable": False,
+            "status": "operator_review",
+            "error": {"code": code, "message": "runtime lease request refused"},
+            "operator_review": {"required": True, "reason_code": code},
+        })
+        return self.anchors[key]
+
+    def acquire(self, body):
+        key = body["issue_idempotency_key"]
+        if key in self.anchors:
+            return self.anchors[key]
+        for lease in self.leases:
+            if lease["status"] == "ACTIVE" and lease["expires_at"] <= self.now:
+                lease["status"] = "EXPIRED"
+        active = next((row for row in self.leases if row["status"] == "ACTIVE"), None)
+        identity = (body["runtime_instance_id"], runtime_client._jwk_thumbprint(body["public_jwk"]))
+        same_identity = active is not None and active["identity"] == identity
+        if "runtime_fence" in body:
+            if not same_identity or active["fence"] != body["runtime_fence"]:
+                return self._refuse(key, "STALE_RUNTIME_FENCE", body["runtime_fence"])
+            if (active["sequence"], active["token"]) != (
+                body["runtime_request_sequence"], body["runtime_request_token"]
+            ):
+                return self._refuse(key, "STALE_RUNTIME_REQUEST_TOKEN", active["fence"])
+            lease, operation = active, "renewed"
+            lease["sequence"] += 1
+        elif active is not None:
+            code = "RUNTIME_RENEWAL_PROOF_REQUIRED" if same_identity else "EXACT_CLONE_RUNTIME_CONFLICT"
+            return self._refuse(key, code, active["fence"])
+        else:
+            lease = {
+                "fence": max((row["fence"] for row in self.leases), default=0) + 1,
+                "identity": identity,
+                "status": "ACTIVE",
+                "sequence": 1,
+            }
+            self.leases.append(lease)
+            operation = "issued"
+        lease["token"] = f"fenced{lease['fence']}x{lease['sequence']:04d}" + "y" * 32
+        lease["expires_at"] = self.now + timedelta(seconds=body["ttl_seconds"])
+        self.anchors[key] = (200, {
+            "ok": True,
+            "status": "ACTIVE",
+            "contract_version": runtime_client.CONTRACT_VERSION,
+            "operation": operation,
+            "lease_id": f"lease-fence-{lease['fence']}",
+            "producer_install_id": "install-test",
+            "runtime_instance_id": identity[0],
+            "public_jwk_thumbprint": identity[1],
+            "issue_idempotency_key": key,
+            "fence": lease["fence"],
+            "issued_at": self.now.isoformat().replace("+00:00", "Z"),
+            "expires_at": lease["expires_at"].isoformat().replace("+00:00", "Z"),
+            "next_request_token": lease["token"],
+            "next_request_sequence": lease["sequence"],
+        })
+        return self.anchors[key]
+
+    def post(self, url, **kwargs):
+        assert str(url).endswith(runtime_client.ENDPOINT_PATH)
+        body = json.loads(bytes(kwargs["data"]).decode("utf-8"))
+        self.calls.append(body)
+        if self.down:
+            raise ConnectionError("simulated outage")
+        status, payload = self.acquire(body)
+        if self.lose_ack:
+            raise ConnectionError("simulated lost ACK after the server committed")
+        return _Response(status, payload, {})
+
+    def active_fence(self):
+        return next(
+            (row["fence"] for row in self.leases
+             if row["status"] == "ACTIVE" and row["expires_at"] > self.now),
+            None,
+        )
+
+
+def _liveness(db_path: Path, server: _FencedLeaseServer, seconds: int):
+    return runtime_client.ensure_runtime_authority(
+        db_path=db_path,
+        credentials=_credentials(),
+        producer_install_id="install-test",
+        session=server,
+        now=server.at(seconds),
+        ttl_seconds=900,
+    )
+
+
+def _renewal_pending_through_outage(db_path: Path, server: _FencedLeaseServer, ticks) -> dict:
+    """Issue fence 1, then tick the relay while the server is unreachable."""
+
+    issued = _liveness(db_path, server, 0)
+    assert issued.error_code == "" and issued.receipt["fence"] == 1
+    server.down = True
+    for seconds in ticks:
+        assert _liveness(db_path, server, seconds).operator_review is False
+    server.down = False
+    renewal = server.calls[-1]
+    assert renewal["runtime_fence"] == 1
+    assert _authority_row(db_path)["pending_issue_idempotency_key"] == renewal["issue_idempotency_key"]
+    return renewal
+
+
+@pytest.mark.parametrize(
+    "outage_ticks",
+    [(800,), (100, 400, 790, 820, 880, 930)],
+    ids=["renewal-window-outage", "outage-longer-than-ttl"],
+)
+def test_dead_renewal_after_outage_reissues_next_fence(tmp_path, outage_ticks):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _FencedLeaseServer()
+    renewal = _renewal_pending_through_outage(db_path, server, outage_ticks)
+    old_runtime_id = renewal["runtime_instance_id"]
+
+    recovered = _liveness(db_path, server, 960)
+
+    assert recovered.error_code == ""
+    assert recovered.receipt["fence"] == 2
+    assert recovered.receipt["runtime_instance_id"] != old_runtime_id
+    assert server.active_fence() == 2
+    assert server.audit == [("STALE_RUNTIME_FENCE", 1)]
+    replay, issue = server.calls[-2:]
+    assert replay == renewal
+    assert "runtime_fence" not in issue and "runtime_request_token" not in issue
+    row = _authority_row(db_path)
+    assert (row["status"], row["fence"], row["pending_request_json"]) == ("ACTIVE", 2, None)
+    assert _liveness(db_path, server, 1000).receipt["request_sent"] is False
+
+
+def test_lost_renewal_ack_replays_same_key_without_reissue(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _FencedLeaseServer()
+    assert _liveness(db_path, server, 0).receipt["fence"] == 1
+    server.lose_ack = True
+    assert _liveness(db_path, server, 800).retryable is True
+    server.lose_ack = False
+    renewal = server.calls[-1]
+
+    replayed = _liveness(db_path, server, 960)
+
+    assert replayed.error_code == ""
+    assert replayed.receipt["fence"] == 1
+    assert server.calls[-1] == renewal
+    assert len(server.leases) == 1 and server.audit == []
+    assert _authority_row(db_path)["status"] == "ACTIVE"
+
+
+def test_live_clone_is_not_displaced_by_dead_renewal_recovery(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _FencedLeaseServer()
+    _renewal_pending_through_outage(db_path, server, (800,))
+    server.at(930)
+    clone_id, clone_jwk = runtime_client.new_runtime_identity()
+    status, clone_grant = server.acquire({
+        "runtime_instance_id": clone_id,
+        "public_jwk": clone_jwk,
+        "issue_idempotency_key": "clone-issue",
+        "ttl_seconds": 900,
+    })
+    assert (status, clone_grant["fence"]) == (200, 2)
+
+    result = _liveness(db_path, server, 960)
+
+    assert result.operator_review is True
+    assert result.error_code == "EXACT_CLONE_RUNTIME_CONFLICT"
+    assert server.active_fence() == 2
+    assert server.leases[-1]["identity"][0] == clone_id
+    assert _authority_row(db_path)["status"] == "OPERATOR_REVIEW"
+
+
+def _stuck_pre_upgrade_review(db_path: Path, server: _FencedLeaseServer) -> dict:
+    """The state the previous client stored after the server refused its renewal."""
+
+    renewal = _renewal_pending_through_outage(db_path, server, (800,))
+    server.at(960)
+    assert server.acquire(renewal)[1]["error"]["code"] == "STALE_RUNTIME_FENCE"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE direct_sync_runtime_authority "
+            "SET status='OPERATOR_REVIEW', last_error_code='STALE_RUNTIME_FENCE', updated_at=?",
+            ("2026-09-25T00:16:00Z",),
+        )
+    return renewal
+
+
+def test_pre_upgrade_stale_renewal_review_recovers_on_first_cycle(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _FencedLeaseServer()
+    _stuck_pre_upgrade_review(db_path, server)
+    sent_before = len(server.calls)
+
+    recovered = _liveness(db_path, server, 990)
+
+    assert recovered.error_code == ""
+    assert recovered.receipt["fence"] == 2
+    assert len(server.calls) == sent_before + 1
+    assert "runtime_fence" not in server.calls[-1]
+    assert _authority_row(db_path)["status"] == "ACTIVE"
+
+
+def test_stale_renewal_review_bound_to_a_relay_row_stays_fail_closed(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _FencedLeaseServer()
+    _stuck_pre_upgrade_review(db_path, server)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("UPDATE direct_sync_runtime_authority SET assigned_relay_id='relay-bound'")
+    before = dict(_authority_row(db_path))
+    sent_before = len(server.calls)
+
+    result = _liveness(db_path, server, 990)
+
+    assert result.operator_review is True
+    assert result.error_code == "STALE_RUNTIME_FENCE"
+    assert len(server.calls) == sent_before
+    assert dict(_authority_row(db_path)) == before
+
+
+def test_row_preparation_after_dead_renewal_attaches_the_next_fence(tmp_path):
+    db_path = tmp_path / "relay.sqlite3"
+    server = _FencedLeaseServer()
+    renewal = _renewal_pending_through_outage(db_path, server, (800,))
+    _insert_claimed_row(db_path, "relay-a")
+
+    prepared = runtime_client.prepare_runtime_metadata(
+        db_path=db_path,
+        relay_id="relay-a",
+        metadata=_metadata("relay-a"),
+        credentials=_credentials(),
+        expected_lease_owner="worker",
+        expected_attempt_count=1,
+        session=server,
+        timeout=5,
+        now=server.at(960),
+        ttl_seconds=900,
+    )
+
+    assert prepared.metadata is not None
+    assert prepared.metadata["runtime_fence"] == 2
+    assert prepared.metadata["runtime_instance_id"] != renewal["runtime_instance_id"]
+    assert server.calls[-2] == renewal and server.audit == [("STALE_RUNTIME_FENCE", 1)]
+    row = _authority_row(db_path)
+    assert (row["status"], row["assigned_relay_id"]) == ("ACTIVE", "relay-a")

@@ -1,5 +1,10 @@
 # Label_Match 진행·공백·추가 제안
 
+<a id="lm-w9-lease-screen"></a>
+## W9 · runtime lease 격리 자동 회복 이후 (w9calmleasefix)
+
+갱신 거절(`STALE_RUNTIME_FENCE`)의 자동 회복은 소스·격리 시험과 Web 362ae46 lease 서비스 재현으로 확인했다([계약](contracts.md#lm-lease-dead-renewal)). 남은 것: 포장 작업자 화면에는 relay 전송 상태를 보이는 자리가 없다(`Label_Match.py` 의 `save_status_label` 은 포장 물류 명령 상태만 3초 표시). 자동으로 풀리지 않는 lease 검토(복제본 충돌·토큰 불일치)와 자료 경로 STALE 검토는 화면에 드러나지 않으며 기존 `tools/direct_sync_relay_operator.py`·상태 파일로만 확인된다. 실제 HTTPS·랩·회사 서버 회복은 NOT TESTED다.
+
 ## W9 · 기존 시험 실패 감사
 
 기존 전체 suite의 21 FAIL은 제품 변경 없이 fixture/API 16개와 저장 루트 환경 의존 5개로 교정했고 첫 전체 3065 PASS/5 SKIP를 확인했다([분류·현재 검증](operations.md#test-audit-w9)). 마지막 시험 변경 뒤 전체 3회 반복의 결과는 해당 RESULT로 결속하며 실제 GUI 5개·VM·서버·운영 lifecycle 수용은 별도로 남는다.
