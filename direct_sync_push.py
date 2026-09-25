@@ -1170,12 +1170,12 @@ def _upload_response_result(
             and client_runtime_lease_mode(credentials) == "observe"
             and not receipt_error_code
         )
-        # A committed observe receipt whose only finding is the dead fence N
-        # stored the exact source; the row's authority then expires locally.
+        # Only an observe server commits an observed_rejected receipt (enforce
+        # refuses it uncommitted), so the client mode is not consulted. Its only
+        # finding, dead fence N, stored the exact source; the authority expires locally.
         dead_fence_receipt_accepted = (
             runtime_error_code == "STALE_RUNTIME_FENCE"
             and payload["runtime_lease"].get("contract_version") == RUNTIME_CONTRACT_VERSION
-            and client_runtime_lease_mode(credentials) == "observe"
             and 200 <= status_code < 300
             and not receipt_error_code
             and payload["totals"]["errors"] == 0

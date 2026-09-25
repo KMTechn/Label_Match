@@ -324,23 +324,27 @@ def _replace_expired_identity(
 
 
 def _dead_renewal_review(state: sqlite3.Row) -> bool:
-    """Whether the stored review is a renewal the server refused as expired.
+    """Whether the stored review is a pending request the server refused for good.
 
     STALE_RUNTIME_FENCE on the pending renewal is the server's final answer
-    that its fence is no longer ACTIVE; a new issue gets fence max+1 and the
-    server still refuses a live clone. Only an authority no relay row holds
-    takes the ordinary expiry transition.
+    that its fence is no longer ACTIVE; EXACT_CLONE_RUNTIME_CONFLICT on the
+    pending proof-less issue (reinstall, relay DB loss) is anchored to its key
+    and would be answered again after the other runtime's lease ends. Both
+    take the ordinary expiry transition: a new issue gets fence max+1 and the
+    server still refuses it while a live clone holds its lease. Only an
+    authority no relay row holds takes the transition.
     """
 
+    code = str(state["last_error_code"] or "")
     if (
         str(state["status"] or "") != "OPERATOR_REVIEW"
-        or str(state["last_error_code"] or "") != DEAD_RENEWAL_CODE
+        or code not in {DEAD_RENEWAL_CODE, "EXACT_CLONE_RUNTIME_CONFLICT"}
         or state["assigned_relay_id"]
         or not state["pending_request_json"]
     ):
         return False
     pending = json.loads(str(state["pending_request_json"]))
-    return isinstance(pending, dict) and "runtime_fence" in pending
+    return isinstance(pending, dict) and ("runtime_fence" in pending) == (code == DEAD_RENEWAL_CODE)
 
 
 def _lease_request_value(state: sqlite3.Row, ttl_seconds: int) -> Dict[str, Any]:

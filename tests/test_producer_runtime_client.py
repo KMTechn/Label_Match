@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -464,8 +465,11 @@ def _committed_stale_recovery_case(tmp_path):
     liveness = runtime_client.ensure_runtime_authority(
         db_path=db, credentials=_credentials(), producer_install_id="install-test", session=session)
     assert liveness.receipt["request_in_flight"] and not session.calls
-    result = direct_sync_push.drain_one_relay_batch(
-        db_path=db, credentials=_credentials(), session=session, target_relay_id="relay-reviewed")
+    # A bound dead-fence upload is ACKed today; this review is what a client
+    # before that release stored and what the release keeps when its CAS misses.
+    with mock.patch.object(direct_sync_push, "expire_dead_fence_authority_in_transaction", return_value=False):
+        result = direct_sync_push.drain_one_relay_batch(
+            db_path=db, credentials=_credentials(), session=session, target_relay_id="relay-reviewed")
     assert result.committed and not result.success and result.error_code == "STALE_RUNTIME_FENCE"
     with sqlite3.connect(db) as conn:
         conn.row_factory = sqlite3.Row
@@ -1915,6 +1919,35 @@ def test_live_clone_is_not_displaced_by_dead_renewal_recovery(tmp_path):
     assert _authority_row(db_path)["status"] == "OPERATOR_REVIEW"
 
 
+def test_reinstalled_relay_reissues_once_the_old_lease_ends(tmp_path):
+    old_db = tmp_path / "relay.sqlite3"
+    new_db = tmp_path / "relay-reinstalled.sqlite3"  # reinstall or relay DB loss
+    server = _FencedLeaseServer()
+    assert _liveness(old_db, server, 0).receipt["fence"] == 1
+    refused = _liveness(new_db, server, 60)
+    assert refused.error_code == "EXACT_CLONE_RUNTIME_CONFLICT" and refused.operator_review
+    # While the old runtime keeps renewing, the new one never displaces it.
+    assert _liveness(old_db, server, 870).receipt["fence"] == 1
+    assert _liveness(new_db, server, 960).error_code == "EXACT_CLONE_RUNTIME_CONFLICT"
+    assert _liveness(old_db, server, 1000).receipt["fence"] == 1 and server.active_fence() == 1
+    # The old runtime is gone; its renewed lease ends at 870 + 900 s.
+    sent_before = len(server.calls)
+
+    recovered = _liveness(new_db, server, 870 + 900 + 30)
+
+    assert recovered.error_code == "" and recovered.receipt["fence"] == 2
+    assert server.active_fence() == 2
+    this_cycle = server.calls[sent_before:]
+    assert len(this_cycle) == 1 and "runtime_fence" not in this_cycle[0]
+    issued_keys = [call["issue_idempotency_key"] for call in server.calls if "runtime_fence" not in call]
+    assert len(set(issued_keys)) == len(issued_keys)  # a refused key is never sent again
+    assert server.audit == [("EXACT_CLONE_RUNTIME_CONFLICT", 1)] * 2
+    row = _authority_row(new_db)
+    assert (row["status"], row["fence"], row["pending_request_json"]) == ("ACTIVE", 2, None)
+    assert row["runtime_instance_id"] == this_cycle[0]["runtime_instance_id"]
+    assert _liveness(new_db, server, 1830).receipt["request_sent"] is False
+
+
 def _stuck_pre_upgrade_review(db_path: Path, server: _FencedLeaseServer) -> dict:
     """The state the previous client stored after the server refused its renewal."""
 
@@ -2346,3 +2379,25 @@ def test_enforce_refuses_the_dead_fence_uncommitted_and_stays_in_review(tmp_path
     assert _relay_rows(db_path)["relay-a"] == ("operator_review", "STALE_RUNTIME_FENCE")
     assert server.stored == {}
     assert _authority_row(db_path)["status"] == "OPERATOR_REVIEW"
+
+
+def test_enforce_client_acks_the_observe_servers_committed_dead_fence_receipt(tmp_path):
+    # Registered credentials carry no runtime_lease_mode, so field clients run enforce.
+    db_path = tmp_path / "relay.sqlite3"
+    server = _DataPathServer()
+    _dead_fence_outage(db_path, server, tmp_path, mode="enforce")
+
+    _, recovered = _data_path_cycle(db_path, server, 960, tmp_path, mode="enforce")
+    reissued, _ = _data_path_cycle(db_path, server, 990, tmp_path, mode="enforce")
+    _make_pending_relay(db_path, tmp_path, "relay-b")
+    _, next_row = _data_path_cycle(db_path, server, 1000, tmp_path, mode="enforce")
+
+    assert recovered.success is True and recovered.committed is True
+    assert reissued.receipt["fence"] == 2 and next_row.success is True
+    assert {relay: row[0] for relay, row in _relay_rows(db_path).items()} == {
+        "relay-a": "acked", "relay-b": "acked"
+    }
+    assert server.audit == [("STALE_RUNTIME_FENCE", 1)]
+    assert server.stored["relay-b"][0]["runtime_fence"] == 2
+    row = _authority_row(db_path)
+    assert (row["status"], row["fence"], row["assigned_relay_id"]) == ("ACTIVE", 2, None)
