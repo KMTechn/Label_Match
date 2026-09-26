@@ -25,7 +25,7 @@ def _current_fence(state):
             "WriterFenceReplacementTransactionId": authority["replacement_transaction_id"]}
 
 
-def invoke_helper(tmp_path, state, action="Preserve", *, sid=None, guard="fake", inputs=None):
+def invoke_helper(tmp_path, state, action="Preserve", *, sid=None, guard="fake", inputs=None, test_override=True):
     journal = Path(state["paths"]["control_dir"]) / "fresh-server-transition.json"
     journal.parent.mkdir(parents=True, exist_ok=True)
     journal.write_text(json.dumps(state), encoding="utf-8")
@@ -43,10 +43,12 @@ def invoke_helper(tmp_path, state, action="Preserve", *, sid=None, guard="fake",
 function Enter-LabelWriterDelegatedOperation {
     param($ControlRoot,$SessionId,$AttemptId,$ReplacementTransactionId,$DelegationToken,$Source)
     if($Source -cne 'fresh_machine_preservation') { throw 'wrong guard' }
+    if($RootProbe) { throw 'CANONICAL_ROOT_ACCEPTED' }
     $script:admitted=$true
     return 'synthetic-admission'
 }
 function Exit-LabelWriterAdmission($lease) { if($lease -cne 'synthetic-admission') { throw 'wrong lease' } }''')
+    guard_functions = "$RootProbe=$" + str(guard == "root_probe").lower() + "\n" + guard_functions
     harness = tmp_path / "helper-harness.ps1"
     harness.write_text(r'''
 param([string]$Helper,[string]$Guard,[string]$Spec)
@@ -61,7 +63,7 @@ function Get-BootstrapFileSha256([string]$Path) { (Get-FileHash -LiteralPath $Pa
 foreach($p in (Get-Content -LiteralPath $Spec -Raw | ConvertFrom-Json).PSObject.Properties) { Set-Variable -Name $p.Name -Value $p.Value }
 $DryRun=$false
 $Uninstall=$false
-$testOverride=$true
+$testOverride=$''' + str(test_override).lower() + r'''
 $WriterFenceFunctionsPreloaded=$true
 $BootstrapIntegrityPreloaded=$true
 Invoke-FreshMachinePreservation
@@ -200,6 +202,24 @@ def test_real_guard_rejects_unbound_helper_inputs_before_any_move(tmp_path, mach
     assert _snapshot(Path(entry["source"])) == entry["snapshot"]
     assert not Path(entry["inactive"]).exists()
     assert not Path(entry["archive"]).exists()
+
+
+@pytest.mark.parametrize("control_root", ["profile_default", "caller_choice"])
+def test_production_helper_takes_the_control_root_from_the_profile_list(tmp_path, machine_state, control_root):
+    """Outside test mode the caller cannot choose the root; nothing at the real root is read or changed."""
+    real_local = subprocess.check_output([
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+        "[Environment]::GetFolderPath('LocalApplicationData')"], text=True).strip()
+    root = (Path(real_local) if control_root == "profile_default" else tmp_path / "local") / \
+        "KMTech/DirectSync/label_match/control/writer-session"
+    entry = machine_state["entries"][0]
+    result = invoke_helper(tmp_path, machine_state, guard="root_probe", test_override=False,
+                           inputs={"WriterFenceControlRoot": str(root)})
+    assert result.returncode != 0
+    accepted = "CANONICAL_ROOT_ACCEPTED" in result.stderr
+    assert accepted is (control_root == "profile_default"), result.stderr
+    assert _snapshot(Path(entry["source"])) == entry["snapshot"]
+    assert not Path(entry["inactive"]).exists()
 
 
 def test_canonical_audit_directory_protection_needs_no_sacl_privilege(tmp_path):
