@@ -42,9 +42,16 @@ W5-S0의 scope facade·ensure·prepare는 같은 credentials/install 식을 name
 저장된 갱신 요청(pending, `runtime_fence` 포함)을 같은 issue key로 다시 보내 `STALE_RUNTIME_FENCE`를 받으면 그 fence는 다시 ACTIVE가 되지 않는다는 서버의 확정 답이다. relay 행에 묶인 권한(`assigned_relay_id`)이 없으면 `ensure_runtime_authority`와 `prepare_runtime_metadata` 모두 기존 만료 전이(`_replace_expired_identity`: 새 runtime 신원·새 key의 증명 없는 발급)로 같은 주기에 다시 요청한다. 교정 전 판본이 남긴 같은 조건의 `OPERATOR_REVIEW`도 첫 주기에 풀린다. fence 번호(max+1)와 살아 있는 복제본의 `EXACT_CLONE_RUNTIME_CONFLICT` 거절은 서버가 정하며, 응답을 잃은 갱신은 같은 key 재전송이 저장된 grant를 돌려받는다. 증명 없는 발급이 `EXACT_CLONE_RUNTIME_CONFLICT`로 거절되면(재설치·relay DB 손실 뒤 옛 lease가 살아 있을 때) 서버가 그 거절을 key에 고정하므로, 묶인 행이 없을 때 같은 만료 전이로 다음 주기에 새 신원·새 key로 한 번 다시 요청한다(Rework b159d81과 같은 규칙, w9calmenforce). 거절된 key는 다시 보내지 않는다. 옛 lease가 ACTIVE인 동안에는 서버가 계속 거절하고(주기마다 요청 1회·서버 격리 감사 1건) 그 lease가 끝난 뒤 첫 주기에 max+1을 받는다. `STALE_RUNTIME_REQUEST_TOKEN`·묶인 행은 자동으로 풀지 않는다(자료 경로는 [아래](#lm-lease-dead-fence-datapath)). 자동으로 풀리지 않는 lease 검토는 relay 상태 파일의 `runtime_lease.status=operator_review`로 남고, 작업 화면 하단 오른쪽이 `작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요`를 보인다([서버 반영 상태 표시](#lm-relay-screen-status)). 서버 계약·`kmtech_shared.runtime`은 바꾸지 않는다. [producer_runtime_client](../../producer_runtime_client.py)
 
 <a id="lm-relay-screen-status"></a>
-### 작업 화면 서버 반영 상태 (w9lmdistatus)
+### 작업 화면 서버 반영 상태 (w9lmdistatus, w9lmdistatus2)
 
-작업 화면 하단 오른쪽은 relay 가 스스로 쓰는 상태 파일(`direct_sync_relay_status.json`)을 5초마다(바뀐 경우에만) 읽어 세 상태 중 하나를 보인다. `서버 반영 정상`: `idle`·`acked`·`enqueued`·scan 정상 상태. `서버 반영 재시도 중`: `retry_wait`·`runtime_error`(끊김 등)·`enqueue_error`·queue 역압, 또는 재시도 대기 행이 있을 때. `작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요`(경고색): lease 검토(`runtime_lease.status=operator_review`), 검토·영구 실패 행, 기존 행이 막은 원본, 일시중지, 디스크 부족, 모르는 상태. 상태 파일이 없으면 아무것도 표시하지 않는다. 표시만 하며 스캔·저장·전송·lease 판단은 바꾸지 않는다. [Label_Match](../../Label_Match.py) `_label_match_relay_screen_state`
+작업 화면 하단 오른쪽은 5초마다 두 원천을 읽어 더 나쁜 쪽을 보인다. ① relay DB(`queue/direct_sync_relay.sqlite3`, 읽기 전용, 매 주기): 아직 풀리지 않은 lease·행. ② relay 상태 파일(`direct_sync_relay_status.json`, 바뀐 경우에만 읽고 읽다 깨지면 직전 기록 유지): 마지막 relay 주기의 판정. 저장(enqueue)·설치 baseline·scan 만의 기록은 relay 판정이 아니므로 ①이 정한다. 그래서 저장이 상태 파일을 다시 써도 lease 검토·응답 없는 lease 요청은 지워지지 않는다.
+
+- `서버 반영 정상`: relay 판정이 `idle`·`acked`(또는 판정 없음)이고, 현재 자격 범위의 lease 행(가장 최근 갱신 행)이 만료 전 `ACTIVE`(요청 대기 없음)·`LEGACY_DISABLED`·행이 전송 중 잡은 lease 이고, 검토·영구 실패·재시도 행이 없을 때만.
+- `서버 반영 재시도 중`: 응답 없는 lease 요청(`PENDING`·요청 대기), 만료된 lease(`EXPIRED`, 갱신 없이 `expires_at` 지남), lease 행 없음(첫 relay 주기 전), relay DB 없음, `retry_wait` 행, relay 판정 `retry_wait`·`runtime_error`·`enqueue_error`·queue 역압, DB 가 잠시 열리지 않을 때.
+- `작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요`(경고색): lease `OPERATOR_REVIEW`, 검토·영구 실패 행, relay 판정의 lease 검토·기존 행이 막은 원본·일시중지·디스크 부족·모르는 상태, 모르는 lease 상태, 읽을 수 없는 relay DB.
+- 상태 파일과 relay DB 가 둘 다 없으면 아무것도 표시하지 않는다(relay 미설정).
+
+'최근 성공'의 문턱은 서버가 준 lease 만료 시각이다. relay 는 매 주기 lease 를 확인하고 만료 120초 전부터 갱신하며 요청 TTL 은 900초다. relay 가 멈추면 늦어도 마지막 갱신 900초 뒤 `재시도 중`으로 바뀐다. 표시만 하며 스캔·저장·전송·lease 판단은 바꾸지 않는다. [Label_Match](../../Label_Match.py) `_label_match_relay_durable_state/_label_match_relay_screen_state`
 
 <a id="lm-lease-dead-fence-datapath"></a>
 ## 자료 경로 dead fence 회복 · 2026-09-26

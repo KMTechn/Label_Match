@@ -3,6 +3,8 @@ import hashlib
 import json
 import sqlite3
 import threading
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -1090,6 +1092,159 @@ def test_runtime_status_tells_work_screen_whether_lease_resumes_by_itself(
     assert session.calls == []
     assert relay_queue_status(config.db_path)["counts"] == {RELAY_STATUS_PENDING: 1}
     assert _label_match_relay_screen_state(persisted) == screen_state
+
+
+class LeaseRefusedSession:
+    """The lease endpoint refuses this install: a live exact clone holds it."""
+
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, **_kwargs):
+        self.calls.append(url)
+        return FakeResponse(
+            409,
+            {
+                "status": "operator_review",
+                "retryable": False,
+                "operator_review": True,
+                "error": {"code": "EXACT_CLONE_RUNTIME_CONFLICT", "message": "exact clone"},
+            },
+        )
+
+
+class DisconnectedSession:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, **_kwargs):
+        self.calls.append(url)
+        raise ConnectionError("synthetic disconnected relay")
+
+
+@pytest.fixture
+def real_runtime_lease(monkeypatch):
+    # Undo this module's lease stubs: the work screen reads what the real
+    # lease client records in the relay database.
+    monkeypatch.setattr(direct_sync_runtime, "ensure_runtime_authority", runtime_client.ensure_runtime_authority)
+    monkeypatch.setattr(direct_sync_push, "prepare_runtime_metadata", runtime_client.prepare_runtime_metadata)
+    monkeypatch.setattr(direct_sync_push, "client_runtime_lease_mode", runtime_client.client_runtime_lease_mode)
+
+
+def make_work_screen_config(tmp_path):
+    # The relay files where the work screen looks for them under its data root.
+    return replace(
+        make_config(tmp_path),
+        db_path=tmp_path / "queue" / "direct_sync_relay.sqlite3",
+        runtime_status_path=tmp_path / "status" / "direct_sync_relay_status.json",
+    )
+
+
+class _ScreenLabel:
+    def __init__(self):
+        self.options = {}
+
+    def configure(self, **options):
+        self.options.update(options)
+
+
+def work_screen(config):
+    """What a freshly started work screen shows from the relay's own files."""
+    import Label_Match
+
+    app = Label_Match.Label_Match.__new__(Label_Match.Label_Match)
+    app.relay_screen_status_label = _ScreenLabel()
+    app.direct_sync_bootstrap_context = {
+        "program_data_root": str(Path(config.db_path).parent.parent),
+        "runtime_status_path": str(config.runtime_status_path),
+    }
+    app.after = lambda _delay, _callback: "relay-after"
+    app._refresh_relay_screen_status()
+    text = app.relay_screen_status_label.options.get("text", "")
+    return {value: key for key, value in Label_Match.LABEL_MATCH_RELAY_SCREEN_TEXT.items()}.get(text, text)
+
+
+@pytest.mark.parametrize(
+    ("session_type", "held_state"),
+    [(LeaseRefusedSession, "stopped"), (DisconnectedSession, "retrying")],
+    ids=["lease-held-for-review", "lease-request-unanswered"],
+)
+def test_save_after_unresolved_lease_does_not_turn_work_screen_normal(
+    real_runtime_lease, tmp_path, session_type, held_state,
+):
+    config = make_work_screen_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+
+    refused = run_relay_once(config, session=session_type())
+    assert refused["status"] == "runtime_error"
+    assert refused["runtime_lease"].get("status") == ("operator_review" if held_state == "stopped" else None)
+    assert work_screen(config) == held_state
+
+    # w9appfixrev: the next save rewrites the status file with no lease in it.
+    saved = enqueue_completed_source_file(config, source_file_path=source_file)
+    persisted = json.loads(Path(config.runtime_status_path).read_text(encoding="utf-8"))
+    assert saved["status"] == persisted["status"] == "enqueued"
+    assert persisted["runtime_lease"] == {}
+    assert persisted["queue"]["counts"] == {RELAY_STATUS_PENDING: 1}
+    assert work_screen(config) == held_state
+
+    again = run_relay_once(config, session=session_type())
+    assert again["status"] == "runtime_error"
+    assert work_screen(config) == held_state
+
+
+def test_work_screen_turns_normal_only_after_the_relay_really_recovers(real_runtime_lease, tmp_path):
+    config = make_work_screen_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    run_relay_once(config, session=LeaseRefusedSession())
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    assert work_screen(config) == "stopped"
+
+    # The clone is gone: the next relay cycle gets a fresh lease and delivers the row.
+    session = EchoAcceptedSession()
+    recovered = run_relay_once(config, session=session)
+
+    assert recovered["status"] == "acked"
+    assert len(session.calls) == 1
+    assert work_screen(config) == "normal"
+    # A save after a real success stays normal: live lease, row waiting.
+    saved = enqueue_completed_source_file(config, source_file_path=write_csv(tmp_path, name="next.csv", barcode="BC-2"))
+    assert saved["status"] == "enqueued"
+    assert work_screen(config) == "normal"
+
+
+def test_work_screen_is_not_normal_without_a_live_relay_lease(real_runtime_lease, tmp_path):
+    config = make_work_screen_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    assert work_screen(config) == ""
+
+    # Saved before the first relay cycle: no lease has been granted yet.
+    enqueue_completed_source_file(config, source_file_path=source_file)
+    assert work_screen(config) == "retrying"
+
+    assert run_relay_once(config, session=EchoAcceptedSession())["status"] == "acked"
+    assert work_screen(config) == "normal"
+
+    # The relay database is gone: the last "acked" record proves nothing now.
+    Path(config.db_path).unlink()
+    assert json.loads(Path(config.runtime_status_path).read_text(encoding="utf-8"))["status"] == "acked"
+    assert work_screen(config) == "retrying"
+
+
+def test_relay_lease_that_lapsed_without_renewal_is_not_normal(real_runtime_lease, tmp_path):
+    from Label_Match import _label_match_relay_durable_state
+
+    config = make_work_screen_config(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=write_csv(tmp_path))
+    assert run_relay_once(config, session=EchoAcceptedSession())["status"] == "acked"
+
+    # A stopped relay writes nothing; only the granted expiry tells it apart.
+    assert _label_match_relay_durable_state(config.db_path) == "normal"
+    assert _label_match_relay_durable_state(
+        config.db_path, now=datetime(3000, 1, 1, tzinfo=timezone.utc)
+    ) == "retrying"
 
 
 def test_runtime_permanent_failure_moves_to_failed_permanent(tmp_path):

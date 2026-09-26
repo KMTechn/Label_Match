@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import inspect
 import math
 import os
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -580,32 +582,129 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
 RELAY_STOPPED_TEXT = "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요"
 
 
+SAVE_RECORD = {"status": "enqueued", "queue": {"counts": {"pending": 1}}, "runtime_lease": {}}
+
+
 @pytest.mark.parametrize(
-    ("payload", "state"),
+    ("payload", "durable", "state"),
     [
-        ({"status": "acked", "queue": {"counts": {"acked": 3}}}, "normal"),
-        ({"status": "idle", "queue": {"counts": {}}}, "normal"),
-        ({"status": "enqueued", "queue": {"counts": {"pending": 1}}}, "normal"),
-        ({"status": "scan_no_new_rows"}, "normal"),
-        ({"status": "retry_wait", "queue": {"counts": {"retry_wait": 1}}}, "retrying"),
-        ({"status": "idle", "queue": {"counts": {"retry_wait": 1}}}, "retrying"),
+        ({"status": "acked", "queue": {"counts": {"acked": 3}}}, "normal", "normal"),
+        ({"status": "idle", "queue": {"counts": {}}}, "normal", "normal"),
+        # A save record carries no relay verdict: the relay database decides.
+        (SAVE_RECORD, "normal", "normal"),
+        (SAVE_RECORD, "retrying", "retrying"),
+        (SAVE_RECORD, "stopped", "stopped"),
+        (SAVE_RECORD, None, "retrying"),
+        ({"status": "baseline_complete"}, None, "retrying"),
+        ({"status": "scan_no_new_rows"}, "normal", "normal"),
+        # A success record without a live lease behind it is not normal.
+        ({"status": "acked"}, None, "retrying"),
+        ({"status": "acked"}, "retrying", "retrying"),
+        ({"status": "idle"}, "stopped", "stopped"),
+        ({"status": "retry_wait", "queue": {"counts": {"retry_wait": 1}}}, "normal", "retrying"),
+        ({"status": "idle", "queue": {"counts": {"retry_wait": 1}}}, "normal", "retrying"),
         ({"status": "runtime_error", "error_message": "runtime_lease_transport_error",
-          "runtime_lease": {}}, "retrying"),
-        ({"status": "blocked_queue_backpressure"}, "retrying"),
+          "runtime_lease": {}}, "normal", "retrying"),
+        ({"status": "blocked_queue_backpressure"}, "normal", "retrying"),
         ({"status": "runtime_error", "runtime_lease": {
-            "status": "operator_review", "error_code": "EXACT_CLONE_RUNTIME_CONFLICT"}}, "stopped"),
-        ({"status": "acked", "queue": {"counts": {"operator_review": 1}}}, "stopped"),
-        ({"status": "retry_wait", "queue": {"counts": {"failed_permanent": 1, "retry_wait": 2}}}, "stopped"),
-        ({"status": "acked", "scan_status": "existing_terminal_blocked"}, "stopped"),
-        ({"status": "paused_by_operator"}, "stopped"),
-        ({"status": "blocked_disk_pressure"}, "stopped"),
-        ({"status": "status_added_later"}, "stopped"),
-        ({}, ""),
-        (None, ""),
+            "status": "operator_review", "error_code": "EXACT_CLONE_RUNTIME_CONFLICT"}}, "normal", "stopped"),
+        ({"status": "acked", "queue": {"counts": {"operator_review": 1}}}, "normal", "stopped"),
+        ({"status": "retry_wait", "queue": {"counts": {"failed_permanent": 1, "retry_wait": 2}}},
+         "normal", "stopped"),
+        ({"status": "acked", "scan_status": "existing_terminal_blocked"}, "normal", "stopped"),
+        ({"status": "paused_by_operator"}, "normal", "stopped"),
+        ({"status": "blocked_disk_pressure"}, "normal", "stopped"),
+        ({"status": "status_added_later"}, "normal", "stopped"),
+        # Status file missing or unreadable: only the relay database speaks.
+        ({}, "normal", "normal"),
+        ({}, "retrying", "retrying"),
+        ({}, None, ""),
+        (None, None, ""),
     ],
 )
-def test_relay_screen_state_folds_relay_status_into_three_operator_states(payload, state):
-    assert label_match_module._label_match_relay_screen_state(payload) == state
+def test_relay_screen_state_folds_status_record_and_relay_database(payload, durable, state):
+    assert label_match_module._label_match_relay_screen_state(payload, durable) == state
+
+
+LIVE_LEASE = {"status": "ACTIVE", "expires_at": "2999-01-01T00:00:00Z"}
+
+
+def _write_relay_db(root, *, lease=None, rows=()):
+    """A relay database under the work screen's data root, in the relay's own schema."""
+    import direct_sync_push
+
+    db_path = root / "queue" / "direct_sync_relay.sqlite3"
+    direct_sync_push.init_relay_queue_schema(db_path)
+    leases = [lease] if isinstance(lease, dict) else list(lease or [])
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+        for index, status in enumerate(rows):
+            conn.execute(
+                "INSERT INTO direct_sync_relay_batches(relay_id, status, source_file_path,"
+                " spooled_file_path, producer_manifest_path, relative_path, content_sha256,"
+                " byte_length, created_at, updated_at)"
+                " VALUES(?, ?, '', '', '', '', '', 0, '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z')",
+                (f"relay-{index}", status),
+            )
+        for index, fields in enumerate(leases):
+            row = {"expires_at": None, "assigned_relay_id": None, "pending_request_json": None,
+                   "updated_at": f"2026-09-26T00:00:0{index}Z", **fields}
+            conn.execute(
+                "INSERT INTO direct_sync_runtime_authority(authority_scope, endpoint_url, producer_id,"
+                " key_id, producer_install_id, runtime_instance_id, runtime_public_jwk_json, status,"
+                " expires_at, assigned_relay_id, pending_request_json, created_at, updated_at)"
+                " VALUES(?, 'https://relay.example.invalid', 'producer', 'key', 'install', 'runtime',"
+                " '{}', ?, ?, ?, ?, ?, ?)",
+                (f"scope-{index}", row["status"], row["expires_at"], row["assigned_relay_id"],
+                 row["pending_request_json"], row["updated_at"], row["updated_at"]),
+            )
+    return db_path
+
+
+@pytest.mark.parametrize(
+    ("lease", "rows", "state"),
+    [
+        (LIVE_LEASE, (), "normal"),
+        (LIVE_LEASE, ("pending", "leased", "acked"), "normal"),
+        (LIVE_LEASE, ("retry_wait", "pending"), "retrying"),
+        (LIVE_LEASE, ("operator_review",), "stopped"),
+        (LIVE_LEASE, ("failed_permanent", "retry_wait"), "stopped"),
+        # Saved before the first relay cycle: no lease has been granted.
+        (None, ("pending",), "retrying"),
+        (None, (), "retrying"),
+        # A lease request nobody answered (disconnected, or still in flight).
+        ({"status": "PENDING", "pending_request_json": "{}"}, (), "retrying"),
+        ({"status": "PENDING"}, ("pending",), "retrying"),
+        ({**LIVE_LEASE, "pending_request_json": "{}"}, (), "retrying"),
+        # The relay stopped renewing: the grant lapsed without any status write.
+        ({**LIVE_LEASE, "expires_at": "2000-01-01T00:00:00Z"}, (), "retrying"),
+        ({**LIVE_LEASE, "expires_at": "not-a-time"}, (), "retrying"),
+        ({"status": "EXPIRED", "expires_at": "2000-01-01T00:00:00Z"}, (), "retrying"),
+        # A row mid-upload holds the lease; its outcome shows up in the rows.
+        ({**LIVE_LEASE, "expires_at": "2000-01-01T00:00:00Z", "assigned_relay_id": "relay-0"},
+         ("leased",), "normal"),
+        ({"status": "LEGACY_DISABLED"}, (), "normal"),
+        ({"status": "OPERATOR_REVIEW", "pending_request_json": "{}"}, (), "stopped"),
+        ({"status": "OPERATOR_REVIEW"}, ("retry_wait",), "stopped"),
+        ({"status": "STATUS_ADDED_LATER"}, (), "stopped"),
+        # The relay renews the row of its current credential scope.
+        ([{"status": "OPERATOR_REVIEW"}, LIVE_LEASE], (), "normal"),
+        ([LIVE_LEASE, {"status": "OPERATOR_REVIEW"}], (), "stopped"),
+    ],
+)
+def test_relay_durable_state_folds_unresolved_lease_and_rows(tmp_path, lease, rows, state):
+    db_path = _write_relay_db(tmp_path, lease=lease, rows=rows)
+
+    assert label_match_module._label_match_relay_durable_state(db_path) == state
+
+
+def test_relay_durable_state_without_or_with_unreadable_database(tmp_path):
+    db_path = tmp_path / "queue" / "direct_sync_relay.sqlite3"
+    assert label_match_module._label_match_relay_durable_state(db_path) is None
+    assert label_match_module._label_match_relay_durable_state("") is None
+
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"not a relay database " * 64)
+    assert label_match_module._label_match_relay_durable_state(db_path) == "stopped"
 
 
 def test_relay_screen_texts_promise_no_automatic_resume():
@@ -618,12 +717,16 @@ def test_relay_screen_texts_promise_no_automatic_resume():
     assert not any("자동" in text for text in texts.values())
 
 
-def test_relay_screen_status_follows_status_file_and_keeps_state_on_torn_read(
+def test_relay_screen_status_follows_relay_files_and_keeps_state_on_torn_read(
     operator_workbench, tmp_path,
 ):
     app = operator_workbench
-    status_path = tmp_path / "direct_sync_relay_status.json"
-    app.direct_sync_bootstrap_context = {"runtime_status_path": str(status_path)}
+    status_path = tmp_path / "status" / "direct_sync_relay_status.json"
+    status_path.parent.mkdir()
+    app.direct_sync_bootstrap_context = {
+        "program_data_root": str(tmp_path),
+        "runtime_status_path": str(status_path),
+    }
     scheduled = []
     app.after = lambda delay, callback: scheduled.append((delay, callback)) or "relay-after"
     label = app.relay_screen_status_label
@@ -638,6 +741,15 @@ def test_relay_screen_status_follows_status_file_and_keeps_state_on_torn_read(
         status_path.write_text(text, encoding="utf-8")
         os.utime(status_path, ns=(stamp, stamp))
 
+    def set_lease(**fields):
+        with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute(
+                "UPDATE direct_sync_runtime_authority SET "
+                + ", ".join(f"{name}=?" for name in fields),
+                tuple(fields.values()),
+            )
+
+    db_path = _write_relay_db(tmp_path, lease={"status": "OPERATOR_REVIEW"}, rows=("pending",))
     write_status(
         '{"status": "runtime_error", "runtime_lease": {"status": "operator_review"}}',
         1_000_000_000,
@@ -646,16 +758,30 @@ def test_relay_screen_status_follows_status_file_and_keeps_state_on_torn_read(
     assert label.cget("text") == RELAY_STOPPED_TEXT
     assert label.cget("style") == "Error.TLabel"
 
-    # A read that lands mid-replace keeps the last state and retries.
-    write_status('{"status": "acked"', 2_000_000_000)
+    # A save rewrites the status file without the lease: the database keeps it.
+    write_status('{"status": "enqueued", "runtime_lease": {}}', 2_000_000_000)
     app._refresh_relay_screen_status()
     assert label.cget("text") == RELAY_STOPPED_TEXT
+
+    # Resolved, and the relay delivered: live lease and a success record.
+    set_lease(status="ACTIVE", expires_at="2999-01-01T00:00:00Z")
     write_status('{"status": "acked"}', 3_000_000_000)
     app._refresh_relay_screen_status()
     assert label.cget("text") == "서버 반영 정상"
     assert label.cget("style") == "Status.TLabel"
 
+    # A read that lands mid-replace keeps the last record and retries.
+    write_status('{"status": "runtime_error"', 4_000_000_000)
+    app._refresh_relay_screen_status()
+    assert label.cget("text") == "서버 반영 정상"
+    # The database is read on every tick: a lapsed lease shows with no status write.
+    set_lease(expires_at="2000-01-01T00:00:00Z")
+    app._refresh_relay_screen_status()
+    assert label.cget("text") == "서버 반영 재시도 중"
+    assert label.cget("style") == "Status.TLabel"
+
     status_path.unlink()
+    db_path.unlink()
     app._refresh_relay_screen_status()
     assert label.cget("text") == ""
 

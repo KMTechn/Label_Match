@@ -206,6 +206,7 @@ import shutil
 import tkinter.font as tkFont
 import queue
 import socket
+import sqlite3
 _label_match_startup_trace("before_requests_import")
 import requests
 from item_catalog_sync import (
@@ -1116,21 +1117,86 @@ LABEL_MATCH_RELAY_SCREEN_TEXT = {
     "retrying": "서버 반영 재시도 중",
     "stopped": "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요",
 }
-_LABEL_MATCH_RELAY_NORMAL_STATUSES = frozenset({
-    "idle", "acked", "enqueued", "baseline_complete",
+_LABEL_MATCH_RELAY_NORMAL_STATUSES = frozenset({"idle", "acked"})
+# Written by a save-time enqueue, the install baseline or a scan without a
+# relay cycle: they say nothing about the server, so the relay database does.
+_LABEL_MATCH_RELAY_UNJUDGED_STATUSES = frozenset({
+    "enqueued", "baseline_complete",
     "scan_deferred_sources", "scan_no_new_rows", "scan_no_files",
 })
 _LABEL_MATCH_RELAY_RETRYING_STATUSES = frozenset({
     "retry_wait", "runtime_error", "enqueue_error", "blocked_queue_backpressure",
 })
+_LABEL_MATCH_RELAY_STATE_ORDER = ("normal", "retrying", "stopped")
 
 
-def _label_match_relay_screen_state(payload):
-    """Fold the relay's own status file into normal / retrying / stopped."""
-    if not isinstance(payload, dict):
-        return ""
+def _label_match_relay_worst_state(*states):
+    return max(states, key=_LABEL_MATCH_RELAY_STATE_ORDER.index)
+
+
+def _label_match_relay_durable_state(db_path, *, now=None):
+    """Fold what the relay database still holds unresolved; None before it exists.
+
+    A save rewrites the relay status file but never this database, so a lease
+    held for review or a lease request nobody answered stays on screen until
+    the relay really recovers it.
+    """
+    if not db_path or not os.path.isfile(db_path):
+        return None
+    try:
+        with contextlib.closing(
+            sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True, timeout=0.5)
+        ) as conn:
+            tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            counts = dict(
+                conn.execute("SELECT status, COUNT(*) FROM direct_sync_relay_batches GROUP BY status").fetchall()
+            ) if "direct_sync_relay_batches" in tables else {}
+            # The relay renews the row of its current credential scope.
+            lease = conn.execute(
+                "SELECT status, expires_at, assigned_relay_id, pending_request_json "
+                "FROM direct_sync_runtime_authority ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone() if "direct_sync_runtime_authority" in tables else None
+    except sqlite3.OperationalError:
+        return "retrying"  # busy or not openable right now: nothing is confirmed
+    except sqlite3.DatabaseError:
+        return "stopped"
+    rows = (
+        "stopped" if counts.get("operator_review") or counts.get("failed_permanent")
+        else "retrying" if counts.get("retry_wait")
+        else "normal"
+    )
+    if lease is None:
+        return _label_match_relay_worst_state(rows, "retrying")  # no lease granted yet
+    status, expires_at, assigned_relay_id, pending_request_json = lease
+    try:
+        expires = datetime.fromisoformat(str(expires_at or "").replace("Z", "+00:00"))
+    except ValueError:
+        expires = None
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    live = expires is not None and expires > (now or datetime.now(timezone.utc))
+    if status == "OPERATOR_REVIEW":
+        held = "stopped"
+    elif status == "LEGACY_DISABLED" or assigned_relay_id:
+        held = "normal"  # observe-mode legacy server, or a row holds the lease mid-upload
+    elif status == "ACTIVE" and live and not pending_request_json:
+        held = "normal"
+    elif status in {"ACTIVE", "PENDING", "EXPIRED"}:
+        held = "retrying"  # unanswered request, or the lease lapsed without renewal
+    else:
+        held = "stopped"
+    return _label_match_relay_worst_state(rows, held)
+
+
+def _label_match_relay_screen_state(payload, durable=None):
+    """Fold the relay's status record and its database into normal / retrying / stopped.
+
+    durable is _label_match_relay_durable_state(): a later status record never
+    clears what the database still holds.
+    """
+    payload = payload if isinstance(payload, dict) else {}
     status = str(payload.get("status") or "").strip()
-    if not status:
+    if not status and durable is None:
         return ""
     queue = payload.get("queue") if isinstance(payload.get("queue"), dict) else {}
     counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
@@ -1149,13 +1215,16 @@ def _label_match_relay_screen_state(payload):
         or count("failed_permanent")
         or payload.get("scan_status") == "existing_terminal_blocked"
     ):
-        return "stopped"
-    if status in _LABEL_MATCH_RELAY_RETRYING_STATUSES or count("retry_wait"):
-        return "retrying"
-    if status in _LABEL_MATCH_RELAY_NORMAL_STATUSES:
-        return "normal"
-    # Paused, disk pressure, terminal rows or an unknown status: ask the manager.
-    return "stopped"
+        relay = "stopped"
+    elif status in _LABEL_MATCH_RELAY_RETRYING_STATUSES or count("retry_wait"):
+        relay = "retrying"
+    elif not status or status in _LABEL_MATCH_RELAY_NORMAL_STATUSES | _LABEL_MATCH_RELAY_UNJUDGED_STATUSES:
+        relay = "normal"
+    else:
+        # Paused, disk pressure, terminal rows or an unknown status: ask the manager.
+        relay = "stopped"
+    # No relay database yet: no lease was ever granted, nothing is confirmed.
+    return _label_match_relay_worst_state(relay, "retrying" if durable is None else durable)
 
 
 def _label_match_existing_direct_sync_task_name(context):
@@ -5781,12 +5850,23 @@ class Label_Match(tk.Tk):
         except OSError:
             modified_ns = None
         # Read only after the relay rewrote its status; a file caught
-        # mid-replace reads empty and keeps the last state until next tick.
+        # mid-replace reads empty and keeps the last record until next tick.
         if modified_ns != self.__dict__.get("_relay_screen_status_mtime_ns"):
             payload = _label_match_json_file(path) if modified_ns is not None else {}
             if payload or modified_ns is None:
                 self._relay_screen_status_mtime_ns = modified_ns
-                self._render_relay_screen_status(_label_match_relay_screen_state(payload))
+                self._relay_screen_status_payload = payload
+        # The relay database is read every tick: a lease lapses without any write.
+        try:
+            db_path = _label_match_direct_sync_runtime_paths(context)["db_path"]
+        except KeyError:
+            db_path = ""
+        self._render_relay_screen_status(
+            _label_match_relay_screen_state(
+                self.__dict__.get("_relay_screen_status_payload"),
+                _label_match_relay_durable_state(db_path),
+            )
+        )
         self._relay_screen_status_after_id = self.after(5000, self._refresh_relay_screen_status)
         return None
 

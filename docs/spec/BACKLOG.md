@@ -3,7 +3,7 @@
 <a id="lm-w9-lease-screen"></a>
 ## W9 · runtime lease 격리 자동 회복 이후 (w9calmleasefix)
 
-갱신 거절(`STALE_RUNTIME_FENCE`)의 자동 회복은 소스·격리 시험과 Web 362ae46 lease 서비스 재현으로 확인했다([계약](contracts.md#lm-lease-dead-renewal)). 작업 화면 하단에 서버 반영 상태(정상·재시도 중·멈춤)를 표시한다([계약](contracts.md#lm-relay-screen-status), w9lmdistatus; 실제 창 확인은 NOT TESTED). 재설치 복제본 거절은 옛 lease가 끝난 뒤 첫 주기에, 자료 경로 dead fence는 enforce 자격증명에서도 회복한다(w9calmenforce, 소스·격리 시험·Web 362ae46 하네스). 자동으로 풀리지 않는 lease 검토(살아 있는 복제본 충돌·토큰 불일치, 교정 전 판본이 남긴 자료 경로 STALE 검토)는 화면에 `서버 반영 멈춤`으로 보이고, 원인 확인·해제는 기존 `tools/direct_sync_relay_operator.py`로 한다. 실제 HTTPS·랩·회사 서버 회복은 NOT TESTED다.
+갱신 거절(`STALE_RUNTIME_FENCE`)의 자동 회복은 소스·격리 시험과 Web 362ae46 lease 서비스 재현으로 확인했다([계약](contracts.md#lm-lease-dead-renewal)). 작업 화면 하단에 서버 반영 상태(정상·재시도 중·멈춤)를 표시한다([계약](contracts.md#lm-relay-screen-status), w9lmdistatus; 실제 창 확인은 NOT TESTED). 저장이 relay 상태 파일을 다시 써도 relay DB 의 lease 검토·응답 없는 요청이 남아 거짓 '정상'이 되지 않는다(w9lmdistatus2). 남은 한계: relay 가 멈추면 lease 만료(마지막 갱신 뒤 최대 900초)까지 `정상`이 남을 수 있고, `LEGACY_DISABLED`(observe·lease 미지원 서버)는 만료가 없어 오래됨을 판정하지 못한다. DB 에 남지 않는 relay 오류(자격 증명·manifest)는 다음 relay 기록까지 저장 기록에 가려질 수 있다. 재설치 복제본 거절은 옛 lease가 끝난 뒤 첫 주기에, 자료 경로 dead fence는 enforce 자격증명에서도 회복한다(w9calmenforce, 소스·격리 시험·Web 362ae46 하네스). 자동으로 풀리지 않는 lease 검토(살아 있는 복제본 충돌·토큰 불일치, 교정 전 판본이 남긴 자료 경로 STALE 검토)는 화면에 `서버 반영 멈춤`으로 보이고, 원인 확인·해제는 기존 `tools/direct_sync_relay_operator.py`로 한다. 실제 HTTPS·랩·회사 서버 회복은 NOT TESTED다.
 
 ## W9 · 기존 시험 실패 감사
 
