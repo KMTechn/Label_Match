@@ -46,7 +46,7 @@ W5-S0의 scope facade·ensure·prepare는 같은 credentials/install 식을 name
 
 작업 화면 하단 오른쪽은 5초마다 두 원천을 읽어 더 나쁜 쪽을 보인다. ① relay DB(`queue/direct_sync_relay.sqlite3`, 읽기 전용, 매 주기): 아직 풀리지 않은 lease·행. ② relay 상태 파일(`direct_sync_relay_status.json`, 바뀐 경우에만 읽고 읽다 깨지면 직전 기록 유지): 마지막 relay 주기의 판정. 저장(enqueue)·설치 baseline·scan 만의 기록은 relay 판정이 아니므로 ①이 정한다. 그래서 저장이 상태 파일을 다시 써도 lease 검토·응답 없는 lease 요청은 지워지지 않는다.
 
-- `서버 반영 정상`: relay 판정이 `idle`·`acked`(또는 판정 없음)이고, 현재 자격 범위의 lease 행(가장 최근 갱신 행)이 만료 전 `ACTIVE`(요청 대기 없음)·`LEGACY_DISABLED`·행이 전송 중 잡은 lease 이고, 검토·영구 실패·재시도 행이 없을 때만.
+- `서버 반영 정상`: relay 판정이 `idle`·`acked`(또는 판정 없음)이고, 현재 자격 범위의 lease 행(가장 최근 갱신 행)이 만료 전 `ACTIVE`(요청 대기 없음; 행이 전송 중 잡고 있어도 만료 전이어야 한다) 또는 `LEGACY_DISABLED` 이고, 검토·영구 실패·재시도 행이 없을 때만.
 - `서버 반영 재시도 중`: 응답 없는 lease 요청(`PENDING`·요청 대기), 만료된 lease(`EXPIRED`, 갱신 없이 `expires_at` 지남), lease 행 없음(첫 relay 주기 전), relay DB 없음, `retry_wait` 행, relay 판정 `retry_wait`·`runtime_error`·`enqueue_error`·queue 역압, DB 가 잠시 열리지 않을 때.
 - `작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요`(경고색): lease `OPERATOR_REVIEW`, 검토·영구 실패 행, relay 판정의 lease 검토·기존 행이 막은 원본·일시중지·디스크 부족·모르는 상태, 모르는 lease 상태, 읽을 수 없는 relay DB.
 - 상태 파일과 relay DB 가 둘 다 없으면 아무것도 표시하지 않는다(relay 미설정).

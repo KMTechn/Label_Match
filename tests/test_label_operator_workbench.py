@@ -679,9 +679,10 @@ def _write_relay_db(root, *, lease=None, rows=()):
         ({**LIVE_LEASE, "expires_at": "2000-01-01T00:00:00Z"}, (), "retrying"),
         ({**LIVE_LEASE, "expires_at": "not-a-time"}, (), "retrying"),
         ({"status": "EXPIRED", "expires_at": "2000-01-01T00:00:00Z"}, (), "retrying"),
-        # A row mid-upload holds the lease; its outcome shows up in the rows.
+        # A row mid-upload holds the lease: normal only before its expiry.
+        ({**LIVE_LEASE, "assigned_relay_id": "relay-0"}, ("leased",), "normal"),
         ({**LIVE_LEASE, "expires_at": "2000-01-01T00:00:00Z", "assigned_relay_id": "relay-0"},
-         ("leased",), "normal"),
+         ("leased",), "retrying"),
         ({"status": "LEGACY_DISABLED"}, (), "normal"),
         ({"status": "OPERATOR_REVIEW", "pending_request_json": "{}"}, (), "stopped"),
         ({"status": "OPERATOR_REVIEW"}, ("retry_wait",), "stopped"),

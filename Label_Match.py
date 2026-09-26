@@ -1153,7 +1153,7 @@ def _label_match_relay_durable_state(db_path, *, now=None):
             ) if "direct_sync_relay_batches" in tables else {}
             # The relay renews the row of its current credential scope.
             lease = conn.execute(
-                "SELECT status, expires_at, assigned_relay_id, pending_request_json "
+                "SELECT status, expires_at, pending_request_json "
                 "FROM direct_sync_runtime_authority ORDER BY updated_at DESC LIMIT 1"
             ).fetchone() if "direct_sync_runtime_authority" in tables else None
     except sqlite3.OperationalError:
@@ -1167,7 +1167,7 @@ def _label_match_relay_durable_state(db_path, *, now=None):
     )
     if lease is None:
         return _label_match_relay_worst_state(rows, "retrying")  # no lease granted yet
-    status, expires_at, assigned_relay_id, pending_request_json = lease
+    status, expires_at, pending_request_json = lease
     try:
         expires = datetime.fromisoformat(str(expires_at or "").replace("Z", "+00:00"))
     except ValueError:
@@ -1177,9 +1177,11 @@ def _label_match_relay_durable_state(db_path, *, now=None):
     live = expires is not None and expires > (now or datetime.now(timezone.utc))
     if status == "OPERATOR_REVIEW":
         held = "stopped"
-    elif status == "LEGACY_DISABLED" or assigned_relay_id:
-        held = "normal"  # observe-mode legacy server, or a row holds the lease mid-upload
+    elif status == "LEGACY_DISABLED":
+        held = "normal"  # observe-mode legacy server: no lease to hold
     elif status == "ACTIVE" and live and not pending_request_json:
+        # A row holding it mid-upload counts only before expiry too: a relay
+        # that stopped there delivers nothing.
         held = "normal"
     elif status in {"ACTIVE", "PENDING", "EXPIRED"}:
         held = "retrying"  # unanswered request, or the lease lapsed without renewal
