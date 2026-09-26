@@ -3,7 +3,7 @@
 <a id="lm-w9-lease-screen"></a>
 ## W9 · runtime lease 격리 자동 회복 이후 (w9calmleasefix)
 
-갱신 거절(`STALE_RUNTIME_FENCE`)의 자동 회복은 소스·격리 시험과 Web 362ae46 lease 서비스 재현으로 확인했다([계약](contracts.md#lm-lease-dead-renewal)). 남은 것: 포장 작업자 화면에는 relay 전송 상태를 보이는 자리가 없다(`Label_Match.py` 의 `save_status_label` 은 포장 물류 명령 상태만 3초 표시). 재설치 복제본 거절은 옛 lease가 끝난 뒤 첫 주기에, 자료 경로 dead fence는 enforce 자격증명에서도 회복한다(w9calmenforce, 소스·격리 시험·Web 362ae46 하네스). 자동으로 풀리지 않는 lease 검토(살아 있는 복제본 충돌·토큰 불일치, 교정 전 판본이 남긴 자료 경로 STALE 검토)는 화면에 드러나지 않으며 기존 `tools/direct_sync_relay_operator.py`·상태 파일로만 확인된다. 실제 HTTPS·랩·회사 서버 회복은 NOT TESTED다.
+갱신 거절(`STALE_RUNTIME_FENCE`)의 자동 회복은 소스·격리 시험과 Web 362ae46 lease 서비스 재현으로 확인했다([계약](contracts.md#lm-lease-dead-renewal)). 작업 화면 하단에 서버 반영 상태(정상·재시도 중·멈춤)를 표시한다([계약](contracts.md#lm-relay-screen-status), w9lmdistatus; 실제 창 확인은 NOT TESTED). 재설치 복제본 거절은 옛 lease가 끝난 뒤 첫 주기에, 자료 경로 dead fence는 enforce 자격증명에서도 회복한다(w9calmenforce, 소스·격리 시험·Web 362ae46 하네스). 자동으로 풀리지 않는 lease 검토(살아 있는 복제본 충돌·토큰 불일치, 교정 전 판본이 남긴 자료 경로 STALE 검토)는 화면에 `서버 반영 멈춤`으로 보이고, 원인 확인·해제는 기존 `tools/direct_sync_relay_operator.py`로 한다. 실제 HTTPS·랩·회사 서버 회복은 NOT TESTED다.
 
 ## W9 · 기존 시험 실패 감사
 

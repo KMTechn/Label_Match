@@ -1111,6 +1111,53 @@ def _label_match_recent_runtime_status(context, max_age_seconds=7 * 24 * 60 * 60
         return False
 
 
+LABEL_MATCH_RELAY_SCREEN_TEXT = {
+    "normal": "서버 반영 정상",
+    "retrying": "서버 반영 재시도 중",
+    "stopped": "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요",
+}
+_LABEL_MATCH_RELAY_NORMAL_STATUSES = frozenset({
+    "idle", "acked", "enqueued", "baseline_complete",
+    "scan_deferred_sources", "scan_no_new_rows", "scan_no_files",
+})
+_LABEL_MATCH_RELAY_RETRYING_STATUSES = frozenset({
+    "retry_wait", "runtime_error", "enqueue_error", "blocked_queue_backpressure",
+})
+
+
+def _label_match_relay_screen_state(payload):
+    """Fold the relay's own status file into normal / retrying / stopped."""
+    if not isinstance(payload, dict):
+        return ""
+    status = str(payload.get("status") or "").strip()
+    if not status:
+        return ""
+    queue = payload.get("queue") if isinstance(payload.get("queue"), dict) else {}
+    counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
+    lease = payload.get("runtime_lease") if isinstance(payload.get("runtime_lease"), dict) else {}
+
+    def count(name):
+        try:
+            return max(0, int(counts.get(name) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    # A lease or rows held for review never resume by themselves.
+    if (
+        lease.get("status") == "operator_review"
+        or count("operator_review")
+        or count("failed_permanent")
+        or payload.get("scan_status") == "existing_terminal_blocked"
+    ):
+        return "stopped"
+    if status in _LABEL_MATCH_RELAY_RETRYING_STATUSES or count("retry_wait"):
+        return "retrying"
+    if status in _LABEL_MATCH_RELAY_NORMAL_STATUSES:
+        return "normal"
+    # Paused, disk pressure, terminal rows or an unknown status: ask the manager.
+    return "stopped"
+
+
 def _label_match_existing_direct_sync_task_name(context):
     # Retained as a compatibility seam for older tests/callers.  Scheduled
     # task authority is unsupported and is never queried or started.
@@ -5720,6 +5767,37 @@ class Label_Match(tk.Tk):
         # synchronous current-user onboarding boundary.  Application startup
         # only binds the already-proven context used for transaction wakes.
         self._direct_sync_auto_bootstrap_thread = None
+        self._refresh_relay_screen_status()
+        return None
+
+    def _refresh_relay_screen_status(self):
+        self._relay_screen_status_after_id = None
+        if self.__dict__.get("_app_close_in_progress", False):
+            return None
+        context = self.__dict__.get("direct_sync_bootstrap_context") or {}
+        path = str(context.get("runtime_status_path") or "")
+        try:
+            modified_ns = os.stat(path).st_mtime_ns if path else None
+        except OSError:
+            modified_ns = None
+        # Read only after the relay rewrote its status; a file caught
+        # mid-replace reads empty and keeps the last state until next tick.
+        if modified_ns != self.__dict__.get("_relay_screen_status_mtime_ns"):
+            payload = _label_match_json_file(path) if modified_ns is not None else {}
+            if payload or modified_ns is None:
+                self._relay_screen_status_mtime_ns = modified_ns
+                self._render_relay_screen_status(_label_match_relay_screen_state(payload))
+        self._relay_screen_status_after_id = self.after(5000, self._refresh_relay_screen_status)
+        return None
+
+    def _render_relay_screen_status(self, state):
+        label = self.__dict__.get("relay_screen_status_label")
+        if label is None:
+            return None
+        label.configure(
+            text=LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, ""),
+            style="Error.TLabel" if state == "stopped" else "Status.TLabel",
+        )
         return None
 
     def show_loading_overlay(self):
@@ -7166,6 +7244,7 @@ class Label_Match(tk.Tk):
             "_update_check_after_id",
             "_deferred_validation_after_id",
             "_deferred_observability_poll_after_id",
+            "_relay_screen_status_after_id",
             "_app_close_poll_after_id",
             "_app_close_drain_watchdog_after_id",
             "_app_close_recovery_after_id",
@@ -18401,6 +18480,9 @@ class Label_Match(tk.Tk):
                 font=("Consolas", operator_caption_size),
             )
             self.operator_footer_label.configure(
+                font=(self.default_font_name, min(13, operator_caption_size)),
+            )
+            self.relay_screen_status_label.configure(
                 font=(self.default_font_name, min(13, operator_caption_size)),
             )
             self.save_status_label.configure(

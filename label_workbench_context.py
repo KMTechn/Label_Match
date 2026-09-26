@@ -213,6 +213,12 @@ def create_status_footer(
         style="Status.TLabel",
     )
     self.operator_footer_label.grid(row=0, column=1, sticky="e")
+    self.relay_screen_status_label = ttk.Label(
+        self.operator_status_frame,
+        text="",
+        style="Status.TLabel",
+    )
+    self.relay_screen_status_label.grid(row=0, column=2, sticky="e", padx=(12, 0))
 
     self.loading_overlay = ttk.Frame(main_frame, style="Overlay.TFrame")
     loading_content_frame = ttk.Frame(self.loading_overlay, style="Overlay.TFrame")

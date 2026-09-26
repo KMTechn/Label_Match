@@ -577,6 +577,121 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
     assert "관리자 확인 2건" in app.operator_footer_label.cget("text")
 
 
+RELAY_STOPPED_TEXT = "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요"
+
+
+@pytest.mark.parametrize(
+    ("payload", "state"),
+    [
+        ({"status": "acked", "queue": {"counts": {"acked": 3}}}, "normal"),
+        ({"status": "idle", "queue": {"counts": {}}}, "normal"),
+        ({"status": "enqueued", "queue": {"counts": {"pending": 1}}}, "normal"),
+        ({"status": "scan_no_new_rows"}, "normal"),
+        ({"status": "retry_wait", "queue": {"counts": {"retry_wait": 1}}}, "retrying"),
+        ({"status": "idle", "queue": {"counts": {"retry_wait": 1}}}, "retrying"),
+        ({"status": "runtime_error", "error_message": "runtime_lease_transport_error",
+          "runtime_lease": {}}, "retrying"),
+        ({"status": "blocked_queue_backpressure"}, "retrying"),
+        ({"status": "runtime_error", "runtime_lease": {
+            "status": "operator_review", "error_code": "EXACT_CLONE_RUNTIME_CONFLICT"}}, "stopped"),
+        ({"status": "acked", "queue": {"counts": {"operator_review": 1}}}, "stopped"),
+        ({"status": "retry_wait", "queue": {"counts": {"failed_permanent": 1, "retry_wait": 2}}}, "stopped"),
+        ({"status": "acked", "scan_status": "existing_terminal_blocked"}, "stopped"),
+        ({"status": "paused_by_operator"}, "stopped"),
+        ({"status": "blocked_disk_pressure"}, "stopped"),
+        ({"status": "status_added_later"}, "stopped"),
+        ({}, ""),
+        (None, ""),
+    ],
+)
+def test_relay_screen_state_folds_relay_status_into_three_operator_states(payload, state):
+    assert label_match_module._label_match_relay_screen_state(payload) == state
+
+
+def test_relay_screen_texts_promise_no_automatic_resume():
+    texts = label_match_module.LABEL_MATCH_RELAY_SCREEN_TEXT
+    assert texts == {
+        "normal": "서버 반영 정상",
+        "retrying": "서버 반영 재시도 중",
+        "stopped": RELAY_STOPPED_TEXT,
+    }
+    assert not any("자동" in text for text in texts.values())
+
+
+def test_relay_screen_status_follows_status_file_and_keeps_state_on_torn_read(
+    operator_workbench, tmp_path,
+):
+    app = operator_workbench
+    status_path = tmp_path / "direct_sync_relay_status.json"
+    app.direct_sync_bootstrap_context = {"runtime_status_path": str(status_path)}
+    scheduled = []
+    app.after = lambda delay, callback: scheduled.append((delay, callback)) or "relay-after"
+    label = app.relay_screen_status_label
+
+    app._refresh_relay_screen_status()
+    assert label.cget("text") == ""
+    assert scheduled[-1] == (5000, app._refresh_relay_screen_status)
+    assert app._relay_screen_status_after_id == "relay-after"
+
+    def write_status(text, stamp):
+        # Explicit stamps: two writes inside one clock tick share an mtime.
+        status_path.write_text(text, encoding="utf-8")
+        os.utime(status_path, ns=(stamp, stamp))
+
+    write_status(
+        '{"status": "runtime_error", "runtime_lease": {"status": "operator_review"}}',
+        1_000_000_000,
+    )
+    app._refresh_relay_screen_status()
+    assert label.cget("text") == RELAY_STOPPED_TEXT
+    assert label.cget("style") == "Error.TLabel"
+
+    # A read that lands mid-replace keeps the last state and retries.
+    write_status('{"status": "acked"', 2_000_000_000)
+    app._refresh_relay_screen_status()
+    assert label.cget("text") == RELAY_STOPPED_TEXT
+    write_status('{"status": "acked"}', 3_000_000_000)
+    app._refresh_relay_screen_status()
+    assert label.cget("text") == "서버 반영 정상"
+    assert label.cget("style") == "Status.TLabel"
+
+    status_path.unlink()
+    app._refresh_relay_screen_status()
+    assert label.cget("text") == ""
+
+    app._app_close_in_progress = True
+    scheduled.clear()
+    app._refresh_relay_screen_status()
+    assert scheduled == []
+    assert "_relay_screen_status_after_id" in inspect.getsource(Label_Match._cancel_pending_ui_jobs)
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.2, 3.0])
+@pytest.mark.parametrize("base_font_size", [14, 18], ids=["default-text", "large-text"])
+def test_relay_screen_status_fits_1024_footer_row_without_new_row(
+    operator_workbench, monkeypatch, scale, base_font_size,
+):
+    app = operator_workbench
+    _configure_narrow_workbench(app, monkeypatch, 1024, scale, base_font_size)
+    app._render_relay_screen_status("stopped")
+    app.operator_footer_label.configure(text="미완료 13건 · 관리자 확인 2건")
+    relay = app.relay_screen_status_label
+    footer = app.operator_footer_label
+
+    # Same single footer row as the existing labels: the fixed 32 px status
+    # budget and every action button above it keep their place.
+    assert relay.master is app.operator_status_frame
+    assert relay.grid_options["row"] == footer.grid_options["row"] == 0
+    assert relay.grid_options["column"] == 2
+    assert not relay.cget("wraplength")
+    assert relay.cget("font") == footer.cget("font")
+    available = 1024 - 2 * int(app.main_frame.cget("padding"))
+    relay_width = _LayoutFont(font=relay.cget("font")).measure(relay.cget("text"))
+    footer_width = _LayoutFont(font=footer.cget("font")).measure(footer.cget("text"))
+    assert footer_width + relay.grid_options["padx"][0] + relay_width <= available
+    assert _LayoutFont(font=relay.cget("font")).metrics("linespace") <= 32
+
+
 def test_deferred_validator_waits_for_active_observability_readback():
     app = Label_Match.__new__(Label_Match)
     scheduled = []

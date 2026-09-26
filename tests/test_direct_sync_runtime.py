@@ -1048,6 +1048,50 @@ def test_runtime_committed_with_conflict_moves_to_operator_review(tmp_path):
     assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_OPERATOR_REVIEW] == 1
 
 
+@pytest.mark.parametrize(
+    ("preparation", "lease_status", "screen_state"),
+    [
+        (
+            RuntimePreparation(
+                operator_review=True,
+                error_code="EXACT_CLONE_RUNTIME_CONFLICT",
+                error_message="runtime authority requires operator review",
+            ),
+            "operator_review",
+            "stopped",
+        ),
+        (
+            RuntimePreparation(
+                retryable=True,
+                error_code="runtime_lease_transport_error",
+                error_message="runtime lease transport error: ConnectionError",
+            ),
+            None,
+            "retrying",
+        ),
+    ],
+    ids=["held-for-review", "disconnected"],
+)
+def test_runtime_status_tells_work_screen_whether_lease_resumes_by_itself(
+    monkeypatch, tmp_path, preparation, lease_status, screen_state,
+):
+    from Label_Match import _label_match_relay_screen_state
+
+    config = make_config(tmp_path)
+    enqueue_completed_source_file(config, source_file_path=write_csv(tmp_path))
+    monkeypatch.setattr(direct_sync_runtime, "ensure_runtime_authority", lambda **kwargs: preparation)
+    session = EchoAcceptedSession()
+
+    status = run_relay_once(config, session=session)
+
+    persisted = json.loads(Path(config.runtime_status_path).read_text(encoding="utf-8"))
+    assert status["status"] == persisted["status"] == "runtime_error"
+    assert persisted["runtime_lease"].get("status") == lease_status
+    assert session.calls == []
+    assert relay_queue_status(config.db_path)["counts"] == {RELAY_STATUS_PENDING: 1}
+    assert _label_match_relay_screen_state(persisted) == screen_state
+
+
 def test_runtime_permanent_failure_moves_to_failed_permanent(tmp_path):
     config = make_config(tmp_path)
     source_file = write_csv(tmp_path)

@@ -900,6 +900,13 @@ def run_relay_once(
             tls_ca_bundle_path=str(config.tls_ca_bundle_path or ""),
         )
         runtime_lease = dict(runtime_preparation.receipt or {})
+        if runtime_preparation.operator_review:
+            # Not recovered automatically (live clone, stale token, bound row):
+            # the work screen asks for an administrator instead of a resume.
+            runtime_lease = {
+                "status": "operator_review",
+                "error_code": runtime_preparation.error_code,
+            }
         if runtime_preparation.error_code:
             raise DirectSyncPushError(runtime_preparation.error_code)
         result = drain_one_relay_batch(
