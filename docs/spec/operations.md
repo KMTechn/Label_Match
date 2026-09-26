@@ -7,9 +7,13 @@
 
 `-FreshTransitionAction Status`는 기록을 확인한다. 중단 후 같은 packet/입력으로 `Resume`하고, 기존 owner가 살아 있거나 다른 SID/대상/키이면 거부한다. `Restore -ConfirmOldServerReady`는 REGISTERING 전만 가능하다. REGISTERING 이후 안내는 “새 서버 등록이 시작됐을 수 있어 되돌릴 수 없음 — 관리자 지원 필요”와 보관 위치다. 등록 응답 유실은 같은 candidate의 소유증명 재연결이며, credential 복사나 ID 변경으로 우회하지 않는다.
 
+완료 기록 직후 중단돼 쓰기 잠금이 남으면 `Status`가 `completion=FENCE_RELEASE_PENDING`과 다음 동작을 보인다. 같은 packet·입력으로 `Resume`(복원 완료면 `Restore`도 가능)을 실행하면 그 전환의 끝난 owner fence만 풀고 `fresh_transition_status=PASS`를 출력한다. 살아 있는 owner·다른 작업·결속 없는 잠금은 그대로 두고 한국어 안내와 함께 거부한다. 완료된 전환은 새 fence를 시작하지 않으며, 복원 완료 전환의 `Prepare`는 새 지원 전환 기록을 요구한다. `LABEL_MATCH_SETTINGS_PATH=<data root>/app_settings.json` 배치도 등록·활성화까지 진행한다.
+
 보관 위치는 `<보존볼륨>/KMTech/server-transition/Label_Match/<UTC-transition>/`이며 `transition-result.json`, 검증된 `items/<번호>`, 중단 사본과 DPAPI 보호 응답을 보존한다. 원본은 같은 부모의 `.이름.fresh-<transition>`로 비활성 보존한다. 두 위치 모두 원 SID/SYSTEM/Administrators만 접근한다. 공개 요약은 경로·대상·건수·단계·복원 가능 여부만 출력하고 원 credential/token/키를 출력하지 않는다. 상세 journal은 보호된 사용자 control에 남으며 `%LOCALAPPDATA%/KMTech/Label_Match/server-transition`의 pointer로 custom root 소실 뒤에도 찾는다.
 
 8월 설치기의 앱 전용 `%ProgramData%/KMTech/Logistics/profiles/Label_Match`, `DirectSync/label_match`, historical `DirectSync/label-match-margin-r2`, 업무 data/settings는 기존 pinned 승격 helper의 고정 allowlist로 복사·검증·비활성 rename/사전 복원을 수행한다. 공유 `Logistics/runtime-profile.json`은 유지한다. 소유 SYSTEM task는 기존 지원 정지/해제 절차로 ABSENT 또는 DISABLED·실행 없음이 확인돼야 한다. HKLM profile/required/data/root 환경 앵커가 있으면 보관 전에 관리자 지원으로 중단하며 값은 출력하지 않는다. DPAPI/KSP 등록은 원 사용자로만 실행하고 승격 helper에서는 처리하지 않는다.
+
+승격 helper는 호출 입력을 그대로 믿지 않는다. 비어 있지 않은 위임 token, 원 SID의 ProfileList 프로필 경로 기준 `AppData\Local` 아래 canonical control root, 그 사용자 pointer가 가리키는 journal, journal 마지막 attempt와 현재 fence의 결속, 살아 있는 installer authority를 스스로 확인하고 하나라도 다르면 이동 없이 거부한다. 공통 `Enter-LabelWriterDelegatedOperation`도 token 없는 호출을 거부한다. ProgramData 대상이 있는데 LOCALAPPDATA가 프로필 기본 위치가 아니면 fence 전에 관리자 지원으로 멈춘다.
 
 회사 수용은 별도 랩에서 native KSP/DPAPI/UAC, 실제 옛 packet/ACL/Run/task, 동일 URL 교체, 로그온/재부팅, 새 scope 첫 F3 업무/ACK와 옛 미전송 유입 0을 확인한다. headless 검증은 이 현장 수용을 대신하지 않는다. 전환 자료 삭제는 이 기능의 범위 밖이며 보존 정책에 따른다.
 

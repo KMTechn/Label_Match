@@ -509,6 +509,38 @@ def test_exact_attempt_delegation_allows_only_the_named_placement_sink(
     assert target.read_text(encoding="utf-8") == "MUTATED"
 
 
+def test_delegated_operation_requires_the_live_installer_delegation(tmp_path: Path) -> None:
+    control_root = tmp_path / "control"
+    token = "6" * 64
+    payload = _payload(delegated_sources=["canonical_placement"], token=token)
+    authority = fence._acquire_named_mutex(  # noqa: SLF001
+        str(payload["session_authority_mutex_name"]), 0
+    )
+    assert authority is not None
+    try:
+        _write_active(control_root, payload)
+        completed = _run_powershell_harness(tmp_path, f"""
+$env:KMTECH_LABEL_WRITER_TEST_MODE = '1'
+$env:KMTECH_LABEL_WRITER_CONTROL_ROOT = '{_quote(control_root)}'
+foreach ($token in @('', '{token}')) {{
+    try {{
+        $lease = Enter-LabelWriterDelegatedOperation -ControlRoot '{_quote(control_root)}' -SessionId '{payload["session_id"]}' -AttemptId '{payload["attempt_id"]}' -ReplacementTransactionId '{payload["replacement_transaction_id"]}' -DelegationToken $token -Source 'canonical_placement'
+        Exit-LabelWriterAdmission $lease
+        "ADMITTED:$($token.Length)"
+    }} catch {{ "DENIED:$($token.Length):$($_.Exception.Message)" }}
+}}
+""")
+    finally:
+        authority.release()
+
+    assert completed.returncode == 0, completed.stderr
+    # An empty token would reduce the check to the readable session tuple.
+    assert completed.stdout.split() == [
+        "DENIED:0:LABEL_WRITER_FENCE_DELEGATION_TOKEN_INVALID",
+        "ADMITTED:64",
+    ]
+
+
 def test_writer_started_while_placement_holds_admission_is_denied_nonmutating(
     tmp_path: Path,
 ) -> None:

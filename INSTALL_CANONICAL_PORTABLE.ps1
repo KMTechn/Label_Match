@@ -510,8 +510,8 @@ shared_transition = all(
 
 # FRESH-SERVER-PINS-BEGIN
 # Exact a4b2aee / 75858ca Git LF preimages; no mixed release or semantic wildcard.
-fresh_release_pairs = [{'app/current_user_onboarding.py': ('02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7', '3149589a1e0f06ac391d3f2df340b1a511a868a57d7c03a910844e791180682e'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'f3e0387817f26d912770b97dc8c3dc5201e5bf957a3ce644d9402ed353c4ab3d'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'c3e34966c344fd441d90088ce00c92995d10f95ac02d08a8b9290913f9e78d2b'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '5f42240609079cb7026e0a53c9a020e6185cc86282ff46fbd172e2da196b3e39'), 'app/tools/register_label_match_worker_pc.py': ('e9b60577911e8c73b7aa0cf093b8334c609107bda5869b39ba43acc5e89a85f3', '4e94c89938b2f460d83111e6e1263579949c86093423e9c20c06773dd0cac5a9'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '8f27b26266cd36f0beefb92c6be8c38404acb70243126f586f801bfbc952d7f6'), 'app/Label_Match.py': ('876e57a539bda1a3f3f6ce74167745b2888c94f22ed72977a167c209fd7462af', '71a57b9a866eaadfb7e4cff52f5f51440e4a30fc0470213bd22bf05d0f83e0e4')}, {'app/current_user_onboarding.py': ('02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7', '3149589a1e0f06ac391d3f2df340b1a511a868a57d7c03a910844e791180682e'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'f3e0387817f26d912770b97dc8c3dc5201e5bf957a3ce644d9402ed353c4ab3d'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'c3e34966c344fd441d90088ce00c92995d10f95ac02d08a8b9290913f9e78d2b'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '5f42240609079cb7026e0a53c9a020e6185cc86282ff46fbd172e2da196b3e39'), 'app/tools/register_label_match_worker_pc.py': ('e9b60577911e8c73b7aa0cf093b8334c609107bda5869b39ba43acc5e89a85f3', '4e94c89938b2f460d83111e6e1263579949c86093423e9c20c06773dd0cac5a9'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '8f27b26266cd36f0beefb92c6be8c38404acb70243126f586f801bfbc952d7f6')}]
-fresh_additions = {'app/fresh_server_transition.py': '62605252ea8486d4723a0fb7a8d62feadd77f073a6e3a8b9a5e78f30d072811d'}
+fresh_release_pairs = [{'app/current_user_onboarding.py': ('02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7', '3149589a1e0f06ac391d3f2df340b1a511a868a57d7c03a910844e791180682e'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'f3e0387817f26d912770b97dc8c3dc5201e5bf957a3ce644d9402ed353c4ab3d'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'c3e34966c344fd441d90088ce00c92995d10f95ac02d08a8b9290913f9e78d2b'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '5f42240609079cb7026e0a53c9a020e6185cc86282ff46fbd172e2da196b3e39'), 'app/tools/register_label_match_worker_pc.py': ('e9b60577911e8c73b7aa0cf093b8334c609107bda5869b39ba43acc5e89a85f3', '4e94c89938b2f460d83111e6e1263579949c86093423e9c20c06773dd0cac5a9'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '08c68ea5505bab2b867442ae23c3670b56d910035b3baee91bdcbfb106f9f280'), 'app/Label_Match.py': ('876e57a539bda1a3f3f6ce74167745b2888c94f22ed72977a167c209fd7462af', '71a57b9a866eaadfb7e4cff52f5f51440e4a30fc0470213bd22bf05d0f83e0e4')}, {'app/current_user_onboarding.py': ('02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7', '3149589a1e0f06ac391d3f2df340b1a511a868a57d7c03a910844e791180682e'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'f3e0387817f26d912770b97dc8c3dc5201e5bf957a3ce644d9402ed353c4ab3d'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'c3e34966c344fd441d90088ce00c92995d10f95ac02d08a8b9290913f9e78d2b'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '5f42240609079cb7026e0a53c9a020e6185cc86282ff46fbd172e2da196b3e39'), 'app/tools/register_label_match_worker_pc.py': ('e9b60577911e8c73b7aa0cf093b8334c609107bda5869b39ba43acc5e89a85f3', '4e94c89938b2f460d83111e6e1263579949c86093423e9c20c06773dd0cac5a9'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '08c68ea5505bab2b867442ae23c3670b56d910035b3baee91bdcbfb106f9f280')}]
+fresh_additions = {'app/fresh_server_transition.py': '5639f6005728ed04126a45f1c4b920290f200106b083c9a6240199ec41a277af'}
 # FRESH-SERVER-PINS-END
 fresh_replacements = next((replacements for replacements in fresh_release_pairs if all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -1385,12 +1385,13 @@ function Invoke-LabelFreshServerTransition {
     $freshReadback | ConvertTo-Json -Depth 12
     Remove-Item -LiteralPath $freshPlan
     if ($PlanOnly -or $FreshTransitionAction -ceq 'Status') { return }
-    if ([string]$freshReadback.phase -ceq 'RESTORED' -and $FreshTransitionAction -ceq 'Restore') { return }
     if ($FreshTransitionAction -ceq 'Restore' -and -not [bool]$freshReadback.restore_possible) {
         throw ([string]$freshReadback.restore_reason + ': ' + [string]$freshReadback.archive_root)
     }
-    if ([string]$freshReadback.phase -ceq 'ACTIVATED' -and $FreshTransitionAction -cne 'Restore') { return }
-    if (-not $ConfirmFreshServerRegistration -and $FreshTransitionAction -cne 'Restore') {
+    # A completed record never starts another fence. It is final only after the
+    # fence that wrote it is gone; until then Status reports FENCE_RELEASE_PENDING.
+    $freshTerminal = [string]$freshReadback.phase -cin @('ACTIVATED', 'RESTORED')
+    if (-not $freshTerminal -and -not $ConfirmFreshServerRegistration -and $FreshTransitionAction -cne 'Restore') {
         throw 'ConfirmFreshServerRegistration is required after reviewing the target and archive plan.'
     }
 
@@ -1408,6 +1409,60 @@ function Invoke-LabelFreshServerTransition {
         [Security.AccessControl.AccessControlSections]::Access)
     [IO.Directory]::SetAccessControl($freshAudit, $freshAcl)
     $freshOwnerPath = Join-Path $freshAudit 'installer-owner.json'
+    if ($freshTerminal) {
+        if ([string]$freshReadback.completion -ceq 'FENCE_RELEASE_PENDING' -and $FreshTransitionAction -cin @('Resume', 'Restore')) {
+            # Support Resume/Restore finishes only this transition's ended owner.
+            # Another transition, a live owner or an unbound fence stays in place.
+            $terminalFenceBytes = PinnedFileBytes (Join-Path $source 'tools\label_writer_fence.ps1') `
+                ([string]$freshSourceInventory.critical_file_sha256.writer_fence_helper)
+            . ([ScriptBlock]::Create((New-Object Text.UTF8Encoding($false, $true)).GetString($terminalFenceBytes)))
+            $Script:LabelWriterFenceAdmissionProductionRoot = if ($testMode) { '' } else { $freshControl }
+            $terminalAuthority = $freshReadback.terminal_authority
+            $terminalOwnerPresent = Test-Path -LiteralPath $freshOwnerPath
+            $terminalOwner = if ($terminalOwnerPresent) {
+                Get-Content -LiteralPath $freshOwnerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            } else { $null }
+            $terminalAdmission = Enter-LabelWriterAdmission $freshControl
+            try {
+                $terminalFence = Read-LabelWriterFence $freshControl -AllowAbsent
+                if ($null -ne $terminalFence) {
+                    if ($null -eq $terminalOwner -or $null -eq $terminalAuthority -or
+                        [string]$terminalOwner.schema -cne 'label-fresh-installer-owner-v1' -or
+                        [string]$terminalOwner.sid -cne $freshSid -or -not (Same ([string]$terminalOwner.install_root) $install) -or
+                        [string]$terminalOwner.packet -cne (Sha (Join-Path $source 'portable-manifest.json')) -or
+                        [string]$terminalOwner.input_sha256 -cne (Sha $freshInput) -or
+                        [string]$terminalFence.session_id -cne [string]$terminalAuthority.session_id -or
+                        [string]$terminalFence.attempt_id -cne [string]$terminalAuthority.attempt_id -or
+                        [string]$terminalFence.replacement_transaction_id -cne [string]$terminalAuthority.replacement_transaction_id -or
+                        [string]$terminalOwner.session_id -cne [string]$terminalFence.session_id -or
+                        [string]$terminalOwner.attempt_id -cne [string]$terminalFence.attempt_id -or
+                        [string]$terminalOwner.transaction_id -cne [string]$terminalFence.replacement_transaction_id -or
+                        (Test-LabelWriterSessionAuthorityHeldByOther ([string]$terminalFence.session_authority_mutex_name))) {
+                        throw ('Only the ended owner of this completed transition releases its fence: ' + [string]$freshReadback.next_action)
+                    }
+                    [void](Stop-LabelWriterFence $freshControl ([string]$terminalFence.session_id) `
+                        ([string]$terminalFence.attempt_id) ([string]$terminalFence.replacement_transaction_id))
+                }
+            }
+            finally { Exit-LabelWriterAdmission $terminalAdmission }
+        }
+        elseif ([string]$freshReadback.completion -cne 'COMPLETE' -or
+            ([string]$freshReadback.phase -ceq 'RESTORED' -and $FreshTransitionAction -ceq 'Prepare')) {
+            throw ('A completed transition starts no new fence: ' + [string]$freshReadback.next_action)
+        }
+        'fresh_transition_status=PASS'
+        return
+    }
+    if (-not $testMode -and [bool]$freshReadback.machine_required) {
+        # The elevated helper binds this user's control root through ProfileList.
+        # Refuse before any fence when that is not this LOCALAPPDATA.
+        $freshProfileKey = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $freshSid
+        $freshProfileLocal = Join-Path ([Environment]::ExpandEnvironmentVariables([string](
+            Get-ItemProperty -LiteralPath $freshProfileKey -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath)) 'AppData\Local'
+        if (-not (Same $freshProfileLocal $freshLocal)) {
+            throw 'LOCALAPPDATA is not the profile default the machine helper binds; administrator support is required before any change.'
+        }
+    }
     $freshInstalled = Test-Path -LiteralPath $install
     if ($freshInstalled) {
         [void](Manifest $install $SkipSignatureValidationForTest)

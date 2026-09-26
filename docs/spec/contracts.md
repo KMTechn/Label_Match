@@ -7,9 +7,13 @@
 
 `PLANNED → QUIESCED → ARCHIVE_VERIFIED → DETACHED → REGISTERING → REGISTERED → ACTIVATED`를 원 SID·MachineGuid·packet·대상·공유 키에 결속한다. 기존 canonical writer fence/authority와 EnrollmentMutex를 쓰고 만료된 동일 전환만 새 attempt로 재개한다. shared current-user KSP는 open-existing만 허용하며 생성·수리·삭제·회전·export를 하지 않는다. old v2 receipt가 다른 PC/키에 속하면 거부한다.
 
+완료 기록(ACTIVATED·RESTORED)은 그 기록을 쓴 writer fence가 풀린 뒤에만 완료다. 요약의 `completion`은 그 fence가 남으면 `FENCE_RELEASE_PENDING`, 이 전환의 것이 아닌 잠금이면 `FENCE_BLOCKED`, 잠금이 없으면 `COMPLETE`이며 `next_action`에 한국어 다음 동작을 둔다. 완료 기록 뒤 실행은 새 fence를 시작하지 않는다. 지원 `Resume`/`Restore`만 journal 마지막 attempt의 authority와 installer owner 기록(SID·설치 root·packet·입력 SHA)에 정확히 결속되고 authority가 끝난 fence를 풀어 마무리한다. 일반 시작 경로는 죽은 owner의 fence를 인수·삭제하지 않는다.
+
 보관은 원본 read-only snapshot → 보호된 사본 byte/membership 검증 → 같은 부모의 비활성 rename 순서다. 신원/manifest/credential/receipt/status, profile/token/TLS, queue/relay DB와 sidecar, 업무 DB/journal/CSV/spool/세션/lease keyring, custom root와 이전 onboarding ledger, 앱 전용 ProgramData fallback 및 Run/task 정의를 포함한다. SQLite 건수는 사본에서만 읽으며 UNKNOWN/미전송은 별도 확인 없으면 거부한다. live writer fence/control·공유 legacy profile·다른 앱은 이동하지 않는다. HKLM 환경 앵커는 값 출력 없이 보관 전 거부한다.
 
 DETACHED에서 ABSENT를 확인한다. 같은 candidate·manifest·키로 등록하고 응답 유실은 possession reattach로만 처리한다. 응답 신원/receipt/fingerprint/scope를 검증하고 DPAPI 보호 저장한 뒤 정상 profile/credential 게시기를 사용한다(기존 token rotation 금지 유지). 새 앱 전용 runtime binding이 GUI·onboarding·profile resolver에 우선하며 옛 root/credential/queue를 다시 탐색하지 않는다. 새 첫 lease·relay ALIVE 확인 뒤에만 Run을 활성화한다.
+
+보관 뒤 새 업무 0건 검사는 등록이 게시한 새 settings만, 게시 전에 journal에 남긴 정확한 경로·SHA256으로 제외한다(원자 교체가 남긴 같은 bytes의 사본 포함). 그 밖의 파일과 bytes가 바뀐 settings는 새 업무로 거부한다. 새 profile 게시 위치가 data/queue/spool root 안인 배치는 구분할 수 없으므로 원본 분리 전에 거부한다.
 
 **복원은 REGISTERING 전만 지원한다.** 그 뒤에는 새 서버 등록이 시작됐을 수 있으므로 자동 rollback/retirement 증명 형식이 없고 보관 위치와 관리자 지원을 안내한다. 사전 복원도 원 server/client 쌍 복귀 확인·동일 SID/키·정지·원본 bytes/ACL/속성·Run/task/stop 대조가 필요하다. 중단 사본과 UNKNOWN attempt는 보존하며 새 업무를 옛 서버로 되돌리지 않는다.
 

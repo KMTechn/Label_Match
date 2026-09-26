@@ -506,6 +506,20 @@ function Invoke-FreshMachinePreservation {
         -not $WriterFenceFunctionsPreloaded -or -not $BootstrapIntegrityPreloaded) {
         throw 'Fresh machine preservation requires the pinned canonical helper.'
     }
+    # Bind the caller's inputs here: an empty delegation would skip the guard's
+    # source/authority checks, and any other root or journal is not the
+    # original user's transition.
+    if ($WriterFenceDelegationToken.Length -lt 32 -or $FreshOperatorSid -cnotmatch '^S-1-5-21-[0-9-]+$') {
+        throw 'Fresh machine preservation requires the live installer delegation for the original user.'
+    }
+    $operatorLocal = if ($testOverride) { Get-StrictFullPath $OperatorLocalAppDataRoot 'operator LOCALAPPDATA' } else {
+        $profileKey = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $FreshOperatorSid
+        Join-Path ([Environment]::ExpandEnvironmentVariables([string](
+            Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath)) 'AppData\Local'
+    }
+    if (-not (Test-SamePath $WriterFenceControlRoot (Join-Path $operatorLocal 'KMTech\DirectSync\label_match\control\writer-session'))) {
+        throw 'Machine preservation fence is not the original user canonical control root.'
+    }
     $lease = Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot `
         -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
         -ReplacementTransactionId $WriterFenceReplacementTransactionId `
@@ -527,6 +541,24 @@ function Invoke-FreshMachinePreservation {
         if ($state.target.sid -cne $FreshOperatorSid -or
             $state.target.packet -cne (Get-FileSha256 (Join-Path $SourceRoot 'portable-manifest.json'))) {
             throw 'Machine preservation PC user/packet differs.'
+        }
+        $pointer = Get-Content -LiteralPath (Join-Path $operatorLocal 'KMTech\Label_Match\server-transition\active-transition.json') `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+        $attempts = @($state.attempts)
+        if ([string]$pointer.schema -cne 'label-match-fresh-server-transition-v1' -or
+            -not (Test-SamePath ([string]$pointer.journal) $journal) -or
+            -not (Test-SamePath (Join-Path ([string]$state.paths.control_dir) 'fresh-server-transition.json') $journal) -or
+            $attempts.Count -eq 0) {
+            throw 'Fresh journal is not the original user current transition record.'
+        }
+        $attempt = $attempts[$attempts.Count - 1]
+        $attemptKind = if ($null -ne $attempt.PSObject.Properties['kind']) { [string]$attempt.kind } else { '' }
+        if ([string]$attempt.status -cne 'UNKNOWN' -or
+            $attemptKind -cne $(if ($FreshMachineAction -ceq 'Restore') { 'restore' } else { '' }) -or
+            [string]$attempt.authority.session_id -cne $WriterFenceSessionId -or
+            [string]$attempt.authority.attempt_id -cne $WriterFenceAttemptId -or
+            [string]$attempt.authority.replacement_transaction_id -cne $WriterFenceReplacementTransactionId) {
+            throw 'Machine preservation is not bound to the current transition attempt.'
         }
         $machine = Get-StrictFullPath ([string]$state.machine_root) 'machine root'
         if (-not $testOverride -and -not (Test-SamePath $machine 'C:\ProgramData')) { throw 'Noncanonical machine root.' }

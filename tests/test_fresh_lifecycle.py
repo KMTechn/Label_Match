@@ -1,5 +1,6 @@
 """Exercise archive -> real registration publication -> deferred activation."""
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -17,6 +18,19 @@ from tests.test_current_user_onboarding import _ready_state
 
 @pytest.fixture
 def lifecycle(fresh, candidate, monkeypatch):
+    return _archived(fresh, monkeypatch)
+
+
+@pytest.fixture
+def nested_lifecycle(fresh, candidate, monkeypatch):
+    """The supported LABEL_MATCH_SETTINGS_PATH=<data root>/app_settings.json placement."""
+    transition, env, paths, target, archive = fresh
+    paths = replace(paths, settings_path=paths.data_root / "app_settings.json")
+    env = dict(env, LABEL_MATCH_SETTINGS_PATH=str(paths.settings_path))
+    return _archived((transition, env, paths, target, archive), monkeypatch)
+
+
+def _archived(fresh, monkeypatch):
     transition, env, paths, target, archive = fresh
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -152,3 +166,118 @@ def test_activation_defers_run_until_first_lease_and_relay(lifecycle, monkeypatc
         resumed = transition.activate_fresh_server(paths, environ=env)
         assert resumed["phase"] == "ACTIVATED"
         assert resumed["attempts"][-1]["status"] == "PASS"
+
+
+def _activate_with_boundaries(transition, env, paths, monkeypatch):
+    """Real deferred onboarding; only OS task/relay/Run and the network lease are replaced."""
+    import current_user_scheduled_task as tasks
+    import user_relay
+    real_onboard = onboarding.onboard_current_user
+
+    def deferred(*args, **kwargs):
+        assert kwargs["defer_activation"] is True
+        kwargs["require_bootstrap_integrity"] = False
+        kwargs["autostart_installer"] = lambda *a: pytest.fail("Run enabled by deferred onboarding")
+        kwargs["relay_launcher"] = lambda *a: pytest.fail("relay started by deferred onboarding")
+        return real_onboard(*args, **kwargs)
+
+    monkeypatch.setattr(onboarding, "onboard_current_user", deferred)
+    monkeypatch.setattr(transition, "_require_quiescence", lambda *a: {"status": "QUIESCED", "relay": {}})
+    monkeypatch.setattr(transition, "_first_lease", lambda *a: {"status": "ACTIVE", "server_grant_accepted": True})
+    monkeypatch.setattr(tasks, "remove_current_user_scheduled_task", lambda *a: {"status": "ABSENT"})
+    monkeypatch.setattr(user_relay, "start_user_relay_process", lambda *a: {"status": "ALIVE"})
+    monkeypatch.setattr(user_relay, "install_user_relay_autostart", lambda *a: {"status": "PASS"})
+    monkeypatch.setattr(user_relay, "remove_user_relay_autostart", lambda *a: {"status": "PASS"})
+    monkeypatch.setattr(user_relay, "request_user_relay_stop", lambda *a: {"status": "ABSENT"})
+    return transition.activate_fresh_server(paths, environ=env)
+
+
+@pytest.mark.parametrize("interruption", ["none", "after_settings", "atomic_copy_left"])
+def test_settings_published_inside_the_data_root_reach_activation(nested_lifecycle, monkeypatch, interruption):
+    transition, env, paths, before, peer = nested_lifecycle
+    if interruption == "after_settings":
+        # Crash after the new settings exist but before REGISTERED is durable.
+        publish = transition._publish_runtime_binding
+        calls = []
+
+        def interrupted(*args):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("interrupted after settings publication")
+            return publish(*args)
+
+        monkeypatch.setattr(transition, "_publish_runtime_binding", interrupted)
+    elif interruption == "atomic_copy_left":
+        # A locked target can leave the complete atomic copy beside the settings.
+        write = transition._write_json_atomic
+
+        def left_copy(path, payload):
+            if Path(path) == paths.settings_path and not left:
+                write(path.with_name("." + path.name + ".4242.aaaa.tmp"), payload)
+                left.append(path)
+                raise PermissionError("settings target locked")
+            return write(path, payload)
+
+        left = []
+        monkeypatch.setattr(transition, "_write_json_atomic", left_copy)
+    if interruption != "none":
+        with pytest.raises(OSError):
+            transition.register_fresh_server(paths, environ=env)
+        assert transition._json(transition.transition_record_path(paths, env), 16 * 1024 * 1024)["phase"] == "REGISTERING"
+    registered = transition.register_fresh_server(paths, environ=env)
+    new = transition._bound_paths(registered, new=True)
+    assert registered["phase"] == "REGISTERED" and len(peer.calls) == 1
+    assert new.settings_path.parent == new.data_root and new.settings_path.is_file()
+    assert not (new.data_root / "old.csv").exists()
+    result = _activate_with_boundaries(transition, env, paths, monkeypatch)
+    assert result["phase"] == "ACTIVATED"
+    assert json.loads(new.settings_path.read_text(encoding="utf-8"))["custom_save_path"] == str(new.data_root)
+
+
+@pytest.mark.parametrize("new_work", ["business_csv", "settings_changed", "partial_atomic_copy"])
+def test_real_new_local_work_beside_published_settings_is_still_refused(nested_lifecycle, monkeypatch, new_work):
+    transition, env, paths, before, peer = nested_lifecycle
+    registered = transition.register_fresh_server(paths, environ=env)
+    new = transition._bound_paths(registered, new=True)
+    if new_work == "business_csv":
+        (new.data_root / "포장실작업이벤트로그_new_20260927.csv").write_bytes(b"NEW-BUSINESS\r\n")
+    elif new_work == "settings_changed":
+        settings = json.loads(new.settings_path.read_text(encoding="utf-8"))
+        settings["custom_save_path"] = str(new.data_root.parent / "elsewhere")
+        new.settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    else:
+        (new.data_root / ("." + new.settings_path.name + ".4242.bbbb.tmp")).write_bytes(new.settings_path.read_bytes()[:7])
+    with pytest.raises(transition.FreshTransitionError, match="새 로컬 파일"):
+        _activate_with_boundaries(transition, env, paths, monkeypatch)
+    state = transition._json(transition.transition_record_path(paths, env), 16 * 1024 * 1024)
+    assert state["phase"] == "REGISTERED"
+
+
+def test_status_keeps_the_completed_record_in_progress_until_its_fence_is_released(lifecycle, fresh, monkeypatch, tmp_path):
+    import writer_session_fence as fence
+    from tests.test_writer_session_fence import _payload, _write_active
+    transition, env, paths, before, peer = lifecycle
+    _transition, _env, _paths, target, archive = fresh
+    transition.register_fresh_server(paths, environ=env)
+    activated = _activate_with_boundaries(transition, env, paths, monkeypatch)
+    payload = _payload(delegated_sources=["fresh_server_transition"], token="t" * 64)
+    payload.update(activated["attempts"][-1]["authority"])
+    payload["session_authority_mutex_name"] = fence.session_authority_mutex_name(
+        payload["session_id"], payload["attempt_id"], payload["orchestrator_sha256"],
+        payload["replacement_transaction_id"], payload["writer_contract_sha256"])
+    control = fence.canonical_control_root()
+    _write_active(control, payload)
+
+    def status():
+        result = tmp_path / "status.json"
+        assert transition.transition_main(["--app-root", str(paths.app_root), "--transition-input", str(target),
+                                           "--archive-volume", str(archive), "--action", "status",
+                                           "--result-path", str(result)]) == 0
+        return json.loads(result.read_text(encoding="utf-8"))
+
+    pending = status()
+    assert pending["phase"] == "ACTIVATED"
+    assert pending["completion"] == "FENCE_RELEASE_PENDING" and "Resume" in pending["next_action"]
+    assert pending["terminal_authority"] == activated["attempts"][-1]["authority"]
+    (control / "active.json").unlink()
+    assert status()["completion"] == "COMPLETE"

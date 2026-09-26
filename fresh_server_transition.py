@@ -33,7 +33,7 @@ from current_user_onboarding import (
 )
 from enrollment_mutex import EnrollmentMutex
 from logistics_runtime_profile import assert_path_has_no_reparse_components
-from writer_session_fence import active_fence, writer_admission
+from writer_session_fence import WriterFenceError, _named_mutex_held_by_other, active_fence, writer_admission
 
 
 SCHEMA = "label-match-fresh-server-transition-v1"
@@ -41,6 +41,7 @@ INPUT_SCHEMA = "kmtech.fresh-transition.v1"
 JOURNAL_NAME = "fresh-server-transition.json"
 TERMINAL_PHASES = {"ACTIVATED", "RESTORED"}
 UNSENT_CONFIRMATION = "옛 미전송 자료는 보관만 하며 새 서버에 보내지 않습니다"
+AUTHORITY_FIELDS = ("session_id", "attempt_id", "replacement_transaction_id")
 
 
 class FreshTransitionError(ValueError):
@@ -555,6 +556,12 @@ def prepare_fresh_server_registration(
             if previous["phase"] == "ACTIVATED":
                 _completed_readback(previous)
             return previous
+    # New work is recognized only beside the exactly recorded settings. Other
+    # publications inside a new-work root could not be told apart from business.
+    publication = Path(env["LOCALAPPDATA"]) / "KMTech/Logistics/profiles/Label_Match"
+    if any(_under(publication, root) for root in (paths.data_root, paths.queue_dir, paths.spool_dir)):
+        raise FreshTransitionError("새 서버 profile 게시 위치가 업무 폴더 안이라 새 업무와 구분할 수 없습니다; "
+                                   "원본을 분리하기 전에 관리자 지원이 필요합니다")
     roots = _state_roots(paths, env) if previous is None else [Path(e["source"]) for e in previous["entries"]]
     volume = Path(os.path.abspath(archive_volume))
     assert_path_has_no_reparse_components(volume, label="보존 볼륨")
@@ -704,6 +711,37 @@ def _completed_readback(state: dict) -> None:
         raise FreshTransitionError("완료 전환의 서버 대상 readback이 다릅니다")
 
 
+def _completion(state: dict) -> dict:
+    """A completed record is final only once the writer fence that wrote it is released."""
+    kind = {"ACTIVATED": "activation", "RESTORED": "restore"}.get(state["phase"])
+    attempt = state["attempts"][-1] if state.get("attempts") else {}
+    authority = attempt.get("authority") if kind and attempt.get("kind") == kind else None
+    authority = {name: authority.get(name) for name in AUTHORITY_FIELDS} if isinstance(authority, dict) else None
+    result = {"completion": "IN_PROGRESS", "next_action": "", "terminal_authority": authority}
+    if kind is None:
+        return result
+    try:
+        fence = active_fence()
+    except WriterFenceError:
+        fence = {}
+    if fence is None:
+        result["completion"] = "COMPLETE"
+        if kind == "restore":
+            result["next_action"] = "복원이 끝난 전환입니다. 다시 새 서버에 등록하려면 새 지원 전환 기록이 필요합니다(관리자 지원)"
+    elif not fence or authority is None or any(fence.get(name) != authority[name] for name in AUTHORITY_FIELDS):
+        result.update(completion="FENCE_BLOCKED", next_action=(
+            "이 전환이 남긴 잠금이 아닌 쓰기 잠금이 있습니다. 풀지 않고 그대로 둡니다. "
+            "그 설치 작업을 마무리하거나 관리자 지원을 요청하세요"))
+    elif _named_mutex_held_by_other(fence["session_authority_mutex_name"]):
+        result.update(completion="FENCE_RELEASE_PENDING",
+                      next_action="전환 설치기가 아직 실행 중입니다. 끝날 때까지 기다린 뒤 Status로 다시 확인하세요")
+    else:
+        result.update(completion="FENCE_RELEASE_PENDING", next_action=(
+            "이 전환의 쓰기 잠금이 남아 있습니다. 같은 packet과 입력으로 "
+            + ("Restore를" if kind == "restore" else "Resume을") + " 실행해 마무리하세요"))
+    return result
+
+
 def _validate_local_owner(state: dict) -> None:
     pc, sid, guid = _runtime_identity()
     if (sid != state["target"]["sid"] or guid != state["machine_guid"]
@@ -736,14 +774,20 @@ def _publish_runtime_binding(paths, state: dict, env: Mapping[str, str]) -> None
     state["runtime_binding_path"] = str(binding)
 
 
-def _assert_no_new_work(paths: CurrentUserOnboardingPaths) -> None:
+def _assert_no_new_work(paths: CurrentUserOnboardingPaths, published: dict | None = None) -> None:
     from contextlib import closing
+    settings = Path(published["path"]) if published else None
     for root in {paths.data_root, paths.queue_dir, paths.spool_dir}:
         if not root.exists():
             continue
         for file in root.rglob("*"):
             assert_path_has_no_reparse_components(file, label="새 업무 확인")
             if not file.is_file():
+                continue
+            if settings is not None and (file == settings or (
+                    file.parent == settings.parent and file.name.startswith("." + settings.name + ".")
+                    and file.name.endswith(".tmp"))) and _file_sha256(file) == published["sha256"]:
+                # Exactly the settings bytes this transition published (or their unreplaced atomic copy).
                 continue
             if file.suffix.lower() in {".db", ".sqlite3"}:
                 with closing(sqlite3.connect(file.as_uri() + "?mode=ro", uri=True)) as connection:
@@ -830,7 +874,7 @@ def register_fresh_server(paths: CurrentUserOnboardingPaths, *, environ: Mapping
     with EnrollmentMutex(), _transition_writer():
         if state["phase"] == "REGISTERED":
             return state
-        _assert_no_new_work(paths)
+        _assert_no_new_work(paths, state.get("published_settings"))
         state["phase"] = "REGISTERING"
         attempt = {"id": uuid.uuid4().hex, "kind": "registration", "started_at": _now(), "status": "UNKNOWN"}
         state["attempts"].append(attempt)
@@ -863,7 +907,14 @@ def register_fresh_server(paths: CurrentUserOnboardingPaths, *, environ: Mapping
             except (FreshTransitionError, OSError, ValueError):
                 old_settings = {}
             settings.update(_safe_ui_preferences(old_settings))
+            # Record the exact bytes before they exist, so a supported settings
+            # path inside the data root is never counted as new local work.
+            raw = (json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            state["published_settings"] = {"path": str(paths.settings_path), "sha256": hashlib.sha256(raw).hexdigest()}
+            _save(paths, state)
             _write_json_atomic(paths.settings_path, settings)
+            if _file_sha256(paths.settings_path) != state["published_settings"]["sha256"]:
+                raise FreshTransitionError("새 설정 게시 bytes가 기록과 다릅니다")
             _publish_runtime_binding(paths, state, env)
             state.update(phase="REGISTERED", registration={"credential_epoch": report["credential_epoch"],
                          "action": report["registration_action"], "manifest_hash": report["manifest_hash"],
@@ -914,7 +965,7 @@ def activate_fresh_server(paths, *, environ: Mapping[str, str] | None = None) ->
     _require_authority()
     paths = _bound_paths(state, new=True)
     with _transition_writer(), _activation_attempt(paths, state):
-        _assert_no_new_work(paths)
+        _assert_no_new_work(paths, state.get("published_settings"))
         state["quiescence"] = _require_quiescence(paths, [])
         _save(paths, state)
         onboard_current_user(paths.app_root, environ=dict(env), server_base_url=state["target"]["origin"],
@@ -1102,6 +1153,7 @@ def transition_main(argv: list[str] | None = None) -> int:
         summary["restore_possible"] = result["phase"] not in {"REGISTERING", "REGISTERED", "ACTIVATED"}
         summary["restore_reason"] = ("원 server/client 복귀 확인 필요" if summary["restore_possible"] else
                                      "새 서버 등록이 시작됐을 수 있어 되돌릴 수 없음 — 관리자 지원 필요")
+        summary.update(_completion(result))
         if args.result_path:
             _write_json_atomic(Path(args.result_path), summary)
         print(json.dumps(summary, ensure_ascii=True))

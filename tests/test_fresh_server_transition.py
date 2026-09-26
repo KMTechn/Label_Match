@@ -140,6 +140,21 @@ def test_machine_roots_require_helper_before_any_rename(fresh):
     assert [e["source"] for e in state["entries"] if e["machine"]] == [str(legacy.parent.parent)]
 
 
+def test_publication_that_would_land_in_a_new_work_root_is_refused_before_detaching(fresh):
+    from dataclasses import replace
+    transition, env, paths, target, archive = fresh
+    _ready_state(paths)
+    profiles = Path(env["LOCALAPPDATA"]) / "KMTech/Logistics/profiles"
+    (profiles / "old.csv").write_bytes(b"old-business")
+    paths = replace(paths, data_root=profiles)
+    identity = paths.identity_path.read_bytes()
+    with pytest.raises(transition.FreshTransitionError, match="구분할 수 없"):
+        transition.prepare_fresh_server_registration(paths, target, archive, environ=env, plan_only=True)
+    assert paths.identity_path.read_bytes() == identity
+    assert (profiles / "old.csv").read_bytes() == b"old-business"
+    assert not archive.exists()
+
+
 def test_normal_onboarding_and_registration_block_during_transition(fresh, monkeypatch):
     import current_user_onboarding as onboarding
     from tools import register_label_match_worker_pc as registration

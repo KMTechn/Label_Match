@@ -6,7 +6,7 @@ $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
 $Script:LabelWriterFenceAdmissionProductionRoot = ''
-$Script:LabelWriterFenceInventorySha256 = '356e596ba9853a2ec4f64f24b299b57d60298afe3a7cb282110458d5a75efa9a'
+$Script:LabelWriterFenceInventorySha256 = 'caa16a8a933db43995d4956f7e5dcfcd120749ca056de7ca85128f4c89bf38c7'
 $Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
@@ -507,6 +507,9 @@ function Enter-LabelWriterDelegatedOperation {
         [string]$Source,
         [int]$TimeoutMilliseconds = 5000
     )
+    # Without the installer's token the owner check would rest on the readable
+    # session tuple alone, skipping source, expiry and live-authority checks.
+    if ($DelegationToken.Length -lt 32) { throw 'LABEL_WRITER_FENCE_DELEGATION_TOKEN_INVALID' }
     $lease = Enter-LabelWriterAdmission $ControlRoot $TimeoutMilliseconds
     try {
         [void](Assert-LabelWriterFenceOwner `
