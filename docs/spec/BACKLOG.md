@@ -1,5 +1,12 @@
 # Label_Match 진행·공백·추가 제안
 
+<a id="lm-fresh-server-d2"></a>
+## D2 fresh 서버 지원 전환
+
+명시 canonical 옵션·공통 v1 입력 결속·old READY/legacy/partial 보관/ABSENT·동일 KSP 등록/응답 유실 reattach·부분 게시 재개·첫 lease 뒤 자동시작·REGISTERING 전 복원을 구현한다([계약](contracts.md#fresh-server-transition), [운영](operations.md#fresh-server-transition)). 기존 READY 재사용과 token rotation 거부를 유지한다. 미완료 전환은 일반 onboarding/등록을 막고 같은 지원 전환만 재개한다.
+
+검증 경계: fake KSP/HTTPS/DPAPI headless, 격리 파일의 native helper bytes/ACL, 실패·binding 거부, stock/writer/pin 및 전체 headless 회귀를 RESULT에 기록한다. **남은 회사 수용**은 native KSP/DPAPI/UAC·실제 task/Run·11개 장비 대응·동일 URL 서버 교체·첫 F3/ACK·old 유입 0·로그온/재부팅이다. REGISTERING 이후 복원은 지원하지 않으며 별도 서버 퇴역 증명 프로토콜을 추가하지 않는다.
+
 <a id="lm-w9-lease-screen"></a>
 ## W9 · runtime lease 격리 자동 회복 이후 (w9calmleasefix)
 

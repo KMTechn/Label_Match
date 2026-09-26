@@ -37,6 +37,15 @@ def test_non_product_arguments_continue_to_gui_startup():
     assert product_host.dispatch_product_mode(["--ordinary-app-argument"]) is None
 
 
+def test_fresh_transition_mode_dispatches_support_lifecycle_without_gui(monkeypatch):
+    import fresh_server_transition
+    observed = []
+    monkeypatch.setattr(fresh_server_transition, "transition_main", lambda args: observed.append(args) or 4)
+    args = ["--app-root", "C:/synthetic-packet", "--action", "status"]
+    assert product_host.dispatch_product_mode([product_host.FRESH_SERVER_TRANSITION_MODE, *args]) == 4
+    assert observed == [args]
+
+
 def test_relay_mode_reuses_main_onedir_process_and_forwards_arguments(monkeypatch):
     observed = []
     monkeypatch.setattr(

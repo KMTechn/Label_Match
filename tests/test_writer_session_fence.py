@@ -303,7 +303,11 @@ def test_ordinary_production_root_keeps_literal_mutex_name_without_allocating_it
     assert fence.writer_admission_mutex_name(root, environ=environment) == fence.WRITER_MUTEX_NAME
 
 
-def test_worker_root_keeps_one_mutex_name_when_installer_runs_as_other_account(tmp_path: Path) -> None:
+def test_worker_root_keeps_one_mutex_name_when_installer_runs_as_other_account(tmp_path: Path, monkeypatch) -> None:
+    # This is the production namespace contract, independent of an enclosing
+    # test runner's explicit isolated writer-root pair.
+    monkeypatch.delenv("KMTECH_LABEL_WRITER_TEST_MODE", raising=False)
+    monkeypatch.delenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", raising=False)
     worker_local = tmp_path / "worker" / "AppData" / "Local"
     admin_local = tmp_path / "administrator" / "AppData" / "Local"
     worker_root = worker_local / "KMTech" / "DirectSync" / "label_match" / "control" / "writer-session"
@@ -527,6 +531,8 @@ def test_writer_started_while_placement_holds_admission_is_denied_nonmutating(
 
 def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
     source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8")
+    # Inspect the ordinary executable path, excluding support function bodies.
+    source = source[source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }"):]
 
     preimage = source.index("$taskBefore = ScheduledTaskSnapshot")
     fence_start = source.index("Start-LabelWriterFence")
@@ -546,6 +552,23 @@ def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
     )
     assert "WriterFenceFunctionsPreloaded = $true" in source
     assert "-DelegatedSources @('canonical_placement')" in source
+
+
+def test_fresh_transition_fences_before_archive_then_places_and_registers() -> None:
+    source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8")
+    source = source[source.index("function Invoke-LabelFreshServerTransition"):]
+    source = source[:source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
+    inventory = source.index("$freshSourceInventory = PortableInventory $source")
+    plan = source.index("Product $source '--fresh-server-transition'")
+    fence = source.index("Start-LabelWriterFence")
+    prepare = source.index("@('--action', 'prepare', '--defer-machine'")
+    placement = source.index("$freshPlacementExit = InvokeFrozenPlacementHelper")
+    register = source.index("@('--action', 'register')")
+    activate = source.index("@('--action', 'activate')")
+    stop = source.index("Stop-LabelWriterFence", activate)
+    assert inventory < plan < fence < prepare < placement < register < activate < stop
+    assert "Test-LabelWriterSessionAuthorityHeldByOther" in source
+    assert "[string]$previousOwner.input_sha256 -cne (Sha $freshInput)" in source
 
 
 def test_negative_admission_depth_fails_closed_instead_of_bypassing_active_fence(

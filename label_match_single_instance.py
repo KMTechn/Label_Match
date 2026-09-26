@@ -60,6 +60,10 @@ def resolve_data_scope(
     """
 
     env = os.environ if environment is None else environment
+    from logistics_runtime_profile import fresh_server_runtime_binding
+    binding = fresh_server_runtime_binding(env)
+    if binding:
+        return str(Path(binding["LABEL_MATCH_SAVE_DIR"]).resolve(strict=False))
     payload = settings
     if payload is None and settings_path:
         selected_path = Path(settings_path)

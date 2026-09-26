@@ -1,5 +1,18 @@
 # Label_Match 데이터·통합 계약
 
+<a id="fresh-server-transition"></a>
+## Fresh 서버 전환 (D2)
+
+`-PrepareFreshServerRegistration`만 옛 READY/legacy/partial 상태를 보관 후 분리한다. 일반 onboarding/등록은 전환 미완료 시 같은 지원 경로로 안내한다. 입력은 공통 `kmtech.fresh-transition.v1`의 origin/scope/deployment_id/packet/pc/sid/acceptance이며, 실제 packet·PC/SID·서버 수용 기록 SHA·source commit을 대조한다. 최초 challenge의 정확한 `404 producer_identity_not_found` 관측 전에 원본을 분리하지 않는다. health/등록/reattach는 HTTPS, proxy 환경 미사용, redirect 거부다.
+
+`PLANNED → QUIESCED → ARCHIVE_VERIFIED → DETACHED → REGISTERING → REGISTERED → ACTIVATED`를 원 SID·MachineGuid·packet·대상·공유 키에 결속한다. 기존 canonical writer fence/authority와 EnrollmentMutex를 쓰고 만료된 동일 전환만 새 attempt로 재개한다. shared current-user KSP는 open-existing만 허용하며 생성·수리·삭제·회전·export를 하지 않는다. old v2 receipt가 다른 PC/키에 속하면 거부한다.
+
+보관은 원본 read-only snapshot → 보호된 사본 byte/membership 검증 → 같은 부모의 비활성 rename 순서다. 신원/manifest/credential/receipt/status, profile/token/TLS, queue/relay DB와 sidecar, 업무 DB/journal/CSV/spool/세션/lease keyring, custom root와 이전 onboarding ledger, 앱 전용 ProgramData fallback 및 Run/task 정의를 포함한다. SQLite 건수는 사본에서만 읽으며 UNKNOWN/미전송은 별도 확인 없으면 거부한다. live writer fence/control·공유 legacy profile·다른 앱은 이동하지 않는다. HKLM 환경 앵커는 값 출력 없이 보관 전 거부한다.
+
+DETACHED에서 ABSENT를 확인한다. 같은 candidate·manifest·키로 등록하고 응답 유실은 possession reattach로만 처리한다. 응답 신원/receipt/fingerprint/scope를 검증하고 DPAPI 보호 저장한 뒤 정상 profile/credential 게시기를 사용한다(기존 token rotation 금지 유지). 새 앱 전용 runtime binding이 GUI·onboarding·profile resolver에 우선하며 옛 root/credential/queue를 다시 탐색하지 않는다. 새 첫 lease·relay ALIVE 확인 뒤에만 Run을 활성화한다.
+
+**복원은 REGISTERING 전만 지원한다.** 그 뒤에는 새 서버 등록이 시작됐을 수 있으므로 자동 rollback/retirement 증명 형식이 없고 보관 위치와 관리자 지원을 안내한다. 사전 복원도 원 server/client 쌍 복귀 확인·동일 SID/키·정지·원본 bytes/ACL/속성·Run/task/stop 대조가 필요하다. 중단 사본과 UNKNOWN attempt는 보존하며 새 업무를 옛 서버로 되돌리지 않는다.
+
 [w9 시험 감사](operations.md#test-audit-w9)는 기존 계약을 그대로 검증한다. bootstrap 전체 inventory는 신뢰된 `SharedCodeRoot`를 명시하고, F4 prepare에는 앱 parser가 검증한 정수 QT를 전달하며, relay ACK는 stdout 대신 durable status·queue·실제 수신 내용으로 확인한다. ProgramData 기본값 시험은 onboarding 상태가 없는 standalone 문맥을 명시한다.
 
 `Label_Match.DataManager`는 [저장 구현](../../label_data_manager.py)에 위임한다. clock·open·이벤트 투영·현재 세트 파일명은 호출 시점의 앱 callback으로 결속하며 A/C/P 저장 루트 우선순위, CSV flush/fsync·원자 JSON 교체와 기존 save/load 결과는 유지한다([LM-1](operations.md#module-boundaries-lm1)).

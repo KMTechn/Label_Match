@@ -31,6 +31,7 @@ from logistics_runtime_profile import (
     PROFILE_PATH_ENV,
     REQUIRED_ENV,
     load_logistics_runtime_profile,
+    fresh_server_runtime_binding,
     unprotect_current_user_secret,
 )
 from user_relay import (
@@ -287,6 +288,9 @@ def resolve_current_user_onboarding_paths(
     environ: Mapping[str, str] | None = None,
 ) -> CurrentUserOnboardingPaths:
     values = os.environ if environ is None else environ
+    binding = fresh_server_runtime_binding(values)
+    if binding:
+        values = {**values, **binding}
     selected_app_root = _resolved(app_root)
     local_app_data = str(values.get("LOCALAPPDATA") or "").strip()
     explicit_data_root = str(values.get(LABEL_MATCH_DATA_ROOT_ENV) or "").strip()
@@ -921,8 +925,23 @@ def onboard_current_user(
     relay_launcher: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
+    fresh_transition_id: str = "",
+    defer_activation: bool = False,
 ) -> dict[str, Any]:
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    from fresh_server_transition import transition_record_path
+    transition_path = transition_record_path(paths, environ)
+    if transition_path.exists():
+        transition = _read_json(transition_path, "fresh server transition", maximum_bytes=16 * 1024 * 1024)
+        if transition.get("phase") not in {"ACTIVATED", "RESTORED"}:
+            if (not fresh_transition_id or fresh_transition_id != transition.get("transition_id")
+                    or transition.get("phase") != "REGISTERED" or not defer_activation):
+                raise CurrentUserOnboardingError(
+                    "새 서버 등록 전환이 진행 중입니다. 지원 설치기의 상태 확인/이어서 등록/복원을 사용하세요.",
+                    report_path=transition_path, status="RECOVERY_REQUIRED",
+                    cause_code="FRESH_SERVER_TRANSITION_INCOMPLETE")
+            from fresh_server_transition import _require_authority
+            _require_authority()
     tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     for directory in (
         paths.data_root,
@@ -1136,6 +1155,16 @@ def onboard_current_user(
         settings_status = str(report["settings"].get("status") or "")
         if settings_status not in {"CREATED", "REUSED"}:
             raise ValueError("current-user settings placement was not proven")
+
+        if defer_activation:
+            if not fresh_transition_id:
+                raise ValueError("deferred activation requires the fresh transition binding")
+            apply_current_user_runtime_environment(paths, environ=environ)
+            report.update(status="REGISTERED", state_readback=state,
+                          server_registration_verified=True, relay_activation="DEFERRED",
+                          fresh_transition_id=fresh_transition_id)
+            _write_json_atomic(paths.onboarding_report_path, report)
+            return report
 
         stop_path = user_relay_stop_path(paths.direct_sync_root)
         report["stop_marker_release"] = _portable_stop_marker_release_preflight(

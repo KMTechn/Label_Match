@@ -377,7 +377,42 @@ def _test1_isolated_legacy_override_enabled() -> bool:
     return True
 
 
+def fresh_server_runtime_binding(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """App-specific binding published only by the explicit fresh transition.
+
+    Shared machine profiles remain untouched and cannot win a later fallback.
+    An invalid installed binding is diagnosed rather than falling back to old data.
+    """
+    values = os.environ if environ is None else environ
+    local = str(values.get("LOCALAPPDATA") or "").strip()
+    if not local:
+        return {}
+    path = Path(local) / "KMTech/Label_Match/server-transition/runtime-binding.json"
+    if not path.exists():
+        return {}
+    assert_path_has_no_reparse_components(path, label="fresh runtime binding")
+    if not 0 < path.stat().st_size <= MAX_PROFILE_BYTES:
+        raise LogisticsRuntimeConfigurationError("fresh runtime binding size is invalid")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise LogisticsRuntimeConfigurationError("fresh runtime binding is invalid") from exc
+    fields = {"LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_SETTINGS_PATH", "LABEL_MATCH_DIRECT_SYNC_ROOT", PROFILE_PATH_ENV}
+    if (not isinstance(value, dict) or set(value) != {"schema", "transition_id", "paths"}
+            or value["schema"] != "label-match-fresh-runtime-binding-v1"
+            or not re.fullmatch(r"[0-9a-f]{32}", str(value["transition_id"]))
+            or not isinstance(value["paths"], dict) or set(value["paths"]) != fields
+            or any(not isinstance(p, str) or not Path(p).is_absolute() for p in value["paths"].values())):
+        raise LogisticsRuntimeConfigurationError("fresh runtime binding fields are invalid")
+    for selected in value["paths"].values():
+        assert_path_has_no_reparse_components(selected, label="fresh runtime path")
+    return dict(value["paths"])
+
+
 def _runtime_environment(environ: Mapping[str, str] | None) -> Mapping[str, str]:
+    binding = fresh_server_runtime_binding(environ)
+    if binding:
+        return {**(os.environ if environ is None else environ), **binding, REQUIRED_ENV: "1"}
     if environ is not None:
         return environ
     if _test1_isolated_legacy_override_enabled():

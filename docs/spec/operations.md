@@ -1,5 +1,18 @@
 # Label_Match 운영·복구·검증
 
+<a id="fresh-server-transition"></a>
+## 옛 자료 보관 후 fresh 서버 등록
+
+원 Windows 사용자가 검증된 새 stock packet의 `INSTALL_CANONICAL_PORTABLE.ps1`을 실행한다. `-PrepareFreshServerRegistration -TransitionInputPath <공통-v1-JSON> -TransitionArchiveVolume D:\ -PlanOnly`로 PC/SID·새 origin/scope/deployment·packet·보관 목록·미전송/UNKNOWN을 확인한다. 실제 지원 실행에는 `-ConfirmFreshServerRegistration`을 주고 미전송/UNKNOWN이 있으면 `-ConfirmArchiveUnsent`로 “옛 미전송 자료는 보관만 하며 새 서버에 보내지 않습니다”를 별도로 승인한다. 일반 설치/GUI 실행은 이 전환을 자동 선택하지 않는다.
+
+`-FreshTransitionAction Status`는 기록을 확인한다. 중단 후 같은 packet/입력으로 `Resume`하고, 기존 owner가 살아 있거나 다른 SID/대상/키이면 거부한다. `Restore -ConfirmOldServerReady`는 REGISTERING 전만 가능하다. REGISTERING 이후 안내는 “새 서버 등록이 시작됐을 수 있어 되돌릴 수 없음 — 관리자 지원 필요”와 보관 위치다. 등록 응답 유실은 같은 candidate의 소유증명 재연결이며, credential 복사나 ID 변경으로 우회하지 않는다.
+
+보관 위치는 `<보존볼륨>/KMTech/server-transition/Label_Match/<UTC-transition>/`이며 `transition-result.json`, 검증된 `items/<번호>`, 중단 사본과 DPAPI 보호 응답을 보존한다. 원본은 같은 부모의 `.이름.fresh-<transition>`로 비활성 보존한다. 두 위치 모두 원 SID/SYSTEM/Administrators만 접근한다. 공개 요약은 경로·대상·건수·단계·복원 가능 여부만 출력하고 원 credential/token/키를 출력하지 않는다. 상세 journal은 보호된 사용자 control에 남으며 `%LOCALAPPDATA%/KMTech/Label_Match/server-transition`의 pointer로 custom root 소실 뒤에도 찾는다.
+
+8월 설치기의 앱 전용 `%ProgramData%/KMTech/Logistics/profiles/Label_Match`, `DirectSync/label_match`, historical `DirectSync/label-match-margin-r2`, 업무 data/settings는 기존 pinned 승격 helper의 고정 allowlist로 복사·검증·비활성 rename/사전 복원을 수행한다. 공유 `Logistics/runtime-profile.json`은 유지한다. 소유 SYSTEM task는 기존 지원 정지/해제 절차로 ABSENT 또는 DISABLED·실행 없음이 확인돼야 한다. HKLM profile/required/data/root 환경 앵커가 있으면 보관 전에 관리자 지원으로 중단하며 값은 출력하지 않는다. DPAPI/KSP 등록은 원 사용자로만 실행하고 승격 helper에서는 처리하지 않는다.
+
+회사 수용은 별도 랩에서 native KSP/DPAPI/UAC, 실제 옛 packet/ACL/Run/task, 동일 URL 교체, 로그온/재부팅, 새 scope 첫 F3 업무/ACK와 옛 미전송 유입 0을 확인한다. headless 검증은 이 현장 수용을 대신하지 않는다. 전환 자료 삭제는 이 기능의 범위 밖이며 보존 정책에 따른다.
+
 <a id="test-audit-w9"></a>
 ## W9 · 기존 21개 시험 실패 감사
 

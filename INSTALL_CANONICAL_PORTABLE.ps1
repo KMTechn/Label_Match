@@ -4,6 +4,13 @@ param(
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
     [string]$EvidencePath = "",
     [string]$ServerBaseUrl = "",
+    [switch]$PrepareFreshServerRegistration,
+    [string]$TransitionInputPath = "",
+    [string]$TransitionArchiveVolume = "",
+    [string]$FreshTransitionAction = "Prepare",
+    [switch]$ConfirmFreshServerRegistration,
+    [switch]$ConfirmArchiveUnsent,
+    [switch]$ConfirmOldServerReady,
     [switch]$PlanOnly,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$SkipSignatureValidationForTest
@@ -501,19 +508,42 @@ shared_transition = all(
     for relative, expected in shared_additions.items()
 )
 
+# FRESH-SERVER-PINS-BEGIN
+# Exact a4b2aee / 75858ca Git LF preimages; no mixed release or semantic wildcard.
+fresh_release_pairs = [{'app/current_user_onboarding.py': ('02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7', '3149589a1e0f06ac391d3f2df340b1a511a868a57d7c03a910844e791180682e'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'f3e0387817f26d912770b97dc8c3dc5201e5bf957a3ce644d9402ed353c4ab3d'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'c3e34966c344fd441d90088ce00c92995d10f95ac02d08a8b9290913f9e78d2b'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '5f42240609079cb7026e0a53c9a020e6185cc86282ff46fbd172e2da196b3e39'), 'app/tools/register_label_match_worker_pc.py': ('e9b60577911e8c73b7aa0cf093b8334c609107bda5869b39ba43acc5e89a85f3', '4e94c89938b2f460d83111e6e1263579949c86093423e9c20c06773dd0cac5a9'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '8f27b26266cd36f0beefb92c6be8c38404acb70243126f586f801bfbc952d7f6'), 'app/Label_Match.py': ('876e57a539bda1a3f3f6ce74167745b2888c94f22ed72977a167c209fd7462af', '71a57b9a866eaadfb7e4cff52f5f51440e4a30fc0470213bd22bf05d0f83e0e4')}, {'app/current_user_onboarding.py': ('02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7', '3149589a1e0f06ac391d3f2df340b1a511a868a57d7c03a910844e791180682e'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'f3e0387817f26d912770b97dc8c3dc5201e5bf957a3ce644d9402ed353c4ab3d'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'c3e34966c344fd441d90088ce00c92995d10f95ac02d08a8b9290913f9e78d2b'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '5f42240609079cb7026e0a53c9a020e6185cc86282ff46fbd172e2da196b3e39'), 'app/tools/register_label_match_worker_pc.py': ('e9b60577911e8c73b7aa0cf093b8334c609107bda5869b39ba43acc5e89a85f3', '4e94c89938b2f460d83111e6e1263579949c86093423e9c20c06773dd0cac5a9'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '8f27b26266cd36f0beefb92c6be8c38404acb70243126f586f801bfbc952d7f6')}]
+fresh_additions = {'app/fresh_server_transition.py': '62605252ea8486d4723a0fb7a8d62feadd77f073a6e3a8b9a5e78f30d072811d'}
+# FRESH-SERVER-PINS-END
+fresh_replacements = next((replacements for replacements in fresh_release_pairs if all(
+    (installed / relative).is_file() and (source / relative).is_file() and
+    release_digest(installed / relative) == before and release_digest(source / relative) == after
+    for relative, (before, after) in replacements.items()
+)), {})
+fresh_transition = bool(fresh_replacements and fresh_additions) and all(
+    not (installed / relative).exists() and (source / relative).is_file() and
+    release_digest(source / relative) == expected for relative, expected in fresh_additions.items()
+)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
-if candidate_sources != installed_sources:
+fresh_membership = [
+    ('fresh_server_transition', 'fresh_server_transition.py', '_transition_writer', 'bounded_context'),
+    ('fresh_machine_preservation', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation')]
+expected_sources = sorted(installed_sources + (fresh_membership if fresh_transition else []))
+if sorted(candidate_sources) != expected_sources:
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 for directory in ('app', 'runtime'):
     left, right = files(source, directory), files(installed, directory)
     additions = set(shared_additions) if shared_transition and directory == 'app' else set()
+    if fresh_transition and directory == 'app':
+        additions |= set(fresh_additions)
     if left.keys() != right.keys() | additions:
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     for relative, path in left.items():
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
         if integrity_order_transition and relative == integrity_order_path:
+            continue
+        if fresh_transition and relative in (fresh_replacements.keys() | fresh_additions.keys()):
             continue
         other = right[relative]
         if digest(path) == digest(other):
@@ -525,9 +555,12 @@ for directory in ('app', 'runtime'):
 for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence_contract.json'):
     if shared_transition and relative in shared_replacements:
         continue
+    if fresh_transition and relative in fresh_replacements:
+        continue
     if (source / relative).read_bytes() != (installed / relative).read_bytes():
         raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: ' + relative)
 compatibility = ('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else
+                 'PINNED_FRESH_SERVER_TRANSITION' if fresh_transition else
                  'PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX' if integrity_order_transition else
                  'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
@@ -955,7 +988,8 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall',
+        'FreshMachineAction','FreshMachineJournal','FreshMachineJournalSha256','FreshOperatorSid')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -986,6 +1020,14 @@ $invokeParameters = @{
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
 }
 $Script:LabelWriterFenceAdmissionProductionRoot = [string]$invokeParameters.WriterFenceControlRoot
+if ($null -ne $payload.parameters.PSObject.Properties['FreshMachineAction']) {
+    foreach ($name in @('FreshMachineAction','FreshMachineJournal','FreshMachineJournalSha256','FreshOperatorSid')) {
+        if ($null -eq $payload.parameters.PSObject.Properties[$name] -or $payload.parameters.$name -isnot [string]) {
+            throw 'Fresh machine helper parameter contract differs.'
+        }
+        $invokeParameters[$name] = [string]$payload.parameters.$name
+    }
+}
 if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
     (Get-RequiredExternalBoolean $payload.parameters 'Uninstall')) {
     if ($invokeParameters.ReplaceExistingVerifiedPortable -or $invokeParameters.DryRun) {
@@ -1317,6 +1359,257 @@ function Test-PristineInstallState(
     return $true
 }
 
+function Invoke-LabelFreshServerTransition {
+    # This is an explicit lifecycle. Normal install/onboarding never selects it.
+    if ($FreshTransitionAction -cnotin @('Prepare', 'Resume', 'Status', 'Restore')) {
+        throw 'FreshTransitionAction must be Prepare, Resume, Status, or Restore.'
+    }
+    if (-not $TransitionInputPath -or -not $TransitionArchiveVolume) {
+        throw 'TransitionInputPath and TransitionArchiveVolume are required.'
+    }
+    $freshInput = Full $TransitionInputPath 'TransitionInputPath'
+    if ($TransitionArchiveVolume -notmatch '^[A-Za-z]:[\\/]') {
+        throw 'TransitionArchiveVolume must be an absolute local preservation path.'
+    }
+    $freshVolume = [IO.Path]::GetFullPath($TransitionArchiveVolume)
+    $freshArgs = @('--transition-input', $freshInput, '--archive-volume', $freshVolume,
+                   '--installed-app-root', $install)
+    $freshSourceInventory = PortableInventory $source
+    if ($ConfirmFreshServerRegistration) { $freshArgs += '--confirm' }
+    if ($ConfirmArchiveUnsent) { $freshArgs += '--confirm-unsent' }
+    if ($ConfirmOldServerReady) { $freshArgs += '--confirm-old-server-ready' }
+    $freshPlan = Join-Path ([IO.Path]::GetTempPath()) ('label-fresh-plan-' + [Guid]::NewGuid().ToString('N') + '.json')
+    $freshReadAction = if ($FreshTransitionAction -ceq 'Status') { 'status' } else { 'plan' }
+    Product $source '--fresh-server-transition' ($freshArgs + @('--action', $freshReadAction, '--result-path', $freshPlan))
+    $freshReadback = Get-Content -LiteralPath $freshPlan -Raw -Encoding UTF8 | ConvertFrom-Json
+    $freshReadback | ConvertTo-Json -Depth 12
+    Remove-Item -LiteralPath $freshPlan
+    if ($PlanOnly -or $FreshTransitionAction -ceq 'Status') { return }
+    if ([string]$freshReadback.phase -ceq 'RESTORED' -and $FreshTransitionAction -ceq 'Restore') { return }
+    if ($FreshTransitionAction -ceq 'Restore' -and -not [bool]$freshReadback.restore_possible) {
+        throw ([string]$freshReadback.restore_reason + ': ' + [string]$freshReadback.archive_root)
+    }
+    if ([string]$freshReadback.phase -ceq 'ACTIVATED' -and $FreshTransitionAction -cne 'Restore') { return }
+    if (-not $ConfirmFreshServerRegistration -and $FreshTransitionAction -cne 'Restore') {
+        throw 'ConfirmFreshServerRegistration is required after reviewing the target and archive plan.'
+    }
+
+    $freshLocal = Full $env:LOCALAPPDATA 'LOCALAPPDATA'
+    if (-not $testMode -and -not (Same $freshLocal ([Environment]::GetFolderPath('LocalApplicationData')))) {
+        throw 'The transition must run as the original Windows user.'
+    }
+    $freshControl = Join-Path $freshLocal 'KMTech\DirectSync\label_match\control\writer-session'
+    $Script:LabelWriterFenceAdmissionProductionRoot = if ($testMode) { '' } else { $freshControl }
+    $freshAudit = Join-Path $freshLocal 'KMTech\Label_Match\server-transition'
+    if (-not (Test-Path -LiteralPath $freshAudit)) { [void](New-Item -ItemType Directory -Path $freshAudit) }
+    $freshSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $freshAcl = New-Object Security.AccessControl.DirectorySecurity
+    $freshAcl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;$freshSid)",
+        [Security.AccessControl.AccessControlSections]::Access)
+    [IO.Directory]::SetAccessControl($freshAudit, $freshAcl)
+    $freshOwnerPath = Join-Path $freshAudit 'installer-owner.json'
+    $freshInstalled = Test-Path -LiteralPath $install
+    if ($freshInstalled) {
+        [void](Manifest $install $SkipSignatureValidationForTest)
+        InvokeFrozenIntegrityProbe ([pscustomobject]@{
+            root=$source; integrity_sha256=[string]$freshSourceInventory.critical_file_sha256.bootstrap_integrity_helper
+        }) $install
+    }
+    $freshTransition = Assert-WriterTransition $source $(if ($freshInstalled) { $install } else { $source })
+    $freshRunId = [Guid]::NewGuid().ToString('N')
+    $freshFrozen = FreezePlacementHelper $source $freshAudit $freshRunId $freshSourceInventory.critical_file_sha256
+    . ([string]$freshFrozen.writer_fence_path)
+    $Script:LabelWriterFenceAdmissionProductionRoot = if ($testMode) { '' } else { $freshControl }
+    $freshSessionId = [Guid]::NewGuid().ToString('N')
+    $freshAttemptId = [Guid]::NewGuid().ToString('N')
+    $freshTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshToken = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $freshOrchestrator = Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1')
+    $freshContract = [string]$freshFrozen.writer_fence_sha256
+    $freshAuthority = $null
+    $freshFenceStarted = $false
+    $freshEnvironment = @($WriterDelegationEnvironmentNames | ForEach-Object {
+        [Environment]::GetEnvironmentVariable($_, 'Process')
+    })
+    $freshSources = @('fresh_server_transition', 'fresh_machine_preservation', 'current_user_onboarding', 'scheduled_task_remove',
+        'user_relay_autostart_install', 'user_relay_autostart_remove', 'user_relay_stop_request',
+        'user_relay_stop_release', 'user_relay_process_start', 'direct_sync_enqueue', 'direct_sync_upload',
+        'direct_sync_relay_cycle', 'persistent_relay_cycle', 'persistent_relay_status', 'raw_relay_runner',
+        'relay_batch_claim', 'relay_batch_drain', 'relay_child_launch', 'relay_queue_schema',
+        'relay_spool_enqueue', 'relay_stale_lease_reset')
+    try {
+        $freshAuthority = Enter-LabelWriterSessionAuthority -SessionId $freshSessionId -AttemptId $freshAttemptId `
+            -OrchestratorSha256 $freshOrchestrator -ReplacementTransactionId $freshTransactionId -WriterContractSha256 $freshContract
+        $freshAdmission = Enter-LabelWriterAdmission $freshControl
+        try {
+            $previousFence = Read-LabelWriterFence $freshControl -AllowAbsent
+            if ($null -ne $previousFence) {
+                if ($FreshTransitionAction -cnotin @('Resume', 'Restore') -or -not (Test-Path -LiteralPath $freshOwnerPath)) {
+                    throw 'An active fence requires this transition Resume/Restore and its original owner record.'
+                }
+                $previousOwner = Get-Content -LiteralPath $freshOwnerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ([string]$previousOwner.schema -cne 'label-fresh-installer-owner-v1' -or
+                    [string]$previousOwner.sid -cne $freshSid -or -not (Same ([string]$previousOwner.install_root) $install) -or
+                    [string]$previousOwner.packet -cne (Sha (Join-Path $source 'portable-manifest.json')) -or
+                    [string]$previousOwner.input_sha256 -cne (Sha $freshInput) -or
+                    [string]$previousOwner.session_id -cne [string]$previousFence.session_id -or
+                    [string]$previousOwner.attempt_id -cne [string]$previousFence.attempt_id -or
+                    [string]$previousOwner.transaction_id -cne [string]$previousFence.replacement_transaction_id -or
+                    (Test-LabelWriterSessionAuthorityHeldByOther ([string]$previousFence.session_authority_mutex_name))) {
+                    throw 'A different or live transition owner cannot be resumed.'
+                }
+                # Preserve the previous attempt before replacing its expired owner.
+                Save (Join-Path $freshAudit ('owner-' + [string]$previousOwner.attempt_id + '.json')) $previousOwner
+                [void](Stop-LabelWriterFence $freshControl ([string]$previousFence.session_id) `
+                    ([string]$previousFence.attempt_id) ([string]$previousFence.replacement_transaction_id))
+            }
+            Save $freshOwnerPath ([ordered]@{schema='label-fresh-installer-owner-v1';sid=$freshSid;
+                install_root=$install;packet=(Sha (Join-Path $source 'portable-manifest.json'));
+                input_sha256=(Sha $freshInput);session_id=$freshSessionId;attempt_id=$freshAttemptId;
+                transaction_id=$freshTransactionId;status='UNKNOWN';started_at=[DateTime]::UtcNow.ToString('o')})
+            [void](Start-LabelWriterFence -ControlRoot $freshControl -Status 'QUIESCING' `
+                -SessionId $freshSessionId -AttemptId $freshAttemptId -ReplacementTransactionId $freshTransactionId `
+                -SessionStartedAtUtc ([DateTime]::UtcNow.ToString('o')) -OrchestratorSha256 $freshOrchestrator `
+                -WriterContractSha256 $freshContract -AuthorityOwnedByCaller)
+            $freshFenceStarted = $true
+        }
+        finally { Exit-LabelWriterAdmission $freshAdmission }
+        [void](Set-LabelWriterFenceDelegation -ControlRoot $freshControl -Status 'RESTORING' `
+            -SessionId $freshSessionId -AttemptId $freshAttemptId -ReplacementTransactionId $freshTransactionId `
+            -DelegationToken $freshToken -DelegatedSources $freshSources -LifetimeSeconds 1200)
+        SetWriterDelegationEnvironment $freshToken $freshSessionId $freshAttemptId $freshTransactionId
+        $freshCodeRecordPath = Join-Path $freshAudit 'code-preimage.json'
+        if (Test-Path -LiteralPath $freshCodeRecordPath) {
+            $freshCode = Get-Content -LiteralPath $freshCodeRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ([string]$freshCode.schema -cne 'label-fresh-code-preimage-v1' -or
+                [string]$freshCode.sid -cne $freshSid -or
+                [string]$freshCode.packet -cne (Sha (Join-Path $source 'portable-manifest.json')) -or
+                [string]$freshCode.input_sha256 -cne (Sha $freshInput)) { throw 'Fresh code preimage binding differs.' }
+        } else {
+            $freshCode = [pscustomobject]@{schema='label-fresh-code-preimage-v1';sid=$freshSid;
+                packet=(Sha (Join-Path $source 'portable-manifest.json'));input_sha256=(Sha $freshInput);
+                existed=[bool]$freshInstalled; inventory=$(if($freshInstalled){PortableInventory $install}else{$null});
+                before_backups=@(Get-ChildItem -LiteralPath (Split-Path $install -Parent) -Directory -Force -ErrorAction SilentlyContinue |
+                    Where-Object {$_.Name -like '.current.rollback.*'} | ForEach-Object {$_.FullName})}
+            Save $freshCodeRecordPath $freshCode
+        }
+        $freshPlacementParameters = @{
+            SourceRoot=$source; InstallRoot=$install; ElevationLogPath=(Join-Path $freshAudit ($freshRunId + '-placement.jsonl'));
+            ExpectedBootstrapScriptSha256=[string]$freshFrozen.helper_sha256;
+            VerifiedBootstrapScriptPath=[string]$freshFrozen.helper_path; BootstrapIntegrityPreloaded=$true;
+            ExpectedSourceAggregateSha256=[string]$freshSourceInventory.bootstrap_aggregate_sha256;
+            ExpectedSourceFileCount=[int]$freshSourceInventory.file_count;ExpectedSourceByteCount=[uint64]$freshSourceInventory.byte_count;
+            WriterFenceFunctionsPreloaded=$true;WriterFenceControlRoot=$freshControl;
+            WriterFenceSessionId=$freshSessionId;WriterFenceAttemptId=$freshAttemptId;
+            WriterFenceReplacementTransactionId=$freshTransactionId;WriterFenceDelegationToken=$freshToken;
+            AllowNoncanonicalLayoutForTest=[bool]$testMode;ReplaceExistingVerifiedPortable=[bool]$freshInstalled;DryRun=$false
+        }
+        if ($FreshTransitionAction -ceq 'Restore') {
+            Product $source '--fresh-server-transition' ($freshArgs + @('--action', 'restore-prepare'))
+            if ([bool]$freshCode.existed) {
+                $currentInventory = if (Test-Path -LiteralPath $install) { PortableInventory $install } else { $null }
+                if ($null -eq $currentInventory -or [string]$currentInventory.sha256 -cne [string]$freshCode.inventory.sha256) {
+                    $backup = ReplacementPreimage $install $freshCode.inventory @($freshCode.before_backups)
+                    if (-not $backup) { throw 'The original code preimage is unavailable; state remains preserved.' }
+                    $rollbackSource = Join-Path $freshAudit ($freshRunId + '-code-restore')
+                    [void](New-Item -ItemType Directory -Path $rollbackSource)
+                    & (Join-Path ([Environment]::SystemDirectory) 'robocopy.exe') $backup $rollbackSource /E /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $backup 'bootstrap-integrity.json') | Out-Null
+                    if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw 'Original code preservation copy failed.' }
+                    [void](Set-LabelWriterFenceDelegation -ControlRoot $freshControl -Status 'RESTORING' `
+                        -SessionId $freshSessionId -AttemptId $freshAttemptId -ReplacementTransactionId $freshTransactionId `
+                        -DelegationToken $freshToken -DelegatedSources @('canonical_placement') -LifetimeSeconds 1200)
+                    $restoreParameters = $freshPlacementParameters.Clone()
+                    $restoreParameters.SourceRoot=$rollbackSource
+                    $restoreParameters.ReplaceExistingVerifiedPortable=[bool](Test-Path -LiteralPath $install)
+                    $restoreParameters.ExpectedSourceAggregateSha256=[string]$freshCode.inventory.bootstrap_aggregate_sha256
+                    $restoreParameters.ExpectedSourceFileCount=[int]$freshCode.inventory.file_count
+                    $restoreParameters.ExpectedSourceByteCount=[uint64]$freshCode.inventory.byte_count
+                    if ((InvokeFrozenPlacementHelper $freshFrozen $restoreParameters) -ne 0) { throw 'Original code restore UNKNOWN.' }
+                    InvokeFrozenIntegrityProbe $freshFrozen $install
+                    if ([string](PortableInventory $install).sha256 -cne [string]$freshCode.inventory.sha256) { throw 'Original code readback differs.' }
+                }
+            } elseif (Test-Path -LiteralPath $install) {
+                # Use the established absent-code rollback. Never remove an
+                # unrelated task as a side effect of restoring code absence.
+                if (@(Get-ScheduledTask | Where-Object {$_.TaskName -in @('direct-sync-relay-label-match','direct-sync-relay-label-match-current-pc')}).Count) {
+                    throw 'Code-absence restore with a preserved task needs administrator support.'
+                }
+                [void](Set-LabelWriterFenceDelegation -ControlRoot $freshControl -Status 'RESTORING' `
+                    -SessionId $freshSessionId -AttemptId $freshAttemptId -ReplacementTransactionId $freshTransactionId `
+                    -DelegationToken $freshToken -DelegatedSources @('canonical_placement') -LifetimeSeconds 1200)
+                $removeParameters = $freshPlacementParameters.Clone()
+                $removeParameters.ReplaceExistingVerifiedPortable=$false
+                $removeParameters.Uninstall=$true
+                $absenceAdmission = Enter-LabelWriterAdmission $freshControl
+                try { $removed = InvokeFrozenPlacementHelper $freshFrozen $removeParameters }
+                finally { Exit-LabelWriterAdmission $absenceAdmission }
+                if ($removed -ne 0 -or (Test-Path -LiteralPath $install)) { throw 'Code absence restore UNKNOWN.' }
+            }
+            [void](Set-LabelWriterFenceDelegation -ControlRoot $freshControl -Status 'RESTORING' `
+                -SessionId $freshSessionId -AttemptId $freshAttemptId -ReplacementTransactionId $freshTransactionId `
+                -DelegationToken $freshToken -DelegatedSources $freshSources -LifetimeSeconds 1200)
+            if ([bool]$freshReadback.machine_required) {
+                $machineParameters = $freshPlacementParameters.Clone()
+                $machineParameters.FreshMachineAction = 'Restore'
+                $machineParameters.FreshMachineJournal = [string]$freshReadback.journal
+                $machineParameters.FreshMachineJournalSha256 = Sha ([string]$freshReadback.journal)
+                $machineParameters.FreshOperatorSid = $freshSid
+                if ((InvokeFrozenPlacementHelper $freshFrozen $machineParameters) -ne 0) { throw 'Machine restore UNKNOWN.' }
+            }
+            Product $source '--fresh-server-transition' ($freshArgs + @('--action', 'restore'))
+        }
+        else {
+            $freshPreparedPath = Join-Path $freshAudit ($freshRunId + '-prepared.json')
+            Product $source '--fresh-server-transition' ($freshArgs + @('--action', 'prepare', '--defer-machine', '--result-path', $freshPreparedPath))
+            $prepared = Get-Content -LiteralPath $freshPreparedPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ([bool]$prepared.machine_required -and [string]$prepared.phase -cin @('QUIESCED','ARCHIVE_VERIFIED')) {
+                $machineParameters = $freshPlacementParameters.Clone()
+                $machineParameters.FreshMachineAction = 'Preserve'
+                $machineParameters.FreshMachineJournal = [string]$prepared.journal
+                $machineParameters.FreshMachineJournalSha256 = Sha ([string]$prepared.journal)
+                $machineParameters.FreshOperatorSid = $freshSid
+                if ((InvokeFrozenPlacementHelper $freshFrozen $machineParameters) -ne 0) { throw 'Machine preservation UNKNOWN.' }
+                Product $source '--fresh-server-transition' ($freshArgs + @('--action', 'prepare', '--defer-machine'))
+            }
+            $ownedPattern = '(?i)Label[_-]?Match|' + ((@($prepared.runtime_roots) | ForEach-Object {
+                [regex]::Escape([string]$_) + '(?=[\\/"\s]|$)'
+            }) -join '|')
+            if (@(UnquiescedProductWriters | Where-Object { [string]$_.CommandLine -match $ownedPattern }).Count -ne 0) {
+                throw 'Fresh transition writer absence is unproven.'
+            }
+            [void](Set-LabelWriterFenceDelegation -ControlRoot $freshControl -Status 'INSTALLING' `
+                -SessionId $freshSessionId -AttemptId $freshAttemptId -ReplacementTransactionId $freshTransactionId `
+                -DelegationToken $freshToken -DelegatedSources @('canonical_placement') -LifetimeSeconds 1200)
+            $freshPlacementExit = InvokeFrozenPlacementHelper $freshFrozen $freshPlacementParameters
+            if ($freshPlacementExit -ne 0) { throw 'Fresh code placement failed; preserved state requires Resume.' }
+            InvokeFrozenIntegrityProbe $freshFrozen $install
+            if ([string](PortableInventory $install).sha256 -cne [string]$freshSourceInventory.sha256) {
+                throw 'Fresh installed packet differs from the approved source.'
+            }
+            [void](Set-LabelWriterFenceDelegation -ControlRoot $freshControl -Status 'RESTORING' `
+                -SessionId $freshSessionId -AttemptId $freshAttemptId -ReplacementTransactionId $freshTransactionId `
+                -DelegationToken $freshToken -DelegatedSources $freshSources -LifetimeSeconds 1200)
+            Product $install '--fresh-server-transition' ($freshArgs + @('--action', 'register'))
+            Product $install '--fresh-server-transition' ($freshArgs + @('--action', 'activate'))
+        }
+        [void](Stop-LabelWriterFence $freshControl $freshSessionId $freshAttemptId $freshTransactionId)
+        $freshFenceStarted = $false
+        'fresh_transition_status=PASS'
+        "fresh_transition_owner_report=$freshOwnerPath"
+    }
+    catch {
+        # Neither UNKNOWN server outcomes nor new credentials may trigger the
+        # ordinary install rollback. A matching stopped owner can Resume.
+        'fresh_transition_status=UNKNOWN'
+        'fresh_transition_next_action=Status / Resume / Restore before REGISTERING'
+        throw
+    }
+    finally {
+        RestoreWriterDelegationEnvironment $freshEnvironment
+        if ($null -ne $freshAuthority) { Exit-LabelWriterSessionAuthority $freshAuthority }
+    }
+}
+
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
 . (Get-LabelSharedPortableLeafPath $SourceRoot)
 $source = Full $SourceRoot 'SourceRoot'
@@ -1341,6 +1634,10 @@ if ($conflictReceiptSupplied) {
     $receiptSource = ReceiptSource $source $sourceManifest
 }
 $wanted = Command $install
+if ($PrepareFreshServerRegistration) {
+    Invoke-LabelFreshServerTransition
+    exit 0
+}
 if ($PlanOnly) {
     "install_status=PLAN_ONLY"
     "install_root=$install"

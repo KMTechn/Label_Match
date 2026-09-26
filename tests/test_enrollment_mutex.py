@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import ctypes
 import hashlib
 import json
@@ -413,6 +414,35 @@ def test_registration_transport_guard_cardinality_is_unchanged():
     assert ENROLLMENT_MUTEX_NAME == r"Local\KMTech.Enrollment.LabelMatch.v1"
     assert "EnrollmentMutex(args.enrollment_mutex_timeout_seconds)" in registration_source
     assert "with guard as receipt" in registration_source
-    assert registration_source.count("require_enrollment_mutex_owned()") == 2
-    assert registration_source.count("requests.post(") == 1
-    assert registration_source.count("session.post(") == 1
+    fresh_names = {
+        "preflight_fresh_server", "_fresh_reattach",
+        "enroll_fresh_candidate", "publish_fresh_registration",
+    }
+    fresh_bodies = {
+        node.name: ast.get_source_segment(registration_source, node)
+        for node in ast.parse(registration_source).body
+        if isinstance(node, ast.FunctionDef) and node.name in fresh_names
+    }
+    assert set(fresh_bodies) == fresh_names
+    legacy_source = registration_source
+    for body in fresh_bodies.values():
+        assert body.count("require_enrollment_mutex_owned()") == 1
+        legacy_source = legacy_source.replace(body, "", 1)
+    # Preserve the exact old boundaries; only the four named support functions
+    # may add guarded transports or publication, with no wildcard exemption.
+    assert legacy_source.count("require_enrollment_mutex_owned()") == 2
+    assert legacy_source.count("requests.post(") == 1
+    assert legacy_source.count("session.post(") == 1
+    assert sum(body.count("requests.post(") for body in fresh_bodies.values()) == 0
+    assert sum(body.count("session.post(") for body in fresh_bodies.values()) == 3
+
+
+@pytest.mark.parametrize("entrypoint,args", [
+    ("preflight_fresh_server", (None, {}, {})),
+    ("_fresh_reattach", (None, {}, {}, None, {})),
+    ("enroll_fresh_candidate", (None, {})),
+    ("publish_fresh_registration", (None, {}, {})),
+])
+def test_fresh_transport_or_publication_cannot_bypass_mutex(entrypoint, args):
+    with pytest.raises(EnrollmentMutexNotOwned):
+        getattr(registration, entrypoint)(*args)

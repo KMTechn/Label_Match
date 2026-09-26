@@ -1522,12 +1522,221 @@ def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, 
     return manifest, credential, report
 
 
+def prepare_fresh_candidate(paths, target: Mapping[str, Any], transition_id: str) -> dict[str, Any]:
+    """Derive one new-server candidate without consuming an old identity file."""
+    args = argparse.Namespace(
+        server_base_url=target["origin"], endpoint_url="", enrollment_url="",
+        data_dir=str(paths.direct_sync_root), sync_dir=str(paths.data_root),
+        identity_path=str(paths.control_dir / ("fresh-candidate-" + transition_id + ".identity")),
+        pc_id=target["pc"], producer_id="", producer_install_id="", source_host_id="",
+        key_id="", secret_ref_target="label-fresh-" + transition_id, machine_guid="",
+        credential_scope="current_user", dry_run=False,
+    )
+    if Path(args.identity_path).exists():
+        raise DirectSyncPushError("fresh candidate identity path is not empty")
+    manifest, credential, report = build_payloads(args)
+    report["producer_identity_source"] = "fresh_transition_existing_key"
+    report["producer_identity_path"] = str(paths.identity_path)
+    candidate = {"manifest": manifest, "credential": credential, "report": report,
+                 "producer_id": report["producer_id"], "source_host_id": report["source_host_id"],
+                 "producer_install_id": report["producer_install_id"], "manifest_hash": report["manifest_hash"]}
+    # A valid v2 receipt from another PC/key is not a legacy identity to reset.
+    if paths.registration_receipt_path.is_file():
+        receipt = _load_json_no_duplicate_keys(paths.registration_receipt_path.read_bytes())
+        if isinstance(receipt, dict) and receipt.get("possession_key_fingerprint"):
+            descriptor = _prepare_possession_key(report)
+            if (receipt["possession_key_fingerprint"] != descriptor["fingerprint"]
+                    or any(receipt.get(field) != candidate[field] for field in (
+                        "producer_id", "source_host_id", "producer_install_id"))):
+                raise DirectSyncPushError("old v2 identity belongs to another PC or possession key")
+    return candidate
+
+
+def _fresh_session(tls_ca_bundle_path: str = ""):
+    session = requests.Session()
+    session.trust_env = False
+    if tls_ca_bundle_path:
+        ca = assert_path_has_no_reparse_components(tls_ca_bundle_path, label="fresh TLS CA")
+        if not ca.is_file():
+            raise DirectSyncPushError("fresh TLS CA is unavailable")
+        session.verify = str(ca)
+    return session
+
+
+def _fresh_response(response) -> dict[str, Any]:
+    if len(response.content) > 1024 * 1024:
+        raise DirectSyncPushError("fresh server response exceeds the supported bound")
+    try:
+        value = response.json()
+    except ValueError as exc:
+        raise DirectSyncPushError("fresh server response is not JSON") from exc
+    if not isinstance(value, dict):
+        raise DirectSyncPushError("fresh server response is not an object")
+    return value
+
+
+def _fresh_bindings(candidate: Mapping[str, Any]) -> dict[str, str]:
+    return {field: str(candidate[field]) for field in (
+        "producer_id", "producer_install_id", "source_host_id", "manifest_hash")}
+
+
+def preflight_fresh_server(paths, target: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict:
+    require_enrollment_mutex_owned()
+    from current_user_onboarding import _configured_tls_ca_bundle_source
+    with _fresh_session(_configured_tls_ca_bundle_source(paths)) as session:
+        health = session.get(target["origin"] + "/health/ready", timeout=30, allow_redirects=False)
+        if (health.status_code != 200 or health.headers.get("X-KMTech-Source-Commit")
+                != target["acceptance"]["source_commit"]):
+            raise DirectSyncPushError("fresh readiness/source commit readback failed")
+        response = session.post(target["origin"] + "/api/producer-ingest/v2/reattach/challenge",
+                                json={"contract_version": "producer-reattach-challenge-request-v1",
+                                      **_fresh_bindings(candidate)}, timeout=30, allow_redirects=False)
+        payload = _fresh_response(response)
+        error = payload.get("error")
+        if (response.status_code != 404 or not isinstance(error, dict)
+                or error.get("code") != "producer_identity_not_found"):
+            raise DirectSyncPushError("candidate absence is unproven; existing/unknown server identity must not be detached")
+        return {"ready_source_commit": target["acceptance"]["source_commit"],
+                "initial_challenge_status": 404, "initial_challenge_code": "producer_identity_not_found"}
+
+
+def _validate_fresh_response(payload: Mapping[str, Any], candidate: dict, target: dict, fingerprint: str) -> None:
+    reattached = payload.get("contract_version") == "producer-reattach-complete-v1"
+    epoch = payload.get("credential_epoch")
+    if type(epoch) is not int or (epoch < 2 if reattached else epoch != 1):
+        raise DirectSyncPushError("fresh response credential epoch mismatch")
+    expected = {"contract_version": "producer-reattach-complete-v1" if reattached else ENROLLMENT_CONTRACT_VERSION,
+                "status": "reattached" if reattached else "enrolled",
+                "identity_action": "REATTACHED" if reattached else "CREATED",
+                "producer_id": candidate["producer_id"], "source_host_id": candidate["source_host_id"],
+                "producer_install_id": candidate["producer_install_id"],
+                "endpoint_url": candidate["credential"]["endpoint_url"],
+                "active_manifest_hashes": [candidate["manifest_hash"]]}
+    receipt = payload.get("client_receipt")
+    possession = payload.get("possession_key")
+    if (any(payload.get(k) != v for k, v in expected.items()) or not isinstance(receipt, dict)
+            or any(receipt.get(k) != v for k, v in expected.items())
+            or not isinstance(possession, dict) or possession.get("fingerprint") != fingerprint
+            or possession.get("contract_version") != POSSESSION_KEY_CONTRACT_VERSION
+            or receipt.get("possession_key_fingerprint") != fingerprint
+            or type(receipt.get("credential_epoch")) is not int or receipt["credential_epoch"] != epoch
+            or payload.get("authorization_state") not in {"LOGISTICS_READY", "OPERATION_PENDING", "OPERATION_READY"}
+            or any(receipt.get(k) != payload.get(k) for k in (
+                "authorization_state", "key_id", "secret_fingerprint_sha256", "server_binding"))):
+        raise DirectSyncPushError("fresh response identity/receipt/key binding mismatch")
+    secret = _secret_from_response(payload)
+    if not payload.get("key_id") or payload.get("secret_fingerprint_sha256") != _fingerprint(secret):
+        raise DirectSyncPushError("fresh credential readback mismatch")
+    bundle = payload.get("machine_credential_bundle")
+    bindings = bundle.get("bindings") if isinstance(bundle, dict) else None
+    profile = bundle.get("profiles", {}).get("logistics") if isinstance(bundle, dict) else None
+    if (not isinstance(bindings, dict) or not isinstance(profile, dict)
+            or bindings.get("authority_scope_id") != target["scope"]
+            or profile.get("authority_scope") != target["scope"]
+            or profile.get("authority_plane") != "AUTHORITATIVE"
+            or profile.get("base_url", "").rstrip("/") != target["origin"]):
+        raise DirectSyncPushError("fresh authoritative scope/origin mismatch")
+
+
+def _fresh_reattach(session, candidate: dict, target: dict, key, headers: dict) -> dict:
+    require_enrollment_mutex_owned()
+    from kmtech_zero_pe import validated_reattach_proof
+
+    def post(suffix: str, payload: dict) -> dict:
+        response = session.post(target["origin"] + "/api/producer-ingest/v2/reattach" + suffix,
+                                json=payload, headers=headers, timeout=30, allow_redirects=False)
+        result = _fresh_response(response)
+        if response.status_code != 200:
+            raise DirectSyncPushError("same-transition possession reattach was refused")
+        return result
+
+    bindings = _fresh_bindings(candidate)
+    challenge = post("/challenge", {"contract_version": "producer-reattach-challenge-request-v1", **bindings})
+    if (challenge.get("contract_version") != "producer-reattach-challenge-v1"
+            or challenge.get("possession_key_fingerprint") != key.descriptor().fingerprint):
+        raise DirectSyncPushError("fresh challenge key binding mismatch")
+    proof = validated_reattach_proof(challenge.get("proof_payload"))
+    expires = _dt.datetime.strptime(proof["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
+    if (any(proof.get(k) != v for k, v in bindings.items())
+            or not re.fullmatch(r"reattach-[0-9a-f]{32}", proof["challenge_id"])
+            or not re.fullmatch(r"[A-Za-z0-9_-]{43}", proof["nonce"])
+            or not 0 < (expires - _dt.datetime.now(_dt.timezone.utc)).total_seconds() <= 900):
+        raise DirectSyncPushError("fresh challenge identity/expiry mismatch")
+    return post("", {"contract_version": "producer-reattach-complete-v1",
+                      "producer_id": candidate["producer_id"], "endpoint_url": candidate["credential"]["endpoint_url"],
+                      "manifest": candidate["manifest"], "proof": proof, "signature": key.sign_reattach_proof(proof)})
+
+
+def enroll_fresh_candidate(paths, state: dict, *, tls_ca_bundle_path: str = "") -> dict:
+    """Return a validated response; caller durably protects it before publication."""
+    require_enrollment_mutex_owned()
+    target, candidate = state["target"], state["candidate"]
+    preflight = state.get("server_preflight", {})
+    if (state.get("phase") != "REGISTERING" or preflight.get("initial_challenge_status") != 404
+            or preflight.get("initial_challenge_code") != "producer_identity_not_found"):
+        raise DirectSyncPushError("fresh reattach requires this transition's pre-archive absence receipt")
+    args = argparse.Namespace(enrollment_token="", enrollment_token_file="",
+                              enrollment_token_env=DEFAULT_ENROLLMENT_TOKEN_ENV)
+    _token_source, token = _token_from_sources(args)
+    headers = {"X-Producer-Enrollment-Token": token} if token else {}
+    with PersistentPossessionKey.open_existing(scope=POSSESSION_KEY_SCOPE) as key, _fresh_session(tls_ca_bundle_path) as session:
+        descriptor = key.descriptor().as_dict()
+        if descriptor != state["possession_key"]:
+            raise DirectSyncPushError("fresh transition possession key changed")
+        payload = {"contract_version": ENROLLMENT_CONTRACT_VERSION,
+                   "endpoint_url": candidate["credential"]["endpoint_url"],
+                   "key_id": candidate["credential"]["key_id"], "manifest": candidate["manifest"],
+                   "manifest_hash": candidate["manifest_hash"], "producer_id": candidate["producer_id"],
+                   "possession_public_jwk": descriptor["public_jwk"]}
+        response = session.post(target["origin"] + ENROLLMENT_PATH, json=payload,
+                                headers=headers, timeout=30, allow_redirects=False)
+        result = _fresh_response(response)
+        error = result.get("error", {})
+        if response.status_code == 409 and isinstance(error, dict) and error.get("code") == "reattach_proof_required":
+            result = _fresh_reattach(session, candidate, target, key, headers)
+        elif response.status_code != 200:
+            code = str(error.get("code") or response.status_code) if isinstance(error, dict) else str(response.status_code)
+            raise ProducerEnrollmentHTTPError(response.status_code, code, "", enrollment_token_supplied=bool(token))
+        _validate_fresh_response(result, candidate, target, descriptor["fingerprint"])
+        return result
+
+
+def publish_fresh_registration(paths, state: dict, response: dict, *, tls_ca_bundle_path: str = "") -> dict:
+    require_enrollment_mutex_owned()
+    candidate = state["candidate"]
+    descriptor = _prepare_possession_key({"producer_identity_source": "fresh_transition_existing_key"})
+    if descriptor != state["possession_key"]:
+        raise DirectSyncPushError("fresh publication possession key changed")
+    _validate_fresh_response(response, candidate, state["target"], descriptor["fingerprint"])
+    manifest = dict(candidate["manifest"])
+    credential = dict(candidate["credential"])
+    report = dict(candidate["report"])
+    args = argparse.Namespace(admin_recovery_secret_file="", logistics_profile_path=str(paths.logistics_profile_path),
+                              tls_ca_bundle_path=tls_ca_bundle_path, credential_scope="current_user",
+                              require_machine_credential_bundle=True)
+    report = _apply_registration_locked(args, manifest, credential, report, fresh_response=(response, descriptor))
+    identity = {"schema_version": PRODUCER_IDENTITY_SCHEMA_VERSION, "producer_id": candidate["producer_id"],
+                **{k: manifest["pc_identity"][k] for k in ("pc_id", "source_host_id", "producer_install_id")}}
+    for path, payload in ((paths.identity_path, identity), (paths.producer_manifest_path, manifest),
+                          (paths.credential_path, credential), (paths.registration_receipt_path, report["client_receipt"])):
+        _write_json(path, payload)
+        _verify_json_file(path, payload, label="fresh registration document")
+    report.update(manifest_hash_verified=True, persisted_manifest_hash_verified=True,
+                  producer_identity_persisted=True, fresh_transition_id=state["transition_id"],
+                  registration_action="possession_reattach" if response["status"] == "reattached" else "initial_enrollment")
+    _write_json(paths.registration_report_path, report)
+    _verify_json_file(paths.registration_report_path, report, label="fresh registration report")
+    return report
+
+
 def _apply_registration_locked(
     args: argparse.Namespace,
     manifest: dict[str, Any],
     credential: dict[str, Any],
     report: dict[str, Any],
     progress: _AdminRecoveryProgress | None = None,
+    *,
+    fresh_response: tuple[dict[str, Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     admin_recovery_requested = bool(
         str(getattr(args, "admin_recovery_secret_file", "") or "").strip()
@@ -1536,7 +1745,14 @@ def _apply_registration_locked(
         progress = _AdminRecoveryProgress()
     recovery_path: Path | None = None
     recovery_authorization: dict[str, Any] | None = None
-    if admin_recovery_requested:
+    if fresh_response is not None:
+        if admin_recovery_requested:
+            raise DirectSyncPushError("fresh registration cannot be combined with admin recovery")
+        response_payload, possession_key = fresh_response
+        token_source = "fresh_transition"
+        registration_contract_version = str(response_payload["contract_version"])
+        registration_url = str(report["enrollment_url"])
+    elif admin_recovery_requested:
         (
             response_payload,
             possession_key,
@@ -1752,6 +1968,8 @@ def apply_registration(
 ) -> dict[str, Any]:
     """Apply through the shared mutex, including direct imported callers."""
 
+    _assert_no_pending_fresh_transition()
+
     guard = EnrollmentMutex(
         getattr(
             args,
@@ -1768,6 +1986,15 @@ def apply_registration(
             report,
             progress,
         )
+
+
+def _assert_no_pending_fresh_transition() -> None:
+    from current_user_onboarding import resolve_current_user_onboarding_paths
+    from fresh_server_transition import _json, transition_record_path
+    paths = resolve_current_user_onboarding_paths(ROOT)
+    journal = transition_record_path(paths)
+    if journal.exists() and _json(journal, 16 * 1024 * 1024).get("phase") not in {"ACTIVATED", "RESTORED"}:
+        raise DirectSyncPushError("fresh server transition is incomplete; use the canonical installer Resume action")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1829,6 +2056,12 @@ def main(argv: list[str] | None = None) -> int:
     report_context: dict[str, Any] = {}
     report: dict[str, Any] = {}
     enrollment_guard: EnrollmentMutex | None = None
+    if args.apply:
+        try:
+            _assert_no_pending_fresh_transition()
+        except Exception:
+            print("registration_status=FRESH_TRANSITION_INCOMPLETE; use canonical Resume")
+            return 4
     try:
         if args.apply:
             enrollment_guard = EnrollmentMutex(args.enrollment_mutex_timeout_seconds)

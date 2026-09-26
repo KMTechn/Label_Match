@@ -318,6 +318,8 @@ def _assert_portable_import_closure(
     python_executable: Path | None = None,
 ) -> None:
     modules = ["current_user_onboarding", "label_match_product_host"]
+    if (repo_root / "fresh_server_transition.py").is_file():
+        modules.append("fresh_server_transition")
     modules.extend(
         "tools."
         + ".".join(

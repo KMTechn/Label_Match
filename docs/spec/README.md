@@ -1,5 +1,7 @@
 # Label_Match 기술 명세
 
+옛 신원이 있는 PC의 fresh 서버 전환은 canonical 설치기의 명시 지원 옵션을 사용한다. 일반 READY 재사용·partial 거부는 유지하며, [보관·등록 계약](contracts.md#fresh-server-transition)과 [지원 실행·재개·복원](operations.md#fresh-server-transition)을 따른다. 실제 회사 적용은 별도 랩 수용 결과가 필요하다.
+
 기존 전체 시험의 21 FAIL은 [w9 시험 감사](operations.md#test-audit-w9)의 fixture/API 정합과 저장 루트 격리로 교정했다. 제품 계약·실제 GUI 수용과 호스트 회귀 결과를 구분한다.
 
 F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completion.py)에 있고 기존 앱 API·writer admission·성공 표시·worker dispatch는 [LM-3 경계](operations.md#module-boundaries-lm3)를 유지한다.

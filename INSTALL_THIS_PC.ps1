@@ -14,6 +14,10 @@ param(
     [int]$ExpectedSourceFileCount = 0,
     [uint64]$ExpectedSourceByteCount = 0,
     [switch]$WriterFenceFunctionsPreloaded,
+    [string]$FreshMachineAction = '',
+    [string]$FreshMachineJournal = '',
+    [string]$FreshMachineJournalSha256 = '',
+    [string]$FreshOperatorSid = '',
     [string]$WriterFenceControlRoot = "",
     [string]$WriterFenceSessionId = "",
     [string]$WriterFenceAttemptId = "",
@@ -497,6 +501,156 @@ function Test-CurrentUserRelayPersistencePresent {
     }
 }
 
+function Invoke-FreshMachinePreservation {
+    if ($FreshMachineAction -cnotin @('Preserve', 'Restore') -or $DryRun -or $Uninstall -or
+        -not $WriterFenceFunctionsPreloaded -or -not $BootstrapIntegrityPreloaded) {
+        throw 'Fresh machine preservation requires the pinned canonical helper.'
+    }
+    $lease = Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot `
+        -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
+        -ReplacementTransactionId $WriterFenceReplacementTransactionId `
+        -DelegationToken $WriterFenceDelegationToken -Source 'fresh_machine_preservation'
+    try {
+        $journal = Get-StrictFullPath $FreshMachineJournal 'fresh journal'
+        Assert-NoReparsePoint $journal 'fresh journal'
+        if ($FreshMachineJournalSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            (Get-FileSha256 $journal) -cne $FreshMachineJournalSha256 -or
+            (Get-Item -LiteralPath $journal).Length -gt 16777216) { throw 'Fresh journal pin differs.' }
+        $state = Get-Content -LiteralPath $journal -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($state.schema -cne 'label-match-fresh-server-transition-v1' -or
+            $state.transition_id -cnotmatch '^[0-9a-f]{32}$' -or
+            $state.target.sid -cnotmatch '^S-1-5-21-[0-9-]+$' -or
+            $state.phase -cnotin @('PLANNED','QUIESCED','ARCHIVE_VERIFIED','DETACHED') -or
+            ($FreshMachineAction -ceq 'Preserve' -and $state.phase -ceq 'PLANNED')) {
+            throw 'Machine preservation phase or user binding is invalid.'
+        }
+        if ($state.target.sid -cne $FreshOperatorSid -or
+            $state.target.packet -cne (Get-FileSha256 (Join-Path $SourceRoot 'portable-manifest.json'))) {
+            throw 'Machine preservation PC user/packet differs.'
+        }
+        $machine = Get-StrictFullPath ([string]$state.machine_root) 'machine root'
+        if (-not $testOverride -and -not (Test-SamePath $machine 'C:\ProgramData')) { throw 'Noncanonical machine root.' }
+        $allowed = @('KMTech\Label_Match\data','KMTech\Label_Match\config\app_settings.json',
+            'KMTech\Logistics\profiles\Label_Match','KMTech\DirectSync\label_match',
+            'KMTech\DirectSync\label-match-margin-r2') | ForEach-Object { Join-Path $machine $_ }
+        $archiveRoot = Get-StrictFullPath ([string]$state.archive_root) 'archive'
+        if ($archiveRoot.StartsWith('\\') -or $archiveRoot -notmatch '\\KMTech\\server-transition\\Label_Match\\[^\\]+$') {
+            throw 'Machine archive location differs.'
+        }
+        function Assert-FreshAncestors([string]$Path) {
+            $cursor = $Path
+            while ($cursor) {
+                if (Test-Path -LiteralPath $cursor) {
+                    if (((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        throw 'Machine preservation ancestor is a reparse point.'
+                    }
+                }
+                $cursor = Split-Path -Parent $cursor
+            }
+        }
+        function Assert-FreshSnapshot([string]$Path, $Snapshot, [bool]$Metadata) {
+            Assert-FreshAncestors $Path
+            Assert-NoReparsePoint $Path 'fresh state'
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            if ([bool]$item.PSIsContainer -ne [bool]$Snapshot.directory) { throw 'Machine state type differs.' }
+            if ($Metadata -and ([int64]$item.Attributes -ne [int64]$Snapshot.attributes -or
+                (Get-Acl -LiteralPath $Path).Sddl -cne [string]$Snapshot.sddl)) { throw 'Machine state metadata differs.' }
+            if ($item.PSIsContainer) {
+                $names = @($Snapshot.children.PSObject.Properties.Name)
+                if (@(Get-ChildItem -LiteralPath $Path -Force).Count -ne $names.Count) { throw 'Machine membership differs.' }
+                foreach ($name in $names) {
+                    if ($name -in @('.', '..') -or $name.Contains('\') -or $name.Contains('/')) { throw 'Invalid snapshot leaf.' }
+                    Assert-FreshSnapshot (Join-Path $Path $name) $Snapshot.children.$name $Metadata
+                }
+            } elseif ([int64]$item.Length -ne [int64]$Snapshot.size -or
+                (Get-FileSha256 $Path) -cne [string]$Snapshot.sha256) { throw 'Machine state bytes differ.' }
+        }
+        function Set-FreshTreeAcl([string]$Path, $Snapshot, [bool]$Restore) {
+            if ($Snapshot.directory) {
+                foreach ($property in $Snapshot.children.PSObject.Properties) {
+                    Set-FreshTreeAcl (Join-Path $Path $property.Name) $property.Value $Restore
+                }
+            }
+            $sddl = if ($Restore) { [string]$Snapshot.sddl } else {
+                'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;' + [string]$state.target.sid + ')'
+            }
+            [LabelFreshDacl]::Set($Path, $sddl, ($Restore -and -not $sddl.Contains('D:P')))
+            if ($Restore) { [IO.File]::SetAttributes($Path, [IO.FileAttributes][int]$Snapshot.attributes) }
+        }
+        # Set only the DACL. Set-Acl can request SACL privileges on a protected
+        # file when used a second time; preserving data never requires those.
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class LabelFreshDacl {
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string text, uint version, out IntPtr sd, IntPtr size);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool SetFileSecurity(string path, uint flags, IntPtr sd);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr value);
+    public static void Set(string path, string text, bool inherit) {
+        IntPtr sd;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(text, 1, out sd, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            if (!SetFileSecurity(path, 4u | (inherit ? 0x20000000u : 0x80000000u), sd))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        } finally { LocalFree(sd); }
+    }
+}
+'@
+        foreach ($entry in @($state.entries | Where-Object { $_.machine -eq $true })) {
+            $original = Get-StrictFullPath ([string]$entry.source) 'machine source'
+            if (@($allowed | Where-Object { Test-SamePath $_ $original }).Count -ne 1) { throw 'Unsupported machine state root.' }
+            $inactive = Get-StrictFullPath ([string]$entry.inactive) 'machine inactive'
+            $expectedInactive = Join-Path (Split-Path $original -Parent) ('.' + (Split-Path $original -Leaf) + '.fresh-' + $state.transition_id)
+            if (-not (Test-SamePath $inactive $expectedInactive)) { throw 'Inactive location differs.' }
+            $archive = Get-StrictFullPath ([string]$entry.archive) 'machine archive'
+            if (-not $archive.StartsWith(($archiveRoot + '\items\'), [StringComparison]::OrdinalIgnoreCase) -or
+                (Split-Path $archive -Leaf) -notmatch '^[0-9]+$') { throw 'Machine archive escaped its preservation root.' }
+            foreach ($path in @($original,$inactive,$archive)) { Assert-FreshAncestors $path }
+            if ($FreshMachineAction -ceq 'Restore') {
+                if (Test-Path -LiteralPath $inactive) {
+                    if (Test-Path -LiteralPath $original) { throw 'Active machine state already exists.' }
+                    Assert-FreshSnapshot $archive $entry.snapshot $false
+                    Assert-FreshSnapshot $inactive $entry.snapshot $false
+                    Move-Item -LiteralPath $inactive -Destination $original -ErrorAction Stop
+                    Set-FreshTreeAcl $original $entry.snapshot $true
+                }
+                # A retry after rename, before metadata restoration is safe only
+                # for the original byte tree, and never overwrites a new file.
+                Assert-FreshSnapshot $original $entry.snapshot $false
+                Set-FreshTreeAcl $original $entry.snapshot $true
+                Assert-FreshSnapshot $original $entry.snapshot $true
+                continue
+            }
+            $from = if (Test-Path -LiteralPath $inactive) { $inactive } else { $original }
+            $originalExists = Test-Path -LiteralPath $original
+            if ($from -eq $inactive -and $originalExists) { throw 'Machine state has two active candidates.' }
+            Assert-FreshSnapshot $from $entry.snapshot ($from -eq $original)
+            if (-not (Test-Path -LiteralPath $archive)) {
+                [void][IO.Directory]::CreateDirectory((Split-Path $archive -Parent))
+                $staging = Join-Path (Split-Path $archive -Parent) ('.c-' + [Guid]::NewGuid().ToString('N').Substring(0,12))
+                Copy-Item -LiteralPath $from -Destination $staging -Recurse -ErrorAction Stop
+                $files = if ($entry.snapshot.directory) { @(Get-ChildItem -LiteralPath $staging -File -Recurse -Force) } else { @(Get-Item -LiteralPath $staging) }
+                foreach ($file in $files) {
+                    $stream = [IO.File]::Open($file.FullName, 'Open', 'ReadWrite', 'Read')
+                    try { $stream.Flush($true) } finally { $stream.Dispose() }
+                }
+                Assert-FreshSnapshot $staging $entry.snapshot $false
+                Move-Item -LiteralPath $staging -Destination $archive -ErrorAction Stop
+            }
+            Assert-FreshSnapshot $archive $entry.snapshot $false
+            if ($from -eq $original) { Move-Item -LiteralPath $original -Destination $inactive -ErrorAction Stop }
+            Set-FreshTreeAcl $inactive $entry.snapshot $false
+            Assert-FreshSnapshot $inactive $entry.snapshot $false
+        }
+        Write-Output 'fresh_machine_preservation=PASS'
+    }
+    finally { Exit-LabelWriterAdmission $lease }
+}
+
 $testOverride = $earlyTestOverride
 if ([string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "The invoking operator LOCALAPPDATA is unavailable." }
@@ -539,6 +693,11 @@ if (
 if (-not $DryRun.IsPresent -and -not $testOverride) {
     Assert-AlreadyElevated
     Write-ElevationLog 'STARTED' 'Elevated Label code placement started.'
+}
+
+if ($FreshMachineAction) {
+    Invoke-FreshMachinePreservation
+    return
 }
 
 if ($Uninstall.IsPresent) {

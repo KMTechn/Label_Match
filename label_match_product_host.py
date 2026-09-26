@@ -17,12 +17,14 @@ USER_RELAY_MODE = "--label-match-user-relay"
 RETIRED_SCHEDULED_RELAY_MODE = "--label-match-scheduled-relay"
 ONBOARD_CURRENT_USER_MODE = "--onboard-current-user"
 REMOVE_CURRENT_USER_MODE = "--remove-current-user-setup"
+FRESH_SERVER_TRANSITION_MODE = "--fresh-server-transition"
 PRODUCT_MODES = frozenset(
     {
         DIRECT_SYNC_RELAY_MODE,
         USER_RELAY_MODE,
         ONBOARD_CURRENT_USER_MODE,
         REMOVE_CURRENT_USER_MODE,
+        FRESH_SERVER_TRANSITION_MODE,
     }
 )
 HOSTED_RELAY_FAILURE_EXIT_CODE = 1
@@ -274,4 +276,8 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
             from current_user_onboarding import removal_main
 
             return int(removal_main(arguments))
+        if mode == FRESH_SERVER_TRANSITION_MODE:
+            from fresh_server_transition import transition_main
+
+            return int(transition_main(arguments))
     raise AssertionError(f"unhandled Label_Match product mode: {mode}")
