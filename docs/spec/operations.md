@@ -474,7 +474,11 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 
 원본은 producer data root의 `recovery/partial-registration/*.original`에 보관한다. 이 자식 폴더는 현재 사용자·SYSTEM·관리자 ACL만 허용하며 `journal.dpapi`와 준비 자격은 current-user DPAPI로 보호한다. 링크·하드링크·경로 중첩·해석 가능한 타 신원·manifest 불일치·다른 키는 거부한다. 손상 JSON은 신원 증거로 사용하지 않고 원 bytes를 보관한다. 공유 소유 키는 생성·교체·삭제하지 않으며 업무 CSV·원장·outbox·stop marker도 옮기지 않는다. 보관 파일과 journal을 수동으로 고치거나 삭제하지 않는다.
 
-이 옵션은 기존 서버 `/recover/prepare`, `/recover/status`, `/recover/commit` 계약을 사용한다. prepare 응답 유실은 같은 request ID로 재요청하고 commit 응답 유실은 서명된 status로 확인한다. 로컬 저장이나 승인 파일 마지막 정리가 끊겨도 **같은 명령**으로 재개한다. 진행 중 승인 파일을 새 승인으로 바꾸지 않는다. 만료·취소·불명 상태는 성공으로 표시하지 않고 원본을 보존해 관리자에게 넘긴다. 기존 전체 부재/완전한 등록 복구는 새 옵션 없이 종전 경로를 유지한다.
+이 옵션은 기존 서버 `/recover/prepare`, `/recover/status`, `/recover/commit` 계약을 사용한다. prepare 응답 유실은 같은 request ID로 재요청하고 commit 응답 유실은 서명된 status로 확인한다. 로컬 저장이나 승인 파일 마지막 정리가 끊겨도 **같은 명령**으로 재개한다. 진행 중 승인 파일을 임의로 바꾸지 않는다. 서버 상태가 확인되지 않으면 원본·journal·후보 승인 파일을 그대로 두고 통신 복구 후 같은 명령으로 다시 확인한다. 기존 전체 부재/완전한 등록 복구는 새 옵션 없이 종전 경로를 유지한다.
+
+**만료·종결 뒤 재복구(회사 지원 절차):** 서버 root 담당자가 기존 시도의 상태·만료 시각을 먼저 확인한다. PREPARED/RESERVED이면 만료 또는 지원되는 취소의 확정을 기다리고, EXPIRED/ABORTED/COMMITTED를 확인한 뒤 기존 producer에 새 일회용 승인을 발급해 원 사용자에게 보호 전달한다. prepare 응답이 유실돼 PC에 prepare ID가 없어도 root의 RESERVED 발급 거부를 무시하지 않는다. 만료 후 재발급은 서버가 이전 pending 승인을 취소하며 새 prepare도 경쟁 PREPARED가 있으면 거부한다. 승인 거부·통신 오류를 종결로 추정하지 않는다.
+
+지원 담당자는 **기존 명령의 `--admin-recovery-secret-file`에 새 승인 파일을 지정**한다(같은 파일 경로도 가능). 나머지 identity·hash·CA·데이터/프로필 경로는 유지한다. 도구는 이전 상태를 검증한 뒤 새 request/commit ID로 재복구하며, prepare ID가 없던 시도는 보호된 후보를 먼저 기록하고 서버의 새 prepare 성공 뒤에만 전환한다. 기존 `journal.dpapi`의 원 bytes는 `journal-*.dpapi`에 남기고 활성 journal에 이전 SHA·연결·대체 시각을 기록한다. `attempt-*.dpapi`는 중단된 후보 재개에 사용하며 `*.original`은 기존 위치에서 이어받고 덮어쓰지 않는다. 이전 `prepared.dpapi`도 보존하고 새 transaction은 별도 `prepared-*.dpapi`를 쓴다. 후보·원본·journal을 수동으로 삭제하거나 수정하지 않는다.
 
 한국어 완료 안내와 등록 보고서 `ADMIN_RECOVERY_REGISTERED`를 확인한 뒤 정상 onboarding의 `READY`/`REUSED`와 같은 신원·manifest readback을 확인한다. 첫 업무는 별도로 원 요청의 중앙 receipt/actor/수량까지 확인한다. headless 회귀는 실제 DPAPI·profile 로딩·READY 이후 첫 bundle 요청까지이며 실제 서버·runtime lease·PHS2/F3 완료와 화면은 별도 수용이다. 보관 폴더는 기존 `DirectSync/label_match` 아래여서 삭제/사전 점검의 LM 귀속에 포함된다. 새 portable 설치 후 삭제 도구를 복구 대체 수단으로 사용하지 않는다.
 

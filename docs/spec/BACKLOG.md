@@ -4,7 +4,9 @@
 
 랩 최종 리허설 P2 두 건도 교정했다: 설치된 등록기가 bundled 의존성을 찾는 직접 실행 경로, 필수 명시 인수 누락 시 한국어 옵션·서버 읽기 출처 안내. stock app 복사와 격리 Python에서 직접 `--help` 실행, 신원 조회 전 누락 거부를 회귀로 고정한다.
 
-신원 파일 일부 부재·손상으로 기존 관리자 복구도 거부하던 분기에 명시 `--recover-partial-local-state` 경로를 추가했다. 같은 사용자·PC의 유도 install ID·기존 키·root 승인을 검증하고 원본 보호 보관과 기존 서버 2단계 복구로 중단을 재개한다([절차](operations.md#partial-registration-recovery)). 소스 회귀 범위는 파일 조합·거부·ACK 유실·이동/로컬 저장 중단·실제 DPAPI/profile·READY 이후 첫 요청이다. 실제 packet 설치·서버 승인/첫 runtime lease·PHS2/F3의 중앙 receipt와 화면은 후속 랩 수용으로 남는다. 비유도 legacy install ID의 부분 신원 이관과 만료/취소된 진행 journal의 새 승인 전환은 이 옵션의 지원 범위 밖이다.
+신원 파일 일부 부재·손상으로 기존 관리자 복구도 거부하던 분기에 명시 `--recover-partial-local-state` 경로를 추가했다. 같은 사용자·PC의 유도 install ID·기존 키·root 승인을 검증하고 원본 보호 보관과 기존 서버 2단계 복구로 중단을 재개한다([절차](operations.md#partial-registration-recovery)). 소스 회귀 범위는 파일 조합·거부·ACK 유실·이동/로컬 저장 중단·실제 DPAPI/profile·READY 이후 첫 요청이다. w9lmpartial2는 만료·종결 journal에서 새 root 승인으로 전환하며 이전 journal·원본을 보존한다. prepare 전 중단·이동 후 만료·완료 후 profile 유실, 진행/불명 상태·타 신원 거부, 새 후보/전환 중단·ACK 유실을 회귀로 고정한다. 실제 packet 설치·서버 승인/첫 runtime lease·PHS2/F3의 중앙 receipt와 화면은 후속 랩 수용으로 남는다. 비유도 legacy install ID의 부분 신원 이관은 이 옵션의 지원 범위 밖이다.
+
+후속 후보: cutover 뒤 Web의 prepare ID 없는 승인/request 상태 조회를 검토한다. 현재는 Web ad0fc84 계약을 유지하며 보호된 후보와 새 prepare 성공으로 superseded를 확인한다. 일반 authorization 오류를 terminal로 취급하는 우회는 허용하지 않는다.
 
 <a id="lm-w9-lease-screen"></a>
 ## W9 · runtime lease 격리 자동 회복 이후 (w9calmleasefix)

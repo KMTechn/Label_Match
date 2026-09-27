@@ -123,6 +123,10 @@ class ProducerEnrollmentHTTPError(DirectSyncPushError):
         super().__init__(f"self-enroll failed: {self.error_code}{detail}")
 
 
+class PartialRecoveryRequired(DirectSyncPushError):
+    """A fixed, secret-free instruction for an unresolved partial recovery."""
+
+
 class PossessionKeyRecoveryRequired(DirectSyncPushError):
     """An existing producer identity cannot silently receive a replacement key."""
 
@@ -1511,6 +1515,15 @@ def _partial_recovery_request(session: requests.Session, url: str, action: str,
     return payload
 
 
+def _partial_recovery_status(session: requests.Session, url: str, proof: dict[str, Any],
+                             key: Any, token: str, timeout: int) -> dict[str, Any]:
+    observed = _partial_recovery_request(session, url, "status", proof, key, token, timeout)
+    fields = ("prepare_id", "client_request_id", "producer_id", "producer_install_id", "source_host_id")
+    if observed.get("status") != "observed" or any(observed.get(k) != proof[k] for k in fields):
+        raise PartialRecoveryRequired("부분 등록 상태 응답의 신원이 다릅니다. 원본을 보존하고 서버 root 담당자에게 확인을 요청하세요.")
+    return observed
+
+
 def _recover_partial_local_state(args: argparse.Namespace, manifest: dict[str, Any],
                                  credential: dict[str, Any], progress: _AdminRecoveryProgress | None):
     require_enrollment_mutex_owned()
@@ -1541,10 +1554,15 @@ def _recover_partial_local_state(args: argparse.Namespace, manifest: dict[str, A
                    "targets": [str(p) for p in targets], "authorization_path": str(recovery_path),
                    "ca_sha256": hashlib.sha256(_partial_recovery_bytes(ca_path)).hexdigest()}
         _validate_partial_evidence(targets, manifest, credential, descriptor["fingerprint"])
+        previous = None
         if journal.exists():
             state = _load_json_no_duplicate_keys(
                 _dpapi_unprotect_current_user(_partial_recovery_bytes(journal)).encode("utf-8"))
-            if not isinstance(state, dict) or state.get("binding") != binding:
+            # Only a new approval may change its input path. Identity, key, CA
+            # and every output remain bound to the original installation.
+            if (not isinstance(state, dict) or not isinstance(state.get("binding"), dict)
+                    or {k: v for k, v in state["binding"].items() if k != "authorization_path"}
+                    != {k: v for k, v in binding.items() if k != "authorization_path"}):
                 raise DirectSyncPushError("부분 등록 복구 기록의 사용자·설치·입력이 다릅니다")
         else:
             _, authorization = _load_admin_recovery_authorization(str(recovery_path), expected_producer_id=credential["producer_id"])
@@ -1555,18 +1573,58 @@ def _recover_partial_local_state(args: argparse.Namespace, manifest: dict[str, A
             _save_partial_recovery(journal, state)
         authorization = state["authorization"]
         if recovery_path.exists():
-            # Once a package is durable, its approval may expire while local
-            # persistence is resumed. It must still be the same file: never
-            # consume or delete a newly issued approval at the old path.
+            # A durable package can resume after approval expiry. A different
+            # approval instead needs a separately confirmed transaction.
             current = _load_json_no_duplicate_keys(_partial_recovery_bytes(recovery_path))
             if current != authorization:
-                raise DirectSyncPushError("진행 중인 부분 등록 복구의 승인 파일이 달라졌습니다")
+                _, current = _load_admin_recovery_authorization(str(recovery_path), expected_producer_id=credential["producer_id"])
+                if any(current[k] == authorization[k] for k in ("authorization_id", "recovery_token", "nonce")):
+                    raise PartialRecoveryRequired("기존 승인 일부를 바꿔 재사용할 수 없습니다. 서버 root가 새로 발급한 승인 파일이 필요합니다.")
+                previous = state
+            elif state["binding"] != binding:
+                raise DirectSyncPushError("진행 중인 부분 등록 복구의 승인 경로가 다릅니다")
+        elif state["binding"] != binding:
+            raise DirectSyncPushError("부분 등록 복구의 새 승인 파일이 없습니다")
         proof = {"authorization_id": authorization["authorization_id"],
                  "client_request_id": state["request_id"], "producer_id": credential["producer_id"],
                  "producer_install_id": install_id, "source_host_id": manifest["pc_identity"]["source_host_id"],
                  "manifest_hash": manifest_hash(manifest), "new_possession_key_fingerprint": descriptor["fingerprint"]}
         session = _open_admin_recovery_session(str(ca_path))
         try:
+            if previous is not None:
+                terminal = "SUPERSEDED_BY_PREPARE"
+                if previous["prepared"] is not None:
+                    try:
+                        old_status = _partial_recovery_status(
+                            session, url, {**proof, "prepare_id": previous["prepared"]["prepare_id"]},
+                            key, token, max(1, int(args.enrollment_timeout_seconds)))
+                    except (requests.RequestException, ProducerEnrollmentHTTPError) as exc:
+                        raise PartialRecoveryRequired("기존 복구의 서버 상태를 확인하지 못했습니다. 원본과 승인을 보존하고 통신 복구 후 같은 명령으로 다시 확인하세요.") from exc
+                    terminal = old_status.get("recovery_state")
+                    if terminal not in {"EXPIRED", "ABORTED", "COMMITTED"}:
+                        raise PartialRecoveryRequired("기존 복구가 아직 종결되지 않아 승인을 바꿀 수 없습니다. 서버 root 담당자가 만료 시각·상태를 확인하고 만료 또는 취소 확정 뒤 새 승인을 전달해야 합니다.")
+                # Keep the active journal untouched until the new prepare has
+                # succeeded. In particular, an unknown old prepare ID is NOT
+                # evidence of expiry: the server must accept the new approval.
+                active_journal = journal
+                old_bytes = _partial_recovery_bytes(active_journal)
+                old_name = "journal-" + hashlib.sha256(previous["request_id"].encode()).hexdigest() + ".dpapi"
+                journal = archive / ("attempt-" + hashlib.sha256(current["authorization_id"].encode()).hexdigest() + ".dpapi")
+                predecessor = {"request_id": previous["request_id"], "commit_id": previous["commit_id"],
+                               "journal": old_name, "journal_sha256": hashlib.sha256(old_bytes).hexdigest()}
+                if journal.exists():
+                    state = _load_json_no_duplicate_keys(
+                        _dpapi_unprotect_current_user(_partial_recovery_bytes(journal)).encode("utf-8"))
+                    if (not isinstance(state, dict) or state.get("binding") != binding
+                            or state.get("authorization") != current or state.get("predecessor") != predecessor):
+                        raise PartialRecoveryRequired("새 복구 후보의 신원·승인·이전 기록이 다릅니다. 원본을 보존하고 서버 root 담당자에게 확인을 요청하세요.")
+                else:
+                    state = {"binding": binding, "authorization": current,
+                             "request_id": "lm-" + uuid.uuid4().hex, "commit_id": "lm-" + uuid.uuid4().hex,
+                             "archives": previous["archives"], "prepared": None, "predecessor": predecessor}
+                    _save_partial_recovery(journal, state)
+                authorization = state["authorization"]
+                proof.update(authorization_id=authorization["authorization_id"], client_request_id=state["request_id"])
             if state["prepared"] is None:
                 _, current_authorization = _load_admin_recovery_authorization(str(recovery_path), expected_producer_id=credential["producer_id"])
                 if current_authorization != authorization:
@@ -1594,17 +1652,34 @@ def _recover_partial_local_state(args: argparse.Namespace, manifest: dict[str, A
                     raise DirectSyncPushError("부분 등록 준비 응답의 만료 시각이 잘못되었습니다") from exc
                 state["prepared"] = prepared
                 _save_partial_recovery(journal, state)
+            if previous is not None:
+                # New root issuance revokes pending approvals and refuses a
+                # reserved one; prepare also refuses any competing PREPARED
+                # transaction. Its bound success is the supersession proof
+                # when the old prepare response was never received.
+                retired = archive / old_name
+                if not retired.exists():
+                    _atomic_write(retired, old_bytes)
+                if _partial_recovery_bytes(retired) != old_bytes:
+                    raise PartialRecoveryRequired("이전 복구 기록의 보관 검증에 실패했습니다. 원본을 보존하고 지원 담당자에게 확인을 요청하세요.")
+                state["supersession"] = {"previous_state": terminal,
+                                         "confirmed_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                         "new_prepare_id": state["prepared"]["prepare_id"]}
+                _save_partial_recovery(active_journal, state)
+                journal = active_journal
             prepared = state["prepared"]
             proof["prepare_id"] = prepared["prepare_id"]
-            observed = _partial_recovery_request(session, url, "status", proof, key, token, max(1, int(args.enrollment_timeout_seconds)))
+            observed = _partial_recovery_status(session, url, proof, key, token, max(1, int(args.enrollment_timeout_seconds)))
             bound_fields = ("prepare_id", "client_request_id", "producer_id", "producer_install_id", "source_host_id")
-            if observed.get("status") != "observed" or any(observed.get(k) != proof[k] for k in bound_fields):
-                raise DirectSyncPushError("부분 등록 상태 응답의 신원이 다릅니다")
             if observed.get("recovery_state") == "PREPARED":
                 _archive_partial_recovery(journal, state, targets)
                 # Bind commit to an immutable, separately protected package. The
                 # mutable journal itself changes as local files are finalized.
-                package = archive / "prepared.dpapi"
+                # Derive the slot; never use a journal-supplied output path.
+                # Keep legacy packages at their original fixed location.
+                package = archive / (
+                    "prepared-" + hashlib.sha256(state["request_id"].encode()).hexdigest() + ".dpapi"
+                    if "predecessor" in state else "prepared.dpapi")
                 if not package.exists():
                     _atomic_write(package, _dpapi_protect_current_user(json.dumps(prepared, sort_keys=True)))
                 sealed = _partial_recovery_bytes(package)
@@ -1619,7 +1694,7 @@ def _recover_partial_local_state(args: argparse.Namespace, manifest: dict[str, A
             elif observed.get("recovery_state") == "COMMITTED":
                 committed = observed
             else:
-                raise DirectSyncPushError("부분 등록 승인이 만료되거나 취소되었습니다. 관리자 확인이 필요합니다")
+                raise PartialRecoveryRequired("부분 등록 복구가 만료·취소되었거나 상태가 불명입니다. 서버 root 담당자에게 종결 상태 확인과 새 승인을 요청한 뒤 같은 명령의 --admin-recovery-secret-file에 새 승인 파일을 지정하세요.")
             required = {**{k: proof[k] for k in bound_fields}, "commit_id": state["commit_id"],
                         "recovery_state": "COMMITTED", "identity_action": "REATTACHED", "recovery_action": "ADMIN_RECOVERY",
                         "key_id": prepared["key_id"], "secret_fingerprint_sha256": prepared["secret_fingerprint_sha256"],
@@ -2313,7 +2388,10 @@ def main(argv: list[str] | None = None) -> int:
             diagnostic = {
                 "status": "RECOVERY_REQUIRED", "error_type": type(exc).__name__,
                 "server_error_code": exc.error_code if isinstance(exc, ProducerEnrollmentHTTPError) else "",
-                "message_ko": str(exc) if isinstance(exc, AdminRecoveryArgumentsRequired) else "등록 복구가 끝나지 않았습니다. 원본과 복구 기록을 보존했습니다. 같은 명령으로 다시 확인하세요.",
+                "message_ko": str(exc) if isinstance(exc, (AdminRecoveryArgumentsRequired, PartialRecoveryRequired)) else (
+                    "등록 복구가 끝나지 않았습니다. 원본과 복구 기록을 보존했습니다. 통신·저장 중단은 같은 명령으로 다시 확인하세요. "
+                    "기존 시도가 진행 중이면 서버 root 담당자가 만료 시각·상태를 확인하고 만료 또는 취소 확정까지 기다려야 합니다. "
+                    "만료·종결 뒤에는 새 승인을 요청하고 같은 명령의 --admin-recovery-secret-file에 새 승인 파일을 지정하세요."),
                 "admin_recovery_progress": recovery_progress.redacted_summary(),
             }
             _write_json(report_path, diagnostic)
