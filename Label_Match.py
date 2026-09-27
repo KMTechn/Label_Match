@@ -1141,6 +1141,10 @@ def _label_match_relay_durable_state(db_path, *, now=None):
     held for review or a lease request nobody answered stays on screen until
     the relay really recovers it.
     """
+    if db_path:
+        from user_relay import user_relay_stop_path
+        if user_relay_stop_path(Path(db_path).parent.parent).exists():
+            return "stopped"  # a still-live lease does not prove relay delivery
     if not db_path or not os.path.isfile(db_path):
         return None
     try:
@@ -21001,6 +21005,11 @@ FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
     "아래 보고서 경로를 IT 담당자에게 전달하세요."
 )
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
+    "RELAY_RESUME_REQUIRED": (
+        "중앙 전송 릴레이가 정지해 있습니다. 신원 복구만으로 전송이 다시 시작되지는 않습니다.\n\n"
+        "미전송 기록은 보존됩니다. 같은 Windows 사용자로 초기 설정을 다시 실행하고 "
+        "READY와 릴레이 ALIVE를 확인하세요. 계속 정지하면 아래 보고서를 지원 담당자에게 전달하세요."
+    ),
     "BOOTSTRAP_INTEGRITY_INVALID": (
         "설치 파일의 로컬 무결성 기록이 올바르지 않아 프로그램 시작을 중단했습니다.\n\n"
         "관리자에게 공식 배포본으로 다시 설치하도록 요청하세요. "

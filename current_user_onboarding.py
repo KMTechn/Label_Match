@@ -190,6 +190,11 @@ def _portable_stop_marker_release_preflight(
     expected_receipt_hash = str(
         values.get(CONFLICT_RECEIPT_SHA256_ENV) or ""
     ).strip().lower()
+    if not receipt_value and not expected_receipt_hash:
+        from registration_relay_recovery import recovered_stop_release
+        recovered = recovered_stop_release(paths)
+        if recovered is not None:
+            return recovered
     if not receipt_value or len(expected_receipt_hash) != 64 or any(
         character not in "0123456789abcdef" for character in expected_receipt_hash
     ):
@@ -1138,6 +1143,7 @@ def onboard_current_user(
             raise ValueError("current-user settings placement was not proven")
 
         stop_path = user_relay_stop_path(paths.direct_sync_root)
+        report['relay_resume_required'] = stop_path.exists()
         report["stop_marker_release"] = _portable_stop_marker_release_preflight(
             paths,
             environ=environ,
@@ -1221,6 +1227,8 @@ def onboard_current_user(
         ) from exc
     except CurrentUserOnboardingError as exc:
         restore_stop_marker_fence()
+        if report.get('relay_resume_required'):
+            exc.cause_code = 'RELAY_RESUME_REQUIRED'
         report["status"] = exc.status
         report["failure"] = str(exc)
         report["error_type"] = exc.__class__.__name__
@@ -1234,6 +1242,7 @@ def onboard_current_user(
         report["error_type"] = exc.__class__.__name__
         from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
         cause_code = (
+            'RELAY_RESUME_REQUIRED' if report.get('relay_resume_required') else
             "NETWORK_OR_SERVER_UNAVAILABLE"
             if isinstance(exc, (ConnectionError, TimeoutError, RequestsConnectionError, Timeout))
             else "SETUP_FAILED"

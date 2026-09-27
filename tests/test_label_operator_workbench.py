@@ -718,6 +718,16 @@ def test_relay_screen_texts_promise_no_automatic_resume():
     assert not any("자동" in text for text in texts.values())
 
 
+def test_supported_stop_overrides_live_lease_and_old_success_status(tmp_path):
+    from user_relay import request_user_relay_stop
+    db_path = _write_relay_db(tmp_path, lease=LIVE_LEASE)
+    assert label_match_module._label_match_relay_durable_state(db_path) == 'normal'
+    assert request_user_relay_stop(tmp_path)['status'] == 'ABSENT'
+    durable = label_match_module._label_match_relay_durable_state(db_path)
+    assert durable == 'stopped'
+    assert label_match_module._label_match_relay_screen_state({'status': 'PASS'}, durable) == 'stopped'
+
+
 def test_relay_screen_status_follows_relay_files_and_keeps_state_on_torn_read(
     operator_workbench, tmp_path,
 ):

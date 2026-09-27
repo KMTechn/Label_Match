@@ -1,5 +1,7 @@
 # Label_Match 기술 명세
 
+업무하던 PC의 관리자 신원 복구는 중앙 확정 뒤 같은 사용자·PC·설치의 relay 큐 자격 결속을 감사 기록과 함께 이전한다. 미전송 원문·runtime proof·완료/보류 상태를 보존하며, 정상 정지 → 복구 → `--onboard-current-user`의 READY/ALIVE 확인으로 전송을 재개한다([절차·거부 경계](operations.md#registration-relay-recovery)).
+
 등록 중단으로 신원 파일 일부만 남았으면 지원 담당자가 같은 Windows 사용자·PC에서 `--recover-partial-local-state` 관리자 복구를 사용한다. 기존 설치 신원·소유 키를 대조하고 원본을 보관하며 보호된 journal과 중앙 prepare/status/commit으로 재개한다([범위·절차](operations.md#partial-registration-recovery)).
 만료·취소·완료된 복구 뒤에는 서버 root의 새 승인으로 별도 transaction을 시작할 수 있다. 기존 journal·이동한 원본을 보존하며 진행 중이거나 서버 확인이 불가능한 시도는 임의로 대체하지 않는다.
 설치된 등록 도구는 `app/site-packages`를 직접 로드하므로 packet의 `runtime/python.exe -I -B app/tools/register_label_match_worker_pc.py`로 실행한다. 복구의 명시 신원·hash 인수가 빠지면 신원 조회 전에 필요한 옵션과 서버 root의 읽기 출처를 한국어로 안내한다.

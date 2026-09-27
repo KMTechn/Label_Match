@@ -1930,7 +1930,20 @@ def _apply_registration_locked(
         progress = _AdminRecoveryProgress()
     recovery_path: Path | None = None
     recovery_authorization: dict[str, Any] | None = None
+    relay_preflight = None
     if admin_recovery_requested:
+        from registration_relay_recovery import prepare_relay_handoff
+        from user_relay import user_relay_stop_path
+        relay_root = Path(credential.get('secret_data_dir') or '')
+        if (credential.get('secret_data_dir') and (
+                (relay_root / 'queue/direct_sync_relay.sqlite3').exists()
+                or user_relay_stop_path(relay_root).exists())):
+            sid = _current_user_sid()
+            relay_preflight = prepare_relay_handoff(
+                relay_root, manifest, credential,
+                owner={'user_sid': sid, 'producer_install_id': derive_path_independent_install_id(
+                    machine_guid=_current_machine_guid(), user_sid=sid)},
+            )
         (
             response_payload,
             possession_key,
@@ -2138,6 +2151,12 @@ def _apply_registration_locked(
     if client_receipt:
         report["client_receipt"] = client_receipt
         report["client_receipt_status"] = client_receipt.get("status")
+    if relay_preflight is not None:
+        from registration_relay_recovery import commit_relay_handoff
+        report['relay_recovery'] = commit_relay_handoff(
+            relay_preflight, manifest, credential, client_receipt,
+            recovery_authorization['authorization_id'],
+        )
     return report
 
 
@@ -2373,6 +2392,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"registration_report={report_path.resolve()}")
         if report.get("partial_recovery_message_ko"):
             print(report["partial_recovery_message_ko"])
+        if report.get('relay_recovery', {}).get('message_ko'):
+            print(report['relay_recovery']['message_ko'])
         return (
             0
             if args.dry_run

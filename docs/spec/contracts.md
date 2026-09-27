@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+관리자 복구의 relay 전이는 검증된 중앙 recovered/COMMITTED 응답과 동일 MachineGuid/SID 유도 install ID·producer/source/manifest/endpoint, 정확한 정상 제거 marker/report, relay 부재를 요구한다. 한 SQLite FULL transaction에서 활성 authority의 scope/key와 큐의 key 결속만 바꾸고 current-user DPAPI 감사에 이전 authority·원 큐 digest·중앙 receipt를 보존한다. 원 payload/metadata·idempotency·runtime fence/token·행 상태/receipt는 바꾸지 않는다. runtime proof는 Web의 exact receipt replay에 포함되므로 새 HMAC 키로 원 요청을 재서명하며 fence는 ACK 뒤 정상 서버 lease 만료/발급에서 증가한다. 다른 신원·미확정 응답·격리 authority·경합 변경은 전이를 거부한다([지원 재개](operations.md#registration-relay-recovery)).
+
 [w9 시험 감사](operations.md#test-audit-w9)는 기존 계약을 그대로 검증한다. bootstrap 전체 inventory는 신뢰된 `SharedCodeRoot`를 명시하고, F4 prepare에는 앱 parser가 검증한 정수 QT를 전달하며, relay ACK는 stdout 대신 durable status·queue·실제 수신 내용으로 확인한다. ProgramData 기본값 시험은 onboarding 상태가 없는 standalone 문맥을 명시한다.
 
 `Label_Match.DataManager`는 [저장 구현](../../label_data_manager.py)에 위임한다. clock·open·이벤트 투영·현재 세트 파일명은 호출 시점의 앱 callback으로 결속하며 A/C/P 저장 루트 우선순위, CSV flush/fsync·원자 JSON 교체와 기존 save/load 결과는 유지한다([LM-1](operations.md#module-boundaries-lm1)).
