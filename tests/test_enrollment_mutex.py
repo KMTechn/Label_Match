@@ -361,6 +361,13 @@ def test_direct_admin_recovery_cannot_mutate_before_mutex_ownership():
         registration._admin_recover(registration.argparse.Namespace(), {}, {})
 
 
+def test_direct_partial_recovery_cannot_mutate_or_send_before_mutex_ownership():
+    with pytest.raises(EnrollmentMutexNotOwned):
+        registration._recover_partial_local_state(registration.argparse.Namespace(), {}, {}, None)
+    with pytest.raises(EnrollmentMutexNotOwned):
+        registration._partial_recovery_request(None, '', 'prepare', {}, None, '', 1)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows named mutex proof")
 def test_direct_transport_is_allowed_only_while_current_thread_owns_mutex(monkeypatch):
     response = type(
@@ -405,7 +412,7 @@ def test_logical_entrypoint_inventory_is_derived_from_executable_code():
         )
 
 
-def test_registration_transport_guard_cardinality_is_unchanged():
+def test_registration_transport_guard_cardinality_covers_partial_recovery():
     registration_source = (
         ROOT / "tools" / "register_label_match_worker_pc.py"
     ).read_text(encoding="utf-8-sig")
@@ -413,6 +420,8 @@ def test_registration_transport_guard_cardinality_is_unchanged():
     assert ENROLLMENT_MUTEX_NAME == r"Local\KMTech.Enrollment.LabelMatch.v1"
     assert "EnrollmentMutex(args.enrollment_mutex_timeout_seconds)" in registration_source
     assert "with guard as receipt" in registration_source
-    assert registration_source.count("require_enrollment_mutex_owned()") == 2
+    # Partial recovery adds a local transaction entry and one shared transport
+    # for prepare/status/commit; both independently require the existing mutex.
+    assert registration_source.count("require_enrollment_mutex_owned()") == 4
     assert registration_source.count("requests.post(") == 1
-    assert registration_source.count("session.post(") == 1
+    assert registration_source.count("session.post(") == 2

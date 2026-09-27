@@ -188,6 +188,8 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 <a id="c-00"></a>
 ## C-00 공통 명령·권한
 
+부분 등록의 명시 복구는 기존 root 일회용 승인·명시 identity·candidate manifest hash·TLS CA에 더해 현재 MachineGuid/SID로 유도한 install ID와 남은 파일의 해석 가능한 신원·소유 키를 대조한다. 공유 `KMTech.DirectSync.Possession.v1`은 기존 키 열기만 허용한다. current-user DPAPI journal에 경로·CA hash·신원·키·승인·request/commit ID를 결속하고 각 원본의 이동 의도·SHA를 먼저 내구 저장한 뒤 별도 슬롯으로 이동·재대조한다. 준비 자격을 보호 저장한 뒤 중앙 commit하며 ACK 유실은 서명된 status로 확인한다. 로컬 쓰기·승인 파일 정리 중단은 같은 transaction으로 재개하고 같은 경로의 새 승인 파일은 거부한다. 검증된 committed response와 보호된 prepare를 조합한 receipt를 기존 등록 readback에 전달하며 READY나 첫 업무 ACK를 추정하지 않는다([지원 절차](operations.md#partial-registration-recovery)).
+
 최초 등록·관리자 복구의 네트워크 승인 토큰은 선택 사항이다. 빈 토큰은 헤더/JSON 필드에서 생략하고 서버의 허용 IP 판정을 사용하며, 명시 토큰이 있으면 기존 토큰 인증을 유지한다. tokenless `enrollment_unauthorized`는 서버 HTTP 상태·오류 코드와 IP 등록/토큰 입력 안내를 CLI·등록 보고서에 남긴다. 관리자 복구의 별도 일회용 `recovery_token`·manifest·TLS·현재 사용자 소유 키 검증과 아래 업무 명령용 기계 자격증명은 유지한다([운영 절차](operations.md#enrollment-ip-policy)).
 
 명령 envelope는 `contract_version=logistics-v1`, `command_type`, `authority_scope_id`, `authority_epoch`, `ledger_plane`, `plane_epoch`, `idempotency_key`, `expected_versions`, `payload`를 사용한다. payload의 source/package·membership·seal/lease evidence가 중앙 snapshot과 맞아야 한다. 임의 수량을 중앙 멤버십 대신 보내지 않는다. 클라이언트는 JSON boolean `ok` 등 응답 구조와 receipt의 identity·구성·버전을 검증한다([package_logistics.build_create_package_command/_data/_validate_receipt](../../package_logistics.py)).

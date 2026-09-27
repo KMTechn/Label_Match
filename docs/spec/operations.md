@@ -455,6 +455,17 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 
 ## 설정 위치와 우선순위
 
+<a id="partial-registration-recovery"></a>
+### 등록 중단으로 신원 파일 일부만 남은 PC
+
+지원 담당자는 해당 앱의 writer/relay를 정상 지원 절차로 멈추고 원 Windows 사용자로 실행한다. 서버 root가 기존 producer에 발급한 일회용 승인 파일과 기존 pc/producer/source-host/install ID, 정확한 candidate manifest hash, 보관 대상 밖의 TLS CA 원본을 준비한다. 관리자 복구 명령에 `--recover-partial-local-state`를 추가하고 `--credential-scope current_user`, `--admin-recovery-secret-file`, `--expected-active-manifest-hash`, 네 identity 인수와 기존 `--data-dir`, `--sync-dir`, `--logistics-profile-path`, `--tls-ca-bundle-path`를 지정한다. 손상 신원 파일도 명시 ID로 처리하되 현재 MachineGuid/SID에서 유도되는 install ID와 다르면 거부한다. 과거 비유도 install ID·다른 사용자·다른 PC의 부분 파일을 이 옵션으로 이관하지 않는다.
+
+원본은 producer data root의 `recovery/partial-registration/*.original`에 보관한다. 이 자식 폴더는 현재 사용자·SYSTEM·관리자 ACL만 허용하며 `journal.dpapi`와 준비 자격은 current-user DPAPI로 보호한다. 링크·하드링크·경로 중첩·해석 가능한 타 신원·manifest 불일치·다른 키는 거부한다. 손상 JSON은 신원 증거로 사용하지 않고 원 bytes를 보관한다. 공유 소유 키는 생성·교체·삭제하지 않으며 업무 CSV·원장·outbox·stop marker도 옮기지 않는다. 보관 파일과 journal을 수동으로 고치거나 삭제하지 않는다.
+
+이 옵션은 기존 서버 `/recover/prepare`, `/recover/status`, `/recover/commit` 계약을 사용한다. prepare 응답 유실은 같은 request ID로 재요청하고 commit 응답 유실은 서명된 status로 확인한다. 로컬 저장이나 승인 파일 마지막 정리가 끊겨도 **같은 명령**으로 재개한다. 진행 중 승인 파일을 새 승인으로 바꾸지 않는다. 만료·취소·불명 상태는 성공으로 표시하지 않고 원본을 보존해 관리자에게 넘긴다. 기존 전체 부재/완전한 등록 복구는 새 옵션 없이 종전 경로를 유지한다.
+
+한국어 완료 안내와 등록 보고서 `ADMIN_RECOVERY_REGISTERED`를 확인한 뒤 정상 onboarding의 `READY`/`REUSED`와 같은 신원·manifest readback을 확인한다. 첫 업무는 별도로 원 요청의 중앙 receipt/actor/수량까지 확인한다. headless 회귀는 실제 DPAPI·profile 로딩·READY 이후 첫 bundle 요청까지이며 실제 서버·runtime lease·PHS2/F3 완료와 화면은 별도 수용이다. 보관 폴더는 기존 `DirectSync/label_match` 아래여서 삭제/사전 점검의 LM 귀속에 포함된다. 새 portable 설치 후 삭제 도구를 복구 대체 수단으로 사용하지 않는다.
+
 <a id="enrollment-ip-policy"></a>
 ### 등록·관리자 복구의 IP 기준 승인
 

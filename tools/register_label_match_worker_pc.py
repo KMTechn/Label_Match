@@ -13,6 +13,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -61,6 +62,7 @@ from logistics_runtime_profile import (  # noqa: E402
 )
 from tools.install_logistics_runtime_profile import (  # noqa: E402
     TLS_CA_BUNDLE_RELATIVE_PATH,
+    _atomic_write,
     ensure_runtime_profile_from_enrollment_bundle,
 )
 
@@ -598,8 +600,18 @@ def _derive_identity(args: argparse.Namespace, endpoint_url: str) -> dict[str, s
     if identity_path.exists():
         if not identity_path.is_file():
             raise DirectSyncPushError("producer identity path is not a regular file")
-        loaded = _load_producer_identity_file(identity_path)
-        loaded_from = str(identity_path.resolve())
+        try:
+            loaded = _load_producer_identity_file(identity_path)
+            loaded_from = str(identity_path.resolve())
+        except DirectSyncPushError:
+            # Only the audited partial-recovery path may derive a candidate
+            # independently of damaged evidence. It validates and archives it
+            # before replacing any local document.
+            if not (getattr(args, "recover_partial_local_state", False)
+                    and getattr(args, "admin_recovery_secret_file", "")
+                    and all(getattr(args, f, "") for f in (
+                        "pc_id", "producer_id", "source_host_id", "producer_install_id"))):
+                raise
 
     pc_id = _safe_token(
         getattr(args, "pc_id", "")
@@ -1203,13 +1215,12 @@ def _resolved_output_path(value: str, fallback: Path) -> Path:
     )
 
 
-def _preflight_admin_recovery_local_state(
+def _admin_recovery_local_targets(
     args: argparse.Namespace,
     manifest: Mapping[str, Any],
     credential: Mapping[str, Any],
     recovery_path: Path,
-) -> bool:
-    """Admit a wholly absent local identity or verify the complete existing one."""
+) -> list[Path]:
 
     data_dir = assert_path_has_no_reparse_components(
         str(credential["secret_data_dir"]),
@@ -1283,8 +1294,31 @@ def _preflight_admin_recovery_local_state(
             "admin recovery authorization path overlaps a local target"
         )
     for path in local_targets:
-        if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+        if os.path.lexists(path) and (
+            path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1
+        ):
             raise DirectSyncPushError("admin recovery local target is not a regular file")
+    return local_targets
+
+
+def _preflight_admin_recovery_local_state(
+    args: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    credential: Mapping[str, Any],
+    recovery_path: Path,
+) -> bool:
+    """Admit a wholly absent local identity or verify the complete existing one."""
+    (identity_path, manifest_path, credential_path, receipt_path, report_path,
+     producer_secret_path, profile_path, logistics_secret_path, tls_target) = (
+        _admin_recovery_local_targets(args, manifest, credential, recovery_path)
+    )
+    ca_source = assert_path_has_no_reparse_components(
+        str(getattr(args, "tls_ca_bundle_path", "") or ""), label="admin recovery TLS CA source"
+    )
+    target_keys = {os.path.normcase(str(path)) for path in (
+        identity_path, manifest_path, credential_path, receipt_path, report_path,
+        producer_secret_path, profile_path, logistics_secret_path, tls_target,
+    )}
     required_state = (
         (identity_path, "producer identity"),
         (manifest_path, "producer manifest"),
@@ -1326,6 +1360,273 @@ def _preflight_admin_recovery_local_state(
     return False
 
 
+def _partial_recovery_bytes(path: Path) -> bytes:
+    target = assert_path_has_no_reparse_components(path, label="partial recovery evidence")
+    stat = target.stat()
+    if not target.is_file() or stat.st_nlink != 1 or stat.st_size > 4_194_304:
+        raise DirectSyncPushError("부분 등록 파일의 형식·크기를 확인할 수 없습니다")
+    return target.read_bytes()
+
+
+def _secure_partial_directory(path: Path, user_sid: str) -> None:
+    assert_path_has_no_reparse_components(path, label="partial recovery archive")
+    path.mkdir(parents=True, exist_ok=True)
+    # This is an application-owned child, never the profile/data root itself.
+    subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r",
+         f"*{_normalize_user_sid(user_sid)}:(OI)(CI)F",
+         "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"],
+        check=True, capture_output=True, timeout=30,
+    )
+
+
+def _save_partial_recovery(path: Path, state: Mapping[str, Any]) -> None:
+    protected = _dpapi_protect_current_user(json.dumps(state, ensure_ascii=True, sort_keys=True))
+    _atomic_write(path, protected)
+    observed = _load_json_no_duplicate_keys(
+        _dpapi_unprotect_current_user(_partial_recovery_bytes(path)).encode("utf-8")
+    )
+    if observed != dict(state):
+        raise DirectSyncPushError("부분 등록 복구 기록을 다시 읽지 못했습니다")
+
+
+def _validate_partial_evidence(
+    targets: list[Path], manifest: Mapping[str, Any], credential: Mapping[str, Any],
+    fingerprint: str,
+) -> None:
+    expected = {**manifest["pc_identity"], "producer_id": credential["producer_id"],
+                "endpoint_url": credential["endpoint_url"], "dpapi_scope": "current_user",
+                "credential_scope": "current_user", "possession_key_fingerprint": fingerprint}
+    def compare(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        for field, wanted in expected.items():
+            if field in value and value[field] != wanted:
+                raise DirectSyncPushError("부분 등록 파일이 다른 사용자·설치·소유 키에 속합니다")
+        possession = value.get("possession_key")
+        if isinstance(possession, dict) and possession.get("fingerprint") != fingerprint:
+            raise DirectSyncPushError("부분 등록 파일의 소유 키가 다릅니다")
+        for field in ("pc_identity", "client_receipt"):
+            compare(value.get(field))
+    for index, path in enumerate(targets):
+        if not path.exists():
+            continue
+        raw = _partial_recovery_bytes(path)
+        if path.suffix.lower() != ".json":
+            continue
+        try:
+            value = _load_json_no_duplicate_keys(raw)
+        except DirectSyncPushError:
+            # Damaged bytes are evidence, never an identity assertion. The
+            # machine/SID-derived install identity and signed approval remain required.
+            continue
+        compare(value)
+        if index == 1 and isinstance(value, dict) and "pc_identity" in value and value != dict(manifest):
+            raise DirectSyncPushError("existing producer manifest differs from the recovery candidate")
+
+
+def _archive_partial_recovery(
+    journal: Path, state: dict[str, Any], targets: list[Path],
+) -> None:
+    entries = state["archives"]
+    # Finish the previous move intent before examining any files from a later
+    # interrupted local installation. Each original has its own immutable slot.
+    if not entries or all(entry["moved"] for entry in entries):
+        for index, source in enumerate(targets):
+            if source.exists():
+                raw = _partial_recovery_bytes(source)
+                entries.append({"source": str(source), "target_index": index,
+                                "name": f"{len(entries):04d}.original",
+                                "sha256": hashlib.sha256(raw).hexdigest(), "moved": False})
+        _save_partial_recovery(journal, state)
+    for entry in entries:
+        source = targets[entry["target_index"]]
+        if entry["source"] != str(source) or not re.fullmatch(r"[0-9]{4}\.original", entry["name"]):
+            raise DirectSyncPushError("부분 등록 보관 경로가 달라졌습니다")
+        destination = journal.parent / entry["name"]
+        if destination.exists():
+            if hashlib.sha256(_partial_recovery_bytes(destination)).hexdigest() != entry["sha256"]:
+                raise DirectSyncPushError("부분 등록 보관 원본이 달라졌습니다")
+            if entry["moved"]:
+                continue
+            if source.exists():
+                raise DirectSyncPushError("부분 등록 이동 중 원 위치에 새 파일이 생겼습니다")
+        else:
+            if entry["moved"] or hashlib.sha256(_partial_recovery_bytes(source)).hexdigest() != entry["sha256"]:
+                raise DirectSyncPushError("부분 등록 이동 전 원본이 달라졌습니다")
+            # Windows rename refuses an existing destination. No replacement,
+            # recursive cleanup, or shared possession-key operation is involved.
+            source.rename(destination)
+        subprocess.run(["icacls", str(destination), "/reset"], check=True,
+                       capture_output=True, timeout=30)
+        if hashlib.sha256(_partial_recovery_bytes(destination)).hexdigest() != entry["sha256"]:
+            raise DirectSyncPushError("부분 등록 보관 원본 읽기 검증에 실패했습니다")
+        entry["moved"] = True
+        _save_partial_recovery(journal, state)
+
+
+def _partial_recovery_request(session: requests.Session, url: str, action: str,
+                              proof: dict[str, Any], key: Any, token: str,
+                              timeout: int, **extra: Any) -> dict[str, Any]:
+    require_enrollment_mutex_owned()
+    proof = {"contract_version": f"producer-admin-recovery-{action}-proof-v1", **proof}
+    response = session.post(
+        url + "/" + action,
+        json={"contract_version": f"producer-admin-recovery-{action}-request-v1",
+              "proof": proof, "signature": b64url_encode(key.sign_es256(canonical_json_bytes(proof))),
+              **extra},
+        headers={"X-Producer-Enrollment-Token": token} if token else {},
+        timeout=timeout, allow_redirects=False,
+    )
+    payload = response.json()
+    if response.status_code != 200:
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        raise ProducerEnrollmentHTTPError(response.status_code, str(error.get("code", response.status_code)),
+                                         "", enrollment_token_supplied=bool(token))
+    if not isinstance(payload, dict) or payload.get("contract_version") != f"producer-admin-recovery-{action}-response-v1":
+        raise DirectSyncPushError("부분 등록 복구 응답 형식이 다릅니다")
+    return payload
+
+
+def _recover_partial_local_state(args: argparse.Namespace, manifest: dict[str, Any],
+                                 credential: dict[str, Any], progress: _AdminRecoveryProgress | None):
+    require_enrollment_mutex_owned()
+    user_sid = _current_user_sid()
+    # Do not trust the diagnostic --machine-guid override for this ownership check.
+    install_id = derive_path_independent_install_id(machine_guid=_current_machine_guid(), user_sid=user_sid)
+    if manifest["pc_identity"]["producer_install_id"] != install_id:
+        raise DirectSyncPushError("부분 등록이 현재 Windows 사용자·PC의 설치 신원과 다릅니다")
+    recovery_path = assert_path_has_no_reparse_components(args.admin_recovery_secret_file, label="recovery authorization")
+    targets = _admin_recovery_local_targets(args, manifest, credential, recovery_path)
+    ca_path = assert_path_has_no_reparse_components(args.tls_ca_bundle_path, label="recovery TLS CA")
+    if not ca_path.is_file() or ca_path in targets:
+        raise DirectSyncPushError("부분 등록 복구에는 보관 대상 밖의 TLS CA 원본이 필요합니다")
+    archive = assert_path_has_no_reparse_components(
+        Path(credential["secret_data_dir"]) / "recovery" / "partial-registration", label="partial recovery archive")
+    if any(path == archive or archive in path.parents for path in [*targets, ca_path, recovery_path]):
+        raise DirectSyncPushError("부분 등록 보관 경로가 입력·출력 경로와 겹칩니다")
+    journal = archive / "journal.dpapi"
+    url = _validate_admin_recovery_url(args.admin_recovery_url or _admin_recovery_url_from_endpoint(credential["endpoint_url"]),
+                                      credential["endpoint_url"])
+    token_source, token = _token_from_sources(args)
+    with PersistentPossessionKey.open_existing(scope=SCOPE_CURRENT_USER) as key:
+        descriptor = key.descriptor().as_dict()
+        key.assert_non_exportable()
+        binding = {"user_sid": user_sid, "producer_id": credential["producer_id"],
+                   "identity": manifest["pc_identity"], "manifest_hash": manifest_hash(manifest),
+                   "endpoint_url": credential["endpoint_url"], "possession_key_fingerprint": descriptor["fingerprint"],
+                   "targets": [str(p) for p in targets], "authorization_path": str(recovery_path),
+                   "ca_sha256": hashlib.sha256(_partial_recovery_bytes(ca_path)).hexdigest()}
+        _validate_partial_evidence(targets, manifest, credential, descriptor["fingerprint"])
+        if journal.exists():
+            state = _load_json_no_duplicate_keys(
+                _dpapi_unprotect_current_user(_partial_recovery_bytes(journal)).encode("utf-8"))
+            if not isinstance(state, dict) or state.get("binding") != binding:
+                raise DirectSyncPushError("부분 등록 복구 기록의 사용자·설치·입력이 다릅니다")
+        else:
+            _, authorization = _load_admin_recovery_authorization(str(recovery_path), expected_producer_id=credential["producer_id"])
+            state = {"binding": binding, "authorization": authorization,
+                     "request_id": "lm-" + uuid.uuid4().hex, "commit_id": "lm-" + uuid.uuid4().hex,
+                     "archives": [], "prepared": None}
+            _secure_partial_directory(archive, user_sid)
+            _save_partial_recovery(journal, state)
+        authorization = state["authorization"]
+        if recovery_path.exists():
+            # Once a package is durable, its approval may expire while local
+            # persistence is resumed. It must still be the same file: never
+            # consume or delete a newly issued approval at the old path.
+            current = _load_json_no_duplicate_keys(_partial_recovery_bytes(recovery_path))
+            if current != authorization:
+                raise DirectSyncPushError("진행 중인 부분 등록 복구의 승인 파일이 달라졌습니다")
+        proof = {"authorization_id": authorization["authorization_id"],
+                 "client_request_id": state["request_id"], "producer_id": credential["producer_id"],
+                 "producer_install_id": install_id, "source_host_id": manifest["pc_identity"]["source_host_id"],
+                 "manifest_hash": manifest_hash(manifest), "new_possession_key_fingerprint": descriptor["fingerprint"]}
+        session = _open_admin_recovery_session(str(ca_path))
+        try:
+            if state["prepared"] is None:
+                _, current_authorization = _load_admin_recovery_authorization(str(recovery_path), expected_producer_id=credential["producer_id"])
+                if current_authorization != authorization:
+                    raise DirectSyncPushError("진행 중인 부분 등록 복구의 승인 파일이 달라졌습니다")
+                prepared = _partial_recovery_request(
+                    session, url, "prepare", {**proof, **{k: authorization[k] for k in ("nonce", "expires_at", "audience")}},
+                    key, token, max(1, int(args.enrollment_timeout_seconds)),
+                    recovery_token=authorization["recovery_token"], new_possession_public_jwk=descriptor["public_jwk"],
+                    manifest=manifest, endpoint_url=credential["endpoint_url"])
+                required = {"status": "prepared", "recovery_state": "PREPARED", "authorization_state": "RESERVED",
+                            "identity_action": "REATTACHED", "recovery_action": "ADMIN_RECOVERY",
+                            "endpoint_url": credential["endpoint_url"], "active_manifest_hashes": [manifest_hash(manifest)],
+                            **{k: proof[k] for k in ("client_request_id", "producer_id", "producer_install_id", "source_host_id")}}
+                if (any(prepared.get(k) != v for k, v in required.items())
+                        or not isinstance(prepared.get("prepare_id"), str) or not prepared["prepare_id"].strip()
+                        or not isinstance(prepared.get("key_id"), str) or not prepared["key_id"].strip()
+                        or type(prepared.get("proposed_credential_epoch")) is not int or prepared["proposed_credential_epoch"] < 2
+                        or prepared.get("secret_fingerprint_sha256") != _fingerprint(_secret_from_response(prepared))
+                        or prepared.get("possession_key") != {"contract_version": POSSESSION_KEY_CONTRACT_VERSION, "fingerprint": descriptor["fingerprint"]}
+                        or not isinstance(prepared.get("machine_credential_bundle"), dict)):
+                    raise DirectSyncPushError("부분 등록 준비 응답의 신원·키·자격 증명이 다릅니다")
+                try:
+                    _dt.datetime.strptime(prepared.get("prepare_expires_at", ""), "%Y-%m-%dT%H:%M:%SZ")
+                except (TypeError, ValueError) as exc:
+                    raise DirectSyncPushError("부분 등록 준비 응답의 만료 시각이 잘못되었습니다") from exc
+                state["prepared"] = prepared
+                _save_partial_recovery(journal, state)
+            prepared = state["prepared"]
+            proof["prepare_id"] = prepared["prepare_id"]
+            observed = _partial_recovery_request(session, url, "status", proof, key, token, max(1, int(args.enrollment_timeout_seconds)))
+            bound_fields = ("prepare_id", "client_request_id", "producer_id", "producer_install_id", "source_host_id")
+            if observed.get("status") != "observed" or any(observed.get(k) != proof[k] for k in bound_fields):
+                raise DirectSyncPushError("부분 등록 상태 응답의 신원이 다릅니다")
+            if observed.get("recovery_state") == "PREPARED":
+                _archive_partial_recovery(journal, state, targets)
+                # Bind commit to an immutable, separately protected package. The
+                # mutable journal itself changes as local files are finalized.
+                package = archive / "prepared.dpapi"
+                if not package.exists():
+                    _atomic_write(package, _dpapi_protect_current_user(json.dumps(prepared, sort_keys=True)))
+                sealed = _partial_recovery_bytes(package)
+                if json.loads(_dpapi_unprotect_current_user(sealed)) != prepared:
+                    raise DirectSyncPushError("부분 등록 준비 자격 증명의 읽기 검증에 실패했습니다")
+                committed = _partial_recovery_request(
+                    session, url, "commit", {**proof, "commit_id": state["commit_id"],
+                     "sealed_package_sha256": hashlib.sha256(sealed).hexdigest(),
+                     "prepared_key_id": prepared["key_id"],
+                     "prepared_secret_fingerprint_sha256": prepared["secret_fingerprint_sha256"]},
+                    key, token, max(1, int(args.enrollment_timeout_seconds)))
+            elif observed.get("recovery_state") == "COMMITTED":
+                committed = observed
+            else:
+                raise DirectSyncPushError("부분 등록 승인이 만료되거나 취소되었습니다. 관리자 확인이 필요합니다")
+            required = {**{k: proof[k] for k in bound_fields}, "commit_id": state["commit_id"],
+                        "recovery_state": "COMMITTED", "identity_action": "REATTACHED", "recovery_action": "ADMIN_RECOVERY",
+                        "key_id": prepared["key_id"], "secret_fingerprint_sha256": prepared["secret_fingerprint_sha256"],
+                        "credential_epoch": prepared["proposed_credential_epoch"],
+                        "active_manifest_hashes": [manifest_hash(manifest)], "possession_key": prepared["possession_key"]}
+            if (any(committed.get(k) != v for k, v in required.items())
+                    or committed.get("status") != ("observed" if committed is observed else "recovered")
+                    or committed.get("authorization_state") not in ADMIN_RECOVERY_AUTHORIZATION_STATES
+                    or not isinstance(committed.get("committed_at"), str) or not committed["committed_at"].strip()):
+                raise DirectSyncPushError("부분 등록 복구의 중앙 확정을 확인하지 못했습니다")
+            if progress is not None:
+                progress.server_credential_rotated = True
+                progress.fresh_local_state = True
+                progress.partial_archive = str(archive)
+                progress.partial_authorization_sha256 = hashlib.sha256(canonical_json_bytes(authorization)).hexdigest()
+            _archive_partial_recovery(journal, state, targets)
+            response = {**prepared, **committed, "contract_version": ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION, "status": "recovered"}
+            response["client_receipt"] = {
+                "receipt_schema_version": "producer-self-enrollment-client-receipt-v1",
+                **{k: response[k] for k in ("contract_version", "status", "identity_action", "recovery_action",
+                    "authorization_state", "credential_epoch", "producer_id", "producer_install_id", "source_host_id",
+                    "endpoint_url", "active_manifest_hashes", "key_id", "secret_fingerprint_sha256")},
+                "possession_key_fingerprint": descriptor["fingerprint"],
+            }
+            _validate_admin_recovery_response(response, manifest=manifest, credential=credential, possession_key=descriptor)
+            return response, descriptor, token_source, recovery_path, authorization
+        finally:
+            session.close()
+
+
 def _admin_recover(
     args: argparse.Namespace,
     manifest: dict[str, Any],
@@ -1362,6 +1663,8 @@ def _admin_recover(
     ).strip()
     if not configured_ca_bundle_path:
         raise DirectSyncPushError("admin recovery requires an explicit TLS CA bundle")
+    if getattr(args, "recover_partial_local_state", False):
+        return _recover_partial_local_state(args, manifest, credential, progress)
     recovery_path, authorization = _load_admin_recovery_authorization(
         str(getattr(args, "admin_recovery_secret_file", "") or ""),
         expected_producer_id=str(credential["producer_id"]),
@@ -1544,6 +1847,9 @@ def _apply_registration_locked(
             recovery_path,
             recovery_authorization,
         ) = _admin_recover(args, manifest, credential, progress)
+        if getattr(progress, "partial_archive", ""):
+            report["partial_recovery_archive"] = progress.partial_archive
+            report["partial_recovery_message_ko"] = "중단된 등록 원본을 보호된 위치에 보관하고 기존 신원으로 복구했습니다"
         registration_contract_version = ADMIN_RECOVERY_COMPLETE_CONTRACT_VERSION
         registration_url = _validate_admin_recovery_url(
             str(getattr(args, "admin_recovery_url", "") or "")
@@ -1678,8 +1984,9 @@ def _apply_registration_locked(
         if not _verify_dpapi_secret(credential["secret_data_dir"], secret_target, secret):
             raise DirectSyncPushError("dpapi secret verify failed")
     except Exception:
-        for created_path in (machine_profile or {}).get("created_paths", []):
-            Path(created_path).unlink(missing_ok=True)
+        if not getattr(args, "recover_partial_local_state", False):
+            for created_path in (machine_profile or {}).get("created_paths", []):
+                Path(created_path).unlink(missing_ok=True)
         raise
     if admin_recovery_requested and progress is not None:
         progress.producer_credential_finalized = True
@@ -1785,6 +2092,10 @@ def main(argv: list[str] | None = None) -> int:
         help="one-time authorization file issued by the audited server admin tool",
     )
     parser.add_argument(
+        "--recover-partial-local-state", action="store_true",
+        help="관리자 승인으로 중단된 등록 원본을 보관하고 같은 사용자·설치의 복구를 재개",
+    )
+    parser.add_argument(
         "--expected-active-manifest-hash",
         default="",
         help="required exact server-active legacy manifest hash for recovery preflight",
@@ -1830,6 +2141,8 @@ def main(argv: list[str] | None = None) -> int:
     report: dict[str, Any] = {}
     enrollment_guard: EnrollmentMutex | None = None
     try:
+        if args.recover_partial_local_state and not args.admin_recovery_secret_file:
+            raise DirectSyncPushError("부분 등록 복구에는 관리자 일회용 승인 파일이 필요합니다")
         if args.apply:
             enrollment_guard = EnrollmentMutex(args.enrollment_mutex_timeout_seconds)
             report_context["enrollment_mutex"] = enrollment_guard.acquire()
@@ -1935,6 +2248,10 @@ def main(argv: list[str] | None = None) -> int:
                 recovery_secret_path = Path(
                     str(report.get("admin_recovery_secret_file") or "")
                 )
+                if args.recover_partial_local_state and recovery_secret_path.exists():
+                    current_authorization = _load_json_no_duplicate_keys(_partial_recovery_bytes(recovery_secret_path))
+                    if hashlib.sha256(canonical_json_bytes(current_authorization)).hexdigest() != recovery_progress.partial_authorization_sha256:
+                        raise DirectSyncPushError("승인 파일이 바뀌어 삭제하지 않았습니다")
                 recovery_secret_path.unlink(missing_ok=True)
                 if recovery_secret_path.exists():
                     raise OSError(
@@ -1961,6 +2278,8 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(report_path, report)
         _verify_json_file(report_path, report, label="registration report")
         print(f"registration_report={report_path.resolve()}")
+        if report.get("partial_recovery_message_ko"):
+            print(report["partial_recovery_message_ko"])
         return (
             0
             if args.dry_run
@@ -1969,6 +2288,20 @@ def main(argv: list[str] | None = None) -> int:
             else 1
         )
     except Exception as exc:
+        if args.recover_partial_local_state:
+            # A rejected recovery must not overwrite the surviving registration
+            # report. Keep the original evidence and a separate, redacted result.
+            report_path = data_dir / "status" / "partial_recovery_diagnostic.json"
+            diagnostic = {
+                "status": "RECOVERY_REQUIRED", "error_type": type(exc).__name__,
+                "server_error_code": exc.error_code if isinstance(exc, ProducerEnrollmentHTTPError) else "",
+                "message_ko": "등록 복구가 끝나지 않았습니다. 원본과 복구 기록을 보존했습니다. 같은 명령으로 다시 확인하세요.",
+                "admin_recovery_progress": recovery_progress.redacted_summary(),
+            }
+            _write_json(report_path, diagnostic)
+            print(diagnostic["message_ko"])
+            print(f"registration_report={report_path.resolve()}")
+            return 3 if recovery_progress.server_credential_rotated else 2
         if recovery_progress.server_credential_rotated:
             blocked = {
                 "report_version": "label-match-worker-pc-registration-v1",

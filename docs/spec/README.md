@@ -1,5 +1,7 @@
 # Label_Match 기술 명세
 
+등록 중단으로 신원 파일 일부만 남았으면 지원 담당자가 같은 Windows 사용자·PC에서 `--recover-partial-local-state` 관리자 복구를 사용한다. 기존 설치 신원·소유 키를 대조하고 원본을 보관하며 보호된 journal과 중앙 prepare/status/commit으로 재개한다([범위·절차](operations.md#partial-registration-recovery)).
+
 기존 전체 시험의 21 FAIL은 [w9 시험 감사](operations.md#test-audit-w9)의 fixture/API 정합과 저장 루트 격리로 교정했다. 제품 계약·실제 GUI 수용과 호스트 회귀 결과를 구분한다.
 
 F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completion.py)에 있고 기존 앱 API·writer admission·성공 표시·worker dispatch는 [LM-3 경계](operations.md#module-boundaries-lm3)를 유지한다.
