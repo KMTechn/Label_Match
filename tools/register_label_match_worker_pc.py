@@ -23,6 +23,9 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+SITE_PACKAGES = ROOT / "site-packages"
+if SITE_PACKAGES.is_dir() and str(SITE_PACKAGES) not in sys.path:
+    sys.path.insert(1, str(SITE_PACKAGES))
 
 import requests  # noqa: E402
 
@@ -129,6 +132,26 @@ class PossessionKeyRecoveryRequired(DirectSyncPushError):
         super().__init__(
             "existing producer identity requires audited administrator recovery; "
             "automatic possession-key replacement is forbidden"
+        )
+
+
+class AdminRecoveryArgumentsRequired(DirectSyncPushError):
+    """A bounded operator hint containing option names, never supplied values."""
+
+
+def _require_admin_recovery_arguments(args: argparse.Namespace) -> None:
+    missing = ["--" + field.replace("_", "-") for field in (
+        "pc_id", "producer_id", "source_host_id", "producer_install_id",
+        "expected_active_manifest_hash",
+    ) if not str(getattr(args, field, "") or "").strip()]
+    if missing:
+        raise AdminRecoveryArgumentsRequired(
+            "관리자 복구에 필요한 인수가 빠졌습니다: " + ", ".join(missing) + ". "
+            "서버 root 담당자가 기존 producer의 producer_self_enrolled_credentials에서 "
+            "producer_id, source_host_id, producer_install_id, active_manifest_hashes_json을 "
+            "읽고 producer_manifest_path 파일의 pc_identity.pc_id와 대조해 전달해야 합니다. "
+            "이 신원·해시는 비밀이 아니며 임의로 새 값을 만들지 마세요. "
+            "일회용 승인 파일과 TLS CA는 별도로 준비하고 비밀 값은 출력하지 마세요."
         )
 
 
@@ -1641,14 +1664,7 @@ def _admin_recover(
         raise DirectSyncPushError(
             "admin recovery requires --credential-scope current_user"
         )
-    for field, option in (
-        ("pc_id", "--pc-id"),
-        ("producer_id", "--producer-id"),
-        ("source_host_id", "--source-host-id"),
-        ("producer_install_id", "--producer-install-id"),
-    ):
-        if not str(getattr(args, field, "") or "").strip():
-            raise DirectSyncPushError(f"admin recovery requires explicit {option}")
+    _require_admin_recovery_arguments(args)
     candidate_manifest_hash = manifest_hash(manifest)
     expected_active_manifest_hash = _validated_sha256_hex(
         str(getattr(args, "expected_active_manifest_hash", "") or ""),
@@ -2143,6 +2159,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.recover_partial_local_state and not args.admin_recovery_secret_file:
             raise DirectSyncPushError("부분 등록 복구에는 관리자 일회용 승인 파일이 필요합니다")
+        if args.admin_recovery_secret_file:
+            _require_admin_recovery_arguments(args)
         if args.apply:
             enrollment_guard = EnrollmentMutex(args.enrollment_mutex_timeout_seconds)
             report_context["enrollment_mutex"] = enrollment_guard.acquire()
@@ -2295,7 +2313,7 @@ def main(argv: list[str] | None = None) -> int:
             diagnostic = {
                 "status": "RECOVERY_REQUIRED", "error_type": type(exc).__name__,
                 "server_error_code": exc.error_code if isinstance(exc, ProducerEnrollmentHTTPError) else "",
-                "message_ko": "등록 복구가 끝나지 않았습니다. 원본과 복구 기록을 보존했습니다. 같은 명령으로 다시 확인하세요.",
+                "message_ko": str(exc) if isinstance(exc, AdminRecoveryArgumentsRequired) else "등록 복구가 끝나지 않았습니다. 원본과 복구 기록을 보존했습니다. 같은 명령으로 다시 확인하세요.",
                 "admin_recovery_progress": recovery_progress.redacted_summary(),
             }
             _write_json(report_path, diagnostic)
@@ -2333,6 +2351,8 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             print(f"registration_report={report_path.resolve()}")
             return 3
+        if isinstance(exc, AdminRecoveryArgumentsRequired):
+            print(str(exc))
         blocked = {
             "report_version": "label-match-worker-pc-registration-v1",
             "status": "BLOCKED",

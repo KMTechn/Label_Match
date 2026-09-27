@@ -458,6 +458,18 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 <a id="partial-registration-recovery"></a>
 ### 등록 중단으로 신원 파일 일부만 남은 PC
 
+설치된 packet에서는 `runtime/python.exe -I -B app/tools/register_label_match_worker_pc.py`를 직접 사용한다. 도구가 bundled `app/site-packages`를 추가하므로 별도 Python 패키지 설치나 경로 우회가 필요하지 않다. 누락 인수 안내가 나오면 서버 root 담당자가 운영 DB를 읽기 전용으로 열어 기존 producer의 아래 값만 전달한다. `secret_hex`·자격 증명·승인 토큰은 조회/출력하지 않는다.
+
+| 필요한 옵션 | 기존 서버에서 읽는 값 |
+| --- | --- |
+| `--producer-id` | `producer_self_enrolled_credentials.producer_id` |
+| `--source-host-id` | 같은 행의 `source_host_id` |
+| `--producer-install-id` | 같은 행의 `producer_install_id` |
+| `--pc-id` | 같은 행의 `producer_manifest_path` 파일 안 `pc_identity.pc_id` |
+| `--expected-active-manifest-hash` | 같은 행의 `active_manifest_hashes_json` 중 candidate manifest와 정확히 같은 SHA256 |
+
+기존 사용자·설치의 경로로 만든 후보와 서버 hash가 다르면 새 identity나 임의 hash로 우회하지 않는다. 원 설정과 서버 manifest를 다시 대조한다.
+
 지원 담당자는 해당 앱의 writer/relay를 정상 지원 절차로 멈추고 원 Windows 사용자로 실행한다. 서버 root가 기존 producer에 발급한 일회용 승인 파일과 기존 pc/producer/source-host/install ID, 정확한 candidate manifest hash, 보관 대상 밖의 TLS CA 원본을 준비한다. 관리자 복구 명령에 `--recover-partial-local-state`를 추가하고 `--credential-scope current_user`, `--admin-recovery-secret-file`, `--expected-active-manifest-hash`, 네 identity 인수와 기존 `--data-dir`, `--sync-dir`, `--logistics-profile-path`, `--tls-ca-bundle-path`를 지정한다. 손상 신원 파일도 명시 ID로 처리하되 현재 MachineGuid/SID에서 유도되는 install ID와 다르면 거부한다. 과거 비유도 install ID·다른 사용자·다른 PC의 부분 파일을 이 옵션으로 이관하지 않는다.
 
 원본은 producer data root의 `recovery/partial-registration/*.original`에 보관한다. 이 자식 폴더는 현재 사용자·SYSTEM·관리자 ACL만 허용하며 `journal.dpapi`와 준비 자격은 current-user DPAPI로 보호한다. 링크·하드링크·경로 중첩·해석 가능한 타 신원·manifest 불일치·다른 키는 거부한다. 손상 JSON은 신원 증거로 사용하지 않고 원 bytes를 보관한다. 공유 소유 키는 생성·교체·삭제하지 않으며 업무 CSV·원장·outbox·stop marker도 옮기지 않는다. 보관 파일과 journal을 수동으로 고치거나 삭제하지 않는다.

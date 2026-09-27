@@ -1,6 +1,7 @@
 # Label_Match 기술 명세
 
 등록 중단으로 신원 파일 일부만 남았으면 지원 담당자가 같은 Windows 사용자·PC에서 `--recover-partial-local-state` 관리자 복구를 사용한다. 기존 설치 신원·소유 키를 대조하고 원본을 보관하며 보호된 journal과 중앙 prepare/status/commit으로 재개한다([범위·절차](operations.md#partial-registration-recovery)).
+설치된 등록 도구는 `app/site-packages`를 직접 로드하므로 packet의 `runtime/python.exe -I -B app/tools/register_label_match_worker_pc.py`로 실행한다. 복구의 명시 신원·hash 인수가 빠지면 신원 조회 전에 필요한 옵션과 서버 root의 읽기 출처를 한국어로 안내한다.
 
 기존 전체 시험의 21 FAIL은 [w9 시험 감사](operations.md#test-audit-w9)의 fixture/API 정합과 저장 루트 격리로 교정했다. 제품 계약·실제 GUI 수용과 호스트 회귀 결과를 구분한다.
 

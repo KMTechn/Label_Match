@@ -1482,6 +1482,11 @@ def test_post_recovery_failure_is_fenced_and_reported_without_exception_text(
             "--apply",
             "--admin-recovery-secret-file",
             str(authorization_path),
+            "--pc-id", "LABEL-PC-01",
+            "--producer-id", "producer-label-01",
+            "--source-host-id", "label-host-01",
+            "--producer-install-id", "install-label-01",
+            "--expected-active-manifest-hash", module.manifest_hash(manifest),
             "--report-path",
             str(report_path),
         ]
@@ -1561,6 +1566,11 @@ def test_successful_local_recovery_finalization_deletes_authorization_last(
             "--apply",
             "--admin-recovery-secret-file",
             str(authorization_path),
+            "--pc-id", "LABEL-PC-01",
+            "--producer-id", "producer-label-01",
+            "--source-host-id", "label-host-01",
+            "--producer-install-id", "install-label-01",
+            "--expected-active-manifest-hash", module.manifest_hash(manifest),
             "--data-dir",
             str(data_dir),
             "--report-path",
@@ -1833,3 +1843,47 @@ def test_admin_recovery_partial_local_state_cannot_be_treated_as_fresh(tmp_path,
             args, manifest, credential, tmp_path / "authorization.json"
         )
     assert present.read_bytes() == content
+
+
+def test_installed_registration_tool_loads_bundled_dependencies_directly(tmp_path):
+    import subprocess
+    import sys
+    from tools.build_portable_release_candidate import _copy_application, _copy_third_party
+
+    app = tmp_path / 'installed' / 'app'
+    _copy_application(Path(__file__).resolve().parents[1], app)
+    packages = app / 'site-packages'
+    packages.mkdir()
+    _copy_third_party(packages)
+    # -S removes the developer interpreter's installed third-party packages;
+    # the tool must find the same app/site-packages layout as the stock packet.
+    code = (
+        "import runpy,sys,tkinter;"
+        "tkinter.Tk.__init__=lambda *a,**k: (_ for _ in ()).throw(RuntimeError('GUI forbidden'));"
+        "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
+    )
+    result = subprocess.run(
+        [sys.executable, '-I', '-S', '-B', '-c', code,
+         str(app / 'tools' / 'register_label_match_worker_pc.py'), '--help'],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert '--recover-partial-local-state' in result.stdout
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_recovery_missing_arguments_explains_server_readback_before_identity_lookup(tmp_path, monkeypatch, capsys, partial):
+    module = load_registration_module()
+    monkeypatch.setattr(module, '_current_machine_guid', lambda: pytest.fail('identity lookup before explicit argument check'))
+    argv = ['--apply', '--credential-scope', 'current_user',
+            '--admin-recovery-secret-file', str(tmp_path / 'authorization.json'),
+            '--data-dir', str(tmp_path / 'state'), '--sync-dir', str(tmp_path / 'work')]
+    if partial:
+        argv.append('--recover-partial-local-state')
+    assert module.main(argv) == 2
+    output = capsys.readouterr().out
+    for option in ('--pc-id', '--producer-id', '--source-host-id', '--producer-install-id',
+                   '--expected-active-manifest-hash'):
+        assert option in output
+    assert '서버 root' in output and 'active_manifest_hashes_json' in output
+    assert 'pc_identity.pc_id' in output and '비밀' in output

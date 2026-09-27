@@ -2,6 +2,8 @@
 
 ## W9 · 부분 등록 지원 복구 (O11, w9lmpartial)
 
+랩 최종 리허설 P2 두 건도 교정했다: 설치된 등록기가 bundled 의존성을 찾는 직접 실행 경로, 필수 명시 인수 누락 시 한국어 옵션·서버 읽기 출처 안내. stock app 복사와 격리 Python에서 직접 `--help` 실행, 신원 조회 전 누락 거부를 회귀로 고정한다.
+
 신원 파일 일부 부재·손상으로 기존 관리자 복구도 거부하던 분기에 명시 `--recover-partial-local-state` 경로를 추가했다. 같은 사용자·PC의 유도 install ID·기존 키·root 승인을 검증하고 원본 보호 보관과 기존 서버 2단계 복구로 중단을 재개한다([절차](operations.md#partial-registration-recovery)). 소스 회귀 범위는 파일 조합·거부·ACK 유실·이동/로컬 저장 중단·실제 DPAPI/profile·READY 이후 첫 요청이다. 실제 packet 설치·서버 승인/첫 runtime lease·PHS2/F3의 중앙 receipt와 화면은 후속 랩 수용으로 남는다. 비유도 legacy install ID의 부분 신원 이관과 만료/취소된 진행 journal의 새 승인 전환은 이 옵션의 지원 범위 밖이다.
 
 <a id="lm-w9-lease-screen"></a>
