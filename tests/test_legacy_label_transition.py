@@ -1623,10 +1623,14 @@ def _cancellation_row(event, **changes):
     # detail.source_host_id is Web's own lineage key, never this binding.
     pytest.param([_duplicate_row(transition_source_host_id=None, source_host_id="label-host-1")],
                  "TRANSITION_DUPLICATE_OBSERVED", False, id="web-lineage-key"),
+    # The PC binding is transition_source_host_id (07:4x); Web judges the rest
+    # of the row (08:50: set identity, set count, event ID derivation).
     pytest.param([_duplicate_row(packaging_set_identity="label_match|OTHER-PC|set-dup")],
-                 "TRANSITION_DUPLICATE_OBSERVED", False, id="other-writer"),
+                 "TRANSITION_DUPLICATE_OBSERVED", True, id="this-host-other-writer"),
     pytest.param([_duplicate_row(idempotency_key="LM-TRAY_COMPLETE-" + "a" * 40)],
-                 "TRANSITION_DUPLICATE_OBSERVED", False, id="unbound-key"),
+                 "TRANSITION_DUPLICATE_OBSERVED", True, id="this-host-other-key"),
+    pytest.param([_duplicate_row(idempotency_key=None)], "TRANSITION_DUPLICATE_OBSERVED", False,
+                 id="completion-without-event-id"),
     pytest.param([_duplicate_row(
         transition_source_host_id="other-host", packaging_set_identity="label_match|OTHER-PC|set-dup",
         idempotency_key=label_transition.event_key("OTHER-PC", "set-dup", "TRAY_COMPLETE"),
@@ -1652,9 +1656,13 @@ def _cancellation_row(event, **changes):
                  "TRANSITION_DUPLICATE_OBSERVED", False, id="cancellation-other-host"),
     pytest.param([_cancellation_row("SET_DELETED", idempotency_key=None)],
                  "TRANSITION_NOT_PROJECTABLE", False, id="cancellation-without-event-id"),
-    pytest.param([_cancellation_row("TRAY_COMPLETION_CANCELLED",
-                                    idempotency_key=label_transition.cancellation_key("PC-LT", "other"))],
-                 "TRANSITION_DUPLICATE_OBSERVED", False, id="cancellation-unbound-key"),
+    # COORD-INBOX-0850: the five Web re-review combinations.
+    pytest.param([_duplicate_row(transition_duplicate=False, packaging_set_count="1")],
+                 "TRANSITION_NOT_PROJECTABLE", True, id="0850-completion-string-count"),
+    pytest.param([_cancellation_row("SET_DELETED", idempotency_key="LM-CANCELLATION-" + "b" * 40)],
+                 "TRANSITION_DUPLICATE_OBSERVED", True, id="0850-deletion-same-set-new-id"),
+    pytest.param([_cancellation_row("TRAY_COMPLETION_CANCELLED", idempotency_key="LM-CANCELLATION-" + "c" * 40)],
+                 "TRANSITION_DUPLICATE_OBSERVED", True, id="0850-cancellation-same-set-new-id"),
     pytest.param([_DUPLICATE_ROW], "TRANSITION_UNPUBLISHED_REASON", False, id="unpublished-reason"),
 ])
 def test_relay_accepts_a_raw_transition_duplicate_receipt_only_exactly(

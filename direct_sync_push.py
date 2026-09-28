@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
-import label_transition
 from producer_runtime_client import (
     CONTRACT_VERSION as RUNTIME_CONTRACT_VERSION,
     METADATA_FIELDS as RUNTIME_METADATA_FIELDS,
@@ -1063,7 +1062,6 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
         return False
 
 
-_TRANSITION_CLASSES = frozenset(label_transition.CLASSES)
 # The server's LabelMatch stream catalog (w9webrecv 6e27c99) without its three
 # business events (TRAY_COMPLETE, SET_DELETED, TRAY_COMPLETION_CANCELLED).  The
 # server acknowledges each as RAW_LEGITIMATE / NO_STAGE1_REDUCER, so a delta of
@@ -1086,50 +1084,22 @@ _TRANSITION_RAW_ONLY_REASONS = frozenset(("TRANSITION_DUPLICATE_OBSERVED", "TRAN
 def _is_this_pc_transition_row(row: Mapping[str, Any], source_host_id: str) -> bool:
     """A completion or cancellation this PC wrote in transition mode.
 
-    The row carries an event ID and its transition_source_host_id is the
-    uploading manifest's source_host_id.  A row naming its set must derive
-    that event ID from the same Label_Match writer and set, so another PC's
-    row never takes this PC's raw acknowledgement.
+    It carries an event ID and names the uploading manifest's source_host_id
+    as transition_source_host_id, so another PC's row never takes this PC's
+    raw acknowledgement.  The rest of the row (set identity, set count, how
+    its ID was made) is Web's to judge, and its receipt code says the result.
     """
 
     try:
         details = json.loads(row.get("details") or "{}")
     except (TypeError, ValueError):
         return False
-    if not isinstance(details, dict):
-        return False
-    key = details.get("idempotency_key")
-    completion = row.get("event") == "TRAY_COMPLETE"
-    if (
-        not source_host_id
-        or details.get("transition_source_host_id") != source_host_id
-        or not isinstance(key, str)
-        or not 0 < len(key) <= 128
-        or (completion and details.get("transition_class") not in _TRANSITION_CLASSES)
-    ):
-        return False
-    set_id = str(details.get(
-        "cancelled_set_id" if row.get("event") == "TRAY_COMPLETION_CANCELLED" else "set_id"
-    ) or "")
-    identity = str(details.get(
-        "packaging_set_identity" if completion else "affected_completed_packaging_set_identity"
-    ) or "")
-    if not set_id and not identity:
-        return True  # Web observes it as not projectable (no set identity).
-    source, _separator, writer_and_set = identity.partition("|")
-    writer_id = (
-        writer_and_set[: -len(set_id) - 1]
-        if set_id and writer_and_set.endswith(f"|{set_id}")
-        else ""
-    )
+    key = details.get("idempotency_key") if isinstance(details, dict) else None
     return bool(
-        source == "label_match"
-        and writer_id
-        and key == (
-            label_transition.event_key(writer_id, set_id, "TRAY_COMPLETE")
-            if completion
-            else label_transition.cancellation_key(writer_id, set_id)
-        )
+        source_host_id
+        and details.get("transition_source_host_id") == source_host_id
+        and isinstance(key, str)
+        and 0 < len(key) <= 128
     )
 
 
