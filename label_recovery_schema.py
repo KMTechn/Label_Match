@@ -69,9 +69,6 @@ RECOVERY_SCHEMAS = {
             "exact_rescan_source_bundle_id": _TEXT,
             "recovery_operator_review": _BOOLEAN,
             "restored_from_package_outbox": _BOOLEAN,
-            "transition_class": _TEXT,
-            "transition_reasons": _TEXT_LIST,
-            "transition_duplicate": _BOOLEAN,
         },
     },
     "draft": {
