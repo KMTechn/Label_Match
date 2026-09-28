@@ -1624,11 +1624,8 @@ def _label_match_tray_complete_passed(details):
     return _label_match_tray_complete_result(details) == LABEL_MATCH_RESULT_PASS
 
 
-def _label_match_local_completion_event_exists(data_manager, set_id, *, file_dates=None):
-    """Synchronize a matching TRAY_COMPLETE before reusing its completion.
-
-    ``file_dates`` (YYYYMMDD) limits the search to those daily files.
-    """
+def _label_match_local_completion_event_exists(data_manager, set_id):
+    """Synchronize a matching TRAY_COMPLETE before reusing its completion."""
 
     identity = str(set_id or "").strip()
     save_directory = str(
@@ -1662,7 +1659,6 @@ def _label_match_local_completion_event_exists(data_manager, set_id, *, file_dat
                 os.path.join(save_directory, name)
                 for name in os.listdir(save_directory)
                 if name.startswith(prefix) and name.lower().endswith(".csv")
-                and (file_dates is None or name[len(prefix):len(prefix) + 8] in file_dates)
             ]
         except OSError as exc:
             raise PackageLogisticsError("local completion CSV files could not be enumerated") from exc
@@ -10539,8 +10535,11 @@ class Label_Match(tk.Tk):
         saved_set_id = str(saved_set_info.get("id") or "").strip()
         capture = self._owned_deferred_capture_for_set(saved_set_info)
         if capture is not None and capture["state"] == "CANCELLED":
-            self.data_manager.delete_current_state()
-            return
+            if saved_set_info.get("transition_class") not in label_transition.LOCAL_CLASSES:
+                self.data_manager.delete_current_state()
+                return
+            # A pinned transition local set outlives its closed capture.
+            saved_set_info.pop("deferred_intent_id", None)
         package_row = (
             package_outbox.get_by_set_id(saved_set_id)
             if package_outbox is not None and saved_set_id
@@ -16663,7 +16662,7 @@ class Label_Match(tk.Tk):
             set_id_for_log=set_id_for_log,
             current_snapshot=current_snapshot,
             deepcopy=lambda value: copy.deepcopy(value),
-            _label_match_local_completion_event_exists=lambda *args, **kwargs: _label_match_local_completion_event_exists(*args, **kwargs),
+            _label_match_local_completion_event_exists=lambda *args: _label_match_local_completion_event_exists(*args),
             PackageLogisticsError=lambda *args: PackageLogisticsError(*args),
             _label_match_parse_sealed_transfer_qr=lambda raw: _label_match_parse_sealed_transfer_qr(raw),
             _app_version=APP_VERSION,

@@ -4,6 +4,7 @@ Local storage (event CSV, package outbox) is real; the central client may only
 expose its read-only config, so any central call fails the test.
 """
 
+import base64
 import copy
 import csv
 import json
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import label_transition
 from package_logistics import PackageOutbox
 from tests.test_label_match_core import (
     _B1_KEY,
@@ -796,12 +798,12 @@ def test_on_flush_retry_resends_the_one_completion_row_unchanged(tmp_path, monke
     module = load_label_match_module()
     app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
     real_flush = module.Label_Match._flush_data_manager_if_supported
-    calls = []
+    glitched = []
 
     def flush(timeout=5.0):
         real_flush(app, timeout=timeout)
-        calls.append(timeout)
-        if len(calls) == 2:  # right after the TRAY_COMPLETE append
+        if not glitched and _events(tmp_path, "TRAY_COMPLETE"):  # right after the append
+            glitched.append(timeout)
             raise TimeoutError("Log writer did not flush before timeout")
 
     app._flush_data_manager_if_supported = flush
@@ -1384,6 +1386,34 @@ def test_f3_source_refresh_refusal_completes_locally_before_any_command(
     }
 
 
+def test_f3_source_refresh_refusal_keeps_a_submitted_package_out_of_local(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, actions, _clock = _b1_app(module, tmp_path, monkeypatch)
+    app._legacy_label_transition_enabled = True
+    app.current_set_info.pop("package_source_snapshot", None)
+    submitted_row = {"set_id": "b1-first", "status": "UNKNOWN"}
+    monkeypatch.setattr(app.package_outbox, "get_by_set_id",
+                        lambda set_id: submitted_row if set_id == "b1-first" else None)
+    app.ui_lane = object()
+    submitted = []
+    app._submit_ui_lane_task = lambda **task: submitted.append(task) or SimpleNamespace(accepted=True)
+    app._publish_submission_block = lambda error: actions.append("preflight:" + str(error))
+
+    def refuse(*_args, **_kwargs):
+        raise module.PackageLogisticsError("PACKAGE_PREVIEW_MISMATCH")
+
+    app._resolve_central_phs2_seal_for_exchange = refuse
+    try:
+        assert app._begin_central_package_submission()
+        [task] = submitted
+        task["finish"](task["work"]())
+    finally:
+        _b1_close(app.data_manager)
+    assert _b1_rows(tmp_path)[1] == []  # no local completion row
+    assert app.current_set_info.get("transition_class") != "PHS2_LOCAL"
+    assert any("PACKAGE_PREVIEW_MISMATCH" in str(item) for item in actions)
+
+
 def test_emitted_transition_reasons_are_upper_case_codes(tmp_path, monkeypatch):
     import re
 
@@ -1537,10 +1567,20 @@ def _transition_relay_batch(tmp_path, rows):
     )
 
 
-_DUPLICATE_ROW = ("TRAY_COMPLETE", {
-    "set_id": "set-dup", "transition_class": "PHS2_LOCAL", "transition_reasons": ["DUPLICATE_LABEL"],
-    "transition_duplicate": True, "idempotency_key": "LM-TRAY_COMPLETE-" + "a" * 40,
-})
+def _duplicate_row(**changes):
+    """A duplicate completion row this PC (manifest source_host_id label-host-1) wrote."""
+
+    details = {
+        "set_id": "set-dup", "transition_class": "PHS2_LOCAL", "transition_reasons": ["DUPLICATE_LABEL"],
+        "transition_duplicate": True, "transition_source_host_id": "label-host-1",
+        "packaging_set_identity": "label_match|PC-LT|set-dup",
+        "idempotency_key": label_transition.event_key("PC-LT", "set-dup", "TRAY_COMPLETE"),
+    }
+    details.update(changes)
+    return "TRAY_COMPLETE", {key: value for key, value in details.items() if value is not None}
+
+
+_DUPLICATE_ROW = _duplicate_row()
 
 
 @pytest.mark.parametrize(("rows", "reason", "accepted"), [
@@ -1550,6 +1590,22 @@ _DUPLICATE_ROW = ("TRAY_COMPLETE", {
     pytest.param([_DUPLICATE_ROW], "NO_STAGE1_REDUCER", False, id="wrong-reason"),
     pytest.param([("TRAY_COMPLETE", {"set_id": "set-base"})], "TRANSITION_DUPLICATE_OBSERVED",
                  False, id="base-completion"),
+    # sub-03 P1 (3): only a row this PC wrote takes its raw acknowledgement.
+    pytest.param([_duplicate_row(transition_source_host_id="other-host")], "TRANSITION_DUPLICATE_OBSERVED",
+                 False, id="other-host"),
+    pytest.param([_duplicate_row(transition_source_host_id=None)], "TRANSITION_DUPLICATE_OBSERVED",
+                 False, id="no-host"),
+    # detail.source_host_id is Web's own lineage key, never this binding.
+    pytest.param([_duplicate_row(transition_source_host_id=None, source_host_id="label-host-1")],
+                 "TRANSITION_DUPLICATE_OBSERVED", False, id="web-lineage-key"),
+    pytest.param([_duplicate_row(packaging_set_identity="label_match|OTHER-PC|set-dup")],
+                 "TRANSITION_DUPLICATE_OBSERVED", False, id="other-writer"),
+    pytest.param([_duplicate_row(idempotency_key="LM-TRAY_COMPLETE-" + "a" * 40)],
+                 "TRANSITION_DUPLICATE_OBSERVED", False, id="unbound-key"),
+    pytest.param([_duplicate_row(
+        transition_source_host_id="other-host", packaging_set_identity="label_match|OTHER-PC|set-dup",
+        idempotency_key=label_transition.event_key("OTHER-PC", "set-dup", "TRAY_COMPLETE"),
+    )], "TRANSITION_DUPLICATE_OBSERVED", False, id="other-pc"),
 ])
 def test_relay_accepts_a_raw_transition_duplicate_receipt_only_exactly(
     tmp_path, monkeypatch, rows, reason, accepted,
@@ -1583,3 +1639,302 @@ def test_relay_accepts_a_raw_transition_duplicate_receipt_only_exactly(
     assert result.success is accepted
     if not accepted:
         assert result.error_code == "producer_projection_incomplete"
+
+
+# sub-03 interim P1s (07:0x, 07:1x); ported from sub-03/test_recheck3.py.
+
+
+class _PowerLoss(BaseException):
+    """Stop a call at a persistence boundary without ending the process."""
+
+
+def _captured_transition_app(case, module, tmp_path, monkeypatch, transition_class):
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    app.deferred_intent_capture = case.open_capture()
+    app.package_outbox = case.app.package_outbox
+    app.package_logistics_client = case.app.package_logistics_client
+    app._operation_lease_request_context = case.app._operation_lease_request_context
+    app.current_set_info = copy.deepcopy(case.app.current_set_info)
+    app.current_set_info.update(label_transition.fields(transition_class))
+    app.current_set_info["start_time"] = datetime.now()
+    return app
+
+
+def _restored_app(case, module, tmp_path, monkeypatch):
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    restored.deferred_intent_capture = case.open_capture()
+    restored.package_outbox = case.app.package_outbox
+    restored._load_current_set_state()
+    return restored
+
+
+@pytest.mark.parametrize("failure", ["save-false", "interruption"])
+def test_failed_local_decision_save_keeps_the_saved_set_and_its_capture(
+    clock_case, tmp_path, monkeypatch, failure,
+):
+    import label_completion
+    from tests.test_deferred_intent_capture import _row
+
+    intent_id = _first_scan(clock_case)
+    module = load_label_match_module()
+    app = _captured_transition_app(clock_case, module, tmp_path, monkeypatch, "PHS2_CENTRAL")
+    raw = list(app.current_set_info["raw"])
+    path = Path(app._package_current_state_path())
+    assert app._save_current_set_state()
+    saved = path.read_bytes()
+
+    def fail_save(_current):
+        if failure == "interruption":
+            raise _PowerLoss()
+        return False
+
+    try:
+        try:
+            decided = label_completion._decide_transition_local(
+                app, app.current_set_info, "PHS2_LOCAL", ["PACKAGE_PREVIEW_MISMATCH"], False,
+                persist_current_state=fail_save,
+            )
+        except _PowerLoss:
+            decided = None
+        assert not decided and path.read_bytes() == saved
+        # The capture stays open until the decision is durable.
+        assert _row(clock_case.database, intent_id)["state"] == "VALIDATED"
+    finally:
+        _close(app)
+    restored = _restored_app(clock_case, module, tmp_path, monkeypatch)
+    try:
+        assert path.exists() and restored.current_set_info["raw"] == raw
+    finally:
+        _close(restored)
+
+
+def test_recovery_keeps_a_pinned_local_set_whose_capture_was_closed(clock_case, tmp_path, monkeypatch):
+    from tests.test_deferred_intent_capture import _row
+
+    intent_id = _first_scan(clock_case)
+    module = load_label_match_module()
+    app = _captured_transition_app(clock_case, module, tmp_path, monkeypatch, "PHS2_LOCAL")
+    raw = list(app.current_set_info["raw"])
+    try:
+        # A stop between closing the capture and the save that drops its id.
+        assert app._save_current_set_state()
+        app._cancel_deferred_capture_for_set(app.current_set_info)
+        assert _row(clock_case.database, intent_id)["state"] == "CANCELLED"
+    finally:
+        _close(app)
+    restored = _restored_app(clock_case, module, tmp_path, monkeypatch)
+    try:
+        assert Path(restored._package_current_state_path()).exists()
+        assert restored.current_set_info["raw"] == raw
+        assert restored.current_set_info["transition_class"] == "PHS2_LOCAL"
+        assert "deferred_intent_id" not in restored.current_set_info
+    finally:
+        _close(restored)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_local_completion_retry_reuses_its_row_from_any_earlier_day(tmp_path, monkeypatch, restart):
+    module = load_label_match_module()
+
+    class Clock(datetime):
+        instant = datetime(2026, 9, 27, 23, 59, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.instant
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    real_flush = app._flush_data_manager_if_supported
+    glitched = []
+
+    def flush(timeout=5):
+        real_flush(timeout=timeout)
+        if not glitched and _events(tmp_path, "TRAY_COMPLETE"):
+            glitched.append(True)
+            raise TimeoutError("completion append succeeded, flush status unavailable")
+
+    try:
+        for value in _legacy_set(301)[:4]:  # started 9/27
+            _scan(module, app, value)
+        Clock.instant = datetime(2026, 9, 28, 0, 1, 0)  # completed 9/28
+        app._flush_data_manager_if_supported = flush
+        _scan(module, app, f"{MASTER}-FINAL-LABEL-0301<GS>6D20260927")
+        first = _events(tmp_path, "TRAY_COMPLETE")
+        assert len(first) == 1 and app.current_set_info["raw"]
+        Clock.instant = datetime(2026, 9, 29, 8, 0, 0)  # retried 9/29
+        if restart:
+            _close(app)
+            app = _app_for_recovery(module, tmp_path, monkeypatch)
+            app._load_current_set_state()
+        app._finalize_set(app.Results.PASS)
+        app.data_manager.flush(timeout=5)
+        assert _events(tmp_path, "TRAY_COMPLETE") == first  # the same row and content
+    finally:
+        _close(app)
+
+
+def test_transition_completion_names_the_registered_pc_for_the_relay(tmp_path, monkeypatch):
+    import direct_sync_push
+
+    module = load_label_match_module()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    app.package_logistics_client.config = SimpleNamespace(tls_ca_bundle_path="", source_host_id="label-host-1")
+    try:
+        for value in _legacy_set(311):
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    [(row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["transition_class"] == "LEGACY"
+    assert details["transition_source_host_id"] == "label-host-1" and "source_host_id" not in details
+    assert direct_sync_push._is_transition_completion_row(row, "label-host-1")
+    assert not direct_sync_push._is_transition_completion_row(row, "other-host")
+
+
+@pytest.mark.parametrize("quantity", ["abc", "0", "-1", "", "2|QTY=0"])
+def test_inspection_quantity_alias_is_checked_before_the_ledger(tmp_path, monkeypatch, quantity):
+    module = load_label_match_module()
+    raw = f"CLC=INSPECTION|ITEM={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-ALIAS|QTY={quantity}"
+    # The package flow reads QTY as QT.
+    assert module._label_match_parse_new_format_fields(raw).get("QT", "") == quantity.split("QTY=")[-1]
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in [raw, *_legacy_set(312)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["transition_class"] == "PHS2_MALFORMED"
+    assert "QT_INVALID" in details["transition_reasons"]
+    assert _outbox_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("encoded", [False, True], ids=["plain", "base64"])
+@pytest.mark.parametrize("transition", [False, True])
+def test_valid_inspection_name_alias_stays_central(tmp_path, monkeypatch, transition, encoded):
+    module = load_label_match_module()
+    raw = f"CLC=INSPECTION|ITEM={MASTER}|ITEM_NAME=Product|PHS=1|BND=TRANSFER-ALIAS|QT=4"
+    if encoded:
+        raw = base64.b64encode(raw.encode()).decode()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=transition)
+    try:
+        for value in [raw, *_legacy_set(313)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details.get("transition_class") == ("PHS2_CENTRAL" if transition else None)
+    assert len(_outbox_rows(tmp_path)) == 1
+
+
+@pytest.mark.parametrize(("raw", "reasons"), [
+    pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|ITEM_NAME=Product|PHS=1|BND=B-1|QT=4", (), id="item-name"),
+    pytest.param(f"CLC=INSPECTION|ITEM_CODE={MASTER}|PHS=1|BND=B-1|QTY=4", (), id="item-code-qty"),
+    pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|SPC=P|PHASE=1|BND=B-1|QT=4", (), id="phase"),
+    pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|SPC=P|PHS=1|BND=B-1|QT=4|QTY=4",
+                 ("DUPLICATE_KEY",), id="qt-and-qty"),
+    pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|SPC=P|PHS=1|BND=B-1|QTY=",
+                 ("PHS_EMPTY", "QT_INVALID"), id="empty-qty"),
+    pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|SPC=P|PHASE=1|PHASE=2|BND=B-1|QT=4",
+                 ("DUPLICATE_KEY",), id="repeated-phase"),
+    pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|ITEM_NAME=P|ITEM_NAME=Q|PHS=1|BND=B-1|QT=4",
+                 ("DUPLICATE_KEY",), id="repeated-item-name"),
+    # The carrier parser reads no item from ITEM without CLC=INSPECTION.
+    pytest.param(f"ITEM={MASTER}|SPC=P|PHS=1|BND=B-1|QT=4", ("FORMAT_INVALID",), id="no-clc"),
+])
+def test_structured_label_aliases_are_judged_as_the_carrier_parser_reads_them(raw, reasons):
+    from carrier_identity_port import parse_legacy_fields
+
+    shape, found, item = label_transition.classify_start_label(raw, parse_sealed=lambda _raw: None)
+    assert (shape, found, item) == ("MALFORMED" if reasons else "STRUCTURED", reasons, MASTER)
+    if not reasons:
+        assert parse_legacy_fields(raw)["CLC"] == MASTER  # the package flow reads each one
+
+
+def test_bnd_label_the_carrier_parser_cannot_read_completes_as_malformed(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    raw = f"ITEM={MASTER}|SPC=Product|PHS=1|BND=T-ALIAS|QT=4"
+    assert module._label_match_parse_new_format_fields(raw) is None
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in [raw, *_legacy_set(306)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert app.errors == []
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert _transition(details) == {
+        "transition_class": "PHS2_MALFORMED", "transition_reasons": ["FORMAT_INVALID"],
+        "transition_duplicate": False,
+    }
+    assert _outbox_rows(tmp_path) == []
+
+
+def test_central_completion_retry_waits_for_its_queued_row(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _actions, clock = _b1_app(module, tmp_path, monkeypatch)
+    app._legacy_label_transition_enabled = True
+    entered, release = threading.Event(), threading.Event()
+    real_open = app.data_manager._open_file
+
+    class HeldWriter:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def write(self, value):
+            if "TRAY_COMPLETE" in value:
+                entered.set()
+                assert release.wait(10), "the test did not release its writer barrier"
+            return self.handle.write(value)
+
+    def open_file(path, mode, **kwargs):
+        handle = real_open(path, mode, **kwargs)
+        return HeldWriter(handle) if mode == "a" else handle
+
+    app.data_manager._open_file = open_file
+    appended, timed_out = [], []
+    real_log_event = app.data_manager.log_event
+    real_flush = app._flush_data_manager_if_supported
+
+    def log_event(event, *args, **kwargs):
+        if "TRAY_COMPLETE" in str(event):
+            appended.append(event)
+        return real_log_event(event, *args, **kwargs)
+
+    def flush(timeout=5):
+        if appended and not timed_out:  # the completion row is still in the writer queue
+            timed_out.append(True)
+            assert entered.wait(5)
+            raise TimeoutError("flush timed out with the completion row still queued")
+        if timed_out:
+            release.set()
+        return real_flush(timeout=timeout)
+
+    app.data_manager.log_event = log_event
+    app._flush_data_manager_if_supported = flush
+    try:
+        app._begin_central_package_submission()
+        assert entered.is_set() and _b1_rows(tmp_path)[1] == []
+        clock.instant += timedelta(seconds=2)
+        app._finalize_set(app.Results.PASS)  # operator retry
+        app.data_manager.flush(timeout=5)
+        [(_row, details)] = _b1_rows(tmp_path)[1]
+        assert details["transition_class"] == "PHS2_CENTRAL"
+    finally:
+        release.set()
+        _b1_close(app.data_manager)

@@ -15,7 +15,7 @@ See docs/spec/operations.md#legacy-label-transition.
 import hashlib
 import re
 
-from carrier_identity_port import decode_carrier_scan, parse_compact_carrier
+from carrier_identity_port import decode_carrier_scan, parse_compact_carrier, parse_legacy_fields
 
 LEGACY = "LEGACY"
 PHS2_CENTRAL = "PHS2_CENTRAL"
@@ -36,8 +36,12 @@ SHAPE_MALFORMED = "MALFORMED"
 _REASON = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
 # Keys whose empty or repeated value breaks a new-system label.
 _IDENTITY_KEYS = frozenset((
-    "PHS", "SRC", "ITG", "BND", "CLC", "SPC", "LBL", "HSH", "TRF", "QT", "ITEM", "ITEM_CODE",
+    "PHS", "SRC", "ITG", "BND", "CLC", "SPC", "LBL", "HSH", "TRF", "QT", "QTY", "ITEM", "ITEM_CODE",
 ))
+# The carrier parser reads QTY as QT: both name the one quantity.
+_QUANTITY_KEYS = frozenset(("QT", "QTY"))
+# Its other aliases (CLC=INSPECTION): a repeat would hide a value.
+_ALIAS_KEYS = frozenset(("ITEM_NAME", "PHASE"))
 
 
 def _pairs(decoded):
@@ -85,7 +89,10 @@ def classify_start_label(raw_value, *, parse_sealed):
     if not ({"TRF", "BND", "ITG"} & set(keys) or input_tag):
         return SHAPE_LEGACY, (), item_code
     reasons = []
-    if any(keys.count(key) > 1 for key in _IDENTITY_KEYS):
+    if (
+        any(keys.count(key) > 1 for key in _IDENTITY_KEYS | _ALIAS_KEYS)
+        or sum(key in _QUANTITY_KEYS for key in keys) > 1
+    ):
         reasons.append("DUPLICATE_KEY")
     if any(key in _IDENTITY_KEYS and value == "" for key, value in pairs) or "" in keys:
         reasons.append("PHS_EMPTY")
@@ -95,13 +102,18 @@ def classify_start_label(raw_value, *, parse_sealed):
         shape, lineage = SHAPE_PHS2, "ITG"
     else:
         shape, lineage = SHAPE_STRUCTURED, "BND"
-    if shape != SHAPE_SEALED and "PHS" not in keys:
+    # A structured label is judged as the package flow reads it: through the
+    # carrier parser's aliases (CLC=INSPECTION: ITEM, ITEM_NAME, PHASE, QTY).
+    normalized = (
+        (parse_legacy_fields(decoded) or {}) if shape == SHAPE_STRUCTURED else {}
+    )
+    if shape != SHAPE_SEALED and "PHS" not in keys and not normalized.get("PHS"):
         reasons.append("PHS_MISSING")
     elif shape == SHAPE_PHS2 and str(values.get("PHS") or "2") != "2":
         reasons.append("PHS_NOT_2")
     if not values.get(lineage):
         reasons.append("LINEAGE_MISSING")
-    if any(key == "QT" and not _positive_integer(value) for key, value in pairs):
+    if any(key in _QUANTITY_KEYS and not _positive_integer(value) for key, value in pairs):
         reasons.append("QT_INVALID")
     if shape == SHAPE_SEALED:
         try:
@@ -115,7 +127,12 @@ def classify_start_label(raw_value, *, parse_sealed):
             parse_compact_carrier(decoded)
         except ValueError:
             reasons.append("PHS2_FORMAT_INVALID")
-    elif not values.get("SPC") or any(value is None for _key, value in pairs if _key):
+    elif (
+        not (values.get("SPC") or normalized.get("SPC"))
+        or any(value is None for _key, value in pairs if _key)
+        # The carrier parser cannot read it, and no other code says why.
+        or not (normalized or {"PHS_MISSING", "PHS_EMPTY"} & set(reasons) or not item_code)
+    ):
         reasons.append("FORMAT_INVALID")
     if not item_code:
         reasons.append("ITEM_UNCONFIRMED")

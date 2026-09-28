@@ -149,30 +149,41 @@ def _decide_transition_local(
     nothing changed) when the capture cannot be closed or the state not saved.
     """
 
-    if not _close_transition_capture(self, current):
-        return False
-    previous = {
-        key: current[key]
-        for key in (*_TRANSITION_KEYS, "deferred_intent_id")
-        if key in current
-    }
+    outbox = self.__dict__.get("package_outbox")
+    if outbox is not None and outbox.get_by_set_id(str(current.get("id") or "")) is not None:
+        return False  # A submitted (or unknown) package is never recorded as local.
+    previous = {key: current[key] for key in _TRANSITION_KEYS if key in current}
+
+    def restore():
+        for key in _TRANSITION_KEYS:
+            current.pop(key, None)
+        current.update(previous)
+
+    # The decision is saved while the capture is still open: a failed save or a
+    # stop here leaves the saved set and its capture as they were.
     current.update(label_transition.fields(transition_class, reasons, duplicate))
-    # The closed capture no longer owns the set; a restart must not treat the
-    # set as a cancelled capture and delete it.
-    current.pop("deferred_intent_id", None)
+    if not _persist_transition_state(self, current, persist_current_state):
+        restore()
+        return False
+    if not _close_transition_capture(self, current):
+        restore()
+        _persist_transition_state(self, current, persist_current_state)
+        return False
+    # The closed capture no longer owns the set.  A stop before this save is
+    # safe too: recovery keeps a pinned local set whose capture is cancelled.
+    if current.pop("deferred_intent_id", None) is not None:
+        _persist_transition_state(self, current, persist_current_state)
+    return True
+
+
+def _persist_transition_state(self, current, persist_current_state=None):
     if not self.__dict__.get("initialized_successfully", False):
         return True
-    persisted = (
+    return bool(
         persist_current_state(current)
         if callable(persist_current_state)
         else self._save_current_set_state()
     )
-    if persisted:
-        return True
-    for key in _TRANSITION_KEYS:
-        current.pop(key, None)
-    current.update(previous)
-    return False
 
 
 def _queue_transition_package(
@@ -193,6 +204,12 @@ def _queue_transition_package(
         current, parse_sealed=parse_sealed,
     )
     if decided:
+        # A decision saved just before a stop may still own an open capture.
+        if not _close_transition_capture(self, current):
+            raise PackageLogisticsError(
+                "transition local completion could not close the set's PHS2 capture"
+            )
+        current.pop("deferred_intent_id", None)
         return _transition_local(decided, reasons, duplicate)
     if is_manual_complete:
         reasons = [*reasons, "PARTIAL_PACKAGE"]
@@ -584,14 +601,6 @@ def _transition_failed_completion(current, *, parse_sealed):
     return label_transition.fields(decided, reasons, duplicate)
 
 
-def _transition_file_dates(details):
-    return {
-        value.strftime("%Y%m%d")
-        for value in (details.get("start_time"), details.get("end_time"))
-        if hasattr(value, "strftime")
-    } or None
-
-
 def _commit_finalized_set_durable(
     self,
     *,
@@ -665,21 +674,51 @@ def _commit_finalized_set_durable(
         )
         if _app_version:
             durable_details["app_version"] = _app_version
+        # The relay takes a raw-only receipt for this row only when the
+        # uploading manifest names the same PC (direct_sync_push).  Not
+        # detail.source_host_id: Web checks that key against the install.
+        source_host_id = str(getattr(
+            getattr(self.__dict__.get("package_logistics_client"), "config", None),
+            "source_host_id",
+            "",
+        ) or "").strip()
+        if source_host_id:
+            durable_details["transition_source_host_id"] = source_host_id
     if (
         transition is not None
         and transition["transition_class"] != label_transition.PHS2_CENTRAL
     ):
-        # A retry after an uncertain flush reuses the one durable row, so the
-        # direct sync resends the same row and content instead of a second one.
-        self._flush_data_manager_if_supported()
-        local_event_durable = bool(
-            _label_match_local_completion_event_exists(
-                self.__dict__.get("data_manager"),
-                set_id_for_log,
-                file_dates=_transition_file_dates(durable_details),
-            )
+        # The saved set marks the attempt before its row is appended.  A retry
+        # (or a restart) after an uncertain flush then finds that one row in
+        # every retained daily file and resends it, never a second row.
+        marked = (
+            current_snapshot
+            if detached
+            else (self.__dict__.get("current_set_info") or {})
         )
+        if marked.get("transition_row_key") == durable_details["idempotency_key"]:
+            self._flush_data_manager_if_supported()
+            local_event_durable = bool(
+                _label_match_local_completion_event_exists(
+                    self.__dict__.get("data_manager"),
+                    set_id_for_log,
+                )
+            )
+        else:
+            marked["transition_row_key"] = durable_details["idempotency_key"]
+            if not _persist_transition_state(
+                self,
+                marked,
+                self._persist_ui_lane_current_set_snapshot if detached else None,
+            ):
+                raise PackageLogisticsError(
+                    "current packaging state could not be saved before completion"
+                )
+            local_event_durable = False
     else:
+        if transition is not None:
+            # A retry must not decide absence while its row is still queued.
+            self._flush_data_manager_if_supported()
         local_event_durable = bool(
             (
                 (central_inherit_all and package_logistics)
@@ -807,13 +846,15 @@ def _submit_finalized_set_on_lane(
         if (
             str(live.get("id") or "") == str(current_snapshot.get("id") or "")
             and tuple(live.get("raw") or ()) == tuple(current_snapshot.get("raw") or ())
-            and current_snapshot.get("transition_class") in label_transition.LOCAL_CLASSES
         ):
-            for key in _TRANSITION_KEYS:
-                if key in current_snapshot:
-                    live[key] = deepcopy(current_snapshot[key])
-            if "deferred_intent_id" not in current_snapshot:
-                live.pop("deferred_intent_id", None)
+            if "transition_row_key" in current_snapshot:
+                live["transition_row_key"] = current_snapshot["transition_row_key"]
+            if current_snapshot.get("transition_class") in label_transition.LOCAL_CLASSES:
+                for key in _TRANSITION_KEYS:
+                    if key in current_snapshot:
+                        live[key] = deepcopy(current_snapshot[key])
+                if "deferred_intent_id" not in current_snapshot:
+                    live.pop("deferred_intent_id", None)
         self._publish_durable_commit_block(error)
 
     admission = self._submit_ui_lane_task(

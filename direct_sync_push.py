@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
+import label_transition
 from producer_runtime_client import (
     CONTRACT_VERSION as RUNTIME_CONTRACT_VERSION,
     METADATA_FIELDS as RUNTIME_METADATA_FIELDS,
@@ -1050,7 +1051,8 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
                     return False
                 name = row["event"]
                 if name not in lifecycle_names and not (
-                    name == "TRAY_COMPLETE" and _is_transition_completion_row(row)
+                    name == "TRAY_COMPLETE"
+                    and _is_transition_completion_row(row, metadata["source_host_id"])
                 ):
                     return False
                 uploaded_names[name] += 1
@@ -1059,21 +1061,41 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
         return False
 
 
-_TRANSITION_CLASSES = frozenset(("LEGACY", "PHS2_CENTRAL", "PHS2_LOCAL", "PHS2_MALFORMED"))
+_TRANSITION_CLASSES = frozenset(label_transition.CLASSES)
 
 
-def _is_transition_completion_row(row: Mapping[str, Any]) -> bool:
-    """A TRAY_COMPLETE this PC wrote while its transition mode classified it."""
+def _is_transition_completion_row(row: Mapping[str, Any], source_host_id: str) -> bool:
+    """A TRAY_COMPLETE this PC wrote while its transition mode classified it.
+
+    The row's transition_source_host_id is the uploading manifest's
+    source_host_id, and its set identity and event ID derive from one
+    Label_Match writer, so another PC's row never takes this PC's raw
+    acknowledgement.
+    """
 
     try:
         details = json.loads(row.get("details") or "{}")
     except (TypeError, ValueError):
         return False
-    return (
-        isinstance(details, dict)
+    if not isinstance(details, dict):
+        return False
+    set_id = str(details.get("set_id") or "")
+    source, _separator, writer_and_set = str(
+        details.get("packaging_set_identity") or ""
+    ).partition("|")
+    writer_id = (
+        writer_and_set[: -len(set_id) - 1]
+        if set_id and writer_and_set.endswith(f"|{set_id}")
+        else ""
+    )
+    return bool(
+        source_host_id
+        and details.get("transition_source_host_id") == source_host_id
         and details.get("transition_class") in _TRANSITION_CLASSES
-        and isinstance(details.get("idempotency_key"), str)
-        and 0 < len(details["idempotency_key"]) <= 128
+        and source == "label_match"
+        and writer_id
+        and details.get("idempotency_key")
+        == label_transition.event_key(writer_id, set_id, "TRAY_COMPLETE")
     )
 
 
