@@ -1744,6 +1744,45 @@ def test_recovery_keeps_a_pinned_local_set_whose_capture_was_closed(clock_case, 
         _close(restored)
 
 
+def test_lane_marker_save_failure_writes_no_row_until_the_marker_is_durable(tmp_path, monkeypatch):
+    """Ported from sub-04/test_recheck4_boundaries.py: a set pinned without the
+    start marker (an older build's shape) must save its row marker first."""
+
+    module = load_label_match_module()
+    app, _actions, _clock = _b1_app(module, tmp_path, monkeypatch)
+    app.current_set_info.update(label_transition.fields("PHS2_LOCAL", ["PACKAGE_TRANSPORT_UNAVAILABLE"]))
+    app._legacy_label_transition_enabled = True
+    app.ui_lane = object()
+    pending = []
+    app._submit_ui_lane_task = lambda **task: pending.append(task) or SimpleNamespace(accepted=True)
+    real_save = app._persist_ui_lane_current_set_snapshot
+    rejected = []
+
+    def save(snapshot):
+        if snapshot.get("transition_row_key"):
+            rejected.append(True)
+            return False
+        return real_save(snapshot)
+
+    app._persist_ui_lane_current_set_snapshot = save
+    try:
+        for _attempt in range(2):
+            assert app._begin_central_package_submission()
+            task = pending.pop(0)
+            with pytest.raises(module.PackageLogisticsError):
+                task["work"]()
+            assert _b1_rows(tmp_path) == ([], [])
+        assert len(rejected) == 2
+        app._persist_ui_lane_current_set_snapshot = real_save
+        assert app._begin_central_package_submission()
+        task = pending.pop(0)
+        task["finish"](task["work"]())
+        commands, rows = _b1_rows(tmp_path)
+        assert commands == [] and [details["transition_class"] for _row, details in rows] == ["PHS2_LOCAL"]
+    finally:
+        _b1_close(app.data_manager)
+
+
 def test_declining_restore_closes_a_pinned_local_capture(clock_case, tmp_path, monkeypatch):
     """A stop after the local decision was saved but before its capture closed,
     then the operator declines the restore: the cycle stays local."""
