@@ -176,6 +176,21 @@ def _decide_transition_local(
     return True
 
 
+def _transition_source_host_id(self):
+    """The registered PC's source_host_id for its transition rows.
+
+    The relay takes a raw-only receipt for such a row only when the uploading
+    manifest names the same PC (direct_sync_push).  Never written as
+    detail.source_host_id: Web checks that key against the install.
+    """
+
+    return str(getattr(
+        getattr(self.__dict__.get("package_logistics_client"), "config", None),
+        "source_host_id",
+        "",
+    ) or "").strip()
+
+
 def _persist_transition_state(self, current, persist_current_state=None):
     if not self.__dict__.get("initialized_successfully", False):
         return True
@@ -674,14 +689,7 @@ def _commit_finalized_set_durable(
         )
         if _app_version:
             durable_details["app_version"] = _app_version
-        # The relay takes a raw-only receipt for this row only when the
-        # uploading manifest names the same PC (direct_sync_push).  Not
-        # detail.source_host_id: Web checks that key against the install.
-        source_host_id = str(getattr(
-            getattr(self.__dict__.get("package_logistics_client"), "config", None),
-            "source_host_id",
-            "",
-        ) or "").strip()
+        source_host_id = _transition_source_host_id(self)
         if source_host_id:
             durable_details["transition_source_host_id"] = source_host_id
     if (

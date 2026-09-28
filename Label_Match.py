@@ -16528,6 +16528,9 @@ class Label_Match(tk.Tk):
         if transition_key:
             details["idempotency_key"] = transition_key
             details["app_version"] = APP_VERSION
+            source_host_id = label_completion._transition_source_host_id(self)
+            if source_host_id:
+                details["transition_source_host_id"] = source_host_id
         already_logged = bool(
             cancellation
             and self._package_cancellation_event_was_logged(

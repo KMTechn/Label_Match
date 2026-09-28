@@ -1595,6 +1595,19 @@ def _duplicate_row(**changes):
 _DUPLICATE_ROW = _duplicate_row()
 
 
+def _cancellation_row(event, **changes):
+    """A transition cancellation row this PC (label-host-1) wrote."""
+
+    details = {
+        ("set_id" if event == "SET_DELETED" else "cancelled_set_id"): "set-dup",
+        "affected_completed_packaging_set_identity": "label_match|PC-LT|set-dup",
+        "idempotency_key": label_transition.cancellation_key("PC-LT", "set-dup"),
+        "transition_source_host_id": "label-host-1",
+    }
+    details.update(changes)
+    return event, {key: value for key, value in details.items() if value is not None}
+
+
 @pytest.mark.parametrize(("rows", "reason", "accepted"), [
     pytest.param([_DUPLICATE_ROW], "TRANSITION_DUPLICATE_OBSERVED", True, id="duplicate-completion"),
     pytest.param([("APP_CLOSE", {"message": "closed"}), _DUPLICATE_ROW],
@@ -1618,6 +1631,31 @@ _DUPLICATE_ROW = _duplicate_row()
         transition_source_host_id="other-host", packaging_set_identity="label_match|OTHER-PC|set-dup",
         idempotency_key=label_transition.event_key("OTHER-PC", "set-dup", "TRAY_COMPLETE"),
     )], "TRANSITION_DUPLICATE_OBSERVED", False, id="other-pc"),
+    # The published Web receipt table (w9webrecv RECEIPT-CODES.md, d928087).
+    pytest.param([_duplicate_row(transition_duplicate=False, packaging_set_count="x")],
+                 "TRANSITION_NOT_PROJECTABLE", True, id="completion-bad-set-count"),
+    pytest.param([_duplicate_row(set_id=None, packaging_set_identity=None)],
+                 "TRANSITION_NOT_PROJECTABLE", True, id="completion-without-set-identity"),
+    pytest.param([_cancellation_row("SET_DELETED")], "TRANSITION_DUPLICATE_OBSERVED", True,
+                 id="deletion-duplicate"),
+    pytest.param([_cancellation_row("TRAY_COMPLETION_CANCELLED")], "TRANSITION_DUPLICATE_OBSERVED", True,
+                 id="cancellation-duplicate"),
+    pytest.param([_cancellation_row("SET_DELETED", set_id=None,
+                                    affected_completed_packaging_set_identity=None)],
+                 "TRANSITION_NOT_PROJECTABLE", True, id="deletion-without-set-identity"),
+    pytest.param([_cancellation_row("TRAY_COMPLETION_CANCELLED", cancelled_set_id=None,
+                                    affected_completed_packaging_set_identity=None)],
+                 "TRANSITION_NOT_PROJECTABLE", True, id="cancellation-without-set-identity"),
+    pytest.param([("APP_CLOSE", {"message": "closed"}), _cancellation_row("TRAY_COMPLETION_CANCELLED")],
+                 "TRANSITION_NOT_PROJECTABLE", True, id="raw-and-cancellation"),
+    pytest.param([_cancellation_row("SET_DELETED", transition_source_host_id="other-host")],
+                 "TRANSITION_DUPLICATE_OBSERVED", False, id="cancellation-other-host"),
+    pytest.param([_cancellation_row("SET_DELETED", idempotency_key=None)],
+                 "TRANSITION_NOT_PROJECTABLE", False, id="cancellation-without-event-id"),
+    pytest.param([_cancellation_row("TRAY_COMPLETION_CANCELLED",
+                                    idempotency_key=label_transition.cancellation_key("PC-LT", "other"))],
+                 "TRANSITION_DUPLICATE_OBSERVED", False, id="cancellation-unbound-key"),
+    pytest.param([_DUPLICATE_ROW], "TRANSITION_UNPUBLISHED_REASON", False, id="unpublished-reason"),
 ])
 def test_relay_accepts_a_raw_transition_duplicate_receipt_only_exactly(
     tmp_path, monkeypatch, rows, reason, accepted,
@@ -1639,7 +1677,7 @@ def test_relay_accepts_a_raw_transition_duplicate_receipt_only_exactly(
     names = [event for event, _details in rows]
     receipt = _raw_lifecycle_receipt(row, tuple(names))
     for entry in receipt["projection_observation"]["event_classifications"]:
-        if entry["raw_event_name"] == "TRAY_COMPLETE":
+        if entry["raw_event_name"] in {"TRAY_COMPLETE", "SET_DELETED", "TRAY_COMPLETION_CANCELLED"}:
             entry["raw_only_reason_code"] = reason
     assert sum(entry["count"] for entry in receipt["projection_observation"]["event_classifications"]) == len(rows)
     assert Counter(names) == Counter({entry["raw_event_name"]: entry["count"]
@@ -1903,23 +1941,35 @@ def test_local_completion_retry_reuses_its_row_from_any_earlier_day(tmp_path, mo
         _close(app)
 
 
-def test_transition_completion_names_the_registered_pc_for_the_relay(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel", ["SET_DELETED", "TRAY_COMPLETION_CANCELLED"])
+def test_transition_rows_name_the_registered_pc_for_the_relay(tmp_path, monkeypatch, cancel):
     import direct_sync_push
 
     module = load_label_match_module()
     app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
     app.package_logistics_client.config = SimpleNamespace(tls_ca_bundle_path="", source_host_id="label-host-1")
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
+    for name in ("showinfo", "showerror"):
+        monkeypatch.setattr(module.messagebox, name, lambda *a, **k: None)
     try:
         for value in _legacy_set(311):
             _scan(module, app, value)
+        _select_completed_rows(app)
+        if cancel == "SET_DELETED":
+            app._delete_selected_row()
+        else:
+            app._cancel_completed_tray_by_label(MASTER)
     finally:
         _close(app)
 
-    [(row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    [(completion, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    [(cancellation, cancelled)] = _events(tmp_path, cancel)
     assert details["transition_class"] == "LEGACY"
-    assert details["transition_source_host_id"] == "label-host-1" and "source_host_id" not in details
-    assert direct_sync_push._is_transition_completion_row(row, "label-host-1")
-    assert not direct_sync_push._is_transition_completion_row(row, "other-host")
+    for row, row_details in ((completion, details), (cancellation, cancelled)):
+        assert row_details["transition_source_host_id"] == "label-host-1"
+        assert "source_host_id" not in row_details
+        assert direct_sync_push._is_this_pc_transition_row(row, "label-host-1")
+        assert not direct_sync_push._is_this_pc_transition_row(row, "other-host")
 
 
 @pytest.mark.parametrize("quantity", ["abc", "0", "-1", "", "2|QTY=0"])

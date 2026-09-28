@@ -1027,9 +1027,11 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
             or not isinstance(entry.get("raw_event_name"), str)
             or (entry.get("raw_event_name"), entry.get("raw_only_reason_code")) not in {
                 *((name, "NO_STAGE1_REDUCER") for name in lifecycle_names),
-                # Web keeps a transition duplicate completion as one raw
-                # observation; it must not stop this PC's relay.
-                ("TRAY_COMPLETE", "TRANSITION_DUPLICATE_OBSERVED"),
+                # Web keeps a transition business row it will not project as
+                # one raw observation; it must not stop this PC's relay.
+                *((name, reason)
+                  for name in LABEL_MATCH_BUSINESS_EVENTS
+                  for reason in _TRANSITION_RAW_ONLY_REASONS),
             }
             or entry.get("projection_required") is not False
             or entry.get("projection_status") != "NOT_PROJECTED"
@@ -1051,8 +1053,8 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
                     return False
                 name = row["event"]
                 if name not in lifecycle_names and not (
-                    name == "TRAY_COMPLETE"
-                    and _is_transition_completion_row(row, metadata["source_host_id"])
+                    name in LABEL_MATCH_BUSINESS_EVENTS
+                    and _is_this_pc_transition_row(row, metadata["source_host_id"])
                 ):
                     return False
                 uploaded_names[name] += 1
@@ -1074,15 +1076,20 @@ LABEL_MATCH_RAW_ONLY_EVENTS = frozenset((
     "SEALED_TRANSFER_EXCHANGE_ACKED", "SEALED_TRANSFER_EXCHANGE_APPLIED", "SET_CANCELLED",
     "SET_RESTORED", "SHIPPING_WAITING_OBSERVED", "UI_ERROR",
 ))
+LABEL_MATCH_BUSINESS_EVENTS = frozenset(("TRAY_COMPLETE", "SET_DELETED", "TRAY_COMPLETION_CANCELLED"))
+# The raw-only reasons Web gives a transition business row with an event ID
+# (w9webrecv RECEIPT-CODES.md, d928087): an observed duplicate, or a row it
+# cannot project (no set identity, bad set count).
+_TRANSITION_RAW_ONLY_REASONS = frozenset(("TRANSITION_DUPLICATE_OBSERVED", "TRANSITION_NOT_PROJECTABLE"))
 
 
-def _is_transition_completion_row(row: Mapping[str, Any], source_host_id: str) -> bool:
-    """A TRAY_COMPLETE this PC wrote while its transition mode classified it.
+def _is_this_pc_transition_row(row: Mapping[str, Any], source_host_id: str) -> bool:
+    """A completion or cancellation this PC wrote in transition mode.
 
-    The row's transition_source_host_id is the uploading manifest's
-    source_host_id, and its set identity and event ID derive from one
-    Label_Match writer, so another PC's row never takes this PC's raw
-    acknowledgement.
+    The row carries an event ID and its transition_source_host_id is the
+    uploading manifest's source_host_id.  A row naming its set must derive
+    that event ID from the same Label_Match writer and set, so another PC's
+    row never takes this PC's raw acknowledgement.
     """
 
     try:
@@ -1091,23 +1098,38 @@ def _is_transition_completion_row(row: Mapping[str, Any], source_host_id: str) -
         return False
     if not isinstance(details, dict):
         return False
-    set_id = str(details.get("set_id") or "")
-    source, _separator, writer_and_set = str(
-        details.get("packaging_set_identity") or ""
-    ).partition("|")
+    key = details.get("idempotency_key")
+    completion = row.get("event") == "TRAY_COMPLETE"
+    if (
+        not source_host_id
+        or details.get("transition_source_host_id") != source_host_id
+        or not isinstance(key, str)
+        or not 0 < len(key) <= 128
+        or (completion and details.get("transition_class") not in _TRANSITION_CLASSES)
+    ):
+        return False
+    set_id = str(details.get(
+        "cancelled_set_id" if row.get("event") == "TRAY_COMPLETION_CANCELLED" else "set_id"
+    ) or "")
+    identity = str(details.get(
+        "packaging_set_identity" if completion else "affected_completed_packaging_set_identity"
+    ) or "")
+    if not set_id and not identity:
+        return True  # Web observes it as not projectable (no set identity).
+    source, _separator, writer_and_set = identity.partition("|")
     writer_id = (
         writer_and_set[: -len(set_id) - 1]
         if set_id and writer_and_set.endswith(f"|{set_id}")
         else ""
     )
     return bool(
-        source_host_id
-        and details.get("transition_source_host_id") == source_host_id
-        and details.get("transition_class") in _TRANSITION_CLASSES
-        and source == "label_match"
+        source == "label_match"
         and writer_id
-        and details.get("idempotency_key")
-        == label_transition.event_key(writer_id, set_id, "TRAY_COMPLETE")
+        and key == (
+            label_transition.event_key(writer_id, set_id, "TRAY_COMPLETE")
+            if completion
+            else label_transition.cancellation_key(writer_id, set_id)
+        )
     )
 
 
