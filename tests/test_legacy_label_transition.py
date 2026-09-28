@@ -424,11 +424,11 @@ def test_on_server_rejection_or_offline_never_blocks_the_next_set(tmp_path, monk
     assert _outbox_rows(tmp_path) == []
 
 
-@pytest.mark.parametrize("malformed", [
-    f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=",
-    f"CLC={MASTER}|SPC=Product|PHS=1|BND=",
+@pytest.mark.parametrize(("malformed", "reasons"), [
+    (f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=", ["DUPLICATE_KEY", "PHS_EMPTY"]),
+    (f"CLC={MASTER}|SPC=Product|PHS=1|BND=", ["PHS_EMPTY", "LINEAGE_MISSING"]),
 ])
-def test_on_damaged_bnd_label_is_malformed_not_legacy(tmp_path, monkeypatch, malformed):
+def test_on_damaged_bnd_label_is_malformed_not_legacy(tmp_path, monkeypatch, malformed, reasons):
     module = load_label_match_module()
     app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
     try:
@@ -440,10 +440,10 @@ def test_on_damaged_bnd_label_is_malformed_not_legacy(tmp_path, monkeypatch, mal
     assert app.blocks == [] and app.errors == []
     assert [title for title, _message in app.warnings] == ["현품표 형식 오류 · 과도기 기록"]
     [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
-    assert details["transition_class"] == "PHS2_MALFORMED"
-    assert "LINEAGE_MISSING" in details["transition_reasons"] or (
-        "DUPLICATE_KEY" in details["transition_reasons"]
-    )
+    assert _transition(details) == {
+        "transition_class": "PHS2_MALFORMED", "transition_reasons": reasons,
+        "transition_duplicate": False,
+    }
     assert details["scanned_product_barcodes"][0] == malformed  # the raw label value
     assert details["package_logistics"]["status"] == LOCAL_STATUS
     assert _outbox_rows(tmp_path) == []
