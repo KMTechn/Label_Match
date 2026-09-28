@@ -474,7 +474,7 @@ D-day 전까지 등록 PC(중앙 client가 있거나 필수 모드)에서 현장
 | --- | --- | --- |
 | `LEGACY` | 새 시스템 키(TRF·BND·ITG·`SRC=KMTECH_INPUT_TAG`)가 없는 현품표: 13자리, 옛 QR(`PHS` 값만 있는 옛 단계 QR 포함) | 5단계·F3 소량 |
 | `PHS2_CENTRAL` | 정상 새 현품표이고 중앙 흐름(포장 전송함 등록)이 성공 | 기존과 같음 |
-| `PHS2_LOCAL` | 정상 새 현품표인데 중앙·엄격 검사가 막음: 첫 스캔 중앙 확인 실패(오프라인 등, 미제출 capture는 F1과 같은 방식으로 취소), 보류 현품표, 중복 현품표, F3 때 lease·전송함 거부, 새 현품표 세트의 F3 소량 | 첫 스캔에서 막히면 5단계로 계속, F3에서 막히면 그 세트를 로컬 완료 |
+| `PHS2_LOCAL` | 정상 새 현품표인데 중앙·엄격 검사가 막음: 첫 스캔 중앙 확인 실패(오프라인 등, 미제출 capture는 F1과 같은 방식으로 취소), 보류 현품표, 중복 현품표, F3 때 lease·전송함 거부, 새 현품표 세트의 F3 소량 | 첫 스캔에서 막히면 5단계로 계속, F3에서 막히면 그 세트를 로컬 완료. 그 세트의 미제출 capture를 F1과 같은 방식으로 닫을 수 없으면(결과 불명 lease·검증) 기존처럼 막는다 |
 | `PHS2_MALFORMED` | 새 시스템 키가 있는데 형식이 깨짐 | 5단계로 받고 사유와 원문(`scanned_product_barcodes[0]`)을 남김 |
 
 사유 코드: 공통 `PHS_MISSING`·`PHS_EMPTY`(빈 값)·`DUPLICATE_KEY`·`LINEAGE_MISSING`(BND/ITG 값 없음)·`DUPLICATE_LABEL`·`ITEM_UNCONFIRMED`(품목 코드 없음, 제품 품목 대조 불가). 기존 코드는 그대로 쓴다(`PHS2_FORMAT_INVALID`, `OPERATION_LEASE_*`, 중앙 확인의 `PACKAGE_TRANSPORT_UNAVAILABLE` 등, 허용 목록 밖은 `REASON_CODE_REDACTED`). LM 추가: `SEALED_QR_INVALID`, `PACKAGE_WORKBENCH_HOLD`, `LABEL_EXCHANGE_HOLD`, `PARTIAL_PACKAGE`, `PACKAGE_OUTBOX_UNAVAILABLE`, `PACKAGE_CENTRAL_PROFILE_UNAVAILABLE`, `PACKAGE_CENTRAL_BLOCKED`, `PACKAGE_NOT_CREATED`, 실패 세트 행의 `LABEL_MATCH_FAILED_OR_MISMATCH`.
