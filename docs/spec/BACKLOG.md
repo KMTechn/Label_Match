@@ -1,5 +1,10 @@
 # Label_Match 진행·공백·추가 제안
 
+<a id="lm-w9-legacy-transition"></a>
+## W9 · 과도기 모드 (w9lmtransit)
+
+관리자 스위치로 등록 PC가 옛 5단계 세트를 로컬 완료로 받는다([절차](operations.md#legacy-label-transition)). 남은 일: ① 서버 화면에서 과도기 세트 구분·일별 집계(Web 변경 S, 지금은 LM 행의 `package_logistics.status`를 읽지 않음), ② 두 체인 이중 계수를 찾는 바코드 대조 보고서, ③ 꺼짐 상태 F4 전체 재스캔에 없는 TRANSFER ID를 넣으면 포장 전송함에 중앙 충돌이 쌓이는 기존 위험(미교정), ④ 실제 화면·랩·현장 수용은 NOT TESTED.
+
 ## W9 · 부분 등록 지원 복구 (O11, w9lmpartial)
 
 **w9lmrelay P1:** 기존 큐/authority와 정상 stop marker가 있는 PC의 partial/full 복구 뒤 key 회전으로 재개·설치가 막히던 경로를 교정한다. 중앙 확정에 결속된 원자 handoff와 보호 감사, canonical onboarding 재개, 정지/다음 행동 안내를 추가한다. Web ad0fc84 실제 handler의 미전송·lost-ACK 재서명/단일 ACK 및 stock installer의 read-only healthy 판정을 격리 시험한다. 실제 설치·업그레이드·Windows 재로그인/화면·현장 첫 업무는 후속 랩 수용이며, 다른 앱의 자격 회전 경로는 이 LM 변경으로 교정되지 않는다.

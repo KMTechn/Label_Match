@@ -79,6 +79,16 @@ def create_context_pane(
         style="Control.TButton",
     )
     self.about_button.pack(side=tk.LEFT)
+    # Shown only while the administrator transition switch is on.
+    self.legacy_transition_label = ttk.Label(
+        self.operator_header_frame,
+        text="",
+        style="ViewMode.TLabel",
+    )
+    self.legacy_transition_label.grid(
+        row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+    )
+    self.legacy_transition_label.grid_remove()
 
     # Persistent three-column desk.
     self.operator_workbench_frame = ttk.Frame(main_frame)

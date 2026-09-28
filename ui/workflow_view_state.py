@@ -23,6 +23,10 @@ CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
     ("master_label", "PHS2 현품표"),
 )
 COMPLETION_KINDS = frozenset({"full", "partial", "failed"})
+LEGACY_LABEL_TRANSITION_OFF_CAUSE = (
+    "이 현품표는 새 포장 이력(PHS2)이 없는 옛 방식입니다. 과도기 모드가 꺼져 있어 "
+    "이 PC에서는 제품을 이어서 스캔할 수 없습니다."
+)
 
 _OPERATOR_INTERNAL_LANGUAGE = (
     "authority",
@@ -126,6 +130,7 @@ class WorkflowSnapshot:
     exact_rescan_complete: bool = False
     exact_rescan_target: int = 0
     exact_rescan_barcodes: tuple[str, ...] = ()
+    legacy_label_blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -473,6 +478,23 @@ def _primary_view(
             f"전체 제품을 재스캔하세요: {exact_rescan.completed}/{exact_rescan.target}",
             None,
             "primary",
+        )
+    if snapshot.legacy_label_blocked:
+        # Guidance, not a blocking notice: F1 and the base F4 path stay available.
+        notice = WorkflowNotice(
+            "옛 방식 현품표 · 5단계 포장 불가",
+            LEGACY_LABEL_TRANSITION_OFF_CAUSE
+            + " 새 현품표 QR이 손상된 경우에만 F4로 이적 화면의 실제 TRANSFER ID를 "
+            "스캔하세요. 그 밖에는 F1로 취소하고 관리자에게 알리세요.",
+            kind="legacy_label_blocked",
+            tone="danger",
+        )
+        return _PrimaryView(
+            "legacy_label_blocked",
+            notice.title,
+            "F4(QR 손상 시만) 또는 F1 취소",
+            notice,
+            "danger",
         )
     if (
         snapshot.central_inherit_all

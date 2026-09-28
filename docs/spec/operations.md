@@ -455,6 +455,36 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 
 ## 설정 위치와 우선순위
 
+<a id="legacy-label-transition"></a>
+### 과도기 모드: 옛 방식 5단계 포장 받기 (`KMTECH_LEGACY_LABEL_TRANSITION`)
+
+D-day 전까지 등록 PC에서도 현장의 옛 5단계 포장(현품표+제품 3+최종 라벨)을 받는 관리자 스위치다. Machine 환경 값이 `1`일 때만 켜지고 그 밖(없음 포함)은 끔이다. 앱은 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`에서 직접 읽으므로 사용자·process 환경 값으로는 켜지지 않는다. 앱 시작 때 한 번 읽고 자동 만료는 없다.
+
+관리자 PowerShell에서 바꾼 뒤 Label_Match를 정상 종료하고 다시 연다.
+
+```powershell
+[Environment]::SetEnvironmentVariable('KMTECH_LEGACY_LABEL_TRANSITION', '1', 'Machine')    # 켜기
+[Environment]::SetEnvironmentVariable('KMTECH_LEGACY_LABEL_TRANSITION', $null, 'Machine')  # 끄기(D-day)
+[Environment]::GetEnvironmentVariable('KMTECH_LEGACY_LABEL_TRANSITION', 'Machine')         # 확인
+```
+
+| 상태 | BND/ITG·PHS2 이력이 없는 옛 현품표(13자리·CLC QR) | PHS2·BND/ITG 현품표, 미등록 PC |
+| --- | --- | --- |
+| 켬 | 5단계와 F3 소량 완료를 레거시 표시 `LEGACY_TRANSITION_LOCAL_ONLY`의 로컬 완료로 기록한다. 포장 전송함·중앙 명령 없음, 취소도 로컬. 머리글에 `과도기 모드 — 옛 방식 포장 받음 · 오늘 N건`(이 PC의 오늘 레거시 완료, 취소 제외)이 늘 보인다 | 기존과 같음 |
+| 끔 | 현품표는 받아 원인을 바로 안내한다(`옛 방식 현품표 · 5단계 포장 불가`). 제품 스캔은 같은 원인으로 거부한다. F4 전체 재스캔은 기존과 같으며 새 현품표 QR 손상 시 실제 TRANSFER ID에만 쓴다. 그 밖에는 F1 취소 후 관리자 확인 | 기존과 같음 |
+
+검사는 v2.0.38(`f24a35c`)의 5단계와 같다: 13자리·Item.csv 등록, 제품의 현품표 코드 포함·길이, 세트 안·전체 중복, 최종 라벨 31자 이상·6D 생산일. 오늘 건수를 로그로 볼 때는 데이터 폴더(등록 PC 기본 `%LOCALAPPDATA%\KMTech\Label_Match\data`, 설정의 저장 위치가 있으면 그 폴더)에서 센다. 이 수는 나중에 취소된 세트(`TRAY_COMPLETION_CANCELLED`·`SET_DELETED` 행)도 포함한다.
+
+```powershell
+$d = Get-Date -Format yyyyMMdd
+Get-ChildItem "$env:LOCALAPPDATA\KMTech\Label_Match\data\포장실작업이벤트로그_*_$d.csv" |
+  ForEach-Object { Import-Csv -LiteralPath $_.FullName -Encoding UTF8 } |
+  Where-Object { $_.event -eq 'TRAY_COMPLETE' -and $_.details -match 'LEGACY_TRANSITION_LOCAL_ONLY' } |
+  Measure-Object
+```
+
+서버 표시: 레거시 완료 행은 기존 relay·직접 동기화(HTTPS)로 올라가 공통 projection의 포장 세트(`packaging_set_projection`, 포장 완료→출고 증거 대기)로 보인다([C-05](contracts.md#c-05)). 포장·출고 원장과 포장 전송함에는 들어가지 않고 Syncthing·`C:\Sync`도 쓰지 않는다. 전송은 배경 작업이라 서버 거절·오프라인이어도 다음 세트는 막히지 않고 결과는 상태 파일에만 남는다. 서버 화면은 과도기 세트를 다른 레거시 세트와 구분하지 않는다. 과도기 세트는 새 원장 밖이므로 같은 제품이 새 체인에서 다시 계수될 수 있어 물리 분리와 나중의 바코드 대조가 필요하다([BACKLOG](BACKLOG.md#lm-w9-legacy-transition)).
+
 <a id="partial-registration-recovery"></a>
 ### 등록 중단으로 신원 파일 일부만 남은 PC
 

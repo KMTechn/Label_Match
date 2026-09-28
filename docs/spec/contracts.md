@@ -1,5 +1,8 @@
 # Label_Match 데이터·통합 계약
 
+<a id="legacy-label-transition"></a>
+과도기 모드(Machine `KMTECH_LEGACY_LABEL_TRANSITION=1`)의 레거시 로컬 완료는 등록 PC(중앙 client 있음)에서 첫 스캔에 sealed transfer·PHS2·BND/ITG 이력이 없고 F4 전체 재스캔이 아닌 세트에만 적용한다. `TRAY_COMPLETE`의 `package_logistics`는 `{status: LEGACY_TRANSITION_LOCAL_ONLY, sample_barcodes_are_membership: false}`이며 포장 전송함 행·operation lease·중앙 명령을 만들지 않는다. 필수 모드의 F3 소량 완료도 같은 세트에 한해 같은 표시로 받는다. 취소는 `LEGACY_DIRECT_SYNC_ONLY`와 같은 로컬 취소다. 꺼짐 상태에서는 같은 세트의 제품 스캔을 거부하고 F4 경로는 유지한다. 레거시 현품표·필수 모드 F3 소량 완료·중앙 프로필 부재로 완료를 거부할 때는 저장 실패 문구 대신 원인을 표시한다. 현장 절차·명령은 [운영](operations.md#legacy-label-transition)을 따른다.
+
 관리자 복구의 relay 전이는 검증된 중앙 recovered/COMMITTED 응답과 동일 MachineGuid/SID 유도 install ID·producer/source/manifest/endpoint, 정확한 정상 제거 marker/report, relay 부재를 요구한다. 한 SQLite FULL transaction에서 활성 authority의 scope/key와 큐의 key 결속만 바꾸고 current-user DPAPI 감사에 이전 authority·원 큐 digest·중앙 receipt를 보존한다. 원 payload/metadata·idempotency·runtime fence/token·행 상태/receipt는 바꾸지 않는다. runtime proof는 Web의 exact receipt replay에 포함되므로 새 HMAC 키로 원 요청을 재서명하며 fence는 ACK 뒤 정상 서버 lease 만료/발급에서 증가한다. 다른 신원·미확정 응답·격리 authority·경합 변경은 전이를 거부한다([지원 재개](operations.md#registration-relay-recovery)).
 
 [w9 시험 감사](operations.md#test-audit-w9)는 기존 계약을 그대로 검증한다. bootstrap 전체 inventory는 신뢰된 `SharedCodeRoot`를 명시하고, F4 prepare에는 앱 parser가 검증한 정수 QT를 전달하며, relay ACK는 stdout 대신 durable status·queue·실제 수신 내용으로 확인한다. ProgramData 기본값 시험은 onboarding 상태가 없는 standalone 문맥을 명시한다.

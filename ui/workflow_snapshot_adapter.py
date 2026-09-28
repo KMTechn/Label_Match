@@ -31,6 +31,7 @@ def adapt_workflow_snapshot(
     last_normal_scan_override: str | None = None,
     has_error: bool | None = None,
     error_message: str = "",
+    legacy_label_blocked: bool = False,
 ) -> WorkflowSnapshot:
     """Copy runtime and transient UI state into an immutable snapshot.
 
@@ -93,6 +94,7 @@ def adapt_workflow_snapshot(
         ),
         exact_rescan_target=exact_target,
         exact_rescan_barcodes=exact_barcodes,
+        legacy_label_blocked=bool(legacy_label_blocked),
     )
 
 

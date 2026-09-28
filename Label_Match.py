@@ -275,11 +275,19 @@ from phs_label_workflow import (
     PHSLabelWorkflowError,
     normalize_packaging_phs_label_evidence,
 )
-from logistics_runtime_profile import logistics_runtime_required
+from logistics_runtime_profile import (
+    legacy_label_transition_enabled,
+    logistics_runtime_required,
+)
 from ui.operator_layout import build_operator_layout
 from ui.style_tokens import build_style_tokens
 from ui.workflow_snapshot_adapter import adapt_workflow_snapshot
-from ui.workflow_view_state import WorkflowNotice, operator_safe_message, present_workflow
+from ui.workflow_view_state import (
+    LEGACY_LABEL_TRANSITION_OFF_CAUSE,
+    WorkflowNotice,
+    operator_safe_message,
+    present_workflow,
+)
 from tk_serial_ui_lane import (
     Admission,
     CoalescingTrigger,
@@ -1813,6 +1821,64 @@ PHS_REPLACEMENT_REQUIRED_NOTICE = (
     "현품표 교체 필요. 작업은 계속할 수 있습니다. "
     "현재 현품표를 교체 대기로 분리해 주세요."
 )
+LEGACY_LABEL_TRANSITION_BANNER = "과도기 모드 — 옛 방식 포장 받음"
+LEGACY_LABEL_TRANSITION_OFF_REJECT = (
+    LEGACY_LABEL_TRANSITION_OFF_CAUSE
+    + " 확인을 누른 뒤 새 현품표로 다시 시작하세요. 새 현품표 QR이 손상된 경우에만 "
+    "현품표 스캔 직후 F4로 실제 TRANSFER ID를 스캔하고, 그 밖에는 관리자에게 알리세요."
+)
+# Completion refusals decided by packaging policy, not by local storage.  The
+# prefixes are the stable messages raised by label_completion.
+LABEL_MATCH_PACKAGE_POLICY_BLOCKS = (
+    (
+        "central packaging requires a sealed transfer QR, structured PHS BND/ITG",
+        "PACKAGE_LEGACY_LABEL_NOT_ACCEPTED",
+    ),
+    (
+        "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled",
+        "PACKAGE_MANUAL_COMPLETE_DISABLED",
+    ),
+    (
+        "AUTHORITATIVE_LOGISTICS_REQUIRED: installed central client/profile is unavailable",
+        "PACKAGE_CENTRAL_PROFILE_UNAVAILABLE",
+    ),
+)
+LABEL_MATCH_PACKAGE_POLICY_NOTICES = {
+    "PACKAGE_LEGACY_LABEL_NOT_ACCEPTED": (
+        "옛 방식 현품표 완료 불가",
+        "이 현품표는 새 포장 이력(PHS2)이 없는 옛 방식이라 이 PC에서 완료할 수 "
+        "없습니다. 과도기 모드가 꺼져 있습니다. 현재 세트와 실물을 그대로 두고 "
+        "관리자에게 알리세요.",
+    ),
+    "PACKAGE_MANUAL_COMPLETE_DISABLED": (
+        "F3 소량 완료 불가",
+        "이 PC는 중앙 포장 필수 모드라서 이 세트의 F3 소량 완료를 받지 않습니다. "
+        "현재 세트와 실물을 그대로 두고 관리자에게 알리세요.",
+    ),
+    "PACKAGE_CENTRAL_PROFILE_UNAVAILABLE": (
+        "중앙 포장 연결 설정 확인 필요",
+        "이 PC의 중앙 포장 연결 설정을 불러오지 못해 완료할 수 없습니다. "
+        "현재 세트와 실물을 그대로 두고 관리자에게 알리세요.",
+    ),
+}
+
+
+def _label_match_package_policy_block_code(error):
+    """Return the stable cause code of a completion refused by packaging policy."""
+
+    if isinstance(error, Failure):
+        code = error.safe_operator_code
+    else:
+        text = str(error) if isinstance(error, PackageLogisticsError) else ""
+        code = next(
+            (
+                code
+                for prefix, code in LABEL_MATCH_PACKAGE_POLICY_BLOCKS
+                if text.startswith(prefix)
+            ),
+            "",
+        )
+    return code if code in LABEL_MATCH_PACKAGE_POLICY_NOTICES else ""
 
 
 def _label_match_capture_current_set(current_set_info):
@@ -4581,6 +4647,26 @@ class Label_Match(tk.Tk):
             or self.__dict__.get("package_logistics_client") is not None
         )
 
+    def _legacy_label_needs_transition(self):
+        """Whether this registered PC, with the transition switch off, cannot
+        finish the current set because its label has no lineage.
+
+        Tests and simulations keep the base flow, as the completion gate does.
+        """
+
+        state = self.__dict__
+        return bool(
+            not state.get("run_tests", False)
+            and not state.get("is_running_simulation", False)
+            and not state.get("_legacy_label_transition_enabled", False)
+            and label_completion._registered_legacy_label(
+                self,
+                state.get("current_set_info") or {},
+                _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
+                _label_match_parse_new_format_fields=_label_match_parse_new_format_fields,
+            )
+        )
+
     def _operator_workflow_hint_text(self, source=None):
         if self._standard_phs2_workflow_expected(source):
             return "현품표 1회 스캔 → 필요 시 제품 교체 (F4) → 랩핑 후 포장 완료 (F3). 교체 후 새 전자 QR을 확인하며 원본 현품표는 유지합니다."
@@ -4734,6 +4820,7 @@ class Label_Match(tk.Tk):
         )
         self.package_logistics_client = startup_package_logistics_client
         self._logistics_authoritative_required = startup_logistics_required
+        self._legacy_label_transition_enabled = legacy_label_transition_enabled()
         self.deferred_intent_capture = None
         self._deferred_intent_capture_error = ""
         if self.package_logistics_client is not None:
@@ -10480,6 +10567,7 @@ class Label_Match(tk.Tk):
                 self.scan_count = result['scan_count']
                 self.global_scanned_set = result['global_scanned_set']
                 self.set_details_map = result['set_details_map']
+                self._render_legacy_transition_banner()
             self.history_row_details_map = result.get('set_details_map', {})
             # The complete logical state is authoritative now. Painting the
             # same snapshot must not keep today's input gate closed.
@@ -13091,6 +13179,14 @@ class Label_Match(tk.Tk):
                     if not self.run_tests:
                         messagebox.showwarning("입력 형식 오류", "테스트 코드 형식이 올바르지 않습니다.\n(예: TEST_LOG_100)")
                     return
+
+            if self._legacy_label_needs_transition():
+                self._handle_input_error(
+                    raw_input,
+                    title="[옛 방식 포장 불가]",
+                    reason=LEGACY_LABEL_TRANSITION_OFF_REJECT,
+                )
+                return
 
             master_code = self.current_set_info['parsed'][0]
             final_label_position = self._workflow_final_label_position()
@@ -15963,7 +16059,11 @@ class Label_Match(tk.Tk):
                     if has_central_identity or (
                         status
                         and status
-                        not in {"LEGACY_DIRECT_SYNC_ONLY", "LOCAL_ONLY"}
+                        not in {
+                            "LEGACY_DIRECT_SYNC_ONLY",
+                            label_completion.LEGACY_TRANSITION_LOCAL_ONLY,
+                            "LOCAL_ONLY",
+                        }
                     ):
                         return True
                 pending.extend(value.values())
@@ -16218,6 +16318,13 @@ class Label_Match(tk.Tk):
             set_id_for_log=set_id_for_log,
             deepcopy=lambda value: copy.deepcopy(value),
             PackageLogisticsError=lambda *args: PackageLogisticsError(*args),
+            failure_adapter=lambda error: Failure.from_exception(
+                error,
+                safe_operator_code=(
+                    _label_match_package_policy_block_code(error)
+                    or "UNEXPECTED_WORK_FAILURE"
+                ),
+            ),
         )
 
     def _finalize_set(
@@ -19249,6 +19356,7 @@ class Label_Match(tk.Tk):
             "completion_full": "다음 세트 준비",
             "completion_partial": "다음 세트 준비",
             "completion_failed": "새 세트 준비",
+            "legacy_label_blocked": "옛 방식 현품표",
         }.get(view.current_stage, "상태 확인")
 
     @staticmethod
@@ -19657,6 +19765,7 @@ class Label_Match(tk.Tk):
             ),
             has_error=bool(self.__dict__.get("_pending_workflow_error")),
             error_message=str(self.__dict__.get("_workflow_error_message") or ""),
+            legacy_label_blocked=self._legacy_label_needs_transition(),
         )
         view = present_workflow(snapshot)
         self._last_workflow_view = view
@@ -20190,6 +20299,10 @@ class Label_Match(tk.Tk):
                 and error.cause_type == "OperationLeaseError"
             )
         )
+        # A policy refusal is not a storage failure; name its actual cause.
+        policy_notice = LABEL_MATCH_PACKAGE_POLICY_NOTICES.get(
+            _label_match_package_policy_block_code(error)
+        )
         message = (
             (
                 "이 장비의 포장 권한과 현재 현품표 상태를 확인하지 못했습니다. "
@@ -20197,6 +20310,8 @@ class Label_Match(tk.Tk):
                 "계속 실패하면 관리자에게 확인을 요청하세요."
             )
             if lease_failure
+            else policy_notice[1]
+            if policy_notice
             else (
                 "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
                 "디스크 공간·저장 폴더 권한·파일 잠금을 확인한 뒤 저장 재시도를 누르세요. "
@@ -20212,6 +20327,8 @@ class Label_Match(tk.Tk):
             title=(
                 f"{completed}/{total} 유지 · 포장 권한 확인 필요"
                 if lease_failure
+                else f"{completed}/{total} 유지 · {policy_notice[0]}"
+                if policy_notice
                 else f"{completed}/{total} 유지 · 로컬 기록 저장 필요"
             ),
             message=message,
@@ -20225,7 +20342,9 @@ class Label_Match(tk.Tk):
             if callable(retry_action)
             else self._retry_blocked_submission
         )
-        self._workflow_notice_action_text = "저장 재시도"
+        self._workflow_notice_action_text = (
+            "다시 확인" if policy_notice and not lease_failure else "저장 재시도"
+        )
         self._workflow_last_normal_override = scans[-1] if scans else ""
         notice_label = self.__dict__.get("workflow_notice_label")
         if notice_label is not None:
@@ -20345,6 +20464,7 @@ class Label_Match(tk.Tk):
             build_style_tokens=build_style_tokens,
             _label_match_operator_context=_label_match_operator_context,
         )
+        self._render_legacy_transition_banner()
 
         label_workbench_scan.create_scan_status(
             self,
@@ -20686,6 +20806,37 @@ class Label_Match(tk.Tk):
 
     def _update_summary_tree(self):
         self._render_summary_tree(self.scan_count)
+        self._render_legacy_transition_banner()
+
+    def _render_legacy_transition_banner(self):
+        """Keep the transition switch and today's legacy set count on screen."""
+
+        label = self.__dict__.get("legacy_transition_label")
+        if label is None:
+            return
+        try:
+            if not self.__dict__.get("_legacy_label_transition_enabled", False):
+                label.grid_remove()
+                return
+            today = datetime.now().date()
+            count = 0
+            for details in (self.__dict__.get("set_details_map") or {}).values():
+                logistics = (details or {}).get("package_logistics")
+                if (
+                    not isinstance(logistics, dict)
+                    or logistics.get("status")
+                    != label_completion.LEGACY_TRANSITION_LOCAL_ONLY
+                ):
+                    continue
+                try:
+                    if _label_match_parse_datetime(details.get("end_time")).date() == today:
+                        count += 1
+                except (TypeError, ValueError):
+                    continue
+            label.configure(text=f"{LEGACY_LABEL_TRANSITION_BANNER} · 오늘 {count}건")
+            label.grid()
+        except (TclError, AttributeError):
+            pass
 
     def _render_summary_tree(self, scan_count):
         if not self.initialized_successfully: return

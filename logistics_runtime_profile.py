@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 PROFILE_CONTRACT_VERSION = "km-logistics-runtime-profile-v1"
 PROFILE_PATH_ENV = "KM_LOGISTICS_PROFILE_PATH"
 REQUIRED_ENV = "KM_LOGISTICS_REQUIRED"
+LEGACY_LABEL_TRANSITION_ENV = "KMTECH_LEGACY_LABEL_TRANSITION"
 PROFILE_PROGRAM = "Label_Match"
 TEST1_ISOLATED_LEGACY_OVERRIDE_ENV = (
     "KMTECH_TEST1_ALLOW_ISOLATED_LEGACY_LOGISTICS"
@@ -238,6 +239,24 @@ def _machine_environment_value(name: str) -> str:
             "Windows Machine logistics environment could not be read"
         ) from exc
     return str(value or "").strip()
+
+
+def legacy_label_transition_enabled(
+    machine_value: Callable[[str], str] | None = None,
+) -> bool:
+    """Read the administrator-only transition switch; only Machine value 1 enables it.
+
+    Process and user environment values are deliberately ignored, so only an
+    administrator can accept legacy five-scan sets on a registered PC.
+    """
+
+    try:
+        value = (machine_value or _machine_environment_value)(
+            LEGACY_LABEL_TRANSITION_ENV
+        )
+    except LogisticsRuntimeConfigurationError:
+        return False
+    return str(value or "").strip() == "1"
 
 
 def _test1_run_path(
@@ -828,6 +847,7 @@ def assert_logistics_runtime_ready(
 __all__ = [
     "DPAPI_ENTROPY",
     "DEFAULT_TOKEN_REF",
+    "LEGACY_LABEL_TRANSITION_ENV",
     "LogisticsRuntimeConfigurationError",
     "LogisticsRuntimeProfile",
     "PROFILE_CONTRACT_VERSION",
@@ -839,6 +859,7 @@ __all__ = [
     "default_logistics_profile_path",
     "default_profile_path",
     "inspect_logistics_runtime_profile_identity",
+    "legacy_label_transition_enabled",
     "load_logistics_runtime_profile",
     "logistics_runtime_required",
     "profile_from_values",

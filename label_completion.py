@@ -5,6 +5,43 @@ success presentation and worker dispatch. Storage APIs and transaction order
 remain unchanged.
 """
 
+LEGACY_TRANSITION_LOCAL_ONLY = "LEGACY_TRANSITION_LOCAL_ONLY"
+
+
+def _registered_legacy_label(
+    self,
+    current,
+    *,
+    _label_match_parse_sealed_transfer_qr,
+    _label_match_parse_new_format_fields,
+):
+    """Whether a registered PC's set starts with a label without lineage.
+
+    Lineage is a sealed transfer QR, PHS2 or BND/ITG.  Central sets and the F4
+    exact rescan keep their own paths, so they never qualify.
+    """
+
+    if (
+        self.__dict__.get("package_logistics_client") is None
+        or current.get("central_inherit_all")
+        or current.get("exact_rescan_active")
+        or current.get("exact_rescan_complete")
+    ):
+        return False
+    raw = list(current.get("raw") or [])
+    if not raw:
+        return False
+    try:
+        if _label_match_parse_sealed_transfer_qr(raw[0]):
+            return False
+    except ValueError:
+        return False
+    fields = _label_match_parse_new_format_fields(raw[0]) or {}
+    return not (
+        str(fields.get("BND") or "").strip()
+        or str(fields.get("ITG") or "").strip()
+    )
+
 
 def _queue_authoritative_package(
     self,
@@ -34,8 +71,23 @@ def _queue_authoritative_package(
         or self.__dict__.get("is_running_simulation", False)
     ):
         return None
+    transition_mode = bool(
+        self.__dict__.get("_legacy_label_transition_enabled", False)
+    )
     if is_manual_complete:
         if required_mode:
+            if transition_mode and _registered_legacy_label(
+                self,
+                current_set_info
+                if isinstance(current_set_info, dict)
+                else (self.__dict__.get("current_set_info") or {}),
+                _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
+                _label_match_parse_new_format_fields=_label_match_parse_new_format_fields,
+            ):
+                return {
+                    "status": LEGACY_TRANSITION_LOCAL_ONLY,
+                    "sample_barcodes_are_membership": False,
+                }
             raise PackageLogisticsError(
                 "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
             )
@@ -83,6 +135,18 @@ def _queue_authoritative_package(
             or str(fields.get("ITG") or "").strip()
         )
         if central_enabled and not has_structured_phs_identity:
+            if transition_mode and _registered_legacy_label(
+                self,
+                current,
+                _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
+                _label_match_parse_new_format_fields=_label_match_parse_new_format_fields,
+            ):
+                # Never a package outbox command: the server only observes
+                # the TRAY_COMPLETE event through the existing direct sync.
+                return {
+                    "status": LEGACY_TRANSITION_LOCAL_ONLY,
+                    "sample_barcodes_are_membership": False,
+                }
             raise PackageLogisticsError(
                 "central packaging requires a sealed transfer QR, structured PHS BND/ITG "
                 "lineage, or FULL EXACT_RESCAN; three product samples are not membership"
@@ -410,6 +474,7 @@ def _submit_finalized_set_on_lane(
     set_id_for_log,
     deepcopy,
     PackageLogisticsError,
+    failure_adapter=None,
 ):
     current_snapshot = deepcopy(self.current_set_info or {})
 
@@ -450,5 +515,6 @@ def _submit_finalized_set_on_lane(
         work=work,
         finish=finish,
         fail=fail,
+        failure_adapter=failure_adapter,
     )
     return bool(admission is not None and admission.accepted)
