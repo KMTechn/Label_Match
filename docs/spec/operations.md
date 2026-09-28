@@ -470,7 +470,7 @@ D-day 전까지 등록 PC(중앙 client가 있거나 필수 모드)에서 현장
 
 켬이면 `TRAY_COMPLETE` detail 최상위에 Container_Audit와 같은 약속의 `transition_class`·`transition_reasons`(사유 코드 목록, 대문자 코드만)·`transition_duplicate`와 사건 ID `idempotency_key`(128자 이하)·`app_version`, 등록 PC의 `transition_source_host_id`(중앙 클라이언트 설정의 source_host_id, relay 대조용; Web이 설치 신원과 대조하는 `source_host_id` 키는 쓰지 않는다)를 붙인다. 이런 세트의 `TRAY_COMPLETION_CANCELLED`·`SET_DELETED`도 사건 ID·`app_version`을 가진다. 취소 사건 ID는 취소된 세트로 정해(`label_transition.cancellation_key`) 이력 삭제와 현품표 취소가 같은 값을 쓰며, 첫 취소 행을 쓴 뒤 저장 확인이 실패해 다른 경로로 다시 해도 그 행을 재사용한다. `PHS2_CENTRAL`만 기존 포장 전송함(원장) 흐름을 탄다. 나머지는 `package_logistics.status = TRANSITION_LOCAL_ONLY`의 로컬 완료이며 포장 전송함 행·operation lease·중앙 명령이 없고 취소도 로컬이다.
 
-회차 분류 고정: 켬에서 시작한 세트는 첫 스캔 때 분류를 저장 상태에 적는다(새 현품표는 `PHS2_CENTRAL`로 시작해 중앙이 막히면 `PHS2_LOCAL`). 로컬 결정은 완료 행보다 먼저 저장 상태에 고정되므로 전송 결과 불명 뒤 재시도, 재시작, 스위치를 끈 뒤 복원해 마저 끝내도 같은 분류로 기록되고 원장·outbox에 들어가지 않는다. 미제출 capture는 이 결정이 저장된 뒤에야 닫는다: 저장이 실패하거나 그 사이에 멈추면 세트와 capture가 그대로 남고, capture를 닫은 뒤 멈추면 복원이 고정된 로컬 세트를 지우지 않고 이어 간다(취소된 capture를 가진 세트를 지우는 F1 복구는 로컬 분류가 없는 세트에만). 이런 세트는 날짜가 바뀐 재시작에도 지우지 않는다. 끔에서 새로 시작한 세트만 엄격 모드다.
+회차 분류 고정: 켬에서 시작한 세트는 첫 스캔 때 분류를 저장 상태에 적는다(새 현품표는 `PHS2_CENTRAL`로 시작해 중앙이 막히면 `PHS2_LOCAL`). 로컬 결정은 완료 행보다 먼저 저장 상태에 고정되므로 전송 결과 불명 뒤 재시도, 재시작, 스위치를 끈 뒤 복원해 마저 끝내도 같은 분류로 기록되고 원장·outbox에 들어가지 않는다. 미제출 capture는 이 결정이 저장된 뒤에야 닫는다: 저장이 실패하거나 그 사이에 멈추면 세트와 capture가 그대로 남고, capture를 닫은 뒤 멈추면 복원이 고정된 로컬 세트를 지우지 않고 이어 간다(취소된 capture를 가진 세트를 지우는 F1 복구는 로컬 분류가 없는 세트에만). 결정 저장 뒤·닫기 전에 멈춘 세트의 복원을 작업자가 거절하면 그 capture를 로컬 결정대로 먼저 닫고 저장 상태를 지운다(닫을 수 없으면 저장 상태를 남긴다). 그래서 로컬로 정한 회차가 중앙 검증으로 되살아나지 않는다. 이런 세트는 날짜가 바뀐 재시작에도 지우지 않는다. 끔에서 새로 시작한 세트만 엄격 모드다.
 
 | 분류 | 언제 | 흐름 |
 | --- | --- | --- |

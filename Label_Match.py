@@ -10649,7 +10649,8 @@ class Label_Match(tk.Tk):
                                                        icon='warning')
                 if response is None: return
                 elif response is False:
-                    self.data_manager.delete_current_state()
+                    if not self._discard_declined_saved_set(saved_set_info):
+                        return
                     if not self.run_tests:
                         messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
                     return
@@ -10693,7 +10694,28 @@ class Label_Match(tk.Tk):
             self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
             self._reconcile_active_package_submission()
         else:
-            self.data_manager.delete_current_state()
+            self._discard_declined_saved_set(saved_set_info)
+
+    def _discard_declined_saved_set(self, saved_set_info):
+        """Delete a saved set the operator declined to restore.
+
+        A pinned transition local set first closes the PHS2 capture it still
+        owns (a stop between saving its decision and closing the capture), so
+        the declined cycle never returns to central validation.  False, with
+        the state kept, when that capture cannot be closed safely.
+        """
+
+        if saved_set_info.get("transition_class") in label_transition.LOCAL_CLASSES:
+            try:
+                self._cancel_deferred_capture_for_set(saved_set_info)
+            except Exception as error:
+                print(
+                    "declined transition local set kept its saved state: "
+                    f"{getattr(error, 'code', error.__class__.__name__)}"
+                )
+                return False
+        self.data_manager.delete_current_state()
+        return True
 
     def _delete_current_set_state(self):
         self.data_manager.delete_current_state()
