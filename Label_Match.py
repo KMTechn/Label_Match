@@ -16505,7 +16505,7 @@ class Label_Match(tk.Tk):
             )
         ) or bool(
             transition_key
-            and self._transition_event_was_logged(event_type, transition_key)
+            and self._transition_event_was_logged(transition_key)
         )
         if not already_logged:
             self.data_manager.log_event(event_type, details)
@@ -16520,7 +16520,10 @@ class Label_Match(tk.Tk):
         return details
 
     def _transition_cancellation_key(self, event_type, details):
-        """Event ID of a transition set's cancellation (same cancel, same ID)."""
+        """Event ID of a transition set's cancellation: the cancelled set's own.
+
+        Not the route: history delete and label cancel of one set share it.
+        """
 
         deleted = event_type == self.Events.SET_DELETED
         cancelled = details.get("original_details" if deleted else "details")
@@ -16529,17 +16532,16 @@ class Label_Match(tk.Tk):
             or cancelled.get("transition_class") not in label_transition.CLASSES
         ):
             return ""
-        return label_transition.event_key(
+        return label_transition.cancellation_key(
             str(getattr(self.__dict__.get("data_manager"), "unique_id", "") or ""),
             str(details.get("set_id" if deleted else "cancelled_set_id") or ""),
-            event_type,
         )
 
-    def _transition_event_was_logged(self, event_type, idempotency_key):
-        """Drain the writer, then find the one row of this event ID.
+    def _transition_event_was_logged(self, idempotency_key):
+        """Drain the writer, then find the one cancellation row of this event ID.
 
-        A retry after an uncertain flush reuses that row instead of a second
-        one with another timestamp.
+        A retry after an uncertain flush, through either cancel route, reuses
+        that row instead of a second one with another timestamp.
         """
 
         self._flush_data_manager_if_supported()
@@ -16553,7 +16555,10 @@ class Label_Match(tk.Tk):
             path = os.path.join(save_directory, filename)
             with open(path, "r", encoding="utf-8-sig", newline="") as handle:
                 for record in csv.DictReader(handle):
-                    if record.get("event") != event_type:
+                    if record.get("event") not in (
+                        self.Events.SET_DELETED,
+                        self.Events.TRAY_COMPLETION_CANCELLED,
+                    ):
                         continue
                     try:
                         details = json.loads(record.get("details") or "{}")

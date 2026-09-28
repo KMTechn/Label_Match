@@ -1021,7 +1021,7 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
     if not isinstance(entries, list) or not entries:
         return False
     observed_names: Counter[str] = Counter()
-    lifecycle_names = {"APP_START", "APP_CLOSE", "SCAN_ATTEMPT", "SCAN_OK", "ERROR_INPUT", "SET_RESTORED", "SET_CANCELLED", "SEALED_TRANSFER_EXCHANGE_APPLIED"}
+    lifecycle_names = LABEL_MATCH_RAW_ONLY_EVENTS
     for entry in entries:
         if (not isinstance(entry, dict)
             or not isinstance(entry.get("raw_event_name"), str)
@@ -1062,6 +1062,18 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
 
 
 _TRANSITION_CLASSES = frozenset(label_transition.CLASSES)
+# The server's LabelMatch stream catalog (w9webrecv 6e27c99) without its three
+# business events (TRAY_COMPLETE, SET_DELETED, TRAY_COMPLETION_CANCELLED).  The
+# server acknowledges each as RAW_LEGITIMATE / NO_STAGE1_REDUCER, so a delta of
+# only such rows must not stop this PC's relay.
+LABEL_MATCH_RAW_ONLY_EVENTS = frozenset((
+    "APP_CLOSE", "APP_START", "BASE64_DECODED", "ERROR_INPUT", "ERROR_MISMATCH",
+    "LABEL_MATCHED", "PACKAGING_WAITING_OBSERVED", "PHS_LABEL_ACTIVE_RESOLVED",
+    "PHS_LABEL_EXCHANGE_RESULT", "PHS_RECONCILIATION_EXCHANGE_RESULT",
+    "PHS_REPLACEMENT_WAITING_MARKED", "POST_REVIEW_REQUIRED", "SCAN_ATTEMPT", "SCAN_OK",
+    "SEALED_TRANSFER_EXCHANGE_ACKED", "SEALED_TRANSFER_EXCHANGE_APPLIED", "SET_CANCELLED",
+    "SET_RESTORED", "SHIPPING_WAITING_OBSERVED", "UI_ERROR",
+))
 
 
 def _is_transition_completion_row(row: Mapping[str, Any], source_host_id: str) -> bool:

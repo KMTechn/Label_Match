@@ -1279,12 +1279,23 @@ def test_transition_business_events_carry_a_stable_event_key(tmp_path, monkeypat
     [(_row, details)] = _events(tmp_path, event)
     key = details["idempotency_key"]
     assert isinstance(key, str) and 0 < len(key) <= 128
-    assert key == module.label_transition.event_key("PC-LT", set_id, event)
+    # Both cancel routes share the one cancellation ID of the completed set.
+    assert key == (
+        module.label_transition.event_key("PC-LT", set_id, event)
+        if event == "TRAY_COMPLETE"
+        else module.label_transition.cancellation_key("PC-LT", set_id)
+    )
     assert details["app_version"] == module.APP_VERSION
 
 
-@pytest.mark.parametrize("event", ["SET_DELETED", "TRAY_COMPLETION_CANCELLED"])
-def test_cancellation_retry_reuses_the_original_csv_row(tmp_path, monkeypatch, event):
+@pytest.mark.parametrize(("event", "retry"), [
+    ("SET_DELETED", "SET_DELETED"),
+    ("TRAY_COMPLETION_CANCELLED", "TRAY_COMPLETION_CANCELLED"),
+    # sub-04 P1: the retry may come through the other cancel route.
+    ("SET_DELETED", "TRAY_COMPLETION_CANCELLED"),
+    ("TRAY_COMPLETION_CANCELLED", "SET_DELETED"),
+])
+def test_cancellation_retry_reuses_the_original_csv_row(tmp_path, monkeypatch, event, retry):
     module = load_label_match_module()
     app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
     monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
@@ -1302,19 +1313,20 @@ def test_cancellation_retry_reuses_the_original_csv_row(tmp_path, monkeypatch, e
     try:
         for value in _legacy_set(111):
             _scan(module, app, value)
-        if event == "SET_DELETED":
-            _select_completed_rows(app)
-            cancel = app._delete_selected_row
-        else:
-            cancel = lambda: app._cancel_completed_tray_by_label(MASTER)  # noqa: E731
+        _select_completed_rows(app)
+        routes = {
+            "SET_DELETED": app._delete_selected_row,
+            "TRAY_COMPLETION_CANCELLED": lambda: app._cancel_completed_tray_by_label(MASTER),
+        }
         app._flush_data_manager_if_supported = flush
-        cancel()
+        routes[event]()
         assert app.set_details_map, "the uncertain first cancellation keeps the target"
         first = _events(tmp_path, event)
         assert len(first) == 1
-        cancel()
+        routes[retry]()
         app.data_manager.flush(timeout=5)
-        assert _events(tmp_path, event) == first  # same row, same timestamp
+        # The first row stays the one row (same timestamp), whichever route retried.
+        assert _events(tmp_path, "SET_DELETED") + _events(tmp_path, "TRAY_COMPLETION_CANCELLED") == first
     finally:
         _close(app)
 
@@ -1938,3 +1950,36 @@ def test_central_completion_retry_waits_for_its_queued_row(tmp_path, monkeypatch
     finally:
         release.set()
         _b1_close(app.data_manager)
+
+
+# The server's LabelMatch stream catalog (w9webrecv 6e27c99) without its three
+# business events; the server answers each with RAW_LEGITIMATE/NO_STAGE1_REDUCER.
+_SERVER_RAW_ONLY_EVENTS = (
+    "APP_CLOSE", "APP_START", "BASE64_DECODED", "ERROR_INPUT", "ERROR_MISMATCH", "LABEL_MATCHED",
+    "PACKAGING_WAITING_OBSERVED", "PHS_LABEL_ACTIVE_RESOLVED", "PHS_LABEL_EXCHANGE_RESULT",
+    "PHS_RECONCILIATION_EXCHANGE_RESULT", "PHS_REPLACEMENT_WAITING_MARKED", "POST_REVIEW_REQUIRED",
+    "SCAN_ATTEMPT", "SCAN_OK", "SEALED_TRANSFER_EXCHANGE_ACKED", "SEALED_TRANSFER_EXCHANGE_APPLIED",
+    "SET_CANCELLED", "SET_RESTORED", "SHIPPING_WAITING_OBSERVED", "UI_ERROR",
+)
+
+
+@pytest.mark.parametrize("event", [
+    *_SERVER_RAW_ONLY_EVENTS, "TRAY_COMPLETE", "SET_DELETED", "TRAY_COMPLETION_CANCELLED",
+])
+def test_relay_takes_a_raw_receipt_for_every_server_raw_only_event(tmp_path, monkeypatch, event):
+    import direct_sync_push
+    from tests.test_direct_sync_push import (
+        FakeResponse, FakeSession, RuntimePreparation, _raw_lifecycle_receipt, make_credentials,
+    )
+
+    monkeypatch.setattr(direct_sync_push, "prepare_runtime_metadata",
+                        lambda **kwargs: RuntimePreparation(metadata=dict(kwargs["metadata"])))
+    monkeypatch.setattr(direct_sync_push, "client_runtime_lease_mode", lambda _credentials: "observe")
+    row = _transition_relay_batch(tmp_path, [(event, {"set_id": "set-raw"})])
+    result = direct_sync_push.drain_one_relay_batch(
+        db_path=tmp_path / "relay.sqlite3", credentials=make_credentials(),
+        session=FakeSession(FakeResponse(200, _raw_lifecycle_receipt(row, (event,)))),
+        status_dir=tmp_path / "status",
+    )
+    # A business event never takes a raw-only acknowledgement.
+    assert result.success is (event in _SERVER_RAW_ONLY_EVENTS)

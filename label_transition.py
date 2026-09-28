@@ -158,6 +158,16 @@ def event_key(pc_id, set_id, event):
     return f"LM-{event}-{digest[:40]}"
 
 
+def cancellation_key(pc_id, set_id):
+    """Event ID of one completed set's cancellation.
+
+    History delete (SET_DELETED) and label cancel (TRAY_COMPLETION_CANCELLED)
+    share it, so a retry through the other route reuses the first row.
+    """
+
+    return event_key(pc_id, set_id, "CANCELLATION")
+
+
 def fields(transition_class, reasons=(), duplicate=False):
     """The shared completion-detail contract (CA and LM use the same names)."""
 
