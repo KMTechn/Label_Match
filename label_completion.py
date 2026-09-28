@@ -688,23 +688,17 @@ def _commit_finalized_set_durable(
         transition is not None
         and transition["transition_class"] != label_transition.PHS2_CENTRAL
     ):
-        # The saved set marks the attempt before its row is appended.  A retry
-        # (or a restart) after an uncertain flush then finds that one row in
-        # every retained daily file and resends it, never a second row.
+        # The saved set marks the attempt before its row is appended.  Only a
+        # set this build started ("" at its first scan) skips the search on
+        # its first attempt; a retry, a restart after an uncertain flush, or a
+        # set saved by an older build finds the one row in every retained
+        # daily file and resends it, never a second row.
         marked = (
             current_snapshot
             if detached
             else (self.__dict__.get("current_set_info") or {})
         )
-        if marked.get("transition_row_key") == durable_details["idempotency_key"]:
-            self._flush_data_manager_if_supported()
-            local_event_durable = bool(
-                _label_match_local_completion_event_exists(
-                    self.__dict__.get("data_manager"),
-                    set_id_for_log,
-                )
-            )
-        else:
+        if marked.get("transition_row_key") == "":
             marked["transition_row_key"] = durable_details["idempotency_key"]
             if not _persist_transition_state(
                 self,
@@ -715,6 +709,14 @@ def _commit_finalized_set_durable(
                     "current packaging state could not be saved before completion"
                 )
             local_event_durable = False
+        else:
+            self._flush_data_manager_if_supported()
+            local_event_durable = bool(
+                _label_match_local_completion_event_exists(
+                    self.__dict__.get("data_manager"),
+                    set_id_for_log,
+                )
+            )
     else:
         if transition is not None:
             # A retry must not decide absence while its row is still queued.

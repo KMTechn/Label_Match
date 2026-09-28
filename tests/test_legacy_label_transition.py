@@ -1744,6 +1744,42 @@ def test_recovery_keeps_a_pinned_local_set_whose_capture_was_closed(clock_case, 
         _close(restored)
 
 
+def test_retry_of_a_completion_saved_before_the_marker_reuses_its_row(tmp_path, monkeypatch):
+    """A set saved by a build without transition_row_key (3f4574a, the lab's
+    preserved state) whose row was appended with an unknown flush result."""
+
+    module = load_label_match_module()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=False, transition=False)
+    del app.__dict__["_save_current_set_state"]  # the real current-state file
+    real_flush = app._flush_data_manager_if_supported
+    glitched = []
+
+    def flush(timeout=5):
+        real_flush(timeout=timeout)
+        if not glitched and _events(tmp_path, "TRAY_COMPLETE"):
+            glitched.append(True)
+            raise TimeoutError("completion append succeeded, flush status unavailable")
+
+    app._flush_data_manager_if_supported = flush
+    try:
+        for value in _legacy_set(321):
+            _scan(module, app, value)
+        first = _events(tmp_path, "TRAY_COMPLETE")
+        assert len(first) == 1 and "transition_class" not in first[0][1]
+        assert app.current_set_info["raw"] and "transition_row_key" not in app.current_set_info
+    finally:
+        _close(app)
+    upgraded = _app_for_recovery(module, tmp_path, monkeypatch)  # registered, switch on
+    try:
+        upgraded._load_current_set_state()
+        assert upgraded.current_set_info["raw"] == _legacy_set(321)
+        upgraded._finalize_set(upgraded.Results.PASS)
+        upgraded.data_manager.flush(timeout=5)
+        assert _events(tmp_path, "TRAY_COMPLETE") == first  # the one row, unchanged
+    finally:
+        _close(upgraded)
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_local_completion_retry_reuses_its_row_from_any_earlier_day(tmp_path, monkeypatch, restart):
     module = load_label_match_module()

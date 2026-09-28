@@ -1834,6 +1834,10 @@ LEGACY_LABEL_TRANSITION_MALFORMED_OFF_REJECT = (
     "확인을 누른 뒤 이 현품표를 관리자에게 전달하세요."
 )
 # Operator names of the transition classes (banner counts, notices).
+# What a first scan pins in the current set while the switch is on.
+_LABEL_TRANSITION_START_KEYS = (
+    "transition_class", "transition_reasons", "transition_duplicate", "transition_row_key",
+)
 LABEL_TRANSITION_CLASS_NAMES = {
     label_transition.LEGACY: "옛 방식",
     label_transition.PHS2_CENTRAL: "중앙",
@@ -4759,7 +4763,7 @@ class Label_Match(tk.Tk):
 
         previous = {
             key: self.current_set_info[key]
-            for key in ("transition_class", "transition_reasons", "transition_duplicate")
+            for key in _LABEL_TRANSITION_START_KEYS
             if key in self.current_set_info
         }
         transition_class = {
@@ -4769,10 +4773,13 @@ class Label_Match(tk.Tk):
         }.get(shape)
         if transition_class:
             self.current_set_info.update(label_transition.fields(transition_class))
+            # This build started the set: no completion row yet (see
+            # label_completion._commit_finalized_set_durable).
+            self.current_set_info["transition_row_key"] = ""
         return previous
 
     def _restore_transition_start(self, previous):
-        for key in ("transition_class", "transition_reasons", "transition_duplicate"):
+        for key in _LABEL_TRANSITION_START_KEYS:
             self.current_set_info.pop(key, None)
         self.current_set_info.update(previous)
 
@@ -4794,6 +4801,7 @@ class Label_Match(tk.Tk):
         self.current_set_info.update(
             label_transition.fields(transition_class, reasons, duplicate)
         )
+        self.current_set_info["transition_row_key"] = ""
         self._update_on_success_scan(raw_input, item_code)
         if duplicate:
             self._announce_transition_set("DUPLICATE")
