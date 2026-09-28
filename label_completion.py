@@ -101,6 +101,27 @@ def _transition_completion(current, *, parse_sealed):
     return decided, reasons, bool(current.get("transition_duplicate"))
 
 
+def _close_transition_capture(self, current):
+    """Close the set's unsubmitted PHS2 capture exactly as F1 would.
+
+    A local completion must not leave that capture VALIDATED: an open intent
+    holds every later capture in its FIFO partition.  False when the capture
+    is not safely cancellable (unknown lease or validation result).
+    """
+
+    if not str(current.get("deferred_intent_id") or "").strip():
+        return True
+    try:
+        self._cancel_deferred_capture_for_set(current)
+    except Exception as error:
+        print(
+            "transition local completion kept the central path: "
+            f"{getattr(error, 'code', error.__class__.__name__)}"
+        )
+        return False
+    return True
+
+
 def _queue_transition_package(
     self,
     current,
@@ -110,6 +131,7 @@ def _queue_transition_package(
     parse_sealed,
     errors,
     reason,
+    PackageLogisticsError,
 ):
     """Accept every set; only a successful central flow enters the ledger."""
 
@@ -119,6 +141,10 @@ def _queue_transition_package(
     if decided:
         return _transition_local(decided, reasons, duplicate)
     if is_manual_complete:
+        if not _close_transition_capture(self, current):
+            raise PackageLogisticsError(
+                "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
+            )
         return _transition_local(
             label_transition.PHS2_LOCAL, [*reasons, "PARTIAL_PACKAGE"], duplicate,
         )
@@ -129,7 +155,7 @@ def _queue_transition_package(
         if (
             outbox is not None
             and outbox.get_by_set_id(str(current.get("id") or "")) is not None
-        ):
+        ) or not _close_transition_capture(self, current):
             raise
         return _transition_local(
             label_transition.PHS2_LOCAL, [*reasons, reason(error)], duplicate,
@@ -201,6 +227,7 @@ def _queue_authoritative_package(
         parse_sealed=_label_match_parse_sealed_transfer_qr,
         errors=tuple(_transition_errors),
         reason=_transition_reason,
+        PackageLogisticsError=PackageLogisticsError,
     )
 
 

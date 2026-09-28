@@ -731,6 +731,47 @@ def test_on_real_capture_store_cancels_the_offline_phs2_before_the_local_set(clo
         assert conn.execute("SELECT COUNT(*) FROM package_operation_leases").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("transition", [False, True])
+def test_f3_refusal_closes_the_validated_capture_before_a_local_completion(
+    clock_case, monkeypatch, transition,
+):
+    """An open VALIDATED capture would hold later captures in its FIFO."""
+
+    from tests.test_deferred_intent_capture import _row
+
+    case = clock_case
+    app = case.app
+    intent_id = _first_scan(case)  # validated online at the first scan
+    assert _row(case.database, intent_id)["state"] == "VALIDATED"
+    import Label_Match as module
+
+    def refuse(*_args, **_kwargs):  # refused before any F3 lease is issued
+        raise module.PackageLogisticsError("PHS2 package draft is refused")
+
+    monkeypatch.setattr(module, "_label_match_package_draft", refuse)
+    app.run_tests = False
+    app.worker_name = "worker-lt"
+    app._legacy_label_transition_enabled = transition
+    if not transition:
+        with pytest.raises(module.PackageLogisticsError):
+            app._queue_authoritative_package(item_code=case.group["item_id"], is_manual_complete=False)
+        assert _row(case.database, intent_id)["state"] == "VALIDATED"
+        return
+    package = app._queue_authoritative_package(
+        item_code=case.group["item_id"], is_manual_complete=False,
+    )
+    assert package == {
+        "status": LOCAL_STATUS, "sample_barcodes_are_membership": False,
+        "transition_class": "PHS2_LOCAL", "transition_reasons": ["PACKAGE_CENTRAL_BLOCKED"],
+        "transition_duplicate": False,
+    }
+    assert _row(case.database, intent_id)["state"] == "CANCELLED"
+    assert case.calls == []  # no F3 lease was issued
+    assert app.deferred_intent_capture.next_materialization_candidate() is None
+    with closing(sqlite3.connect(case.database)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM package_command_outbox").fetchone()[0] == 0
+
+
 def test_on_held_phs2_label_is_kept_local(tmp_path, monkeypatch):
     module = load_label_match_module()
     app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
