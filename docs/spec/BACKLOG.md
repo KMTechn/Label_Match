@@ -3,7 +3,7 @@
 <a id="lm-w9-legacy-transition"></a>
 ## W9 · 과도기 모드 (w9lmtransit)
 
-관리자 스위치로 등록 PC가 옛 5단계 세트를 로컬 완료로 받는다([절차](operations.md#legacy-label-transition)). 남은 일: ① 서버 화면에서 과도기 세트 구분·일별 집계(Web 변경 S, 지금은 LM 행의 `package_logistics.status`를 읽지 않음), ② 두 체인 이중 계수를 찾는 바코드 대조 보고서, ③ 꺼짐 상태 F4 전체 재스캔에 없는 TRANSFER ID를 넣으면 포장 전송함에 중앙 충돌이 쌓이는 기존 위험(미교정), ④ 실제 화면·랩·현장 수용은 NOT TESTED.
+관리자 스위치로 등록 PC가 모든 현품표를 받고 완료마다 네 분류·사유·중복을 기록한다([절차](operations.md#legacy-label-transition)). 남은 일: ① Web에서 분류·사유·중복을 PC·날짜별로 세고 새 사건 ID로 온 의도한 중복 완료를 관측 1건으로 받기(웹 후속, 지금은 detail 원문만 보존), ② 두 체인 이중 계수를 찾는 바코드 대조 보고서, ③ 꺼짐 상태 F4 전체 재스캔에 없는 TRANSFER ID를 넣으면 포장 전송함에 중앙 충돌이 쌓이는 기존 위험(미교정), ④ F3 단계에서 로컬로 바뀐 세트의 lease가 PREFETCHED로 남아 만료되는 동작 확인, ⑤ 실제 화면·랩·현장 수용은 NOT TESTED.
 
 ## W9 · 부분 등록 지원 복구 (O11, w9lmpartial)
 

@@ -456,9 +456,9 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 ## 설정 위치와 우선순위
 
 <a id="legacy-label-transition"></a>
-### 과도기 모드: 옛 방식 5단계 포장 받기 (`KMTECH_LEGACY_LABEL_TRANSITION`)
+### 과도기 모드: 모든 현품표를 받고 종류별로 기록 (`KMTECH_LEGACY_LABEL_TRANSITION`)
 
-D-day 전까지 등록 PC에서도 현장의 옛 5단계 포장(현품표+제품 3+최종 라벨)을 받는 관리자 스위치다. Machine 환경 값이 `1`일 때만 켜지고 그 밖(없음 포함)은 끔이다. 앱은 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`에서 직접 읽으므로 사용자·process 환경 값으로는 켜지지 않는다. 앱 시작 때 한 번 읽고 자동 만료는 없다.
+D-day 전까지 등록 PC(중앙 client가 있거나 필수 모드)에서 현장의 옛 5단계 포장과 새 현품표를 모두 받고, 완료마다 종류를 붙여 따로 기록하는 관리자 스위치다. Machine 환경 값이 `1`일 때만 켜지고 그 밖(없음 포함)은 끔이다. 앱은 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`에서 직접 읽으므로 사용자·process 환경 값으로는 켜지지 않는다. 앱 시작 때 한 번 읽고 자동 만료는 없다. 미등록 PC·시험·시뮬레이션은 켜져 있어도 기존 동작이다.
 
 관리자 PowerShell에서 바꾼 뒤 Label_Match를 정상 종료하고 다시 연다.
 
@@ -468,22 +468,36 @@ D-day 전까지 등록 PC에서도 현장의 옛 5단계 포장(현품표+제품
 [Environment]::GetEnvironmentVariable('KMTECH_LEGACY_LABEL_TRANSITION', 'Machine')         # 확인
 ```
 
-| 상태 | BND/ITG·PHS2 이력이 없는 옛 현품표(13자리·CLC QR) | PHS2·BND/ITG 현품표, 미등록 PC |
-| --- | --- | --- |
-| 켬 | 5단계와 F3 소량 완료를 레거시 표시 `LEGACY_TRANSITION_LOCAL_ONLY`의 로컬 완료로 기록한다. 포장 전송함·중앙 명령 없음, 취소도 로컬. 머리글에 `과도기 모드 — 옛 방식 포장 받음 · 오늘 N건`(이 PC의 오늘 레거시 완료, 취소 제외)이 늘 보인다 | 기존과 같음 |
-| 끔 | 현품표는 받아 원인을 바로 안내한다(`옛 방식 현품표 · 5단계 포장 불가`). 제품 스캔은 같은 원인으로 거부한다. F4 전체 재스캔은 기존과 같으며 새 현품표 QR 손상 시 실제 TRANSFER ID에만 쓴다. 그 밖에는 F1 취소 후 관리자 확인 | 기존과 같음 |
+켬이면 `TRAY_COMPLETE` detail 최상위에 Container_Audit와 같은 약속의 `transition_class`·`transition_reasons`(사유 코드 목록)·`transition_duplicate`를 붙인다. `PHS2_CENTRAL`만 기존 포장 전송함(원장) 흐름을 탄다. 나머지는 `package_logistics.status = TRANSITION_LOCAL_ONLY`의 로컬 완료이며 포장 전송함 행·operation lease·중앙 명령이 없고 취소도 로컬이다.
 
-검사는 v2.0.38(`f24a35c`)의 5단계와 같다: 13자리·Item.csv 등록, 제품의 현품표 코드 포함·길이, 세트 안·전체 중복, 최종 라벨 31자 이상·6D 생산일. 오늘 건수를 로그로 볼 때는 데이터 폴더(등록 PC 기본 `%LOCALAPPDATA%\KMTech\Label_Match\data`, 설정의 저장 위치가 있으면 그 폴더)에서 센다. 이 수는 나중에 취소된 세트(`TRAY_COMPLETION_CANCELLED`·`SET_DELETED` 행)도 포함한다.
+| 분류 | 언제 | 흐름 |
+| --- | --- | --- |
+| `LEGACY` | 새 시스템 키(TRF·BND·ITG·`SRC=KMTECH_INPUT_TAG`)가 없는 현품표: 13자리, 옛 QR(`PHS` 값만 있는 옛 단계 QR 포함) | 5단계·F3 소량 |
+| `PHS2_CENTRAL` | 정상 새 현품표이고 중앙 흐름(포장 전송함 등록)이 성공 | 기존과 같음 |
+| `PHS2_LOCAL` | 정상 새 현품표인데 중앙·엄격 검사가 막음: 첫 스캔 중앙 확인 실패(오프라인 등, 미제출 capture는 F1과 같은 방식으로 취소), 보류 현품표, 중복 현품표, F3 때 lease·전송함 거부, 새 현품표 세트의 F3 소량 | 첫 스캔에서 막히면 5단계로 계속, F3에서 막히면 그 세트를 로컬 완료 |
+| `PHS2_MALFORMED` | 새 시스템 키가 있는데 형식이 깨짐 | 5단계로 받고 사유와 원문(`scanned_product_barcodes[0]`)을 남김 |
+
+사유 코드: 공통 `PHS_MISSING`·`PHS_EMPTY`(빈 값)·`DUPLICATE_KEY`·`LINEAGE_MISSING`(BND/ITG 값 없음)·`DUPLICATE_LABEL`·`ITEM_UNCONFIRMED`(품목 코드 없음, 제품 품목 대조 불가). 기존 코드는 그대로 쓴다(`PHS2_FORMAT_INVALID`, `OPERATION_LEASE_*`, 중앙 확인의 `PACKAGE_TRANSPORT_UNAVAILABLE` 등, 허용 목록 밖은 `REASON_CODE_REDACTED`). LM 추가: `SEALED_QR_INVALID`, `PACKAGE_WORKBENCH_HOLD`, `LABEL_EXCHANGE_HOLD`, `PARTIAL_PACKAGE`, `PACKAGE_OUTBOX_UNAVAILABLE`, `PACKAGE_CENTRAL_PROFILE_UNAVAILABLE`, `PACKAGE_CENTRAL_BLOCKED`, `PACKAGE_NOT_CREATED`, 실패 세트 행의 `LABEL_MATCH_FAILED_OR_MISMATCH`.
+
+중복: 이미 완료된 같은 현품표를 다시 찍으면 막지 않고 경고한 뒤 `transition_duplicate=true`·`DUPLICATE_LABEL`로 기록한다. 새 현품표면 `PHS2_LOCAL`이라 원장에는 처음 한 번만 간다. 같은 세트의 완료 재시도(저장 확인 실패 뒤 `저장 재시도`)는 쓰기 대기열을 비운 뒤 이미 있는 `TRAY_COMPLETE` 행을 찾으면 새 행을 쓰지 않는다. 그래서 직접 동기화는 같은 파일의 같은 행·같은 내용(같은 detail·시각)을 다시 보낸다.
+
+끔은 base와 같다. 옛 현품표는 현품표를 받은 뒤 원인을 안내하고 제품 스캔을 거부한다(`옛 방식 현품표 · 5단계 포장 불가`). 계보가 깨져 완료가 거부될 새 모양 현품표(BND 빈 값·중복으로 유효 BND/ITG 없음)도 첫 제품 스캔에서 `[현품표 형식 오류]`로 거부한다. F4 전체 재스캔은 기존과 같으며 새 현품표 QR 손상 시 실제 TRANSFER ID에만 쓴다. 유효한 이적 봉인 QR을 시작 라벨로 찍으면 켬·끔 모두 기존처럼 원본 PHS2 현품표를 요구한다.
+
+검사는 5단계 세트(옛·로컬·형식 오류) 모두 v2.0.38(`f24a35c`)의 일반 5단계와 같다: 13자리·Item.csv 등록(옛 13자리), 제품의 현품표 코드 포함·길이, 세트 안·전체 중복, 최종 라벨 31자 이상·6D 생산일. 새 현품표 모양은 품목 코드(CLC)로 대조하며 없으면 `ITEM_UNCONFIRMED`로 받는다.
+
+화면: 켬이면 머리글에 `과도기 모드 — 옛 방식 포장 받음 · 오늘 옛 방식 N · 중앙 N · 로컬 N · 형식 오류 N · 중복 N`(이 PC의 오늘 통과 완료, 취소 제외, 자정에 다시 셈)이 늘 보인다. 로컬·형식 오류·중복 세트는 시작 때 경고 창을 띄운다. PC·날짜별 건수는 데이터 폴더(등록 PC 기본 `%LOCALAPPDATA%\KMTech\Label_Match\data`, 설정의 저장 위치가 있으면 그 폴더)의 이벤트 로그로 센다. 이 수는 나중에 취소된 세트(`TRAY_COMPLETION_CANCELLED`·`SET_DELETED` 행)와 실패 세트 행도 포함한다.
 
 ```powershell
 $d = Get-Date -Format yyyyMMdd
 Get-ChildItem "$env:LOCALAPPDATA\KMTech\Label_Match\data\포장실작업이벤트로그_*_$d.csv" |
   ForEach-Object { Import-Csv -LiteralPath $_.FullName -Encoding UTF8 } |
-  Where-Object { $_.event -eq 'TRAY_COMPLETE' -and $_.details -match 'LEGACY_TRANSITION_LOCAL_ONLY' } |
-  Measure-Object
+  Where-Object event -eq 'TRAY_COMPLETE' |
+  ForEach-Object { $_.details | ConvertFrom-Json } |
+  Where-Object transition_class |
+  Group-Object transition_class, transition_duplicate -NoElement
 ```
 
-서버 표시: 레거시 완료 행은 기존 relay·직접 동기화(HTTPS)로 올라가 공통 projection의 포장 세트(`packaging_set_projection`, 포장 완료→출고 증거 대기)로 보인다([C-05](contracts.md#c-05)). 포장·출고 원장과 포장 전송함에는 들어가지 않고 Syncthing·`C:\Sync`도 쓰지 않는다. 전송은 배경 작업이라 서버 거절·오프라인이어도 다음 세트는 막히지 않고 결과는 상태 파일에만 남는다. 서버 화면은 과도기 세트를 다른 레거시 세트와 구분하지 않는다. 과도기 세트는 새 원장 밖이므로 같은 제품이 새 체인에서 다시 계수될 수 있어 물리 분리와 나중의 바코드 대조가 필요하다([BACKLOG](BACKLOG.md#lm-w9-legacy-transition)).
+서버 표시: 완료 행은 기존 relay·직접 동기화(HTTPS)로 올라가 공통 projection의 포장 세트(`packaging_set_projection`)로 보인다([C-05](contracts.md#c-05)). Web e356a09는 detail 원문(분류 필드 포함)을 보존하지만 분류를 읽거나 따로 세지 않는다. LM 행은 파일·행 위치 신원(`LEGACY_FALLBACK`)이라 같은 행 재전송은 재생이고, 같은 세트가 다른 행·다른 내용으로 오면 `LEGACY_REPLAY_CONFLICT` 격리다. Syncthing·`C:\Sync`는 쓰지 않는다. 전송은 배경 작업이라 서버 거절·오프라인이어도 다음 세트는 막히지 않는다. 분류 집계·의도한 중복 완료 수용·사건 ID 승격은 Web 후속이며, 과도기 로컬 세트는 새 원장 밖이라 같은 제품이 새 체인에서 다시 계수될 수 있어 물리 분리와 나중의 바코드 대조가 필요하다([BACKLOG](BACKLOG.md#lm-w9-legacy-transition)).
 
 <a id="partial-registration-recovery"></a>
 ### 등록 중단으로 신원 파일 일부만 남은 PC

@@ -7,6 +7,7 @@ import traceback
 import carrier_identity_port as carrier_identity
 import label_history
 import label_completion
+import label_transition
 import label_workbench_context
 import label_workbench_history
 import label_workbench_activity
@@ -1623,8 +1624,11 @@ def _label_match_tray_complete_passed(details):
     return _label_match_tray_complete_result(details) == LABEL_MATCH_RESULT_PASS
 
 
-def _label_match_local_completion_event_exists(data_manager, set_id):
-    """Synchronize a matching TRAY_COMPLETE before reusing its completion."""
+def _label_match_local_completion_event_exists(data_manager, set_id, *, file_dates=None):
+    """Synchronize a matching TRAY_COMPLETE before reusing its completion.
+
+    ``file_dates`` (YYYYMMDD) limits the search to those daily files.
+    """
 
     identity = str(set_id or "").strip()
     save_directory = str(
@@ -1658,6 +1662,7 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
                 os.path.join(save_directory, name)
                 for name in os.listdir(save_directory)
                 if name.startswith(prefix) and name.lower().endswith(".csv")
+                and (file_dates is None or name[len(prefix):len(prefix) + 8] in file_dates)
             ]
         except OSError as exc:
             raise PackageLogisticsError("local completion CSV files could not be enumerated") from exc
@@ -1827,6 +1832,36 @@ LEGACY_LABEL_TRANSITION_OFF_REJECT = (
     + " 확인을 누른 뒤 새 현품표로 다시 시작하세요. 새 현품표 QR이 손상된 경우에만 "
     "현품표 스캔 직후 F4로 실제 TRANSFER ID를 스캔하고, 그 밖에는 관리자에게 알리세요."
 )
+LEGACY_LABEL_TRANSITION_MALFORMED_OFF_REJECT = (
+    "이 현품표는 새 현품표 모양이지만 계보(BND/ITG) 형식이 올바르지 않습니다. "
+    "과도기 모드가 꺼져 있어 이 PC에서는 제품을 이어서 스캔할 수 없습니다. "
+    "확인을 누른 뒤 이 현품표를 관리자에게 전달하세요."
+)
+# Operator names of the transition classes (banner counts, notices).
+LABEL_TRANSITION_CLASS_NAMES = {
+    label_transition.LEGACY: "옛 방식",
+    label_transition.PHS2_CENTRAL: "중앙",
+    label_transition.PHS2_LOCAL: "로컬",
+    label_transition.PHS2_MALFORMED: "형식 오류",
+}
+LABEL_TRANSITION_LOCAL_NOTICES = {
+    label_transition.PHS2_MALFORMED: (
+        "현품표 형식 오류 · 과도기 기록",
+        "새 현품표 모양이지만 형식이 올바르지 않습니다. 과도기 모드라 막지 않고 "
+        "'형식 오류'로 따로 기록합니다. 제품 3개와 최종 라벨을 스캔하세요. "
+        "포장 원장에는 들어가지 않습니다.",
+    ),
+    label_transition.PHS2_LOCAL: (
+        "중앙 확인 불가 · 과도기 로컬 기록",
+        "중앙 확인이 막혀 이 세트는 '로컬'로 따로 기록합니다. 제품 3개와 최종 "
+        "라벨을 스캔하세요. 포장 원장에는 들어가지 않습니다.",
+    ),
+    "DUPLICATE": (
+        "중복 현품표 · 과도기 기록",
+        "이미 처리된 현품표입니다. 과도기 모드라 막지 않고 '중복'으로 기록합니다. "
+        "포장 원장에는 처음 한 번만 반영됩니다. 실물이 두 번 포장되지 않았는지 확인하세요.",
+    ),
+}
 # Completion refusals decided by packaging policy, not by local storage.  The
 # prefixes are the stable messages raised by label_completion.
 LABEL_MATCH_PACKAGE_POLICY_BLOCKS = (
@@ -1879,6 +1914,19 @@ def _label_match_package_policy_block_code(error):
             "",
         )
     return code if code in LABEL_MATCH_PACKAGE_POLICY_NOTICES else ""
+
+
+def _label_match_transition_reason(error):
+    """Stable code of a central or strict refusal kept as a PHS2_LOCAL set."""
+
+    text = str(error)
+    for prefix, code in (
+        *LABEL_MATCH_PACKAGE_POLICY_BLOCKS,
+        ("durable package outbox is unavailable", "PACKAGE_OUTBOX_UNAVAILABLE"),
+    ):
+        if text.startswith(prefix):
+            return code
+    return str(getattr(error, "code", "") or "PACKAGE_CENTRAL_BLOCKED")
 
 
 def _label_match_capture_current_set(current_set_info):
@@ -4615,6 +4663,8 @@ class Label_Match(tk.Tk):
 
     def _central_inherit_all_active(self):
         current = self.__dict__.get("current_set_info", {}) or {}
+        if current.get("transition_class") in label_transition.LOCAL_CLASSES:
+            return False  # A transition local set is always the five-scan flow.
         if current.get("central_inherit_all"):
             return True
         if current.get("exact_rescan_active") or current.get("exact_rescan_complete"):
@@ -4634,6 +4684,8 @@ class Label_Match(tk.Tk):
             if isinstance(source, dict)
             else self.__dict__.get("current_set_info", {}) or {}
         )
+        if current.get("transition_class") in label_transition.LOCAL_CLASSES:
+            return False
         if current.get("central_inherit_all"):
             return True
         raw = list(current.get("raw") or [])
@@ -4648,23 +4700,123 @@ class Label_Match(tk.Tk):
         )
 
     def _legacy_label_needs_transition(self):
-        """Whether this registered PC, with the transition switch off, cannot
-        finish the current set because its label has no lineage.
+        """Why this registered PC, with the transition switch off, cannot
+        finish the current set: "legacy" (a label without lineage),
+        "malformed" (broken lineage the completion would refuse) or "".
 
         Tests and simulations keep the base flow, as the completion gate does.
         """
 
         state = self.__dict__
-        return bool(
-            not state.get("run_tests", False)
-            and not state.get("is_running_simulation", False)
-            and not state.get("_legacy_label_transition_enabled", False)
-            and label_completion._registered_legacy_label(
-                self,
-                state.get("current_set_info") or {},
-                _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
-                _label_match_parse_new_format_fields=_label_match_parse_new_format_fields,
+        if (
+            state.get("run_tests", False)
+            or state.get("is_running_simulation", False)
+            or state.get("_legacy_label_transition_enabled", False)
+        ):
+            return ""
+        current = state.get("current_set_info") or {}
+        shape, _reasons = label_completion._registered_label_shape(
+            self,
+            current,
+            _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
+        )
+        if shape == label_transition.SHAPE_LEGACY:
+            return "legacy"
+        fields = _label_match_parse_new_format_fields(
+            (current.get("raw") or [""])[0]
+        ) or {}
+        if shape == label_transition.SHAPE_MALFORMED and not (
+            str(fields.get("BND") or "").strip()
+            or str(fields.get("ITG") or "").strip()
+        ):
+            return "malformed"
+        return ""
+
+    def _transition_mode_active(self):
+        return label_completion._transition_active(self)
+
+    def _announce_transition_set(self, kind):
+        title, message = LABEL_TRANSITION_LOCAL_NOTICES[kind]
+        self._transition_last_notice = (title, message)
+        if not self.__dict__.get("run_tests", False):
+            messagebox.showwarning(title, message, parent=self)
+
+    def _transition_start_local(
+        self,
+        raw_input,
+        item_code,
+        transition_class,
+        reasons=(),
+        *,
+        duplicate=False,
+        phase=None,
+        item_name_override=None,
+    ):
+        """Start a five-scan set that completes locally in its transition class."""
+
+        self.current_set_info["phase"] = phase
+        self.current_set_info["item_name_override"] = item_name_override
+        self.current_set_info.update(
+            label_transition.fields(transition_class, reasons, duplicate)
+        )
+        self._update_on_success_scan(raw_input, item_code)
+        if duplicate:
+            self._announce_transition_set("DUPLICATE")
+        elif transition_class in LABEL_TRANSITION_LOCAL_NOTICES:
+            self._announce_transition_set(transition_class)
+        return True
+
+    def _show_phs2_lookup_outcome(self, outcome, physical_qr_payload, item_code, show):
+        if not self._transition_accept_blocked_phs2(
+            outcome, physical_qr_payload, item_code,
+        ):
+            show(outcome)
+
+    def _transition_accept_blocked_phs2(self, outcome, physical_qr_payload, item_code):
+        """With the switch on, keep a PHS2 whose central check did not pass.
+
+        The unsubmitted capture is cancelled exactly as F1 would, then the
+        label starts a local five-scan set.  Anything not safely cancellable
+        keeps the base screen.
+        """
+
+        if outcome is None or not self._transition_mode_active():
+            return False
+        state = str(getattr(outcome, "state", "") or "")
+        if state in {"VALIDATED", "CAPTURED_UNVERIFIED", "VALIDATING"}:
+            return False
+        current = self.__dict__.get("current_set_info") or {}
+        if list(current.get("raw") or []):
+            return False
+        physical_qr = str(physical_qr_payload or "").strip()
+        try:
+            if str(current.get("deferred_intent_id") or "").strip():
+                self._cancel_deferred_capture_for_set(
+                    {**current, "physical_scanned_qr_payload": physical_qr}
+                )
+        except Exception as error:
+            print(
+                "PHS2 transition local fallback kept the base screen: "
+                f"{getattr(error, 'code', error.__class__.__name__)}"
             )
+            return False
+        current.pop("deferred_intent_id", None)
+        self._deferred_capture_ui = None
+        reason = (
+            operator_safe_reason_code(getattr(outcome, "reason_code", ""))
+            or str(getattr(outcome, "code", "") or "")
+            or str(getattr(outcome, "safe_operator_code", "") or "")
+            or state
+            or "PHS2_CENTRAL_UNAVAILABLE"
+        )
+        fields = _label_match_display_fields(physical_qr)
+        return self._transition_start_local(
+            physical_qr,
+            item_code,
+            label_transition.PHS2_LOCAL,
+            [reason],
+            phase=fields.get("PHS"),
+            item_name_override=fields.get("SPC") or current.get("item_name_override"),
         )
 
     def _operator_workflow_hint_text(self, source=None):
@@ -7505,7 +7657,7 @@ class Label_Match(tk.Tk):
         saved = copy.deepcopy(dict(saved_set_info or {}))
         raw = list(saved.get("raw") or [])
         parsed = list(saved.get("parsed") or [])
-        if not raw:
+        if not raw or saved.get("transition_class") in label_transition.LOCAL_CLASSES:
             return saved
         central = bool(saved.get("central_inherit_all"))
         if not central:
@@ -10330,6 +10482,8 @@ class Label_Match(tk.Tk):
                 and _label_match_has_central_source_identity(
                     (saved_set_info.get("raw") or [""])[0]
                 )
+                and saved_set_info.get("transition_class")
+                not in label_transition.LOCAL_CLASSES
             )
         )
         try:
@@ -12724,7 +12878,10 @@ class Label_Match(tk.Tk):
             if isinstance(materialization, dict):
                 self._deferred_label_materialization = materialization
             if not self._materialize_validated_deferred_label(result):
-                self._show_deferred_validation_result(result)
+                self._show_phs2_lookup_outcome(
+                    result, physical_qr_payload, item_code,
+                    self._show_deferred_validation_result,
+                )
             self._render_operator_workbench()
 
         def fail(error):
@@ -12735,13 +12892,19 @@ class Label_Match(tk.Tk):
             )
             capture_result = work_state.get("capture_result")
             if capture_result is None:
-                self._show_deferred_capture_failure(error)
+                self._show_phs2_lookup_outcome(
+                    error, physical_qr_payload, item_code,
+                    self._show_deferred_capture_failure,
+                )
             else:
                 durable = self.deferred_intent_capture.validation_status(
                     capture_result.intent_id
                 )
                 if durable is not None:
-                    self._show_deferred_validation_result(durable)
+                    self._show_phs2_lookup_outcome(
+                        durable, physical_qr_payload, item_code,
+                        self._show_deferred_validation_result,
+                    )
                 else:
                     self._show_deferred_capture_pending(capture_result)
             self._render_operator_workbench()
@@ -12815,7 +12978,10 @@ class Label_Match(tk.Tk):
                 "PHS2 deferred-intent capture technical diagnostic: "
                 f"{getattr(exc, 'code', exc.__class__.__name__)}"
             )
-            self._show_deferred_capture_failure(exc)
+            self._show_phs2_lookup_outcome(
+                exc, physical_qr_payload, item_code,
+                self._show_deferred_capture_failure,
+            )
             return True
         try:
             validation_work = self._prepare_deferred_label_validation(
@@ -12830,12 +12996,18 @@ class Label_Match(tk.Tk):
                 capture_result.intent_id
             )
             if durable is not None:
-                self._show_deferred_validation_result(durable)
+                self._show_phs2_lookup_outcome(
+                    durable, physical_qr_payload, item_code,
+                    self._show_deferred_validation_result,
+                )
             else:
                 self._show_deferred_capture_pending(capture_result)
             return True
         if isinstance(validation_work, DeferredValidationResult):
-            self._show_deferred_validation_result(validation_work)
+            self._show_phs2_lookup_outcome(
+                validation_work, physical_qr_payload, item_code,
+                self._show_deferred_validation_result,
+            )
             self._render_operator_workbench()
             return True
         if not isinstance(validation_work, DeferredValidationClaim):
@@ -12903,11 +13075,17 @@ class Label_Match(tk.Tk):
                 durable = self.deferred_intent_capture.validation_status(
                     capture_result.intent_id
                 )
-                self._show_deferred_validation_result(durable)
+                self._show_phs2_lookup_outcome(
+                    durable, physical_qr_payload, item_code,
+                    self._show_deferred_validation_result,
+                )
                 self._render_operator_workbench()
                 return
             if not self._materialize_validated_deferred_label(value):
-                self._show_deferred_validation_result(value)
+                self._show_phs2_lookup_outcome(
+                    value, physical_qr_payload, item_code,
+                    self._show_deferred_validation_result,
+                )
             self._render_operator_workbench()
 
         threading.Thread(
@@ -13014,6 +13192,35 @@ class Label_Match(tk.Tk):
                 pass
 
         if scan_pos == 1:
+            transition_shape = ""
+            if self._transition_mode_active():
+                transition_shape, transition_reasons, transition_item = (
+                    label_transition.classify_start_label(
+                        processed_input,
+                        parse_sealed=_label_match_parse_sealed_transfer_qr,
+                    )
+                )
+                if transition_shape == label_transition.SHAPE_MALFORMED:
+                    # Accepted, never mixed with LEGACY: its own class, reasons
+                    # and the raw label (scanned_product_barcodes[0]).
+                    consume_input()
+                    display = _label_match_display_fields(processed_input)
+                    duplicate = bool(
+                        (
+                            _label_match_unique_master_index_keys(raw_input)
+                            | _label_match_unique_master_index_keys(processed_input)
+                        )
+                        & self.global_scanned_set
+                    )
+                    return self._transition_start_local(
+                        raw_input,
+                        transition_item,
+                        label_transition.PHS2_MALFORMED,
+                        [*transition_reasons, *(["DUPLICATE_LABEL"] if duplicate else [])],
+                        duplicate=duplicate,
+                        phase=display.get("PHS"),
+                        item_name_override=display.get("SPC"),
+                    )
             try:
                 transfer_label_data = _label_match_parse_sealed_transfer_qr(processed_input)
             except ValueError as exc:
@@ -13074,6 +13281,15 @@ class Label_Match(tk.Tk):
                     return
                 if held or label_hold:
                     consume_input()
+                    if self._transition_mode_active():
+                        return self._transition_start_local(
+                            raw_input,
+                            str(new_label_data.get("CLC") or ""),
+                            label_transition.PHS2_LOCAL,
+                            ["PACKAGE_WORKBENCH_HOLD" if held else "LABEL_EXCHANGE_HOLD"],
+                            phase=new_label_data.get("PHS"),
+                            item_name_override=new_label_data.get("SPC"),
+                        )
                     if not self.run_tests:
                         messagebox.showwarning(
                             "보류 현품표", "이 현품표는 이전 요청의 결과 확인을 위해 보류 중입니다. "
@@ -13100,6 +13316,21 @@ class Label_Match(tk.Tk):
                 duplicate_keys = _label_match_unique_master_index_keys(raw_input)
                 duplicate_keys.update(_label_match_unique_master_index_keys(processed_input))
                 if not reusable_input_master and duplicate_keys & self.global_scanned_set:
+                    if self._transition_mode_active():
+                        # Warn and record; only the first completion reaches
+                        # the package ledger, so a new label stays local.
+                        consume_input()
+                        return self._transition_start_local(
+                            raw_input,
+                            str(new_label_data.get("CLC") or ""),
+                            label_transition.LEGACY
+                            if transition_shape == label_transition.SHAPE_LEGACY
+                            else label_transition.PHS2_LOCAL,
+                            ["DUPLICATE_LABEL"],
+                            duplicate=True,
+                            phase=new_label_data.get("PHS"),
+                            item_name_override=new_label_data.get("SPC"),
+                        )
                     self._handle_input_error(
                         raw_input,
                         title="[현품표 중복 스캔]",
@@ -13180,11 +13411,20 @@ class Label_Match(tk.Tk):
                         messagebox.showwarning("입력 형식 오류", "테스트 코드 형식이 올바르지 않습니다.\n(예: TEST_LOG_100)")
                     return
 
-            if self._legacy_label_needs_transition():
+            label_block = self._legacy_label_needs_transition()
+            if label_block:
                 self._handle_input_error(
                     raw_input,
-                    title="[옛 방식 포장 불가]",
-                    reason=LEGACY_LABEL_TRANSITION_OFF_REJECT,
+                    title=(
+                        "[옛 방식 포장 불가]"
+                        if label_block == "legacy"
+                        else "[현품표 형식 오류]"
+                    ),
+                    reason=(
+                        LEGACY_LABEL_TRANSITION_OFF_REJECT
+                        if label_block == "legacy"
+                        else LEGACY_LABEL_TRANSITION_MALFORMED_OFF_REJECT
+                    ),
                 )
                 return
 
@@ -16029,6 +16269,8 @@ class Label_Match(tk.Tk):
             _clock=lambda: datetime,
             _timezone=lambda: timezone,
             _restore_draft=lambda data: PackageCommandDraft.from_dict(data),
+            _transition_errors=(PackageLogisticsError, OperationLeaseError),
+            _transition_reason=lambda error: _label_match_transition_reason(error),
         )
 
     @staticmethod
@@ -16061,7 +16303,7 @@ class Label_Match(tk.Tk):
                         and status
                         not in {
                             "LEGACY_DIRECT_SYNC_ONLY",
-                            label_completion.LEGACY_TRANSITION_LOCAL_ONLY,
+                            label_transition.LOCAL_ONLY_STATUS,
                             "LOCAL_ONLY",
                         }
                     ):
@@ -16285,8 +16527,9 @@ class Label_Match(tk.Tk):
             set_id_for_log=set_id_for_log,
             current_snapshot=current_snapshot,
             deepcopy=lambda value: copy.deepcopy(value),
-            _label_match_local_completion_event_exists=lambda *args: _label_match_local_completion_event_exists(*args),
+            _label_match_local_completion_event_exists=lambda *args, **kwargs: _label_match_local_completion_event_exists(*args, **kwargs),
             PackageLogisticsError=lambda *args: PackageLogisticsError(*args),
+            _label_match_parse_sealed_transfer_qr=lambda raw: _label_match_parse_sealed_transfer_qr(raw),
         )
 
     def _apply_ui_lane_completion_snapshot(self, snapshot):
@@ -16531,6 +16774,9 @@ class Label_Match(tk.Tk):
                 "CONFLICT": "중앙 충돌 · 관리자 확인",
             }.get(str(package_logistics.get("status") or "").upper(), "중앙 전송 대기")
             saved_text = f"로컬 완료 저장됨 · {central_text}"
+        transition_name = LABEL_TRANSITION_CLASS_NAMES.get(details.get("transition_class"))
+        if transition_name and details["transition_class"] != label_transition.PHS2_CENTRAL:
+            saved_text = f"기록됨 · 과도기 {transition_name}(원장 제외)"
         self.save_status_label.config(text=f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
@@ -19765,7 +20011,7 @@ class Label_Match(tk.Tk):
             ),
             has_error=bool(self.__dict__.get("_pending_workflow_error")),
             error_message=str(self.__dict__.get("_workflow_error_message") or ""),
-            legacy_label_blocked=self._legacy_label_needs_transition(),
+            legacy_label_blocked=self._legacy_label_needs_transition() == "legacy",
         )
         view = present_workflow(snapshot)
         self._last_workflow_view = view
@@ -20785,6 +21031,11 @@ class Label_Match(tk.Tk):
             return
         if self.initialized_successfully:
             self.clock_label.config(text=time.strftime('%Y-%m-%d %H:%M:%S'))
+            if self.__dict__.get("_legacy_transition_banner_date") not in (
+                None,
+                datetime.now().date(),
+            ):
+                self._render_legacy_transition_banner()  # "오늘" starts again at midnight.
         self._clock_after_id = self.after(1000, self._update_clock)
     def update_big_display(self, text, color=""):
         fg_color = self.colors.get("text_strong", "#000000")
@@ -20809,7 +21060,7 @@ class Label_Match(tk.Tk):
         self._render_legacy_transition_banner()
 
     def _render_legacy_transition_banner(self):
-        """Keep the transition switch and today's legacy set count on screen."""
+        """Keep the transition switch and today's per-class counts on screen."""
 
         label = self.__dict__.get("legacy_transition_label")
         if label is None:
@@ -20819,22 +21070,29 @@ class Label_Match(tk.Tk):
                 label.grid_remove()
                 return
             today = datetime.now().date()
-            count = 0
+            counts = dict.fromkeys(label_transition.CLASSES, 0)
+            duplicates = 0
             for details in (self.__dict__.get("set_details_map") or {}).values():
-                logistics = (details or {}).get("package_logistics")
-                if (
-                    not isinstance(logistics, dict)
-                    or logistics.get("status")
-                    != label_completion.LEGACY_TRANSITION_LOCAL_ONLY
-                ):
+                details = details or {}
+                transition_class = details.get("transition_class")
+                if transition_class not in counts:
                     continue
                 try:
-                    if _label_match_parse_datetime(details.get("end_time")).date() == today:
-                        count += 1
+                    if _label_match_parse_datetime(details.get("end_time")).date() != today:
+                        continue
                 except (TypeError, ValueError):
                     continue
-            label.configure(text=f"{LEGACY_LABEL_TRANSITION_BANNER} · 오늘 {count}건")
+                counts[transition_class] += 1
+                duplicates += bool(details.get("transition_duplicate"))
+            summary = " · ".join(
+                f"{LABEL_TRANSITION_CLASS_NAMES[name]} {count}"
+                for name, count in counts.items()
+            )
+            label.configure(
+                text=f"{LEGACY_LABEL_TRANSITION_BANNER} · 오늘 {summary} · 중복 {duplicates}"
+            )
             label.grid()
+            self._legacy_transition_banner_date = today
         except (TclError, AttributeError):
             pass
 

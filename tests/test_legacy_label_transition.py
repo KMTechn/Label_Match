@@ -1,4 +1,4 @@
-"""Administrator transition mode for legacy five-scan sets on a registered PC.
+"""Administrator transition mode: every set is accepted and classified.
 
 Local storage (event CSV, package outbox) is real; the central client may only
 expose its read-only config, so any central call fails the test.
@@ -11,7 +11,7 @@ import sys
 import threading
 from collections import defaultdict
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,9 +20,11 @@ import pytest
 from package_logistics import PackageOutbox
 from tests.test_label_match_core import (
     _B1_KEY,
+    _B1_RAW,
     _b1_app,
     _b1_assert_completion,
     _b1_close,
+    _b1_rows,
     _FakeEntry,
     _FakeHistoryTree,
     _FakeLabel,
@@ -33,17 +35,28 @@ from tests.test_label_operator_action_gates import FakeWidget, _render_app
 
 MASTER = "AAA2270730100"
 TODAY = datetime.now().strftime("%Y%m%d")
-LEGACY_STATUS = "LEGACY_TRANSITION_LOCAL_ONLY"
+LOCAL_STATUS = "TRANSITION_LOCAL_ONLY"
+OLD_QR = f"CLC={MASTER}|SPC=과도기 품목|PHS=1"
+BND_LABEL = f"CLC={MASTER}|SPC=구조화 품목|PHS=1|BND=TRANSFER-BND-1"
+PHS2_LABEL = (
+    f"PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-OFF-1|CLC={MASTER}|LBL=LBL-OFF-1|HSH=0123456789abcdef"
+)
 
 
-def _legacy_set(number):
+def _legacy_set(number, master=MASTER):
     return [
-        MASTER,
+        master,
         f"{MASTER}-P{number}-1",
         f"{MASTER}-P{number}-2",
         f"{MASTER}-P{number}-3",
         f"{MASTER}-FINAL-LABEL-{number:04d}<GS>6D{TODAY}",
     ]
+
+
+def _transition(details):
+    return {key: details.get(key) for key in (
+        "transition_class", "transition_reasons", "transition_duplicate",
+    )}
 
 
 class _CentralClientMustNotBeCalled:
@@ -119,6 +132,11 @@ def _packaging_app(module, tmp_path, monkeypatch, *, registered, transition):
     )
     app.blocks = []
     app._publish_durable_commit_block = lambda error, **k: app.blocks.append(error) or False
+    app.warnings = []
+    monkeypatch.setattr(
+        module.messagebox, "showwarning",
+        lambda title, message, **k: app.warnings.append((title, message)),
+    )
 
     def idle():
         app.current_set_info = _fresh_set()
@@ -196,6 +214,42 @@ def test_switch_reads_only_the_machine_environment_value_one(monkeypatch):
     assert legacy_label_transition_enabled(lambda requested: "") is False
 
 
+def test_start_label_classes_keep_new_system_keys_apart_from_legacy():
+    import label_transition
+
+    module = load_label_match_module()
+
+    def classify(raw):
+        return label_transition.classify_start_label(
+            raw, parse_sealed=module._label_match_parse_sealed_transfer_qr,
+        )
+
+    assert classify(MASTER) == ("LEGACY", (), "")
+    assert classify(OLD_QR)[:2] == ("LEGACY", ())
+    # An old phase QR (PHS=2 without any new-system key) stays legacy.
+    assert classify(f"CLC={MASTER}|SPC=옛 품목|PHS=2")[:2] == ("LEGACY", ())
+    assert classify(PHS2_LABEL) == ("PHS2", (), MASTER)
+    assert classify(BND_LABEL) == ("STRUCTURED", (), MASTER)
+    cases = {
+        f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=": ("DUPLICATE_KEY", "PHS_EMPTY"),
+        f"CLC={MASTER}|SPC=Product|PHS=1|BND=": ("PHS_EMPTY", "LINEAGE_MISSING"),
+        f"CLC={MASTER}|SPC=Product|BND=TRANSFER-REAL-1": ("PHS_MISSING",),
+        PHS2_LABEL.replace("HSH=0123456789abcdef", "HSH=0123"): ("PHS2_FORMAT_INVALID",),
+        PHS2_LABEL.replace("PHS=2|", ""): ("PHS_MISSING", "PHS2_FORMAT_INVALID"),
+        PHS2_LABEL.replace("ITG=ITG-OFF-1", "ITG="): ("PHS_EMPTY", "LINEAGE_MISSING", "PHS2_FORMAT_INVALID"),
+        PHS2_LABEL.replace(f"CLC={MASTER}|", ""): ("PHS2_FORMAT_INVALID", "ITEM_UNCONFIRMED"),
+        f"TRF=1|BND=TRANSFER-1|CLC={MASTER}|QT=4": ("SEALED_QR_INVALID",),
+    }
+    for raw, reasons in cases.items():
+        assert classify(raw)[:2] == ("MALFORMED", reasons), raw
+    assert classify(f"TRF=1|BND=TRANSFER-1|CLC={MASTER}|QT=4")[2] == MASTER
+    assert label_transition.fields("PHS2_LOCAL", ["a b", "OK_CODE", "OK_CODE"], 1) == {
+        "transition_class": "PHS2_LOCAL",
+        "transition_reasons": ["REASON_CODE_REDACTED", "OK_CODE"],
+        "transition_duplicate": True,
+    }
+
+
 def test_on_registered_five_scan_set_completes_locally_without_outbox(tmp_path, monkeypatch):
     module = load_label_match_module()
     app, syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
@@ -205,10 +259,13 @@ def test_on_registered_five_scan_set_completes_locally_without_outbox(tmp_path, 
     finally:
         _close(app)
 
-    assert app.blocks == [] and app.errors == []
+    assert app.blocks == [] and app.errors == [] and app.warnings == []
     [(row, details)] = _events(tmp_path, "TRAY_COMPLETE")
     assert details["package_logistics"] == {
-        "status": LEGACY_STATUS, "sample_barcodes_are_membership": False,
+        "status": LOCAL_STATUS, "sample_barcodes_are_membership": False,
+    }
+    assert _transition(details) == {
+        "transition_class": "LEGACY", "transition_reasons": [], "transition_duplicate": False,
     }
     assert details["scanned_product_barcodes"] == _legacy_set(1)
     assert details["final_result"] == "통과" and details["scan_count"] == 5
@@ -217,6 +274,7 @@ def test_on_registered_five_scan_set_completes_locally_without_outbox(tmp_path, 
     assert _outbox_rows(tmp_path) == []
     assert syncs == ["TRAY_COMPLETE"]
     assert app.current_set_info["raw"] == []
+    assert app.save_status_label.kwargs["text"].startswith("✓ 기록됨 · 과도기 옛 방식(원장 제외)")
 
 
 def test_on_registered_partial_f3_completes_locally_without_outbox(tmp_path, monkeypatch):
@@ -226,14 +284,23 @@ def test_on_registered_partial_f3_completes_locally_without_outbox(tmp_path, mon
         for value in _legacy_set(2)[:3]:
             _scan(module, app, value)
         module.Label_Match._finalize_set(app, app.Results.PASS, is_manual_complete=True)
+        for value in [BND_LABEL, *_legacy_set(12)[1:3]]:
+            _scan(module, app, value)
+        module.Label_Match._finalize_set(app, app.Results.PASS, is_manual_complete=True)
     finally:
         _close(app)
 
     assert app.blocks == []
-    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
-    assert details["package_logistics"]["status"] == LEGACY_STATUS
-    assert details["is_partial_submission"] is True
-    assert details["packaging_set_count"] == 0
+    [(_row, legacy), (_row2, structured)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert legacy["package_logistics"]["status"] == LOCAL_STATUS
+    assert legacy["transition_class"] == "LEGACY"
+    assert legacy["is_partial_submission"] is True
+    assert legacy["packaging_set_count"] == 0
+    assert structured["package_logistics"]["status"] == LOCAL_STATUS
+    assert _transition(structured) == {
+        "transition_class": "PHS2_LOCAL", "transition_reasons": ["PARTIAL_PACKAGE"],
+        "transition_duplicate": False,
+    }
     assert _outbox_rows(tmp_path) == []
 
 
@@ -260,11 +327,14 @@ def test_on_legacy_completion_cancels_locally(tmp_path, monkeypatch):
     assert _outbox_rows(tmp_path) == []
 
 
-def test_on_legacy_completion_survives_restart_with_banner_count(tmp_path, monkeypatch):
+def test_on_completion_classes_survive_restart_and_banner_counts_them(tmp_path, monkeypatch):
     module = load_label_match_module()
     app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    malformed = f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND="
     try:
         for value in _legacy_set(4):
+            _scan(module, app, value)
+        for value in [malformed, *_legacy_set(13)[1:]]:
             _scan(module, app, value)
     finally:
         _close(app)
@@ -276,16 +346,36 @@ def test_on_legacy_completion_survives_restart_with_banner_count(tmp_path, monke
     results = __import__("queue").Queue()
     module.Label_Match._async_load_history_task(restarted, results)
     loaded = results.get_nowait()
-    [details] = loaded["set_details_map"].values()
-    assert details["package_logistics"]["status"] == LEGACY_STATUS
+    classes = sorted(
+        (details["transition_class"], tuple(details["transition_reasons"]))
+        for details in loaded["set_details_map"].values()
+    )
+    assert classes == [("LEGACY", ()), ("PHS2_MALFORMED", ("DUPLICATE_KEY", "PHS_EMPTY"))]
     assert set(_legacy_set(4)[1:]) <= loaded["global_scanned_set"]
 
     restarted.set_details_map = loaded["set_details_map"]
     restarted.legacy_transition_label = FakeWidget()
     restarted._legacy_label_transition_enabled = True
     restarted._render_legacy_transition_banner()
-    assert restarted.legacy_transition_label.options["text"] == "과도기 모드 — 옛 방식 포장 받음 · 오늘 1건"
+    assert restarted.legacy_transition_label.options["text"] == (
+        "과도기 모드 — 옛 방식 포장 받음 · 오늘 옛 방식 1 · 중앙 0 · 로컬 0 · 형식 오류 1 · 중복 0"
+    )
     assert restarted.legacy_transition_label.mapped is True
+
+    class Tomorrow(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=1)
+
+    monkeypatch.setattr(module, "datetime", Tomorrow)
+    restarted.winfo_exists = lambda: True
+    restarted.initialized_successfully = True
+    restarted.clock_label = FakeWidget()
+    restarted.after = lambda *a: None
+    restarted._update_clock()  # the per-second clock starts "오늘" again at midnight
+    assert restarted.legacy_transition_label.options["text"].endswith(
+        "오늘 옛 방식 0 · 중앙 0 · 로컬 0 · 형식 오류 0 · 중복 0"
+    )
     restarted._legacy_label_transition_enabled = False
     restarted._render_legacy_transition_banner()
     assert restarted.legacy_transition_label.mapped is False
@@ -331,6 +421,353 @@ def test_on_server_rejection_or_offline_never_blocks_the_next_set(tmp_path, monk
     assert app.blocks == [] and app.errors == []
     assert len(_events(tmp_path, "TRAY_COMPLETE")) == 2
     assert _outbox_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("malformed", [
+    f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=",
+    f"CLC={MASTER}|SPC=Product|PHS=1|BND=",
+])
+def test_on_damaged_bnd_label_is_malformed_not_legacy(tmp_path, monkeypatch, malformed):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in [malformed, *_legacy_set(14)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert app.blocks == [] and app.errors == []
+    assert [title for title, _message in app.warnings] == ["현품표 형식 오류 · 과도기 기록"]
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["transition_class"] == "PHS2_MALFORMED"
+    assert "LINEAGE_MISSING" in details["transition_reasons"] or (
+        "DUPLICATE_KEY" in details["transition_reasons"]
+    )
+    assert details["scanned_product_barcodes"][0] == malformed  # the raw label value
+    assert details["package_logistics"]["status"] == LOCAL_STATUS
+    assert _outbox_rows(tmp_path) == []
+
+
+def test_off_damaged_bnd_label_is_refused_at_first_product_as_malformed(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=False)
+    malformed = f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND="
+    try:
+        _scan(module, app, malformed)
+        _scan(module, app, f"{MASTER}-P15-1")
+    finally:
+        _close(app)
+
+    [(title, message)] = app.errors
+    assert title == "[현품표 형식 오류]"
+    assert "옛 방식" not in message and "디스크" not in message and "관리자" in message
+    assert _events(tmp_path, "TRAY_COMPLETE") == []
+
+
+@pytest.mark.parametrize("transition", [False, True])
+def test_malformed_phs2_label_is_classified_on_and_refused_off(tmp_path, monkeypatch, transition):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(
+        module, tmp_path, monkeypatch, registered=True, transition=transition,
+    )
+    damaged = PHS2_LABEL.replace("HSH=0123456789abcdef", "HSH=0123")
+    try:
+        for value in [damaged, *_legacy_set(16)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    if not transition:
+        assert app.errors[0][0] == "[PHS2 현품표 오류]"  # base first-scan refusal
+        assert _events(tmp_path, "TRAY_COMPLETE") == []
+        return
+    assert app.errors == [] and app.blocks == []
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert _transition(details) == {
+        "transition_class": "PHS2_MALFORMED", "transition_reasons": ["PHS2_FORMAT_INVALID"],
+        "transition_duplicate": False,
+    }
+    assert details["scan_count"] == 5 and details["scanned_product_barcodes"][0] == damaged
+    assert _outbox_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("transition", [False, True])
+def test_duplicate_label_is_warned_and_reaches_the_ledger_once(tmp_path, monkeypatch, transition):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(
+        module, tmp_path, monkeypatch, registered=True, transition=transition,
+    )
+    try:
+        for value in [BND_LABEL, *_legacy_set(17)[1:]]:
+            _scan(module, app, value)
+        for value in [BND_LABEL, *_legacy_set(18)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert len(_outbox_rows(tmp_path)) == 1  # the package ledger sees the label once
+    completions = [details for _row, details in _events(tmp_path, "TRAY_COMPLETE")]
+    if not transition:
+        assert app.errors[0][0] == "[현품표 중복 스캔]"
+        assert len(completions) == 1 and "transition_class" not in completions[0]
+        return
+    assert app.errors == [] and app.blocks == []
+    assert [title for title, _message in app.warnings] == ["중복 현품표 · 과도기 기록"]
+    assert [_transition(details) for details in completions] == [
+        {"transition_class": "PHS2_CENTRAL", "transition_reasons": [], "transition_duplicate": False},
+        {"transition_class": "PHS2_LOCAL", "transition_reasons": ["DUPLICATE_LABEL"],
+         "transition_duplicate": True},
+    ]
+    assert completions[1]["package_logistics"]["status"] == LOCAL_STATUS
+
+
+def test_on_duplicate_old_qr_label_stays_legacy_with_duplicate_mark(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for number in (19, 20):
+            for value in [OLD_QR, *_legacy_set(number)[1:]]:
+                _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert [_transition(details) for _row, details in _events(tmp_path, "TRAY_COMPLETE")] == [
+        {"transition_class": "LEGACY", "transition_reasons": [], "transition_duplicate": False},
+        {"transition_class": "LEGACY", "transition_reasons": ["DUPLICATE_LABEL"],
+         "transition_duplicate": True},
+    ]
+    assert _outbox_rows(tmp_path) == []
+
+
+def test_on_duplicate_malformed_label_keeps_its_class_with_duplicate_mark(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    malformed = f"CLC={MASTER}|SPC=Product|PHS=1|BND="
+    try:
+        for number in (24, 25):
+            for value in [malformed, *_legacy_set(number)[1:]]:
+                _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert [title for title, _message in app.warnings] == [
+        "현품표 형식 오류 · 과도기 기록", "중복 현품표 · 과도기 기록",
+    ]
+    assert [_transition(details) for _row, details in _events(tmp_path, "TRAY_COMPLETE")] == [
+        {"transition_class": "PHS2_MALFORMED", "transition_reasons": ["PHS_EMPTY", "LINEAGE_MISSING"],
+         "transition_duplicate": False},
+        {"transition_class": "PHS2_MALFORMED",
+         "transition_reasons": ["PHS_EMPTY", "LINEAGE_MISSING", "DUPLICATE_LABEL"],
+         "transition_duplicate": True},
+    ]
+
+
+def test_on_failed_set_row_keeps_its_label_class(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    wrong = "BBB2270730100-WRONG-ITEM-1"
+    try:
+        for value in _legacy_set(26)[:2]:
+            _scan(module, app, value)
+        _scan(module, app, wrong)
+        assert [title for title, _message in app.errors] == ["[제품 불일치]"]
+        module.Label_Match._finalize_set(app, app.Results.FAIL_MISMATCH, wrong)
+    finally:
+        _close(app)
+
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["final_result"] == app.Results.FAIL_MISMATCH
+    assert details["packaging_set_count"] == 0
+    assert _transition(details) == {
+        "transition_class": "LEGACY", "transition_reasons": [], "transition_duplicate": False,
+    }
+    assert "package_logistics" not in details and _outbox_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("transition", [False, True])
+def test_central_refusal_at_f3_is_kept_as_phs2_local(tmp_path, monkeypatch, transition):
+    module = load_label_match_module()
+    app, actions, _clock = _b1_app(module, tmp_path, monkeypatch)
+    app._legacy_label_transition_enabled = transition
+
+    def refuse(*_args, **_kwargs):
+        raise module.OperationLeaseError(
+            "OPERATION_LEASE_REQUIRED", "a verified operation lease is required",
+        )
+
+    monkeypatch.setattr(module, "_label_match_package_draft", refuse)
+    try:
+        app._begin_central_package_submission()
+    finally:
+        _b1_close(app.data_manager)
+    commands, events = _b1_rows(tmp_path)
+    assert commands == []
+    if not transition:
+        assert events == [] and actions == ["a verified operation lease is required"]
+        return
+    [(_row, details)] = events
+    assert _transition(details) == {
+        "transition_class": "PHS2_LOCAL", "transition_reasons": ["OPERATION_LEASE_REQUIRED"],
+        "transition_duplicate": False,
+    }
+    assert details["package_logistics"]["status"] == LOCAL_STATUS
+    assert actions == ["sound:pass", "summary", "idle"]  # no outbox drain
+
+
+class _OfflineCaptureStore:
+    """Only the capture seam; the overlay, cancel call and set flow are real."""
+
+    def __init__(self):
+        self.cancelled = []
+
+    def capture_label_package_source(self, *, local_work_identity, physical_qr_payload, item_code):
+        self.capture = (local_work_identity, physical_qr_payload, item_code)
+        return SimpleNamespace(
+            intent_id="INTENT-OFFLINE-1", pending_count=1, oldest_age_seconds=0, reason_code="",
+        )
+
+    def get_owned_capture(self, *, intent_id, local_work_identity, physical_qr_payload):
+        return {"intent_id": intent_id, "state": "RETRY_WAIT_VALIDATION", "row_version": 2,
+                "authority_scope_id": "SCOPE-LT"}
+
+    def cancel_unsubmitted(self, **kwargs):
+        self.cancelled.append(kwargs)
+        return {"state": "CANCELLED"}
+
+    def validation_status(self, intent_id):
+        return None
+
+
+@pytest.mark.parametrize("transition", [False, True])
+def test_offline_phs2_lookup_is_kept_as_a_local_five_scan_set(tmp_path, monkeypatch, transition):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(
+        module, tmp_path, monkeypatch, registered=True, transition=transition,
+    )
+    app.package_logistics_client.config = SimpleNamespace(
+        tls_ca_bundle_path="", authority_scope_id="SCOPE-LT",
+        device_id="PC-LT", source_host_id="HOST-LT",
+    )
+    store = _OfflineCaptureStore()
+    app.deferred_intent_capture = store
+    app._prepare_deferred_label_validation = lambda capture: module.DeferredValidationResult(
+        intent_id=capture.intent_id, state="RETRY_WAIT_VALIDATION",
+        outcome="RETRYABLE_UNAVAILABLE", reason_code="PACKAGE_TRANSPORT_UNAVAILABLE",
+        observed_at="2026-09-29T00:00:00Z",
+    )
+    try:
+        for value in [PHS2_LABEL, *_legacy_set(21)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert store.capture[1:] == (PHS2_LABEL, MASTER)
+    if not transition:
+        assert store.cancelled == []
+        assert app._deferred_capture_ui["status"] == "저장됨-검증대기"
+        assert _events(tmp_path, "TRAY_COMPLETE") == []
+        return
+    [cancel] = store.cancelled
+    assert cancel["intent_id"] == "INTENT-OFFLINE-1" and cancel["physical_qr_payload"] == PHS2_LABEL
+    assert [title for title, _message in app.warnings] == ["중앙 확인 불가 · 과도기 로컬 기록"]
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert _transition(details) == {
+        "transition_class": "PHS2_LOCAL", "transition_reasons": ["PACKAGE_TRANSPORT_UNAVAILABLE"],
+        "transition_duplicate": False,
+    }
+    assert details["scan_count"] == 5 and details["packaging_scan_mode"] == "LEGACY_QA_SAMPLES"
+    assert _outbox_rows(tmp_path) == []
+
+
+def test_on_held_phs2_label_is_kept_local(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    app._recover_unknown_package_hold_identities = lambda: None
+    app.package_outbox.workbench_hold_for_source = lambda *a: {"set_id": "held-before"}
+    try:
+        for value in [PHS2_LABEL, *_legacy_set(22)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert _transition(details) == {
+        "transition_class": "PHS2_LOCAL", "transition_reasons": ["PACKAGE_WORKBENCH_HOLD"],
+        "transition_duplicate": False,
+    }
+    assert _outbox_rows(tmp_path) == []
+
+
+def test_on_flush_retry_resends_the_one_completion_row_unchanged(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    real_flush = module.Label_Match._flush_data_manager_if_supported
+    calls = []
+
+    def flush(timeout=5.0):
+        real_flush(app, timeout=timeout)
+        calls.append(timeout)
+        if len(calls) == 2:  # right after the TRAY_COMPLETE append
+            raise TimeoutError("Log writer did not flush before timeout")
+
+    app._flush_data_manager_if_supported = flush
+    try:
+        for value in _legacy_set(23):
+            _scan(module, app, value)
+        assert [type(error) for error in app.blocks] == [TimeoutError]
+        assert app.current_set_info["raw"] == _legacy_set(23)  # still the same set
+        [log_path] = Path(tmp_path).glob("포장실작업이벤트로그_PC-LT_*.csv")
+        first = log_path.read_bytes()
+        [(first_row, first_details)] = _events(tmp_path, "TRAY_COMPLETE")
+
+        module.Label_Match._finalize_set(app, app.Results.PASS)  # operator retry
+        app.data_manager.flush(timeout=5)
+        assert log_path.read_bytes() == first  # same row, same detail, same time
+    finally:
+        _close(app)
+
+    assert len(app.blocks) == 1
+    [(row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert (row, details) == (first_row, first_details)
+    assert details["transition_class"] == "LEGACY"
+    assert app.current_set_info["raw"] == []
+
+
+@pytest.mark.parametrize(
+    ("error_text", "title"),
+    [
+        (
+            "central packaging requires a sealed transfer QR, structured PHS BND/ITG "
+            "lineage, or FULL EXACT_RESCAN; three product samples are not membership",
+            "5/5 유지 · 옛 방식 현품표 완료 불가",
+        ),
+        (
+            "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled",
+            "5/5 유지 · F3 소량 완료 불가",
+        ),
+    ],
+)
+def test_policy_block_names_its_cause_instead_of_disk_storage(error_text, title):
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"raw": _legacy_set(9), "parsed": [MASTER] * 5}
+    rendered = []
+    app._render_operator_workbench = lambda: rendered.append(app._workflow_blocking_notice)
+    error = module.PackageLogisticsError(error_text)
+    lane_failure = module.Failure.from_exception(
+        error, safe_operator_code=module._label_match_package_policy_block_code(error),
+    )
+
+    for failure in (error, lane_failure):
+        module.Label_Match._publish_durable_commit_block(app, failure)
+        notice = rendered[-1]
+        assert notice.title == title
+        assert "디스크" not in notice.message and "관리자" in notice.message
+        assert app._workflow_notice_action_text == "다시 확인"
+
+    module.Label_Match._publish_durable_commit_block(app, OSError("disk full"))
+    assert "디스크" in rendered[-1].message
+    assert app._workflow_notice_action_text == "저장 재시도"
 
 
 def test_off_registered_legacy_label_is_explained_at_first_scan(tmp_path, monkeypatch):
@@ -395,43 +832,6 @@ def test_off_f4_exact_rescan_path_is_not_gated(tmp_path, monkeypatch):
     assert app.current_set_info["raw"] == [MASTER, f"{MASTER}-P8-1"]
 
 
-@pytest.mark.parametrize(
-    ("error_text", "title"),
-    [
-        (
-            "central packaging requires a sealed transfer QR, structured PHS BND/ITG "
-            "lineage, or FULL EXACT_RESCAN; three product samples are not membership",
-            "5/5 유지 · 옛 방식 현품표 완료 불가",
-        ),
-        (
-            "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled",
-            "5/5 유지 · F3 소량 완료 불가",
-        ),
-    ],
-)
-def test_policy_block_names_its_cause_instead_of_disk_storage(error_text, title):
-    module = load_label_match_module()
-    app = object.__new__(module.Label_Match)
-    app.current_set_info = {"raw": _legacy_set(9), "parsed": [MASTER] * 5}
-    rendered = []
-    app._render_operator_workbench = lambda: rendered.append(app._workflow_blocking_notice)
-    error = module.PackageLogisticsError(error_text)
-    lane_failure = module.Failure.from_exception(
-        error, safe_operator_code=module._label_match_package_policy_block_code(error),
-    )
-
-    for failure in (error, lane_failure):
-        module.Label_Match._publish_durable_commit_block(app, failure)
-        notice = rendered[-1]
-        assert notice.title == title
-        assert "디스크" not in notice.message and "관리자" in notice.message
-        assert app._workflow_notice_action_text == "다시 확인"
-
-    module.Label_Match._publish_durable_commit_block(app, OSError("disk full"))
-    assert "디스크" in rendered[-1].message
-    assert app._workflow_notice_action_text == "저장 재시도"
-
-
 @pytest.mark.parametrize("transition", [False, True])
 def test_central_phs2_completion_is_identical_in_both_modes(tmp_path, monkeypatch, transition):
     module = load_label_match_module()
@@ -439,11 +839,20 @@ def test_central_phs2_completion_is_identical_in_both_modes(tmp_path, monkeypatc
     app._legacy_label_transition_enabled = transition
     try:
         assert app._begin_central_package_submission() is True
-        command, _row = _b1_assert_completion(tmp_path)
+        command, row = _b1_assert_completion(tmp_path)
         assert command["idempotency_key"] == _B1_KEY
         assert actions == ["sound:pass", "drain", "summary", "idle"]
     finally:
         _b1_close(app.data_manager)
+    details = json.loads(row["details"])
+    assert details["scanned_product_barcodes"] == [_B1_RAW]
+    if transition:
+        assert _transition(details) == {
+            "transition_class": "PHS2_CENTRAL", "transition_reasons": [],
+            "transition_duplicate": False,
+        }
+    else:
+        assert "transition_class" not in details
 
 
 @pytest.mark.parametrize("transition", [False, True])
@@ -452,8 +861,7 @@ def test_structured_bnd_label_keeps_the_central_outbox_path(tmp_path, monkeypatc
     app, _syncs = _packaging_app(
         module, tmp_path, monkeypatch, registered=True, transition=transition,
     )
-    master = f"CLC={MASTER}|SPC=구조화 품목|PHS=1|BND=TRANSFER-BND-1"
-    values = [master, *_legacy_set(10)[1:]]
+    values = [BND_LABEL, *_legacy_set(10)[1:]]
     try:
         for value in values:
             _scan(module, app, value)
@@ -462,8 +870,9 @@ def test_structured_bnd_label_keeps_the_central_outbox_path(tmp_path, monkeypatc
 
     assert app.errors == []
     [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
-    assert details["package_logistics"]["status"] != LEGACY_STATUS
+    assert details["package_logistics"]["status"] != LOCAL_STATUS
     assert details["package_logistics"]["idempotency_key"]
+    assert details.get("transition_class") == ("PHS2_CENTRAL" if transition else None)
     assert len(_outbox_rows(tmp_path)) == 1
 
 
@@ -484,4 +893,5 @@ def test_unregistered_legacy_set_is_unchanged_in_both_modes(tmp_path, monkeypatc
     assert details["package_logistics"] == {
         "status": "LEGACY_DIRECT_SYNC_ONLY", "sample_barcodes_are_membership": False,
     }
+    assert "transition_class" not in details
     assert _outbox_rows(tmp_path) == []

@@ -1,6 +1,6 @@
 # Label_Match 기술 명세
 
-관리자 과도기 모드(Machine `KMTECH_LEGACY_LABEL_TRANSITION=1`)는 등록 PC에서도 BND/ITG·PHS2 이력이 없는 옛 5단계 세트와 그 F3 소량 완료를 레거시 표시의 로컬 완료로 받는다. 포장 전송함·중앙 원장에는 넣지 않고 기존 relay로 서버 대시보드에만 보인다. 꺼져 있으면 첫 스캔에서 원인을 안내하고 제품 스캔을 거부한다([켜고 끄기](operations.md#legacy-label-transition), [계약](contracts.md#legacy-label-transition)).
+관리자 과도기 모드(Machine `KMTECH_LEGACY_LABEL_TRANSITION=1`)는 등록 PC에서 옛 5단계와 새 현품표를 모두 받고 완료마다 `LEGACY`·`PHS2_CENTRAL`·`PHS2_LOCAL`·`PHS2_MALFORMED` 중 하나와 사유 코드·중복 표시를 기록한다. `PHS2_CENTRAL`만 포장 전송함·중앙 원장에 들어가고 나머지는 로컬 완료로 기존 relay를 통해 서버 화면에만 보인다. 꺼져 있으면 옛 현품표는 첫 스캔 뒤 원인을 안내하고 제품 스캔을 거부한다([켜고 끄기](operations.md#legacy-label-transition), [계약](contracts.md#legacy-label-transition)).
 
 업무하던 PC의 관리자 신원 복구는 중앙 확정 뒤 같은 사용자·PC·설치의 relay 큐 자격 결속을 감사 기록과 함께 이전한다. 미전송 원문·runtime proof·완료/보류 상태를 보존하며, 정상 정지 → 복구 → `--onboard-current-user`의 READY/ALIVE 확인으로 전송을 재개한다([절차·거부 경계](operations.md#registration-relay-recovery)).
 

@@ -5,20 +5,22 @@ success presentation and worker dispatch. Storage APIs and transaction order
 remain unchanged.
 """
 
-LEGACY_TRANSITION_LOCAL_ONLY = "LEGACY_TRANSITION_LOCAL_ONLY"
+import label_transition
+
+_TRANSITION_KEYS = ("transition_class", "transition_reasons", "transition_duplicate")
 
 
-def _registered_legacy_label(
+def _registered_label_shape(
     self,
     current,
     *,
     _label_match_parse_sealed_transfer_qr,
-    _label_match_parse_new_format_fields,
 ):
-    """Whether a registered PC's set starts with a label without lineage.
+    """(shape, reasons) of a registered PC's own-path start label.
 
-    Lineage is a sealed transfer QR, PHS2 or BND/ITG.  Central sets and the F4
-    exact rescan keep their own paths, so they never qualify.
+    Any new-system key (sealed transfer QR, PHS2, BND/ITG) is lineage, even in
+    a malformed label, so such a label is never LEGACY.  Central sets and the
+    F4 exact rescan keep their own paths and return ("", ()).
     """
 
     if (
@@ -27,23 +29,182 @@ def _registered_legacy_label(
         or current.get("exact_rescan_active")
         or current.get("exact_rescan_complete")
     ):
-        return False
+        return "", ()
     raw = list(current.get("raw") or [])
     if not raw:
-        return False
-    try:
-        if _label_match_parse_sealed_transfer_qr(raw[0]):
-            return False
-    except ValueError:
-        return False
-    fields = _label_match_parse_new_format_fields(raw[0]) or {}
-    return not (
-        str(fields.get("BND") or "").strip()
-        or str(fields.get("ITG") or "").strip()
+        return "", ()
+    shape, reasons, _item_code = label_transition.classify_start_label(
+        raw[0], parse_sealed=_label_match_parse_sealed_transfer_qr,
+    )
+    return shape, reasons
+
+
+def _transition_active(self):
+    """The administrator switch applies to a registered or required PC only.
+
+    Tests and simulations keep the base flow, as the completion gate does.
+    """
+
+    state = self.__dict__
+    return bool(
+        state.get("_legacy_label_transition_enabled", False)
+        and not state.get("run_tests", False)
+        and not state.get("is_running_simulation", False)
+        and (
+            state.get("package_logistics_client") is not None
+            or state.get("_logistics_authoritative_required", False)
+        )
     )
 
 
+def _transition_local(transition_class, reasons=(), duplicate=False):
+    # Never a package outbox command: the server only observes the
+    # TRAY_COMPLETE event through the existing direct sync.
+    return {
+        "status": label_transition.LOCAL_ONLY_STATUS,
+        "sample_barcodes_are_membership": False,
+        **label_transition.fields(transition_class, reasons, duplicate),
+    }
+
+
+def _transition_label_class(current, *, parse_sealed):
+    """LEGACY or PHS2_MALFORMED from the start label, else ("", ())."""
+
+    raw = list(current.get("raw") or [])
+    if (
+        not raw
+        or current.get("central_inherit_all")
+        or current.get("exact_rescan_active")
+        or current.get("exact_rescan_complete")
+    ):
+        return "", ()
+    shape, reasons, _item_code = label_transition.classify_start_label(
+        raw[0], parse_sealed=parse_sealed,
+    )
+    if shape == label_transition.SHAPE_LEGACY:
+        return label_transition.LEGACY, ()
+    if shape == label_transition.SHAPE_MALFORMED:
+        return label_transition.PHS2_MALFORMED, reasons
+    return "", ()
+
+
+def _transition_completion(current, *, parse_sealed):
+    """Class decided before the central path, or ("", reasons, duplicate)."""
+
+    reasons = list(current.get("transition_reasons") or ())
+    decided = str(current.get("transition_class") or "")
+    if decided not in label_transition.LOCAL_CLASSES:
+        decided, label_reasons = _transition_label_class(
+            current, parse_sealed=parse_sealed,
+        )
+        reasons.extend(label_reasons)
+    return decided, reasons, bool(current.get("transition_duplicate"))
+
+
+def _queue_transition_package(
+    self,
+    current,
+    *,
+    package,
+    is_manual_complete,
+    parse_sealed,
+    errors,
+    reason,
+):
+    """Accept every set; only a successful central flow enters the ledger."""
+
+    decided, reasons, duplicate = _transition_completion(
+        current, parse_sealed=parse_sealed,
+    )
+    if decided:
+        return _transition_local(decided, reasons, duplicate)
+    if is_manual_complete:
+        return _transition_local(
+            label_transition.PHS2_LOCAL, [*reasons, "PARTIAL_PACKAGE"], duplicate,
+        )
+    try:
+        queued = package()
+    except errors as error:
+        outbox = self.__dict__.get("package_outbox")
+        if (
+            outbox is not None
+            and outbox.get_by_set_id(str(current.get("id") or "")) is not None
+        ):
+            raise
+        return _transition_local(
+            label_transition.PHS2_LOCAL, [*reasons, reason(error)], duplicate,
+        )
+    if not queued:
+        return _transition_local(
+            label_transition.PHS2_LOCAL, [*reasons, "PACKAGE_NOT_CREATED"], duplicate,
+        )
+    return {
+        **queued,
+        **label_transition.fields(label_transition.PHS2_CENTRAL, reasons, duplicate),
+    }
+
+
 def _queue_authoritative_package(
+    self,
+    *,
+    item_code,
+    is_manual_complete,
+    current_set_info=None,
+    persist_current_state=None,
+    logistics_runtime_required,
+    _central_scan_count,
+    _label_match_has_central_source_identity,
+    _label_match_parse_sealed_transfer_qr,
+    _label_match_parse_new_format_fields,
+    _label_match_existing_package_row_metadata,
+    _label_match_package_draft,
+    PackageLogisticsError,
+    OperationLeaseError,
+    _clock,
+    _timezone,
+    _restore_draft,
+    _transition_errors=(),
+    _transition_reason=str,
+):
+    def package():
+        return _queue_package(
+            self,
+            item_code=item_code,
+            is_manual_complete=is_manual_complete,
+            current_set_info=current_set_info,
+            persist_current_state=persist_current_state,
+            logistics_runtime_required=logistics_runtime_required,
+            _central_scan_count=_central_scan_count,
+            _label_match_has_central_source_identity=_label_match_has_central_source_identity,
+            _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
+            _label_match_parse_new_format_fields=_label_match_parse_new_format_fields,
+            _label_match_existing_package_row_metadata=_label_match_existing_package_row_metadata,
+            _label_match_package_draft=_label_match_package_draft,
+            PackageLogisticsError=PackageLogisticsError,
+            OperationLeaseError=OperationLeaseError,
+            _clock=_clock,
+            _timezone=_timezone,
+            _restore_draft=_restore_draft,
+        )
+
+    if not _transition_active(self):
+        return package()
+    return _queue_transition_package(
+        self,
+        (
+            current_set_info
+            if isinstance(current_set_info, dict)
+            else (self.__dict__.get("current_set_info") or {})
+        ),
+        package=package,
+        is_manual_complete=is_manual_complete,
+        parse_sealed=_label_match_parse_sealed_transfer_qr,
+        errors=tuple(_transition_errors),
+        reason=_transition_reason,
+    )
+
+
+def _queue_package(
     self,
     *,
     item_code,
@@ -71,23 +232,8 @@ def _queue_authoritative_package(
         or self.__dict__.get("is_running_simulation", False)
     ):
         return None
-    transition_mode = bool(
-        self.__dict__.get("_legacy_label_transition_enabled", False)
-    )
     if is_manual_complete:
         if required_mode:
-            if transition_mode and _registered_legacy_label(
-                self,
-                current_set_info
-                if isinstance(current_set_info, dict)
-                else (self.__dict__.get("current_set_info") or {}),
-                _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
-                _label_match_parse_new_format_fields=_label_match_parse_new_format_fields,
-            ):
-                return {
-                    "status": LEGACY_TRANSITION_LOCAL_ONLY,
-                    "sample_barcodes_are_membership": False,
-                }
             raise PackageLogisticsError(
                 "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
             )
@@ -135,18 +281,6 @@ def _queue_authoritative_package(
             or str(fields.get("ITG") or "").strip()
         )
         if central_enabled and not has_structured_phs_identity:
-            if transition_mode and _registered_legacy_label(
-                self,
-                current,
-                _label_match_parse_sealed_transfer_qr=_label_match_parse_sealed_transfer_qr,
-                _label_match_parse_new_format_fields=_label_match_parse_new_format_fields,
-            ):
-                # Never a package outbox command: the server only observes
-                # the TRAY_COMPLETE event through the existing direct sync.
-                return {
-                    "status": LEGACY_TRANSITION_LOCAL_ONLY,
-                    "sample_barcodes_are_membership": False,
-                }
             raise PackageLogisticsError(
                 "central packaging requires a sealed transfer QR, structured PHS BND/ITG "
                 "lineage, or FULL EXACT_RESCAN; three product samples are not membership"
@@ -345,6 +479,28 @@ def _persist_ui_lane_current_set_snapshot(self, current, *, _clock):
     )
 
 
+def _transition_failed_completion(current, *, parse_sealed):
+    """Class of a failed set's completion row while the switch is on."""
+
+    if not list(current.get("raw") or []):
+        return None
+    decided, reasons, duplicate = _transition_completion(
+        current, parse_sealed=parse_sealed,
+    )
+    if not decided:
+        decided = label_transition.PHS2_LOCAL
+        reasons.append("LABEL_MATCH_FAILED_OR_MISMATCH")
+    return label_transition.fields(decided, reasons, duplicate)
+
+
+def _transition_file_dates(details):
+    return {
+        value.strftime("%Y%m%d")
+        for value in (details.get("start_time"), details.get("end_time"))
+        if hasattr(value, "strftime")
+    } or None
+
+
 def _commit_finalized_set_durable(
     self,
     *,
@@ -358,6 +514,7 @@ def _commit_finalized_set_durable(
     deepcopy,
     _label_match_local_completion_event_exists,
     PackageLogisticsError,
+    _label_match_parse_sealed_transfer_qr=None,
 ):
     detached = isinstance(current_snapshot, dict)
     if (
@@ -386,27 +543,65 @@ def _commit_finalized_set_durable(
         else None
     )
     durable_details = deepcopy(dict(details or {}))
+    transition = None
+    if isinstance(package_logistics, dict) and _TRANSITION_KEYS[0] in package_logistics:
+        package_logistics = dict(package_logistics)
+        transition = {key: package_logistics.pop(key) for key in _TRANSITION_KEYS}
+    elif (
+        result != self.Results.PASS
+        and callable(_label_match_parse_sealed_transfer_qr)
+        and _transition_active(self)
+    ):
+        transition = _transition_failed_completion(
+            current_snapshot
+            if detached
+            else (self.__dict__.get("current_set_info") or {}),
+            parse_sealed=_label_match_parse_sealed_transfer_qr,
+        )
     if package_logistics:
         durable_details["package_logistics"] = package_logistics
         durable_details["package_membership_mode"] = (
             package_logistics.get("membership_mode")
         )
         durable_details["sample_barcodes_are_membership"] = False
-    local_event_durable = bool(
-        central_inherit_all
-        and package_logistics
-        and _label_match_local_completion_event_exists(
-            self.__dict__.get("data_manager"),
-            set_id_for_log,
+    if transition is not None:
+        durable_details.update(transition)
+    if (
+        transition is not None
+        and transition["transition_class"] != label_transition.PHS2_CENTRAL
+    ):
+        # A retry after an uncertain flush reuses the one durable row, so the
+        # direct sync resends the same row and content instead of a second one.
+        self._flush_data_manager_if_supported()
+        local_event_durable = bool(
+            _label_match_local_completion_event_exists(
+                self.__dict__.get("data_manager"),
+                set_id_for_log,
+                file_dates=_transition_file_dates(durable_details),
+            )
         )
-    )
+    else:
+        local_event_durable = bool(
+            (
+                (central_inherit_all and package_logistics)
+                or transition is not None
+            )
+            and _label_match_local_completion_event_exists(
+                self.__dict__.get("data_manager"),
+                set_id_for_log,
+            )
+        )
     if not local_event_durable:
         self.data_manager.log_event(
             self.Events.TRAY_COMPLETE,
             durable_details,
         )
         self._flush_data_manager_if_supported()
-    if central_inherit_all and package_logistics:
+    if (
+        central_inherit_all
+        and package_logistics
+        and package_logistics.get("status") != label_transition.LOCAL_ONLY_STATUS
+    ):
         outbox = self.__dict__.get("package_outbox")
         if outbox is None:
             raise PackageLogisticsError(
