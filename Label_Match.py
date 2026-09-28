@@ -1926,7 +1926,19 @@ def _label_match_transition_reason(error):
     ):
         if text.startswith(prefix):
             return code
-    return str(getattr(error, "code", "") or "PACKAGE_CENTRAL_BLOCKED")
+    head = text.split(":", 1)[0].strip()
+    return str(
+        getattr(error, "code", "")
+        or (head if re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", head) else "")
+        or "PACKAGE_CENTRAL_BLOCKED"
+    )
+
+
+class _TransitionPreflightRefusal:
+    """F3's read-only source refresh failed for a set under transition rules."""
+
+    def __init__(self, error):
+        self.error = error
 
 
 def _label_match_capture_current_set(current_set_info):
@@ -4708,13 +4720,14 @@ class Label_Match(tk.Tk):
         """
 
         state = self.__dict__
+        current = state.get("current_set_info") or {}
         if (
             state.get("run_tests", False)
             or state.get("is_running_simulation", False)
             or state.get("_legacy_label_transition_enabled", False)
+            or current.get("transition_class") in label_transition.CLASSES
         ):
-            return ""
-        current = state.get("current_set_info") or {}
+            return ""  # A set started with the switch on keeps its class.
         shape, _reasons = label_completion._registered_label_shape(
             self,
             current,
@@ -4740,6 +4753,32 @@ class Label_Match(tk.Tk):
         self._transition_last_notice = (title, message)
         if not self.__dict__.get("run_tests", False):
             messagebox.showwarning(title, message, parent=self)
+
+    def _pin_transition_start(self, shape):
+        """Pin the class of a set started with the switch on; return the old values.
+
+        LEGACY is final; a new label starts as PHS2_CENTRAL and becomes
+        PHS2_LOCAL only when its central flow is blocked.
+        """
+
+        previous = {
+            key: self.current_set_info[key]
+            for key in ("transition_class", "transition_reasons", "transition_duplicate")
+            if key in self.current_set_info
+        }
+        transition_class = {
+            label_transition.SHAPE_LEGACY: label_transition.LEGACY,
+            label_transition.SHAPE_PHS2: label_transition.PHS2_CENTRAL,
+            label_transition.SHAPE_STRUCTURED: label_transition.PHS2_CENTRAL,
+        }.get(shape)
+        if transition_class:
+            self.current_set_info.update(label_transition.fields(transition_class))
+        return previous
+
+    def _restore_transition_start(self, previous):
+        for key in ("transition_class", "transition_reasons", "transition_duplicate"):
+            self.current_set_info.pop(key, None)
+        self.current_set_info.update(previous)
 
     def _transition_start_local(
         self,
@@ -5612,9 +5651,14 @@ class Label_Match(tk.Tk):
             captured = copy.deepcopy(current)
 
             def work():
-                return self._resolve_central_phs2_seal_for_exchange(
-                    captured
-                )
+                try:
+                    return self._resolve_central_phs2_seal_for_exchange(
+                        captured
+                    )
+                except Exception as exc:
+                    if not label_completion._transition_applies(self, captured):
+                        raise
+                    return _TransitionPreflightRefusal(exc)
 
             def finish(value):
                 self._central_package_preflight_in_progress = False
@@ -5625,6 +5669,10 @@ class Label_Match(tk.Tk):
                 ):
                     self._render_operator_workbench()
                     return
+                if isinstance(value, _TransitionPreflightRefusal):
+                    if not self._transition_local_after_preflight(value.error):
+                        self._publish_submission_block(value.error)
+                    return
                 sealed, snapshot, active_updates = value
                 try:
                     self._apply_resolved_central_phs2_seal(
@@ -5633,7 +5681,8 @@ class Label_Match(tk.Tk):
                         active_updates,
                     )
                 except Exception as exc:
-                    self._publish_durable_commit_block(exc)
+                    if not self._transition_local_after_preflight(exc):
+                        self._publish_durable_commit_block(exc)
                     return
                 self.after(0, self._enqueue_central_package_submission)
 
@@ -5691,7 +5740,8 @@ class Label_Match(tk.Tk):
                 self._render_operator_workbench()
                 return
             if not ok:
-                self._publish_submission_block(value)
+                if not self._transition_local_after_preflight(value):
+                    self._publish_submission_block(value)
                 return
             sealed, snapshot, active_updates = value
             try:
@@ -5701,7 +5751,8 @@ class Label_Match(tk.Tk):
                     active_updates,
                 )
             except Exception as exc:
-                self._publish_durable_commit_block(exc)
+                if not self._transition_local_after_preflight(exc):
+                    self._publish_durable_commit_block(exc)
                 return
             self._enqueue_central_package_submission()
 
@@ -5713,6 +5764,30 @@ class Label_Match(tk.Tk):
         self._central_package_preflight_thread = preflight_thread
         preflight_thread.start()
         self.after(100, poll)
+        return True
+
+    def _transition_local_after_preflight(self, error):
+        """F3's source refresh was refused before any package command.
+
+        A set under the transition rules completes locally with the cause;
+        False keeps the base refusal (switch off, or capture not closable).
+        """
+
+        current = self.__dict__.get("current_set_info") or {}
+        if not label_completion._transition_applies(self, current):
+            return False
+        if not label_completion._decide_transition_local(
+            self,
+            current,
+            label_transition.PHS2_LOCAL,
+            [
+                *(current.get("transition_reasons") or ()),
+                _label_match_transition_reason(error),
+            ],
+            bool(current.get("transition_duplicate")),
+        ):
+            return False
+        self._finalize_set(self.Results.PASS)
         return True
 
     def _package_review_context(self):
@@ -10486,6 +10561,10 @@ class Label_Match(tk.Tk):
                 not in label_transition.LOCAL_CLASSES
             )
         )
+        # A transition set is a pinned record of the switch era; never expire it.
+        transition_state = (
+            saved_set_info.get("transition_class") in label_transition.CLASSES
+        )
         try:
             saved_timestamp_str = state_data.get('timestamp')
             if saved_timestamp_str:
@@ -10493,6 +10572,7 @@ class Label_Match(tk.Tk):
                 if (
                     saved_dt.date() != datetime.now().date()
                     and not durable_central_state
+                    and not transition_state
                 ):
                     if not self.run_tests:
                         messagebox.showinfo("이전 작업 만료", "어제 완료되지 않은 작업 데이터는 자동으로 삭제됩니다.")
@@ -13303,8 +13383,9 @@ class Label_Match(tk.Tk):
                     raw_input,
                     title="[PHS2 현품표 필요]",
                     reason=(
-                        "이적 봉인 QR은 제품 교체 후 보조 증거이며 포장 시작 라벨이 아닙니다. "
-                        "원본 PHS2 현품표를 스캔하세요."
+                        "이 QR은 제품 교체 뒤 붙이는 이적 봉인 QR이라 포장 시작 라벨로 쓸 수 없습니다. "
+                        "같은 상자의 원본 PHS2 현품표를 스캔하세요. 원본 현품표가 없거나 읽히지 않으면 "
+                        "상자를 따로 두고 관리자에게 알리세요."
                     ),
                 )
                 return
@@ -13345,6 +13426,7 @@ class Label_Match(tk.Tk):
                     previous_name_override = self.current_set_info.get(
                         "item_name_override"
                     )
+                    previous_transition = self._pin_transition_start(transition_shape)
                     self.current_set_info["phase"] = phase
                     self.current_set_info[
                         "item_name_override"
@@ -13359,11 +13441,13 @@ class Label_Match(tk.Tk):
                         self.current_set_info[
                             "item_name_override"
                         ] = previous_name_override
+                        self._restore_transition_start(previous_transition)
                     return accepted
                 self.current_set_info['phase'] = phase
                 self.current_set_info['item_name_override'] = supplier_code
                 if _label_match_has_central_source_identity(processed_input):
                     self.current_set_info["central_inherit_all"] = True
+                self._pin_transition_start(transition_shape)
                 self._update_on_success_scan(raw_input, client_code)
             else:
                 MASTER_LABEL_LENGTH = 13
@@ -13385,6 +13469,7 @@ class Label_Match(tk.Tk):
                         reason=f"미등록 현품표입니다.\n\n- 미등록 코드: {self._truncate_string(raw_input)}\n\n→ Item.csv를 확인하세요."
                     )
                     return
+                self._pin_transition_start(transition_shape)
                 self._update_on_success_scan(raw_input, raw_input)
 
         elif 2 <= scan_pos <= self._workflow_total_scan_count():
@@ -16410,11 +16495,18 @@ class Label_Match(tk.Tk):
         details = self._package_cancellation_event_details(
             local_event_details, cancellation
         )
+        transition_key = self._transition_cancellation_key(event_type, details)
+        if transition_key:
+            details["idempotency_key"] = transition_key
+            details["app_version"] = APP_VERSION
         already_logged = bool(
             cancellation
             and self._package_cancellation_event_was_logged(
                 cancellation["cancellation_event_id"]
             )
+        ) or bool(
+            transition_key
+            and self._transition_event_was_logged(event_type, transition_key)
         )
         if not already_logged:
             self.data_manager.log_event(event_type, details)
@@ -16427,6 +16519,50 @@ class Label_Match(tk.Tk):
                 )
             outbox.mark_local_event_committed(cancellation["cancellation_event_id"])
         return details
+
+    def _transition_cancellation_key(self, event_type, details):
+        """Event ID of a transition set's cancellation (same cancel, same ID)."""
+
+        deleted = event_type == self.Events.SET_DELETED
+        cancelled = details.get("original_details" if deleted else "details")
+        if (
+            not isinstance(cancelled, dict)
+            or cancelled.get("transition_class") not in label_transition.CLASSES
+        ):
+            return ""
+        return label_transition.event_key(
+            str(getattr(self.__dict__.get("data_manager"), "unique_id", "") or ""),
+            str(details.get("set_id" if deleted else "cancelled_set_id") or ""),
+            event_type,
+        )
+
+    def _transition_event_was_logged(self, event_type, idempotency_key):
+        """Drain the writer, then find the one row of this event ID.
+
+        A retry after an uncertain flush reuses that row instead of a second
+        one with another timestamp.
+        """
+
+        self._flush_data_manager_if_supported()
+        save_directory = str(self.__dict__.get("save_directory") or "")
+        if not save_directory or not os.path.isdir(save_directory):
+            return False
+        prefix = f"{self.Worker.PACKAGING}작업이벤트로그_"
+        for filename in sorted(os.listdir(save_directory)):
+            if not filename.startswith(prefix) or not filename.endswith(".csv"):
+                continue
+            path = os.path.join(save_directory, filename)
+            with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+                for record in csv.DictReader(handle):
+                    if record.get("event") != event_type:
+                        continue
+                    try:
+                        details = json.loads(record.get("details") or "{}")
+                    except json.JSONDecodeError:
+                        continue
+                    if details.get("idempotency_key") == idempotency_key:
+                        return True
+        return False
 
     def _package_cancellation_event_was_logged(self, cancellation_event_id):
         event_id = str(cancellation_event_id or "").strip()
@@ -16530,6 +16666,7 @@ class Label_Match(tk.Tk):
             _label_match_local_completion_event_exists=lambda *args, **kwargs: _label_match_local_completion_event_exists(*args, **kwargs),
             PackageLogisticsError=lambda *args: PackageLogisticsError(*args),
             _label_match_parse_sealed_transfer_qr=lambda raw: _label_match_parse_sealed_transfer_qr(raw),
+            _app_version=APP_VERSION,
         )
 
     def _apply_ui_lane_completion_snapshot(self, snapshot):
@@ -21075,7 +21212,10 @@ class Label_Match(tk.Tk):
             for details in (self.__dict__.get("set_details_map") or {}).values():
                 details = details or {}
                 transition_class = details.get("transition_class")
-                if transition_class not in counts:
+                if (
+                    transition_class not in counts
+                    or not _label_match_tray_complete_passed(details)
+                ):
                     continue
                 try:
                     if _label_match_parse_datetime(details.get("end_time")).date() != today:

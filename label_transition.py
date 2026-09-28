@@ -12,6 +12,7 @@ Only PHS2_CENTRAL reaches the package ledger; the others complete locally.
 See docs/spec/operations.md#legacy-label-transition.
 """
 
+import hashlib
 import re
 
 from carrier_identity_port import decode_carrier_scan, parse_compact_carrier
@@ -33,6 +34,10 @@ SHAPE_SEALED = "SEALED"
 SHAPE_MALFORMED = "MALFORMED"
 
 _REASON = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+# Keys whose empty or repeated value breaks a new-system label.
+_IDENTITY_KEYS = frozenset((
+    "PHS", "SRC", "ITG", "BND", "CLC", "SPC", "LBL", "HSH", "TRF", "QT", "ITEM", "ITEM_CODE",
+))
 
 
 def _pairs(decoded):
@@ -47,11 +52,24 @@ def _pairs(decoded):
     return pairs
 
 
+def _item_code(values):
+    """The label's item, with the carrier parser's INSPECTION alias."""
+
+    clc = str(values.get("CLC") or "").strip()
+    alias = str(values.get("ITEM") or values.get("ITEM_CODE") or "").strip()
+    return alias if clc.upper() == "INSPECTION" else (clc or alias)
+
+
+def _positive_integer(value):
+    return bool(re.fullmatch(r"[0-9]+", str(value or "").strip())) and int(value) > 0
+
+
 def classify_start_label(raw_value, *, parse_sealed):
     """Return (shape, reasons, item_code) of one start label.
 
-    Keys of the new system (TRF, BND, ITG or SRC=KMTECH_INPUT_TAG) make a label
-    new-shaped; a PHS value alone does not, so an old phase QR stays LEGACY.
+    Keys of the new system (TRF, BND, ITG or any SRC=KMTECH_INPUT_TAG) make a
+    label new-shaped; a PHS value alone does not, so an old phase QR stays
+    LEGACY.  Every raw pair counts, so a repeated key cannot hide a marker.
     ``parse_sealed`` is the application's sealed-transfer parser.
     """
 
@@ -59,19 +77,18 @@ def classify_start_label(raw_value, *, parse_sealed):
     pairs = _pairs(decoded)
     keys = [key for key, _value in pairs]
     values = {key: value for key, value in pairs if value}
-    item_code = str(
-        values.get("CLC") or values.get("ITEM") or values.get("ITEM_CODE") or ""
-    ).strip()
-    input_tag = str(values.get("SRC") or "").upper() == "KMTECH_INPUT_TAG"
+    item_code = _item_code(values)
+    input_tag = any(
+        key == "SRC" and str(value or "").strip().upper() == "KMTECH_INPUT_TAG"
+        for key, value in pairs
+    )
     if not ({"TRF", "BND", "ITG"} & set(keys) or input_tag):
         return SHAPE_LEGACY, (), item_code
     reasons = []
-    if len(keys) != len(set(keys)):
+    if any(keys.count(key) > 1 for key in _IDENTITY_KEYS):
         reasons.append("DUPLICATE_KEY")
-    if any(not key or value == "" for key, value in pairs):
+    if any(key in _IDENTITY_KEYS and value == "" for key, value in pairs) or "" in keys:
         reasons.append("PHS_EMPTY")
-    if any(value is None for _key, value in pairs):
-        reasons.append("PHS2_FORMAT_INVALID")
     if "TRF" in keys:
         shape, lineage = SHAPE_SEALED, "BND"
     elif "ITG" in keys or input_tag:
@@ -80,8 +97,12 @@ def classify_start_label(raw_value, *, parse_sealed):
         shape, lineage = SHAPE_STRUCTURED, "BND"
     if shape != SHAPE_SEALED and "PHS" not in keys:
         reasons.append("PHS_MISSING")
+    elif shape == SHAPE_PHS2 and str(values.get("PHS") or "2") != "2":
+        reasons.append("PHS_NOT_2")
     if not values.get(lineage):
         reasons.append("LINEAGE_MISSING")
+    if any(key == "QT" and not _positive_integer(value) for key, value in pairs):
+        reasons.append("QT_INVALID")
     if shape == SHAPE_SEALED:
         try:
             sealed = parse_sealed(decoded)
@@ -94,8 +115,8 @@ def classify_start_label(raw_value, *, parse_sealed):
             parse_compact_carrier(decoded)
         except ValueError:
             reasons.append("PHS2_FORMAT_INVALID")
-    elif not values.get("SPC"):
-        reasons.append("PHS2_FORMAT_INVALID")
+    elif not values.get("SPC") or any(value is None for _key, value in pairs if _key):
+        reasons.append("FORMAT_INVALID")
     if not item_code:
         reasons.append("ITEM_UNCONFIRMED")
     if reasons:
@@ -108,6 +129,16 @@ def reason_code(value):
 
     text = str(value or "").strip().upper()
     return text if _REASON.fullmatch(text) else "REASON_CODE_REDACTED"
+
+
+def event_key(pc_id, set_id, event):
+    """Stable event ID (detail.idempotency_key, <=128) of one set's event.
+
+    A resend of the same event reuses it; a new completion has a new set.
+    """
+
+    digest = hashlib.sha256(f"{pc_id}|{set_id}|{event}".encode("utf-8")).hexdigest()
+    return f"LM-{event}-{digest[:40]}"
 
 
 def fields(transition_class, reasons=(), duplicate=False):

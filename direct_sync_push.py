@@ -1024,11 +1024,15 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
     for entry in entries:
         if (not isinstance(entry, dict)
             or not isinstance(entry.get("raw_event_name"), str)
-            or entry.get("raw_event_name") not in lifecycle_names
+            or (entry.get("raw_event_name"), entry.get("raw_only_reason_code")) not in {
+                *((name, "NO_STAGE1_REDUCER") for name in lifecycle_names),
+                # Web keeps a transition duplicate completion as one raw
+                # observation; it must not stop this PC's relay.
+                ("TRAY_COMPLETE", "TRANSITION_DUPLICATE_OBSERVED"),
+            }
             or entry.get("projection_required") is not False
             or entry.get("projection_status") != "NOT_PROJECTED"
             or entry.get("event_projection_class") != "RAW_EVIDENCE_ONLY"
-            or entry.get("raw_only_reason_code") != "NO_STAGE1_REDUCER"
             or type(entry.get("count")) is not int or entry["count"] <= 0):
             return False
         observed_names[entry["raw_event_name"]] += entry["count"]
@@ -1045,12 +1049,32 @@ def _is_raw_lifecycle_receipt(plan: SourceFilePlan, receipt: Mapping[str, Any]) 
                 if None in row or any(value is None for value in row.values()):
                     return False
                 name = row["event"]
-                if name not in lifecycle_names:
+                if name not in lifecycle_names and not (
+                    name == "TRAY_COMPLETE" and _is_transition_completion_row(row)
+                ):
                     return False
                 uploaded_names[name] += 1
         return sum(uploaded_names.values()) == row_count and uploaded_names == observed_names
     except (OSError, UnicodeError, csv.Error):
         return False
+
+
+_TRANSITION_CLASSES = frozenset(("LEGACY", "PHS2_CENTRAL", "PHS2_LOCAL", "PHS2_MALFORMED"))
+
+
+def _is_transition_completion_row(row: Mapping[str, Any]) -> bool:
+    """A TRAY_COMPLETE this PC wrote while its transition mode classified it."""
+
+    try:
+        details = json.loads(row.get("details") or "{}")
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(details, dict)
+        and details.get("transition_class") in _TRANSITION_CLASSES
+        and isinstance(details.get("idempotency_key"), str)
+        and 0 < len(details["idempotency_key"]) <= 128
+    )
 
 
 def _receipt_accepted_shape_error(plan: SourceFilePlan, receipt: Mapping[str, Any]) -> tuple[str, str]:

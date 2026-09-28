@@ -4,6 +4,7 @@ Local storage (event CSV, package outbox) is real; the central client may only
 expose its read-only config, so any central call fails the test.
 """
 
+import copy
 import csv
 import json
 import sqlite3
@@ -988,3 +989,597 @@ def test_unregistered_legacy_set_is_unchanged_in_both_modes(tmp_path, monkeypatc
     }
     assert "transition_class" not in details
     assert _outbox_rows(tmp_path) == []
+
+
+# --- Cross-check sub-02 (Codex) findings and the 09-29 coordinator decisions ---
+# Ported from work/Label_Match/w9lmtransit/sub-02/test_crosscheck2.py; the
+# sealed start label keeps the approved refusal, so its case checks the notice.
+
+
+def _app_for_recovery(module, tmp_path, monkeypatch):
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    del app.__dict__["_save_current_set_state"]  # the real current-state file
+    app._recover_pending_package_pin_moves = lambda: None
+    app._finalize_label_recovery_holds = lambda: True
+    app.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **k: [])
+    app._reconcile_pending_sealed_transfer_exchanges = lambda **k: None
+    app._reconcile_active_package_submission = lambda: None
+    for name in ("askyesno", "askyesnocancel"):
+        monkeypatch.setattr(module.messagebox, name, lambda *a, **k: True)
+    for name in ("showinfo", "showerror"):
+        monkeypatch.setattr(module.messagebox, name, lambda *a, **k: None)
+    return app
+
+
+def _load_history(module, app):
+    pending = __import__("queue").Queue()
+    module.Label_Match._async_load_history_task(app, pending)
+    result = pending.get_nowait()
+    assert "error" not in result, result
+    for key in ("scan_count", "global_scanned_set", "set_details_map"):
+        setattr(app, key, result[key])
+    return result
+
+
+def _select_completed_rows(app):
+    from tests.test_label_match_core import _RecordingTree
+
+    class SelectableTree(_RecordingTree):
+        def selection(self):
+            return tuple(self.rows)
+
+        def item(self, iid, option=None):
+            return self.rows[iid]["values"] if option == "values" else self.rows[iid]
+
+    app.history_tree = SelectableTree()
+    for set_id in app.set_details_map:
+        app.history_tree.insert("", "end", iid=set_id,
+                                values=(set_id, MASTER, "p1", "p2", "p3", "final", "통과", "05:00:00"))
+    app._render_history_detail = lambda *a, **k: None
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_duplicate_src_keeps_the_new_label_marker(tmp_path, monkeypatch, encoded):
+    import base64
+
+    module = load_label_match_module()
+    raw = f"CLC={MASTER}|SPC=Product|PHS=2|SRC=KMTECH_INPUT_TAG|SRC=OLD"
+    if encoded:
+        raw = base64.b64encode(raw.encode()).decode()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in [raw, *_legacy_set(101)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["final_result"] == app.Results.PASS and _outbox_rows(tmp_path) == []
+    assert details["transition_class"] == "PHS2_MALFORMED"
+    assert "DUPLICATE_KEY" in details["transition_reasons"]
+
+
+@pytest.mark.parametrize("raw", [
+    BND_LABEL + "|PHS=1", BND_LABEL + "|BND=", PHS2_LABEL + "|ITG=", PHS2_LABEL + "|SRC=OLD",
+])
+def test_detectable_duplicate_keys_keep_the_malformed_class(raw):
+    import label_transition
+
+    module = load_label_match_module()
+    shape, reasons, _item = label_transition.classify_start_label(
+        raw, parse_sealed=module._label_match_parse_sealed_transfer_qr,
+    )
+    assert shape == "MALFORMED" and "DUPLICATE_KEY" in reasons
+
+
+@pytest.mark.parametrize("quantity", ["abc", "0", "-1"])
+@pytest.mark.parametrize("kind", ["BND", "SEALED", "COMPACT"])
+def test_malformed_quantity_is_accepted_outside_the_ledger(tmp_path, monkeypatch, quantity, kind):
+    module = load_label_match_module()
+    if kind == "BND":
+        raw = BND_LABEL + "|QT=" + quantity
+    elif kind == "COMPACT":
+        raw = PHS2_LABEL + "|QT=" + quantity
+    else:
+        raw = (f"TRF=1|BND=T-QTY|AUTH_SCOPE=S-QTY|CLC={MASTER}|QT={quantity}"
+               f"|HSH={'a' * 64}|EPOCH=1|PLANE=AUTHORITATIVE|PE=1")
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in [raw, *_legacy_set(102)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["final_result"] == app.Results.PASS
+    assert details["transition_class"] == "PHS2_MALFORMED"
+    assert "QT_INVALID" in details["transition_reasons"]
+    assert _outbox_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("transition", [False, True])
+def test_valid_sealed_start_label_names_the_cause_and_next_step(tmp_path, monkeypatch, transition):
+    module = load_label_match_module()
+    raw = (f"TRF=1|BND=T-SEALED|AUTH_SCOPE=S-SEALED|CLC={MASTER}|QT=4"
+           f"|HSH={'b' * 64}|EPOCH=1|PLANE=AUTHORITATIVE|PE=1")
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=transition)
+    try:
+        _scan(module, app, raw)
+    finally:
+        _close(app)
+
+    [(title, message)] = app.errors  # approved: not a start label in either mode
+    assert title == "[PHS2 현품표 필요]" and app.current_set_info["raw"] == []
+    assert "이적 봉인 QR" in message and "원본 PHS2 현품표를 스캔" in message
+    assert "관리자" in message and "디스크" not in message
+
+
+def test_malformed_inspection_alias_keeps_the_resolved_item(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    raw = f"CLC=INSPECTION|ITEM={MASTER}|SPC=Product|PHS=1|BND="
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in [raw, *_legacy_set(103)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert app.errors == []
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["transition_class"] == "PHS2_MALFORMED" and details["item_code"] == MASTER
+
+
+@pytest.mark.parametrize("raw", [BND_LABEL + "|BND=", PHS2_LABEL + "|QT=abc"])
+def test_malformed_current_set_survives_a_real_save_and_load(tmp_path, monkeypatch, raw):
+    module = load_label_match_module()
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        for value in [raw, _legacy_set(104)[1]]:
+            _scan(module, app, value)
+        saved = copy.deepcopy(app.current_set_info)
+        assert app._save_current_set_state()
+    finally:
+        _close(app)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        restored._load_current_set_state()
+        assert restored.current_set_info["id"] == saved["id"]
+        assert restored.current_set_info["raw"] == saved["raw"]
+        assert restored.current_set_info["transition_class"] == "PHS2_MALFORMED"
+        assert not restored._central_inherit_all_active()
+    finally:
+        _close(restored)
+
+
+def test_second_cycle_of_a_label_survives_restore_and_counts_separately(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        for value in [OLD_QR, *_legacy_set(105)[1:]]:
+            _scan(module, app, value)
+        first_id = next(iter(app.set_details_map))
+        for value in [OLD_QR, _legacy_set(106)[1]]:
+            _scan(module, app, value)
+        second_id = app.current_set_info["id"]
+        assert second_id != first_id and app.current_set_info["transition_duplicate"]
+    finally:
+        _close(app)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        _load_history(module, restored)
+        restored._load_current_set_state()
+        assert restored.current_set_info["id"] == second_id
+        assert len(restored.current_set_info["raw"]) == 2
+        for value in _legacy_set(106)[2:]:
+            _scan(module, restored, value)
+        restored.data_manager.flush(timeout=5)
+        rows = _load_history(module, restored)["set_details_map"]
+        assert set(rows) == {first_id, second_id}
+        assert sum(bool(details["transition_duplicate"]) for details in rows.values()) == 1
+    finally:
+        _close(restored)
+
+
+def test_local_phs2_current_set_is_kept_after_midnight(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        app.global_scanned_set.add(PHS2_LABEL)
+        for value in [PHS2_LABEL, _legacy_set(107)[1]]:
+            _scan(module, app, value)
+        saved = copy.deepcopy(app.current_set_info)
+        assert saved["transition_class"] == "PHS2_LOCAL"
+    finally:
+        _close(app)
+
+    class Tomorrow(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=1)
+
+    monkeypatch.setattr(module, "datetime", Tomorrow)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        restored._load_current_set_state()
+        assert restored.current_set_info["raw"] == saved["raw"]
+        assert Path(restored._package_current_state_path()).exists()
+    finally:
+        _close(restored)
+
+
+def test_started_transition_cycle_keeps_its_class_after_switch_off(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        app.global_scanned_set.add(PHS2_LABEL)
+        for value in [PHS2_LABEL, _legacy_set(112)[1]]:
+            _scan(module, app, value)
+        assert app.current_set_info["transition_class"] == "PHS2_LOCAL"
+    finally:
+        _close(app)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    restored._legacy_label_transition_enabled = False
+    try:
+        restored._load_current_set_state()
+        for value in _legacy_set(112)[2:]:
+            _scan(module, restored, value)
+    finally:
+        _close(restored)
+
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["final_result"] == restored.Results.PASS and _outbox_rows(tmp_path) == []
+    assert details["transition_class"] == "PHS2_LOCAL" and details["transition_duplicate"] is True
+    assert details["package_logistics"]["status"] == LOCAL_STATUS
+
+
+def test_started_legacy_cycle_is_not_refused_after_switch_off(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    try:
+        for value in _legacy_set(113)[:2]:
+            _scan(module, app, value)
+        assert app.current_set_info["transition_class"] == "LEGACY"
+    finally:
+        _close(app)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    restored._legacy_label_transition_enabled = False
+    try:
+        restored._load_current_set_state()
+        for value in _legacy_set(113)[2:]:
+            _scan(module, restored, value)
+    finally:
+        _close(restored)
+
+    assert restored.errors == []
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["transition_class"] == "LEGACY" and _outbox_rows(tmp_path) == []
+
+
+@pytest.mark.parametrize("event", ["TRAY_COMPLETE", "TRAY_COMPLETION_CANCELLED", "SET_DELETED"])
+def test_transition_business_events_carry_a_stable_event_key(tmp_path, monkeypatch, event):
+    module = load_label_match_module()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
+    for name in ("showinfo", "showerror"):
+        monkeypatch.setattr(module.messagebox, name, lambda *a, **k: None)
+    try:
+        for value in _legacy_set(108):
+            _scan(module, app, value)
+        set_id = next(iter(app.set_details_map))
+        if event == "SET_DELETED":
+            _select_completed_rows(app)
+            app._delete_selected_row()
+        elif event == "TRAY_COMPLETION_CANCELLED":
+            app._cancel_completed_tray_by_label(MASTER)
+    finally:
+        _close(app)
+
+    [(_row, details)] = _events(tmp_path, event)
+    key = details["idempotency_key"]
+    assert isinstance(key, str) and 0 < len(key) <= 128
+    assert key == module.label_transition.event_key("PC-LT", set_id, event)
+    assert details["app_version"] == module.APP_VERSION
+
+
+@pytest.mark.parametrize("event", ["SET_DELETED", "TRAY_COMPLETION_CANCELLED"])
+def test_cancellation_retry_reuses_the_original_csv_row(tmp_path, monkeypatch, event):
+    module = load_label_match_module()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
+    for name in ("showinfo", "showerror"):
+        monkeypatch.setattr(module.messagebox, name, lambda *a, **k: None)
+    real_flush = app._flush_data_manager_if_supported
+    glitched = []
+
+    def flush(timeout=5):
+        real_flush(timeout=timeout)
+        if not glitched and _events(tmp_path, event):
+            glitched.append(1)
+            raise TimeoutError("cancellation append succeeded, flush status unavailable")
+
+    try:
+        for value in _legacy_set(111):
+            _scan(module, app, value)
+        if event == "SET_DELETED":
+            _select_completed_rows(app)
+            cancel = app._delete_selected_row
+        else:
+            cancel = lambda: app._cancel_completed_tray_by_label(MASTER)  # noqa: E731
+        app._flush_data_manager_if_supported = flush
+        cancel()
+        assert app.set_details_map, "the uncertain first cancellation keeps the target"
+        first = _events(tmp_path, event)
+        assert len(first) == 1
+        cancel()
+        app.data_manager.flush(timeout=5)
+        assert _events(tmp_path, event) == first  # same row, same timestamp
+    finally:
+        _close(app)
+
+
+def test_failed_completion_stays_out_of_the_banner_after_restart(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in _legacy_set(109)[:2]:
+            _scan(module, app, value)
+        app._finalize_set(app.Results.FAIL_MISMATCH, "wrong item")
+        app.data_manager.flush(timeout=5)
+        app.legacy_transition_label = FakeWidget()
+        app._render_legacy_transition_banner()
+        before = app.legacy_transition_label.options["text"]
+        _load_history(module, app)
+        app._render_legacy_transition_banner()
+        assert app.legacy_transition_label.options["text"] == before
+        assert before.endswith("오늘 옛 방식 0 · 중앙 0 · 로컬 0 · 형식 오류 0 · 중복 0")
+    finally:
+        _close(app)
+
+
+@pytest.mark.parametrize("failure_stage", ["lookup", "apply"])
+@pytest.mark.parametrize("transition", [False, True])
+def test_f3_source_refresh_refusal_completes_locally_before_any_command(
+    tmp_path, monkeypatch, failure_stage, transition,
+):
+    module = load_label_match_module()
+    app, actions, _clock = _b1_app(module, tmp_path, monkeypatch)
+    app._legacy_label_transition_enabled = transition
+    app.current_set_info.pop("package_source_snapshot", None)
+    app.ui_lane = object()
+    submitted = []
+    app._submit_ui_lane_task = lambda **task: submitted.append(task) or SimpleNamespace(accepted=True)
+    app._publish_submission_block = lambda error: actions.append("preflight:" + str(error))
+
+    def refuse(*_args, **_kwargs):
+        raise module.PackageLogisticsError("PACKAGE_PREVIEW_MISMATCH")
+
+    if failure_stage == "lookup":
+        app._resolve_central_phs2_seal_for_exchange = refuse
+    else:
+        app._resolve_central_phs2_seal_for_exchange = lambda *a: ({}, {}, {})
+        app._apply_resolved_central_phs2_seal = refuse
+    try:
+        assert app._begin_central_package_submission()
+        [task] = submitted[:1]
+        try:
+            value = task["work"]()
+        except Exception as error:  # the base lane delivers it to fail()
+            task["fail"](error)
+        else:
+            task["finish"](value)
+        if len(submitted) > 1:  # the local completion itself runs on the lane
+            completion = submitted[1]
+            completion["finish"](completion["work"]())
+    finally:
+        _b1_close(app.data_manager)
+    commands, rows = _b1_rows(tmp_path)
+    assert commands == []
+    if not transition:
+        assert rows == [] and any("PACKAGE_PREVIEW_MISMATCH" in str(item) for item in actions)
+        return
+    [(_row, details)] = rows
+    assert _transition(details) == {
+        "transition_class": "PHS2_LOCAL", "transition_reasons": ["PACKAGE_PREVIEW_MISMATCH"],
+        "transition_duplicate": False,
+    }
+
+
+def test_emitted_transition_reasons_are_upper_case_codes(tmp_path, monkeypatch):
+    import re
+
+    module = load_label_match_module()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    try:
+        for value in [BND_LABEL + "|BND=", *_legacy_set(110)[1:]]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["transition_reasons"]
+    assert all(re.fullmatch(r"[A-Z0-9_]+", code) for code in details["transition_reasons"])
+
+
+def test_local_f3_decision_never_becomes_central_on_a_flush_retry(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, actions, clock = _b1_app(module, tmp_path, monkeypatch)
+    app._legacy_label_transition_enabled = True
+    real_draft = module._label_match_package_draft
+    draft_calls = []
+
+    def draft(*args, **kwargs):
+        draft_calls.append(1)
+        if len(draft_calls) == 1:
+            raise module.OperationLeaseError("OPERATION_LEASE_REQUIRED", "first lookup failure")
+        return real_draft(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_label_match_package_draft", draft)
+    real_flush = app._flush_data_manager_if_supported
+    glitched = []
+
+    def flush(timeout=5):
+        real_flush(timeout=timeout)
+        if not glitched and _b1_rows(tmp_path)[1]:
+            glitched.append(1)
+            raise TimeoutError("completion append succeeded, flush status unavailable")
+
+    app._flush_data_manager_if_supported = flush
+    try:
+        app._begin_central_package_submission()
+        commands, first_rows = _b1_rows(tmp_path)
+        assert commands == [] and first_rows[0][1]["transition_class"] == "PHS2_LOCAL"
+        clock.instant += timedelta(seconds=3)
+        app._finalize_set(app.Results.PASS)  # operator retry; the draft would pass now
+        app.data_manager.flush(timeout=5)
+        commands, rows = _b1_rows(tmp_path)
+        assert rows == first_rows
+        assert commands == [], "a pinned PHS2_LOCAL completion stays outside the package outbox"
+    finally:
+        _b1_close(app.data_manager)
+
+
+@pytest.mark.parametrize("field,bad_value", [
+    ("transition_class", []), ("transition_reasons", "free text"), ("transition_duplicate", "false"),
+])
+def test_current_state_transition_fields_keep_their_types(field, bad_value):
+    from label_recovery_schema import validate_recovery_record
+
+    state = {"current_set_info": {"id": "set-type-check", "raw": [MASTER], field: bad_value}}
+    assert validate_recovery_record("current", state) is False
+    good = {"current_set_info": {"id": "set-type-check", "raw": [MASTER],
+                                 "transition_class": "LEGACY", "transition_reasons": ["QT_INVALID"],
+                                 "transition_duplicate": False}}
+    assert validate_recovery_record("current", good) is True
+
+
+@pytest.mark.parametrize("live_claim", [False, True])
+def test_transition_capture_cancellation_preserves_an_unsafe_state(tmp_path, monkeypatch, live_claim):
+    from tests.test_deferred_intent_capture import _capture, _row, _store
+
+    module = load_label_match_module()
+    db_path, outbox, store = _store(tmp_path)
+    captured = _capture(store, set_id="SET-TRANSITION-CAPTURE", scan=PHS2_LABEL)
+    if live_claim:
+        assert store.claim_validation(captured.intent_id, worker_id="still-validating")
+    before = _row(db_path, captured.intent_id)
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    app.deferred_intent_capture = store
+    app.package_outbox = outbox
+    app.current_set_info.update(id=before["local_work_identity"], deferred_intent_id=captured.intent_id)
+    app._operation_lease_request_context = lambda scan: (store.binding.authority_scope_id, "")
+    try:
+        accepted = app._transition_accept_blocked_phs2(
+            module.PackageLogisticsError("read-only source unavailable"), PHS2_LABEL, MASTER)
+        after = _row(db_path, captured.intent_id)
+        if live_claim:
+            assert not accepted and before == after and app.current_set_info["raw"] == []
+        else:
+            assert accepted and after["state"] == "CANCELLED"
+            assert app.current_set_info["transition_class"] == "PHS2_LOCAL"
+            assert "deferred_intent_id" not in app.current_set_info
+            second = _capture(store, set_id="SET-NEXT", scan=PHS2_LABEL + "-NEXT")
+            assert store.next_validation_candidate() == second.intent_id
+        assert _outbox_rows(tmp_path) == []
+    finally:
+        _close(app)
+
+
+def test_documented_powershell_measurement_counts_a_real_csv(tmp_path, monkeypatch):
+    import re
+    import subprocess
+
+    module = load_label_match_module()
+    app, _ = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(module.messagebox, "showinfo", lambda *a, **k: None)
+    try:
+        for value in _legacy_set(114):
+            _scan(module, app, value)
+        app._cancel_completed_tray_by_label(MASTER)
+        for value in _legacy_set(115)[:2]:
+            _scan(module, app, value)
+        app._finalize_set(app.Results.FAIL_MISMATCH, "wrong item")
+    finally:
+        _close(app)
+    operations = (Path(__file__).resolve().parents[1] / "docs/spec/operations.md").read_text(encoding="utf-8")
+    section = operations.split('<a id="legacy-label-transition"></a>', 1)[1].split("<a id=", 1)[0]
+    [documented] = [block for block in re.findall(r"```powershell\n(.*?)```", section, re.S)
+                    if "Group-Object" in block]
+    script = documented.replace(
+        r"$env:LOCALAPPDATA\KMTech\Label_Match\data\포장실작업이벤트로그_*_$d.csv",
+        str(tmp_path / "포장실작업이벤트로그_*_$d.csv"),
+    )
+    script = ("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n" + script.rstrip()
+              + " | Select-Object Count,Name | ConvertTo-Json -Compress\n")
+    path = tmp_path / "measurement.ps1"
+    path.write_text(script, encoding="utf-8-sig")
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(path)],
+                            capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert result.returncode == 0, result.stderr
+    measured = json.loads(result.stdout.strip())
+    # The documented count includes the later-cancelled and the failed row.
+    assert measured["Count"] == 2 and measured["Name"].startswith("LEGACY")
+
+
+def _transition_relay_batch(tmp_path, rows):
+    from tests.test_direct_sync_push import enqueue_source_file_for_relay, make_credentials, make_manifest
+
+    _manifest, manifest_path = make_manifest(tmp_path)
+    path = tmp_path / "transition.csv"
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["timestamp", "worker_name", "event", "details"])
+        for event, details in rows:
+            writer.writerow(["2026-09-29T05:00:00", "worker", event, json.dumps(details)])
+    return enqueue_source_file_for_relay(
+        db_path=tmp_path / "relay.sqlite3", spool_dir=tmp_path / "spool",
+        source_file_path=path, producer_manifest_path=manifest_path,
+        credentials=make_credentials(),
+    )
+
+
+_DUPLICATE_ROW = ("TRAY_COMPLETE", {
+    "set_id": "set-dup", "transition_class": "PHS2_LOCAL", "transition_reasons": ["DUPLICATE_LABEL"],
+    "transition_duplicate": True, "idempotency_key": "LM-TRAY_COMPLETE-" + "a" * 40,
+})
+
+
+@pytest.mark.parametrize(("rows", "reason", "accepted"), [
+    pytest.param([_DUPLICATE_ROW], "TRANSITION_DUPLICATE_OBSERVED", True, id="duplicate-completion"),
+    pytest.param([("APP_CLOSE", {"message": "closed"}), _DUPLICATE_ROW],
+                 "TRANSITION_DUPLICATE_OBSERVED", True, id="lifecycle-and-duplicate"),
+    pytest.param([_DUPLICATE_ROW], "NO_STAGE1_REDUCER", False, id="wrong-reason"),
+    pytest.param([("TRAY_COMPLETE", {"set_id": "set-base"})], "TRANSITION_DUPLICATE_OBSERVED",
+                 False, id="base-completion"),
+])
+def test_relay_accepts_a_raw_transition_duplicate_receipt_only_exactly(
+    tmp_path, monkeypatch, rows, reason, accepted,
+):
+    from collections import Counter
+
+    import direct_sync_push
+    from tests.test_direct_sync_push import (
+        FakeResponse, FakeSession, RuntimePreparation, _raw_lifecycle_receipt, make_credentials,
+    )
+
+    # As tests/test_direct_sync_push.py isolates relay receipts from runtime leases.
+    monkeypatch.setattr(direct_sync_push, "prepare_runtime_metadata",
+                        lambda **kwargs: RuntimePreparation(metadata=dict(kwargs["metadata"])))
+    monkeypatch.setattr(direct_sync_push, "client_runtime_lease_mode", lambda _credentials: "observe")
+    drain_one_relay_batch = direct_sync_push.drain_one_relay_batch
+
+    row = _transition_relay_batch(tmp_path, rows)
+    names = [event for event, _details in rows]
+    receipt = _raw_lifecycle_receipt(row, tuple(names))
+    for entry in receipt["projection_observation"]["event_classifications"]:
+        if entry["raw_event_name"] == "TRAY_COMPLETE":
+            entry["raw_only_reason_code"] = reason
+    assert sum(entry["count"] for entry in receipt["projection_observation"]["event_classifications"]) == len(rows)
+    assert Counter(names) == Counter({entry["raw_event_name"]: entry["count"]
+                                      for entry in receipt["projection_observation"]["event_classifications"]})
+    result = drain_one_relay_batch(
+        db_path=tmp_path / "relay.sqlite3", credentials=make_credentials(),
+        session=FakeSession(FakeResponse(200, receipt)), status_dir=tmp_path / "status",
+    )
+    assert result.success is accepted
+    if not accepted:
+        assert result.error_code == "producer_projection_incomplete"
