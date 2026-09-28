@@ -31,6 +31,7 @@ from tests.test_label_match_core import (
     _FakeProgressBar,
     load_label_match_module,
 )
+from tests.test_deferred_lease_clock_retry import _first_scan, clock_case  # noqa: F401
 from tests.test_label_operator_action_gates import FakeWidget, _render_app
 
 MASTER = "AAA2270730100"
@@ -677,6 +678,57 @@ def test_offline_phs2_lookup_is_kept_as_a_local_five_scan_set(tmp_path, monkeypa
     }
     assert details["scan_count"] == 5 and details["packaging_scan_mode"] == "LEGACY_QA_SAMPLES"
     assert _outbox_rows(tmp_path) == []
+
+
+def test_on_real_capture_store_cancels_the_offline_phs2_before_the_local_set(clock_case, monkeypatch):
+    """Production capture store and cancellation; only the read is offline."""
+
+    from unittest.mock import Mock
+
+    from package_logistics import PackageTransportError
+    from tests.test_deferred_intent_capture import _row
+
+    case = clock_case
+    app = case.app
+    app.package_logistics_client.resolve_package_source_evidence = Mock(
+        side_effect=PackageTransportError("offline read")
+    )
+    intent_id = _first_scan(case)  # the base first scan: captured, read failed
+    outcome = app.deferred_intent_capture.validation_status(intent_id)
+    assert outcome.state == "RETRY_WAIT_VALIDATION" and app.current_set_info["raw"] == []
+
+    events = []
+    app.tk = SimpleNamespace()  # No Tcl interpreter in this storage fixture.
+    app.history_view_updates_active_state = True
+    app.data_manager = SimpleNamespace(log_event=lambda *event: events.append(event))
+    app.run_tests = False
+    app.is_running_simulation = False
+    app._legacy_label_transition_enabled = True
+    app.worker_name = "worker-lt"
+    app.progress_bar = _FakeProgressBar()
+    for name in ("update_big_display", "_update_status_label", "_update_history_tree_in_progress",
+                 "_render_operator_workbench", "_play_sound", "_clear_workflow_completion"):
+        setattr(app, name, lambda *a, **k: None)
+    app._save_current_set_state = lambda: True
+    warnings = []
+    module = load_label_match_module()
+    monkeypatch.setattr(module.messagebox, "showwarning", lambda title, *a, **k: warnings.append(title))
+
+    assert app._transition_accept_blocked_phs2(
+        outcome, case.group["scan_payload"], case.group["item_id"],
+    ) is True
+    assert _row(case.database, intent_id)["state"] == "CANCELLED"
+    assert app.current_set_info["raw"] == [case.group["scan_payload"]]
+    assert "deferred_intent_id" not in app.current_set_info
+    assert _transition(app.current_set_info) == {
+        "transition_class": "PHS2_LOCAL", "transition_reasons": ["PACKAGE_TRANSPORT_UNAVAILABLE"],
+        "transition_duplicate": False,
+    }
+    assert app._central_inherit_all_active() is False  # five scans follow
+    assert warnings == ["중앙 확인 불가 · 과도기 로컬 기록"]
+    with closing(sqlite3.connect(case.database)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM package_command_outbox").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM package_operation_leases").fetchone()[0] == 0
 
 
 def test_on_held_phs2_label_is_kept_local(tmp_path, monkeypatch):
