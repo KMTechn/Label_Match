@@ -116,9 +116,15 @@ def _finish(app, root, release):
 
 
 def _teardown(app, root, release):
+    # Close the lane even when broken: its worker thread is not a daemon and
+    # only close_idle() stops it (as Label_Match.destroy() does), so a lane
+    # left open kept pytest from exiting.
     release.set()
     try:
-        if app.ui_lane.state is not LaneState.BROKEN:
+        if app.ui_lane.state is LaneState.BROKEN:
+            app.ui_lane.close_idle()
+            assert str(app.ui_lane.state) == "CLOSED"
+        else:
             _close_lane(app, root)
     finally:
         _close(app)
@@ -249,8 +255,7 @@ def test_closing_during_the_save_refuses_the_held_scan_before_it_closes(tmp_path
         assert _attempts(app) == _legacy_set(60)  # the held scan never ran
         assert "TRAY_COMPLETE" in [event for event, _details in _logged(app)]  # the save itself finished
     finally:
-        release.set()
-        _close(app)
+        _teardown(app, root, release)
 
 
 @pytest.mark.parametrize("change", ["f1-reset", "generation"])
@@ -298,8 +303,7 @@ def test_a_lane_fault_during_the_save_refuses_the_held_scans_aloud(tmp_path, mon
         assert app.__dict__.get("_scans_behind_completion") in (None, [])
         assert _attempts(app) == _legacy_set(60)
     finally:
-        release.set()
-        _close(app)
+        _teardown(app, root, release)
 
 
 def _render_completion_save(app, gate):
