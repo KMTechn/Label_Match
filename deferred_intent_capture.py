@@ -26,6 +26,7 @@ import time
 from typing import Any, Callable, Mapping
 from ctypes import wintypes
 
+from carrier_identity_port import parse_compact_carrier
 from logistics_runtime_profile import (
     protect_current_user_secret,
     unprotect_current_user_secret,
@@ -241,10 +242,15 @@ _TERMINAL_STATES = frozenset({"COMPLETED", "CANCELLED", "SUPERSEDED"})
 
 def label_partition_key(physical_qr_payload: str) -> str:
     """One ordering partition per physical label: FIFO holds inside a label,
-    and one unfinished label never stops another."""
+    and one unfinished label never stops another. A label is its parsed
+    canonical fields, so spellings the parser reads as one label share it."""
 
-    digest = hashlib.sha256(str(physical_qr_payload or "").strip().encode("utf-8")).hexdigest()
-    return f"{LABEL_PARTITION_KEY}/{digest}"
+    value = str(physical_qr_payload or "").strip()
+    try:
+        identity = canonical_json_bytes(parse_compact_carrier(value))
+    except ValueError:
+        identity = value.encode("utf-8")
+    return f"{LABEL_PARTITION_KEY}/{hashlib.sha256(identity).hexdigest()}"
 
 
 class _DataBlob(ctypes.Structure):
@@ -4214,34 +4220,44 @@ class DeferredIntentCaptureStore:
             conn.close()
 
     def open_label_capture(self, physical_qr_payload: str) -> dict[str, Any] | None:
-        """The earliest unfinished capture of this physical label, if any."""
+        """The earliest unfinished capture of this physical label, if any, with
+        the label exactly as it was captured (F1 later proves it)."""
 
         placeholders = ",".join("?" for _ in _TERMINAL_STATES)
         conn = self._connect()
         try:
             row = conn.execute(
-                f"""SELECT intent_id,local_work_identity,state FROM deferred_intents
+                f"""SELECT * FROM deferred_intents
                      WHERE app_id=? AND producer_install_id=? AND authority_scope_id=?
                        AND partition_key=? AND state NOT IN ({placeholders})
                      ORDER BY partition_seq LIMIT 1""",
                 (LABEL_APP_ID, self.binding.producer_install_id, self.binding.authority_scope_id,
                  label_partition_key(physical_qr_payload), *sorted(_TERMINAL_STATES)),
             ).fetchone()
-            return dict(row) if row else None
         finally:
             conn.close()
+        if row is None:
+            return None
+        payload = json.loads(self._unprotect_label_owned_payload(dict(row)))
+        return {"intent_id": row["intent_id"], "local_work_identity": row["local_work_identity"],
+                "state": row["state"], "physical_qr_payload": str(payload.get("physical_qr_payload") or "")}
 
     def review_captures(self) -> list[dict[str, Any]]:
-        """Captures waiting for an administrator, attached to a set or not."""
+        """Captures waiting for an administrator, attached to a set or not, and
+        every unfinished capture left in the shared pre-w9lmp1fix partition."""
 
+        placeholders = ",".join("?" for _ in _TERMINAL_STATES)
         conn = self._connect()
         try:
             return [dict(row) for row in conn.execute(
-                """SELECT intent_id,local_work_identity,state,last_reason_code FROM deferred_intents
-                    WHERE app_id=? AND producer_install_id=? AND authority_scope_id=?
-                      AND state IN ('BLOCKED_INVALID','OPERATOR_REVIEW')
-                    ORDER BY created_at,intent_id""",
-                (LABEL_APP_ID, self.binding.producer_install_id, self.binding.authority_scope_id),
+                f"""SELECT intent_id,local_work_identity,state,last_reason_code,partition_key
+                      FROM deferred_intents
+                     WHERE app_id=? AND producer_install_id=? AND authority_scope_id=?
+                       AND (state IN ('BLOCKED_INVALID','OPERATOR_REVIEW')
+                            OR (partition_key=? AND state NOT IN ({placeholders})))
+                     ORDER BY created_at,intent_id""",
+                (LABEL_APP_ID, self.binding.producer_install_id, self.binding.authority_scope_id,
+                 LABEL_PARTITION_KEY, *sorted(_TERMINAL_STATES)),
             )]
         finally:
             conn.close()

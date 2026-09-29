@@ -67,6 +67,7 @@ from deferred_intent_capture import (
     DeferredIntentCaptureStore,
     DeferredValidationClaim,
     DeferredValidationResult,
+    label_partition_key,
     operator_safe_reason_code,
 )
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
@@ -4869,7 +4870,9 @@ class Label_Match(tk.Tk):
         try:
             if str(current.get("deferred_intent_id") or "").strip():
                 self._cancel_deferred_capture_for_set(
-                    {**current, "physical_scanned_qr_payload": physical_qr}
+                    {**current, "physical_scanned_qr_payload": str(
+                        current.get("physical_scanned_qr_payload") or physical_qr
+                    )}
                 )
         except Exception as error:
             print(
@@ -10395,7 +10398,9 @@ class Label_Match(tk.Tk):
                 if item.get("orphan_path"):
                     condition += " · 이동 의도 없는 보류 파일: " + item["orphan_path"]
                 if item.get("capture"):
-                    condition += " · 현품표 저장본 관리자확인"
+                    condition += (" · 현품표 저장본 관리자확인"
+                                  if item["capture"]["state"] in {"BLOCKED_INVALID", "OPERATOR_REVIEW"}
+                                  else " · 이전 판 미완료 현품표 저장본")
                 if item.get("changed_hold"):
                     changed = item["changed_hold"]
                     condition += (" · TARGET_CHANGED_DURING_HOLD 원SHA "
@@ -12886,12 +12891,16 @@ class Label_Match(tk.Tk):
             "pending_count": pending_count,
             "oldest_age_seconds": oldest_age,
             "reason_code": reason_code,
+            "state": state,
             "next_attempt_at": getattr(result, "next_attempt_at", None),
             "operator_complete_signal": state == "COMPLETED",
         }
 
     def _deferred_capture_pending_notice(self):
         state = self.__dict__.get("_deferred_capture_ui") or {}
+        own_capture = bool(state.get("intent_id")) and state.get("intent_id") == str(
+            (self.__dict__.get("current_set_info") or {}).get("deferred_intent_id") or ""
+        ).strip()
         if (
             state.get("status") == "저장됨-검증대기"
             and state.get("reason_code") == "OPERATION_LEASE_NOT_YET_VALID"
@@ -12928,8 +12937,14 @@ class Label_Match(tk.Tk):
                 title=str(state.get("status")),
                 message={
                     "관리자확인": (
-                        "이 현품표 저장본은 관리자 확인이 필요합니다. 실물은 따로 두고 "
-                        "다음 현품표를 스캔하면 새 세트로 진행됩니다(F1로 먼저 비워도 됩니다). "
+                        "중앙 확인이 이 현품표를 받지 않았습니다. F1로 비우고 다음 현품표를 "
+                        "진행하세요(다음 현품표를 바로 스캔해도 새 세트가 됩니다). "
+                        "CA 봉인 뒤 다시 하려면 F1 후 같은 현품표를 다시 스캔하세요. "
+                        "관리자는 작업대 건별 복구에서 이 건만 확인합니다."
+                        # F1 closes only a refused read on the set's own capture.
+                        if state.get("state") == "BLOCKED_INVALID" and own_capture
+                        else "이 현품표 저장본은 관리자 확인이 필요합니다. 실물은 따로 두고 "
+                        "다음 현품표를 스캔하면 새 세트로 진행됩니다. "
                         "관리자는 작업대 건별 복구에서 이 건만 확인·보류합니다."
                     ),
                     "결과확인중": "처리 결과를 확인 중입니다. 같은 작업을 다시 제출하지 마세요.",
@@ -12960,9 +12975,13 @@ class Label_Match(tk.Tk):
             title="저장됨-검증대기",
             message=(
                 f"대기 {pending_count}건 · 최장 {oldest_age}초\n"
-                f"{next_step}\n"
-                "다른 현품표를 스캔해도 이 저장본은 계속 확인되고, "
-                "같은 현품표를 다시 스캔하면 이어집니다."
+                f"{next_step}"
+                + (
+                    "\n다른 현품표를 스캔해도 이 저장본은 계속 확인되고, "
+                    "같은 현품표를 다시 스캔하면 이어집니다."
+                    if own_capture
+                    else ""
+                )
             ),
             kind="deferred_capture_pending",
             tone="warning",
@@ -13055,12 +13074,16 @@ class Label_Match(tk.Tk):
         open_capture = getattr(
             self.__dict__.get("deferred_intent_capture"), "open_label_capture", None
         )
-        return open_capture(physical_qr_payload) if callable(open_capture) else None
+        try:
+            return open_capture(physical_qr_payload) if callable(open_capture) else None
+        except DeferredIntentCaptureError as error:
+            print(f"PHS2 capture resume technical diagnostic: {error.code}")
+            return None
 
     def _capture_or_resume_central_phs2_scan(
         self, physical_qr_payload, item_code, local_work_identity, resumed
     ):
-        if resumed is not None and resumed["state"] != "CAPTURED_UNVERIFIED":
+        if resumed is not None:
             return self.deferred_intent_capture.validation_status(resumed["intent_id"])
         return self._capture_central_phs2_scan(
             physical_qr_payload, item_code, local_work_identity,
@@ -13077,7 +13100,9 @@ class Label_Match(tk.Tk):
         ).strip():
             return False
         own = str(current.get("physical_scanned_qr_payload") or "").strip()
-        if physical_qr_payload is not None and own == str(physical_qr_payload).strip():
+        if physical_qr_payload is not None and label_partition_key(own) == label_partition_key(
+            physical_qr_payload
+        ):
             return False
         current["id"] = None
         current.pop("deferred_intent_id", None)
@@ -13303,7 +13328,7 @@ class Label_Match(tk.Tk):
                 central_check_pending=True,
                 local_work_identity=captured_set_id,
                 on_capture_committed=on_capture_committed,
-                physical_qr_payload=physical_qr_payload,
+                physical_qr_payload=(resumed or {}).get("physical_qr_payload") or physical_qr_payload,
             )
             validation_work = self._prepare_deferred_label_validation(
                 capture_result
@@ -13434,7 +13459,7 @@ class Label_Match(tk.Tk):
                     or ""
                 ),
                 on_capture_committed=on_capture_committed,
-                physical_qr_payload=physical_qr_payload,
+                physical_qr_payload=(resumed or {}).get("physical_qr_payload") or physical_qr_payload,
             )
         except Exception as exc:
             print(

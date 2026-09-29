@@ -378,12 +378,51 @@ def test_review_capture_set_is_listed_for_hold_and_continue(tmp_path, state):
     assert candidates["SET-FLOATING"]["capture"]["state"] == state
 
 
-def test_review_notice_names_the_next_step():
+@pytest.mark.parametrize(("status", "state", "own", "says", "never"), [
+    ("관리자확인", "BLOCKED_INVALID", True, ("F1", "CA 봉인 뒤", "같은 현품표를 다시 스캔", "건별 복구"), ()),
+    ("관리자확인", "OPERATOR_REVIEW", True, ("건별 복구", "다음 현품표"), ("F1",)),
+    ("관리자확인", "BLOCKED_INVALID", False, ("건별 복구", "다음 현품표"), ("F1",)),
+    ("저장됨-검증대기", "RETRY_WAIT_VALIDATION", True, ("다시 스캔하면 이어",), ()),
+    ("저장됨-검증대기", "RETRY_WAIT_VALIDATION", False, (), ("이어",)),
+])
+def test_review_notice_names_the_next_step(status, state, own, says, never):
+    """F1 is offered only where it closes the capture; resuming by rescan
+    only for the set's own capture."""
     module = load_label_match_module()
     app = module.Label_Match.__new__(module.Label_Match)
-    app._deferred_capture_ui = {"status": "관리자확인"}
+    app.current_set_info = {"id": "SET-N", "raw": [], "deferred_intent_id": "di_own"}
+    app._deferred_capture_ui = {"status": status, "state": state,
+                                "intent_id": "di_own" if own else "di_other"}
     message = app._deferred_capture_pending_notice().message
-    assert "F1" in message and "건별 복구" in message
+    assert all(text in message for text in says), message
+    assert not any(text in message for text in never), message
+
+
+def test_spellings_of_one_label_share_its_partition(tmp_path):
+    """The parser reads key case and spaces around separators as one label."""
+    from deferred_intent_capture import label_partition_key
+    variant = PHS2_LABEL.replace("|", " | ").replace("PHS=", "phs=").replace("KMTECH_INPUT_TAG", "kmtech_input_tag")
+    assert variant != PHS2_LABEL
+    assert label_partition_key(variant) == label_partition_key(PHS2_LABEL)
+    assert label_partition_key(OTHER_PHS2) != label_partition_key(PHS2_LABEL)
+    _db, _outbox, store = _store(tmp_path)
+    first = _capture(store, set_id="SET-SPELL-1", scan=PHS2_LABEL)
+    second = _capture(store, set_id="SET-SPELL-2", scan=variant)
+    assert _row(store.db_path, first.intent_id)["partition_key"] == _row(store.db_path, second.intent_id)["partition_key"]
+    assert store.claim_validation(second.intent_id, worker_id="p1fix-spell", now=NOW) is None  # FIFO inside the label
+    assert store.open_label_capture(variant)["physical_qr_payload"] == PHS2_LABEL  # the label as captured
+
+
+def test_unfinished_capture_in_the_old_shared_partition_is_listed(tmp_path):
+    """A 92abdaa capture waiting in the old partition never stays silent."""
+    from deferred_intent_capture import LABEL_PARTITION_KEY
+    _db, _outbox, store = _store(tmp_path)
+    old = store.capture_label_package_source(local_work_identity="SET-OLD-PART", physical_qr_payload="PHS2-OLD",
+                                             item_code="ITEM-LABEL-1", partition_key=LABEL_PARTITION_KEY)
+    app = _recovery_app(store, {"id": None, "raw": [], "deferred_intent_id": old.intent_id})  # nothing on screen
+    candidates = {row["set_id"]: row for row in app._package_recovery_candidates()}
+    assert candidates["SET-OLD-PART"]["capture"]["intent_id"] == old.intent_id
+    assert candidates["SET-OLD-PART"]["capture"]["state"] == "CAPTURED_UNVERIFIED"
 
 
 # --- P1-5: 30 seconds of clock tolerance, the same as the server ---------------------------

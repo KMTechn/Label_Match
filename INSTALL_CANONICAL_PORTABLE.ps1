@@ -508,10 +508,10 @@ shared_transition = all(
 legacy_label_replacements = {
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-        'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
+        '8a10462f6621a99b62c816308fed800072a8c88e363aa9063c85ec9249f3951a'),
     'app/deferred_intent_capture.py': (
         'e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
-        '434e07810197946a4cc69cf97fdf254dcec0661bbfb208dccba9cc61c5d9d51a'),
+        '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
     'app/direct_sync_push.py': (
         '21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
         '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'),
@@ -561,16 +561,16 @@ legacy_label_transition = all(
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {
     ('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-     'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
+     '8a10462f6621a99b62c816308fed800072a8c88e363aa9063c85ec9249f3951a'),
     ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-     'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
+     '8a10462f6621a99b62c816308fed800072a8c88e363aa9063c85ec9249f3951a'),
     ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-     'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
+     '8a10462f6621a99b62c816308fed800072a8c88e363aa9063c85ec9249f3951a'),
 }
 scan_input_companions = {
     'app/deferred_intent_capture.py': (
         'e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
-        '434e07810197946a4cc69cf97fdf254dcec0661bbfb208dccba9cc61c5d9d51a'),
+        '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
     'app/label_completion.py': (
         'aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
         'd0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492'),
