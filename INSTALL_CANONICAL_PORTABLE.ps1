@@ -508,13 +508,16 @@ shared_transition = all(
 legacy_label_replacements = {
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-        'b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d'),
+        'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
+    'app/deferred_intent_capture.py': (
+        'e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
+        '434e07810197946a4cc69cf97fdf254dcec0661bbfb208dccba9cc61c5d9d51a'),
     'app/direct_sync_push.py': (
         '21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
         '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'),
     'app/label_completion.py': (
         '25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
-        'aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8'),
+        'd0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492'),
     'app/label_recovery_schema.py': (
         '52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
         'e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462'),
@@ -524,6 +527,9 @@ legacy_label_replacements = {
     'app/logistics_runtime_profile.py': (
         'a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
         '2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed'),
+    'app/terminal_operation_lease.py': (
+        '4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
+        'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
     'app/ui/workflow_snapshot_adapter.py': (
         'f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
         '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'),
@@ -545,22 +551,42 @@ legacy_label_transition = all(
     for relative, expected in legacy_label_additions.items()
 )
 
-# c83c72c (w9lmtransit) or 817d393 (its w9lmscanmsg 1733-only cut, a TEST1
-# candidate) -> w9lmscanmsg only: scanner-only input fixes in Label_Match.py
-# (w9scanflow). No writer, stored state or other file changes; everything
-# else stays checked and downgrade is not admitted.
+# c83c72c (w9lmtransit), 817d393 (its w9lmscanmsg 1733-only cut, a TEST1
+# candidate) or 92abdaa (w9lmscanmsg) -> w9lmp1fix only: scanner-only input
+# fixes (w9scanflow), and a refused read-only label check that stops only its
+# own label plus the 30 s lease clock tolerance (w9lmp1fix) in Label_Match.py
+# and the three companion modules, identical in all three installs. No writer
+# or other file changes; the capture edge guard is rewritten by the ordinary
+# initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {
     ('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-     'b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d'),
+     'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
     ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-     'b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d'),
+     'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
+    ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
+     'd6411cea41eb86e0623e0e1f8edc113d2e9fe1ea48cf6a704f19d10adf3332e5'),
+}
+scan_input_companions = {
+    'app/deferred_intent_capture.py': (
+        'e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
+        '434e07810197946a4cc69cf97fdf254dcec0661bbfb208dccba9cc61c5d9d51a'),
+    'app/label_completion.py': (
+        'aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
+        'd0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492'),
+    'app/terminal_operation_lease.py': (
+        '4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
+        'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
 }
 scan_input_transition = (
     (installed / scan_input_path).is_file() and
     (source / scan_input_path).is_file() and
     (release_digest(installed / scan_input_path),
      release_digest(source / scan_input_path)) in scan_input_pairs
+) and all(
+    (installed / relative).is_file() and (source / relative).is_file() and
+    release_digest(installed / relative) == before and release_digest(source / relative) == after
+    for relative, (before, after) in scan_input_companions.items()
 )
 
 candidate_pin, candidate_sources = identity(source)
@@ -579,7 +605,7 @@ for directory in ('app', 'runtime'):
             continue
         if integrity_order_transition and relative == integrity_order_path:
             continue
-        if scan_input_transition and relative == scan_input_path:
+        if scan_input_transition and relative in ({scan_input_path} | scan_input_companions.keys()):
             continue
         if legacy_label_transition and relative in (legacy_label_replacements.keys() | legacy_label_additions.keys()):
             continue

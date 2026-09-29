@@ -176,7 +176,8 @@ def test_signed_future_f3_retries_original_request_after_restart(clock_case):
     app.package_operation_lease_keyring = lease_module.PinnedOperationLeaseKeyring(
         app.package_operation_lease_keyring.path,
     )
-    case.instant[0] += timedelta(seconds=39)
+    # Still 31 s behind the grant: beyond the server's 30 s clock skew.
+    case.instant[0] += timedelta(seconds=9)
     with pytest.raises(lease_module.OperationLeaseError) as blocked:
         _queue_f3(case)
     assert blocked.value.code == "OPERATION_LEASE_NOT_YET_VALID"

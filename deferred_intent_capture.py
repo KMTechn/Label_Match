@@ -239,6 +239,14 @@ _OPERATOR_REASON_CODE_ALLOWLIST = frozenset(
 _TERMINAL_STATES = frozenset({"COMPLETED", "CANCELLED", "SUPERSEDED"})
 
 
+def label_partition_key(physical_qr_payload: str) -> str:
+    """One ordering partition per physical label: FIFO holds inside a label,
+    and one unfinished label never stops another."""
+
+    digest = hashlib.sha256(str(physical_qr_payload or "").strip().encode("utf-8")).hexdigest()
+    return f"{LABEL_PARTITION_KEY}/{digest}"
+
+
 class _DataBlob(ctypes.Structure):
     _fields_ = (
         ("cbData", wintypes.DWORD),
@@ -879,7 +887,7 @@ WHEN NEW.state <> OLD.state AND NOT (
     (OLD.state='RECONCILE_PENDING_SUBMIT' AND NEW.state IN ('ACKED','RETRY_WAIT_SUBMIT','OPERATOR_REVIEW')) OR
     (OLD.state='ACKED' AND NEW.state IN ('LOCAL_EFFECT_PENDING','COMPLETED')) OR
     (OLD.state='LOCAL_EFFECT_PENDING' AND NEW.state IN ('COMPLETED','OPERATOR_REVIEW')) OR
-    (OLD.state='OPERATOR_REVIEW' AND NEW.state='SUPERSEDED')
+    (OLD.state='OPERATOR_REVIEW' AND NEW.state IN ('SUPERSEDED','CANCELLED'))
 )
 BEGIN
     SELECT RAISE(ABORT, 'forbidden deferred intent state edge');
@@ -1599,12 +1607,14 @@ class DeferredIntentCaptureStore:
         local_work_identity: str,
         physical_qr_payload: str,
         item_code: str,
-        partition_key: str = LABEL_PARTITION_KEY,
+        partition_key: str | None = None,
     ) -> DeferredCaptureResult:
         work_id = str(local_work_identity or "").strip()
         physical_qr = str(physical_qr_payload or "").strip()
         normalized_item = str(item_code or "").strip()
-        selected_partition = str(partition_key or "").strip()
+        selected_partition = str(
+            label_partition_key(physical_qr) if partition_key is None else partition_key or ""
+        ).strip()
         if not all((work_id, physical_qr, normalized_item, selected_partition)):
             raise DeferredIntentCaptureError(
                 "CAPTURE_PAYLOAD_INVALID",
@@ -1646,11 +1656,17 @@ class DeferredIntentCaptureStore:
             try:
                 conn = self._connect()
                 conn.execute("BEGIN IMMEDIATE")
+                # The work identity stays unique across partitions, so a set
+                # id reused for another label is still a payload mismatch.
                 existing_rows = conn.execute(
                     """SELECT * FROM deferred_intents
                          WHERE capture_key IN (?,?)
+                            OR (app_id=? AND producer_install_id=?
+                                AND authority_scope_id=? AND local_work_identity=?)
                          ORDER BY CASE WHEN capture_key=? THEN 0 ELSE 1 END""",
-                    (capture_key, legacy_capture_key, capture_key),
+                    (capture_key, legacy_capture_key, LABEL_APP_ID,
+                     self.binding.producer_install_id, self.binding.authority_scope_id,
+                     work_id, capture_key),
                 ).fetchall()
                 if len(existing_rows) > 1:
                     raise DeferredIntentCaptureError(
@@ -3918,8 +3934,11 @@ class DeferredIntentCaptureStore:
                 if current["state"] == "CANCELLED":
                     conn.commit()
                     return current
+                # OPERATOR_REVIEW is cancellable only when a read-only step's
+                # definite refusal caused it; the step loop below proves that.
+                review = current["state"] == "OPERATOR_REVIEW"
                 if (current["row_version"] != expected_row_version
-                        or current["state"] not in {"CAPTURED_UNVERIFIED", "RETRY_WAIT_VALIDATION", "WAITING_DEPENDENCY", "BLOCKED_INVALID", "VALIDATED"}
+                        or current["state"] not in {"CAPTURED_UNVERIFIED", "RETRY_WAIT_VALIDATION", "WAITING_DEPENDENCY", "BLOCKED_INVALID", "VALIDATED", "OPERATOR_REVIEW"}
                         or current["claim_owner"] or current["claim_expires_at"]
                         or current["command_hash"] or current["command_json"] or current["server_idempotency_key"]
                         or current["receipt_hash"] or current["receipt_json"]
@@ -3980,8 +3999,13 @@ class DeferredIntentCaptureStore:
                     "SELECT 1 FROM package_operation_lease_issue_attempts WHERE status='ACTIVE' AND lease_id IS NULL LIMIT 1"
                 ).fetchone():
                     raise DeferredIntentCaptureError("CANCEL_LEASE_UNKNOWN", "the current issue identity cannot be checked")
+                read_only_refusal = False
                 for step in conn.execute("SELECT * FROM deferred_intent_validation_steps WHERE intent_id=?", (selected_id,)):
                     if step["step_effect"] != "IDEMPOTENT_MUTATION":
+                        if (review and step["status"] == "OPERATOR_REVIEW"
+                                and step["validation_outcome"] == "CONFLICT"):
+                            read_only_refusal = True  # a definite answer to a read; nothing was changed
+                            continue
                         if step["status"] in {"REQUEST_RECORDED", "RECONCILE_PENDING", "OPERATOR_REVIEW"}:
                             raise DeferredIntentCaptureError("CANCEL_VALIDATION_UNKNOWN", "validation outcome requires review")
                         continue
@@ -4013,6 +4037,8 @@ class DeferredIntentCaptureStore:
                     if (step["idempotency_key"] != lease["issue_idempotency_key"]
                             or any(evidence.get(key) != lease.get(key) for key in ("fence", "snapshot_hash"))):
                         raise DeferredIntentCaptureError("CANCEL_VALIDATION_UNKNOWN", "verified issue result differs from retained lease")
+                if review and not read_only_refusal:
+                    raise DeferredIntentCaptureError("CANCEL_CAPTURE_REVIEW_REQUIRED", "capture review was not a read-only refusal")
                 now = utc_now()
                 cursor = conn.execute(
                     "UPDATE deferred_intents SET state='CANCELLED',next_attempt_at=NULL,"
@@ -4184,6 +4210,39 @@ class DeferredIntentCaptureStore:
                 (observed_at, observed_at),
             ).fetchone()
             return str(row[0]) if row else None
+        finally:
+            conn.close()
+
+    def open_label_capture(self, physical_qr_payload: str) -> dict[str, Any] | None:
+        """The earliest unfinished capture of this physical label, if any."""
+
+        placeholders = ",".join("?" for _ in _TERMINAL_STATES)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                f"""SELECT intent_id,local_work_identity,state FROM deferred_intents
+                     WHERE app_id=? AND producer_install_id=? AND authority_scope_id=?
+                       AND partition_key=? AND state NOT IN ({placeholders})
+                     ORDER BY partition_seq LIMIT 1""",
+                (LABEL_APP_ID, self.binding.producer_install_id, self.binding.authority_scope_id,
+                 label_partition_key(physical_qr_payload), *sorted(_TERMINAL_STATES)),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def review_captures(self) -> list[dict[str, Any]]:
+        """Captures waiting for an administrator, attached to a set or not."""
+
+        conn = self._connect()
+        try:
+            return [dict(row) for row in conn.execute(
+                """SELECT intent_id,local_work_identity,state,last_reason_code FROM deferred_intents
+                    WHERE app_id=? AND producer_install_id=? AND authority_scope_id=?
+                      AND state IN ('BLOCKED_INVALID','OPERATOR_REVIEW')
+                    ORDER BY created_at,intent_id""",
+                (LABEL_APP_ID, self.binding.producer_install_id, self.binding.authority_scope_id),
+            )]
         finally:
             conn.close()
 

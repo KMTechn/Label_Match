@@ -105,20 +105,31 @@ def test_declared_pair_is_exactly_3f4574a_and_this_tree():
     assert set(additions) == {"app/label_transition.py"}
 
 
-def test_declared_scan_input_pairs_are_exactly_c83c72c_and_817d393_to_this_tree():
-    """c83c72c (w9lmtransit) and 817d393 (the 1733-only TEST1 candidate) may be
-    installed; each upgrades to this tree, never the other way."""
+def test_declared_scan_input_pairs_are_exactly_c83c72c_817d393_and_92abdaa_to_this_tree():
+    """c83c72c (w9lmtransit), 817d393 (the 1733-only TEST1 candidate) and
+    92abdaa (w9lmscanmsg) may be installed; each upgrades to this tree, never
+    the other way. The companions are the modules w9lmp1fix changes, the same
+    in all three."""
     source = INSTALLER.read_text(encoding="utf-8")
     start = source.index("$probe = @'") + len("$probe = @'")
     tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
-    [pairs] = [ast.literal_eval(node.value) for node in tree.body
-               if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
-               and node.targets[0].id == "scan_input_pairs"]
+    values = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body
+              if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+              and node.targets[0].id in {"scan_input_pairs", "scan_input_companions"}}
+    pairs, companions = values["scan_input_pairs"], values["scan_input_companions"]
+    installs = ("c83c72c", "817d393", "92abdaa")
     here = _release_digest((ROOT / "Label_Match.py").read_bytes())
     befores = {_release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", f"{commit}:Label_Match.py"]))
-               for commit in ("c83c72c", "817d393")}
+               for commit in installs}
     assert pairs == {(before, here) for before in befores}
     assert not any((here, before) in pairs for before in befores)
+    assert set(companions) == {"app/deferred_intent_capture.py", "app/label_completion.py",
+                               "app/terminal_operation_lease.py"}
+    for relative, (before, after) in companions.items():
+        name = relative.removeprefix("app/")
+        assert {_release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", f"{commit}:{name}"]))
+                for commit in installs} == {before}, relative
+        assert _release_digest((ROOT / name).read_bytes()) == after != before, relative
 
 
 @pytest.mark.parametrize("base_work", [False, True], ids=["no-work", "open-and-held-sets"])

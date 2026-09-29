@@ -2911,10 +2911,12 @@ def test_status_readback_exposes_all_states_age_dependency_and_blocked_partition
 ):
     _db_path, _outbox, store = _store(tmp_path)
     first = _capture(store)
+    # The same physical label: a partition is one label (another label is
+    # never blocked, test_label_source_conflict_recovery).
     second = _capture(
         store,
         set_id="1787940225728641501",
-        scan="PHS2-MEASURED-SECOND",
+        scan="PHS2-MEASURED",
     )
     _finish_waiting_dependency(store, first.intent_id)
     first_row = store.get(first.intent_id)
@@ -2941,7 +2943,8 @@ def test_status_readback_exposes_all_states_age_dependency_and_blocked_partition
     assert first_read.dependency_checked_at == "2026-08-29T01:00:02Z"
     assert first_read.last_reason_code == "OPERATION_LEASE_AUTHORIZATION_PENDING"
     assert first_read.retry_schedule == ()
-    assert first_read.blocked_partitions[0].partition_key == "label-package-source"
+    from deferred_intent_capture import label_partition_key
+    assert first_read.blocked_partitions[0].partition_key == label_partition_key("PHS2-MEASURED")
     assert first_read.blocked_partitions[0].head_intent_id == first.intent_id
     assert first_read.blocked_partitions[0].blocked_count == 1
     assert first_read.downstream_outbox_refs == ()

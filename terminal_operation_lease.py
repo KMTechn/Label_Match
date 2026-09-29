@@ -16,7 +16,7 @@ import secrets
 import sqlite3
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -42,6 +42,7 @@ MAX_KEYRING_BYTES = 32_768
 MAX_OPERATION_SNAPSHOT_BYTES = 512_000
 MAX_KEYS = 8
 MAX_EXPECTED_VERSIONS = 128
+LEASE_CLOCK_SKEW_SECONDS = 30  # the server's OPERATION_LEASE clock skew default
 MAX_LEASE_SECONDS = 24 * 60 * 60
 
 _B64_RE = re.compile(r"[A-Za-z0-9_-]+")
@@ -491,7 +492,10 @@ class PinnedOperationLeaseKeyring:
             require_low_s=True,
         )
         instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if instant < parse_utc(payload["issued_at"], field="issued_at"):
+        # The server accepts a PC clock up to 30 seconds behind its own.
+        if instant < parse_utc(payload["issued_at"], field="issued_at") - timedelta(
+            seconds=LEASE_CLOCK_SKEW_SECONDS
+        ):
             raise _error("OPERATION_LEASE_NOT_YET_VALID", "lease is not yet valid")
         if instant >= parse_utc(payload["expires_at"], field="expires_at"):
             raise _error("OPERATION_LEASE_EXPIRED", "lease has expired")

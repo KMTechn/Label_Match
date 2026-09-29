@@ -112,6 +112,25 @@ def _transition_completion(current, *, parse_sealed):
     return decided, reasons, bool(current.get("transition_duplicate"))
 
 
+def _lease_completion_time(verified_lease, _clock, _timezone):
+    """A grant is issued before its completion. A PC clock up to 30 s behind
+    the server is only ever moved forward to the grant, never past expiry."""
+
+    utc = _timezone().utc
+    now = _clock().now(utc).replace(microsecond=0)
+    try:
+        issued, expires = (
+            _clock().strptime(str(verified_lease.get(key) or ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=utc)
+            for key in ("issued_at", "expires_at")
+        )
+    except ValueError:
+        issued = expires = None
+    if issued is not None and now < issued < expires and (issued - now).total_seconds() <= 30:
+        print(f"operation lease completion raised {int((issued - now).total_seconds())}s to its grant")
+        now = issued
+    return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _close_transition_capture(self, current):
     """Close the set's unsubmitted PHS2 capture exactly as F1 would.
 
@@ -537,9 +556,7 @@ def _queue_package(
                 )
         operation_completed_at = str(
             current.get("operation_lease_completed_at") or ""
-        ).strip() or _clock().now(_timezone().utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        ).strip() or _lease_completion_time(verified_lease, _clock, _timezone)
         current["operation_lease_completed_at"] = operation_completed_at
         draft_data = draft.to_dict()
         draft_data.update(

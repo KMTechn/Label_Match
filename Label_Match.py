@@ -4876,6 +4876,8 @@ class Label_Match(tk.Tk):
                 "PHS2 transition local fallback kept the base screen: "
                 f"{getattr(error, 'code', error.__class__.__name__)}"
             )
+            # The capture stays for review, but no next set may inherit it.
+            self._detach_deferred_capture_shell()
             return False
         current.pop("deferred_intent_id", None)
         self._deferred_capture_ui = None
@@ -8409,6 +8411,16 @@ class Label_Match(tk.Tk):
                 rows[current_id] = {"set_id": current_id, "package": package,
                                     "exchange": exchanges[-1] if exchanges else None,
                                     "current": current, "held": outbox.get_workbench_hold(current_id)}
+        review_captures = getattr(self.__dict__.get("deferred_intent_capture"), "review_captures", None)
+        for capture in review_captures() if callable(review_captures) else ():
+            set_id = str(capture["local_work_identity"] or "").strip()
+            if not set_id:
+                continue
+            rows.setdefault(set_id, {
+                "set_id": set_id, "package": outbox.get_by_set_id(set_id), "exchange": None,
+                "current": current if set_id == current_id else None,
+                "held": outbox.get_workbench_hold(set_id),
+            })["capture"] = capture
         recovery_state = self.__dict__.get("_package_recovery_state_data")
         if recovery_state:
             saved = recovery_state.get("current_set_info") or {}
@@ -10382,6 +10394,8 @@ class Label_Match(tk.Tk):
                     condition += " · 파일 미검증"
                 if item.get("orphan_path"):
                     condition += " · 이동 의도 없는 보류 파일: " + item["orphan_path"]
+                if item.get("capture"):
+                    condition += " · 현품표 저장본 관리자확인"
                 if item.get("changed_hold"):
                     changed = item["changed_hold"]
                     condition += (" · TARGET_CHANGED_DURING_HOLD 원SHA "
@@ -11947,7 +11961,11 @@ class Label_Match(tk.Tk):
         if api_error is not None and int(api_error.status_code) in {409, 412}:
             code = str(api_error.code or "VALIDATION_CONFLICT").upper()
             return {
-                "outcome": "CONFLICT",
+                # The read-only source step changed nothing on the server: its
+                # refusal is a cancellable BLOCKED_INVALID, not an irreversible review.
+                "outcome": (
+                    "INVALID" if selected_step == "label-package-source" else "CONFLICT"
+                ),
                 "reason_code": code,
                 "retry_after_seconds": None,
                 "evidence": {
@@ -12170,13 +12188,14 @@ class Label_Match(tk.Tk):
         current = self.__dict__.get("current_set_info") or {}
         current_raw = list(current.get("raw") or [])
         current_intent_id = str(current.get("deferred_intent_id") or "").strip()
-        if current_raw:
-            if current_intent_id == intent_id:
-                self.__dict__.pop("_deferred_label_materialization", None)
-                return True
-            raise PackageLogisticsError(
-                "current packaging set changed before deferred materialization"
-            )
+        if current_raw and current_intent_id == intent_id:
+            self.__dict__.pop("_deferred_label_materialization", None)
+            return True
+        if current_raw or current_intent_id not in {"", intent_id}:
+            # Another set owns the screen: the capture stays VALIDATED and is
+            # applied from an empty screen or when its label is scanned again.
+            self.__dict__.pop("_deferred_label_materialization", None)
+            return False
         accepted = self._accept_resolved_central_phs2_scan(
             pending["evidence"],
             pending["snapshot"],
@@ -12570,10 +12589,11 @@ class Label_Match(tk.Tk):
                     f"{self._ui_lane_diagnostic_text(error)}"
                 )
                 durable = dict(payload or {}).get("durable")
-                if durable is not None:
+                if durable is not None and self._deferred_result_on_screen(durable):
                     self._show_deferred_validation_result(durable)
             elif result is not None:
-                if not self._materialize_validated_deferred_label(result):
+                if (not self._materialize_validated_deferred_label(result)
+                        and self._deferred_result_on_screen(result)):
                     self._show_deferred_validation_result(result)
             self._refresh_deferred_observability()
             self._render_operator_workbench()
@@ -12907,7 +12927,11 @@ class Label_Match(tk.Tk):
             return WorkflowNotice(
                 title=str(state.get("status")),
                 message={
-                    "관리자확인": "현재 작업과 실물을 유지하고 관리자에게 확인을 요청하세요.",
+                    "관리자확인": (
+                        "이 현품표 저장본은 관리자 확인이 필요합니다. 실물은 따로 두고 "
+                        "다음 현품표를 스캔하면 새 세트로 진행됩니다(F1로 먼저 비워도 됩니다). "
+                        "관리자는 작업대 건별 복구에서 이 건만 확인·보류합니다."
+                    ),
                     "결과확인중": "처리 결과를 확인 중입니다. 같은 작업을 다시 제출하지 마세요.",
                     "검증완료-전송대기": "검증을 마쳤습니다. 중앙 전송을 기다리며 자동으로 다시 확인합니다.",
                     "서버확정-로컬반영대기": "중앙 처리는 확정됐습니다. 이 장비의 기록 반영을 기다리세요.",
@@ -12936,7 +12960,9 @@ class Label_Match(tk.Tk):
             title="저장됨-검증대기",
             message=(
                 f"대기 {pending_count}건 · 최장 {oldest_age}초\n"
-                f"{next_step}"
+                f"{next_step}\n"
+                "다른 현품표를 스캔해도 이 저장본은 계속 확인되고, "
+                "같은 현품표를 다시 스캔하면 이어집니다."
             ),
             kind="deferred_capture_pending",
             tone="warning",
@@ -13001,11 +13027,17 @@ class Label_Match(tk.Tk):
         central_check_pending,
         local_work_identity="",
         on_capture_committed=None,
+        physical_qr_payload="",
     ):
         selected_work_identity = str(local_work_identity or "").strip()
         if selected_work_identity and not self.current_set_info.get("id"):
             self.current_set_info["id"] = selected_work_identity
         self.current_set_info["deferred_intent_id"] = result.intent_id
+        # F1 and the transition fallback prove the capture with this label
+        # before any scan row exists.
+        self.current_set_info["physical_scanned_qr_payload"] = str(
+            physical_qr_payload or ""
+        ).strip()
         self._show_deferred_capture_pending(
             result,
             central_check_pending=bool(central_check_pending),
@@ -13013,6 +13045,55 @@ class Label_Match(tk.Tk):
         if callable(on_capture_committed):
             on_capture_committed()
         return result
+
+    def _resumable_label_capture(self, physical_qr_payload):
+        """On an empty screen, a label scanned again continues its own
+        unfinished capture instead of starting a second one."""
+
+        if str(self.current_set_info.get("id") or "").strip():
+            return None
+        open_capture = getattr(
+            self.__dict__.get("deferred_intent_capture"), "open_label_capture", None
+        )
+        return open_capture(physical_qr_payload) if callable(open_capture) else None
+
+    def _capture_or_resume_central_phs2_scan(
+        self, physical_qr_payload, item_code, local_work_identity, resumed
+    ):
+        if resumed is not None and resumed["state"] != "CAPTURED_UNVERIFIED":
+            return self.deferred_intent_capture.validation_status(resumed["intent_id"])
+        return self._capture_central_phs2_scan(
+            physical_qr_payload, item_code, local_work_identity,
+        )
+
+    def _detach_deferred_capture_shell(self, physical_qr_payload=None):
+        """Free a set that holds only a capture (no scan rows) for the next
+        label. The capture stays durable and keeps validating in its own
+        label partition; scanning the same label again continues it."""
+
+        current = self.__dict__.get("current_set_info") or {}
+        if list(current.get("raw") or []) or not str(
+            current.get("deferred_intent_id") or ""
+        ).strip():
+            return False
+        own = str(current.get("physical_scanned_qr_payload") or "").strip()
+        if physical_qr_payload is not None and own == str(physical_qr_payload).strip():
+            return False
+        current["id"] = None
+        current.pop("deferred_intent_id", None)
+        current.pop("physical_scanned_qr_payload", None)
+        self._deferred_capture_ui = None
+        return True
+
+    def _deferred_result_on_screen(self, result):
+        """Only the set's own capture may change its notice; a detached
+        capture reports through the counts and the recovery list."""
+
+        current = self.__dict__.get("current_set_info") or {}
+        own = str(current.get("deferred_intent_id") or "").strip()
+        if not own and not list(current.get("raw") or []):
+            return True
+        return own == str(getattr(result, "intent_id", "") or "").strip()
 
     def _resolve_central_phs2_scan_overlay(
         self,
@@ -13198,17 +13279,22 @@ class Label_Match(tk.Tk):
         ):
             self._show_ui_lane_rejection("busy")
             return False
+        self._detach_deferred_capture_shell(physical_qr_payload)
         captured_raw = tuple(self.current_set_info.get("raw") or ())
+        resumed = self._resumable_label_capture(physical_qr_payload)
         captured_set_id = str(
-            self.current_set_info.get("id") or time.time_ns()
+            self.current_set_info.get("id")
+            or (resumed or {}).get("local_work_identity")
+            or time.time_ns()
         ).strip()
         work_state = {}
 
         def work():
-            capture_result = self._capture_central_phs2_scan(
+            capture_result = self._capture_or_resume_central_phs2_scan(
                 physical_qr_payload,
                 item_code,
                 captured_set_id,
+                resumed,
             )
             work_state["capture_result"] = capture_result
             self.ui_lane.call_ui_sync(
@@ -13217,6 +13303,7 @@ class Label_Match(tk.Tk):
                 central_check_pending=True,
                 local_work_identity=captured_set_id,
                 on_capture_committed=on_capture_committed,
+                physical_qr_payload=physical_qr_payload,
             )
             validation_work = self._prepare_deferred_label_validation(
                 capture_result
@@ -13329,18 +13416,25 @@ class Label_Match(tk.Tk):
             "_phs_label_scan_lookup_in_progress", False
         ):
             return False
+        self._detach_deferred_capture_shell(physical_qr_payload)
         try:
-            capture_result = self._capture_central_phs2_scan(
+            resumed = self._resumable_label_capture(physical_qr_payload)
+            capture_result = self._capture_or_resume_central_phs2_scan(
                 physical_qr_payload,
                 item_code,
+                (resumed or {}).get("local_work_identity"),
+                resumed,
             )
             self._apply_captured_central_phs2_scan(
                 capture_result,
                 central_check_pending=True,
                 local_work_identity=str(
-                    self.current_set_info.get("id") or ""
+                    self.current_set_info.get("id")
+                    or (resumed or {}).get("local_work_identity")
+                    or ""
                 ),
                 on_capture_committed=on_capture_committed,
+                physical_qr_payload=physical_qr_payload,
             )
         except Exception as exc:
             print(
@@ -16559,6 +16653,9 @@ class Label_Match(tk.Tk):
         prepare_durable_state=None,
     ):
         durable_acceptance = callable(prepare_durable_state)
+        if not self.current_set_info['raw']:
+            # A set holding only another label's capture never passes it on.
+            self._detach_deferred_capture_shell(raw)
         active_current_set = self.current_set_info
         previous_current_set = (
             copy.deepcopy(active_current_set)
@@ -21057,8 +21154,18 @@ class Label_Match(tk.Tk):
         policy_notice = LABEL_MATCH_PACKAGE_POLICY_NOTICES.get(
             _label_match_package_policy_block_code(error)
         )
+        clock_behind = lease_failure and any(
+            getattr(item, "code", "") == "OPERATION_LEASE_NOT_YET_VALID"
+            for item in (error, getattr(error, "__cause__", None))
+        )
         message = (
             (
+                "이 PC 시계가 서버보다 30초 넘게 늦어 포장 권한을 아직 쓸 수 없습니다. "
+                "현재 세트와 실물을 유지하고 IT 담당자에게 PC 시간 동기화를 요청한 뒤 "
+                "저장 재시도를 누르세요."
+            )
+            if clock_behind
+            else (
                 "이 장비의 포장 권한과 현재 현품표 상태를 확인하지 못했습니다. "
                 "현재 세트와 실물을 유지하고 네트워크 연결 후 다시 시도하세요. "
                 "계속 실패하면 관리자에게 확인을 요청하세요."
@@ -21079,7 +21186,9 @@ class Label_Match(tk.Tk):
         completed = min(total, len(scans))
         notice = WorkflowNotice(
             title=(
-                f"{completed}/{total} 유지 · 포장 권한 확인 필요"
+                f"{completed}/{total} 유지 · PC 시계 확인 필요"
+                if clock_behind
+                else f"{completed}/{total} 유지 · 포장 권한 확인 필요"
                 if lease_failure
                 else f"{completed}/{total} 유지 · {policy_notice[0]}"
                 if policy_notice
