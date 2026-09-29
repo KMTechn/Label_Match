@@ -10632,6 +10632,10 @@ class Label_Match(tk.Tk):
                 )
         else:
             should_restore = self.run_tests or messagebox.askyesno("작업 복구", msg)
+        if not should_restore:
+            if self._discard_declined_saved_set(saved_set_info):
+                return
+            should_restore = True  # A kept local set continues as the active set.
 
         if should_restore:
             saved_worker_name = persistent_operator_name(state_data.get('worker_name'))
@@ -10648,9 +10652,7 @@ class Label_Match(tk.Tk):
                                                        f"현재 '{display_operator_name(self.worker_name)}' 작업자가 이어서 하시겠습니까?",
                                                        icon='warning')
                 if response is None: return
-                elif response is False:
-                    if not self._discard_declined_saved_set(saved_set_info):
-                        return
+                elif response is False and self._discard_declined_saved_set(saved_set_info):
                     if not self.run_tests:
                         messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
                     return
@@ -10693,16 +10695,16 @@ class Label_Match(tk.Tk):
                 return
             self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
             self._reconcile_active_package_submission()
-        else:
-            self._discard_declined_saved_set(saved_set_info)
 
     def _discard_declined_saved_set(self, saved_set_info):
         """Delete a saved set the operator declined to restore.
 
         A pinned transition local set first closes the PHS2 capture it still
         owns (a stop between saving its decision and closing the capture), so
-        the declined cycle never returns to central validation.  False, with
-        the state kept, when that capture cannot be closed safely.
+        the declined cycle never returns to central validation.  False when
+        that capture cannot be closed safely: the caller then keeps the set as
+        the active set, which also keeps background validation off its
+        capture, until it is finished or cancelled again with F1.
         """
 
         if saved_set_info.get("transition_class") in label_transition.LOCAL_CLASSES:
@@ -10713,6 +10715,14 @@ class Label_Match(tk.Tk):
                     "declined transition local set kept its saved state: "
                     f"{getattr(error, 'code', error.__class__.__name__)}"
                 )
+                if not self.run_tests:
+                    messagebox.showwarning(
+                        "작업 복구",
+                        "이 세트는 로컬 과도기 세트로 정해졌지만 중앙 확인 기록을 지금 닫지 못해 "
+                        "지울 수 없습니다. 세트를 이어서 엽니다. 마저 끝내거나 F1로 다시 취소하세요. "
+                        "계속 안 되면 관리자에게 알리세요.",
+                        parent=self,
+                    )
                 return False
         self.data_manager.delete_current_state()
         return True

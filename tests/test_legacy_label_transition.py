@@ -1871,6 +1871,62 @@ def test_declining_restore_closes_a_pinned_local_capture(clock_case, tmp_path, m
         _close(restored)
 
 
+@pytest.mark.parametrize("prompt", ["restore", "handover"])
+def test_declined_restore_that_cannot_close_its_capture_keeps_the_local_set(
+    clock_case, tmp_path, monkeypatch, prompt,
+):
+    """Ported from sub-05/test_recheck5_state.py: the close fails while the
+    operator declines, so the pinned local set stays the active set and no
+    background validation revives its capture."""
+
+    import label_completion
+    from tests.test_deferred_intent_capture import _row
+
+    intent_id = _first_scan(clock_case)
+    module = load_label_match_module()
+    app = _captured_transition_app(clock_case, module, tmp_path, monkeypatch, "PHS2_CENTRAL")
+    assert app._save_current_set_state()
+
+    def stop_before_close(_current):
+        raise _PowerLoss()
+
+    app._cancel_deferred_capture_for_set = stop_before_close
+    try:
+        with pytest.raises(_PowerLoss):
+            label_completion._decide_transition_local(
+                app, app.current_set_info, "PHS2_LOCAL", ["PACKAGE_TRANSPORT_UNAVAILABLE"], False,
+            )
+    finally:
+        _close(app)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    restored.deferred_intent_capture = clock_case.open_capture()
+    restored.package_outbox = clock_case.app.package_outbox
+    restored.package_logistics_client = clock_case.app.package_logistics_client
+    restored._operation_lease_request_context = clock_case.app._operation_lease_request_context
+    if prompt == "handover":
+        restored.worker_name = "another-worker"
+        monkeypatch.setattr(module.messagebox, "askyesnocancel", lambda *a, **k: False)
+    else:
+        monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: False)
+
+    def unable_to_close(_current):
+        raise OSError("capture store unavailable during the declined restore")
+
+    restored._cancel_deferred_capture_for_set = unable_to_close
+    attempts = []
+    restored._prepare_deferred_intent_validation = lambda identity: attempts.append(identity)
+    try:
+        restored._load_current_set_state()
+        assert Path(restored._package_current_state_path()).exists()
+        assert restored.current_set_info["transition_class"] == "PHS2_LOCAL"
+        assert restored.current_set_info["raw"]
+        assert restored.warnings, "the operator is told why the declined set continues"
+        restored._build_deferred_validation_lane_task().work()
+        assert attempts == [] and _row(clock_case.database, intent_id)["state"] == "VALIDATED"
+    finally:
+        _close(restored)
+
+
 def test_retry_of_a_completion_saved_before_the_marker_reuses_its_row(tmp_path, monkeypatch):
     """A set saved by a build without transition_row_key (3f4574a, the lab's
     preserved state) whose row was appended with an unknown flush result."""
