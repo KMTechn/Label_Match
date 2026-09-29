@@ -334,6 +334,46 @@ def test_other_label_detaches_a_waiting_capture_and_the_same_label_resumes_it(tm
         _close(app)
 
 
+@pytest.mark.parametrize("spelling", ["same", "variant"])
+@pytest.mark.parametrize(("head", "after"), [
+    ("CAPTURED_UNVERIFIED", "RETRY_WAIT_VALIDATION"),
+    ("RETRY_WAIT_VALIDATION", "RETRY_WAIT_VALIDATION"),
+    ("BLOCKED_INVALID", "BLOCKED_INVALID"),
+])
+def test_rescanning_the_label_on_screen_continues_its_own_capture(tmp_path, monkeypatch, head, after, spelling):
+    """The label scanned again over its own capture-only set continues that
+    capture (review R2-1/R2-2): no second capture, no payload mismatch, no
+    repeated '저장 실패', and F1 still closes it with the label as captured."""
+    module = load_label_match_module()
+    app, store = _registered_app(module, tmp_path, monkeypatch, transition=False,
+                                 outcome_for=lambda _row: "INVALID" if head == "BLOCKED_INVALID"
+                                 else "RETRYABLE_UNAVAILABLE")
+    validate = app._prepare_deferred_label_validation
+    if head == "CAPTURED_UNVERIFIED":  # the first check has not run yet
+        app._prepare_deferred_label_validation = lambda capture: store.validation_status(capture.intent_id)
+    again = PHS2_LABEL.replace("|", " | ").replace("PHS=", "phs=") if spelling == "variant" else PHS2_LABEL
+    try:
+        _scan(module, app, PHS2_LABEL)
+        with closing(sqlite3.connect(store.db_path)) as conn:
+            [(intent_id, set_id)] = conn.execute("SELECT intent_id,local_work_identity FROM deferred_intents").fetchall()
+        assert _row(store.db_path, intent_id)["state"] == head
+        app._prepare_deferred_label_validation = validate
+        _scan(module, app, again)
+        with closing(sqlite3.connect(store.db_path)) as conn:
+            assert conn.execute("SELECT intent_id FROM deferred_intents").fetchall() == [(intent_id,)]
+        assert _row(store.db_path, intent_id)["state"] == after
+        assert _row(store.db_path, intent_id)["last_reason_code"] != "DUPLICATE_IDENTITY_PAYLOAD_MISMATCH"
+        assert app.current_set_info["id"] == set_id and app.current_set_info["deferred_intent_id"] == intent_id
+        assert app.current_set_info["physical_scanned_qr_payload"] == PHS2_LABEL
+        assert "저장 실패" not in app._deferred_capture_ui["status"], app._deferred_capture_ui
+        message = app._deferred_capture_pending_notice().message
+        assert ("F1" if head == "BLOCKED_INVALID" else "다시 스캔하면 이어") in message, message
+        app._cancel_deferred_capture_for_set(app.current_set_info)
+        assert _row(store.db_path, intent_id)["state"] == "CANCELLED"
+    finally:
+        _close(app)
+
+
 # --- floating validated capture, recovery list, texts ---------------------------------------
 
 

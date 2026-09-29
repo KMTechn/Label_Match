@@ -13066,11 +13066,26 @@ class Label_Match(tk.Tk):
         return result
 
     def _resumable_label_capture(self, physical_qr_payload):
-        """On an empty screen, a label scanned again continues its own
-        unfinished capture instead of starting a second one."""
+        """A label scanned again continues its own unfinished capture instead
+        of starting a second one: the capture its set on screen holds, or on
+        an empty screen the earliest one in its partition."""
 
-        if str(self.current_set_info.get("id") or "").strip():
-            return None
+        current = self.current_set_info
+        if str(current.get("id") or "").strip():
+            own = str(current.get("physical_scanned_qr_payload") or "").strip()
+            intent_id = str(current.get("deferred_intent_id") or "").strip()
+            if (
+                list(current.get("raw") or [])
+                or not own
+                or not intent_id
+                or label_partition_key(own) != label_partition_key(physical_qr_payload)
+            ):
+                return None
+            return {
+                "intent_id": intent_id,
+                "local_work_identity": str(current["id"]).strip(),
+                "physical_qr_payload": own,
+            }
         open_capture = getattr(
             self.__dict__.get("deferred_intent_capture"), "open_label_capture", None
         )
