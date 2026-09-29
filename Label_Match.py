@@ -10652,10 +10652,18 @@ class Label_Match(tk.Tk):
                                                        f"현재 '{display_operator_name(self.worker_name)}' 작업자가 이어서 하시겠습니까?",
                                                        icon='warning')
                 if response is None:
-                    # Asked again at the next start; a pinned local set first
-                    # closes its capture, or stays active if it cannot.
-                    if self._close_local_capture_before_leaving(saved_set_info):
+                    # Asked again at the next start, except a pinned local set:
+                    # it stays the active set, so neither background validation
+                    # nor a new scan takes its place (F1 still cancels it).
+                    if saved_set_info.get("transition_class") not in label_transition.LOCAL_CLASSES:
                         return
+                    if not self.run_tests:
+                        messagebox.showwarning(
+                            "작업 복구",
+                            "이 세트는 로컬 과도기 세트라 비워 둘 수 없어 이어서 엽니다. "
+                            "마저 끝내거나 F1로 취소하세요.",
+                            parent=self,
+                        )
                 elif response is False and self._discard_declined_saved_set(saved_set_info):
                     if not self.run_tests:
                         messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
@@ -10709,8 +10717,8 @@ class Label_Match(tk.Tk):
         return True
 
     def _close_local_capture_before_leaving(self, saved_set_info):
-        """Close a pinned local saved set's PHS2 capture before the restore ends
-        without the set (a decline, or the handover window cancelled).
+        """Close a pinned local saved set's PHS2 capture before a decline ends
+        the restore without the set.
 
         The capture is still open after a stop between saving the local
         decision and closing it; closing it as F1 would keeps the cycle out of

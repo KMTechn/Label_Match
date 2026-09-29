@@ -1946,8 +1946,8 @@ def test_every_restore_answer_keeps_a_pinned_local_cycle_out_of_central_validati
 ):
     """Every way the restore prompts end (yes, no, cancel/close of the handover
     window, a capture that cannot be closed) leaves the local cycle either
-    active or with its capture closed; background validation never runs it,
-    and a next scan never meets an open local capture (sub-05 x5 09:20)."""
+    active or discarded with its capture closed; background validation never
+    runs it, and a next scan never replaces a kept one (sub-05 x5 09:20)."""
 
     import label_completion
     from tests.test_deferred_intent_capture import _row
@@ -1995,12 +1995,12 @@ def test_every_restore_answer_keeps_a_pinned_local_cycle_out_of_central_validati
         active = bool(restored.current_set_info.get("raw"))
         state = _row(clock_case.database, intent_id)["state"]
         if active:
-            assert restored.current_set_info["transition_class"] == "PHS2_LOCAL"
-        else:
-            assert state == "CANCELLED", "an inactive local cycle keeps no open capture"
-            assert path.exists() is (handover is None)  # cancel keeps the file, a no deletes it
-        assert active is (restore and handover is not False and handover is not None
-                          or close_fails), (active, state)
+            assert restored.current_set_info["transition_class"] == "PHS2_LOCAL" and path.exists()
+        else:  # only an explicit "no" with the capture closed ends a local cycle
+            assert state == "CANCELLED" and not path.exists()
+        # A cancelled handover window keeps the local set active: neither
+        # background validation nor a next scan can take its place.
+        assert active is (restore and handover is not False or close_fails), (active, state)
         restored._build_deferred_validation_lane_task().work()
         assert attempts == [] and _row(clock_case.database, intent_id)["state"] == state
         if not active:
