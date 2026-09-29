@@ -8,7 +8,8 @@ capture that cannot close leaves the set; other labels keep validating.
 import json
 import sqlite3
 from contextlib import closing
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -24,8 +25,8 @@ from tests.test_deferred_intent_capture import (
 from tests.test_deferred_lease_clock_retry import _first_scan, _queue_f3, clock_case  # noqa: F401
 from tests.test_label_capture_cancellation import _app, _cancel, _validated
 from tests.test_legacy_label_transition import (
-    MASTER, PHS2_LABEL, _close, _events, _legacy_set, _packaging_app, _scan, _transition,
-    load_label_match_module,
+    MASTER, PHS2_LABEL, _app_for_recovery, _close, _events, _legacy_set, _packaging_app, _scan,
+    _transition, load_label_match_module,
 )
 
 NOW = "2026-08-29T01:00:00Z"
@@ -463,6 +464,163 @@ def test_unfinished_capture_in_the_old_shared_partition_is_listed(tmp_path):
     candidates = {row["set_id"]: row for row in app._package_recovery_candidates()}
     assert candidates["SET-OLD-PART"]["capture"]["intent_id"] == old.intent_id
     assert candidates["SET-OLD-PART"]["capture"]["state"] == "CAPTURED_UNVERIFIED"
+
+
+# --- 92abdaa saved state the upgraded PC loads (w9lmp1fix3, lab w9labp1 lm-p1-1-state) -----
+
+LAB_SET = "1790680070079588800"
+
+
+def _saved_state(module, tmp_path, monkeypatch, scans, *, capture_scan=PHS2_LABEL, central=False):
+    """A 92abdaa set naming the review capture of the PHS2 label scanned
+    before it: the lab's LEGACY 5/5 took over its id and capture; a
+    capture-only set kept no QR."""
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    app.entry = SimpleNamespace(focus_set=lambda: None)  # F1 and a hold refocus the entry
+    _db, _outbox, store = _store(tmp_path)
+    app.deferred_intent_capture = store
+    captured = _head(store, "OPERATOR_REVIEW", set_id=LAB_SET, scan=capture_scan)
+    saved = {
+        "id": LAB_SET, "raw": list(scans), "parsed": [MASTER] * len(scans),
+        "start_time": datetime.now().isoformat(), "error_count": 0, "has_error_or_reset": False,
+        "phase": "2", "item_name_override": None, "production_date": None,
+        "physical_scanned_qr_payload": PHS2_LABEL if central else "",
+        "deferred_intent_id": captured.intent_id, "central_inherit_all": central,
+    }
+    if scans and not central:
+        saved.update(transition_class="LEGACY", transition_reasons=[], transition_duplicate=False,
+                     transition_row_key="")
+    assert app.data_manager.save_current_state({"current_set_info": saved, "worker_name": "worker-lt",
+                                                "timestamp": datetime.now().isoformat()})
+    return app, store, captured, saved
+
+
+def test_full_old_label_set_holding_another_labels_capture_loads_and_completes(tmp_path, monkeypatch):
+    """Was: the start load refused it, every new label reopened 건별 복구 and
+    F1 was off. Now the capture leaves the set as it is and the set finishes
+    with the retry its refused save offered; the next label starts."""
+    module = load_label_match_module()
+    app, store, captured, _saved = _saved_state(module, tmp_path, monkeypatch, _legacy_set(41))
+    before = _row(store.db_path, captured.intent_id)
+    try:
+        app._load_current_set_state()
+        notice = app.__dict__.get("_workflow_blocking_notice")
+        assert notice is not None and app._workflow_notice_action_text == "저장 재시도", notice
+        assert notice.title.startswith("5/5 유지") and "건별 복구" in notice.message
+        assert app.current_set_info["id"] == LAB_SET and app.current_set_info["raw"] == _legacy_set(41)
+        assert not app.current_set_info.get("deferred_intent_id")
+        on_disk = app.data_manager.load_current_state()["current_set_info"]
+        assert "deferred_intent_id" not in on_disk and on_disk["raw"] == _legacy_set(41)
+        assert _row(store.db_path, captured.intent_id) == before  # kept as it is
+        app._acknowledge_workflow_notice()  # 저장 재시도
+        [(_event, details)] = _events(tmp_path, "TRAY_COMPLETE")
+        assert details["set_id"] == LAB_SET and details["scanned_product_barcodes"] == _legacy_set(41)
+        assert _transition(details)["transition_class"] == "LEGACY"
+        assert app.blocks == [] and app.__dict__.get("_workflow_blocking_notice") is None
+        [row] = [row for row in app._package_recovery_candidates() if row["set_id"] == LAB_SET]
+        assert row["capture"]["intent_id"] == captured.intent_id and row["current"] is None
+        _scan(module, app, _legacy_set(42)[0])
+        assert app.current_set_info["raw"] == [_legacy_set(42)[0]]
+        assert app.current_set_info["id"] != LAB_SET and not app.current_set_info.get("deferred_intent_id")
+        assert _row(store.db_path, captured.intent_id) == before
+    finally:
+        _close(app)
+
+
+def test_partial_old_label_set_holding_another_labels_capture_cancels_with_f1(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, store, captured, _saved = _saved_state(module, tmp_path, monkeypatch, _legacy_set(43)[:3])
+    before = _row(store.db_path, captured.intent_id)
+    try:
+        app._load_current_set_state()
+        assert app.__dict__.get("_workflow_blocking_notice") is None
+        assert app.current_set_info["raw"] == _legacy_set(43)[:3]
+        assert not app.current_set_info.get("deferred_intent_id")
+        assert app._reset_current_set(full_reset=True) is True  # F1
+        assert not Path(app._package_current_state_path()).exists()
+        [(_event, cancelled)] = _events(tmp_path, "SET_CANCELLED")
+        assert cancelled["set_id"] == LAB_SET
+        _scan(module, app, _legacy_set(44)[0])
+        assert app.current_set_info["raw"] == [_legacy_set(44)[0]] and app.current_set_info["id"] != LAB_SET
+        assert _row(store.db_path, captured.intent_id) == before
+    finally:
+        _close(app)
+
+
+def test_capture_only_set_without_its_qr_frees_the_screen(tmp_path, monkeypatch):
+    """A 92abdaa capture-only set (physical QR empty) held the start load."""
+    module = load_label_match_module()
+    app, store, captured, _saved = _saved_state(module, tmp_path, monkeypatch, [])
+    before = _row(store.db_path, captured.intent_id)
+    try:
+        app._load_current_set_state()
+        assert app.__dict__.get("_workflow_blocking_notice") is None
+        assert not Path(app._package_current_state_path()).exists()
+        _scan(module, app, _legacy_set(45)[0])
+        assert app.current_set_info["raw"] == [_legacy_set(45)[0]] and app.current_set_info["id"] != LAB_SET
+        assert _row(store.db_path, captured.intent_id) == before
+        assert LAB_SET in {row["set_id"] for row in app._package_recovery_candidates()}
+    finally:
+        _close(app)
+
+
+def test_hold_and_continue_accepts_a_listed_capture_no_set_holds(tmp_path, monkeypatch):
+    """'보류 후 계속' on a capture-only row answered '대상 또는 작업자가
+    바뀌었습니다': it now records the hold and leaves the capture as it is."""
+    module = load_label_match_module()
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    _db, _outbox, store = _store(tmp_path)
+    app.deferred_intent_capture = store
+    captured = _head(store, "OPERATOR_REVIEW", set_id=LAB_SET, scan=PHS2_LABEL)
+    before = _row(store.db_path, captured.intent_id)
+    try:
+        target, _source = app._package_pin_target("LABEL.SET_HOLD", LAB_SET)
+        assert target["id"] == LAB_SET
+        app._package_recovery_manager = lambda code=None: "admin-p1fix3"
+        assert app._hold_package_recovery_set(LAB_SET) is True
+        held = app.package_outbox.get_workbench_hold(LAB_SET)
+        assert json.loads(held["snapshot_json"])["capture"]["intent_id"] == captured.intent_id
+        assert app._package_set_hold_complete(LAB_SET, held)
+        assert _row(store.db_path, captured.intent_id) == before
+    finally:
+        _close(app)
+
+
+def test_hold_target_reads_the_set_on_screen_with_its_start_time(tmp_path):
+    """A set on screen keeps start_time as a datetime; its fingerprint raised
+    and '보류 후 계속' answered '대상 또는 작업자가 바뀌었습니다'."""
+    _db, _outbox, store = _store(tmp_path)
+    captured = _head(store, "OPERATOR_REVIEW", set_id="SET-LIVE", scan="PHS2-LIVE")
+    app = _recovery_app(store, {"id": "SET-LIVE", "raw": ["PHS2-LIVE"], "parsed": ["ITEM-LABEL-1"],
+                                "deferred_intent_id": captured.intent_id,
+                                "physical_scanned_qr_payload": "PHS2-LIVE", "start_time": datetime.now()})
+    target, _source = app._package_pin_target("LABEL.SET_HOLD", "SET-LIVE")
+    assert target["id"] == "SET-LIVE"
+    assert app._package_pin_target("LABEL.SET_HOLD", "SET-LIVE")[1] == _source  # stable for the write
+
+
+def test_central_set_whose_capture_differs_is_listed_for_hold_and_the_pc_continues(tmp_path, monkeypatch):
+    """A set that needs its capture is not run without it: it stays as saved,
+    is listed with its own evidence, and a hold frees the PC."""
+    module = load_label_match_module()
+    app, store, captured, saved = _saved_state(module, tmp_path, monkeypatch, [PHS2_LABEL],
+                                               capture_scan=OTHER_PHS2, central=True)
+    before = _row(store.db_path, captured.intent_id)
+    current_path = Path(app._package_current_state_path())
+    try:
+        app._load_current_set_state()
+        assert app._workflow_blocking_notice.title == "포장 기록 저장 확인 필요"
+        assert "건별 복구에서 이 세트를 보류" in app._workflow_blocking_notice.message
+        [row] = [row for row in app._package_recovery_candidates() if row["set_id"] == LAB_SET]
+        assert row["current"] == saved
+        app._package_pin_target("LABEL.SET_HOLD", LAB_SET)
+        app._package_recovery_manager = lambda code=None: "admin-p1fix3"
+        assert app._hold_package_recovery_set(LAB_SET) is True
+        assert not current_path.exists() and app.package_outbox.get_workbench_hold(LAB_SET)
+        assert app.__dict__.get("_workflow_blocking_notice") is None
+        assert _row(store.db_path, captured.intent_id) == before
+    finally:
+        _close(app)
 
 
 # --- P1-5: 30 seconds of clock tolerance, the same as the server ---------------------------

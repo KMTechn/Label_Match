@@ -8433,6 +8433,8 @@ class Label_Match(tk.Tk):
                                   "package": outbox.get_by_set_id(saved_id),
                                   "exchange": None, "current": saved,
                                   "held": outbox.get_workbench_hold(saved_id)}
+            elif saved_id and rows[saved_id].get("current") is None:
+                rows[saved_id]["current"] = saved  # the unloaded set its capture names
         for package in outbox.list_local_completion_pending(limit=1000):
             set_id = str(package.get("set_id") or "").strip()
             if set_id and set_id not in rows:
@@ -8957,7 +8959,7 @@ class Label_Match(tk.Tk):
         if candidate is None:
             raise AdminPinError("TARGET_CHANGED")
         if action != "LABEL.SUPPORT_HANDOFF" and not any(candidate.get(name) for name in (
-            "current", "current_file", "package", "exchange", "held", "label",
+            "current", "current_file", "package", "exchange", "held", "label", "capture",
         )):
             raise AdminPinError("TARGET_CHANGED")
         outbox = self.package_outbox
@@ -9008,13 +9010,18 @@ class Label_Match(tk.Tk):
             details["exchange_command_sha256"] = hashlib.sha256(
                 str(exchange.get("command_json") or "").encode("utf-8")
             ).hexdigest()
+            if candidate.get("capture"):
+                details["capture_sha256"] = admin_pin_fingerprint(dict(candidate["capture"]))
             current_file = candidate.get("current_file")
             if current_file:
                 details["current_file_sha256"] = self._read_package_recovery_file(
                     current_file
                 )["sha256"]
             elif candidate.get("current"):
-                details["current_sha256"] = admin_pin_fingerprint(candidate["current"])
+                # The set on screen keeps its start time as a datetime.
+                details["current_sha256"] = admin_pin_fingerprint(
+                    json.loads(json.dumps(candidate["current"], default=str))
+                )
                 current_path = self._package_current_state_path()
                 if current_path and os.path.lexists(current_path):
                     evidence = self._read_package_recovery_file(current_path)
@@ -9687,7 +9694,11 @@ class Label_Match(tk.Tk):
             target_id = str(set_id)[3:] if action == "LABEL.F5_HOLD" else str(set_id)
             pending = self._admin_pin_store.pending(kind, target_id)
             if (pending is None or pending["error_code"] != "VERIFY_UNAVAILABLE"):
-                raise AdminPinError("TARGET_CHANGED")
+                self._admin_pin_last_message = (
+                    "이 단추는 관리자 PIN 확인을 할 수 없었던 건에만 씁니다. "
+                    "이 건은 '보류 후 계속'을 눌러 관리자 PIN으로 보류하세요."
+                )
+                return False
             if not self._recover_package_pin_moves(pending):
                 raise AdminPinError("TARGET_CHANGED")
             target, _ = self._package_pin_target(pending["action"], set_id,
@@ -10041,6 +10052,8 @@ class Label_Match(tk.Tk):
             else:
                 snapshot = {"orphan_set_id": str(set_id),
                             "package_key": str((candidate.get("package") or {}).get("idempotency_key") or "")}
+                if candidate.get("capture"):
+                    snapshot["capture"] = dict(candidate["capture"])  # the row stays as it is
             try:
                 source, input_tag_id = self._package_recovery_identity(candidate)
                 reason = "중앙 결과 또는 로컬 복구 확인 필요"
@@ -10783,7 +10796,43 @@ class Label_Match(tk.Tk):
                 return
         saved_set_info = dict(state_data.get("current_set_info") or {})
         saved_set_id = str(saved_set_info.get("id") or "").strip()
-        capture = self._owned_deferred_capture_for_set(saved_set_info)
+        detached_capture = False
+        try:
+            capture = self._owned_deferred_capture_for_set(saved_set_info)
+        except Exception as error:
+            code = str(getattr(error, "code", "") or type(error).__name__)
+            print(f"포장 시작 복구 저장본 확인 기술 진단: {code}")
+            # A 92abdaa set could hold a capture that is not its own: the next
+            # old-label set took over the id and capture of the PHS2 label
+            # before it, and a capture-only set kept no QR.  Such a local set
+            # goes on without it; the capture stays as it is and 건별 복구
+            # lists it for the administrator.
+            detached_capture = bool(
+                code == "CANCEL_CAPTURE_INTEGRITY"
+                and not saved_set_info.get("central_inherit_all")
+            )
+            if detached_capture and not list(saved_set_info.get("raw") or []):
+                self.data_manager.delete_current_state()  # nothing but the capture's id
+                return
+            if detached_capture:
+                detached = {key: value for key, value in saved_set_info.items()
+                            if key != "deferred_intent_id"}
+                detached_capture = bool(self.data_manager.save_current_state(
+                    {**state_data, "current_set_info": detached}))
+                if detached_capture:
+                    saved_set_info = detached
+                    state_data["current_set_info"] = detached
+            if not detached_capture:
+                # The set is kept as saved and listed, so 건별 복구 can hold
+                # it and the PC takes new work.
+                self._package_recovery_state_data = state_data
+                self._show_package_recovery_block(
+                    "저장된 현재 세트를 그 현품표 저장본과 맞춰 보지 못했습니다. "
+                    "건별 복구에서 이 세트를 보류하면 다른 작업을 계속할 수 있습니다.",
+                    retry_action=self._show_package_recovery_workbench,
+                )
+                return
+            capture = None
         if capture is not None and capture["state"] == "CANCELLED":
             if saved_set_info.get("transition_class") not in label_transition.LOCAL_CLASSES:
                 self.data_manager.delete_current_state()
@@ -10947,6 +10996,35 @@ class Label_Match(tk.Tk):
             if completion_sync_error is not None:
                 self._publish_durable_commit_block(completion_sync_error)
                 return
+            scans = len(self.current_set_info.get("raw") or [])
+            if (
+                not self.current_set_info.get("central_inherit_all")
+                and not self.current_set_info.get("exact_rescan_active")
+                and scans >= self._workflow_total_scan_count()
+            ):
+                # A full local set whose completion save was refused (or cut
+                # off) before the stop: a further scan, F1 and F3 do not act on
+                # a full set, so the refusal's retry is offered again.
+                notice = WorkflowNotice(
+                    title=f"{scans}/{scans} 유지 · 완료 기록 저장 필요",
+                    message=(
+                        "이전 실행에서 이 세트의 완료 기록을 남기지 못했습니다. "
+                        "저장 재시도를 누르면 이 세트를 완료합니다. 실물을 이동하지 마세요."
+                        + (
+                            " 이 세트에 붙어 있던 다른 현품표 저장본은 세트에서 떼고 "
+                            "기록은 그대로 두었습니다. 관리자 확인이 필요한 저장본이면 "
+                            "작업대의 건별 복구에 뜨고, 관리자가 그 건만 확인·보류합니다."
+                            if detached_capture else ""
+                        )
+                    ),
+                    kind="submission_blocked",
+                    tone="danger",
+                )
+                self._workflow_blocking_notice = notice
+                self._workflow_notice = notice
+                self._workflow_notice_action = self._retry_blocked_submission
+                self._workflow_notice_action_text = "저장 재시도"
+                self._render_operator_workbench()
             self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
             self._reconcile_active_package_submission()
 
