@@ -19,7 +19,7 @@ writer 전환은 설치된 파일 집합을 기준으로 한다. 57f52e1의 shar
 
 `PINNED_LEGACY_LABEL_TRANSITION_MODE` 전환은 `3f4574a` → 과도기 모드 판(w9lmtransit)에만 적용한다. `Label_Match`·`direct_sync_push`·`label_completion`·`label_recovery_schema`·`label_workbench_context`·`logistics_runtime_profile`·`ui/workflow_snapshot_adapter`·`ui/workflow_view_state` 여덟 모듈의 LF-normalized SHA256 전/후 쌍과 leaf `app/label_transition.py` 한 파일 추가만 허용한다. writer pin 파생·membership, 나머지 파일 AST·runtime·계약 검사는 그대로이며 역방향·다른 전/후 판·그 밖의 추가는 거부한다. 후보가 `3f4574a`의 저장 상태를 그대로 읽으므로 데이터 변환은 없다.
 
-`PINNED_SCAN_INPUT_FIX` 전환은 `c83c72c`(w9lmtransit 최종) → w9lmscanmsg 판에만 적용한다. `app/Label_Match.py` 한 파일의 LF-normalized SHA256 전/후 쌍 `27c03a98…b1f1b5` → 후보 파일만 허용하고, writer pin 파생·membership과 나머지 파일 AST·runtime·계약 검사는 그대로다. 저장 형식은 같아 데이터 변환이 없고 역방향은 거부한다.
+`PINNED_SCAN_INPUT_FIX` 전환은 `c83c72c`(w9lmtransit 최종)와 `817d393`(w9lmscanmsg 1733만 넣은 판, TEST1 후보) → w9lmscanmsg 판에만 적용한다. `app/Label_Match.py` 한 파일의 LF-normalized SHA256 전/후 쌍 두 개(`27c03a98…b1f1b5` → 후보, `78968d19…a261a` → 후보)만 허용하고, writer pin 파생·membership과 나머지 파일 AST·runtime·계약 검사는 그대로다. 저장 형식은 같아 데이터 변환이 없고 역방향은 거부한다.
 
 별도의 `PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX` 전환은 `d0e504e`/`0cf5bf6`의 `app/current_user_onboarding.py` LF-normalized SHA256 쌍 `bfd59326…20a57f` → `02bcbd5b…a73ab7`에만 적용한다. 양쪽의 파생 writer pin·동일 membership/guard와 모든 나머지 파일·runtime·계약을 검증한다. 기존 설치본의 bootstrap 기록 검증이 전환 판정보다 먼저 실행되고 실패는 fence·snapshot·교체 전에 중단한다. 변경은 기존 v1의 읽기 검증뿐이므로 mutable data 변환·기존 record 재작성은 없으며, 후보 record 생성과 기존 코드/record 보존은 원래 placement transaction이 담당한다. 역방향은 지원하지 않고 실패 transaction의 검증된 preimage 복원은 유지한다.
 

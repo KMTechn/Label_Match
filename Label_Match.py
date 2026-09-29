@@ -353,6 +353,9 @@ LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
 LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS = 5
 # Background lane work waits this long after the last scan's Enter.
 LABEL_MATCH_SCAN_QUIET_SECONDS = 1.0
+# Scans made while this lane task saves a completion wait for it in scan
+# order instead of being refused (w9lmscanmsg B).
+LABEL_MATCH_COMPLETION_LANE_TASK = "f3-package-completion"
 _LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_AUTOMATED_TEST_ENV = "LABEL_MATCH_AUTOMATED_TEST"
@@ -5255,6 +5258,24 @@ class Label_Match(tk.Tk):
             }
         )
 
+    def _completion_scan_queue_open(self):
+        """Only the completion save runs, so a scan can wait for it (B)."""
+
+        lane = self.__dict__.get("ui_lane")
+        if (
+            lane is None
+            or getattr(lane, "state", None) is not LaneState.BUSY
+            or self.__dict__.get("_ui_lane_busy_task")
+            != LABEL_MATCH_COMPLETION_LANE_TASK
+            or self.__dict__.get("_app_close_in_progress", False)
+        ):
+            return False
+        view = self.__dict__.get("_last_workflow_view")
+        # present_workflow enables F2 exactly when no screen gate (history,
+        # blocking notice, error) holds; a central 1/1 set's wait for F3 is
+        # what this save ends.
+        return view is None or bool(view.cancel_completed_enabled)
+
     def _advance_ui_lane_generation(self):
         """Fence terminal rendering from the prior current-set screen."""
 
@@ -5328,6 +5349,150 @@ class Label_Match(tk.Tk):
         if scan_dropped:
             self._play_sound("fail")
 
+    def _hold_scan_behind_completion(self, raw_input):
+        """Take a scan made during the completion save out of the entry (B).
+
+        It runs after that save in scan order and never joins the next scan.
+        """
+        held = self.__dict__.get("_scans_behind_completion")
+        if not held:
+            held = self._scans_behind_completion = []
+            self._scans_behind_completion_work = str(
+                (self.current_set_info or {}).get("id")
+            )
+            self._completed_set_behind_scans = None
+        try:
+            self.entry.delete(0, tk.END)
+        except (TclError, AttributeError):
+            pass
+        held.append(raw_input)
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            try:
+                status_label.config(
+                    text=f"포장 완료 저장 뒤 이어서 처리할 스캔 {len(held)}건",
+                    style="Status.TLabel",
+                )
+                status_label.grid()
+            except (TclError, AttributeError):
+                pass
+
+    def _refuse_scans_behind_completion(self, reason):
+        """Drop every held scan aloud with its count, never silently (B)."""
+
+        held = list(self.__dict__.get("_scans_behind_completion") or ())
+        self._scans_behind_completion = []
+        self._scans_behind_completion_work = None
+        self._completed_set_behind_scans = None
+        if not held:
+            return False
+        count = len(held)
+        message = {
+            "not_completed": (
+                f"포장 완료 저장이 끝나지 않아 이어서 들어온 스캔 {count}건은 받지 않았습니다. "
+                "화면 안내를 확인한 뒤 다시 스캔하세요."
+            ),
+            "changed": f"작업이 바뀌어 이어서 들어온 스캔 {count}건은 받지 않았습니다. 다시 스캔하세요.",
+            "closing": f"종료 중이라 이어서 들어온 스캔 {count}건은 받지 않았습니다. 다시 시작한 뒤 다시 스캔하세요.",
+            "broken": (
+                f"처리 상태를 확인할 수 없어 이어서 들어온 스캔 {count}건은 받지 않았습니다. "
+                "관리자 확인 뒤 다시 스캔하세요."
+            ),
+        }.get(reason, (
+            f"앞 스캔 처리로 이어서 들어온 스캔 {count}건은 받지 않았습니다. "
+            "화면 안내대로 한 뒤 다시 스캔하세요."
+        ))
+        # Other notices of the same moment (a completion block, an input
+        # error, closing, a lane fault) keep the headline.
+        if reason == "changed" and "big_display_label" in self.__dict__:
+            self.update_big_display(f"스캔 {count}건 안 받음 · 다시 스캔", "red")
+        status_label = self.__dict__.get("status_label")
+        if status_label is not None:
+            try:
+                status_label.config(text=message, style="Error.TLabel")
+                status_label.grid()
+            except (TclError, AttributeError):
+                pass
+        self._play_sound("fail")
+        return True
+
+    def _schedule_scans_behind_completion(self):
+        if not self.__dict__.get("_scans_behind_completion"):
+            return
+        lane = self.__dict__.get("ui_lane")
+        state = getattr(lane, "state", None)
+        if state is LaneState.BROKEN:
+            self._refuse_scans_behind_completion("broken")
+        elif state not in {LaneState.IDLE, LaneState.BUSY}:
+            self._refuse_scans_behind_completion("closing")
+        else:
+            # After the lane's idle barrier, so a held scan may start lane work.
+            lane.defer_until_idle(self._drain_scans_behind_completion)
+
+    def _drain_scans_behind_completion(self, _waits=0):
+        """Run the held scans oldest first, only once the completion they
+        waited for is durable and its set returned to idle (B)."""
+
+        if not self.__dict__.get("_scans_behind_completion"):
+            return
+        lane = self.__dict__.get("ui_lane")
+        state = getattr(lane, "state", None)
+        done = self.__dict__.get("_completed_set_behind_scans")
+        if self.__dict__.get("_app_close_in_progress", False) or state in {
+            LaneState.DRAINING, LaneState.CLOSED,
+        }:
+            self._refuse_scans_behind_completion("closing")
+            return
+        if lane is None or state is LaneState.BROKEN:
+            self._refuse_scans_behind_completion("broken")
+            return
+        if done is None or done[0] != self.__dict__.get("_scans_behind_completion_work"):
+            self._refuse_scans_behind_completion("not_completed")
+            return
+        if done[1] != int(self.__dict__.get("_ui_lane_generation", 0)) or (
+            (self.current_set_info or {}).get("raw")
+        ):
+            self._refuse_scans_behind_completion("changed")
+            return
+        if lane.is_busy():
+            # Other lane work started first; the held scans keep their turn.
+            lane.defer_until_idle(self._drain_scans_behind_completion)
+            return
+        entry = self.__dict__.get("entry")
+        try:
+            typing = bool(entry is not None and entry.get())
+        except (TclError, AttributeError):
+            typing = False
+        if typing and _waits < 20:
+            # A scan is being typed: its Enter queues it behind these, and
+            # a held scan starting lane work would lock the entry mid-scan.
+            self.after(50, lambda: self._drain_scans_behind_completion(_waits + 1))
+            return
+        while self.__dict__.get("_scans_behind_completion"):
+            view = (
+                self._render_operator_workbench()
+                if self.__dict__.get("operator_workbench_ready")
+                else None
+            )
+            if (
+                self._ui_lane_is_busy()
+                or self.__dict__.get("is_blinking", False)
+                or self.__dict__.get("_pending_workflow_error")
+                or self.__dict__.get("_workflow_pending_error")
+                or (view is not None and not view.scan_input_enabled)
+            ):
+                self._refuse_scans_behind_completion("blocked")
+                return
+            value = self._scans_behind_completion.pop(0)
+            try:
+                self.process_input(_scan_behind_completion=value)
+            except BaseException:
+                # Never leave the rest waiting for a drain that is not coming.
+                self._refuse_scans_behind_completion("blocked")
+                raise
+        self._scans_behind_completion_work = None
+        self._completed_set_behind_scans = None
+
     def _handle_ui_lane_fault(self, error):
         self._ui_lane_busy_task = ""
         self._ui_lane_busy_label = ""
@@ -5349,6 +5514,8 @@ class Label_Match(tk.Tk):
                 status_label.grid()
             except (TclError, AttributeError):
                 pass
+        if self.__dict__.get("_scans_behind_completion"):
+            self._refuse_scans_behind_completion("broken")
 
     def _submit_ui_lane_task(
         self,
@@ -5407,6 +5574,8 @@ class Label_Match(tk.Tk):
             self._clear_ui_lane_busy(task_name)
             if on_idle is not None:
                 on_idle()
+            if task_name == LABEL_MATCH_COMPLETION_LANE_TASK:
+                self._schedule_scans_behind_completion()
 
         admission = lane.submit(
             LaneTask(
@@ -5436,6 +5605,7 @@ class Label_Match(tk.Tk):
         last_enter = self.__dict__.get("_last_scan_enter_at")
         if not self.__dict__.get("_app_close_in_progress", False) and (
             (entry is not None and entry.get())
+            or self.__dict__.get("_scans_behind_completion")
             or (
                 last_enter is not None
                 and time.monotonic() - last_enter < LABEL_MATCH_SCAN_QUIET_SECONDS
@@ -7564,6 +7734,8 @@ class Label_Match(tk.Tk):
                 if self.__dict__.get("operator_workbench_ready", False):
                     self._render_operator_workbench()
                 self._show_ui_lane_rejection("closing")
+                if self.__dict__.get("_scans_behind_completion"):
+                    self._refuse_scans_behind_completion("closing")
             if (
                 ui_lane is not None
                 and ui_lane.state is not LaneState.CLOSED
@@ -13295,14 +13467,19 @@ class Label_Match(tk.Tk):
         self.after(100, poll)
         return True
 
-    def process_input(self, event=None):
+    def process_input(self, event=None, *, _scan_behind_completion=None):
         if self.__dict__.get("_app_close_in_progress", False):
             # Closing has locked the entry: this scan was not taken.
             self._show_ui_lane_rejection("closing")
             self._play_sound("fail")
             return
-        raw_input = self.entry.get().strip()
-        input_consumed = False
+        # A held scan (B) is no longer in the entry: nothing there is its.
+        held_scan = _scan_behind_completion is not None
+        raw_input = (
+            str(_scan_behind_completion).strip() if held_scan
+            else self.entry.get().strip()
+        )
+        input_consumed = held_scan
 
         def consume_input():
             nonlocal input_consumed
@@ -13319,9 +13496,22 @@ class Label_Match(tk.Tk):
             input_consumed = True
 
         if self._ui_lane_is_busy():
+            if not held_scan and self._completion_scan_queue_open():
+                # Only the completion save runs: the scan waits for it.
+                if raw_input:
+                    self._hold_scan_behind_completion(raw_input)
+                return
             # The busy lane has locked the entry, so a scan made meanwhile
             # never reached it; only a value typed before is still there.
             self._show_ui_lane_rejection("busy" if raw_input else "busy_scan_dropped")
+            return
+        if (
+            not held_scan and raw_input
+            and self.__dict__.get("_scans_behind_completion")
+        ):
+            # Earlier scans still wait to run: this one keeps its turn.
+            self._hold_scan_behind_completion(raw_input)
+            self._schedule_scans_behind_completion()
             return
 
         if self.is_blinking or not self.initialized_successfully: return
@@ -17075,7 +17265,13 @@ class Label_Match(tk.Tk):
         self.save_status_label.config(text=f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
-        return self._return_to_idle_after_finalized_set()
+        returned = self._return_to_idle_after_finalized_set()
+        if returned and _durable_completion is not None:
+            # Scans held behind this durable completion may start the next set.
+            self._completed_set_behind_scans = (
+                set_id_for_log, int(self.__dict__.get("_ui_lane_generation", 0)),
+            )
+        return returned
 
     def _return_to_idle_after_finalized_set(self):
         """Clear transient set UI after its durable result has been recorded."""
@@ -17562,6 +17758,9 @@ class Label_Match(tk.Tk):
             self._phs_label_guidance_notice = None
             self._workflow_recovered = False
 
+        if not from_finalize and self.__dict__.get("_scans_behind_completion"):
+            # Scans held behind a completion belong to the work reset here.
+            self._refuse_scans_behind_completion("changed")
         self._advance_ui_lane_generation()
         self.current_set_info = {
             'id': None, 'parsed': [], 'raw': [],
@@ -20572,8 +20771,11 @@ class Label_Match(tk.Tk):
 
         entry = self.__dict__.get("entry")
         if entry is not None:
+            # The completion save alone leaves the entry open: its scans
+            # wait for it in order (w9lmscanmsg B).
+            completion_queue_open = self._completion_scan_queue_open()
             entry_enabled = bool(
-                view.scan_input_enabled
+                (view.scan_input_enabled or completion_queue_open)
                 and self.__dict__.get("initialized_successfully", False)
                 and not self.__dict__.get(
                     "_app_close_in_progress", False
@@ -20597,7 +20799,7 @@ class Label_Match(tk.Tk):
                 and not self.__dict__.get(
                     "_phs_label_exchange_pending", False
                 )
-                and not self._ui_lane_is_busy()
+                and (completion_queue_open or not self._ui_lane_is_busy())
             )
             try:
                 entry.configure(state="normal" if entry_enabled else "disabled")

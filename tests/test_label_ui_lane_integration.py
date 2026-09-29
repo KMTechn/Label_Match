@@ -1215,12 +1215,13 @@ def _workbench_with_lane():
     return app, root
 
 
-def _begin_completion_save(app, gate):
-    # The completion save's lane task (label_completion._submit_finalized_set_on_lane)
-    # with its work held until the test releases it.
+def _begin_locking_save(app, gate):
+    # A save that locks the entry (the PHS2 capture's lane task) with its work
+    # held until the test releases it; the completion save holds scans instead
+    # (w9lmscanmsg B, tests/test_label_completion_scan_queue.py).
     admission = app._submit_ui_lane_task(
-        name="f3-package-completion",
-        busy_text="포장 완료 · 권한 확인 및 로컬 완료 저장 중",
+        name="phs2-capture-validation",
+        busy_text="현품표 저장 · 중앙 확인 중",
         work=lambda: gate.wait(timeout=2.0),
         finish=lambda _value: None,
         fail=pytest.fail,
@@ -1238,7 +1239,7 @@ def test_scan_refused_during_a_save_says_whether_it_was_kept(kept):
     try:
         for char in kept:  # typed before the save locked the entry
             app.entry.insert("insert", char)
-        _begin_completion_save(app, gate)
+        _begin_locking_save(app, gate)
         _scanner(app, "ITEM-001-P1-2")
 
         assert app.entry.get() == kept
@@ -1269,9 +1270,10 @@ _FIVE_SCANS = [
 
 
 @pytest.mark.parametrize("state", ["legacy", "local", "malformed", "central"])
-def test_scan_during_any_completion_save_is_refused_aloud(state):
-    """Each class's completion save refuses a scan with the warning sound and
-    the rescan notice; a central 1/1 set's screen gate returned first, silently."""
+def test_scan_during_locking_lane_work_is_refused_aloud_for_any_set(state):
+    """Lane work that locks the entry refuses a scan with the warning sound and
+    the rescan notice for every set class; a central 1/1 set's screen gate
+    returned first, silently (review 1733)."""
 
     app, root = _workbench_with_lane()
     if state == "central":
@@ -1285,7 +1287,7 @@ def test_scan_during_any_completion_save_is_refused_aloud(state):
     before = list(app.current_set_info["raw"])
     gate = threading.Event()
     try:
-        _begin_completion_save(app, gate)
+        _begin_locking_save(app, gate)
         _scanner(app, "ITEM-001-P9-9")
 
         assert app.entry.get() == "" and app.current_set_info["raw"] == before
@@ -1385,7 +1387,7 @@ def test_scan_during_a_save_leaves_nothing_to_join_the_next_scan():
     app, root = _workbench_with_lane()
     gate = threading.Event()
     try:
-        _begin_completion_save(app, gate)
+        _begin_locking_save(app, gate)
         _scanner(app, "ITEM-001-P1-1")
         assert app.entry.get() == ""
         gate.set()

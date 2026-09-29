@@ -105,15 +105,20 @@ def test_declared_pair_is_exactly_3f4574a_and_this_tree():
     assert set(additions) == {"app/label_transition.py"}
 
 
-def test_declared_scan_input_pair_is_exactly_c83c72c_and_this_tree():
+def test_declared_scan_input_pairs_are_exactly_c83c72c_and_817d393_to_this_tree():
+    """c83c72c (w9lmtransit) and 817d393 (the 1733-only TEST1 candidate) may be
+    installed; each upgrades to this tree, never the other way."""
     source = INSTALLER.read_text(encoding="utf-8")
     start = source.index("$probe = @'") + len("$probe = @'")
     tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
-    [(before, after)] = [ast.literal_eval(node.value) for node in tree.body
-                         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
-                         and node.targets[0].id == "scan_input_pair"]
-    assert _release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", "c83c72c:Label_Match.py"])) == before
-    assert _release_digest((ROOT / "Label_Match.py").read_bytes()) == after
+    [pairs] = [ast.literal_eval(node.value) for node in tree.body
+               if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+               and node.targets[0].id == "scan_input_pairs"]
+    here = _release_digest((ROOT / "Label_Match.py").read_bytes())
+    befores = {_release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", f"{commit}:Label_Match.py"]))
+               for commit in ("c83c72c", "817d393")}
+    assert pairs == {(before, here) for before in befores}
+    assert not any((here, before) in pairs for before in befores)
 
 
 @pytest.mark.parametrize("base_work", [False, True], ids=["no-work", "open-and-held-sets"])
