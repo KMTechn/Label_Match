@@ -351,6 +351,8 @@ LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS = 5
 LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS = 10
 LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
 LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS = 5
+# Background lane work waits this long after the last scan's Enter.
+LABEL_MATCH_SCAN_QUIET_SECONDS = 1.0
 _LABEL_MATCH_SESSION_SYNC_LOCK = threading.Lock()
 LABEL_MATCH_AUDIO_ENABLED_ENV = "LABEL_MATCH_AUDIO_ENABLED"
 LABEL_MATCH_AUTOMATED_TEST_ENV = "LABEL_MATCH_AUTOMATED_TEST"
@@ -5302,8 +5304,10 @@ class Label_Match(tk.Tk):
         reason = str(reason or "")
         broken = reason == "broken" or getattr(self.__dict__.get("ui_lane"), "state", None) is LaneState.BROKEN
         closing = reason == "closing" and not broken
+        dropped = reason == "busy_scan_dropped" and not broken
         headline = "처리 상태 확인 필요" if broken else (
-            "처리 완료 후 종료합니다" if closing else "이전 작업 처리 중 · 입력 보존"
+            "처리 완료 후 종료합니다" if closing else
+            "이전 작업 처리 중 · 스캔 안 받음" if dropped else "이전 작업 처리 중 · 입력 보존"
         )
         if "big_display_label" in self.__dict__:
             self.update_big_display(headline, "red" if broken else "primary")
@@ -5313,12 +5317,15 @@ class Label_Match(tk.Tk):
                 status_text = (
                     "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요." if broken else
                     "새 작업은 받지 않습니다. 처리 완료 후 종료합니다." if closing else
+                    "처리 중이라 이번 스캔은 받지 않았습니다. 끝나면 다시 스캔하세요." if dropped else
                     "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
                 )
                 status_label.config(text=status_text, style="Error.TLabel" if broken else "Status.TLabel")
                 status_label.grid()
             except (TclError, AttributeError):
                 pass
+        if dropped:
+            self._play_sound("fail")
 
     def _handle_ui_lane_fault(self, error):
         self._ui_lane_busy_task = ""
@@ -5421,6 +5428,20 @@ class Label_Match(tk.Tk):
         return admission
 
     def _submit_deferred_validation_lane_task(self, task):
+        # This start has no scan of its own: locking the entry mid-scan kept
+        # the typed part and the next scan joined it. Wait for an empty entry
+        # and a pause after the last Enter; the work is only delayed.
+        entry = self.__dict__.get("entry")
+        last_enter = self.__dict__.get("_last_scan_enter_at")
+        if not self.__dict__.get("_app_close_in_progress", False) and (
+            (entry is not None and entry.get())
+            or (
+                last_enter is not None
+                and time.monotonic() - last_enter < LABEL_MATCH_SCAN_QUIET_SECONDS
+            )
+        ):
+            self._schedule_deferred_validation_worker(1000)
+            return Admission(False, reason="scan_in_progress")
         return self._submit_ui_lane_task(
             name=task.name,
             busy_text="저장된 현품표 · 중앙 확인 중",
@@ -12997,6 +13018,7 @@ class Label_Match(tk.Tk):
         item_code,
         *,
         on_capture_committed=None,
+        on_capture_failed=None,
     ):
         if self.__dict__.get(
             "_phs_label_scan_lookup_in_progress", False
@@ -13060,6 +13082,10 @@ class Label_Match(tk.Tk):
             )
             capture_result = work_state.get("capture_result")
             if capture_result is None:
+                # Nothing was stored: the rescan the failure asks for (or,
+                # in transition mode, the first product) must stand alone.
+                if on_capture_failed is not None:
+                    on_capture_failed()
                 self._show_phs2_lookup_outcome(
                     error, physical_qr_payload, item_code,
                     self._show_deferred_capture_failure,
@@ -13114,6 +13140,7 @@ class Label_Match(tk.Tk):
         item_code,
         *,
         on_capture_committed=None,
+        on_capture_failed=None,
     ):
         if (
             self.__dict__.get("ui_lane") is not None
@@ -13123,6 +13150,7 @@ class Label_Match(tk.Tk):
                 physical_qr_payload,
                 item_code,
                 on_capture_committed=on_capture_committed,
+                on_capture_failed=on_capture_failed,
             )
         if self.__dict__.get(
             "_phs_label_scan_lookup_in_progress", False
@@ -13146,6 +13174,8 @@ class Label_Match(tk.Tk):
                 "PHS2 deferred-intent capture technical diagnostic: "
                 f"{getattr(exc, 'code', exc.__class__.__name__)}"
             )
+            if on_capture_failed is not None:
+                on_capture_failed()
             self._show_phs2_lookup_outcome(
                 exc, physical_qr_payload, item_code,
                 self._show_deferred_capture_failure,
@@ -13285,7 +13315,9 @@ class Label_Match(tk.Tk):
             input_consumed = True
 
         if self._ui_lane_is_busy():
-            self._show_ui_lane_rejection("busy")
+            # The busy lane has locked the entry, so a scan made meanwhile
+            # never reached it; only a value typed before is still there.
+            self._show_ui_lane_rejection("busy" if raw_input else "busy_scan_dropped")
             return
 
         if self.is_blinking or not self.initialized_successfully: return
@@ -13533,6 +13565,7 @@ class Label_Match(tk.Tk):
                         processed_input,
                         client_code,
                         on_capture_committed=consume_input,
+                        on_capture_failed=consume_input,
                     )
                     if not accepted:
                         self.current_set_info["phase"] = previous_phase
@@ -20650,6 +20683,7 @@ class Label_Match(tk.Tk):
         return self._render_operator_workbench()
 
     def _handle_scan_enter(self, event=None):
+        self._last_scan_enter_at = time.monotonic()
         if self.__dict__.get("_pending_workflow_error") or self.__dict__.get(
             "_workflow_pending_error"
         ):

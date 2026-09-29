@@ -805,6 +805,68 @@ def test_on_real_capture_store_cancels_the_offline_phs2_before_the_local_set(clo
         assert conn.execute("SELECT COUNT(*) FROM package_operation_leases").fetchone()[0] == 0
 
 
+class _FailingCaptureStore:
+    """The durable PHS2 capture fails (disk full) before anything is stored."""
+
+    def __init__(self):
+        self.payloads = []
+
+    def capture_label_package_source(self, *, local_work_identity, physical_qr_payload, item_code):
+        from deferred_intent_capture import DeferredIntentCaptureError
+
+        self.payloads.append(physical_qr_payload)
+        raise DeferredIntentCaptureError("SQLITE_CAPTURE_FAILED", "database or disk is full")
+
+
+@pytest.mark.parametrize("transition", [False, True])
+def test_failed_phs2_capture_leaves_nothing_to_join_the_next_scan(tmp_path, monkeypatch, transition):
+    """The label stayed in the entry after a failed capture. Off, the rescan
+    the screen asks for joined it; on, the local set's first product did."""
+
+    from tests.test_label_ui_lane_integration import _ScannerEntry
+    from tests.test_tk_serial_ui_lane import FakeTkRoot
+    from tk_serial_ui_lane import TkSerialUiLane
+
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=transition)
+    root = FakeTkRoot()
+    app._ui_lane_generation = 0
+    app._ui_lane_busy_label = ""
+    app._ui_lane_busy_task = ""
+    app._app_close_in_progress = False
+    app.ui_lane = TkSerialUiLane(root, poll_ms=1, generation_provider=lambda: app._ui_lane_generation)
+    app.deferred_intent_capture = store = _FailingCaptureStore()
+    app.entry = _ScannerEntry()
+    product = f"{MASTER}-P41-1"
+
+    def scan(value):
+        for char in value:
+            app.entry.insert("insert", char)
+        module.Label_Match.process_input(app)
+        root.run_until(lambda: not app.ui_lane.is_busy())
+
+    try:
+        scan(PHS2_LABEL)
+        assert store.payloads == [PHS2_LABEL]
+        assert app.entry.get() == ""
+        if transition:
+            assert app.current_set_info["raw"] == [PHS2_LABEL]
+            assert app.current_set_info["transition_reasons"] == ["PHS2_CAPTURE_FAILED"]
+            scan(product)
+            assert app.current_set_info["raw"] == [PHS2_LABEL, product]
+            assert app.errors == []
+        else:
+            notice = app._deferred_capture_failure_notice()
+            assert notice.title == "저장 실패—다시 스캔 필요"
+            assert "같은 현품표를 다시 스캔하세요." in notice.message
+            for char in PHS2_LABEL:  # the rescan the notice asks for
+                app.entry.insert("insert", char)
+            assert app.entry.get() == PHS2_LABEL
+    finally:
+        app.ui_lane.close_idle()
+        _close(app)
+
+
 @pytest.mark.parametrize("transition", [False, True])
 def test_f3_refusal_closes_the_validated_capture_before_a_local_completion(
     clock_case, monkeypatch, transition,

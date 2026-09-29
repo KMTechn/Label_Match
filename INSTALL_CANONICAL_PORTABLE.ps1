@@ -508,7 +508,7 @@ shared_transition = all(
 legacy_label_replacements = {
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-        '0f2f47e3748cb6281481063e8bd858a5cfcd6cd2f6e681683b08f5ff23292c86'),
+        '1788ce28404ca4cdea0039f6c56a272ee337511b8b1faf89ac48f6826c903dd3'),
     'app/direct_sync_push.py': (
         '21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
         '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'),
@@ -551,7 +551,7 @@ legacy_label_transition = all(
 scan_input_path = 'app/Label_Match.py'
 scan_input_pair = (
     '27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-    '0f2f47e3748cb6281481063e8bd858a5cfcd6cd2f6e681683b08f5ff23292c86')
+    '1788ce28404ca4cdea0039f6c56a272ee337511b8b1faf89ac48f6826c903dd3')
 scan_input_transition = (
     (installed / scan_input_path).is_file() and
     (source / scan_input_path).is_file() and

@@ -1103,12 +1103,15 @@ def test_scan_is_not_cleared_while_lane_is_busy():
     deleted = []
     rejected = []
     background_finished = []
+    rescheduled = []
     app._app_close_in_progress = False
+    typed = [""]
     app.entry = SimpleNamespace(
-        get=lambda: "PHS2-PRESERVE",
+        get=lambda: typed[0],
         delete=lambda *_args: deleted.append(True),
     )
     app._show_ui_lane_rejection = lambda reason: rejected.append(reason)
+    app._schedule_deferred_validation_worker = lambda delay_ms=1000: rescheduled.append(delay_ms)
     assert app.ui_lane.submit(
         LaneTask(
             "blocking",
@@ -1130,17 +1133,193 @@ def test_scan_is_not_cleared_while_lane_is_busy():
     assert trigger.trigger().reason == "busy"
     assert trigger.pending_count == 1
     background_rejections = list(rejected)
+    typed[0] = "PHS2-PRESERVE"  # in the entry before the lane got busy
     app.process_input()
     gate.set()
+    root.run_until(lambda: bool(rescheduled) and not app.ui_lane.is_busy())
+    assert background_finished == []  # waits while the kept value is there
+    typed[0] = ""
+    assert trigger.trigger().accepted
     root.run_until(lambda: bool(background_finished) and not app.ui_lane.is_busy())
     _close_lane(app, root)
     assert deleted == []
     assert background_rejections == []
     assert rejected == ["busy"]
+    assert rescheduled == [1000]
     for reason in ("broken", "closing"):
         app.ui_lane = SimpleNamespace(submit=lambda _task: Admission(False, reason=reason))
         app._submit_deferred_validation_lane_task(deferred_task)
         assert rejected[-1] == reason
+
+
+class _ScannerEntry(FakeWidget):
+    """The ttk.Entry as a scanner meets it: key presses insert text and
+    delete() clears it only while the entry is normal (a disabled ttk.Entry
+    ignores both, as Label_Match's consume_input already relies on)."""
+
+    def __init__(self):
+        super().__init__()
+        self.options["state"] = "normal"
+        self.text = ""
+
+    def cget(self, name):
+        return self.options[name]
+
+    def get(self):
+        return self.text
+
+    def insert(self, _index, text):
+        if self.options["state"] == "normal":
+            self.text += text
+
+    def delete(self, _first, _last=None):
+        if self.options["state"] == "normal":
+            self.text = ""
+
+
+def _scanner(app, value):
+    """One key press per character, then Return through the entry binding."""
+
+    for char in value:
+        app.entry.insert("insert", char)
+    return app._handle_scan_enter()
+
+
+def _workbench_with_lane():
+    """Real workbench render and lane; a legacy set waiting for product 1."""
+
+    app = _render_app(("ITEM-001",), ("ITEM-001",))
+    root = FakeTkRoot()
+    app._ui_lane_generation = 0
+    app._ui_lane_busy_label = ""
+    app._ui_lane_busy_task = ""
+    app._app_close_in_progress = False
+    app.is_blinking = False
+    app.run_tests = False
+    app.is_running_simulation = False
+    app.global_scanned_set = set()
+    app.status_label = FakeWidget()
+    app.entry = _ScannerEntry()
+    app.events = []
+    app.data_manager = SimpleNamespace(
+        log_event=lambda event, details: app.events.append((event, details))
+    )
+    app.sounds = []
+    app._play_sound = lambda key, *_args: app.sounds.append(key)
+    for name in ("_update_status_label", "_update_history_tree_in_progress",
+                 "_save_current_set_state"):
+        setattr(app, name, lambda: True)
+    app.ui_lane = TkSerialUiLane(
+        root, poll_ms=1, generation_provider=lambda: app._ui_lane_generation
+    )
+    return app, root
+
+
+def _begin_completion_save(app, gate):
+    # The completion save's lane task (label_completion._submit_finalized_set_on_lane)
+    # with its work held until the test releases it.
+    admission = app._submit_ui_lane_task(
+        name="f3-package-completion",
+        busy_text="포장 완료 · 권한 확인 및 로컬 완료 저장 중",
+        work=lambda: gate.wait(timeout=2.0),
+        finish=lambda _value: None,
+        fail=pytest.fail,
+    )
+    assert admission.accepted and app.entry.cget("state") == "disabled"
+
+
+@pytest.mark.parametrize("kept", ["", "ITEM-001-P1-1"], ids=["scan-dropped", "value-kept"])
+def test_scan_refused_during_a_save_says_whether_it_was_kept(kept):
+    """The locked entry drops a scan made during the save: say so and warn.
+    Only a value already in the entry is kept (w9scanflow F3)."""
+
+    app, root = _workbench_with_lane()
+    gate = threading.Event()
+    try:
+        for char in kept:  # typed before the save locked the entry
+            app.entry.insert("insert", char)
+        _begin_completion_save(app, gate)
+        _scanner(app, "ITEM-001-P1-2")
+
+        assert app.entry.get() == kept
+        assert [event for event, _details in app.events] == []
+        if kept:
+            assert app.big_display_label.options["text"] == "이전 작업 처리 중 · 입력 보존"
+            assert app.status_label.options["text"] == (
+                "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+            )
+            assert app.sounds == []
+        else:
+            assert app.big_display_label.options["text"] == "이전 작업 처리 중 · 스캔 안 받음"
+            assert app.status_label.options["text"] == (
+                "처리 중이라 이번 스캔은 받지 않았습니다. 끝나면 다시 스캔하세요."
+            )
+            assert app.sounds == ["fail"]
+        assert app.status_label.mapped is True
+    finally:
+        gate.set()
+        _close_lane(app, root)
+
+
+def test_background_validation_waits_for_an_empty_entry_and_a_pause():
+    """A scan-less background start locked the entry in the middle of a scan:
+    the typed part was kept and the next scan joined it (w9scanflow 3-1)."""
+
+    app, root = _app_with_lane()
+    app._app_close_in_progress = False
+    app.entry = _ScannerEntry()
+    app.process_input = lambda event=None: app.entry.delete(0, "end")
+    rescheduled = []
+    app._schedule_deferred_validation_worker = lambda delay_ms=1000: rescheduled.append(delay_ms)
+    started = []
+    task = LaneTask(
+        "deferred-validation", 0, lambda: True,
+        lambda _value: started.append(True), pytest.fail,
+    )
+    trigger = CoalescingTrigger(
+        app.ui_lane, lambda: task,
+        submit_task=app._submit_deferred_validation_lane_task,
+    )
+    try:
+        app.entry.insert("insert", "ITEM-001-P1")  # a scan being typed
+        assert trigger.trigger().accepted is False
+        assert not app.ui_lane.is_busy() and app.entry.cget("state") == "normal"
+        app.entry.insert("insert", "-1")
+        app._handle_scan_enter()  # its Enter: taken, the entry is empty again
+        assert trigger.trigger().accepted is False  # the next scan may follow
+        assert started == [] and trigger.pending_count == 0
+        app._last_scan_enter_at -= label_module.LABEL_MATCH_SCAN_QUIET_SECONDS
+        assert trigger.trigger().accepted is True  # delayed, never dropped
+        root.run_until(lambda: bool(started) and not app.ui_lane.is_busy())
+        assert rescheduled == [1000, 1000]
+    finally:
+        _close_lane(app, root)
+
+
+def test_scan_during_a_save_leaves_nothing_to_join_the_next_scan():
+    """Container_Audit kept such a scan in its open entry and joined it to the
+    next one (w9scanflow 3-1); Label_Match's locked entry keeps none of it."""
+
+    app, root = _workbench_with_lane()
+    gate = threading.Event()
+    try:
+        _begin_completion_save(app, gate)
+        _scanner(app, "ITEM-001-P1-1")
+        assert app.entry.get() == ""
+        gate.set()
+        root.run_until(lambda: not app.ui_lane.is_busy())
+        assert app.entry.cget("state") == "normal"
+
+        _scanner(app, "ITEM-001-P1-2")
+
+        assert app.current_set_info["raw"] == ["ITEM-001", "ITEM-001-P1-2"]
+        assert [
+            details["raw_input"] for event, details in app.events if event == "SCAN_ATTEMPT"
+        ] == ["ITEM-001-P1-2"]
+        assert app.entry.get() == ""
+    finally:
+        gate.set()
+        _close_lane(app, root)
 
 
 @pytest.mark.parametrize("capture_succeeds", [True, False])
@@ -1190,7 +1369,9 @@ def test_phs2_capture_clears_disabled_entry_only_after_durable_acceptance(captur
     try:
         assert app.process_input() is True
         root.run_until(lambda: not app.ui_lane.is_busy())
-        assert app.entry.get() == ("" if capture_succeeds else raw)
+        # Kept during the capture (above), consumed once it is decided: a
+        # failure asks for a rescan, which must not join the old value.
+        assert app.entry.get() == ""
         assert app.entry.cget("state") == "normal"
         assert len(captured) == int(capture_succeeds)
         if captured:
