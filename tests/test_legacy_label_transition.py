@@ -2301,3 +2301,183 @@ def test_relay_takes_a_raw_receipt_for_every_server_raw_only_event(tmp_path, mon
     )
     # A business event never takes a raw-only acknowledgement.
     assert result.success is (event in _SERVER_RAW_ONLY_EVENTS)
+
+
+# w9labtransit1 (3aa3195, switch on) 11:50:43 and 11:52:23: a new-label
+# envelope without lineage fell through to the 13-digit check and was refused
+# (scan 0, no class); CA c3a1230 takes the same label as PHS2_MALFORMED.
+LAB_ITEM = "AAA2270710000"
+LAB_LABEL = f"PHS=2|CLC={LAB_ITEM}|QT=3"
+# CA's new-system markers (PHS=2 or an identity value) that no LM parser reads.
+UNREAD_NEW_LABELS = [
+    pytest.param(LAB_LABEL, ["LINEAGE_MISSING"], id="lab-no-lineage"),
+    pytest.param(base64.b64encode(LAB_LABEL.encode()).decode(), ["LINEAGE_MISSING"], id="lab-base64"),
+    pytest.param(f"PHS=2|CLC={LAB_ITEM}|LBL=label_458c|HSH=3f29da5d49dc0b88", ["LINEAGE_MISSING"],
+                 id="no-src-itg"),
+    pytest.param(LAB_LABEL + "|BROKEN", ["LINEAGE_MISSING", "FORMAT_INVALID"], id="format-invalid"),
+    pytest.param(f"PHS=2|PHS=1|CLC={LAB_ITEM}|QT=3", ["DUPLICATE_KEY", "PHS_NOT_2", "LINEAGE_MISSING"],
+                 id="duplicate-phs"),
+    pytest.param(f"PHS=2|CLC={LAB_ITEM}|QT=0", ["LINEAGE_MISSING", "QT_INVALID"], id="quantity"),
+    pytest.param(f"CLC={LAB_ITEM}|LBL=label_458c|QT=3", ["PHS_MISSING", "LINEAGE_MISSING"],
+                 id="identity-without-phs"),
+]
+
+
+def _lab_set(number, label=LAB_LABEL):
+    return [
+        label,
+        *(f"{LAB_ITEM}T0929K{number}{index}" for index in range(1, 4)),
+        f"{LAB_ITEM}-FINAL-LABEL-{number:04d}<GS>6D{TODAY}",
+    ]
+
+
+def _lab_app(module, tmp_path, monkeypatch, *, registered=True, transition=True):
+    app, syncs = _packaging_app(
+        module, tmp_path, monkeypatch, registered=registered, transition=transition,
+    )
+    app.items_data[LAB_ITEM] = {"Item Name": "랩 품목", "Spec": "규격"}
+    return app, syncs
+
+
+@pytest.mark.parametrize(("label", "reasons"), UNREAD_NEW_LABELS)
+def test_on_unread_new_label_is_malformed_and_completes_locally(tmp_path, monkeypatch, label, reasons):
+    module = load_label_match_module()
+    app, syncs = _lab_app(module, tmp_path, monkeypatch)
+    try:
+        for value in _lab_set(1, label):
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert app.errors == [] and app.blocks == [] and _events(tmp_path, "ERROR_INPUT") == []
+    assert [title for title, _message in app.warnings] == ["현품표 형식 오류 · 과도기 기록"]
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert _transition(details) == {
+        "transition_class": "PHS2_MALFORMED", "transition_reasons": reasons,
+        "transition_duplicate": False,
+    }
+    assert details["final_result"] == "통과" and details["scan_count"] == 5
+    assert details["scanned_product_barcodes"] == _lab_set(1, label)  # the raw label as scanned
+    assert details["package_logistics"]["status"] == LOCAL_STATUS
+    # The central client fails any call; nothing reaches the package ledger.
+    assert _outbox_rows(tmp_path) == [] and syncs == ["TRAY_COMPLETE"]
+
+
+@pytest.mark.parametrize(("registered", "transition"), [(True, False), (False, True)],
+                         ids=["registered-off", "unregistered-on"])
+@pytest.mark.parametrize(("label", "_reasons"), UNREAD_NEW_LABELS)
+def test_off_or_unregistered_unread_new_label_keeps_the_base_refusal(
+    tmp_path, monkeypatch, label, _reasons, registered, transition,
+):
+    module = load_label_match_module()
+    app, _syncs = _lab_app(module, tmp_path, monkeypatch, registered=registered, transition=transition)
+    try:
+        _scan(module, app, label)
+    finally:
+        _close(app)
+
+    [(title, message)] = app.errors
+    assert title == "[현품표 형식 오류]" and "13자리 아님" in message
+    assert app.current_set_info["raw"] == [] and _events(tmp_path, "TRAY_COMPLETE") == []
+
+
+@pytest.mark.parametrize("raw", [
+    pytest.param(f"{LAB_ITEM}T0929K01", id="lab-product-as-label"),  # 11:50:48
+    pytest.param("PHS=2", id="no-envelope"),
+    pytest.param(f"CLC={LAB_ITEM}|QT=3", id="no-new-system-key"),
+])
+def test_on_input_without_a_new_label_shape_is_still_an_input_error(tmp_path, monkeypatch, raw):
+    module = load_label_match_module()
+    app, _syncs = _lab_app(module, tmp_path, monkeypatch)
+    try:
+        _scan(module, app, raw)
+    finally:
+        _close(app)
+
+    [(title, message)] = app.errors
+    assert title == "[현품표 형식 오류]" and "13자리 아님" in message
+    assert app.current_set_info["raw"] == [] and _events(tmp_path, "TRAY_COMPLETE") == []
+
+
+def test_readable_old_qr_with_new_system_values_stays_legacy():
+    module = load_label_match_module()
+    for raw in (f"CLC={MASTER}|SPC=옛 품목|PHS=2", f"CLC={MASTER}|SPC=옛 품목|PHS=2|LBL=label-1|QT=3"):
+        assert label_transition.classify_start_label(
+            raw, parse_sealed=module._label_match_parse_sealed_transfer_qr,
+        ) == ("LEGACY", (), MASTER), raw
+
+
+@pytest.mark.parametrize("transition", [False, True])
+def test_valid_phs2_and_13_digit_start_labels_keep_their_routes(tmp_path, monkeypatch, transition):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=transition)
+    app._recover_unknown_package_hold_identities = lambda: None
+    central = []
+    app._begin_central_phs2_scan_overlay = lambda raw, item, **k: central.append((raw, item)) or True
+    try:
+        _scan(module, app, PHS2_LABEL)
+        assert central == [(PHS2_LABEL, MASTER)] and app.current_set_info["raw"] == []
+        assert app.current_set_info.get("transition_class") == ("PHS2_CENTRAL" if transition else None)
+        app.current_set_info = _fresh_set()
+        _scan(module, app, MASTER)
+    finally:
+        _close(app)
+
+    assert app.errors == [] and app.current_set_info["raw"] == [MASTER]
+    assert app.current_set_info.get("transition_class") == ("LEGACY" if transition else None)
+
+
+@pytest.mark.parametrize("transition", [False, True])
+@pytest.mark.parametrize(("value", "accepted"), [
+    pytest.param(f"PHS=2|CLC={MASTER}|QT=3", True, id="no-lineage"),
+    pytest.param(f"PHS=2|CLC={MASTER}|QT=3|BROKEN", True, id="format-invalid"),
+    pytest.param(PHS2_LABEL, True, id="phs2"),
+    pytest.param(MASTER, False, id="13-digit"),
+])
+def test_product_position_never_reads_the_start_label_shape(tmp_path, monkeypatch, transition, value, accepted):
+    """As base: a product is any scan longer than the item code that contains it."""
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=transition)
+    master = MASTER if transition else BND_LABEL  # off: a set whose products the base admits
+    try:
+        _scan(module, app, master)
+        _scan(module, app, value)
+    finally:
+        _close(app)
+
+    if accepted:
+        assert app.errors == [] and app.current_set_info["raw"] == [master, value]
+    else:
+        assert [title for title, _message in app.errors] == ["[바코드 종류 오류]"]
+        assert app.current_set_info["raw"] == [master]
+    assert app.current_set_info.get("transition_class") == ("LEGACY" if transition else None)
+
+
+def test_unread_new_label_set_keeps_its_class_through_restore_after_switch_off(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app = _app_for_recovery(module, tmp_path, monkeypatch)
+    app.items_data[LAB_ITEM] = {"Item Name": "랩 품목", "Spec": "규격"}
+    try:
+        for value in _lab_set(2)[:2]:
+            _scan(module, app, value)
+        assert app.current_set_info["transition_class"] == "PHS2_MALFORMED"
+    finally:
+        _close(app)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    restored.items_data[LAB_ITEM] = {"Item Name": "랩 품목", "Spec": "규격"}
+    restored._legacy_label_transition_enabled = False
+    try:
+        restored._load_current_set_state()
+        assert restored.current_set_info["raw"] == _lab_set(2)[:2]
+        for value in _lab_set(2)[2:]:
+            _scan(module, restored, value)
+    finally:
+        _close(restored)
+
+    assert restored.errors == []
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert _transition(details) == {
+        "transition_class": "PHS2_MALFORMED", "transition_reasons": ["LINEAGE_MISSING"],
+        "transition_duplicate": False,
+    }
+    assert details["package_logistics"]["status"] == LOCAL_STATUS and _outbox_rows(tmp_path) == []

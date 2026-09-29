@@ -533,7 +533,7 @@ legacy_label_replacements = {
 }
 legacy_label_additions = {
     'app/label_transition.py':
-        'df9373ca448d1ab8c54efb2f0ecb3336efa88130ba61d638a2bf5530b7d6dd7d',
+        'ccc98f2af8843b6d9b2282186865baa2effd37bbb3d6b6dabbad8a6765ce8a3a',
 }
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and

@@ -42,6 +42,8 @@ _IDENTITY_KEYS = frozenset((
 _QUANTITY_KEYS = frozenset(("QT", "QTY"))
 # Its other aliases (CLC=INSPECTION): a repeat would hide a value.
 _ALIAS_KEYS = frozenset(("ITEM_NAME", "PHASE"))
+# Container_Audit's other new-system identity values (ITG and BND are lineage).
+_IDENTITY_VALUE_KEYS = frozenset(("LBL", "HSH", "HSH_CORE", "HSH_LABEL", "BUNDLE_ID", "SOURCE_BUNDLE_ID"))
 
 
 def _pairs(decoded):
@@ -68,12 +70,28 @@ def _positive_integer(value):
     return bool(re.fullmatch(r"[0-9]+", str(value or "").strip())) and int(value) > 0
 
 
+def _unread_new_label(decoded, pairs):
+    """A label Container_Audit reads as new (PHS=2 or an identity value) that
+    the old-QR parser cannot read, so the base refused it at the 13-digit check."""
+
+    return (
+        "|" in decoded
+        and any(
+            (key == "PHS" and value == "2") or (key in _IDENTITY_VALUE_KEYS and value)
+            for key, value in pairs
+        )
+        and parse_legacy_fields(decoded) is None
+    )
+
+
 def classify_start_label(raw_value, *, parse_sealed):
     """Return (shape, reasons, item_code) of one start label.
 
     Keys of the new system (TRF, BND, ITG or any SRC=KMTECH_INPUT_TAG) make a
     label new-shaped; a PHS value alone does not, so an old phase QR stays
-    LEGACY.  Every raw pair counts, so a repeated key cannot hide a marker.
+    LEGACY.  A label no LM parser reads is new-shaped without lineage when
+    Container_Audit reads it as new (PHS=2 or an identity value such as LBL).
+    Every raw pair counts, so a repeated key cannot hide a marker.
     ``parse_sealed`` is the application's sealed-transfer parser.
     """
 
@@ -86,8 +104,10 @@ def classify_start_label(raw_value, *, parse_sealed):
         key == "SRC" and str(value or "").strip().upper() == "KMTECH_INPUT_TAG"
         for key, value in pairs
     )
-    if not ({"TRF", "BND", "ITG"} & set(keys) or input_tag):
+    lineage_marked = bool({"TRF", "BND", "ITG"} & set(keys) or input_tag)
+    if not lineage_marked and not _unread_new_label(decoded, pairs):
         return SHAPE_LEGACY, (), item_code
+    unread = not lineage_marked
     reasons = []
     if (
         any(keys.count(key) > 1 for key in _IDENTITY_KEYS | _ALIAS_KEYS)
@@ -98,7 +118,7 @@ def classify_start_label(raw_value, *, parse_sealed):
         reasons.append("PHS_EMPTY")
     if "TRF" in keys:
         shape, lineage = SHAPE_SEALED, "BND"
-    elif "ITG" in keys or input_tag:
+    elif "ITG" in keys or input_tag or unread:
         shape, lineage = SHAPE_PHS2, "ITG"
     else:
         shape, lineage = SHAPE_STRUCTURED, "BND"
@@ -122,6 +142,11 @@ def classify_start_label(raw_value, *, parse_sealed):
             sealed = None
         if not sealed:
             reasons.append("SEALED_QR_INVALID")
+    elif unread:
+        # Lineage is missing, so the compact carrier is not judged; a segment
+        # without "=" is still a broken format.
+        if any(value is None for _key, value in pairs if _key):
+            reasons.append("FORMAT_INVALID")
     elif shape == SHAPE_PHS2:
         try:
             parse_compact_carrier(decoded)

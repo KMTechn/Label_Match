@@ -474,10 +474,10 @@ D-day 전까지 등록 PC(중앙 client가 있거나 필수 모드)에서 현장
 
 | 분류 | 언제 | 흐름 |
 | --- | --- | --- |
-| `LEGACY` | 새 시스템 키(TRF·BND·ITG·`SRC=KMTECH_INPUT_TAG`)가 없는 현품표: 13자리, 옛 QR(`PHS` 값만 있는 옛 단계 QR 포함) | 5단계·F3 소량 |
+| `LEGACY` | 새 시스템 키(TRF·BND·ITG·`SRC=KMTECH_INPUT_TAG`)가 없는 현품표: 13자리, 옛 QR(옛 QR parser가 읽는 `CLC`·`SPC`·`PHS` 단계 QR은 `PHS=2`여도 포함) | 5단계·F3 소량 |
 | `PHS2_CENTRAL` | 정상 새 현품표이고 중앙 흐름(포장 전송함 등록)이 성공 | 기존과 같음 |
 | `PHS2_LOCAL` | 정상 새 현품표인데 중앙·엄격 검사가 막음: 첫 스캔 중앙 확인 실패(오프라인 등, 미제출 capture는 F1과 같은 방식으로 취소), 보류 현품표, 중복 현품표, F3 제품 집합 재확인·적용 거부, F3 때 lease·전송함 거부, 새 현품표 세트의 F3 소량 | 첫 스캔에서 막히면 5단계로 계속, F3에서 막히면 그 세트를 로컬 완료. 그 세트의 미제출 capture를 F1과 같은 방식으로 닫을 수 없으면(결과 불명 lease·검증) 기존처럼 막는다 |
-| `PHS2_MALFORMED` | 새 시스템 키가 있는데 형식이 깨짐(구조화 BND 라벨을 기존 carrier parser가 읽지 못하는 경우 포함) | 5단계로 받고 사유와 원문(`scanned_product_barcodes[0]`)을 남김 |
+| `PHS2_MALFORMED` | 새 시스템 키가 있는데 형식이 깨짐(구조화 BND 라벨을 기존 carrier parser가 읽지 못하는 경우 포함). 옛 QR parser가 읽지 못하는데 Container_Audit가 새 현품표로 보는 `k=v\|k=v` 라벨(`PHS=2`, 또는 `LBL`·`HSH`·`HSH_CORE`·`HSH_LABEL`·`BUNDLE_ID`·`SOURCE_BUNDLE_ID` 값)도 계보 없음(`LINEAGE_MISSING`, 예 `PHS=2\|CLC=…\|QT=3`)으로 여기에 들어간다 | 5단계로 받고 사유와 원문(`scanned_product_barcodes[0]`)을 남김 |
 
 사유 코드: 공통 `PHS_MISSING`·`PHS_EMPTY`(식별 키의 빈 값)·`PHS_NOT_2`(PHS2 모양인데 PHS가 2가 아님)·`DUPLICATE_KEY`(식별 키 반복, 마지막 값만 보지 않음)·`LINEAGE_MISSING`(BND/ITG 값 없음)·`QT_INVALID`(수량이 숫자가 아니거나 0 이하)·`FORMAT_INVALID`(그 밖의 형식 오류)·`DUPLICATE_LABEL`·`ITEM_UNCONFIRMED`(품목 코드 없음, 제품 품목 대조 불가). 구조화 라벨은 포장 흐름이 읽는 대로 기존 carrier parser(`parse_legacy_fields`)의 별칭으로 판정한다: `CLC=INSPECTION`이면 `ITEM`·`ITEM_CODE`가 품목, `ITEM_NAME`(없으면 품목)이 SPC, `PHASE`(없으면 `INSPECTION`)가 PHS, `QT`가 없으면 `QTY`가 수량이다. 수량은 `QT`·`QTY` 원문 값을 모두 검사하고(`QT_INVALID`), 둘이 함께 있거나 `QTY`·`PHASE`·`ITEM_NAME`이 반복되면 `DUPLICATE_KEY`다. parser가 읽지 못하는데 다른 코드가 설명하지 않으면(예: CLC 없이 `ITEM`만) `FORMAT_INVALID`다. 기존 코드는 그대로 쓴다(`PHS2_FORMAT_INVALID`, `OPERATION_LEASE_*`, 중앙 확인의 `PACKAGE_TRANSPORT_UNAVAILABLE` 등, 허용 목록 밖은 `REASON_CODE_REDACTED`). LM 추가: `SEALED_QR_INVALID`, `PACKAGE_WORKBENCH_HOLD`, `LABEL_EXCHANGE_HOLD`, `PARTIAL_PACKAGE`, `PACKAGE_OUTBOX_UNAVAILABLE`, `PACKAGE_CENTRAL_PROFILE_UNAVAILABLE`, `PACKAGE_CENTRAL_BLOCKED`, `PACKAGE_NOT_CREATED`, 실패 세트 행의 `LABEL_MATCH_FAILED_OR_MISMATCH`.
 
@@ -485,7 +485,7 @@ D-day 전까지 등록 PC(중앙 client가 있거나 필수 모드)에서 현장
 
 보장과 일부러 멈추는 곳: 켬에서 정상 입력은 포장을 멈추지 않는다. 실패 닫힘으로 멈추는 곳은 ① 유효한 이적 봉인 QR을 시작 라벨로 찍음(원본 현품표 안내) ② 그 세트의 미제출 capture를 안전하게 닫을 수 없음(결과 불명 lease·검증) ③ 저장 상태·표식 저장이나 writer flush 실패 — 세트는 그대로 남고 `저장 재시도`가 원 행을 재사용한다 ④ 복원을 거절했는데 capture를 닫을 수 없음(그 세트를 안내와 함께 다시 엶)뿐이다. 재시도·복원: 같은 세트의 완료·취소는 재시도·재시작·끔 복원·자정·다른 취소 경로에서도 행 1개다(표식 없는 3f4574a 저장 상태 포함, 미배포 중간 커밋 5c66d84가 남긴 상태는 보장 밖). 로컬로 정한 회차는 재시작·복원 거절 뒤에도 중앙 검증으로 되살아나지 않는다. F1 취소가 capture 취소 뒤 멈추면 그 로컬 세트는 복원되므로 다시 취소한다. 전송: 켬 PC의 relay는 웹 영수증 표의 항목만 성공으로 받는다. 다른 PC 행·사건 ID 없는 업무 행·표 밖 항목과 같은 사건 ID·다른 내용(서버 `TRANSITION_EVENT_ID_CONFLICT` 격리)은 그 PC 전송 줄을 멈추고 관리자 확인이 필요하다.
 
-끔은 base와 같다. 옛 현품표는 현품표를 받은 뒤 원인을 안내하고 제품 스캔을 거부한다(`옛 방식 현품표 · 5단계 포장 불가`). 계보가 깨져 완료가 거부될 새 모양 현품표(BND 빈 값·중복으로 유효 BND/ITG 없음)도 첫 제품 스캔에서 `[현품표 형식 오류]`로 거부한다. F4 전체 재스캔은 기존과 같으며 새 현품표 QR 손상 시 실제 TRANSFER ID에만 쓴다. 유효한 이적 봉인 QR을 시작 라벨로 찍으면 켬·끔 모두 분류하지 않고 "제품 교체 뒤 붙이는 이적 봉인 QR이라 시작 라벨로 쓸 수 없다, 같은 상자의 원본 PHS2 현품표를 스캔, 없으면 상자를 따로 두고 관리자에게"를 안내한다.
+끔은 base와 같다. 옛 현품표는 현품표를 받은 뒤 원인을 안내하고 제품 스캔을 거부한다(`옛 방식 현품표 · 5단계 포장 불가`). 계보가 깨져 완료가 거부될 새 모양 현품표(BND 빈 값·중복으로 유효 BND/ITG 없음)도 첫 제품 스캔에서 `[현품표 형식 오류]`로 거부한다. 어떤 parser도 읽지 못하는 계보 없는 새 모양(예 `PHS=2|CLC=…|QT=3`)은 base처럼 첫 스캔에서 `[현품표 형식 오류]`(13자리 아님)로 거부한다. F4 전체 재스캔은 기존과 같으며 새 현품표 QR 손상 시 실제 TRANSFER ID에만 쓴다. 유효한 이적 봉인 QR을 시작 라벨로 찍으면 켬·끔 모두 분류하지 않고 "제품 교체 뒤 붙이는 이적 봉인 QR이라 시작 라벨로 쓸 수 없다, 같은 상자의 원본 PHS2 현품표를 스캔, 없으면 상자를 따로 두고 관리자에게"를 안내한다.
 
 검사는 5단계 세트(옛·로컬·형식 오류) 모두 v2.0.38(`f24a35c`)의 일반 5단계와 같다: 13자리·Item.csv 등록(옛 13자리), 제품의 현품표 코드 포함·길이, 세트 안·전체 중복, 최종 라벨 31자 이상·6D 생산일. 새 현품표 모양은 품목 코드(CLC)로 대조하며 없으면 `ITEM_UNCONFIRMED`로 받는다.
 
