@@ -1927,6 +1927,93 @@ def test_declined_restore_that_cannot_close_its_capture_keeps_the_local_set(
         _close(restored)
 
 
+@pytest.mark.parametrize(("worker", "restore", "handover", "close_fails"), [
+    pytest.param("same", True, "-", False, id="restore"),
+    pytest.param("same", False, "-", False, id="decline"),
+    pytest.param("same", False, "-", True, id="decline-close-fails"),
+    pytest.param("other", True, True, False, id="restore-handover-yes"),
+    pytest.param("other", True, False, False, id="restore-handover-no"),
+    pytest.param("other", True, False, True, id="restore-handover-no-close-fails"),
+    pytest.param("other", True, None, False, id="restore-handover-cancel"),
+    pytest.param("other", True, None, True, id="restore-handover-cancel-close-fails"),
+    pytest.param("other", False, "-", False, id="decline-other-worker"),
+    pytest.param("other", False, True, True, id="decline-close-fails-handover-yes"),
+    pytest.param("other", False, False, True, id="decline-close-fails-handover-no"),
+    pytest.param("other", False, None, True, id="decline-close-fails-handover-cancel"),
+])
+def test_every_restore_answer_keeps_a_pinned_local_cycle_out_of_central_validation(
+    clock_case, tmp_path, monkeypatch, worker, restore, handover, close_fails,
+):
+    """Every way the restore prompts end (yes, no, cancel/close of the handover
+    window, a capture that cannot be closed) leaves the local cycle either
+    active or with its capture closed; background validation never runs it,
+    and a next scan never meets an open local capture (sub-05 x5 09:20)."""
+
+    import label_completion
+    from tests.test_deferred_intent_capture import _row
+
+    intent_id = _first_scan(clock_case)
+    module = load_label_match_module()
+    app = _captured_transition_app(clock_case, module, tmp_path, monkeypatch, "PHS2_CENTRAL")
+    assert app._save_current_set_state()
+
+    def stop_before_close(_current):
+        raise _PowerLoss()
+
+    app._cancel_deferred_capture_for_set = stop_before_close
+    try:
+        with pytest.raises(_PowerLoss):
+            label_completion._decide_transition_local(
+                app, app.current_set_info, "PHS2_LOCAL", ["PACKAGE_TRANSPORT_UNAVAILABLE"], False,
+            )
+    finally:
+        _close(app)
+    restored = _app_for_recovery(module, tmp_path, monkeypatch)
+    restored.deferred_intent_capture = clock_case.open_capture()
+    restored.package_outbox = clock_case.app.package_outbox
+    restored.package_logistics_client = clock_case.app.package_logistics_client
+    restored._operation_lease_request_context = clock_case.app._operation_lease_request_context
+    if worker == "other":
+        restored.worker_name = "another-worker"
+    monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: restore)
+    handover_asked = []
+    monkeypatch.setattr(module.messagebox, "askyesnocancel",
+                        lambda *a, **k: handover_asked.append(True) or handover)
+    real_close = restored._cancel_deferred_capture_for_set
+
+    def unable_to_close(_current):
+        raise OSError("capture store unavailable")
+
+    if close_fails:
+        restored._cancel_deferred_capture_for_set = unable_to_close
+    attempts = []
+    restored._prepare_deferred_intent_validation = lambda identity: attempts.append(identity)
+    path = Path(restored._package_current_state_path())
+    try:
+        restored._load_current_set_state()
+        assert bool(handover_asked) is (handover != "-")
+        active = bool(restored.current_set_info.get("raw"))
+        state = _row(clock_case.database, intent_id)["state"]
+        if active:
+            assert restored.current_set_info["transition_class"] == "PHS2_LOCAL"
+        else:
+            assert state == "CANCELLED", "an inactive local cycle keeps no open capture"
+            assert path.exists() is (handover is None)  # cancel keeps the file, a no deletes it
+        assert active is (restore and handover is not False and handover is not None
+                          or close_fails), (active, state)
+        restored._build_deferred_validation_lane_task().work()
+        assert attempts == [] and _row(clock_case.database, intent_id)["state"] == state
+        if not active:
+            # The capture store recovers and a next scan starts a new set; the
+            # closed local capture stays closed.
+            restored._cancel_deferred_capture_for_set = real_close
+            _scan(module, restored, MASTER)
+            assert restored.current_set_info["raw"] == [MASTER]
+            assert _row(clock_case.database, intent_id)["state"] == "CANCELLED" and attempts == []
+    finally:
+        _close(restored)
+
+
 def test_retry_of_a_completion_saved_before_the_marker_reuses_its_row(tmp_path, monkeypatch):
     """A set saved by a build without transition_row_key (3f4574a, the lab's
     preserved state) whose row was appended with an unknown flush result."""

@@ -10651,7 +10651,11 @@ class Label_Match(tk.Tk):
                                                        f"이 저장된 세트는 '{display_operator_name(saved_worker_name)}' 작업자의 것입니다.\n"
                                                        f"현재 '{display_operator_name(self.worker_name)}' 작업자가 이어서 하시겠습니까?",
                                                        icon='warning')
-                if response is None: return
+                if response is None:
+                    # Asked again at the next start; a pinned local set first
+                    # closes its capture, or stays active if it cannot.
+                    if self._close_local_capture_before_leaving(saved_set_info):
+                        return
                 elif response is False and self._discard_declined_saved_set(saved_set_info):
                     if not self.run_tests:
                         messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
@@ -10697,34 +10701,42 @@ class Label_Match(tk.Tk):
             self._reconcile_active_package_submission()
 
     def _discard_declined_saved_set(self, saved_set_info):
-        """Delete a saved set the operator declined to restore.
+        """Delete a saved set the operator declined to restore (see below)."""
 
-        A pinned transition local set first closes the PHS2 capture it still
-        owns (a stop between saving its decision and closing the capture), so
-        the declined cycle never returns to central validation.  False when
-        that capture cannot be closed safely: the caller then keeps the set as
-        the active set, which also keeps background validation off its
-        capture, until it is finished or cancelled again with F1.
+        if not self._close_local_capture_before_leaving(saved_set_info):
+            return False
+        self.data_manager.delete_current_state()
+        return True
+
+    def _close_local_capture_before_leaving(self, saved_set_info):
+        """Close a pinned local saved set's PHS2 capture before the restore ends
+        without the set (a decline, or the handover window cancelled).
+
+        The capture is still open after a stop between saving the local
+        decision and closing it; closing it as F1 would keeps the cycle out of
+        central validation.  False when it cannot be closed safely: the caller
+        then keeps the set as the active set, which also keeps background
+        validation off its capture, until it is finished or cancelled with F1.
         """
 
-        if saved_set_info.get("transition_class") in label_transition.LOCAL_CLASSES:
-            try:
-                self._cancel_deferred_capture_for_set(saved_set_info)
-            except Exception as error:
-                print(
-                    "declined transition local set kept its saved state: "
-                    f"{getattr(error, 'code', error.__class__.__name__)}"
+        if saved_set_info.get("transition_class") not in label_transition.LOCAL_CLASSES:
+            return True
+        try:
+            self._cancel_deferred_capture_for_set(saved_set_info)
+        except Exception as error:
+            print(
+                "declined transition local set kept its saved state: "
+                f"{getattr(error, 'code', error.__class__.__name__)}"
+            )
+            if not self.run_tests:
+                messagebox.showwarning(
+                    "작업 복구",
+                    "이 세트는 로컬 과도기 세트로 정해졌지만 중앙 확인 기록을 지금 닫지 못해 "
+                    "지울 수 없습니다. 세트를 이어서 엽니다. 마저 끝내거나 F1로 다시 취소하세요. "
+                    "계속 안 되면 관리자에게 알리세요.",
+                    parent=self,
                 )
-                if not self.run_tests:
-                    messagebox.showwarning(
-                        "작업 복구",
-                        "이 세트는 로컬 과도기 세트로 정해졌지만 중앙 확인 기록을 지금 닫지 못해 "
-                        "지울 수 없습니다. 세트를 이어서 엽니다. 마저 끝내거나 F1로 다시 취소하세요. "
-                        "계속 안 되면 관리자에게 알리세요.",
-                        parent=self,
-                    )
-                return False
-        self.data_manager.delete_current_state()
+            return False
         return True
 
     def _delete_current_set_state(self):
