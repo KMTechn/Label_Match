@@ -458,12 +458,15 @@ def test_scan_enter_refreshes_stale_enabled_view_before_processing(fresh_view):
     app = _fresh_gate_app(cached_view=cached_enabled, fresh_view=fresh_view)
     app.process_calls = []
     app.process_input = lambda event=None: app.process_calls.append(event)
+    app.sounds = []
+    app._play_sound = lambda key, *a: app.sounds.append(key)
 
     handled = Label_Match._handle_scan_enter(app, event="scan-enter")
 
     assert handled == "break"
     assert app.render_calls == ["render"]
     assert app.process_calls == []
+    assert app.sounds == ["fail"]  # the refused scan is not silent
 
 
 @pytest.mark.parametrize(

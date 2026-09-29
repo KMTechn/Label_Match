@@ -5304,7 +5304,8 @@ class Label_Match(tk.Tk):
         reason = str(reason or "")
         broken = reason == "broken" or getattr(self.__dict__.get("ui_lane"), "state", None) is LaneState.BROKEN
         closing = reason == "closing" and not broken
-        dropped = reason == "busy_scan_dropped" and not broken
+        scan_dropped = reason == "busy_scan_dropped"
+        dropped = scan_dropped and not broken
         headline = "처리 상태 확인 필요" if broken else (
             "처리 완료 후 종료합니다" if closing else
             "이전 작업 처리 중 · 스캔 안 받음" if dropped else "이전 작업 처리 중 · 입력 보존"
@@ -5324,7 +5325,7 @@ class Label_Match(tk.Tk):
                 status_label.grid()
             except (TclError, AttributeError):
                 pass
-        if dropped:
+        if scan_dropped:
             self._play_sound("fail")
 
     def _handle_ui_lane_fault(self, error):
@@ -13296,6 +13297,9 @@ class Label_Match(tk.Tk):
 
     def process_input(self, event=None):
         if self.__dict__.get("_app_close_in_progress", False):
+            # Closing has locked the entry: this scan was not taken.
+            self._show_ui_lane_rejection("closing")
+            self._play_sound("fail")
             return
         raw_input = self.entry.get().strip()
         input_consumed = False
@@ -13321,7 +13325,16 @@ class Label_Match(tk.Tk):
             return
 
         if self.is_blinking or not self.initialized_successfully: return
-        if not raw_input: return
+        if not raw_input:
+            # A lookup or exchange still running has locked the entry and
+            # dropped the scan; an empty open entry is only a stray Enter.
+            try:
+                locked = str(self.entry.cget("state")) != "normal"
+            except (TclError, AttributeError):
+                locked = False
+            if locked:
+                self._show_ui_lane_rejection("busy_scan_dropped")
+            return
         if self._sealed_transfer_exchange_blocks_local_action("다음 스캔"):
             return
         test_tools_enabled = label_match_test_tools_enabled(
@@ -20691,6 +20704,16 @@ class Label_Match(tk.Tk):
         if self.__dict__.get("operator_workbench_ready"):
             view = self._render_operator_workbench()
             if view is None or not view.scan_input_enabled:
+                # The screen gate has locked the entry, so this scan was not
+                # taken; never drop it silently (w9scanflow F3). Processing
+                # and closing get process_input's notice; any other gate
+                # keeps its own notice and adds the warning sound.
+                if self._ui_lane_is_busy() or self.__dict__.get("_app_close_in_progress", False):
+                    self.process_input(event)
+                else:
+                    if view is not None and view.notice is None and "big_display_label" in self.__dict__:
+                        self.update_big_display(f"스캔 안 받음 · {view.next_action}", "red")
+                    self._play_sound("fail")
                 return "break"
         return self.process_input(event)
 

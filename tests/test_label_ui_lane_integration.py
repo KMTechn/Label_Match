@@ -1261,6 +1261,88 @@ def test_scan_refused_during_a_save_says_whether_it_was_kept(kept):
         _close_lane(app, root)
 
 
+_CENTRAL_PHS2 = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-SCAN|CLC=ITEM-001|LBL=LBL-SCAN|HSH=0123456789abcdef"
+_FIVE_SCANS = [
+    "ITEM-001", "ITEM-001-P1-1", "ITEM-001-P1-2", "ITEM-001-P1-3",
+    "ITEM-001-FINAL-LABEL-0001<GS>6D20260929",
+]
+
+
+@pytest.mark.parametrize("state", ["legacy", "local", "malformed", "central"])
+def test_scan_during_any_completion_save_is_refused_aloud(state):
+    """Each class's completion save refuses a scan with the warning sound and
+    the rescan notice; a central 1/1 set's screen gate returned first, silently."""
+
+    app, root = _workbench_with_lane()
+    if state == "central":
+        app.current_set_info.update(raw=[_CENTRAL_PHS2], parsed=["ITEM-001"], central_inherit_all=True)
+    else:
+        app.current_set_info.update(raw=list(_FIVE_SCANS), parsed=["ITEM-001"] * 5)
+        if state != "legacy":
+            app.current_set_info["transition_class"] = {
+                "local": "PHS2_LOCAL", "malformed": "PHS2_MALFORMED",
+            }[state]
+    before = list(app.current_set_info["raw"])
+    gate = threading.Event()
+    try:
+        _begin_completion_save(app, gate)
+        _scanner(app, "ITEM-001-P9-9")
+
+        assert app.entry.get() == "" and app.current_set_info["raw"] == before
+        assert [event for event, _details in app.events] == []
+        assert app.sounds == ["fail"]
+        assert app.big_display_label.options["text"] == "이전 작업 처리 중 · 스캔 안 받음"
+        assert app.status_label.options["text"] == (
+            "처리 중이라 이번 스캔은 받지 않았습니다. 끝나면 다시 스캔하세요."
+        )
+    finally:
+        gate.set()
+        _close_lane(app, root)
+
+
+@pytest.mark.parametrize(("lock", "headline"), [
+    ("history-loading", None),
+    ("history-readonly", None),
+    ("blocking-notice", None),
+    ("central-waiting-for-f3", "스캔 안 받음 · 랩핑 후 F3 포장 완료"),
+    ("closing", "처리 완료 후 종료합니다"),
+    ("seal-lookup", "이전 작업 처리 중 · 스캔 안 받음"),
+], ids=["history-loading", "history-readonly", "blocking-notice", "central-waiting-for-f3",
+        "closing", "seal-lookup"])
+def test_scan_refused_by_any_other_lock_is_never_silent(lock, headline):
+    """Screen gates, closing and running lookups lock the entry too; the
+    Enter of a scan they drop gets the warning sound and a notice."""
+
+    app, root = _workbench_with_lane()
+    if lock == "history-loading":
+        app.history_active_load_pending = True
+    elif lock == "history-readonly":
+        app.history_view_updates_active_state = False
+    elif lock == "blocking-notice":
+        app._workflow_blocking_notice = label_module.WorkflowNotice(
+            title="확인 필요", message="현재 상태 확인", kind="blocked", tone="warning"
+        )
+    elif lock == "central-waiting-for-f3":
+        app.current_set_info.update(raw=[_CENTRAL_PHS2], parsed=["ITEM-001"], central_inherit_all=True)
+    elif lock == "closing":
+        app._app_close_in_progress = True
+    else:
+        app._central_seal_lookup_in_progress = True
+    before = list(app.current_set_info["raw"])
+    try:
+        app._render_operator_workbench()  # the lock is on screen before the scan
+        assert app.entry.cget("state") == "disabled"
+        _scanner(app, "ITEM-001-P9-9")
+
+        assert app.entry.get() == "" and app.current_set_info["raw"] == before
+        assert [event for event, _details in app.events] == []
+        assert app.sounds == ["fail"]
+        if headline is not None:
+            assert app.big_display_label.options["text"] == headline
+    finally:
+        _close_lane(app, root)
+
+
 def test_background_validation_waits_for_an_empty_entry_and_a_pause():
     """A scan-less background start locked the entry in the middle of a scan:
     the typed part was kept and the next scan joined it (w9scanflow 3-1)."""

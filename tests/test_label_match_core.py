@@ -2882,8 +2882,12 @@ def test_process_input_ignores_scanner_input_while_app_close_is_in_progress():
     app = object.__new__(module.Label_Match)
     app._app_close_in_progress = True
     app.entry = object()
+    refusals = []
+    app._show_ui_lane_rejection = lambda reason: refusals.append(reason)
+    app._play_sound = lambda key, *a: refusals.append(key)
 
     assert module.Label_Match.process_input(app) is None
+    assert refusals == ["closing", "fail"]  # not taken, and not silently
 
 
 def test_app_close_poll_saves_settings_and_destroys_after_worker_result():
