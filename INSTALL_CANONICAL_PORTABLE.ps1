@@ -501,6 +501,50 @@ shared_transition = all(
     for relative, expected in shared_additions.items()
 )
 
+# 3f4574a -> w9lmtransit only: the legacy-label transition mode adds one leaf
+# module and changes these modules. Writer membership, runtime, contracts and
+# every other file stay checked. Persisted state gains only optional keys the
+# preimage ignores, so no data migration; downgrade is not admitted.
+legacy_label_replacements = {
+    'app/Label_Match.py': (
+        '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
+        'ac88a007e59143a3719f2f62d8db84fe1907858fab88744dd3b77e7f80312615'),
+    'app/direct_sync_push.py': (
+        '21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
+        '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'),
+    'app/label_completion.py': (
+        '25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
+        '1de17f68df834fb12aa9813e37114d6d5fc8faf2efe17bfa03bb5a0fffe9a4a9'),
+    'app/label_recovery_schema.py': (
+        '52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
+        'e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462'),
+    'app/label_workbench_context.py': (
+        '95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422',
+        '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'),
+    'app/logistics_runtime_profile.py': (
+        'a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
+        '2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed'),
+    'app/ui/workflow_snapshot_adapter.py': (
+        'f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
+        '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'),
+    'app/ui/workflow_view_state.py': (
+        '6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718',
+        '45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a'),
+}
+legacy_label_additions = {
+    'app/label_transition.py':
+        'df9373ca448d1ab8c54efb2f0ecb3336efa88130ba61d638a2bf5530b7d6dd7d',
+}
+legacy_label_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file() and
+    release_digest(installed / relative) == before and release_digest(source / relative) == after
+    for relative, (before, after) in legacy_label_replacements.items()
+) and all(
+    not (installed / relative).exists() and (source / relative).is_file() and
+    release_digest(source / relative) == expected
+    for relative, expected in legacy_label_additions.items()
+)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
 if candidate_sources != installed_sources:
@@ -508,12 +552,16 @@ if candidate_sources != installed_sources:
 for directory in ('app', 'runtime'):
     left, right = files(source, directory), files(installed, directory)
     additions = set(shared_additions) if shared_transition and directory == 'app' else set()
+    if legacy_label_transition and directory == 'app':
+        additions |= set(legacy_label_additions)
     if left.keys() != right.keys() | additions:
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     for relative, path in left.items():
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
         if integrity_order_transition and relative == integrity_order_path:
+            continue
+        if legacy_label_transition and relative in (legacy_label_replacements.keys() | legacy_label_additions.keys()):
             continue
         other = right[relative]
         if digest(path) == digest(other):
@@ -529,6 +577,7 @@ for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstr
         raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: ' + relative)
 compatibility = ('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else
                  'PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX' if integrity_order_transition else
+                 'PINNED_LEGACY_LABEL_TRANSITION_MODE' if legacy_label_transition else
                  'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@
