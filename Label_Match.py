@@ -4751,10 +4751,14 @@ class Label_Match(tk.Tk):
         return label_completion._transition_active(self)
 
     def _announce_transition_set(self, kind):
+        # In the notice row with a warning sound, never a modal window: a
+        # product scanned while the window was open only closed the window.
         title, message = LABEL_TRANSITION_LOCAL_NOTICES[kind]
-        self._transition_last_notice = (title, message)
-        if not self.__dict__.get("run_tests", False):
-            messagebox.showwarning(title, message, parent=self)
+        self._phs_label_guidance_notice = WorkflowNotice(
+            title=title, message=message, kind="transition_start", tone="warning",
+        )
+        self._play_sound("fail")
+        self._render_operator_workbench()
 
     def _transition_start_reasons(self, label_reasons, item_code, *, duplicate=False, blocked=()):
         """A local start's reasons in the shared order (label_transition).

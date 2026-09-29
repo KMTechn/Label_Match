@@ -122,10 +122,19 @@ def _packaging_app(module, tmp_path, monkeypatch, *, registered, transition):
     app._update_status_label = lambda: None
     app._update_history_tree_in_progress = lambda: None
     app._update_manual_complete_button_state = lambda: None
-    app._render_operator_workbench = lambda: None
+    app.notices = []
+
+    def render():
+        # The in-window notice as each render would show it.
+        notice = app.__dict__.get("_phs_label_guidance_notice")
+        if notice is not None and (not app.notices or app.notices[-1] is not notice):
+            app.notices.append(notice)
+
+    app._render_operator_workbench = render
     app._save_current_set_state = lambda: True
     app.after = lambda *a: None
-    app._play_sound = lambda *a: None
+    app.sounds = []
+    app._play_sound = lambda key, *a: app.sounds.append(key)
     app._update_summary_tree = lambda: None
     app.errors = []
     app._present_inline_workflow_error = (
@@ -265,7 +274,7 @@ def test_on_registered_five_scan_set_completes_locally_without_outbox(tmp_path, 
     finally:
         _close(app)
 
-    assert app.blocks == [] and app.errors == [] and app.warnings == []
+    assert app.blocks == [] and app.errors == [] and app.warnings == [] and app.notices == []
     [(row, details)] = _events(tmp_path, "TRAY_COMPLETE")
     assert details["package_logistics"] == {
         "status": LOCAL_STATUS, "sample_barcodes_are_membership": False,
@@ -443,7 +452,8 @@ def test_on_damaged_bnd_label_is_malformed_not_legacy(tmp_path, monkeypatch, mal
         _close(app)
 
     assert app.blocks == [] and app.errors == []
-    assert [title for title, _message in app.warnings] == ["현품표 형식 오류 · 과도기 기록"]
+    assert app.warnings == []
+    assert [notice.title for notice in app.notices] == ["현품표 형식 오류 · 과도기 기록"]
     [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
     assert _transition(details) == {
         "transition_class": "PHS2_MALFORMED", "transition_reasons": reasons,
@@ -518,7 +528,8 @@ def test_duplicate_label_is_warned_and_reaches_the_ledger_once(tmp_path, monkeyp
         assert len(completions) == 1 and "transition_class" not in completions[0]
         return
     assert app.errors == [] and app.blocks == []
-    assert [title for title, _message in app.warnings] == ["중복 현품표 · 과도기 기록"]
+    assert app.warnings == []
+    assert [notice.title for notice in app.notices] == ["중복 현품표 · 과도기 기록"]
     assert [_transition(details) for details in completions] == [
         {"transition_class": "PHS2_CENTRAL", "transition_reasons": [], "transition_duplicate": False},
         {"transition_class": "PHS2_LOCAL", "transition_reasons": ["DUPLICATE_LABEL"],
@@ -556,7 +567,8 @@ def test_on_duplicate_malformed_label_keeps_its_class_with_duplicate_mark(tmp_pa
     finally:
         _close(app)
 
-    assert [title for title, _message in app.warnings] == [
+    assert app.warnings == []
+    assert [notice.title for notice in app.notices] == [
         "현품표 형식 오류 · 과도기 기록", "중복 현품표 · 과도기 기록",
     ]
     assert [_transition(details) for _row, details in _events(tmp_path, "TRAY_COMPLETE")] == [
@@ -566,6 +578,60 @@ def test_on_duplicate_malformed_label_keeps_its_class_with_duplicate_mark(tmp_pa
          "transition_reasons": ["LINEAGE_MISSING", "DUPLICATE_LABEL"],
          "transition_duplicate": True},
     ]
+
+
+def test_on_start_notice_stays_in_the_window_and_the_next_scan_counts(tmp_path, monkeypatch):
+    """A modal notice took the product scanned while it was open (w9scanflow F2)."""
+
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    scans = [f"CLC={MASTER}|SPC=Product|PHS=1|BND=", *_legacy_set(27)[1:]]
+    try:
+        _scan(module, app, scans[0])
+        assert app.warnings == []  # no Windows dialog
+        [notice] = app.notices
+        assert (notice.title, notice.message) == module.LABEL_TRANSITION_LOCAL_NOTICES["PHS2_MALFORMED"]
+        assert notice.tone == "warning"
+        assert app.sounds == ["scan_master", "fail"]  # the warning replaces the start beep
+        _scan(module, app, scans[1])
+        assert app.current_set_info["raw"] == scans[:2]
+        for value in scans[2:]:
+            _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert app.errors == [] and app.blocks == [] and app.sounds.count("fail") == 1
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["scanned_product_barcodes"] == scans
+    assert details["transition_class"] == "PHS2_MALFORMED"
+
+
+def test_on_start_notice_keeps_the_scan_entry_open(monkeypatch):
+    """Guidance in the notice row, not a gate: the entry stays enabled, Enter
+    still reaches the scan and no notice button takes the scanner's focus."""
+
+    module = load_label_match_module()
+    shown = []
+    monkeypatch.setattr(module.messagebox, "showwarning", lambda *a, **k: shown.append(a))
+    malformed = f"CLC={MASTER}|SPC=Product|PHS=1|BND="
+    app = _render_app((malformed,), (MASTER,), transition_class="PHS2_MALFORMED")
+    for name in ("workflow_notice_frame", "workflow_notice_title_label",
+                 "workflow_notice_label", "workflow_notice_action_button"):
+        setattr(app, name, FakeWidget())
+    app.sounds = []
+    app._play_sound = lambda key, *a: app.sounds.append(key)
+    entered = []
+    app.process_input = lambda event=None: entered.append(event)
+
+    app._announce_transition_set(label_transition.PHS2_MALFORMED)
+
+    assert shown == [] and app.sounds == ["fail"]
+    assert app.workflow_notice_title_label.options["text"] == "현품표 형식 오류 · 과도기 기록"
+    assert app.entry.options["state"] == "normal"
+    button = app.workflow_notice_action_button
+    assert not button.mapped and not button.focused
+    app._handle_scan_enter("scan-enter")
+    assert entered == ["scan-enter"]
 
 
 def test_on_failed_set_row_keeps_its_label_class(tmp_path, monkeypatch):
@@ -675,7 +741,8 @@ def test_offline_phs2_lookup_is_kept_as_a_local_five_scan_set(tmp_path, monkeypa
         return
     [cancel] = store.cancelled
     assert cancel["intent_id"] == "INTENT-OFFLINE-1" and cancel["physical_qr_payload"] == PHS2_LABEL
-    assert [title for title, _message in app.warnings] == ["중앙 확인 불가 · 과도기 로컬 기록"]
+    assert app.warnings == []
+    assert [notice.title for notice in app.notices] == ["중앙 확인 불가 · 과도기 로컬 기록"]
     [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
     assert _transition(details) == {
         "transition_class": "PHS2_LOCAL", "transition_reasons": ["PACKAGE_TRANSPORT_UNAVAILABLE"],
@@ -731,7 +798,8 @@ def test_on_real_capture_store_cancels_the_offline_phs2_before_the_local_set(clo
         "transition_duplicate": False,
     }
     assert app._central_inherit_all_active() is False  # five scans follow
-    assert warnings == ["중앙 확인 불가 · 과도기 로컬 기록"]
+    assert warnings == []
+    assert app._phs_label_guidance_notice.title == "중앙 확인 불가 · 과도기 로컬 기록"
     with closing(sqlite3.connect(case.database)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM package_command_outbox").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM package_operation_leases").fetchone()[0] == 0
@@ -2353,7 +2421,8 @@ def test_on_unread_new_label_is_malformed_and_completes_locally(tmp_path, monkey
         _close(app)
 
     assert app.errors == [] and app.blocks == [] and _events(tmp_path, "ERROR_INPUT") == []
-    assert [title for title, _message in app.warnings] == ["현품표 형식 오류 · 과도기 기록"]
+    assert app.warnings == []
+    assert [notice.title for notice in app.notices] == ["현품표 형식 오류 · 과도기 기록"]
     [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
     assert _transition(details) == {
         "transition_class": "PHS2_MALFORMED", "transition_reasons": reasons,

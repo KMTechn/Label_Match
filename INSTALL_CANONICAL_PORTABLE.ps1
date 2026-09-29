@@ -508,7 +508,7 @@ shared_transition = all(
 legacy_label_replacements = {
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-        '27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5'),
+        '0f2f47e3748cb6281481063e8bd858a5cfcd6cd2f6e681683b08f5ff23292c86'),
     'app/direct_sync_push.py': (
         '21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
         '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'),
@@ -545,6 +545,20 @@ legacy_label_transition = all(
     for relative, expected in legacy_label_additions.items()
 )
 
+# c83c72c (w9lmtransit) -> w9lmscanmsg only: scanner-only input fixes in
+# Label_Match.py (w9scanflow). No writer, stored state or other file changes;
+# everything else stays checked and downgrade is not admitted.
+scan_input_path = 'app/Label_Match.py'
+scan_input_pair = (
+    '27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
+    '0f2f47e3748cb6281481063e8bd858a5cfcd6cd2f6e681683b08f5ff23292c86')
+scan_input_transition = (
+    (installed / scan_input_path).is_file() and
+    (source / scan_input_path).is_file() and
+    (release_digest(installed / scan_input_path),
+     release_digest(source / scan_input_path)) == scan_input_pair
+)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
 if candidate_sources != installed_sources:
@@ -560,6 +574,8 @@ for directory in ('app', 'runtime'):
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
         if integrity_order_transition and relative == integrity_order_path:
+            continue
+        if scan_input_transition and relative == scan_input_path:
             continue
         if legacy_label_transition and relative in (legacy_label_replacements.keys() | legacy_label_additions.keys()):
             continue
@@ -578,6 +594,7 @@ for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstr
 compatibility = ('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else
                  'PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX' if integrity_order_transition else
                  'PINNED_LEGACY_LABEL_TRANSITION_MODE' if legacy_label_transition else
+                 'PINNED_SCAN_INPUT_FIX' if scan_input_transition else
                  'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@

@@ -105,6 +105,17 @@ def test_declared_pair_is_exactly_3f4574a_and_this_tree():
     assert set(additions) == {"app/label_transition.py"}
 
 
+def test_declared_scan_input_pair_is_exactly_c83c72c_and_this_tree():
+    source = INSTALLER.read_text(encoding="utf-8")
+    start = source.index("$probe = @'") + len("$probe = @'")
+    tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
+    [(before, after)] = [ast.literal_eval(node.value) for node in tree.body
+                         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                         and node.targets[0].id == "scan_input_pair"]
+    assert _release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", "c83c72c:Label_Match.py"])) == before
+    assert _release_digest((ROOT / "Label_Match.py").read_bytes()) == after
+
+
 @pytest.mark.parametrize("base_work", [False, True], ids=["no-work", "open-and-held-sets"])
 def test_stock_3f4574a_upgrade_passes_the_writer_guard(tmp_path, legacy_label_packages, base_work):
     old, candidate = legacy_label_packages
