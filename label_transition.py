@@ -13,9 +13,11 @@ See docs/spec/operations.md#legacy-label-transition.
 """
 
 import hashlib
+import json
 import re
+import unicodedata
 
-from carrier_identity_port import decode_carrier_scan, parse_compact_carrier, parse_legacy_fields
+from carrier_identity_port import decode_carrier_scan, parse_legacy_fields
 
 LEGACY = "LEGACY"
 PHS2_CENTRAL = "PHS2_CENTRAL"
@@ -34,135 +36,244 @@ SHAPE_SEALED = "SEALED"
 SHAPE_MALFORMED = "MALFORMED"
 
 _REASON = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
-# Keys whose empty or repeated value breaks a new-system label.
-_IDENTITY_KEYS = frozenset((
-    "PHS", "SRC", "ITG", "BND", "CLC", "SPC", "LBL", "HSH", "TRF", "QT", "QTY", "ITEM", "ITEM_CODE",
+# ---- Transition label rules shared by Container_Audit (label_qr.py) and
+# Label_Match (label_transition.py).  Keep this block identical in both; both
+# run the same vectors (tests/transition_label_vectors.json).
+TRANSITION_LABEL_LEGACY = "LEGACY"
+TRANSITION_LABEL_NEW = "NEW"
+TRANSITION_LABEL_MALFORMED = "MALFORMED"
+# Every label defect is recorded once, in this order; then DUPLICATE_LABEL,
+# then what blocked the central path.
+TRANSITION_REASON_ORDER = (
+    "DUPLICATE_KEY", "PHS_EMPTY", "PHS_MISSING", "PHS_NOT_2", "LINEAGE_MISSING",
+    "QT_INVALID", "FORMAT_INVALID", "SEALED_QR_INVALID", "ITEM_UNCONFIRMED",
+)
+# Keys only the new system prints: present at all, they mark a new label.
+_TRANSITION_LINEAGE_KEYS = frozenset(("TRF", "BND", "ITG"))
+# Values only the new system prints: a non-empty one marks a new label.
+_TRANSITION_IDENTITY_VALUE_KEYS = frozenset((
+    "LBL", "HSH", "HSH_CORE", "HSH_LABEL", "BUNDLE_ID", "SOURCE_BUNDLE_ID",
 ))
-# The carrier parser reads QTY as QT: both name the one quantity.
-_QUANTITY_KEYS = frozenset(("QT", "QTY"))
-# Its other aliases (CLC=INSPECTION): a repeat would hide a value.
-_ALIAS_KEYS = frozenset(("ITEM_NAME", "PHASE"))
-# Container_Audit's other new-system identity values (ITG and BND are lineage).
-_IDENTITY_VALUE_KEYS = frozenset(("LBL", "HSH", "HSH_CORE", "HSH_LABEL", "BUNDLE_ID", "SOURCE_BUNDLE_ID"))
+_TRANSITION_QUANTITY_KEYS = frozenset(("QT", "QTY", "QUANTITY"))
+_TRANSITION_COMPACT_KEYS = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
 
 
-def _pairs(decoded):
-    """Every key/value in scan order, duplicates kept (None: no '=')."""
+class _TransitionJsonPairs(list):
+    pass
 
-    if "|" not in decoded and "=" not in decoded:
-        return []
+
+def transition_label_pairs(text):
+    """(pairs, is_json): every (KEY, value) of a pipe or JSON label in scan
+    order with repeats kept; value None when a segment has no '='.  Keys are
+    upper-case, keys and values trimmed, empty segments skipped.  No pairs:
+    not a label (13 digits, no '|', another separator)."""
+
+    stripped = str(text or "").strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            parsed = json.loads(stripped, object_pairs_hook=_TransitionJsonPairs)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, _TransitionJsonPairs):
+            return [(str(key).strip().upper(), str(value).strip()) for key, value in parsed], True
+    if "|" not in stripped:
+        return [], False
     pairs = []
-    for part in decoded.split("|"):
-        key, separator, value = part.partition("=")
-        pairs.append((key.strip().upper(), value.strip() if separator else None))
-    return pairs
+    for segment in stripped.split("|"):
+        if segment.strip():
+            key, separator, value = segment.partition("=")
+            pairs.append((key.strip().upper(), value.strip() if separator else None))
+    return pairs, False
 
 
-def _item_code(values):
-    """The label's item, with the carrier parser's INSPECTION alias."""
+def _transition_old_qr_readable(pairs, is_json):
+    """Whether the old QR reader (CLC, SPC and PHS, with the CLC=INSPECTION
+    aliases; the last value wins) reads the label."""
 
-    clc = str(values.get("CLC") or "").strip()
-    alias = str(values.get("ITEM") or values.get("ITEM_CODE") or "").strip()
+    if is_json:
+        return False
+    fields = {key: value for key, value in pairs if value is not None}
+    if str(fields.get("CLC") or "").upper() == "INSPECTION":
+        item = str(fields.get("ITEM") or fields.get("ITEM_CODE") or "")
+        if not item:
+            return False
+        fields = dict(fields, CLC=item)
+        fields.setdefault("SPC", str(fields.get("ITEM_NAME") or item))
+        fields.setdefault("PHS", str(fields.get("PHASE") or "INSPECTION"))
+    return all(fields.get(key) for key in ("CLC", "SPC", "PHS"))
+
+
+def transition_label_item_code(pairs):
+    """The label's item: CLC, or ITEM/ITEM_CODE for CLC=INSPECTION or no CLC."""
+
+    fields = {key: value for key, value in pairs if value}
+    clc = str(fields.get("CLC") or "")
+    alias = str(fields.get("ITEM") or fields.get("ITEM_CODE") or "")
     return alias if clc.upper() == "INSPECTION" else (clc or alias)
 
 
-def _positive_integer(value):
-    return bool(re.fullmatch(r"[0-9]+", str(value or "").strip())) and int(value) > 0
+def transition_label_text_defects(pairs):
+    """Defects of any label's text: a repeated key (two quantity keys count),
+    a quantity that is not a positive integer, a segment without '=' or key."""
+
+    keys = [key for key, _value in pairs]
+    defects = []
+    if (
+        any(keys.count(key) > 1 for key in keys if key)
+        or sum(key in _TRANSITION_QUANTITY_KEYS for key in keys) > 1
+    ):
+        defects.append("DUPLICATE_KEY")
+    if any(
+        key in _TRANSITION_QUANTITY_KEYS and not re.fullmatch(r"[0-9]*[1-9][0-9]*", value or "")
+        for key, value in pairs
+    ):
+        defects.append("QT_INVALID")
+    if any(value is None or not key for key, value in pairs):
+        defects.append("FORMAT_INVALID")
+    return defects
 
 
-def _unread_new_label(decoded, pairs):
-    """A label Container_Audit reads as new (PHS=2 or an identity value) that
-    the old-QR parser cannot read, so the base refused it at the 13-digit check."""
+def _transition_compact_label(text):
+    """The exact central label PHS=2|SRC=KMTECH_INPUT_TAG|ITG|CLC|LBL|HSH."""
 
+    fields = {}
+    parts = str(text or "").strip().split("|")
+    for part, expected in zip(parts, _TRANSITION_COMPACT_KEYS):
+        key, separator, value = part.partition("=")
+        if key.strip() != expected or not separator or "=" in value or not value.strip():
+            return False
+        fields[expected] = value.strip()
     return (
-        "|" in decoded
-        and any(
-            (key == "PHS" and value == "2") or (key in _IDENTITY_VALUE_KEYS and value)
-            for key, value in pairs
+        len(parts) == len(_TRANSITION_COMPACT_KEYS)
+        and fields["PHS"] == "2"
+        and fields["SRC"].upper() == "KMTECH_INPUT_TAG"
+        and re.fullmatch(r"[0-9A-Fa-f]{16}", fields["HSH"]) is not None
+        and all(
+            len(fields[key]) <= 256
+            and not any(unicodedata.category(character).startswith("C") for character in fields[key])
+            for key in ("ITG", "CLC", "LBL")
         )
-        and parse_legacy_fields(decoded) is None
     )
+
+
+def transition_ordered_reasons(reasons):
+    order = {code: index for index, code in enumerate(TRANSITION_REASON_ORDER)}
+    return tuple(sorted(dict.fromkeys(reasons), key=lambda code: order.get(code, len(order))))
+
+
+def classify_transition_label(text):
+    """(kind, reasons, item_code) of one decoded start label.
+
+    LEGACY: no new-system marker, or an old QR the old reader reads without a
+    lineage key (an old phase QR with PHS=2 or an LBL value stays LEGACY).
+    A marker is PHS=2, SRC=KMTECH_INPUT_TAG, a TRF/BND/ITG key or an
+    LBL/HSH/HSH_CORE/HSH_LABEL/BUNDLE_ID/SOURCE_BUNDLE_ID value, in any
+    occurrence.  NEW: the exact compact central label.  MALFORMED: any other
+    marked label, with every defect.
+    """
+
+    pairs, is_json = transition_label_pairs(text)
+    keys = {key for key, _value in pairs}
+    fields = {key: value for key, value in pairs if value}
+    item_code = transition_label_item_code(pairs)
+    lineage = bool(_TRANSITION_LINEAGE_KEYS & keys) or any(
+        key == "SRC" and str(value or "").upper() == "KMTECH_INPUT_TAG" for key, value in pairs
+    )
+    marked = lineage or any(
+        (key == "PHS" and value == "2") or (key in _TRANSITION_IDENTITY_VALUE_KEYS and value)
+        for key, value in pairs
+    )
+    reasons = transition_label_text_defects(pairs)
+    if not marked or (not lineage and _transition_old_qr_readable(pairs, is_json)):
+        return TRANSITION_LABEL_LEGACY, transition_ordered_reasons(reasons), item_code
+    phases = [value for key, value in pairs if key == "PHS"]
+    if not phases:
+        reasons.append("PHS_MISSING")
+    if "" in phases:
+        reasons.append("PHS_EMPTY")
+    if any(value and value != "2" for value in phases):
+        reasons.append("PHS_NOT_2")
+    if not all(fields.get(key) for key in ("SRC", "ITG", "LBL", "HSH")):
+        reasons.append("LINEAGE_MISSING")
+    elif item_code and not reasons and not _transition_compact_label(text):
+        reasons.append("FORMAT_INVALID")
+    if not item_code:
+        reasons.append("ITEM_UNCONFIRMED")
+    kind = TRANSITION_LABEL_MALFORMED if reasons else TRANSITION_LABEL_NEW
+    return kind, transition_ordered_reasons(reasons), item_code
+
+
+def transition_start_reasons(label_reasons=(), *, item_unconfirmed=False, duplicate=False, blocked=()):
+    """A start's reasons in the shared order: label defects, ITEM_UNCONFIRMED,
+    DUPLICATE_LABEL, then what blocked the central path."""
+
+    reasons = list(transition_ordered_reasons(
+        [*label_reasons, *(["ITEM_UNCONFIRMED"] if item_unconfirmed else [])]
+    ))
+    if duplicate:
+        reasons.append("DUPLICATE_LABEL")
+    return list(dict.fromkeys([*reasons, *blocked]))
+# ---- End of the shared transition label rules.
 
 
 def classify_start_label(raw_value, *, parse_sealed):
     """Return (shape, reasons, item_code) of one start label.
 
-    Keys of the new system (TRF, BND, ITG or any SRC=KMTECH_INPUT_TAG) make a
-    label new-shaped; a PHS value alone does not, so an old phase QR stays
-    LEGACY.  A label no LM parser reads is new-shaped without lineage when
-    Container_Audit reads it as new (PHS=2 or an identity value such as LBL).
-    Every raw pair counts, so a repeated key cannot hide a marker.
-    ``parse_sealed`` is the application's sealed-transfer parser.
+    The shared rules above decide LEGACY, the compact PHS2 label and
+    MALFORMED.  Two lineage shapes only this application reads keep their own
+    checks: a sealed transfer QR (TRF) and a structured BND label without
+    ITG or SRC=KMTECH_INPUT_TAG.  ``parse_sealed`` is the application's
+    sealed-transfer parser.
     """
 
     decoded = decode_carrier_scan(raw_value)
-    pairs = _pairs(decoded)
-    keys = [key for key, _value in pairs]
-    values = {key: value for key, value in pairs if value}
-    item_code = _item_code(values)
+    kind, reasons, item_code = classify_transition_label(decoded)
+    pairs, _is_json = transition_label_pairs(decoded)
+    keys = {key for key, _value in pairs}
     input_tag = any(
-        key == "SRC" and str(value or "").strip().upper() == "KMTECH_INPUT_TAG"
-        for key, value in pairs
+        key == "SRC" and str(value or "").upper() == "KMTECH_INPUT_TAG" for key, value in pairs
     )
-    lineage_marked = bool({"TRF", "BND", "ITG"} & set(keys) or input_tag)
-    if not lineage_marked and not _unread_new_label(decoded, pairs):
-        return SHAPE_LEGACY, (), item_code
-    unread = not lineage_marked
-    reasons = []
-    if (
-        any(keys.count(key) > 1 for key in _IDENTITY_KEYS | _ALIAS_KEYS)
-        or sum(key in _QUANTITY_KEYS for key in keys) > 1
+    if kind == TRANSITION_LABEL_LEGACY or not (
+        "TRF" in keys or ("BND" in keys and "ITG" not in keys and not input_tag)
     ):
-        reasons.append("DUPLICATE_KEY")
-    if any(key in _IDENTITY_KEYS and value == "" for key, value in pairs) or "" in keys:
-        reasons.append("PHS_EMPTY")
+        shape = {
+            TRANSITION_LABEL_LEGACY: SHAPE_LEGACY,
+            TRANSITION_LABEL_NEW: SHAPE_PHS2,
+            TRANSITION_LABEL_MALFORMED: SHAPE_MALFORMED,
+        }[kind]
+        return shape, reasons, item_code
+    fields = {key: value for key, value in pairs if value}
+    reasons = transition_label_text_defects(pairs)
     if "TRF" in keys:
-        shape, lineage = SHAPE_SEALED, "BND"
-    elif "ITG" in keys or input_tag or unread:
-        shape, lineage = SHAPE_PHS2, "ITG"
-    else:
-        shape, lineage = SHAPE_STRUCTURED, "BND"
-    # A structured label is judged as the package flow reads it: through the
-    # carrier parser's aliases (CLC=INSPECTION: ITEM, ITEM_NAME, PHASE, QTY).
-    normalized = (
-        (parse_legacy_fields(decoded) or {}) if shape == SHAPE_STRUCTURED else {}
-    )
-    if shape != SHAPE_SEALED and "PHS" not in keys and not normalized.get("PHS"):
-        reasons.append("PHS_MISSING")
-    elif shape == SHAPE_PHS2 and str(values.get("PHS") or "2") != "2":
-        reasons.append("PHS_NOT_2")
-    if not values.get(lineage):
-        reasons.append("LINEAGE_MISSING")
-    if any(key in _QUANTITY_KEYS and not _positive_integer(value) for key, value in pairs):
-        reasons.append("QT_INVALID")
-    if shape == SHAPE_SEALED:
+        shape = SHAPE_SEALED
         try:
             sealed = parse_sealed(decoded)
         except ValueError:
             sealed = None
         if not sealed:
             reasons.append("SEALED_QR_INVALID")
-    elif unread:
-        # Lineage is missing, so the compact carrier is not judged; a segment
-        # without "=" is still a broken format.
-        if any(value is None for _key, value in pairs if _key):
+    else:
+        # Judged as the package flow reads it: through the carrier parser's
+        # aliases (CLC=INSPECTION: ITEM, ITEM_NAME, PHASE, QTY).
+        shape = SHAPE_STRUCTURED
+        normalized = parse_legacy_fields(decoded) or {}
+        phases = [value for key, value in pairs if key == "PHS"]
+        if "" in phases:
+            reasons.append("PHS_EMPTY")
+        if not phases and not normalized.get("PHS"):
+            reasons.append("PHS_MISSING")
+        if (
+            not (fields.get("SPC") or normalized.get("SPC"))
+            # The carrier parser cannot read it, and no other code says why.
+            or not (normalized or {"PHS_MISSING", "PHS_EMPTY"} & set(reasons) or not item_code)
+        ):
             reasons.append("FORMAT_INVALID")
-    elif shape == SHAPE_PHS2:
-        try:
-            parse_compact_carrier(decoded)
-        except ValueError:
-            reasons.append("PHS2_FORMAT_INVALID")
-    elif (
-        not (values.get("SPC") or normalized.get("SPC"))
-        or any(value is None for _key, value in pairs if _key)
-        # The carrier parser cannot read it, and no other code says why.
-        or not (normalized or {"PHS_MISSING", "PHS_EMPTY"} & set(reasons) or not item_code)
-    ):
-        reasons.append("FORMAT_INVALID")
+    if not fields.get("BND"):
+        reasons.append("LINEAGE_MISSING")
     if not item_code:
         reasons.append("ITEM_UNCONFIRMED")
     if reasons:
-        return SHAPE_MALFORMED, tuple(dict.fromkeys(reasons)), item_code
+        return SHAPE_MALFORMED, transition_ordered_reasons(reasons), item_code
     return shape, (), item_code
 
 

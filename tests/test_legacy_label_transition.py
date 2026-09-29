@@ -235,13 +235,15 @@ def test_start_label_classes_keep_new_system_keys_apart_from_legacy():
     assert classify(PHS2_LABEL) == ("PHS2", (), MASTER)
     assert classify(BND_LABEL) == ("STRUCTURED", (), MASTER)
     cases = {
-        f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=": ("DUPLICATE_KEY", "PHS_EMPTY"),
-        f"CLC={MASTER}|SPC=Product|PHS=1|BND=": ("PHS_EMPTY", "LINEAGE_MISSING"),
+        # w9transitalign table: PHS_EMPTY is an empty PHS only, compact defects
+        # are the shared FORMAT_INVALID and not judged beside another defect.
+        f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=": ("DUPLICATE_KEY",),
+        f"CLC={MASTER}|SPC=Product|PHS=1|BND=": ("LINEAGE_MISSING",),
         f"CLC={MASTER}|SPC=Product|BND=TRANSFER-REAL-1": ("PHS_MISSING",),
-        PHS2_LABEL.replace("HSH=0123456789abcdef", "HSH=0123"): ("PHS2_FORMAT_INVALID",),
-        PHS2_LABEL.replace("PHS=2|", ""): ("PHS_MISSING", "PHS2_FORMAT_INVALID"),
-        PHS2_LABEL.replace("ITG=ITG-OFF-1", "ITG="): ("PHS_EMPTY", "LINEAGE_MISSING", "PHS2_FORMAT_INVALID"),
-        PHS2_LABEL.replace(f"CLC={MASTER}|", ""): ("PHS2_FORMAT_INVALID", "ITEM_UNCONFIRMED"),
+        PHS2_LABEL.replace("HSH=0123456789abcdef", "HSH=0123"): ("FORMAT_INVALID",),
+        PHS2_LABEL.replace("PHS=2|", ""): ("PHS_MISSING",),
+        PHS2_LABEL.replace("ITG=ITG-OFF-1", "ITG="): ("LINEAGE_MISSING",),
+        PHS2_LABEL.replace(f"CLC={MASTER}|", ""): ("ITEM_UNCONFIRMED",),
         f"TRF=1|BND=TRANSFER-1|CLC={MASTER}|QT=4": ("SEALED_QR_INVALID",),
     }
     for raw, reasons in cases.items():
@@ -354,7 +356,7 @@ def test_on_completion_classes_survive_restart_and_banner_counts_them(tmp_path, 
         (details["transition_class"], tuple(details["transition_reasons"]))
         for details in loaded["set_details_map"].values()
     )
-    assert classes == [("LEGACY", ()), ("PHS2_MALFORMED", ("DUPLICATE_KEY", "PHS_EMPTY"))]
+    assert classes == [("LEGACY", ()), ("PHS2_MALFORMED", ("DUPLICATE_KEY",))]
     assert set(_legacy_set(4)[1:]) <= loaded["global_scanned_set"]
 
     restarted.set_details_map = loaded["set_details_map"]
@@ -428,8 +430,8 @@ def test_on_server_rejection_or_offline_never_blocks_the_next_set(tmp_path, monk
 
 
 @pytest.mark.parametrize(("malformed", "reasons"), [
-    (f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=", ["DUPLICATE_KEY", "PHS_EMPTY"]),
-    (f"CLC={MASTER}|SPC=Product|PHS=1|BND=", ["PHS_EMPTY", "LINEAGE_MISSING"]),
+    (f"CLC={MASTER}|SPC=Product|PHS=1|BND=TRANSFER-REAL-1|BND=", ["DUPLICATE_KEY"]),
+    (f"CLC={MASTER}|SPC=Product|PHS=1|BND=", ["LINEAGE_MISSING"]),
 ])
 def test_on_damaged_bnd_label_is_malformed_not_legacy(tmp_path, monkeypatch, malformed, reasons):
     module = load_label_match_module()
@@ -488,7 +490,7 @@ def test_malformed_phs2_label_is_classified_on_and_refused_off(tmp_path, monkeyp
     assert app.errors == [] and app.blocks == []
     [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
     assert _transition(details) == {
-        "transition_class": "PHS2_MALFORMED", "transition_reasons": ["PHS2_FORMAT_INVALID"],
+        "transition_class": "PHS2_MALFORMED", "transition_reasons": ["FORMAT_INVALID"],
         "transition_duplicate": False,
     }
     assert details["scan_count"] == 5 and details["scanned_product_barcodes"][0] == damaged
@@ -558,10 +560,10 @@ def test_on_duplicate_malformed_label_keeps_its_class_with_duplicate_mark(tmp_pa
         "현품표 형식 오류 · 과도기 기록", "중복 현품표 · 과도기 기록",
     ]
     assert [_transition(details) for _row, details in _events(tmp_path, "TRAY_COMPLETE")] == [
-        {"transition_class": "PHS2_MALFORMED", "transition_reasons": ["PHS_EMPTY", "LINEAGE_MISSING"],
+        {"transition_class": "PHS2_MALFORMED", "transition_reasons": ["LINEAGE_MISSING"],
          "transition_duplicate": False},
         {"transition_class": "PHS2_MALFORMED",
-         "transition_reasons": ["PHS_EMPTY", "LINEAGE_MISSING", "DUPLICATE_LABEL"],
+         "transition_reasons": ["LINEAGE_MISSING", "DUPLICATE_LABEL"],
          "transition_duplicate": True},
     ]
 
@@ -708,6 +710,7 @@ def test_on_real_capture_store_cancels_the_offline_phs2_before_the_local_set(clo
     app.is_running_simulation = False
     app._legacy_label_transition_enabled = True
     app.worker_name = "worker-lt"
+    app.items_data = {case.group["item_id"]: {"Item Name": "품목", "Spec": ""}}
     app.progress_bar = _FakeProgressBar()
     for name in ("update_big_display", "_update_status_label", "_update_history_tree_in_progress",
                  "_render_operator_workbench", "_play_sound", "_clear_workflow_completion"):
@@ -2168,7 +2171,7 @@ def test_valid_inspection_name_alias_stays_central(tmp_path, monkeypatch, transi
     pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|SPC=P|PHS=1|BND=B-1|QT=4|QTY=4",
                  ("DUPLICATE_KEY",), id="qt-and-qty"),
     pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|SPC=P|PHS=1|BND=B-1|QTY=",
-                 ("PHS_EMPTY", "QT_INVALID"), id="empty-qty"),
+                 ("QT_INVALID",), id="empty-qty"),
     pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|SPC=P|PHASE=1|PHASE=2|BND=B-1|QT=4",
                  ("DUPLICATE_KEY",), id="repeated-phase"),
     pytest.param(f"CLC=INSPECTION|ITEM={MASTER}|ITEM_NAME=P|ITEM_NAME=Q|PHS=1|BND=B-1|QT=4",
@@ -2481,3 +2484,153 @@ def test_unread_new_label_set_keeps_its_class_through_restore_after_switch_off(t
         "transition_duplicate": False,
     }
     assert details["package_logistics"]["status"] == LOCAL_STATUS and _outbox_rows(tmp_path) == []
+
+
+# w9transitalign: Container_Audit and Label_Match record the same class and
+# reasons for the same start label; both repositories carry this vector copy.
+TRANSITION_VECTORS = json.loads(
+    (Path(__file__).with_name("transition_label_vectors.json")).read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize(
+    "vector", TRANSITION_VECTORS["vectors"], ids=[row["id"] for row in TRANSITION_VECTORS["vectors"]],
+)
+def test_start_label_matches_the_shared_transition_table(vector):
+    module = load_label_match_module()
+    shape, reasons, item_code = label_transition.classify_start_label(
+        vector["raw"], parse_sealed=module._label_match_parse_sealed_transfer_qr,
+    )
+    # Sealed transfer QRs and structured BND labels reach Label_Match only.
+    expected = vector.get("lm", vector["expected"])
+    assert {
+        "kind": {"PHS2": "NEW"}.get(shape, shape), "reasons": list(reasons), "item_code": item_code,
+    } == expected
+
+
+@pytest.mark.parametrize(
+    "case", TRANSITION_VECTORS["start_cases"], ids=[row["id"] for row in TRANSITION_VECTORS["start_cases"]],
+)
+def test_transition_start_records_the_shared_class_and_reasons(tmp_path, monkeypatch, case):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    app._recover_unknown_package_hold_identities = lambda: None
+    _shape, _reasons, item_code = label_transition.classify_start_label(
+        case["raw"], parse_sealed=module._label_match_parse_sealed_transfer_qr,
+    )
+    app.items_data = (
+        {item_code or case["raw"]: {"Item Name": "품목", "Spec": ""}} if case["item_known"] else {}
+    )
+    app._item_catalog_unconfirmed = not case["catalog_confirmed"]
+    if case["duplicate"]:
+        app.global_scanned_set.update(module._label_match_unique_master_index_keys(case["raw"]))
+    try:
+        _scan(module, app, case["raw"])
+    finally:
+        _close(app)
+
+    assert app.errors == [] and app.current_set_info["raw"] == [case["raw"]]
+    assert _transition(app.current_set_info) == {
+        "transition_class": case["class"], "transition_reasons": case["reasons"],
+        "transition_duplicate": case["duplicate"],
+    }
+
+
+def test_off_13_digit_code_outside_the_catalog_keeps_the_base_refusal(tmp_path, monkeypatch):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=False)
+    try:
+        _scan(module, app, "ZZZ9999999999")
+    finally:
+        _close(app)
+
+    [(title, _message)] = app.errors
+    assert title == "[미등록 현품표]" and app.current_set_info["raw"] == []
+
+
+def test_duplicate_malformed_label_without_supplier_is_marked(tmp_path, monkeypatch):
+    # Before w9transitalign a new-shaped label without SPC was never indexed,
+    # so its second completion carried no duplicate mark (Container_Audit did).
+    module = load_label_match_module()
+    app, _syncs = _lab_app(module, tmp_path, monkeypatch)
+    try:
+        for number in (41, 42):
+            for value in _lab_set(number):
+                _scan(module, app, value)
+    finally:
+        _close(app)
+
+    assert [_transition(details) for _row, details in _events(tmp_path, "TRAY_COMPLETE")] == [
+        {"transition_class": "PHS2_MALFORMED", "transition_reasons": ["LINEAGE_MISSING"],
+         "transition_duplicate": False},
+        {"transition_class": "PHS2_MALFORMED", "transition_reasons": ["LINEAGE_MISSING", "DUPLICATE_LABEL"],
+         "transition_duplicate": True},
+    ]
+
+
+class _CatalogUnavailable(Exception):
+    pass
+
+
+def _startup_without_catalog(module, monkeypatch, *, transition):
+    import writer_session_fence
+
+    error = module.ItemCatalogSyncError("no cache and offline", cause_code="REQUEST_FAILED_NO_CACHE")
+    shown, created, diagnostics = [], [], []
+
+    def prepare():
+        raise error
+
+    def warning(title, message, *a, **k):
+        # The notice must not hold the writer admission (CA held it and its
+        # relay died; w9carelay RESULT 1).
+        shown.append((title, message, getattr(writer_session_fence._WRITER_LOCAL, "depth", 0)))
+
+    class _App:
+        def __init__(self):
+            created.append(self)
+            self._item_catalog_unconfirmed = None
+
+        def title(self):
+            return "Label Match"
+
+        def state(self):
+            return "normal"
+
+        def mainloop(self):
+            return None
+
+    monkeypatch.setattr(module, "prepare_startup_item_catalog", prepare)
+    monkeypatch.setattr(module, "legacy_label_transition_enabled", lambda: transition)
+    monkeypatch.setattr(module, "write_item_catalog_failure_diagnostic",
+                        lambda path, exc: diagnostics.append(exc.cause_code))
+    monkeypatch.setattr(module, "_offer_item_catalog_startup_retry", lambda exc: False)
+    monkeypatch.setattr(module.messagebox, "showwarning", warning)
+    monkeypatch.setattr(module, "Label_Match", _App)
+    monkeypatch.setenv(module.ACTIVE_PATH_ENV, "stale-active-catalog.csv")
+    return error, shown, created, diagnostics
+
+
+def test_on_startup_without_item_catalog_warns_and_opens_the_work_screen(monkeypatch):
+    module = load_label_match_module()
+    _error, shown, created, diagnostics = _startup_without_catalog(module, monkeypatch, transition=True)
+
+    assert module._run_label_match_application() == 0
+
+    [(title, message, writer_depth)] = shown
+    assert title == "과도기 모드 — 품목 목록 미확인" and "REQUEST_FAILED_NO_CACHE" in message
+    assert writer_depth == 0
+    assert diagnostics == ["REQUEST_FAILED_NO_CACHE"]
+    assert module.ACTIVE_PATH_ENV not in __import__("os").environ  # the bundled list names items
+    [app] = created
+    assert app._item_catalog_unconfirmed is True
+
+
+def test_off_startup_without_item_catalog_keeps_the_base_stop(monkeypatch):
+    module = load_label_match_module()
+    error, shown, created, _diagnostics = _startup_without_catalog(module, monkeypatch, transition=False)
+
+    with pytest.raises(module.ItemCatalogSyncError) as raised:
+        module._run_label_match_application()
+
+    assert raised.value is error and shown == [] and created == []

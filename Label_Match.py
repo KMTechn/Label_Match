@@ -3503,6 +3503,8 @@ def _label_match_first_scan_is_unique_master(details):
         source.get("is_unique_master_label")
         or source.get("item_name_override")
         or _label_match_new_format_identity_key(first_scan)
+        # A new-shaped label, even one no parser reads, is one physical label.
+        or source.get("transition_class") == label_transition.PHS2_MALFORMED
     )
 
 
@@ -4754,11 +4756,29 @@ class Label_Match(tk.Tk):
         if not self.__dict__.get("run_tests", False):
             messagebox.showwarning(title, message, parent=self)
 
-    def _pin_transition_start(self, shape):
+    def _transition_start_reasons(self, label_reasons, item_code, *, duplicate=False, blocked=()):
+        """A local start's reasons in the shared order (label_transition).
+
+        ITEM_UNCONFIRMED: no item code, a code outside the item catalog, or a
+        catalog this run could not confirm at startup.
+        """
+
+        return label_transition.transition_start_reasons(
+            label_reasons,
+            item_unconfirmed=bool(
+                self.__dict__.get("_item_catalog_unconfirmed", False)
+                or not carrier_identity.item_lookup(self.__dict__.get("items_data") or {}, item_code)
+            ),
+            duplicate=duplicate,
+            blocked=blocked,
+        )
+
+    def _pin_transition_start(self, shape, reasons=(), item_code=""):
         """Pin the class of a set started with the switch on; return the old values.
 
-        LEGACY is final; a new label starts as PHS2_CENTRAL and becomes
-        PHS2_LOCAL only when its central flow is blocked.
+        LEGACY is final, with its label and item reasons; a new label starts
+        as PHS2_CENTRAL and becomes PHS2_LOCAL only when its central flow is
+        blocked.
         """
 
         previous = {
@@ -4772,7 +4792,12 @@ class Label_Match(tk.Tk):
             label_transition.SHAPE_STRUCTURED: label_transition.PHS2_CENTRAL,
         }.get(shape)
         if transition_class:
-            self.current_set_info.update(label_transition.fields(transition_class))
+            self.current_set_info.update(label_transition.fields(
+                transition_class,
+                self._transition_start_reasons(reasons, item_code)
+                if transition_class == label_transition.LEGACY
+                else (),
+            ))
             # This build started the set: no completion row yet (see
             # label_completion._commit_finalized_set_durable).
             self.current_set_info["transition_row_key"] = ""
@@ -4857,7 +4882,7 @@ class Label_Match(tk.Tk):
             physical_qr,
             item_code,
             label_transition.PHS2_LOCAL,
-            [reason],
+            self._transition_start_reasons((), item_code, blocked=[reason]),
             phase=fields.get("PHS"),
             item_name_override=fields.get("SPC") or current.get("item_name_override"),
         )
@@ -13331,7 +13356,7 @@ class Label_Match(tk.Tk):
                 pass
 
         if scan_pos == 1:
-            transition_shape = ""
+            transition_shape, transition_reasons = "", ()
             if self._transition_mode_active():
                 transition_shape, transition_reasons, transition_item = (
                     label_transition.classify_start_label(
@@ -13355,7 +13380,9 @@ class Label_Match(tk.Tk):
                         raw_input,
                         transition_item,
                         label_transition.PHS2_MALFORMED,
-                        [*transition_reasons, *(["DUPLICATE_LABEL"] if duplicate else [])],
+                        self._transition_start_reasons(
+                            transition_reasons, transition_item, duplicate=duplicate,
+                        ),
                         duplicate=duplicate,
                         phase=display.get("PHS"),
                         item_name_override=display.get("SPC"),
@@ -13425,7 +13452,11 @@ class Label_Match(tk.Tk):
                             raw_input,
                             str(new_label_data.get("CLC") or ""),
                             label_transition.PHS2_LOCAL,
-                            ["PACKAGE_WORKBENCH_HOLD" if held else "LABEL_EXCHANGE_HOLD"],
+                            self._transition_start_reasons(
+                                transition_reasons,
+                                str(new_label_data.get("CLC") or ""),
+                                blocked=["PACKAGE_WORKBENCH_HOLD" if held else "LABEL_EXCHANGE_HOLD"],
+                            ),
                             phase=new_label_data.get("PHS"),
                             item_name_override=new_label_data.get("SPC"),
                         )
@@ -13466,7 +13497,11 @@ class Label_Match(tk.Tk):
                             label_transition.LEGACY
                             if transition_shape == label_transition.SHAPE_LEGACY
                             else label_transition.PHS2_LOCAL,
-                            ["DUPLICATE_LABEL"],
+                            self._transition_start_reasons(
+                                transition_reasons,
+                                str(new_label_data.get("CLC") or ""),
+                                duplicate=True,
+                            ),
                             duplicate=True,
                             phase=new_label_data.get("PHS"),
                             item_name_override=new_label_data.get("SPC"),
@@ -13506,7 +13541,7 @@ class Label_Match(tk.Tk):
                 self.current_set_info['item_name_override'] = supplier_code
                 if _label_match_has_central_source_identity(processed_input):
                     self.current_set_info["central_inherit_all"] = True
-                self._pin_transition_start(transition_shape)
+                self._pin_transition_start(transition_shape, transition_reasons, client_code)
                 self._update_on_success_scan(raw_input, client_code)
             else:
                 MASTER_LABEL_LENGTH = 13
@@ -13521,14 +13556,20 @@ class Label_Match(tk.Tk):
                         reason=f"잘못된 현품표 형식(13자리 아님)이거나 미등록 코드입니다.\n\n- 입력 값: {self._truncate_string(raw_input)}"
                     )
                     return
-                if not is_test_code and raw_input not in self.items_data:
+                # With the switch on a 13-digit code outside the catalog is
+                # taken as LEGACY with ITEM_UNCONFIRMED (_pin_transition_start).
+                if (
+                    not is_test_code
+                    and raw_input not in self.items_data
+                    and transition_shape != label_transition.SHAPE_LEGACY
+                ):
                     self._handle_input_error(
                         raw_input,
                         title="[미등록 현품표]",
                         reason=f"미등록 현품표입니다.\n\n- 미등록 코드: {self._truncate_string(raw_input)}\n\n→ Item.csv를 확인하세요."
                     )
                     return
-                self._pin_transition_start(transition_shape)
+                self._pin_transition_start(transition_shape, transition_reasons, raw_input)
                 self._update_on_success_scan(raw_input, raw_input)
 
         elif 2 <= scan_pos <= self._workflow_total_scan_count():
@@ -21597,6 +21638,13 @@ ITEM_CATALOG_CACHE_WARNING_MESSAGE = (
     "캐시 기준 시각: {cache_time}\n"
     "네트워크가 복구되면 다음 실행에서 중앙 목록을 다시 확인합니다."
 )
+ITEM_CATALOG_TRANSITION_WARNING_TITLE = "과도기 모드 — 품목 목록 미확인"
+ITEM_CATALOG_TRANSITION_WARNING_MESSAGE = (
+    "중앙 품목 목록을 확인하지 못했지만 과도기 모드라 설치에 들어 있는 품목 목록으로 시작합니다.\n"
+    "이 상태에서 시작한 세트는 '품목 미확인'으로 기록됩니다.\n\n"
+    "네트워크가 돌아온 뒤 프로그램을 다시 실행하면 중앙 목록을 다시 확인합니다.\n"
+    "오류 코드: {cause_code}"
+)
 ITEM_CATALOG_DIAGNOSTIC_FILENAME = "item_catalog_startup_diagnostic.json"
 LOGISTICS_PROFILE_WARNING_TITLE = "중앙 물류 프로파일 확인 필요"
 LOGISTICS_PROFILE_WARNING_MESSAGES = {
@@ -21829,9 +21877,32 @@ def _item_catalog_diagnostic_path():
     return root / "status" / ITEM_CATALOG_DIAGNOSTIC_FILENAME
 
 
+def _start_without_confirmed_item_catalog(error):
+    """Transition mode starts without a confirmed catalog, as Container_Audit
+    does: the bundled list names items and every local start records
+    ITEM_UNCONFIRMED.  No writer lock is held while the notice is shown."""
+
+    try:
+        write_item_catalog_failure_diagnostic(_item_catalog_diagnostic_path(), error)
+    except Exception:
+        _label_match_startup_trace("item_catalog_failure_diagnostic_unavailable")
+    os.environ.pop(ACTIVE_PATH_ENV, None)
+    _label_match_startup_trace(
+        "item_catalog_transition_unconfirmed", cause_code=error.cause_code,
+    )
+    try:
+        messagebox.showwarning(
+            ITEM_CATALOG_TRANSITION_WARNING_TITLE,
+            ITEM_CATALOG_TRANSITION_WARNING_MESSAGE.format(cause_code=error.cause_code),
+        )
+    except Exception:
+        _label_match_startup_trace("item_catalog_transition_warning_unavailable")
+
+
 def _run_label_match_application():
     """Start the stateful application after single-instance ownership."""
 
+    catalog_unconfirmed = False
     while True:
         try:
             active_catalog_path = prepare_startup_item_catalog()
@@ -21840,6 +21911,10 @@ def _run_label_match_application():
             _label_match_startup_trace(
                 "item_catalog_retry_available", cause_code=error.cause_code,
             )
+            if legacy_label_transition_enabled():
+                _start_without_confirmed_item_catalog(error)
+                active_catalog_path, catalog_unconfirmed = None, True
+                break
             if not _offer_item_catalog_startup_retry(error):
                 raise
     if active_catalog_path is not None:
@@ -21863,6 +21938,7 @@ def _run_label_match_application():
         ):
             _show_item_catalog_cache_warning(catalog_context)
     app = Label_Match()
+    app._item_catalog_unconfirmed = catalog_unconfirmed
     _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
     _label_match_startup_trace("mainloop_enter")
     app.mainloop()

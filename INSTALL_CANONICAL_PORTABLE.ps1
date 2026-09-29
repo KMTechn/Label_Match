@@ -508,13 +508,13 @@ shared_transition = all(
 legacy_label_replacements = {
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-        'ac88a007e59143a3719f2f62d8db84fe1907858fab88744dd3b77e7f80312615'),
+        '27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5'),
     'app/direct_sync_push.py': (
         '21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
         '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'),
     'app/label_completion.py': (
         '25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
-        '1de17f68df834fb12aa9813e37114d6d5fc8faf2efe17bfa03bb5a0fffe9a4a9'),
+        'aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8'),
     'app/label_recovery_schema.py': (
         '52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
         'e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462'),
@@ -533,7 +533,7 @@ legacy_label_replacements = {
 }
 legacy_label_additions = {
     'app/label_transition.py':
-        'ccc98f2af8843b6d9b2282186865baa2effd37bbb3d6b6dabbad8a6765ce8a3a',
+        '001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
 }
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and

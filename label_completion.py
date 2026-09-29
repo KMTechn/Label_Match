@@ -93,7 +93,7 @@ def _transition_label_class(current, *, parse_sealed):
         raw[0], parse_sealed=parse_sealed,
     )
     if shape == label_transition.SHAPE_LEGACY:
-        return label_transition.LEGACY, ()
+        return label_transition.LEGACY, reasons
     if shape == label_transition.SHAPE_MALFORMED:
         return label_transition.PHS2_MALFORMED, reasons
     return "", ()

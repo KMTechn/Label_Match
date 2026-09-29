@@ -1,0 +1,1606 @@
+{
+ "version": "w9transitalign-1",
+ "rules": "work/program/w9transitalign/CLASSIFICATION-RULES.md (copy in each repo: docs/spec/operations.md)",
+ "contract": "expected = (kind, reasons, item_code) of the start label after the app's Base64 decode; kind LEGACY | NEW (exact compact central label) | MALFORMED. 'lm' overrides expected for Label_Match only (sealed TRF and structured BND lineage shapes, which Container_Audit never receives). start_cases: the recorded class and reasons at the start, with the catalog and duplicate context; the central outcome is not part of the table.",
+ "vectors": [
+  {
+   "id": "lab",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "base64-lab",
+   "raw": "UEhTPTJ8Q0xDPUFBQTIyNzA3MTAwMDB8UVQ9Mw==",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "phs1",
+   "raw": "PHS=1|CLC=AAA2270710000|QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "phs3",
+   "raw": "PHS=3|CLC=AAA2270710000|QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "phs-empty",
+   "raw": "PHS=|CLC=AAA2270710000|QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lowercase",
+   "raw": "phs=2|clc=aaa2270710000|qt=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "aaa2270710000"
+   }
+  },
+  {
+   "id": "mixedcase",
+   "raw": "phs=2|CLC=AAA2270710000|QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "whitespace",
+   "raw": " PHS = 2 | CLC = AAA2270710000 | QT = 3 ",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "trailing-pipe",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3|",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "double-pipe",
+   "raw": "PHS=2||CLC=AAA2270710000|QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "semicolon",
+   "raw": "PHS=2;CLC=AAA2270710000;QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "group-separator",
+   "raw": "PHS=2\u001dCLC=AAA2270710000\u001dQT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "bare-phs",
+   "raw": "PHS=2",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "garbage",
+   "raw": "NOT-A-LABEL",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "legacy13",
+   "raw": "AAA2270710000",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "legacy-qr-phs1",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=1",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "legacy-qr-phs2",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=2",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "legacy-qr-phs3",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "empty-spc",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3|SPC=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "empty-clc",
+   "raw": "PHS=2|CLC=|QT=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "ITEM_UNCONFIRMED"
+    ],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "broken-segment",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3|BROKEN",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "duplicate-phs",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3|PHS=1",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "duplicate-empty",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3|PHS=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "PHS_EMPTY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "zero-qt",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=0",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "QT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "invalid-qt",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=no",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "QT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "qt-qty",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3|QTY=3",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "json-shape",
+   "raw": "{\"PHS\": \"2\", \"CLC\": \"AAA2270710000\", \"QT\": \"3\"}",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "LBL-only",
+   "raw": "CLC=AAA2270710000|LBL=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "LBL-empty",
+   "raw": "CLC=AAA2270710000|LBL=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "LBL-phs1",
+   "raw": "PHS=1|CLC=AAA2270710000|LBL=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "LBL-duplicate",
+   "raw": "PHS=2|CLC=AAA2270710000|LBL=a|LBL=b",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH-only",
+   "raw": "CLC=AAA2270710000|HSH=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH-empty",
+   "raw": "CLC=AAA2270710000|HSH=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH-phs1",
+   "raw": "PHS=1|CLC=AAA2270710000|HSH=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH-duplicate",
+   "raw": "PHS=2|CLC=AAA2270710000|HSH=a|HSH=b",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_CORE-only",
+   "raw": "CLC=AAA2270710000|HSH_CORE=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_CORE-empty",
+   "raw": "CLC=AAA2270710000|HSH_CORE=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_CORE-phs1",
+   "raw": "PHS=1|CLC=AAA2270710000|HSH_CORE=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_CORE-duplicate",
+   "raw": "PHS=2|CLC=AAA2270710000|HSH_CORE=a|HSH_CORE=b",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_LABEL-only",
+   "raw": "CLC=AAA2270710000|HSH_LABEL=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_LABEL-empty",
+   "raw": "CLC=AAA2270710000|HSH_LABEL=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_LABEL-phs1",
+   "raw": "PHS=1|CLC=AAA2270710000|HSH_LABEL=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "HSH_LABEL-duplicate",
+   "raw": "PHS=2|CLC=AAA2270710000|HSH_LABEL=a|HSH_LABEL=b",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "BUNDLE_ID-only",
+   "raw": "CLC=AAA2270710000|BUNDLE_ID=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "BUNDLE_ID-empty",
+   "raw": "CLC=AAA2270710000|BUNDLE_ID=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "BUNDLE_ID-phs1",
+   "raw": "PHS=1|CLC=AAA2270710000|BUNDLE_ID=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "BUNDLE_ID-duplicate",
+   "raw": "PHS=2|CLC=AAA2270710000|BUNDLE_ID=a|BUNDLE_ID=b",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "SOURCE_BUNDLE_ID-only",
+   "raw": "CLC=AAA2270710000|SOURCE_BUNDLE_ID=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "SOURCE_BUNDLE_ID-empty",
+   "raw": "CLC=AAA2270710000|SOURCE_BUNDLE_ID=",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "SOURCE_BUNDLE_ID-phs1",
+   "raw": "PHS=1|CLC=AAA2270710000|SOURCE_BUNDLE_ID=value",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "SOURCE_BUNDLE_ID-duplicate",
+   "raw": "PHS=2|CLC=AAA2270710000|SOURCE_BUNDLE_ID=a|SOURCE_BUNDLE_ID=b",
+   "group": "sub08",
+   "note": "sub-08 51-input comparison",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "exact central compact label",
+   "expected": {
+    "kind": "NEW",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-base64",
+   "raw": "UEhTPTJ8U1JDPUtNVEVDSF9JTlBVVF9UQUd8SVRHPUlURy1BMXxDTEM9QUFBMjI3MDcxMDAwMHxMQkw9TEJMLUExfEhTSD0wMTIzNDU2Nzg5YWJjZGVm",
+   "group": "boundary",
+   "note": "standard Base64 of the compact label",
+   "expected": {
+    "kind": "NEW",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-base64-urlsafe",
+   "raw": "UEhTPTJ8U1JDPUtNVEVDSF9JTlBVVF9UQUd8SVRHPUlURy1BMT8_fENMQz1BQUEyMjcwNzEwMDAwfExCTD1MQkwtQTF8SFNIPTAxMjM0NTY3ODlhYmNkZWY=",
+   "group": "boundary",
+   "note": "URL-safe Base64 of a compact label",
+   "expected": {
+    "kind": "NEW",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-hsh-upper",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789ABCDEF",
+   "group": "boundary",
+   "note": "HSH hex in upper case",
+   "expected": {
+    "kind": "NEW",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-src-lower",
+   "raw": "PHS=2|SRC=kmtech_input_tag|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "SRC value case",
+   "expected": {
+    "kind": "NEW",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-keys-lower",
+   "raw": "phs=2|src=KMTECH_INPUT_TAG|itg=ITG-A1|clc=AAA2270710000|lbl=LBL-A1|hsh=0123456789abcdef",
+   "group": "boundary",
+   "note": "compact label with lower-case keys",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-reordered",
+   "raw": "SRC=KMTECH_INPUT_TAG|PHS=2|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "compact fields out of order",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-trailing-pipe",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|",
+   "group": "boundary",
+   "note": "compact label with a trailing pipe",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-spaces",
+   "raw": "PHS=2 | SRC=KMTECH_INPUT_TAG | ITG=ITG-A1 | CLC=AAA2270710000 | LBL=LBL-A1 | HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "spaces around the separators",
+   "expected": {
+    "kind": "NEW",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-with-qt",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|QT=3",
+   "group": "boundary",
+   "note": "an extra valid quantity",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-with-zero-qt",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|QT=0",
+   "group": "boundary",
+   "note": "an extra invalid quantity",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "QT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-short-hsh",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123",
+   "group": "boundary",
+   "note": "HSH not 16 hex",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-src-other",
+   "raw": "PHS=2|SRC=OTHER_SOURCE|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "SRC present, wrong value",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-no-src",
+   "raw": "PHS=2|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "SRC missing, ITG present",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-no-itg",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "ITG missing, SRC present",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-empty-itg",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "ITG empty",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-no-lbl",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "LBL missing",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-no-hsh",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1",
+   "group": "boundary",
+   "note": "HSH missing",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-no-clc",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "item code missing",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "ITEM_UNCONFIRMED"
+    ],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "compact-no-phs",
+   "raw": "SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "PHS missing",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-phs1",
+   "raw": "PHS=1|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "PHS not 2",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-value-equals",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL=A1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "a value with '='",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-control-char",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL\tA1|HSH=0123456789abcdef",
+   "group": "boundary",
+   "note": "a control character",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-duplicate-hsh-core",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|HSH_CORE=a|HSH_CORE=b",
+   "group": "boundary",
+   "note": "repeated HSH_CORE",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-duplicate-bundle",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|BUNDLE_ID=a|BUNDLE_ID=b",
+   "group": "boundary",
+   "note": "repeated BUNDLE_ID",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-duplicate-source-bundle",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|SOURCE_BUNDLE_ID=a|SOURCE_BUNDLE_ID=b",
+   "group": "boundary",
+   "note": "repeated SOURCE_BUNDLE_ID",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-duplicate-hsh-label",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|HSH_LABEL=a|HSH_LABEL=b",
+   "group": "boundary",
+   "note": "repeated HSH_LABEL",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "compact-duplicate-src",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef|SRC=OLD",
+   "group": "boundary",
+   "note": "repeated SRC",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-base64-urlsafe",
+   "raw": "UEhTPTJ8Q0xDPUFBQTIyNzA3MTAwMDB8UVQ9M3xYPT8/Pg==",
+   "group": "boundary",
+   "note": "URL-safe Base64 of a new label",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-duplicate-base64",
+   "raw": "UEhTPTJ8Q0xDPUFBQTIyNzA3MTAwMDB8UVQ9M3xQSFM9MQ==",
+   "group": "boundary",
+   "note": "Base64 of a label a strict parser refuses",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-whitespace-segment",
+   "raw": "PHS=2| |CLC=AAA2270710000|QT=3",
+   "group": "boundary",
+   "note": "a blank segment",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-empty-key",
+   "raw": "PHS=2|CLC=AAA2270710000|=3",
+   "group": "boundary",
+   "note": "a segment with an empty key",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-quantity-key",
+   "raw": "PHS=2|CLC=AAA2270710000|QUANTITY=3",
+   "group": "boundary",
+   "note": "QUANTITY as the quantity",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-quantity-zero",
+   "raw": "PHS=2|CLC=AAA2270710000|QUANTITY=0",
+   "group": "boundary",
+   "note": "QUANTITY zero",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "QT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-qt-quantity",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3|QUANTITY=3",
+   "group": "boundary",
+   "note": "two quantity keys",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-empty-qt",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=",
+   "group": "boundary",
+   "note": "an empty quantity",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "QT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "lab-lower-value",
+   "raw": "PHS=2|CLC=aaa2270710000|QT=3",
+   "group": "boundary",
+   "note": "item code value kept as printed",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "aaa2270710000"
+   }
+  },
+  {
+   "id": "phs2-pipe-only",
+   "raw": "PHS=2|",
+   "group": "boundary",
+   "note": "PHS=2 with a pipe and nothing else",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "ITEM_UNCONFIRMED"
+    ],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "item-alias-no-clc",
+   "raw": "PHS=2|ITEM=AAA2270710000|QT=3",
+   "group": "boundary",
+   "note": "ITEM without CLC",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "inspection-phs2",
+   "raw": "CLC=INSPECTION|ITEM=AAA2270710000|PHS=2|QT=3",
+   "group": "boundary",
+   "note": "INSPECTION alias, readable old QR",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "inspection-no-item",
+   "raw": "CLC=INSPECTION|PHS=2|QT=3",
+   "group": "boundary",
+   "note": "INSPECTION alias without an item",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING",
+     "ITEM_UNCONFIRMED"
+    ],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "old-qr-phs2-lbl",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=2|LBL=LBL-1|QT=3",
+   "group": "boundary",
+   "note": "old phase QR with an LBL value",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "old-qr-phs2-itg",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=2|ITG=ITG-1",
+   "group": "boundary",
+   "note": "old phase QR with a lineage key",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "old-qr-duplicate-phs",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=2|PHS=1",
+   "group": "boundary",
+   "note": "old QR, PHS repeated",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [
+     "DUPLICATE_KEY"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "old-qr-broken",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=1|BROKEN",
+   "group": "boundary",
+   "note": "old QR with a segment without '='",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "old-qr-zero-qt",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=1|QT=0",
+   "group": "boundary",
+   "note": "old QR with quantity zero",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [
+     "QT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "old-qr-lower-keys",
+   "raw": "clc=AAA2270710000|spc=Old|phs=1",
+   "group": "boundary",
+   "note": "old QR with lower-case keys",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "old-pipe-no-phs",
+   "raw": "CLC=AAA2270710000|WID=WO-1|QT=60",
+   "group": "boundary",
+   "note": "old pipe label without PHS and SPC",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "old-json",
+   "raw": "{\"CLC\": \"AAA2270710000\", \"WID\": \"WO-1\", \"QT\": \"60\"}",
+   "group": "boundary",
+   "note": "old JSON label",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "json-duplicate",
+   "raw": "{\"PHS\": \"2\", \"PHS\": \"1\", \"CLC\": \"AAA2270710000\"}",
+   "group": "boundary",
+   "note": "JSON with a repeated key",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "json-compact",
+   "raw": "{\"PHS\": \"2\", \"SRC\": \"KMTECH_INPUT_TAG\", \"ITG\": \"ITG-A1\", \"CLC\": \"AAA2270710000\", \"LBL\": \"LBL-A1\", \"HSH\": \"0123456789abcdef\"}",
+   "group": "boundary",
+   "note": "compact fields as JSON",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "FORMAT_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "json-number-phs",
+   "raw": "{\"PHS\": 2, \"CLC\": \"AAA2270710000\"}",
+   "group": "boundary",
+   "note": "JSON number PHS",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "json-broken",
+   "raw": "{\"PHS\": \"2\", \"CLC\": \"AAA2270710000\"",
+   "group": "boundary",
+   "note": "JSON without the closing brace",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "lineage-bare",
+   "raw": "ITG=ITG-1",
+   "group": "boundary",
+   "note": "a lineage key without a pipe",
+   "expected": {
+    "kind": "LEGACY",
+    "reasons": [],
+    "item_code": ""
+   }
+  },
+  {
+   "id": "bnd-empty-old-qr",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=1|BND=",
+   "group": "boundary",
+   "note": "empty BND on an old QR",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   },
+   "lm": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "structured",
+   "raw": "CLC=AAA2270710000|SPC=Structured|PHS=1|BND=TRANSFER-B1",
+   "group": "boundary",
+   "note": "structured BND label",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   },
+   "lm": {
+    "kind": "STRUCTURED",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "structured-duplicate-wid",
+   "raw": "CLC=AAA2270710000|SPC=Structured|PHS=1|BND=TRANSFER-B1|WID=1|WID=2",
+   "group": "boundary",
+   "note": "structured label, repeated key",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY",
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   },
+   "lm": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "DUPLICATE_KEY"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "structured-empty-lbl",
+   "raw": "CLC=AAA2270710000|SPC=Structured|PHS=1|BND=TRANSFER-B1|LBL=",
+   "group": "boundary",
+   "note": "structured label, empty LBL",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_NOT_2",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   },
+   "lm": {
+    "kind": "STRUCTURED",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "sealed",
+   "raw": "TRF=1|BND=TRANSFER-A1|AUTH_SCOPE=SCOPE-A1|CLC=AAA2270710000|QT=4|HSH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|EPOCH=1|PLANE=AUTHORITATIVE|PE=1",
+   "group": "boundary",
+   "note": "sealed transfer QR",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   },
+   "lm": {
+    "kind": "SEALED",
+    "reasons": [],
+    "item_code": "AAA2270710000"
+   }
+  },
+  {
+   "id": "sealed-invalid",
+   "raw": "TRF=1|BND=TRANSFER-1|CLC=AAA2270710000|QT=4",
+   "group": "boundary",
+   "note": "sealed transfer QR missing fields",
+   "expected": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "PHS_MISSING",
+     "LINEAGE_MISSING"
+    ],
+    "item_code": "AAA2270710000"
+   },
+   "lm": {
+    "kind": "MALFORMED",
+    "reasons": [
+     "SEALED_QR_INVALID"
+    ],
+    "item_code": "AAA2270710000"
+   }
+  }
+ ],
+ "start_cases": [
+  {
+   "id": "legacy13-known",
+   "raw": "AAA2270710000",
+   "item_known": true,
+   "catalog_confirmed": true,
+   "duplicate": false,
+   "class": "LEGACY",
+   "reasons": [],
+   "note": "13-digit item in the catalog"
+  },
+  {
+   "id": "legacy13-unknown",
+   "raw": "ZZZ9999999999",
+   "item_known": false,
+   "catalog_confirmed": true,
+   "duplicate": false,
+   "class": "LEGACY",
+   "reasons": [
+    "ITEM_UNCONFIRMED"
+   ],
+   "note": "13-digit code not in the catalog"
+  },
+  {
+   "id": "legacy13-no-catalog",
+   "raw": "AAA2270710000",
+   "item_known": true,
+   "catalog_confirmed": false,
+   "duplicate": false,
+   "class": "LEGACY",
+   "reasons": [
+    "ITEM_UNCONFIRMED"
+   ],
+   "note": "started without a confirmed catalog"
+  },
+  {
+   "id": "old-qr-known",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=1",
+   "item_known": true,
+   "catalog_confirmed": true,
+   "duplicate": false,
+   "class": "LEGACY",
+   "reasons": [],
+   "note": "old QR"
+  },
+  {
+   "id": "old-qr-duplicate",
+   "raw": "CLC=AAA2270710000|SPC=Old|PHS=1",
+   "item_known": true,
+   "catalog_confirmed": true,
+   "duplicate": true,
+   "class": "LEGACY",
+   "reasons": [
+    "DUPLICATE_LABEL"
+   ],
+   "note": "old QR completed before"
+  },
+  {
+   "id": "old-qr-zero-qt-unknown",
+   "raw": "CLC=ZZZ9999999999|SPC=Old|PHS=1|QT=0",
+   "item_known": false,
+   "catalog_confirmed": true,
+   "duplicate": false,
+   "class": "LEGACY",
+   "reasons": [
+    "QT_INVALID",
+    "ITEM_UNCONFIRMED"
+   ],
+   "note": "old QR defect and unknown item"
+  },
+  {
+   "id": "lab-known",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=3",
+   "item_known": true,
+   "catalog_confirmed": true,
+   "duplicate": false,
+   "class": "PHS2_MALFORMED",
+   "reasons": [
+    "LINEAGE_MISSING"
+   ],
+   "note": "lab input"
+  },
+  {
+   "id": "lab-unknown",
+   "raw": "PHS=2|CLC=ZZZ9999999999|QT=3",
+   "item_known": false,
+   "catalog_confirmed": true,
+   "duplicate": false,
+   "class": "PHS2_MALFORMED",
+   "reasons": [
+    "LINEAGE_MISSING",
+    "ITEM_UNCONFIRMED"
+   ],
+   "note": "lab shape, unknown item"
+  },
+  {
+   "id": "lab-no-catalog-duplicate",
+   "raw": "PHS=2|CLC=AAA2270710000|QT=0",
+   "item_known": true,
+   "catalog_confirmed": false,
+   "duplicate": true,
+   "class": "PHS2_MALFORMED",
+   "reasons": [
+    "LINEAGE_MISSING",
+    "QT_INVALID",
+    "ITEM_UNCONFIRMED",
+    "DUPLICATE_LABEL"
+   ],
+   "note": "no catalog and completed before"
+  },
+  {
+   "id": "no-clc",
+   "raw": "PHS=2|QT=3",
+   "item_known": false,
+   "catalog_confirmed": true,
+   "duplicate": false,
+   "class": "PHS2_MALFORMED",
+   "reasons": [
+    "LINEAGE_MISSING",
+    "ITEM_UNCONFIRMED"
+   ],
+   "note": "new shape without an item code"
+  },
+  {
+   "id": "compact-duplicate",
+   "raw": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-A1|CLC=AAA2270710000|LBL=LBL-A1|HSH=0123456789abcdef",
+   "item_known": true,
+   "catalog_confirmed": true,
+   "duplicate": true,
+   "class": "PHS2_LOCAL",
+   "reasons": [
+    "DUPLICATE_LABEL"
+   ],
+   "note": "valid label completed before: local, never the ledger twice"
+  }
+ ]
+}
