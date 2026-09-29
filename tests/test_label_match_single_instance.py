@@ -535,6 +535,8 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     traces = []
 
     monkeypatch.setattr(app_module, "resolve_data_scope", lambda **_kwargs: r"C:\data")
+    # A failed catalog check reads the transition switch; pin it off, never the host value.
+    monkeypatch.setattr(app_module, "legacy_label_transition_enabled", lambda: False)
     monkeypatch.setattr(
         app_module,
         "run_guarded_entrypoint",

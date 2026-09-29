@@ -952,6 +952,8 @@ def test_catalog_retry_uses_verified_startup_path_without_restart(monkeypatch):
     monkeypatch.setattr(app_module, "Label_Match", FakeApp)
     monkeypatch.setattr(app_module, "_label_match_startup_trace", lambda *args, **kwargs: None)
     monkeypatch.setattr(app_module, "_offer_item_catalog_startup_retry", lambda exc: exc is error)
+    # A failed catalog check reads the transition switch; pin it off, never the host value.
+    monkeypatch.setattr(app_module, "legacy_label_transition_enabled", lambda: False)
     assert app_module._run_label_match_application() == 0
     assert len(attempts) == 2 and constructed == [True]
 
@@ -963,6 +965,7 @@ def test_catalog_retry_cancel_stays_closed(monkeypatch):
     monkeypatch.setattr(app_module, "prepare_startup_item_catalog", lambda: (_ for _ in ()).throw(error))
     monkeypatch.setattr(app_module, "_label_match_startup_trace", lambda *args, **kwargs: None)
     monkeypatch.setattr(app_module, "_offer_item_catalog_startup_retry", lambda exc: False)
+    monkeypatch.setattr(app_module, "legacy_label_transition_enabled", lambda: False)
     monkeypatch.setattr(app_module, "Label_Match", lambda: pytest.fail("unverified app constructed"))
     with pytest.raises(app_module.ItemCatalogSyncError):
         app_module._run_label_match_application()
