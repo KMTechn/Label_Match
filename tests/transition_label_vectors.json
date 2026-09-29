@@ -1,7 +1,7 @@
 {
  "version": "w9transitalign-1",
  "rules": "work/program/w9transitalign/CLASSIFICATION-RULES.md (copy in each repo: docs/spec/operations.md)",
- "contract": "expected = (kind, reasons, item_code) of the start label after the app's Base64 decode; kind LEGACY | NEW (exact compact central label) | MALFORMED. 'lm' overrides expected for Label_Match only (sealed TRF and structured BND lineage shapes, which Container_Audit never receives). start_cases: the recorded class and reasons at the start, with the catalog and duplicate context; the central outcome is not part of the table.",
+ "contract": "expected = (kind, reasons, item_code) of the start label after the app's Base64 decode; kind LEGACY | NEW (exact compact central label) | MALFORMED. 'lm' overrides expected for Label_Match only (sealed TRF and structured BND lineage shapes, which Container_Audit never receives). start_cases: the recorded class and reasons at the start, with the catalog and duplicate context; the central outcome is not part of the table. 'ca': {'refused': true} marks a start Container_Audit refuses (no item code for its product check).",
  "vectors": [
   {
    "id": "lab",
@@ -1588,7 +1588,10 @@
     "LINEAGE_MISSING",
     "ITEM_UNCONFIRMED"
    ],
-   "note": "new shape without an item code"
+   "note": "new shape without an item code",
+   "ca": {
+    "refused": true
+   }
   },
   {
    "id": "compact-duplicate",
