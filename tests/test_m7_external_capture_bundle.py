@@ -33,7 +33,7 @@ def test_canonical_validator_uses_reviewed_repository_copy():
     assert VALIDATOR == expected
     assert expected.is_file()
     assert hashlib.sha256(expected.read_bytes()).hexdigest() == (
-        "86713b77bd004a3577b53221be8667362d67984f915395dec95727ca5b1235e1"
+        "09b96389f41e2272dcd589228ea75ed4372f74a9075ed165ea00dd6728240de9"
     )
 
 

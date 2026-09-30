@@ -14260,7 +14260,18 @@ class Label_Match(tk.Tk):
                     )
                     return
                 self.current_set_info['production_date'] = production_date
-            self._update_on_success_scan(raw_input, master_code)
+            prepare = None
+            if new_label and self.current_set_info.get("central_inherit_all") and not self.current_set_info.get("scanner_only"):
+                # An unsubmitted pre-upgrade PHS2 save joins the scanner flow
+                # at its next accepted product. Preserve submitted commands.
+                outbox = self.__dict__.get("package_outbox")
+                if outbox is not None and outbox.get_by_set_id(str(self.current_set_info.get("id") or "")) is not None:
+                    self._ignore_product_scan(raw_input, "이 세트는 이미 전송함에 저장되었습니다. 저장된 처리 상태를 확인하세요.")
+                    return
+                def prepare(state):
+                    state["scanner_only"] = True
+                    state["physical_scanned_qr_payload"] = str(state.get("physical_scanned_qr_payload") or state["raw"][0])
+            self._update_on_success_scan(raw_input, master_code, prepare_durable_state=prepare)
         else:
             consume_input()
 
@@ -14643,12 +14654,7 @@ class Label_Match(tk.Tk):
                     self._reconcile_active_package_submission()
                     return True
                 self._set_active_package_submission_notice(row)
-                if not self.run_tests:
-                    messagebox.showwarning(
-                        "중앙 포장 확정 필요",
-                        f"{action} 작업은 중앙 포장 상태가 확정된 뒤 진행할 수 있습니다.",
-                        parent=self,
-                    )
+                self._play_sound("fail")
                 return True
         attempt = self._current_sealed_transfer_exchange_attempt()
         if attempt is None:

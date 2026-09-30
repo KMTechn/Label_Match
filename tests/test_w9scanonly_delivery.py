@@ -46,6 +46,46 @@ def test_undo_unfinished_product_preserves_the_label_and_order(packaging):
     assert completions(app) == [] and dialogs == []
 
 
+def test_unsubmitted_legacy_phs2_save_completes_in_the_scanner_outbox(central):
+    app, dialogs, case, root, _releases = central
+    master = case.group["scan_payload"]
+    values = [row["normalized_barcode"] for row in case.snapshot["work_group_source"]["members"]]
+    scan(app, master)
+    root.run_until(lambda: not app.__dict__.get("_phs2_background_pending"), timeout=5)
+    identity = app.current_set_info["id"]
+    app.current_set_info.pop("scanner_only")
+    app.current_set_info["operation_lease_id"] = "preserved-old-prefetch"
+    app.package_logistics_client.issue_operation_lease = lambda **kw: pytest.fail("local completion must not acquire a lease")
+    for value in values:
+        scan(app, value)
+    assert app.blocks == []
+    assert len(completions(app)) == 1
+    row = app.package_outbox.get_by_set_id(identity)
+    assert row is not None and not row.get("command_json")
+    draft = json.loads(row["draft_json"])
+    assert draft["scanner_only"] is True
+    assert draft["sample_barcodes"] == values
+    assert draft["scan_payload"] == master and draft["local_completed_at"]
+    assert not draft.get("operation_lease_id")
+    assert dialogs == []
+
+
+def test_submitted_legacy_phs2_save_preserves_its_original_outbox_draft(central):
+    from Label_Match import _label_match_package_draft
+    app, dialogs, case, root, _releases = central
+    master = case.group["scan_payload"]
+    scan(app, master)
+    root.run_until(lambda: not app.__dict__.get("_phs2_background_pending"), timeout=5)
+    app.current_set_info.pop("scanner_only")
+    identity = app.current_set_info["id"]
+    original = app.package_outbox.enqueue(_label_match_package_draft(app.current_set_info, item_code=case.group["item_id"]))
+    scan(app, case.snapshot["work_group_source"]["members"][0]["normalized_barcode"])
+    assert app.current_set_info["raw"] == [master]
+    assert not app.current_set_info.get("scanner_only")
+    assert app.package_outbox.get_by_set_id(identity)["draft_json"] == original["draft_json"]
+    assert completions(app) == [] and dialogs == []
+
+
 def test_unknown_command_never_becomes_a_product_or_an_error_gate(packaging):
     app, dialogs = packaging
     for value in [MASTER, "KMCMD:OTHER", products()[0]]:

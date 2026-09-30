@@ -35,6 +35,7 @@ def test_package_review_api_consumer_set_requires_review():
         'Label_Match.py:Label_Match._refresh_package_cancellation_review_notice': '_package_review_context,_package_review_snapshot,_refresh_package_cancellation_review_notice,_start_package_outbox_drain',
         'Label_Match.py:Label_Match._render_operator_workbench': '_package_review_context,_package_review_snapshot,_refresh_package_cancellation_review_notice',
         'Label_Match.py:Label_Match._reset_current_set': '_refresh_package_cancellation_review_notice',
+        'Label_Match.py:Label_Match._release_shortage_confirmation': '_start_package_outbox_drain',
         'Label_Match.py:Label_Match._run_scheduled_package_outbox_drain': '_run_scheduled_package_outbox_drain,_start_package_outbox_drain',
         'Label_Match.py:Label_Match._schedule_package_outbox_poll': '_poll_package_outbox_drain,_schedule_package_outbox_poll',
         'Label_Match.py:Label_Match._start_package_outbox_drain': '_package_review_context,_schedule_package_outbox_poll,_start_package_outbox_drain',

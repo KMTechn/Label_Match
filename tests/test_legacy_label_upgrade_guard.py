@@ -125,8 +125,13 @@ def test_declared_scan_input_pairs_are_exactly_c83c72c_817d393_and_92abdaa_to_th
                for commit in installs}
     assert pairs == {(before, here) for before in befores}
     assert not any((here, before) in pairs for before in befores)
-    assert set(companions) == {"app/deferred_intent_capture.py", "app/label_completion.py",
-                               "app/terminal_operation_lease.py"}
+    assert set(companions) == {
+        "app/carrier_identity_port.py", "app/deferred_intent_capture.py",
+        "app/label_completion.py", "app/label_recovery_schema.py", "app/label_transition.py",
+        "app/label_workbench_history.py", "app/package_command_draft.py", "app/package_logistics.py",
+        "app/package_outbox.py", "app/package_outbox_processor.py", "app/sealed_transfer_exchange.py",
+        "app/terminal_operation_lease.py", "app/ui/workflow_view_state.py",
+    }
     for relative, (before, after) in companions.items():
         name = relative.removeprefix("app/")
         assert {_release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", f"{commit}:{name}"]))
@@ -359,6 +364,38 @@ def test_mutex_pair_refuses_changed_installed_preimage(tmp_path, nextfix_archive
     result = _nextfix_probe(tmp_path, candidate, changed)
     assert result.returncode != 0
     assert "WRITER_TRANSITION_SEMANTICS_DIFFER" in result.stderr
+
+
+def test_declared_scanner_pair_and_companions_match_reviewed_sources():
+    source = INSTALLER.read_text(encoding="utf-8")
+    start = source.index("$probe = @'") + len("$probe = @'")
+    tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
+    values = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body
+              if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+              and node.targets[0].id in {"scanner_label_pair", "nextfix_companions"}}
+    assert values["scanner_label_pair"] == (
+        _release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", "a20cd01:Label_Match.py"])),
+        _release_digest((ROOT / "Label_Match.py").read_bytes()),
+    )
+    for relative, (before, after) in values["nextfix_companions"].items():
+        name = relative.removeprefix("app/")
+        assert before == _release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show", f"a20cd01:{name}"]))
+        assert after == _release_digest((ROOT / name).read_bytes()) != before
+
+
+def test_baseline_archive_upgrades_only_forward_to_scanner_source(tmp_path, nextfix_archive_layouts):
+    old, candidate = nextfix_archive_layouts
+    baseline = _tree(old, tmp_path / "baseline", ["app/Label_Match.py"])
+    (baseline / "app/Label_Match.py").write_bytes(subprocess.check_output(["git", "-C", str(ROOT), "show", "a20cd01:Label_Match.py"]))
+    _pin(baseline)
+    preserved = (baseline / "app/Label_Match.py").read_bytes()
+    result = _nextfix_probe(tmp_path, candidate, baseline)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["compatibility"] == "PINNED_W9SCANONLY_WORKFLOW"
+    assert (baseline / "app/Label_Match.py").read_bytes() == preserved
+    reverse = _nextfix_probe(tmp_path, baseline, candidate)
+    assert reverse.returncode != 0
+    assert "WRITER_TRANSITION_SEMANTICS_DIFFER" in reverse.stderr
 
 
 @pytest.mark.parametrize("change,reason", [

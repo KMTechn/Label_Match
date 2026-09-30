@@ -631,6 +631,7 @@ def test_main_warns_and_continues_with_verified_catalog_cache(
 ):
     import Label_Match as app_module
 
+    monkeypatch.setattr(app_module, "_STARTUP_WORKFLOW_NOTICES", [])
     calls = []
     dialogs = []
     cache_path = tmp_path / "Item.csv"
@@ -708,6 +709,8 @@ def test_main_warns_and_continues_with_verified_catalog_cache(
     assert calls[3] == ("diagnostic", diagnostic_path)
     assert "client-created" in calls
     assert "mainloop" in calls
+    assert dialogs == []
+    dialogs = [(notice.title, notice.message) for notice in app_module._STARTUP_WORKFLOW_NOTICES]
     assert len(dialogs) == 1
     assert dialogs[0][0] == app_module.ITEM_CATALOG_CACHE_WARNING_TITLE
     assert "2026-08-28" in dialogs[0][1]
@@ -719,6 +722,7 @@ def test_main_warns_and_continues_when_selected_profile_conflicts_with_install(
 ):
     import Label_Match as app_module
 
+    monkeypatch.setattr(app_module, "_STARTUP_WORKFLOW_NOTICES", [])
     calls = []
     warnings = []
     sensitive_marker = "alternate-profile-token-must-not-leak"
@@ -789,12 +793,17 @@ def test_main_warns_and_continues_when_selected_profile_conflicts_with_install(
     monkeypatch.setattr(app_module, "Label_Match", FakeLabelMatch)
 
     assert app_module.main([]) == 0
+    assert warnings == []
+    warnings = [(notice.title, notice.message) for notice in app_module._STARTUP_WORKFLOW_NOTICES]
     assert len(warnings) == 1
     assert warnings[0][0] == app_module.LOGISTICS_PROFILE_WARNING_TITLE
-    assert selected_path in warnings[0][1]
-    assert "TEST1-SELECTED-SCOPE" in warnings[0][1]
-    assert "https://selected.example.invalid:18456" in warnings[0][1]
-    assert catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH in warnings[0][1]
+    assert warnings[0][1] == app_module.LOGISTICS_PROFILE_WARNING_MESSAGES[catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH]
+    assert ("item_catalog_profile_selected", {
+        "selected_profile_path": selected_path,
+        "selected_authority_scope": "TEST1-SELECTED-SCOPE",
+        "selected_base_url": "https://selected.example.invalid:18456",
+        "profile_selection_warning": catalog_sync.PROFILE_WARNING_CURRENT_USER_MISMATCH,
+    }) in calls
     assert sensitive_marker not in repr(warnings)
     assert "client-created" in calls
     assert "mainloop" in calls

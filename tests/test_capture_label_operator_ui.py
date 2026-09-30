@@ -100,7 +100,10 @@ def _product_admitted_busy_seam_literals():
     completion_tree = ast.parse(
         (capture.ROOT / "label_completion.py").read_text(encoding="utf-8")
     )
-    expected_tasks = set(_ADMITTED_BUSY_PRODUCT_CALLS.values())
+    # The PHS2 busy fixture remains a historical recovery renderer case;
+    # current scanner admission never waits on that exclusive lane.
+    expected_tasks = set(_ADMITTED_BUSY_PRODUCT_CALLS.values()) - {"phs2-capture-validation"}
+    assert not any(isinstance(node, ast.Constant) and node.value == "phs2-capture-validation" for node in ast.walk(product_tree))
     prefixes_by_task = {}
     for node in (*ast.walk(product_tree), *ast.walk(completion_tree)):
         if not (
@@ -155,6 +158,7 @@ def _product_admitted_busy_seam_literals():
 
     assert set(prefixes_by_task) == expected_tasks
     assert len(templates) == 1
+    prefixes_by_task["phs2-capture-validation"] = {"text": M7_STATE_CONTRACT["phs2_admitted_busy"]["busy_text"]}
     prefixes_by_state = {
         state_id: prefixes_by_task[task_name]
         for state_id, task_name in _ADMITTED_BUSY_PRODUCT_CALLS.items()
@@ -570,7 +574,7 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     assert fixtures["history_readonly"].history_readonly is True
     assert fixtures["submission_blocked"].central_inherit_all is True
     assert fixtures["submission_blocked"].notice_title == (
-        "1/1 유지 · 로컬 기록 저장 필요"
+        "1/5 유지 · 로컬 기록 저장 필요"
     )
     assert fixtures["submission_blocked"].qa_scans == fixtures["qa_master"].qa_scans
     assert "HTTP" not in fixtures["submission_blocked"].notice_message
@@ -719,8 +723,8 @@ def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
     assert view.scan_input_enabled is True
     assert view.cancel_current_enabled is True
     assert view.cancel_completed_enabled is True
-    assert view.f3_enabled is True
-    assert view.f4_enabled is False
+    assert view.f3_enabled is False
+    assert view.f4_enabled is True
     assert app._workflow_blocking_notice is None
     assert len(app._package_cancellation_review_rows) == CANCELLATION_CONFLICT_COUNT
     notice = app._package_cancellation_review_notice
@@ -1021,7 +1025,7 @@ def test_fixtures_are_accepted_by_the_real_workflow_presenter(state_id):
     view = build_presenter_view(fixture)
 
     assert len(view.slots) == (
-        1 if fixture.central_inherit_all else 5
+        5
     )
     assert view.qa_completed == len(fixture.qa_scans)
     assert view.last_normal_scan == fixture.last_normal_scan
@@ -1038,7 +1042,7 @@ def test_fixtures_are_accepted_by_the_real_workflow_presenter(state_id):
         assert view.scan_input_enabled is True
         assert view.cancel_current_enabled is True
         assert view.cancel_completed_enabled is True
-        assert view.f3_enabled is True
+        assert view.f3_enabled is False
 
 
 def test_live_contract_reports_missing_widgets_and_never_false_passes_legacy_ui():
@@ -3742,7 +3746,7 @@ def test_cancellation_conflict_evaluation_is_exact_and_nonblocking():
     assert evaluate_capture(record) == []
 
     record["rendered_state"]["display_notice"]["message"] = "미확인 3건"
-    record["rendered_state"]["presenter_action_gates"]["f3_enabled"] = False
+    record["rendered_state"]["presenter_action_gates"]["f3_enabled"] = True
     record["rendered_state"]["qa_detail_contract"]["selected_detail_text"] = (
         "abbreviated"
     )
@@ -3888,7 +3892,7 @@ def test_cross_capture_conflict_preserves_selected_raw_and_fkey_gates():
 
     conflict["rendered_state"]["qa_detail_contract"]["selected_raw"] = "changed"
     conflict["rendered_state"]["button_states"]["manual_complete_button"] = (
-        "disabled"
+        "normal"
     )
     apply_cross_capture_contracts([qa, conflict])
 

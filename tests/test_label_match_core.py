@@ -5089,6 +5089,8 @@ def test_recoverable_prewrite_package_conflict_still_blocks_non_cancel_actions()
     app.current_set_info = {"id": "set-conflict"}
     app.package_outbox = DurableOutbox()
     app._current_sealed_transfer_exchange_attempt = lambda: None
+    sounds = []
+    app._play_sound = sounds.append
     notices = []
     app._set_active_package_submission_notice = (
         lambda durable_row: notices.append(durable_row) or False
@@ -5096,6 +5098,7 @@ def test_recoverable_prewrite_package_conflict_still_blocks_non_cancel_actions()
 
     assert app._sealed_transfer_exchange_blocks_local_action("포장 완료") is True
     assert notices == [row]
+    assert sounds == ["fail"]
 
 
 def test_central_package_preflight_state_must_be_durable_before_enqueue():

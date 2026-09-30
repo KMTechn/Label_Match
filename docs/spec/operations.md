@@ -747,6 +747,8 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 <a id="bootstrap-integrity-writer-transition"></a>
 ### 무결성 순서 수정본으로 writer 업그레이드
 
+스캐너 전환 후보는 `a20cd01` 기준판과 기존 지원 preimage의 정확한 전/후 source hash 쌍 및 scanner companion 목록을 설치기 read-only writer probe에 고정한다. 동일한 59개 writer identity·path·guard 종류를 유지하며 source 위치와 bytes로 파생되는 Python/PowerShell inventory pin만 함께 갱신한다. runtime·파일 집합·설치 계약·bootstrap 무결성 검사는 그대로 요구하고 역방향 설치와 목록 밖 변경을 거부한다. 이 후보의 host archive/stock preflight 검증은 native 설치 수용과 구분한다.
+
 `0cf5bf6` 자체의 installer는 `d0e504e`와 onboarding AST가 달라 교체 전에 거부한다. `w9labelwriterupgrade`가 포함된 stock portable을 사용하면 정확한 전/후 onboarding hash 쌍만 `PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX`로 인정한다. 파일 집합·writer/guard·runtime·계약·설치본 bootstrap 검증은 유지한다. 검증 순서만 바뀌고 data/identity/queue/spool/settings/receipt schema는 같으므로 데이터 변환은 필요 없다. 임의 이전/이후 릴리스나 역방향 downgrade를 허용하는 옵션은 없다.
 
 capture8에서 `aa4d59b` 패키지는 `app/assets/Item.csv`에서 거부됐다. 실제 `d0e504e` 설치본 CSV는 committed LF 2374 bytes지만 후보는 checkout CRLF 2425 bytes였고 bundled 설정도 같은 차이가 있었다. `w9labelwriterupgrade2` stock 빌더는 commit/tree를 고정한 Git blob snapshot을 사용하여 저장소 입력 bytes를 보존한다. CSV/설정 예외나 guard 완화는 없다. onboarding은 inventory 비교와 aggregate 검증의 실제 코드 변경이므로 기존 pin 쌍은 필요하다.
