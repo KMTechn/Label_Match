@@ -21,6 +21,10 @@ SLOT_DEFINITIONS = (
 )
 CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
     ("master_label", "PHS2 현품표"),
+    ("product_1", "제품1"),
+    ("product_2", "제품2"),
+    ("product_3", "제품3"),
+    ("final_label", "제품4"),
 )
 COMPLETION_KINDS = frozenset({"full", "partial", "failed"})
 LEGACY_LABEL_TRANSITION_OFF_CAUSE = (
@@ -218,20 +222,7 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     )
     action_gate_reason = _action_gate_reason(snapshot, completion_kind)
 
-    f3_enabled = bool(
-        action_gate_reason is None
-        and not snapshot.exact_rescan_active
-        and (
-            (
-                snapshot.central_inherit_all
-                and qa_completed == qa_total == 1
-            )
-            or (
-                not snapshot.central_inherit_all
-                and 2 <= qa_completed < qa_total
-            )
-        )
-    )
+    f3_enabled = False
     f3_hint = _f3_hint(
         qa_completed=qa_completed,
         qa_total=qa_total,
@@ -246,25 +237,8 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     f4_gate_reason = _action_gate_reason(
         snapshot, completion_kind, exchange_recovery=True
     )
-    f4_enabled = (
-        f4_gate_reason is None
-        and (
-            (
-                snapshot.central_inherit_all
-                and qa_completed == qa_total == 1
-            )
-            or (
-                snapshot.sealed_transfer
-                and 1 <= qa_completed < qa_total
-            )
-            or (
-                not inherited_membership
-                and qa_completed == 1
-            )
-        )
-        and not snapshot.exact_rescan_active
-        and not snapshot.exact_rescan_complete
-    )
+    f4_enabled = (f4_gate_reason is None and 1 <= qa_completed < qa_total
+                  and not snapshot.exact_rescan_active and not snapshot.exact_rescan_complete)
     f4_hint = _f4_hint(
         qa_completed=qa_completed,
         sealed_transfer=snapshot.sealed_transfer,
@@ -302,25 +276,19 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     else:
         last_successful_scan = _last_successful_scan(scans, exact_members)
 
-    scan_input_enabled = bool(
-        not interaction_blocked
-        and not (
-            snapshot.central_inherit_all
-            and qa_completed == qa_total == 1
-        )
-    )
+    scan_input_enabled = not interaction_blocked
     cancelable_active_set = bool(
         0 < qa_completed < qa_total
         or (
             snapshot.central_inherit_all
-            and qa_completed == qa_total == 1
+            and 0 < qa_completed <= qa_total
         )
     )
     recoverable_blocked_cancel = bool(
         snapshot.blocking_notice is not None
         and snapshot.blocking_notice.allow_current_set_cancel
         and snapshot.central_inherit_all
-        and qa_completed == qa_total == 1
+        and 0 < qa_completed <= qa_total
         and snapshot.initialized
         and not snapshot.loading
         and not readonly
@@ -496,17 +464,6 @@ def _primary_view(
             notice,
             "danger",
         )
-    if (
-        snapshot.central_inherit_all
-        and qa_completed == qa_total == 1
-    ):
-        return _PrimaryView(
-            "package_ready",
-            "포장 준비",
-            "랩핑 후 F3 포장 완료",
-            None,
-            "primary",
-        )
     if qa_completed >= qa_total:
         return _PrimaryView(
             "complete",
@@ -520,7 +477,7 @@ def _primary_view(
     if qa_completed == 0:
         action = f"1/{qa_total} 현품표 스캔"
     elif snapshot.central_inherit_all:
-        action = "랩핑 후 F3 포장 완료"
+        action = f"{qa_completed + 1}/{qa_total} 제품 {qa_completed} 스캔"
     elif qa_completed < qa_total - 1:
         action = f"{qa_completed + 1}/{qa_total} 제품 {qa_completed} 스캔"
     else:

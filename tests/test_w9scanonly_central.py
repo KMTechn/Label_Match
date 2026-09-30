@@ -20,7 +20,7 @@ from tk_serial_ui_lane import TkSerialUiLane
 def central(packaging, clock_case):
     app, dialogs = packaging
     case = clock_case
-    for name in ("deferred_intent_capture", "package_logistics_client",
+    for name in ("deferred_intent_capture", "package_logistics_client", "package_outbox",
                  "package_operation_lease_store", "package_operation_lease_keyring"):
         setattr(app, name, getattr(case.app, name))
     app._deferred_intent_capture_error = ""
@@ -32,6 +32,7 @@ def central(packaging, clock_case):
     app._tk_shutdown_requested = False
     app._focus_scan_entry_if_available = lambda: None
     root = FakeTkRoot()
+    app.after = root.after
     app.ui_lane = TkSerialUiLane(root, poll_ms=1, generation_provider=lambda: app._ui_lane_generation)
     releases = []
     try:
@@ -39,7 +40,7 @@ def central(packaging, clock_case):
     finally:
         for release in releases:
             release.set()
-        root.run_until(lambda: not app.ui_lane.is_busy(), timeout=5)
+        root.run_until(lambda: not app.ui_lane.is_busy() and not app.__dict__.get("_phs2_background_pending"), timeout=5)
         app.ui_lane.close_idle()
 
 
@@ -49,11 +50,12 @@ def test_resolved_phs2_and_four_member_products_complete_without_f3_or_confirmat
     values = [row["normalized_barcode"] for row in case.snapshot["work_group_source"]["members"]]
     assert len(values) == 4, "fixture must represent four real source members"
     scan(app, master)
-    root.run_until(lambda: not app.ui_lane.is_busy(), timeout=5)
+    root.run_until(lambda: not app.__dict__.get("_phs2_background_pending"), timeout=5)
     assert app.current_set_info["raw"] == [master], "valid synthetic central evidence must be accepted"
     assert app.current_set_info["package_source_snapshot"] == case.snapshot
     for value in values:
         scan(app, value)
+    assert app.blocks == [], [str(error) for error in app.blocks]
     rows = completions(app)
     assert len(rows) == 1 and rows[0][1]["final_result"] == app.Results.PASS, (
         "four member products after PHS2 must complete locally on scan five, without F3"
@@ -84,6 +86,7 @@ def test_unanswered_central_lookup_does_not_block_samples_or_local_completion(ce
     assert not release.is_set()
     for value in values:
         scan(app, value)
+    assert app.blocks == [], [str(error) for error in app.blocks]
     rows = completions(app)
     assert len(rows) == 1 and rows[0][1]["final_result"] == app.Results.PASS, (
         "local durable completion must finish while central lookup remains unanswered"
@@ -108,10 +111,11 @@ def test_disconnected_central_transport_still_allows_five_scan_local_completion(
     master = case.group["scan_payload"]
     values = products(case.group["item_id"])
     scan(app, master)
-    root.run_until(lambda: not app.ui_lane.is_busy(), timeout=5)
+    root.run_until(lambda: not app.__dict__.get("_phs2_background_pending"), timeout=5)
     assert calls == ["disconnected"], "the fake transport must actually be exercised"
     for value in values:
         scan(app, value)
+    assert app.blocks == [], [str(error) for error in app.blocks]
     rows = completions(app)
     assert len(rows) == 1 and rows[0][1]["final_result"] == app.Results.PASS, (
         "transport loss must leave a locally completable five-scan set"

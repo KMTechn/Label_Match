@@ -1281,6 +1281,9 @@ class PackageLogisticsClient:
         operation: str,
         scan_payload: str,
         idempotency_key: str,
+        deferred_reflection: bool = False,
+        local_completion_id: str = "",
+        local_completed_at: str = "",
     ) -> dict[str, Any]:
         """Prefetch one signed terminal-exclusive operation lease online."""
 
@@ -1305,6 +1308,8 @@ class PackageLogisticsClient:
                 "authority_scope_id": scope,
                 "operation": selected_operation,
                 "scan_payload": physical_scan,
+                **({"deferred_reflection": True, "local_completion_id": local_completion_id,
+                    "local_completed_at": local_completed_at} if deferred_reflection else {}),
             },
             ensure_ascii=False,
             allow_nan=False,

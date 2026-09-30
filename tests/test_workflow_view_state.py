@@ -20,9 +20,9 @@ from ui.workflow_view_state import (
     [
         (0, "master_label", "현품표", "1/5 현품표 스캔", False, False),
         (1, "product_1", "제품1", "2/5 제품 1 스캔", False, True),
-        (2, "product_2", "제품2", "3/5 제품 2 스캔", True, False),
-        (3, "product_3", "제품3", "4/5 제품 3 스캔", True, False),
-        (4, "final_label", "최종 라벨", "5/5 최종 라벨 스캔", True, False),
+        (2, "product_2", "제품2", "3/5 제품 2 스캔", False, True),
+        (3, "product_3", "제품3", "4/5 제품 3 스캔", False, True),
+        (4, "final_label", "최종 라벨", "5/5 최종 라벨 스캔", False, True),
         (5, "complete", "통과 완료", "다음 현품표를 스캔하세요.", False, False),
     ],
 )
@@ -60,7 +60,7 @@ def test_f3_partial_requires_a_clean_product_scan_and_stops_at_five():
 
     assert one_scan.f3_enabled is False
     assert one_scan.f3_hint == "제품 1개 이상 스캔 후 가능"
-    assert partial.f3_enabled is True
+    assert partial.f3_enabled is False
     assert partial.f3_hint == "F3 소량 완료 가능"
     assert errored.f3_enabled is False
     assert errored.f3_hint == "오류 세트는 불가"
@@ -157,7 +157,7 @@ def test_recovered_state_keeps_stage_and_actions_with_recovery_badge():
     assert view.current_stage == "product_2"
     assert view.next_action == "3/5 제품 2 스캔"
     assert view.last_successful_scan == "PRODUCT-1"
-    assert view.f3_enabled is True
+    assert view.f3_enabled is False  # DESIGN §1.3/§2: shortage uses the label/card.
     assert "복구됨" in view.badges
 
 
@@ -591,13 +591,13 @@ def test_central_inherit_all_presents_one_phs2_stage_with_explicit_actions():
         )
     )
 
-    assert view.qa_total == 1
-    assert view.qa_progress_text == "1/1"
-    assert [slot.label for slot in view.slots] == ["PHS2 현품표"]
-    assert view.next_action == "랩핑 후 F3 포장 완료"
-    assert view.current_stage == "package_ready"
-    assert view.scan_input_enabled is False
-    assert view.f3_enabled is True
+    assert view.qa_total == 5
+    assert view.qa_progress_text == "1/5"
+    assert [slot.label for slot in view.slots] == ["PHS2 현품표", "제품1", "제품2", "제품3", "제품4"]
+    assert view.next_action == "2/5 제품 1 스캔"
+    assert view.current_stage == "product_1"
+    assert view.scan_input_enabled is True
+    assert view.f3_enabled is False
     assert view.f4_enabled is True
 
 

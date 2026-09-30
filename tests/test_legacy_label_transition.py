@@ -2583,7 +2583,8 @@ def test_product_position_never_reads_the_start_label_shape(tmp_path, monkeypatc
         assert app.errors == [] and app.current_set_info["raw"] == [master, value]
     else:
         # DESIGN P2: ignore only this scan; no error-acknowledgment gate.
-        assert app.errors == [] and "fail" in app.sounds
+        assert app.errors == []
+        assert "scan_master" in app.sounds if value == master else "fail" in app.sounds
         assert app.current_set_info["raw"] == [master]
     assert app.current_set_info.get("transition_class") == ("LEGACY" if transition else None)
 
@@ -2622,6 +2623,7 @@ def test_new_label_cannot_become_a_local_product_or_final_label(
         _scan(module, app, scanned_label)
         # DESIGN P2: preserve the set and allow the very next product.
         assert app.errors == [] and "fail" in app.sounds
+        app.data_manager.flush(timeout=5)  # log_event queues the audit row; observe its durable write.
         rejection = _events(tmp_path, "ERROR_INPUT")[-1][1]
         assert "현품표입니다." in rejection["reason"]
         assert "F1" not in rejection["reason"]

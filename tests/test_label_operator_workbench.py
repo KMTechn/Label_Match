@@ -1104,9 +1104,9 @@ def test_exchange_guidance_clears_when_existing_attempt_no_longer_blocks(operato
     app._package_review_snapshot = app._package_review_snapshot._replace(exchange=None)
     view = app._render_operator_workbench()
 
-    assert view.current_stage == "package_ready"
+    assert view.current_stage == "product_1"
     assert view.notice is None
-    assert view.next_action == "랩핑 후 F3 포장 완료"
+    assert view.next_action == "2/5 제품 1 스캔"
     assert app.manual_complete_button.cget("state") == "normal"
     app._current_sealed_transfer_exchange_attempt.assert_not_called()
     assert app.current_set_info == original
@@ -2667,7 +2667,7 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     original = copy.deepcopy(app.current_set_info)
     view = app._render_operator_workbench()
     assert app.operator_membership_label.cget("text") == "제품 48개"
-    assert app.big_display_label.cget("text") == "랩핑 후 F3 포장 완료"
+    assert app.big_display_label.cget("text") == "2/5 제품 1 스캔"
     assert not app.workflow_notice_frame.winfo_ismapped()
     assert not app.live_scan_notebook.winfo_ismapped()
     assert not app.operator_task_detail_frame.winfo_ismapped()
@@ -2683,8 +2683,7 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     assert not app.live_scan_notebook.winfo_ismapped()
     assert app.current_set_info == original
     assert app._last_workflow_view == view
-    assert app.entry.cget("state") == "disabled"
-    assert not app.entry.focused
+    assert app.entry.cget("state") == "normal"  # DESIGN §2 LM keeps sample input open.
 
     app.current_set_info.update(raw=[], parsed=[], package_source_snapshot=None)
     app._render_operator_workbench()
@@ -2842,8 +2841,8 @@ def test_disabled_f5_caption_fits_without_shrinking_font_or_other_actions(
         app.default_font_name, {1.0: 12, 1.2: 14, 3.0: 15}[scale], "bold",
     )
     assert styles[button.cget("style")].get("font", styles["Operator.Action.TButton"]["font"]) == styles["Operator.Action.TButton"]["font"]
-    assert app.manual_complete_button.cget("text") == "포장 완료\n(F3)"
-    assert app.exact_rescan_button.cget("text") == "제품 교체\n(F4)"
+    assert app.manual_complete_button.cget("text") == "방금 스캔\n되돌리기"
+    assert app.exact_rescan_button.cget("text") == "교환\n(제품)"
     assert app.current_set_info == before
 
 

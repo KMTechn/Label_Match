@@ -195,23 +195,15 @@ def create_history_pane(
     self.bottom_frame = self.operator_action_frame
     self.manual_complete_button = ttk.Button(
         self.operator_action_frame,
-        text=(
-            "포장 완료 (F3)"
-            if self._standard_phs2_workflow_expected()
-            else self.MANUAL_COMPLETE_BUTTON_TEXT
-        ),
-        command=self._prompt_manual_complete,
+        text="취소 · 방금 스캔 되돌리기",
+        command=lambda: self._handle_workflow_shortcut("undo"),
         style=self.MANUAL_COMPLETE_BUTTON_STYLE,
         state="disabled",
     )
     self.manual_complete_button.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
     self.exact_rescan_button = ttk.Button(
         self.operator_action_frame,
-        text=(
-            "제품 교체 (F4)"
-            if self._standard_phs2_workflow_expected()
-            else self.EXACT_RESCAN_BUTTON_TEXT
-        ),
+        text="교환",
         command=self._handle_f4_action,
         style=self.MANUAL_COMPLETE_BUTTON_STYLE,
         state="disabled",
@@ -256,7 +248,6 @@ def create_history_pane(
 
     self.bind("<F1>", lambda event: self._handle_workflow_shortcut("f1", event))
     self.bind("<F2>", lambda event: self._handle_workflow_shortcut("f2", event))
-    self.bind("<F3>", lambda event: self._handle_workflow_shortcut("f3", event))
     self.bind("<F4>", lambda event: self._handle_workflow_shortcut("f4", event))
     self.bind(
         "<F5>",

@@ -3,6 +3,8 @@ import sys
 import json
 import base64
 import traceback
+import unicodedata
+
 
 import carrier_identity_port as carrier_identity
 import label_history
@@ -2346,6 +2348,8 @@ def _label_match_package_draft(
     current_set_info, *, item_code, require_source_snapshot=False
 ):
     current = current_set_info or {}
+    if current.get("completion_identity"):
+        current = {**current, "id": current["completion_identity"]}
     raw = list(current.get("raw") or [])
     central_inherit_all = bool(current.get("central_inherit_all"))
     required_scan_count = (
@@ -2353,6 +2357,8 @@ def _label_match_package_draft(
         if central_inherit_all
         else LABEL_MATCH_TOTAL_SCAN_COUNT
     )
+    if current.get("scanner_only"):
+        required_scan_count = len(raw) if current.get("shortage_confirmed") else LABEL_MATCH_TOTAL_SCAN_COUNT
     if len(raw) != required_scan_count:
         if central_inherit_all:
             raise PackageLogisticsError(
@@ -2584,10 +2590,16 @@ def _label_match_package_draft(
         ),
         membership_mode=configured_mode,
         sample_barcodes=(
-            ()
-            if central_inherit_all
+            raw[1:]
+            if current.get("scanner_only")
+            else () if central_inherit_all
             else raw[1:1 + LABEL_MATCH_PRODUCT_SAMPLE_COUNT]
         ),
+        scanner_only=bool(current.get("scanner_only")),
+        scan_payload=str(current.get("physical_scanned_qr_payload") or raw[0]),
+        local_completed_at=str(current.get("local_completed_at") or ""),
+        short_confirmed=bool(current.get("shortage_confirmed")),
+        scanner_exchanges=current.get("scanner_exchanges", ()),
         exact_rescan_barcodes=exact_rescan,
         expected_seal_id=expected_seal_id,
         expected_seal_revision=expected_seal_revision,
@@ -4902,23 +4914,14 @@ class Label_Match(tk.Tk):
         )
 
     def _operator_workflow_hint_text(self, source=None):
-        if self._standard_phs2_workflow_expected(source):
-            return "현품표 1회 스캔 → 필요 시 제품 교체 (F4) → 랩핑 후 포장 완료 (F3). 교체 후 새 전자 QR을 확인하며 원본 현품표는 유지합니다."
-        return "레거시 전용: QA 5단계와 F4 전체 재스캔 절차를 사용합니다."
+        return "현품표 1 + 상단 제품 4 · 다섯 번째 스캔에서 자동 완료 · 교환/취소 카드 또는 단추"
+
 
     def _workflow_total_scan_count(self):
-        return (
-            LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
-            if self._central_inherit_all_active()
-            else self.TOTAL_SCAN_COUNT
-        )
+        return self.TOTAL_SCAN_COUNT
 
     def _workflow_final_label_position(self):
-        return (
-            LABEL_MATCH_CENTRAL_INHERIT_ALL_FINAL_LABEL_POSITION
-            if self._central_inherit_all_active()
-            else self.FINAL_LABEL_SCAN_POSITION
-        )
+        return self.FINAL_LABEL_SCAN_POSITION
 
     def __init__(self, run_tests=False):
         _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
@@ -5111,6 +5114,7 @@ class Label_Match(tk.Tk):
             PackageOutboxProcessor(
                 self.package_outbox,
                 self.package_logistics_client,
+                prepare_scanner_delivery=self._prepare_scanner_package_delivery,
             )
             if self.package_logistics_client is not None
             else None
@@ -5606,6 +5610,12 @@ class Label_Match(tk.Tk):
         # This start has no scan of its own: locking the entry mid-scan kept
         # the typed part and the next scan joined it. Wait for an empty entry
         # and a pause after the last Enter; the work is only delayed.
+        current = self.__dict__.get("current_set_info") or {}
+        if ((current.get("scanner_only") and current.get("raw"))
+                or current.get("shortage_undo_snapshot")
+                or self.__dict__.get("_scanner_shortage_undo")):
+            self._schedule_deferred_validation_worker(1000)
+            return Admission(False, reason="scan_in_progress")
         entry = self.__dict__.get("entry")
         last_enter = self.__dict__.get("_last_scan_enter_at")
         if not self.__dict__.get("_app_close_in_progress", False) and (
@@ -7711,6 +7721,8 @@ class Label_Match(tk.Tk):
             do_close = True
 
         if do_close:
+            if not self._release_shortage_confirmation():
+                return
             ui_lane = self.__dict__.get("ui_lane")
             entry = self.__dict__.get("entry")
             if not self.__dict__.get("_app_close_in_progress", False):
@@ -7962,6 +7974,8 @@ class Label_Match(tk.Tk):
 
     def _migrate_restored_central_package_state(self, saved_set_info):
         saved = copy.deepcopy(dict(saved_set_info or {}))
+        if saved.get("scanner_only"):
+            return saved
         raw = list(saved.get("raw") or [])
         parsed = list(saved.get("parsed") or [])
         if not raw or saved.get("transition_class") in label_transition.LOCAL_CLASSES:
@@ -10620,6 +10634,16 @@ class Label_Match(tk.Tk):
         state_data = self._load_verified_package_current_state(
             evidence if current_path and os.path.lexists(current_path) else None
         )
+        if state_data and (state_data.get("current_set_info") or {}).get("shortage_undo_snapshot"):
+            self.current_set_info = state_data["current_set_info"]
+            self._scanner_shortage_undo = self.current_set_info["shortage_undo_snapshot"]
+            if self.current_set_info.get("shortage_confirmation_pending"):
+                if isinstance(self.current_set_info.get("start_time"), str):
+                    self.current_set_info["start_time"] = datetime.fromisoformat(self.current_set_info["start_time"])
+                self._finalize_set(self.Results.PASS)
+                return
+            self.update_big_display("부족 확정 · 취소 카드로 되돌리거나 다음 현품표를 스캔하세요.", "primary")
+            return
         if state_data:
             held_set_id = str((state_data.get("current_set_info") or {}).get("id") or "")
             get_hold = getattr(package_outbox, "get_workbench_hold", None)
@@ -10795,7 +10819,7 @@ class Label_Match(tk.Tk):
                     )
                 return
         saved_set_info = dict(state_data.get("current_set_info") or {})
-        saved_set_id = str(saved_set_info.get("id") or "").strip()
+        saved_set_id = str(saved_set_info.get("completion_identity") or saved_set_info.get("id") or "").strip()
         detached_capture = False
         try:
             capture = self._owned_deferred_capture_for_set(saved_set_info)
@@ -10910,7 +10934,9 @@ class Label_Match(tk.Tk):
             if saved_set_id
             else []
         )
-        if exchange_rows or package_row is not None:
+        if saved_set_info.get("scanner_only"):
+            should_restore = True
+        elif exchange_rows or package_row is not None:
             should_restore = True
             if not self.run_tests:
                 messagebox.showwarning(
@@ -10935,6 +10961,7 @@ class Label_Match(tk.Tk):
                 saved_worker_name
                 and saved_worker_name != persistent_operator_name(self.worker_name)
                 and package_row is None
+                and not saved_set_info.get("scanner_only")
             ):
                 response = True
                 if not self.run_tests:
@@ -11774,6 +11801,9 @@ class Label_Match(tk.Tk):
         expected_issue_request_hash="",
         reuse_allowed=True,
         persist_artifact=True,
+        deferred_reflection=False,
+        local_completion_id="",
+        local_completed_at="",
     ):
         if reuse_allowed:
             reusable = self._load_reusable_operation_lease(
@@ -11821,8 +11851,12 @@ class Label_Match(tk.Tk):
                 operation=PACKAGE_OPERATION_LEASE_OPERATION,
                 scan_payload=str(physical_qr or "").strip(),
                 idempotency_key=issue_key,
+                **({"deferred_reflection": True, "local_completion_id": local_completion_id,
+                    "local_completed_at": local_completed_at} if deferred_reflection else {}),
             )
         except PackageLogisticsError as exc:
+            if deferred_reflection:
+                raise
             raise OperationLeaseError(
                 "OPERATION_LEASE_ISSUE_FAILED",
                 str(exc),
@@ -12716,6 +12750,12 @@ class Label_Match(tk.Tk):
 
         if self.__dict__.get("_app_close_in_progress", False):
             return
+        current = self.__dict__.get("current_set_info") or {}
+        if ((current.get("scanner_only") and current.get("raw"))
+                or current.get("shortage_undo_snapshot")
+                or self.__dict__.get("_scanner_shortage_undo")):
+            self._schedule_deferred_validation_worker(1000)
+            return
         if (
             self.__dict__.get("ui_lane") is not None
             and not self.__dict__.get("run_tests", False)
@@ -13423,125 +13463,146 @@ class Label_Match(tk.Tk):
         on_capture_committed=None,
         on_capture_failed=None,
     ):
-        if self.__dict__.get(
-            "_phs_label_scan_lookup_in_progress", False
-        ):
-            self._show_ui_lane_rejection("busy")
+        return self._begin_scanner_phs2(physical_qr_payload, item_code,
+            on_capture_committed=on_capture_committed,
+            on_capture_failed=on_capture_failed)
+
+    def _begin_scanner_phs2(self, physical_qr_payload, item_code, *,
+                             on_capture_committed=None, on_capture_failed=None):
+        """Persist the label locally, then read source membership off the scan lane."""
+        lane = self.__dict__.get("ui_lane")
+        if lane is not None and lane.state in {LaneState.BROKEN, LaneState.CLOSED}:
+            self._show_ui_lane_rejection("broken" if lane.state is LaneState.BROKEN else "closing")
             return False
         self._detach_deferred_capture_shell(physical_qr_payload)
-        captured_raw = tuple(self.current_set_info.get("raw") or ())
-        resumed = self._resumable_label_capture(physical_qr_payload)
-        captured_set_id = str(
-            self.current_set_info.get("id")
-            or (resumed or {}).get("local_work_identity")
-            or time.time_ns()
-        ).strip()
-        work_state = {}
+        set_id = str(self.current_set_info.get("id") or time.time_ns())
+        try:
+            resumed = self._resumable_label_capture(physical_qr_payload)
+            if resumed:
+                set_id = resumed["local_work_identity"]
+            captured = self._capture_or_resume_central_phs2_scan(
+                physical_qr_payload, item_code, set_id, resumed)
 
-        def work():
-            capture_result = self._capture_or_resume_central_phs2_scan(
-                physical_qr_payload,
-                item_code,
-                captured_set_id,
-                resumed,
-            )
-            work_state["capture_result"] = capture_result
-            self.ui_lane.call_ui_sync(
-                self._apply_captured_central_phs2_scan,
-                capture_result,
-                central_check_pending=True,
-                local_work_identity=captured_set_id,
-                on_capture_committed=on_capture_committed,
-                physical_qr_payload=(resumed or {}).get("physical_qr_payload") or physical_qr_payload,
-            )
-            validation_work = self._prepare_deferred_label_validation(
-                capture_result
-            )
-            work_state["validation_work"] = validation_work
-            if isinstance(validation_work, DeferredValidationClaim):
-                result, materialization = (
-                    self._execute_deferred_label_validation(
-                        validation_work,
-                        return_materialization=True,
-                    )
-                )
-                return result, materialization
-            return validation_work, None
+            def prepare(current):
+                current.update(id=set_id, scanner_only=True, central_inherit_all=True,
+                    deferred_intent_id=captured.intent_id,
+                    physical_scanned_qr_payload=physical_qr_payload)
 
-        def finish(value):
-            self._phs_label_scan_lookup_in_progress = False
-            if tuple(self.current_set_info.get("raw") or ()) != captured_raw:
-                self._render_operator_workbench()
+            self._update_on_success_scan(physical_qr_payload, item_code,
+                                        prepare_durable_state=prepare)
+            if callable(on_capture_committed):
+                on_capture_committed()
+        except Exception as error:
+            if callable(on_capture_failed):
+                on_capture_failed()
+            if isinstance(error, DeferredIntentCaptureError):
+                if self._transition_mode_active():
+                    return self._transition_start_local(physical_qr_payload, item_code,
+                        label_transition.PHS2_LOCAL, ["PHS2_CAPTURE_FAILED"])
+                self._show_deferred_capture_failure(error)
+                self._play_sound("fail")
+                return False
+            failure = Failure.from_exception(error, category="transient", commit_state="unknown",
+                retryable=True, safe_operator_code="PHS2_CAPTURE_FAILED")
+            self._show_deferred_capture_failure(failure)
+            self._play_sound("fail")
+            return False
+        result_queue = queue.Queue(maxsize=1)
+        pending = self.__dict__.setdefault("_phs2_background_pending", {})
+        pending[set_id] = result_queue
+
+        def lookup():
+            try:
+                result_queue.put((True, self._resolve_central_phs2_scan_overlay(
+                    physical_qr_payload, item_code, force_central_read=True)))
+            except Exception as error:
+                result_queue.put((False, error))
+
+        def poll():
+            if self.__dict__.get("_tk_shutdown_requested", False):
                 return
-            result, materialization = value
-            if isinstance(materialization, dict):
-                self._deferred_label_materialization = materialization
-            if not self._materialize_validated_deferred_label(result):
-                self._show_phs2_lookup_outcome(
-                    result, physical_qr_payload, item_code,
-                    self._show_deferred_validation_result,
-                )
-            self._render_operator_workbench()
-
-        def fail(error):
-            self._phs_label_scan_lookup_in_progress = False
-            print(
-                "PHS2 deferred validation technical diagnostic: "
-                f"{self._ui_lane_diagnostic_text(error)}"
-            )
-            capture_result = work_state.get("capture_result")
-            if capture_result is None:
-                # Nothing was stored: the rescan the failure asks for (or,
-                # in transition mode, the first product) must stand alone.
-                if on_capture_failed is not None:
-                    on_capture_failed()
-                self._show_phs2_lookup_outcome(
-                    error, physical_qr_payload, item_code,
-                    self._show_deferred_capture_failure,
-                )
+            try:
+                valid, value = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(25, poll)
+                return
+            pending.pop(set_id, None)
+            if not valid:
+                # The package outbox owns retries, even after local completion.
+                return
+            evidence, snapshot, sealed, _lease = value
+            current = self.current_set_info
+            if str(current.get("id") or "") == set_id:
+                previous = copy.deepcopy(current)
+                current.update(evidence.state_fields())
+                current["package_source_snapshot"] = dict(snapshot or {})
+                current["sealed_transfer"] = sealed
+                if not self._save_current_set_state():
+                    current.clear()
+                    current.update(previous)
+                    self._publish_durable_commit_block(PackageLogisticsError("source snapshot save failed"))
+                    return
+                samples = current.get("raw", [])[1:]
             else:
-                durable = self.deferred_intent_capture.validation_status(
-                    capture_result.intent_id
-                )
-                if durable is not None:
-                    self._show_phs2_lookup_outcome(
-                        durable, physical_qr_payload, item_code,
-                        self._show_deferred_validation_result,
-                    )
-                else:
-                    self._show_deferred_capture_pending(capture_result)
-            self._render_operator_workbench()
+                completed = self.__dict__.get("set_details_map", {}).get(set_id)
+                if not completed:
+                    return
+                samples = completed.get("scanned_product_barcodes", [])[1:]
+                current = completed
+            members = self._known_sample_members(snapshot)
+            replacements = {row["replacement_barcode"] for row in current.get("scanner_exchanges", [])}
+            if members is not None and any(self._sample_barcode(value) not in members | replacements for value in samples):
+                outbox = self.__dict__.get("package_outbox")
+                row = outbox.get_by_set_id(set_id) if outbox is not None else None
+                if row:
+                    outbox.mark_conflict(row["idempotency_key"], PackageLogisticsError("PACKAGE_SAMPLE_NOT_MEMBER"))
+                self.data_manager.log_event(self.Events.POST_REVIEW_REQUIRED, {
+                    "set_id": set_id, "reason_code": "PACKAGE_SAMPLE_NOT_MEMBER"})
+                self._flush_data_manager_if_supported()
 
-        def adapt_failure(error):
-            capture_committed = work_state.get("capture_result") is not None
-            return Failure.from_exception(
-                error,
-                category=(
-                    "transient" if capture_committed else "local_durability"
-                ),
-                commit_state=(
-                    "unknown" if capture_committed else "not_committed"
-                ),
-                retryable=True,
-                safe_operator_code=(
-                    "PHS2_VALIDATION_FAILED"
-                    if capture_committed
-                    else "PHS2_CAPTURE_FAILED"
-                ),
-            )
+        threading.Thread(target=lookup, name="label-match-source-read", daemon=True).start()
+        self.after(25, poll)
+        return True
 
-        admission = self._submit_ui_lane_task(
-            name="phs2-capture-validation",
-            busy_text="현품표 저장 · 중앙 확인 중",
-            work=work,
-            finish=finish,
-            fail=fail,
-            failure_adapter=adapt_failure,
-        )
-        if admission is not None and admission.accepted:
-            self._phs_label_scan_lookup_in_progress = True
-            return True
-        return False
+    def _prepare_scanner_package_delivery(self, draft):
+        """The outbox worker owns exchange, source resolution and the signed lease."""
+        physical = draft.scan_payload
+        for pair in draft.scanner_exchanges:
+            delivery = getattr(self.sealed_transfer_exchange_coordinator, "deliver_scanner_exchange", None)
+            if not callable(delivery):
+                raise PackageTransportError("scanner exchange delivery is not ready")
+            delivery(
+                pair, physical_qr=physical, item_code=draft.item_code,
+                local_completion_id=draft.set_id, local_completed_at=draft.local_completed_at)
+        evidence, snapshot, sealed, _unused = self._resolve_central_phs2_scan_overlay(
+            physical, draft.item_code, force_central_read=True)
+        current = {"id": draft.set_id, "raw": [physical, *draft.sample_barcodes],
+            "parsed": [draft.item_code] * (len(draft.sample_barcodes) + 1),
+            "scanner_only": True, "central_inherit_all": True,
+            "physical_scanned_qr_payload": physical,
+            "shortage_confirmed": draft.short_confirmed,
+            "local_completed_at": draft.local_completed_at,
+            "scanner_exchanges": list(draft.scanner_exchanges),
+            "package_source_snapshot": snapshot, "sealed_transfer": sealed,
+            **evidence.state_fields()}
+        hydrated = _label_match_package_draft(current, item_code=draft.item_code,
+                                              require_source_snapshot=True)
+        _evidence, _snapshot, _sealed, lease = self._acquire_operation_lease(
+            physical, expected_snapshot=snapshot, deferred_reflection=True,
+            local_completion_id=draft.set_id, local_completed_at=draft.local_completed_at)
+        lease_id = lease["lease_id"]
+        completed_at = datetime.fromisoformat(draft.local_completed_at.replace("Z", "+00:00")).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.package_operation_lease_store.attach_set(lease_id, draft.set_id)
+        row = self.package_operation_lease_store.get(lease_id=lease_id)
+        values = hydrated.to_dict()
+        values.update(operation_lease_id=lease_id, operation_lease_token=row["token"],
+            operation_lease_fence=lease["fence"], operation_lease_snapshot_hash=lease["snapshot_hash"],
+            operation_lease_completed_at=completed_at)
+        self.package_outbox.mark_local_completion_committed(
+            self.package_outbox.get_by_set_id(draft.set_id)["idempotency_key"],
+            operation_lease_id=lease_id, operation_completed_at=completed_at)
+        return PackageCommandDraft.from_dict(values)
+
 
     def _begin_central_phs2_scan_overlay(
         self,
@@ -13802,22 +13863,54 @@ class Label_Match(tk.Tk):
         if self._block_active_history_load_action("스캔"):
             return
 
+        previous_scan = self.__dict__.get("_scanner_previous_scan") or ("", 0.0)
+        self._scanner_previous_scan = (raw_input, time.monotonic())
+        if raw_input.startswith("KMCMD:"):
+            consume_input()
+            if self.current_set_info.get("scanner_exchange_phase"):
+                previous = copy.deepcopy(self.current_set_info)
+                self.current_set_info.pop("scanner_exchange_phase", None)
+                self.current_set_info.pop("scanner_exchange_target", None)
+                if not self._save_current_set_state():
+                    self.current_set_info = previous
+                    return self._publish_durable_commit_block(PackageLogisticsError("exchange cancellation save failed"))
+            if raw_input in {"KMCMD:EXCHANGE", "KMCMD:UNDO"}:
+                return self._scanner_command(raw_input)
+            return self._ignore_product_scan(raw_input, "SCAN_COMMAND_UNKNOWN · 사용할 수 없는 명령입니다.")
+        if self.current_set_info.get("scanner_exchange_phase"):
+            decoded = carrier_identity.decode_carrier_scan(raw_input)
+            pairs, _ = label_transition.transition_label_pairs(decoded)
+            if len(decoded) == 13 or carrier_identity.parse_legacy_fields(decoded) or any(key in {"ITG", "TRF", "BND"} for key, _value in pairs):
+                self.current_set_info.pop("scanner_exchange_phase", None)
+                self.current_set_info.pop("scanner_exchange_target", None)
+                if not self._save_current_set_state():
+                    consume_input()
+                    return self._publish_durable_commit_block(PackageLogisticsError("exchange cancellation save failed"))
+            else:
+                consume_input()
+                return self._scanner_exchange_input(raw_input)
+        if self.current_set_info.get("shortage_confirmation_pending"):
+            consume_input()
+            if raw_input == self.current_set_info["raw"][0]:
+                return self._finalize_set(self.Results.PASS)
+            return self._ignore_product_scan(raw_input, "미달 확정 저장을 재시도하려면 같은 현품표를 스캔하세요.")
+        if raw_input == previous_scan[0] and time.monotonic() - previous_scan[1] < 3:
+            # Only label repeats are debounce reads; duplicate products still fail validation.
+            current_label = (self.current_set_info.get("raw") or [""])[0]
+            undo_label = (self.__dict__.get("_scanner_shortage_undo", {}).get("raw") or [""])[0]
+            if raw_input in {current_label, undo_label}:
+                consume_input()
+                self._play_sound("scan_master")
+                return
+        if self.current_set_info.get("raw") and raw_input == self.current_set_info["raw"][0]:
+            consume_input()
+            if len(self.current_set_info["raw"]) == 1:
+                self._play_sound("scan_master")
+                return
+            return self._confirm_scanner_shortage()
         if self.current_set_info.get("exact_rescan_active"):
             consume_input()
             self._process_exact_rescan_product(raw_input)
-            return
-
-        if (
-            self._central_inherit_all_active()
-            and len(self.current_set_info.get("raw") or [])
-            >= LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
-        ):
-            if not self.run_tests:
-                messagebox.showwarning(
-                    "포장 완료 대기",
-                    "PHS2가 확인되었습니다. 제품 교체는 F4, 랩핑 완료는 F3을 누르세요.",
-                    parent=self,
-                )
             return
 
         self.data_manager.log_event(self.Events.SCAN_ATTEMPT, {"raw_input": raw_input, "scan_pos": len(self.current_set_info['raw']) + 1})
@@ -14098,6 +14191,7 @@ class Label_Match(tk.Tk):
 
             master_code = self.current_set_info['parsed'][0]
             final_label_position = self._workflow_final_label_position()
+            new_label = _label_match_has_central_source_identity(self.current_set_info['raw'][0])
             decoded_label = carrier_identity.decode_carrier_scan(raw_input)
             label_pairs, _ = label_transition.transition_label_pairs(decoded_label)
             if len(decoded_label) == 13 or carrier_identity.parse_legacy_fields(decoded_label) or any(
@@ -14114,7 +14208,7 @@ class Label_Match(tk.Tk):
                     reason=f"잘못된 바코드 종류입니다.\n\n- 스캔 값: {self._truncate_string(raw_input)}\n\n→ 제품 바코드를 스캔하세요."
                 )
                 return
-            if scan_pos == final_label_position and len(raw_input) < 31:
+            if not new_label and scan_pos == final_label_position and len(raw_input) < 31:
                 self._handle_input_error(
                     raw_input,
                     title="[라벨 형식 오류]",
@@ -14138,8 +14232,16 @@ class Label_Match(tk.Tk):
                     reason=f"이미 다른 세트에서 처리된 제품입니다.\n\n- 중복 제품: {self._truncate_string(raw_input)}\n\n→ 새 제품으로 교체하세요."
                 )
                 return
+            known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"))
+            if known is not None:
+                for pair in self.current_set_info.get("scanner_exchanges", []):
+                    known.discard(pair["target_barcode"])
+                    known.add(pair["replacement_barcode"])
+            if known is not None and self._sample_barcode(raw_input) not in known:
+                self._ignore_product_scan(raw_input, "이 현품표의 구성원이 아닙니다. 현재 트레이의 제품을 스캔하세요.")
+                return
             production_date = None
-            if scan_pos == final_label_position:
+            if not new_label and scan_pos == final_label_position:
                 production_date = self._extract_production_date(raw_input)
                 if not production_date:
                     self._handle_input_error(
@@ -14157,11 +14259,250 @@ class Label_Match(tk.Tk):
         """Reject this input without consuming the next scan as an acknowledgment."""
         self.data_manager.log_event(self.Events.ERROR_INPUT, {
             "set_id": self.current_set_info.get("id"),
-            "raw_input": raw_input,
+            **({"raw_input": raw_input} if not raw_input.startswith("KMCMD:") else {}),
             "reason": message,
         })
         self._play_sound("fail")
         self.update_big_display(message, "red")
+
+    @staticmethod
+    def _sample_barcode(value):
+        return unicodedata.normalize("NFKC", str(value or "")).strip().upper()
+
+    @classmethod
+    def _known_sample_members(cls, snapshot):
+        snapshot = snapshot or {}
+        source = snapshot.get("work_group_source") or snapshot
+        members = source.get("members")
+        if not isinstance(members, list):
+            return None
+        return {cls._sample_barcode(row.get("normalized_barcode"))
+                for row in members if isinstance(row, dict) and row.get("normalized_barcode")}
+
+    def _scanner_command(self, command):
+        if self._app_close_blocks_local_action() or self._block_view_only_action("스캐너 명령") or self._block_active_history_load_action("스캐너 명령"):
+            return
+        if command == "KMCMD:UNDO":
+            return self._undo_scanner_input()
+        if not self.current_set_info.get("raw"):
+            return self._ignore_product_scan(command, "현품표를 먼저 스캔하세요.")
+        previous = copy.deepcopy(self.current_set_info)
+        self.current_set_info["scanner_exchange_phase"] = "target"
+        self.current_set_info.pop("scanner_exchange_target", None)
+        if not self._save_current_set_state():
+            self.current_set_info = previous
+            return self._publish_durable_commit_block(PackageLogisticsError("exchange phase save failed"))
+        self.update_big_display("교환할 불량 제품을 스캔하세요.", "primary")
+
+    def _scanner_exchange_input(self, value):
+        current = self.current_set_info
+        normalized = self._sample_barcode(value)
+        samples = {self._sample_barcode(barcode) for barcode in current["raw"][1:]}
+        known = self._known_sample_members(current.get("package_source_snapshot"))
+        if current["scanner_exchange_phase"] == "target":
+            if normalized not in samples and (known is None or normalized not in known):
+                return self._ignore_product_scan(value, "이 세트의 표본 또는 현품표 구성원을 스캔하세요.")
+            previous = copy.deepcopy(current)
+            current.update(scanner_exchange_phase="replacement", scanner_exchange_target=value)
+            if not self._save_current_set_state():
+                self.current_set_info = previous
+                return self._publish_durable_commit_block(PackageLogisticsError("exchange target save failed"))
+            self.update_big_display("검사실의 대체 제품을 스캔하세요.", "primary")
+            return
+        master = current["parsed"][0]
+        decoded = carrier_identity.decode_carrier_scan(value)
+        pairs, _ = label_transition.transition_label_pairs(decoded)
+        if (len(decoded) == 13 or carrier_identity.parse_legacy_fields(decoded)
+            or any(key in {"ITG", "TRF", "BND"} for key, _value in pairs)
+            or master not in value or normalized in samples
+            or value in self.global_scanned_set):
+            return self._ignore_product_scan(value, "다른 품목·중복·이미 포장된 제품은 교환할 수 없습니다.")
+        # Refuse a known bad or downstream product; unavailable knowledge is checked by delivery.
+        product_state = self.__dict__.get("known_product_states", {}).get(normalized, {})
+        if product_state.get("quality") in {"NG", "DEFECTIVE"} or product_state.get("stage") in {"TRANSFER", "PACKAGING", "SHIPPING"}:
+            return self._ignore_product_scan(value, "불량 기록 또는 이미 이적·포장·출고된 제품입니다.")
+        previous = copy.deepcopy(current)
+        target = current["scanner_exchange_target"]
+        pair = {"target_barcode": self._sample_barcode(target), "replacement_barcode": normalized,
+                "set_id": str(current["id"]), "pc_id": self.data_manager.unique_id,
+                "operator": self.worker_name, "occurred_at": datetime.now().isoformat()}
+        sequence = int(current.get("scanner_exchange_sequence", 0)) + 1
+        current["scanner_exchange_sequence"] = sequence
+        pair["idempotency_key"] = label_transition.event_key(self.data_manager.unique_id,
+            f"{current['id']}:{sequence}", "EXCHANGE")
+        current.setdefault("scanner_exchanges", []).append(pair)
+        current.pop("scanner_exchange_phase", None)
+        current.pop("scanner_exchange_target", None)
+        index = next((i for i, raw in enumerate(current["raw"][1:], 1)
+                      if self._sample_barcode(raw) == self._sample_barcode(target)), None)
+        if index is not None:
+            current["raw"][index] = value
+        pair["sample_index"] = index if index is not None else len(current["raw"])
+        pair["replaced_sample"] = index is not None
+        current["scanner_undo_exchange"] = pair["idempotency_key"]
+        pair_saved = False
+        try:
+            if not self._save_current_set_state():
+                raise PackageLogisticsError("exchange record save failed")
+            pair_saved = True
+            self.data_manager.log_event(self.Events.SCAN_OK, {
+                "set_id": current["id"], "raw": value, "parsed": master,
+                "barcode_role": "product", "scanner_exchange": pair,
+                "product_barcode": value, "barcode_projection_status": "INCLUDED"})
+            self._flush_data_manager_if_supported()
+        except Exception as error:
+            if not pair_saved:
+                self.current_set_info = previous
+            return self._publish_durable_commit_block(error)
+        if index is None:
+            self._update_on_success_scan(value, master,
+                prepare_durable_state=lambda state: state.update(scanner_undo_exchange=pair["idempotency_key"]))
+        else:
+            self._play_sound("scan_1")
+            self._update_history_tree_in_progress()
+            self._render_operator_workbench()
+            self.update_big_display("교환 기록됨 · 다음 제품을 스캔하세요.", "green")
+
+    def _confirm_scanner_shortage(self):
+        previous = copy.deepcopy(self.current_set_info)
+        self.current_set_info.setdefault("local_completed_at", datetime.now(timezone.utc).isoformat())
+        snapshot = copy.deepcopy(self.current_set_info)
+        missing = self.TOTAL_SCAN_COUNT - len(snapshot["raw"])
+        self.current_set_info.update(shortage_confirmed=True,
+            shortage_confirmation_pending=True, shortage_undo_snapshot=snapshot)
+        if not self._save_current_set_state():
+            self.current_set_info.clear()
+            self.current_set_info.update(previous)
+            return self._publish_durable_commit_block(PackageLogisticsError("short confirmation decision save failed"))
+        self._scanner_shortage_undo = snapshot
+        if self._finalize_set(self.Results.PASS):
+            details = self.set_details_map[str(snapshot.get("completion_identity") or snapshot["id"])]
+            self.current_set_info["shortage_undo_snapshot"] = snapshot
+            self.current_set_info["shortage_completion_details"] = details
+            self._play_sound("scan_master")
+            self.update_big_display(f"부족 {missing}개로 확정", "primary")
+
+    def _release_shortage_confirmation(self):
+        current = self.__dict__.get("current_set_info") or {}
+        snapshot = self.__dict__.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
+        if not snapshot:
+            return True
+        try:
+            current["shortage_release_pending"] = True
+            if not self.data_manager.save_current_state({"current_set_info": current}):
+                current.pop("shortage_release_pending", None)
+                raise PackageLogisticsError("short confirmation release checkpoint failed")
+            released = copy.deepcopy(snapshot)
+            released.update(shortage_confirmed=True, shortage_released=True)
+            if released.get("scanner_only"):
+                metadata = self._queue_authoritative_package(item_code=released["parsed"][0],
+                    is_manual_complete=False, current_set_info=released)
+                self.package_outbox.mark_local_completion_committed(metadata["idempotency_key"])
+            self.data_manager.log_event(self.Events.SCAN_OK, {
+                "set_id": released["id"], "short_confirmation_released": True,
+                "barcode_role": "material_master_label"})
+            self._flush_data_manager_if_supported()
+            checkpoint = copy.deepcopy(self.current_set_info)
+            for name in ("shortage_undo_snapshot", "shortage_completion_details", "shortage_release_pending"):
+                checkpoint.pop(name, None)
+            if not self.data_manager.save_current_state({"current_set_info": checkpoint}):
+                raise PackageLogisticsError("short confirmation release state save failed")
+            self.current_set_info.clear()
+            self.current_set_info.update(checkpoint)
+            self.__dict__.pop("_scanner_shortage_undo", None)
+            if released.get("scanner_only"):
+                self._start_package_outbox_drain()
+            return True
+        except Exception as error:
+            self._publish_durable_commit_block(error)
+            return False
+
+    def _undo_scanner_input(self):
+        current = self.current_set_info
+        snapshot = self.__dict__.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
+        if current.get("shortage_release_pending"):
+            return self._ignore_product_scan("KMCMD:UNDO", "이미 다음 작업으로 넘긴 미달 확정입니다.")
+        if (not current.get("raw") or current.get("shortage_confirmed")) and snapshot:
+            set_id = str(snapshot.get("completion_identity") or snapshot["id"])
+            details = self.set_details_map.get(set_id) or current.get("shortage_completion_details")
+            if not details:
+                return self._ignore_product_scan("KMCMD:UNDO", "되돌릴 미달 확정이 없습니다.")
+            try:
+                log_details = {"cancelled_set_id": set_id, "details": details, "reason": "SHORTAGE_UNDO"}
+                self._commit_package_cancellation_local_event(
+                    event_type=self.Events.TRAY_COMPLETION_CANCELLED,
+                    local_event_details=log_details, cancellation=None)
+                restored = copy.deepcopy(snapshot)
+                restored["completion_identity"] = f"{set_id}-undo"
+                restored["transition_row_key"] = ""
+                restored.pop("local_completed_at", None)
+                self._cancel_deferred_capture_for_set(snapshot)
+                restored.pop("deferred_intent_id", None)
+                if restored.get("scanner_only"):
+                    captured = self._capture_or_resume_central_phs2_scan(
+                        restored["raw"][0], restored["parsed"][0], restored["completion_identity"], None)
+                    restored["deferred_intent_id"] = captured.intent_id
+                if not self.data_manager.save_current_state({"current_set_info": restored}):
+                    raise PackageLogisticsError("shortage undo state save failed")
+            except Exception as error:
+                return self._publish_durable_commit_block(error)
+            self.set_details_map.pop(set_id, None)
+            self.__dict__.get("history_row_details_map", {}).pop(set_id, None)
+            summary_date = _label_match_summary_date(details)
+            key = (details.get("item_code"), details.get("phase") or "-")
+            counts = self.scan_count.get(summary_date, {})
+            if counts.get(key, 0):
+                counts[key] -= 1
+                if not counts[key]:
+                    del counts[key]
+                if not counts:
+                    self.scan_count.pop(summary_date, None)
+            if self.history_tree.exists(set_id):
+                self.history_tree.delete(set_id)
+            self._rebuild_global_scanned_set_from_details()
+            self.current_set_info = restored
+            self.__dict__.pop("_scanner_shortage_undo", None)
+            self._update_summary_tree()
+        elif current.get("raw"):
+            restored = copy.deepcopy(current)
+            if restored.get("scanner_exchange_phase"):
+                restored.pop("scanner_exchange_phase", None)
+                restored.pop("scanner_exchange_target", None)
+            else:
+                exchanges = restored.get("scanner_exchanges", [])
+                exchange = next((pair for pair in reversed(exchanges)
+                    if pair["idempotency_key"] == restored.get("scanner_undo_exchange")), None)
+                if exchange is not None:
+                    index = exchange["sample_index"]
+                    if exchange["replaced_sample"]:
+                        restored["raw"][index] = exchange["target_barcode"]
+                    else:
+                        restored["raw"].pop(index)
+                        restored["parsed"].pop(index)
+                    exchanges.remove(exchange)
+                else:
+                    removed = self._sample_barcode(restored["raw"].pop())
+                    restored["parsed"].pop()
+                    restored["scanner_exchanges"] = [pair for pair in exchanges
+                        if pair["replacement_barcode"] != removed]
+                restored.pop("scanner_undo_exchange", None)
+                restored["production_date"] = None
+                if not restored["raw"]:
+                    self._cancel_deferred_capture_for_set(current)
+                    restored = {"id": None, "raw": [], "parsed": [], "start_time": None,
+                                "error_count": 0, "has_error_or_reset": False}
+            if not self.data_manager.save_current_state({"current_set_info": restored}):
+                return self._publish_durable_commit_block(PackageLogisticsError("undo state save failed"))
+            self.data_manager.log_event(self.Events.SET_RESTORED, {
+                "set_id": current["id"], "reason": "SCANNER_UNDO", "scanned_product_barcodes": restored["raw"]})
+            self._flush_data_manager_if_supported()
+            self.current_set_info = restored
+        else:
+            return self._ignore_product_scan("KMCMD:UNDO", "지금 세트에 되돌릴 스캔이 없습니다.")
+        self._clear_workflow_completion()
+        self._update_history_tree_in_progress()
+        self._render_operator_workbench()
+        self.update_big_display("마지막 입력을 되돌렸습니다. 계속 스캔하세요.", "primary")
 
     def _current_sealed_transfer_exchange_attempt(
         self,
@@ -14314,7 +14655,7 @@ class Label_Match(tk.Tk):
                 "중앙 제품 교체가 완료되어 새 봉인 QR 확인이 필요합니다.\n"
                 "새 QR을 확인·재스캔한 뒤 계속하세요."
             )
-            self._prompt_new_seal_verification(attempt)
+            self._accept_background_exchange_receipt(attempt)
         elif (
             attempt.status == "OPERATOR_REVIEW"
             or attempt.local_apply_status == "OPERATOR_REVIEW"
@@ -14418,116 +14759,12 @@ class Label_Match(tk.Tk):
         self.update_big_display("제품 교체 및 새 봉인 확인 완료", "green")
         return True
 
-    def _prompt_new_seal_verification(self, attempt):
-        if attempt is None or attempt.status != "ACKED":
+    def _accept_background_exchange_receipt(self, attempt):
+        if attempt.status != "ACKED":
             return False
-        existing = self.__dict__.get("_sealed_transfer_reseal_window")
-        if existing is not None:
-            try:
-                if existing.winfo_exists():
-                    existing.lift()
-                    return True
-            except TclError:
-                pass
-        if attempt.seal_verification_status == "VERIFIED":
-            return self._apply_acked_sealed_transfer_exchange(attempt.intent_id)
-        if self.run_tests:
-            return False
-        popup = tk.Toplevel(self)
-        self._sealed_transfer_reseal_window = popup
-        popup.title("새 이적 봉인 QR 확인")
-        popup.transient(self)
-        popup.grab_set()
-        popup.geometry("760x720")
-        popup.configure(bg=self.colors.get("background", "#ECEFF1"))
-        frame = ttk.Frame(popup, padding=18)
-        frame.pack(fill="both", expand=True)
-        master_fields = _label_match_parse_new_format_fields(
-            (self.current_set_info.get("raw") or [""])[0]
-        ) or {}
-        keeps_physical_phs2 = bool(
-            str(master_fields.get("PHS") or "").strip() == "2"
-            and str(master_fields.get("ITG") or "").strip()
-        )
-        ttk.Label(
-            frame,
-            text="중앙 교체 완료 · 기존 QR은 즉시 무효",
-            style="Title.TLabel",
-        ).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=(
-                (
-                    "기존 PHS2는 그대로 유지하며 별도 라벨을 만들지 않습니다.\n"
-                    "아래 새 전자 봉인 QR을 화면에서 스캐너로 다시 읽어 확인하세요."
-                )
-                if keeps_physical_phs2
-                else (
-                    "아래 새 전자 봉인 QR을 화면에서 스캐너로 다시 읽어야\n"
-                    "포장 작업을 계속할 수 있습니다."
-                )
-            ),
-            justify="left",
-        ).pack(anchor="w", pady=(8, 12))
-        qr_holder = ttk.Label(frame)
-        qr_holder.pack(pady=8)
-        try:
-            with RasterCanvas(256, 256, background=(255, 255, 255)) as canvas:
-                canvas.qr(
-                    attempt.new_seal_qr_payload,
-                    (0, 0, 256, 256),
-                    error_correction="L",
-                    border=4,
-                )
-                image = canvas.snapshot()
-            photo = image.to_tk_photo_image(master=popup)
-            qr_holder.configure(image=photo)
-            popup._sealed_qr_photo = photo
-        except Exception as exc:
-            print(f"QR 표시 기술 진단: {exc}")
-            qr_holder.configure(
-                text="QR을 표시하지 못했습니다. 관리자에게 확인을 요청하세요."
-            )
-        payload_box = tk.Text(frame, height=4, wrap="word")
-        payload_box.insert("1.0", attempt.new_seal_qr_payload)
-        payload_box.configure(state="disabled")
-        payload_box.pack(fill="x", pady=(8, 10))
-        status_var = tk.StringVar(value="새 봉인 QR 재스캔 대기")
-        ttk.Label(frame, textvariable=status_var).pack(anchor="w")
-        scan_entry = ttk.Entry(frame, font=(self.default_font_name, 14))
-        scan_entry.pack(fill="x", pady=(6, 10))
+        self.sealed_transfer_exchange_store.mark_seal_verified(attempt.intent_id, attempt.new_seal_qr_payload)
+        return self._apply_acked_sealed_transfer_exchange(attempt.intent_id)
 
-        def verify(event=None):
-            scanned = _label_match_decode_possible_base64_label(
-                scan_entry.get().strip()
-            )
-            scan_entry.delete(0, tk.END)
-            try:
-                self.sealed_transfer_exchange_store.mark_seal_verified(
-                    attempt.intent_id, scanned
-                )
-            except Exception:
-                status_var.set("기존 QR 또는 다른 QR입니다. 새 봉인 QR을 스캔하세요.")
-                scan_entry.focus_set()
-                return "break"
-            popup.grab_release()
-            popup.destroy()
-            self._sealed_transfer_reseal_window = None
-            self._apply_acked_sealed_transfer_exchange(attempt.intent_id)
-            return "break"
-
-        scan_entry.bind("<Return>", verify)
-        ttk.Button(frame, text="새 QR 확인", command=verify).pack(anchor="e")
-        popup.protocol(
-            "WM_DELETE_WINDOW",
-            lambda: (
-                popup.grab_release(),
-                popup.destroy(),
-                setattr(self, "_sealed_transfer_reseal_window", None),
-            ),
-        )
-        scan_entry.focus_set()
-        return True
 
     def _reconcile_pending_sealed_transfer_exchanges(self, prompt_operator=False):
         coordinator = self.__dict__.get("sealed_transfer_exchange_coordinator")
@@ -14563,7 +14800,7 @@ class Label_Match(tk.Tk):
                     attempt.intent_id
                 ) or changed
             elif prompt_operator:
-                self._prompt_new_seal_verification(attempt)
+                self._accept_background_exchange_receipt(attempt)
         return changed
 
     def _resolve_central_phs2_seal_for_exchange(self, current_set_info=None):
@@ -14788,7 +15025,7 @@ class Label_Match(tk.Tk):
                     parent=self,
                 )
                 return
-            self._prompt_sealed_transfer_exchange()
+            self._start_scanner_exchange()
 
         def fail(error):
             self._central_seal_lookup_in_progress = False
@@ -14838,7 +15075,7 @@ class Label_Match(tk.Tk):
             )
             if not isinstance(sealed, dict):
                 return False
-            return self._prompt_sealed_transfer_exchange()
+            return self._start_scanner_exchange()
 
         set_id = str(self.current_set_info.get("id") or "")
         master = tuple(self.current_set_info.get("raw") or ())
@@ -14903,7 +15140,7 @@ class Label_Match(tk.Tk):
                     parent=self,
                 )
                 return
-            self._prompt_sealed_transfer_exchange()
+            self._start_scanner_exchange()
 
         thread = threading.Thread(
             target=worker,
@@ -15001,14 +15238,14 @@ class Label_Match(tk.Tk):
             pending = preflight.get("pending_exchange")
             if pending is not None:
                 if pending.status == "ACKED":
-                    self._prompt_new_seal_verification(pending)
+                    self._accept_background_exchange_receipt(pending)
                 else:
-                    self._prompt_sealed_transfer_exchange(
+                    self._start_scanner_exchange(
                         _lease_gate_checked=True, _pending_checked=True,
                         _review_attempt=pending,
                     )
                 return
-            self._prompt_sealed_transfer_exchange(
+            self._start_scanner_exchange(
                 _lease_gate_checked=True,
                 _pending_checked=True,
                 _target_barcodes=preflight.get("target_barcodes"),
@@ -15034,396 +15271,9 @@ class Label_Match(tk.Tk):
         )
         return bool(admission is not None and admission.accepted)
 
-    def _prompt_sealed_transfer_exchange(
-        self,
-        *,
-        _lease_gate_checked=False,
-        _pending_checked=False,
-        _target_barcodes=None,
-        _review_attempt=None,
-    ):
-        """Start F4 only with the online replace-and-reseal authority.
+    def _start_scanner_exchange(self, *args, **kwargs):
+        return self._scanner_command("KMCMD:EXCHANGE")
 
-        A prefetched CREATE_PACKAGE lease deliberately cannot authorize this
-        topology-changing command.  Offline F4 therefore fails closed without
-        changing the local package set; after an online ACK, PHS2 preflight must
-        issue a fresh CREATE_PACKAGE lease for the new seal and membership.
-        """
-
-        raw = list(self.current_set_info.get("raw") or [])
-        if not 1 <= len(raw) < self.TOTAL_SCAN_COUNT:
-            if not self.run_tests:
-                messagebox.showwarning(
-                    "제품 교체 불가",
-                    "sealed transfer를 스캔한 뒤 포장 완료 전까지만 교체할 수 있습니다.",
-                    parent=self,
-                )
-            return False
-        sealed = self.current_set_info.get("sealed_transfer")
-        if not isinstance(sealed, dict) or not all(
-            sealed.get(key) for key in ("BND", "AUTH_SCOPE", "CLC", "SID", "SREV", "STK")
-        ):
-            if not self.run_tests:
-                messagebox.showerror(
-                    "제품 교체 불가",
-                    "현재 현품표에 중앙 봉인 증거가 없습니다. 기존 형식 QR은 교체할 수 없습니다.",
-                    parent=self,
-                )
-            return False
-        if (
-            not _lease_gate_checked
-            and self.__dict__.get("ui_lane") is not None
-            and not self.__dict__.get("run_tests", False)
-        ):
-            return self._begin_f4_operation_lease_gate_on_lane(
-                copy.deepcopy(self.current_set_info)
-            )
-        if not _lease_gate_checked and self._operation_lease_blocks_f4():
-            if not self.run_tests:
-                messagebox.showwarning(
-                    "포장 처리 우선",
-                    (
-                        "포장 완료 준비가 이미 시작되어 제품 교체를 진행할 수 없습니다. "
-                        "현재 포장 결과를 먼저 확정하거나 관리자에게 상태 확인을 요청하세요."
-                    ),
-                    parent=self,
-                )
-            return False
-        if not _pending_checked:
-            pending = self._current_sealed_transfer_exchange_attempt()
-            if pending is not None:
-                if pending.status == "ACKED":
-                    return self._prompt_new_seal_verification(pending)
-                return self._prompt_sealed_transfer_exchange(
-                    _lease_gate_checked=True, _pending_checked=True,
-                    _review_attempt=pending,
-                )
-        if self.package_logistics_client is None:
-            if not self.run_tests:
-                messagebox.showerror(
-                    "중앙 연결 필요",
-                    "제품 교체는 중앙 물류 API가 설정된 PC에서만 가능합니다.",
-                    parent=self,
-                )
-            return False
-        if self.run_tests:
-            return True
-        snapshot = self.current_set_info.get("package_source_snapshot") or {}
-        members = (snapshot.get("work_group_source") or {}).get("members") or ()
-        try:
-            draft = SealedTransferExchangeDraft(
-                _target_barcodes if _target_barcodes is not None
-                else (member["normalized_barcode"] for member in members),
-                target_member_count=sealed.get("QT"),
-            )
-            if _review_attempt is not None:
-                if _review_attempt.set_id != str(self.current_set_info.get("id") or ""):
-                    raise PackageLogisticsError("saved replacement belongs to another set")
-                for old, new in zip(_review_attempt.old_barcodes, _review_attempt.new_barcodes, strict=True):
-                    draft.accept(old)
-                    draft.accept(new)
-        except (PackageLogisticsError, KeyError, TypeError, ValueError):
-            messagebox.showerror(
-                "제품 교체 불가",
-                ("저장된 교체 목록을 현재 작업에서 확인하지 못했습니다. 요청과 목록은 보관 중입니다. 관리자에게 확인을 요청하세요."
-                 if _review_attempt is not None else
-                 "교체 대상 목록을 확인하지 못했습니다. 잠시 후 다시 시도하거나 관리자에게 알려 주세요."),
-                parent=self,
-            )
-            return False
-        captured_set_id = str(self.current_set_info.get("id") or "")
-        captured_raw = tuple(raw)
-        popup = tk.Toplevel(self)
-        popup.title("제품 교체")
-        popup.geometry("760x500")
-        popup.transient(self)
-        popup.grab_set()
-        frame = ttk.Frame(popup, padding=16)
-        frame.pack(fill="both", expand=True)
-        title_var = tk.StringVar(value="교체 대상 제품 스캔")
-        ttk.Label(frame, textvariable=title_var, font=(self.default_font_name, 16, "bold")).pack(anchor="w")
-        editable_guidance = "교체 대상 → 새 양품 순서로 필요한 만큼 스캔하세요.\n목록을 확인한 뒤 [교체 적용]을 한 번 누르면 목록 그대로 교체됩니다.\n적용 전에 창을 닫으면 목록은 사라집니다."
-        guidance_var = tk.StringVar(value=editable_guidance)
-        ttk.Label(frame, textvariable=guidance_var, wraplength=700).pack(anchor="w", pady=(8, 6))
-        count_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=count_var).pack(anchor="w")
-        scan_entry = ttk.Entry(frame, font=(self.default_font_name, 16))
-        scan_entry.pack(fill="x", pady=(8, 6))
-        rows_frame = ttk.Frame(frame)
-        rows = ttk.Treeview(rows_frame, columns=("old", "new"), show="headings", selectmode="browse", height=8)
-        rows.heading("old", text="교체 대상")
-        rows.heading("new", text="새 양품")
-        for column in ("old", "new"):
-            rows.column(column, width=280, minwidth=160, stretch=True)
-        scrollbar = ttk.Scrollbar(rows_frame, orient="vertical", command=rows.yview)
-        rows.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        rows.pack(side="left", fill="both", expand=True)
-        status_var = tk.StringVar(value="")
-        state = {"locked": False, "dispatching": False, "attempt": _review_attempt}
-        mutable_controls = []
-
-        def lock_draft(locked):
-            state["locked"] = locked
-            for widget in mutable_controls:
-                widget.configure(state="disabled" if locked else "normal")
-
-        def close_popup():
-            if state["dispatching"]:
-                status_var.set("중앙 처리가 끝난 뒤 창을 닫을 수 있습니다.")
-                return
-            try:
-                popup.grab_release()
-                popup.destroy()
-            except TclError:
-                pass
-
-        def render_rows():
-            children = rows.get_children()
-            if children:
-                rows.delete(*children)
-            for index, pair in enumerate(draft.pairs):
-                rows.insert("", "end", iid=str(index), values=pair)
-            count_var.set(f"교체 목록 {len(draft.pairs)}건")
-            prefix = f"{draft.edit_index + 1}번 수정 · " if draft.edit_index is not None else ""
-            title_var.set(prefix + ("새 양품 스캔" if draft.pending_old else "교체 대상 제품 스캔"))
-            if draft.pending_old:
-                status_var.set(f"입력 중인 교체 대상: {draft.pending_old}")
-
-        def selected_index():
-            selection = rows.selection()
-            return int(selection[0]) if selection else None
-
-        def edit_selected():
-            if state["locked"]:
-                return
-            if draft.pending_old or draft.edit_index is not None or scan_entry.get().strip():
-                status_var.set("입력 중인 교체 쌍을 완료하거나 [입력 취소]를 누르세요.")
-                return
-            index = selected_index()
-            if index is not None:
-                scan_entry.insert(0, draft.begin_edit(index))
-                scan_entry.selection_range(0, tk.END)
-                render_rows()
-                scan_entry.focus_set()
-
-        def remove_selected():
-            if state["locked"]:
-                return
-            if draft.pending_old or draft.edit_index is not None:
-                status_var.set("입력 중인 교체 쌍을 완료하거나 [입력 취소]를 누르세요.")
-                return
-            index = selected_index()
-            if index is not None:
-                draft.remove(index)
-                status_var.set("")
-                render_rows()
-
-        def cancel_input():
-            if state["locked"]:
-                return
-            draft.cancel_pending()
-            scan_entry.delete(0, tk.END)
-            status_var.set("")
-            render_rows()
-            scan_entry.focus_set()
-
-        def accept_scan(event=None):
-            if state["locked"]:
-                return "break"
-            value = normalize_exchange_barcode(scan_entry.get())
-            if not value:
-                return "break"
-            try:
-                if draft.pending_old and value in {
-                    normalize_exchange_barcode(sample) for sample in raw[1:4]
-                }:
-                    raise PackageLogisticsError("현재 QA 표본은 새 양품으로 사용할 수 없습니다.")
-                draft.accept(value)
-            except PackageLogisticsError as error:
-                status_var.set(str(error))
-                return "break"
-            scan_entry.delete(0, tk.END)
-            status_var.set("")
-            render_rows()
-            return "break"
-
-        def render_attempt(result):
-            state["attempt"] = result
-            lock_draft(True)
-            guidance_var.set("저장된 교체 목록은 결과 확인을 위해 보관됩니다.\n목록은 수정할 수 없으며, 창을 닫아도 교체 요청과 목록은 그대로 남습니다.")
-            apply_button.configure(text="교체 적용", state="disabled")
-            if getattr(result, "operator_retry_available", False):
-                title_var.set("제품 교체 거부 · 목록 보관 중")
-                status_var.set("작업 지시 정보가 맞지 않아 교체가 거부되었습니다. 관리자 조치 후 같은 목록으로 재시도하세요.")
-                apply_button.configure(text="같은 교체 재시도", state="normal")
-            elif result.status == "OPERATOR_REVIEW":
-                title_var.set("제품 교체 결과 확인 필요")
-                status_var.set("교체 결과를 확인하지 못했습니다. 목록을 보관 중입니다. 관리자에게 확인을 요청하세요.")
-            else:
-                title_var.set("제품 교체 결과 확인 중")
-                status_var.set("중앙 결과를 확인 중입니다. 목록은 그대로 보관됩니다.")
-            if getattr(result, "operator_retry_refusal", ""):
-                title_var.set("제품 교체 재시도 보류")
-                status_var.set(result.operator_retry_refusal)
-
-        def submit_to_server():
-            if state["dispatching"]:
-                return
-            pending = state["attempt"]
-            operator_retry = state["locked"] and getattr(pending, "operator_retry_available", False)
-            if state["locked"] and not operator_retry:
-                return
-            if scan_entry.get().strip():
-                status_var.set("입력한 바코드를 Enter로 확인하거나 입력 취소를 누르세요.")
-                return
-            try:
-                pairs = draft.snapshot()
-            except PackageLogisticsError as error:
-                status_var.set(str(error))
-                return
-            if (
-                str(self.current_set_info.get("id") or "") != captured_set_id
-                or tuple(self.current_set_info.get("raw") or ()) != captured_raw
-            ):
-                status_var.set("현재 작업이 변경되었습니다. 창을 닫고 작업을 확인하세요.")
-                return
-            if operator_retry:
-                if not messagebox.askyesno(
-                    "같은 교체 재시도",
-                    "이전 교체 요청이 거부되어 목록을 보관 중입니다.\n"
-                    "제품을 그대로 두고 관리자 조치를 확인한 뒤 진행하세요.\n"
-                    f"저장된 교체 목록 {len(pairs)}건을 확인하고 같은 요청으로 한 번 재시도할까요?",
-                    parent=popup, default=messagebox.NO,
-                ):
-                    return
-                current_drain = self.__dict__.get("package_outbox_thread")
-                if current_drain is not None and current_drain.is_alive():
-                    status_var.set("중앙 결과 확인이 진행 중입니다. 완료된 뒤 재시도하세요.")
-                    return
-                if (
-                    self._ui_lane_is_busy()
-                    or str(self.current_set_info.get("id") or "") != captured_set_id
-                    or tuple(self.current_set_info.get("raw") or ()) != captured_raw
-                ):
-                    status_var.set("현재 작업 상태가 변경되었습니다. 작업을 확인한 뒤 재시도하세요.")
-                    return
-                captured_current = copy.deepcopy(self.current_set_info)
-            old_qr = str(sealed.get("_seal_qr_payload") or _label_match_decode_possible_base64_label(raw[0]))
-            captured_sealed = copy.deepcopy(sealed)
-            captured_old = tuple(old for old, _new in pairs)
-            captured_new = tuple(new for _old, new in pairs)
-            captured_operator = persistent_operator_name(self.worker_name)
-            lock_draft(True)
-            state["dispatching"] = True
-            close_button.configure(state="disabled")
-            title_var.set("제품 교체 처리 중")
-            guidance_var.set("교체 요청을 확인하고 있습니다.\n처리가 끝날 때까지 제품과 목록을 그대로 두세요.")
-            apply_button.configure(text="교체 적용", state="disabled")
-            status_var.set("목록 전체를 한 번에 적용합니다.")
-
-            def work():
-                if operator_retry:
-                    if self._operation_lease_blocks_f4(captured_current):
-                        return "retry_blocked", pending
-                    return "result", self.sealed_transfer_exchange_coordinator.attempt(
-                        pending.intent_id, operator_retry=True,
-                    )
-                try:
-                    prepared = self.sealed_transfer_exchange_coordinator.prepare(
-                        set_id=captured_set_id, old_seal_qr_payload=old_qr,
-                        old_seal_fields=captured_sealed, operator=captured_operator,
-                        old_barcodes=captured_old, new_barcodes=captured_new,
-                    )
-                except SealedTransferExchangeAdmissionError as error:
-                    return "admission_rejected", error
-                except Exception as error:
-                    return "preserve", error
-                try:
-                    return "result", self.sealed_transfer_exchange_coordinator.attempt(prepared.intent_id)
-                except Exception as error:
-                    # prepare may already have committed. Its first load can
-                    # fail; never reopen a submitted list on a generic error.
-                    return "preserve", error
-
-            def apply_value(value):
-                state["dispatching"] = False
-                close_button.configure(state="normal")
-                if isinstance(value, Failure):
-                    kind, result = "preserve", value
-                else:
-                    kind, result = value
-                if kind == "admission_rejected":
-                    lock_draft(False)
-                    guidance_var.set(editable_guidance)
-                    render_rows()
-                    status_var.set("교체를 시작하지 못했습니다. 목록은 그대로 있습니다. 잠시 후 다시 누르거나 관리자에게 알려 주세요.")
-                    return
-                if kind == "preserve":
-                    title_var.set("제품 교체 결과 확인 필요")
-                    guidance_var.set("교체 요청이 이미 접수되었을 수 있습니다.\n창을 닫아도 취소된 것으로 볼 수 없으니 제품과 목록을 그대로 두고 관리자에게 확인을 요청하세요.")
-                    status_var.set("교체 결과 확인이 필요합니다. 목록은 그대로 있습니다. 관리자에게 확인을 요청하세요.")
-                    return
-                if kind == "retry_blocked":
-                    render_attempt(result)
-                    status_var.set("포장 완료 준비가 진행 중이라 교체 재시도를 보류했습니다. 작업 상태를 확인한 뒤 다시 시도하세요.")
-                    return
-                if result.status == "ACKED":
-                    self.data_manager.log_event(
-                        self.Events.SEALED_TRANSFER_EXCHANGE_ACKED,
-                        {
-                            "set_id": result.set_id, "intent_id": result.intent_id,
-                            "receipt_id": result.receipt_id,
-                            "target_bundle_id": result.target_bundle_id,
-                            "damage_bundle_id": result.damage_bundle_id,
-                            "old_barcodes": list(result.old_barcodes),
-                            "new_barcodes": list(result.new_barcodes),
-                            "new_seal_qr_payload": result.new_seal_qr_payload,
-                        },
-                    )
-                    close_popup()
-                    self._prompt_new_seal_verification(result)
-                    return
-                render_attempt(result)
-
-            admission = self._submit_ui_lane_task(
-                name="f4-atomic-replacement", busy_text="제품 교체 · 중앙 처리 중",
-                work=work, finish=apply_value, fail=apply_value,
-            )
-            if admission is None or not admission.accepted:
-                state["dispatching"] = False
-                close_button.configure(state="normal")
-                if operator_retry:
-                    render_attempt(pending)
-                else:
-                    lock_draft(False)
-                    guidance_var.set(editable_guidance)
-                    render_rows()
-                status_var.set("다른 작업을 처리 중입니다. 목록은 그대로 있습니다. 잠시 후 다시 적용하세요.")
-
-        buttons = ttk.Frame(frame)
-        buttons.pack(side="bottom", fill="x", pady=(10, 0))
-        for text, command in (
-            ("선택 수정", edit_selected), ("선택 삭제", remove_selected),
-            ("입력 취소", cancel_input), ("교체 적용", submit_to_server),
-        ):
-            button = ttk.Button(buttons, text=text, command=command, width=0)
-            button.pack(side="left", padx=(0, 8))
-            mutable_controls.append(button)
-            if command is submit_to_server:
-                apply_button = button
-        mutable_controls.append(scan_entry)
-        close_button = ttk.Button(buttons, text="닫기", command=close_popup, width=0)
-        close_button.pack(side="right")
-        ttk.Label(frame, textvariable=status_var, wraplength=700).pack(side="bottom", anchor="w", pady=(8, 0))
-        rows_frame.pack(fill="both", expand=True)
-        render_rows()
-        if _review_attempt is not None:
-            render_attempt(_review_attempt)
-        scan_entry.bind("<Return>", accept_scan)
-        popup.protocol("WM_DELETE_WINDOW", close_popup)
-        scan_entry.focus_set()
-        return True
 
 
     def _phs_label_exchange_enabled_for_current(self):
@@ -16651,104 +16501,9 @@ class Label_Match(tk.Tk):
         return "break"
 
     def _handle_f4_action(self):
-        if self._sealed_transfer_exchange_blocks_local_action("제품 교체"):
-            return False
-        snapshot = self.current_set_info.get("package_source_snapshot")
-        if (
-            isinstance(snapshot, dict)
-            and snapshot.get("source_resolution_basis")
-            == "PHS_WORK_GROUP_EXACT_MEMBERSHIP"
-            and snapshot.get("full_single_transfer") is not True
-        ):
-            message = (
-                "현재 현품표는 여러 이적 묶음을 합치거나 원본 이적 묶음의 "
-                "일부만 나눈 작업입니다. 포장(F3)은 가능하지만 제품 교체(F4)는 "
-                "원본 이적 묶음 전체를 대표하는 단일 현품표에서만 가능합니다."
-            )
-            self.update_big_display("제품 교체 불가", "red")
-            self._render_operator_workbench()
-            if not self.run_tests:
-                messagebox.showerror(
-                    "제품 교체 불가",
-                    message,
-                    parent=self,
-                )
-            return False
-        if self.current_set_info.get("sealed_transfer"):
-            return self._prompt_sealed_transfer_exchange()
-        if self._central_inherit_all_active():
-            return self._start_central_phs2_exchange()
-        return self._prompt_exact_rescan()
+        return self._scanner_command("KMCMD:EXCHANGE")
 
-    def _prompt_exact_rescan(self):
-        raw = list(self.current_set_info.get("raw") or [])
-        if not raw:
-            if not self.run_tests:
-                messagebox.showwarning("전체 재스캔", "먼저 현품표를 스캔하세요.", parent=self)
-            return False
-        try:
-            if _label_match_parse_sealed_transfer_qr(raw[0]):
-                if not self.run_tests:
-                    messagebox.showinfo(
-                        "전체 재스캔 불필요",
-                        "sealed transfer QR은 서버 exact membership을 전체 상속합니다.",
-                        parent=self,
-                    )
-                return False
-        except ValueError as exc:
-            if not self.run_tests:
-                messagebox.showerror("전체 재스캔", str(exc), parent=self)
-            return False
-        if len(raw) != 1:
-            if not self.run_tests:
-                messagebox.showwarning(
-                    "전체 재스캔",
-                    "제품 샘플 스캔 전에 전체 재스캔을 시작하세요.",
-                    parent=self,
-                )
-            return False
-        source_bundle_id = str(
-            self.current_set_info.get("exact_rescan_source_bundle_id") or ""
-        ).strip()
-        if not self.run_tests:
-            source_bundle_id = str(
-                simpledialog.askstring(
-                    "이적 컨테이너 ID",
-                    "QR을 사용할 수 없으면 이적 화면의 TRANSFER bundle ID를 스캔하세요.",
-                    parent=self,
-                    initialvalue=source_bundle_id,
-                )
-                or ""
-            ).strip()
-        target = self.current_set_info.get("exact_rescan_target_count")
-        if not self.run_tests:
-            target = simpledialog.askinteger(
-                "전체 재스캔 수량",
-                "sealed evidence가 없는 제품 전체 수량을 입력하세요.",
-                parent=self,
-                minvalue=1,
-                maxvalue=100000,
-                initialvalue=int(target or 1),
-            )
-        if not target:
-            return False
-        self.current_set_info["exact_rescan_active"] = True
-        self.current_set_info["exact_rescan_complete"] = False
-        self.current_set_info["exact_rescan_target_count"] = int(target)
-        self.current_set_info["exact_rescan_source_bundle_id"] = source_bundle_id
-        self.current_set_info["exact_rescan_barcodes"] = []
-        self.data_manager.log_event(
-            self.Events.EXACT_RESCAN_STARTED,
-            {
-                "set_id": self.current_set_info.get("id"),
-                "target_count": int(target),
-                "sample_barcodes_are_membership": False,
-            },
-        )
-        self._save_current_set_state()
-        self.update_big_display(f"전체 제품 재스캔 0/{int(target)}", "primary")
-        self._update_status_label()
-        return True
+
 
     def _process_exact_rescan_product(self, raw_input):
         barcode = _normalize_barcode_for_exact_rescan(raw_input)
@@ -16822,13 +16577,13 @@ class Label_Match(tk.Tk):
     ):
         durable_acceptance = callable(prepare_durable_state)
         if not self.current_set_info['raw']:
+            if not self._release_shortage_confirmation():
+                raise PackageLogisticsError("previous short confirmation release failed")
             # A set holding only another label's capture never passes it on.
             self._detach_deferred_capture_shell(raw)
         active_current_set = self.current_set_info
         previous_current_set = (
             copy.deepcopy(active_current_set)
-            if durable_acceptance
-            else None
         )
         first_scan = len(self.current_set_info['raw']) == 0
         try:
@@ -16848,17 +16603,15 @@ class Label_Match(tk.Tk):
 
             self.current_set_info['raw'].append(raw)
             self.current_set_info['parsed'].append(parsed)
+            self.current_set_info.pop("scanner_undo_exchange", None)
             if durable_acceptance:
                 prepare_durable_state(self.current_set_info)
-                if not self._save_current_set_state():
-                    raise PackageLogisticsError(
-                        "PHS2 was accepted, but current packaging state could not be saved"
-                    )
+            if not self._save_current_set_state():
+                raise PackageLogisticsError("current packaging state could not be saved")
         except Exception:
-            if durable_acceptance:
-                active_current_set.clear()
-                active_current_set.update(previous_current_set)
-                self.current_set_info = active_current_set
+            active_current_set.clear()
+            active_current_set.update(previous_current_set)
+            self.current_set_info = active_current_set
             raise
 
         if durable_acceptance and first_scan:
@@ -16888,7 +16641,7 @@ class Label_Match(tk.Tk):
             "material_master_label"
             if num_scans == LABEL_MATCH_MASTER_SCAN_POSITION
             else "final_packaging_label"
-            if num_scans == final_label_position
+            if num_scans == final_label_position and not _label_match_has_central_source_identity(self.current_set_info['raw'][0])
             else "product"
         )
         self.data_manager.log_event(
@@ -16914,10 +16667,8 @@ class Label_Match(tk.Tk):
                 ),
             },
         )
-        if not durable_acceptance:
-            self._save_current_set_state()
         self._render_operator_workbench()
-        if num_scans == workflow_total and not self._central_inherit_all_active():
+        if num_scans == workflow_total:
             self._finalize_set(self.Results.PASS)
 
     @classmethod
@@ -17331,6 +17082,8 @@ class Label_Match(tk.Tk):
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
         central_inherit_all = self._central_inherit_all_active()
+        if self.current_set_info.get("scanner_only"):
+            self.current_set_info.setdefault("local_completed_at", datetime.now(timezone.utc).isoformat())
         item_code = parsed_scans_to_log[0] if parsed_scans_to_log else "N/A"
 
         item_name_override = self.current_set_info.get('item_name_override')
@@ -17343,7 +17096,7 @@ class Label_Match(tk.Tk):
         work_time_sec = (datetime.now() - start_time).total_seconds() if start_time else 0.0
         production_date = self.current_set_info.get('production_date')
         phase = self.current_set_info.get('phase') or '-'
-        set_id_for_log = str(self.current_set_info['id'])
+        set_id_for_log = str(self.current_set_info.get('completion_identity') or self.current_set_info['id'])
         master_label_raw = raw_scans_to_log[0] if raw_scans_to_log else ""
         master_label_fields = _label_match_parse_new_format_fields(master_label_raw) or {}
         master_label_identity_key = _label_match_new_format_identity_key(master_label_raw)
@@ -17378,6 +17131,17 @@ class Label_Match(tk.Tk):
             "CENTRAL_INHERIT_ALL" if central_inherit_all else "LEGACY_QA_SAMPLES"
         )
         details['central_membership_inherited'] = central_inherit_all
+        details['shortage_confirmed'] = bool(self.current_set_info.get('shortage_confirmed'))
+        details['scanner_exchanges'] = copy.deepcopy(self.current_set_info.get('scanner_exchanges', []))
+        if self.current_set_info.get("scanner_only"):
+            details['product_sample_barcodes'] = raw_scans_to_log[1:]
+            details['barcode_roles'] = [_label_match_barcode_projection(
+                raw, parsed_scans_to_log[index], index + 1)
+                for index, raw in enumerate(raw_scans_to_log)]
+            for row in details['barcode_roles'][1:]:
+                row.update(barcode_role="product", barcode_projection_status="INCLUDED",
+                           barcode_exclusion_reason_code=None, product_barcode=row.get("raw_barcode"))
+            details['package_completion_action'] = "SCAN_SHORT_CONFIRM" if details['shortage_confirmed'] else "SCAN_FIFTH_AUTO"
         if (
             central_inherit_all
             and len(raw_scans_to_log)
@@ -17432,6 +17196,8 @@ class Label_Match(tk.Tk):
             )
         if (
             _durable_completion is None
+            and not self.current_set_info.get("scanner_only")
+            and not self.current_set_info.get("shortage_confirmed")
             and self.__dict__.get("ui_lane") is not None
             and not self.__dict__.get("run_tests", False)
             and not self.__dict__.get("is_running_simulation", False)
@@ -17461,7 +17227,16 @@ class Label_Match(tk.Tk):
             dict(_durable_completion.get("details") or details)
         )
         package_logistics = _durable_completion.get("package_logistics")
-        if result == self.Results.PASS and not self.is_running_simulation:
+        if self.current_set_info.get("shortage_confirmed"):
+            self.current_set_info["shortage_completion_details"] = copy.deepcopy(details)
+            checkpoint = {"id": None, "raw": [], "parsed": [], "start_time": None,
+                          "error_count": 0, "has_error_or_reset": False,
+                          "shortage_undo_snapshot": copy.deepcopy(self._scanner_shortage_undo),
+                          "shortage_completion_details": copy.deepcopy(details)}
+            if not self.data_manager.save_current_state({"current_set_info": checkpoint}):
+                return self._publish_durable_commit_block(PackageLogisticsError("short confirmation undo save failed"))
+            self._shortage_durable_checkpoint = checkpoint
+        if result == self.Results.PASS and not self.is_running_simulation and not self.current_set_info.get("shortage_confirmed"):
             # Sound and all visible success mutations happen only after the
             # append-only intent, CSV event, and local commit marker are durable.
             self._play_sound("pass")
@@ -17493,7 +17268,8 @@ class Label_Match(tk.Tk):
         self.__dict__.setdefault("history_row_details_map", {})[set_id_for_log] = details
         if result == self.Results.PASS:
             summary_date = _label_match_summary_date(details)
-            if item_code != "N/A" and summary_date:
+            if item_code != "N/A" and summary_date and not (
+                    details.get("shortage_confirmed") and set_id_for_log in self.set_details_map):
                 self.scan_count[summary_date][(item_code, phase)] += 1
             self.set_details_map[set_id_for_log] = details
             self.global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
@@ -17917,7 +17693,7 @@ class Label_Match(tk.Tk):
         raw = list(current.get("raw") or [])
         physical_qr = str(current.get("physical_scanned_qr_payload") or (raw[0] if raw else "") or "").strip()
         return store.get_owned_capture(
-            intent_id=intent_id, local_work_identity=str(current.get("id") or ""),
+            intent_id=intent_id, local_work_identity=str(current.get("completion_identity") or current.get("id") or ""),
             physical_qr_payload=physical_qr,
         )
 
@@ -17936,7 +17712,7 @@ class Label_Match(tk.Tk):
             if scope != row["authority_scope_id"]:
                 raise DeferredIntentCaptureError("CANCEL_CAPTURE_BINDING", "the active scope differs from the current capture")
         self.deferred_intent_capture.cancel_unsubmitted(
-            intent_id=row["intent_id"], local_work_identity=str(current.get("id") or ""),
+            intent_id=row["intent_id"], local_work_identity=str(current.get("completion_identity") or current.get("id") or ""),
             physical_qr_payload=physical_qr, operator_id=persistent_operator_name(self.worker_name),
             expected_row_version=row["row_version"], issue_request_fingerprint=fingerprint,
             expected_operation_lease_id=str(current.get("operation_lease_id") or ""),
@@ -18015,7 +17791,8 @@ class Label_Match(tk.Tk):
                 self.history_tree.delete(str(self.current_set_info['id']))
             self.__dict__.setdefault("history_row_details_map", {}).pop(str(self.current_set_info['id']), None)
             self.current_set_info['has_error_or_reset'] = True
-        if from_finalize or full_reset:
+        short_checkpoint = self.__dict__.pop("_shortage_durable_checkpoint", None) if from_finalize else None
+        if (from_finalize or full_reset) and not short_checkpoint:
             self._delete_current_set_state()
         if full_reset and not from_finalize:
             self._clear_workflow_completion()
@@ -18064,6 +17841,8 @@ class Label_Match(tk.Tk):
             'exact_rescan_source_bundle_id': "",
             'exact_rescan_barcodes': [],
         }
+        if short_checkpoint:
+            self.current_set_info.update(short_checkpoint)
         self.progress_bar['value'] = 0
         if dismissed_package_conflict:
             self._refresh_package_cancellation_review_notice()
@@ -18259,54 +18038,6 @@ class Label_Match(tk.Tk):
 
         self._cancel_completed_tray_by_label(master_label)
     
-    def _prompt_manual_complete(self):
-        """Confirm a legacy partial set or commit one staged central PHS2."""
-        if not self.initialized_successfully:
-            return
-        if self._sealed_transfer_exchange_blocks_local_action("포장 완료"):
-            return
-        if self._block_active_history_load_action("현재 세트를 완료", parent=self):
-            return
-        if not self.history_view_updates_active_state:
-            if not self.run_tests:
-                messagebox.showwarning("조회 모드", "과거 기록 조회 중에는 현재 세트를 완료할 수 없습니다.\n'오늘' 기록으로 돌아온 뒤 다시 시도하세요.", parent=self)
-            return
-
-        block_reason = _label_match_manual_complete_block_reason(self.current_set_info)
-        if block_reason:
-            self._update_manual_complete_button_state()
-            if not self.run_tests:
-                messagebox.showwarning("수동 완료 불가", "현재 세트는 수동 완료할 수 없습니다.", parent=self)
-            return
-
-        central_inherit_all = self._central_inherit_all_active()
-        num_scans = len(self.current_set_info['raw'])
-        if central_inherit_all:
-            msg = (
-                "스캔한 PHS2의 현재 이적 멤버 전체를 기준으로\n"
-                "랩핑과 포장을 완료 처리하시겠습니까?\n\n"
-                "제품 교체가 필요하면 완료 전에 F4를 사용하세요."
-            )
-        else:
-            msg = (
-                f"현재 {num_scans}개만 스캔되었습니다.\n"
-                f"이 세트를 '통과'로 즉시 완료하시겠습니까?\n\n"
-                f"(샘플 출고 등 소량 작업 시 사용)"
-            )
-
-        title = "포장 완료 확인" if central_inherit_all else "수동 완료 확인"
-        should_complete = self.run_tests or messagebox.askyesno(
-            title, msg, icon='question'
-        )
-
-        if should_complete:
-            if central_inherit_all and not self.run_tests:
-                self._begin_central_package_submission()
-            else:
-                self._finalize_set(
-                    self.Results.PASS,
-                    is_manual_complete=not central_inherit_all,
-                )
 
     # [수정됨] 버그가 수정되고 로직이 개선된 최종 버전
     def _cancel_completed_tray_by_label(self, label_to_cancel):
@@ -18749,6 +18480,8 @@ class Label_Match(tk.Tk):
                 authenticated=True,
             )
             new_worker_name = ""
+        if not self._release_shortage_confirmation():
+            return
         try:
             self.data_manager.close(timeout=None)
         except Exception as e:
@@ -20207,15 +19940,11 @@ class Label_Match(tk.Tk):
         narrow_f5 = layout is not None and layout.panes.right_width < 360
         return {
             "manual_complete_button": (
-                "포장 완료\n(F3)"
-                if central_workflow
-                else "현재 세트\n완료 (F3)",
+                "방금 스캔\n되돌리기",
                 "Operator.Action.TButton",
             ),
             "exact_rescan_button": (
-                "제품 교체\n(F4)"
-                if current.get("sealed_transfer") or central_workflow
-                else "전체 재스캔\n(F4)",
+                "교환\n(제품)",
                 "Operator.Action.TButton",
             ),
             "phs_label_exchange_button": (
@@ -21089,7 +20818,9 @@ class Label_Match(tk.Tk):
         except PHSLabelWorkflowError:
             phs_label_recovery_pending = True
         for name, enabled in (
-            ("manual_complete_button", view.f3_enabled),
+            ("manual_complete_button", bool(view.cancel_current_enabled or
+                (view.scan_input_enabled and (self.__dict__.get("_scanner_shortage_undo") or
+                 (self.__dict__.get("current_set_info") or {}).get("shortage_undo_snapshot"))))),
             ("exact_rescan_button", view.f4_enabled),
             ("reset_button", view.cancel_current_enabled or self._refused_capture_cancel_enabled(view)),
             ("cancel_tray_button", view.cancel_completed_enabled),
@@ -21200,6 +20931,7 @@ class Label_Match(tk.Tk):
             "f2": bool(view and view.cancel_completed_enabled),
             "f3": bool(view and view.f3_enabled),
             "f4": bool(view and view.f4_enabled),
+            "undo": bool(self.current_set_info.get("raw") or self.__dict__.get("_scanner_shortage_undo") or self.current_set_info.get("shortage_undo_snapshot")),
         }
         if not allowed.get(str(action).lower(), False):
             return "break"
@@ -21207,8 +20939,8 @@ class Label_Match(tk.Tk):
             self._reset_current_set(full_reset=True)
         elif action == "f2":
             self._prompt_and_cancel_completed_tray()
-        elif action == "f3":
-            self._prompt_manual_complete()
+        elif action == "undo":
+            self._scanner_command("KMCMD:UNDO")
         elif action == "f4":
             self._handle_f4_action()
         return "break"
@@ -21911,7 +21643,7 @@ class Label_Match(tk.Tk):
         if num_scans <= 0:
             return self._idle_instruction_text()
         if self._central_inherit_all_active():
-            return "랩핑 후 F3 포장 완료"
+            return f"{num_scans + 1}/5 제품 {num_scans} 스캔" if num_scans < 5 else "통과 완료"
         workflow_total = self._workflow_total_scan_count()
         final_label_position = self._workflow_final_label_position()
         if num_scans < final_label_position - 1:
@@ -21947,7 +21679,7 @@ class Label_Match(tk.Tk):
                 or self._standard_phs2_workflow_expected(current)
             )
         step_names = (
-            ("PHS2 현품표",)
+            ("PHS2 현품표", "제품1", "제품2", "제품3", "제품4")
             if central_inherit_all
             else self.STEP_NAMES
         )
@@ -22036,7 +21768,7 @@ class Label_Match(tk.Tk):
             )
         elif self.current_set_info.get("exact_rescan_complete"):
             status_text += " | 전체 재스캔 완료"
-        status_text += f" | F3: {self._manual_complete_hint()}"
+        status_text += " | 제품 4개 자동 완료 · 교환/취소 카드"
         self.status_label.config(text=status_text, style="Status.TLabel")
         self._update_step_rail(num_scans, error=self.current_set_info.get('has_error_or_reset', False))
         self._update_manual_complete_button_state()
@@ -22044,64 +21776,23 @@ class Label_Match(tk.Tk):
         self._render_operator_workbench()
 
     def _update_manual_complete_button_state(self):
-        if not self.initialized_successfully: return
-        if self.__dict__.get("_ui_lane_busy_task", ""):
-            state = "disabled"
-        elif not getattr(self, "history_view_updates_active_state", True):
-            state = "disabled"
-        else:
-            state = "normal" if _label_match_manual_complete_allowed(self.current_set_info) else "disabled"
-        self.manual_complete_button.config(
-            state=state,
-            text=(
-                "포장 완료 (F3)"
-                if self._central_inherit_all_active()
-                or self._standard_phs2_workflow_expected()
-                else self.MANUAL_COMPLETE_BUTTON_TEXT
-            ),
-        )
+        button = self.__dict__.get("manual_complete_button")
+        if button is not None:
+            button.config(text="취소 · 방금 스캔 되돌리기", state="normal" if self.current_set_info.get("raw") or self.__dict__.get("_scanner_shortage_undo") else "disabled")
+
 
     def _update_exact_rescan_button_state(self):
-        if not self.initialized_successfully or "exact_rescan_button" not in self.__dict__:
-            return
-        raw = list(self.current_set_info.get("raw") or [])
-        sealed = False
-        if raw:
-            try:
-                sealed = bool(_label_match_parse_sealed_transfer_qr(raw[0]))
-            except ValueError:
-                sealed = True
-        enabled = (
-            getattr(self, "history_view_updates_active_state", True)
-            and (
-                (sealed and 1 <= len(raw) < self.TOTAL_SCAN_COUNT)
-                or (
-                    self._central_inherit_all_active()
-                    and len(raw) == LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
-                )
-                or (not sealed and len(raw) == 1)
-            )
-            and not self.current_set_info.get("exact_rescan_active")
-            and not self.current_set_info.get("exact_rescan_complete")
-            and not self.__dict__.get("_ui_lane_busy_task", "")
-        )
-        self.exact_rescan_button.config(
-            state="normal" if enabled else "disabled",
-            text=(
-                "제품 교체 (F4)"
-                if sealed
-                or self._central_inherit_all_active()
-                or self._standard_phs2_workflow_expected()
-                else self.EXACT_RESCAN_BUTTON_TEXT
-            ),
-        )
+        button = self.__dict__.get("exact_rescan_button")
+        if button is not None:
+            button.config(text="교환", state="normal" if self.current_set_info.get("raw") else "disabled")
+
 
     def _update_history_tree_in_progress(self):
         if not self.initialized_successfully: return
         if not self.history_view_updates_active_state: return
         num_scans = len(self.current_set_info['parsed'])
         if num_scans == 0: return
-        set_id = str(self.current_set_info['id'])
+        set_id = str(self.current_set_info.get('completion_identity') or self.current_set_info['id'])
         timestamp = datetime.now().strftime("%H:%M:%S")
 
         display_scans = self.current_set_info['parsed']

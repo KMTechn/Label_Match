@@ -42,6 +42,11 @@ RECOVERY_SCHEMAS = {
             "sealed_transfer": _NULLABLE_OBJECT,
             "package_source_snapshot": "nullable_source_snapshot",
             "central_inherit_all": _BOOLEAN,
+            "scanner_only": _BOOLEAN,
+            "shortage_confirmed": _BOOLEAN,
+            "shortage_confirmation_pending": _BOOLEAN,
+            "shortage_release_pending": _BOOLEAN,
+            "shortage_released": _BOOLEAN,
             "error_count": _INTEGER,
             "has_error_or_reset": _BOOLEAN,
             "active_label_version": _INTEGER,
@@ -90,6 +95,7 @@ RECOVERY_SCHEMAS = {
             "expected_seal_revision": _INTEGER,
             "operation_lease_fence": _INTEGER,
             "sample_barcodes": _TEXT_LIST,
+            "scanner_only": _BOOLEAN,
             "exact_rescan_barcodes": _TEXT_LIST,
             "source_session_ids": _TEXT_LIST,
             "phs_work_group": _OBJECT,
@@ -253,7 +259,7 @@ RECOVERY_SCHEMAS = {
 _PHS2 = re.compile(
     r"PHS=2\|SRC=KMTECH_INPUT_TAG\|ITG=([^\s|=\x00-\x1f\x7f]+)\|"
     r"CLC=[^\s|=\x00-\x1f\x7f]+\|LBL=([^\s|=\x00-\x1f\x7f]+)\|"
-    r"HSH=[0-9a-fA-F]{16}"
+    r"HSH=[0-9a-fA-F]{16}(?:\|QT=[1-9][0-9]{0,3})?"
 )
 _PHS2_FIELDS = {
     "current_set": {"canonical_input_tag_qr", "physical_scanned_qr_payload",

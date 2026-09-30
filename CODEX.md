@@ -6,14 +6,14 @@
 
 ## 프로젝트 목적
 
-`Label_Match`는 포장실 바코드 검증 및 중앙 포장 완료 처리용 Windows Tkinter 앱이다. 중앙 표준 작업은 **물리 PHS2 현품표 1회 스캔 → 필요 시 F4 교체 목록 확인·일괄 적용 → F3 포장 완료 → 로컬 durable 완료 후 중앙 자동 전송**이다. 원본 PHS2가 이적 멤버십 전체를 대표하므로 제품 3개, 최종 라벨, 전량 제품을 추가로 스캔하지 않는다. 과거의 `현품표 + 제품 3개 + 최종 라벨` 5단계는 레거시 입력 호환 경로일 뿐 중앙 PHS2 운영 절차가 아니다. 최신 기본 저장소는 `%ProgramData%\KMTech\Label_Match\data`이며, `LABEL_MATCH_SAVE_DIR`로 override할 수 있다.
+`Label_Match`는 포장실 바코드 검증 및 중앙 포장 완료 처리용 Windows Tkinter 앱이다. 중앙 표준 작업은 **현품표 1장 + 상단 제품 4개 → 다섯 번째 자동 로컬 내구 완료 → 배경 교환·source·lease·포장 등록**이다. 스캐너 명령 카드는 `KMCMD:EXCHANGE`·`KMCMD:UNDO`이며 재스캔 미달 확정은 다음 현품표/종료까지 로컬 undo를 허용한다. F3/F4 확인 창은 사용하지 않는다. 최신 기본 저장소는 `%ProgramData%\KMTech\Label_Match\data`이며, `LABEL_MATCH_SAVE_DIR`로 override할 수 있다.
 
 ## 주요 기능
 
 - 엄격한 compact `PHS=2` 현품표를 한 번 스캔해 중앙 이적 멤버십을 조회하고 포장 준비 상태로 만든다.
-- 필요할 때만 F4에서 교체 대상과 같은 품목의 양품을 차례로 스캔한다. 실제 대상 멤버 수 이내의 목록을 확인·수정·삭제한 뒤 **교체 적용** 한 번으로 서버에서 원자 교체하며, 3쌍 이상은 추가 capability가 필요하다. 원본 PHS2는 유지하며 재봉인 QR은 화면에서 확인하는 전자 증거다.
-- F3으로 랩핑 완료를 확정하면 durable outbox intent와 로컬 완료 이벤트를 먼저 flush한 뒤 성공을 표시한다. 중앙 ACK는 같은 idempotency key로 due/공정 자동 재시도하며, pending은 다음 준비 작업을 막지 않고 conflict는 로컬 완료를 되돌리지 않은 채 `OPERATOR_REVIEW`로 격리한다.
-- 중앙에서 분류되지 않은 입력은 fail-closed로 거부한다. 과거 5단계 입력은 명시적인 레거시 호환 경로에서만 처리한다.
+- 교환 카드·단추 → 불량 대상 → 대체품을 스캔한다. 로컬 기록을 먼저 저장하고 완료 outbox에서 기존 원자 교환 전송을 수행한다. 원본 PHS2는 유지하고 재봉인 영수증을 전자 증거로 검증한다.
+- 다섯 번째 제품 스캔으로 완료하면 durable outbox intent와 로컬 완료 이벤트를 먼저 flush한 뒤 성공을 표시한다. 중앙 ACK는 같은 idempotency key로 due/공정 자동 재시도하며, pending은 다음 준비 작업을 막지 않고 conflict는 로컬 완료를 되돌리지 않은 채 `OPERATOR_REVIEW`로 격리한다.
+- 중앙 구성원을 알면 표본을 대조하고, 아직 모르면 로컬 스캔을 계속 받는다. 배경 검증 충돌은 해당 완료만 격리한다. 과도기 레거시 라벨의 최종 날짜 규칙은 유지한다.
 - `assets/Item.csv`를 기준으로 품목명/규격 정보를 조회한다.
 - 신규 `CLC|SPC|PHS` 형식과 생산일자 `6D` 필드 중심의 레거시 검증 로직도 호환용으로 포함한다.
 - 사운드 피드백, 히스토리/집계 UI, 완료 트레이 취소를 제공한다.
@@ -65,9 +65,9 @@ python -m pytest -q -p no:cacheprovider <changed-test-node>
 - `README.txt`는 `validation_rules.csv` 기반 규칙을 설명하지만 현재 폴더에는 해당 파일이 없고 실제 코드는 `assets/Item.csv` 중심이다.
 - GUI 실행은 사운드 장치, `%ProgramData%\KMTech\Label_Match\data` 쓰기 권한, GitHub 업데이트 네트워크 접근의 영향을 받는다.
 - 단일 대형 파일이므로 기능 수정 전 관련 메서드와 상태 변수 흐름을 먼저 찾아야 한다.
-- S05에서 호출되지 않는 옛 UI builder와 보조 함수를 제거했다. 현재 `main` → guarded application → `_create_widgets` 경로 및 F1/F4/F3 계약을 유지하며, 작업 결과와 범위는 `docs/spec/operations.md#s05-simplification`을 따른다.
+- S05에서 호출되지 않는 옛 UI builder와 보조 함수를 제거했다. 현재 `main` → guarded application → `_create_widgets` 경로 및 F1 및 스캐너 명령 계약을 사용하며, 작업 결과와 범위는 `docs/spec/operations.md#s05-simplification`을 따른다.
 - 중앙 표준 경로에서 첫 입력은 compact PHS2만 허용한다. sealed transfer QR을 첫 물리 입력으로 쓰거나 제품 3개·최종 라벨·F4 전량 재스캔을 요구하는 변경은 현재 계약의 역행이다.
-- F4 교체, F3 로컬 commit, outbox 재전송, 중앙 ACK, 충돌 격리는 하나의 완료 계약이다. outbox intent와 로컬 이벤트의 durable write보다 성공 표시가 앞서면 안 되며, 중앙 ACK 실패 때문에 이미 commit된 로컬 완료를 취소해서도 안 된다.
+- 스캐너 교환, 다섯 번째 로컬 commit, outbox 재전송, 중앙 ACK, 충돌 격리는 하나의 완료 계약이다. outbox intent와 로컬 이벤트의 durable write보다 성공 표시가 앞서면 안 되며, 중앙 ACK 실패 때문에 이미 commit된 로컬 완료를 취소해서도 안 된다.
 - PHS2 작업과 outbox는 날짜가 바뀌어도 보존·복구해야 한다. 여러 PC가 같은 PHS2를 동시에 제출하면 중앙 CAS/idempotency 판정에 따라 한 작업만 완료되고 나머지는 충돌로 격리되어야 한다.
 - 스캔 순서와 상태 저장 로직은 운영 중단 복구와 연결되어 있어 단순 UI 변경도 데이터 흐름을 확인한다.
 - 저장소 상태 메모는 시간 민감 정보다. 작업 전 `git status -sb`와 remote 상태를 새로 확인한다.

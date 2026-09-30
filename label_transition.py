@@ -138,13 +138,18 @@ def _transition_compact_label(text):
 
     fields = {}
     parts = str(text or "").strip().split("|")
-    for part, expected in zip(parts, _TRANSITION_COMPACT_KEYS):
+    expected_keys = _TRANSITION_COMPACT_KEYS
+    if len(parts) == 7:
+        if not re.fullmatch(r"QT=[1-9][0-9]{0,3}", parts[-1]):
+            return False
+        expected_keys += ("QT",)
+    for part, expected in zip(parts, expected_keys):
         key, separator, value = part.partition("=")
         if key.strip() != expected or not separator or "=" in value or not value.strip():
             return False
         fields[expected] = value.strip()
     return (
-        len(parts) == len(_TRANSITION_COMPACT_KEYS)
+        len(parts) == len(expected_keys)
         and fields["PHS"] == "2"
         and fields["SRC"].upper() == "KMTECH_INPUT_TAG"
         and re.fullmatch(r"[0-9A-Fa-f]{16}", fields["HSH"]) is not None

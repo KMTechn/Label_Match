@@ -6,6 +6,7 @@ import io
 import itertools
 from pathlib import Path
 import random
+import re
 import runpy
 
 import pytest
@@ -86,6 +87,20 @@ def assert_parity(raw):
         (port.parse_compact_carrier, BASELINE['_label_match_parse_compact_phs2']),
         (parse_raw_port, BASELINE['parse_compact_phs2']),
     ):
+        # DESIGN §1.4: QT extends only the strict compact contract; preserve
+        # the frozen six-field behavior and all other differential vectors.
+        if current in (app._label_match_parse_compact_phs2, port.parse_compact_carrier,
+                       workflow.parse_compact_phs2, parse_raw_port):
+            try:
+                text = str(raw or "") if current in (workflow.parse_compact_phs2, parse_raw_port) else port.decode_carrier_scan(raw)
+            except ValueError:
+                text = ""  # Both baseline and current retain this malformed decode error.
+            parts = text.split("|")
+            if len(parts) == 7 and re.fullmatch(r"QT=[1-9][0-9]{0,3}", parts[-1]):
+                old_result, old_output = observe(old, "|".join(parts[:-1]))
+                if old_result[0] == "return":
+                    assert observe(current, raw) == (("return", dict(old_result[1], QT=parts[-1][3:])), old_output)
+                    continue
         assert observe(current, raw) == observe(old, raw), (current.__name__, raw)
 
 

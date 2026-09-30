@@ -408,7 +408,7 @@ def _replacement_waiting_payload(*, marked_at="2026-08-01T10:00:00"):
         assert draft.source_input_tag_hash_prefix == "0123456789abcdef"
 
 
-def test_central_one_scan_workflow_waits_for_explicit_package_complete():
+def test_central_label_workflow_waits_for_four_products():
     app = label_module.Label_Match.__new__(label_module.Label_Match)
     app.package_logistics_client = object()
     app.current_set_info = {
@@ -418,9 +418,9 @@ def test_central_one_scan_workflow_waits_for_explicit_package_complete():
     }
     app.history_view_updates_active_state = True
 
-    assert app._workflow_total_scan_count() == 1
-    assert app._workflow_final_label_position() == 1
-    assert app._next_action_text(1) == "랩핑 후 F3 포장 완료"
+    assert app._workflow_total_scan_count() == 5  # DESIGN §2 LM.
+    assert app._workflow_final_label_position() == 5
+    assert app._next_action_text(1) == "2/5 제품 1 스캔"
     assert label_module._label_match_manual_complete_block_reason(app.current_set_info) is None
 
 
@@ -429,7 +429,7 @@ def test_central_one_scan_workflow_waits_for_explicit_package_complete():
     [
         "PHS=1|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=0123456789abcdef",
         "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|HSH=0123456789abcdef",
-        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=0123456789abcdef|QT=4",
+        "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=0123456789abcdef|QT=04",
         "SRC=KMTECH_INPUT_TAG|PHS=2|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=0123456789abcdef",
         "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-1|CLC=ITEM000000001|LBL=LBL-1|HSH=not-hex-prefix",
     ],
@@ -586,7 +586,12 @@ def test_exact_rescan_operational_input_is_durably_recoverable(tmp_path):
     app.data_manager = manager
     app.status_label = FakeWidget()
     app._handle_input_error = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError(kwargs))
-    assert label_module.Label_Match._prompt_exact_rescan(app)
+    # DESIGN §9-b removes admission; a previously saved exact rescan still
+    # retains its durable recovery behavior and membership evidence.
+    assert not hasattr(label_module.Label_Match, "_prompt_exact_rescan")
+    app.current_set_info.update(exact_rescan_active=True, exact_rescan_complete=False,
+                                exact_rescan_barcodes=[])
+    app._render_operator_workbench()
     assert app._last_workflow_view.exact_rescan.status == "active"
     assert label_module.Label_Match._process_exact_rescan_product(app, "ITEM000000001-A")
     saved = manager.load_current_state()["current_set_info"]
@@ -4394,7 +4399,9 @@ def test_label_match_work_group_snapshot_draft_and_f4_block(split):
         lambda: network_starts.append(True)
     )
 
-    assert label_module.Label_Match._handle_f4_action(app) is False
+    app._save_current_set_state = lambda: True
+    label_module.Label_Match._handle_f4_action(app)
+    assert app.current_set_info["scanner_exchange_phase"] == "target"
     assert network_starts == []
 
 
@@ -4414,12 +4421,10 @@ def test_label_match_full_single_work_group_keeps_f4_path():
         lambda _action: False
     )
     prompts = []
-    app._prompt_sealed_transfer_exchange = (
-        lambda: prompts.append(True) or True
-    )
+    app._scanner_command = lambda command: prompts.append(command) or True
 
     assert label_module.Label_Match._handle_f4_action(app) is True
-    assert prompts == [True]
+    assert prompts == ["KMCMD:EXCHANGE"]
 
 
 def test_initial_phs2_scan_is_read_only_so_f4_remains_available(tmp_path):
@@ -4490,7 +4495,10 @@ def test_initial_phs2_scan_is_read_only_so_f4_remains_available(tmp_path):
     }
     app.run_tests = True
     app._current_sealed_transfer_exchange_attempt = lambda: None
-    assert app._prompt_sealed_transfer_exchange() is True
+    app._save_current_set_state = lambda: True
+    app.update_big_display = lambda *_args: None
+    app._start_scanner_exchange()
+    assert app.current_set_info["scanner_exchange_phase"] == "target"
     assert issue_calls == []
 
 
@@ -4625,7 +4633,7 @@ def test_f3_restart_offline_reuses_exact_durable_prefetched_lease(tmp_path):
     )["status"] == "LOCAL_COMPLETED"
 
 
-def test_label_match_offline_f4_fails_closed_without_local_package_mutation():
+def test_label_match_offline_exchange_card_persists_phase_without_package_mutation():
     app = label_module.Label_Match.__new__(label_module.Label_Match)
     original = {
         "id": "SET-OFFLINE-F4",
@@ -4649,10 +4657,12 @@ def test_label_match_offline_f4_fails_closed_without_local_package_mutation():
     app.package_logistics_client = None
     app._current_sealed_transfer_exchange_attempt = lambda: None
 
-    assert (
-        label_module.Label_Match._prompt_sealed_transfer_exchange(app)
-        is False
-    )
+    saved = []
+    app._save_current_set_state = lambda: saved.append(copy.deepcopy(app.current_set_info)) or True
+    app.update_big_display = lambda *_args: None
+    app._start_scanner_exchange()
+    assert saved[-1]["scanner_exchange_phase"] == "target"
+    assert app.current_set_info.pop("scanner_exchange_phase") == "target"
     assert app.current_set_info == original
 
 

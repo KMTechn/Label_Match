@@ -770,10 +770,8 @@
    "group": "boundary",
    "note": "an extra valid quantity",
    "expected": {
-    "kind": "MALFORMED",
-    "reasons": [
-     "FORMAT_INVALID"
-    ],
+    "kind": "NEW",
+    "reasons": [],
     "item_code": "AAA2270710000"
    }
   },

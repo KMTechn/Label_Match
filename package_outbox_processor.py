@@ -25,6 +25,7 @@ from package_command_draft import (
     membership_hash,
 )
 from package_errors import PackageApiError, PackageLogisticsError, PackageTransportError
+from terminal_operation_lease import OperationLeaseError
 
 if TYPE_CHECKING:
     from package_logistics import PackageLogisticsClient, PackageOutbox
@@ -34,10 +35,12 @@ class PackageOutboxProcessor:
         self,
         outbox: PackageOutbox,
         client: PackageLogisticsClient,
+        *, prepare_scanner_delivery=None,
     ):
         self.outbox = outbox
         self.client = client
         self._drain_lock = threading.Lock()
+        self.prepare_scanner_delivery = prepare_scanner_delivery
 
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0}
@@ -65,10 +68,22 @@ class PackageOutboxProcessor:
                         if receipt is None:
                             receipt = self.client.create_package(command)
                     else:
+                        if draft.scanner_only:
+                            if not callable(self.prepare_scanner_delivery):
+                                raise PackageTransportError("scanner package delivery is not ready")
+                            draft = self.prepare_scanner_delivery(draft)
                         source_id, command = self.client.build_create_package_command(
                             draft, idempotency_key=key
                         )
-                        self.outbox.save_command(key, source_id, command)
+                        if draft.scanner_only:
+                            command["payload"].update(
+                                scan_payload=draft.scan_payload,
+                                local_completion_id=draft.set_id, local_completed_at=draft.local_completed_at,
+                                deferred_reflection=True, short_confirmed=draft.short_confirmed,
+                                exchange_idempotency_keys=[row["idempotency_key"] for row in draft.scanner_exchanges])
+                            self.outbox.save_command(key, source_id, command, delivery_draft=draft)
+                        else:
+                            self.outbox.save_command(key, source_id, command)
                         receipt = self.client.create_package(command)
                     self._validate_receipt(draft, source_id, receipt, command=command)
                     consumption = (
@@ -95,6 +110,9 @@ class PackageOutboxProcessor:
                             ),
                         )
                         counts["conflict"] += 1
+                    elif exc.status_code == 409 and exc.code == "UPSTREAM_COMPLETION_PENDING" and exc.retryable is True:
+                        self.outbox.mark_retry(key, exc)
+                        counts["retry"] += 1
                     elif (
                         exc.status_code not in {409, 412}
                         and (
@@ -117,7 +135,7 @@ class PackageOutboxProcessor:
                 except PackageTransportError as exc:
                     self.outbox.mark_retry(key, exc)
                     counts["retry"] += 1
-                except PackageLogisticsError as exc:
+                except (PackageLogisticsError, OperationLeaseError) as exc:
                     self.outbox.mark_conflict(
                         key,
                         exc,
@@ -250,6 +268,12 @@ class PackageOutboxProcessor:
                 barcode_membership_hash(draft.exact_rescan_barcodes)
             )
         _attach_operation_lease(expected_payload, draft)
+        if draft.scanner_only:
+            expected_payload.update(
+                scan_payload=draft.scan_payload, local_completion_id=draft.set_id,
+                local_completed_at=draft.local_completed_at, deferred_reflection=True,
+                short_confirmed=draft.short_confirmed,
+                exchange_idempotency_keys=[pair["idempotency_key"] for pair in draft.scanner_exchanges])
         if (
             not group_id
             or source_identity != group_id

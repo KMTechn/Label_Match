@@ -1,5 +1,15 @@
 # Label_Match 데이터·통합 계약
 
+<a id="scanner-only-packaging"></a>
+
+현품표 1장 + 상단 제품 4개를 받아 다섯 번째에서 자동 내구 완료한다. 새 PHS2의 네 제품 자리는 같은 품목·중복·알려진 구성원을 검사하며 마지막 자리에 추가 길이·생산일자 조건을 두지 않는다. 옛 현품표의 과도기 조건은 유지한다. 중앙 조회는 배경이고 무응답·단절에도 스캔과 로컬 완료를 받는다. 로컬 intent → 완료 CSV flush → commit marker → 표시 순서를 지키고 같은 key로 교환 ACK → source 확인 → 서명 lease → CREATE_PACKAGE를 배경 전송한다. 늦은 표본 불일치는 해당 outbox만 OPERATOR_REVIEW로 남기며 로컬 완료를 취소하지 않는다.
+
+KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체품을 받아 연결된 로컬 교환 기록을 먼저 저장한다. KMCMD:UNDO/취소 단추는 미완료 세트의 마지막 입력을 되돌린다. 같은 현품표 재스캔은 제품이 하나 이상 있을 때 미달을 확정하며 직전 같은 현품표의 3초 이내 중복 읽기는 짧은 소리로 무시한다. 미달은 다른 소리와 큰 글씨 부족 N개로 확정을 표시하고 다음 현품표 또는 종료 전까지 UNDO로 복원한다. 이 구간에서는 중앙 전송을 하지 않으며 다음 현품표 또는 종료 때 기존 outbox에 넘긴다. 기록 삭제·UNKNOWN 재분류는 하지 않는다. F3 수동 완료·확인 창·F4 교체 창·새 봉인 QR 물리 확인은 제거했다.
+
+확정 계약은 w9scanonly CONTRACT.md v1.2(SHA256 CAF67E54B3D0622F5BE6748B84CA53312E3AAB9FDB17FE4FEAF7E4205370AACE)이다. 요청 공통 필드는 원본 scan_payload, local_completion_id, local_completed_at, deferred_reflection=true이며 포장은 short_confirmed, sample_barcodes, exchange_idempotency_keys를 추가한다. 교환은 SCAN_REGISTER_GOOD와 old_barcode/new_barcode, exchanged_at을 전송하며 기존 전체 대상 구성원·CAS·봉인 증거를 보존한다. 응답의 pairs에는 old/new_unit_id, new_source_bundle_id, new_source_kind가 있고 source_membership_changes는 최상위에 둔다. UPSTREAM_COMPLETION_PENDING+retryable=true는 동일 key 재시도, COMPLETION_REVIEW_REQUIRED는 그 건의 확인 상태다.
+
+
+
 <a id="legacy-label-transition"></a>
 
 제품 자리에 현품표(옛 13자리·옛 QR·PHS2·ITG/TRF)가 오면 공통 carrier/transition 판별로 오류음과 창 안 안내를 내고 그 입력만 무시한다. 이미 받은 스캔·세트·중복 집합·완료 원장·outbox를 유지하며 다음 정상 제품을 즉시 받는다. 오류 확인 스캔이나 리셋은 필요하지 않다(P2).

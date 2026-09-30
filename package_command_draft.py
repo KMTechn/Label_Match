@@ -204,6 +204,11 @@ class PackageCommandDraft:
     operation_lease_fence: int = 0
     operation_lease_snapshot_hash: str = ""
     operation_lease_completed_at: str = ""
+    scanner_only: bool = False
+    scan_payload: str = ""
+    local_completed_at: str = ""
+    short_confirmed: bool = False
+    scanner_exchanges: tuple[Mapping[str, Any], ...] = ()
 
     @classmethod
     def build(
@@ -248,6 +253,11 @@ class PackageCommandDraft:
         operation_lease_fence: int = 0,
         operation_lease_snapshot_hash: str = "",
         operation_lease_completed_at: str = "",
+        scanner_only: bool = False,
+        scan_payload: str = "",
+        local_completed_at: str = "",
+        short_confirmed: bool = False,
+        scanner_exchanges: Iterable[Mapping[str, Any]] = (),
     ) -> "PackageCommandDraft":
         normalized_set_id = str(set_id or "").strip()
         normalized_item = str(item_code or "").strip()
@@ -356,7 +366,14 @@ class PackageCommandDraft:
             )
         if mode not in MEMBERSHIP_MODES:
             raise PackageLogisticsError("membership_mode must be INHERIT_ALL or EXACT_RESCAN")
-        sample_error = carrier_identity.legacy_qa_sample_error(raw_samples)
+        sample_error = (
+            "scanner package requires four unique samples, or one to three confirmed short samples"
+            if scanner_only and (not raw_samples or any(not value for value in raw_samples)
+                or len(set(raw_samples)) != len(raw_samples)
+                or (not 1 <= len(raw_samples) <= 3 if short_confirmed else len(raw_samples) != 4))
+            else None if scanner_only
+            else carrier_identity.legacy_qa_sample_error(raw_samples)
+        )
         if sample_error:
             raise PackageLogisticsError(sample_error)
         exact = canonical_barcodes(raw_exact)
@@ -402,6 +419,11 @@ class PackageCommandDraft:
             external_label=final_label,
             membership_mode=mode,
             sample_barcodes=canonical_barcodes(raw_samples),
+            scanner_only=scanner_only,
+            scan_payload=str(scan_payload or ""),
+            local_completed_at=str(local_completed_at or ""),
+            short_confirmed=bool(short_confirmed),
+            scanner_exchanges=tuple(_json_clone_mapping(row, field_name="scanner_exchange") for row in scanner_exchanges),
             source_input_tag_label_id=source_input_tag_label,
             source_input_tag_hash_prefix=source_input_tag_hash,
             source_canonical_input_tag_qr=canonical_input_tag_qr,
@@ -462,7 +484,7 @@ class PackageCommandDraft:
         ).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "set_id": self.set_id,
             "item_code": self.item_code,
             "source_bundle_id": self.source_bundle_id,
@@ -503,3 +525,8 @@ class PackageCommandDraft:
             "operation_lease_snapshot_hash": self.operation_lease_snapshot_hash,
             "operation_lease_completed_at": self.operation_lease_completed_at,
         }
+        if self.scanner_only:
+            data.update(scanner_only=True, scan_payload=self.scan_payload, local_completed_at=self.local_completed_at,
+                        short_confirmed=self.short_confirmed,
+                        scanner_exchanges=[dict(row) for row in self.scanner_exchanges])
+        return data

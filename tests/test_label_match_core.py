@@ -220,7 +220,7 @@ def test_central_inherit_all_phs2_scan_stages_without_auto_finalize():
     app.update_big_display = lambda *args, **kwargs: None
     app._update_status_label = lambda: None
     app._update_history_tree_in_progress = lambda: None
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
     app._render_operator_workbench = lambda: None
     finalized = []
     app._finalize_set = lambda *args, **kwargs: finalized.append((args, kwargs))
@@ -277,14 +277,14 @@ def test_compact_phs2_stays_one_scan_fail_closed_when_central_client_is_missing(
     app._play_sound = lambda *args, **kwargs: None
     app._update_status_label = lambda: None
     app._update_history_tree_in_progress = lambda: None
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
     app._render_operator_workbench = lambda: None
 
     module.Label_Match.process_input(app)
 
     assert app.current_set_info["raw"] == [master]
     assert app.current_set_info["central_inherit_all"] is True
-    assert app._workflow_total_scan_count() == 1
+    assert app._workflow_total_scan_count() == 5
 
 
 @pytest.mark.parametrize("central_client", [True, False])
@@ -422,7 +422,7 @@ def test_restored_phs2_cannot_fall_back_to_legacy_partial_via_exact_rescan_flags
     app.package_logistics_client = object()
 
     assert app._central_inherit_all_active() is True
-    assert app._workflow_total_scan_count() == 1
+    assert app._workflow_total_scan_count() == 5
     assert module._label_match_manual_complete_block_reason(stale) == (
         "central_package_legacy_exact_rescan_state_invalid"
     )
@@ -436,8 +436,7 @@ def test_restored_phs2_cannot_fall_back_to_legacy_partial_via_exact_rescan_flags
     app._finalize_set = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError("stale central PHS2 must not use legacy local finalize")
     )
-    app._prompt_manual_complete()
-    assert blocked_updates == [True]
+    assert not hasattr(module.Label_Match, "_prompt_manual_complete")  # scanner-only decision: F3 removed
 
     migrated = app._migrate_restored_central_package_state(stale)
     assert migrated["central_inherit_all"] is True
@@ -461,15 +460,11 @@ def test_standard_operator_copy_describes_one_phs2_and_atomic_replacement():
     assert app._idle_instruction_text() == "PHS2 현품표 1장 스캔"
     assert app._standard_phs2_workflow_expected() is True
     hint = app._operator_workflow_hint_text()
-    scan, replacement, completion = hint.split("→")
-    assert "현품표" in scan and "1회 스캔" in scan
-    assert "필요 시" in replacement and "제품 교체" in replacement
-    assert "F4" in replacement
-    assert "랩핑 후" in completion and "포장 완료" in completion
-    assert "F3" in completion
-    assert "새 전자 QR을 확인" in hint
-    assert "원본 현품표는 유지" in hint
-    for legacy_step in ("5단계", "제품 3개", "최종 라벨", "전체 재스캔"):
+    # DESIGN §2 LM: label + four products and cards replace F3/F4 prompts.
+    assert "현품표 1 + 상단 제품 4" in hint
+    assert "다섯 번째 스캔에서 자동 완료" in hint
+    assert "교환/취소 카드 또는 단추" in hint
+    for legacy_step in ("F3", "F4", "최종 라벨", "전체 재스캔"):
         assert legacy_step not in hint
     presentation_source = app._workflow_view_source()
     assert presentation_source["central_inherit_all"] is True
@@ -485,7 +480,7 @@ def test_legacy_operator_copy_is_explicitly_isolated_from_standard_phs2():
 
     assert app._idle_instruction_text() == "1/5 현품표 스캔 (레거시)"
     assert app._standard_phs2_workflow_expected() is False
-    assert app._operator_workflow_hint_text().startswith("레거시 전용:")
+    assert "현품표 1 + 상단 제품 4" in app._operator_workflow_hint_text()
 
 
 def test_default_sound_config_starts_counting_on_master_scan():
@@ -1202,108 +1197,71 @@ def test_manual_complete_policy_requires_clean_partial_product_scan():
     assert reason({"raw": ["MASTER", "PRODUCT_1"], "error_count": 1}) == "manual_complete_blocked_after_error"
 
 
-def test_prompt_manual_complete_blocks_while_viewing_past_history(monkeypatch):
+def test_removed_f3_blocks_while_viewing_past_history():
+    """CONTRACT §5/§6: F3 cannot finalize; samples or a label rescan do."""
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
-    app.initialized_successfully = True
-    app.history_active_load_pending = False
+    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"]}
     app.history_view_updates_active_state = False
-    app.run_tests = False
-    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"], "error_count": 0, "has_error_or_reset": False}
-    app.status_label = _FakeLabel()
-    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("manual complete should not finalize")
-    )
-    warnings = []
-    monkeypatch.setattr(module.messagebox, "showwarning", lambda *args, **kwargs: warnings.append((args, kwargs)))
-
-    module.Label_Match._prompt_manual_complete(app)
-
-    assert warnings
-    assert "과거 기록 조회 중" in warnings[0][0][1]
+    app._finalize_set = lambda *a, **k: (_ for _ in ()).throw(AssertionError("F3 must not finalize"))
+    assert app._handle_workflow_shortcut("f3") == "break"
+    assert app.current_set_info["raw"] == ["MASTER", "PRODUCT_1"]
+    assert not hasattr(module.Label_Match, "_prompt_manual_complete")
 
 
-def test_prompt_manual_complete_blocks_while_today_history_load_is_pending():
+
+def test_removed_f3_blocks_while_today_history_load_is_pending():
+    """CONTRACT §5/§6: F3 cannot finalize; samples or a label rescan do."""
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
-    app.initialized_successfully = True
+    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"]}
     app.history_active_load_pending = True
-    app.history_view_updates_active_state = True
-    app.run_tests = True
-    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"], "error_count": 0, "has_error_or_reset": False}
-    app.status_label = _FakeLabel()
-    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("manual complete should not finalize")
-    )
-
-    module.Label_Match._prompt_manual_complete(app)
-
-    assert "오늘 기록을 불러오는 중" in app.status_label.kwargs["text"]
+    app._finalize_set = lambda *a, **k: (_ for _ in ()).throw(AssertionError("F3 must not finalize"))
+    assert app._handle_workflow_shortcut("f3") == "break"
+    assert app.current_set_info["raw"] == ["MASTER", "PRODUCT_1"]
+    assert not hasattr(module.Label_Match, "_prompt_manual_complete")
 
 
-def test_prompt_manual_complete_calls_finalize_for_clean_partial_set():
+
+def test_removed_f3_preserves_clean_partial_set():
+    """CONTRACT §5/§6: F3 cannot finalize; samples or a label rescan do."""
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
-    app.Results = module.Label_Match.Results
-    app.initialized_successfully = True
-    app.history_active_load_pending = False
+    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"]}
     app.history_view_updates_active_state = True
-    app.run_tests = True
-    app.current_set_info = {"raw": ["MASTER", "PRODUCT_1"], "error_count": 0, "has_error_or_reset": False}
-    calls = []
-    app._finalize_set = lambda *args, **kwargs: calls.append((args, kwargs))
-    app._update_manual_complete_button_state = lambda: (_ for _ in ()).throw(
-        AssertionError("button state should not update for allowed manual completion")
-    )
-
-    module.Label_Match._prompt_manual_complete(app)
-
-    assert calls == [((module.Label_Match.Results.PASS,), {"is_manual_complete": True})]
+    app.history_active_load_pending = False
+    app._finalize_set = lambda *a, **k: (_ for _ in ()).throw(AssertionError("F3 must not finalize"))
+    assert app._handle_workflow_shortcut("f3") == "break"
+    assert app.current_set_info["raw"] == ["MASTER", "PRODUCT_1"]
+    assert not hasattr(module.Label_Match, "_prompt_manual_complete")
 
 
-def test_prompt_manual_complete_treats_one_phs2_as_full_package_not_partial():
+
+def test_removed_f3_leaves_one_phs2_waiting_for_four_products():
+    """CONTRACT §5/§6: F3 cannot finalize; samples or a label rescan do."""
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
-    app.Results = module.Label_Match.Results
-    app.initialized_successfully = True
-    app.history_active_load_pending = False
-    app.history_view_updates_active_state = True
-    app.run_tests = True
-    app.current_set_info = {
-        "raw": [
-            "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-F3|CLC=AAA2270730100|"
-            "LBL=LBL-F3|HSH=0123456789abcdef"
-        ],
-        "parsed": ["AAA2270730100"],
-        "central_inherit_all": True,
-        "error_count": 0,
-        "has_error_or_reset": False,
-    }
-    calls = []
-    app._finalize_set = lambda *args, **kwargs: calls.append((args, kwargs))
-
-    module.Label_Match._prompt_manual_complete(app)
-
-    assert calls == [((module.Label_Match.Results.PASS,), {"is_manual_complete": False})]
+    master = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=TAG-1|CLC=ITEM-1|LBL=LABEL-1|HSH=0123456789abcdef"
+    app.current_set_info = {"raw": [master], "central_inherit_all": True}
+    app._finalize_set = lambda *a, **k: (_ for _ in ()).throw(AssertionError("F3 must not finalize"))
+    assert app._handle_workflow_shortcut("f3") == "break"
+    assert app.current_set_info["raw"] == [master]
+    assert app._workflow_total_scan_count() == 5
+    assert not hasattr(module.Label_Match, "_prompt_manual_complete")
 
 
-def test_prompt_manual_complete_rejects_unscanned_or_full_sets_without_finalizing():
+
+@pytest.mark.parametrize("raw", [[], ["MASTER", "P1", "P2", "P3", "P4"]])
+def test_removed_f3_rejects_unscanned_or_full_sets_without_finalizing(raw):
+    """CONTRACT §5/§6: F3 cannot finalize; samples or a label rescan do."""
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
-    app.initialized_successfully = True
-    app.history_active_load_pending = False
-    app.history_view_updates_active_state = True
-    app.run_tests = True
-    app.current_set_info = {"raw": ["MASTER"], "error_count": 0, "has_error_or_reset": False}
-    updates = []
-    app._update_manual_complete_button_state = lambda: updates.append("updated")
-    app._finalize_set = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("blocked manual complete should not finalize")
-    )
+    app.current_set_info = {"raw": raw.copy()}
+    app._finalize_set = lambda *a, **k: (_ for _ in ()).throw(AssertionError("F3 must not finalize"))
+    assert app._handle_workflow_shortcut("f3") == "break"
+    assert app.current_set_info["raw"] == raw
+    assert not hasattr(module.Label_Match, "_prompt_manual_complete")
 
-    module.Label_Match._prompt_manual_complete(app)
-
-    assert updates == ["updated"]
 
 
 def test_history_display_keeps_master_label_full_text_when_narrow():
@@ -2217,7 +2175,7 @@ def test_durable_commit_block_hides_raw_error_and_disables_next_work():
     notice = app._workflow_blocking_notice
     assert notice.kind == "submission_blocked"
     assert notice.tone == "danger"
-    assert notice.title == "1/1 유지 · 로컬 기록 저장 필요"
+    assert notice.title == "1/5 유지 · 로컬 기록 저장 필요"
     assert "로컬 완료 기록" in notice.message
     assert "관리자" in notice.message
     assert rendered == [True]
@@ -3170,7 +3128,7 @@ def test_new_format_unique_master_duplicate_blocks_base64_and_decoded_equivalent
     app.items_data = {}
     app.update_big_display = lambda *args, **kwargs: None
     app._update_manual_complete_button_state = lambda: None
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
 
     module.Label_Match.process_input(app)
 
@@ -3233,7 +3191,7 @@ def test_completed_phs2_remains_duplicate_blocked_until_central_cancel():
     app._play_sound = lambda *args, **kwargs: None
     app._update_status_label = lambda: None
     app._update_history_tree_in_progress = lambda: None
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
     app._update_manual_complete_button_state = lambda: None
 
     module.Label_Match.process_input(app)
@@ -4749,7 +4707,7 @@ def test_active_package_submission_recovers_local_completion_without_waiting_for
     }
     app.package_outbox = Outbox()
     app.data_manager = object()
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
     notices = []
     app._set_active_package_submission_notice = lambda row: notices.append(row) or False
     finalized = []
@@ -6344,7 +6302,7 @@ def test_process_input_accepts_literal_gs_final_label_and_writes_tray_complete()
     app._play_sound = lambda *args, **kwargs: None
     app._update_status_label = lambda: None
     app._update_history_tree_in_progress = lambda: None
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
     app._update_summary_tree = lambda: None
     app._reset_current_set = lambda *args, **kwargs: None
     app.after = lambda *args, **kwargs: None

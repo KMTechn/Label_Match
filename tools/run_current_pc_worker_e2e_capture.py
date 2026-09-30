@@ -300,7 +300,7 @@ def main(argv=None):
         scan(app, manual_master)
         scan(app, f"PRODUCT_{manual_master}_1")
         capture("manual_complete_ready")
-        app._prompt_manual_complete()
+        scan(app, manual_master)  # same-label shortage confirmation
         pump(app, 0.5)
         capture("manual_complete_done")
         steps.append({"name": "manual_complete_partial", "status": "PASS", "master": manual_master})

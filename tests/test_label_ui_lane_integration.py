@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from copy import deepcopy
 from types import SimpleNamespace
 import threading
 import time
@@ -23,6 +24,23 @@ from tk_serial_ui_lane import (
     LaneTask,
     TkSerialUiLane,
 )
+
+
+@pytest.fixture(autouse=True)
+def _close_test_lanes_even_after_assertion_failure(monkeypatch):
+    """Failing UI assertions must not leave non-daemon queue workers alive."""
+    lanes = []
+    original = TkSerialUiLane.__init__
+    def create(lane, root, *args, **kwargs):
+        original(lane, root, *args, **kwargs)
+        lanes.append((lane, root))
+    monkeypatch.setattr(TkSerialUiLane, "__init__", create)
+    yield
+    for lane, root in reversed(lanes):
+        if lane.state is not LaneState.CLOSED:
+            if lane.is_busy():
+                root.run_until(lambda: not lane.is_busy(), timeout=5)
+            lane.close_idle()
 
 
 def _app_with_lane():
@@ -145,101 +163,41 @@ def test_terminal_lane_preserves_remaining_scan_admission_gate(remaining_gate):
         gate.set()
         root.run_until(lambda: not app.ui_lane.is_busy())
         assert app.ui_lane.state == LaneState.IDLE
-        assert app.entry.options["state"] == "disabled"
+        assert app.entry.options["state"] == ("normal" if remaining_gate == "staged" else "disabled")
     finally:
         gate.set()
         _close_lane(app, root)
 
 
-def test_phs2_capture_validation_runs_off_tk_and_materializes_on_tk():
+def test_phs2_checkpoint_precedes_background_lookup_without_locking_the_scan_lane():
+    """DESIGN §1.1/§2 LM: local capture first, source read off Tk, no lane wait."""
     app, root = _app_with_lane()
     owner = root.owner_thread_id
-    thread_trace = []
-    capture = SimpleNamespace(intent_id="intent-1")
-    claim = DeferredValidationClaim(
-        intent_id="intent-1",
-        worker_id="validator",
-        fence=1,
-        validation_generation=1,
-        validation_attempt_count=1,
-        claim_expires_at="2099-01-01T00:00:00Z",
-        payload={},
-    )
-    result = DeferredValidationResult(
-        intent_id="intent-1",
-        state="VALIDATED",
-        outcome="VALID",
-        reason_code="ORDERED_LABEL_VALIDATION_VALID",
-        observed_at="2026-09-01T00:00:00Z",
-    )
-    materialization = {
-        "intent_id": "intent-1",
-        "local_work_identity": "set-1",
-        "evidence": object(),
-        "snapshot": {},
-        "sealed": None,
-        "operation_lease": {},
-    }
-
-    def capture_scan(*_args):
-        thread_trace.append(("capture", threading.get_ident()))
-        return capture
-
-    def prepare(_capture):
-        thread_trace.append(("prepare", threading.get_ident()))
-        return claim
-
-    def execute(_claim, *, return_materialization=False):
-        assert return_materialization is True
-        thread_trace.append(("execute", threading.get_ident()))
-        return result, materialization
-
-    def materialize(value):
-        thread_trace.append(("materialize", threading.get_ident()))
-        assert value is result
-        assert app._deferred_label_materialization is materialization
-        return True
-
-    app._capture_central_phs2_scan = capture_scan
-    app._prepare_deferred_label_validation = prepare
-    app._execute_deferred_label_validation = execute
-    app._materialize_validated_deferred_label = materialize
-    app._show_deferred_validation_result = lambda _value: pytest.fail(
-        "validated result should materialize"
-    )
-    app._show_deferred_capture_failure = lambda error: pytest.fail(str(error))
+    trace = []
+    app.after = root.after
+    app._capture_central_phs2_scan = lambda *_args: (trace.append(("capture", threading.get_ident())) or SimpleNamespace(intent_id="intent-1"))
     app._show_deferred_capture_pending = lambda *_args, **_kwargs: None
-    app.deferred_intent_capture = SimpleNamespace(
-        validation_status=lambda _intent_id: None
-    )
-    app._phs_label_scan_lookup_in_progress = False
+    def accept(raw, parsed, *, prepare_durable_state):
+        prepare_durable_state(app.current_set_info)
+        app.current_set_info.update(raw=[raw], parsed=[parsed])
+        trace.append(("checkpoint", threading.get_ident()))
+    app._update_on_success_scan = accept
+    app._resolve_central_phs2_scan_overlay = lambda *_args, **_kwargs: (
+        trace.append(("lookup", threading.get_ident())) or
+        (SimpleNamespace(state_fields=lambda: {}), {"members": []}, None, None))
+    app._save_current_set_state = lambda: trace.append(("snapshot", threading.get_ident())) or True
+    try:
+        assert app._begin_central_phs2_scan_overlay_on_lane("PHS2-RAW", "ITEM-1",
+            on_capture_committed=lambda: trace.append(("input-consumed", threading.get_ident())))
+        assert app.current_set_info["raw"] == ["PHS2-RAW"]
+        assert not app.ui_lane.is_busy() and app._ui_lane_busy_label == ""
+        root.run_until(lambda: not app.__dict__.get("_phs2_background_pending"))
+        assert trace.index(("capture", owner)) < trace.index(("checkpoint", owner)) < trace.index(("input-consumed", owner))
+        assert next(thread for name, thread in trace if name == "lookup") != owner
+        assert ("snapshot", owner) in trace
+    finally:
+        _close_lane(app, root)
 
-    started_at = time.perf_counter()
-    assert app._begin_central_phs2_scan_overlay_on_lane(
-        "PHS2-RAW",
-        "ITEM-1",
-        on_capture_committed=lambda: thread_trace.append(
-            ("input-consumed", threading.get_ident())
-        ),
-    ) is True
-    assert time.perf_counter() - started_at < 0.1
-    assert app._ui_lane_busy_label == "현품표 저장 · 중앙 확인 중"
-    root.run_until(lambda: not app.ui_lane.is_busy())
-
-    worker_ids = {
-        thread_id
-        for name, thread_id in thread_trace
-        if name in {"capture", "prepare", "execute"}
-    }
-    assert worker_ids == {app.ui_lane.worker_thread_id}
-    assert ("input-consumed", owner) in thread_trace
-    assert thread_trace.index(("capture", app.ui_lane.worker_thread_id)) < (
-        thread_trace.index(("input-consumed", owner))
-    )
-    assert ("materialize", owner) in thread_trace
-    assert app._phs_label_scan_lookup_in_progress is False
-    assert app._ui_lane_busy_label == ""
-    _close_lane(app, root)
 
 
 @pytest.mark.parametrize("mode", [
@@ -446,7 +404,7 @@ def test_f4_central_lookup_runs_off_tk_and_applies_on_tk():
     app._apply_resolved_central_phs2_seal = (
         lambda *_args: trace.append(("apply", threading.get_ident()))
     )
-    app._prompt_sealed_transfer_exchange = (
+    app._start_scanner_exchange = (
         lambda: trace.append(("prompt", threading.get_ident())) or True
     )
 
@@ -500,7 +458,7 @@ def test_f4_lease_and_pending_exchange_gate_runs_off_tk(legacy_direct_seal):
         trace.append(("pending-gate", threading.get_ident(), value["id"]))
         or None
     )
-    app._prompt_sealed_transfer_exchange = lambda **kwargs: (
+    app._start_scanner_exchange = lambda **kwargs: (
         trace.append(("prompt", threading.get_ident(), kwargs)) or True
     )
 
@@ -527,325 +485,100 @@ def test_f4_lease_and_pending_exchange_gate_runs_off_tk(legacy_direct_seal):
 
 
 @pytest.mark.parametrize("outcome", ["pending", "post_prepare_load_error", "prepare_error", "admission_error", "missing_members"])
-def test_f4_draft_requires_explicit_submit_and_freezes_one_lane_command(monkeypatch, tmp_path, outcome):
-    from copy import deepcopy
-    import sqlite3
-    from sealed_transfer_exchange import SealedTransferExchangeCoordinator, SealedTransferExchangeStore
-    from tests.test_label_operator_action_gates import FakeTree
-    from tests.test_sealed_transfer_exchange import BatchClient, _fields
-
-    app, root = _app_with_lane()
-    client = BatchClient(extension=outcome != "admission_error")
-    app.current_set_info = {
-        "id": "batch-set", "raw": ["original-physical-phs2"], "parsed": ["ITEM-001"],
-        "sealed_transfer": {**_fields(client.qr), "_seal_qr_payload": client.qr},
-        "package_source_snapshot": {
-            "full_single_transfer": True,
-            "work_group_source": {"members": [
-                {"unit_id": uid, "normalized_barcode": barcode}
-                for uid, barcode in zip(client.old_ids, client.old_barcodes, strict=True)
-            ]},
-        },
-    }
-    app.default_font_name = "Test Font"
-    app.run_tests = False
-    app.worker_name = "packer"
-    app.package_logistics_client = client
-    popup = Mock()
-    entry = Mock()
-    content = {"text": "", "scan": None, "selection": ()}
-    entry.get.side_effect = lambda: content["text"]
-    entry.delete.side_effect = lambda *_: content.update(text="")
-    entry.insert.side_effect = lambda _index, value: content.update(text=value)
-    entry.bind.side_effect = lambda _key, callback: content.update(scan=callback)
-    tree = FakeTree()
-    tree.pack = tree.column = tree.heading = tree.yview = Mock()
-    tree.selection = lambda: content["selection"]
-    buttons = {}
-    variables = []
-
-    def variable(**_kwargs):
-        value = Mock()
-        variables.append(value)
-        return value
-
-    def button(*_args, **kwargs):
-        widget = Mock()
-        buttons[kwargs["text"]] = (widget, kwargs["command"])
-        return widget
-
-    monkeypatch.setattr(label_module.simpledialog, "askinteger", lambda *_a, **_k: pytest.fail("upfront quantity dialog"))
-    monkeypatch.setattr(label_module.messagebox, "showerror", Mock())
-    monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
-    monkeypatch.setattr(label_module.tk, "StringVar", variable)
-    for name in ("Frame", "Label", "Scrollbar"):
-        monkeypatch.setattr(label_module.ttk, name, lambda *_a, **_k: Mock())
-    monkeypatch.setattr(label_module.ttk, "Entry", lambda *_a, **_k: entry)
-    monkeypatch.setattr(label_module.ttk, "Treeview", lambda *_a, **_k: tree)
-    monkeypatch.setattr(label_module.ttk, "Button", button)
-    captured = []
-    worker_gate = threading.Event()
-    store = SealedTransferExchangeStore(tmp_path / "ui-batch.db")
-    coordinator = SealedTransferExchangeCoordinator(store, client)
-
-    def prepare(**kwargs):
-        assert worker_gate.wait(2)
-        if outcome == "prepare_error":
-            raise OSError("prepare outcome unavailable")
-        result = coordinator.prepare(**kwargs)
-        captured.append(deepcopy(kwargs))
-        if outcome == "post_prepare_load_error":
-            def failed_load(_intent):
-                raise OSError("first load failed after durable prepare")
-            monkeypatch.setattr(store, "load", failed_load)
-        return result
-
-    app.sealed_transfer_exchange_coordinator = SimpleNamespace(
-        prepare=prepare,
-        attempt=(coordinator.attempt if outcome == "post_prepare_load_error"
-                 else lambda _intent: SimpleNamespace(status="RETRY_WAIT", retryable=True)),
-    )
-    if outcome == "missing_members":
-        app.current_set_info["package_source_snapshot"]["work_group_source"]["members"] = []
-    before = deepcopy(app.current_set_info)
+def test_scanner_exchange_is_durable_without_a_popup_or_submit(monkeypatch, tmp_path, outcome):
+    """DESIGN §1.2/§1.3/§2 LM replaces the F4 editor with a local pair."""
+    from tests.test_legacy_label_transition import _packaging_app, _scan, _close, MASTER
+    from tests.test_label_match_core import load_label_match_module
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    old, new = MASTER + "-OLD", MASTER + "-NEW"
+    from sealed_transfer_exchange import SealedTransferExchangeStore
+    app.sealed_transfer_exchange_store = SealedTransferExchangeStore(tmp_path / "package_logistics_outbox.sqlite3")
+    app._save_current_set_state = lambda: module.Label_Match._save_current_set_state(app)
+    monkeypatch.setattr(module.tk, "Toplevel", lambda *_a, **_k: pytest.fail("scanner flow opened a window"))
     try:
+        for value in [MASTER, old, "KMCMD:EXCHANGE"]:
+            _scan(module, app, value)
         if outcome == "missing_members":
-            assert not app._prompt_sealed_transfer_exchange(_lease_gate_checked=True, _pending_checked=True)
-            assert app.current_set_info == before and captured == [] and not buttons
-            label_module.messagebox.showerror.assert_called_once()
+            _scan(module, app, MASTER + "-OTHER")
+            assert app.current_set_info["raw"] == [MASTER, old]
+            assert app.current_set_info["scanner_exchange_phase"] == "target"
+            assert "scanner_exchanges" not in app.current_set_info
             return
-        assert app._prompt_sealed_transfer_exchange(_lease_gate_checked=True, _pending_checked=True)
-
-        def scan(value):
-            content["text"] = value
-            content["scan"]()
-
-        for i in range(3):
-            scan(f"OLD-{i}")
-            scan(f"NEW-{i}")
-        assert len(tree.get_children()) == 3
-        assert captured == [] and not app.ui_lane.is_busy()
-        content["selection"] = ("1",)
-        buttons["선택 삭제"][1]()
-        assert len(tree.get_children()) == 2
-        scan("OLD-1")
-        buttons["교체 적용"][1]()
-        assert captured == [] and not app.ui_lane.is_busy()
-        scan("CORRECTED")
-        buttons["교체 적용"][1]()
-        buttons["교체 적용"][1]()
-        assert app.ui_lane.is_busy()
-        # Even synthetic events cannot mutate the captured draft during dispatch.
-        scan("UNEXPECTED")
-        worker_gate.set()
-        root.run_until(lambda: not app.ui_lane.is_busy())
-        expected_intents = 0 if outcome in {"admission_error", "prepare_error"} else 1
-        assert len(captured) == expected_intents
-        if captured:
-            assert captured[0]["old_barcodes"] == ("OLD-0", "OLD-2", "OLD-1")
-            assert captured[0]["new_barcodes"] == ("NEW-0", "NEW-2", "CORRECTED")
-        with sqlite3.connect(store.db_path) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM sealed_transfer_exchange_intents").fetchone()[0] == expected_intents
-        assert content["text"] == "UNEXPECTED"
-        assert app.current_set_info == before
-        content["selection"] = ("0",)
-        buttons["선택 삭제"][1]()
-        assert len(tree.get_children()) == (2 if outcome == "admission_error" else 3)
-        buttons["교체 적용"][1]()
-        assert len(captured) == expected_intents and not app.ui_lane.is_busy()
-        if outcome in {"prepare_error", "post_prepare_load_error"}:
-            assert "접수되었을 수 있습니다" in variables[1].set.call_args.args[0]
+        _scan(module, app, old)
+        before = deepcopy(app.current_set_info)
+        if outcome == "prepare_error":
+            app._save_current_set_state = lambda: False
+        elif outcome == "post_prepare_load_error":
+            log = app.data_manager.log_event
+            def fail_event(event, details):
+                if details.get("scanner_exchange"):
+                    raise OSError("exchange CSV append unavailable")
+                return log(event, details)
+            app.data_manager.log_event = fail_event
+        elif outcome == "admission_error":
+            app.known_product_states = {new: {"quality": "NG"}}
+        _scan(module, app, new)
+        if outcome in {"prepare_error", "admission_error"}:
+            assert app.current_set_info == before
+            assert "scanner_exchanges" not in app.current_set_info
+        else:
+            assert app.current_set_info["raw"] == [MASTER, new]
+            saved = app.data_manager.load_current_state()["current_set_info"]
+            assert saved["raw"] == [MASTER, new]
+            assert saved["scanner_exchanges"] == app.current_set_info["scanner_exchanges"]
+            assert saved["scanner_exchanges"][0]["idempotency_key"]
+        assert app.sealed_transfer_exchange_store.blocking_rows() == []
     finally:
-        worker_gate.set()
-        _close_lane(app, root)
+        _close(app)
 
 
-@pytest.mark.parametrize("outcome", [
-    "success", "uncertain", "cancel", "changed_set", "drain_busy", "lease",
-    "receipt_refused", "fresh_refused", "replay_invalid", "sibling_review",
-])
-def test_f4_review_reuses_saved_list_and_requires_one_confirmed_idle_retry(monkeypatch, tmp_path, outcome):
-    from copy import deepcopy
+
+@pytest.mark.parametrize("outcome", ["success", "uncertain", "receipt_refused", "fresh_refused", "sibling_review"])
+def test_saved_exchange_retry_keeps_immutable_command_off_tk(monkeypatch, tmp_path, outcome):
+    """DESIGN §1.3/§2 LM retires popup editing; historical journal replay remains."""
     from package_logistics import PackageApiError, PackageTransportError
     from sealed_transfer_exchange import SealedTransferExchangeCoordinator
-    from tests.test_label_operator_action_gates import FakeTree
-    from tests.test_sealed_transfer_exchange import (
-        InstructionRecoveryClient, OLD_QR, OLD_IDS, OLD_BARCODES, _fields, _instruction_review,
-    )
-
+    from tests.test_sealed_transfer_exchange import InstructionRecoveryClient, _instruction_review
     store, intent_id, saved = _instruction_review(tmp_path, operator_retry=True)
     app, root = _app_with_lane()
-    app.current_set_info = {
-        "id": saved["set_id"], "raw": ["original-physical-phs2"], "parsed": ["ITEM-001"],
-        "sealed_transfer": {**_fields(), "_seal_qr_payload": OLD_QR},
-        "package_source_snapshot": {"work_group_source": {"members": [
-            {"unit_id": uid, "normalized_barcode": barcode}
-            for uid, barcode in zip(OLD_IDS, OLD_BARCODES, strict=True)
-        ]}},
-    }
-    original = deepcopy(app.current_set_info)
-    app.run_tests = False
-    app.default_font_name = "Test Font"
-    app.worker_name = "packer"
-    app.data_manager = SimpleNamespace(log_event=Mock())
-    app._prompt_new_seal_verification = Mock()
-    app._operation_lease_blocks_f4 = Mock(return_value=False)
-    app.package_outbox_thread = SimpleNamespace(is_alive=lambda: outcome == "drain_busy")
-
     class Client(InstructionRecoveryClient):
         def get_receipt(self, key, *, authority_scope_id):
             if outcome == "receipt_refused":
                 raise PackageTransportError("receipt lookup unavailable")
             return super().get_receipt(key, authority_scope_id=authority_scope_id)
-
         def get_capabilities(self):
             if outcome == "fresh_refused":
                 raise PackageTransportError("current source unavailable")
             return super().get_capabilities()
-
         def replace_and_reseal_transfer(self, command):
-            if outcome == "uncertain":
+            if outcome in {"uncertain", "sibling_review"}:
                 self.commands.append(command)
-                raise PackageTransportError("uncertain response")
-            if outcome == "sibling_review":
-                self.commands.append(command)
+                if outcome == "uncertain":
+                    raise PackageTransportError("uncertain response")
                 raise PackageApiError(409, "PHS_REPLACEMENT_TARGET_CONFLICT", "Target state changed", committed=False)
             return super().replace_and_reseal_transfer(command)
-
     client = Client()
     coordinator = SealedTransferExchangeCoordinator(store, client)
-    app.package_logistics_client = client
-    app.sealed_transfer_exchange_store = store
-    pending = coordinator._attempt(store.load(intent_id))
-    assert pending.operator_retry_available
-    if outcome == "replay_invalid":
-        app.current_set_info["package_source_snapshot"]["work_group_source"]["members"] = []
-    gate = threading.Event()
-    calls = []
-
-    def retry(selected, *, operator_retry=False):
-        calls.append((selected, operator_retry, threading.get_ident()))
-        assert gate.wait(2)
-        return coordinator.attempt(selected, operator_retry=operator_retry)
-
-    app.sealed_transfer_exchange_coordinator = SimpleNamespace(
-        attempt=retry, prepare=Mock(side_effect=AssertionError("retry must not prepare")),
-        _attempt=coordinator._attempt,
-    )
     monkeypatch.setattr(store, "bind_command", Mock(side_effect=AssertionError("retry must not rebind")))
-    popup, entry = Mock(), Mock()
-    content = {"text": "", "scan": None}
-    entry.get.side_effect = lambda: content["text"]
-    entry.bind.side_effect = lambda _key, callback: content.update(scan=callback)
-    tree = FakeTree()
-    tree.pack = tree.column = tree.heading = tree.yview = Mock()
-    tree.selection = lambda: ()
-    buttons, variables, labels = {}, [], []
-
-    def button(*_args, **kwargs):
-        widget = Mock()
-        buttons[kwargs["text"]] = (widget, kwargs["command"])
-        return widget
-
-    def variable(**kwargs):
-        var = Mock()
-        var.value = kwargs.get("value", "")
-        var.set.side_effect = lambda value: setattr(var, "value", value)
-        var.get.side_effect = lambda: var.value
-        variables.append(var)
-        return var
-
-    def confirm(*_args, **_kwargs):
-        if outcome == "changed_set":
-            app.current_set_info["id"] = "different-set"
-        return outcome != "cancel"
-
-    confirmation = Mock(side_effect=confirm)
-    monkeypatch.setattr(label_module.messagebox, "askyesno", confirmation)
-    replay_error = Mock()
-    monkeypatch.setattr(label_module.messagebox, "showerror", replay_error)
-    monkeypatch.setattr(label_module.messagebox, "showwarning", Mock())
-    monkeypatch.setattr(label_module.tk, "Toplevel", lambda *_: popup)
-    monkeypatch.setattr(label_module.tk, "StringVar", variable)
-    for name in ("Frame", "Scrollbar"):
-        monkeypatch.setattr(label_module.ttk, name, lambda *_a, **_k: Mock())
-    monkeypatch.setattr(label_module.ttk, "Label", lambda *_a, **kwargs: labels.append(kwargs) or Mock())
-    monkeypatch.setattr(label_module.ttk, "Entry", lambda *_a, **_k: entry)
-    monkeypatch.setattr(label_module.ttk, "Treeview", lambda *_a, **_k: tree)
-    monkeypatch.setattr(label_module.ttk, "Button", button)
+    results, threads = [], []
+    def work():
+        threads.append(threading.get_ident())
+        return coordinator.attempt(intent_id, operator_retry=True)
     try:
-        assert app._handle_f4_action()
+        app._submit_ui_lane_task(name="historical-exchange-retry", busy_text="saved retry",
+            work=work, finish=results.append, fail=pytest.fail)
         root.run_until(lambda: not app.ui_lane.is_busy())
-        if outcome == "replay_invalid":
-            assert "저장된 교체 목록" in replay_error.call_args.args[1]
-            assert "보관 중" in replay_error.call_args.args[1]
-            assert "잠시 후" not in replay_error.call_args.args[1]
-            assert dict(store.load(intent_id)) == saved and not calls and not client.commands
-            confirmation.assert_not_called()
-            return
-        app._operation_lease_blocks_f4.return_value = outcome == "lease"
-        assert len(tree.get_children()) == 1
-        assert "거부" in variables[0].set.call_args.args[0]
-        visible_text = "\n".join(
-            label["textvariable"].get() if "textvariable" in label else label.get("text", "")
-            for label in labels
-        )
-        assert "창을 닫아도" in visible_text and "목록" in visible_text
-        assert "스캔하세요" not in visible_text and "목록은 사라집니다" not in visible_text
-        buttons["교체 적용"][0].configure.assert_called_with(text="같은 교체 재시도", state="normal")
-        buttons["선택 삭제"][1]()
-        assert len(tree.get_children()) == 1
-        callback = buttons["교체 적용"][1]
-        callback()
-        if outcome in {"success", "uncertain", "lease", "receipt_refused", "fresh_refused", "sibling_review"}:
-            assert app.ui_lane.is_busy()
-            callback()
-            content["text"] = "UNEXPECTED"
-            content["scan"]()
-            gate.set()
-            root.run_until(lambda: not app.ui_lane.is_busy())
-        assert confirmation.call_count == 1
-        assert len(calls) == (1 if outcome in {"success", "uncertain", "receipt_refused", "fresh_refused", "sibling_review"} else 0)
-        if calls:
-            assert calls[0] == (intent_id, True, app.ui_lane.worker_thread_id)
-        if outcome == "success":
-            assert store.load(intent_id)["status"] == "ACKED"
-            app._prompt_new_seal_verification.assert_called_once()
-        elif outcome in {"uncertain", "sibling_review"}:
-            assert store.load(intent_id)["status"] == "OPERATOR_REVIEW"
-            assert "확인 필요" in variables[0].set.call_args.args[0]
-            buttons["교체 적용"][0].configure.assert_called_with(text="교체 적용", state="disabled")
-            assert [r.status for r in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
-            retained = dict(store.load(intent_id))
-            buttons["닫기"][1]()
-            content["text"] = ""
-            confirmation.reset_mock()
-            assert app._handle_f4_action()
-            root.run_until(lambda: not app.ui_lane.is_busy())
-            assert len(tree.get_children()) == 1
-            assert "확인 필요" in variables[-4].get()
-            assert "교체 결과를 확인하지 못했습니다" in variables[-1].get()
-            buttons["교체 적용"][0].configure.assert_called_with(text="교체 적용", state="disabled")
-            buttons["교체 적용"][1]()
-            confirmation.assert_not_called()
-            assert len(calls) == 1 and dict(store.load(intent_id)) == retained
-        else:
-            assert dict(store.load(intent_id)) == saved
-            if outcome in {"receipt_refused", "fresh_refused"}:
-                assert "재시도 보류" in variables[0].get()
-                assert ("중앙 교체 결과" if outcome == "receipt_refused" else "현재 제품 상태") in variables[-1].get()
-                assert "않았습니다" in variables[-1].get()
-            if outcome == "lease":
-                assert "보류했습니다" in variables[-1].get()
-                assert "할 수 없습니다" not in variables[-1].get()
-                buttons["교체 적용"][0].configure.assert_called_with(text="같은 교체 재시도", state="normal")
-        assert len(client.commands) == (1 if outcome in {"success", "uncertain", "sibling_review"} else 0)
+        assert threads == [app.ui_lane.worker_thread_id] and threads[0] != root.owner_thread_id
+        row = store.load(intent_id)
         for field in ("intent_id", "intent_hash", "created_at", "command_id", "command_json", "command_hash"):
-            assert store.load(intent_id)[field] == saved[field]
-        if outcome != "changed_set":
-            assert app.current_set_info == original
+            assert row[field] == saved[field]
+        assert row["status"] == ("ACKED" if outcome == "success" else "OPERATOR_REVIEW")
+        assert len(client.commands) == int(outcome in {"success", "uncertain", "sibling_review"})
+        if outcome in {"uncertain", "sibling_review"}:
+            assert [result.status for result in coordinator.drain_pending()] == ["OPERATOR_REVIEW"]
+            assert len(client.commands) == 1
     finally:
-        gate.set()
         _close_lane(app, root)
 
 
@@ -1058,7 +791,8 @@ def test_f3_lease_outbox_and_flush_run_off_tk_before_ui_apply(tmp_path, monkeypa
         app._play_sound = first_success
         assert app._begin_central_package_submission() is True
         assert app._ui_lane_busy_label == "포장 완료 · 권한 확인 및 로컬 완료 저장 중"
-        assert marker_entered.wait(5)
+        root.run_until(lambda: marker_entered.is_set() or not app.ui_lane.is_busy(), timeout=30)
+        assert marker_entered.is_set(), trace
         read_completion(False)
         assert successes == [] and not app.scan_count and not app.set_details_map
         assert ui_mutations == []
@@ -1240,7 +974,7 @@ def test_scan_refused_during_a_save_says_whether_it_was_kept(kept):
         for char in kept:  # typed before the save locked the entry
             app.entry.insert("insert", char)
         _begin_locking_save(app, gate)
-        _scanner(app, "ITEM-001-P1-2")
+        _scanner(app, "ITEM-001-P1-22")
 
         assert app.entry.get() == kept
         assert [event for event, _details in app.events] == []
@@ -1264,7 +998,7 @@ def test_scan_refused_during_a_save_says_whether_it_was_kept(kept):
 
 _CENTRAL_PHS2 = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-SCAN|CLC=ITEM-001|LBL=LBL-SCAN|HSH=0123456789abcdef"
 _FIVE_SCANS = [
-    "ITEM-001", "ITEM-001-P1-1", "ITEM-001-P1-2", "ITEM-001-P1-3",
+    "ITEM-001", "ITEM-001-P1-1", "ITEM-001-P1-22", "ITEM-001-P1-3",
     "ITEM-001-FINAL-LABEL-0001<GS>6D20260929",
 ]
 
@@ -1288,7 +1022,7 @@ def test_scan_during_locking_lane_work_is_refused_aloud_for_any_set(state):
     gate = threading.Event()
     try:
         _begin_locking_save(app, gate)
-        _scanner(app, "ITEM-001-P9-9")
+        _scanner(app, "ITEM-001-P9-99")
 
         assert app.entry.get() == "" and app.current_set_info["raw"] == before
         assert [event for event, _details in app.events] == []
@@ -1333,8 +1067,14 @@ def test_scan_refused_by_any_other_lock_is_never_silent(lock, headline):
     before = list(app.current_set_info["raw"])
     try:
         app._render_operator_workbench()  # the lock is on screen before the scan
+        if lock == "central-waiting-for-f3":
+            assert app.entry.cget("state") == "normal"
+            _scanner(app, "ITEM-001-P9-99")
+            assert app.current_set_info["raw"] == before + ["ITEM-001-P9-99"]
+            assert app.entry.get() == "" and "fail" not in app.sounds
+            return
         assert app.entry.cget("state") == "disabled"
-        _scanner(app, "ITEM-001-P9-9")
+        _scanner(app, "ITEM-001-P9-99")
 
         assert app.entry.get() == "" and app.current_set_info["raw"] == before
         assert [event for event, _details in app.events] == []
@@ -1394,12 +1134,12 @@ def test_scan_during_a_save_leaves_nothing_to_join_the_next_scan():
         root.run_until(lambda: not app.ui_lane.is_busy())
         assert app.entry.cget("state") == "normal"
 
-        _scanner(app, "ITEM-001-P1-2")
+        _scanner(app, "ITEM-001-P1-22")
 
-        assert app.current_set_info["raw"] == ["ITEM-001", "ITEM-001-P1-2"]
+        assert app.current_set_info["raw"] == ["ITEM-001", "ITEM-001-P1-22"]
         assert [
             details["raw_input"] for event, details in app.events if event == "SCAN_ATTEMPT"
-        ] == ["ITEM-001-P1-2"]
+        ] == ["ITEM-001-P1-22"]
         assert app.entry.get() == ""
     finally:
         gate.set()
@@ -1428,6 +1168,15 @@ def test_phs2_capture_clears_disabled_entry_only_after_durable_acceptance(captur
     app._show_deferred_capture_pending = lambda *_args, **_kwargs: None
     app._materialize_validated_deferred_label = lambda *_args: False
     app._show_deferred_validation_result = lambda *_args: None
+    app.after = root.after
+    app._publish_durable_commit_block = lambda error: False
+    def accepted(raw, item, *, prepare_durable_state):
+        prepare_durable_state(app.current_set_info)
+        app.current_set_info.update(raw=[raw], parsed=[item])
+    app._update_on_success_scan = accepted
+    def offline(*_args, **_kwargs):
+        raise label_module.PackageTransportError("offline")
+    app._resolve_central_phs2_scan_overlay = offline
     captured = []
 
     def prepare(*_args):
@@ -1437,7 +1186,7 @@ def test_phs2_capture_clears_disabled_entry_only_after_durable_acceptance(captur
 
     def capture(payload, item, set_id):
         assert app.entry.get() == raw
-        assert app.entry.cget("state") == "disabled"
+        assert app.entry.cget("state") == "normal"
         if not capture_succeeds:
             raise RuntimeError("isolated durable capture failure")
         captured.append((payload, item, set_id))
@@ -1451,8 +1200,8 @@ def test_phs2_capture_clears_disabled_entry_only_after_durable_acceptance(captur
     app._prepare_deferred_label_validation = prepare
     app._render_operator_workbench = render
     try:
-        assert app.process_input() is True
-        root.run_until(lambda: not app.ui_lane.is_busy())
+        assert bool(app.process_input()) is capture_succeeds
+        root.run_until(lambda: not app.__dict__.get("_phs2_background_pending"))
         # Kept during the capture (above), consumed once it is decided: a
         # failure asks for a rescan, which must not join the old value.
         assert app.entry.get() == ""
@@ -1676,6 +1425,7 @@ def test_failed_durable_capture_preserves_input_and_exposes_only_failure(
 
     app._capture_central_phs2_scan = capture
     app._show_deferred_capture_failure = failures.append
+    app._play_sound = lambda _sound: None
     app._show_deferred_capture_pending = lambda *_args, **_kwargs: None
     app._render_operator_workbench = lambda: None
 
@@ -1683,8 +1433,8 @@ def test_failed_durable_capture_preserves_input_and_exposes_only_failure(
         "PHS2-RAW",
         "ITEM-1",
         on_capture_committed=lambda: consumed.append(True),
-    ) is True
-    root.run_until(lambda: not app.ui_lane.is_busy())
+    ) is False
+    assert not app.ui_lane.is_busy()
 
     assert consumed == []
     assert len(failures) == 1

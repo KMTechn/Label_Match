@@ -1471,7 +1471,7 @@ def run(
                 error_sink=quantity_dialog_errors,
             )
             try:
-                app._prompt_exact_rescan()
+                raise RuntimeError("Retired F4 capture: use scanner exchange target/replacement capture")
             finally:
                 label_module.simpledialog.askstring = original_askstring
             if quantity_dialog_errors:

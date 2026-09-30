@@ -69,11 +69,16 @@ def parse_legacy_fields(raw_value):
 
 
 def parse_compact_carrier(raw_value):
-    """Parse the exact six-field central PHS2 physical-label contract."""
+    """Parse a central PHS2 label with optional canonical trailing QT."""
 
     decoded = decode_carrier_scan(raw_value)
     parts = decoded.split("|") if decoded else []
     expected_keys = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
+    if len(parts) == 7 and parts[-1].startswith("QT="):
+        raw_quantity = str(raw_value).split("|")[-1] if "|" in str(raw_value) else parts[-1]
+        if not re.fullmatch(r"QT=[1-9][0-9]{0,3}", raw_quantity):
+            raise ValueError("PHS2 QT must be an ASCII integer from 1 to 9999")
+        expected_keys += ("QT",)
     if len(parts) != len(expected_keys):
         raise ValueError("PHS2 must contain exactly six canonical fields")
     fields = {}
@@ -104,9 +109,15 @@ def parse_compact_carrier(raw_value):
 
 def parse_raw_compact_carrier(raw_value: Any, *, error_type) -> dict[str, str]:
     """Parse raw workflow text with the caller's existing (code, message) error."""
-    value = str(raw_value or "").strip()
+    value = str(raw_value or "")
     expected_keys = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
     parts = value.split("|") if value else []
+    if len(parts) != 7:
+        parts = value.strip().split("|") if value.strip() else []
+    if len(parts) == 7 and parts[-1].startswith("QT="):
+        if not re.fullmatch(r"QT=[1-9][0-9]{0,3}", parts[-1]):
+            raise error_type("PHS2_QT_INVALID", "현품표 수량은 1–9999의 양의 정수여야 합니다.")
+        expected_keys += ("QT",)
     if len(parts) != len(expected_keys):
         raise error_type(
             "PHS2_FORMAT_INVALID",

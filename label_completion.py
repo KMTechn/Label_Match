@@ -331,6 +331,20 @@ def _queue_authoritative_package(
         if isinstance(current_set_info, dict)
         else (self.__dict__.get("current_set_info") or {})
     )
+    if current.get("scanner_only"):
+        if current.get("shortage_confirmed") and not current.get("shortage_released"):
+            return {"status": "LOCAL_SHORT_CONFIRMATION", "sample_barcodes_are_membership": False}
+        # Source reads and lease acquisition belong to the delivery worker.
+        outbox = self.__dict__.get("package_outbox")
+        if outbox is None:
+            raise PackageLogisticsError("durable package outbox is unavailable")
+        completion_identity = str(current.get("completion_identity") or current.get("id") or "")
+        existing = outbox.get_by_set_id(completion_identity)
+        if existing is None:
+            draft = _label_match_package_draft(current, item_code=item_code)
+            existing = outbox.enqueue(draft, captured_intent_id=str(current.get("deferred_intent_id") or ""))
+        completed = dict(current, id=completion_identity)
+        return _label_match_existing_package_row_metadata(existing, completed, item_code)
     if not _transition_applies(self, current):
         return package()
     return _queue_transition_package(
@@ -766,6 +780,7 @@ def _commit_finalized_set_durable(
     if (
         central_inherit_all
         and package_logistics
+        and package_logistics.get("idempotency_key")
         and package_logistics.get("status") != label_transition.LOCAL_ONLY_STATUS
     ):
         outbox = self.__dict__.get("package_outbox")

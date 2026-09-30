@@ -104,7 +104,7 @@ def test_f4_saved_pairs_restore_with_real_store(business_factory, state, monkeyp
     raw = deepcopy(case.app.current_set_info["raw"])
     prompts = []
     # Observe the request to open the QR dialog; do not invent confirmation.
-    monkeypatch.setattr(lm.Label_Match, "_prompt_new_seal_verification",
+    monkeypatch.setattr(lm.Label_Match, "_accept_background_exchange_receipt",
                         lambda app, value: prompts.append(value) or False)
     case.restart()
     restored = case.app._current_sealed_transfer_exchange_attempt()
@@ -141,7 +141,7 @@ def test_f4_three_pairs_require_extension_before_durable_intent(business_factory
 
 
 @pytest.mark.parametrize("refusal", ["lease", "missing_profile"])
-def test_f4_authority_boundaries_preserve_input_without_exchange(business_factory, refusal):
+def test_exchange_card_keeps_authority_checks_in_background(business_factory, refusal):
     case = business_factory(exchange=True)
     case.accept()
     current = deepcopy(case.app.current_set_info)
@@ -152,8 +152,9 @@ def test_f4_authority_boundaries_preserve_input_without_exchange(business_factor
         assert case.app._operation_lease_blocks_f4()
     else:
         case.app.package_logistics_client = None
-    # These real F4 refusals occur before opening a popup, with run_tests=False.
-    assert case.app._prompt_sealed_transfer_exchange() is False
+    # DESIGN §2/§3: the card saves its local phase; no authority mutation yet.
+    case.app._start_scanner_exchange()
+    assert case.app.current_set_info.pop("scanner_exchange_phase") == "target"
     assert case.app.current_set_info == current
     assert not case.app.sealed_transfer_exchange_store.blocking_rows()
     assert case.app.package_outbox.get_by_set_id(current["id"]) is None

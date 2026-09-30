@@ -482,7 +482,7 @@ class PackageOutbox:
             conn.commit()
             return dict(claimed)
 
-    def save_command(self, key: str, source_bundle_id: str, command: Mapping[str, Any]) -> None:
+    def save_command(self, key: str, source_bundle_id: str, command: Mapping[str, Any], *, delivery_draft=None) -> None:
         encoded = json.dumps(dict(command), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -514,6 +514,10 @@ class PackageOutbox:
             if cursor.rowcount != 1:
                 conn.rollback()
                 raise PackageLogisticsError("package command lost its immutable save CAS")
+            if delivery_draft is not None:
+                require_recovery_record("draft", delivery_draft.to_dict())
+                conn.execute("UPDATE package_command_outbox SET draft_json=? WHERE idempotency_key=?",
+                    (json.dumps(delivery_draft.to_dict(), ensure_ascii=False, sort_keys=True), key))
             conn.commit()
 
     def mark_acked(

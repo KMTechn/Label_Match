@@ -223,8 +223,8 @@ def _action_app(view):
     app.calls = []
     app._reset_current_set = lambda **kwargs: app.calls.append(("f1", kwargs))
     app._prompt_and_cancel_completed_tray = lambda: app.calls.append(("f2", {}))
-    app._prompt_manual_complete = lambda: app.calls.append(("f3", {}))
-    app._prompt_exact_rescan = lambda: app.calls.append(("f4", {}))
+    app._scanner_command = lambda command: app.calls.append((command, {}))
+    app._handle_f4_action = lambda: app.calls.append(("f4", {}))
     return app
 
 
@@ -281,7 +281,7 @@ def test_shortcut_handler_blocks_every_action_when_presenter_disables_it(
         (
             "f3",
             present_workflow(WorkflowSnapshot(qa_scans=("M", "P1"))),
-            ("f3", {}),
+            None,
         ),
         (
             "f4",
@@ -296,7 +296,7 @@ def test_shortcut_handler_calls_only_the_presenter_enabled_action(action, view, 
     handled = Label_Match._handle_workflow_shortcut(app, action)
 
     assert handled == "break"
-    assert app.calls == [expected]
+    assert app.calls == ([expected] if expected else [])
 
 
 def test_shortcut_handler_allows_only_f1_for_recoverable_prewrite_conflict():
