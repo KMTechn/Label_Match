@@ -550,6 +550,49 @@ def test_business_junction_is_preserved(tmp_path, profile_junction, profile_anch
     assert Path(selected) == target / "data"
 
 
+@pytest.mark.parametrize("consumer", ["default", "onboarding"])
+@pytest.mark.parametrize("placement", ["plain", "root", "suffix"])
+@pytest.mark.parametrize("direct_sync_env", [
+    None, "LABEL_MATCH_DIRECT_SYNC_ROOT", "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT",
+])
+def test_programdata_is_never_a_profile_fallback(
+    tmp_path, profile_junction, consumer, placement, direct_sync_env,
+):
+    link, target = profile_junction
+    program = tmp_path / "program"
+    if placement == "root":
+        program = link
+    elif placement == "suffix":
+        program.mkdir()
+        link.rename(program / "KMTech")
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    values = {
+        "PROGRAMDATA": str(program),
+        "LABEL_MATCH_SETTINGS_PATH": str(settings),
+    }
+    if direct_sync_env:
+        direct = tmp_path / "direct"
+        direct.mkdir()
+        (direct / "producer_identity.json").write_text("{}", encoding="utf-8")
+        values[direct_sync_env] = str(direct)
+    with pytest.raises(LogisticsRuntimeConfigurationError, match="explicit data root"):
+        if consumer == "default":
+            default_logistics_profile_path(values)
+        else:
+            resolve_current_user_onboarding_paths(tmp_path / "app", environ=values)
+    # The same legacy folder remains an ordinary business-storage fallback.
+    from label_match_single_instance import resolve_data_scope
+
+    selected = resolve_data_scope(environment=values, settings={})
+    expected = (
+        target / "Label_Match/data" if placement == "suffix"
+        else target / "KMTech/Label_Match/data" if placement == "root"
+        else program / "KMTech/Label_Match/data"
+    )
+    assert Path(selected) == expected
+
+
 @pytest.mark.parametrize("mode", ["local", "override", "no-local"])
 def test_runtime_and_tool_defaults_share_first_run_profile(monkeypatch, tmp_path, mode):
     values = {"LABEL_MATCH_SAVE_DIR": str(tmp_path / "data")}
@@ -564,7 +607,17 @@ def test_runtime_and_tool_defaults_share_first_run_profile(monkeypatch, tmp_path
     expected = resolve_current_user_onboarding_paths(tmp_path / "app", environ=values).logistics_profile_path
     assert default_logistics_profile_path(values) == expected
     assert runtime_module.selected_logistics_runtime_profile_path(environ=values) == expected
-    assert profile_installer_module.build_parser().get_default("profile_path") == str(expected)
+    assert profile_installer_module.build_parser().get_default("profile_path") is None
+    monkeypatch.setenv("W9_TEST_INSTALL_TOKEN", "synthetic-token")
+    installed = []
+    monkeypatch.setattr(profile_installer_module, "install_runtime_profile",
+                        lambda **kwargs: installed.append(kwargs["profile_path"]) or {})
+    assert profile_installer_module.main([
+        "--base-url", "https://fixture.invalid", "--authority-scope", "fixture",
+        "--authority-epoch", "1", "--plane-epoch", "1", "--device-id", "fixture-device",
+        "--source-host-id", "fixture-host", "--token-env", "W9_TEST_INSTALL_TOKEN", "--dry-run",
+    ]) == 0
+    assert installed == [str(expected)]
     # The check CLI's default must target the same own path without touching I/O.
     seen = []
     import tools.check_logistics_runtime_profile as check_module
@@ -572,6 +625,43 @@ def test_runtime_and_tool_defaults_share_first_run_profile(monkeypatch, tmp_path
                         lambda **kwargs: seen.append(kwargs["profile_path"]) or None)
     assert check_module.main([]) == 0
     assert seen == [str(expected)]
+
+
+@pytest.mark.parametrize("tool", ["install", "check"])
+@pytest.mark.parametrize("explicit", [True, False])
+def test_profile_cli_without_local_state_uses_only_explicit_profile(
+    monkeypatch, tmp_path, tool, explicit,
+):
+    for name in ("LOCALAPPDATA", "LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_LOGISTICS_PROFILE_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("LABEL_MATCH_SETTINGS_PATH", str(settings))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "program"))
+    selected = str(tmp_path / "own/profile.json")
+    seen = []
+    if tool == "install":
+        monkeypatch.setenv("W9_TEST_INSTALL_TOKEN", "synthetic-token")
+        monkeypatch.setattr(profile_installer_module, "install_runtime_profile",
+                            lambda **kwargs: seen.append(kwargs["profile_path"]) or {})
+        main = profile_installer_module.main
+        args = [
+            "--base-url", "https://fixture.invalid", "--authority-scope", "fixture",
+            "--authority-epoch", "1", "--plane-epoch", "1", "--device-id", "fixture-device",
+            "--source-host-id", "fixture-host", "--token-env", "W9_TEST_INSTALL_TOKEN", "--dry-run",
+        ]
+    else:
+        import tools.check_logistics_runtime_profile as check_module
+        monkeypatch.setattr(check_module, "load_logistics_runtime_profile",
+                            lambda **kwargs: seen.append(kwargs["profile_path"]) or None)
+        main, args = check_module.main, ["--optional"]
+    if explicit:
+        assert main(args + ["--profile-path", selected]) == 0
+        assert seen == [selected]
+    else:
+        with pytest.raises(LogisticsRuntimeConfigurationError, match="explicit data root"):
+            main(args)
+        assert seen == []
 
 
 @pytest.mark.parametrize("prefix", ["LABEL_MATCH", "WORKER_ANALYSIS"])

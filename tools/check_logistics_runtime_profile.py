@@ -17,9 +17,11 @@ from logistics_runtime_profile import default_profile_path, load_logistics_runti
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the installed logistics profile.")
-    parser.add_argument("--profile-path", default=str(default_profile_path()))
+    parser.add_argument("--profile-path")
     parser.add_argument("--optional", action="store_true")
     args = parser.parse_args(argv)
+    if args.profile_path is None:
+        args.profile_path = str(default_profile_path())
     try:
         profile = load_logistics_runtime_profile(
             required=not args.optional,

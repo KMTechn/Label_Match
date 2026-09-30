@@ -327,7 +327,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 - 유형/우선: **확인된 문서/현행 소스 차이 · P1**. packaged 설정이나 공통 Machine profile을 모든 설치의 정본 위치로 잘못 안내할 수 있다.
 - 근거: [CODEX](../../CODEX.md)의 설정/GitHub 자동 업데이트 요약, [프로필 안내](../LOGISTICS_RUNTIME_PROFILE.md)의 공통 경로와 [현재 설정 선택](operations.md#configuration), [릴리스 사용자 상태 계약](../../RELEASE_GATE_CONTRACT.md). 앱 내부 updater apply는 LM-F01에서 제거했으며 후보·manifest 조회와 외부 installer 책임을 구별한다. 일반 fallback·onboarding·Machine 우선권도 구별해야 한다.
-- 상태/다음: **운영 구성 표의 profile 선택 교정 / 나머지 오래된 안내 수정 남음**. w9setupprep R1은 상속 공용 경로·ProgramData 암묵 선택을 제거하고 first-run·client·도구 기본을 같은 사용자 resolver로 묶는다. J1은 물류 위치를 정하는 원 경로 정션을 해소 전에 거절하고 TEST1은 새 앱 anchor도 거절한다. 일반 business 저장 정션·명시 도구 경로·legacy 환경은 유지하며 실제 설치본·서버 수용은 NOT TESTED. Label 문서·릴리스 담당은 나머지 CODEX/프로필 안내와 배포 topology를 대조한다.
+- 상태/다음: **운영 구성 표의 profile 선택 교정 / 나머지 오래된 안내 수정 남음**. w9setupprep R1은 상속 공용 경로·ProgramData 암묵 선택을 제거하고 first-run·client·도구 기본을 같은 사용자 resolver로 묶는다. J1은 물류 위치를 정하는 원 경로 정션을 해소 전에 거절하며 LOCALAPPDATA·앱 profile override·명시 data root가 없을 때 ProgramData 옛 data root로 물류 위치를 계산하지 않는다. TEST1은 새 앱 anchor도 거절한다. 일반 business 저장 정션·명시 도구 경로·legacy 환경은 유지하며 실제 설치본·서버 수용은 NOT TESTED. Label 문서·릴리스 담당은 나머지 CODEX/프로필 안내와 배포 topology를 대조한다.
 - 완료 기준: 사용자 설정 vs packaged template, current-user vs Machine profile, ProgramData fallback vs 실제 데이터 위치, update 조회 vs installer 적용 책임이 안내와 일치한다. 기본 `off`나 코드 적용 차단을 실제 installed provider 관찰로 확대하지 않는다.
 - 의존/병렬: LM-B04/08 및 중앙 구성 요약. 기존 안내 대조는 실제 실행 없이 가능.
 

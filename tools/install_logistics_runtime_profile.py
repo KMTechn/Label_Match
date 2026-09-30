@@ -899,7 +899,7 @@ def ensure_runtime_profile_from_enrollment_bundle(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install the shared KMTech logistics PC profile.")
-    parser.add_argument("--profile-path", default=str(default_profile_path()))
+    parser.add_argument("--profile-path")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--authority-scope", required=True)
     parser.add_argument("--authority-epoch", type=int, required=True)
@@ -924,6 +924,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.profile_path is None:
+        args.profile_path = str(default_profile_path())
     token = str(os.environ.get(args.token_env) or "").strip()
     if not token:
         print("BLOCKED: bearer token environment value is missing", file=sys.stderr)

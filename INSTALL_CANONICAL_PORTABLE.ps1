@@ -506,7 +506,8 @@ shared_transition = all(
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {
-    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '5c5ab74b20ff7a2ed6df614bac5984fb69b7bb79eb3e312d714455bf88cda5ff'),
+    'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '531a16790d9923b832a101845334cdb2e9c441dc5f3d300f84a67abbea6df408'),
     'app/current_user_onboarding.py': (
         '323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
         '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d'),
@@ -610,10 +611,11 @@ nextfix_label_transition = (
 )
 
 # Reviewed current-user selection update on the same accepted preimages.
-# All three modules must match the exact directional LF set. Other app/runtime
+# All four modules must match the exact directional LF set. Other app/runtime
 # files, writer membership and contracts retain their ordinary checks.
 current_user_profile_replacements = {
-    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '5c5ab74b20ff7a2ed6df614bac5984fb69b7bb79eb3e312d714455bf88cda5ff'),
+    'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '531a16790d9923b832a101845334cdb2e9c441dc5f3d300f84a67abbea6df408'),
     'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d'),
     'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
 }

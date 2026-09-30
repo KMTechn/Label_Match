@@ -81,6 +81,18 @@ def resolve_data_scope(
     rule = "settings.custom_save_path" if configured else "environment.LABEL_MATCH_SAVE_DIR"
     if not selected:
         local_app_data = str(env.get("LOCALAPPDATA", "") or "").strip()
+        if (
+            for_onboarding
+            and not local_app_data
+            and not str(env.get("LABEL_MATCH_LOGISTICS_PROFILE_PATH") or "").strip()
+        ):
+            # A legacy business folder is not a current-user identity anchor.
+            # Stop before resolving or inspecting the ProgramData fallback.
+            from logistics_runtime_profile import LogisticsRuntimeConfigurationError
+
+            raise LogisticsRuntimeConfigurationError(
+                "LOCALAPPDATA or an explicit data root is required for the current-user logistics profile"
+            )
         direct_root = str(
             env.get("LABEL_MATCH_DIRECT_SYNC_ROOT")
             or env.get("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT") or ""

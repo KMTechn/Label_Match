@@ -217,6 +217,7 @@ def test_declared_current_user_profile_pair_matches_reviewed_preimage_and_tree()
     assert set(pairs) == {
         "app/current_user_onboarding.py", "app/logistics_runtime_profile.py",
         "app/label_match_single_instance.py",
+        "app/tools/install_logistics_runtime_profile.py",
     }
     for relative, (before, after) in pairs.items():
         name = relative.removeprefix("app/")
@@ -305,6 +306,7 @@ def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_
 @pytest.mark.parametrize("relative", [
     "app/current_user_onboarding.py", "app/logistics_runtime_profile.py",
     "app/label_match_single_instance.py",
+    "app/tools/install_logistics_runtime_profile.py",
 ])
 def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_layouts, relative):
     old, candidate = nextfix_archive_layouts
