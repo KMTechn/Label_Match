@@ -1,4 +1,4 @@
-"""Secure machine-scoped runtime profile for the authoritative logistics API."""
+"""Secure runtime profile for the authoritative logistics API."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 PROFILE_CONTRACT_VERSION = "km-logistics-runtime-profile-v1"
 PROFILE_PATH_ENV = "KM_LOGISTICS_PROFILE_PATH"
+APP_PROFILE_PATH_ENV = "LABEL_MATCH_LOGISTICS_PROFILE_PATH"
 REQUIRED_ENV = "KM_LOGISTICS_REQUIRED"
 LEGACY_LABEL_TRANSITION_ENV = "KMTECH_LEGACY_LABEL_TRANSITION"
 PROFILE_PROGRAM = "Label_Match"
@@ -35,7 +36,6 @@ DEFAULT_PROFILE_RELATIVE_PATH = (
     / PROFILE_PROGRAM
     / "runtime-profile.json"
 )
-LEGACY_PROFILE_RELATIVE_PATH = Path("KMTech") / "Logistics" / "runtime-profile.json"
 SUPPORTED_LEDGER_PLANES = frozenset({"AUTHORITATIVE", "SHADOW_CANDIDATE"})
 MAX_TLS_CA_BUNDLE_BYTES = 128 * 1024
 MAX_PROFILE_BYTES = 64 * 1024
@@ -399,42 +399,37 @@ def _test1_isolated_legacy_override_enabled() -> bool:
 def _runtime_environment(environ: Mapping[str, str] | None) -> Mapping[str, str]:
     if environ is not None:
         return environ
-    # Raises on an invalid TEST1 envelope. Machine KM_LOGISTICS_* values from the
-    # old PC-wide rollout are not read: first-run sets this process's values to
-    # the user's own profile, and old field programs may still use the others.
+    # Preserve the strict TEST1 legacy envelope; ordinary selection uses only
+    # the app's current-user resolver, including before first-run has executed.
     _test1_isolated_legacy_override_enabled()
     return os.environ
 
 
-def default_logistics_profile_path(environ: Mapping[str, str] | None = None) -> Path:
-    values = _runtime_environment(environ)
-    program_data = str(values.get("PROGRAMDATA") or r"C:\ProgramData").strip()
-    return Path(program_data) / DEFAULT_PROFILE_RELATIVE_PATH
-
-
-def _preferred_default_profile_path(environ: Mapping[str, str]) -> Path:
-    program_data = str(environ.get("PROGRAMDATA") or r"C:\ProgramData").strip()
-    root = Path(program_data)
-    app_profile = root / DEFAULT_PROFILE_RELATIVE_PATH
-    legacy_profile = root / LEGACY_PROFILE_RELATIVE_PATH
-    if app_profile.is_file() or not legacy_profile.is_file():
-        return app_profile
-    return legacy_profile
-
-
-def _configured_or_preferred_profile_path(
-    configured_path: str, environ: Mapping[str, str]
+def default_logistics_profile_path(
+    environ: Mapping[str, str] | None = None,
+    *,
+    default_data_root: str | os.PathLike[str] | None = None,
 ) -> Path:
-    configured = str(configured_path or "").strip()
-    program_data = str(environ.get("PROGRAMDATA") or r"C:\ProgramData").strip()
+    values = _runtime_environment(environ)
+    configured = str(values.get(APP_PROFILE_PATH_ENV) or "").strip()
+    local_app_data = str(values.get("LOCALAPPDATA") or "").strip()
     if configured:
-        candidate = Path(configured).expanduser()
-        legacy_profile = Path(program_data) / LEGACY_PROFILE_RELATIVE_PATH
-        candidate_key = os.path.normcase(os.path.abspath(os.fspath(candidate)))
-        legacy_key = os.path.normcase(os.path.abspath(os.fspath(legacy_profile)))
-        if candidate_key != legacy_key:
-            return candidate
-    return _preferred_default_profile_path(environ)
+        selected = Path(configured)
+    elif local_app_data:
+        selected = Path(local_app_data) / DEFAULT_PROFILE_RELATIVE_PATH
+    elif default_data_root is not None:
+        selected = Path(default_data_root).parent / "logistics-profile" / "runtime-profile.json"
+    else:
+        # The existing resolver owns the settings/data-root fallback. It calls
+        # this function with its computed root, so the no-LOCALAPPDATA rule is
+        # identical for onboarding, runtime and standalone tools.
+        from current_user_onboarding import resolve_current_user_onboarding_paths
+        from label_match_product_host import _default_product_root
+
+        return resolve_current_user_onboarding_paths(
+            _default_product_root(), environ=values
+        ).logistics_profile_path
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(selected))))
 
 
 def selected_logistics_runtime_profile_path(
@@ -442,15 +437,14 @@ def selected_logistics_runtime_profile_path(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> Path:
-    """Return the exact profile path selected by the existing trust boundary."""
+    """Select an explicit path or the same own profile used by first-run."""
 
     values = _runtime_environment(environ)
     requested_path = str(profile_path or "").strip()
-    configured_path = str(values.get(PROFILE_PATH_ENV) or "").strip()
     selected = (
         Path(requested_path).expanduser()
         if requested_path
-        else _configured_or_preferred_profile_path(configured_path, values)
+        else default_logistics_profile_path(values)
     )
     return Path(os.path.abspath(os.path.expanduser(os.fspath(selected))))
 
@@ -704,8 +698,15 @@ def load_logistics_runtime_profile(
         return None
     required_value = logistics_runtime_required(values) if required is None else bool(required)
     requested_path = str(profile_path or "").strip()
-    configured_path = str(values.get(PROFILE_PATH_ENV) or "").strip()
+    configured_path = str(values.get(APP_PROFILE_PATH_ENV) or "").strip()
     explicit_path = requested_path or configured_path
+    if not required_value and not explicit_path and not any(
+        str(values.get(name) or "").strip()
+        for name in ("LOCALAPPDATA", "LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_SETTINGS_PATH")
+    ):
+        # An environment-only legacy client has no current-user state location.
+        # Keep its optional-profile behavior without consulting a PC-wide file.
+        return None
     selected_path = selected_logistics_runtime_profile_path(
         requested_path,
         environ=values,
@@ -844,6 +845,7 @@ __all__ = [
     "LogisticsRuntimeProfile",
     "PROFILE_CONTRACT_VERSION",
     "PROFILE_PATH_ENV",
+    "APP_PROFILE_PATH_ENV",
     "REQUIRED_ENV",
     "TEST1_ISOLATED_LEGACY_OVERRIDE_ENV",
     "assert_logistics_runtime_ready",

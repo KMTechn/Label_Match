@@ -327,7 +327,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 - 유형/우선: **확인된 문서/현행 소스 차이 · P1**. packaged 설정이나 공통 Machine profile을 모든 설치의 정본 위치로 잘못 안내할 수 있다.
 - 근거: [CODEX](../../CODEX.md)의 설정/GitHub 자동 업데이트 요약, [프로필 안내](../LOGISTICS_RUNTIME_PROFILE.md)의 공통 경로와 [현재 설정 선택](operations.md#configuration), [릴리스 사용자 상태 계약](../../RELEASE_GATE_CONTRACT.md). 앱 내부 updater apply는 LM-F01에서 제거했으며 후보·manifest 조회와 외부 installer 책임을 구별한다. 일반 fallback·onboarding·Machine 우선권도 구별해야 한다.
-- 상태/다음: **기준선에 차이 반영 / 오래된 안내 수정 남음**. Label 문서·릴리스 담당이 현재 지원 배포 topology와 소스 근거를 대조해 적용 조건을 명시한다. 기존 문서는 이번 허용 5경로 밖이므로 보존했다.
+- 상태/다음: **운영 구성 표의 profile 선택 교정 / 나머지 오래된 안내 수정 남음**. w9setupprep R1은 상속 공용 경로·ProgramData 암묵 선택을 제거하고 first-run·client·도구 기본을 같은 사용자 resolver로 묶는다. 명시 도구 경로와 legacy/TEST1 분기는 유지하며 실제 설치본·서버 수용은 NOT TESTED. Label 문서·릴리스 담당은 나머지 CODEX/프로필 안내와 배포 topology를 대조한다.
 - 완료 기준: 사용자 설정 vs packaged template, current-user vs Machine profile, ProgramData fallback vs 실제 데이터 위치, update 조회 vs installer 적용 책임이 안내와 일치한다. 기본 `off`나 코드 적용 차단을 실제 installed provider 관찰로 확대하지 않는다.
 - 의존/병렬: LM-B04/08 및 중앙 구성 요약. 기존 안내 대조는 실제 실행 없이 가능.
 

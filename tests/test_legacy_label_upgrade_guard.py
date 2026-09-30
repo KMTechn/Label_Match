@@ -203,6 +203,26 @@ NEXTFIX_BASE = "e88011c"
 NEXTFIX_PINNED = "PINNED_W9NEXTFIX_LABEL_RECOVERY"
 
 
+def _declared_current_user_profile_pairs():
+    source = INSTALLER.read_text(encoding="utf-8")
+    start = source.index("$probe = @'") + len("$probe = @'")
+    tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
+    return next(ast.literal_eval(node.value) for node in tree.body
+                if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "current_user_profile_replacements")
+
+
+def test_declared_current_user_profile_pair_matches_reviewed_preimage_and_tree():
+    pairs = _declared_current_user_profile_pairs()
+    assert set(pairs) == {"app/current_user_onboarding.py", "app/logistics_runtime_profile.py"}
+    for relative, (before, after) in pairs.items():
+        name = relative.removeprefix("app/")
+        assert before == _release_digest(subprocess.check_output(
+            ["git", "-C", str(ROOT), "show", f"a20cd01:{name}"]))
+        assert after == _release_digest((ROOT / name).read_bytes())
+        assert before != after
+
+
 def test_declared_nextfix_pair_is_exactly_e88011c_and_this_tree():
     source = INSTALLER.read_text(encoding="utf-8")
     start = source.index("$probe = @'") + len("$probe = @'")
@@ -269,10 +289,39 @@ def test_e88011c_archive_upgrade_passes_nextfix_writer_guard(tmp_path, nextfix_a
     assert (old / "app/Label_Match.py").read_bytes() == before
 
 
+def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_archive_layouts):
+    old, candidate = nextfix_archive_layouts
+    for relative, (before, after) in _declared_current_user_profile_pairs().items():
+        assert _release_digest((old / relative).read_bytes()) == before
+        assert _release_digest((candidate / relative).read_bytes()) == after
+    result = _nextfix_probe(tmp_path, candidate, old)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["compatibility"] == NEXTFIX_PINNED
+
+
+@pytest.mark.parametrize("relative", ["app/current_user_onboarding.py", "app/logistics_runtime_profile.py"])
+def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_layouts, relative):
+    old, candidate = nextfix_archive_layouts
+    before, after = _declared_current_user_profile_pairs()[relative]
+    assert _release_digest((old / relative).read_bytes()) == before
+    assert _release_digest((candidate / relative).read_bytes()) == after
+    changed = _tree(candidate, tmp_path / "changed", [relative])
+    with (changed / relative).open("a", encoding="utf-8") as stream:
+        stream.write(CHANGED_LINE)
+    _pin(changed)
+    assert _release_digest((changed / relative).read_bytes()) != after
+    result = _nextfix_probe(tmp_path, changed, old)
+    assert result.returncode != 0
+    # Either mutation disables the atomic two-file pair; the archive layout's
+    # first ordinary AST mismatch is onboarding, including a profile mutation.
+    assert "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py" in result.stderr
+
+
 @pytest.mark.parametrize("change,reason", [
+    ("membership", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/user_relay.py"),
     ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
-    ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
+    ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
     ("contract", "WRITER_TRANSITION_CONTRACT_DIFFERS: launch-label-match.cmd"),
 ])
 def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_layouts, change, reason):
@@ -280,12 +329,14 @@ def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_l
     if change == "reverse":
         source, installed = old, candidate
     else:
-        relative = {"other-app": "app/user_relay.py", "other-label": "app/Label_Match.py",
+        relative = {"membership": "app/user_relay.py", "other-app": "app/user_relay.py", "other-label": "app/Label_Match.py",
                     "contract": "launch-label-match.cmd"}[change]
         source = _tree(candidate, tmp_path / "candidate", [relative])
         installed = old
         with (source / relative).open("ab") as stream:
-            stream.write(CHANGED_LINE.encode() if change == "other-label" else b"X")
+            stream.write(b'\n@writer_sink("unreviewed_membership")\ndef unreviewed_writer():\n    return None\n'
+                         if change == "membership" else
+                         CHANGED_LINE.encode() if change == "other-label" else b"X")
         _pin(source)  # Refusal is semantic/contract evidence, rather than a stale-pin failure.
     result = _nextfix_probe(tmp_path, source, installed)
     assert result.returncode != 0, result.stdout

@@ -506,6 +506,9 @@ shared_transition = all(
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {
+    'app/current_user_onboarding.py': (
+        '323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+        '8fb53bb3ef4ceaebe2afbaf5374dfb9ef8821d165c89d43d8e09dd57ee4d01e8'),
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
         '7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57'),
@@ -526,7 +529,7 @@ legacy_label_replacements = {
         '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'),
     'app/logistics_runtime_profile.py': (
         'a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
-        '2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed'),
+        'd65ed6b391c81e661184615077f328c3a45aabc8c466ebad596569e443652cdb'),
     'app/terminal_operation_lease.py': (
         '4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
         'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
@@ -605,6 +608,19 @@ nextfix_label_transition = (
      release_digest(source / nextfix_label_path)) == nextfix_label_pair
 )
 
+# Reviewed current-user selection update on the same accepted preimages.
+# Both modules must match the exact directional LF pair. Other app/runtime
+# files, writer membership and contracts retain their ordinary checks.
+current_user_profile_replacements = {
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '8fb53bb3ef4ceaebe2afbaf5374dfb9ef8821d165c89d43d8e09dd57ee4d01e8'),
+    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', 'd65ed6b391c81e661184615077f328c3a45aabc8c466ebad596569e443652cdb'),
+}
+current_user_profile_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file() and
+    release_digest(installed / relative) == before and release_digest(source / relative) == after
+    for relative, (before, after) in current_user_profile_replacements.items()
+)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
 if candidate_sources != installed_sources:
@@ -620,6 +636,8 @@ for directory in ('app', 'runtime'):
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
         if integrity_order_transition and relative == integrity_order_path:
+            continue
+        if current_user_profile_transition and relative in current_user_profile_replacements:
             continue
         if scan_input_transition and relative in ({scan_input_path} | scan_input_companions.keys()):
             continue
@@ -644,6 +662,7 @@ compatibility = ('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else
                  'PINNED_LEGACY_LABEL_TRANSITION_MODE' if legacy_label_transition else
                  'PINNED_SCAN_INPUT_FIX' if scan_input_transition else
                  'PINNED_W9NEXTFIX_LABEL_RECOVERY' if nextfix_label_transition else
+                 'PINNED_CURRENT_USER_PROFILE_SELECTION' if current_user_profile_transition else
                  'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@

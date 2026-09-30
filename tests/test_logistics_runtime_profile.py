@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import Label_Match as label_module
+import item_catalog_sync as catalog_module
 import logistics_runtime_profile as runtime_module
 import tools.install_logistics_runtime_profile as profile_installer_module
 from logistics_runtime_profile import (
@@ -32,6 +33,7 @@ from tools.install_logistics_runtime_profile import (
     main as install_main,
 )
 from tools.check_logistics_runtime_profile import main as readiness_main
+from current_user_onboarding import resolve_current_user_onboarding_paths
 
 
 def test_gui_startup_builds_client_without_network_readiness_probe(monkeypatch):
@@ -84,7 +86,7 @@ def _profile(tmp_path, *, profile_path=None, **changes):
 
 def _env(monkeypatch, profile_path):
     monkeypatch.setenv("KM_LOGISTICS_REQUIRED", "1")
-    monkeypatch.setenv("KM_LOGISTICS_PROFILE_PATH", str(profile_path))
+    monkeypatch.setenv("LABEL_MATCH_LOGISTICS_PROFILE_PATH", str(profile_path))
 
 
 def _private_ca_pem() -> bytes:
@@ -472,7 +474,7 @@ def test_recovery_post_replace_readback_failure_rolls_back_original(
 
 
 def test_default_profile_path_is_program_scoped(tmp_path):
-    assert default_logistics_profile_path({"PROGRAMDATA": str(tmp_path)}) == (
+    assert default_logistics_profile_path({"LOCALAPPDATA": str(tmp_path)}) == (
         tmp_path
         / "KMTech"
         / "Logistics"
@@ -482,28 +484,69 @@ def test_default_profile_path_is_program_scoped(tmp_path):
     )
 
 
-def test_program_scoped_default_precedes_legacy_machine_profile(
+@pytest.mark.parametrize("mode", ["local", "override", "no-local"])
+def test_runtime_and_tool_defaults_share_first_run_profile(monkeypatch, tmp_path, mode):
+    values = {"LABEL_MATCH_SAVE_DIR": str(tmp_path / "data")}
+    if mode != "no-local":
+        values["LOCALAPPDATA"] = str(tmp_path / "local")
+    if mode == "override":
+        values["LABEL_MATCH_LOGISTICS_PROFILE_PATH"] = str(tmp_path / "chosen/profile.json")
+    for name in ("LOCALAPPDATA", "LABEL_MATCH_LOGISTICS_PROFILE_PATH", "LABEL_MATCH_SAVE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    expected = resolve_current_user_onboarding_paths(tmp_path / "app", environ=values).logistics_profile_path
+    assert default_logistics_profile_path(values) == expected
+    assert runtime_module.selected_logistics_runtime_profile_path(environ=values) == expected
+    assert profile_installer_module.build_parser().get_default("profile_path") == str(expected)
+    # The check CLI's default must target the same own path without touching I/O.
+    seen = []
+    import tools.check_logistics_runtime_profile as check_module
+    monkeypatch.setattr(check_module, "load_logistics_runtime_profile",
+                        lambda **kwargs: seen.append(kwargs["profile_path"]) or None)
+    assert check_module.main([]) == 0
+    assert seen == [str(expected)]
+
+
+@pytest.mark.parametrize("prefix", ["LABEL_MATCH", "WORKER_ANALYSIS"])
+def test_legacy_environment_client_without_user_state_is_preserved(tmp_path, prefix):
+    values = {
+        "PROGRAMDATA": str(tmp_path / "program"),
+        f"{prefix}_LOGISTICS_API_BASE_URL": "https://legacy.example.invalid",
+        f"{prefix}_LOGISTICS_API_TOKEN": "synthetic-legacy-token",
+        f"{prefix}_LOGISTICS_AUTHORITY_SCOPE_ID": "legacy-scope",
+        "COMPUTERNAME": "legacy-fixture-host",
+    }
+    client = package_client_from_env(environ=values, probe_required=False)
+    assert client is not None
+    assert client.config.base_url == "https://legacy.example.invalid"
+    assert client.config.source_host_id == "legacy-fixture-host"
+    assert client.config.authority_scope_id == "legacy-scope"
+    assert client.config.token == "synthetic-legacy-token"
+    assert client.config.authoritative_required is False
+
+
+def test_current_user_default_never_borrows_legacy_machine_profile(
     monkeypatch, tmp_path
 ):
-    app_profile = default_logistics_profile_path({"PROGRAMDATA": str(tmp_path)})
-    legacy_profile = tmp_path / "KMTech" / "Logistics" / "runtime-profile.json"
-    monkeypatch.setenv("PROGRAMDATA", str(tmp_path))
+    values = {"LOCALAPPDATA": str(tmp_path / "local"), "PROGRAMDATA": str(tmp_path / "program")}
+    app_profile = default_logistics_profile_path(values)
+    legacy_profile = tmp_path / "program" / "KMTech" / "Logistics" / "runtime-profile.json"
+    monkeypatch.setenv("LOCALAPPDATA", values["LOCALAPPDATA"])
+    monkeypatch.setenv("PROGRAMDATA", values["PROGRAMDATA"])
+    monkeypatch.delenv("LABEL_MATCH_LOGISTICS_PROFILE_PATH", raising=False)
     monkeypatch.delenv("KM_LOGISTICS_PROFILE_PATH", raising=False)
     monkeypatch.delenv("KM_LOGISTICS_REQUIRED", raising=False)
 
     _profile(tmp_path, profile_path=legacy_profile)
-    loaded = load_logistics_runtime_profile(
-        required=True,
-        decryptor=lambda _value: "legacy-machine-secret",
-    )
-    assert loaded is not None
-    assert Path(loaded.profile_path) == legacy_profile.resolve()
+    with pytest.raises(LogisticsRuntimeConfigurationError, match="profile is missing"):
+        load_logistics_runtime_profile(required=True, decryptor=lambda _value: "legacy-machine-secret")
 
     _profile(tmp_path, profile_path=app_profile)
     loaded = load_logistics_runtime_profile(
         required=True,
         environ={
-            "PROGRAMDATA": str(tmp_path),
+            **values,
             "KM_LOGISTICS_PROFILE_PATH": str(legacy_profile),
             "KM_LOGISTICS_REQUIRED": "1",
         },
@@ -516,7 +559,7 @@ def test_program_scoped_default_precedes_legacy_machine_profile(
         required=True,
         profile_path=legacy_profile,
         environ={
-            "PROGRAMDATA": str(tmp_path),
+            **values,
             "KM_LOGISTICS_PROFILE_PATH": str(legacy_profile),
             "KM_LOGISTICS_REQUIRED": "1",
         },
@@ -532,8 +575,9 @@ def test_program_scoped_default_precedes_legacy_machine_profile(
     custom = load_logistics_runtime_profile(
         required=True,
         environ={
-            "PROGRAMDATA": str(tmp_path),
-            "KM_LOGISTICS_PROFILE_PATH": str(custom_profile),
+            **values,
+            "LABEL_MATCH_LOGISTICS_PROFILE_PATH": str(custom_profile),
+            "KM_LOGISTICS_PROFILE_PATH": str(legacy_profile),
             "KM_LOGISTICS_REQUIRED": "1",
         },
         decryptor=lambda _value: "custom-machine-secret",
@@ -998,7 +1042,8 @@ def test_old_pc_wide_machine_profile_does_not_replace_own_profile(tmp_path, monk
     # first-run set for this process wins and the Machine values are not read.
     machine = _profile(tmp_path / "machine-profile", base_url="https://old-pc-wide.invalid")
     own = _profile(tmp_path / "own-profile")
-    monkeypatch.setenv("KM_LOGISTICS_PROFILE_PATH", str(own))
+    monkeypatch.setenv("LABEL_MATCH_LOGISTICS_PROFILE_PATH", str(own))
+    monkeypatch.setenv("KM_LOGISTICS_PROFILE_PATH", str(machine))
     monkeypatch.setenv("KM_LOGISTICS_REQUIRED", "1")
     values = {
         "KM_LOGISTICS_PROFILE_PATH": str(machine),
@@ -1284,3 +1329,60 @@ def test_existing_current_user_profile_can_add_ca_without_rotating_secret(
     assert profile["tls_ca_bundle_path"] == str(ca_target.resolve())
     assert ca_target.read_bytes() == ca_payload
     assert secret_path.read_bytes() == secret_before
+
+
+@pytest.mark.parametrize('case', ['inherited', 'default', 'default-absent', 'own-absent', 'own-invalid'])
+@pytest.mark.parametrize('consumer', ['startup', 'package', 'catalog'])
+def test_r1_real_clients_never_borrow_old_identity(monkeypatch, tmp_path, case, consumer):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.setenv('PROGRAMDATA', str(tmp_path / 'program'))
+    for name in ('LABEL_MATCH_LOGISTICS_PROFILE_PATH', 'KM_LOGISTICS_PROFILE_PATH',
+                 'KM_LOGISTICS_REQUIRED', 'LABEL_MATCH_LOGISTICS_API_BASE_URL',
+                 'LABEL_MATCH_LOGISTICS_API_TOKEN', 'WORKER_ANALYSIS_LOGISTICS_API_BASE_URL',
+                 'WORKER_ANALYSIS_LOGISTICS_API_TOKEN'):
+        monkeypatch.delenv(name, raising=False)
+    own = resolve_current_user_onboarding_paths(Path(label_module.__file__).parent).logistics_profile_path
+    old = tmp_path / 'program/KMTech/Logistics/runtime-profile.json'
+    scoped_old = old.parent / 'profiles/Label_Match/runtime-profile.json'
+    def profile(path, identity):
+        secret = path.parent / 'secrets/bearer-token.dpapi'
+        secret.parent.mkdir(parents=True, exist_ok=True)
+        secret.write_bytes(b'synthetic-protected-token')
+        path.write_text(json.dumps(dict(contract_version=runtime_module.PROFILE_CONTRACT_VERSION,
+            base_url='https://example.invalid', authority_scope='fixture-scope',
+            authority_epoch=1, authority_plane='AUTHORITATIVE', plane_epoch=1,
+            device_id=identity + '-device', source_host_id=identity,
+            bearer_token_ref=runtime_module.DEFAULT_TOKEN_REF, credential_scope='current_user',
+            timeout_seconds=4)), encoding='utf-8')
+    profile(old, 'foreign-old-program')
+    profile(scoped_old, 'foreign-old-program')
+    originals = {p: p.read_bytes() for p in old.parent.rglob('*') if p.is_file()}
+    if case not in ('default-absent', 'own-absent', 'own-invalid'):
+        profile(own, 'own-current-user')
+    if case == 'own-invalid':
+        own.parent.mkdir(parents=True, exist_ok=True)
+        own.write_text('{}', encoding='utf-8')
+    if case not in ('default', 'default-absent'):
+        monkeypatch.setenv('KM_LOGISTICS_PROFILE_PATH', str(old))
+        monkeypatch.setenv('KM_LOGISTICS_REQUIRED', '1')
+    monkeypatch.setattr(runtime_module, 'unprotect_current_user_secret', lambda *_: 'synthetic-token')
+    monkeypatch.setattr(runtime_module, 'unprotect_machine_secret', lambda *_: 'synthetic-token')
+    factory = dict(startup=label_module.label_match_startup_package_client,
+                   package=lambda: package_client_from_env(probe_required=False),
+                   catalog=catalog_module._load_item_catalog_logistics_profile)[consumer]
+    if case == 'default-absent':
+        assert factory() is None
+    elif case in ('own-absent', 'own-invalid'):
+        with pytest.raises(runtime_module.LogisticsRuntimeConfigurationError):
+            factory()
+    else:
+        value = factory()
+        identity = value.config.source_host_id if hasattr(value, 'config') else value.source_host_id
+        assert identity == 'own-current-user'
+    # This is the actual F3 required callback and manual-completion guard.
+    if case not in ('default', 'default-absent'):
+        assert label_module.logistics_runtime_required() is True
+        with pytest.raises(PackageLogisticsError, match='AUTHORITATIVE_LOGISTICS_REQUIRED'):
+            label_module.Label_Match._queue_authoritative_package(SimpleNamespace(),
+                item_code='fixture-item', is_manual_complete=True)
+    assert all(p.read_bytes() == content for p, content in originals.items())

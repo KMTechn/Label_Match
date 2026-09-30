@@ -28,8 +28,9 @@ from label_exact_clone_resolution import read_pinned_json, validate_resolution_r
 from label_match_product_host import _default_product_root, requires_bootstrap_integrity
 from label_match_single_instance import SingleInstanceError, resolve_data_scope
 from logistics_runtime_profile import (
-    PROFILE_PATH_ENV,
+    APP_PROFILE_PATH_ENV as LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV,
     REQUIRED_ENV,
+    default_logistics_profile_path,
     load_logistics_runtime_profile,
     unprotect_current_user_secret,
 )
@@ -57,7 +58,6 @@ LABEL_MATCH_DATA_ROOT_ENV = "LABEL_MATCH_SAVE_DIR"
 LABEL_MATCH_SETTINGS_PATH_ENV = "LABEL_MATCH_SETTINGS_PATH"
 LABEL_MATCH_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_ROOT"
 LEGACY_DIRECT_SYNC_ROOT_ENV = "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"
-LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV = "LABEL_MATCH_LOGISTICS_PROFILE_PATH"
 CANONICAL_PORTABLE_ROOT = Path(r"C:\KMTech\Apps\Label_Match\current")
 PORTABLE_BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v1"
 CONFLICT_RECEIPT_PATH_ENV = "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH"
@@ -354,26 +354,9 @@ def resolve_current_user_onboarding_paths(
     else:
         direct_sync_root = default_data_root.parent / "direct_sync"
 
-    # The shared KM_LOGISTICS_PROFILE_PATH is not read: an inherited Machine value
-    # from the old PC-wide rollout points at a file other programs may use.
-    explicit_profile = str(
-        values.get(LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV) or ""
-    ).strip()
-    if explicit_profile:
-        logistics_profile_path = _resolved(explicit_profile)
-    elif local_app_data:
-        logistics_profile_path = (
-            _resolved(local_app_data)
-            / "KMTech"
-            / "Logistics"
-            / "profiles"
-            / "Label_Match"
-            / "runtime-profile.json"
-        )
-    else:
-        logistics_profile_path = (
-            default_data_root.parent / "logistics-profile" / "runtime-profile.json"
-        )
+    logistics_profile_path = default_logistics_profile_path(
+        values, default_data_root=default_data_root
+    )
     bootstrap_tls_ca_bundle_path = (
         _resolved(local_app_data)
         / "KMTech"
@@ -901,7 +884,7 @@ def apply_current_user_runtime_environment(
     values[LABEL_MATCH_SETTINGS_PATH_ENV] = str(paths.settings_path)
     values[LABEL_MATCH_DIRECT_SYNC_ROOT_ENV] = str(paths.direct_sync_root)
     values[LEGACY_DIRECT_SYNC_ROOT_ENV] = str(paths.direct_sync_root)
-    values[PROFILE_PATH_ENV] = str(paths.logistics_profile_path)
+    values[LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV] = str(paths.logistics_profile_path)
     values[REQUIRED_ENV] = "1"
 
 

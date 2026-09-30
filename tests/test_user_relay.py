@@ -279,7 +279,7 @@ def test_relay_restart_discovers_csv_in_effective_data_root(
         monkeypatch.setenv("LOCALAPPDATA", str(local_root))
         for name in (
             "LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_SETTINGS_PATH", "LABEL_MATCH_DIRECT_SYNC_ROOT",
-            "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT", "KM_LOGISTICS_PROFILE_PATH",
+            "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT", "LABEL_MATCH_LOGISTICS_PROFILE_PATH",
         ):
             monkeypatch.delenv(name, raising=False)
         if source_case == "custom-env":
