@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import fields
 import importlib
+import sys
 import threading
 import time
 
@@ -49,9 +50,8 @@ class FakeTkRoot:
     def run_until(self, predicate, *, timeout=2.0) -> None:
         deadline = time.monotonic() + timeout
         while not predicate():
-            ran = self.run_one()
-            if not ran:
-                threading.Event().wait(0.002)
+            self.run_one()
+            threading.Event().wait(0.002)
             if time.monotonic() >= deadline:
                 raise AssertionError("fake Tk pump did not reach the expected state")
 
@@ -59,6 +59,54 @@ class FakeTkRoot:
 def _symbols():
     module = importlib.import_module("tk_serial_ui_lane")
     return module, module.LaneTask, module.TkSerialUiLane
+
+
+def test_fake_pump_yields_even_when_tk_callbacks_keep_rescheduling():
+    root = FakeTkRoot()
+    entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+
+    def work():
+        entered.set()
+        release.wait()
+        completed.set()
+
+    def poll():
+        release.set()
+        root.after(1, poll)
+
+    worker = threading.Thread(target=work, daemon=True)
+    interval = sys.getswitchinterval()
+    worker.start()
+    try:
+        assert entered.wait(timeout=2.0)
+        root.after(1, poll)
+        # Hold the owner thread's GIL slice past the unchanged pump deadline.
+        # A real waiting worker needs a yield even while callbacks stay queued.
+        sys.setswitchinterval(10.0)
+        root.run_until(completed.is_set)
+        assert completed.is_set()
+    finally:
+        sys.setswitchinterval(interval)
+        release.set()
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+
+def test_fake_pump_still_rejects_a_stalled_product_lane():
+    _module, LaneTask, TkSerialUiLane = _symbols()
+    root = FakeTkRoot()
+    lane = TkSerialUiLane(root, poll_ms=1)
+    release = threading.Event()
+    finished = []
+    try:
+        lane.submit(LaneTask("stalled-product", 0, release.wait, finished.append, pytest.fail))
+        with pytest.raises(AssertionError, match="fake Tk pump did not reach"):
+            root.run_until(lambda: not lane.is_busy())
+        assert lane.is_busy() and finished == []
+    finally:
+        release.set()
+        root.run_until(lambda: not lane.is_busy())
+        _close(root, lane)
 
 
 def _close(root, lane) -> None:
