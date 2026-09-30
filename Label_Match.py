@@ -12974,7 +12974,38 @@ class Label_Match(tk.Tk):
             "operator_complete_signal": state == "COMPLETED",
         }
 
-    def _deferred_capture_pending_notice(self):
+    def _refused_capture_cancel_enabled(self, view=None):
+        state = self.__dict__.get("_deferred_capture_ui") or {}
+        current = self.__dict__.get("current_set_info") or {}
+        if not (
+            state.get("state") == "BLOCKED_INVALID"
+            and state.get("intent_id")
+            and state.get("intent_id") == str(current.get("deferred_intent_id") or "").strip()
+        ):
+            return False
+        if view is None:
+            view = present_workflow(adapt_workflow_snapshot(
+                current,
+                initialized=bool(self.__dict__.get("initialized_successfully", False)),
+                history_readonly=not bool(self.__dict__.get("history_view_updates_active_state", True)),
+                history_loading=bool(self.__dict__.get("history_active_load_pending", False)),
+                has_error=bool(self.__dict__.get("_pending_workflow_error")),
+                completion_kind=self.__dict__.get("_workflow_completion_kind"),
+                blocking_notice=self.__dict__.get("_workflow_blocking_notice") or self.__dict__.get("_workflow_notice"),
+            ))
+        return bool(
+            view.scan_input_enabled
+            and view.completion_kind is None
+            and not self._ui_lane_is_busy()
+            and not any(self.__dict__.get(name) for name in (
+                "_app_close_in_progress", "_ui_lane_busy_task", "is_blinking",
+                "_central_seal_lookup_in_progress", "_central_package_preflight_in_progress",
+                "_phs_label_scan_lookup_in_progress", "_phs_label_candidate_pending",
+                "_phs_reconciliation_lookup_pending", "_phs_label_exchange_pending",
+            ))
+        )
+
+    def _deferred_capture_pending_notice(self, view=None):
         state = self.__dict__.get("_deferred_capture_ui") or {}
         own_capture = bool(state.get("intent_id")) and state.get("intent_id") == str(
             (self.__dict__.get("current_set_info") or {}).get("deferred_intent_id") or ""
@@ -13020,7 +13051,7 @@ class Label_Match(tk.Tk):
                         "CA 봉인 뒤 다시 하려면 F1 후 같은 현품표를 다시 스캔하세요. "
                         "관리자는 작업대 건별 복구에서 이 건만 확인합니다."
                         # F1 closes only a refused read on the set's own capture.
-                        if state.get("state") == "BLOCKED_INVALID" and own_capture
+                        if self._refused_capture_cancel_enabled(view)
                         else "이 현품표 저장본은 관리자 확인이 필요합니다. 실물은 따로 두고 "
                         "다음 현품표를 스캔하면 새 세트로 진행됩니다. "
                         "관리자는 작업대 건별 복구에서 이 건만 확인·보류합니다."
@@ -17912,6 +17943,8 @@ class Label_Match(tk.Tk):
             expected_row_version=row["row_version"], issue_request_fingerprint=fingerprint,
             expected_operation_lease_id=str(current.get("operation_lease_id") or ""),
         )
+        if (self.__dict__.get("_deferred_capture_ui") or {}).get("intent_id") == row["intent_id"]:
+            self._deferred_capture_ui = None
 
     def _reset_current_set(self, full_reset=False, from_finalize=False):
         if self.is_blinking: return False
@@ -20746,7 +20779,7 @@ class Label_Match(tk.Tk):
         view = present_workflow(snapshot)
         self._last_workflow_view = view
         deferred_capture_notice = (
-            self._deferred_capture_pending_notice()
+            self._deferred_capture_pending_notice(view)
             or self._deferred_capture_failure_notice()
         )
 
@@ -21060,7 +21093,7 @@ class Label_Match(tk.Tk):
         for name, enabled in (
             ("manual_complete_button", view.f3_enabled),
             ("exact_rescan_button", view.f4_enabled),
-            ("reset_button", view.cancel_current_enabled),
+            ("reset_button", view.cancel_current_enabled or self._refused_capture_cancel_enabled(view)),
             ("cancel_tray_button", view.cancel_completed_enabled),
             (
                 "phs_label_exchange_button",
@@ -21165,7 +21198,7 @@ class Label_Match(tk.Tk):
         else:
             view = self.__dict__.get("_last_workflow_view")
         allowed = {
-            "f1": bool(view and view.cancel_current_enabled),
+            "f1": bool(view and (view.cancel_current_enabled or self._refused_capture_cancel_enabled(view))),
             "f2": bool(view and view.cancel_completed_enabled),
             "f3": bool(view and view.f3_enabled),
             "f4": bool(view and view.f4_enabled),

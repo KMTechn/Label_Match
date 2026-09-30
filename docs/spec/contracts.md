@@ -166,6 +166,8 @@ resident10 c6e72592의 [실제 설치 및 기본 GUI09 시작](operations.md#res
 
 Main의 `msg_8450ebdcf336` 감사는 기존 Label의 정상 F1을 현재의 정확한 owned·unsubmitted 접수에 연결하도록 승인했다. producer/install/source host/manifest/scope, intent/set, 보존된 물리 입력과 seal, row version·fence·validation generation을 확인하고 한 SQLite transaction에서 `CANCELLED`, `TC_CANCEL`, `OPERATOR_CANCELLED_LOCAL_CAPTURE`를 기록한 뒤 UI/cache를 비운다. `VALIDATED → CANCELLED`는 정상 초기화 때 기존 DB trigger까지 transaction 안에서 교체한다. 이미 CANCELLED인 같은 접수의 반복은 추가 취소 audit를 만들지 않는다.
 
+스캔 0인 자기 `BLOCKED_INVALID` 접수도 안전한 작업 화면에서는 F1 키·현재 세트 취소 단추로 같은 transaction을 실행한다. 안내의 F1 문장·키·단추는 같은 앱 술어를 사용하며 초기화·이력 로딩·읽기 전용·오류·완료·UI lane 처리 중에는 허용하지 않는다. `OPERATOR_REVIEW`·다른 세트 접수·검증 대기·검증 완료·로컬 반영 중 접수는 이 예외에 포함하지 않는다. 취소된 원본을 보존하고 CA 봉인 뒤 같은 현품표를 다시 스캔하면 새 접수로 검증한다.
+
 확정되어 로컬에 보존된 미소비 PREFETCHED lease의 존재·만료는 로컬 접수 취소를 일괄 금지하지 않는다. 해당 lease, ACTIVE issue attempt, 기존 payload·검증 이력·서버 reservation·receipt는 바꾸지 않으며 취소는 포장 완료·중앙 lease release·재고 반환이 아니다. 과거 mutation은 정확한 request/hash/idempotency와 검증된 발급 결과를 보존 lease에 결속해야 하고, actual pending/UNKNOWN·live claim·package outbox·미완료 F4/F5·UI in-flight guard는 유지한다. 기존 fingerprint/resource별 lease 선택과 같은 원본의 F4 차단도 그대로다. 재구성 rw13 fixture의 별도 foreground marker/credential을 Label 업무 요구로 추가하지 않는다.
 
 commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache를 복원하지 않고, 늦은 VALIDATED callback도 현재 DB state를 다시 확인해 materialize하지 않는다. 저장 실패·identity/CAS 불일치 때 화면/접수는 보존한다. [host 회귀와 구분한 native 범위](operations.md#f1-cancel07-qualification)는 별도 판정이며 이 계약은 실제 중앙 reservation 해제를 입증하지 않는다.

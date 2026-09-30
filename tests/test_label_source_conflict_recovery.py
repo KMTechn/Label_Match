@@ -431,12 +431,135 @@ def test_review_notice_names_the_next_step(status, state, own, says, never):
     only for the set's own capture."""
     module = load_label_match_module()
     app = module.Label_Match.__new__(module.Label_Match)
+    app.initialized_successfully = True
     app.current_set_info = {"id": "SET-N", "raw": [], "deferred_intent_id": "di_own"}
     app._deferred_capture_ui = {"status": status, "state": state,
                                 "intent_id": "di_own" if own else "di_other"}
     message = app._deferred_capture_pending_notice().message
     assert all(text in message for text in says), message
     assert not any(text in message for text in never), message
+
+
+@pytest.mark.parametrize("action", ["key", "button"])
+def test_refused_owned_capture_f1_cancels_then_same_label_validates(clock_case, action):
+    from tests.test_label_operator_action_gates import _render_app
+
+    case = clock_case
+    app = case.app
+    intent_id, _outcome = _conflict(case)
+    before = _row(case.database, intent_id)
+    rendered = _render_app()
+    app.__dict__.update({key: value for key, value in rendered.__dict__.items()
+                         if key != "current_set_info"})
+    app.is_blinking = False
+    app.worker_name = "F1 test operator"
+    app.history_tree = SimpleNamespace(exists=lambda _key: False)
+    app.data_manager = SimpleNamespace(log_event=lambda *args: None, delete_current_state=lambda: None)
+    app._update_status_label = lambda: None
+    app.update_big_display = lambda *args: None
+    view = app._render_operator_workbench()
+    assert "F1" in app._deferred_capture_pending_notice().message
+    assert view.cancel_current_enabled is False  # capture-only presenter stays unchanged
+    assert app.reset_button.options["state"] == "normal"
+    if action == "key":
+        assert app._handle_workflow_shortcut("f1") == "break"
+    else:
+        # The real button command is the same guarded reset, once enabled.
+        assert app._reset_current_set(full_reset=True) is True
+    cancelled = _row(case.database, intent_id)
+    assert cancelled["state"] == "CANCELLED"
+    assert cancelled["payload_ciphertext"] == before["payload_ciphertext"]
+    with sqlite3.connect(case.database) as conn:
+        assert conn.execute("SELECT transition_code,reason_code FROM deferred_intent_transition_audit "
+                            "WHERE intent_id=? AND transition_code='TC_CANCEL'", (intent_id,)).fetchall() == [
+                                ("TC_CANCEL", "OPERATOR_CANCELLED_LOCAL_CAPTURE")]
+    assert not app.current_set_info["id"] and app.current_set_info["raw"] == []
+    assert not app.current_set_info["deferred_intent_id"]
+    assert app.progress_bar.options["value"] == 0
+    assert app._last_workflow_view.qa_completed == 0
+    assert all(not slot.filled and not slot.value for slot in app._last_workflow_view.slots)
+    assert app._deferred_capture_pending_notice() is None
+    app.package_logistics_client.resolve_package_source_evidence = lambda _draft: case.response
+    new_id = _first_scan(case)
+    assert new_id != intent_id
+    assert _row(case.database, new_id)["state"] == "VALIDATED"
+    assert _row(case.database, intent_id)["state"] == "CANCELLED"
+    assert app.current_set_info["raw"] == [case.group["scan_payload"]]
+    assert app.current_set_info["central_inherit_all"] is True
+    assert len(case.accepted) == 1
+
+
+@pytest.mark.parametrize("boundary", ["audit-failure", "other-notice"])
+def test_refused_capture_reset_preserves_unclosed_or_unrelated_notice(clock_case, boundary):
+    case = clock_case
+    intent_id, _outcome = _conflict(case)
+    current = dict(case.app.current_set_info)
+    before = _row(case.database, intent_id)
+    app = _app(case.app.deferred_intent_capture, SimpleNamespace(intent_id=intent_id),
+               scan=case.group["scan_payload"])
+    app.current_set_info = current
+    notice = {"status": "관리자확인", "state": "BLOCKED_INVALID",
+              "intent_id": intent_id if boundary == "audit-failure" else "di_other"}
+    app._deferred_capture_ui = dict(notice)
+    if boundary == "audit-failure":
+        with sqlite3.connect(case.database) as conn:
+            conn.execute("CREATE TRIGGER refuse_f1_cancel BEFORE INSERT ON deferred_intent_transition_audit "
+                         "WHEN NEW.transition_code='TC_CANCEL' BEGIN SELECT RAISE(ABORT,'test cancel failure'); END")
+        assert app._reset_current_set(full_reset=True) is False
+        assert _row(case.database, intent_id) == before
+        assert app.current_set_info == current
+        assert app.events == []
+    else:
+        assert app._reset_current_set(full_reset=True) is True
+        assert _row(case.database, intent_id)["state"] == "CANCELLED"
+    assert app._deferred_capture_ui == notice
+
+
+@pytest.mark.parametrize("gate", [
+    "ready", "review", "other-capture", "retry", "validated", "materializing",
+    "lane", "initializing", "history", "readonly", "error", "completion", "closing", "preflight",
+])
+def test_refused_capture_notice_key_and_button_share_the_safe_gate(gate):
+    from tests.test_label_operator_action_gates import _render_app
+
+    app = _render_app(deferred_intent_id="di_own")
+    app._deferred_capture_ui = {"status": "관리자확인", "state": "BLOCKED_INVALID", "intent_id": "di_own"}
+    if gate == "review":
+        app._deferred_capture_ui["state"] = "OPERATOR_REVIEW"
+    elif gate == "other-capture":
+        app._deferred_capture_ui["intent_id"] = "di_other"
+    elif gate in {"retry", "validated", "materializing"}:
+        app._deferred_capture_ui.update(state={"retry": "RETRY_WAIT_VALIDATION", "validated": "VALIDATED",
+                                              "materializing": "LOCAL_EFFECT_PENDING"}[gate],
+                                        status={"retry": "저장됨-검증대기", "validated": "검증완료-전송대기",
+                                                "materializing": "서버확정-로컬반영대기"}[gate])
+    elif gate == "lane":
+        app._ui_lane_busy_task = "validation"
+    elif gate == "initializing":
+        app.initialized_successfully = False
+    elif gate == "history":
+        app.history_active_load_pending = True
+    elif gate == "readonly":
+        app.history_view_updates_active_state = False
+    elif gate == "error":
+        app._pending_workflow_error = True
+    elif gate == "completion":
+        app._workflow_completion_kind = "full"
+    elif gate == "closing":
+        app._app_close_in_progress = True
+    elif gate == "preflight":
+        app._central_package_preflight_in_progress = True
+    reset = Mock()
+    app._reset_current_set = reset
+    app._render_operator_workbench()
+    message = app._deferred_capture_pending_notice().message
+    expected = gate == "ready"
+    assert ("F1" in message) is expected
+    assert (app.reset_button.options["state"] == "normal") is expected
+    app._handle_workflow_shortcut("f1")
+    assert bool(reset.call_count) is expected
+    if expected:
+        reset.assert_called_once_with(full_reset=True)
 
 
 def test_spellings_of_one_label_share_its_partition(tmp_path):

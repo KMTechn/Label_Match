@@ -4,7 +4,7 @@
 
 항목 6: 새 체계 현품표가 로컬 5단계의 제품·최종 라벨로 들어가던 경로를 공통 표식 분류로 거절한다. 3종 현품표 × 3종 로컬 세트 × 2자리의 헤드리스 RED 18 FAIL → GREEN 18 PASS와 다음 정상 제품·최종 라벨 수용을 확인했다. 실제 창·스캐너와 e88011c 설치본의 제자리 업그레이드는 별도 확인 대상이다.
 
-항목 3: e88011c의 BLOCKED_INVALID·스캔 0 자기 접수는 안내에 F1이 있으나 presenter/키가 취소를 허용하지 않는다. 같은 현품표를 다시 스캔하거나 다른 현품표·빈 화면 뒤 돌아와도 원 접수를 이어받고 재검증하지 않는다. 건별 복구의 다시 확인·보류도 capture를 그대로 둔다. 문구만 바꾸어 약속할 재사용 경로가 없어 안내·gate는 이번 수정에 포함하지 않으며, 해당 상태의 실제 F1 허용 여부는 1차 판단으로 남긴다. 사실·근거는 `D:/KMTech/program-improvement-20260912/work/program/w9nextfix/sub-2/REPORT.md`에 기록한다.
+항목 3: `BLOCKED_INVALID`·스캔 0 자기 접수의 F1 안내·키·단추를 같은 안전 술어로 연결했다. 기존 취소 transaction이 원본을 보존해 `CANCELLED`로 닫으며, CA 봉인 뒤 같은 현품표는 새 접수로 검증·세트 진행한다. 문구만으로 재사용할 경로가 없던 F-a–F-d를 동작 수정으로 해소했다. 관리자 검토·다른 접수·검증 대기·검증 완료·반영 중·UI lane 처리 중과 초기화·이력·오류·완료 gate는 유지한다. 실제 창·스캐너 확인은 NOT TESTED다. 근거는 `D:/KMTech/program-improvement-20260912/work/program/w9nextfix/sub-2b/REPORT.md`에 기록한다.
 
 <a id="lm-w9-legacy-transition"></a>
 ## W9 · 과도기 모드 (w9lmtransit)
