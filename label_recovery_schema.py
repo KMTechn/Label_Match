@@ -43,6 +43,8 @@ RECOVERY_SCHEMAS = {
             "package_source_snapshot": "nullable_source_snapshot",
             "central_inherit_all": _BOOLEAN,
             "scanner_only": _BOOLEAN,
+            "scanner_failure_result": _TEXT,
+            "scanner_failure_details": _TEXT,
             "shortage_confirmed": _BOOLEAN,
             "shortage_confirmation_pending": _BOOLEAN,
             "shortage_release_pending": _BOOLEAN,

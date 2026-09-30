@@ -262,7 +262,9 @@ def _production_mismatch_presentation(raw, master):
     app._trigger_modal_error = lambda *args: pytest.fail(
         f"workbench mismatch used the modal path: {args!r}"
     )
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
+    finalized = []
+    app._finalize_set = lambda result, details="": finalized.append((result, details)) or True
     app._update_manual_complete_button_state = lambda: None
     app.update_big_display = (
         lambda text, color="": app.big_display_label.configure(
@@ -274,15 +276,14 @@ def _production_mismatch_presentation(raw, master):
     Label_Match._handle_mismatch(app, raw, master)
 
     assert events and events[-1][0] == app.Events.ERROR_MISMATCH
-    pending = app._pending_workflow_error
-    notice = app._workflow_blocking_notice
-    assert pending is app._workflow_pending_error
-    assert notice is app._workflow_notice
+    notice = app._phs_label_guidance_notice
+    assert notice.kind == "scanner_notice" and not app.__dict__.get("_pending_workflow_error")
+    assert finalized == [(app.Results.FAIL_MISMATCH, raw)]
     return (
         notice.title,
         notice.message,
-        pending["result"],
-        pending["error_details"],
+        finalized[0][0],
+        finalized[0][1],
     )
 
 

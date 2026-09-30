@@ -124,7 +124,9 @@ def test_acked_orphan_requires_existing_csv_sync_before_marker(
         assert commands[0]["draft_json"] == original["draft_json"]
         assert commands[0]["idempotency_key"] == original["idempotency_key"]
         assert events == original_events
-        assert actions == []  # No success sound, drain, summary, or dismissal.
+        assert actions == ([] if fault is None else ["sound:fail"])
+        # DESIGN §1.2 allows recovery guidance/error sound, while success,
+        # drain, summary and dismissal still require the original CSV barrier.
         if fault is None:
             assert barriers and opened and synced == [True] and not refused
             assert commands[0]["local_completion_committed"] == 1

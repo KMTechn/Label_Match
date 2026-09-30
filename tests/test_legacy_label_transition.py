@@ -1962,9 +1962,9 @@ def test_lane_marker_save_failure_writes_no_row_until_the_marker_is_durable(tmp_
         _b1_close(app.data_manager)
 
 
-def test_declining_restore_closes_a_pinned_local_capture(clock_case, tmp_path, monkeypatch):
+def test_automatic_restore_preserves_a_pinned_local_capture(clock_case, tmp_path, monkeypatch):
     """A stop after the local decision was saved but before its capture closed,
-    then the operator declines the restore: the cycle stays local."""
+    then automatic restore keeps the saved cycle local without a question."""
 
     import label_completion
     from tests.test_deferred_intent_capture import _row
@@ -1996,21 +1996,21 @@ def test_declining_restore_closes_a_pinned_local_capture(clock_case, tmp_path, m
     restored._prepare_deferred_intent_validation = lambda identity: attempts.append(identity)
     try:
         restored._load_current_set_state()
-        assert not Path(restored._package_current_state_path()).exists()
-        assert _row(clock_case.database, intent_id)["state"] == "CANCELLED"
+        assert Path(restored._package_current_state_path()).exists()
+        assert restored.current_set_info["transition_class"] == "PHS2_LOCAL"
+        assert _row(clock_case.database, intent_id)["state"] == "VALIDATED"
         restored._build_deferred_validation_lane_task().work()
-        assert attempts == [], "a declined local cycle never returns to central validation"
+        assert attempts == [], "a restored local cycle never returns to central validation"
     finally:
         _close(restored)
 
 
 @pytest.mark.parametrize("prompt", ["restore", "handover"])
-def test_declined_restore_that_cannot_close_its_capture_keeps_the_local_set(
+def test_automatic_restore_does_not_need_to_close_its_local_capture(
     clock_case, tmp_path, monkeypatch, prompt,
 ):
-    """Ported from sub-05/test_recheck5_state.py: the close fails while the
-    operator declines, so the pinned local set stays the active set and no
-    background validation revives its capture."""
+    """The pinned local set resumes without closing its capture or asking
+    either recovery question; background validation never revives it."""
 
     import label_completion
     from tests.test_deferred_intent_capture import _row
@@ -2053,7 +2053,8 @@ def test_declined_restore_that_cannot_close_its_capture_keeps_the_local_set(
         assert Path(restored._package_current_state_path()).exists()
         assert restored.current_set_info["transition_class"] == "PHS2_LOCAL"
         assert restored.current_set_info["raw"]
-        assert restored.warnings, "the operator is told why the declined set continues"
+        assert restored.warnings == [], "automatic restore opens no warning window"
+        assert restored.notices[-1].title == "이전 작업 복구"
         restored._build_deferred_validation_lane_task().work()
         assert attempts == [] and _row(clock_case.database, intent_id)["state"] == "VALIDATED"
     finally:
@@ -2074,13 +2075,11 @@ def test_declined_restore_that_cannot_close_its_capture_keeps_the_local_set(
     pytest.param("other", False, False, True, id="decline-close-fails-handover-no"),
     pytest.param("other", False, None, True, id="decline-close-fails-handover-cancel"),
 ])
-def test_every_restore_answer_keeps_a_pinned_local_cycle_out_of_central_validation(
+def test_obsolete_restore_answers_do_not_discard_a_pinned_local_cycle(
     clock_case, tmp_path, monkeypatch, worker, restore, handover, close_fails,
 ):
-    """Every way the restore prompts end (yes, no, cancel/close of the handover
-    window, a capture that cannot be closed) leaves the local cycle either
-    active or discarded with its capture closed; background validation never
-    runs it, and a next scan never replaces a kept one (sub-05 x5 09:20)."""
+    """Obsolete yes/no/cancel answers cannot discard the saved local cycle;
+    DESIGN §1.2 restores it without a question and preserves its capture."""
 
     import label_completion
     from tests.test_deferred_intent_capture import _row
@@ -2108,12 +2107,12 @@ def test_every_restore_answer_keeps_a_pinned_local_cycle_out_of_central_validati
     restored._operation_lease_request_context = clock_case.app._operation_lease_request_context
     if worker == "other":
         restored.worker_name = "another-worker"
-    monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: restore)
+    restore_asked = []
+    monkeypatch.setattr(module.messagebox, "askyesno",
+                        lambda *a, **k: restore_asked.append(True) or restore)
     handover_asked = []
     monkeypatch.setattr(module.messagebox, "askyesnocancel",
                         lambda *a, **k: handover_asked.append(True) or handover)
-    real_close = restored._cancel_deferred_capture_for_set
-
     def unable_to_close(_current):
         raise OSError("capture store unavailable")
 
@@ -2124,25 +2123,17 @@ def test_every_restore_answer_keeps_a_pinned_local_cycle_out_of_central_validati
     path = Path(restored._package_current_state_path())
     try:
         restored._load_current_set_state()
-        assert bool(handover_asked) is (handover != "-")
+        assert restore_asked == handover_asked == [], "DESIGN §1.2: restoration needs no modal response"
         active = bool(restored.current_set_info.get("raw"))
         state = _row(clock_case.database, intent_id)["state"]
-        if active:
-            assert restored.current_set_info["transition_class"] == "PHS2_LOCAL" and path.exists()
-        else:  # only an explicit "no" with the capture closed ends a local cycle
-            assert state == "CANCELLED" and not path.exists()
-        # A cancelled handover window keeps the local set active: neither
-        # background validation nor a next scan can take its place.
-        assert active is (restore and handover is not False or close_fails), (active, state)
+        assert active and restored.current_set_info["transition_class"] == "PHS2_LOCAL"
+        assert path.exists() and state == "VALIDATED"
         restored._build_deferred_validation_lane_task().work()
         assert attempts == [] and _row(clock_case.database, intent_id)["state"] == state
-        if not active:
-            # The capture store recovers and a next scan starts a new set; the
-            # closed local capture stays closed.
-            restored._cancel_deferred_capture_for_set = real_close
-            _scan(module, restored, MASTER)
-            assert restored.current_set_info["raw"] == [MASTER]
-            assert _row(clock_case.database, intent_id)["state"] == "CANCELLED" and attempts == []
+        preserved = list(restored.current_set_info["raw"])
+        _scan(module, restored, MASTER)
+        assert restored.current_set_info["raw"] == preserved, "a new label cannot replace a restored local set"
+        assert _row(clock_case.database, intent_id)["state"] == "VALIDATED" and attempts == []
     finally:
         _close(restored)
 

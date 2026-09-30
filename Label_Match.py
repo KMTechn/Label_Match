@@ -1633,7 +1633,7 @@ def _label_match_tray_complete_passed(details):
     return _label_match_tray_complete_result(details) == LABEL_MATCH_RESULT_PASS
 
 
-def _label_match_local_completion_event_exists(data_manager, set_id):
+def _label_match_local_completion_event_exists(data_manager, set_id, *, expected_results=None):
     """Synchronize a matching TRAY_COMPLETE before reusing its completion."""
 
     identity = str(set_id or "").strip()
@@ -1656,6 +1656,7 @@ def _label_match_local_completion_event_exists(data_manager, set_id):
             if (
                 isinstance(details, dict)
                 and str(details.get("set_id") or "").strip() == identity
+                and (expected_results is None or details.get("final_result") in expected_results)
             ):
                 return True
         return False
@@ -7991,7 +7992,9 @@ class Label_Match(tk.Tk):
 
     def _save_current_set_state(self):
         current_set = self.__dict__.get("current_set_info") or {}
-        if not self.initialized_successfully or not current_set.get("raw"):
+        if not self.initialized_successfully or (
+            not current_set.get("raw") and "scanner_failure_result" not in current_set
+        ):
             return True
         state_data = {
             'current_set_info': current_set,
@@ -10847,6 +10850,15 @@ class Label_Match(tk.Tk):
                 return
         saved_set_info = dict(state_data.get("current_set_info") or {})
         saved_set_id = str(saved_set_info.get("completion_identity") or saved_set_info.get("id") or "").strip()
+        if "scanner_failure_result" in saved_set_info:
+            self.current_set_info.update(saved_set_info)
+            start_time = self.current_set_info.get("start_time")
+            if isinstance(start_time, str):
+                self.current_set_info["start_time"] = datetime.fromisoformat(start_time)
+            if self._resume_scanner_failure():
+                self._show_scanner_notice("이전 오류 기록 복구",
+                    "이전 세트의 오류 기록을 저장했습니다. 새 현품표부터 스캔하세요.")
+            return
         detached_capture = False
         try:
             capture = self._owned_deferred_capture_for_set(saved_set_info)
@@ -10924,7 +10936,7 @@ class Label_Match(tk.Tk):
                     and not transition_state
                 ):
                     if not self.run_tests:
-                        messagebox.showinfo("이전 작업 만료", "어제 완료되지 않은 작업 데이터는 자동으로 삭제됩니다.")
+                        self._show_scanner_notice("이전 작업 만료", "어제 완료되지 않은 작업 데이터는 자동으로 삭제됩니다.")
                     self.data_manager.delete_current_state()
                     return
         except (ValueError, TypeError) as e:
@@ -10954,65 +10966,18 @@ class Label_Match(tk.Tk):
             saved_set_info
         )
         state_data["current_set_info"] = saved_set_info
-        msg = f"이전에 완료되지 않은 스캔 세트가 있습니다.\n(스캔 수: {len(saved_set_info.get('raw', []))})\n\n이어서 진행하시겠습니까?"
-        
-        exchange_rows = (
-            self.sealed_transfer_exchange_store.blocking_rows(set_id=saved_set_id)
-            if saved_set_id
-            else []
-        )
-        if saved_set_info.get("scanner_only"):
-            should_restore = True
-        elif exchange_rows or package_row is not None:
-            should_restore = True
-            if not self.run_tests:
-                messagebox.showwarning(
-                    "중앙 포장 작업 복구 필요",
-                    (
-                        "중앙 제품 교체 또는 포장 확인이 진행 중이므로 "
-                        "이 PHS2 세트는 자동 복구됩니다."
-                    ),
-                    parent=self,
-                )
-        else:
-            should_restore = self.run_tests or messagebox.askyesno("작업 복구", msg)
-        if not should_restore:
-            if self._discard_declined_saved_set(saved_set_info):
-                return
-            should_restore = True  # A kept local set continues as the active set.
-
+        # Recovery is a scanner workflow; it never needs a yes/no response.
+        should_restore = True
         if should_restore:
             saved_worker_name = persistent_operator_name(state_data.get('worker_name'))
             state_data['worker_name'] = saved_worker_name
-            if (
-                saved_worker_name
-                and saved_worker_name != persistent_operator_name(self.worker_name)
-                and package_row is None
-                and not saved_set_info.get("scanner_only")
-            ):
-                response = True
-                if not self.run_tests:
-                    response = messagebox.askyesnocancel("작업자 불일치",
-                                                       f"이 저장된 세트는 '{display_operator_name(saved_worker_name)}' 작업자의 것입니다.\n"
-                                                       f"현재 '{display_operator_name(self.worker_name)}' 작업자가 이어서 하시겠습니까?",
-                                                       icon='warning')
-                if response is None:
-                    # Asked again at the next start, except a pinned local set:
-                    # it stays the active set, so neither background validation
-                    # nor a new scan takes its place (F1 still cancels it).
-                    if saved_set_info.get("transition_class") not in label_transition.LOCAL_CLASSES:
-                        return
-                    if not self.run_tests:
-                        messagebox.showwarning(
-                            "작업 복구",
-                            "이 세트는 로컬 과도기 세트라 비워 둘 수 없어 이어서 엽니다. "
-                            "마저 끝내거나 F1로 취소하세요.",
-                            parent=self,
-                        )
-                elif response is False and self._discard_declined_saved_set(saved_set_info):
-                    if not self.run_tests:
-                        messagebox.showinfo("작업 삭제", "이전 작업이 삭제되었습니다.")
-                    return
+            self._show_scanner_notice(
+                "이전 작업 복구",
+                "이전에 완료되지 않은 세트를 복구했습니다. "
+                "계속 스캔하거나 현재 세트를 취소하세요."
+                + (f" 이전 작업자: {display_operator_name(saved_worker_name)}."
+                   if saved_worker_name and saved_worker_name != persistent_operator_name(self.worker_name)
+                   else ""))
             self.current_set_info.update(saved_set_info)
 
             if self.current_set_info.get("recovery_operator_review"):
@@ -11219,7 +11184,7 @@ class Label_Match(tk.Tk):
                 self._start_history_display_apply(result)
                 self._render_operator_workbench()
                 if not self.run_tests:
-                    messagebox.showerror(
+                    self._show_scanner_notice(
                         "기록 로딩 오류",
                         result['error'] + ". 이력 상세를 확인하고 다시 조회하세요.",
                     )
@@ -11255,7 +11220,7 @@ class Label_Match(tk.Tk):
             print(f"UI 업데이트 중 오류 발생: {e}")
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
             if not self.run_tests:
-                messagebox.showerror(
+                self._show_scanner_notice(
                     "UI 업데이트 오류",
                     "기록을 화면에 표시하지 못했습니다. 프로그램을 다시 시작해주세요. "
                     "계속 실패하면 관리자에게 확인을 요청하세요.",
@@ -11338,7 +11303,7 @@ class Label_Match(tk.Tk):
             self._history_display_applying = False
             print(f"이력 화면 적용 오류: {exc}")
             if not self.run_tests:
-                messagebox.showerror("UI 업데이트 오류", "기록을 화면에 표시하지 못했습니다. 다시 조회하세요.")
+                self._show_scanner_notice("UI 업데이트 오류", "기록을 화면에 표시하지 못했습니다. 다시 조회하세요.")
             return
         self._history_apply_after_id = self.after(
             1, lambda: self._apply_history_display_chunk(generation, steps)
@@ -14058,11 +14023,9 @@ class Label_Match(tk.Tk):
                             phase=new_label_data.get("PHS"),
                             item_name_override=new_label_data.get("SPC"),
                         )
-                    if not self.run_tests:
-                        messagebox.showwarning(
-                            "보류 현품표", "이 현품표는 이전 요청의 결과 확인을 위해 보류 중입니다. "
-                            "다른 세트를 진행하고 관리자에게 이 현품표를 인계하세요.", parent=self,
-                        )
+                    self._show_scanner_notice(
+                        "보류 현품표", "이 현품표는 이전 요청의 결과 확인을 위해 보류 중입니다. "
+                        "다른 세트를 진행하고 관리자에게 이 현품표를 인계하세요.")
                     return
             if not central_label_candidate:
                 consume_input()
@@ -14296,6 +14259,20 @@ class Label_Match(tk.Tk):
         self._play_sound("fail")
         self.update_big_display(message, "red")
 
+    def _show_scanner_notice(self, title, message, *, tone="warning"):
+        self._phs_label_guidance_notice = WorkflowNotice(
+            title=title, message=message, kind="scanner_notice", tone=tone)
+        self._play_sound("fail")
+        self.update_big_display(message, "red")
+        self._render_operator_workbench()
+
+    def _clear_scanner_notice(self):
+        guidance = self.__dict__.get("_phs_label_guidance_notice")
+        if guidance is not None and guidance.kind == "scanner_notice":
+            if guidance.tone == "danger":
+                self._stop_error_siren()
+            self._phs_label_guidance_notice = None
+
     @staticmethod
     def _sample_barcode(value):
         return unicodedata.normalize("NFKC", str(value or "")).strip().upper()
@@ -14399,6 +14376,7 @@ class Label_Match(tk.Tk):
             if not pair_saved:
                 self.current_set_info = previous
             return self._publish_durable_commit_block(error)
+        self._clear_scanner_notice()
         if index is None:
             count = len(current["raw"])
             workflow_total = self._workflow_total_scan_count()
@@ -14631,11 +14609,9 @@ class Label_Match(tk.Tk):
             )
             or self.__dict__.get("_phs_label_exchange_pending", False)
         ):
-            if not self.run_tests:
-                messagebox.showwarning(
+            self._show_scanner_notice(
                     "현품표 날짜 교환 처리 중",
                     f"{action} 작업은 현재 현품표 확인·교환이 끝난 뒤 진행하세요.",
-                    parent=self,
                 )
             return True
         label_coordinator = self.__dict__.get(
@@ -14658,33 +14634,27 @@ class Label_Match(tk.Tk):
             and str(action or "")
             not in {"현품표 날짜 교환", "현품표 교체"}
         ):
-            if not self.run_tests:
-                messagebox.showwarning(
+            self._show_scanner_notice(
                     "현품표 날짜 교환 복구 필요",
                     f"{action} 작업 전에 F5로 미완료 현품표 교환을 복구하세요.",
-                    parent=self,
                 )
             return True
         if (
             current_state.get("recovery_operator_review")
             and str(action or "") != "프로그램 종료"
         ):
-            if not self.run_tests:
-                messagebox.showwarning(
+            self._show_scanner_notice(
                     "복구 상태 관리자 확인 필요",
                     f"{action} 작업을 진행할 수 없습니다. PHS2 저장 상태를 관리자와 확인하세요.",
-                    parent=self,
                 )
             return True
         if (
             self.__dict__.get("_central_seal_lookup_in_progress", False)
             or self.__dict__.get("_central_package_preflight_in_progress", False)
         ):
-            if not self.run_tests:
-                messagebox.showwarning(
+            self._show_scanner_notice(
                     "중앙 이적 정보 확인 중",
                     f"PHS2의 현재 이적·봉인 정보를 확인 중입니다.\n{action} 작업은 조회가 끝난 뒤 진행하세요.",
-                    parent=self,
                 )
             return True
         if str(action or "") != "프로그램 종료":
@@ -14733,15 +14703,13 @@ class Label_Match(tk.Tk):
                 "제품 교체 결과가 운영자 확인 잠금 상태입니다.\n"
                 f"{action} 작업을 진행하지 말고 중앙 처리 결과와 현재 포장 상태를 확인하세요."
             )
-            if not self.run_tests:
-                messagebox.showwarning("제품 교체 확인 필요", message, parent=self)
+            self._show_scanner_notice("제품 교체 확인 필요", message)
         else:
             message = (
                 "제품 교체 명령의 중앙 결과를 확인 중입니다.\n"
                 f"{action} 작업은 중앙 처리 결과 복구가 끝난 뒤 가능합니다."
             )
-            if not self.run_tests:
-                messagebox.showwarning("제품 교체 처리 중", message, parent=self)
+            self._show_scanner_notice("제품 교체 처리 중", message)
         return True
 
     def _apply_acked_sealed_transfer_exchange(self, intent_id):
@@ -14813,12 +14781,11 @@ class Label_Match(tk.Tk):
                 )
             if self.run_tests:
                 raise
-            messagebox.showerror(
+            self._show_scanner_notice(
                 "제품 교체 로컬 반영 보류",
                 "중앙 교체 결과는 보존됐지만 현재 포장 화면 저장에 실패했습니다.\n"
                 "프로그램을 종료하지 말고 다시 시도하세요. "
                 "계속 실패하면 관리자에게 확인을 요청하세요.",
-                parent=self,
             )
             return False
         self._update_history_tree_in_progress()
@@ -16682,6 +16649,8 @@ class Label_Match(tk.Tk):
             self.current_set_info = active_current_set
             raise
 
+        self._clear_scanner_notice()
+
         if durable_acceptance and first_scan:
             self._clear_workflow_completion()
             self._workflow_recovered = False
@@ -17095,7 +17064,7 @@ class Label_Match(tk.Tk):
             set_id_for_log=set_id_for_log,
             current_snapshot=current_snapshot,
             deepcopy=lambda value: copy.deepcopy(value),
-            _label_match_local_completion_event_exists=lambda *args: _label_match_local_completion_event_exists(*args),
+            _label_match_local_completion_event_exists=lambda *args, **kwargs: _label_match_local_completion_event_exists(*args, **kwargs),
             PackageLogisticsError=lambda *args: PackageLogisticsError(*args),
             _label_match_parse_sealed_transfer_qr=lambda raw: _label_match_parse_sealed_transfer_qr(raw),
             _app_version=APP_VERSION,
@@ -17264,6 +17233,7 @@ class Label_Match(tk.Tk):
             )
         if (
             _durable_completion is None
+            and result == self.Results.PASS
             and not self.current_set_info.get("scanner_only")
             and not self.current_set_info.get("shortage_confirmed")
             and self.__dict__.get("ui_lane") is not None
@@ -17420,6 +17390,12 @@ class Label_Match(tk.Tk):
                 "scan_pos": len(self.current_set_info.get('raw', [])) + 1,
             },
         )
+        if (self.__dict__.get("operator_workbench_ready")
+                and not self.is_running_simulation and not self.run_tests and "DEMO" not in raw):
+            self.current_set_info['error_count'] += 1
+            self.current_set_info['has_error_or_reset'] = True
+            return self._present_inline_workflow_error(
+                title, reason, self.Results.FAIL_INPUT_ERROR, raw)
         self._mark_current_set_error()
 
         self.update_big_display("입력 오류 - 새 현품표부터 시작", "red")
@@ -17458,7 +17434,6 @@ class Label_Match(tk.Tk):
                 "scan_pos": len(self.current_set_info.get('raw', [])) + 1,
             },
         )
-        self._mark_current_set_error()
         title = "[제품 불일치]"
 
         truncated_raw = self._middle_ellipsis(raw, 48)
@@ -17469,6 +17444,13 @@ class Label_Match(tk.Tk):
             f"- 스캔 제품: {truncated_raw}\n\n"
             "→ 이 세트는 오류 처리됩니다. 제품을 제거하고 확인 후 새 현품표부터 다시 스캔하세요."
         )
+        if (self.__dict__.get("operator_workbench_ready")
+                and not self.is_running_simulation and not self.run_tests and "DEMO" not in raw):
+            self.current_set_info['error_count'] += 1
+            self.current_set_info['has_error_or_reset'] = True
+            return self._present_inline_workflow_error(
+                title, error_message, self.Results.FAIL_MISMATCH, raw)
+        self._mark_current_set_error()
         self.update_big_display("제품 불일치 - 새 현품표부터 시작", "red")
         self.status_label.config(text=f"불일치: 확인 후 새 현품표부터 시작 | 스캔 제품: {truncated_raw}", style="Error.TLabel")
 
@@ -17827,15 +17809,13 @@ class Label_Match(tk.Tk):
                     # Fail closed: keep the physical set visible unless the
                     # durable local-recovery dismissal is recorded.
                     self._set_active_package_submission_notice(package_row)
-                    if not self.run_tests:
-                        messagebox.showwarning(
+                    self._show_scanner_notice(
                             "현재 세트 취소 보류",
                             (
                                 "충돌 증거의 로컬 복구 해제 상태를 저장하지 "
                                 "못했습니다. 현재 세트는 유지됩니다. "
                                 "관리자에게 확인을 요청하세요."
                             ),
-                            parent=self,
                         )
                     return False
                 dismissed_package_conflict = True
@@ -17846,11 +17826,9 @@ class Label_Match(tk.Tk):
                 )
             except Exception as exc:
                 print(f"현재 세트 취소 보류: {getattr(exc, 'code', type(exc).__name__)}")
-                if not self.run_tests:
-                    messagebox.showwarning(
+                self._show_scanner_notice(
                         "현재 세트 취소 보류",
                         "저장된 작업의 처리 결과를 확인할 수 없어 현재 세트를 유지합니다. 관리자와 확인하세요.",
-                        parent=self,
                     )
                 return False
         if full_reset and self.current_set_info.get('id'):
@@ -17950,11 +17928,10 @@ class Label_Match(tk.Tk):
             return None
         sound = self.sound_objects.get("fail")
         if not sound:
-            messagebox.showwarning(
+            self._show_scanner_notice(
                 "사운드 설정 오류",
                 "경고음 파일을 찾을 수 없습니다.\n(assets 폴더의 fail.wav 파일 확인 필요)\n\n"
                 "오류 발생 시 경고음이 울리지 않습니다.",
-                parent=self,
             )
             return None
         self._siren_stop_event.clear()
@@ -17986,12 +17963,11 @@ class Label_Match(tk.Tk):
             kind = detail = None
         if kind == "error":
             print(f"사운드 재생 기술 진단: {detail}")
-            messagebox.showerror(
+            self._show_scanner_notice(
                 "사운드 재생 오류",
                 "경고음을 재생하는 중 오류가 발생했습니다.\n"
                 "스피커 또는 사운드 드라이버를 확인해주세요. "
                 "계속 실패하면 관리자에게 확인을 요청하세요.",
-                parent=self,
             )
         if any(thread.is_alive() for thread in self.__dict__.get("_siren_threads", [])):
             self._siren_after_id = self.after(50, self._poll_error_siren)
@@ -20965,6 +20941,7 @@ class Label_Match(tk.Tk):
 
     def _handle_scan_enter(self, event=None):
         self._last_scan_enter_at = time.monotonic()
+        self._clear_scanner_notice()
         if self.__dict__.get("_pending_workflow_error") or self.__dict__.get(
             "_workflow_pending_error"
         ):
@@ -21014,6 +20991,12 @@ class Label_Match(tk.Tk):
         return "break"
 
     def _handle_workflow_escape(self, event=None):
+        guidance = self.__dict__.get("_phs_label_guidance_notice")
+        if guidance is not None and guidance.kind == "scanner_notice":
+            self._clear_scanner_notice()
+            self._render_operator_workbench()
+            self.update_big_display(self._next_action_text(len(self.current_set_info.get("raw") or [])), "primary")
+            return "break"
         if (
             self.__dict__.get("_pending_workflow_error")
             or self.__dict__.get("_workflow_pending_error")
@@ -21057,48 +21040,37 @@ class Label_Match(tk.Tk):
 
     def _present_inline_workflow_error(self, title, message, result, error_details):
         normalized_title = operator_safe_message(
-            str(title or "입력 오류").strip("[] "),
-            fallback="입력 오류",
-        )
+            str(title or "입력 오류").strip("[] "), fallback="입력 오류")
         normalized_message = operator_safe_message(
-            message,
-            fallback="입력을 확인하고 새 현품표부터 다시 시작하세요.",
-        )
-        self.is_blinking = True
-        pending = {"result": result, "error_details": error_details}
-        self._pending_workflow_error = pending
-        self._workflow_pending_error = pending
-        notice = WorkflowNotice(
-            title=normalized_title,
-            message=normalized_message,
-            kind="error",
-            tone="danger",
-        )
-        self._workflow_blocking_notice = notice
-        self._workflow_notice = notice
-        self._workflow_error_message = normalized_message
-        self._workflow_notice_action = None
-        self._workflow_notice_action_text = "확인"
-        notice_label = self.__dict__.get("workflow_notice_label")
-        if notice_label is not None:
-            try:
-                notice_label.configure(text=f"{normalized_title}: {normalized_message}")
-            except (TclError, AttributeError):
-                pass
-        if (
-            not self.__dict__.get("run_tests", False)
-            and not _label_match_automated_test_mode()
-            and self.__dict__.get("sound_objects", {}).get("fail") is not None
-        ):
+            message, fallback="입력을 확인하고 새 현품표부터 다시 시작하세요.")
+        normalized_message = normalized_message.replace("확인 후 새 현품표", "새 현품표").replace(
+            "이 세트는 오류 처리됩니다.", "이 세트는 오류 기록되었습니다.")
+        self._ensure_current_set_id()
+        self.is_blinking = False
+        # Persist the verdict and original error before its completion event.
+        # A restart resumes the same FAIL, never a new PASS or a second row.
+        self.current_set_info.update(scanner_failure_result=result,
+                                     scanner_failure_details=str(error_details or ""))
+        if not self._save_current_set_state():
+            return self._publish_durable_commit_block(
+                PackageLogisticsError("failed set decision save failed"))
+        if not self._resume_scanner_failure():
+            return False
+        self._show_scanner_notice(normalized_title, normalized_message, tone="danger")
+        if (not self.__dict__.get("run_tests", False)
+                and not _label_match_automated_test_mode()
+                and self.__dict__.get("sound_objects", {}).get("fail") is not None):
             self._start_error_siren_thread()
-        self._render_operator_workbench()
-        button = self.__dict__.get("workflow_notice_action_button")
-        if button is not None:
-            try:
-                button.focus_set()
-            except (TclError, AttributeError):
-                pass
         return True
+
+    def _resume_scanner_failure(self):
+        current = self.current_set_info
+        result = current.get("scanner_failure_result")
+        details = current.get("scanner_failure_details")
+        if result not in {self.Results.FAIL_MISMATCH, self.Results.FAIL_INPUT_ERROR} or not isinstance(details, str):
+            return self._publish_durable_commit_block(
+                PackageLogisticsError("saved failed set decision is invalid"))
+        return self._finalize_set(result, details)
 
     def _clear_workflow_completion(self):
         self._workflow_completion_kind = None
@@ -21227,6 +21199,8 @@ class Label_Match(tk.Tk):
         self._workflow_notice = None
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
+        if "scanner_failure_result" in self.current_set_info:
+            return self._resume_scanner_failure()
         if ((self.__dict__.get("operator_workbench_ready") or self.current_set_info.get("scanner_only"))
                 and not self.current_set_info.get("shortage_confirmed")
                 and not self.current_set_info.get("transition_row_key")

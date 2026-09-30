@@ -313,11 +313,14 @@ def test_held_phs2_is_rejected_before_central_acceptance(central_client):
     app._begin_central_phs2_scan_overlay = lambda *_args, **_kwargs: pytest.fail(
         "held source was submitted"
     )
+    guidance = []
+    app.update_big_display = lambda message, tone: guidance.append((message, tone))
 
     module.Label_Match.process_input(app)
 
     assert app.current_set_info["raw"] == []
     assert app.entry.get() == ""
+    assert guidance and app._phs_label_guidance_notice.kind == "scanner_notice"
 
 
 def test_transfer_seal_qr_is_rejected_as_packaging_start_label():
@@ -2036,7 +2039,12 @@ def test_f3_crash_recovery_keeps_one_completion_across_midnight(tmp_path, monkey
     app.sealed_transfer_exchange_store = type("ExchangeBoundary", (), {"blocking_rows": lambda self, **k: []})()
     app._reconcile_pending_sealed_transfer_exchanges = lambda **k: None
     observations = []
-    app._play_sound = lambda sound: observations.append(_b1_assert_completion(tmp_path))
+    def observe_sound(sound):
+        if sound == "pass":
+            observations.append(_b1_assert_completion(tmp_path))
+        else:
+            assert sound == "fail" and app._phs_label_guidance_notice.kind == "scanner_notice"
+    app._play_sound = observe_sound
     try:
         app._load_current_set_state()
         assert len(observations) == int(cut == "csv_durable_marker_uncommitted")
@@ -2082,6 +2090,7 @@ def test_current_state_timestamp_failure_preserves_central_recovery_cache(tmp_pa
     app.sealed_transfer_exchange_store = SimpleNamespace(blocking_rows=lambda **_kwargs: [])
     app._migrate_restored_central_package_state = lambda saved: saved
     app.progress_bar = {}
+    app._play_sound = lambda *_args: None
     app.update_big_display = lambda *_args: None
     app._next_action_text = lambda _count: "restored"
     app._update_status_label = lambda: None

@@ -771,6 +771,11 @@ def _commit_finalized_set_durable(
                 set_id_for_log,
             )
         )
+    if result != self.Results.PASS:
+        self._flush_data_manager_if_supported()
+        local_event_durable = _label_match_local_completion_event_exists(
+            self.__dict__.get("data_manager"), set_id_for_log,
+            expected_results=(result,))
     if not local_event_durable:
         self.data_manager.log_event(
             self.Events.TRAY_COMPLETE,

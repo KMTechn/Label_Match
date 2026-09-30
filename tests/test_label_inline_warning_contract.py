@@ -72,12 +72,18 @@ def _error_app(*scans, workbench_ready=True):
     app._modal_calls = []
     app._trigger_modal_error = lambda *args, **kwargs: app._modal_calls.append((args, kwargs))
     app._play_sound = lambda *args, **kwargs: None
-    app._save_current_set_state = lambda: None
+    app._save_current_set_state = lambda: True
     app._update_manual_complete_button_state = lambda: None
     app.update_big_display = lambda text, color="": app.big_display_label.configure(
         text=text,
         color=color,
     )
+    app._finalize_calls = []
+    def finalize(result, details="", **kwargs):
+        app._finalize_calls.append((result, details, deepcopy(app.current_set_info)))
+        app.current_set_info = _current()
+        return True
+    app._finalize_set = finalize
     return app
 
 
@@ -88,7 +94,7 @@ def _error_app(*scans, workbench_ready=True):
         ("_handle_mismatch", ("WRONG-PRODUCT", "MASTER-001"), "제품 불일치"),
     ],
 )
-def test_error_is_inline_when_workbench_is_ready_and_keeps_accepted_scans(
+def test_error_finishes_the_accepted_scans_and_leaves_nonblocking_guidance(
     method_name,
     args,
     expected_text,
@@ -99,11 +105,15 @@ def test_error_is_inline_when_workbench_is_ready_and_keeps_accepted_scans(
     getattr(Label_Match, method_name)(app, *args)
 
     assert app._modal_calls == []
-    assert app.current_set_info["parsed"] == accepted_before
-    assert app.current_set_info["raw"] == accepted_before
-    assert app.current_set_info["error_count"] == 1
-    assert app.current_set_info["has_error_or_reset"] is True
-    assert expected_text in app.workflow_notice_label.cget("text")
+    result, details, recorded = app._finalize_calls[0]
+    assert result == (app.Results.FAIL_INPUT_ERROR if method_name == "_handle_input_error" else app.Results.FAIL_MISMATCH)
+    assert details == args[0]
+    assert recorded["parsed"] == accepted_before and recorded["raw"] == accepted_before
+    assert recorded["error_count"] == 1 and recorded["has_error_or_reset"] is True
+    assert app.current_set_info["raw"] == []
+    assert expected_text in app._phs_label_guidance_notice.title
+    assert app._phs_label_guidance_notice.kind == "scanner_notice"
+    assert not app.__dict__.get("_workflow_blocking_notice")
     assert app._render_calls
 
 
