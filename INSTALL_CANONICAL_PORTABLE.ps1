@@ -506,7 +506,7 @@ shared_transition = all(
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-                        '98339d0e780a7f8c0610d1c3a23d971a7bfc56b944a307b773396a6028e6b04c'),
+                        '2813553f47a0af0a61fe83d160d6eb560ee993c4e7764b5d36472b5307d695b9'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
@@ -569,11 +569,11 @@ legacy_label_transition = all(
 # initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-  '98339d0e780a7f8c0610d1c3a23d971a7bfc56b944a307b773396a6028e6b04c'),
+  '2813553f47a0af0a61fe83d160d6eb560ee993c4e7764b5d36472b5307d695b9'),
  ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-  '98339d0e780a7f8c0610d1c3a23d971a7bfc56b944a307b773396a6028e6b04c'),
+  '2813553f47a0af0a61fe83d160d6eb560ee993c4e7764b5d36472b5307d695b9'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-  '98339d0e780a7f8c0610d1c3a23d971a7bfc56b944a307b773396a6028e6b04c')}
+  '2813553f47a0af0a61fe83d160d6eb560ee993c4e7764b5d36472b5307d695b9')}
 scan_input_companions = {'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
@@ -617,7 +617,7 @@ scan_input_transition = (
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
- '98339d0e780a7f8c0610d1c3a23d971a7bfc56b944a307b773396a6028e6b04c')
+ '2813553f47a0af0a61fe83d160d6eb560ee993c4e7764b5d36472b5307d695b9')
 nextfix_companions = {'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492',
@@ -649,7 +649,7 @@ nextfix_label_transition = (
 
 # a20cd01 -> this scanner source: exact forward-only source pair, the same
 # pinned companion deltas, and unchanged writer membership/runtime/contracts.
-scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '98339d0e780a7f8c0610d1c3a23d971a7bfc56b944a307b773396a6028e6b04c')
+scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '2813553f47a0af0a61fe83d160d6eb560ee993c4e7764b5d36472b5307d695b9')
 scanner_transition = (
     (installed / nextfix_label_path).is_file() and
     (source / nextfix_label_path).is_file() and

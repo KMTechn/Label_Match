@@ -5609,14 +5609,32 @@ class Label_Match(tk.Tk):
             self._show_ui_lane_rejection(admission.reason)
         return admission
 
+    def _scanner_validation_must_wait(self):
+        current = self.__dict__.get("current_set_info") or {}
+        raw = current.get("raw") or []
+        if ((current.get("scanner_only") and raw)
+                or current.get("shortage_undo_snapshot")
+                or self.__dict__.get("_scanner_shortage_undo")):
+            return True
+        # Pre-upgrade PHS2 saves enter scanner mode on the next durable
+        # product scan. Keep that scan available before its state upgrade,
+        # while leaving already-submitted legacy commands recoverable.
+        outbox = self.__dict__.get("package_outbox")
+        set_id = str(current.get("id") or "")
+        if not (raw and current.get("central_inherit_all") and set_id
+                and outbox is not None):
+            return False
+        try:
+            _label_match_parse_compact_phs2(raw[0])
+        except ValueError:
+            return False
+        return outbox.get_by_set_id(set_id) is None
+
     def _submit_deferred_validation_lane_task(self, task):
         # This start has no scan of its own: locking the entry mid-scan kept
         # the typed part and the next scan joined it. Wait for an empty entry
         # and a pause after the last Enter; the work is only delayed.
-        current = self.__dict__.get("current_set_info") or {}
-        if ((current.get("scanner_only") and current.get("raw"))
-                or current.get("shortage_undo_snapshot")
-                or self.__dict__.get("_scanner_shortage_undo")):
+        if self._scanner_validation_must_wait():
             self._schedule_deferred_validation_worker(1000)
             return Admission(False, reason="scan_in_progress")
         entry = self.__dict__.get("entry")
@@ -12759,10 +12777,7 @@ class Label_Match(tk.Tk):
 
         if self.__dict__.get("_app_close_in_progress", False):
             return
-        current = self.__dict__.get("current_set_info") or {}
-        if ((current.get("scanner_only") and current.get("raw"))
-                or current.get("shortage_undo_snapshot")
-                or self.__dict__.get("_scanner_shortage_undo")):
+        if self._scanner_validation_must_wait():
             self._schedule_deferred_validation_worker(1000)
             return
         if (

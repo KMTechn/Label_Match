@@ -70,6 +70,40 @@ def test_unsubmitted_legacy_phs2_save_completes_in_the_scanner_outbox(central):
     assert dialogs == []
 
 
+@pytest.mark.parametrize("trigger", ["admission", "scheduled_worker"])
+def test_restored_unsubmitted_phs2_does_not_admit_a_blocking_validation_lane(central, trigger):
+    import threading
+    from tk_serial_ui_lane import LaneTask
+    app, dialogs, case, root, releases = central
+    master = case.group["scan_payload"]
+    scan(app, master)
+    root.run_until(lambda: not app.__dict__.get("_phs2_background_pending"), timeout=5)
+    saved = copy.deepcopy(app.current_set_info)
+    saved.pop("scanner_only")
+    app.current_set_info = app._migrate_restored_central_package_state(saved)
+    app._last_scan_enter_at = None
+    app._scans_behind_completion = False
+    entered, release = threading.Event(), threading.Event()
+    releases.append(release)
+    def offline_validation():
+        entered.set()
+        release.wait()
+    task = LaneTask(name="deferred-validation", generation=app._ui_lane_generation,
+                    work=offline_validation, finish=lambda value: None, fail=lambda error: None)
+    rescheduled = []
+    app._schedule_deferred_validation_worker = rescheduled.append
+    if trigger == "admission":
+        admission = app._submit_deferred_validation_lane_task(task)
+        assert admission.accepted is False
+    else:
+        app._run_deferred_validation_worker_once()
+    assert rescheduled == [1000]
+    assert not app.ui_lane.is_busy() and not entered.is_set()
+    for member in case.snapshot["work_group_source"]["members"]:
+        scan(app, member["normalized_barcode"])
+    assert len(completions(app)) == 1 and app.blocks == [] and dialogs == []
+
+
 def test_submitted_legacy_phs2_save_preserves_its_original_outbox_draft(central):
     from Label_Match import _label_match_package_draft
     app, dialogs, case, root, _releases = central
