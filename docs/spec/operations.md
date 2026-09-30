@@ -4,6 +4,8 @@
 
 `BLOCKED_INVALID` 자기 접수의 안내에 F1이 표시되면 F1 키 또는 현재 세트 취소 단추로 저장본을 `CANCELLED`로 닫고 화면을 비운다. CA에서 봉인한 뒤 같은 현품표를 다시 스캔하면 새 접수로 중앙 확인·세트 진행을 시작한다. 원본·취소 감사는 보존한다. 초기화·이력 로딩·읽기 전용·오류·완료·처리 중에는 F1 안내·허용을 함께 끈다. 관리자 검토·다른 접수·검증 대기·검증 완료·반영 중은 이 예외로 취소하지 않는다. 헤드리스 저장소·화면 대역 검증이며 실제 창·스캐너 확인은 NOT TESTED다.
 
+TEST1의 `e88011c`에서 이 수정 판으로의 제자리 업그레이드는 정확한 `Label_Match.py` LF digest 쌍만 `PINNED_W9NEXTFIX_LABEL_RECOVERY`로 허용한다. 다른 app/runtime·설치 계약·writer 멤버십 검사는 유지하고 되돌림·다른 digest는 거절한다. 이 파일을 다시 고치면 후보 digest를 다시 결속해야 한다. committed source archive의 읽기 전용 설치기 probe 검증이며 실제 packet·설치 수용은 별도다.
+
 <a id="test-audit-w9"></a>
 ## W9 · 기존 21개 시험 실패 감사
 

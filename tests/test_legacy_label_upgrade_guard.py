@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import zipfile
 
 import pytest
 
@@ -193,5 +195,98 @@ def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_labe
             stream.write(b"unreviewed data change\n")
     env = _environment(tmp_path)
     result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(installed)}", env)
+    assert result.returncode != 0, result.stdout
+    assert reason in result.stderr, result.stdout + result.stderr
+
+
+NEXTFIX_BASE = "e88011c"
+NEXTFIX_PINNED = "PINNED_W9NEXTFIX_LABEL_RECOVERY"
+
+
+def test_declared_nextfix_pair_is_exactly_e88011c_and_this_tree():
+    source = INSTALLER.read_text(encoding="utf-8")
+    start = source.index("$probe = @'") + len("$probe = @'")
+    tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
+    values = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body
+              if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+              and node.targets[0].id in {"nextfix_label_pair", "nextfix_label_path"}}
+    pair = values["nextfix_label_pair"]
+    assert values["nextfix_label_path"] == "app/Label_Match.py"
+    before = _release_digest(subprocess.check_output(["git", "-C", str(ROOT), "show",
+                                                      f"{NEXTFIX_BASE}:Label_Match.py"]))
+    after = _release_digest((ROOT / "Label_Match.py").read_bytes())
+    assert pair == (before, after)
+    assert before != after
+
+
+@pytest.fixture(scope="module")
+def nextfix_archive_layouts(tmp_path_factory):
+    root = tmp_path_factory.mktemp("nextfix-source-archives")
+    head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+    layouts = []
+    for name, revision in (("old", NEXTFIX_BASE), ("candidate", head)):
+        archive = root / (name + ".zip")
+        subprocess.run(["git", "-C", str(ROOT), "archive", "--format=zip", "-o", str(archive), revision],
+                       check=True, capture_output=True)
+        source = root / (name + "-source")
+        with zipfile.ZipFile(archive) as stream:
+            stream.extractall(source)
+        spec = importlib.util.spec_from_file_location(name + "_nextfix_builder",
+                                                     source / "tools/build_portable_release_candidate.py")
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        layout = root / (name + "-layout")
+        builder._copy_application(source, layout / "app")
+        (layout / "runtime").mkdir()
+        for relative in ("INSTALL_THIS_PC.ps1", "launch-label-match.cmd", "tools/bootstrap_integrity.ps1",
+                         "tools/label_writer_fence.ps1", "tools/label_writer_fence_contract.json"):
+            target = layout / relative
+            target.parent.mkdir(exist_ok=True)
+            origin = "portable/launch-label-match.cmd" if relative == "launch-label-match.cmd" else relative
+            target.write_bytes((source / origin).read_bytes())
+        layouts.append(layout)
+    return tuple(layouts)
+
+
+def _nextfix_probe(tmp_path, source, installed):
+    """Real read-only installer probe; source archives, no runtime/packet attestation."""
+    installer = INSTALLER.read_text(encoding="utf-8")
+    start = installer.index("$probe = @'") + len("$probe = @'")
+    probe = tmp_path / "writer-transition-probe.py"
+    probe.write_text(installer[start:installer.index("\n'@", start)].lstrip(), encoding="utf-8")
+    return subprocess.run([sys.executable, "-B", str(probe), str(source), str(installed)],
+                          text=True, capture_output=True)
+
+
+def test_e88011c_archive_upgrade_passes_nextfix_writer_guard(tmp_path, nextfix_archive_layouts):
+    old, candidate = nextfix_archive_layouts
+    before = (old / "app/Label_Match.py").read_bytes()
+    result = _nextfix_probe(tmp_path, candidate, old)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["compatibility"] == NEXTFIX_PINNED
+    assert payload["installed_inventory_sha256"] != payload["candidate_inventory_sha256"]
+    assert (old / "app/Label_Match.py").read_bytes() == before
+
+
+@pytest.mark.parametrize("change,reason", [
+    ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/user_relay.py"),
+    ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
+    ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
+    ("contract", "WRITER_TRANSITION_CONTRACT_DIFFERS: launch-label-match.cmd"),
+])
+def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_layouts, change, reason):
+    old, candidate = nextfix_archive_layouts
+    if change == "reverse":
+        source, installed = old, candidate
+    else:
+        relative = {"other-app": "app/user_relay.py", "other-label": "app/Label_Match.py",
+                    "contract": "launch-label-match.cmd"}[change]
+        source = _tree(candidate, tmp_path / "candidate", [relative])
+        installed = old
+        with (source / relative).open("ab") as stream:
+            stream.write(CHANGED_LINE.encode() if change == "other-label" else b"X")
+        _pin(source)  # Refusal is semantic/contract evidence, rather than a stale-pin failure.
+    result = _nextfix_probe(tmp_path, source, installed)
     assert result.returncode != 0, result.stdout
     assert reason in result.stderr, result.stdout + result.stderr

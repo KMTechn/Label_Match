@@ -589,6 +589,22 @@ scan_input_transition = (
     for relative, (before, after) in scan_input_companions.items()
 )
 
+# e88011c -> w9nextfix only: refuse input tags in local product/final slots
+# and allow F1 on an owned refused capture. No writer membership, persisted
+# state or contract changes. Every other app/runtime file stays checked;
+# downgrade is not admitted. Re-pin if Label_Match.py changes again.
+nextfix_label_path = 'app/Label_Match.py'
+nextfix_label_pair = (
+    'caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
+    '7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57',
+)
+nextfix_label_transition = (
+    (installed / nextfix_label_path).is_file() and
+    (source / nextfix_label_path).is_file() and
+    (release_digest(installed / nextfix_label_path),
+     release_digest(source / nextfix_label_path)) == nextfix_label_pair
+)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
 if candidate_sources != installed_sources:
@@ -606,6 +622,8 @@ for directory in ('app', 'runtime'):
         if integrity_order_transition and relative == integrity_order_path:
             continue
         if scan_input_transition and relative in ({scan_input_path} | scan_input_companions.keys()):
+            continue
+        if nextfix_label_transition and relative == nextfix_label_path:
             continue
         if legacy_label_transition and relative in (legacy_label_replacements.keys() | legacy_label_additions.keys()):
             continue
@@ -625,6 +643,7 @@ compatibility = ('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else
                  'PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX' if integrity_order_transition else
                  'PINNED_LEGACY_LABEL_TRANSITION_MODE' if legacy_label_transition else
                  'PINNED_SCAN_INPUT_FIX' if scan_input_transition else
+                 'PINNED_W9NEXTFIX_LABEL_RECOVERY' if nextfix_label_transition else
                  'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@
