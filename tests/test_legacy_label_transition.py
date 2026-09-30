@@ -2803,9 +2803,9 @@ def test_on_startup_without_item_catalog_warns_and_opens_the_work_screen(monkeyp
 
     assert module._run_label_match_application() == 0
 
-    [(title, message, writer_depth)] = shown
-    assert title == "과도기 모드 — 품목 목록 미확인" and "REQUEST_FAILED_NO_CACHE" in message
-    assert writer_depth == 0
+    assert shown == []  # DESIGN §1.2: startup warnings belong inside the app.
+    notice = module._STARTUP_WORKFLOW_NOTICES[-1]
+    assert notice.title == "과도기 모드 — 품목 목록 미확인" and "REQUEST_FAILED_NO_CACHE" in notice.message
     assert diagnostics == ["REQUEST_FAILED_NO_CACHE"]
     assert module.ACTIVE_PATH_ENV not in __import__("os").environ  # the bundled list names items
     [app] = created

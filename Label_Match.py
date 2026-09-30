@@ -5,6 +5,7 @@ import base64
 import traceback
 import unicodedata
 
+_STARTUP_WORKFLOW_NOTICES = []
 
 import carrier_identity_port as carrier_identity
 import label_history
@@ -5205,6 +5206,8 @@ class Label_Match(tk.Tk):
         self._configure_base_styles()
         _label_match_startup_trace("app_init_before_create_widgets")
         self._create_widgets()
+        self._startup_workflow_notices = tuple(_STARTUP_WORKFLOW_NOTICES)
+        _STARTUP_WORKFLOW_NOTICES.clear()
         _label_match_startup_trace("app_init_after_create_widgets")
         self._configure_treeview_styles()
         self.show_loading_overlay()
@@ -6297,6 +6300,12 @@ class Label_Match(tk.Tk):
             self.title(_label_match_window_title())
             self.data_manager.log_event(self.Events.APP_START, {"message": "Application initialized."})
             self.initialized_successfully = True
+            notices = self.__dict__.get("_startup_workflow_notices", ())
+            if notices:
+                self._phs_label_guidance_notice = WorkflowNotice(
+                    title="시작 안내", message="\n".join(notice.message for notice in notices),
+                    kind="startup_warning", tone="warning")
+                self._play_sound("fail")
             self._render_operator_workbench()
             self._refresh_deferred_observability()
             self.history_queue = queue.Queue()
@@ -22065,13 +22074,11 @@ def _show_item_catalog_cache_warning(context):
     cache_time = _item_catalog_cache_time_for_display(
         context.get("cache_last_modified_utc")
     )
-    try:
-        messagebox.showwarning(
-            ITEM_CATALOG_CACHE_WARNING_TITLE,
-            ITEM_CATALOG_CACHE_WARNING_MESSAGE.format(cache_time=cache_time),
-        )
-    except Exception:
-        _label_match_startup_trace("item_catalog_cache_warning_dialog_unavailable")
+    notice = WorkflowNotice(title=ITEM_CATALOG_CACHE_WARNING_TITLE,
+        message=ITEM_CATALOG_CACHE_WARNING_MESSAGE.format(cache_time=cache_time),
+        kind="startup_warning", tone="warning")
+    _STARTUP_WORKFLOW_NOTICES.append(notice)
+    return notice
 
 
 def _show_logistics_profile_warning(context):
@@ -22079,17 +22086,10 @@ def _show_logistics_profile_warning(context):
     warning_message = LOGISTICS_PROFILE_WARNING_MESSAGES.get(warning_code)
     if not warning_message:
         return
-    try:
-        messagebox.showwarning(
-            LOGISTICS_PROFILE_WARNING_TITLE,
-            (
-                f"{warning_message}\n\n"
-                f"{_item_catalog_profile_details_for_display(context)}\n"
-                f"경고 코드: {warning_code}"
-            ),
-        )
-    except Exception:
-        _label_match_startup_trace("logistics_profile_warning_dialog_unavailable")
+    notice = WorkflowNotice(title=LOGISTICS_PROFILE_WARNING_TITLE,
+        message=warning_message, kind="startup_warning", tone="warning")
+    _STARTUP_WORKFLOW_NOTICES.append(notice)
+    return notice
 
 
 def _item_catalog_diagnostic_path():
@@ -22123,13 +22123,11 @@ def _start_without_confirmed_item_catalog(error):
     _label_match_startup_trace(
         "item_catalog_transition_unconfirmed", cause_code=error.cause_code,
     )
-    try:
-        messagebox.showwarning(
-            ITEM_CATALOG_TRANSITION_WARNING_TITLE,
-            ITEM_CATALOG_TRANSITION_WARNING_MESSAGE.format(cause_code=error.cause_code),
-        )
-    except Exception:
-        _label_match_startup_trace("item_catalog_transition_warning_unavailable")
+    notice = WorkflowNotice(title=ITEM_CATALOG_TRANSITION_WARNING_TITLE,
+        message=ITEM_CATALOG_TRANSITION_WARNING_MESSAGE.format(cause_code=error.cause_code),
+        kind="startup_warning", tone="warning")
+    _STARTUP_WORKFLOW_NOTICES.append(notice)
+    return notice
 
 
 def _run_label_match_application():
