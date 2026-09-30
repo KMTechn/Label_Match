@@ -197,3 +197,71 @@ def test_short_confirmation_checkpoint_failure_retries_one_csv_without_server_ef
     assert app.package_outbox.get_by_set_id(identity) is None and case.calls == []
     scan(app, "KMCMD:UNDO")
     assert app.current_set_info["raw"] == [master, sample] and dialogs == []
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("corrupt", [None, "old_seal_token_hash", "new_members", "seal_token_hash", "target_version_after", "new_source_kind", "lost_ack"])
+def test_scanner_exchange_preserves_exact_receipt_checks(tmp_path, corrupt, split):
+    from sealed_transfer_exchange import SealedTransferExchangeStore, SealedTransferExchangeCoordinator
+    from package_logistics import PackageLogisticsError
+    from tests.test_sealed_transfer_exchange import _target_projection, _receipt, ITEM, SCOPE
+    key = "scanner-exchange-fixed-key"
+    pair = {"idempotency_key": key, "target_barcode": "BC-OLD", "replacement_barcode": "BC-NEW",
+            "operator": "worker", "occurred_at": "2026-09-30T14:00:00Z"}
+    commands, saved_receipts = [], []
+    def send(command):
+        commands.append(copy.deepcopy(command))
+        legacy = copy.deepcopy(command)
+        legacy["payload"]["pairs"] = [{"old_unit_id": "unit-old", "new_unit_id": "unit-new", "new_source_bundle_id": None}]
+        receipt = _receipt(legacy)
+        data = receipt["data"]
+        data["pairs"][0].update(old_barcode="BC-OLD", new_barcode="BC-NEW", new_source_kind="EXCHANGE_GOOD_REGISTERED")
+        data["source_membership_changes"] = []
+        if corrupt == "new_source_kind":
+            data["pairs"][0][corrupt] = "UNKNOWN"
+        elif corrupt and corrupt != "lost_ack":
+            data[corrupt] = [] if corrupt == "new_members" else "wrong"
+        saved_receipts.append(copy.deepcopy(receipt))
+        if corrupt == "lost_ack":
+            from package_logistics import PackageTransportError
+            raise PackageTransportError("ACK lost after server commit")
+        return receipt
+    client = SimpleNamespace(resolve_package_source_projection=lambda draft: _target_projection(),
+        get_receipt_if_exists=lambda *args, **kwargs: saved_receipts[-1] if corrupt == "lost_ack" and saved_receipts else None, replace_and_reseal_transfer=send)
+    if split:
+        projection = _target_projection()
+        target_unit = next(member["unit_id"] for member in projection["members"] if member["normalized_barcode"] == pair["target_barcode"])
+        group = {"authority_scope_id": SCOPE, "members": projection["members"], "source_transfers": [
+            {"bundle_id": projection["bundle_id"], "selected_member_ids": [target_unit],
+             "source_member_ids": projection["member_ids"], "entity_version": projection["entity_version"],
+             "active_seal": projection["active_seal"]},
+            {"bundle_id": "another-transfer", "selected_member_ids": ["another-unit"]}]}
+        client.resolve_package_source_evidence = lambda draft: {"source_resolution_basis": "PHS_WORK_GROUP_EXACT_MEMBERSHIP", "work_group_source": group}
+        def get_bundle(bundle_id, **kwargs):
+            assert bundle_id == projection["bundle_id"] and kwargs["authority_scope_id"] == SCOPE
+            return projection
+        client.get_bundle = get_bundle
+    store = SealedTransferExchangeStore(tmp_path / "exchange.sqlite3")
+    coordinator = SealedTransferExchangeCoordinator(store, client)
+    args = dict(physical_qr=f"PHS=2|SRC=KMTECH_INPUT_TAG|ITG=TAG-1|CLC={ITEM}|LBL=LABEL-1|HSH=0123456789abcdef",
+        item_code=ITEM, local_completion_id="local-scanner-1", local_completed_at="2026-09-30T14:01:00Z")
+    if corrupt == "lost_ack":
+        from package_logistics import PackageTransportError
+        with pytest.raises(PackageTransportError):
+            coordinator.deliver_scanner_exchange(pair, **args)
+        assert store.blocking_rows(set_id="local-scanner-1")[0]["status"] == "RETRY_WAIT"
+        assert [attempt.status for attempt in coordinator.drain_pending()] == ["ACKED"]
+        assert store.pending_local(set_id="local-scanner-1") == []
+        assert coordinator.deliver_scanner_exchange(pair, **args)["local_apply_status"] == "APPLIED"
+        assert len(commands) == 1
+    elif corrupt:
+        with pytest.raises(PackageLogisticsError):
+            coordinator.deliver_scanner_exchange(pair, **args)
+        assert store.blocking_rows(set_id="local-scanner-1")[0]["status"] == "OPERATOR_REVIEW"
+    else:
+        result = coordinator.deliver_scanner_exchange(pair, **args)
+        assert result["status"] == "ACKED" and result["local_apply_status"] == "APPLIED"
+        assert coordinator.deliver_scanner_exchange(pair, **args)["command_id"] == key
+        assert len(commands) == 1
+        assert commands[0]["payload"]["replacement_mode"] == "SCAN_REGISTER_GOOD"
+        assert commands[0]["payload"]["target_evidence"]["member_count"] == 2

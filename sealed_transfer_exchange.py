@@ -29,7 +29,9 @@ from package_logistics import (
     canonical_barcodes,
     canonical_member_ids,
     membership_hash,
+    PackageCommandDraft,
 )
+import carrier_identity_port as carrier_identity
 from writer_session_fence import writer_sink
 
 
@@ -616,7 +618,9 @@ class SealedTransferExchangeStore:
     def record_error(self, intent_id: str, error: Exception) -> sqlite3.Row:
         code = str(getattr(error, "code", "SEALED_TRANSFER_EXCHANGE_ERROR"))
         committed = getattr(error, "committed", None)
-        terminal_api_error = isinstance(error, PackageApiError) and int(
+        upstream_pending = (getattr(error, "code", "") == "UPSTREAM_COMPLETION_PENDING"
+                            and bool(getattr(error, "retryable", False)))
+        terminal_api_error = not upstream_pending and isinstance(error, PackageApiError) and int(
             getattr(error, "status_code", 0) or 0
         ) in {400, 403, 409, 412, 422}
         unknown_api_outcome = isinstance(error, PackageApiError) and (
@@ -796,6 +800,208 @@ class SealedTransferExchangeStore:
 
 
 class SealedTransferExchangeCoordinator:
+    def deliver_scanner_exchange(self, pair, *, physical_qr, item_code,
+                                 local_completion_id, local_completed_at):
+        """Deliver a locally recorded pair using the existing exchange journal and transport."""
+        key = pair["idempotency_key"]
+        with self.store._connect() as conn:
+            row = conn.execute("""SELECT * FROM sealed_transfer_exchange_intents WHERE command_id=?
+                OR json_extract(old_seal_fields_json, '$.scanner_command_id')=?""", (key, key)).fetchone()
+        if row is None or not row["command_json"]:
+            if row is not None:
+                saved = json.loads(row["old_seal_fields_json"])
+                target, seal = saved["scanner_target"], saved["scanner_seal"]
+            else:
+                fields = carrier_identity.parse_compact_carrier(physical_qr)
+                draft = PackageCommandDraft.build(set_id=local_completion_id, item_code=item_code,
+                    source_input_tag_id=fields["ITG"], source_input_tag_label_id=fields["LBL"],
+                    source_input_tag_hash_prefix=fields["HSH"], external_label=local_completion_id)
+                resolve_evidence = getattr(self.client, "resolve_package_source_evidence", None)
+                evidence = resolve_evidence(draft) if callable(resolve_evidence) else None
+                if evidence and evidence.get("source_resolution_basis") == "PHS_WORK_GROUP_EXACT_MEMBERSHIP":
+                    group = evidence["work_group_source"]
+                    old_units = [member["unit_id"] for member in group["members"]
+                                 if member["normalized_barcode"] == pair["target_barcode"]]
+                    sources = [source for source in group["source_transfers"]
+                               if len(old_units) == 1 and old_units[0] in source["selected_member_ids"]]
+                    if len(sources) != 1:
+                        raise PackageLogisticsError("exchange target source is not exact")
+                    source = sources[0]
+                    projection = self.client.get_bundle(source["bundle_id"], authority_scope_id=group["authority_scope_id"])
+                    target = _exact_bundle(projection, bundle_type="TRANSFER", location="TRANSFER")
+                    if (set(target["member_ids"]) != set(source["source_member_ids"])
+                            or target["entity_version"] != source["entity_version"]):
+                        raise PackageLogisticsError("exchange target source changed")
+                    seal = dict(source["active_seal"])
+                else:
+                    projection = evidence["bundle"] if evidence else self.client.resolve_package_source_projection(draft)
+                    target = _exact_bundle(projection, bundle_type="TRANSFER", location="TRANSFER")
+                    seal = dict(projection.get("active_seal") or {})
+                qr = str(seal.get("seal_qr_payload") or "")
+                old_fields = _qr_fields(qr)
+                self._validate_active_seal(target, old_qr=qr, old_fields=old_fields)
+                if pair["target_barcode"] not in target["by_barcode"]:
+                    raise PackageLogisticsError("exchange target is not a source member")
+                saved = dict(old_fields, scanner_command_id=key, scanner_target=target, scanner_seal=seal)
+                saved["QT"] = len(target["member_ids"])
+                row = self.store.prepare(set_id=local_completion_id,
+                    target_bundle_id=target["bundle_id"], item_id=item_code,
+                    authority_scope_id=target["authority_scope_id"], operator=pair["operator"],
+                    old_seal_qr_payload=qr, old_seal_fields=saved,
+                    old_barcodes=[pair["target_barcode"]], new_barcodes=[pair["replacement_barcode"]])
+            target_evidence = {
+                "bundle_id": target["bundle_id"], "entity_version": target["entity_version"],
+                "member_ids": list(target["member_ids"]), "members": list(target["members"]),
+                "member_count": len(target["member_ids"]), "membership_hash": target["membership_hash"],
+                "normalized_barcodes": list(target["barcodes"]),
+                "barcode_membership_hash": target["barcode_membership_hash"],
+                "seal_id": seal["seal_id"], "seal_revision": seal["seal_revision"],
+                "seal_token": seal["seal_token"], "seal_qr_payload": seal["seal_qr_payload"],
+            }
+            damage_id = "PHS-PROCESS-DAMAGE-" + hashlib.sha256(key.encode()).hexdigest()[:24].upper()
+            command = {"contract_version": "logistics-v1", "command_type": COMMAND_TYPE,
+                "authority_scope_id": target["authority_scope_id"], "authority_epoch": target["authority_epoch"],
+                "ledger_plane": target["ledger_plane"], "plane_epoch": target["plane_epoch"],
+                "idempotency_key": key, "expected_versions": {f"bundle:{target['bundle_id']}": target["entity_version"], f"bundle:{damage_id}": 0},
+                "payload": {"target_bundle_id": target["bundle_id"], "replacement_mode": "SCAN_REGISTER_GOOD",
+                    "target_evidence": target_evidence, "damage_bundle_id": damage_id, "damage_external_label": damage_id,
+                    "pairs": [{"old_barcode": pair["target_barcode"], "new_barcode": pair["replacement_barcode"]}],
+                    "exchanged_at": pair["occurred_at"], "scan_payload": physical_qr,
+                    "deferred_reflection": True, "local_completion_id": local_completion_id,
+                    "local_completed_at": local_completed_at},
+                "client_exact_evidence": {"target_item_id": item_code, "old_barcodes": [pair["target_barcode"]],
+                    "new_barcodes": [pair["replacement_barcode"]], "target_barcodes": list(target["barcodes"])} }
+            row = self.store.bind_command(row["intent_id"], command)
+        if row["status"] == "ACKED":
+            return self._finish_scanner_exchange(row)
+        if row["status"] == "OPERATOR_REVIEW":
+            raise PackageLogisticsError("scanner exchange requires operator review")
+        command = json.loads(row["command_json"])
+        try:
+            receipt = self.client.get_receipt_if_exists(key, authority_scope_id=row["authority_scope_id"])
+            if receipt is None:
+                receipt = self.client.replace_and_reseal_transfer(command)
+            qr = self._validate_scanner_receipt(command, receipt)
+            self.store.record_receipt(row["intent_id"], receipt, new_seal_qr_payload=qr)
+            # The new contract consumes electronic receipt evidence directly.
+            return self._finish_scanner_exchange(self.store.load(row["intent_id"]))
+        except Exception as error:
+            self.store.record_error(row["intent_id"], error)
+            raise
+
+    def _finish_scanner_exchange(self, row):
+        """The receipt replaces the former physical reseal scan and Apply step."""
+        self.store.mark_seal_verified(row["intent_id"], row["new_seal_qr_payload"])
+        self.store.mark_local_applied(row["intent_id"], {
+            "set_id": row["set_id"], "scanner_command_id": row["command_id"],
+            "verification_source": "ELECTRONIC_RECEIPT"})
+        return dict(self.store.load(row["intent_id"]))
+
+    @staticmethod
+    def _validate_scanner_receipt(command, receipt):
+        data = receipt.get("data", receipt)
+        fields = _qr_fields(str(data.get("new_seal_qr_payload") or ""))
+        before = set(command["client_exact_evidence"]["target_barcodes"])
+        pair = command["payload"]["pairs"][0]
+        expected = canonical_barcodes((before - {pair["old_barcode"]}) | {pair["new_barcode"]})
+        members = data.get("new_members")
+        member_pairs = _member_pairs(members)
+        ids = canonical_member_ids(unit for unit, _barcode in member_pairs)
+        target = command["payload"]["target_evidence"]
+        old_pairs = _member_pairs(target["members"])
+        old_id = next((unit for unit, barcode in old_pairs if barcode == pair["old_barcode"]), None)
+        actual_pairs = data.get("pairs")
+        if not isinstance(actual_pairs, list) or len(actual_pairs) != 1:
+            raise PackageLogisticsError("scanner exchange pair evidence is incomplete")
+        actual_pair = actual_pairs[0]
+        new_id = actual_pair.get("new_unit_id")
+        kind = actual_pair.get("new_source_kind")
+        source_id = actual_pair.get("new_source_bundle_id")
+        changes = data.get("source_membership_changes")
+        if (not old_id or not new_id or new_id in dict(old_pairs)
+            or actual_pair.get("old_unit_id") != old_id
+            or actual_pair.get("old_barcode") != pair["old_barcode"]
+            or actual_pair.get("new_barcode") != pair["new_barcode"]
+            or kind not in {"INSPECTION_TRANSFER", "EXCHANGE_GOOD_REGISTERED"}
+            or not isinstance(changes, list)
+            or (kind == "EXCHANGE_GOOD_REGISTERED" and source_id is not None)
+            or (kind == "INSPECTION_TRANSFER" and not any(
+                isinstance(change, Mapping) and new_id in change.get("removed_unit_ids", [])
+                and (change.get("source_bundle_id") == source_id if source_id else change.get("source_session_id"))
+                and isinstance(change.get("member_count"), int) and change["member_count"] >= 0
+                and isinstance(change.get("entity_versions"), Mapping) and change["entity_versions"]
+                for change in changes))):
+            raise PackageLogisticsError("scanner exchange source evidence differs")
+        expected_pairs = tuple(sorted([(unit, barcode) for unit, barcode in old_pairs if unit != old_id]
+                                      + [(new_id, pair["new_barcode"])]))
+        old_checks = {
+            "receipt_contract_version": RECEIPT_CONTRACT_VERSION,
+            "target_bundle_type": "TRANSFER", "target_version_before": target["entity_version"],
+            "target_version_after": target["entity_version"] + 1,
+            "old_seal_id": target["seal_id"], "old_seal_revision": target["seal_revision"],
+            "old_seal_qr_payload": target["seal_qr_payload"],
+            "old_seal_token_hash": hashlib.sha256(target["seal_token"].encode()).hexdigest(),
+            "old_member_count": target["member_count"], "old_membership_hash": target["membership_hash"],
+            "old_barcode_membership_hash": target["barcode_membership_hash"],
+            "damage_bundle_id": command["payload"]["damage_bundle_id"],
+            "damage_location": "PROCESS_DAMAGE_HOLD", "damage_membership_hash": membership_hash([old_id]),
+            "requires_reseal": True, "pair_count": 1,
+            "seal_contract_version": SEAL_QR_CONTRACT_VERSION, "seal_state": "ACTIVE",
+            "sealed_bundle_id": target["bundle_id"], "sealed_bundle_version": target["entity_version"] + 1,
+            "seal_revision": int(target["seal_revision"]) + 1,
+        }
+        if (any(data.get(name) != value for name, value in old_checks.items())
+            or _member_pairs(data.get("old_members")) != old_pairs
+            or canonical_member_ids(data.get("old_member_ids") or ()) != canonical_member_ids(target["member_ids"])
+            or canonical_barcodes(data.get("old_normalized_barcodes") or ()) != canonical_barcodes(target["normalized_barcodes"])
+            or _member_pairs(data.get("damage_members")) != ((old_id, pair["old_barcode"]),)
+            or canonical_member_ids(data.get("damage_member_ids") or ()) != (old_id,)
+            or member_pairs != expected_pairs
+            or not receipt.get("event_ids") or not receipt.get("outbox_ids") or not data.get("movement_ids")):
+            raise PackageLogisticsError("scanner exchange target evidence differs")
+        for prefix in ("new_", "", "sealed_"):
+            if (_member_pairs(data.get(prefix + "members")) != expected_pairs
+                or canonical_member_ids(data.get(prefix + "member_ids") or ()) != ids
+                or data.get(prefix + "member_count") != len(ids)
+                or data.get(prefix + "membership_hash") != membership_hash(ids)
+                or canonical_barcodes(data.get(prefix + "normalized_barcodes") or ()) != expected
+                or data.get(prefix + "barcode_membership_hash") != barcode_membership_hash(expected)):
+                raise PackageLogisticsError("scanner exchange new membership differs")
+        versions = receipt.get("entity_versions") or data.get("entity_versions") or {}
+        token = str(data.get("seal_token") or "")
+        seal_id = str(data.get("seal_id") or "")
+        expected_fields = {
+            "TRF": "1", "BND": target["bundle_id"], "AUTH_SCOPE": command["authority_scope_id"],
+            "CLC": command["client_exact_evidence"]["target_item_id"], "QT": str(len(ids)),
+            "HSH": membership_hash(ids), "EPOCH": str(command["authority_epoch"]),
+            "PLANE": command["ledger_plane"], "PE": str(command["plane_epoch"]),
+            "SID": seal_id, "SREV": str(data.get("seal_revision")), "STK": token,
+        }
+        if (not token or not seal_id or token == target["seal_token"] or seal_id == target["seal_id"]
+            or data.get("seal_token_hash") != hashlib.sha256(token.encode()).hexdigest()
+            or data.get("seal_qr_payload") != data.get("new_seal_qr_payload") or fields != expected_fields
+            or any(data.get("new_" + name) != data.get(name) for name in ("seal_id", "seal_revision", "seal_token", "seal_token_hash"))
+            or any(versions.get(name) != int(version) + 1 for name, version in command["expected_versions"].items())):
+            raise PackageLogisticsError("scanner exchange seal or version evidence differs")
+        if (receipt.get("contract_version") != "logistics-v1"
+            or receipt.get("command_type") != COMMAND_TYPE or receipt.get("status") != "COMMITTED"
+            or not receipt.get("receipt_id") or not receipt.get("committed_at")
+            or receipt.get("authority_scope_id") != command["authority_scope_id"]
+            or receipt.get("authority_epoch") != command["authority_epoch"]
+            or receipt.get("resolved_ledger_plane") != command["ledger_plane"]
+            or receipt.get("resolved_plane_epoch") != command["plane_epoch"]
+            or data.get("idempotency_key") != command["idempotency_key"]
+            or data.get("target_bundle_id") != command["payload"]["target_bundle_id"]
+            or not fields or fields.get("CLC") != command["client_exact_evidence"]["target_item_id"]
+            or fields.get("BND") != command["payload"]["target_bundle_id"]
+            or canonical_barcodes(barcode for _unit, barcode in member_pairs) != expected
+            or str(data.get("new_membership_hash") or "") != membership_hash(ids)
+            or str(fields.get("HSH") or "") != membership_hash(ids)
+            or int(fields.get("QT") or 0) != len(ids)
+            or data.get("atomic") is not True or data.get("resealed") is not True):
+            raise PackageLogisticsError("scanner exchange receipt evidence differs")
+        return data["new_seal_qr_payload"]
+
     def __init__(
         self,
         store: SealedTransferExchangeStore,
@@ -1182,6 +1388,8 @@ class SealedTransferExchangeCoordinator:
     def _validate_receipt(
         command: Mapping[str, Any], receipt: Mapping[str, Any]
     ) -> str:
+        if command.get("payload", {}).get("replacement_mode") == "SCAN_REGISTER_GOOD":
+            return SealedTransferExchangeCoordinator._validate_scanner_receipt(command, receipt)
         data_value = receipt.get("data")
         data = dict(data_value) if isinstance(data_value, Mapping) else dict(receipt)
         payload = command["payload"]
@@ -1475,7 +1683,10 @@ class SealedTransferExchangeCoordinator:
     @writer_sink("sealed_transfer_attempt")
     def attempt(self, intent_id: str, *, operator_retry: bool = False) -> SealedTransferExchangeAttempt:
         row = self.store.load(intent_id)
+        scanner_command = bool(row["command_json"] and json.loads(row["command_json"]).get("payload", {}).get("replacement_mode") == "SCAN_REGISTER_GOOD")
         if row["status"] == "ACKED":
+            if scanner_command:
+                row = self._finish_scanner_exchange(row)
             return self._attempt(row)
         command_was_durable = row["command_json"] is not None
         operator_review = row["status"] == "OPERATOR_REVIEW"
@@ -1601,6 +1812,8 @@ class SealedTransferExchangeCoordinator:
                             row = self.store.record_receipt(
                                 intent_id, receipt, new_qr
                             )
+                        if scanner_command:
+                            row = self._finish_scanner_exchange(row)
                         return self._attempt(row)
                 if operator_review:
                     # A review row may represent a committed command whose ACK
@@ -1645,6 +1858,8 @@ class SealedTransferExchangeCoordinator:
                 "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN", message
             ) if operator_retry else PackageTransportError(message))
             row = self.store.record_error(intent_id, error)
+        if scanner_command and row["status"] == "ACKED":
+            row = self._finish_scanner_exchange(row)
         return self._attempt(row)
 
     @writer_sink("sealed_transfer_drain")

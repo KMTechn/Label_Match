@@ -9,6 +9,8 @@ KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체품을 받아 연결된 
 확정 계약은 w9scanonly CONTRACT.md v1.2(SHA256 CAF67E54B3D0622F5BE6748B84CA53312E3AAB9FDB17FE4FEAF7E4205370AACE)이다. 요청 공통 필드는 원본 scan_payload, local_completion_id, local_completed_at, deferred_reflection=true이며 포장은 short_confirmed, sample_barcodes, exchange_idempotency_keys를 추가한다. 교환은 SCAN_REGISTER_GOOD와 old_barcode/new_barcode, exchanged_at을 전송하며 기존 전체 대상 구성원·CAS·봉인 증거를 보존한다. 응답의 pairs에는 old/new_unit_id, new_source_bundle_id, new_source_kind가 있고 source_membership_changes는 최상위에 둔다. UPSTREAM_COMPLETION_PENDING+retryable=true는 동일 key 재시도, COMPLETION_REVIEW_REQUIRED는 그 건의 확인 상태다.
 
 
+교환 ACK 유실은 기존 journal의 같은 명령·영수증 조회로 복구하고, 예약 재시도 경로에서도 봉인을 전자 검증하여 로컬 적용 완료로 저장한다. 새 봉인 QR 스캔이나 적용 창은 필요하지 않다.
+
 
 <a id="legacy-label-transition"></a>
 
