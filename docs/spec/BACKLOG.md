@@ -1,6 +1,6 @@
 # Label_Match 진행·공백·추가 제안
 
-스캐너만 포장: 구현·격리 회귀는 scanner-only-packaging 계약을 따른다. 실제 스캐너·음향·화면 및 새 서버 계약의 현장 수용은 후속 랩 검증이다.
+스캐너만 포장: 구현·격리 회귀는 scanner-only-packaging 계약과 [제거 경계](scanner-retirement.md)를 따른다. 실제 스캐너·음향·화면 및 새 서버 계약의 현장 수용은 후속 랩 검증이다.
 
 ## W9 · 로컬 제품 자리의 현품표 거절·막힌 접수 안내 (w9nextfix)
 
