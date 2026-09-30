@@ -214,7 +214,10 @@ def _declared_current_user_profile_pairs():
 
 def test_declared_current_user_profile_pair_matches_reviewed_preimage_and_tree():
     pairs = _declared_current_user_profile_pairs()
-    assert set(pairs) == {"app/current_user_onboarding.py", "app/logistics_runtime_profile.py"}
+    assert set(pairs) == {
+        "app/current_user_onboarding.py", "app/logistics_runtime_profile.py",
+        "app/label_match_single_instance.py",
+    }
     for relative, (before, after) in pairs.items():
         name = relative.removeprefix("app/")
         assert before == _release_digest(subprocess.check_output(
@@ -299,7 +302,10 @@ def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_
     assert json.loads(result.stdout)["compatibility"] == NEXTFIX_PINNED
 
 
-@pytest.mark.parametrize("relative", ["app/current_user_onboarding.py", "app/logistics_runtime_profile.py"])
+@pytest.mark.parametrize("relative", [
+    "app/current_user_onboarding.py", "app/logistics_runtime_profile.py",
+    "app/label_match_single_instance.py",
+])
 def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_layouts, relative):
     old, candidate = nextfix_archive_layouts
     before, after = _declared_current_user_profile_pairs()[relative]
@@ -312,7 +318,7 @@ def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_l
     assert _release_digest((changed / relative).read_bytes()) != after
     result = _nextfix_probe(tmp_path, changed, old)
     assert result.returncode != 0
-    # Either mutation disables the atomic two-file pair; the archive layout's
+    # Any mutation disables the atomic module set; the archive layout's
     # first ordinary AST mismatch is onboarding, including a profile mutation.
     assert "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py" in result.stderr
 

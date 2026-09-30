@@ -506,9 +506,10 @@ shared_transition = all(
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {
+    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '5c5ab74b20ff7a2ed6df614bac5984fb69b7bb79eb3e312d714455bf88cda5ff'),
     'app/current_user_onboarding.py': (
         '323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-        '8fb53bb3ef4ceaebe2afbaf5374dfb9ef8821d165c89d43d8e09dd57ee4d01e8'),
+        '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d'),
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
         '7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57'),
@@ -529,7 +530,7 @@ legacy_label_replacements = {
         '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'),
     'app/logistics_runtime_profile.py': (
         'a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
-        'd65ed6b391c81e661184615077f328c3a45aabc8c466ebad596569e443652cdb'),
+        '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
     'app/terminal_operation_lease.py': (
         '4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
         'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
@@ -609,11 +610,12 @@ nextfix_label_transition = (
 )
 
 # Reviewed current-user selection update on the same accepted preimages.
-# Both modules must match the exact directional LF pair. Other app/runtime
+# All three modules must match the exact directional LF set. Other app/runtime
 # files, writer membership and contracts retain their ordinary checks.
 current_user_profile_replacements = {
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '8fb53bb3ef4ceaebe2afbaf5374dfb9ef8821d165c89d43d8e09dd57ee4d01e8'),
-    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', 'd65ed6b391c81e661184615077f328c3a45aabc8c466ebad596569e443652cdb'),
+    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '5c5ab74b20ff7a2ed6df614bac5984fb69b7bb79eb3e312d714455bf88cda5ff'),
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d'),
+    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
 }
 current_user_profile_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and

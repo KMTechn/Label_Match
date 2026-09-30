@@ -30,6 +30,7 @@ from label_match_single_instance import SingleInstanceError, resolve_data_scope
 from logistics_runtime_profile import (
     APP_PROFILE_PATH_ENV as LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV,
     REQUIRED_ENV,
+    assert_path_has_no_reparse_components,
     default_logistics_profile_path,
     load_logistics_runtime_profile,
     unprotect_current_user_secret,
@@ -297,6 +298,14 @@ def resolve_current_user_onboarding_paths(
     local_app_data = str(values.get("LOCALAPPDATA") or "").strip()
     explicit_data_root = str(values.get(LABEL_MATCH_DATA_ROOT_ENV) or "").strip()
     explicit_settings = str(values.get(LABEL_MATCH_SETTINGS_PATH_ENV) or "").strip()
+    if not local_app_data and not str(
+        values.get(LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV) or ""
+    ).strip():
+        for anchor in (explicit_data_root, explicit_settings):
+            if anchor:
+                assert_path_has_no_reparse_components(
+                    anchor, label="current-user profile state root"
+                )
     if explicit_settings:
         settings_path = _resolved(explicit_settings)
     elif local_app_data:
@@ -346,13 +355,16 @@ def resolve_current_user_onboarding_paths(
         or ""
     ).strip()
     if explicit_direct_sync_root:
-        direct_sync_root = _resolved(explicit_direct_sync_root)
+        direct_sync_root = Path(explicit_direct_sync_root)
     elif local_app_data:
         direct_sync_root = (
-            _resolved(local_app_data) / "KMTech" / "DirectSync" / "label_match"
+            Path(local_app_data) / "KMTech" / "DirectSync" / "label_match"
         )
     else:
         direct_sync_root = default_data_root.parent / "direct_sync"
+    direct_sync_root = assert_path_has_no_reparse_components(
+        direct_sync_root, label="current-user DirectSync root"
+    ).resolve(strict=False)
 
     logistics_profile_path = default_logistics_profile_path(
         values, default_data_root=default_data_root

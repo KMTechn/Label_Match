@@ -125,6 +125,19 @@ def resolve_data_scope(
             selected, rule = str(legacy_root), "legacy_standalone_default"
         else:
             raise SingleInstanceError("ProgramData is empty")
+    if (
+        for_onboarding
+        and not str(env.get("LOCALAPPDATA") or "").strip()
+        and not str(env.get("LABEL_MATCH_LOGISTICS_PROFILE_PATH") or "").strip()
+        and not override
+    ):
+        # Only this fallback also selects the logistics identity location.
+        # Ordinary business storage may continue to use a redirected folder.
+        from logistics_runtime_profile import assert_path_has_no_reparse_components
+
+        assert_path_has_no_reparse_components(
+            selected, label="current-user profile data root"
+        )
     resolved = str(Path(selected).expanduser().resolve(strict=False))
     logging.getLogger(__name__).warning("storage_root_selected: rule=%s data_root=%s", rule, resolved)
     return resolved

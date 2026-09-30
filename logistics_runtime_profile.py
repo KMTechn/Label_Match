@@ -313,7 +313,10 @@ def _test1_isolated_legacy_override_enabled() -> bool:
         raise LogisticsRuntimeConfigurationError(
             "TEST1 isolated legacy logistics override requires COMPUTERNAME=TEST1"
         )
-    if any(name in os.environ for name in (PROFILE_PATH_ENV, REQUIRED_ENV)):
+    if any(
+        name in os.environ
+        for name in (PROFILE_PATH_ENV, APP_PROFILE_PATH_ENV, REQUIRED_ENV)
+    ):
         raise LogisticsRuntimeConfigurationError(
             "TEST1 isolated legacy logistics override requires process profile "
             "anchors to be absent"
@@ -418,7 +421,10 @@ def default_logistics_profile_path(
     elif local_app_data:
         selected = Path(local_app_data) / DEFAULT_PROFILE_RELATIVE_PATH
     elif default_data_root is not None:
-        selected = Path(default_data_root).parent / "logistics-profile" / "runtime-profile.json"
+        data_root = assert_path_has_no_reparse_components(
+            default_data_root, label="current-user data root"
+        )
+        selected = data_root.parent / "logistics-profile" / "runtime-profile.json"
     else:
         # The existing resolver owns the settings/data-root fallback. It calls
         # this function with its computed root, so the no-LOCALAPPDATA rule is
@@ -429,7 +435,9 @@ def default_logistics_profile_path(
         return resolve_current_user_onboarding_paths(
             _default_product_root(), environ=values
         ).logistics_profile_path
-    return Path(os.path.abspath(os.path.expanduser(os.fspath(selected))))
+    return assert_path_has_no_reparse_components(
+        selected, label="runtime profile"
+    ).resolve(strict=False)
 
 
 def selected_logistics_runtime_profile_path(
@@ -446,7 +454,9 @@ def selected_logistics_runtime_profile_path(
         if requested_path
         else default_logistics_profile_path(values)
     )
-    return Path(os.path.abspath(os.path.expanduser(os.fspath(selected))))
+    return assert_path_has_no_reparse_components(
+        selected, label="runtime profile"
+    ).resolve(strict=False)
 
 
 default_profile_path = default_logistics_profile_path

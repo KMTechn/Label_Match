@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -484,6 +485,71 @@ def test_default_profile_path_is_program_scoped(tmp_path):
     )
 
 
+@pytest.fixture
+def profile_junction(tmp_path):
+    if os.name != "nt":
+        pytest.skip("requires a Windows directory junction")
+    target, link = tmp_path / "target", tmp_path / "link"
+    target.mkdir()
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         "New-Item -ItemType Junction -Path '" + str(link).replace("'", "''")
+         + "' -Target '" + str(target).replace("'", "''") + "' | Out-Null"],
+        capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode == 0, result.stderr
+    assert link.is_junction()
+    return link, target
+
+
+@pytest.mark.parametrize("consumer", ["default", "onboarding"])
+@pytest.mark.parametrize("anchor", ["override", "local", "suffix", "data", "leaf", "custom", "direct"])
+def test_profile_roots_reject_junctions(tmp_path, profile_junction, consumer, anchor):
+    link, _target = profile_junction
+    values = {"LABEL_MATCH_SAVE_DIR": str(tmp_path / "data")}
+    if anchor == "override":
+        values["LABEL_MATCH_LOGISTICS_PROFILE_PATH"] = str(link / "profile.json")
+    elif anchor == "local":
+        values["LOCALAPPDATA"] = str(link)
+    elif anchor == "suffix":
+        values["LOCALAPPDATA"] = str(tmp_path)
+        # Put a reparse component inside the default profile suffix.
+        link.rename(tmp_path / "KMTech")
+    elif anchor == "data":
+        values["LABEL_MATCH_SAVE_DIR"] = str(link / "data")
+    elif anchor == "leaf":
+        values["LABEL_MATCH_SAVE_DIR"] = str(link)
+    elif anchor == "custom":
+        values.pop("LABEL_MATCH_SAVE_DIR")
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"custom_save_path": str(link / "data")}), encoding="utf-8")
+        values["LABEL_MATCH_SETTINGS_PATH"] = str(settings)
+    else:
+        values["LABEL_MATCH_DIRECT_SYNC_ROOT"] = str(link)
+    with pytest.raises(LogisticsRuntimeConfigurationError, match="symlink or junction"):
+        if consumer == "default":
+            default_logistics_profile_path(values)
+        else:
+            resolve_current_user_onboarding_paths(tmp_path / "app", environ=values)
+
+
+@pytest.mark.parametrize("profile_anchor", ["local", "override", "standalone"])
+def test_business_junction_is_preserved(tmp_path, profile_junction, profile_anchor):
+    from label_match_single_instance import resolve_data_scope
+
+    link, target = profile_junction
+    values = {}
+    if profile_anchor == "local":
+        values["LOCALAPPDATA"] = str(tmp_path / "local")
+    elif profile_anchor == "override":
+        values["LABEL_MATCH_LOGISTICS_PROFILE_PATH"] = str(tmp_path / "profile.json")
+    selected = resolve_data_scope(
+        environment=values, settings={"custom_save_path": str(link / "data")},
+        for_onboarding=profile_anchor != "standalone",
+    )
+    assert Path(selected) == target / "data"
+
+
 @pytest.mark.parametrize("mode", ["local", "override", "no-local"])
 def test_runtime_and_tool_defaults_share_first_run_profile(monkeypatch, tmp_path, mode):
     values = {"LABEL_MATCH_SAVE_DIR": str(tmp_path / "data")}
@@ -897,6 +963,11 @@ def test_test1_isolated_legacy_override_uses_only_process_environment(
         (
             "KM_LOGISTICS_REQUIRED",
             "0",
+            "anchors to be absent",
+        ),
+        (
+            "LABEL_MATCH_LOGISTICS_PROFILE_PATH",
+            "",
             "anchors to be absent",
         ),
         (
