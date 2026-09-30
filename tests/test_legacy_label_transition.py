@@ -2582,7 +2582,8 @@ def test_product_position_never_reads_the_start_label_shape(tmp_path, monkeypatc
     if accepted:
         assert app.errors == [] and app.current_set_info["raw"] == [master, value]
     else:
-        assert [title for title, _message in app.errors] == ["[바코드 종류 오류]"]
+        # DESIGN P2: ignore only this scan; no error-acknowledgment gate.
+        assert app.errors == [] and "fail" in app.sounds
         assert app.current_set_info["raw"] == [master]
     assert app.current_set_info.get("transition_class") == ("LEGACY" if transition else None)
 
@@ -2619,16 +2620,18 @@ def test_new_label_cannot_become_a_local_product_or_final_label(
         # checks; this proves the label-kind guard precedes those checks.
         scanned_label = label if position == "product" else label + f"|SN=NEXT<GS>6D{TODAY}"
         _scan(module, app, scanned_label)
-        assert app.errors[-1][0] == "[바코드 종류 오류]"
-        assert "현품표입니다." in app.errors[-1][1]
-        assert "F1" not in app.errors[-1][1]
+        # DESIGN P2: preserve the set and allow the very next product.
+        assert app.errors == [] and "fail" in app.sounds
+        rejection = _events(tmp_path, "ERROR_INPUT")[-1][1]
+        assert "현품표입니다." in rejection["reason"]
+        assert "F1" not in rejection["reason"]
         assert app.current_set_info["raw"] == before_raw
         assert app.current_set_info["parsed"] == before_parsed
         assert app.global_scanned_set == before_global
         assert _outbox_rows(tmp_path) == before_outbox
         assert _events(tmp_path, "TRAY_COMPLETE") == []
         _scan(module, app, products[1] if position == "product" else products[4])
-        assert app.errors[-1][0] == "[바코드 종류 오류]"
+        assert app.errors == []
         if position == "product":
             assert app.current_set_info["raw"] == before_raw + [products[1]]
         else:

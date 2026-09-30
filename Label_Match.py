@@ -14098,26 +14098,14 @@ class Label_Match(tk.Tk):
 
             master_code = self.current_set_info['parsed'][0]
             final_label_position = self._workflow_final_label_position()
-            label_pairs, _ = label_transition.transition_label_pairs(
-                _label_match_decode_possible_base64_label(raw_input)
-            )
-            if any(
+            decoded_label = carrier_identity.decode_carrier_scan(raw_input)
+            label_pairs, _ = label_transition.transition_label_pairs(decoded_label)
+            if len(decoded_label) == 13 or carrier_identity.parse_legacy_fields(decoded_label) or any(
                 key in {"ITG", "TRF"}
                 or (key == "SRC" and str(value or "").upper() == "KMTECH_INPUT_TAG")
                 for key, value in label_pairs
             ):
-                next_barcode = (
-                    "제품 바코드" if scan_pos < final_label_position else "포장 라벨"
-                )
-                self._handle_input_error(
-                    raw_input,
-                    title="[바코드 종류 오류]",
-                    reason=(
-                        f"현품표입니다. {next_barcode}를 스캔하세요.\n\n"
-                        f"- 스캔 값: {self._truncate_string(raw_input)}\n\n"
-                        f"→ 현재 세트의 {next_barcode}를 스캔하세요."
-                    ),
-                )
+                self._ignore_product_scan(raw_input, "현품표입니다. 현재 세트의 제품을 스캔하세요.")
                 return
             if scan_pos < final_label_position and len(raw_input) <= len(master_code):
                 self._handle_input_error(
@@ -14164,6 +14152,16 @@ class Label_Match(tk.Tk):
             self._update_on_success_scan(raw_input, master_code)
         else:
             consume_input()
+
+    def _ignore_product_scan(self, raw_input, message):
+        """Reject this input without consuming the next scan as an acknowledgment."""
+        self.data_manager.log_event(self.Events.ERROR_INPUT, {
+            "set_id": self.current_set_info.get("id"),
+            "raw_input": raw_input,
+            "reason": message,
+        })
+        self._play_sound("fail")
+        self.update_big_display(message, "red")
 
     def _current_sealed_transfer_exchange_attempt(
         self,
