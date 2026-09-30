@@ -374,11 +374,15 @@ def _acquire_named_mutex(name: str, timeout_seconds: float) -> _NamedMutexLease 
     if os.name != "nt":
         return _NamedMutexLease(0)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
-    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexExW.argtypes = [
+        ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong,
+    ]
+    kernel32.CreateMutexExW.restype = ctypes.c_void_p
     kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
     kernel32.WaitForSingleObject.restype = ctypes.c_ulong
-    handle = kernel32.CreateMutexW(None, False, name)
+    # SYNCHRONIZE permits waiting; ReleaseMutex checks thread ownership.
+    # Keep default security when an elevated same-user process holds the mutex.
+    handle = kernel32.CreateMutexExW(None, name, 0, 0x00100000)
     if not handle:
         raise WriterFenceError(
             "WRITER_MUTEX_CREATE_FAILED",

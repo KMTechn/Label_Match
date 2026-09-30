@@ -24,7 +24,7 @@ class _FakeKernel32:
         self.handle = handle
         self.closed = []
 
-    def CreateMutexW(self, _security, _initial_owner, _name):
+    def CreateMutexExW(self, _security, _name, _flags, _access):
         return self.handle
 
     def CloseHandle(self, handle):

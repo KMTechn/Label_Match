@@ -707,6 +707,7 @@ PIN 보류의 활성 파일은 삭제 대신 보류 경로로 원자 이동한�
 시작 시 검증된 품목 목록이 없으면 이유·선택한 중앙 설정·오류 코드를 표시한다. `다시 시도`는 프로그램을 닫지 않고 같은 검증 원본을 다시 조회한다. 검증된 snapshot 또는 cache가 선택된 뒤에만 작업 화면으로 들어간다. 실패가 반복되면 네트워크·설정 확인 후 IT 담당자에게 오류 코드를 전달한다. 과도기 켬(관리자 스위치)이면 다시 시도 없이 진단을 남기고 `과도기 모드 — 품목 목록 미확인` 경고 뒤 설치에 든 품목 목록으로 작업 화면을 연다(Container_Audit 와 같음). 그 실행에서 시작한 로컬 세트는 모두 `ITEM_UNCONFIRMED`로 기록되고, 경고창은 writer 잠금 밖에서 뜬다. 네트워크가 돌아온 뒤 다시 실행하면 중앙 목록을 다시 확인한다.
 
 writer admission mutex는 현재 작업자 profile LOCALAPPDATA에서 파생·확인된 root에만 기존 literal `Local\\KMTech.LabelMatch.WriterAdmission.v1`을 쓴다. 설치기는 상승 전에 실제 사용자 profile root와 환경 경로를 대조하고, 검증된 작업자 root를 상승 helper에 전달한다. 같은 후미를 가진 별도 custom root도 정규화 경로 hash 이름을 쓴다. 실제 다른 계정 UAC/설치 검증은 별도다.
+GUI·relay·등록·writer의 Python mutex 생성은 `CreateMutexExW`의 `SYNCHRONIZE`만 요청하며 기본 SD·이름·중복 거부·대기/해제·ABANDONED·실제 DACL 거부를 유지한다; 낮은 무결성 자식 소스 회귀와 실제 상승 설치→일반 제거/재등록의 랩 수용은 구분한다.
 
 호스트의 넓은 pytest 선택은 live Tk 두 노드를 기본 건너뛴다. 전용 화면 시험에서만 Windows 환경변수 `LABEL_MATCH_RUN_LIVE_TK_TESTS=1`로 명시 선택한다. 헤드리스 시험은 실제 창의 배치를 입증하지 않는다.
 

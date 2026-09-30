@@ -164,7 +164,9 @@ $writerTransition | ConvertTo-Json -Compress
     ("other-candidate", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("second-addition", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("addition-already-installed", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
-    ("unrelated-module", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/user_relay.py"),
+    # Re-pinning a writer module now disables the exact release set before
+    # the legacy leaf addition can be admitted.
+    ("unrelated-module", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("data", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/assets/Item.csv"),
 ])
 def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_label_packages, change, reason):
@@ -203,13 +205,13 @@ NEXTFIX_BASE = "e88011c"
 NEXTFIX_PINNED = "PINNED_W9NEXTFIX_LABEL_RECOVERY"
 
 
-def _declared_current_user_profile_pairs():
+def _declared_current_user_profile_pairs(variable="current_user_profile_replacements"):
     source = INSTALLER.read_text(encoding="utf-8")
     start = source.index("$probe = @'") + len("$probe = @'")
     tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
     return next(ast.literal_eval(node.value) for node in tree.body
                 if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "current_user_profile_replacements")
+                and node.targets[0].id == variable)
 
 
 def test_declared_current_user_profile_pair_matches_reviewed_preimage_and_tree():
@@ -218,6 +220,7 @@ def test_declared_current_user_profile_pair_matches_reviewed_preimage_and_tree()
         "app/current_user_onboarding.py", "app/logistics_runtime_profile.py",
         "app/label_match_single_instance.py",
         "app/tools/install_logistics_runtime_profile.py",
+        "app/enrollment_mutex.py", "app/writer_session_fence.py",
     }
     for relative, (before, after) in pairs.items():
         name = relative.removeprefix("app/")
@@ -225,6 +228,18 @@ def test_declared_current_user_profile_pair_matches_reviewed_preimage_and_tree()
             ["git", "-C", str(ROOT), "show", f"a20cd01:{name}"]))
         assert after == _release_digest((ROOT / name).read_bytes())
         assert before != after
+
+
+def test_writer_preimages_cover_only_the_accepted_profile_releases():
+    preimages = _declared_current_user_profile_pairs("current_user_profile_writer_preimages")
+    revisions = ("a20cd01", "e88011c", "c83c72c", "817d393", "92abdaa", "614369b")
+    expected = {_release_digest(subprocess.check_output(
+        ["git", "-C", str(ROOT), "show", f"{revision}:writer_session_fence.py"]))
+        for revision in revisions}
+    after = _release_digest((ROOT / "writer_session_fence.py").read_bytes())
+    assert preimages == expected
+    assert after not in preimages
+    assert len(preimages) == 5
 
 
 def test_declared_nextfix_pair_is_exactly_e88011c_and_this_tree():
@@ -296,7 +311,11 @@ def test_e88011c_archive_upgrade_passes_nextfix_writer_guard(tmp_path, nextfix_a
 def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_archive_layouts):
     old, candidate = nextfix_archive_layouts
     for relative, (before, after) in _declared_current_user_profile_pairs().items():
-        assert _release_digest((old / relative).read_bytes()) == before
+        installed_digest = _release_digest((old / relative).read_bytes())
+        if relative == "app/writer_session_fence.py":
+            assert installed_digest in _declared_current_user_profile_pairs("current_user_profile_writer_preimages")
+        else:
+            assert installed_digest == before
         assert _release_digest((candidate / relative).read_bytes()) == after
     result = _nextfix_probe(tmp_path, candidate, old)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -307,11 +326,16 @@ def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_
     "app/current_user_onboarding.py", "app/logistics_runtime_profile.py",
     "app/label_match_single_instance.py",
     "app/tools/install_logistics_runtime_profile.py",
+    "app/enrollment_mutex.py", "app/writer_session_fence.py",
 ])
 def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_layouts, relative):
     old, candidate = nextfix_archive_layouts
     before, after = _declared_current_user_profile_pairs()[relative]
-    assert _release_digest((old / relative).read_bytes()) == before
+    installed_digest = _release_digest((old / relative).read_bytes())
+    if relative == "app/writer_session_fence.py":
+        assert installed_digest in _declared_current_user_profile_pairs("current_user_profile_writer_preimages")
+    else:
+        assert installed_digest == before
     assert _release_digest((candidate / relative).read_bytes()) == after
     changed = _tree(candidate, tmp_path / "changed", [relative])
     with (changed / relative).open("a", encoding="utf-8") as stream:
@@ -325,10 +349,24 @@ def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_l
     assert "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py" in result.stderr
 
 
+@pytest.mark.parametrize("relative", ["app/enrollment_mutex.py", "app/writer_session_fence.py"])
+def test_mutex_pair_refuses_changed_installed_preimage(tmp_path, nextfix_archive_layouts, relative):
+    old, candidate = nextfix_archive_layouts
+    changed = _tree(old, tmp_path / "changed-installed", [relative])
+    with (changed / relative).open("a", encoding="utf-8") as stream:
+        stream.write(CHANGED_LINE)
+    _pin(changed)
+    result = _nextfix_probe(tmp_path, candidate, changed)
+    assert result.returncode != 0
+    assert "WRITER_TRANSITION_SEMANTICS_DIFFER" in result.stderr
+
+
 @pytest.mark.parametrize("change,reason", [
     ("membership", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
-    ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/user_relay.py"),
-    ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
+    # These writer-file mutations rotate the inventory pin, invalidating the
+    # exact writer bytes and therefore the atomic current-user profile set.
+    ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
+    ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
     ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
     ("contract", "WRITER_TRANSITION_CONTRACT_DIFFERS: launch-label-match.cmd"),
 ])

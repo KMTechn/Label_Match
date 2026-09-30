@@ -191,10 +191,12 @@ def acquire_data_scope_mutex(
     from ctypes import wintypes
 
     api = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
-    create_mutex = api.CreateMutexW
+    create_mutex = api.CreateMutexExW
     close_handle = api.CloseHandle
     if kernel32 is None:
-        create_mutex.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        create_mutex.argtypes = [
+            wintypes.LPVOID, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ]
         create_mutex.restype = wintypes.HANDLE
         close_handle.argtypes = [wintypes.HANDLE]
         close_handle.restype = wintypes.BOOL
@@ -202,7 +204,9 @@ def acquire_data_scope_mutex(
     set_last_error = getattr(ctypes, "set_last_error", None)
     if set_last_error is not None:
         set_last_error(0)
-    handle = create_mutex(None, False, name)
+    # Keep default security. GUI/relay lifetime handles need no full-control
+    # rights when the same user's elevated process already created the mutex.
+    handle = create_mutex(None, name, 0, 0x00100000)
     error_reader = last_error_getter or getattr(ctypes, "get_last_error", lambda: 0)
     error = int(error_reader())
     if not handle:

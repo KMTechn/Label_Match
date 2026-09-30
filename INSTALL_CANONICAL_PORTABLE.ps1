@@ -506,8 +506,10 @@ shared_transition = all(
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {
+    'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+    'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '503dae7aa0250925287745c61a82b9268da59b2855f87d9ba1bd638b724b9cfb'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
-    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '531a16790d9923b832a101845334cdb2e9c441dc5f3d300f84a67abbea6df408'),
+    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
     'app/current_user_onboarding.py': (
         '323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
         '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d'),
@@ -614,14 +616,27 @@ nextfix_label_transition = (
 # All four modules must match the exact directional LF set. Other app/runtime
 # files, writer membership and contracts retain their ordinary checks.
 current_user_profile_replacements = {
+    'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '503dae7aa0250925287745c61a82b9268da59b2855f87d9ba1bd638b724b9cfb'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
-    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '531a16790d9923b832a101845334cdb2e9c441dc5f3d300f84a67abbea6df408'),
+    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
     'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d'),
     'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
 }
+# Exact writer bytes from the same accepted profile/scan preimages; their
+# inventory pins differ. No additional release direction is admitted.
+current_user_profile_writer_preimages = {
+    '7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1',
+    '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87',
+    '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce',
+    'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7',
+    'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50',
+}
 current_user_profile_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
-    release_digest(installed / relative) == before and release_digest(source / relative) == after
+    release_digest(installed / relative) in (
+        current_user_profile_writer_preimages if relative == 'app/writer_session_fence.py' else {before}
+    ) and release_digest(source / relative) == after
     for relative, (before, after) in current_user_profile_replacements.items()
 )
 

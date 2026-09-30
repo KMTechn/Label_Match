@@ -151,8 +151,10 @@ class EnrollmentMutex:
                 timeout_milliseconds=0,
             )
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
-        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CreateMutexExW.argtypes = [
+            ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong,
+        ]
+        kernel32.CreateMutexExW.restype = ctypes.c_void_p
         kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.WaitForSingleObject.restype = ctypes.c_uint32
         kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
@@ -166,11 +168,13 @@ class EnrollmentMutex:
             raise RuntimeError("this enrollment mutex instance is already active")
         kernel32 = self._load_kernel32()
         ctypes.set_last_error(0)
-        handle = kernel32.CreateMutexW(None, False, ENROLLMENT_MUTEX_NAME)
+        # SYNCHRONIZE permits waiting; ReleaseMutex checks thread ownership.
+        # Retain default security across same-user integrity transitions.
+        handle = kernel32.CreateMutexExW(None, ENROLLMENT_MUTEX_NAME, 0, 0x00100000)
         create_error = ctypes.get_last_error()
         if not handle:
             raise EnrollmentMutexError(
-                "CreateMutexW failed for the enrollment mutex",
+                "CreateMutexExW failed for the enrollment mutex",
                 disposition="CREATE_FAILED",
                 timeout_milliseconds=self.timeout_milliseconds,
                 winerror=create_error,
