@@ -54,7 +54,7 @@ def _environment(root: Path) -> dict[str, str]:
         "LABEL_MATCH_DIRECT_SYNC_ROOT": str(root / "direct-sync"),
         "LABEL_MATCH_SAVE_DIR": str(root / "data"),
         "LABEL_MATCH_SETTINGS_PATH": str(root / "settings.json"),
-        "KM_LOGISTICS_PROFILE_PATH": str(root / "profile.json"),
+        "LABEL_MATCH_LOGISTICS_PROFILE_PATH": str(root / "profile.json"),
     })
     for key in tuple(env):
         if key.startswith("KMTECH_LABEL_WRITER_DELEGATION_"):

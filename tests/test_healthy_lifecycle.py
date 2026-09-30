@@ -111,7 +111,7 @@ def _fixture(tmp_path, healthy_pair):
         "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT",
         "LABEL_MATCH_SAVE_DIR",
         "LABEL_MATCH_SETTINGS_PATH",
-        "KM_LOGISTICS_PROFILE_PATH",
+        "LABEL_MATCH_LOGISTICS_PROFILE_PATH",
     ):
         env.pop(name, None)
     for name in ("KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH", "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256"):
@@ -618,7 +618,7 @@ def _fresh_fixture(tmp_path, healthy_pair, error):
         "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT",
         "LABEL_MATCH_SAVE_DIR",
         "LABEL_MATCH_SETTINGS_PATH",
-        "KM_LOGISTICS_PROFILE_PATH",
+        "LABEL_MATCH_LOGISTICS_PROFILE_PATH",
     ):
         env.pop(name, None)
     env.update(

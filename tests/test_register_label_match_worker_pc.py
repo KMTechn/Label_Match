@@ -1785,7 +1785,7 @@ def test_fresh_pc_identity_conflict_recovers_only_with_audited_authorization(
         "LOCALAPPDATA": str(tmp_path / "LocalAppData"),
         "LABEL_MATCH_SAVE_DIR": str(tmp_path / "work"),
         "LABEL_MATCH_DIRECT_SYNC_ROOT": str(data_dir),
-        "KM_LOGISTICS_PROFILE_PATH": str(profile_path),
+        "LABEL_MATCH_LOGISTICS_PROFILE_PATH": str(profile_path),
     }
     continued = onboarding.onboard_current_user(
         tmp_path / "app", environ=environment, require_bootstrap_integrity=False,

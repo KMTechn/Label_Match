@@ -105,7 +105,7 @@ def assert_ready_and_first_request(r):
     result = onboarding.onboard_current_user(
         r.root / 'app', environ=dict(LOCALAPPDATA=str(r.root / 'local'), LABEL_MATCH_SAVE_DIR=r.args.sync_dir,
                                     LABEL_MATCH_DIRECT_SYNC_ROOT=r.args.data_dir,
-                                    KM_LOGISTICS_PROFILE_PATH=r.args.logistics_profile_path),
+                                    LABEL_MATCH_LOGISTICS_PROFILE_PATH=r.args.logistics_profile_path),
         require_bootstrap_integrity=False,
         registration_runner=lambda _p: pytest.fail('recovery must not enroll again'),
         autostart_installer=lambda _p: {'status': 'PASS'},

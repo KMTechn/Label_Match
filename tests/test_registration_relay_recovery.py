@@ -52,7 +52,7 @@ def used_pc(r, monkeypatch):
 
 def environment(r):
     return dict(LOCALAPPDATA=str(r.root / 'local'), LABEL_MATCH_SAVE_DIR=r.args.sync_dir,
-                LABEL_MATCH_DIRECT_SYNC_ROOT=r.args.data_dir, KM_LOGISTICS_PROFILE_PATH=r.args.logistics_profile_path)
+                LABEL_MATCH_DIRECT_SYNC_ROOT=r.args.data_dir, LABEL_MATCH_LOGISTICS_PROFILE_PATH=r.args.logistics_profile_path)
 
 
 def normal_remove(r):

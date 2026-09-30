@@ -120,7 +120,7 @@ def _run_clean_install_receipt_gate_harness(
         "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT",
         "LABEL_MATCH_SAVE_DIR",
         "LABEL_MATCH_SETTINGS_PATH",
-        "KM_LOGISTICS_PROFILE_PATH",
+        "LABEL_MATCH_LOGISTICS_PROFILE_PATH",
     ):
         environment.pop(name, None)
     if extra_environment:
@@ -536,6 +536,32 @@ def test_clean_install_without_conflict_receipt_reaches_post_gate_sentinel(
 
     assert completed.returncode == 0, combined
     assert "receipt_gate_status=PASS" in completed.stdout
+
+
+def test_old_pc_wide_logistics_anchor_neither_blocks_nor_touches_clean_install(
+    tmp_path: Path,
+) -> None:
+    # TEST1 09-30: Machine KM_LOGISTICS_* from the old PC-wide rollout pointed at
+    # a shared profile, and the clean install refused as noncanonical state.
+    shared_profile = tmp_path / "ProgramData" / "KMTech" / "Logistics" / "runtime-profile.json"
+    shared_secret = shared_profile.parent / "secrets" / "bearer-token.dpapi"
+    shared_secret.parent.mkdir(parents=True)
+    shared_profile.write_bytes(b'{"program": "other"}\n')
+    shared_secret.write_bytes(b"other-program-secret")
+
+    completed = _run_clean_install_receipt_gate_harness(
+        tmp_path / "installer",
+        extra_environment={
+            "KM_LOGISTICS_PROFILE_PATH": str(shared_profile),
+            "KM_LOGISTICS_REQUIRED": "1",
+        },
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode == 0, combined
+    assert "receipt_gate_status=PASS" in completed.stdout
+    assert shared_profile.read_bytes() == b'{"program": "other"}\n'
+    assert shared_secret.read_bytes() == b"other-program-secret"
 
 
 @pytest.mark.parametrize(

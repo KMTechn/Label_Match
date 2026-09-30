@@ -993,29 +993,32 @@ def test_test1_isolated_legacy_override_rejects_reparse_ca_bundle(
         load_logistics_runtime_profile(required=True)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Machine environment trust boundary")
-def test_hklm_machine_profile_ignores_process_path_override(tmp_path, monkeypatch):
-    machine = _profile(tmp_path / "machine-profile")
-    process = _profile(tmp_path / "process-profile", base_url="https://attacker.invalid")
-    monkeypatch.setenv("KM_LOGISTICS_PROFILE_PATH", str(process))
-    monkeypatch.setenv("KM_LOGISTICS_REQUIRED", "0")
+def test_old_pc_wide_machine_profile_does_not_replace_own_profile(tmp_path, monkeypatch):
+    # Old PC-wide rollout values remain on some PCs (TEST1 09-30). The profile
+    # first-run set for this process wins and the Machine values are not read.
+    machine = _profile(tmp_path / "machine-profile", base_url="https://old-pc-wide.invalid")
+    own = _profile(tmp_path / "own-profile")
+    monkeypatch.setenv("KM_LOGISTICS_PROFILE_PATH", str(own))
+    monkeypatch.setenv("KM_LOGISTICS_REQUIRED", "1")
     values = {
         "KM_LOGISTICS_PROFILE_PATH": str(machine),
         "KM_LOGISTICS_REQUIRED": "1",
     }
+    machine_reads = []
     monkeypatch.setattr(
         runtime_module,
         "_machine_environment_value",
-        lambda name: values.get(name, ""),
+        lambda name: machine_reads.append(name) or values.get(name, ""),
     )
 
-    resolved = load_logistics_runtime_profile(decryptor=lambda _value: "machine-secret")
+    resolved = load_logistics_runtime_profile(decryptor=lambda _value: "own-secret")
 
     assert resolved is not None
     assert resolved.base_url == "https://logistics.example.invalid"
-    assert Path(resolved.profile_path) == machine.resolve()
-    assert runtime_module.selected_logistics_runtime_profile_path() == machine.resolve()
+    assert Path(resolved.profile_path) == own.resolve()
+    assert runtime_module.selected_logistics_runtime_profile_path() == own.resolve()
     assert resolved.required is True
+    assert machine_reads == []
 
 
 @pytest.mark.parametrize(

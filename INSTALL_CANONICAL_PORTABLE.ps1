@@ -1496,10 +1496,12 @@ $selectedSettingsPath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATC
     $defaultSettingsPath
 }
 else { Full ([string]$env:LABEL_MATCH_SETTINGS_PATH) 'Label current-user settings path' }
-$selectedProfilePath = if ([string]::IsNullOrWhiteSpace([string]$env:KM_LOGISTICS_PROFILE_PATH)) {
+# The shared KM_LOGISTICS_PROFILE_PATH is not read: an inherited Machine value from the
+# old PC-wide rollout points at a file other programs may use (TEST1 09-30 refused here).
+$selectedProfilePath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH)) {
     $defaultProfilePath
 }
-else { Full ([string]$env:KM_LOGISTICS_PROFILE_PATH) 'Label logistics profile path' }
+else { Full ([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH) 'Label logistics profile path' }
 
 $statusRoot = Join-Path $defaultDirectSyncRoot 'status'
 $stop = Join-Path $defaultDirectSyncRoot 'control\label_match_user_relay.stop.json'

@@ -334,7 +334,7 @@ def test_partial_recovery_real_profile_onboarding_and_first_request(recovery, mo
     monkeypatch.setattr(r.m, 'ensure_runtime_profile_from_enrollment_bundle', installer.ensure_runtime_profile_from_enrollment_bundle)
     assert r.m.main(recovery_argv(r)) == 0
     environment = dict(LOCALAPPDATA=str(r.root / 'local'), LABEL_MATCH_SAVE_DIR=r.args.sync_dir,
-                       LABEL_MATCH_DIRECT_SYNC_ROOT=r.args.data_dir, KM_LOGISTICS_PROFILE_PATH=r.args.logistics_profile_path)
+                       LABEL_MATCH_DIRECT_SYNC_ROOT=r.args.data_dir, LABEL_MATCH_LOGISTICS_PROFILE_PATH=r.args.logistics_profile_path)
     result = onboarding.onboard_current_user(
         r.root / 'app', environ=environment, require_bootstrap_integrity=False,
         registration_runner=lambda _p: pytest.fail('recovery must not enroll again'),

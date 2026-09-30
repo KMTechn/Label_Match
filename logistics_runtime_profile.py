@@ -399,18 +399,10 @@ def _test1_isolated_legacy_override_enabled() -> bool:
 def _runtime_environment(environ: Mapping[str, str] | None) -> Mapping[str, str]:
     if environ is not None:
         return environ
-    if _test1_isolated_legacy_override_enabled():
-        return os.environ
-    if os.name != "nt":
-        return os.environ
-    machine_path = _machine_environment_value(PROFILE_PATH_ENV)
-    machine_required = _machine_environment_value(REQUIRED_ENV)
-    if machine_path or machine_required:
-        return {
-            PROFILE_PATH_ENV: machine_path,
-            REQUIRED_ENV: machine_required,
-            "PROGRAMDATA": r"C:\ProgramData",
-        }
+    # Raises on an invalid TEST1 envelope. Machine KM_LOGISTICS_* values from the
+    # old PC-wide rollout are not read: first-run sets this process's values to
+    # the user's own profile, and old field programs may still use the others.
+    _test1_isolated_legacy_override_enabled()
     return os.environ
 
 

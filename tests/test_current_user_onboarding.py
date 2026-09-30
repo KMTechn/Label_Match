@@ -195,6 +195,29 @@ def test_paths_separate_code_and_current_user_state(tmp_path):
     assert paths.app_root not in paths.data_root.parents
 
 
+def test_old_pc_wide_logistics_anchor_does_not_move_current_user_profile(tmp_path):
+    # TEST1 09-30: an inherited Machine anchor from the old PC-wide rollout
+    # made the canonical install refuse and would move the profile.
+    environment = {
+        "LOCALAPPDATA": str(tmp_path / "local-app-data"),
+        "ProgramData": str(tmp_path / "program-data"),
+        "KM_LOGISTICS_PROFILE_PATH": str(
+            tmp_path / "program-data" / "KMTech" / "Logistics" / "runtime-profile.json"
+        ),
+        "KM_LOGISTICS_REQUIRED": "1",
+    }
+    paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=environment)
+    assert paths.logistics_profile_path == (
+        tmp_path
+        / "local-app-data"
+        / "KMTech"
+        / "Logistics"
+        / "profiles"
+        / "Label_Match"
+        / "runtime-profile.json"
+    ).resolve()
+
+
 @pytest.mark.parametrize("launch", ["env-a", "env-b"])
 def test_custom_root_is_shared_by_onboarding_gui_guard_relay_and_registration(
     monkeypatch, tmp_path, launch
