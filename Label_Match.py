@@ -14067,6 +14067,27 @@ class Label_Match(tk.Tk):
 
             master_code = self.current_set_info['parsed'][0]
             final_label_position = self._workflow_final_label_position()
+            label_pairs, _ = label_transition.transition_label_pairs(
+                _label_match_decode_possible_base64_label(raw_input)
+            )
+            if any(
+                key in {"ITG", "TRF"}
+                or (key == "SRC" and str(value or "").upper() == "KMTECH_INPUT_TAG")
+                for key, value in label_pairs
+            ):
+                next_barcode = (
+                    "제품 바코드" if scan_pos < final_label_position else "포장 라벨"
+                )
+                self._handle_input_error(
+                    raw_input,
+                    title="[바코드 종류 오류]",
+                    reason=(
+                        f"현품표입니다. {next_barcode}를 스캔하세요.\n\n"
+                        f"- 스캔 값: {self._truncate_string(raw_input)}\n\n"
+                        f"→ 현재 세트의 {next_barcode}를 스캔하세요."
+                    ),
+                )
+                return
             if scan_pos < final_label_position and len(raw_input) <= len(master_code):
                 self._handle_input_error(
                     raw_input,

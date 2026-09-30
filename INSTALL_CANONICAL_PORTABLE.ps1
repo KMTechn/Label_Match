@@ -508,7 +508,7 @@ shared_transition = all(
 legacy_label_replacements = {
     'app/Label_Match.py': (
         '0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-        'caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938'),
+        '8eb269b68c2ace100f531d70d1f0845eb4633410d3734e761896b0b3f4a25ef0'),
     'app/deferred_intent_capture.py': (
         'e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
         '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
@@ -561,11 +561,11 @@ legacy_label_transition = all(
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {
     ('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-     'caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938'),
+     '8eb269b68c2ace100f531d70d1f0845eb4633410d3734e761896b0b3f4a25ef0'),
     ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-     'caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938'),
+     '8eb269b68c2ace100f531d70d1f0845eb4633410d3734e761896b0b3f4a25ef0'),
     ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-     'caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938'),
+     '8eb269b68c2ace100f531d70d1f0845eb4633410d3734e761896b0b3f4a25ef0'),
 }
 scan_input_companions = {
     'app/deferred_intent_capture.py': (

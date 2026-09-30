@@ -458,6 +458,8 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 <a id="legacy-label-transition"></a>
 ### 과도기 모드: 모든 현품표를 받고 종류별로 기록 (`KMTECH_LEGACY_LABEL_TRANSITION`)
 
+로컬 5단계 세트의 제품·최종 포장 라벨 자리에서는 새 체계 현품표(`SRC=KMTECH_INPUT_TAG`, `ITG`, `TRF`)를 `[바코드 종류 오류]`로 거절한다. 현재 스캔 목록·중복 목록·포장 전송함을 그대로 두고, 제품 자리에서는 현재 세트의 제품 바코드, 마지막 자리에서는 포장 라벨을 스캔한다. 이 안내는 F1을 요구하지 않는다.
+
 D-day 전까지 등록 PC(중앙 client가 있거나 필수 모드)에서 현장의 옛 5단계 포장과 새 현품표를 모두 받고, 완료마다 종류를 붙여 따로 기록하는 관리자 스위치다. Machine 환경 값이 `1`일 때만 켜지고 그 밖(없음 포함)은 끔이다. 앱은 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`에서 직접 읽으므로 사용자·process 환경 값으로는 켜지지 않는다. 앱 시작 때 한 번 읽고 자동 만료는 없다. 미등록 PC·시험·시뮬레이션은 켜져 있어도 기존 동작이다.
 
 관리자 PowerShell에서 바꾼 뒤 Label_Match를 정상 종료하고 다시 연다.

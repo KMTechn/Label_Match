@@ -2565,11 +2565,11 @@ def test_valid_phs2_and_13_digit_start_labels_keep_their_routes(tmp_path, monkey
 @pytest.mark.parametrize(("value", "accepted"), [
     pytest.param(f"PHS=2|CLC={MASTER}|QT=3", True, id="no-lineage"),
     pytest.param(f"PHS=2|CLC={MASTER}|QT=3|BROKEN", True, id="format-invalid"),
-    pytest.param(PHS2_LABEL, True, id="phs2"),
+    pytest.param(PHS2_LABEL, False, id="phs2"),
     pytest.param(MASTER, False, id="13-digit"),
 ])
 def test_product_position_never_reads_the_start_label_shape(tmp_path, monkeypatch, transition, value, accepted):
-    """As base: a product is any scan longer than the item code that contains it."""
+    """Unmarked product-like scans keep their route; new-system labels are refused."""
     module = load_label_match_module()
     app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=transition)
     master = MASTER if transition else BND_LABEL  # off: a set whose products the base admits
@@ -2585,6 +2585,56 @@ def test_product_position_never_reads_the_start_label_shape(tmp_path, monkeypatc
         assert [title for title, _message in app.errors] == ["[바코드 종류 오류]"]
         assert app.current_set_info["raw"] == [master]
     assert app.current_set_info.get("transition_class") == ("LEGACY" if transition else None)
+
+
+@pytest.mark.parametrize("local_class", ["LEGACY", "PHS2_LOCAL", "PHS2_MALFORMED"])
+@pytest.mark.parametrize("position", ["product", "final"])
+@pytest.mark.parametrize("label", [
+    pytest.param(PHS2_LABEL.replace("OFF-1", "NEXT-1"), id="compact-phs2"),
+    pytest.param(f"ITG=INPUT-NEXT|CLC={MASTER}", id="input-tag"),
+    pytest.param(
+        f"TRF=1|BND=NEXT|AUTH_SCOPE=TEST|CLC={MASTER}|QT=3|HSH={'a' * 64}"
+        "|EPOCH=1|PLANE=AUTHORITATIVE|PE=1", id="sealed-transfer",
+    ),
+])
+def test_new_label_cannot_become_a_local_product_or_final_label(
+    tmp_path, monkeypatch, local_class, position, label,
+):
+    module = load_label_match_module()
+    app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
+    products = _legacy_set(91)
+    try:
+        if local_class == "LEGACY":
+            _scan(module, app, MASTER)
+        else:
+            app._transition_start_local(PHS2_LABEL, MASTER, local_class, ["TEST_LOCAL"])
+        if position == "final":
+            for value in products[1:4]:
+                _scan(module, app, value)
+        before_raw = list(app.current_set_info["raw"])
+        before_parsed = list(app.current_set_info["parsed"])
+        before_global = set(app.global_scanned_set)
+        before_outbox = _outbox_rows(tmp_path)
+        # A date-bearing new label also met the old final-label acceptance
+        # checks; this proves the label-kind guard precedes those checks.
+        scanned_label = label if position == "product" else label + f"|SN=NEXT<GS>6D{TODAY}"
+        _scan(module, app, scanned_label)
+        assert app.errors[-1][0] == "[바코드 종류 오류]"
+        assert "현품표입니다." in app.errors[-1][1]
+        assert "F1" not in app.errors[-1][1]
+        assert app.current_set_info["raw"] == before_raw
+        assert app.current_set_info["parsed"] == before_parsed
+        assert app.global_scanned_set == before_global
+        assert _outbox_rows(tmp_path) == before_outbox
+        assert _events(tmp_path, "TRAY_COMPLETE") == []
+        _scan(module, app, products[1] if position == "product" else products[4])
+        assert app.errors[-1][0] == "[바코드 종류 오류]"
+        if position == "product":
+            assert app.current_set_info["raw"] == before_raw + [products[1]]
+        else:
+            assert len(_events(tmp_path, "TRAY_COMPLETE")) == 1
+    finally:
+        _close(app)
 
 
 def test_unread_new_label_set_keeps_its_class_through_restore_after_switch_off(tmp_path, monkeypatch):
