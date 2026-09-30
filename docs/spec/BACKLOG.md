@@ -1,5 +1,13 @@
 # Label_Match 진행·공백·추가 제안
 
+<a id="lm-w9-scanner-review-fix"></a>
+## W9 · 스캐너 독립 검토 수정
+
+
+교환·UNDO 감사 이벤트 실패 뒤 저장 재시도는 현재 checkpoint를 다시 저장·flush하고 남은 스캔을 이어 받는다. 목표 수량에 도달하지 않은 스캐너 세트를 PASS 완료하지 않는다.
+
+교환 pair·제품 raw/parsed·UNDO 위치를 같은 checkpoint에 저장하고 교환 이벤트 flush 뒤 표시한다. 이벤트 저장이 끊겨도 제품과 되돌림 위치를 함께 복원하며, 옛 pair-only tail 저장본의 UNDO도 받는다. 표본·교환 대상·늦은 source 확인은 교환 overlay를 적용한 같은 유효 구성원 목록을 사용한다. 대체품은 알려진 원 봉인 구성원·대상 자신·앞선 교환의 불량/대체품을 상태 변경 전에 거절하며 source 목록을 모르면 기존 배경 판정으로 넘긴다. 일반 UNDO도 checkpoint 저장 직후 메모리를 맞춰 후속 이벤트 실패 때 저장본과 어긋나지 않는다.
+
 스캐너만 포장: 구현·격리 회귀는 scanner-only-packaging 계약과 [제거 경계](scanner-retirement.md)를 따른다. 실제 스캐너·음향·화면 및 새 서버 계약의 현장 수용은 후속 랩 검증이다.
 
 ## W9 · 로컬 제품 자리의 현품표 거절·막힌 접수 안내 (w9nextfix)

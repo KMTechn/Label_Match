@@ -13573,9 +13573,8 @@ class Label_Match(tk.Tk):
                     return
                 samples = completed.get("scanned_product_barcodes", [])[1:]
                 current = completed
-            members = self._known_sample_members(snapshot)
-            replacements = {row["replacement_barcode"] for row in current.get("scanner_exchanges", [])}
-            if members is not None and any(self._sample_barcode(value) not in members | replacements for value in samples):
+            members = self._known_sample_members(snapshot, current.get("scanner_exchanges", []))
+            if members is not None and any(self._sample_barcode(value) not in members for value in samples):
                 outbox = self.__dict__.get("package_outbox")
                 row = outbox.get_by_set_id(set_id) if outbox is not None else None
                 if row:
@@ -14256,11 +14255,8 @@ class Label_Match(tk.Tk):
                     reason=f"이미 다른 세트에서 처리된 제품입니다.\n\n- 중복 제품: {self._truncate_string(raw_input)}\n\n→ 새 제품으로 교체하세요."
                 )
                 return
-            known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"))
-            if known is not None:
-                for pair in self.current_set_info.get("scanner_exchanges", []):
-                    known.discard(pair["target_barcode"])
-                    known.add(pair["replacement_barcode"])
+            known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
+                                               self.current_set_info.get("scanner_exchanges", []))
             if known is not None and self._sample_barcode(raw_input) not in known:
                 self._ignore_product_scan(raw_input, "이 현품표의 구성원이 아닙니다. 현재 트레이의 제품을 스캔하세요.")
                 return
@@ -14305,14 +14301,18 @@ class Label_Match(tk.Tk):
         return unicodedata.normalize("NFKC", str(value or "")).strip().upper()
 
     @classmethod
-    def _known_sample_members(cls, snapshot):
+    def _known_sample_members(cls, snapshot, exchanges=()):
         snapshot = snapshot or {}
         source = snapshot.get("work_group_source") or snapshot
         members = source.get("members")
         if not isinstance(members, list):
             return None
-        return {cls._sample_barcode(row.get("normalized_barcode"))
-                for row in members if isinstance(row, dict) and row.get("normalized_barcode")}
+        known = {cls._sample_barcode(row.get("normalized_barcode"))
+                 for row in members if isinstance(row, dict) and row.get("normalized_barcode")}
+        for pair in exchanges:
+            known.discard(cls._sample_barcode(pair["target_barcode"]))
+            known.add(cls._sample_barcode(pair["replacement_barcode"]))
+        return known
 
     def _scanner_command(self, command):
         if self._app_close_blocks_local_action() or self._block_view_only_action("스캐너 명령") or self._block_active_history_load_action("스캐너 명령"):
@@ -14333,7 +14333,9 @@ class Label_Match(tk.Tk):
         current = self.current_set_info
         normalized = self._sample_barcode(value)
         samples = {self._sample_barcode(barcode) for barcode in current["raw"][1:]}
-        known = self._known_sample_members(current.get("package_source_snapshot"))
+        known = self._known_sample_members(current.get("package_source_snapshot"),
+                                           current.get("scanner_exchanges", []))
+        source_members = self._known_sample_members(current.get("package_source_snapshot"))
         if current["scanner_exchange_phase"] == "target":
             if normalized not in samples and (known is None or normalized not in known):
                 return self._ignore_product_scan(value, "이 세트의 표본 또는 현품표 구성원을 스캔하세요.")
@@ -14350,6 +14352,10 @@ class Label_Match(tk.Tk):
         if (len(decoded) == 13 or carrier_identity.parse_legacy_fields(decoded)
             or any(key in {"ITG", "TRF", "BND"} for key, _value in pairs)
             or master not in value or normalized in samples
+            or normalized == self._sample_barcode(current["scanner_exchange_target"])
+            or (source_members is not None and normalized in source_members)
+            or any(normalized in {row["target_barcode"], row["replacement_barcode"]}
+                   for row in current.get("scanner_exchanges", []))
             or value in self.global_scanned_set):
             return self._ignore_product_scan(value, "다른 품목·중복·이미 포장된 제품은 교환할 수 없습니다.")
         # Refuse a known bad or downstream product; unavailable knowledge is checked by delivery.
@@ -14370,9 +14376,13 @@ class Label_Match(tk.Tk):
         current.pop("scanner_exchange_target", None)
         index = next((i for i, raw in enumerate(current["raw"][1:], 1)
                       if self._sample_barcode(raw) == self._sample_barcode(target)), None)
+        pair["sample_index"] = index if index is not None else len(current["raw"])
         if index is not None:
             current["raw"][index] = value
-        pair["sample_index"] = index if index is not None else len(current["raw"])
+        else:
+            # The product and its undo slot belong to the same pair checkpoint.
+            current["raw"].append(value)
+            current["parsed"].append(master)
         pair["replaced_sample"] = index is not None
         current["scanner_undo_exchange"] = pair["idempotency_key"]
         pair_saved = False
@@ -14390,8 +14400,23 @@ class Label_Match(tk.Tk):
                 self.current_set_info = previous
             return self._publish_durable_commit_block(error)
         if index is None:
-            self._update_on_success_scan(value, master,
-                prepare_durable_state=lambda state: state.update(scanner_undo_exchange=pair["idempotency_key"]))
+            count = len(current["raw"])
+            workflow_total = self._workflow_total_scan_count()
+            self.update_big_display(self._next_action_text(count),
+                "green" if count < workflow_total else "primary")
+            sound = self._sound_key_for_success_scan(count)
+            if sound and not self.is_running_simulation:
+                self._play_sound(sound)
+            try:
+                self.progress_bar.configure(maximum=workflow_total)
+            except (AttributeError, TclError):
+                pass
+            self.progress_bar["value"] = count
+            self._update_status_label()
+            self._update_history_tree_in_progress()
+            self._render_operator_workbench()
+            if count == workflow_total:
+                self._finalize_set(self.Results.PASS)
         else:
             self._play_sound("scan_1")
             self._update_history_tree_in_progress()
@@ -14509,11 +14534,21 @@ class Label_Match(tk.Tk):
                     if pair["idempotency_key"] == restored.get("scanner_undo_exchange")), None)
                 if exchange is not None:
                     index = exchange["sample_index"]
+                    if (not isinstance(index, int) or isinstance(index, bool)
+                            or index < 1 or index > len(restored["raw"])
+                            or (exchange["replaced_sample"] and index == len(restored["raw"]))):
+                        return self._publish_durable_commit_block(
+                            PackageLogisticsError("saved exchange undo position is invalid"))
                     if exchange["replaced_sample"]:
                         restored["raw"][index] = exchange["target_barcode"]
-                    else:
+                    elif index < len(restored["raw"]):
                         restored["raw"].pop(index)
                         restored["parsed"].pop(index)
+                    elif index != len(restored["raw"]):
+                        return self._publish_durable_commit_block(
+                            PackageLogisticsError("saved exchange undo position is invalid"))
+                    # Historical pair-only checkpoints have no product at the
+                    # tail position; removing their pair still restores the set.
                     exchanges.remove(exchange)
                 else:
                     removed = self._sample_barcode(restored["raw"].pop())
@@ -14528,10 +14563,13 @@ class Label_Match(tk.Tk):
                                 "error_count": 0, "has_error_or_reset": False}
             if not self.data_manager.save_current_state({"current_set_info": restored}):
                 return self._publish_durable_commit_block(PackageLogisticsError("undo state save failed"))
-            self.data_manager.log_event(self.Events.SET_RESTORED, {
-                "set_id": current["id"], "reason": "SCANNER_UNDO", "scanned_product_barcodes": restored["raw"]})
-            self._flush_data_manager_if_supported()
             self.current_set_info = restored
+            try:
+                self.data_manager.log_event(self.Events.SET_RESTORED, {
+                    "set_id": current["id"], "reason": "SCANNER_UNDO", "scanned_product_barcodes": restored["raw"]})
+                self._flush_data_manager_if_supported()
+            except Exception as error:
+                return self._publish_durable_commit_block(error)
         else:
             return self._ignore_product_scan("KMCMD:UNDO", "지금 세트에 되돌릴 스캔이 없습니다.")
         self._clear_workflow_completion()
@@ -21189,6 +21227,20 @@ class Label_Match(tk.Tk):
         self._workflow_notice = None
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
+        if ((self.__dict__.get("operator_workbench_ready") or self.current_set_info.get("scanner_only"))
+                and not self.current_set_info.get("shortage_confirmed")
+                and not self.current_set_info.get("transition_row_key")
+                and len(self.current_set_info.get("raw") or []) < self._workflow_total_scan_count()):
+            try:
+                if not self._save_current_set_state():
+                    raise PackageLogisticsError("scanner checkpoint retry save failed")
+                self._flush_data_manager_if_supported()
+            except Exception as error:
+                return self._publish_durable_commit_block(error)
+            self._update_history_tree_in_progress()
+            self._render_operator_workbench()
+            self.update_big_display(self._next_action_text(len(self.current_set_info["raw"])), "primary")
+            return True
         if self._central_inherit_all_active() and not self.run_tests:
             self._begin_central_package_submission()
         else:

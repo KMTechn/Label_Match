@@ -2,13 +2,17 @@
 
 <a id="scanner-only-packaging"></a>
 
+교환·UNDO 감사 이벤트 실패 뒤 저장 재시도는 현재 checkpoint를 다시 저장·flush하고 남은 스캔을 이어 받는다. 목표 수량에 도달하지 않은 스캐너 세트를 PASS 완료하지 않는다.
+
+교환 pair·제품 raw/parsed·UNDO 위치를 같은 checkpoint에 저장하고 교환 이벤트 flush 뒤 표시한다. 이벤트 저장이 끊겨도 제품과 되돌림 위치를 함께 복원하며, 옛 pair-only tail 저장본의 UNDO도 받는다. 표본·교환 대상·늦은 source 확인은 교환 overlay를 적용한 같은 유효 구성원 목록을 사용한다. 대체품은 알려진 원 봉인 구성원·대상 자신·앞선 교환의 불량/대체품을 상태 변경 전에 거절하며 source 목록을 모르면 기존 배경 판정으로 넘긴다. 일반 UNDO도 checkpoint 저장 직후 메모리를 맞춰 후속 이벤트 실패 때 저장본과 어긋나지 않는다.
+
 미전송 옛 PHS2 저장본은 첫 정상 제품 입력을 내구 저장할 때 scanner 상태로 전환한다. 그 전에도 독점 UI lane의 배경 검증을 미뤄 제품 입력을 받는다. 이미 outbox에 저장된 옛 draft·명령은 덮어쓰지 않고 기존 복구 경로로 처리한다.
 
 현품표 1장 + 상단 제품 4개를 받아 다섯 번째에서 자동 내구 완료한다. 새 PHS2의 네 제품 자리는 같은 품목·중복·알려진 구성원을 검사하며 마지막 자리에 추가 길이·생산일자 조건을 두지 않는다. 옛 현품표의 과도기 조건은 유지한다. 중앙 조회는 배경이고 무응답·단절에도 스캔과 로컬 완료를 받는다. 로컬 intent → 완료 CSV flush → commit marker → 표시 순서를 지키고 같은 key로 교환 ACK → source 확인 → 서명 lease → CREATE_PACKAGE를 배경 전송한다. 늦은 표본 불일치는 해당 outbox만 OPERATOR_REVIEW로 남기며 로컬 완료를 취소하지 않는다.
 
 KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체품을 받아 연결된 로컬 교환 기록을 먼저 저장한다. KMCMD:UNDO/취소 단추는 미완료 세트의 마지막 입력을 되돌린다. 같은 현품표 재스캔은 제품이 하나 이상 있을 때 미달을 확정하며 직전 같은 현품표의 3초 이내 중복 읽기는 짧은 소리로 무시한다. 미달은 다른 소리와 큰 글씨 부족 N개로 확정을 표시하고 다음 현품표 또는 종료 전까지 UNDO로 복원한다. 이 구간에서는 중앙 전송을 하지 않으며 다음 현품표 또는 종료 때 기존 outbox에 넘긴다. 기록 삭제·UNKNOWN 재분류는 하지 않는다. F3 수동 완료·확인 창·F4 교체 창·새 봉인 QR 물리 확인은 제거했다. 시작 경고 세 종류와 과도기 안내는 작업 화면 안내와 기존 소리로 표시한다.
 
-확정 계약은 w9scanonly CONTRACT.md v1.2(SHA256 CAF67E54B3D0622F5BE6748B84CA53312E3AAB9FDB17FE4FEAF7E4205370AACE)이다. 요청 공통 필드는 원본 scan_payload, local_completion_id, local_completed_at, deferred_reflection=true이며 포장은 short_confirmed, sample_barcodes, exchange_idempotency_keys를 추가한다. 교환은 SCAN_REGISTER_GOOD와 old_barcode/new_barcode, exchanged_at을 전송하며 기존 전체 대상 구성원·CAS·봉인 증거를 보존한다. 응답의 pairs에는 old/new_unit_id, new_source_bundle_id, new_source_kind가 있고 source_membership_changes는 최상위에 둔다. UPSTREAM_COMPLETION_PENDING+retryable=true는 동일 key 재시도, COMPLETION_REVIEW_REQUIRED는 그 건의 확인 상태다.
+확정 계약은 w9scanonly CONTRACT.md v1.4(SHA256 2D69CD99913329E28A6C3CBDAFE0F64D6CCECAD0F00D779324070D04BED49EA6)이다. 요청 공통 필드는 원본 scan_payload, local_completion_id, local_completed_at, deferred_reflection=true이며 포장은 short_confirmed, sample_barcodes, exchange_idempotency_keys를 추가한다. 교환은 SCAN_REGISTER_GOOD와 old_barcode/new_barcode, exchanged_at을 전송하며 기존 전체 대상 구성원·CAS·봉인 증거를 보존한다. 응답의 pairs에는 old/new_unit_id, new_source_bundle_id, new_source_kind가 있고 source_membership_changes는 최상위에 둔다. UPSTREAM_COMPLETION_PENDING+retryable=true는 동일 key 재시도, COMPLETION_REVIEW_REQUIRED는 그 건의 확인 상태다.
 
 
 교환 ACK 유실은 기존 journal의 같은 명령·영수증 조회로 복구하고, 예약 재시도 경로에서도 봉인을 전자 검증하여 로컬 적용 완료로 저장한다. 새 봉인 QR 스캔이나 적용 창은 필요하지 않다.

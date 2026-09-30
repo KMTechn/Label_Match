@@ -2,6 +2,10 @@
 
 <a id="scanner-only-packaging"></a>
 
+교환·UNDO 감사 이벤트 실패 뒤 저장 재시도는 현재 checkpoint를 다시 저장·flush하고 남은 스캔을 이어 받는다. 목표 수량에 도달하지 않은 스캐너 세트를 PASS 완료하지 않는다.
+
+교환 pair·제품 raw/parsed·UNDO 위치를 같은 checkpoint에 저장하고 교환 이벤트 flush 뒤 표시한다. 이벤트 저장이 끊겨도 제품과 되돌림 위치를 함께 복원하며, 옛 pair-only tail 저장본의 UNDO도 받는다. 표본·교환 대상·늦은 source 확인은 교환 overlay를 적용한 같은 유효 구성원 목록을 사용한다. 대체품은 알려진 원 봉인 구성원·대상 자신·앞선 교환의 불량/대체품을 상태 변경 전에 거절하며 source 목록을 모르면 기존 배경 판정으로 넘긴다. 일반 UNDO도 checkpoint 저장 직후 메모리를 맞춰 후속 이벤트 실패 때 저장본과 어긋나지 않는다.
+
 [제거한 화면 진입점과 보존 경계](scanner-retirement.md)를 함께 확인한다.
 
 현품표 1장 + 상단 제품 4개를 받아 다섯 번째에서 자동 내구 완료한다. 새 PHS2의 네 제품 자리는 같은 품목·중복·알려진 구성원을 검사하며 마지막 자리에 추가 길이·생산일자 조건을 두지 않는다. 옛 현품표의 과도기 조건은 유지한다. 중앙 조회는 배경이고 무응답·단절에도 스캔과 로컬 완료를 받는다. 로컬 intent → 완료 CSV flush → commit marker → 표시 순서를 지키고 같은 key로 교환 ACK → source 확인 → 서명 lease → CREATE_PACKAGE를 배경 전송한다. 늦은 표본 불일치는 해당 outbox만 OPERATOR_REVIEW로 남기며 로컬 완료를 취소하지 않는다.
