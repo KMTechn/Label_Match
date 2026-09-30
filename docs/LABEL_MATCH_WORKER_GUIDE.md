@@ -115,7 +115,7 @@
 `E:/KMTech/production-readiness-20260830/HANDOVER/CAPTURE-BUNDLE-V1-CONTRACT.md`이며,
 schema는 `M7 external capture bundle v1`, 앱 식별자는 `app=Label_Match`, 외부 앱
 root는 `D:/KMTech/cold-program-material/from-E/requal-evidence/capture-bundle-v1/Label_Match/`입니다. 저장소의 기존
-tracked 이미지는 삭제하지 않고 이력 자료로 보존하며, 현행 화면 증거는 승인된
+tracked 옛 이미지는 저장소에서 제거하고 git 이력(a20cd01 이전)에 보존하며, 현행 화면 증거는 승인된
 external bundle로 대체 예정입니다.
 
 필수 state ID는 다음 9개입니다.
