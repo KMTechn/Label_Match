@@ -163,7 +163,7 @@ def test_terminal_lane_preserves_remaining_scan_admission_gate(remaining_gate):
         gate.set()
         root.run_until(lambda: not app.ui_lane.is_busy())
         assert app.ui_lane.state == LaneState.IDLE
-        assert app.entry.options["state"] == ("normal" if remaining_gate == "staged" else "disabled")
+        assert app.entry.options["state"] == ("normal" if remaining_gate in {"staged", "history"} else "disabled")
     finally:
         gate.set()
         _close_lane(app, root)
@@ -941,7 +941,7 @@ def _workbench_with_lane():
     app.sounds = []
     app._play_sound = lambda key, *_args: app.sounds.append(key)
     for name in ("_update_status_label", "_update_history_tree_in_progress",
-                 "_save_current_set_state"):
+                 "_update_summary_tree", "_save_current_set_state"):
         setattr(app, name, lambda: True)
     app.ui_lane = TkSerialUiLane(
         root, poll_ms=1, generation_provider=lambda: app._ui_lane_generation
@@ -1067,11 +1067,13 @@ def test_scan_refused_by_any_other_lock_is_never_silent(lock, headline):
     before = list(app.current_set_info["raw"])
     try:
         app._render_operator_workbench()  # the lock is on screen before the scan
-        if lock == "central-waiting-for-f3":
+        if lock in {"central-waiting-for-f3", "history-readonly"}:
             assert app.entry.cget("state") == "normal"
             _scanner(app, "ITEM-001-P9-99")
             assert app.current_set_info["raw"] == before + ["ITEM-001-P9-99"]
             assert app.entry.get() == "" and "fail" not in app.sounds
+            if lock == "history-readonly":
+                assert app.history_view_updates_active_state, "DESIGN §1.7: the same scan leaves lookup mode"
             return
         assert app.entry.cget("state") == "disabled"
         _scanner(app, "ITEM-001-P9-99")

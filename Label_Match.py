@@ -6252,7 +6252,10 @@ class Label_Match(tk.Tk):
         if entry is None or not self.__dict__.get("initialized_successfully", False):
             return False
         if view is not None and not view.scan_input_enabled:
-            return False
+            if not (view.readonly and self.__dict__.get("operator_workbench_ready")):
+                return False
+        # The rendered Entry state retains busy/error/shutdown gates while
+        # allowing a scanner to leave a read-only query pane.
         try:
             if str(entry.cget("state")) != "normal":
                 return False
@@ -11111,6 +11114,24 @@ class Label_Match(tk.Tk):
             except queue.Empty:
                 break
         updates_active_state = self._history_load_updates_active_state(target_date)
+        if (self.__dict__.get("operator_workbench_ready")
+                and self.__dict__.get("initialized_successfully", False)
+                and self.__dict__.get("history_view_updates_active_state", True)
+                and not updates_active_state):
+            cached = dict(self.__dict__.get("_scanner_active_history_view") or {})
+            active_rows = dict(self.__dict__.get("history_row_details_map", {}))
+            active_ids = {str(key) for key in active_rows}
+            rows = {str(iid): data for iid, data in cached.get("sorted_sets", ())
+                    if str(iid) in active_ids}
+            for iid in self.history_tree.get_children():
+                if str(iid) != "loading":
+                    rows[str(iid)] = {"values": self.history_tree.item(iid, "values"),
+                                      "tags": self.history_tree.item(iid, "tags")}
+            cached.update(sorted_sets=list(rows.items()), updates_active_state=True,
+                scan_count=self.scan_count, set_details_map=dict(self.set_details_map),
+                active_row_details=active_rows)
+            cached.pop("summary_items", None)
+            self._scanner_active_history_view = cached
         self.history_view_updates_active_state = updates_active_state
         self.history_load_pending = True
         self.history_active_load_pending = updates_active_state
@@ -11195,6 +11216,7 @@ class Label_Match(tk.Tk):
             self.history_active_load_pending = False
             self._history_load_error = None
             if updates_active_state:
+                self._scanner_active_history_view = dict(result)
                 self._history_active_load_error = None
                 self.scan_count = result['scan_count']
                 self.global_scanned_set = result['global_scanned_set']
@@ -20814,8 +20836,16 @@ class Label_Match(tk.Tk):
             # The completion save alone leaves the entry open: its scans
             # wait for it in order (w9lmscanmsg B).
             completion_queue_open = self._completion_scan_queue_open()
+            query_scan_return_open = bool(
+                view.readonly and not self._has_background_work()
+                and not self.__dict__.get("is_blinking", False)
+                and not self.__dict__.get("_workflow_blocking_notice")
+                and not self.__dict__.get("_workflow_notice")
+                and not self.__dict__.get("_tk_shutdown_requested", False)
+                and not self.__dict__.get("history_active_load_pending", False)
+                and not self.__dict__.get("_history_active_load_error"))
             entry_enabled = bool(
-                (view.scan_input_enabled or completion_queue_open)
+                (view.scan_input_enabled or completion_queue_open or query_scan_return_open)
                 and self.__dict__.get("initialized_successfully", False)
                 and not self.__dict__.get(
                     "_app_close_in_progress", False
@@ -20939,9 +20969,52 @@ class Label_Match(tk.Tk):
     def _refresh_workflow_view(self):
         return self._render_operator_workbench()
 
+    def _return_to_scanner_workbench(self):
+        if (not self.__dict__.get("initialized_successfully", False)
+                or self.__dict__.get("_app_close_in_progress", False)
+                or self.__dict__.get("_tk_shutdown_requested", False)):
+            return
+        if (not self.__dict__.get("history_view_updates_active_state", True)
+                and not self.__dict__.get("history_active_load_pending", False)):
+            # Past reads only paint records; today's work/indexes stay live.
+            # Invalidate their pending reads/chunks before accepting the scan.
+            self.history_load_generation = int(self.__dict__.get("history_load_generation", 0)) + 1
+            self.history_view_updates_active_state = True
+            self.history_load_pending = False
+            self._history_display_applying = False
+            self._history_load_error = None
+            cached = self.__dict__.get("_scanner_active_history_view")
+            self.history_row_details_map = dict((cached or {}).get(
+                "active_row_details", self.__dict__.get("set_details_map", {})))
+            if cached is not None:
+                self._start_history_display_apply(cached)
+            else:
+                # No past record may become an editable current-day row.
+                tree = self.__dict__.get("history_tree")
+                if tree is not None:
+                    for iid in tree.get_children():
+                        tree.delete(iid)
+                self._update_summary_tree()
+            self._history_header_full_text = "스캔 기록 (오늘)"
+            label = self.__dict__.get("hist_header_label")
+            if label is not None:
+                label.configure(text=self._history_header_full_text)
+        notebook = self.__dict__.get("operator_notebook")
+        work = self.__dict__.get("session_tab")
+        if notebook is not None and work is not None:
+            notebook.select(work)
+        self._deferred_observability_auto_selected = True
+
     def _handle_scan_enter(self, event=None):
         self._last_scan_enter_at = time.monotonic()
         self._clear_scanner_notice()
+        entry = self.__dict__.get("entry")
+        try:
+            entered_scan = entry.get().strip() if entry is not None else ""
+        except (TclError, AttributeError):
+            entered_scan = ""
+        if self.__dict__.get("operator_workbench_ready") and entered_scan:
+            self._return_to_scanner_workbench()
         if self.__dict__.get("_pending_workflow_error") or self.__dict__.get(
             "_workflow_pending_error"
         ):
@@ -21780,8 +21853,10 @@ class Label_Match(tk.Tk):
                 self.update_big_display(self._next_action_text(0), "")
             self._update_status_label()
             return
-        self.entry.config(state='disabled')
-        message = "과거 기록 조회 중 - 스캔 입력 비활성. 오늘 버튼으로 복귀하세요."
+        self.entry.config(state='normal' if self.__dict__.get("operator_workbench_ready") else 'disabled')
+        message = ("과거 기록 조회 중 · 스캔하면 작업 화면으로 돌아갑니다."
+                   if self.__dict__.get("operator_workbench_ready")
+                   else "과거 기록 조회 중 - 스캔 입력 비활성. 오늘 버튼으로 복귀하세요.")
         if not self.__dict__.get("operator_workbench_ready"):
             self.view_mode_label.config(text=message)
             self.view_mode_label.grid()
@@ -21789,6 +21864,7 @@ class Label_Match(tk.Tk):
             self.status_label.config(text=message, style="Error.TLabel")
             self._update_step_rail(0)
         self._render_operator_workbench()
+        self._focus_scan_entry_if_available()
 
     def _show_idle_instruction_if_idle(self):
         current = getattr(self, "current_set_info", {}) or {}
