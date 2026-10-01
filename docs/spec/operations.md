@@ -1009,3 +1009,10 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 |복구 목록 첫 줄 ID·TARGET_CHANGED_DURING_HOLD·긴 SHA·UNKNOWN|쉬운 이유·다음 동작 우선, 선택한 원 ID·기술 상태·SHA·경로·UNKNOWN은 스크롤 상세|
 
 59개 writer identity/guard는 동일하며 변경한 소스의 line/hash에 맞춰 기존 Python·PowerShell inventory pin만 재계산한다. 실제 화면 크기·스크롤·선택 이동과 스캐너는 별도 랩 확인 대상이다.
+
+
+### 도구 유지·정리 경계
+
+소비자 없는 `tools/sandbox_label_sac/run.ps1`·`guest.ps1`은 내부 쌍으로 제거하고 standalone `tools/scan_portable_pe.ps1`을 제거한다. 원본은 Git 판 `ebbe812`에 남고 portable 빌더의 실제 PE 검사·현재 runtime 도구 선택은 그대로다. 설치/빌더/CI/.spec/manifest/문서, 형제 저장소 committed HEAD와 09-10 이후 절차 검색의 소비자0 근거는 w9slim2 RESULT와 logs에 있다.
+
+publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다. `label_old_fence_liveness_proof.py`는 runtime reconcile의 old-fence 증명 계약에 쓰이므로 보존한다. 일회 tag burner는 현재 계약 참조와 D: 원 evidence 완전성이 미확인이라 보류한다; 감사 CSV의 분류만으로 실제 보장을 지우지 않는다.
