@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+G5·G8·G9·G10/P3: 중복 입력 보존, 포장 진행 현황·스캔 복귀, 옛 제품4 슬롯 문구, 세 가지 소리·연결/전송 대기 표시, CA 분류표 바이트 정렬은 소스에 반영했다. [현재 계약](contracts.md#scanner-only-packaging)의 focused/collect/stock 검증과 별도로 실제 화면 배율·스캐너 연속 입력·소리 청취·단절/재연결 장치 수용은 남아 있다. REWORK_GOOD_READY 교환의 중앙 출처 규칙 변경은 웹 레인 범위다.
+
 <a id="lm-w9-scanner-review-fix"></a>
 ## W9 · 스캐너 독립 검토 수정
 
