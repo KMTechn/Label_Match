@@ -687,6 +687,43 @@ current_user_profile_transition = all(
     for relative, (before, after) in current_user_profile_replacements.items()
 )
 
+# Transport lock release changes only these exact reviewed modules. Accept
+# their directional bytes only when an existing release transition already
+# matches; this table adds no release, writer identity, runtime or contract.
+remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
+                              '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'},
+                             'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'),
+ 'app/label_admin_pin.py': ({'8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0'},
+                            '159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8'),
+ 'app/package_logistics.py': ({'818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'},
+                              'cc299c06bf20caff1456582ad38a6609bbebc2d1469a1767d5ae9952fc647825'),
+ 'app/package_outbox_processor.py': ({'4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79'},
+                                     '99ea848a9954c13c4362180047e062fab0f7a299c21df67d64029f3f876a0c07'),
+ 'app/phs_label_workflow.py': ({'c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c'},
+                               'f74a040996b556bc89c74cfc2f793e63ff5b3fe86c87c44645aa753ac3f927bb'),
+ 'app/producer_runtime_client.py': ({'c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9'},
+                                    '1826411e7d11dbdf0a63cc14a59c79a19879f9940a22237bf3943cecab0c955b'),
+ 'app/sealed_transfer_exchange.py': ({'f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2'},
+                                     '5c9793cf5b034852e327e4cc910c3511e7c998832f14db0257d7cd6afbf38071'),
+ 'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
+                       '3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487'),
+ 'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1',
+                                  '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87',
+                                  '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
+                                  '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce',
+                                  'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7',
+                                  'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
+                                 '03aae3ab6a19c34a6f4836b4464dc85fa0bdac65aefaf93c7a1f9dcf2c61455c')}
+remote_transport_transition = (
+    legacy_label_transition or scan_input_transition or nextfix_label_transition
+    or scanner_transition or current_user_profile_transition
+) and all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) in befores
+    and release_digest(source / relative) == after
+    for relative, (befores, after) in remote_transport_replacements.items()
+)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
 if candidate_sources != installed_sources:
@@ -703,6 +740,8 @@ for directory in ('app', 'runtime'):
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
         if integrity_order_transition and relative == integrity_order_path:
+            continue
+        if remote_transport_transition and relative in remote_transport_replacements:
             continue
         if current_user_profile_transition and relative in current_user_profile_replacements:
             continue
