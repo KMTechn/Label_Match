@@ -3021,6 +3021,29 @@ def test_settings_save_blocks_while_active_history_load_flag_is_pending(monkeypa
     assert window.destroyed is False
 
 
+def test_settings_open_explains_active_set_save_restriction(monkeypatch):
+    module = load_label_match_module()
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {"id": "active-set"}
+    app.run_tests = False
+    app._app_close_blocks_local_action = lambda: False
+    warnings = []
+    monkeypatch.setattr(module.messagebox, "showwarning", lambda *args, **kwargs: warnings.append(args[1]))
+
+    class WindowReached(Exception):
+        pass
+
+    def stop_before_widgets(*args, **kwargs):
+        raise WindowReached()
+
+    monkeypatch.setattr(module.tk, "Toplevel", stop_before_widgets)
+    with pytest.raises(WindowReached):
+        app.open_settings_window()
+    assert "완료하거나 취소한 뒤 설정을 저장" in warnings[0]
+    assert "다음 작업부터 적용" not in warnings[0]
+    assert app.current_set_info == {"id": "active-set"}
+
+
 def test_settings_save_blocks_while_current_set_is_active(monkeypatch):
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)

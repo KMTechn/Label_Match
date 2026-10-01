@@ -213,7 +213,11 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
     app._package_recovery_candidates = lambda: [
         {"set_id": "F5:old", "held": {"hold_id": "old"}, "label": {},
          "pin_intent": {"action": "LABEL.F5_HOLD"},
-         "pin_intents": [{"action": "LABEL.F5_HOLD"}]},
+         "pin_intents": [{"action": "LABEL.F5_HOLD"}],
+         "package": {"status": "UNKNOWN"}, "prior_pin_unknown": True,
+         "orphan_path": "held-original.json", "unverified": "UNVERIFIED",
+         "capture": {"state": "BLOCKED_INVALID"},
+         "changed_hold": {"original_sha256": "a" * 64, "changed_sha256": "b" * 64}},
         {"set_id": "F5:new", "held": None, "label": {}},
     ]
     passed = []
@@ -226,6 +230,8 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
     class Widget:
         def __init__(self, *_args, **options):
             self.options = options
+            self.rows = []
+            self.bindings = {}
             widgets.append(self)
 
         def title(self, _value):
@@ -238,6 +244,18 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
             pass
 
         def insert(self, *_args):
+            self.rows.append(_args[-1])
+
+        def configure(self, **options):
+            self.options.update(options)
+
+        def bind(self, name, callback):
+            self.bindings[name] = callback
+
+        def yview(self, *_args):
+            pass
+
+        def set(self, *_args):
             pass
 
         def curselection(self):
@@ -251,12 +269,19 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
         def set(self, value):
             self.value = value
 
-    for toolkit, names in ((app_module.tk, ("Toplevel", "Listbox")),
-                           (app_module.ttk, ("Frame", "Label", "Button"))):
+    for toolkit, names in ((app_module.tk, ("Toplevel", "Listbox", "Text")),
+                           (app_module.ttk, ("Frame", "Label", "Button", "Scrollbar"))):
         for name in names:
             monkeypatch.setattr(toolkit, name, Widget)
     monkeypatch.setattr(app_module.tk, "StringVar", TextValue)
     app._show_package_recovery_workbench()
+    listing = next(item for item in widgets if item.options.get("height") == 8)
+    assert listing.rows[0].startswith("1. 보류하는 동안 파일 내용이 바뀌었습니다.")
+    listing.bindings["<<ListboxSelect>>"]()
+    detail = next(item for item in widgets if item.options.get("height") == 4)
+    assert detail.options["state"] == "disabled"
+    for original in ["F5:old", "UNKNOWN", "TARGET_CHANGED_DURING_HOLD", "a" * 64, "b" * 64, "held-original.json", "파일 미검증", "현품표 저장본 관리자확인", "관리자 확인 다시 조회 1건"]:
+        assert original in detail.rows[-1]
     next(item for item in widgets if item.options.get("text") == "보류 후 계속").options["command"]()
     assert any(value.value == "관리자 확인 실패" for value in values)
     assert not any("다른 세트 작업을 계속" in value.value for value in values)

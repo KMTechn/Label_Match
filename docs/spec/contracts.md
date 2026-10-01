@@ -384,3 +384,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 ## 계약 유지·검증 연결
 
 기능 기준은 [README 카드](README.md#feature-cards), 실행 설계는 [운영 수용 시나리오](operations.md#verification)에서 연결한다. 서명·권한·version/capability와 source identity가 달라지면 해당 계약의 실제 양쪽 evidence를 재대조한다. 현재 설치 provider/overlay, 서버 flag, upstream 입력 발행과 downstream 출고·화면의 전체 연결은 [LM-B04](BACKLOG.md#lm-b04)·[LM-B06](BACKLOG.md#lm-b06)·[LM-B08](BACKLOG.md#lm-b08)의 확인 과제이며 코드 존재를 연동 성공으로 집계하지 않는다.
+
+
+## 설정·건별 복구 안내
+
+진행 중 설정 창은 현재 작업을 완료하거나 취소한 뒤 저장하도록 안내한다. 기존 활성 세트·배경 작업·이력·종료 guard와 작업자 귀속은 그대로다. 건별 복구 목록은 쉬운 이유와 기존 다음 동작을 먼저 보이며, 선택한 항목의 원 ID·상태 코드·원SHA/변경SHA·파일 경로·미검증·UNKNOWN·관리자 요청 수는 읽기 전용 스크롤 상세에 그대로 남는다. 목록 순서·선택과 PIN·권한·재확인/보류/복원/인계 handler는 변하지 않는다.

@@ -998,3 +998,14 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 |LM-TC04|update_manifest의 defaults_to_off_without_network → off_does_not_call_network 2행|off/환경 미지정, 각 행 fresh module와 network fail sentinel, 공개 결과 `(None,None)`. 예외가 삼켜져도 호출0을 직접 확인.|
 
 벡터 수를 줄이지 않았다. 실행 시간 개선은 미측정이며 native GUI·자격 증명 수용은 이 통합의 근거가 아니다.
+
+
+### 설정·복구 문구
+
+|이전|현재|
+|---|---|
+|작업 중 `설정 변경은 다음 작업부터 적용`|`현재 작업을 완료하거나 취소한 뒤 설정을 저장`|
+|작업자 로그 이름: 저장 후 다음 작업부터 변경|작업이 끝나고 저장하면 다음 작업부터 변경|
+|복구 목록 첫 줄 ID·TARGET_CHANGED_DURING_HOLD·긴 SHA·UNKNOWN|쉬운 이유·다음 동작 우선, 선택한 원 ID·기술 상태·SHA·경로·UNKNOWN은 스크롤 상세|
+
+59개 writer identity/guard는 동일하며 변경한 소스의 line/hash에 맞춰 기존 Python·PowerShell inventory pin만 재계산한다. 실제 화면 크기·스크롤·선택 이동과 스캐너는 별도 랩 확인 대상이다.

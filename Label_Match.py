@@ -10648,6 +10648,14 @@ class Label_Match(tk.Tk):
         ttk.Label(frame, text="문제 세트를 선택하세요. 다른 세트는 보류 기록 확인 후 계속할 수 있습니다.").pack(anchor="w")
         listing = tk.Listbox(frame, width=85, height=8)
         listing.pack(fill="both", expand=True, pady=8)
+        detail_rows = []
+        detail_frame = ttk.Frame(frame)
+        detail_frame.pack(fill="x")
+        details = tk.Text(detail_frame, height=4, width=85, wrap="word", state="disabled")
+        detail_scroll = ttk.Scrollbar(detail_frame, orient="vertical", command=details.yview)
+        details.configure(yscrollcommand=detail_scroll.set)
+        details.pack(side="left", fill="both", expand=True)
+        detail_scroll.pack(side="right", fill="y")
         status = tk.StringVar(value="같은 요청 다시 확인 · 보류 후 계속 · 지원 담당자에게 ID 인계")
         ttk.Label(frame, textvariable=status, wraplength=600).pack(anchor="w")
 
@@ -10660,6 +10668,10 @@ class Label_Match(tk.Tk):
                 status.set("복구 목록을 읽지 못했습니다. 저장 폴더를 확인하고 다시 시도하세요.")
                 return
             listing.delete(0, tk.END)
+            detail_rows.clear()
+            details.configure(state="normal")
+            details.delete("1.0", tk.END)
+            details.configure(state="disabled")
             for item in candidates:
                 package = item.get("package") or {}
                 exchange = item.get("exchange")
@@ -10688,7 +10700,28 @@ class Label_Match(tk.Tk):
                     condition += f" · 관리자 확인 다시 조회 {len(item['pin_intents'])}건"
                 if item.get("prior_pin_unknown"):
                     condition += " · 이전 관리자 요청 UNKNOWN 인계"
-                listing.insert(tk.END, f"{item['set_id']} · {condition}")
+                detail_rows.append(f"{item['set_id']} · {condition}")
+                reason = "이 건의 상태를 다시 확인하거나 보류로 두세요."
+                if held:
+                    reason = "보류한 건입니다. 다시 확인하거나 보류로 두고 다른 작업을 계속하세요."
+                if (item.get("unverified") or item.get("orphan_path")
+                        or self.__dict__.get("_package_recovery_file_issues", {}).get(item["set_id"])):
+                    reason = "저장 파일을 확인하지 못했습니다. 이 건만 보류하고 다시 확인하세요."
+                if item.get("prior_pin_unknown"):
+                    reason = "관리자 요청 결과를 아직 모릅니다. 관리자 확인을 다시 조회하거나 지원 인계하세요."
+                if item.get("changed_hold"):
+                    reason = "보류하는 동안 파일 내용이 바뀌었습니다. 원본을 확인한 뒤 복원하거나 보류로 두세요."
+                listing.insert(tk.END, f"{len(detail_rows)}. {reason}")
+
+        def show_details(_event=None):
+            indexes = listing.curselection()
+            details.configure(state="normal")
+            details.delete("1.0", tk.END)
+            if indexes and indexes[0] < len(detail_rows):
+                details.insert(tk.END, detail_rows[indexes[0]])
+            details.configure(state="disabled")
+
+        listing.bind("<<ListboxSelect>>", show_details)
 
         def selected():
             indexes = listing.curselection()
@@ -18656,7 +18689,7 @@ class Label_Match(tk.Tk):
             return
         if self.current_set_info.get('id'):
             if not self.run_tests:
-                messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n설정 변경은 다음 작업부터 적용됩니다.")
+                messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n현재 작업을 완료하거나 취소한 뒤 설정을 저장하세요.")
         settings_window = tk.Toplevel(self)
         settings_window.title("설정")
         settings_window.resizable(False, False)
@@ -18668,7 +18701,7 @@ class Label_Match(tk.Tk):
         main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.grid_columnconfigure(1, weight=1)
         ttk.Label(main_frame, text="작업자 이름", font=(self.default_font_name, 12, "bold")).grid(row=0, column=0, sticky='w', pady=(8,5), padx=(0, 10))
-        ttk.Label(main_frame, text="저장 후 다음 작업부터 로그 작업자명이 변경됩니다.", style="Status.TLabel").grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
+        ttk.Label(main_frame, text="작업이 끝나고 설정을 저장하면 다음 작업부터 로그 작업자명이 변경됩니다.", style="Status.TLabel").grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
         self.worker_name_var = tk.StringVar(value=display_operator_name(self.worker_name))
         worker_entry = ttk.Combobox(
             main_frame,
