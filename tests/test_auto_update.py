@@ -229,7 +229,8 @@ def test_failed_preparation_defers_but_failed_activation_remains_unknown(monkeyp
     assert writes[-1][1]["phase"] == "UNKNOWN"
 
 
-def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(monkeypatch, tmp_path):
+@pytest.mark.parametrize("failure_mode", ["exit", "launch_error"])
+def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(monkeypatch, tmp_path, failure_mode):
     """Exercise the apply loop/journal with synthetic process and crypto adapters."""
     import json
     import time
@@ -277,6 +278,12 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
                 return []  # New GUI exited normally before READY.
             candidate_seen = True
             nonces.append(state["nonce"])
+            if failure_mode == "launch_error":
+                updates.write_json_durable(stage / "trial-failure.json", {
+                    "nonce": state["nonce"], "transition_id": state["transition_id"], "sha": NEW,
+                    "failed_role": "gui", "launch_failure_details": [{"type": "builtins.OSError", "win32_error": 5}],
+                })
+                return []
             updates.write_json_durable(stage / "trial.json", {"nonce": state["nonce"], "transition_id": state["transition_id"], "pid": 42})
             return [dict(pid=42, observable=True, sha=NEW, sid="operator", role="gui", ordinary_user=True, created_at=LATER)]
         if state["phase"] == "ROLLBACK_PENDING_READY":

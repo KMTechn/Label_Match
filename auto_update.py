@@ -789,15 +789,21 @@ def _apply_prepared(control: Path) -> int:
             rows = process_snapshot(control)
             claim = None
             receipt = None
+            launch_failure = None
             try:
                 claim = optional_record(stage / "trial.json")
                 receipt = optional_record(stage / "ready.json")
+                launch_failure = optional_record(stage / "trial-failure.json")
             except OSError as error:
                 # A contested user proof is unconfirmed; keep the original
                 # journal deadline and normal stop/rollback decision alive.
                 state = {**state, "last_ready_error": type(error).__name__}
                 write_json_durable(control / "transition.json", state)
             sha = state["previous_sha"] if state["phase"] == "ROLLBACK_PENDING_READY" else state["candidate_sha"]
+            if (launch_failure and launch_failure.get("nonce") == state["nonce"]
+                    and launch_failure.get("transition_id") == state["transition_id"]
+                    and launch_failure.get("sha") == sha):
+                break  # The ordinary bootstrap stays alive to launch verified recovery.
             if state.get("trial_pid") is None and claim and claim.get("nonce") == state["nonce"] and claim.get("transition_id") == state["transition_id"]:
                 row = next((row for row in rows if row.get("pid") == claim.get("pid")), None)
                 if row and process_matches_trial(row, state=state, sha=sha, sid=policy["operator_sid"], role="gui"):
@@ -1634,16 +1640,37 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                 with update_lock(control, policy["operator_sid"], trial=True):
                     state = read_json(control / "transition.json")
                     claim = optional_record(Path(policy["staging_root"]) / "trial.json")
-                    if claim and claim.get("nonce") == state["nonce"]:
-                        saw_trial = True
-                    else:
-                        gui_arguments = arguments[1:] if role == "relay" and arguments[:1] == ["--label-match-user-relay"] else arguments
-                        pid = launch_version(control, active["sha"], gui_arguments, nonce=state["nonce"])
-                        write_json_durable(Path(policy["staging_root"]) / "trial.json", {"pid": pid, "nonce": state["nonce"], "transition_id": state["transition_id"]})
-                        # LM's existing user environment/settings select the data
-                        # root for both children; its relay has no --data-root flag.
-                        launch_version(control, active["sha"], ["--label-match-user-relay"], nonce=state["nonce"])
-                        saw_trial = True
+                    failure_path = Path(policy["staging_root"]) / "trial-failure.json"
+                    failure = optional_record(failure_path)
+                    if not (failure and failure.get("nonce") == state["nonce"]
+                            and failure.get("transition_id") == state["transition_id"]):
+                        failed_role = "gui"
+                        try:
+                            if claim and claim.get("nonce") == state["nonce"]:
+                                row = next((row for row in process_snapshot(control) if row.get("pid") == claim.get("pid")), None)
+                                if (not row or claim.get("transition_id") != state["transition_id"]
+                                        or not process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="gui")
+                                        or _utc(row.get("created_at")) > _utc(claim.get("claimed_at"))):
+                                    raise ValueError("existing trial process identity or creation time differs")
+                                failed_role = "relay"
+                                if not any(process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay") for row in process_snapshot(control)):
+                                    raise ValueError("existing trial relay is absent")
+                            else:
+                                gui_arguments = arguments[1:] if role == "relay" and arguments[:1] == ["--label-match-user-relay"] else arguments
+                                pid = launch_version(control, active["sha"], gui_arguments, nonce=state["nonce"])
+                                write_json_durable(Path(policy["staging_root"]) / "trial.json", {"pid": pid, "nonce": state["nonce"], "transition_id": state["transition_id"], "claimed_at": now_utc()})
+                                failed_role = "relay"
+                                # LM's user settings select both children's data root.
+                                launch_version(control, active["sha"], ["--label-match-user-relay"], nonce=state["nonce"])
+                            saw_trial = True
+                        except Exception as error:
+                            write_json_durable(failure_path, {
+                                "nonce": state["nonce"], "transition_id": state["transition_id"],
+                                "sha": active["sha"], "failed_role": failed_role,
+                                "launch_failure_details": launch_failure_details(error),
+                            })
+                            # A failed start is not permission to change the pointer.
+                            # SYSTEM must prove normal stop and previous-code trust.
             if action in {"REQUEST_APPLY", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
                 requested_at = now_utc()
                 request_apply_task(control, policy)
