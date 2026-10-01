@@ -262,3 +262,83 @@ def test_delayed_progress_poll_does_not_override_newer_relay_loss(progress_app, 
     app._refresh_relay_screen_status()
     root.run_until(lambda: app.__dict__.get("_logistics_progress_connected") is True, timeout=5)
     assert "서버 연결: 끊김" in app.connection_text
+
+
+@pytest.mark.parametrize("newer_success", [True, False])
+def test_late_progress_response_keeps_newer_transport_observation(progress_app, tmp_path, monkeypatch, newer_success):
+    import threading
+
+    app, _dialogs, _root = progress_app
+    db = install_connection_relay(app, tmp_path, monkeypatch)
+    instant = [datetime.now(timezone.utc)]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant[0].astimezone(tz) if tz else instant[0].astimezone().replace(tzinfo=None)
+
+    monkeypatch.setattr(lm, "datetime", Clock)
+    entered, release = threading.Event(), threading.Event()
+
+    def delayed(**kwargs):
+        entered.set()
+        assert release.wait(5), "test did not release the progress request"
+        if newer_success:
+            raise PackageTransportError("older request failed late")
+        return copy.deepcopy(PROGRESS)
+
+    app.package_logistics_client = SimpleNamespace(get_progress=delayed)
+    try:
+        open_progress(app)  # Request A starts first and remains in flight.
+        assert entered.wait(5)
+        instant[0] += timedelta(seconds=1)
+        stamp = instant[0]
+        with sqlite3.connect(db) as conn:
+            conn.execute("INSERT INTO direct_sync_relay_batches VALUES (?, ?)",
+                         ("acked" if newer_success else "retry_wait", stamp.isoformat()))
+        app._refresh_relay_screen_status()  # Newer request B finishes first.
+        instant[0] += timedelta(seconds=1)
+        release.set()
+        app._logistics_progress_thread.join(timeout=5)
+        assert not app._logistics_progress_thread.is_alive()
+        app._poll_logistics_progress()  # A finishes after B, in either direction.
+        expected = "정상" if newer_success else "끊김"
+        assert f"서버 연결: {expected}" in app.connection_text
+        assert f"연결 {expected}" in app.progress_text
+        assert app.__dict__.get("_logistics_last_transmission") == (stamp if newer_success else None)
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("newer_success", ["progress", "ack"])
+@pytest.mark.parametrize("table,status", [
+    ("direct_sync_relay_batches", "retry_wait"),
+    ("package_command_outbox", "PENDING"),
+    ("package_cancellation_outbox", "PENDING"),
+    ("sealed_transfer_exchange_intents", "RETRY_WAIT"),
+])
+def test_delayed_retry_read_keeps_newer_success(progress_app, tmp_path, monkeypatch, newer_success, table, status):
+    app, _dialogs, _root = progress_app
+    db = install_connection_relay(app, tmp_path, monkeypatch)
+    older_failure = datetime.now(timezone.utc) - timedelta(minutes=1)
+    with sqlite3.connect(db) as conn:
+        if table != "direct_sync_relay_batches":
+            conn.execute(f"CREATE TABLE {table}(status TEXT, updated_at TEXT, last_error_code TEXT)")
+            conn.execute(f"INSERT INTO {table} VALUES (?, ?, 'TRANSPORT_ERROR')", (status, older_failure.isoformat()))
+        else:
+            conn.execute("INSERT INTO direct_sync_relay_batches VALUES (?, ?)", (status, older_failure.isoformat()))
+    if newer_success == "progress":
+        app.package_logistics_client = SimpleNamespace(get_progress=lambda **kw: copy.deepcopy(PROGRESS))
+        open_progress(app)
+        app._logistics_progress_thread.join(timeout=5)
+        assert not app._logistics_progress_thread.is_alive()
+        app._poll_logistics_progress()
+    else:
+        fresh_ack = datetime.now(timezone.utc)
+        with sqlite3.connect(db) as conn:
+            conn.execute("INSERT INTO direct_sync_relay_batches VALUES ('acked', ?)", (fresh_ack.isoformat(),))
+    app._refresh_relay_screen_status()
+    assert app._logistics_relay_state == ("retrying" if table == "direct_sync_relay_batches" else "normal")
+    assert "서버 연결: 정상" in app.connection_text
+    assert "연결 정상" in app.progress_text
+    assert app.__dict__.get("_logistics_last_transmission") == (fresh_ack if newer_success == "ack" else None)

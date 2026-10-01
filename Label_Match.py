@@ -5775,6 +5775,7 @@ class Label_Match(tk.Tk):
             return current
         client = self.__dict__.get("package_logistics_client")
         day = datetime.now().strftime("%Y-%m-%d")
+        requested_at = datetime.now(timezone.utc)
 
         def worker():
             try:
@@ -5790,9 +5791,9 @@ class Label_Match(tk.Tk):
                         value = row.get(field)
                         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                             raise PackageLogisticsError("invalid progress quantity")
-                self._logistics_progress_result = (copy.deepcopy(data), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), datetime.now(timezone.utc))
+                self._logistics_progress_result = (copy.deepcopy(data), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), requested_at)
             except Exception:
-                self._logistics_progress_result = (None, "", datetime.now(timezone.utc))
+                self._logistics_progress_result = (None, "", requested_at)
 
         thread = threading.Thread(target=worker, name="label-match-progress", daemon=True)
         self._logistics_progress_thread = thread
@@ -6615,14 +6616,14 @@ class Label_Match(tk.Tk):
             self._logistics_last_transmission = last_success
         latest = self.__dict__.get("_logistics_last_transmission")
         last_text = latest.astimezone().strftime("%H:%M:%S") if latest else "없음"
-        # Local idle/lease changes prove no server response. Fold new observations
-        # by their actual time so stale ACKs and delayed polls cannot erase loss.
+        # Local idle/lease changes prove no server response. Progress carries
+        # request start time; durable retries retain their stored time when read late.
         observations = []
+        failure = self.__dict__.get("_logistics_last_transport_failure")
         if relay_state != self.__dict__.get("_logistics_connection_relay_state"):
             self._logistics_connection_relay_state = relay_state
             if relay_state in {"retrying", "stopped"}:
-                observations.append((datetime.now(timezone.utc), False))
-        failure = self.__dict__.get("_logistics_last_transport_failure")
+                observations.append((failure or datetime.now(timezone.utc), False))
         if failure is not None:
             observations.append((failure, False))
         if last_success is not None:
