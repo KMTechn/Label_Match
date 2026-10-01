@@ -4,6 +4,7 @@ import json
 import base64
 import traceback
 import unicodedata
+import wave
 
 _STARTUP_WORKFLOW_NOTICES = []
 
@@ -504,6 +505,8 @@ class _WindowsWaveSound:
     def __init__(self, path, winsound_module):
         self.path = os.fspath(path)
         self._winsound = winsound_module
+        with wave.open(self.path, "rb") as audio:
+            self.duration_ms = max(1, int(audio.getnframes() * 1000 / audio.getframerate()) + 30)
 
     def play(self, *, loops=0):
         flags = self._winsound.SND_FILENAME | self._winsound.SND_ASYNC
@@ -5811,6 +5814,7 @@ class Label_Match(tk.Tk):
             self._logistics_progress_last_success = received_at
         # No notebook selection, work context mutation or scanner gate change.
         self._render_logistics_progress()
+        self._render_logistics_connection(self.__dict__.get("_logistics_relay_state", ""), None, None)
         if self.__dict__.get("_logistics_progress_after_id") is None:
             self._logistics_progress_after_id = self.after(60000, self._run_logistics_progress_refresh)
 
@@ -6535,14 +6539,76 @@ class Label_Match(tk.Tk):
             db_path = _label_match_direct_sync_runtime_paths(context)["db_path"]
         except KeyError:
             db_path = ""
-        self._render_relay_screen_status(
-            _label_match_relay_screen_state(
-                self.__dict__.get("_relay_screen_status_payload"),
-                _label_match_relay_durable_state(db_path),
-            )
+        state = _label_match_relay_screen_state(
+            self.__dict__.get("_relay_screen_status_payload"),
+            _label_match_relay_durable_state(db_path),
         )
+        self._logistics_relay_state = state
+        self._render_relay_screen_status(state)
+        pending, last_success = self._read_logistics_transmission_summary(db_path)
+        self._render_logistics_connection(state, pending, last_success)
         self._relay_screen_status_after_id = self.after(5000, self._refresh_relay_screen_status)
         return None
+
+    def _read_logistics_transmission_summary(self, relay_db_path):
+        """Read counts and actual ACK timestamps; never create a status store."""
+        outbox = self.__dict__.get("package_outbox")
+        paths = {str(relay_db_path or ""), str(getattr(outbox, "db_path", "") or "")}
+        pending, last_success, read = 0, None, False
+        for path in paths:
+            if not path or not os.path.isfile(path):
+                continue
+            try:
+                with contextlib.closing(sqlite3.connect(
+                    f"{Path(path).resolve().as_uri()}?mode=ro", uri=True, timeout=0.05,
+                )) as conn:
+                    tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    for table in ("direct_sync_relay_batches", "package_command_outbox",
+                                  "package_cancellation_outbox", "sealed_transfer_exchange_intents", "deferred_intents"):
+                        if table not in tables:
+                            continue
+                        read = True
+                        state_column = "state" if table == "deferred_intents" else "status"
+                        pending += conn.execute(
+                            f"SELECT COUNT(*) FROM {table} WHERE UPPER({state_column}) NOT IN "
+                            "('ACKED','LOCAL_EFFECT_PENDING','COMPLETED','CANCELLED','SUPERSEDED')"
+                        ).fetchone()[0]
+                        # Deferred completion timestamps include local effects;
+                        # only transport ACK rows prove a successful transmission.
+                        if table == "deferred_intents":
+                            continue
+                        stamp = conn.execute(
+                            f"SELECT MAX(updated_at) FROM {table} WHERE UPPER(status)='ACKED'"
+                        ).fetchone()[0]
+                        if stamp:
+                            try:
+                                parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                                parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+                                last_success = max(last_success, parsed) if last_success else parsed
+                            except ValueError:
+                                pass
+            except (sqlite3.Error, OSError):
+                return None, last_success
+        return (pending if read else None), last_success
+
+    def _render_logistics_connection(self, relay_state, pending, last_success):
+        if pending is not None:
+            self._logistics_pending_transmissions = pending
+        previous = self.__dict__.get("_logistics_last_transmission")
+        if last_success is not None and (previous is None or last_success > previous):
+            self._logistics_last_transmission = last_success
+        latest = self.__dict__.get("_logistics_last_transmission")
+        last_text = latest.astimezone().strftime("%H:%M:%S") if latest else "없음"
+        connected = self.__dict__.get("_logistics_progress_connected")
+        connection = ("정상" if connected is True or relay_state == "normal" else
+                      "끊김" if connected is False or relay_state in {"retrying", "stopped"} else "확인 중")
+        count = self.__dict__.get("_logistics_pending_transmissions")
+        waiting = f"대기 {count}건" if count is not None else "대기 확인 중"
+        if pending is None and count is not None:
+            waiting += "(마지막 확인)"
+        label = self.__dict__.get("logistics_connection_label")
+        if label is not None:
+            label.configure(text=f"서버 연결: {connection} · 마지막 성공 전송 {last_text} · {waiting}")
 
     def _render_relay_screen_status(self, state):
         label = self.__dict__.get("relay_screen_status_label")
@@ -21539,6 +21605,12 @@ class Label_Match(tk.Tk):
         self.operator_notebook.bind("<<NotebookTabChanged>>", self._on_logistics_progress_tab_changed, add="+")
         self._render_logistics_progress()
 
+        self.logistics_connection_label = ttk.Label(
+            self.operator_right_pane, text="서버 연결: 확인 중 · 마지막 성공 전송 없음 · 대기 확인 중",
+            style="Status.TLabel", wraplength=max(180, panes.right_width - 30),
+        )
+        self.logistics_connection_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+
         label_workbench_context.create_status_footer(
             self,
             main_frame=main_frame,
@@ -21829,10 +21901,27 @@ class Label_Match(tk.Tk):
         self.big_display_label.config(text=text or "", foreground=fg_color)
     def _play_sound(self, sound_key, block=False):
         if not self.initialized_successfully or self.run_tests or _label_match_automated_test_mode(): return
+        # One short success waveform, a long completion waveform, repeated
+        # errors. Keep old keys/assets for saved settings and callers.
+        if sound_key in {"scan_master", "scan_1", "scan_2", "scan_3"}:
+            sound_key = "scan_master"
+        generation = self.__dict__.get("_sound_sequence_generation", 0) + 1
+        self._sound_sequence_generation = generation
         sound = self.sound_objects.get(sound_key)
         if sound:
             try:
                 sound.play()
+                if sound_key == "fail":
+                    interval = int(getattr(sound, "duration_ms", 2750))
+                    def repeat():
+                        if (generation == self.__dict__.get("_sound_sequence_generation")
+                                and not self.__dict__.get("_tk_shutdown_requested")):
+                            try:
+                                sound.play()
+                            except Exception:
+                                pass
+                    self.after(interval, repeat)
+                    self.after(interval * 2, repeat)
             except Exception as e:
                 print(f"winsound 사운드 재생 오류: {e}")
         else:
