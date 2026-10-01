@@ -3,6 +3,7 @@ import copy
 import http.server
 import json
 import os
+import sys
 import threading
 from urllib.parse import urlsplit
 
@@ -17,6 +18,7 @@ from tests.test_phs_label_workflow import (
     SCOPE, TARGET_INSTRUCTION, _Client, _Printer, _Renderer, _current_set,
 )
 from tests.test_legacy_label_transition import MASTER
+from tests.test_label_match_core import _FakeEntry
 from tests.test_w9scanonly_packaging import packaging, products, scan
 from tests.test_tk_serial_ui_lane import FakeTkRoot
 from tk_serial_ui_lane import LaneTask, TkSerialUiLane
@@ -69,7 +71,7 @@ def test_f5_method_outside_f5_keeps_remote_admission_release(lock_remote):
     assert not any(event['event'] == 'remote_f5_locked' for event in lock_remote.events)
 
 
-def test_f5_activation_blocks_new_generation_and_preserves_waiting_scan(
+def test_f5_activation_blocks_new_generation_and_preserves_busy_entry(
         tmp_path, packaging, lock_remote):
     # Coordinator 2026-10-02: F5 alone waits; queued writers run after its response.
     app, dialogs = packaging
@@ -136,6 +138,7 @@ def test_f5_activation_blocks_new_generation_and_preserves_waiting_scan(
         finally:
             recovered.set()
     product = products()[0]
+    app.entry = _FakeEntry(product)  # Already entered before the lane becomes busy.
     root = FakeTkRoot()
     app._ui_lane_generation = 0
     app._ui_lane_busy_task = 'f5-label-exchange'
@@ -156,10 +159,16 @@ def test_f5_activation_blocks_new_generation_and_preserves_waiting_scan(
         new.start()
         assert recovery_started.wait(2)
         assert not recovered.wait(0.3)
+        frame = sys._current_frames().get(new.ident)
+        waiting_frames = []
+        while frame is not None:
+            waiting_frames.append(frame.f_code.co_name)
+            frame = frame.f_back
+        assert '_acquire_named_mutex' in waiting_frames, waiting_frames
         assert current == before and current['active_label_version'] == 1
         assert checkpoint.read_bytes() == before_checkpoint and len(writes) == write_count
         assert journal_path.read_bytes() == before_journal
-        scan(app, product)
+        app._handle_scan_enter()
         assert rejected == ['busy']
         assert app.entry.get() == product
         assert app.current_set_info['raw'] == [MASTER]
