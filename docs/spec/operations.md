@@ -755,6 +755,12 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 
 ## 설치·업그레이드·제거·백업·롤백
 
+옛 canonical LM 코드가 이미 있어도 설치 사용자의 자기 등록이 없으면 첫 등록을 진행할 수 있다. 설치본의 manifest·bootstrap·전체 inventory를 검증하고 기존 writer-transition의 정확한 허용 방향에 해당할 때만 `FIRST_REGISTRATION_OVER_PINNED_PREIMAGE`로 기록한다. AST가 같다는 이유만으로 알 수 없는 판을 첫 등록 출발 판으로 인정하지 않는다. 자기 DirectSync 전체 루트·profile/secret 디렉터리·settings 파일·등록 ledger와 sidecar는 모두 ABSENT여야 하며 절대 경로와 부재를 감사에 기록한다. 자기 상태 일부나 사용자 autostart/task/relay가 있으면 기존 healthy/receipt 검사를 유지한다. 파일 대신 디렉터리가 있거나 reparse 경로인 경우도 ABSENT가 아니다.
+
+실행 중인 LM은 정상 종료한 뒤 다시 설치한다. 설치기는 writer admission 안에서 자기 상태 부재를 재확인하고, 검증한 옛 코드를 보존하면서 후보를 배치한 뒤 새 PC와 같은 `--onboard-current-user`를 실행한다. 새 자격은 설치 실행 사용자의 자기 위치에 생성하며 옛 Machine `KM_LOGISTICS_*` 값이나 공용 profile을 읽거나 지우지 않는다. bootstrap용 공개 CA와 일반 업무 파일은 보존한다. 등록 실패는 기존 rollback으로 옛 코드·Run/task/relay/stop preimage를 복원하고, writer fence 해제 뒤 이번 시도가 만든 자기 상태만 설치 감사 옆의 시도별 `*-first-registration-quarantine/state-*`로 이동한다. 삭제하지 않으며 이동 목록과 원 경로 ABSENT readback을 `state-moves.json` 및 설치 보고에 남긴다. 새 자격을 옛 코드가 읽지 않게 하되 실패/복구 원본을 보존한다. 서버에 등록됐을 수 있는 producer는 삭제·재발행하지 않는다; 재시도 409는 지원 관리자 복구 대상이다. 이미 새 코드가 배치된 이 경로를 pristine 설치의 관리자 복구 대기로 남기지 않는다. 실제 설치·DPAPI/서버 승인·등록 실패 뒤 현장 재실행은 별도 랩 수용이다.
+
+PROVEN(호스트 격리): c5e051b의 같은 선택은 53 PASS/9 RED, 후보는 62 PASS이며 신규 32개 회귀에 7단계 실패의 원 경로 ABSENT·시도별 격리·합성 코드 preimage 복원·공용 파일/기존 업무 파일 보존을 포함한다. 실제 앱·DPAPI/서버·등록/relay를 실행한 결과가 아니다. 허용 e88011c 전이와 역방향/변조 거절, 불변 inventory pin 및 전체 한계는 [구현 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-45/REPORT.md)에 기록한다. 실제 옛 앱 재개는 NOT TESTED이다.
+
 <a id="bootstrap-integrity-order"></a>
 `d0e504e` 이하에서 기록·읽기의 ordinal/casefold 순서 차이로 재시작 시 `canonical bootstrap integrity readback differs`가 발생할 수 있다. `w9labelintegrityorder` 수정본은 installer와 같은 ordinal 열거 및 순서 비민감 행 비교를 사용하고, 기존 v1 aggregate는 저장된 순서로 검증하여 원본을 보존한다. 추가·누락·내용·크기·경로·digest 불일치는 계속 차단한다. capture6은 수정 커밋의 stock portable 후보를 정상 설치한 뒤 같은 사용자의 재시작·정상 종료와 기존 stop-marker/receipt 절차를 확인한다. 호스트 headless 검증과 guest 재설치 수용은 구분하며 guest 확인은 아직 NOT VERIFIED다.
 

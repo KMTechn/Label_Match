@@ -160,7 +160,7 @@ def _run_pristine_removal_gate_harness(
     removal_anchor = "    $removalRoot = if ($existingVerified) { $install } else { $source }"
     removal_anchor_index = source.index(removal_anchor)
     guarded_start = source.rfind(
-        "    if (-not $pristineInstall) {", 0, removal_anchor_index
+        "    if (-not $pristineInstall", 0, removal_anchor_index
     )
     assert guarded_start >= 0
     block_start = guarded_start
