@@ -986,14 +986,13 @@ def test_operator_tree_linespace_fallback_is_conservative(monkeypatch):
     assert app._operator_tree_font_linespace(("Malgun Gothic", 15), 15) + 4 == 34
 
 
-def test_five_actions_fit_two_rows_in_right_pane(operator_workbench):
+def test_four_visible_actions_fit_two_rows_in_right_pane(operator_workbench):
     app = operator_workbench
     action_frame = _required_widget(app, "operator_action_frame")
     right = _required_widget(app, "operator_right_pane")
     buttons = (
         app.manual_complete_button,
         app.exact_rescan_button,
-        app.phs_label_exchange_button,
         app.reset_button,
         app.cancel_tray_button,
     )
@@ -1003,11 +1002,11 @@ def test_five_actions_fit_two_rows_in_right_pane(operator_workbench):
     assert [(button.grid_options.get("row"), button.grid_options.get("column")) for button in buttons] == [
         (0, 0),
         (0, 1),
-        (0, 2),
         (1, 0),
         (1, 1),
     ]
     assert app.cancel_tray_button.grid_options.get("columnspan") == 2
+    assert not app.phs_label_exchange_button.winfo_ismapped()
 
 
 def test_workbench_renderer_uses_snapshot_adapter_then_pure_presenter():
@@ -2831,7 +2830,7 @@ def _f5_button_geometry(app, styles):
 @pytest.mark.parametrize("screen_width", [1024, 1366])
 @pytest.mark.parametrize("scale", [1.0, 1.2, 3.0])
 @pytest.mark.parametrize("base_font_size", [14, 18], ids=["default-text", "large-text"])
-def test_disabled_f5_caption_fits_without_shrinking_font_or_other_actions(
+def test_hidden_f5_keeps_font_and_other_actions(
     operator_workbench, monkeypatch, screen_width, scale, base_font_size,
 ):
     app = operator_workbench
@@ -2841,6 +2840,8 @@ def test_disabled_f5_caption_fits_without_shrinking_font_or_other_actions(
     app._render_operator_workbench()
     button = app.phs_label_exchange_button
     assert button.cget("state") == "disabled"
+    assert not button.winfo_ismapped()
+    assert all(sequence != "<F5>" for sequence, *_ in app._root_bindings)
     assert " ".join(button.cget("text").split()) == "현품표 교체 (F5)"
     actual, required = _f5_button_geometry(app, styles)
     assert required[0] <= actual[0] and required[1] <= actual[1], (actual, required)

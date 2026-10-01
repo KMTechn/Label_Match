@@ -245,13 +245,11 @@ def create_history_pane(
         padx=(4, 0),
         pady=(0, 4),
     )
+    # Date exchange is retained only for recovery of an existing journal.
+    self.phs_label_exchange_button.grid_remove()
 
     self.bind("<F1>", lambda event: self._handle_workflow_shortcut("f1", event))
     self.bind("<F2>", lambda event: self._handle_workflow_shortcut("f2", event))
     self.bind("<F4>", lambda event: self._handle_workflow_shortcut("f4", event))
-    self.bind(
-        "<F5>",
-        self._handle_phs_label_exchange_shortcut,
-    )
     self.bind("<Escape>", self._handle_workflow_escape)
     self.bind("<Delete>", self._delete_selected_row_from_shortcut)

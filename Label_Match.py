@@ -7910,6 +7910,29 @@ class Label_Match(tk.Tk):
         except Exception as retry_error:
             print(f"종료 정리 복구 재시도 예약 오류: {retry_error}")
 
+    def _app_close_needs_confirmation(self):
+        current = self.__dict__.get("current_set_info") or {}
+        if (
+            current.get("raw")
+            or "scanner_failure_result" in current
+            or current.get("scanner_exchange_phase")
+            or current.get("shortage_undo_snapshot")
+            or self.__dict__.get("_scanner_shortage_undo")
+            or any(self.__dict__.get(name) for name in (
+                "_phs_label_scan_lookup_in_progress", "_phs_label_candidate_pending",
+                "_phs_reconciliation_lookup_pending", "_phs_label_exchange_pending",
+            ))
+        ):
+            return True
+        coordinator = self.__dict__.get("phs_label_exchange_coordinator")
+        try:
+            return bool(coordinator is not None and (
+                coordinator.has_pending_reconciliation()
+                or coordinator.blocks_other_action(current)
+            ))
+        except PHSLabelWorkflowError:
+            return True
+
     def on_closing(self, _confirmed=False):
         if _confirmed:
             self._app_close_recovery_after_id = None
@@ -7929,7 +7952,7 @@ class Label_Match(tk.Tk):
                 if not self.run_tests:
                     messagebox.showwarning("작업 진행 중", "테스트 시뮬레이션 또는 테스트 로그 생성이 진행 중입니다.\n작업이 끝난 뒤 프로그램을 종료하세요.")
                 return
-            do_close = self.run_tests or messagebox.askokcancel(
+            do_close = self.run_tests or not self._app_close_needs_confirmation() or messagebox.askokcancel(
                 "종료 확인",
                 "프로그램을 종료하시겠습니까?",
             )
@@ -10392,7 +10415,7 @@ class Label_Match(tk.Tk):
                             )
                             return ("교환 파일 항목이 미검증입니다: "
                                     + str(snapshot.get("reason") or "경로 오류")
-                                    + ". 원본 항목은 보관하고 다른 F5를 계속하세요.")
+                                    + ". 원본 항목은 보관하고 다른 포장 작업을 계속하세요.")
                     state = self._active_label_recovery_state()
             except Exception as exc:
                 print(f"현품표 교환 보류 재확인 기술 진단: {exc}")
@@ -10489,7 +10512,7 @@ class Label_Match(tk.Tk):
                         return "먼저 이 현품표 교환 일지를 보류하세요."
                     observed = "FILE_UNVERIFIED"
                     result = ("교환 파일 항목을 안전하게 읽을 수 없습니다. "
-                              "원본 항목을 보관하고 이 건은 보류한 채 다른 F5를 계속하세요.")
+                              "원본 항목을 보관하고 이 건은 보류한 채 다른 포장 작업을 계속하세요.")
                     raise StopIteration
                 raw = bytes(held["journal_bytes"])
                 if hashlib.sha256(raw).hexdigest() != held["journal_sha256"]:
@@ -10560,7 +10583,7 @@ class Label_Match(tk.Tk):
                         or (prepare_key and exchange.get("operation_key")
                             != expected_operation_key)):
                     observed = "CENTRAL_NO_LINK"
-                    result = "중앙 요청·원본·실물 현품표가 일치하지 않습니다. 이 F5 잠금을 유지하세요."
+                    result = "중앙 요청·원본·실물 현품표가 일치하지 않습니다. 이 현품표 교환 잠금을 유지하세요."
                 else:
                     self._audit_package_recovery_action(
                         set_id, "SCAN_PHYSICAL", manager_id, "CENTRAL_MATCH_ATTEMPT"
@@ -10572,7 +10595,7 @@ class Label_Match(tk.Tk):
                     )
                     observed = "CENTRAL_PHYSICAL_MATCH"
                     result = ("원본 교환·중앙 요청·실물 현품표 결속을 기록했습니다. "
-                              "이 현품표는 보류하고 다른 현품표의 새 F5를 계속할 수 있습니다.")
+                              "이 현품표는 보류하고 다른 현품표의 포장 작업을 계속할 수 있습니다.")
             else:
                 held = self.package_outbox.get_workbench_hold(set_id)
                 if held is None:
@@ -10809,6 +10832,10 @@ class Label_Match(tk.Tk):
         ttk.Button(buttons, text="보류 후 계속", command=hold).pack(side="left", padx=4)
         ttk.Button(buttons, text="지원 인계", command=handoff).pack(side="left", padx=4)
         ttk.Button(buttons, text="실물 현품표 스캔·중앙 조회", command=scan_physical).pack(side="left", padx=4)
+        ttk.Button(
+            frame, text="미완료 현품표 교환 복구",
+            command=lambda: self._handle_phs_label_exchange_shortcut(recovery_only=True),
+        ).pack(anchor="w", pady=4)
         def retry_pin():
             item = selected()
             if not item or not item.get("pin_intent"):
@@ -14910,7 +14937,7 @@ class Label_Match(tk.Tk):
         ):
             self._show_scanner_notice(
                     "현품표 날짜 교환 복구 필요",
-                    f"{action} 작업 전에 F5로 미완료 현품표 교환을 복구하세요.",
+                    f"{action} 작업 전에 건별 복구에서 미완료 현품표 교환을 복구하세요.",
                 )
             return True
         if (
@@ -15958,7 +15985,7 @@ class Label_Match(tk.Tk):
                     title="현품표 교체 조회 취소",
                     message=(
                         "조회 중 포장 상태가 바뀌었습니다. "
-                        "F5를 누르고 현품표를 다시 스캔하세요."
+                        "건별 복구에서 현품표 상태를 확인하세요."
                     ),
                     kind="phs_label_exchange",
                     tone="danger",
@@ -15978,7 +16005,7 @@ class Label_Match(tk.Tk):
                 title="현품표 교체 작업 없음",
                 message=(
                     "현품표 교체 작업을 확인하지 못했습니다. "
-                    "F5를 눌러 다시 시도하세요."
+                    "건별 복구에서 현품표 상태를 확인하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="danger",
@@ -16124,7 +16151,7 @@ class Label_Match(tk.Tk):
                 title="현품표 교체 실행 취소",
                 message=(
                     "조회 후 포장 상태가 바뀌어 교체 실행을 취소했습니다. "
-                    "F5로 현품표를 다시 스캔하세요."
+                    "건별 복구에서 현품표 상태를 확인하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="warning",
@@ -16190,7 +16217,7 @@ class Label_Match(tk.Tk):
                 title="현품표 교체 로컬 충돌",
                 message=(
                     "교체 중 현재 포장 상태가 바뀌었습니다. "
-                    "중앙 처리 결과는 F5 복구만 사용하세요."
+                    "중앙 처리 결과는 건별 복구에서 미완료 현품표 교환 복구로 확인하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="danger",
@@ -16219,7 +16246,7 @@ class Label_Match(tk.Tk):
                         }
                     title = "실물 출력 확인 필요"
                     message = (
-                        "실물 출력 여부를 확인한 뒤 F5를 다시 누르면 "
+                        "실물 출력 여부를 확인한 뒤 건별 복구에서 같은 교환을 복구하면 "
                         "확인이 필요한 현품표만 재출력합니다."
                     )
                     tone = "warning"
@@ -16227,7 +16254,7 @@ class Label_Match(tk.Tk):
                     title = "현품표 교체 실패"
                     message = (
                         "현품표 교체를 완료하지 못했습니다. "
-                        "F5로 복구하거나 관리자에게 문의하세요."
+                        "건별 복구에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
                     )
                     tone = "danger"
                 self._phs_label_guidance_notice = WorkflowNotice(
@@ -16257,7 +16284,7 @@ class Label_Match(tk.Tk):
                         if result.success
                         else (
                             "현품표 출력에 실패했습니다. 출력 상태를 "
-                            "확인한 뒤 F5로 다시 시도하세요."
+                            "확인한 뒤 건별 복구에서 미완료 현품표 교환을 복구하세요."
                         )
                     )
                 ),
@@ -16300,7 +16327,7 @@ class Label_Match(tk.Tk):
                 title="현품표 교체 실패",
                 message=(
                     "현품표 교체를 완료하지 못했습니다. "
-                    "F5로 복구하거나 관리자에게 문의하세요."
+                    "건별 복구에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="danger",
@@ -16640,7 +16667,7 @@ class Label_Match(tk.Tk):
                 message=(
                     "현품표 날짜 교환을 완료했습니다. 포장 수량과 진행 상태는 유지됩니다."
                     if result.success
-                    else "현품표 출력에 실패했습니다. 출력 상태를 확인한 뒤 F5로 다시 시도하세요."
+                    else "현품표 출력에 실패했습니다. 출력 상태를 확인한 뒤 건별 복구에서 미완료 현품표 교환을 복구하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="success" if result.success else "danger",
@@ -16715,7 +16742,7 @@ class Label_Match(tk.Tk):
             return True
         return False
 
-    def _handle_phs_label_exchange_shortcut(self, event=None):
+    def _handle_phs_label_exchange_shortcut(self, event=None, *, recovery_only=False):
         if not self._phs_label_exchange_enabled_for_current():
             if not self.run_tests:
                 messagebox.showwarning(
@@ -16760,8 +16787,10 @@ class Label_Match(tk.Tk):
                         retry_failed_target_ids=retry_ids,
                         confirm_ambiguous_reprint_target_ids=confirm_ids,
                     )
-                else:
+                    return "break"
+                elif not recovery_only:
                     self._show_phs_reconciliation_scan_window()
+                    return "break"
             except PHSLabelWorkflowError:
                 self._phs_label_guidance_notice = WorkflowNotice(
                     title="현품표 교체 복구 오류",
@@ -16771,7 +16800,7 @@ class Label_Match(tk.Tk):
                 )
                 self._render_operator_workbench()
                 self._focus_scan_entry_if_available()
-            return "break"
+                return "break"
         try:
             recoverable = coordinator.blocks_other_action(
                 self.current_set_info
@@ -16786,6 +16815,9 @@ class Label_Match(tk.Tk):
             return "break"
         if recoverable:
             self._start_phs_label_exchange(None)
+            return "break"
+        if recovery_only:
+            self._focus_scan_entry_if_available()
             return "break"
         initial_date = str(
             self.current_set_info.get(
