@@ -2,6 +2,8 @@
 
 <a id="remote-writer-admission"></a>
 
+예외: 건별 복구에서 재개하는 숨긴 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 F5 writer 함수와 해당 client 메서드의 조합만 면제한다.
+
 relay 업로드·runtime lease·package client·PIN client는 HTTP 동안 writer lease를 일시 반환한다. 설치/fence 변화로 재획득 또는 재검증이 거부되면 UNKNOWN을 확정하지 않고 저장된 원 요청을 배경 재대조한다. lease 획득·쓰기 guard는 계속 적용되며, 로컬 체크포인트/완료 CSV → 표시 → 배경 전송 순서를 유지한다. `tests/lock_remote_guard.py`는 앱 독립 원본이며 `tests/conftest.py`가 실제 mutex·outbox/전송기 lock과 HTTP를 등록한다.
 
 실제 0.3·6·35초 전송 지연의 공개 스캔 입구와 fence 변화 뒤 같은 명령 영수증 복구는 `tests/test_scan_remote_lock.py`, 정상 완료 저장 중 FIFO 보존·순서·처리 1회는 `tests/test_label_completion_scan_queue.py`로 검사한다. headless 시험과 실제 Tk·스캐너·서버 수용은 구분한다. F5 관리 교환·옛 deferred validation의 busy 입력 및 FIFO의 재시작 내구화는 [후속 범위](BACKLOG.md#busy-scan-durable-fifo)다.

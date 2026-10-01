@@ -585,6 +585,13 @@ def remote_request() -> Iterator[None]:
     lease = saved["lease"]
     if not isinstance(lease, _NamedMutexLease) or not saved["source"] or saved["timeout_seconds"] is None:
         raise WriterFencedError("WRITER_REMOTE_CONTEXT_INVALID", "remote writer context is inexact")
+    # Coordinator 2026-10-02: hidden F5 recovery retains admission through HTTP.
+    if saved["source"] in {
+        "phs_single_exchange", "phs_reconciliation_exchange",
+        "phs_current_recovery", "phs_reconciliation_recovery",
+    }:
+        yield
+        return
     lease.suspend()
     _WRITER_LOCAL.depth = 0
     for name in names:
