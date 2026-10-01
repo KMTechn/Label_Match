@@ -110,8 +110,8 @@ def test_declared_pair_is_exactly_3f4574a_and_this_tree():
 def test_declared_scan_input_pairs_are_exactly_c83c72c_817d393_and_92abdaa_to_this_tree():
     """c83c72c (w9lmtransit), 817d393 (the 1733-only TEST1 candidate) and
     92abdaa (w9lmscanmsg) may be installed; each upgrades to this tree, never
-    the other way. The companions are the modules w9lmp1fix changes, the same
-    in all three."""
+    the other way. The companions include the reviewed scanner audit storage
+    changes; all three accepted releases share the same preimages."""
     source = INSTALLER.read_text(encoding="utf-8")
     start = source.index("$probe = @'") + len("$probe = @'")
     tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
@@ -126,7 +126,7 @@ def test_declared_scan_input_pairs_are_exactly_c83c72c_817d393_and_92abdaa_to_th
     assert pairs == {(before, here) for before in befores}
     assert not any((here, before) in pairs for before in befores)
     assert set(companions) == {
-        "app/carrier_identity_port.py", "app/deferred_intent_capture.py",
+        "app/carrier_identity_port.py", "app/deferred_intent_capture.py", "app/label_data_manager.py",
         "app/label_completion.py", "app/label_recovery_schema.py", "app/label_transition.py",
         "app/label_workbench_history.py", "app/package_command_draft.py", "app/package_logistics.py",
         "app/package_outbox.py", "app/package_outbox_processor.py", "app/sealed_transfer_exchange.py",
@@ -400,11 +400,11 @@ def test_baseline_archive_upgrades_only_forward_to_scanner_source(tmp_path, next
 
 @pytest.mark.parametrize("change,reason", [
     ("membership", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
-    # These writer-file mutations rotate the inventory pin, invalidating the
-    # exact writer bytes and therefore the atomic current-user profile set.
+    # The relay mutation invalidates the atomic profile set. A changed or
+    # reversed scanner source fails its directional Label_Match pair first.
     ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
-    ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
-    ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
+    ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
+    ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
     ("contract", "WRITER_TRANSITION_CONTRACT_DIFFERS: launch-label-match.cmd"),
 ])
 def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_layouts, change, reason):
