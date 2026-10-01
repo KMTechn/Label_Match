@@ -378,6 +378,8 @@ def existing_relay_start(monkeypatch, tmp_path):
         return SimpleNamespace(pid=314159, poll=lambda: 0)
 
     monkeypatch.setattr(user_relay.subprocess, "Popen", duplicate_child)
+    import auto_update
+    monkeypatch.setattr(auto_update, "start_ordinary_process", duplicate_child)
     return SimpleNamespace(app=app_root, state=state, path=status_path,
                            payload=payload, launches=launches)
 

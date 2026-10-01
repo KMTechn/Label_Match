@@ -288,6 +288,17 @@ def nextfix_archive_layouts(tmp_path_factory):
             target.parent.mkdir(exist_ok=True)
             origin = "portable/launch-label-match.cmd" if relative == "launch-label-match.cmd" else relative
             target.write_bytes((source / origin).read_bytes())
+        # Minimal manifest/source fixture, never a stock builder or actual packet.
+        (layout / "portable-manifest.json").write_text(json.dumps({"source_commit":
+            subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", revision], text=True).strip()}), encoding="utf-8")
+        if name == "candidate":
+            (layout / "app/auto-update-settings.json").write_text(json.dumps({"feed_url":"", "channel":"stable",
+                "apply_during_work":False, "profile_auth":False}, sort_keys=True, indent=2)+"\n", encoding="utf-8", newline="\n")
+            public=json.loads((ROOT / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))
+            (layout / "app/update-manifest-key-config.json").write_text(json.dumps(public,ensure_ascii=True,sort_keys=True,indent=2)+"\n",encoding="utf-8")
+            shutil.copyfile(ROOT / "tools/apply_prepared_update.ps1",layout / "tools/apply_prepared_update.ps1")
+        else:
+            shutil.copyfile(ROOT / "tests/fixtures/LM-e88011c-public-key-config.json",layout / "app/update-manifest-key-config.json")
         layouts.append(layout)
     return tuple(layouts)
 
@@ -349,9 +360,8 @@ def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_l
     assert _release_digest((changed / relative).read_bytes()) != after
     result = _nextfix_probe(tmp_path, changed, old)
     assert result.returncode != 0
-    # Any mutation disables the atomic module set; the archive layout's
-    # first ordinary AST mismatch is onboarding, including a profile mutation.
-    assert "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py" in result.stderr
+    # The exact startup companion declaration identifies the changed file.
+    assert "WRITER_TRANSITION_SEMANTICS_DIFFER: " + relative in result.stderr
 
 
 @pytest.mark.parametrize("relative", ["app/enrollment_mutex.py", "app/writer_session_fence.py"])
@@ -395,16 +405,15 @@ def test_baseline_archive_upgrades_only_forward_to_scanner_source(tmp_path, next
     assert (baseline / "app/Label_Match.py").read_bytes() == preserved
     reverse = _nextfix_probe(tmp_path, baseline, candidate)
     assert reverse.returncode != 0
-    assert "WRITER_TRANSITION_SEMANTICS_DIFFER" in reverse.stderr
+    assert "WRITER_TRANSITION_SOURCE_SET_DIFFERS" in reverse.stderr
 
 
 @pytest.mark.parametrize("change,reason", [
     ("membership", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
-    # The relay mutation invalidates the atomic profile set. A changed or
-    # reversed scanner source fails its directional Label_Match pair first.
-    ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py"),
+    # Exact membership and companion bytes reject unreviewed or reverse input.
+    ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/user_relay.py"),
     ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
-    ("reverse", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
+    ("reverse", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("contract", "WRITER_TRANSITION_CONTRACT_DIFFERS: launch-label-match.cmd"),
 ])
 def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_layouts, change, reason):
@@ -424,3 +433,39 @@ def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_l
     result = _nextfix_probe(tmp_path, source, installed)
     assert result.returncode != 0, result.stdout
     assert reason in result.stderr, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("change", ["old_key","new_key","apply_helper","startup_settings"])
+def test_startup_guard_accepts_only_exact_public_rotation_and_new_helpers(tmp_path,nextfix_archive_layouts,change):
+    old,candidate=nextfix_archive_layouts
+    relative={"old_key":"app/update-manifest-key-config.json","new_key":"app/update-manifest-key-config.json",
+              "apply_helper":"tools/apply_prepared_update.ps1","startup_settings":"app/auto-update-settings.json"}[change]
+    source=_tree(candidate,tmp_path/"candidate",[relative])
+    installed=_tree(old,tmp_path/"installed",[relative]) if change=="old_key" else old
+    changed=installed if change=="old_key" else source
+    with (changed/relative).open("ab") as stream: stream.write(b"X")
+    _pin(source)
+    result=_nextfix_probe(tmp_path,source,installed)
+    assert result.returncode != 0
+    assert ("PUBLIC_KEY_PAIR_DIFFERS" if change.endswith("key") else "ADDED_ASSET_DIFFERS") in result.stderr
+
+
+@pytest.mark.parametrize('change',[None,'http','github','unknown','apply','format'])
+def test_company_feed_is_an_exact_validated_startup_build_input(tmp_path,nextfix_archive_layouts,change):
+    import auto_update
+    old,candidate=nextfix_archive_layouts
+    relative='app/auto-update-settings.json'
+    source=_tree(candidate,tmp_path/'candidate',[relative])
+    value={'feed_url':'https://company.test/lm/feed','channel':'stable','profile_auth':True,'apply_during_work':False}
+    if change=='http':value['feed_url']='http://company.test/lm/feed'
+    elif change=='github':value['feed_url']='https://github.com/org/feed'
+    elif change=='unknown':value['unexpected']=True
+    elif change=='apply':value['apply_during_work']=True
+    elif change=='format':value['profile_auth']='true'
+    (source/relative).write_text(json.dumps(value,sort_keys=True,indent=2)+'\n',encoding='utf-8',newline='\n')
+    _pin(source)
+    result=_nextfix_probe(tmp_path,source,old)
+    assert (result.returncode==0)==(change is None),result.stdout+result.stderr
+    if change is None:
+        assert (source/relative).read_bytes()==auto_update.canonical_startup_settings(value)
+    else:assert 'ADDED_ASSET_DIFFERS: startup settings' in result.stderr

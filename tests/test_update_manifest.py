@@ -71,6 +71,37 @@ def valid_manifest():
     }
 
 
+def canonical_manifest():
+    manifest=valid_manifest()
+    manifest['archive']={
+        'format':'zip','layout':'canonical_portable','top_level':'Label_Match','entrypoint':'Label_Match/app/main.py',
+        'required_files':['Label_Match/'+name for name in (
+            'portable-manifest.json','runtime/python.exe','runtime/pythonw.exe','app/main.py',
+            'INSTALL_CANONICAL_PORTABLE.ps1','tools/apply_prepared_update.ps1','app/update-manifest-key-config.json')],
+    }
+    manifest['install']={'strategy':'version_pointer','preserve_paths':[],'restart_executable':'runtime/pythonw.exe'}
+    return manifest
+
+
+def test_canonical_manifest_reuses_policy_and_requires_fixed_pointer_install():
+    module=load_label_match_module()
+    candidate=module._update_candidate_from_manifest(canonical_manifest(),'stable',current_version='v2.0.22')
+    assert candidate['archive']['layout']=='canonical_portable'
+    assert candidate['install']['strategy']=='version_pointer'
+
+
+@pytest.mark.parametrize('change',['old_strategy','arbitrary_restart','data_mirror','entrypoint','missing_helper','legacy_pointer'])
+def test_canonical_manifest_rejects_in_place_or_incomplete_application(change):
+    module=load_label_match_module();manifest=canonical_manifest()
+    if change=='old_strategy':manifest['install']=valid_manifest()['install']
+    elif change=='arbitrary_restart':manifest['install']['restart_executable']='foreign.exe'
+    elif change=='data_mirror':manifest['install']['preserve_paths']=['data']
+    elif change=='entrypoint':manifest['archive']['entrypoint']='Label_Match/foreign.py'
+    elif change=='missing_helper':manifest['archive']['required_files'].remove('Label_Match/tools/apply_prepared_update.ps1')
+    elif change=='legacy_pointer':manifest['archive']=valid_manifest()['archive']
+    with pytest.raises(ValueError):module._update_candidate_from_manifest(manifest,'stable',current_version='v2.0.22')
+
+
 def signed_manifest_payload(manifest):
     private = Ed25519PrivateKey.generate()
     signature = private.sign(json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
