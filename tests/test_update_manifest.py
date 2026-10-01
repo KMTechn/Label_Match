@@ -151,28 +151,24 @@ def test_packaged_build_key_config_accepts_es256_jwk(monkeypatch, tmp_path):
     assert configured == public_jwk
 
 
-def test_update_provider_off_does_not_call_network(monkeypatch):
+@pytest.mark.parametrize("provider", ["off", None], ids=["explicit-off", "unset"])
+def test_update_provider_off_does_not_call_network(monkeypatch, provider):
     module = load_label_match_module()
-    monkeypatch.setenv("LABEL_MATCH_UPDATE_PROVIDER", "off")
+    if provider is None:
+        monkeypatch.delenv("LABEL_MATCH_UPDATE_PROVIDER", raising=False)
+    else:
+        monkeypatch.setenv("LABEL_MATCH_UPDATE_PROVIDER", provider)
+
+    calls = []
 
     def fail_get(*args, **kwargs):
+        calls.append((args, kwargs))
         raise AssertionError("requests.get should not be called when updater is off")
 
     monkeypatch.setattr(module.requests, "get", fail_get)
 
     assert module.check_for_updates() == (None, None)
-
-
-def test_update_provider_defaults_to_off_without_network(monkeypatch):
-    module = load_label_match_module()
-    monkeypatch.delenv("LABEL_MATCH_UPDATE_PROVIDER", raising=False)
-
-    def fail_get(*args, **kwargs):
-        raise AssertionError("requests.get should not be called without explicit updater provider")
-
-    monkeypatch.setattr(module.requests, "get", fail_get)
-
-    assert module.check_for_updates() == (None, None)
+    assert calls == []
 
 
 def test_frozen_release_disables_in_process_code_root_updater(monkeypatch):
@@ -588,20 +584,11 @@ def test_verify_update_file_hash_accepts_matching_sha256(tmp_path):
     module._verify_update_file_hash(str(path), expected)
 
 
-def test_verify_update_file_hash_rejects_mismatch(tmp_path):
+@pytest.mark.parametrize("expected_hash,error", [("0" * 64, "SHA256 mismatch"), (None, "requires")], ids=["mismatch", "missing"])
+def test_verify_update_file_hash_rejects_mismatch(tmp_path, expected_hash, error):
     module = load_label_match_module()
     path = tmp_path / "update.zip"
     path.write_bytes(b"zip bytes")
 
-    with pytest.raises(ValueError, match="SHA256 mismatch"):
-        module._verify_update_file_hash(str(path), "0" * 64)
-
-
-def test_verify_update_file_hash_requires_expected_sha256(tmp_path):
-    module = load_label_match_module()
-    path = tmp_path / "update.zip"
-    path.write_bytes(b"zip bytes")
-
-    with pytest.raises(ValueError, match="requires"):
-        module._verify_update_file_hash(str(path), None)
-
+    with pytest.raises(ValueError, match=error):
+        module._verify_update_file_hash(str(path), expected_hash)

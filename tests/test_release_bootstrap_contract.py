@@ -29,15 +29,8 @@ def test_retired_install_helper_is_unreachable_even_when_legacy_files_exist(tmp_
     nested.unlink()
     assert module._label_match_direct_sync_tool_command(context) == []
 
+    legacy.unlink()
+    assert module._label_match_direct_sync_tool_command(context) == []
 
-def test_retired_install_helper_resolver_always_returns_empty(tmp_path):
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    script = tools / "direct_sync_relay_install_pack.py"
-    script.write_text("# fixture\n", encoding="utf-8")
-    context = {"app_root": str(tmp_path)}
-    command = module._label_match_direct_sync_tool_command(context)
-
-    assert command == []
     script.unlink()
     assert module._label_match_direct_sync_tool_command(context) == []

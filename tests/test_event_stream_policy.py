@@ -78,11 +78,6 @@ def test_catalog_stream_does_not_admit_local_only_events():
     assert not (catalog_events & CONTRACT_CANDIDATE_EVENT_TYPES)
 
 
-def test_materializer_success_event_is_preserved_locally_not_relayed():
-    assert "PHS_LABEL_ACTIVE_RESOLVED" in LOCAL_ONLY_EVENT_TYPES
-    assert "PHS_LABEL_ACTIVE_RESOLVED" not in CONTRACT_CANDIDATE_EVENT_TYPES
-
-
 def test_all_eight_reviewed_values_remain_present_in_label_source():
     source = (
         Path(__file__).resolve().parents[1] / "Label_Match.py"

@@ -986,3 +986,15 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 ### pytest writer 격리
 
 `tests/conftest.py`는 실행별 basetemp 아래 control root와 기존 TEST_MODE override를 함께 설정한다. Python·PowerShell 자식은 같은 root를 상속하므로 실제 경쟁 거절을 유지하면서 서로 다른 시험 실행의 admission mutex 간섭을 피한다. 제품 mutex 이름·derivation과 최소 권한 요청은 그대로다. 실제 Tk·호스트 자격 증명 시험은 기존 headless harness의 차단·제외 범위를 따른다.
+
+
+### 동작 보장 시험 통합
+
+|묶음|통합한 노드 → 남긴 노드|보존한 입력·단언|
+|---|---|---|
+|LM-TC01|event_stream_policy의 materializer_success → audited_label_csv_values + label_csv_contract의 b_events_split|ACTIVE_RESOLVED local-only/candidate 제외는 동결 exact-set·disjoint가 포함. 실제 local/primary CSV와 relay 선택은 그대로.|
+|LM-TC02|release_bootstrap_contract의 resolver_always_returns_empty → is_unreachable_even_when_legacy_files_exist|nested+flat+script, flat+script, script만, 빈 tools의 네 상태 모두 command=[]; public onboarding 순서 시험 유지.|
+|LM-TC03|update_manifest의 requires_expected_sha256 → rejects_mismatch 2행|같은 `b"zip bytes"`, wrong SHA/None, ValueError와 원 `SHA256 mismatch`/`requires`; positive hash·private provider 시험 유지.|
+|LM-TC04|update_manifest의 defaults_to_off_without_network → off_does_not_call_network 2행|off/환경 미지정, 각 행 fresh module와 network fail sentinel, 공개 결과 `(None,None)`. 예외가 삼켜져도 호출0을 직접 확인.|
+
+벡터 수를 줄이지 않았다. 실행 시간 개선은 미측정이며 native GUI·자격 증명 수용은 이 통합의 근거가 아니다.
