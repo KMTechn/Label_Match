@@ -398,6 +398,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 ## StartupUpdate1 · 매일 시작 시 코드 전환 계약
 
+SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부여한 SYNCHRONIZE·MUTEX_MODIFY_STATE(0x00100001)만 요청해 다시 연다. busy·abandoned·native wait 오류는 각각 구분하고 전환을 허용하지 않는다. 경로별 새 native mutex의 일반 사용자 재열기는 호스트에서 PROVEN이며 실제 SYSTEM↔사용자 경합은 랩 NOT TESTED다.
+
 설정은 출시 시 builder 입력이다. 순수 HTTPS·기존 GitHub 거절·정확한 필드/형식 검증을 적용한다. canonical 설정 SHA를 packet 추가 파일 선언과 설치기의 보호 policy에 묶고 설치 뒤 원문·형식·policy 설정이 바뀌면 시작/적용을 거절한다.
 
 요구: 로그온 SYSTEM 작업은 보호된 `current/tools/apply_prepared_update.ps1`만 실행한다. 고정 `current` bootstrap은 `versions/<source SHA>`의 활성 코드를 선택한다. 사용자 데이터·장비 신원·미완료·outbox·대기 전송은 복사하거나 되돌리지 않는다. 준비 패킷과 내구 전이 기록을 GUI/relay 시작 전에 확인한다. 업무 중 적용은 기본 끔이며 켜기를 거절한다.

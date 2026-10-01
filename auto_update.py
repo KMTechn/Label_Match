@@ -582,8 +582,8 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
     sddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;" + operator_sid + ")"
     if not convert(sddl, 1, ctypes.byref(descriptor), None):
         raise OSError(ctypes.get_last_error(), "update mutex ACL conversion failed")
-    create = kernel.CreateMutexW
-    create.argtypes = [ctypes.POINTER(Attributes), wintypes.BOOL, wintypes.LPCWSTR]
+    create = kernel.CreateMutexExW
+    create.argtypes = [ctypes.POINTER(Attributes), wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
     create.restype = wintypes.HANDLE
     kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel.WaitForSingleObject.restype = wintypes.DWORD
@@ -593,7 +593,7 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
     identity = hashlib.sha256(os.path.normcase(str(control.absolute())).encode("utf-8")).hexdigest()[:24]
     attributes = Attributes(ctypes.sizeof(Attributes), descriptor, False)
     try:
-        handle = create(ctypes.byref(attributes), False, "Global\\KMTech.LabelMatch.Update." + identity + (".Trial" if trial else ""))
+        handle = create(ctypes.byref(attributes), "Global\\KMTech.LabelMatch.Update." + identity + (".Trial" if trial else ""), 0, 0x00100001)
     finally:
         kernel.LocalFree(descriptor)
     if not handle:
@@ -602,8 +602,12 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
     try:
         result = kernel.WaitForSingleObject(handle, 5000)
         acquired = result in {0, 0x80}
+        if result == 0x80:
+            raise RuntimeError("update mutex ownership was abandoned")
+        if result == 0x102:
+            raise RuntimeError("update mutex ownership is busy")
         if result != 0:
-            raise RuntimeError("update mutex ownership is busy or abandoned")
+            raise OSError(ctypes.get_last_error(), "update mutex wait failed")
         yield
     finally:
         if acquired:
