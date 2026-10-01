@@ -926,6 +926,7 @@ def onboard_current_user(
     relay_launcher: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
+    defer_canonical_relay_start: bool = False,
 ) -> dict[str, Any]:
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
@@ -1186,7 +1187,15 @@ def onboard_current_user(
         else:
             release = {"status": "NOT_REQUIRED"}
         report["stop_marker_release"]["release"] = release
-        report["relay_start"] = dict(relay_launcher(paths.app_root))
+        if defer_canonical_relay_start:
+            from writer_session_fence import active_fence, canonical_control_root, _delegation_matches
+            values = os.environ if environ is None else environ
+            fence = active_fence(canonical_control_root(values), environ=values)
+            if fence is None or not _delegation_matches(fence, source="current_user_onboarding", environ=values):
+                raise ValueError("deferred relay start requires exact canonical installer ownership")
+            report["relay_start"] = {"status": "DEFERRED_CANONICAL_INSTALL"}
+        else:
+            report["relay_start"] = dict(relay_launcher(paths.app_root))
         relay_start_status = str(report["relay_start"].get("status") or "")
         if relay_start_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
@@ -1194,7 +1203,7 @@ def onboard_current_user(
                 report_path=paths.onboarding_report_path,
                 status="UNKNOWN",
             )
-        if relay_start_status != "ALIVE":
+        if relay_start_status != ("DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE"):
             raise ValueError("current-user relay survival was not proven")
         apply_current_user_runtime_environment(paths, environ=environ)
         report.update(
@@ -1240,6 +1249,8 @@ def onboard_current_user(
         report["status"] = "FAILED"
         report["failure"] = str(exc)[:500]
         report["error_type"] = exc.__class__.__name__
+        from auto_update import launch_failure_details
+        report["launch_failure_details"] = launch_failure_details(exc)
         from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
         cause_code = (
             'RELAY_RESUME_REQUIRED' if report.get('relay_resume_required') else
@@ -1359,10 +1370,12 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--app-root", default=str(_default_app_root()))
     parser.add_argument("--server-base-url", default=DEFAULT_SERVER_BASE_URL)
+    parser.add_argument("--defer-canonical-relay-start", action="store_true")
     args = parser.parse_args(argv)
     try:
         report = onboard_current_user(
             args.app_root,
+            defer_canonical_relay_start=args.defer_canonical_relay_start,
             server_base_url=args.server_base_url,
             require_bootstrap_integrity=requires_bootstrap_integrity(args.app_root),
         )

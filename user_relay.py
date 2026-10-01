@@ -117,8 +117,21 @@ def _default_application_root() -> Path:
     return module_parent
 
 
+def _logical_application_root(root: Path) -> Path:
+    from auto_update import control_root
+    code = root / "app" if (root / "app").is_dir() else root
+    control = control_root(code)
+    return control.parent / "current" if control is not None else root
+
+
 def build_user_relay_command(app_root: str | os.PathLike[str]) -> list[str]:
     root = Path(app_root).expanduser().resolve()
+    from auto_update import control_root
+    code = root / "app" if (root / "app").is_dir() else root
+    control = control_root(code)
+    if control is not None:
+        fixed = control.parent / "current"
+        return [str(fixed / "runtime/pythonw.exe"), "-I", "-B", str(fixed / "app/auto_update.py"), "--bootstrap", "--role", "relay", "--", USER_RELAY_MODE]
     return [*_application_command(root), USER_RELAY_MODE]
 
 
@@ -362,7 +375,7 @@ def start_user_relay_process(
             return None
         return _fresh_persistent_owner(
             _read_json(user_relay_status_path(direct_sync_root)),
-            app_root=root,
+            app_root=_logical_application_root(root),
             direct_sync_root=direct_sync_root,
         )
 
@@ -382,20 +395,8 @@ def start_user_relay_process(
             "existing_relay_reused": True,
             "owner_status_updated_at": confirmed_owner["updated_at"],
         }
-    creation_flags = (
-        getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        | getattr(subprocess, "DETACHED_PROCESS", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    )
-    process = subprocess.Popen(
-        command,
-        cwd=str(Path(app_root).expanduser().resolve()),
-        close_fds=True,
-        creationflags=creation_flags,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    from auto_update import start_ordinary_process
+    process = start_ordinary_process(command, cwd=str(Path(app_root).expanduser().resolve()))
     if process.pid <= 0:
         raise UserRelayError("current-user relay launch did not return a process id")
     wait(survival)
@@ -551,6 +552,12 @@ def _runtime_cycle(
     worker_id: str = LABEL_MATCH_WORKER_ID,
     reason: str = "PERSISTENT_USER_RELAY",
 ) -> dict[str, Any]:
+    from auto_update import prepare_feed_packet
+    code = app_root / "app" if (app_root / "app").is_dir() else app_root
+    try:
+        update_preparation = prepare_feed_packet(code)
+    except Exception as error:
+        update_preparation = {"status": "DEFERRED", "error_type": type(error).__name__}
     selected_status = runtime_status_path or (
         direct_sync_root / "status" / "direct_sync_relay_status.json"
     )
@@ -572,6 +579,7 @@ def _runtime_cycle(
         "process_status": process_status,
         "process_returncode": process_result.get("returncode", "UNKNOWN"),
         "relay_status": relay_status,
+        **({"auto_update": update_preparation} if update_preparation["status"] != "OFF" else {}),
     }
 
 
@@ -809,6 +817,11 @@ def main(argv: list[str] | None = None) -> int:
         .expanduser()
         .resolve()
     )
+    from auto_update import startup_gate, trial_stop_requested, relay_ready_metadata
+    code = app_root / "app" if (app_root / "app").is_dir() else app_root
+    update_result = startup_gate(code, [USER_RELAY_MODE, *(argv or [])], role="relay")
+    if update_result is not None:
+        return update_result
     from current_user_onboarding import (
         apply_current_user_runtime_environment,
         resolve_current_user_onboarding_paths,
@@ -863,14 +876,16 @@ def main(argv: list[str] | None = None) -> int:
             ),
             status_path=user_relay_status_path(direct_sync_root),
             interval_seconds=args.interval_seconds,
-            stop_requested=stop_path.exists,
+            stop_requested=lambda: stop_path.exists() or trial_stop_requested(code),
             max_cycles=1 if args.once else None,
             metadata={
                 "process_id": os.getpid(),
                 "worker_id": LABEL_MATCH_WORKER_ID,
-                "app_root": str(app_root),
+                "app_root": str(_logical_application_root(app_root)),
+                "code_root": str(app_root),
                 "direct_sync_root": str(direct_sync_root),
                 "queue_dir": str(direct_sync_root / "queue"),
+                **relay_ready_metadata(code),
             },
         )
     finally:

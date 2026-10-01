@@ -42,7 +42,7 @@ TEST_MODE_ENV = "KMTECH_LABEL_WRITER_TEST_MODE"
 
 # The code-derived scanner normalizes this literal to zero before hashing its
 # own source closure, so updating the pin is deterministic rather than cyclic.
-WRITER_INVENTORY_SHA256 = "614778630d1b637a84a4e64715ea3f44b4d99917cee370157e8d9d7723098c78"
+WRITER_INVENTORY_SHA256 = "52565c70a0df7f2c07c43c04c37a64c0ff3ccb4451dbbfb41a0d3a38e445a797"
 
 DELEGATION_TOKEN_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TOKEN"
 DELEGATION_SESSION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID"
@@ -539,7 +539,10 @@ def writer_admission(
             source=selected_source,
             environ=values,
         )
-    except WriterFenceError:
+        if allowed_sources is None:
+            from auto_update import assert_version_writer
+            assert_version_writer(Path(__file__).resolve().parent, source=selected_source, environ=values)
+    except BaseException:
         if lease is not None:
             lease.release()
         raise

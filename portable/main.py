@@ -57,6 +57,10 @@ def _portable_smoke() -> int:
 def main() -> int:
     if "--zero-pe-portable-smoke" in sys.argv[1:]:
         return _portable_smoke()
+    from auto_update import startup_gate
+    result = startup_gate(APP_ROOT, list(sys.argv[1:]))
+    if result is not None:
+        return result
     from Label_Match import main as application_main
 
     return int(application_main())

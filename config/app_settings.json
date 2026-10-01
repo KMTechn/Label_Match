@@ -52,5 +52,9 @@
             "Timestamp": 216
         }
     },
-    "worker_name": "1.0.5"
+    "worker_name": "1.0.5",
+    "update_settings": {
+        "manifest_public_key": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"GBWy34k3z4UImrL1aSggBD0odMUDoBtjyYV3Po7BvwY\",\"y\":\"eBZ45Vf2bpqMpjSo76UbfqZEPGRI9BpBtXAp6bOfBA0\"}",
+        "provider": "off"
+    }
 }

@@ -454,7 +454,10 @@ def build(
     output: Path,
     *,
     update_manifest_public_key_config: str,
+    auto_update_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    from auto_update import policy_from_settings
+    startup_policy=policy_from_settings(auto_update_settings or {})
     repo_root = repo_root.resolve()
     python_home = python_home.resolve()
     output = output.resolve()
@@ -557,6 +560,8 @@ def build(
             writer_fence_contract_source,
             output / WRITER_FENCE_CONTRACT,
         )
+        shutil.copy2(repo_root / "tools/apply_prepared_update.ps1", output / "tools/apply_prepared_update.ps1")
+        (app_root / "auto-update-settings.json").write_text(json.dumps(startup_policy, sort_keys=True, indent=2)+"\n", encoding="utf-8", newline="\n")
         native = _app_native_inventory(app_root)
         forbidden_roots = [
             name
@@ -574,6 +579,13 @@ def build(
             "schema": PORTABLE_SCHEMA,
             "source_commit": source_commit,
             "source_tree": source_tree,
+            "startup_update_protocol": 1,
+            "startup_update_helper_sha256": _sha256(output / "tools/apply_prepared_update.ps1"),
+            "helper_sha256": _sha256(output / "INSTALL_THIS_PC.ps1"),
+            "integrity_helper_sha256": _sha256(output / "tools/bootstrap_integrity.ps1"),
+            "writer_fence_helper_sha256": _sha256(output / "tools/label_writer_fence.ps1"),
+            "writer_session_contract_sha256": _sha256(output / "tools/label_writer_fence_contract.json"),
+            "writer_sink_inventory_contract_sha256": next(node.value.value for node in ast.parse((repo_root / "writer_session_fence.py").read_text(encoding="utf-8-sig")).body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "WRITER_INVENTORY_SHA256" for target in node.targets)),
             "python_version": ".".join(str(value) for value in EXPECTED_PYTHON),
             "python_home": str(python_home),
             "runtime_python_sha256": _sha256(output / "runtime" / "python.exe"),
@@ -605,7 +617,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-root", type=Path, default=Path(__file__).resolve().parents[1]
     )
-    parser.add_argument("--update-manifest-public-key-config", required=True)
+    parser.add_argument("--update-manifest-public-key-config", default=None)
+    parser.add_argument("--auto-update-settings", type=Path)
     return parser.parse_args(argv)
 
 
@@ -615,7 +628,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         args.repo_root,
         args.python_home,
         args.output,
-        update_manifest_public_key_config=args.update_manifest_public_key_config,
+        update_manifest_public_key_config=(args.update_manifest_public_key_config or json.dumps(json.loads((args.repo_root / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))["manifest_public_key"])),
+        auto_update_settings=(json.loads(args.auto_update_settings.read_text(encoding="utf-8-sig")) if args.auto_update_settings else None),
     )
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return 0

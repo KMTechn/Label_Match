@@ -336,10 +336,26 @@ function Arg([string]$Value) {
     return $Value
 }
 
-function Command([string]$Root) {
+function Command([string]$Root, [switch]$StartupUpdate) {
+    if ($StartupUpdate) {
+        return ('{0} -I -B {1} --bootstrap --role relay -- --label-match-user-relay' -f (Arg (Join-Path $Root 'runtime\pythonw.exe')), (Arg (Join-Path $Root 'app\auto_update.py')))
+    }
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $Root) 'update-control\policy.json')) {
+        return Command $Root -StartupUpdate
+    }
     return ('{0} -I -B {1} --label-match-user-relay' -f
         (Arg (Join-Path $Root 'runtime\pythonw.exe')),
         (Arg (Join-Path $Root 'app\main.py')))
+}
+
+function RelayCodeRoot([string]$Root) {
+    $control=Join-Path (Split-Path -Parent $Root) 'update-control'
+    if (-not (Test-Path -LiteralPath (Join-Path $control 'policy.json'))) { return $Root }
+    $active=Get-Content -LiteralPath (Join-Path $control 'active.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$active.schema -cne 'label-match-startup-update-v1' -or [string]$active.sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Startup update active code is invalid.' }
+    $version=Join-Path (Join-Path (Split-Path -Parent $Root) 'versions') ([string]$active.sha)
+    if (-not (Test-Path -LiteralPath (Join-Path $version 'app\main.py'))) { throw 'Startup update active code is absent.' }
+    return $version
 }
 
 function ServerBaseUrlOrigin([string]$Value) {
@@ -448,26 +464,18 @@ def syntax(path, relative):
 # X13-B explicitly supports the 57f52e1 shared 0.2.0 preimage. Only these
 # release-declared replacements and the read-only leaf addition may differ.
 # Pins below hash Git LF text; CRLF checkout serialization is also supported.
-shared_replacements = {
-    'app/kmtech_shared/__init__.py': (
-        'b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455',
-        '32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295'),
-    'app/kmtech_shared.manifest.json': (
-        '465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee',
-        'feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117'),
-    'app/kmtech_shared.lock.json': (
-        '6807ed97f7d734c5d8bdb0e23c141916cc5f013bd2392a46b98849d285d54fcd',
-        '87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9'),
-    'app/kmtech_zero_pe.vendor.json': (
-        'e7dac78746db6efbccedcba5c3b44b58b77bc44e8d25a2dbaea6dc1ac01e307c',
-        'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
-    'INSTALL_THIS_PC.ps1': (
-        '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        '2401e30f7d7c5965360bfcb1e1ebc3ef71fe30491eb8ee7e9f84dd2a8e1e5770'),
-    'tools/bootstrap_integrity.ps1': (
-        '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
-        '7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3'),
-}
+shared_replacements = {'INSTALL_THIS_PC.ps1': ('7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
+                         'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+ 'app/kmtech_shared.lock.json': ('6807ed97f7d734c5d8bdb0e23c141916cc5f013bd2392a46b98849d285d54fcd',
+                                 '87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9'),
+ 'app/kmtech_shared.manifest.json': ('465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee',
+                                     'feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117'),
+ 'app/kmtech_shared/__init__.py': ('b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455',
+                                   '32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295'),
+ 'app/kmtech_zero_pe.vendor.json': ('e7dac78746db6efbccedcba5c3b44b58b77bc44e8d25a2dbaea6dc1ac01e307c',
+                                    'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
+ 'tools/bootstrap_integrity.ps1': ('7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
+                                   '7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3')}
 shared_additions = {
     'app/kmtech_shared/powershell/portable.ps1':
         'fb2e506d2194eb54f526f4aa73515ebd226278a3f4f44cbc3854de91186781d1',
@@ -506,16 +514,22 @@ shared_transition = all(
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', 'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
- 'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-                        '6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062'),
+'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
+                        '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+ 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                    'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
                              'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'),
  'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
                              '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+ 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                               'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
+ 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
+                                        '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
  'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
                                   '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
  'app/label_workbench_context.py': ('95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422',
@@ -536,20 +550,18 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
                                      '74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c'),
  'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
                                      'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
+ 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
+                                                    'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
  'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
                                          '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'),
  'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718',
                                    'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
- 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
-                             'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
  'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
-                                 '8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6'),
+                                 '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
  'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
                                                     'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
-                                        '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
- 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d')}
+                                        '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -570,18 +582,20 @@ legacy_label_transition = all(
 # initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-  '6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062'),
+  '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
  ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-  '6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062'),
+  '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-  '6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062')}
+  '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e')}
 scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', 'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
- 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
  'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
                              '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+ 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                               'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
  'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
                                   '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
  'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
@@ -618,13 +632,14 @@ scan_input_transition = (
 # and installer contracts stay checked. Optional local scanner state is read
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
-nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
- '6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062')
+nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938', '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e')
 nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', 'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
- 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492',
                              '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+ 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                               'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
  'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
                                   '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
  'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
@@ -652,7 +667,7 @@ nextfix_label_transition = (
 
 # a20cd01 -> this scanner source: exact forward-only source pair, the same
 # pinned companion deltas, and unchanged writer membership/runtime/contracts.
-scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062')
+scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e')
 scanner_transition = (
     (installed / nextfix_label_path).is_file() and
     (source / nextfix_label_path).is_file() and
@@ -662,14 +677,18 @@ scanner_transition = (
 # Reviewed current-user selection update on the same accepted preimages.
 # All four modules must match the exact directional LF set. Other app/runtime
 # files, writer membership and contracts retain their ordinary checks.
-current_user_profile_replacements = {
-    'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
-    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6'),
-    'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
-    'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d'),
-    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
-}
+current_user_profile_replacements = {'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                    'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+ 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
+                             'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+ 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
+                                        '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
+ 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed',
+                                      '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+ 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
+                                                    'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+ 'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87',
+                                 '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f')}
 # Exact writer bytes from the same accepted profile/scan preimages; their
 # inventory pins differ. No additional release direction is admitted.
 current_user_profile_writer_preimages = {
@@ -723,6 +742,585 @@ remote_transport_transition = (
     and release_digest(source / relative) == after
     for relative, (befores, after) in remote_transport_replacements.items()
 )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Every changed byte and added asset below is an exact committed release pair.
+# Public trust rotation additionally requires this precise old/new configuration.
+from typing import Any, Mapping
+from urllib.parse import urlparse, parse_qsl
+UPDATE_GITHUB_UPDATE_HOSTS = {"api.github.com", "github.com", "www.github.com"}
+UPDATE_SECRET_QUERY_KEYS = {
+    "access_token",
+    "api_key",
+    "client_secret",
+    "github_token",
+    "pat",
+    "private_key",
+    "sig",
+    "signature",
+    "token",
+}
+UPDATE_SECRET_QUERY_PREFIXES = ("x_amz_", "x_goog_")
+def _assert_https_update_url(url, *, require_zip=False):
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError("Update URL must be HTTPS")
+    if parsed.username or parsed.password:
+        raise ValueError("Update URL must not include userinfo")
+    if parsed.fragment:
+        raise ValueError("Update URL must not include fragments")
+    if require_zip and not parsed.path.lower().endswith(".zip"):
+        raise ValueError("Update artifact URL must point to a .zip file")
+    for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
+        normalized_key = key.lower().replace("-", "_")
+        if normalized_key in UPDATE_SECRET_QUERY_KEYS or normalized_key.startswith(UPDATE_SECRET_QUERY_PREFIXES):
+            raise ValueError("Update URL must not contain raw token query parameters")
+def _is_github_hosted_update_url(url):
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    return host in UPDATE_GITHUB_UPDATE_HOSTS or host.endswith(".githubusercontent.com")
+assert_https_update_url = _assert_https_update_url
+def policy_from_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+
+    if not isinstance(settings, Mapping):
+        raise ValueError("auto-update settings must be an object")
+    allowed = {"feed_url", "channel", "apply_during_work", "profile_auth"}
+    if set(settings) - allowed:
+        raise ValueError("auto-update settings contain unsupported fields")
+    feed = settings.get("feed_url", "")
+    if not isinstance(feed, str):
+        raise ValueError("auto-update feed must be a string")
+    if feed:
+        assert_https_update_url(feed)
+        if _is_github_hosted_update_url(feed):
+            raise ValueError("daily update feed cannot use GitHub hosting")
+    if settings.get("apply_during_work", False) is not False:
+        raise ValueError("applying during work requires separate scanner acceptance")
+    channel = settings.get("channel", "stable")
+    if not isinstance(channel, str) or re.fullmatch(r"[a-z0-9_-]{1,32}", channel) is None:
+        raise ValueError("auto-update channel is malformed")
+    auth = settings.get("profile_auth", bool(feed))
+    if feed and auth is not True:
+        raise ValueError("company feed requires existing device authentication")
+    if type(auth) is not bool:
+        raise ValueError("profile authentication setting must be a boolean")
+    return {"feed_url": feed, "channel": channel, "apply_during_work": False, "profile_auth": auth}
+def canonical_startup_settings(settings: Mapping[str, Any]) -> bytes:
+    return (json.dumps(policy_from_settings(settings), sort_keys=True, indent=2) + "\n").encode("utf-8")
+
+startup_release_replacements = {'3f4574a176f45253d746b397ad979896f266d062': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+                                                                               '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
+                                                                                 '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
+                                              'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
+                                                                          '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'),
+                                              'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
+                                                                          'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+                                              'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
+                                                                          '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+                                              'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                                                                            'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
+                                                                                     '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
+                                              'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
+                                                                               '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
+                                              'app/label_workbench_context.py': ('95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422',
+                                                                                 '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'),
+                                              'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
+                                                                                 '409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524'),
+                                              'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
+                                                                                   '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
+                                                                               '4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563'),
+                                              'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
+                                                                           '552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2'),
+                                              'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
+                                                                        '00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786'),
+                                              'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
+                                                                                  'bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d'),
+                                              'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
+                                                                                  'a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f'),
+                                              'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
+                                                                                  'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
+                                              'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
+                                                                                                 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+                                              'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
+                                                                                      '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'),
+                                              'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718',
+                                                                                'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('25f0f9f7b70d27e1b4e7f939720f694ae954670b94dc52c0a9c82d9f310a6794',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('b18a13700497a1064226271f2419b51acf34c008b3f82e69340ec2b64f8846f6',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/label_transition.py': ('a5927e064c0468257c54e408e3164c67512f225cb78dceb49c231ffd8df83c8b',
+                                                                          '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/package_logistics.py': ('85a71ef78d268fae7f7aad9e21ae68920a6b23d5437e598a5822512fa45a6d89',
+                                                                           '552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2'),
+                                              'app/ui/workflow_view_state.py': ('39bfffcbd6819406ded9c62f8c298d53b5148c6448cd1143b8343363ca0d5136',
+                                                                                'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('2c78bd842bfcb8fe74793b84ea36cb06c2af3664faf2872ad0cbb888bb2361be',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('3f94563728cd665a55c134eb34c5b5de0be4fcb1c0a31ce5525d74017f71a959',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ '731ca29b14a5a9f98ec4f4935382548891557d95': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('cbb55194b55969017b22851b9645ed92d676071122f2fbac763161f05729fc45',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('1d55c96bff15a0ddba47fe65a39b033c67dd30c2ea95f19f41bd4fb4b0ecc253',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('f5e36a8d7142a0e130ef712b35178052d1d11140853ac98310b591f9eb8e7f20',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ '817d393b7316735921c2aa6ede271a04cbea20fd': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+                                                                               '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
+                                                                                 '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
+                                              'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
+                                                                          'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+                                              'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
+                                                                          '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+                                              'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                                                                            'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
+                                                                                     '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
+                                              'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
+                                                                               '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
+                                              'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
+                                                                          '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'),
+                                              'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
+                                                                                 '409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524'),
+                                              'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed',
+                                                                                   '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
+                                                                               '4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563'),
+                                              'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
+                                                                           '552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2'),
+                                              'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
+                                                                        '00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786'),
+                                              'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
+                                                                                  'bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d'),
+                                              'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
+                                                                                  'a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f'),
+                                              'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
+                                                                                  'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
+                                              'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
+                                                                                                 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+                                              'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a',
+                                                                                'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('c89453e181b94b7b018b1be78b1fad76d73d0fecd4f728ee6cf395fed6afbf27',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+                                                                               '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
+                                                                                 '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
+                                              'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
+                                                                          'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+                                              'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
+                                                                          '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+                                              'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                                                                            'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
+                                                                                     '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
+                                              'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
+                                                                               '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
+                                              'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
+                                                                          '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'),
+                                              'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
+                                                                                 '409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524'),
+                                              'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed',
+                                                                                   '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
+                                                                               '4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563'),
+                                              'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
+                                                                           '552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2'),
+                                              'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
+                                                                        '00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786'),
+                                              'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
+                                                                                  'bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d'),
+                                              'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
+                                                                                  'a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f'),
+                                              'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
+                                                                                  'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
+                                              'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
+                                                                                                 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+                                              'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a',
+                                                                                'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('6525f38c350d1d875a6943c3b858b417cbeaac8a7b03e1f984f8584f8445d42f',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('c6a122c91e2f6437bb8857986884899d4336469bfb83ee7731b83a81376e9aec',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('f333164e0306008d17b8eddaabb0da44bead475f9008181b97231839698bbbcc',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('ed16a3a03ecdac3ae8c01ca41c124f6ddb4340d12834a8dd83ed8bad2f0049bd',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+                                                                               '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492',
+                                                                          '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+                                              'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                                                                            'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
+                                                                               '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
+                                              'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
+                                                                          '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'),
+                                              'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
+                                                                                 '409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
+                                                                               '4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563'),
+                                              'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
+                                                                           '552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2'),
+                                              'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
+                                                                        '00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786'),
+                                              'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
+                                                                                  'bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d'),
+                                              'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
+                                                                                  'a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f'),
+                                              'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a',
+                                                                                'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('503dae7aa0250925287745c61a82b9268da59b2855f87d9ba1bd638b724b9cfb',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('2406ca2a3c36016007f14a940ad5f432b7736c62e30d4414f8c1ead4de55d034',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ 'c83c72c26fd4352803500792abd27096b28c58de': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+                                                                               '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
+                                                                                 '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
+                                              'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
+                                                                          'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+                                              'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
+                                                                          '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+                                              'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                                                                            'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
+                                                                                     '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
+                                              'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
+                                                                               '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
+                                              'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
+                                                                          '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'),
+                                              'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
+                                                                                 '409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524'),
+                                              'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed',
+                                                                                   '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
+                                                                               '4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563'),
+                                              'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
+                                                                           '552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2'),
+                                              'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
+                                                                        '00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786'),
+                                              'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
+                                                                                  'bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d'),
+                                              'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
+                                                                                  'a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f'),
+                                              'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
+                                                                                  'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
+                                              'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
+                                                                                                 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+                                              'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a',
+                                                                                'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('18204c0518d4e72d1443062546a7a03d2df47a78fc2a7d3cbb929540d05a55f9',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')},
+ 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
+                                                                      'f68a0438f72c3dfbdaec68601efd4a54c91113aa84a0e47386873b3fdf71b342'),
+                                              'app/Label_Match.py': ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
+                                                                     '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
+                                              'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+                                                                               '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+                                              'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8',
+                                                                               'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'),
+                                              'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                                                                 'bb49c42a1650ac198ed80bae935f9c73489e7aac2761339951e742d94abc7172'),
+                                              'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
+                                                                          'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
+                                              'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492',
+                                                                          '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
+                                              'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
+                                                                            'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
+                                              'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
+                                                                                  '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'),
+                                              'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
+                                                                                     '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
+                                              'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
+                                                                               '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
+                                              'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
+                                                                          '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'),
+                                              'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
+                                                                                 '409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524'),
+                                              'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed',
+                                                                                   '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+                                              'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c',
+                                                              '9b2d65b52104aba7e6ae6fa39c38c387824f656165b091b7ed44f6ea354ed0c1'),
+                                              'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
+                                                                               '4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563'),
+                                              'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
+                                                                           '552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2'),
+                                              'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
+                                                                        '00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786'),
+                                              'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
+                                                                                  'bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d'),
+                                              'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
+                                                                                  'a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f'),
+                                              'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
+                                                                                                 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+                                              'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a',
+                                                                                'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
+                                              'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7',
+                                                                    'bca6ee8be36b757de44dbcd20241909be936a458cec4a9b8a3bed7c5455a60f5'),
+                                              'app/writer_session_fence.py': ('96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce',
+                                                                              '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'),
+                                              'tools/label_writer_fence.ps1': ('d55c7eabc25a2260845893fe21da5df7d1075f2734db898632f9a46023a6a68e',
+                                                                               'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18'),
+                                              'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de',
+                                                                                         '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}}
+startup_release_additions = {'3f4574a176f45253d746b397ad979896f266d062': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ '731ca29b14a5a9f98ec4f4935382548891557d95': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ '817d393b7316735921c2aa6ede271a04cbea20fd': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ 'c83c72c26fd4352803500792abd27096b28c58de': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'},
+ 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9',
+                                              'app/auto_update.py': '24c542157d239b1aaccdb8b049d0cc7a38ea84d1a0e4fe1c4e26bf61f9990679',
+                                              'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671',
+                                              'tools/apply_prepared_update.ps1': 'a8a3fcfbd900a93074d0801d318a180b919459925d88d60fe91c99c0358e1c9b'}}
+startup_public_key_pair = ('f570df63d4dd49f5ac5db2d414839fa0372a37605c7bdaddd385f684c948aae3', 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671')
+startup_candidate_membership = [('auto_update_copy_prepared_file', 'auto_update.py', 'copy_prepared_file', 'decorator'), ('auto_update_create_download_stage', 'auto_update.py', 'create_download_stage', 'decorator'), ('auto_update_create_protected_stage', 'auto_update.py', 'create_protected_stage', 'decorator'), ('auto_update_extract_prepared_code', 'auto_update.py', 'extract_prepared_code', 'decorator'), ('auto_update_fixed_helper', 'auto_update.py', 'fixed_helper', 'decorator'), ('auto_update_launch_version', 'auto_update.py', 'launch_version', 'decorator'), ('auto_update_persist_switch', 'auto_update.py', 'persist_switch', 'decorator'), ('auto_update_preserve_candidate_version', 'auto_update.py', 'preserve_candidate_version', 'decorator'), ('auto_update_publish_download', 'auto_update.py', 'publish_download', 'decorator'), ('auto_update_request_apply_task', 'auto_update.py', 'request_apply_task', 'decorator'), ('auto_update_request_bootstrap', 'auto_update.py', 'request_bootstrap', 'decorator'), ('auto_update_restore_preimage', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('auto_update_task_mutation', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('auto_update_write_download_bytes', 'auto_update.py', 'write_download_bytes', 'decorator'), ('auto_update_write_download_chunk', 'auto_update.py', 'write_download_chunk', 'decorator'), ('auto_update_write_json_durable', 'auto_update.py', 'write_json_durable', 'decorator'), ('canonical_placement', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('current_user_onboarding', 'current_user_onboarding.py', 'onboard_current_user', 'decorator'), ('current_user_setup_removal', 'current_user_onboarding.py', 'remove_current_user_setup', 'decorator'), ('direct_sync_enqueue', 'direct_sync_runtime.py', 'enqueue_completed_source_file', 'decorator'), ('direct_sync_relay_cycle', 'direct_sync_runtime.py', 'run_relay_once', 'decorator'), ('direct_sync_upload', 'direct_sync_push.py', 'upload_source_file', 'decorator'), ('gui_deferred_capture_cancel', 'Label_Match.py', 'Label_Match._cancel_deferred_capture_for_set', 'decorator'), ('gui_direct_sync', 'Label_Match.py', '_label_match_run_and_record_session_direct_sync', 'decorator'), ('gui_label_recovery_hold', 'Label_Match.py', 'Label_Match._hold_label_recovery', 'decorator'), ('gui_package_cancel_enqueue', 'Label_Match.py', 'Label_Match._queue_authoritative_package_cancellation', 'decorator'), ('gui_package_enqueue', 'Label_Match.py', 'Label_Match._queue_authoritative_package', 'decorator'), ('gui_package_pin_changed_hold_recovery', 'Label_Match.py', 'Label_Match._resume_changed_pin_hold', 'decorator'), ('gui_package_pin_changed_restore', 'Label_Match.py', 'Label_Match._restore_changed_pin_file', 'decorator'), ('gui_package_pin_file_move_recovery', 'Label_Match.py', 'Label_Match._recover_package_pin_moves', 'decorator'), ('gui_package_recovery_audit', 'Label_Match.py', 'Label_Match._audit_package_recovery_action', 'decorator'), ('gui_package_recovery_hold', 'Label_Match.py', 'Label_Match._hold_package_recovery_set', 'decorator'), ('label_admin_pin_attempt_audit', 'package_outbox.py', 'PackageOutbox.audit_pin_attempt', 'decorator'), ('label_admin_pin_changed_hold_prepare', 'label_admin_pin.py', 'AdminPinIntentStore.stage_changed_hold', 'decorator'), ('label_admin_pin_changed_hold_state', 'label_admin_pin.py', 'AdminPinIntentStore.finish_changed_hold', 'decorator'), ('label_admin_pin_file_move', 'label_admin_pin.py', 'AdminPinIntentStore.stage_file_move', 'decorator'), ('label_admin_pin_file_move_state', 'label_admin_pin.py', 'AdminPinIntentStore.finish_file_move', 'decorator'), ('label_admin_pin_intent_prepare', 'label_admin_pin.py', 'AdminPinIntentStore.prepare', 'decorator'), ('label_admin_pin_intent_transition', 'label_admin_pin.py', 'AdminPinIntentStore.transition', 'decorator'), ('label_admin_pin_request', 'label_admin_pin.py', 'AdminPinClient.post', 'decorator'), ('package_cancel', 'package_logistics.py', 'PackageLogisticsClient.cancel_package', 'decorator'), ('package_cancellation_drain', 'package_logistics.py', 'PackageCancellationOutboxProcessor.drain', 'decorator'), ('package_create', 'package_logistics.py', 'PackageLogisticsClient.create_package', 'decorator'), ('package_operation_lease', 'package_logistics.py', 'PackageLogisticsClient.issue_operation_lease', 'decorator'), ('package_outbox_drain', 'package_logistics.py', 'PackageOutboxProcessor.drain', 'decorator'), ('package_transfer_reseal', 'package_logistics.py', 'PackageLogisticsClient.replace_and_reseal_transfer', 'decorator'), ('persistent_relay_cycle', 'user_relay.py', 'run_persistent_relay_loop', 'bounded_context'), ('persistent_relay_status', 'user_relay.py', 'run_persistent_relay_loop', 'bounded_context'), ('phs_current_recovery', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator.recover_current', 'decorator'), ('phs_exchange_activate', 'package_logistics.py', 'PackageLogisticsClient.activate_phs_label_exchange', 'decorator'), ('phs_exchange_prepare', 'package_logistics.py', 'PackageLogisticsClient.prepare_phs_label_exchange', 'decorator'), ('phs_label_adopt', 'package_logistics.py', 'PackageLogisticsClient.adopt_phs_label', 'decorator'), ('phs_print_complete', 'package_logistics.py', 'PackageLogisticsClient.complete_phs_label_print', 'decorator'), ('phs_print_request', 'package_logistics.py', 'PackageLogisticsClient.request_phs_label_print', 'decorator'), ('phs_reconciliation_exchange', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator.execute_reconciliation', 'decorator'), ('phs_reconciliation_prepare', 'package_logistics.py', 'PackageLogisticsClient.prepare_phs_reconciliation_label_exchange', 'decorator'), ('phs_reconciliation_recovery', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator.recover_reconciliation', 'decorator'), ('phs_single_exchange', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator.execute_single', 'decorator'), ('raw_relay_runner', 'tools/direct_sync_relay_runner.py', 'main', 'decorator'), ('registration_relay_recovery', 'registration_relay_recovery.py', 'commit_relay_handoff', 'decorator'), ('relay_batch_claim', 'direct_sync_push.py', 'claim_next_relay_batch', 'decorator'), ('relay_batch_drain', 'direct_sync_push.py', 'drain_one_relay_batch', 'decorator'), ('relay_child_launch', 'user_relay.py', 'run_session_direct_sync_once', 'decorator'), ('relay_queue_schema', 'direct_sync_push.py', 'init_relay_queue_schema', 'decorator'), ('relay_spool_enqueue', 'direct_sync_push.py', 'enqueue_source_file_for_relay', 'decorator'), ('relay_stale_lease_reset', 'direct_sync_push.py', 'reset_stale_relay_leases', 'decorator'), ('scheduled_task_remove', 'current_user_scheduled_task.py', 'remove_current_user_scheduled_task', 'decorator'), ('sealed_transfer_attempt', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.attempt', 'decorator'), ('sealed_transfer_drain', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.drain_pending', 'decorator'), ('sealed_transfer_prepare', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.prepare', 'decorator'), ('user_relay_autostart_install', 'user_relay.py', 'install_user_relay_autostart', 'decorator'), ('user_relay_autostart_remove', 'user_relay.py', 'remove_user_relay_autostart', 'decorator'), ('user_relay_process_start', 'user_relay.py', 'start_user_relay_process', 'decorator'), ('user_relay_stop_release', 'user_relay.py', 'release_user_relay_stop_marker', 'decorator'), ('user_relay_stop_request', 'user_relay.py', 'request_user_relay_stop', 'decorator')]
+installed_manifest = json.loads((installed / 'portable-manifest.json').read_text(encoding='utf-8-sig'))
+startup_from = installed_manifest.get('source_commit')
+startup_changes = startup_release_replacements.get(startup_from)
+if startup_changes is not None:
+    startup_changes = dict(startup_changes)
+    # Preserve the existing exact scanner Label preimage with its e88011c
+    # companions; every other byte still follows the same committed declaration.
+    startup_scanner = startup_from.startswith('e88011c') and release_digest(installed/'app/Label_Match.py') == scanner_label_pair[0]
+    if startup_scanner:
+        startup_changes['app/Label_Match.py'] = scanner_label_pair
+        # Exact e880 companions with the already accepted scanner preimage and recomputed pins.
+        startup_changes.update({'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '7443f805d8265a33308b2608de836ee2dff1d070255b2ec94eb1d2c3ec2fe76f'), 'tools/label_writer_fence.ps1': ('6ee3e545a1b3d9bf6e4722a2802e57bca8276d92593fe480c8990501a8db7b8a', 'f7e87e4a6a3b2e6c76b93997ef51cb42646b145138c108d0544e8ec2498e4f18')})
+    allowed_additions = dict(startup_release_additions[startup_from])
+    settings_path=source/'app/auto-update-settings.json'
+    settings_raw=settings_path.read_bytes()
+    try:
+        settings_canonical=canonical_startup_settings(json.loads(settings_raw))
+        if settings_raw != settings_canonical:raise ValueError('noncanonical settings')
+    except (ValueError,TypeError):
+        raise ValueError('WRITER_TRANSITION_ADDED_ASSET_DIFFERS: startup settings') from None
+    if 'app/auto-update-settings.json' in allowed_additions:
+        allowed_additions['app/auto-update-settings.json']=hashlib.sha256(settings_canonical).hexdigest()
+    all_directions = {**startup_changes}
+    candidate_pin,candidate_sources=identity(source)
+    if candidate_sources != startup_candidate_membership:
+        raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+    key_path='app/update-manifest-key-config.json'
+    old_key_digest=release_digest(installed/key_path)
+    new_key_digest=release_digest(source/key_path)
+    if old_key_digest != new_key_digest and (old_key_digest,new_key_digest) != startup_public_key_pair:
+        raise ValueError('WRITER_TRANSITION_PUBLIC_KEY_PAIR_DIFFERS')
+    if old_key_digest != new_key_digest:all_directions[key_path]=(old_key_digest,new_key_digest)
+    for directory in ('app','runtime'):
+        left,right=files(source,directory),files(installed,directory)
+        expected_additions={p for p in allowed_additions if p.startswith(directory+'/')}
+        if left.keys() != right.keys() | expected_additions:
+            raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+        for relative,path in left.items():
+            if relative in expected_additions:
+                if release_digest(path) != allowed_additions[relative]:raise ValueError('WRITER_TRANSITION_ADDED_ASSET_DIFFERS')
+            elif relative in all_directions:
+                before,after=all_directions[relative]
+                if release_digest(right[relative]) != before or release_digest(path) != after:raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: '+relative)
+            elif digest(path) != digest(right[relative]):
+                raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: '+relative)
+    for relative in ('INSTALL_THIS_PC.ps1','launch-label-match.cmd','tools/bootstrap_integrity.ps1','tools/label_writer_fence.ps1','tools/label_writer_fence_contract.json','tools/apply_prepared_update.ps1'):
+        if relative in allowed_additions:
+            if (installed/relative).exists() or release_digest(source/relative)!=allowed_additions[relative]:raise ValueError('WRITER_TRANSITION_ADDED_ASSET_DIFFERS')
+        elif relative in all_directions:
+            before,after=all_directions[relative]
+            if release_digest(installed/relative)!=before or release_digest(source/relative)!=after:raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: '+relative)
+        elif digest(source/relative)!=digest(installed/relative):raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: '+relative)
+    compatibility=('PINNED_LEGACY_LABEL_TRANSITION_MODE' if startup_from.startswith('3f4574a') else 'PINNED_SCAN_INPUT_FIX' if startup_from.startswith(('c83c72c','817d393','92abdaa')) else 'PINNED_W9NEXTFIX_LABEL_RECOVERY' if startup_from.startswith('e88011c') else 'PINNED_STARTUP_UPDATE_BOOTSTRAP')
+    if startup_scanner: compatibility='PINNED_W9SCANONLY_WORKFLOW'
+    candidate_pin,candidate_sources=identity(source)
+    installed_pin,installed_sources=identity(installed)
+    print(json.dumps(dict(installed_inventory_sha256=installed_pin,candidate_inventory_sha256=candidate_pin,compatibility=compatibility)))
+    sys.exit(0)
 
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
@@ -1196,7 +1794,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -1225,6 +1823,8 @@ $invokeParameters = @{
     AllowNoncanonicalLayoutForTest = Get-RequiredExternalBoolean $payload.parameters 'AllowNoncanonicalLayoutForTest'
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
+    StartupUpdateRestorePreimage = [string]$payload.parameters.StartupUpdateRestorePreimage
+    StartupUpdateRestoreSha256 = [string]$payload.parameters.StartupUpdateRestoreSha256
 }
 $Script:LabelWriterFenceAdmissionProductionRoot = [string]$invokeParameters.WriterFenceControlRoot
 if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
@@ -1377,13 +1977,149 @@ function RestoreWriterDelegationEnvironment($Before) {
     }
 }
 
+function Initialize-CanonicalUserProcessApi {
+    if ('LabelMatchCanonicalUserProcess' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+public static class LabelMatchCanonicalUserProcess {
+    public sealed class Security { public string sid; public int session_id; public bool elevated; public int integrity_rid; }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    struct Startup {
+        public int cb; public string reserved, desktop, title;
+        public int x,y,cx,cy,xChars,yChars,fill,flags; public short show,reservedBytes;
+        public IntPtr reserved2,input,output,error;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInfo { public IntPtr process,thread; public int pid,tid; }
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr info,int length,out int needed);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool DuplicateTokenEx(IntPtr token,uint access,IntPtr attributes,int level,int type,out IntPtr copy);
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+    static extern bool CreateProcessWithTokenW(IntPtr token,uint logon,string application,StringBuilder command,uint flags,IntPtr environment,string directory,ref Startup startup,out ProcessInfo process);
+    [DllImport("userenv.dll",SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr environment,IntPtr token,bool inherit);
+    [DllImport("userenv.dll")] static extern bool DestroyEnvironmentBlock(IntPtr environment);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out int pid);
+    static void Check(bool success, string call) { if (!success) { var error=new Win32Exception(Marshal.GetLastWin32Error()); error.Data["call"]=call; throw error; } }
+    static int Integer(IntPtr token,int kind) {
+        IntPtr data=Marshal.AllocHGlobal(4);
+        try { int needed; Check(GetTokenInformation(token,kind,data,4,out needed),"GetTokenInformation"); return Marshal.ReadInt32(data); }
+        finally { Marshal.FreeHGlobal(data); }
+    }
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid,uint index);
+    static int Integrity(IntPtr token) {
+        int needed; GetTokenInformation(token,25,IntPtr.Zero,0,out needed);
+        if(needed<=0 || needed>65536) throw new InvalidOperationException("Token integrity sizing differs.");
+        IntPtr data=Marshal.AllocHGlobal(needed);
+        try { Check(GetTokenInformation(token,25,data,needed,out needed),"GetTokenInformation:integrity");
+            IntPtr sid=Marshal.ReadIntPtr(data); int count=Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+            if(count<=0) throw new InvalidOperationException("Token integrity SID differs.");
+            return Marshal.ReadInt32(GetSidSubAuthority(sid,(uint)(count-1)));
+        } finally { Marshal.FreeHGlobal(data); }
+    }
+    static Security Inspect(IntPtr token) {
+        using (WindowsIdentity identity=new WindowsIdentity(token)) {
+            return new Security {sid=identity.User.Value,session_id=Integer(token,12),elevated=Integer(token,20)!=0,integrity_rid=Integrity(token)};
+        }
+    }
+    public static Security Read(int pid) {
+        using (Process process=Process.GetProcessById(pid)) {
+            IntPtr token; Check(OpenProcessToken(process.Handle,8,out token),"OpenProcessToken:child");
+            try { return Inspect(token); } finally { CloseHandle(token); }
+        }
+    }
+    public static int StartLimited(string command,string sid,int session) {
+        IntPtr shell=GetShellWindow(); int shellPid;
+        if (shell==IntPtr.Zero || GetWindowThreadProcessId(shell,out shellPid)==0)
+            throw new InvalidOperationException("Canonical interactive shell is unavailable.");
+        using (Process shellProcess=Process.GetProcessById(shellPid)) {
+            IntPtr token; Check(OpenProcessToken(shellProcess.Handle,10,out token),"OpenProcessToken:shell");
+            IntPtr primary=IntPtr.Zero,environment=IntPtr.Zero;
+            try {
+                Security security=Inspect(token);
+                if (security.elevated || security.integrity_rid!=8192 || security.sid!=sid || security.session_id!=session || session<=0)
+                    throw new InvalidOperationException("Canonical interactive shell security differs.");
+                Check(DuplicateTokenEx(token,0x18B,IntPtr.Zero,2,1,out primary),"DuplicateTokenEx:primary");
+                security=Inspect(primary);
+                if (security.elevated || security.integrity_rid!=8192 || security.sid!=sid || security.session_id!=session)
+                    throw new InvalidOperationException("Canonical normal-user token differs.");
+                Check(CreateEnvironmentBlock(out environment,primary,false),"CreateEnvironmentBlock");
+                Startup startup=new Startup(); startup.cb=Marshal.SizeOf(typeof(Startup)); startup.desktop="winsta0\\default";
+                ProcessInfo child;
+                Check(CreateProcessWithTokenW(primary,0,null,new StringBuilder(command),0x08000400,environment,null,ref startup,out child),"CreateProcessWithTokenW");
+                try { return child.pid; } finally { CloseHandle(child.thread); CloseHandle(child.process); }
+            } finally {
+                if (environment!=IntPtr.Zero) DestroyEnvironmentBlock(environment);
+                if (primary!=IntPtr.Zero) CloseHandle(primary);
+                CloseHandle(token);
+            }
+        }
+    }
+}
+'@
+}
+function Get-CanonicalRelaySecurity([int]$ProcessId) {
+    Initialize-CanonicalUserProcessApi
+    return [LabelMatchCanonicalUserProcess]::Read($ProcessId)
+}
+function Start-CanonicalLimitedRelay([string]$Line, [string]$UserSid, [int]$SessionId) {
+    Initialize-CanonicalUserProcessApi
+    return [LabelMatchCanonicalUserProcess]::StartLimited($Line, $UserSid, $SessionId)
+}
 function StartRaw([string]$Line) {
-    $created = Invoke-CimMethod `
-        -ClassName Win32_Process `
-        -MethodName Create `
-        -Arguments @{ CommandLine = $Line }
-    if ([uint32]$created.ReturnValue -ne 0) { throw 'Rollback process start failed.' }
-    return [int]$created.ProcessId
+    $caller = Get-CanonicalRelaySecurity $PID
+    if ([int]$caller.session_id -le 0) { throw 'Canonical relay requires an interactive user session.' }
+    if ([bool]$caller.elevated) {
+        # Reuse the same user's existing desktop token. Never fall back to the
+        # installer token, another account, credentials, or a scheduled task.
+        $newPid = Start-CanonicalLimitedRelay $Line ([string]$caller.sid) ([int]$caller.session_id)
+    }
+    else {
+        $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$Line}
+        if ([uint32]$created.ReturnValue -ne 0) { throw 'Rollback process start failed.' }
+        $newPid = [int]$created.ProcessId
+    }
+    $security = Get-CanonicalRelaySecurity $newPid
+    if ([bool]$security.elevated -or [int]$security.integrity_rid -ne 8192 -or [string]$security.sid -cne [string]$caller.sid -or
+        [int]$security.session_id -ne [int]$caller.session_id) {
+        throw 'Canonical relay normal-user security readback failed.'
+    }
+    return [int]$newPid
+}
+
+function Get-LabelLaunchFailure($Failure, [string]$Phase) {
+    $chain = @(); $exception=$Failure.Exception
+    while ($null -ne $exception) {
+        $call = if ($exception.Data.Contains('call')) { [string]$exception.Data['call'] } else { '' }
+        $code = if ($exception -is [ComponentModel.Win32Exception]) { [int]$exception.NativeErrorCode } else { $null }
+        $chain += [ordered]@{type=$exception.GetType().FullName;call=$call;win32_error=$code}
+        $exception=$exception.InnerException
+    }
+    return [ordered]@{phase=$Phase;exception_chain=$chain}
+}
+function Wait-LabelRelayPreimageExit([object[]]$Expected) {
+    $deadline=(Get-Date).AddSeconds(15)
+    do {
+        $remaining=@(UnquiescedProductWriters)
+        foreach ($row in $remaining) {
+            $matches=@($Expected | Where-Object {
+                (Same ([string]$_.ExecutablePath) ([string]$row.ExecutablePath)) -and
+                (Normalize-RelayExecutableQuoting ([string]$_.CommandLine) ([string]$_.ExecutablePath)) -ceq
+                (Normalize-RelayExecutableQuoting ([string]$row.CommandLine) ([string]$row.ExecutablePath))
+            })
+            if ($matches.Count -ne 1) { throw 'Unexpected writer remains after normal removal.' }
+        }
+        if ($remaining.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    throw 'Normal relay process exit remains unproven.'
 }
 
 function HealthyLifecycle([string]$Root, [string]$Installed, [string]$Mode = 'inspect', [string]$ExpectedStateSha256 = '') {
@@ -1506,13 +2242,14 @@ function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$I
     if ($Run.exists -and ([string]$Run.kind -cne 'String' -or [string]$Run.data -cne (Command $Installed))) {
         throw 'Healthy lifecycle autostart belongs to another command.'
     }
+    $relayRoot=RelayCodeRoot $Installed
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if (@($RelayValues).Count -gt 1) { throw 'Healthy lifecycle relay ownership is ambiguous.' }
     foreach ($relay in $RelayValues) {
         $owner = Invoke-CimMethod -InputObject $relay -MethodName GetOwnerSid -ErrorAction Stop
         if ($owner.ReturnValue -ne 0 -or [string]$owner.Sid -cne $userSid -or
-            -not (Same ([string]$relay.ExecutablePath) (Join-Path $Installed 'runtime\pythonw.exe')) -or
-            (Normalize-RelayExecutableQuoting ([string]$relay.CommandLine) (Join-Path $Installed 'runtime\pythonw.exe')) -cne (Command $Installed)) {
+            -not (Same ([string]$relay.ExecutablePath) (Join-Path $relayRoot 'runtime\pythonw.exe')) -or
+            (Normalize-RelayExecutableQuoting ([string]$relay.CommandLine) (Join-Path $relayRoot 'runtime\pythonw.exe')) -cne (Command $relayRoot)) {
             throw 'Healthy lifecycle relay belongs to another owner or command.'
         }
     }
@@ -1574,7 +2311,8 @@ function Test-LegacyFirstRegistrationState(
         'PINNED_LEGACY_LABEL_TRANSITION_MODE',
         'PINNED_SCAN_INPUT_FIX',
         'PINNED_W9NEXTFIX_LABEL_RECOVERY',
-        'PINNED_CURRENT_USER_PROFILE_SELECTION'
+        'PINNED_CURRENT_USER_PROFILE_SELECTION',
+        'PINNED_STARTUP_UPDATE_BOOTSTRAP'
     )
     if (-not $ExistingVerified -or
         [string]$WriterTransition.compatibility -cnotin $pinnedDirections -or
@@ -1816,7 +2554,22 @@ function Save-FirstRegistrationAttempt($Record, [string]$Path) {
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
 . (Get-LabelSharedPortableLeafPath $SourceRoot)
 $source = Full $SourceRoot 'SourceRoot'
+function Assert-CanonicalStartupLifecycleBoundary([string]$Root) {
+    $control = Join-Path (Split-Path -Parent $Root) 'update-control'
+    if (-not (Test-Path -LiteralPath (Join-Path $control 'policy.json'))) { return }
+    $active = Get-Content -LiteralPath (Join-Path $control 'active.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $installed = Get-Content -LiteralPath (Join-Path $Root 'portable-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $transition = Get-Content -LiteralPath (Join-Path $control 'transition.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$active.sha -cnotmatch '^[0-9a-f]{40}$' -or [string]$installed.source_commit -cnotmatch '^[0-9a-f]{40}$' -or [string]$active.sha -cne [string]$installed.source_commit -or [string]$transition.phase -cnotin @('CONFIRMED','ROLLED_BACK','DEFERRED')) {
+        Write-Output 'startup_update_lifecycle_status=RECOVERY_REQUIRED'
+        Write-Output 'user_state_preserved=true'
+        $failure = New-Object InvalidOperationException('자동 업데이트 후 수동 교체·제거는 아직 지원되지 않습니다. 데이터와 설치 상태를 보존하고 담당자에게 복구를 요청하세요.')
+        $failure.Data['code'] = 'ACTIVE_CODE_REQUIRES_COORDINATED_RECOVERY'
+        throw $failure
+    }
+}
 $install = Full $InstallRoot 'InstallRoot'
+Assert-CanonicalStartupLifecycleBoundary $install
 if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
     throw 'InstallRoot is not canonical.'
 }
@@ -1836,7 +2589,7 @@ $conflictReceiptSupplied = (
 if ($conflictReceiptSupplied) {
     $receiptSource = ReceiptSource $source $sourceManifest
 }
-$wanted = Command $install
+$wanted = Command $install -StartupUpdate:($sourceManifest.startup_update_protocol -eq 1)
 if ($PlanOnly) {
     "install_status=PLAN_ONLY"
     "install_root=$install"
@@ -2226,13 +2979,17 @@ $restoreSources = @(
     'user_relay_autostart_install',
     'user_relay_process_start',
     'user_relay_stop_release',
-    'user_relay_stop_request'
+    'user_relay_stop_request',
+    'auto_update_task_mutation',
+    'auto_update_restore_preimage'
 )
 $rollbackSources = @(
     'current_user_setup_removal',
     'scheduled_task_remove',
     'user_relay_autostart_remove',
-    'user_relay_stop_request'
+    'user_relay_stop_request',
+    'auto_update_task_mutation',
+    'auto_update_restore_preimage'
 )
 $mutated = $false
 $replacementRollbackRoot = if ($null -ne $firstRegistrationResume) { [string]$firstRegistrationResume.code_backup_root } else { '' }
@@ -2344,6 +3101,7 @@ try {
             ) { throw 'Removal readback failed.' }
         }
     }
+    Wait-LabelRelayPreimageExit $old
     $unquiesced = @(UnquiescedProductWriters)
     if ($unquiesced.Count -ne 0) {
         throw 'Writer quiescence failed: a Label product writer process remains.'
@@ -2374,7 +3132,7 @@ try {
             -AttemptId $writerAttemptId `
             -ReplacementTransactionId $writerTransactionId `
             -DelegationToken $writerDelegationToken `
-            -DelegatedSources @('canonical_placement') `
+            -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
             -LifetimeSeconds 600)
         $helperParameters = @{
             SourceRoot = $source
@@ -2423,6 +3181,10 @@ try {
         [uint64]$installedInventory.byte_count -ne [uint64]$receiptSource.byte_count -or
         [string]$installedInventory.sha256 -cne [string]$receiptSource.sha256
     ) { throw 'Installed full portable inventory differs before Product execution.' }
+    $startupPreimage = Join-Path (Split-Path -Parent $install) ('.startup-update-install.' + $writerAttemptId)
+    if (Test-Path -LiteralPath (Join-Path $startupPreimage 'preimage.json')) {
+        $audit.startup_update_preimage = [ordered]@{path=$startupPreimage;sha256=(Sha (Join-Path $startupPreimage 'preimage.json'))}
+    }
     $audit.code_placement = $placement
     $audit.code_state = 'PRESENT'
     $audit.runtime_pythonw_sha256 = Sha (Join-Path $install 'runtime\pythonw.exe')
@@ -2458,7 +3220,7 @@ try {
         $firstRegistrationAttempt.registration_started = $true
         Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
     }
-    try { Product $install '--onboard-current-user' $onboardingArguments }
+    try { Product $install '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }
     catch { $onboardingFailure = $_ }
     if ($null -ne $onboardingFailure -and -not (Test-Path -LiteralPath $onboardingPath)) {
         throw $onboardingFailure
@@ -2507,7 +3269,20 @@ try {
     ) { throw 'Onboarding Run readback failed.' }
     if (Test-Path -LiteralPath $stop) { throw 'Relay stop marker survived onboarding.' }
 
-    $pidValue = [int]$onboarding.relay_start.process_id
+    [void](Stop-LabelWriterFence `
+        -ControlRoot $writerFenceControlRoot `
+        -SessionId $writerSessionId `
+        -AttemptId $writerAttemptId `
+        -ReplacementTransactionId $writerTransactionId `
+        -TimeoutMilliseconds 90000)
+    $writerFenceStarted = $false
+    Exit-LabelWriterSessionAuthority $writerAuthority
+    $writerAuthority = $null
+
+    if ([string]$onboarding.relay_start.status -cne 'DEFERRED_CANONICAL_INSTALL') { throw 'Canonical relay was not deferred.' }
+    $activeCodeRoot = Join-Path (Join-Path (Split-Path -Parent $install) 'versions') ([string]$installedManifest.source_commit)
+    $pidValue = StartRaw (Command $activeCodeRoot)
+    $audit.relay_launch_security = Get-CanonicalRelaySecurity $pidValue
     Start-Sleep -Seconds 5
     $process = Get-CimInstance `
         Win32_Process `
@@ -2515,7 +3290,7 @@ try {
         -ErrorAction SilentlyContinue
     if (
         $null -eq $process -or
-        -not (Same ([string]$process.ExecutablePath) (Join-Path $install 'runtime\pythonw.exe'))
+        -not (Same ([string]$process.ExecutablePath) (Join-Path $activeCodeRoot 'runtime\pythonw.exe'))
     ) { throw 'Relay process proof failed.' }
 
     $deadline = (Get-Date).AddSeconds(75)
@@ -2535,16 +3310,6 @@ try {
     if ($null -eq $relay -or -not $relayPersistentRetry) {
         throw 'Fresh relay status proof failed.'
     }
-
-    [void](Stop-LabelWriterFence `
-        -ControlRoot $writerFenceControlRoot `
-        -SessionId $writerSessionId `
-        -AttemptId $writerAttemptId `
-        -ReplacementTransactionId $writerTransactionId `
-        -TimeoutMilliseconds 90000)
-    $writerFenceStarted = $false
-    Exit-LabelWriterSessionAuthority $writerAuthority
-    $writerAuthority = $null
 
     $audit.status = 'PASS'
     if ($legacyFirstRegistration) {
@@ -2685,7 +3450,7 @@ catch {
                     -AttemptId $writerAttemptId `
                     -ReplacementTransactionId $writerTransactionId `
                     -DelegationToken $writerDelegationToken `
-                    -DelegatedSources @('canonical_placement') `
+                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
                     -LifetimeSeconds 600)
                 # INSTALL_THIS_PC consumes a release tree: its manifest metrics
                 # exclude the installed bootstrap record. Reconstruct that exact
@@ -2729,7 +3494,7 @@ catch {
                     -AttemptId $writerAttemptId `
                     -ReplacementTransactionId $writerTransactionId `
                     -DelegationToken $writerDelegationToken `
-                    -DelegatedSources @('canonical_placement') `
+                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
                     -LifetimeSeconds 600)
                 $removeParameters = $helperParameters.Clone()
                 $removeParameters.ReplaceExistingVerifiedPortable = $false
@@ -2767,6 +3532,11 @@ catch {
             elseif (Test-Path $stop) {
                 Remove-Item $stop -Force
             }
+            if (Test-Path -LiteralPath $removalPath) {
+                $removalProof=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'-failed-removal-proof.json')
+                if (-not (Test-Path -LiteralPath $removalProof)) { Copy-Item -LiteralPath $removalPath -Destination $removalProof }
+                $audit.rollback.removal_failure_proof=[ordered]@{path=$removalProof;sha256=(Sha $removalProof)}
+            }
             if ($null -ne $healthyRemovalReportBefore) {
                 Copy-Item -LiteralPath $healthyRemovalReportBefore.backup_path -Destination $removalPath -Force
                 if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
@@ -2784,6 +3554,13 @@ catch {
             if ($null -ne $ownerMutationLease) {
                 Exit-LabelWriterAdmission $ownerMutationLease
             }
+        }
+        if ($audit.Contains('startup_update_preimage')) {
+            $restoreParameters=$helperParameters.Clone()
+            $restoreParameters.StartupUpdateRestorePreimage=[string]$audit.startup_update_preimage.path
+            $restoreParameters.StartupUpdateRestoreSha256=[string]$audit.startup_update_preimage.sha256
+            $restoreParameters.ReplaceExistingVerifiedPortable=$false
+            if ((InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters) -ne 0) { throw 'Startup update preimage restoration failed.' }
         }
         $firstRegistrationRollbackLease = $null
         try {
@@ -2857,6 +3634,7 @@ catch {
         $audit.rollback.applied = $mutated
         $audit.rollback.runtime_restored = $true
         $audit.failure_type = $original.Exception.GetType().Name
+        $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
         Save $auditPath $audit
         if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
     }
@@ -2868,7 +3646,14 @@ catch {
             $audit.rollback.applied = $mutated
             $audit.rollback.runtime_restored = $false
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
+            $audit.rollback.failure_details = Get-LabelLaunchFailure $rollbackFailure 'rollback'
+            $runReadback=Snapshot
+            if ([bool]$runReadback.exists -eq [bool]$before.exists -and [string]$runReadback.kind -ceq [string]$before.kind -and [string]$runReadback.data -ceq [string]$before.data) {
+                $audit.rollback.relay_recovery_status='RUN_RESTORED_RELAY_NEXT_LOGON'
+                $audit.rollback.guidance='자동 시작 설정은 복원됐습니다. 다음 로그온 때 전송을 재개하며 설치 결과는 실패입니다.'
+            }
             $audit.failure_type = $original.Exception.GetType().Name
+        $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
             if ($legacyFirstRegistration) {
                 if (-not $writerFenceStarted) {
                     # A final cleanup can throw before returning its readback.
