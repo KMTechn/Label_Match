@@ -1858,13 +1858,13 @@ LABEL_TRANSITION_LOCAL_NOTICES = {
     label_transition.PHS2_MALFORMED: (
         "현품표 형식 오류 · 과도기 기록",
         "새 현품표 모양이지만 형식이 올바르지 않습니다. 과도기 모드라 막지 않고 "
-        "'형식 오류'로 따로 기록합니다. 제품 3개와 최종 라벨을 스캔하세요. "
+        "'형식 오류'로 따로 기록합니다. 제품 4개를 스캔하세요. "
         "포장 원장에는 들어가지 않습니다.",
     ),
     label_transition.PHS2_LOCAL: (
         "중앙 확인 불가 · 과도기 로컬 기록",
-        "중앙 확인이 막혀 이 세트는 '로컬'로 따로 기록합니다. 제품 3개와 최종 "
-        "라벨을 스캔하세요. 포장 원장에는 들어가지 않습니다.",
+        "중앙 확인이 막혀 이 세트는 '로컬'로 따로 기록합니다. 제품 4개를 "
+        "스캔하세요. 포장 원장에는 들어가지 않습니다.",
     ),
     "DUPLICATE": (
         "중복 현품표 · 과도기 기록",
@@ -4624,7 +4624,7 @@ class Label_Match(tk.Tk):
     STEP_NAMES = (
         "현품표",
         *(f"제품{index}" for index in range(1, LABEL_MATCH_PRODUCT_SAMPLE_COUNT + 1)),
-        "라벨지",
+        "제품4",
     )
     BARCODE_DISPLAY_LIMITS = {
         "small": 14,
@@ -21914,7 +21914,7 @@ class Label_Match(tk.Tk):
         if num_scans < final_label_position - 1:
             return f"{num_scans + 1}/{workflow_total} 제품 {num_scans} 스캔"
         if num_scans == final_label_position - 1:
-            return f"{final_label_position}/{workflow_total} 포장 라벨 스캔"
+            return f"{final_label_position}/{workflow_total} 제품 {final_label_position - 1} 스캔"
         return "통과 완료"
 
     def _manual_complete_hint(self):

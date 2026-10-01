@@ -17,7 +17,7 @@ SLOT_DEFINITIONS = (
     ("product_1", "제품1"),
     ("product_2", "제품2"),
     ("product_3", "제품3"),
-    ("final_label", "최종 라벨"),
+    ("final_label", "제품4"),
 )
 CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
     ("master_label", "PHS2 현품표"),
@@ -481,7 +481,7 @@ def _primary_view(
     elif qa_completed < qa_total - 1:
         action = f"{qa_completed + 1}/{qa_total} 제품 {qa_completed} 스캔"
     else:
-        action = f"{qa_total}/{qa_total} 최종 라벨 스캔"
+        action = f"{qa_total}/{qa_total} 제품 {qa_total - 1} 스캔"
     tone = "success" if exact_rescan.status == "complete" else "primary"
     return _PrimaryView(key, label, action, None, tone)
 

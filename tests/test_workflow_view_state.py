@@ -22,7 +22,8 @@ from ui.workflow_view_state import (
         (1, "product_1", "제품1", "2/5 제품 1 스캔", False, True),
         (2, "product_2", "제품2", "3/5 제품 2 스캔", False, True),
         (3, "product_3", "제품3", "4/5 제품 3 스캔", False, True),
-        (4, "final_label", "최종 라벨", "5/5 최종 라벨 스캔", False, True),
+        # G9 / FACTS-LM A: the old final slot also accepts a product.
+        (4, "final_label", "제품4", "5/5 제품 4 스캔", False, True),
         (5, "complete", "통과 완료", "다음 현품표를 스캔하세요.", False, False),
     ],
 )
