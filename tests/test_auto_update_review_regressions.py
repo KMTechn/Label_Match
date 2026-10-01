@@ -296,3 +296,27 @@ Assert-LabelStartupUpdateSettings (Get-Content -LiteralPath {quote(path)} -Raw -
 'COMPANY_ACCEPTED'
 """)
     assert output == "COMPANY_ACCEPTED"
+
+@pytest.mark.parametrize("name,phrase", [
+    ("INSTALL_THIS_PC.ps1", "자동 업데이트 후 수동 교체"),
+    ("INSTALL_CANONICAL_PORTABLE.ps1", "자동 업데이트 후 수동 교체"),
+])
+def test_powershell51_decodes_actual_korean_installer_with_bom(tmp_path, name, phrase):
+    raw = (ROOT / name).read_bytes()
+    if not raw.startswith(b"\xef\xbb\xbf"):
+        pytest.fail("Korean installer requires UTF-8 BOM")
+    expected = raw.decode("utf-8-sig")
+    assert phrase in expected
+    output = powershell(tmp_path, f"""
+if($PSVersionTable.PSVersion.Major -ne 5){{throw 'Expected Windows PowerShell 5.1'}}
+$tokens=$null; $errors=$null
+$tree=[Management.Automation.Language.Parser]::ParseFile({quote(ROOT/name)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'Actual Korean installer parse failed'}}
+$phrases=@($tree.FindAll({{param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst]}},$true) | ForEach-Object {{ $_.Value }} | Where-Object {{ $_.Contains({quote(phrase)}) }})
+if($phrases.Count -eq 0){{throw 'Actual Korean text did not survive PS5.1 decoding'}}
+[IO.File]::WriteAllText({quote(tmp_path/'decoded.txt')},$tree.Extent.Text,(New-Object Text.UTF8Encoding($false)))
+'KOREAN_INTACT'
+""")
+    assert output == "KOREAN_INTACT"
+    # Compare actual decoded bytes: read_text would normalize CRLF to LF.
+    assert hashlib.sha256((tmp_path / "decoded.txt").read_bytes()).hexdigest() == hashlib.sha256(expected.encode("utf-8")).hexdigest()

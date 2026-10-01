@@ -1033,6 +1033,8 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
+한국어 안내를 가진 INSTALL_THIS_PC.ps1·INSTALL_CANONICAL_PORTABLE.ps1은 UTF-8 BOM을 유지한다. 호스트 Windows PowerShell 5.1이 실제 두 파일을 ParseFile로 읽고 한국어 문자열과 전체 decoded source를 보존한 회귀는 PROVEN이다. 기본 codepage 65001 환경이며 다른 ANSI codepage의 실제 -File 설치/안내는 랩 NOT TESTED다. stock packet·companion의 최종 byte 선언은 중앙 출시 컷에서 다시 고정한다.
+
 placement의 Initialize는 자기 전체 함수 묶음과 실제 preloaded integrity/fence 함수에서 Get-FileSha256으로 packet 설정을 해시한다. canonical wrapper의 Sha에 의존하지 않는다. 신규/기존 versions 분기의 숨김 PS5.1 실제 함수 검증은 PROVEN이며 ACL·작업 등록 경계는 주입했으므로 실제 설치 성공으로 승계하지 않는다.
 
 `auto-update-settings.json`은 builder가 canonical JSON으로 만들고 보호 policy의 settings_sha256에 고정한다. HTTP·GitHub·모르는 키·업무 중 적용 true·형식 오류를 거절한다. 설치 뒤 설정 파일 원문이나 policy 설정 변경은 복구 요청 대상이며 그대로 적용하지 않는다.
