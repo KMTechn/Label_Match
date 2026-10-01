@@ -306,8 +306,16 @@ function InvokeFrozenPlacementHelper($Frozen, $Parameters) {{
     [IO.File]::WriteAllText((Join-Path $install 'version.txt'), [IO.File]::ReadAllText((Join-Path $Parameters.SourceRoot 'version.txt')))
     return 0
 }}
-function Enter-LabelWriterAdmission {{ return [pscustomobject]@{{fixture=$true}} }}
-function Exit-LabelWriterAdmission {{}}
+$script:admissionDepth = 0
+function Enter-LabelWriterAdmission {{ $script:admissionDepth++; return [pscustomobject]@{{fixture=$true}} }}
+function Exit-LabelWriterAdmission {{ $script:admissionDepth-- }}
+function Move-Item {{
+    [CmdletBinding()] param([string]$LiteralPath, [string]$Destination, [switch]$Force)
+    if ($firstRegistrationQuarantinePaths -contains $LiteralPath -and $script:admissionDepth -lt 1) {{
+        throw 'self state move was not protected by writer admission'
+    }}
+    Microsoft.PowerShell.Management\\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force -ErrorAction Stop
+}}
 function Restore {{}}
 function RestoreScheduledTask {{}}
 function Stop-LabelWriterFence {{ return [pscustomobject]@{{writer_inventory_sha256='checked'}} }}
@@ -317,6 +325,7 @@ try {{
     {source[catch_start:catch_end]}
 }} catch {{ $audit.fixture_caught_error = $_.Exception.Message }}
 $audit | ConvertTo-Json -Depth 10 -Compress
+if ($script:admissionDepth -ne 0) {{ throw 'writer admission lease leaked' }}
 """
     script.write_text(definitions + setup, encoding="utf-8-sig")
     environment = os.environ.copy()

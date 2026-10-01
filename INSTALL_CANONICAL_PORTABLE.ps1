@@ -2423,23 +2423,37 @@ catch {
                 Exit-LabelWriterAdmission $ownerMutationLease
             }
         }
-        if ($writerFenceStarted) {
-            $releasedFence = Stop-LabelWriterFence `
-                -ControlRoot $writerFenceControlRoot `
-                -SessionId $writerSessionId `
-                -AttemptId $writerAttemptId `
-                -ReplacementTransactionId $writerTransactionId `
-                -TimeoutMilliseconds 90000
-            $writerFenceStarted = $false
-            $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
-            $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
+        $firstRegistrationRollbackLease = $null
+        try {
+            if ($legacyFirstRegistration -and $firstRegistrationStateVerified) {
+                # Keep ordinary writers excluded while releasing the fence and
+                # moving its own root. Session authority alone is a different mutex.
+                $firstRegistrationRollbackLease = Enter-LabelWriterAdmission `
+                    -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+            }
+            if ($writerFenceStarted) {
+                $releasedFence = Stop-LabelWriterFence `
+                    -ControlRoot $writerFenceControlRoot `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -TimeoutMilliseconds 90000
+                $writerFenceStarted = $false
+                $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
+                $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
+            }
+            if ($legacyFirstRegistration -and $firstRegistrationStateVerified) {
+                $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
+                    $firstRegistrationQuarantinePaths `
+                    (Join-Path $localAuditRoot ('canonical-portable-' + $runId + '-first-registration-quarantine')) `
+                    $firstRegistrationStarted
+                $audit.rollback.first_registration_state.retry_conflict_action = 'USE_SUPPORTED_ADMIN_RECOVERY'
+            }
         }
-        if ($legacyFirstRegistration -and $firstRegistrationStateVerified) {
-            $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
-                $firstRegistrationQuarantinePaths `
-                (Join-Path $localAuditRoot ('canonical-portable-' + $runId + '-first-registration-quarantine')) `
-                $firstRegistrationStarted
-            $audit.rollback.first_registration_state.retry_conflict_action = 'USE_SUPPORTED_ADMIN_RECOVERY'
+        finally {
+            if ($null -ne $firstRegistrationRollbackLease) {
+                Exit-LabelWriterAdmission $firstRegistrationRollbackLease
+            }
         }
         foreach ($item in $old) {
             $newPid = StartRaw ([string]$item.CommandLine)
