@@ -1033,6 +1033,8 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
+placement의 Initialize는 자기 전체 함수 묶음과 실제 preloaded integrity/fence 함수에서 Get-FileSha256으로 packet 설정을 해시한다. canonical wrapper의 Sha에 의존하지 않는다. 신규/기존 versions 분기의 숨김 PS5.1 실제 함수 검증은 PROVEN이며 ACL·작업 등록 경계는 주입했으므로 실제 설치 성공으로 승계하지 않는다.
+
 `auto-update-settings.json`은 builder가 canonical JSON으로 만들고 보호 policy의 settings_sha256에 고정한다. HTTP·GitHub·모르는 키·업무 중 적용 true·형식 오류를 거절한다. 설치 뒤 설정 파일 원문이나 policy 설정 변경은 복구 요청 대상이며 그대로 적용하지 않는다.
 
 builder는 승인 공개 키와 `--auto-update-settings` JSON을 사용한다. 기본 feed는 비어 있고 업무 중 적용은 false다. 빈 feed 설치는 외부 조회 없이 현재 판을 시작한다. 출시 담당이 회사 HTTPS feed를 설정하고 독립 검토한 정확한 source/writer 양방향 쌍의 manifest를 중앙 서명·게시한다. 설치 policy에 미래 쌍 목록을 게시할 필요는 없다. 기존 signed version과 실제 APP_VERSION은 일치하고 현재 판보다 높아야 한다. feed의 profile_auth는 true이며 기존 장비 신원·CA와 같은 origin만 사용한다. redirect/netrc/proxy 신원이나 GitHub releases/latest 자동 적용을 사용하지 않는다.

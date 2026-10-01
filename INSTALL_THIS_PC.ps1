@@ -645,7 +645,7 @@ function Initialize-LabelStartupUpdate([string]$Root) {
     } catch { $hiberbootReadStatus = 'UNREADABLE' }
     $policy = [ordered]@{
         schema='label-match-startup-update-policy-v1'
-        settings_sha256=(Sha $settingsPath)
+        settings_sha256=(Get-FileSha256 $settingsPath)
         feed_url=[string]$settings.feed_url;channel=[string]$settings.channel
         profile_auth=[bool]$settings.profile_auth
         apply_during_work=$false
