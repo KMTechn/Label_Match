@@ -250,3 +250,49 @@ def test_diagnostic_storage_failure_preserves_original_relay_outcome(monkeypatch
     assert cycle["error_type"] == "ValueError"
     assert cycle["failure_evidence_status"] == "FAILED"
     assert cycle["failure_evidence_error_details"][0]["win32_error"] == 28
+
+GITHUB_HOSTS = ["kmtechn.github.io", "gist.github.com", "gist.githubusercontent.com",
+                "github.io", "githubusercontent.com", "sub.github.com", "KMTechn.GitHub.IO."]
+
+
+@pytest.mark.parametrize("host", GITHUB_HOSTS)
+def test_github_feed_policy_matches_python_installer_and_embedded_gate(tmp_path, host):
+    settings = updates.policy_from_settings({})
+    settings.update(feed_url=f"https://{host}/feed.json", profile_auth=True)
+    with pytest.raises(ValueError, match="GitHub"):
+        updates.policy_from_settings(settings)
+    # Execute the actual embedded pure gate used by release-pair validation.
+    source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
+    pure = source.split("from typing import Any, Mapping", 1)[1].split("startup_release_replacements =", 1)[0]
+    namespace = {"Any": object, "Mapping": dict, "re": __import__("re"), "json": json}
+    exec(pure, namespace)
+    with pytest.raises(ValueError, match="GitHub"):
+        namespace["policy_from_settings"](settings)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    output = powershell(tmp_path, f"""
+$tokens=$null; $errors=$null
+$tree=[Management.Automation.Language.Parser]::ParseFile({quote(ROOT/'INSTALL_THIS_PC.ps1')},[ref]$tokens,[ref]$errors)
+$bundle=@($tree.EndBlock.Statements | Where-Object {{ $_ -is [Management.Automation.Language.FunctionDefinitionAst] }})
+. ([ScriptBlock]::Create(($bundle.Extent.Text -join [Environment]::NewLine)))
+$settings=Get-Content -LiteralPath {quote(settings_path)} -Raw -Encoding UTF8 | ConvertFrom-Json
+try {{Assert-LabelStartupUpdateSettings $settings; 'ACCEPTED'}} catch {{if($_.Exception.Message -cne 'STARTUP_UPDATE_SETTINGS_GITHUB_FORBIDDEN'){{throw}}; 'GITHUB_REFUSED'}}
+""")
+    assert output == "GITHUB_REFUSED"
+
+
+@pytest.mark.parametrize("host", ["company.test", "github.io.company.test", "evilgithub.io"])
+def test_github_suffix_filter_keeps_company_and_distinct_hosts(tmp_path, host):
+    settings = updates.policy_from_settings({"feed_url": f"https://{host}/feed.json"})
+    assert settings["feed_url"] == f"https://{host}/feed.json"
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(settings), encoding="utf-8")
+    output = powershell(tmp_path, f"""
+$tokens=$null; $errors=$null
+$tree=[Management.Automation.Language.Parser]::ParseFile({quote(ROOT/'INSTALL_THIS_PC.ps1')},[ref]$tokens,[ref]$errors)
+$bundle=@($tree.EndBlock.Statements | Where-Object {{ $_ -is [Management.Automation.Language.FunctionDefinitionAst] }})
+. ([ScriptBlock]::Create(($bundle.Extent.Text -join [Environment]::NewLine)))
+Assert-LabelStartupUpdateSettings (Get-Content -LiteralPath {quote(path)} -Raw -Encoding UTF8 | ConvertFrom-Json)
+'COMPANY_ACCEPTED'
+""")
+    assert output == "COMPANY_ACCEPTED"

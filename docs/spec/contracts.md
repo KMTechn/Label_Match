@@ -398,6 +398,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 ## StartupUpdate1 · 매일 시작 시 코드 전환 계약
 
+feed 설정은 github.com·githubusercontent.com·github.io의 루트와 모든 하위 호스트(Pages/gist 포함)를 거절한다. 대소문자·DNS trailing dot을 정규화하고 닮은 회사 호스트는 이 거절 목록으로 차단하지 않는다. Python/PowerShell 설치기/embedded release gate가 같은 호스트 정책을 사용한다.
+
 GUI/relay trial 시작 예외는 nonce·transition·SHA에 묶인 trial-failure 증거로 먼저 내구 저장한다. bootstrap은 같은 실패 trial을 재시작하지 않고 SYSTEM의 writer 부재·이전 코드 검증·복귀를 기다린 뒤 새 복귀 nonce로 이전 GUI/relay를 시작한다. UNKNOWN/FAILED는 포인터·증거를 보존하고 시작을 거절한다. 기존 claim은 nonce뿐 아니라 실제 PID·SID·역할·SHA·생성 시각을 대조한다.
 
 SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부여한 SYNCHRONIZE·MUTEX_MODIFY_STATE(0x00100001)만 요청해 다시 연다. busy·abandoned·native wait 오류는 각각 구분하고 전환을 허용하지 않는다. 경로별 새 native mutex의 일반 사용자 재열기는 호스트에서 PROVEN이며 실제 SYSTEM↔사용자 경합은 랩 NOT TESTED다.

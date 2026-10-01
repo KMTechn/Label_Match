@@ -596,8 +596,8 @@ function Assert-LabelStartupUpdateSettings([object]$Settings) {
     if ($Settings.feed_url) {
         $uri=$null
         if (-not [Uri]::TryCreate($Settings.feed_url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -cne 'https' -or -not $uri.Host -or $uri.UserInfo -or $uri.Fragment) { throw 'STARTUP_UPDATE_SETTINGS_HTTPS_REQUIRED' }
-        $hostName=$uri.DnsSafeHost.ToLowerInvariant()
-        if ($hostName -in @('api.github.com','github.com','www.github.com') -or $hostName.EndsWith('.githubusercontent.com')) { throw 'STARTUP_UPDATE_SETTINGS_GITHUB_FORBIDDEN' }
+        $hostName=$uri.DnsSafeHost.ToLowerInvariant().TrimEnd('.')
+        if (@(@('github.com','githubusercontent.com','github.io') | Where-Object { $hostName -ceq $_ -or $hostName.EndsWith('.'+$_) }).Count) { throw 'STARTUP_UPDATE_SETTINGS_GITHUB_FORBIDDEN' }
         if (-not $Settings.profile_auth) { throw 'STARTUP_UPDATE_SETTINGS_AUTH_REQUIRED' }
     }
 }

@@ -774,7 +774,7 @@ remote_transport_transition = (
 # Public trust rotation additionally requires this precise old/new configuration.
 from typing import Any, Mapping
 from urllib.parse import urlparse, parse_qsl
-UPDATE_GITHUB_UPDATE_HOSTS = {"api.github.com", "github.com", "www.github.com"}
+UPDATE_GITHUB_UPDATE_HOSTS = {"github.com", "githubusercontent.com", "github.io"}
 UPDATE_SECRET_QUERY_KEYS = {
     "access_token",
     "api_key",
@@ -803,8 +803,8 @@ def _assert_https_update_url(url, *, require_zip=False):
             raise ValueError("Update URL must not contain raw token query parameters")
 def _is_github_hosted_update_url(url):
     parsed = urlparse(str(url or ""))
-    host = (parsed.hostname or "").lower()
-    return host in UPDATE_GITHUB_UPDATE_HOSTS or host.endswith(".githubusercontent.com")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return any(host == root or host.endswith("." + root) for root in UPDATE_GITHUB_UPDATE_HOSTS)
 assert_https_update_url = _assert_https_update_url
 def policy_from_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
 
