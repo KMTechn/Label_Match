@@ -2205,9 +2205,10 @@ try {
         -OrchestratorSha256 $writerOrchestratorSha256 `
         -ReplacementTransactionId $writerTransactionId `
         -WriterContractSha256 $writerContractSha256
-    if ($null -ne $firstRegistrationResume) {
+    if ($null -ne $firstRegistrationResume -and
+        $null -ne (Read-LabelWriterFence $writerFenceControlRoot -AllowAbsent)) {
         # Session authority excludes a still-running original installer. Retire
-        # only its exact orphan fence before publishing the rollback fence.
+        # only its exact orphan fence. An absent fence uses normal Start below.
         [void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot `
             -SessionId $writerSessionId -AttemptId $writerAttemptId `
             -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 90000)

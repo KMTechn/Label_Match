@@ -424,11 +424,11 @@ try {{
 
 
 @pytest.mark.parametrize("verified,failures,move_root", [(False, 0, False), (True, 0, False), (True, 2, False), (True, 3, False), (True, 3, True), (True, 4, True)])
-def test_real_fence_failure_boundaries_and_recorded_cleanup_resume(tmp_path, monkeypatch, verified, failures, move_root):
+def test_real_fence_failure_boundaries_and_recorded_cleanup_resume(tmp_path, monkeypatch, verified, failures, move_root, *, entry_fence=""):
     """Real Start/Stop and committed catch; native enrollment/code are adapters."""
     # Real Windows PowerShell I/O has the normal path-length limit. Keep the
     # fixture case leaf short while retaining every run under its D task root.
-    tmp_path = tmp_path.parent / f"f{int(verified)}{failures}{int(move_root)}"
+    tmp_path = tmp_path.parent / (f"f{int(verified)}{failures}{int(move_root)}" + entry_fence[:1])
     run = subprocess.run
     captured = {}
     stage = "credential" if failures else "placement"
@@ -486,6 +486,49 @@ $firstRegistrationAttempt.absent_paths = $firstRegistrationStatePaths
 $firstRegistrationAttempt.absent_ancestors = @()
 """
         source = source.replace("function Stop-LabelWriterFence { return [pscustomobject]@{writer_inventory_sha256='checked'} }", real_fence, 1)
+        if entry_fence:
+            installer = INSTALLER.read_text(encoding="utf-8-sig")
+            begin = installer.index("try {\n    $writerAuthority = Enter-LabelWriterSessionAuthority")
+            entry = installer[begin:installer.index("\n    [void](Set-LabelWriterFenceDelegation", begin)] + "\n}"
+            source = source.replace("try { throw 'injected registration stage failure' }", entry, 1)
+            setup = """
+$firstRegistrationAttempt.state_verified = $firstRegistrationStateVerified
+$firstRegistrationAttempt.status = 'PREFLIGHT_RECORDED'
+Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+$firstRegistrationResume = Read-FirstRegistrationAttempt $localAuditRoot $install 'candidate-commit' ('a' * 64) $firstRegistrationStatePaths
+$firstRegistrationAttempt = $firstRegistrationResume
+[void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot -SessionId $writerSessionId `
+    -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId)
+$writerAuthority = $null
+$writerFenceStarted = $false
+$mutated = $false
+$elevationLogPath = ''
+$frozenPlacement = [pscustomobject]@{helper_sha256='synthetic';helper_path='synthetic'}
+"""
+            if entry_fence == "foreign":
+                setup += """
+[void](& $script:realStart -ControlRoot $writerFenceControlRoot -Status 'QUIESCING' `
+    -SessionId ('9' * 32) -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId `
+    -SessionStartedAtUtc $writerStartedAt -OrchestratorSha256 $writerOrchestratorSha256 `
+    -WriterContractSha256 $writerContractSha256 -AuthorityOwnedByCaller)
+$foreignFenceSha = (Get-FileHash -LiteralPath (Join-Path $writerFenceControlRoot 'active.json')).Hash
+"""
+            source = source.replace("try {\n    try {", setup + "\ntry {\n    try {", 1)
+            tail = """
+if ($null -ne $writerAuthority) { Exit-LabelWriterSessionAuthority $writerAuthority }
+$active = Join-Path $writerFenceControlRoot 'active.json'
+[ordered]@{status=$audit['status'];error=$audit['fixture_caught_error'];mutated=$mutated;
+    direct_present=(Test-Path -LiteralPath $defaultDirectSyncRoot);
+    credential_present=(Test-Path -LiteralPath (Join-Path $defaultDirectSyncRoot 'credential.json'));
+    foreign_unchanged=$(if (Test-Path -LiteralPath $active) { (Get-FileHash -LiteralPath $active).Hash -ceq $foreignFenceSha } else { $false })
+} | ConvertTo-Json -Compress
+"""
+            source = source.replace("$audit | ConvertTo-Json -Depth 10 -Compress", tail, 1)
+            script.write_text(source, encoding="utf-8-sig")
+            result = run(args, **kwargs)
+            assert result.returncode == 0, result.stderr
+            captured.update(json.loads(result.stdout))
+            return result
         if failures == 4:
             source = source.replace("$firstRegistrationAttempt.schema = ", """
 $script:realMoveState = (Get-Command Move-LegacyFirstRegistrationState).ScriptBlock
@@ -542,6 +585,16 @@ try {
     monkeypatch.setattr(subprocess, "run", intercept)
     with pytest.raises((AssertionError, KeyError)):
         test_registration_stage_failure_restores_absence_and_preserves_new_state(tmp_path, stage)
+    if entry_fence:
+        if entry_fence == "absent":
+            assert captured["status"] == "FAILED_ROLLED_BACK", captured
+            assert captured["error"] == "RESUME_FIRST_REGISTRATION_ROLLBACK", captured
+            assert captured["direct_present"] is captured["credential_present"] is False
+        else:
+            assert captured["error"] == "LABEL_WRITER_FENCE_OWNER_MISMATCH", captured
+            assert captured["mutated"] is False
+            assert captured["foreign_unchanged"] is True
+        return
     assert captured["first_status"] == ("FAILED_ROLLBACK_INCOMPLETE" if failures >= 3 else "FAILED_ROLLED_BACK"), json.dumps(captured)
     assert captured["first_credential"] is (failures == 3 and not move_root)
     assert captured["first_fence"] is (failures >= 3)
@@ -550,6 +603,12 @@ try {
     assert captured["final_status"] == "FAILED_ROLLED_BACK", json.dumps(captured)
     assert captured["final_code"] == "old"
     assert captured["final_direct_present"] is False
+
+
+@pytest.mark.parametrize("fence", ["absent", "foreign"])
+def test_pending_retry_enters_normal_fence_and_preserves_other_writer(tmp_path, monkeypatch, fence):
+    test_real_fence_failure_boundaries_and_recorded_cleanup_resume(
+        tmp_path, monkeypatch, False, 0, False, entry_fence=fence)
 
 
 @pytest.mark.parametrize("mutation", ["", "source", "paths", "ancestor", "boolean"])
