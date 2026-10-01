@@ -369,6 +369,7 @@ def start_user_relay_process(
     *,
     launcher: Callable[[Sequence[str]], Any] | None = None,
     survival_seconds: float = 2.0,
+    bootstrap_readiness_seconds: float = 75.0,
     wait: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     command = build_user_relay_command(app_root)
@@ -381,6 +382,7 @@ def start_user_relay_process(
     root = Path(app_root).expanduser().resolve()
     direct_sync_root = resolve_current_user_onboarding_paths(root).direct_sync_root
     survival = max(0.0, float(survival_seconds))
+    is_bootstrap = "--bootstrap" in command
 
     def existing_owner() -> dict[str, Any] | None:
         if user_relay_stop_path(direct_sync_root).exists():
@@ -389,11 +391,39 @@ def start_user_relay_process(
         if lease is not None:
             lease.close()
             return None
-        return _fresh_persistent_owner(
-            _read_json(user_relay_status_path(direct_sync_root)),
+        status = _read_json(user_relay_status_path(direct_sync_root))
+        owner = _fresh_persistent_owner(
+            status,
             app_root=_logical_application_root(root),
             direct_sync_root=direct_sync_root,
         )
+        if owner is None or not is_bootstrap:
+            return owner
+        from auto_update import control_root, load_policy, update_lock, read_json, version_bundle, process_snapshot, process_matches_trial, _utc
+        code = root / "app" if (root / "app").is_dir() else root
+        control = control_root(code)
+        if control is None:
+            return None
+        policy = load_policy(control)
+        with update_lock(control, policy["operator_sid"]):
+            active = read_json(control / "active.json")
+            state = read_json(control / "transition.json")
+            expected_root = version_bundle(control, active["sha"])
+            rows = [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
+            if len(rows) != 1 or os.path.normcase(str(status.get("code_root") or "")) != os.path.normcase(str(expected_root)):
+                return None
+            row = rows[0]
+            if (row.get("observable") is not True or row.get("sha") != active["sha"]
+                    or row.get("sid") != policy["operator_sid"] or row.get("role") != "relay"
+                    or row.get("ordinary_user") is not True
+                    or _utc(row.get("created_at")) > _utc(status.get("updated_at"))):
+                return None
+            if state.get("phase") in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+                if status.get("update_nonce") != state.get("nonce") or not process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay"):
+                    return None
+            elif state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
+                return None
+        return owner
 
     # A duplicate persistent relay exits cleanly when the instance lease is held.
     # Reuse only the same fresh live owner across the normal survival window;
@@ -417,6 +447,21 @@ def start_user_relay_process(
         raise UserRelayError("current-user relay launch did not return a process id")
     wait(survival)
     return_code = process.poll()
+    if is_bootstrap and return_code in (None, 0):
+        deadline = time.monotonic() + max(0.0, min(75.0, float(bootstrap_readiness_seconds)))
+        owner = existing_owner()
+        while owner is None and time.monotonic() < deadline:
+            if process.poll() not in (None, 0):
+                break
+            wait(0.1)
+            owner = existing_owner()
+        if owner is None:
+            raise UserRelayError("bootstrap did not prove the protected active-version relay")
+        if process.poll() not in (None, 0):
+            raise UserRelayError("bootstrap exited unsuccessfully before relay ownership readback")
+        return {"status": "ALIVE", "process_id": owner["process_id"],
+                "bootstrap_process_id": process.pid, "survival_seconds": survival,
+                "owner_status_updated_at": owner["updated_at"]}
     if return_code is not None:
         raise UserRelayError(
             f"current-user relay exited before survival readback: {return_code}"

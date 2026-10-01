@@ -398,6 +398,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 ## StartupUpdate1 · 매일 시작 시 코드 전환 계약
 
+relay 시작의 bootstrap PID는 임시 launcher다. 정상 exit 0 또는 launcher 생존만으로 relay를 승인하지 않는다. lease·fresh status와 보호 active version의 실제 relay PID·SID·역할·SHA·code root·생성 시각을 대조하고 실제 relay PID를 반환한다. trial에서는 nonce도 결속하며 UNKNOWN/FAILED 전이를 성공으로 바꾸지 않는다. 설치 onboarding은 기존 defer를 유지하고 일반 사용자 bootstrap guard를 완화하지 않는다.
+
 feed 설정은 github.com·githubusercontent.com·github.io의 루트와 모든 하위 호스트(Pages/gist 포함)를 거절한다. 대소문자·DNS trailing dot을 정규화하고 닮은 회사 호스트는 이 거절 목록으로 차단하지 않는다. Python/PowerShell 설치기/embedded release gate가 같은 호스트 정책을 사용한다.
 
 GUI/relay trial 시작 예외는 nonce·transition·SHA에 묶인 trial-failure 증거로 먼저 내구 저장한다. bootstrap은 같은 실패 trial을 재시작하지 않고 SYSTEM의 writer 부재·이전 코드 검증·복귀를 기다린 뒤 새 복귀 nonce로 이전 GUI/relay를 시작한다. UNKNOWN/FAILED는 포인터·증거를 보존하고 시작을 거절한다. 기존 claim은 nonce뿐 아니라 실제 PID·SID·역할·SHA·생성 시각을 대조한다.
