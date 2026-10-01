@@ -5,3 +5,4 @@ kmtech_shared/** text eol=lf
 kmtech_shared.manifest.json text eol=lf
 kmtech_shared.lock.json text eol=lf
 tests/fixtures/deferred_intent_contract/** -text
+tests/lock_remote_guard.py -text
