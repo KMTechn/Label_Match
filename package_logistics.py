@@ -1273,6 +1273,19 @@ class PackageLogisticsClient:
 
         return self._data(self._request("GET", "/logistics/api/v1/capabilities"))
 
+    def get_progress(self, *, business_date: str) -> dict[str, Any]:
+        """Read today's packaging plan using the installed device authority."""
+        scope = str(self.config.authority_scope_id or "").strip()
+        if not scope:
+            raise PackageLogisticsError("authority scope is required to read progress")
+        self._assert_authority(scope)
+        day = str(business_date or "").strip()
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day):
+            raise PackageLogisticsError("progress date must be YYYY-MM-DD")
+        datetime.strptime(day, "%Y-%m-%d")
+        query = urlencode({"authority_scope_id": scope, "date": day, "stage": "packaging"})
+        return self._data(self._request("GET", f"/logistics/api/v1/progress?{query}"))
+
     @writer_sink("package_operation_lease")
     def issue_operation_lease(
         self,

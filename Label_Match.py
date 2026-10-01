@@ -5757,6 +5757,89 @@ class Label_Match(tk.Tk):
         self.package_outbox_after_id = None
         return self._start_package_outbox_drain()
 
+    def _on_logistics_progress_tab_changed(self, _event=None):
+        if str(self.operator_notebook.select()) == str(self.logistics_progress_tab):
+            self._render_logistics_progress()
+            self._refresh_logistics_progress()
+            self._focus_scan_entry_if_available()
+
+    def _refresh_logistics_progress(self):
+        """A read-only worker never acquires the scanner lane or calls Tk."""
+        if self.__dict__.get("_app_close_in_progress") or self.__dict__.get("_tk_shutdown_requested"):
+            return
+        current = self.__dict__.get("_logistics_progress_thread")
+        if (current is not None and current.is_alive()) or "_logistics_progress_result" in self.__dict__:
+            return current
+        client = self.__dict__.get("package_logistics_client")
+        day = datetime.now().strftime("%Y-%m-%d")
+
+        def worker():
+            try:
+                if client is None:
+                    raise PackageLogisticsError("progress client unavailable")
+                data = client.get_progress(business_date=day)
+                if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                    raise PackageLogisticsError("invalid progress response")
+                for row in data["items"]:
+                    if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                        raise PackageLogisticsError("invalid progress item")
+                    for field in ("plan_qty", "packaged_qty", "remaining_qty", "remaining_boxes"):
+                        value = row.get(field)
+                        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                            raise PackageLogisticsError("invalid progress quantity")
+                self._logistics_progress_result = (copy.deepcopy(data), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                self._logistics_progress_result = (None, "")
+
+        thread = threading.Thread(target=worker, name="label-match-progress", daemon=True)
+        self._logistics_progress_thread = thread
+        thread.start()
+        self.after(100, self._poll_logistics_progress)
+        return thread
+
+    def _poll_logistics_progress(self):
+        if self.__dict__.get("_app_close_in_progress") or self.__dict__.get("_tk_shutdown_requested"):
+            return
+        result = self.__dict__.pop("_logistics_progress_result", None)
+        if result is None:
+            self.after(100, self._poll_logistics_progress)
+            return
+        data, received_at = result
+        self._logistics_progress_connected = data is not None
+        if data is not None:
+            self._logistics_progress_snapshot = data
+            self._logistics_progress_last_success = received_at
+        # No notebook selection, work context mutation or scanner gate change.
+        self._render_logistics_progress()
+        if self.__dict__.get("_logistics_progress_after_id") is None:
+            self._logistics_progress_after_id = self.after(60000, self._run_logistics_progress_refresh)
+
+    def _run_logistics_progress_refresh(self):
+        self._logistics_progress_after_id = None
+        return self._refresh_logistics_progress()
+
+    def _logistics_progress_text(self):
+        connected = self.__dict__.get("_logistics_progress_connected")
+        status = "연결 정상" if connected else "연결 끊김" if connected is False else "현황 확인 중"
+        last_success = self.__dict__.get("_logistics_progress_last_success") or "없음"
+        data = self.__dict__.get("_logistics_progress_snapshot") or {}
+        lines = [f"{status} · 마지막 성공 수신 {last_success}",
+                 f"{data.get('date') or datetime.now().strftime('%Y-%m-%d')} 출고 계획 대비 포장"]
+        for row in data.get("items", []):
+            lines.append(f"{row['name']} · 계획 {row['plan_qty']} · 포장 완료 {row['packaged_qty']}\n"
+                         f"남은 수량 {row['remaining_qty']} · 남은 상자 {row['remaining_boxes']}")
+        if not data.get("items"):
+            lines.append("표시할 계획이 없습니다." if data else "현황을 아직 받지 못했습니다.")
+        return "\n\n".join(lines)
+
+    def _render_logistics_progress(self):
+        widget = self.__dict__.get("logistics_progress_text")
+        if widget is not None:
+            widget.configure(state="normal")
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", self._logistics_progress_text())
+            widget.configure(state="disabled")
+
     def _set_active_package_submission_notice(self, row):
         status = str((row or {}).get("status") or "").strip().upper()
         current = self.__dict__.get("current_set_info", {}) or {}
@@ -21438,6 +21521,23 @@ class Label_Match(tk.Tk):
                 style=self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE,
             ),
         )
+
+        self.logistics_progress_tab = ttk.Frame(self.operator_notebook, style="Card.TFrame", padding=8)
+        self.operator_notebook.add(self.logistics_progress_tab, text="진행 현황")
+        self.logistics_progress_tab.grid_columnconfigure(0, weight=1)
+        self.logistics_progress_tab.grid_rowconfigure(1, weight=1)
+        ttk.Label(self.logistics_progress_tab, text="출고 계획 대비 진행 현황", style="Header.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 6))
+        self.logistics_progress_text = tk.Text(
+            self.logistics_progress_tab, wrap="word", relief="flat",
+            font=(self.default_font_name, 12), bg=self.colors["card_background"], fg=self.colors["text"],
+        )
+        scrollbar = ttk.Scrollbar(self.logistics_progress_tab, orient=tk.VERTICAL, command=self.logistics_progress_text.yview)
+        self.logistics_progress_text.configure(yscrollcommand=scrollbar.set, state="disabled")
+        self.logistics_progress_text.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        self.operator_notebook.bind("<<NotebookTabChanged>>", self._on_logistics_progress_tab_changed, add="+")
+        self._render_logistics_progress()
 
         label_workbench_context.create_status_footer(
             self,
