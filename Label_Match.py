@@ -13801,6 +13801,8 @@ class Label_Match(tk.Tk):
         result_queue = queue.Queue(maxsize=1)
         pending = self.__dict__.setdefault("_phs2_background_pending", {})
         pending[set_id] = result_queue
+        source_outbox = self.__dict__.get("package_outbox")
+        expected_claim = source_outbox.get_by_set_id(set_id) if source_outbox is not None else None
 
         def lookup():
             try:
@@ -13811,6 +13813,8 @@ class Label_Match(tk.Tk):
 
         def poll():
             if self.__dict__.get("_tk_shutdown_requested", False):
+                return
+            if pending.get(set_id) is not result_queue:
                 return
             try:
                 valid, value = result_queue.get_nowait()
@@ -13824,6 +13828,13 @@ class Label_Match(tk.Tk):
             evidence, snapshot, sealed, _lease = value
             current = self.current_set_info
             active = str(current.get("id") or "") == set_id
+            target = current if active else self.__dict__.get("set_details_map", {}).get(set_id)
+            latest_claim = source_outbox.get_by_set_id(set_id) if source_outbox is not None else None
+            if (not target or self.__dict__.get("package_outbox") is not source_outbox
+                    or latest_claim != expected_claim
+                    or (source_outbox is not None and source_outbox.get_workbench_hold(set_id) is not None)):
+                # Completion delivery owns any row created/changed after this read.
+                return
             if active:
                 previous = copy.deepcopy(current)
                 current.update(evidence.state_fields())
@@ -13839,7 +13850,7 @@ class Label_Match(tk.Tk):
             members = self._known_sample_members(snapshot, current.get("scanner_exchanges", []))
             invalid_sample = members is not None and any(self._sample_barcode(value) not in members for value in samples)
             audits = [self.data_manager.prepare_audit_event(self.Events.POST_REVIEW_REQUIRED, {
-                "set_id": set_id, "reason_code": "PACKAGE_SAMPLE_NOT_MEMBER"})] if invalid_sample else []
+                "set_id": set_id, "reason_code": "PACKAGE_SAMPLE_NOT_MEMBER"})] if invalid_sample and expected_claim is None else []
             if active:
                 if not (self._save_current_set_state(audit_events=audits) if audits else self._save_current_set_state()):
                     current.clear()
@@ -13854,7 +13865,7 @@ class Label_Match(tk.Tk):
                 outbox = self.__dict__.get("package_outbox")
                 row = outbox.get_by_set_id(set_id) if outbox is not None else None
                 if row:
-                    outbox.mark_conflict(row["idempotency_key"], PackageLogisticsError("PACKAGE_SAMPLE_NOT_MEMBER"))
+                    outbox.mark_conflict(row["idempotency_key"], PackageLogisticsError("PACKAGE_SAMPLE_NOT_MEMBER"), expected_claim=expected_claim)
                 self._replay_scanner_audits()
 
         threading.Thread(target=lookup, name="label-match-source-read", daemon=True).start()

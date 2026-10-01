@@ -24,6 +24,61 @@ def _pin_audit_identity() -> tuple[str, str, str, str, str]:
     return ((operation[0], operation[1], operation[2], operation[4], operation[6])
             if operation else ("", "", "", "", ""))
 
+
+def _sending_claim_cas(table: str, expected_claim: Mapping[str, Any] | None):
+    """Bind a remote result to its claim, immutable command and unheld set."""
+    if expected_claim is None:
+        return "", ()
+    return (
+        f" AND attempt_count=? AND command_json IS ?"
+        f" AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold"
+        f" WHERE hold.set_id={table}.set_id)",
+        (expected_claim["attempt_count"], expected_claim.get("command_json")),
+    )
+
+
+def _request_receipt_recheck(store, kind, expected_claim, receipt):
+    table = "package_command_outbox" if kind == "create" else "package_cancellation_outbox"
+    command = expected_claim.get("command_json")
+    if not command:
+        return
+    with store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        # A late success is evidence to query, never authority to replace a row.
+        conn.execute(
+            f"""INSERT OR IGNORE INTO package_receipt_rechecks
+                (outbox_kind,idempotency_key,command_json,evidence_json,observed_at)
+                SELECT ?,idempotency_key,command_json,?,?
+                FROM {table} WHERE idempotency_key=? AND command_json=?
+                AND status IN ('SENDING','PENDING','CONFLICT')
+                AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold
+                                WHERE hold.set_id={table}.set_id)""",
+            (kind, canonical_json(receipt), store._utc_now() if kind == "create" else store._receipt_now(),
+             expected_claim["idempotency_key"], command),
+        )
+        conn.commit()
+
+
+def _receipt_recheck_cas(table, kind, expected_claim):
+    cas, parameters = _sending_claim_cas(table, expected_claim)
+    return (
+        cas + " AND EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck"
+        f" WHERE recheck.idempotency_key={table}.idempotency_key"
+        f" AND recheck.command_json={table}.command_json"
+        " AND recheck.outbox_kind=? AND recheck.verified_at IS NULL)",
+        (*parameters, kind),
+    )
+
+
+def _record_receipt_recheck(conn, kind, row, receipt, now):
+    conn.execute(
+        """UPDATE package_receipt_rechecks SET verified_at=?,previous_status=?,
+            previous_error_code=?,previous_error_message=?,receipt_json=? WHERE outbox_kind=? AND idempotency_key=?
+            AND command_json=? AND verified_at IS NULL""",
+        (now, row["status"], row.get("last_error_code"), row.get("last_error_message"), canonical_json(receipt),
+         kind, row["idempotency_key"], row["command_json"]),
+    )
+
 class PackageOutbox:
     def __init__(
         self,
@@ -446,13 +501,21 @@ class PackageOutbox:
                     WHERE status='SENDING' AND updated_at<=?
                       AND NOT EXISTS (
                           SELECT 1 FROM package_workbench_holds AS hold
-                          WHERE hold.set_id=package_command_outbox.set_id)""",
+                          WHERE hold.set_id=package_command_outbox.set_id)
+                      AND NOT EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck
+                          WHERE recheck.outbox_kind='create'
+                            AND recheck.idempotency_key=package_command_outbox.idempotency_key
+                            AND recheck.verified_at IS NULL)""",
                 (now, stale_before),
             )
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING'
                        AND local_completion_committed=1
+                       AND NOT EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck
+                           WHERE recheck.outbox_kind='create'
+                             AND recheck.idempotency_key=package_command_outbox.idempotency_key
+                             AND recheck.verified_at IS NULL)
                        AND NOT EXISTS (
                            SELECT 1 FROM package_workbench_holds AS hold
                            WHERE hold.set_id=package_command_outbox.set_id)
@@ -482,16 +545,19 @@ class PackageOutbox:
             conn.commit()
             return dict(claimed)
 
-    def save_command(self, key: str, source_bundle_id: str, command: Mapping[str, Any], *, delivery_draft=None) -> None:
+    def save_command(self, key: str, source_bundle_id: str, command: Mapping[str, Any], *, delivery_draft=None, expected_claim=None) -> bool:
         encoded = json.dumps(dict(command), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        cas, parameters = _sending_claim_cas("package_command_outbox", expected_claim)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT resolved_source_bundle_id,command_json,status FROM package_command_outbox WHERE idempotency_key=?",
-                (key,),
+                "SELECT resolved_source_bundle_id,command_json,status FROM package_command_outbox WHERE idempotency_key=? AND status='SENDING'" + cas,
+                (key, *parameters),
             ).fetchone()
             if row is None or row["status"] != "SENDING":
                 conn.rollback()
+                if expected_claim is not None:
+                    return False
                 raise PackageLogisticsError("package outbox command is not exclusively claimed")
             if row["command_json"]:
                 existing = json.dumps(
@@ -504,7 +570,7 @@ class PackageOutbox:
                     conn.rollback()
                     raise PackageLogisticsError("saved package command is immutable")
                 conn.commit()
-                return
+                return True
             cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET resolved_source_bundle_id=?,command_json=?,updated_at=?
@@ -519,6 +585,7 @@ class PackageOutbox:
                 conn.execute("UPDATE package_command_outbox SET draft_json=? WHERE idempotency_key=?",
                     (json.dumps(delivery_draft.to_dict(), ensure_ascii=False, sort_keys=True), key))
             conn.commit()
+            return True
 
     def mark_acked(
         self,
@@ -527,19 +594,30 @@ class PackageOutbox:
         *,
         operation_lease_id: str = "",
         operation_lease_consumption: Mapping[str, Any] | None = None,
-    ) -> None:
+        expected_claim=None,
+        receipt_recheck=False,
+    ) -> bool:
+        cas, parameters = _sending_claim_cas("package_command_outbox", expected_claim)
+        status = "SENDING"
+        if receipt_recheck:
+            status = expected_claim["status"]
+            if status not in {"SENDING", "PENDING", "CONFLICT"}:
+                return False
+            cas, parameters = _receipt_recheck_cas("package_command_outbox", "create", expected_claim)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             now = self._utc_now()
             cursor = conn.execute(
                 """UPDATE package_command_outbox
-                       SET status='ACKED',receipt_json=?,last_error_code=NULL,
+                       SET status='ACKED',review_status=NULL,receipt_json=?,last_error_code=NULL,
                             last_error_message=NULL,retry_after_at=NULL,updated_at=?
-                     WHERE idempotency_key=? AND status='SENDING'""",
-                (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), now, key),
+                     WHERE idempotency_key=? AND status=?""" + cas,
+                (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), now, key, status, *parameters),
             )
             if cursor.rowcount != 1:
                 conn.rollback()
+                if expected_claim is not None:
+                    return False
                 raise PackageLogisticsError("package outbox ACK state changed concurrently")
             if operation_lease_id:
                 lease_cursor = conn.execute(
@@ -547,13 +625,15 @@ class PackageOutbox:
                            SET status='ACKED',consume_receipt_json=?,
                                consume_claimed_at=NULL,last_error_code=NULL,
                                last_error_message=NULL,updated_at=?
-                         WHERE lease_id=? AND status='LOCAL_COMPLETED'""",
+                         WHERE lease_id=? AND (status='LOCAL_COMPLETED'
+                             OR (? AND status='OPERATOR_REVIEW'))""",
                     (
                         canonical_json(
                             dict(operation_lease_consumption or {})
                         ),
                         now,
                         operation_lease_id,
+                        receipt_recheck,
                     ),
                 )
                 if lease_cursor.rowcount != 1:
@@ -568,14 +648,33 @@ class PackageOutbox:
                          WHERE lease_id=? AND status='ACTIVE'""",
                     (now, now, operation_lease_id),
                 )
-                if attempt_cursor.rowcount != 1:
+                if attempt_cursor.rowcount != 1 and not receipt_recheck:
                     conn.rollback()
                     raise PackageLogisticsError(
                         "operation lease issue attempt ACK state changed concurrently"
                     )
+            if expected_claim is not None:
+                _record_receipt_recheck(conn, "create", expected_claim, receipt, now)
             conn.commit()
+            return True
 
-    def mark_retry(self, key: str, error: Exception) -> None:
+    def request_receipt_recheck(self, expected_claim, receipt):
+        _request_receipt_recheck(self, "create", expected_claim, receipt)
+
+    def pending_receipt_rechecks(self):
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(
+                """SELECT package.* FROM package_command_outbox AS package
+                    JOIN package_receipt_rechecks AS recheck USING(idempotency_key)
+                    WHERE recheck.outbox_kind='create' AND recheck.verified_at IS NULL
+                      AND recheck.command_json=package.command_json
+                      AND package.status IN ('SENDING','PENDING','CONFLICT')
+                      AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold
+                                      WHERE hold.set_id=package.set_id)"""
+            ).fetchall()]
+
+    def mark_retry(self, key: str, error: Exception, *, expected_claim=None) -> bool:
+        cas, parameters = _sending_claim_cas("package_command_outbox", expected_claim)
         retry_after_seconds = _bounded_retry_after_seconds(
             getattr(error, "retry_after_seconds", None)
         )
@@ -585,20 +684,23 @@ class PackageOutbox:
             else None
         )
         with self._connect() as conn:
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET status='PENDING',last_error_code=?,last_error_message=?,
                            retry_after_at=?,updated_at=?
-                     WHERE idempotency_key=? AND status='SENDING'""",
+                     WHERE idempotency_key=? AND status='SENDING'""" + cas,
                 (
                     str(getattr(error, "code", error.__class__.__name__)),
                     str(error),
                     retry_after_at,
                     self._utc_now(),
                     key,
+                    *parameters,
                 ),
             )
             conn.commit()
+            return cursor.rowcount == 1
 
     def mark_conflict(
         self,
@@ -606,18 +708,22 @@ class PackageOutbox:
         error: Exception,
         *,
         operation_lease_id: str = "",
-    ) -> None:
+        expected_claim=None,
+    ) -> bool:
+        cas, parameters = _sending_claim_cas("package_command_outbox", expected_claim)
         code = str(getattr(error, "code", "LOCAL_VALIDATION_CONFLICT"))
         message = str(getattr(error, "message", str(error)))
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
-                     WHERE idempotency_key=?""",
-                (key,),
+                     WHERE idempotency_key=? AND status='SENDING'""" + cas,
+                (key, *parameters),
             ).fetchone()
             if row is None or str(row["status"] or "") != "SENDING":
                 conn.rollback()
+                if expected_claim is not None:
+                    return False
                 raise PackageLogisticsError(
                     "package outbox conflict state changed concurrently"
                 )
@@ -627,8 +733,8 @@ class PackageOutbox:
                        SET status='CONFLICT',review_status='OPERATOR_REVIEW',
                            last_error_code=?,last_error_message=?,
                            retry_after_at=NULL,updated_at=?
-                     WHERE idempotency_key=? AND status='SENDING'""",
-                (code, message, now, key),
+                     WHERE idempotency_key=? AND status='SENDING'""" + cas,
+                (code, message, now, key, *parameters),
             )
             if cursor.rowcount != 1:
                 conn.rollback()
@@ -688,6 +794,7 @@ class PackageOutbox:
                         "operation lease issue attempt review state changed concurrently"
                     )
             conn.commit()
+            return True
 
     def get_by_set_id(self, set_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

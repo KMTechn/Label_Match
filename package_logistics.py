@@ -46,7 +46,10 @@ from package_validation import (
     _validate_work_group_source,
 )
 from package_outbox_processor import PackageOutboxProcessor as _PackageOutboxProcessor
-from package_outbox import PackageOutbox as _PackageOutbox
+from package_outbox import (
+    PackageOutbox as _PackageOutbox, _sending_claim_cas, _request_receipt_recheck,
+    _receipt_recheck_cas, _record_receipt_recheck,
+)
 from package_errors import (
     MAX_RETRY_AFTER_SECONDS,
     PackageLogisticsError,
@@ -75,7 +78,7 @@ from package_command_draft import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v10"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v11"
 POST_REVIEW_EVENT_VERSION = "label-match-post-review-required-v1"
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
 PACKAGE_HTTP_USER_AGENT = "KMTech-Worker-ClaimClient/1.0 LabelMatch"
@@ -570,6 +573,12 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
                   SET local_event_committed=1,
                       local_event_committed_at=COALESCE(local_event_committed_at,updated_at)"""
         )
+    conn.execute("""CREATE TABLE IF NOT EXISTS package_receipt_rechecks (
+        outbox_kind TEXT NOT NULL CHECK(outbox_kind IN ('create','cancel')),
+        idempotency_key TEXT NOT NULL,command_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,observed_at TEXT NOT NULL,
+        verified_at TEXT,previous_status TEXT,previous_error_code TEXT,previous_error_message TEXT,receipt_json TEXT,
+        PRIMARY KEY(outbox_kind,idempotency_key))""")
     # Stamp the version only after every table/column/index is present.
     conn.execute(
         "INSERT OR REPLACE INTO package_outbox_schema_info(key,value) VALUES ('schema_version',?)",
@@ -715,7 +724,13 @@ class PackageCancellationOutbox:
             conn.execute(
                 """UPDATE package_cancellation_outbox
                       SET status='PENDING',retry_after_at=NULL,updated_at=?
-                    WHERE status='SENDING' AND updated_at<=?""",
+                    WHERE status='SENDING' AND updated_at<=?
+                      AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold
+                          WHERE hold.set_id=package_cancellation_outbox.set_id)
+                      AND NOT EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck
+                          WHERE recheck.outbox_kind='cancel'
+                            AND recheck.idempotency_key=package_cancellation_outbox.idempotency_key
+                            AND recheck.verified_at IS NULL)""",
                 (now, stale_before),
             )
             row = conn.execute(
@@ -729,6 +744,12 @@ class PackageCancellationOutbox:
                      JOIN package_command_outbox AS package
                        ON package.idempotency_key=cancellation.package_idempotency_key
                     WHERE cancellation.status='PENDING'
+                      AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold
+                          WHERE hold.set_id=cancellation.set_id)
+                      AND NOT EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck
+                          WHERE recheck.outbox_kind='cancel'
+                            AND recheck.idempotency_key=cancellation.idempotency_key
+                            AND recheck.verified_at IS NULL)
                       AND cancellation.local_event_committed=1
                       AND (cancellation.retry_after_at IS NULL
                            OR cancellation.retry_after_at<=?)
@@ -764,16 +785,19 @@ class PackageCancellationOutbox:
             conn.commit()
             return dict(claimed)
 
-    def save_command(self, key: str, command: Mapping[str, Any]) -> None:
+    def save_command(self, key: str, command: Mapping[str, Any], *, expected_claim=None) -> bool:
         encoded = json.dumps(dict(command), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        cas, parameters = _sending_claim_cas("package_cancellation_outbox", expected_claim)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT command_json,status FROM package_cancellation_outbox WHERE idempotency_key=?",
-                (key,),
+                "SELECT command_json,status FROM package_cancellation_outbox WHERE idempotency_key=? AND status='SENDING'" + cas,
+                (key, *parameters),
             ).fetchone()
             if row is None or row["status"] != "SENDING":
                 conn.rollback()
+                if expected_claim is not None:
+                    return False
                 raise PackageLogisticsError("package cancellation command is not exclusively claimed")
             if row["command_json"]:
                 existing = json.dumps(
@@ -786,7 +810,7 @@ class PackageCancellationOutbox:
                     conn.rollback()
                     raise PackageLogisticsError("saved package cancellation command is immutable")
                 conn.commit()
-                return
+                return True
             cursor = conn.execute(
                 """UPDATE package_cancellation_outbox
                        SET command_json=?,updated_at=?
@@ -797,19 +821,53 @@ class PackageCancellationOutbox:
                 conn.rollback()
                 raise PackageLogisticsError("package cancellation command lost its immutable save CAS")
             conn.commit()
+            return True
 
-    def mark_acked(self, key: str, receipt: Mapping[str, Any]) -> None:
+    def mark_acked(self, key: str, receipt: Mapping[str, Any], *, expected_claim=None, receipt_recheck=False) -> bool:
+        cas, parameters = _sending_claim_cas("package_cancellation_outbox", expected_claim)
+        status = "SENDING"
+        if receipt_recheck:
+            status = expected_claim["status"]
+            if status not in {"SENDING", "PENDING", "CONFLICT"}:
+                return False
+            cas, parameters = _receipt_recheck_cas("package_cancellation_outbox", "cancel", expected_claim)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 """UPDATE package_cancellation_outbox
                        SET status='ACKED',receipt_json=?,last_error_code=NULL,
                            last_error_message=NULL,retry_after_at=NULL,updated_at=?
-                     WHERE idempotency_key=? AND status='SENDING'""",
-                (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), utc_now(), key),
+                     WHERE idempotency_key=? AND status=?""" + cas,
+                (json.dumps(dict(receipt), ensure_ascii=False, sort_keys=True), utc_now(), key, status, *parameters),
             )
             if cursor.rowcount != 1:
+                conn.rollback()
+                if expected_claim is not None:
+                    return False
                 raise PackageLogisticsError("package cancellation ACK state changed concurrently")
+            if expected_claim is not None:
+                _record_receipt_recheck(conn, "cancel", expected_claim, receipt, utc_now())
             conn.commit()
+            return True
+
+    def _receipt_now(self):
+        return utc_now()
+
+    def request_receipt_recheck(self, expected_claim, receipt):
+        _request_receipt_recheck(self, "cancel", expected_claim, receipt)
+
+    def pending_receipt_rechecks(self):
+        with self._connect() as conn:
+            event_ids = [row[0] for row in conn.execute(
+                """SELECT cancellation_event_id FROM package_cancellation_outbox AS cancellation
+                    JOIN package_receipt_rechecks AS recheck USING(idempotency_key)
+                    WHERE recheck.outbox_kind='cancel' AND recheck.verified_at IS NULL
+                      AND recheck.command_json=cancellation.command_json
+                      AND cancellation.status IN ('SENDING','PENDING','CONFLICT')
+                      AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold
+                                      WHERE hold.set_id=cancellation.set_id)"""
+            ).fetchall()]
+        return [self.get_by_event_id(event_id) for event_id in event_ids]
 
     def mark_local_event_committed(self, cancellation_event_id: str) -> None:
         event_id = str(cancellation_event_id or "").strip()
@@ -841,16 +899,19 @@ class PackageCancellationOutbox:
                 )
             conn.commit()
 
-    def mark_retry(self, key: str, error: Exception) -> None:
+    def mark_retry(self, key: str, error: Exception, *, expected_claim=None) -> bool:
+        cas, parameters = _sending_claim_cas("package_cancellation_outbox", expected_claim)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """SELECT attempt_count FROM package_cancellation_outbox
-                     WHERE idempotency_key=? AND status='SENDING'""",
-                (key,),
+                     WHERE idempotency_key=? AND status='SENDING'""" + cas,
+                (key, *parameters),
             ).fetchone()
             if row is None:
                 conn.rollback()
+                if expected_claim is not None:
+                    return False
                 raise PackageLogisticsError(
                     "package cancellation retry state changed concurrently"
                 )
@@ -866,8 +927,8 @@ class PackageCancellationOutbox:
                 """UPDATE package_cancellation_outbox
                        SET status='PENDING',last_error_code=?,last_error_message=?,
                            retry_after_at=?,updated_at=?
-                     WHERE idempotency_key=? AND status='SENDING'""",
-                (code, message, retry_after_at, utc_now(), key),
+                     WHERE idempotency_key=? AND status='SENDING'""" + cas,
+                (code, message, retry_after_at, utc_now(), key, *parameters),
             )
             if cursor.rowcount != 1:
                 conn.rollback()
@@ -875,19 +936,25 @@ class PackageCancellationOutbox:
                     "package cancellation retry state changed concurrently"
                 )
             conn.commit()
+            return True
 
-    def mark_conflict(self, key: str, error: Exception) -> None:
+    def mark_conflict(self, key: str, error: Exception, *, expected_claim=None) -> bool:
+        cas, parameters = _sending_claim_cas("package_cancellation_outbox", expected_claim)
+        if expected_claim is not None:
+            cas += " AND status='SENDING'"
         code = str(getattr(error, "code", "LOCAL_VALIDATION_CONFLICT"))
         message = str(getattr(error, "message", str(error)))
         with self._connect() as conn:
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
                 """UPDATE package_cancellation_outbox
                        SET status='CONFLICT',last_error_code=?,last_error_message=?,
                            retry_after_at=NULL,updated_at=?
-                     WHERE idempotency_key=? AND status IN ('DEFERRED','SENDING')""",
-                (code, message, utc_now(), key),
+                     WHERE idempotency_key=? AND status IN ('DEFERRED','SENDING')""" + cas,
+                (code, message, utc_now(), key, *parameters),
             )
             conn.commit()
+            return cursor.rowcount == 1
 
     def get_by_event_id(self, cancellation_event_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -2493,6 +2560,7 @@ class PackageCancellationOutboxProcessor:
                 return counts
             self._draining = True
         try:
+            counts["acked"] += self._reconcile_receipts()
             for _ in range(max(0, int(limit))):
                 row = self.outbox.claim_next()
                 if row is None:
@@ -2524,7 +2592,8 @@ class PackageCancellationOutboxProcessor:
                         command = self.client.build_cancel_package_command(
                             intent, row, idempotency_key=key
                         )
-                        self.outbox.save_command(key, command)
+                        if not self.outbox.save_command(key, command, expected_claim=row):
+                            continue
                         row = {
                             **row,
                             "command_json": json.dumps(
@@ -2535,18 +2604,14 @@ class PackageCancellationOutboxProcessor:
                             ),
                         }
                         receipt = self.client.cancel_package(command)
-                    latest = self.outbox.get_by_event_id(intent.cancellation_event_id)
-                    if (latest is None or latest['status'] != 'SENDING'
-                            or latest['attempt_count'] != row['attempt_count']
-                            or json.loads(latest['command_json'] or '{}') != command):
-                        continue
                     self._validate_receipt(row, receipt)
-                    self.outbox.mark_acked(key, receipt)
-                    counts["acked"] += 1
+                    applied = self.outbox.mark_acked(key, receipt, expected_claim=row)
+                    counts["acked"] += int(applied)
+                    if not applied:
+                        self.outbox.request_receipt_recheck(row, receipt)
                 except PackageApiError as exc:
                     if exc.committed is True:
-                        self.outbox.mark_conflict(key, exc)
-                        counts["conflict"] += 1
+                        counts["conflict"] += int(self.outbox.mark_conflict(key, exc, expected_claim=row))
                     elif (
                         exc.status_code not in {409, 412}
                         and (
@@ -2555,24 +2620,39 @@ class PackageCancellationOutboxProcessor:
                             or exc.retryable is True
                         )
                     ):
-                        self.outbox.mark_retry(key, exc)
-                        counts["retry"] += 1
+                        counts["retry"] += int(self.outbox.mark_retry(key, exc, expected_claim=row))
                     else:
-                        self.outbox.mark_conflict(key, exc)
-                        counts["conflict"] += 1
+                        counts["conflict"] += int(self.outbox.mark_conflict(key, exc, expected_claim=row))
                 except PackageTransportError as exc:
-                    self.outbox.mark_retry(key, exc)
-                    counts["retry"] += 1
+                    counts["retry"] += int(self.outbox.mark_retry(key, exc, expected_claim=row))
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError, PackageLogisticsError) as exc:
                     if not isinstance(exc, PackageLogisticsError):
                         exc = PackageLogisticsError("saved package cancellation intent is invalid")
-                    self.outbox.mark_conflict(key, exc)
-                    counts["conflict"] += 1
+                    counts["conflict"] += int(self.outbox.mark_conflict(key, exc, expected_claim=row))
         finally:
             with self._drain_lock:
                 self._draining = False
         counts["deferred"] = self.outbox.counts()["DEFERRED"]
         return counts
+
+    def _reconcile_receipts(self) -> int:
+        acked = 0
+        for row in self.outbox.pending_receipt_rechecks():
+            try:
+                self._validate_linked_create_receipt(row)
+                command = json.loads(row["command_json"])
+                receipt = self.client.get_receipt_if_exists(
+                    row["idempotency_key"], authority_scope_id=command["authority_scope_id"]
+                )
+                if receipt is None:
+                    continue
+                self._validate_receipt(row, receipt)
+                acked += int(self.outbox.mark_acked(
+                    row["idempotency_key"], receipt, expected_claim=row, receipt_recheck=True,
+                ))
+            except (PackageApiError, PackageTransportError, PackageLogisticsError):
+                continue
+        return acked
 
     @staticmethod
     def _validate_linked_create_receipt(

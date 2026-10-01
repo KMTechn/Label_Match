@@ -583,6 +583,10 @@ def ensure_runtime_authority(
                     error_code="runtime_state_missing",
                     error_message="runtime authority state disappeared during lease acquisition",
                 )
+            if (state["pending_request_json"] != request_json
+                    or state["assigned_relay_id"] is not None):
+                conn.rollback()
+                continue
             grant_error = _grant_error(grant, state=state, scope=scope, request_value=request_value)
             if grant_error:
                 conn.execute(
@@ -917,6 +921,10 @@ def prepare_runtime_metadata(
                     error_code="runtime_state_missing",
                     error_message="runtime authority state disappeared during lease acquisition",
                 )
+            if (state["pending_request_json"] != request_json
+                    or state["assigned_relay_id"] is not None):
+                conn.rollback()
+                continue
             grant_error = _grant_error(grant, state=state, scope=scope, request_value=request_value)
             if grant_error:
                 conn.execute(

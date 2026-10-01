@@ -50,6 +50,7 @@ class PackageOutboxProcessor:
                 return counts
             self._draining = True
         try:
+            counts["acked"] += self._reconcile_receipts()
             attempted_keys: set[str] = set()
             for _ in range(max(0, int(limit))):
                 row = self.outbox.claim_next(exclude_keys=attempted_keys)
@@ -86,19 +87,13 @@ class PackageOutboxProcessor:
                                 local_completion_id=draft.set_id, local_completed_at=draft.local_completed_at,
                                 deferred_reflection=True, short_confirmed=draft.short_confirmed,
                                 exchange_idempotency_keys=[row["idempotency_key"] for row in draft.scanner_exchanges])
-                            self.outbox.save_command(key, source_id, command, delivery_draft=draft)
+                            saved = self.outbox.save_command(key, source_id, command, delivery_draft=draft, expected_claim=row)
                         else:
-                            self.outbox.save_command(key, source_id, command)
+                            saved = self.outbox.save_command(key, source_id, command, expected_claim=row)
+                        if not saved:
+                            continue
+                        row = {**row, "command_json": canonical_json(command)}
                         receipt = self.client.create_package(command)
-                    # Transport released writer admission. A newer claim/hold
-                    # owns the row if it changed while the request was away;
-                    # its next drain recovers the same central receipt.
-                    latest = self.outbox.get_by_set_id(draft.set_id)
-                    if (latest is None or latest['status'] != 'SENDING'
-                            or latest['attempt_count'] != row['attempt_count']
-                            or self.outbox.get_workbench_hold(draft.set_id) is not None
-                            or json.loads(latest['command_json'] or '{}') != command):
-                        continue
                     self._validate_receipt(draft, source_id, receipt, command=command)
                     consumption = (
                         receipt.get("data", receipt).get(
@@ -107,26 +102,29 @@ class PackageOutboxProcessor:
                         if isinstance(receipt.get("data", receipt), Mapping)
                         else None
                     )
-                    self.outbox.mark_acked(
+                    applied = self.outbox.mark_acked(
                         key,
                         receipt,
                         operation_lease_id=draft.operation_lease_id,
                         operation_lease_consumption=consumption,
+                        expected_claim=row,
                     )
-                    counts["acked"] += 1
+                    counts["acked"] += int(applied)
+                    if not applied:
+                        self.outbox.request_receipt_recheck(row, receipt)
                 except PackageApiError as exc:
                     if exc.committed is True:
-                        self.outbox.mark_conflict(
+                        applied = self.outbox.mark_conflict(
                             key,
                             exc,
                             operation_lease_id=(
                                 draft.operation_lease_id if draft else ""
                             ),
+                            expected_claim=row,
                         )
-                        counts["conflict"] += 1
+                        counts["conflict"] += int(applied)
                     elif exc.status_code == 409 and exc.code == "UPSTREAM_COMPLETION_PENDING" and exc.retryable is True:
-                        self.outbox.mark_retry(key, exc)
-                        counts["retry"] += 1
+                        counts["retry"] += int(self.outbox.mark_retry(key, exc, expected_claim=row))
                     elif (
                         exc.status_code not in {409, 412}
                         and (
@@ -135,33 +133,56 @@ class PackageOutboxProcessor:
                             or exc.retryable is True
                         )
                     ):
-                        self.outbox.mark_retry(key, exc)
-                        counts["retry"] += 1
+                        counts["retry"] += int(self.outbox.mark_retry(key, exc, expected_claim=row))
                     else:
-                        self.outbox.mark_conflict(
+                        applied = self.outbox.mark_conflict(
                             key,
                             exc,
                             operation_lease_id=(
                                 draft.operation_lease_id if draft else ""
                             ),
+                            expected_claim=row,
                         )
-                        counts["conflict"] += 1
+                        counts["conflict"] += int(applied)
                 except PackageTransportError as exc:
-                    self.outbox.mark_retry(key, exc)
-                    counts["retry"] += 1
+                    counts["retry"] += int(self.outbox.mark_retry(key, exc, expected_claim=row))
                 except (PackageLogisticsError, OperationLeaseError) as exc:
-                    self.outbox.mark_conflict(
+                    applied = self.outbox.mark_conflict(
                         key,
                         exc,
                         operation_lease_id=(
                             draft.operation_lease_id if draft else ""
                         ),
+                        expected_claim=row,
                     )
-                    counts["conflict"] += 1
+                    counts["conflict"] += int(applied)
         finally:
             with self._drain_lock:
                 self._draining = False
         return counts
+
+    def _reconcile_receipts(self) -> int:
+        acked = 0
+        for row in self.outbox.pending_receipt_rechecks():
+            try:
+                draft = PackageCommandDraft.from_dict(json.loads(row["draft_json"]))
+                command = json.loads(row["command_json"])
+                receipt = self.client.get_receipt_if_exists(
+                    row["idempotency_key"], authority_scope_id=command["authority_scope_id"]
+                )
+                if receipt is None:
+                    continue
+                self._validate_receipt(draft, row["resolved_source_bundle_id"], receipt, command=command)
+                data = receipt.get("data", receipt)
+                acked += int(self.outbox.mark_acked(
+                    row["idempotency_key"], receipt, expected_claim=row, receipt_recheck=True,
+                    operation_lease_id=draft.operation_lease_id,
+                    operation_lease_consumption=data.get("operation_lease_consumption"),
+                ))
+            except (PackageApiError, PackageTransportError, PackageLogisticsError, OperationLeaseError):
+                # Keep evidence and current state; only a verified receipt can resolve it.
+                continue
+        return acked
 
     @staticmethod
     def _validate_operation_lease_receipt(

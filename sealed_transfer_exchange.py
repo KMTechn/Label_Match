@@ -485,6 +485,11 @@ class SealedTransferExchangeStore:
                 CREATE INDEX IF NOT EXISTS ix_sealed_transfer_exchange_pending
                     ON sealed_transfer_exchange_intents(status,seal_verification_status,
                                                         local_apply_status,created_at);
+                CREATE TABLE IF NOT EXISTS sealed_transfer_receipt_rechecks (
+                    intent_id TEXT PRIMARY KEY,command_hash TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,observed_at TEXT NOT NULL,
+                    verified_at TEXT,previous_status TEXT,previous_error_code TEXT,previous_error_message TEXT,
+                    receipt_json TEXT);
                 CREATE INDEX IF NOT EXISTS ix_sealed_transfer_exchange_set
                     ON sealed_transfer_exchange_intents(set_id,created_at);
                 CREATE TRIGGER IF NOT EXISTS trg_sealed_transfer_exchange_command_immutable
@@ -577,7 +582,7 @@ class SealedTransferExchangeStore:
             raise KeyError(intent_id)
         return row
 
-    def bind_command(self, intent_id: str, command: Mapping[str, Any]) -> sqlite3.Row:
+    def bind_command(self, intent_id: str, command: Mapping[str, Any], *, expected_state=None) -> sqlite3.Row:
         encoded = _json(dict(command))
         digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         command_id = _identifier(command.get("idempotency_key"), "idempotency_key")
@@ -589,6 +594,9 @@ class SealedTransferExchangeStore:
             ).fetchone()
             if row is None:
                 raise KeyError(intent_id)
+            if expected_state is not None and dict(row) != dict(expected_state):
+                conn.rollback()
+                return row
             if row["command_json"]:
                 if (
                     row["command_id"] != command_id
@@ -615,7 +623,18 @@ class SealedTransferExchangeStore:
         assert row is not None
         return row
 
-    def record_error(self, intent_id: str, error: Exception) -> sqlite3.Row:
+    def begin_attempt(self, intent_id, *, expected_state):
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cas, parameters = self._result_cas(conn, expected_state)
+            changed = conn.execute("""UPDATE sealed_transfer_exchange_intents
+                SET attempt_count=attempt_count+1 WHERE intent_id=? AND status!='ACKED'""" + cas,
+                (intent_id, *parameters))
+            row = conn.execute("SELECT * FROM sealed_transfer_exchange_intents WHERE intent_id=?", (intent_id,)).fetchone()
+            conn.commit()
+            return row if changed.rowcount == 1 else None
+
+    def record_error(self, intent_id: str, error: Exception, *, expected_state=None, attempt_started=False) -> sqlite3.Row:
         code = str(getattr(error, "code", "SEALED_TRANSFER_EXCHANGE_ERROR"))
         committed = getattr(error, "committed", None)
         upstream_pending = (getattr(error, "code", "") == "UPSTREAM_COMPLETION_PENDING"
@@ -637,12 +656,13 @@ class SealedTransferExchangeStore:
         status = "RETRY_WAIT" if retryable else "OPERATOR_REVIEW"
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            cas, parameters = self._result_cas(conn, expected_state)
             conn.execute(
                 """UPDATE sealed_transfer_exchange_intents
                       SET status=?,last_error_code=?,last_error_message=?,
-                          attempt_count=attempt_count+1,updated_at=?
-                    WHERE intent_id=? AND status!='ACKED'""",
-                (status, code, str(error), _now(), intent_id),
+                          attempt_count=attempt_count+?,updated_at=?
+                    WHERE intent_id=? AND status!='ACKED'""" + cas,
+                (status, code, str(error), int(not attempt_started), _now(), intent_id, *parameters),
             )
             row = conn.execute(
                 "SELECT * FROM sealed_transfer_exchange_intents WHERE intent_id=?",
@@ -653,30 +673,71 @@ class SealedTransferExchangeStore:
         return row
 
     def record_receipt(
-        self, intent_id: str, receipt: Mapping[str, Any], new_seal_qr_payload: str
+        self, intent_id: str, receipt: Mapping[str, Any], new_seal_qr_payload: str,
+        *, expected_state=None, attempt_started=False,
     ) -> sqlite3.Row:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
+            cas, parameters = self._result_cas(conn, expected_state)
+            changed = conn.execute(
                 """UPDATE sealed_transfer_exchange_intents
                       SET status='ACKED',receipt_json=?,new_seal_qr_payload=?,
                           last_error_code=NULL,last_error_message=NULL,
-                          attempt_count=attempt_count+1,updated_at=?
-                    WHERE intent_id=?""",
+                          attempt_count=attempt_count+?,updated_at=?
+                    WHERE intent_id=?""" + cas,
                 (
                     _json(dict(receipt)),
                     _identifier(new_seal_qr_payload, "new_seal_qr_payload"),
+                    int(not attempt_started),
                     _now(),
                     intent_id,
+                    *parameters,
                 ),
             )
             row = conn.execute(
                 "SELECT * FROM sealed_transfer_exchange_intents WHERE intent_id=?",
                 (intent_id,),
             ).fetchone()
+            if changed.rowcount == 0 and expected_state is not None:
+                if (row["command_hash"] == expected_state["command_hash"]
+                        and row["status"] != "ACKED"):
+                    held = (conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='package_workbench_holds'").fetchone()
+                            and conn.execute("SELECT 1 FROM package_workbench_holds WHERE set_id=?", (row["set_id"],)).fetchone())
+                    if not held:
+                        conn.execute("""INSERT OR IGNORE INTO sealed_transfer_receipt_rechecks
+                            (intent_id,command_hash,evidence_json,observed_at) VALUES (?,?,?,?)""",
+                            (intent_id, row["command_hash"], _json(receipt), _now()))
+            elif expected_state is not None:
+                conn.execute("""UPDATE sealed_transfer_receipt_rechecks SET verified_at=?,
+                    previous_status=?,previous_error_code=?,previous_error_message=?,receipt_json=?
+                    WHERE intent_id=? AND command_hash=? AND verified_at IS NULL""",
+                    (_now(), expected_state["status"], expected_state["last_error_code"], expected_state["last_error_message"],
+                     _json(receipt), intent_id, row["command_hash"]))
             conn.commit()
         assert row is not None
         return row
+
+    @staticmethod
+    def _result_cas(conn, expected_state):
+        if expected_state is None:
+            return "", ()
+        cas, parameters = (
+            " AND attempt_count=? AND command_hash IS ? AND status=?"
+            " AND local_apply_status=? AND seal_verification_status=?",
+            tuple(expected_state[field] for field in (
+                "attempt_count", "command_hash", "status", "local_apply_status", "seal_verification_status"
+            )),
+        )
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='package_workbench_holds'").fetchone():
+            cas += " AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold WHERE hold.set_id=sealed_transfer_exchange_intents.set_id)"
+        return cas, parameters
+
+    def receipt_recheck_pending(self, intent_id):
+        with self._connect() as conn:
+            return conn.execute("""SELECT 1 FROM sealed_transfer_receipt_rechecks AS recheck
+                JOIN sealed_transfer_exchange_intents AS intent USING(intent_id)
+                WHERE intent_id=? AND verified_at IS NULL AND intent.command_hash=recheck.command_hash""",
+                (intent_id,)).fetchone() is not None
 
     def mark_seal_verified(self, intent_id: str, scanned_qr: str) -> sqlite3.Row:
         with self._connect() as conn:
@@ -761,7 +822,10 @@ class SealedTransferExchangeStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""SELECT intent_id FROM sealed_transfer_exchange_intents
-                      WHERE status IN ({placeholders})
+                      WHERE (status IN ({placeholders}) OR EXISTS (
+                          SELECT 1 FROM sealed_transfer_receipt_rechecks AS recheck
+                          WHERE recheck.intent_id=sealed_transfer_exchange_intents.intent_id
+                            AND recheck.verified_at IS NULL))
                         AND NOT EXISTS (
                           SELECT 1 FROM package_workbench_holds AS hold
                           WHERE hold.set_id=sealed_transfer_exchange_intents.set_id)
@@ -871,24 +935,35 @@ class SealedTransferExchangeCoordinator:
                     "local_completed_at": local_completed_at},
                 "client_exact_evidence": {"target_item_id": item_code, "old_barcodes": [pair["target_barcode"]],
                     "new_barcodes": [pair["replacement_barcode"]], "target_barcodes": list(target["barcodes"])} }
-            row = self.store.bind_command(row["intent_id"], command)
+            row = self.store.bind_command(row["intent_id"], command, expected_state=row)
         if row["status"] == "ACKED":
             return self._finish_scanner_exchange(row)
+        if self.store.receipt_recheck_pending(row["intent_id"]):
+            row = self._reconcile_receipt(row)
+            if row["status"] == "ACKED":
+                return self._finish_scanner_exchange(row)
+            raise PackageTransportError("scanner exchange receipt remains unconfirmed")
         if row["status"] == "OPERATOR_REVIEW":
             raise PackageLogisticsError("scanner exchange requires operator review")
         command = json.loads(row["command_json"])
+        attempt_started = False
         try:
             receipt = self.client.get_receipt_if_exists(key, authority_scope_id=row["authority_scope_id"])
             if receipt is None:
+                claimed = self.store.begin_attempt(row["intent_id"], expected_state=row)
+                if claimed is None:
+                    raise PackageTransportError("scanner exchange attempt changed")
+                row = claimed
+                attempt_started = True
                 receipt = self.client.replace_and_reseal_transfer(command)
             qr = self._validate_scanner_receipt(command, receipt)
-            self.store.record_receipt(row["intent_id"], receipt, new_seal_qr_payload=qr)
+            self.store.record_receipt(row["intent_id"], receipt, new_seal_qr_payload=qr, expected_state=row, attempt_started=attempt_started)
             # The new contract consumes electronic receipt evidence directly.
             return self._finish_scanner_exchange(self.store.load(row["intent_id"]))
         except WriterFenceError:
             raise
         except Exception as error:
-            self.store.record_error(row["intent_id"], error)
+            self.store.record_error(row["intent_id"], error, expected_state=row, attempt_started=attempt_started)
             raise
 
     def _finish_scanner_exchange(self, row):
@@ -898,6 +973,21 @@ class SealedTransferExchangeCoordinator:
             "set_id": row["set_id"], "scanner_command_id": row["command_id"],
             "verification_source": "ELECTRONIC_RECEIPT"})
         return dict(self.store.load(row["intent_id"]))
+
+    def _reconcile_receipt(self, row):
+        command = json.loads(row["command_json"])
+        try:
+            receipt = self.client.get_receipt_if_exists(
+                command["idempotency_key"], authority_scope_id=row["authority_scope_id"]
+            )
+            if receipt is None:
+                return row
+            scanner = command.get("payload", {}).get("replacement_mode") == "SCAN_REGISTER_GOOD"
+            qr = (self._validate_scanner_receipt(command, receipt) if scanner
+                  else self._validate_receipt(command, receipt))
+            return self.store.record_receipt(row["intent_id"], receipt, qr, expected_state=row)
+        except (PackageLogisticsError, PackageApiError, PackageTransportError):
+            return row
 
     @staticmethod
     def _validate_scanner_receipt(command, receipt):
@@ -1692,6 +1782,11 @@ class SealedTransferExchangeCoordinator:
             if scanner_command:
                 row = self._finish_scanner_exchange(row)
             return self._attempt(row)
+        if self.store.receipt_recheck_pending(intent_id):
+            row = self._reconcile_receipt(row)
+            if scanner_command and row["status"] == "ACKED":
+                row = self._finish_scanner_exchange(row)
+            return self._attempt(row)
         command_was_durable = row["command_json"] is not None
         operator_review = row["status"] == "OPERATOR_REVIEW"
         operator_retry = operator_retry is True
@@ -1753,9 +1848,10 @@ class SealedTransferExchangeCoordinator:
             )
         ) or operator_retry
         compatibility_post_attempted = False
+        attempt_started = False
         try:
             if row["command_json"] is None:
-                row = self.store.bind_command(intent_id, self._build_command(row))
+                row = self.store.bind_command(intent_id, self._build_command(row), expected_state=row)
             command = json.loads(row["command_json"])
             if self.client is None:
                 raise PackageLogisticsError("central logistics client is not configured")
@@ -1809,7 +1905,7 @@ class SealedTransferExchangeCoordinator:
                             try:
                                 new_qr = self._validate_receipt(command, receipt)
                                 row = self.store.record_receipt(
-                                    intent_id, receipt, new_qr
+                                    intent_id, receipt, new_qr, expected_state=row
                                 )
                             except WriterFenceError:
                                 raise
@@ -1818,7 +1914,7 @@ class SealedTransferExchangeCoordinator:
                         else:
                             new_qr = self._validate_receipt(command, receipt)
                             row = self.store.record_receipt(
-                                intent_id, receipt, new_qr
+                                intent_id, receipt, new_qr, expected_state=row
                             )
                         if scanner_command:
                             row = self._finish_scanner_exchange(row)
@@ -1842,9 +1938,14 @@ class SealedTransferExchangeCoordinator:
                     # Keep the already-bound command and review row unchanged
                     # until the existing same-key call returns its outcome.
                     compatibility_post_attempted = True
+            claimed = self.store.begin_attempt(intent_id, expected_state=row)
+            if claimed is None:
+                return self._attempt(self.store.load(intent_id))
+            row = claimed
+            attempt_started = True
             receipt = self.client.replace_and_reseal_transfer(command)
             new_qr = self._validate_receipt(command, receipt)
-            row = self.store.record_receipt(intent_id, receipt, new_qr)
+            row = self.store.record_receipt(intent_id, receipt, new_qr, expected_state=row, attempt_started=attempt_started)
         except (PackageLogisticsError, PackageApiError, PackageTransportError) as exc:
             if (
                 compatibility_post_attempted
@@ -1861,7 +1962,7 @@ class SealedTransferExchangeCoordinator:
                 exc = SealedTransferExchangeError(
                     "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN", str(exc)
                 )
-            row = self.store.record_error(intent_id, exc)
+            row = self.store.record_error(intent_id, exc, expected_state=row, attempt_started=attempt_started)
         except WriterFenceError:
             raise
         except Exception as exc:
@@ -1869,7 +1970,7 @@ class SealedTransferExchangeCoordinator:
             error = (SealedTransferExchangeError(
                 "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN", message
             ) if operator_retry else PackageTransportError(message))
-            row = self.store.record_error(intent_id, error)
+            row = self.store.record_error(intent_id, error, expected_state=row, attempt_started=attempt_started)
         if scanner_command and row["status"] == "ACKED":
             row = self._finish_scanner_exchange(row)
         return self._attempt(row)

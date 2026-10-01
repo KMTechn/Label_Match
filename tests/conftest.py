@@ -79,3 +79,12 @@ def lock_remote(monkeypatch, request):
                 setattr(app.data_manager, attribute, guard.wrap_lock(value, label='scan checkpoint ' + attribute))
     yield guard
     guard.assert_clean()
+
+
+@pytest.fixture(params=["create", "cancel"])
+def late_result_adapter_factory(tmp_path, monkeypatch, request):
+    from tests.test_package_late_results import PackageLateAdapter
+    # The shared fake clock only satisfies claim expiry/backoff; remote guards stay active.
+    original = __import__("package_logistics")._utc_before
+    monkeypatch.setattr(__import__("package_logistics"), "_utc_before", original)
+    return lambda transport: PackageLateAdapter(tmp_path, request.param, transport, monkeypatch)

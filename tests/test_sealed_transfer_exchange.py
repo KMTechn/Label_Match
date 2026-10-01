@@ -526,7 +526,8 @@ def test_legacy_iin_review_recovers_original_intent_through_normal_drain(tmp_pat
             assert durable["command_hash"] == hashlib.sha256(
                 durable["command_json"].encode()
             ).hexdigest()
-            assert durable["attempt_count"] == 1
+            # The request owns a new generation before POST (sub-112 decision).
+            assert durable["attempt_count"] == 2
             return super().replace_and_reseal_transfer(command)
 
     client = RecoveryClient()
@@ -742,7 +743,9 @@ def test_instruction_review_recovers_same_durable_command_without_rebinding(tmp_
 
         def replace_and_reseal_transfer(self, command):
             calls.append("post")
-            assert dict(store.load(intent_id)) == before
+            assert dict(store.load(intent_id)) == {
+                **before, "attempt_count": before["attempt_count"] + 1,
+            }
             assert command == saved
             return super().replace_and_reseal_transfer(command)
 

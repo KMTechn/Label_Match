@@ -6,6 +6,8 @@ relay 업로드·runtime lease·package client·PIN client는 HTTP 동안 writer
 
 실제 0.3·6·35초 전송 지연의 공개 스캔 입구와 fence 변화 뒤 같은 명령 영수증 복구는 `tests/test_scan_remote_lock.py`, 정상 완료 저장 중 FIFO 보존·순서·처리 1회는 `tests/test_label_completion_scan_queue.py`로 검사한다. headless 시험과 실제 Tk·스캐너·서버 수용은 구분한다. F5 관리 교환·옛 deferred validation의 busy 입력 및 FIFO의 재시작 내구화는 [후속 범위](BACKLOG.md#busy-scan-durable-fifo)다.
 
+claim 만료 뒤 옛 HTTP 성공/거부·retry·끊김·timeout의 적용과 receipt-only 재기동 복구는 `tests/test_package_late_results.py`로 검사한다. `package_receipt_rechecks`·`sealed_transfer_receipt_rechecks`는 같은 명령의 늦은 성공 증거와 완료 감사만 저장한다. pending 표식은 정상 POST claim에서 제외하며 조회만 반복한다. 보류·다른 명령·중앙 receipt 부재는 ACK로 바꾸지 않는다. F5의 `PHS_LABEL_JOURNAL_CHANGED`는 최신 원본을 유지하므로 현재 기록을 다시 읽어 복구하며 파일/DB를 수동 편집하지 않는다.
+
 설치기의 `remote_transport_replacements`는 이미 허용된 release transition을 전제로 이번 9개 변경 모듈의 정확한 과거 SHA 집합과 후보 SHA를 함께 대조한다. 새 release 방향·writer 멤버십·runtime·설치 계약을 허용하지 않으며 기존 preimage와 부정 시험을 보존한다. 각 모듈의 설치본·후보 바이트 변경 거절은 `tests/test_remote_transport_upgrade_guard.py`로 검사한다.
 
 작업 중 중복 제품은 오류음·안내 뒤 다음 제품을 바로 스캔한다. `진행 현황` 탭은 기기 인증으로 오늘 계획·포장 완료·남은 수량/상자를 읽으며 끊기면 마지막 값과 수신 시각을 남긴다. 탭을 연 채 스캔하면 원문을 작업 화면에서 처리한다. 연결 표시의 마지막 성공 **전송** 시각은 현황 수신 시각과 구분한다. 연결 실패 뒤에는 더 최근의 실제 현황 응답 또는 전송 ACK까지 끊김을 유지하며, relay의 로컬 idle·유효 lease만으로 정상 표시하지 않는다. 현황은 요청 시작 시각으로 비교하므로 늦게 끝난 옛 요청의 성공·실패가 더 새로운 연결 관측을 덮지 않는다. 저장된 오래된 retry의 늦은 조회도 새 실패로 승격하지 않는다. 전송 경로 전체의 시작 시각 기록은 [후속 범위](BACKLOG.md#connection-observation-order)다. 옛 현품표의 제품4는 31자·유효 6D 조건을 유지한다. [계약](contracts.md#scanner-only-packaging)과 현장 화면·실제 청취의 별도 확인 범위를 따른다.

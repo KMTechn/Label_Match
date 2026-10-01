@@ -577,12 +577,14 @@ class PHSLabelExchangeJournal:
     def __init__(self, path: str | os.PathLike[str]):
         self.path = Path(path)
         self._lock = threading.Lock()
+        self._observed = threading.local()
 
     def load(self) -> dict[str, Any]:
         with self._lock:
             evidence = read_recovery_file(
                 self.path, journal_schema=PHS_LABEL_EXCHANGE_JOURNAL_VERSION
             )
+            self._observed.sha256 = evidence["sha256"]
             if evidence["reason"] == "missing":
                 return {}
         if not evidence["verified"]:
@@ -603,9 +605,23 @@ class PHSLabelExchangeJournal:
         require_recovery_record("journal", payload,
                                 journal_version=PHS_LABEL_EXCHANGE_JOURNAL_VERSION)
         with self._lock:
+            current = read_recovery_file(
+                self.path, journal_schema=PHS_LABEL_EXCHANGE_JOURNAL_VERSION
+            )
+            if not current["verified"] and current["reason"] != "missing":
+                raise PHSLabelWorkflowError(
+                    "PHS_LABEL_JOURNAL_CORRUPT", "현품표 교환 복구 journal을 확인할 수 없습니다."
+                )
+            if (hasattr(self._observed, "sha256")
+                    and self._observed.sha256 != current["sha256"]):
+                raise PHSLabelWorkflowError(
+                    "PHS_LABEL_JOURNAL_CHANGED",
+                    "현품표 교환 기록이 바뀌었습니다. 현재 결과를 다시 확인하세요.",
+                )
             encoded = (json.dumps(payload, ensure_ascii=False, indent=2,
                                   sort_keys=True) + "\n").encode("utf-8")
             write_checked_bytes(self.path, encoded, allowed_root=self.path.parent)
+            self._observed.sha256 = hashlib.sha256(encoded).hexdigest()
         return dict(bounded)
 
 
