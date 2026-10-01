@@ -1562,10 +1562,37 @@ function Test-LegacyFirstRegistrationState(
     return $true
 }
 
-function Move-LegacyFirstRegistrationState([string[]]$AbsentPaths, [string]$QuarantineRoot, [bool]$ServerRegistrationMayExist) {
+function FirstRegistrationAbsence([string[]]$Paths) {
+    foreach ($path in $Paths) {
+        try {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            [ordered]@{path=$path; state='PRESENT'; kind=$(if ($item.PSIsContainer) { 'DIRECTORY' } else { 'FILE' })}
+        }
+        catch [Management.Automation.ItemNotFoundException] { [ordered]@{path=$path; state='ABSENT'} }
+        catch { [ordered]@{path=$path; state='UNKNOWN'; failure_type=$_.Exception.GetType().Name} }
+    }
+}
+
+function FirstRegistrationAbsentAncestors([string[]]$Paths) {
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in $Paths) {
+        $parent = [IO.Path]::GetDirectoryName((Full $path 'first-registration path'))
+        while ($parent) {
+            try { [void](Get-Item -LiteralPath $parent -Force -ErrorAction Stop); break }
+            catch [Management.Automation.ItemNotFoundException] {
+                if ($seen.Add($parent)) { $parent }
+            }
+            $parent = [IO.Path]::GetDirectoryName($parent)
+        }
+    }
+}
+
+function Move-LegacyFirstRegistrationState(
+    [string[]]$AbsentPaths, [string]$QuarantineRoot, [bool]$ServerRegistrationMayExist,
+    [string[]]$DeferredPaths = @(), [string[]]$AbsentAncestors = @(), [string]$AuditRoot = ''
+) {
     $quarantine = Full $QuarantineRoot 'first-registration quarantine'
-    if (Test-Path -LiteralPath $quarantine) { throw 'First-registration quarantine already exists.' }
-    $resolved = @($AbsentPaths | ForEach-Object { Full $_ 'first-registration state preimage' })
+    $resolved = @($AbsentPaths | ForEach-Object { Full $_ 'first-registration state preimage' } | Select-Object -Unique)
     foreach ($path in $resolved) {
         if ((Same $path $quarantine) -or
             $quarantine.StartsWith($path.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
@@ -1584,24 +1611,167 @@ function Move-LegacyFirstRegistrationState([string[]]$AbsentPaths, [string]$Quar
             $ancestor = [IO.Path]::GetDirectoryName($ancestor)
         }
     }
-    [void](New-Item -ItemType Directory -Path $quarantine -ErrorAction Stop)
+    $progressPath = Join-Path $quarantine 'state-moves.json'
+    $initializeProgress = -not (Test-Path -LiteralPath $quarantine)
+    if (Test-Path -LiteralPath $quarantine) {
+        if (-not (Test-Path -LiteralPath $progressPath -PathType Leaf) -and
+            @(Get-ChildItem -LiteralPath $quarantine -Force).Count -eq 0) {
+            $initializeProgress = $true
+        }
+        elseif (-not (Test-Path -LiteralPath $progressPath -PathType Leaf) -or
+            (Get-Item -LiteralPath $progressPath).Length -gt 65536) {
+            throw 'First-registration quarantine progress is absent or oversized.'
+        }
+        if (-not $initializeProgress) {
+            $previous = Get-Content -LiteralPath $progressPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ([string]$previous.schema -cne 'label-match-first-registration-quarantine-v1' -or
+                -not (Same ([string]$previous.root) $quarantine) -or
+                (@($previous.state_paths | ForEach-Object { $_.original_path }) -join "`n") -cne ($resolved -join "`n")) {
+                throw 'First-registration quarantine belongs to another attempt.'
+            }
+        }
+    }
+    if ($initializeProgress) {
+        if (-not (Test-Path -LiteralPath $quarantine)) { [void](New-Item -ItemType Directory -Path $quarantine -ErrorAction Stop) }
+        $initialMap = @()
+        for ($index = 0; $index -lt $resolved.Count; $index++) {
+            $initialMap += [ordered]@{original_path=$resolved[$index]; quarantined_path=(Join-Path $quarantine ('state-' + $index)); preimage='ABSENT'; status='PENDING'; attempts=0; failure_type=''}
+        }
+        Save $progressPath ([ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$initialMap; restored_absent=$false})
+    }
     $moves = @()
     for ($index = 0; $index -lt $resolved.Count; $index++) {
         $path = $resolved[$index]
         $destination = Join-Path $quarantine ('state-' + $index)
         $present = Test-Path -LiteralPath $path
-        if ($present) { Move-Item -LiteralPath $path -Destination $destination -ErrorAction Stop }
-        $moves += [ordered]@{ original_path=$path; quarantined_path=$(if ($present) { $destination } else { '' }); preimage='ABSENT' }
-        # Persist progress after each move; a later native error must not hide
-        # the already preserved identities or authorize a blind retry.
-        Save (Join-Path $quarantine 'state-moves.json') ([ordered]@{ state_paths=$moves; restored_absent=$false })
+        $history = @(Get-ChildItem -LiteralPath $quarantine -Force | Where-Object {
+            $_.Name -cmatch ('^state-' + $index + '(-[0-9a-f]{32})?$')
+        } | ForEach-Object { $_.FullName })
+        if ($present -and (Test-Path -LiteralPath $destination) -and $DeferredPaths -notcontains $path) {
+            # A resumed removal can create its own new status/fence directories.
+            # Append a new preserved copy; never overwrite an earlier identity.
+            $destination += '-' + [Guid]::NewGuid().ToString('N')
+        }
+        elseif (-not $present -and $history.Count -ne 0) { $destination = $history[-1] }
+        $entry = [ordered]@{original_path=$path; quarantined_path=$destination; quarantined_paths=$history; preimage='ABSENT'; status='ABSENT'; attempts=0; failure_type=''}
+        if ($DeferredPaths -contains $path) { $entry.status = 'DEFERRED' }
+        elseif ($present) {
+            $entry.status = 'FAILED'
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                $entry.attempts = $attempt
+                try {
+                    if (Test-Path -LiteralPath $destination) { throw 'Quarantine destination is occupied; originals preserved.' }
+                    Move-Item -LiteralPath $path -Destination $destination -ErrorAction Stop
+                    $entry.status = 'QUARANTINED'
+                    $entry.quarantined_paths += $destination
+                    $entry.failure_type = ''
+                    break
+                }
+                catch { $entry.failure_type = $_.Exception.GetType().Name }
+                if ($attempt -lt 3) { Start-Sleep -Milliseconds 100 }
+            }
+        }
+        elseif (Test-Path -LiteralPath $destination) { $entry.status = 'QUARANTINED' }
+        $moves += $entry
+        # Keep the complete path map on every save so a stopped/failed move can
+        # be resumed by the same command without renumbering destinations.
+        $map = @($moves)
+        for ($pending = $index + 1; $pending -lt $resolved.Count; $pending++) {
+            $map += [ordered]@{original_path=$resolved[$pending]; quarantined_path=(Join-Path $quarantine ('state-' + $pending)); preimage='ABSENT'; status='PENDING'; attempts=0; failure_type=''}
+        }
+        Save $progressPath ([ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$map; restored_absent=$false})
     }
-    foreach ($path in $resolved) {
-        if (Test-Path -LiteralPath $path) { throw 'First-registration state absence restoration failed.' }
+    $ancestorMoves = @()
+    if ($DeferredPaths.Count -eq 0) {
+        foreach ($parent in @($AbsentAncestors | Sort-Object Length -Descending)) {
+            $entry = [ordered]@{path=$parent; state='ABSENT'}
+            if (Test-Path -LiteralPath $parent) {
+                if ($AuditRoot -and ((Same $parent $AuditRoot) -or
+                    $AuditRoot.StartsWith($parent.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))) {
+                    $entry.state = 'RETAINED_FOR_ATTEMPT_AUDIT'
+                }
+                elseif (@(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop).Count -eq 0) {
+                    $destination = Join-Path $quarantine ('ancestor-' + $ancestorMoves.Count)
+                    $entry.state = 'PRESENT'
+                    for ($attempt = 1; $attempt -le 3; $attempt++) {
+                        try { Move-Item -LiteralPath $parent -Destination $destination -ErrorAction Stop; $entry.state='ABSENT'; break }
+                        catch { $entry.failure_type=$_.Exception.GetType().Name }
+                        if ($attempt -lt 3) { Start-Sleep -Milliseconds 100 }
+                    }
+                }
+                else { $entry.state = 'PRESENT_UNOWNED_CONTENT_PRESERVED' }
+            }
+            $ancestorMoves += $entry
+        }
     }
-    $result = [ordered]@{ root=$quarantine; state_paths=$moves; restored_absent=$true; server_registration_may_exist=$ServerRegistrationMayExist; server_rollback_performed=$false }
-    Save (Join-Path $quarantine 'state-moves.json') $result
+    $readback = @(FirstRegistrationAbsence @($resolved | Where-Object { $DeferredPaths -notcontains $_ }))
+    $remaining = @($readback | Where-Object { $_.state -cne 'ABSENT' })
+    $remaining += @($ancestorMoves | Where-Object { $_.state -cnotin @('ABSENT', 'RETAINED_FOR_ATTEMPT_AUDIT') })
+    $result = [ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$moves; ancestors=$ancestorMoves; absence_readback=$readback; remaining_paths=$remaining; restored_absent=($remaining.Count -eq 0); server_registration_may_exist=$ServerRegistrationMayExist; server_rollback_performed=$false}
+    Save $progressPath $result
     return $result
+}
+
+function Read-FirstRegistrationAttempt(
+    [string]$AuditRoot, [string]$Install, [string]$SourceCommit, [string]$InstallerSha256,
+    [string[]]$ExpectedPaths
+) {
+    if (-not (Test-Path -LiteralPath $AuditRoot)) { return $null }
+    $pending = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $AuditRoot -Filter 'canonical-portable-*-first-registration-attempt.json' -File)) {
+        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt 65536) {
+            throw 'First-registration attempt record is unsafe or oversized.'
+        }
+        $record = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$record.status -cin @('PASS', 'FAILED_ROLLED_BACK')) { continue }
+        [void](Get-RequiredExternalBoolean $record 'state_verified')
+        [void](Get-RequiredExternalBoolean $record 'registration_started')
+        if ([string]$record.schema -cne 'label-match-first-registration-attempt-v1' -or
+            [string]$record.status -cnotin @('PREFLIGHT_RECORDED', 'RUNNING', 'FAILED_ROLLBACK_INCOMPLETE') -or
+            [string]$record.run_id -cnotmatch '^\d{8}T\d{9}Z-[0-9a-f]{32}$' -or
+            $file.Name -cne ('canonical-portable-' + [string]$record.run_id + '-first-registration-attempt.json') -or
+            -not (Same ([string]$record.install_root) $Install) -or
+            [string]$record.source_commit -cne $SourceCommit -or
+            [string]$record.orchestrator_sha256 -cne $InstallerSha256 -or
+            -not (Same ([string]$record.quarantine_root) (Join-Path $AuditRoot ('canonical-portable-' + [string]$record.run_id + '-first-registration-quarantine'))) -or
+            [string]$record.writer_session_id -cnotmatch '^[0-9a-f]{32}$' -or
+            [string]$record.writer_attempt_id -cnotmatch '^[0-9a-f]{32}$' -or
+            [string]$record.writer_transaction_id -cnotmatch '^[0-9a-f]{32}$' -or
+            (@($record.absent_paths) -join "`n") -cne ($ExpectedPaths -join "`n")) {
+            throw 'Pending first-registration cleanup requires the exact original installer and paths.'
+        }
+        foreach ($parent in @($record.absent_ancestors)) {
+            $matches = @($ExpectedPaths | Where-Object {
+                $_.StartsWith(([string]$parent).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+            })
+            $userRoot = Full ([string]$env:LOCALAPPDATA) 'current-user state boundary'
+            if ($matches.Count -eq 0 -or -not [IO.Path]::IsPathRooted([string]$parent) -or
+                -not ([string]$parent).StartsWith($userRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'First-registration absent ancestor is outside its state paths.'
+            }
+        }
+        foreach ($path in @($ExpectedPaths) + @($AuditRoot, [string]$record.quarantine_root)) {
+            $ancestor = Full $path 'first-registration recovery path'
+            while ($ancestor) {
+                try { $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop }
+                catch [Management.Automation.ItemNotFoundException] { $item = $null }
+                if ($null -ne $item -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                    throw 'First-registration recovery path contains a reparse point.'
+                }
+                $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+            }
+        }
+        $record.PSObject.Properties.Remove('record_path')
+        $record | Add-Member -NotePropertyName record_path -NotePropertyValue $file.FullName
+        $pending += $record
+    }
+    if ($pending.Count -gt 1) { throw 'Multiple pending first-registration attempts require supported recovery.' }
+    if ($pending.Count -eq 1) { return $pending[0] }
+    return $null
+}
+
+function Save-FirstRegistrationAttempt($Record, [string]$Path) {
+    if ($null -ne $Record) { Save $Path $Record }
 }
 
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
@@ -1743,6 +1913,13 @@ $firstRegistrationQuarantinePaths = @(
         Join-Path $selectedDataRoot ('package_logistics_outbox.sqlite3' + $suffix)
     }
 )
+$firstRegistrationStatePaths = @(
+    # The credential is detached first, before any other authentication state.
+    (Join-Path $defaultDirectSyncRoot 'credential.json')
+    $firstRegistrationResiduePaths | Where-Object { -not (Same $_ (Join-Path $defaultDirectSyncRoot 'credential.json')) }
+    $firstRegistrationQuarantinePaths | Where-Object { -not (Same $_ $defaultDirectSyncRoot) }
+    $defaultDirectSyncRoot
+) | Select-Object -Unique
 $pristineInstall = Test-PristineInstallState `
     $install `
     $before `
@@ -1783,12 +1960,28 @@ $writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $
 $legacyFirstRegistration = $false
 $firstRegistrationStateVerified = $false
 $firstRegistrationStarted = $false
+$firstRegistrationAttempt = $null
+$firstRegistrationAttemptPath = ''
+$firstRegistrationAbsentAncestors = @()
+$firstRegistrationResume = Read-FirstRegistrationAttempt `
+    (Join-Path $env:LOCALAPPDATA 'KMTech\Label_Match\install-audit') $install `
+    ([string]$sourceManifest.source_commit) (Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1')) $firstRegistrationStatePaths
 if (-not $conflictReceiptSupplied -and -not $pristineInstall) {
     $legacyFirstRegistration = Test-LegacyFirstRegistrationState `
         $existingVerified $writerTransition $before $old $scheduledTasksAtPreflight (@($firstRegistrationResiduePaths) + @($firstRegistrationQuarantinePaths))
     if ($legacyFirstRegistration -and @(UnquiescedProductWriters).Count -ne 0) {
         throw 'First registration requires normal shutdown of the installed Label product writer.'
     }
+}
+if ($null -ne $firstRegistrationResume) {
+    # A retry performs only the recorded rollback, never another enrollment.
+    $legacyFirstRegistration = $true
+    if (@(UnquiescedProductWriters).Count -ne 0) {
+        throw 'Pending first-registration recovery requires normal shutdown of the Label product writer.'
+    }
+}
+elseif ($legacyFirstRegistration) {
+    $firstRegistrationAbsentAncestors = @(FirstRegistrationAbsentAncestors $firstRegistrationStatePaths)
 }
 if (-not $conflictReceiptSupplied -and -not $pristineInstall -and -not $legacyFirstRegistration) {
     $healthyLifecycle = HealthyLifecycle $source $install
@@ -1893,6 +2086,71 @@ $writerDelegationToken = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().To
 $writerStartedAt = [DateTime]::UtcNow.ToString('o')
 $writerOrchestratorSha256 = Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1')
 $writerContractSha256 = [string]$frozenPlacement.writer_fence_sha256
+if ($null -ne $firstRegistrationResume) {
+    $firstRegistrationAttempt = $firstRegistrationResume
+    $firstRegistrationAttemptPath = [string]$firstRegistrationResume.record_path
+    $firstRegistrationAbsentAncestors = @($firstRegistrationResume.absent_ancestors)
+    $firstRegistrationStateVerified = [bool]$firstRegistrationResume.state_verified
+    $firstRegistrationStarted = [bool]$firstRegistrationResume.registration_started
+    if ([string]$firstRegistrationResume.writer_contract_sha256 -cne $writerContractSha256) {
+        throw 'Pending first-registration writer contract differs.'
+    }
+    $originalInventory = $firstRegistrationResume.preimage_inventory
+    if ($null -eq $originalInventory -or [string]$originalInventory.sha256 -notmatch '^[0-9a-f]{64}$') {
+        throw 'Pending first-registration code preimage is invalid.'
+    }
+    $originalWriterTransition = $writerTransition
+    if (-not $existingVerified -or [string]$installedPreimageInventory.sha256 -cne [string]$originalInventory.sha256) {
+        $recoveryCodeRoot = Full ([string]$firstRegistrationResume.code_backup_root) 'first-registration code backup'
+        $installParent = Split-Path -Parent $install
+        if (-not $recoveryCodeRoot.StartsWith($installParent.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            (-not $testMode -and (Split-Path -Leaf $recoveryCodeRoot) -notlike '.current.rollback.*')) {
+            throw 'Pending first-registration code backup is outside the retained preimage location.'
+        }
+        [void](Manifest $recoveryCodeRoot $SkipSignatureValidationForTest)
+        InvokeFrozenIntegrityProbe $frozenPlacement $recoveryCodeRoot
+        $recoveryInventory = PortableInventory $recoveryCodeRoot
+        $recoveryTransition = Assert-WriterTransition $source $recoveryCodeRoot
+        if ([string]$recoveryInventory.sha256 -cne [string]$originalInventory.sha256 -or
+            -not (Test-LegacyFirstRegistrationState $true $recoveryTransition ([pscustomobject]@{exists=$false}) @() @() @())) {
+            throw 'Pending first-registration code backup differs from its validated legacy release.'
+        }
+        $originalWriterTransition = $recoveryTransition
+    }
+    if (-not (Test-LegacyFirstRegistrationState $true $originalWriterTransition ([pscustomobject]@{exists=$false}) @() @() @()) -or
+        [string]$firstRegistrationResume.installed_writer_inventory_sha256 -cne [string]$originalWriterTransition.installed_inventory_sha256) {
+        throw 'Pending first-registration writer inventory differs from its validated legacy release.'
+    }
+    $existingVerified = $true
+    $pristineInstall = $false
+    $installedPreimageInventory = $originalInventory
+    $before = [pscustomobject]@{exists=$false;kind='';data=''}
+    $old = @()
+    $taskBefore = [pscustomobject]@{exists=$false;enabled=$false;backup_path=''}
+    $stopBefore = [pscustomobject]@{exists=$false}
+    $removalReportExisted = $false
+    $healthyRemovalReportBefore = $null
+    $writerSessionId = [string]$firstRegistrationResume.writer_session_id
+    $writerAttemptId = [string]$firstRegistrationResume.writer_attempt_id
+    $writerTransactionId = [string]$firstRegistrationResume.writer_transaction_id
+    $writerTransition.installed_inventory_sha256 = [string]$firstRegistrationResume.installed_writer_inventory_sha256
+    $audit.resumed_first_registration_attempt = [string]$firstRegistrationResume.run_id
+}
+elseif ($legacyFirstRegistration) {
+    $firstRegistrationAttemptPath = Join-Path $localAuditRoot ('canonical-portable-' + $runId + '-first-registration-attempt.json')
+    $firstRegistrationAttempt = [ordered]@{
+        schema='label-match-first-registration-attempt-v1'; run_id=$runId; status='PREFLIGHT_RECORDED'
+        install_root=$install; source_commit=[string]$sourceManifest.source_commit
+        orchestrator_sha256=$writerOrchestratorSha256; writer_contract_sha256=$writerContractSha256
+        writer_session_id=$writerSessionId; writer_attempt_id=$writerAttemptId; writer_transaction_id=$writerTransactionId
+        installed_writer_inventory_sha256=[string]$writerTransition.installed_inventory_sha256
+        absent_paths=$firstRegistrationStatePaths; absent_ancestors=$firstRegistrationAbsentAncestors
+        preimage_inventory=$installedPreimageInventory; code_backup_root=''; state_verified=$false; registration_started=$false
+        quarantine_root=(Join-Path $localAuditRoot ('canonical-portable-' + $runId + '-first-registration-quarantine'))
+        remaining_paths=@(); old_app_state='ABSENT'; server_rollback_performed=$false
+    }
+    Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+}
 $Script:LabelWriterFenceInstalledIdentity = [pscustomobject]@{
     session_id = $writerSessionId
     attempt_id = $writerAttemptId
@@ -1938,7 +2196,7 @@ $rollbackSources = @(
     'user_relay_stop_request'
 )
 $mutated = $false
-$replacementRollbackRoot = ''
+$replacementRollbackRoot = if ($null -ne $firstRegistrationResume) { [string]$firstRegistrationResume.code_backup_root } else { '' }
 $replacementBackupsBefore = @()
 try {
     $writerAuthority = Enter-LabelWriterSessionAuthority `
@@ -1947,6 +2205,18 @@ try {
         -OrchestratorSha256 $writerOrchestratorSha256 `
         -ReplacementTransactionId $writerTransactionId `
         -WriterContractSha256 $writerContractSha256
+    if ($null -ne $firstRegistrationResume) {
+        # Session authority excludes a still-running original installer. Retire
+        # only its exact orphan fence before publishing the rollback fence.
+        [void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot `
+            -SessionId $writerSessionId -AttemptId $writerAttemptId `
+            -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 90000)
+    }
+    if ($legacyFirstRegistration) {
+        $mutated = $true
+        $firstRegistrationAttempt.status = 'RUNNING'
+        Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+    }
     [void](Start-LabelWriterFence `
         -ControlRoot $writerFenceControlRoot `
         -Status 'QUIESCING' `
@@ -1968,6 +2238,18 @@ try {
         token_recorded = $false
     }
     Save $auditPath $audit
+    if ($null -ne $firstRegistrationResume) {
+        $helperParameters = @{
+            SourceRoot=$source; InstallRoot=$install; ElevationLogPath=$elevationLogPath
+            ExpectedBootstrapScriptSha256=[string]$frozenPlacement.helper_sha256
+            VerifiedBootstrapScriptPath=[string]$frozenPlacement.helper_path; BootstrapIntegrityPreloaded=$true
+            WriterFenceFunctionsPreloaded=$true; WriterFenceControlRoot=$writerFenceControlRoot
+            WriterFenceSessionId=$writerSessionId; WriterFenceAttemptId=$writerAttemptId
+            WriterFenceReplacementTransactionId=$writerTransactionId; WriterFenceDelegationToken=$writerDelegationToken
+            AllowNoncanonicalLayoutForTest=[bool]$testMode; ReplaceExistingVerifiedPortable=$true; DryRun=$false
+        }
+        throw 'RESUME_FIRST_REGISTRATION_ROLLBACK'
+    }
 
     [void](Set-LabelWriterFenceDelegation `
         -ControlRoot $writerFenceControlRoot `
@@ -1996,6 +2278,8 @@ try {
             throw 'Current-user state changed before legacy first registration.'
         }
         $firstRegistrationStateVerified = $true
+        $firstRegistrationAttempt.state_verified = $true
+        Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
     }
     if (-not $pristineInstall -and -not $legacyFirstRegistration) {
         if ($null -ne $healthyLifecycle) {
@@ -2079,6 +2363,10 @@ try {
         $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
         if ($existingVerified) {
             $replacementRollbackRoot = ReplacementPreimage $install $installedPreimageInventory $replacementBackupsBefore
+            if ($legacyFirstRegistration) {
+                $firstRegistrationAttempt.code_backup_root = $replacementRollbackRoot
+                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+            }
         }
         if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
         $placement = 'PASS'
@@ -2125,7 +2413,11 @@ try {
         $audit.healthy_lifecycle = HealthyLifecycle $install $install $healthyMode ([string]$healthyLifecycle.state_sha256)
     }
     $onboardingFailure = $null
-    if ($legacyFirstRegistration) { $firstRegistrationStarted = $true }
+    if ($legacyFirstRegistration) {
+        $firstRegistrationStarted = $true
+        $firstRegistrationAttempt.registration_started = $true
+        Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+    }
     try { Product $install '--onboard-current-user' $onboardingArguments }
     catch { $onboardingFailure = $_ }
     if ($null -ne $onboardingFailure -and -not (Test-Path -LiteralPath $onboardingPath)) {
@@ -2215,6 +2507,10 @@ try {
     $writerAuthority = $null
 
     $audit.status = 'PASS'
+    if ($legacyFirstRegistration) {
+        $firstRegistrationAttempt.status = 'PASS'
+        Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+    }
     $audit.completed_at = (Get-Date).ToUniversalTime().ToString('o')
     $audit.stop_marker_absent = -not (Test-Path $stop)
     $audit.writer_fence.status = 'RELEASED_AFTER_RESTORE'
@@ -2314,6 +2610,27 @@ catch {
                 }
             }
             [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+            if ($legacyFirstRegistration) {
+                # Detach authentication before restoring legacy code. Keep its
+                # own active fence until the guarded placement helper completes.
+                $firstRegistrationAttempt.status = 'FAILED_ROLLBACK_INCOMPLETE'
+                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+                $stateMutationLease = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+                try {
+                    $authPaths = @($firstRegistrationStatePaths | Where-Object { -not (Same $_ $defaultDirectSyncRoot) })
+                    if (-not $firstRegistrationStateVerified -and
+                        @(FirstRegistrationAbsence $authPaths | Where-Object { $_.state -cne 'ABSENT' }).Count -ne 0) {
+                        throw 'Unowned state appeared before the first-registration recheck; preserved.'
+                    }
+                    $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
+                        $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
+                        $firstRegistrationStarted @($defaultDirectSyncRoot) $firstRegistrationAbsentAncestors $localAuditRoot
+                    if (-not $audit.rollback.first_registration_state.restored_absent) {
+                        throw 'First-registration authentication cleanup is incomplete; legacy code remains fenced.'
+                    }
+                }
+                finally { Exit-LabelWriterAdmission $stateMutationLease }
+            }
             if ($existingVerified -and -not $rollbackUsesInstalled) {
                 if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
                     throw 'Exact installed code preimage is unavailable for rollback.'
@@ -2334,6 +2651,11 @@ catch {
                 # exclude the installed bootstrap record. Reconstruct that exact
                 # release view without changing or deleting the retained backup.
                 $rollbackSource = Join-Path (Split-Path -Parent $auditPath) ($writerTransactionId + '-rollback-source')
+                if ($legacyFirstRegistration) {
+                    # A failed placement keeps its source as recovery evidence.
+                    # A resumed rollback stages a new copy instead of colliding.
+                    $rollbackSource += '-' + [Guid]::NewGuid().ToString('N')
+                }
                 if (Test-Path -LiteralPath $rollbackSource) { throw 'Rollback source staging already exists.' }
                 [void](New-Item -ItemType Directory -Path $rollbackSource)
                 $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
@@ -2425,7 +2747,7 @@ catch {
         }
         $firstRegistrationRollbackLease = $null
         try {
-            if ($legacyFirstRegistration -and $firstRegistrationStateVerified) {
+            if ($legacyFirstRegistration) {
                 # Keep ordinary writers excluded while releasing the fence and
                 # moving its own root. Session authority alone is a different mutex.
                 $firstRegistrationRollbackLease = Enter-LabelWriterAdmission `
@@ -2442,12 +2764,23 @@ catch {
                 $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
                 $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
             }
-            if ($legacyFirstRegistration -and $firstRegistrationStateVerified) {
+            if ($legacyFirstRegistration) {
                 $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
-                    $firstRegistrationQuarantinePaths `
-                    (Join-Path $localAuditRoot ('canonical-portable-' + $runId + '-first-registration-quarantine')) `
-                    $firstRegistrationStarted
+                    $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
+                    $firstRegistrationStarted @() $firstRegistrationAbsentAncestors $localAuditRoot
                 $audit.rollback.first_registration_state.retry_conflict_action = 'USE_SUPPORTED_ADMIN_RECOVERY'
+                if (-not $audit.rollback.first_registration_state.restored_absent) {
+                    # Retain custody across a final directory/ancestor move
+                    # failure as well; a retry adopts only this exact session.
+                    [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'RESTORING' `
+                        -SessionId $writerSessionId -AttemptId $writerAttemptId `
+                        -ReplacementTransactionId $writerTransactionId -SessionStartedAtUtc $writerStartedAt `
+                        -OrchestratorSha256 $writerOrchestratorSha256 -WriterContractSha256 $writerContractSha256 `
+                        -AuthorityOwnedByCaller)
+                    $writerFenceStarted = $true
+                    [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+                    throw 'First-registration final absence restoration is incomplete.'
+                }
             }
         }
         finally {
@@ -2475,6 +2808,12 @@ catch {
             [string]$check.data -cne [string]$before.data
         ) { throw 'registry restore failed' }
         $audit.status = 'FAILED_ROLLED_BACK'
+        if ($legacyFirstRegistration) {
+            $firstRegistrationAttempt.status = 'FAILED_ROLLED_BACK'
+            $firstRegistrationAttempt.remaining_paths = @()
+            $firstRegistrationAttempt.old_app_state = 'ABSENT'
+            Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+        }
         $audit.rollback.applied = $mutated
         $audit.rollback.runtime_restored = $true
         $audit.failure_type = $original.Exception.GetType().Name
@@ -2484,12 +2823,51 @@ catch {
     catch {
         $rollbackFailure = $_
         try {
-            $audit.status = 'ROLLBACK_FAILED'
+            $audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }
             $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
             $audit.rollback.applied = $mutated
             $audit.rollback.runtime_restored = $false
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
             $audit.failure_type = $original.Exception.GetType().Name
+            if ($legacyFirstRegistration) {
+                if (-not $writerFenceStarted) {
+                    # A final cleanup can throw before returning its readback.
+                    # Retain custody for exceptions as well as reported residue.
+                    [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'RESTORING' `
+                        -SessionId $writerSessionId -AttemptId $writerAttemptId `
+                        -ReplacementTransactionId $writerTransactionId -SessionStartedAtUtc $writerStartedAt `
+                        -OrchestratorSha256 $writerOrchestratorSha256 -WriterContractSha256 $writerContractSha256 `
+                        -AuthorityOwnedByCaller)
+                    $writerFenceStarted = $true
+                    [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+                    $audit.writer_fence.status = 'RESTORING_AFTER_CLEANUP_EXCEPTION'
+                }
+                $readback = @(FirstRegistrationAbsence $firstRegistrationStatePaths)
+                $audit.rollback.active_state_readback = $readback
+                $remaining = @($readback | Where-Object { $_.state -cne 'ABSENT' })
+                $ancestorReadback = @(FirstRegistrationAbsence @($firstRegistrationAbsentAncestors | Where-Object {
+                    -not ((Same $_ $localAuditRoot) -or
+                        $localAuditRoot.StartsWith(([string]$_).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))
+                }))
+                $audit.rollback.ancestor_readback = $ancestorReadback
+                $remaining += @($ancestorReadback | Where-Object { $_.state -cne 'ABSENT' })
+                $firstRegistrationAttempt.status = 'FAILED_ROLLBACK_INCOMPLETE'
+                $firstRegistrationAttempt.remaining_paths = $remaining
+                $core = @((Join-Path $defaultDirectSyncRoot 'producer_identity.json'),
+                    (Join-Path $defaultDirectSyncRoot 'producer_manifest.json'),
+                    (Join-Path $defaultDirectSyncRoot 'credential.json'),
+                    (Join-Path $defaultDirectSyncRoot 'status\label_match_worker_pc_registration.json'),
+                    $selectedProfilePath, (Join-Path (Split-Path -Parent $selectedProfilePath) 'secrets\bearer-token.dpapi'))
+                $coreReadback = @(FirstRegistrationAbsence $core)
+                $present = @($coreReadback | Where-Object { $_.state -ceq 'PRESENT' -and $_.kind -ceq 'FILE' }).Count
+                $firstRegistrationAttempt.old_app_state = if (@($coreReadback | Where-Object { $_.state -ceq 'UNKNOWN' }).Count -ne 0) { 'UNPROVEN_STORAGE_READ_ERROR' }
+                    elseif (@($coreReadback | Where-Object { $_.state -ceq 'PRESENT' -and $_.kind -cne 'FILE' }).Count -ne 0) { 'RECOVERY_REQUIRED' }
+                    elseif ($present -eq 0) { 'ABSENT' }
+                    elseif ($present -eq 1 -and $coreReadback[3].state -ceq 'PRESENT' -and $coreReadback[3].kind -ceq 'FILE') { 'UNPROVEN_REPORT_ONLY_STATE' }
+                    elseif ($present -lt $core.Count) { 'RECOVERY_REQUIRED' } else { 'UNPROVEN_COMPLETE_STATE' }
+                $audit.rollback.old_app_state = $firstRegistrationAttempt.old_app_state
+                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+            }
             Save $auditPath $audit
             if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
         }

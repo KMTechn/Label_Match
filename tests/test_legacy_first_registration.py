@@ -20,9 +20,11 @@ def _probe(tmp_path: Path, *, residue: str = "", compatibility: str = "PINNED_W9
            running: bool = False, verified: bool = True, race: bool = False) -> subprocess.CompletedProcess[str]:
     source = INSTALLER.read_text(encoding="utf-8-sig")
     definitions = source[:source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
+    definitions += "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
     preflight = source[source.index("$pristineResiduePaths = @("):source.index("$healthyWithoutCode =")]
     removal_start = source.rindex("    if (-not $pristineInstall", 0, source.index("    $unquiesced ="))
-    phase_start = source.index("    if ($legacyFirstRegistration) {") if "    if ($legacyFirstRegistration) {" in source else removal_start
+    phase_marker = "    if ($legacyFirstRegistration) {\n        # Repeat absence"
+    phase_start = source.index(phase_marker) if phase_marker in source else removal_start
     phase_end = source.index("    $after = Snapshot", source.index("    $onboardingFailure = $null"))
     phase = source[phase_start:phase_end + len("    $after = Snapshot")]
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,7 @@ function Product($Root, $Mode) {{
     script = tmp_path / "admission.ps1"
     before_phase = """
 $healthyWithoutCode = $false
+$firstRegistrationAttempt = @{state_verified=$false;registration_started=$false}
 # A race is injected after admission and before the owned phase recheck.
 """ + ("New-Item -ItemType Directory -Path (Split-Path -Parent $onboardingPath) -Force | Out-Null\n" if race else "")
     script.write_text(definitions + setup + "\ntry {\n" + preflight + before_phase + phase + """
@@ -162,7 +165,7 @@ def _payload(result: subprocess.CompletedProcess[str]) -> dict:
 def test_pinned_legacy_code_with_absent_user_state_admits_first_registration(tmp_path):
     result = _payload(_probe(tmp_path))
     assert result == {"admitted": True, "pristine": False, "first": True, "removals": 0,
-                      "placements": 1, "registrations": 1}
+                      "placements": 1, "registrations": 1}, result
 
 
 @pytest.mark.parametrize("residue", ["credential", "credential-directory", "identity", "manifest",
@@ -202,7 +205,8 @@ def test_user_state_race_is_rejected_before_placement(tmp_path):
 def test_first_registration_rollback_only_removes_new_code_setup(tmp_path, installed_preimage, expected_removals):
     source = INSTALLER.read_text(encoding="utf-8-sig")
     start = source.index("            $rollbackProductRoot =")
-    end = source.index("            if ($existingVerified -and -not $rollbackUsesInstalled)", start)
+    detach = "            if ($legacyFirstRegistration) {\n                # Detach authentication"
+    end = source.index(detach, start) if detach in source else source.index("            if ($existingVerified -and -not $rollbackUsesInstalled)", start)
     installed = tmp_path / "installed"
     (installed / "runtime").mkdir(parents=True)
     (installed / "runtime/pythonw.exe").write_bytes(b"not an executable")
@@ -277,9 +281,19 @@ $legacyFirstRegistration = $true
 $firstRegistrationStateVerified = $true
 $firstRegistrationStarted = {'$false' if stage == 'placement' else '$true'}
 $firstRegistrationQuarantinePaths = @({','.join(_quote(path) for path in absent_paths)})
+$defaultDirectSyncRoot = {_quote(direct)}
+$selectedProfilePath = {_quote(profile / 'runtime-profile.json')}
+$firstRegistrationStatePaths = @({_quote(direct / 'credential.json')},{_quote(direct / 'producer_identity.json')},
+    {_quote(direct / 'producer_manifest.json')},{_quote(direct / 'status')},{_quote(direct / 'secrets')},
+    {','.join(_quote(path) for path in absent_paths[1:])},{_quote(direct)})
+$firstRegistrationAbsentAncestors = @()
 $localAuditRoot = {_quote(audit_root)}
 $auditPath = Join-Path $localAuditRoot 'audit.json'
 $runId = 'attempt-1'
+$firstRegistrationAttemptPath = Join-Path $localAuditRoot 'attempt.json'
+$firstRegistrationAttempt = @{{status='RUNNING';state_verified=$true;registration_started=$firstRegistrationStarted;
+    quarantine_root=(Join-Path $localAuditRoot ('canonical-portable-' + $runId + '-first-registration-quarantine'));
+    remaining_paths=@();old_app_state='ABSENT'}}
 $writerFenceControlRoot = {_quote(direct / 'control/writer-session')}
 $writerFenceStarted = $true
 $mutated = $true
@@ -313,6 +327,9 @@ function Move-Item {{
     [CmdletBinding()] param([string]$LiteralPath, [string]$Destination, [switch]$Force)
     if ($firstRegistrationQuarantinePaths -contains $LiteralPath -and $script:admissionDepth -lt 1) {{
         throw 'self state move was not protected by writer admission'
+    }}
+    if ($firstRegistrationStatePaths -contains $LiteralPath -and $script:admissionDepth -lt 1) {{
+        throw 'authentication move was not protected by writer admission'
     }}
     Microsoft.PowerShell.Management\\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force -ErrorAction Stop
 }}
@@ -349,3 +366,232 @@ if ($script:admissionDepth -ne 0) {{ throw 'writer admission lease leaked' }}
     assert len(list(quarantine.rglob("attempt.json"))) == 1
     # Every generated file is preserved, including later-stage identities and ledgers.
     assert sum(path.is_file() for path in quarantine.rglob("*")) == len(generated) + 1
+
+
+@pytest.mark.parametrize("failures", [0, 2, 3])
+def test_credential_first_quarantine_retries_and_resumes_without_overwrite(tmp_path, failures):
+    source = INSTALLER.read_text(encoding="utf-8-sig")
+    definitions = source[:source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
+    definitions += "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
+    direct = tmp_path / "local/DirectSync/label_match"
+    credential = direct / "credential.json"
+    profile = tmp_path / "local/profile"
+    quarantine = tmp_path / "audit/quarantine"
+    direct.mkdir(parents=True)
+    profile.mkdir(parents=True)
+    credential.write_bytes(b"synthetic protected credential")
+    (profile / "runtime-profile.json").write_bytes(b"synthetic profile")
+    script = tmp_path / "retry.ps1"
+    script.write_text(definitions + f"""
+$credential = {_quote(credential)}
+$direct = {_quote(direct)}
+$paths = @($credential,{_quote(profile)},$direct)
+$quarantine = {_quote(quarantine)}
+$script:limit = {failures}
+$script:credentialAttempts = 0
+$script:order = @()
+function Move-Item {{
+    [CmdletBinding()] param([string]$LiteralPath,[string]$Destination,[switch]$Force)
+    if ($paths -contains $LiteralPath) {{ $script:order += $LiteralPath }}
+    if ($LiteralPath -ceq $credential) {{
+        $script:credentialAttempts++
+        if ($script:credentialAttempts -le $script:limit) {{ throw [IO.IOException]::new('injected credential move failure') }}
+    }}
+    Microsoft.PowerShell.Management\\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force -ErrorAction Stop
+}}
+try {{
+    $first = Move-LegacyFirstRegistrationState $paths $quarantine $true @($direct)
+    $firstAttempts = $script:credentialAttempts
+    $firstCredentialPresent = Test-Path -LiteralPath $credential
+    $script:limit = 0
+    $resumed = Move-LegacyFirstRegistrationState $paths $quarantine $true @($direct)
+    $final = Move-LegacyFirstRegistrationState $paths $quarantine $true
+    [ordered]@{{first_absent=$first.restored_absent; first_credential_present=$firstCredentialPresent;
+        first_attempts=$firstAttempts; resumed_absent=$resumed.restored_absent; final_absent=$final.restored_absent;
+        credential_first=($script:order[0] -ceq $credential)}} | ConvertTo-Json -Compress
+}} catch {{ [ordered]@{{error=$_.Exception.GetType().Name;message=$_.Exception.Message}} | ConvertTo-Json -Compress }}
+""", encoding="utf-8-sig")
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(script)],
+                            cwd=tmp_path, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert _payload(result) == {"first_absent": failures < 3, "first_credential_present": failures == 3,
+                                "first_attempts": min(failures + 1, 3), "resumed_absent": True,
+                                "final_absent": True, "credential_first": True}
+    assert not credential.exists() and not direct.exists() and not profile.exists()
+    records = json.loads((quarantine / "state-moves.json").read_text(encoding="utf-8-sig"))
+    credential_copy = Path(records["state_paths"][0]["quarantined_path"])
+    assert credential_copy.read_bytes() == b"synthetic protected credential"
+    assert sum(path.name == "runtime-profile.json" for path in quarantine.rglob("*")) == 1
+
+
+@pytest.mark.parametrize("verified,failures,move_root", [(False, 0, False), (True, 0, False), (True, 2, False), (True, 3, False), (True, 3, True), (True, 4, True)])
+def test_real_fence_failure_boundaries_and_recorded_cleanup_resume(tmp_path, monkeypatch, verified, failures, move_root):
+    """Real Start/Stop and committed catch; native enrollment/code are adapters."""
+    # Real Windows PowerShell I/O has the normal path-length limit. Keep the
+    # fixture case leaf short while retaining every run under its D task root.
+    tmp_path = tmp_path.parent / f"f{int(verified)}{failures}{int(move_root)}"
+    run = subprocess.run
+    captured = {}
+    stage = "credential" if failures else "placement"
+
+    def intercept(args, **kwargs):
+        script = Path(args[-1])
+        source = script.read_text(encoding="utf-8-sig")
+        helper = ROOT / "tools/label_writer_fence.ps1"
+        binding = f"""
+. {_quote(helper)}
+$script:realStart = (Get-Command Start-LabelWriterFence).ScriptBlock
+$script:realStop = (Get-Command Stop-LabelWriterFence).ScriptBlock
+$writerDelegationToken = ('d' * 64)
+$rollbackSources = @('current_user_setup_removal')
+$frozenPlacement = [pscustomobject]@{{}}
+$healthyRemovedInstall = $false
+$taskBefore = [pscustomobject]@{{exists=$false;enabled=$false;backup_path=''}}
+$EvidencePath = ''
+$writerStartedAt = [DateTime]::UtcNow.ToString('o')
+$writerOrchestratorSha256 = ('a' * 64)
+$writerContractSha256 = ('b' * 64)
+$script:injectedFailures = {failures if failures < 4 else 0}
+"""
+        source = source.replace("$install = ", binding + "$install = ", 1)
+        source = source.replace("$runId = 'attempt-1'", "$runId = '20261001T120000000Z-" + "1" * 32 + "'", 1)
+        source = source.replace("$firstRegistrationAttemptPath = Join-Path $localAuditRoot 'attempt.json'",
+                                "$firstRegistrationAttemptPath = Join-Path $localAuditRoot ('canonical-portable-' + $runId + '-first-registration-attempt.json')", 1)
+        if not verified:
+            source = source.replace("$firstRegistrationStateVerified = $true", "$firstRegistrationStateVerified = $false", 1)
+        if not failures:
+            (tmp_path / "installed/version.txt").write_text("old")
+        (tmp_path / "local/DirectSync/label_match/control/writer-session/attempt.json").unlink()
+        real_fence = """function Stop-LabelWriterFence {
+    param([string]$ControlRoot,[string]$SessionId,[string]$AttemptId,
+          [string]$ReplacementTransactionId,[int]$TimeoutMilliseconds=90000)
+    & $script:realStop @PSBoundParameters
+}
+$writerSessionId = ('1' * 32)
+$writerAttemptId = ('2' * 32)
+$writerTransactionId = ('3' * 32)
+[void](& $script:realStart -ControlRoot $writerFenceControlRoot -Status 'QUIESCING' `
+    -SessionId $writerSessionId -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId `
+    -SessionStartedAtUtc ([DateTime]::UtcNow.ToString('o')) -OrchestratorSha256 ('a' * 64) `
+    -WriterContractSha256 ('b' * 64) -AuthorityOwnedByCaller)
+$firstRegistrationAttempt.schema = 'label-match-first-registration-attempt-v1'
+$firstRegistrationAttempt.run_id = $runId
+$firstRegistrationAttempt.install_root = $install
+$firstRegistrationAttempt.source_commit = 'candidate-commit'
+$firstRegistrationAttempt.orchestrator_sha256 = ('a' * 64)
+$firstRegistrationAttempt.writer_contract_sha256 = ('b' * 64)
+$firstRegistrationAttempt.writer_session_id = $writerSessionId
+$firstRegistrationAttempt.writer_attempt_id = $writerAttemptId
+$firstRegistrationAttempt.writer_transaction_id = $writerTransactionId
+$firstRegistrationAttempt.absent_paths = $firstRegistrationStatePaths
+$firstRegistrationAttempt.absent_ancestors = @()
+"""
+        source = source.replace("function Stop-LabelWriterFence { return [pscustomobject]@{writer_inventory_sha256='checked'} }", real_fence, 1)
+        if failures == 4:
+            source = source.replace("$firstRegistrationAttempt.schema = ", """
+$script:realMoveState = (Get-Command Move-LegacyFirstRegistrationState).ScriptBlock
+$script:throwFinalCleanup = $true
+function Move-LegacyFirstRegistrationState {
+    param($AbsentPaths,$QuarantineRoot,$ServerRegistrationMayExist,$DeferredPaths=@(),$AbsentAncestors=@(),$AuditRoot='')
+    if ($DeferredPaths.Count -eq 0 -and $script:throwFinalCleanup) {
+        $script:throwFinalCleanup = $false
+        throw [IO.IOException]::new('injected final cleanup exception')
+    }
+    & $script:realMoveState @PSBoundParameters
+}
+$firstRegistrationAttempt.schema = """, 1)
+        move_target = "$defaultDirectSyncRoot" if move_root else "(Join-Path $defaultDirectSyncRoot 'credential.json')"
+        source = source.replace("    if ($firstRegistrationQuarantinePaths -contains $LiteralPath",
+                                f"    if ($LiteralPath -ceq {move_target} -and $script:injectedFailures -gt 0) {{ $script:injectedFailures--; throw [IO.IOException]::new('injected quarantine failure') }}\n"
+                                "    if ($firstRegistrationQuarantinePaths -contains $LiteralPath", 1)
+        tail = """
+$firstAudit = $audit | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+$firstCode = [IO.File]::ReadAllText((Join-Path $install 'version.txt'))
+$firstCredentialPresent = Test-Path -LiteralPath (Join-Path $defaultDirectSyncRoot 'credential.json')
+$firstFencePresent = Test-Path -LiteralPath (Join-Path $writerFenceControlRoot 'active.json')
+$resumeFound = $false
+"""
+        if failures >= 3:
+            installer = INSTALLER.read_text(encoding="utf-8-sig")
+            begin = installer.index("catch {\n    $original = $_")
+            end = installer.index("\nfinally {", begin)
+            tail += """
+$pending = Read-FirstRegistrationAttempt $localAuditRoot $install 'candidate-commit' ('a' * 64) $firstRegistrationStatePaths
+$resumeFound = $null -ne $pending
+if (-not $resumeFound) { throw 'same-command cleanup record was not found' }
+$firstRegistrationAttempt = $pending
+$script:injectedFailures = 0
+$audit = @{rollback=@{};writer_fence=@{status='RESTORING'}}
+try {
+    try { throw 'RESUME_FIRST_REGISTRATION_ROLLBACK' }
+""" + installer[begin:end] + """
+} catch { $audit.fixture_caught_error = $_.Exception.Message }
+"""
+        tail += """
+[ordered]@{first_status=$firstAudit.status;first_error=$firstAudit.fixture_caught_error;first_code=$firstCode;first_credential=$firstCredentialPresent;
+    first_fence=$firstFencePresent;resume_found=$resumeFound;final_status=$audit.status;
+    final_code=[IO.File]::ReadAllText((Join-Path $install 'version.txt'));
+    final_direct_present=(Test-Path -LiteralPath $defaultDirectSyncRoot)} | ConvertTo-Json -Compress
+"""
+        source = source.replace("$audit | ConvertTo-Json -Depth 10 -Compress", tail, 1)
+        script.write_text(source, encoding="utf-8-sig")
+        result = run(args, **kwargs)
+        assert result.returncode == 0, result.stderr
+        captured.update(json.loads(result.stdout))
+        return result
+
+    monkeypatch.setattr(subprocess, "run", intercept)
+    with pytest.raises((AssertionError, KeyError)):
+        test_registration_stage_failure_restores_absence_and_preserves_new_state(tmp_path, stage)
+    assert captured["first_status"] == ("FAILED_ROLLBACK_INCOMPLETE" if failures >= 3 else "FAILED_ROLLED_BACK"), json.dumps(captured)
+    assert captured["first_credential"] is (failures == 3 and not move_root)
+    assert captured["first_fence"] is (failures >= 3)
+    assert captured["first_code"] == ("new" if failures == 3 and not move_root else "old")
+    assert captured["resume_found"] is (failures >= 3)
+    assert captured["final_status"] == "FAILED_ROLLED_BACK", json.dumps(captured)
+    assert captured["final_code"] == "old"
+    assert captured["final_direct_present"] is False
+
+
+@pytest.mark.parametrize("mutation", ["", "source", "paths", "ancestor", "boolean"])
+def test_cleanup_record_requires_exact_source_and_owned_paths(tmp_path, mutation):
+    tmp_path = tmp_path.parent / ("m-" + (mutation or "valid"))
+    tmp_path.mkdir()
+    source = INSTALLER.read_text(encoding="utf-8-sig")
+    definitions = source[:source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
+    definitions += "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    direct = tmp_path / "local/DirectSync/label_match"
+    credential = direct / "credential.json"
+    paths = [str(credential), str(direct)]
+    run_id = "20261001T120000000Z-" + "1" * 32
+    record = {"schema": "label-match-first-registration-attempt-v1", "run_id": run_id,
+              "status": "FAILED_ROLLBACK_INCOMPLETE", "install_root": str(tmp_path / "installed"),
+              "source_commit": "candidate", "orchestrator_sha256": "a" * 64,
+              "writer_session_id": "1" * 32, "writer_attempt_id": "2" * 32, "writer_transaction_id": "3" * 32,
+              "quarantine_root": str(audit / ("canonical-portable-" + run_id + "-first-registration-quarantine")),
+              "absent_paths": paths, "absent_ancestors": [], "state_verified": True, "registration_started": True}
+    if mutation == "source":
+        record["source_commit"] = "other-source"
+    elif mutation == "paths":
+        record["absent_paths"] = [str(tmp_path / "foreign-state")]
+    elif mutation == "ancestor":
+        record["absent_ancestors"] = [str(tmp_path.parent)]
+    elif mutation == "boolean":
+        record["state_verified"] = "false"
+    record_path = audit / ("canonical-portable-" + run_id + "-first-registration-attempt.json")
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    script = tmp_path / "record.ps1"
+    script.write_text(definitions + f"""
+try {{
+    $record = Read-FirstRegistrationAttempt {_quote(audit)} {_quote(tmp_path / 'installed')} 'candidate' ('a' * 64) @({','.join(_quote(path) for path in paths)})
+    [ordered]@{{accepted=($null -ne $record)}} | ConvertTo-Json -Compress
+}} catch {{ [ordered]@{{accepted=$false}} | ConvertTo-Json -Compress }}
+""", encoding="utf-8-sig")
+    environment = os.environ.copy()
+    environment["LOCALAPPDATA"] = str(tmp_path / "local")
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(script)],
+                            cwd=tmp_path, env=environment, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert _payload(result) == {"accepted": not mutation}
+    assert not direct.exists()
+    assert not Path(record["quarantine_root"]).exists()
