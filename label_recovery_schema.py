@@ -27,7 +27,12 @@ RECOVERY_SCHEMAS = {
     "current": {
         "required": {"current_set_info": "current_set"},
         "optional": {"timestamp": _TIME, "worker_name": _TEXT,
-                     "scanner_audit_outbox": "scanner_audit_list"},
+                     "scanner_audit_outbox": "scanner_audit_list",
+                     "scanner_audit_segments": "sha256_list"},
+    },
+    "scanner_audit_segment": {
+        "required": {"scanner_audit_outbox": "scanner_audit_list"},
+        "optional": {},
     },
     "scanner_audit_event": {
         "required": {"event_type": _TEXT, "details": "scanner_audit_details"},
@@ -344,6 +349,9 @@ def _valid(rule, value):
     if rule == 'scanner_audit_list':
         return isinstance(value, list) and all(
             validate_recovery_record('scanner_audit_event', item) for item in value)
+    if rule == 'sha256_list':
+        return isinstance(value, list) and all(isinstance(item, str) and
+            re.fullmatch(r'[0-9a-f]{64}', item) for item in value)
     if rule == "nullable_source_snapshot":
         return value is None or validate_recovery_record("source_snapshot", value)
     if rule == "target_prints":

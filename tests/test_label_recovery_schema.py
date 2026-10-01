@@ -33,6 +33,8 @@ def _sample(rule):
         return {"LBL-A": _record("target_print_state")}
     if rule == "scanner_audit_list":
         return [_record('scanner_audit_event')]
+    if rule == "sha256_list":
+        return ["a" * 64]
     if rule in {"action_list", "source_list", "target_list"}:
         return [_record({"action_list": "action_item", "source_list": "action_source",
                          "target_list": "action_target"}[rule])]
@@ -120,6 +122,7 @@ BAD_VALUES = {
     "source_list": (7, "text", {}, None, [7]),
     "target_list": (7, "text", {}, None, [7]),
     "scanner_audit_list": (7, "text", {}, None, [7], [{}]),
+    "sha256_list": (7, "text", {}, None, [7], ["../outside"], ["a" * 63], ["A" * 64]),
 }
 
 

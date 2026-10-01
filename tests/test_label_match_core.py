@@ -2735,6 +2735,7 @@ def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_
     manager.worker_name = "worker-a"
     manager._state_lock = threading.RLock()
     manager._audit_outbox = []
+    manager._unverified_audit_segments = []
 
     def failing_replace(*args, **kwargs):
         raise OSError("replace failed")

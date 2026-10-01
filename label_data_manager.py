@@ -28,6 +28,10 @@ from label_safe_path import (describe_entry, entry_digest, read_checked_bytes,
                              unlink_checked, write_checked_bytes)
 
 
+RECOVERY_MAX_BYTES = 8 * 1024 * 1024
+AUDIT_SEGMENT_BYTES = 1024 * 1024
+
+
 def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
     """Return raw bytes, digest, and a validated value without modifying evidence."""
     result = {"verified": False, "raw": None, "sha256": "", "value": None,
@@ -40,7 +44,7 @@ def read_recovery_file(path, *, journal_schema=None, current_state=False, expect
             return result
         result["raw"] = raw
         result["sha256"] = hashlib.sha256(raw).hexdigest()
-        if len(raw) > 8 * 1024 * 1024:
+        if len(raw) > RECOVERY_MAX_BYTES and not current_state:
             result["reason"] = "oversized"
             return result
         decoded = json.loads(raw.decode("utf-8"))
@@ -51,15 +55,39 @@ def read_recovery_file(path, *, journal_schema=None, current_state=False, expect
             result["value"] = decoded["state"]
         elif current_state:
             require_recovery_record("current", decoded)
+            # Older versions accepted an unbounded inline audit backlog. Keep
+            # those checkpoints readable without relaxing the business limit.
+            business = {key: value for key, value in decoded.items()
+                        if key not in ('scanner_audit_outbox', 'scanner_audit_segments')}
+            if len(json.dumps(business, ensure_ascii=False, indent=4).encode('utf-8')) > RECOVERY_MAX_BYTES:
+                result['reason'] = 'oversized'
+                return result
             result["value"] = decoded
         else:
             result["value"] = decoded
         if expected_bytes is not None and raw != expected_bytes:
             raise ValueError("recovery bytes differ from durable record")
+        if current_state:
+            pending = list(decoded.get('scanner_audit_outbox', []))
+            unresolved = []
+            for digest in decoded.get('scanner_audit_segments', []):
+                segment = read_recovery_file(path.parent / '_scanner_audit_outbox' / (digest + '.json'))
+                try:
+                    if not segment['verified'] or segment['sha256'] != digest:
+                        raise ValueError('audit segment bytes are unverified')
+                    require_recovery_record('scanner_audit_segment', segment['value'])
+                    pending.extend(segment['value']['scanner_audit_outbox'])
+                except Exception as error:
+                    unresolved.append(digest)
+                    print(f'스캐너 감사 조각 재생 대기: {digest}: {error}')
+            if pending:
+                decoded['scanner_audit_outbox'] = pending
+            result['unverified_audit_segments'] = unresolved
         result["verified"] = True
         result["reason"] = ""
     except Exception as exc:
-        result["reason"] = type(exc).__name__
+        result["reason"] = ('oversized' if result['raw'] is not None and
+                            len(result['raw']) > RECOVERY_MAX_BYTES else type(exc).__name__)
         if result["raw"] is None:
             try:
                 result["entry"] = describe_entry(path)
@@ -117,6 +145,7 @@ class DataManager:
         evidence = read_recovery_file(
             os.path.join(save_dir, self._current_state_filename()), current_state=True)
         self._audit_outbox = list((evidence['value'] or {}).get('scanner_audit_outbox', [])) if evidence['verified'] else []
+        self._unverified_audit_segments = evidence.get('unverified_audit_segments', [])
         self.log_thread = threading.Thread(target=self._log_writer_thread, daemon=True)
         self.log_thread.start()
     def _get_log_filepath(self, target_date=None):
@@ -219,6 +248,19 @@ class DataManager:
         """Replay the saved CSV projection; a failure leaves the checkpoint intact."""
         with self._state_lock:
             try:
+                if self._unverified_audit_segments:
+                    evidence = read_recovery_file(
+                        Path(self.save_directory) / self._current_state_filename(), current_state=True)
+                    if evidence['verified']:
+                        restored = {item['details']['scanner_audit']['key']: item
+                                    for item in self._audit_outbox}
+                        for item in evidence['value'].get('scanner_audit_outbox', []):
+                            key = item['details']['scanner_audit']['key']
+                            if key in restored and restored[key] != item:
+                                raise ValueError('repaired audit key has different content')
+                            restored[key] = item
+                        self._audit_outbox = list(restored.values())
+                        self._unverified_audit_segments = evidence.get('unverified_audit_segments', [])
                 archived = {item['details']['scanner_audit']['key']: item
                             for item in self._archived_audit_outbox}
                 for item in archived_events:
@@ -243,7 +285,7 @@ class DataManager:
                 print(f'보류 감사 재생 대기: {error}')
                 return False
             if not pending_by_key:
-                return True
+                return not self._unverified_audit_segments
             pending = list(pending_by_key.values())
             keys = {item['details']['scanner_audit']['key'] for item in pending}
             before_errors = len(self._writer_errors)
@@ -278,7 +320,7 @@ class DataManager:
                 self._recovered_audit_errors.update(
                     id(error) for error in self._writer_errors
                     if self._writer_error_keys.get(id(error)) in completed)
-                return not failed
+                return not failed and not self._unverified_audit_segments
             except Exception as error:
                 print(f'스캐너 감사 재생 대기: {error}')
                 return False
@@ -328,6 +370,59 @@ class DataManager:
                 encoded = json.dumps(state_data_with_worker, ensure_ascii=False, indent=4,
                                      cls=self._datetime_encoder())
                 require_recovery_record("current", json.loads(encoded))
+                # A checkpoint commits the references only after all immutable
+                # segments are durable. Unreferenced files from interrupted
+                # writes are preserved, but never replayed as accepted actions.
+                state_data_with_worker.pop('scanner_audit_segments', None)
+                segments = list(self._unverified_audit_segments)
+                if len(encoded.encode('utf-8')) > RECOVERY_MAX_BYTES and pending:
+                    pieces, inline, chunk, chunk_bytes = [], [], [], 0
+                    for item in pending.values():
+                        item_bytes = len(json.dumps(item, ensure_ascii=False, indent=4,
+                                                   cls=self._datetime_encoder()).encode('utf-8'))
+                        # A single unusually large event remains inline and
+                        # uses the same legacy audit-only size exemption.
+                        if item_bytes > AUDIT_SEGMENT_BYTES // 2:
+                            inline = list(pending.values())
+                            pieces, chunk = [], []
+                            break
+                        if chunk and chunk_bytes + item_bytes > AUDIT_SEGMENT_BYTES // 2:
+                            pieces.append(chunk)
+                            chunk, chunk_bytes = [], 0
+                        chunk.append(item)
+                        chunk_bytes += item_bytes
+                    if chunk:
+                        pieces.append(chunk)
+                    for piece in pieces:
+                        payload = json.dumps({'scanner_audit_outbox': piece}, ensure_ascii=False,
+                                             indent=4, cls=self._datetime_encoder()).encode('utf-8')
+                        if len(payload) > RECOVERY_MAX_BYTES:
+                            raise ValueError('audit segment exceeds recovery size limit')
+                        digest = hashlib.sha256(payload).hexdigest()
+                        segment_path = Path(self.save_directory) / '_scanner_audit_outbox' / (digest + '.json')
+                        try:
+                            existing = read_checked_bytes(segment_path, allowed_root=self.save_directory)
+                        except FileNotFoundError:
+                            write_checked_bytes(segment_path, payload, allowed_root=self.save_directory,
+                                                replace=False)
+                        else:
+                            if existing != payload:
+                                raise ValueError('existing audit segment bytes differ')
+                        segments.append(digest)
+                    if inline:
+                        state_data_with_worker['scanner_audit_outbox'] = inline
+                    else:
+                        state_data_with_worker.pop('scanner_audit_outbox', None)
+                if segments:
+                    state_data_with_worker['scanner_audit_segments'] = list(dict.fromkeys(segments))
+                encoded = json.dumps(state_data_with_worker, ensure_ascii=False, indent=4,
+                                     cls=self._datetime_encoder())
+                require_recovery_record('current', json.loads(encoded))
+                business = {key: value for key, value in state_data_with_worker.items()
+                            if key not in ('scanner_audit_outbox', 'scanner_audit_segments')}
+                if len(json.dumps(business, ensure_ascii=False, indent=4,
+                                  cls=self._datetime_encoder()).encode('utf-8')) > RECOVERY_MAX_BYTES:
+                    raise ValueError('current business state exceeds recovery size limit')
                 write_checked_bytes(state_path, encoded.encode('utf-8'),
                                     allowed_root=self.save_directory)
                 self._audit_outbox = list(pending.values())
@@ -354,16 +449,20 @@ class DataManager:
                 safe_state['worker_name'] = safe_worker
                 if safe_state != state:
                     state = safe_state
-                    encoded = json.dumps(state, ensure_ascii=False, indent=4,
+                    # Sanitize the stored representation, preserving both its
+                    # segment references and the original worker attribution.
+                    persisted = sanitize_persistent_value(json.loads(
+                        (verified_bytes if verified_bytes is not None else evidence['raw']).decode('utf-8')))
+                    persisted['worker_name'] = safe_worker
+                    encoded = json.dumps(persisted, ensure_ascii=False, indent=4,
                                          cls=self._datetime_encoder()).encode('utf-8')
-                    write_checked_bytes(state_path, encoded,
-                                        allowed_root=self.save_directory)
+                    write_checked_bytes(state_path, encoded, allowed_root=self.save_directory)
             return state
         except Exception as e:
             print(f"임시 상태 로드 실패: {e}"); return None
     def delete_current_state(self):
         with self._state_lock:
-            if self._audit_outbox:
+            if self._audit_outbox or self._unverified_audit_segments:
                 if not self.save_current_state({'current_set_info': {'id': None, 'raw': []}}):
                     raise OSError('pending scanner audit checkpoint could not be preserved')
                 return
