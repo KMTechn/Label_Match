@@ -402,6 +402,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 ## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
 
+- R4 유한 자식 helper/task/relay-cycle의 원 출력·exit와 준비/전이/ready-read/persistent-cycle 원 예외 사슬은 가림·상한을 두어 보존한다. 상주 자식 stream은 부모 종료 뒤에도 가림·상한·handle 수명을 유지할 logging/launcher 작업이 OPEN이다. 기존 실제 native/설치 수용을 이 headless 교정으로 완료 처리하지 않는다.
+
 회사 feed 설정은 검증된 canonical 빌드 입력이며 설치 뒤 보호 SHA로 변조를 거절한다. app/main.py·패키지·실제 app/tools companion도 정확한 preimage/후보 선언에 포함한다. 원 아카이브 누락 실패 13건은 보존한다.
 
 - 구현: 내구 상태기계·서명된 미래 exact 양방향 쌍·실제 기존 version 상승·READY·코드만 복귀, 고정 SYSTEM helper·작업 preimage, GUI/relay 토큰 경계, 정확한 공개 키 회전과 기존 release 핀을 추가했다. 소비자 원문 SHA는 전이 증거다. policy 미래 allowlist나 추가 승인 체계는 없다. 빈 feed·업무 중 적용 끔이 기본이다.

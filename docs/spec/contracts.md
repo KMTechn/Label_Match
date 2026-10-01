@@ -412,7 +412,7 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 
 적용/복귀 기록을 flush·write-through rename한 뒤 코드 포인터를 바꾼다. GUI READY는 nonce·SHA·PID/생성 시각·기동 시각, 읽기 전용 ledger/queue·미완료 확인과 일반 사용자 relay의 같은 버전/nonce에 묶는다. 입력은 보호된 CONFIRMED/ROLLED_BACK와 활성 SHA 확인까지 잠근다. READY 실패 때만 검증된 writer 부재·정상 종료 뒤 이전 코드로 복귀하고 실패 SHA를 보존한다. CONFIRMED 뒤 사용자가 옛 feed로 임의 하향하는 경로는 없다.
 
-설치기는 SYSTEM/SID-logon 작업과 policy/active/transition preimage를 보존하고 정확한 소유 작업만 다룬다. 옛 Run은 실제 옛 명령으로 대조한다. 상승 설치기의 정방향/복귀 relay는 같은 native shell-token 경계·DuplicateTokenEx 0x18B 및 자식 SID/세션/비상승/무결성 8192 readback을 사용한다. Python 시작도 같은 보안 조건을 검사한다. 추가 실패 진단에는 호출 이름·Win32 번호·예외 종류 사슬만 남긴다.
+설치기는 SYSTEM/SID-logon 작업과 policy/active/transition preimage를 보존하고 정확한 소유 작업만 다룬다. 옛 Run은 실제 옛 명령으로 대조한다. 상승 설치기의 정방향/복귀 relay는 같은 native shell-token 경계·DuplicateTokenEx 0x18B 및 자식 SID/세션/비상승/무결성 8192 readback을 사용한다. Python 시작도 같은 보안 조건을 검사한다. 추가 실패 진단은 호출 이름·Win32 번호·원 예외 사슬·권한 값을 가린 원 메시지를 보존한다. 유한 helper/task/relay-cycle 실패는 exit와 stdout/stderr를 각각 8KiB까지 보존하고 persistent-cycle 상태에는 별도 실패 증거 경로를 남긴다. 상주 일반 자식의 stream은 별도 logging/launcher 경계 교정이 OPEN이며 실제 native 자식 시작은 랩 NOT TESTED다.
 
 기존 release-pair/companion/fence 선언을 갱신한다. 실제 e88011c 공개 설정에서 승인 LM ES256 공개 설정으로의 정확한 SHA256 쌍만 첫 수동 설치의 별도 회전으로 허용한다. 같은 공개 키 전이는 유지하고 임의 회전은 거절한다. w9next 소스에는 공개 설정이 추적되지 않으므로 실제 w9next packet matching-key 확인은 중앙 NOT TESTED 항목이다. 개인 키·런타임 데이터는 소스에 넣지 않는다.
 

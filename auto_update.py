@@ -626,7 +626,9 @@ def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> 
         arguments.extend(["-CodeRoot", str(code_root)])
     completed = subprocess.run(arguments, capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if completed.returncode:
-        raise RuntimeError("fixed update helper failed: " + mode)
+        error = RuntimeError("fixed update helper failed: " + mode + "; " + safe_update_text(completed.stderr))
+        error.child_output = child_failure_output(completed)
+        raise error
     return completed.stdout.strip()
 
 
@@ -699,7 +701,8 @@ def apply_prepared(control: Path) -> int:
             not_applied = pointer == before and (not state or state.get("phase") in {"CONFIRMED", "ROLLED_BACK", "DEFERRED", "PREPARED"})
             failure = {**(state or {}), "schema": SCHEMA,
                        "phase": "DEFERRED" if not_applied else "UNKNOWN",
-                       "deferred_at": now_utc(), "reason": type(error).__name__}
+                       "deferred_at": now_utc(), "reason": type(error).__name__,
+                       "launch_failure_details": launch_failure_details(error, include_original=True)}
             write_json_durable(control / ("failure-" + uuid.uuid4().hex + ".json"), failure)
             write_json_durable(control / "transition.json", failure)
         return 0 if not_applied else 20
@@ -797,7 +800,8 @@ def _apply_prepared(control: Path) -> int:
             except OSError as error:
                 # A contested user proof is unconfirmed; keep the original
                 # journal deadline and normal stop/rollback decision alive.
-                state = {**state, "last_ready_error": type(error).__name__}
+                state = {**state, "last_ready_error": type(error).__name__,
+                         "last_ready_error_details": launch_failure_details(error, include_original=True)}
                 write_json_durable(control / "transition.json", state)
             sha = state["previous_sha"] if state["phase"] == "ROLLBACK_PENDING_READY" else state["candidate_sha"]
             if (launch_failure and launch_failure.get("nonce") == state["nonce"]
@@ -1155,8 +1159,29 @@ def process_security(process_id: int) -> dict[str, Any]:
         kernel.CloseHandle(process)
 
 
-def launch_failure_details(error: BaseException) -> list[dict[str, Any]]:
-    """Diagnostic structure only; never serialize messages, arguments or paths."""
+def safe_update_text(value: Any, *, limit: int = 8192) -> str:
+    """Keep bounded original diagnostics while masking authority-bearing values."""
+    from direct_sync_runtime import _operator_safe_error_message
+
+    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+    names = r"(?:authorization|credential|password|secret|token|signature|[A-Za-z0-9_-]*(?:_token|_key|_secret|_password))"
+    text = re.sub(r'(?i)(["\']' + names + r'["\']\s*:\s*)("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')',
+                  lambda match: match[1] + '"[redacted]"', text)
+    text = re.sub(r'(?i)(\b' + names + r'\s*[=:]\s*)([^\s;,]+)',
+                  lambda match: match[1] + "[redacted]", text)
+    text = re.sub(r"(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[redacted]", text)
+    text = re.sub(r"(?i)(https?://)[^/\s@]+@", r"\1[redacted]@", text)
+    return _operator_safe_error_message(text, limit=limit)
+
+
+def child_failure_output(completed: Any) -> dict[str, Any]:
+    return {"returncode": completed.returncode,
+            "stdout": safe_update_text(getattr(completed, "stdout", "")),
+            "stderr": safe_update_text(getattr(completed, "stderr", ""))}
+
+
+def launch_failure_details(error: BaseException, *, include_original: bool = False) -> list[dict[str, Any]]:
+    """Preserve each original cause and native call without emitting authority."""
     chain, seen = [], set()
     calls = {"GetShellWindow", "OpenProcess", "OpenProcess:shell", "OpenProcessToken", "OpenProcessToken:shell",
              "DuplicateTokenEx:primary", "CreateEnvironmentBlock", "CreateProcessWithTokenW", "GetExitCodeProcess",
@@ -1167,8 +1192,20 @@ def launch_failure_details(error: BaseException) -> list[dict[str, Any]]:
         if not isinstance(call, str) or (call not in calls and not re.fullmatch(r"GetTokenInformation:[0-9]+", call)):
             call = ""
         code = (getattr(error, "winerror", None) or error.errno) if isinstance(error, OSError) else None
-        chain.append({"type": type(error).__module__ + "." + type(error).__name__, "call": call,
-                      "win32_error": code if type(code) is int else None})
+        detail = {"type": type(error).__module__ + "." + type(error).__name__, "call": call,
+                  "win32_error": code if type(code) is int else None}
+        if include_original:
+            detail["message"] = safe_update_text(str(error))
+        output = getattr(error, "child_output", None)
+        if include_original and isinstance(output, Mapping):
+            detail["child_output"] = {"returncode": output.get("returncode"),
+                                     "stdout": safe_update_text(output.get("stdout")),
+                                     "stderr": safe_update_text(output.get("stderr"))}
+        elif include_original and (getattr(error, "stdout", None) or getattr(error, "stderr", None)):
+            detail["child_output"] = {"returncode": getattr(error, "returncode", None),
+                                     "stdout": safe_update_text(getattr(error, "stdout", "")),
+                                     "stderr": safe_update_text(getattr(error, "stderr", ""))}
+        chain.append(detail)
         error = error.__cause__ or error.__context__
     return chain
 
@@ -1585,7 +1622,9 @@ def request_apply_task(control: Path, policy: Mapping[str, Any]) -> None:
     executable = system_executable("schtasks.exe")
     result = subprocess.run([executable, "/Run", "/TN", task_name(control.parent / "current", policy["operator_sid"])], capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
-        raise RuntimeError("the installed update task could not be requested")
+        error = RuntimeError("the installed update task could not be requested; " + safe_update_text(result.stderr))
+        error.child_output = child_failure_output(result)
+        raise error
 
 
 @writer_sink("auto_update_launch_version")
@@ -1667,7 +1706,7 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                             write_json_durable(failure_path, {
                                 "nonce": state["nonce"], "transition_id": state["transition_id"],
                                 "sha": active["sha"], "failed_role": failed_role,
-                                "launch_failure_details": launch_failure_details(error),
+                                "launch_failure_details": launch_failure_details(error, include_original=True),
                             })
                             # A failed start is not permission to change the pointer.
                             # SYSTEM must prove normal stop and previous-code trust.

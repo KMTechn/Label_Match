@@ -69,6 +69,19 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _preserve_failure_evidence(path: Path, error: BaseException) -> dict[str, Any]:
+    from auto_update import launch_failure_details
+
+    evidence = {"failure_evidence_path": str(path), "failure_evidence_status": "PROVEN"}
+    try:
+        _write_json_atomic(path, {"launch_failure_details": launch_failure_details(error, include_original=True), "failed_at": _now()})
+    except Exception as evidence_error:
+        # A diagnostic storage failure must not replace the original cycle error.
+        evidence.update(failure_evidence_status="FAILED",
+                        failure_evidence_error_details=launch_failure_details(evidence_error))
+    return evidence
+
+
 def user_relay_status_path(direct_sync_root: str | os.PathLike[str]) -> Path:
     return (
         Path(direct_sync_root).expanduser().resolve()
@@ -207,12 +220,13 @@ def build_session_direct_sync_command(
 
 
 def _run_command(command: list[str], timeout_seconds: int) -> dict[str, Any]:
+    from auto_update import child_failure_output, launch_failure_details
+
     try:
         completed = subprocess.run(
             command,
             check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             timeout=max(10, int(timeout_seconds)),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -221,10 +235,12 @@ def _run_command(command: list[str], timeout_seconds: int) -> dict[str, Any]:
             "status": "UNKNOWN",
             "reason": "relay process did not return an exit code",
             "error_type": exc.__class__.__name__,
+            "launch_failure_details": launch_failure_details(exc, include_original=True),
         }
     return {
         "status": "PASS" if completed.returncode == 0 else "FAIL",
         "returncode": completed.returncode,
+        **({"child_output": child_failure_output(completed)} if completed.returncode else {}),
     }
 
 
@@ -463,10 +479,14 @@ def run_persistent_relay_loop(
                 except WriterFenceError:
                     raise
                 except Exception as exc:
+                    from auto_update import launch_failure_details
+                    failure_path = selected_status_path.with_name("cycle-failure-" + uuid.uuid4().hex + ".json")
+                    failure_evidence = _preserve_failure_evidence(failure_path, exc)
                     cycle = {
                         "status": "UNKNOWN",
                         "reason": "relay cycle did not return a result",
                         "error_type": exc.__class__.__name__,
+                        **failure_evidence,
                         "exception_frames": [
                             {
                                 "file": Path(frame.filename).name,
@@ -552,12 +572,16 @@ def _runtime_cycle(
     worker_id: str = LABEL_MATCH_WORKER_ID,
     reason: str = "PERSISTENT_USER_RELAY",
 ) -> dict[str, Any]:
-    from auto_update import prepare_feed_packet
+    from auto_update import prepare_feed_packet, launch_failure_details
     code = app_root / "app" if (app_root / "app").is_dir() else app_root
     try:
         update_preparation = prepare_feed_packet(code)
     except Exception as error:
-        update_preparation = {"status": "DEFERRED", "error_type": type(error).__name__}
+        failure_path = direct_sync_root / "logs" / ("update-preparation-failure-" + uuid.uuid4().hex + ".json")
+        failure_evidence = _preserve_failure_evidence(failure_path, error)
+        update_preparation = {"status": "DEFERRED", "error_type": type(error).__name__,
+                              "launch_failure_details": launch_failure_details(error),
+                              **failure_evidence}
     selected_status = runtime_status_path or (
         direct_sync_root / "status" / "direct_sync_relay_status.json"
     )
@@ -579,6 +603,8 @@ def _runtime_cycle(
         "process_status": process_status,
         "process_returncode": process_result.get("returncode", "UNKNOWN"),
         "relay_status": relay_status,
+        **({"process_child_output": process_result["child_output"]} if "child_output" in process_result else {}),
+        **({"process_failure_details": process_result["launch_failure_details"]} if "launch_failure_details" in process_result else {}),
         **({"auto_update": update_preparation} if update_preparation["status"] != "OFF" else {}),
     }
 

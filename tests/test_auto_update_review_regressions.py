@@ -5,6 +5,7 @@ import json
 import subprocess
 import time
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 import auto_update as updates
@@ -175,3 +176,77 @@ def test_existing_trial_claim_requires_live_bound_processes(monkeypatch, tmp_pat
     monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
     assert updates.bootstrap(tmp_path / "app", [], role="gui") == 20
     assert records["trial-failure.json"]["sha"] == new
+
+
+@pytest.mark.parametrize("caller", ["helper", "task", "relay_cycle"])
+def test_finite_child_failure_preserves_exit_and_original_streams(monkeypatch, tmp_path, caller):
+    import user_relay
+    monkeypatch.setattr(updates, "system_executable", lambda _: "fixed-probe")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=7, stdout=b"original-stdout-sentinel", stderr=b"original-stderr-sentinel",
+    ))
+    if caller == "relay_cycle":
+        result = user_relay._run_command(["fixed-probe"], 10)
+        evidence = result.get("child_output", {})
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            if caller == "helper": updates.fixed_helper(tmp_path, "Verify")
+            else: updates.request_apply_task(tmp_path, {"operator_sid": "S-1-5-21-1-2-3-1001"})
+        evidence = getattr(caught.value, "child_output", {})
+    assert evidence == {"returncode": 7, "stdout": "original-stdout-sentinel", "stderr": "original-stderr-sentinel"}
+
+
+def test_failed_apply_persists_original_exception_chain(monkeypatch, tmp_path):
+    _, _, _, records = bootstrap_fixture(monkeypatch, tmp_path)
+    records["transition.json"] = {"schema": updates.SCHEMA, "phase": "DEFERRED"}
+    monkeypatch.setattr(updates, "fixed_helper", lambda *a, **k: "")
+    def fail(_):
+        try: raise OSError(5, "DuplicateTokenEx:primary")
+        except OSError as original: raise RuntimeError("original-outer-sentinel") from original
+    monkeypatch.setattr(updates, "_apply_prepared", fail)
+    assert updates.apply_prepared(tmp_path) == 0
+    chain = records["transition.json"].get("launch_failure_details", [])
+    assert chain[0]["message"] == "original-outer-sentinel"
+    assert chain[1]["call"] == "DuplicateTokenEx:primary"
+    assert chain[1]["win32_error"] == 5
+
+
+def test_prepare_failure_reaches_relay_status_with_original_cause(monkeypatch, tmp_path):
+    import user_relay
+    def fail(_): raise OSError(5, "original-prepare-sentinel")
+    monkeypatch.setattr(updates, "prepare_feed_packet", fail)
+    monkeypatch.setattr(user_relay, "run_session_direct_sync_once", lambda **k: {"status": "PASS", "returncode": 0})
+    monkeypatch.setattr(user_relay, "_read_json", lambda _: {"status": "RUNNING"})
+    result = user_relay._runtime_cycle(app_root=tmp_path, direct_sync_root=tmp_path, scan_source_dir=tmp_path)
+    chain = result["auto_update"].get("launch_failure_details", [])
+    assert chain[0]["win32_error"] == 5
+    path = Path(result["auto_update"]["failure_evidence_path"])
+    evidence = json.loads(path.read_text(encoding="utf-8"))
+    assert "original-prepare-sentinel" in evidence["launch_failure_details"][0]["message"]
+    assert "original-prepare-sentinel" not in json.dumps(result)
+
+
+def test_failure_diagnostics_mask_quoted_authority_and_bound_original_text():
+    value = 'original-message-sentinel {"authorization":"Bearer synthetic-value","credential":"synthetic-credential"} token=synthetic-token'
+    chain = updates.launch_failure_details(RuntimeError(value + "x" * 20000), include_original=True)
+    message = chain[0].get("message", "")
+    assert "original-message-sentinel" in message
+    assert all(secret not in message for secret in ("synthetic-value", "synthetic-credential", "synthetic-token"))
+    assert len(message) <= 8192
+
+
+def test_diagnostic_storage_failure_preserves_original_relay_outcome(monkeypatch, tmp_path):
+    import user_relay
+    original = user_relay._write_json_atomic
+    def unavailable(path, value):
+        if path.name.startswith(("cycle-failure-", "update-preparation-failure-")):
+            raise OSError(28, "diagnostic storage unavailable")
+        original(path, value)
+    monkeypatch.setattr(user_relay, "_write_json_atomic", unavailable)
+    def fail(): raise ValueError("original cycle failure")
+    result = user_relay.run_persistent_relay_loop(fail, status_path=tmp_path/"status.json", max_cycles=1)
+    cycle = result["last_cycle"]
+    assert cycle["status"] == "UNKNOWN"
+    assert cycle["error_type"] == "ValueError"
+    assert cycle["failure_evidence_status"] == "FAILED"
+    assert cycle["failure_evidence_error_details"][0]["win32_error"] == 28
