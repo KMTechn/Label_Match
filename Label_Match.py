@@ -14270,18 +14270,10 @@ class Label_Match(tk.Tk):
                 self._handle_mismatch(raw_input, master_code)
                 return
             if raw_input in self.current_set_info['raw']:
-                self._handle_input_error(
-                    raw_input,
-                    title="[세트 내 중복 스캔]",
-                    reason=f"세트 내 중복 스캔입니다.\n\n- 중복 제품: {self._truncate_string(raw_input)}\n\n→ 다른 제품을 스캔하세요."
-                )
+                self._ignore_product_scan(raw_input, "세트 내 중복 스캔입니다. 다른 제품을 스캔하세요.")
                 return
             if raw_input in self.global_scanned_set:
-                self._handle_input_error(
-                    raw_input,
-                    title="[전체 작업 내 중복 스캔]",
-                    reason=f"이미 다른 세트에서 처리된 제품입니다.\n\n- 중복 제품: {self._truncate_string(raw_input)}\n\n→ 새 제품으로 교체하세요."
-                )
+                self._ignore_product_scan(raw_input, "이미 다른 세트에서 처리된 제품입니다. 새 제품을 스캔하세요.")
                 return
             known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
                                                self.current_set_info.get("scanner_exchanges", []))
