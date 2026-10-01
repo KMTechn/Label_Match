@@ -5790,9 +5790,9 @@ class Label_Match(tk.Tk):
                         value = row.get(field)
                         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                             raise PackageLogisticsError("invalid progress quantity")
-                self._logistics_progress_result = (copy.deepcopy(data), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                self._logistics_progress_result = (copy.deepcopy(data), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), datetime.now(timezone.utc))
             except Exception:
-                self._logistics_progress_result = (None, "")
+                self._logistics_progress_result = (None, "", datetime.now(timezone.utc))
 
         thread = threading.Thread(target=worker, name="label-match-progress", daemon=True)
         self._logistics_progress_thread = thread
@@ -5807,14 +5807,17 @@ class Label_Match(tk.Tk):
         if result is None:
             self.after(100, self._poll_logistics_progress)
             return
-        data, received_at = result
+        data, received_at, observed_at = result
         self._logistics_progress_connected = data is not None
         if data is not None:
             self._logistics_progress_snapshot = data
             self._logistics_progress_last_success = received_at
         # No notebook selection, work context mutation or scanner gate change.
+        self._render_logistics_connection(
+            self.__dict__.get("_logistics_relay_state", ""), None, None,
+            progress_observation=(observed_at, data is not None),
+        )
         self._render_logistics_progress()
-        self._render_logistics_connection(self.__dict__.get("_logistics_relay_state", ""), None, None)
         if self.__dict__.get("_logistics_progress_after_id") is None:
             self._logistics_progress_after_id = self.after(60000, self._run_logistics_progress_refresh)
 
@@ -5823,7 +5826,8 @@ class Label_Match(tk.Tk):
         return self._refresh_logistics_progress()
 
     def _logistics_progress_text(self):
-        connected = self.__dict__.get("_logistics_progress_connected")
+        observation = self.__dict__.get("_logistics_connection_observation")
+        connected = observation[1] if observation else self.__dict__.get("_logistics_progress_connected")
         status = "연결 정상" if connected else "연결 끊김" if connected is False else "현황 확인 중"
         last_success = self.__dict__.get("_logistics_progress_last_success") or "없음"
         data = self.__dict__.get("_logistics_progress_snapshot") or {}
@@ -6547,6 +6551,7 @@ class Label_Match(tk.Tk):
         self._render_relay_screen_status(state)
         pending, last_success = self._read_logistics_transmission_summary(db_path)
         self._render_logistics_connection(state, pending, last_success)
+        self._render_logistics_progress()
         self._relay_screen_status_after_id = self.after(5000, self._refresh_relay_screen_status)
         return None
 
@@ -6577,21 +6582,32 @@ class Label_Match(tk.Tk):
                         # only transport ACK rows prove a successful transmission.
                         if table == "deferred_intents":
                             continue
-                        stamp = conn.execute(
-                            f"SELECT MAX(updated_at) FROM {table} WHERE UPPER(status)='ACKED'"
-                        ).fetchone()[0]
-                        if stamp:
+                        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                        retry = "UPPER(status)='RETRY_WAIT'"
+                        if "last_error_code" in columns:
+                            retry += " OR (UPPER(status)='PENDING' AND COALESCE(last_error_code,'')!='')"
+                        for connected, predicate in ((True, "UPPER(status)='ACKED'"), (False, retry)):
+                            stamp = conn.execute(
+                                f"SELECT MAX(updated_at) FROM {table} WHERE {predicate}"
+                            ).fetchone()[0]
+                            if not stamp:
+                                continue
                             try:
                                 parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
                                 parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-                                last_success = max(last_success, parsed) if last_success else parsed
+                                if connected:
+                                    last_success = max(last_success, parsed) if last_success else parsed
+                                else:
+                                    previous = self.__dict__.get("_logistics_last_transport_failure")
+                                    if previous is None or parsed > previous:
+                                        self._logistics_last_transport_failure = parsed
                             except ValueError:
                                 pass
             except (sqlite3.Error, OSError):
                 return None, last_success
         return (pending if read else None), last_success
 
-    def _render_logistics_connection(self, relay_state, pending, last_success):
+    def _render_logistics_connection(self, relay_state, pending, last_success, *, progress_observation=None):
         if pending is not None:
             self._logistics_pending_transmissions = pending
         previous = self.__dict__.get("_logistics_last_transmission")
@@ -6599,9 +6615,28 @@ class Label_Match(tk.Tk):
             self._logistics_last_transmission = last_success
         latest = self.__dict__.get("_logistics_last_transmission")
         last_text = latest.astimezone().strftime("%H:%M:%S") if latest else "없음"
-        connected = self.__dict__.get("_logistics_progress_connected")
-        connection = ("정상" if connected is True or relay_state == "normal" else
-                      "끊김" if connected is False or relay_state in {"retrying", "stopped"} else "확인 중")
+        # Local idle/lease changes prove no server response. Fold new observations
+        # by their actual time so stale ACKs and delayed polls cannot erase loss.
+        observations = []
+        if relay_state != self.__dict__.get("_logistics_connection_relay_state"):
+            self._logistics_connection_relay_state = relay_state
+            if relay_state in {"retrying", "stopped"}:
+                observations.append((datetime.now(timezone.utc), False))
+        failure = self.__dict__.get("_logistics_last_transport_failure")
+        if failure is not None:
+            observations.append((failure, False))
+        if last_success is not None:
+            observations.append((last_success, True))
+        if progress_observation is not None:
+            observations.append(progress_observation)
+        observation = self.__dict__.get("_logistics_connection_observation")
+        for candidate in observations:
+            if (observation is None or candidate[0] > observation[0]
+                    or (candidate[0] == observation[0] and candidate[1] is False)):
+                observation = candidate
+        self._logistics_connection_observation = observation
+        connected = observation[1] if observation else None
+        connection = "정상" if connected is True else "끊김" if connected is False else "확인 중"
         count = self.__dict__.get("_logistics_pending_transmissions")
         waiting = f"대기 {count}건" if count is not None else "대기 확인 중"
         if pending is None and count is not None:
