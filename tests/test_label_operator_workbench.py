@@ -474,6 +474,8 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
     deferred_tab = _required_widget(app, "deferred_observability_tab")
     history_tab = _required_widget(app, "operator_history_tab")
     summary_tab = _required_widget(app, "operator_summary_tab")
+    # G8 / DESIGN §1.7 adds a separate one-click, read-only progress view.
+    progress_tab = _required_widget(app, "logistics_progress_tab")
 
     assert _is_descendant(notebook, right)
     assert notebook.cget("style") == "Operator.TNotebook"
@@ -482,9 +484,13 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
         deferred_tab,
         history_tab,
         summary_tab,
+        progress_tab,
     ]
     tab_text = [options.get("text", "") for _, options in notebook.notebook_pages]
-    assert tab_text == ["이번 세션", "대기 현황", "스캔 기록", "통과 요약"]
+    assert tab_text == ["이번 세션", "대기 현황", "스캔 기록", "통과 요약", "진행 현황"]
+    assert _is_descendant(app.logistics_progress_text, progress_tab)
+    assert app.logistics_progress_text.cget("state") == "disabled"
+    assert ("<<NotebookTabChanged>>", app._on_logistics_progress_tab_changed, "+") in notebook.bindings
     assert _is_descendant(app.deferred_observability_tree, deferred_tab)
     assert _is_descendant(app.history_tree, history_tab)
     assert _is_descendant(app.summary_tree, summary_tab)
