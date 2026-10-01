@@ -321,6 +321,9 @@ def test_worker_root_keeps_one_mutex_name_when_installer_runs_as_other_account(t
         f"""
 $workerRoot = '{_quote(worker_root)}'
 $Script:LabelWriterFenceAdmissionProductionRoot = $workerRoot
+# This read-only name test uses the explicit production branch, matching the
+# Python scenarios above; inherited test-root isolation remains on write tests.
+$env:KMTECH_LABEL_WRITER_TEST_MODE = '0'
 $env:LOCALAPPDATA = '{_quote(worker_local)}'
 $workerSid = 'S-1-5-21-101'
 $workerName = Get-LabelWriterAdmissionMutexName $workerRoot

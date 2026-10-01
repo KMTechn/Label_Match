@@ -7993,7 +7993,7 @@ class Label_Match(tk.Tk):
             print(f"로그 매니저 복구 실패: {replacement_error}")
             return False
 
-    def _save_current_set_state(self):
+    def _save_current_set_state(self, *, audit_events=()):
         current_set = self.__dict__.get("current_set_info") or {}
         if not self.initialized_successfully or (
             not current_set.get("raw") and "scanner_failure_result" not in current_set
@@ -8003,7 +8003,40 @@ class Label_Match(tk.Tk):
             'current_set_info': current_set,
             'timestamp': datetime.now().isoformat(),
         }
+        if audit_events:
+            state_data['scanner_audit_outbox'] = list(audit_events)
         return bool(self.data_manager.save_current_state(state_data))
+
+    def _replay_scanner_audits(self, *, include_holds=False):
+        replay = getattr(self.__dict__.get('data_manager'), 'replay_audit_events', None)
+        if not callable(replay):
+            return True
+        archived = []
+        list_holds = getattr(self.__dict__.get('package_outbox'), 'list_workbench_holds', None)
+        if include_holds and callable(list_holds):
+            try:
+                holds = list_holds()
+            except Exception as error:
+                print(f'보류 감사 목록 조회 대기: {type(error).__name__}')
+                holds = []
+            for held in holds:
+                try:
+                    snapshot = json.loads(held['snapshot_json'])
+                    if snapshot.get('scanner_audit_outbox'):
+                        require_recovery_record('current', snapshot)
+                        archived.extend(snapshot['scanner_audit_outbox'])
+                    archive_path = snapshot.get('archive_path')
+                    if archive_path:
+                        path = Path(archive_path).absolute()
+                        root = Path(self.data_manager.save_directory).absolute()
+                        if path.parent != root:
+                            raise ValueError('held audit archive is outside the save root')
+                        evidence = self._read_package_recovery_file(path)
+                        if (evidence['verified'] and evidence['sha256'] == snapshot.get('current_file_sha256')):
+                            archived.extend(evidence['value'].get('scanner_audit_outbox', []))
+                except Exception as error:
+                    print(f'보류 감사 원본 조회 대기: {type(error).__name__}')
+        return replay(archived_events=archived) if archived else replay()
 
     def _migrate_restored_central_package_state(self, saved_set_info):
         saved = copy.deepcopy(dict(saved_set_info or {}))
@@ -10631,6 +10664,8 @@ class Label_Match(tk.Tk):
 
     def _load_current_set_state_checked(self):
         completion_sync_error = None
+
+        self._replay_scanner_audits(include_holds=True)
 
         self._recover_pending_package_pin_moves()
         if not self._finalize_label_recovery_holds():
@@ -13543,16 +13578,12 @@ class Label_Match(tk.Tk):
                 return
             evidence, snapshot, sealed, _lease = value
             current = self.current_set_info
-            if str(current.get("id") or "") == set_id:
+            active = str(current.get("id") or "") == set_id
+            if active:
                 previous = copy.deepcopy(current)
                 current.update(evidence.state_fields())
                 current["package_source_snapshot"] = dict(snapshot or {})
                 current["sealed_transfer"] = sealed
-                if not self._save_current_set_state():
-                    current.clear()
-                    current.update(previous)
-                    self._publish_durable_commit_block(PackageLogisticsError("source snapshot save failed"))
-                    return
                 samples = current.get("raw", [])[1:]
             else:
                 completed = self.__dict__.get("set_details_map", {}).get(set_id)
@@ -13561,14 +13592,25 @@ class Label_Match(tk.Tk):
                 samples = completed.get("scanned_product_barcodes", [])[1:]
                 current = completed
             members = self._known_sample_members(snapshot, current.get("scanner_exchanges", []))
-            if members is not None and any(self._sample_barcode(value) not in members for value in samples):
+            invalid_sample = members is not None and any(self._sample_barcode(value) not in members for value in samples)
+            audits = [self.data_manager.prepare_audit_event(self.Events.POST_REVIEW_REQUIRED, {
+                "set_id": set_id, "reason_code": "PACKAGE_SAMPLE_NOT_MEMBER"})] if invalid_sample else []
+            if active:
+                if not (self._save_current_set_state(audit_events=audits) if audits else self._save_current_set_state()):
+                    current.clear()
+                    current.update(previous)
+                    self._publish_durable_commit_block(PackageLogisticsError("source snapshot save failed"))
+                    return
+            elif audits and not self.data_manager.save_current_state({
+                    "current_set_info": self.current_set_info, "scanner_audit_outbox": audits}):
+                self._publish_durable_commit_block(PackageLogisticsError("source review audit save failed"))
+                return
+            if invalid_sample:
                 outbox = self.__dict__.get("package_outbox")
                 row = outbox.get_by_set_id(set_id) if outbox is not None else None
                 if row:
                     outbox.mark_conflict(row["idempotency_key"], PackageLogisticsError("PACKAGE_SAMPLE_NOT_MEMBER"))
-                self.data_manager.log_event(self.Events.POST_REVIEW_REQUIRED, {
-                    "set_id": set_id, "reason_code": "PACKAGE_SAMPLE_NOT_MEMBER"})
-                self._flush_data_manager_if_supported()
+                self._replay_scanner_audits()
 
         threading.Thread(target=lookup, name="label-match-source-read", daemon=True).start()
         self.after(25, poll)
@@ -13873,6 +13915,7 @@ class Label_Match(tk.Tk):
         if self._block_active_history_load_action("스캔"):
             return
 
+        self._replay_scanner_audits()
         previous_scan = self.__dict__.get("_scanner_previous_scan") or ("", 0.0)
         self._scanner_previous_scan = (raw_input, time.monotonic())
         if raw_input.startswith("KMCMD:"):
@@ -14386,14 +14429,14 @@ class Label_Match(tk.Tk):
         current["scanner_undo_exchange"] = pair["idempotency_key"]
         pair_saved = False
         try:
-            if not self._save_current_set_state():
-                raise PackageLogisticsError("exchange record save failed")
-            pair_saved = True
-            self.data_manager.log_event(self.Events.SCAN_OK, {
+            audit = self.data_manager.prepare_audit_event(self.Events.SCAN_OK, {
                 "set_id": current["id"], "raw": value, "parsed": master,
                 "barcode_role": "product", "scanner_exchange": pair,
                 "product_barcode": value, "barcode_projection_status": "INCLUDED"})
-            self._flush_data_manager_if_supported()
+            if not self._save_current_set_state(audit_events=[audit]):
+                raise PackageLogisticsError("exchange record save failed")
+            pair_saved = True
+            self._replay_scanner_audits()
         except Exception as error:
             if not pair_saved:
                 self.current_set_info = previous
@@ -14449,7 +14492,11 @@ class Label_Match(tk.Tk):
             return True
         try:
             current["shortage_release_pending"] = True
-            if not self.data_manager.save_current_state({"current_set_info": current}):
+            audit = current.setdefault('shortage_release_audit', self.data_manager.prepare_audit_event(self.Events.SCAN_OK, {
+                "set_id": snapshot["id"], "short_confirmation_released": True,
+                "barcode_role": "material_master_label"}))
+            if not self.data_manager.save_current_state({"current_set_info": current,
+                                                        "scanner_audit_outbox": [audit]}):
                 current.pop("shortage_release_pending", None)
                 raise PackageLogisticsError("short confirmation release checkpoint failed")
             released = copy.deepcopy(snapshot)
@@ -14458,12 +14505,9 @@ class Label_Match(tk.Tk):
                 metadata = self._queue_authoritative_package(item_code=released["parsed"][0],
                     is_manual_complete=False, current_set_info=released)
                 self.package_outbox.mark_local_completion_committed(metadata["idempotency_key"])
-            self.data_manager.log_event(self.Events.SCAN_OK, {
-                "set_id": released["id"], "short_confirmation_released": True,
-                "barcode_role": "material_master_label"})
-            self._flush_data_manager_if_supported()
+            self._replay_scanner_audits()
             checkpoint = copy.deepcopy(self.current_set_info)
-            for name in ("shortage_undo_snapshot", "shortage_completion_details", "shortage_release_pending"):
+            for name in ("shortage_undo_snapshot", "shortage_completion_details", "shortage_release_pending", "shortage_release_audit"):
                 checkpoint.pop(name, None)
             if not self.data_manager.save_current_state({"current_set_info": checkpoint}):
                 raise PackageLogisticsError("short confirmation release state save failed")
@@ -14561,15 +14605,13 @@ class Label_Match(tk.Tk):
                     self._cancel_deferred_capture_for_set(current)
                     restored = {"id": None, "raw": [], "parsed": [], "start_time": None,
                                 "error_count": 0, "has_error_or_reset": False}
-            if not self.data_manager.save_current_state({"current_set_info": restored}):
+            audit = self.data_manager.prepare_audit_event(self.Events.SET_RESTORED, {
+                "set_id": current["id"], "reason": "SCANNER_UNDO", "scanned_product_barcodes": restored["raw"]})
+            if not self.data_manager.save_current_state({"current_set_info": restored,
+                                                        "scanner_audit_outbox": [audit]}):
                 return self._publish_durable_commit_block(PackageLogisticsError("undo state save failed"))
             self.current_set_info = restored
-            try:
-                self.data_manager.log_event(self.Events.SET_RESTORED, {
-                    "set_id": current["id"], "reason": "SCANNER_UNDO", "scanned_product_barcodes": restored["raw"]})
-                self._flush_data_manager_if_supported()
-            except Exception as error:
-                return self._publish_durable_commit_block(error)
+            self._replay_scanner_audits()
         else:
             return self._ignore_product_scan("KMCMD:UNDO", "지금 세트에 되돌릴 스캔이 없습니다.")
         self._clear_workflow_completion()
@@ -21272,6 +21314,7 @@ class Label_Match(tk.Tk):
         self._workflow_notice = None
         self._workflow_notice_action = None
         self._workflow_notice_action_text = "확인"
+        audit_replayed = self._replay_scanner_audits()
         if "scanner_failure_result" in self.current_set_info:
             return self._resume_scanner_failure()
         if ((self.__dict__.get("operator_workbench_ready") or self.current_set_info.get("scanner_only"))
@@ -21281,7 +21324,8 @@ class Label_Match(tk.Tk):
             try:
                 if not self._save_current_set_state():
                     raise PackageLogisticsError("scanner checkpoint retry save failed")
-                self._flush_data_manager_if_supported()
+                if audit_replayed:
+                    self._flush_data_manager_if_supported()
             except Exception as error:
                 return self._publish_durable_commit_block(error)
             self._update_history_tree_in_progress()

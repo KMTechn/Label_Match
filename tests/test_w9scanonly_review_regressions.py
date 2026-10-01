@@ -100,7 +100,7 @@ def test_exchange_checkpoint_contains_the_product_and_undo_position(central, mon
         raise OSError("exchange flush interrupted")
 
     if cut == "checkpoint":
-        monkeypatch.setattr(app, "_save_current_set_state", lambda: False)
+        monkeypatch.setattr(app, "_save_current_set_state", lambda **kwargs: False)
     elif cut == "event":
         monkeypatch.setattr(app.data_manager, "log_event", fail_event)
     else:
@@ -110,12 +110,15 @@ def test_exchange_checkpoint_contains_the_product_and_undo_position(central, mon
     monkeypatch.setattr(app.data_manager, "flush", flush)
     monkeypatch.setattr(app, "_save_current_set_state", save)
     saved = app.data_manager.load_current_state()["current_set_info"]
-    assert feedback == [], "interrupted exchange must not report success"
     if cut == "checkpoint":
+        assert feedback == [], "failed checkpoint must not report success"
         assert app.current_set_info == before
         assert saved["raw"] == before["raw"]
         assert not saved.get("scanner_exchanges")
     else:
+        assert feedback, "durable exchange accepts scanning while its audit waits"
+        assert not app.blocks
+        assert app.data_manager.load_current_state()['scanner_audit_outbox']
         assert saved["raw"] == [master, replacement]
         assert len(saved["parsed"]) == len(saved["raw"])
         pair = saved["scanner_exchanges"][-1]
@@ -218,7 +221,8 @@ def test_undo_event_failure_keeps_memory_at_the_saved_checkpoint(packaging, monk
     saved = app.data_manager.load_current_state()["current_set_info"]
     assert saved["raw"] == [MASTER]
     assert app.current_set_info["raw"] == saved["raw"]
-    assert app.blocks
+    assert not app.blocks, "a durable undo must not stop scanning for a CSV outage"
+    assert app.data_manager.load_current_state()['scanner_audit_outbox']
 
 
 def test_exchange_audit_failure_cannot_lose_the_replacement_to_a_later_scan(central, monkeypatch):

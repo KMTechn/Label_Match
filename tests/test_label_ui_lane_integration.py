@@ -494,7 +494,7 @@ def test_scanner_exchange_is_durable_without_a_popup_or_submit(monkeypatch, tmp_
     old, new = MASTER + "-OLD", MASTER + "-NEW"
     from sealed_transfer_exchange import SealedTransferExchangeStore
     app.sealed_transfer_exchange_store = SealedTransferExchangeStore(tmp_path / "package_logistics_outbox.sqlite3")
-    app._save_current_set_state = lambda: module.Label_Match._save_current_set_state(app)
+    app._save_current_set_state = lambda **kwargs: module.Label_Match._save_current_set_state(app, **kwargs)
     monkeypatch.setattr(module.tk, "Toplevel", lambda *_a, **_k: pytest.fail("scanner flow opened a window"))
     try:
         for value in [MASTER, old, "KMCMD:EXCHANGE"]:
@@ -508,7 +508,7 @@ def test_scanner_exchange_is_durable_without_a_popup_or_submit(monkeypatch, tmp_
         _scan(module, app, old)
         before = deepcopy(app.current_set_info)
         if outcome == "prepare_error":
-            app._save_current_set_state = lambda: False
+            app._save_current_set_state = lambda **kwargs: False
         elif outcome == "post_prepare_load_error":
             log = app.data_manager.log_event
             def fail_event(event, details):

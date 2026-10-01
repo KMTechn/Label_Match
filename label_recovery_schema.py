@@ -26,7 +26,20 @@ _RENDERED_PATH = "rendered_path"
 RECOVERY_SCHEMAS = {
     "current": {
         "required": {"current_set_info": "current_set"},
-        "optional": {"timestamp": _TIME, "worker_name": _TEXT},
+        "optional": {"timestamp": _TIME, "worker_name": _TEXT,
+                     "scanner_audit_outbox": "scanner_audit_list"},
+    },
+    "scanner_audit_event": {
+        "required": {"event_type": _TEXT, "details": "scanner_audit_details"},
+        "optional": {},
+    },
+    "scanner_audit_details": {
+        "required": {"scanner_audit": "scanner_audit_identity"},
+        "optional": {},
+    },
+    "scanner_audit_identity": {
+        "required": {"key": _TEXT, "occurred_at": _TIME, "operator": _TEXT},
+        "optional": {},
     },
     "current_set": {
         "required": {"id": _NULLABLE_TEXT, "raw": _TEXT_LIST},
@@ -49,6 +62,7 @@ RECOVERY_SCHEMAS = {
             "shortage_confirmation_pending": _BOOLEAN,
             "shortage_release_pending": _BOOLEAN,
             "shortage_released": _BOOLEAN,
+            "shortage_release_audit": "scanner_audit_event",
             "error_count": _INTEGER,
             "has_error_or_reset": _BOOLEAN,
             "active_label_version": _INTEGER,
@@ -327,6 +341,9 @@ def _valid(rule, value):
         return valid_recovery_rendered_path(value)
     if rule in RECOVERY_SCHEMAS:
         return validate_recovery_record(rule, value)
+    if rule == 'scanner_audit_list':
+        return isinstance(value, list) and all(
+            validate_recovery_record('scanner_audit_event', item) for item in value)
     if rule == "nullable_source_snapshot":
         return value is None or validate_recovery_record("source_snapshot", value)
     if rule == "target_prints":
@@ -403,6 +420,8 @@ def validate_recovery_record(kind, value, *, journal_version=None):
     required = schema["required"]
     optional = schema["optional"]
     if not required.keys() <= value.keys():
+        return False
+    if kind == 'scanner_audit_identity' and not value['key']:
         return False
     if kind == "journal_state" and value.keys() - {"updated_at"} and "status" not in value:
         return False

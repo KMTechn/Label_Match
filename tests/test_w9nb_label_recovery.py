@@ -793,6 +793,8 @@ def test_unverified_current_audit_failure_keeps_retryable_hold(tmp_path, monkeyp
 
 def test_corrupt_draft_recovers_phs2_and_blocks_original_rescan_before_submit(tmp_path, monkeypatch):
     app, _journal = _recovery_app(tmp_path, monkeypatch, {})
+    displays = []
+    app.update_big_display = lambda *args: displays.append(args)
     source = ("PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-ORIGINAL|CLC=AAA2270730100|"
               "LBL=LBL-ORIGINAL|HSH=0123456789abcdef")
     draft = {"set_id": "SET-ORIGINAL", "membership_mode": [],
@@ -844,6 +846,7 @@ def test_corrupt_draft_recovers_phs2_and_blocks_original_rescan_before_submit(tm
         "held source reached central submission"
     )
     app.process_input()
+    assert displays and app._phs_label_guidance_notice.kind == 'scanner_notice'
     assert app.current_set_info["raw"] == []
     assert app.entry.get() == ""
 

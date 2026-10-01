@@ -498,6 +498,9 @@ def test_refused_capture_reset_preserves_unclosed_or_unrelated_notice(clock_case
     app = _app(case.app.deferred_intent_capture, SimpleNamespace(intent_id=intent_id),
                scan=case.group["scan_payload"])
     app.current_set_info = current
+    displays = []
+    app.update_big_display = lambda *args: displays.append(args)
+    app._render_operator_workbench = lambda: None
     notice = {"status": "관리자확인", "state": "BLOCKED_INVALID",
               "intent_id": intent_id if boundary == "audit-failure" else "di_other"}
     app._deferred_capture_ui = dict(notice)
@@ -509,6 +512,7 @@ def test_refused_capture_reset_preserves_unclosed_or_unrelated_notice(clock_case
         assert _row(case.database, intent_id) == before
         assert app.current_set_info == current
         assert app.events == []
+        assert displays and app._phs_label_guidance_notice.kind == 'scanner_notice'
     else:
         assert app._reset_current_set(full_reset=True) is True
         assert _row(case.database, intent_id)["state"] == "CANCELLED"

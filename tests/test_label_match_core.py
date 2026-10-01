@@ -2728,11 +2728,13 @@ def test_data_manager_flush_raises_writer_error_before_close(tmp_path, monkeypat
 def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_path, monkeypatch):
     module = load_label_match_module()
     state_path = tmp_path / module.Label_Match.FILES.CURRENT_STATE
-    state_path.write_text('{"worker_name": "old-worker", "current_set_info": {"raw": ["OLD"]}}', encoding="utf-8")
+    state_path.write_text('{"worker_name": "old-worker", "current_set_info": {"id": "OLD", "raw": ["OLD"]}}', encoding="utf-8")
 
     manager = object.__new__(module.DataManager)
     manager.save_directory = str(tmp_path)
     manager.worker_name = "worker-a"
+    manager._state_lock = threading.RLock()
+    manager._audit_outbox = []
 
     def failing_replace(*args, **kwargs):
         raise OSError("replace failed")
@@ -2740,7 +2742,7 @@ def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_
     monkeypatch.setattr("label_data_manager.write_checked_bytes", failing_replace)
 
     assert module.DataManager.save_current_state(
-        manager, {"current_set_info": {"raw": ["NEW"]}}
+        manager, {"current_set_info": {"id": "NEW", "raw": ["NEW"]}}
     ) is False
 
     saved = json.loads(state_path.read_text(encoding="utf-8"))
