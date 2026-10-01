@@ -399,3 +399,12 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 ## W9 슬림화 잔여 수용
 
 설정 저장 조건과 안내를 일치시키고 건별 복구의 원 기술 정보를 읽기 전용 상세에 보존했다. 소스·합성 headless 보장과 실제 화면 수용을 구별한다. 실제 랩에서 작업 중 설정 안내, 복구 항목 선택·스크롤·원 SHA/UNKNOWN 확인은 NOT TESTED다. 제품의 완전한 CSV/queue/identity/F5/receipt 동시점 백업·복원과 미전송분 재개의 공개 보장은 아직 없다; raw artifact 다운로드나 코드 rollback을 그 보장으로 승격하지 않는다.
+
+## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
+
+회사 feed 설정은 검증된 canonical 빌드 입력이며 설치 뒤 보호 SHA로 변조를 거절한다. app/main.py·패키지·실제 app/tools companion도 정확한 preimage/후보 선언에 포함한다. 원 아카이브 누락 실패 13건은 보존한다.
+
+- 구현: 내구 상태기계·서명된 미래 exact 양방향 쌍·실제 기존 version 상승·READY·코드만 복귀, 고정 SYSTEM helper·작업 preimage, GUI/relay 토큰 경계, 정확한 공개 키 회전과 기존 release 핀을 추가했다. 소비자 원문 SHA는 전이 증거다. policy 미래 allowlist나 추가 승인 체계는 없다. 빈 feed·업무 중 적용 끔이 기본이다.
+- PROVEN 범위: 독립 clone 집중 기존 비교, 새 순수/주입 경계, source-derived inventory와 공개 키 정확 쌍. 개수·버전·환경·원 실패·한계는 w9setupprep sub-88 REPORT.md에 기록한다.
+- 첫 현장 설치 전 필수 OPEN: 자동 업데이트로 active와 current bootstrap source가 달라진 뒤 수동 교체·제거·사용자 제거·재등록의 canonical lifecycle 소유권 교정. 현재 RECOVERY_REQUIRED로 거절하고 데이터/상태를 보존한다. CONFIRMED 후 수동 복귀는 지원되지 않는다. LIFECYCLE-AFTER-AUTO-UPDATE.md의 설계 범위와 중앙 랩 수용이 필요하다.
+- OPEN / NOT TESTED: 중앙 전체 suite·stock builder/실제 packet·독립 검토 및 로그온/빠른 시작/전원 손실/옛 판 등록/교체/제거/재설치/복귀 랩. 작업 ACL readback, 실제 0x18B 토큰의 모든 native 시작 자리, 실패 진단·Run 다음 로그온 복구, 데이터/미완료/outbox 보존을 확인한다. 실제 w9next packet matching-key·feed/manifest 게시·최종 병합은 중앙 담당이다.

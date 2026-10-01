@@ -1030,3 +1030,19 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 소비자 없는 `tools/sandbox_label_sac/run.ps1`·`guest.ps1`은 내부 쌍으로 제거하고 standalone `tools/scan_portable_pe.ps1`을 제거한다. 원본은 Git 판 `ebbe812`에 남고 portable 빌더의 실제 PE 검사·현재 runtime 도구 선택은 그대로다. 설치/빌더/CI/.spec/manifest/문서, 형제 저장소 committed HEAD와 09-10 이후 절차 검색의 소비자0 근거는 w9slim2 RESULT와 logs에 있다.
 
 publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다. `label_old_fence_liveness_proof.py`는 runtime reconcile의 old-fence 증명 계약에 쓰이므로 보존한다. 일회 tag burner는 현재 계약 참조와 D: 원 evidence 완전성이 미확인이라 보류한다; 감사 CSV의 분류만으로 실제 보장을 지우지 않는다.
+
+## StartupUpdate1 · 자동 업데이트 준비·시작·복구
+
+`auto-update-settings.json`은 builder가 canonical JSON으로 만들고 보호 policy의 settings_sha256에 고정한다. HTTP·GitHub·모르는 키·업무 중 적용 true·형식 오류를 거절한다. 설치 뒤 설정 파일 원문이나 policy 설정 변경은 복구 요청 대상이며 그대로 적용하지 않는다.
+
+builder는 승인 공개 키와 `--auto-update-settings` JSON을 사용한다. 기본 feed는 비어 있고 업무 중 적용은 false다. 빈 feed 설치는 외부 조회 없이 현재 판을 시작한다. 출시 담당이 회사 HTTPS feed를 설정하고 독립 검토한 정확한 source/writer 양방향 쌍의 manifest를 중앙 서명·게시한다. 설치 policy에 미래 쌍 목록을 게시할 필요는 없다. 기존 signed version과 실제 APP_VERSION은 일치하고 현재 판보다 높아야 한다. feed의 profile_auth는 true이며 기존 장비 신원·CA와 같은 origin만 사용한다. redirect/netrc/proxy 신원이나 GitHub releases/latest 자동 적용을 사용하지 않는다.
+
+관리자 보호 부모에는 current bootstrap, versions/<SHA>, update-control을 둔다. 사용자 staging은 같은 사용자 경로이며 SYSTEM은 읽기 handle·소유자·reparse/hardlink·서명·크기를 재검증해 보호 영역으로 복사한다. 숨김 SYSTEM 작업은 SID 로그온 또는 앱 안전망의 요청 때 고정 helper만 호출한다. Hiberboot는 읽고 기록하며 OS 설정을 바꾸지 않는다. HKCU Run과 일반 사용자 relay는 기존 사용자 책임을 유지한다.
+
+정상 순서는 준비 → writer 부재 → 내구 적용 기록 → 활성 코드 전환 → 일반 사용자 GUI/relay trial → READY → CONFIRMED다. READY 실패는 정상 종료·writer 부재·이전 코드 검증 뒤 코드만 복귀한다. failed SHA와 불명확 상태의 증거를 보존한다. 사용자 데이터 백업을 코드 복귀로 덮지 않는다. CONFIRMED 후 자발적 하향/수동 복귀 도구는 이 변경에 없다.
+
+canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작을 연기한다. fence 해제 뒤 native 일반 토큰 시작과 상태 readback을 한다. Run 복원만 성공하고 relay 시작이 실패하면 RUN_RESTORED_RELAY_NEXT_LOGON이며 설치는 실패다. 정상 removal 보고서를 복원/정리하기 전 고유 실패 증거를 보존한다.
+
+자동 업데이트로 active와 current source가 다르거나 전이가 미완료면 수동 교체·제거 및 사용자 제거·재등록을 RECOVERY_REQUIRED로 거절한다. 데이터·미완료·outbox·설치 상태를 그대로 보존하고 담당자에게 복구를 요청한다. 첫 현장 설치 전 canonical host의 active code root 선택과 고정 app-root 제거 보고서 소유권을 교정하고 랩에서 검증해야 한다. 현재 CONFIRMED 상태를 수동으로 수정하거나 임의 옛 packet을 설치하는 복구는 지원되지 않는다.
+
+2026-10-02 Windows 호스트의 격리 known-folder·독립 .git 순수/주입 집중 시험만 수행한다. 실제 로그온·전원 손실·빠른 시작·토큰·작업 ACL·옛 packet(6479eca 첫 등록 포함)·수동 lifecycle·stock packet·전체 suite·독립 검토는 중앙 NOT TESTED다. 정확한 결과와 원 실패는 sub-88 REPORT.md 및 원 로그에 남긴다.

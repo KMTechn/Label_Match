@@ -395,3 +395,23 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 ## 설정·건별 복구 안내
 
 진행 중 설정 창은 현재 작업을 완료하거나 취소한 뒤 저장하도록 안내한다. 기존 활성 세트·배경 작업·이력·종료 guard와 작업자 귀속은 그대로다. 건별 복구 목록은 쉬운 이유와 기존 다음 동작을 먼저 보이며, 선택한 항목의 원 ID·상태 코드·원SHA/변경SHA·파일 경로·미검증·UNKNOWN·관리자 요청 수는 읽기 전용 스크롤 상세에 그대로 남는다. 목록 순서·선택과 PIN·권한·재확인/보류/복원/인계 handler는 변하지 않는다.
+
+## StartupUpdate1 · 매일 시작 시 코드 전환 계약
+
+설정은 출시 시 builder 입력이다. 순수 HTTPS·기존 GitHub 거절·정확한 필드/형식 검증을 적용한다. canonical 설정 SHA를 packet 추가 파일 선언과 설치기의 보호 policy에 묶고 설치 뒤 원문·형식·policy 설정이 바뀌면 시작/적용을 거절한다.
+
+요구: 로그온 SYSTEM 작업은 보호된 `current/tools/apply_prepared_update.ps1`만 실행한다. 고정 `current` bootstrap은 `versions/<source SHA>`의 활성 코드를 선택한다. 사용자 데이터·장비 신원·미완료·outbox·대기 전송은 복사하거나 되돌리지 않는다. 준비 패킷과 내구 전이 기록을 GUI/relay 시작 전에 확인한다. 업무 중 적용은 기본 끔이며 켜기를 거절한다.
+
+구현: `auto_update.py`는 기존 LM HTTPS·ES256 manifest·archive 검증을 재사용한다. 회사 feed는 기존 사용자 장비 인증과 같은 HTTPS origin만 사용한다. `authorize_feed_transition`은 신뢰 키로 인증된 manifest의 정확한 두 방향 from/to source commit·실제 재계산 writer contract SHA, 실제 후보 APP_VERSION과 서명 version의 일치, 실제 현재 판보다 높은 기존 version을 요구한다. 설치 당시 알려진 쌍 목록을 policy에 요구하지 않는다. 소비자 원문 data/API SHA와 같음/다름은 전이 증거이며 원문 동일성은 승인 gate가 아니다. wildcard·단방향·다른 실제 from·같거나 낮은 버전·옛 feed 재생·다른 키·손상 패킷은 거절한다.
+
+쌍 승인은 출시 컷 `w9setupprep`의 독립 검토와 중앙 서명으로 표현한다. 독립 검토는 데이터 형식·API의 양방향 불변과 보존을 확인한다. 이는 GUI 핫픽스의 정확한 미래 쌍을 승인하는 방식이며 schema/API 변경의 일반 승인이 아니다. 별도 승인 의식·receipt 체계는 추가하지 않는다. policy는 설치기가 packet의 feed/channel/user/staging 설정으로 초기화하고 기존 preimage를 보존한다. SYSTEM apply는 policy를 읽고 SHA를 기록하며 확인된 역방향 권한은 transition에 남긴다. policy 승인 목록을 쓰지 않는다.
+
+적용/복귀 기록을 flush·write-through rename한 뒤 코드 포인터를 바꾼다. GUI READY는 nonce·SHA·PID/생성 시각·기동 시각, 읽기 전용 ledger/queue·미완료 확인과 일반 사용자 relay의 같은 버전/nonce에 묶는다. 입력은 보호된 CONFIRMED/ROLLED_BACK와 활성 SHA 확인까지 잠근다. READY 실패 때만 검증된 writer 부재·정상 종료 뒤 이전 코드로 복귀하고 실패 SHA를 보존한다. CONFIRMED 뒤 사용자가 옛 feed로 임의 하향하는 경로는 없다.
+
+설치기는 SYSTEM/SID-logon 작업과 policy/active/transition preimage를 보존하고 정확한 소유 작업만 다룬다. 옛 Run은 실제 옛 명령으로 대조한다. 상승 설치기의 정방향/복귀 relay는 같은 native shell-token 경계·DuplicateTokenEx 0x18B 및 자식 SID/세션/비상승/무결성 8192 readback을 사용한다. Python 시작도 같은 보안 조건을 검사한다. 추가 실패 진단에는 호출 이름·Win32 번호·예외 종류 사슬만 남긴다.
+
+기존 release-pair/companion/fence 선언을 갱신한다. 실제 e88011c 공개 설정에서 승인 LM ES256 공개 설정으로의 정확한 SHA256 쌍만 첫 수동 설치의 별도 회전으로 허용한다. 같은 공개 키 전이는 유지하고 임의 회전은 거절한다. w9next 소스에는 공개 설정이 추적되지 않으므로 실제 w9next packet matching-key 확인은 중앙 NOT TESTED 항목이다. 개인 키·런타임 데이터는 소스에 넣지 않는다.
+
+수동 수명주기 제한: 자동 업데이트 후 active 코드가 current bootstrap과 다르면 수동 교체·제거·사용자 제거·재등록은 RECOVERY_REQUIRED로 차단한다. 데이터와 설치 상태를 보존하고 담당자 복구를 안내한다. 기존 정확한 deployment delegation은 유지한다. 이 상태를 지원하는 canonical lifecycle 교정과 실기 수용은 첫 현장 설치 전 필수 OPEN 항목이다.
+
+증거: 새 순수/주입 경계·독립 clone 집중 비교와 기존 source-derived inventory 핀 확인만 이 레인의 PROVEN 대상이다. 전체 suite·stock builder·실제 packet·작업 등록/ACL·CreateProcessWithTokenW·GUI·VM 수명주기·독립 검토는 NOT TESTED이며 중앙 랩 수용이 필요하다.
