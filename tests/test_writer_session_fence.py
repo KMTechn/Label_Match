@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import unicodedata
+import uuid
 
 import pytest
 
@@ -42,7 +43,7 @@ def _environment(control_root: Path) -> dict[str, str]:
 
 
 def _payload(*, delegated_sources: list[str], token: str = "") -> dict[str, object]:
-    session_id = "1" * 32
+    session_id = uuid.uuid4().hex
     attempt_id = "2" * 32
     transaction_id = "3" * 32
     orchestrator = "4" * 64
@@ -254,6 +255,19 @@ def test_powershell_helper_inventory_pin_matches_python_writer_inventory() -> No
         "$Script:LabelWriterFenceInventorySha256 = "
         f"'{fence.WRITER_INVENTORY_SHA256}'"
     ) in helper
+
+
+def test_pytest_default_writer_root_is_isolated_and_inherited_by_child(tmp_path_factory) -> None:
+    root = fence.canonical_control_root()
+    assert root.is_relative_to(tmp_path_factory.getbasetemp())
+    parent_name = fence.writer_admission_mutex_name(root)
+    assert parent_name != fence.WRITER_MUTEX_NAME
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c",
+         "import writer_session_fence as f; print(f.writer_admission_mutex_name(f.canonical_control_root()))"],
+        cwd=ROOT, capture_output=True, text=True, check=True,
+    )
+    assert completed.stdout.strip() == parent_name
 
 
 def test_explicit_guarded_root_uses_derived_name_without_allocating_production_mutex(tmp_path: Path) -> None:

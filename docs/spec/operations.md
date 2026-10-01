@@ -980,3 +980,9 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 **PROVEN은 안정된 settings에서 기존 custom 우선 선택·nullable fallback·동일 lexical 저장 경로의 native callback 제외/해제 범위다.** Tk를 구성하거나 두 process의 실제 GUI writer·파일 쓰기·중단 복구를 실행한 시험은 아니다. source/source 및 packaged/source의 중복 writer 제외, 같은 C의 pending identity 복구, onboarding/relay A/C의 enqueue 이전 CSV 발견, template/alias/settings race는 [LM-B10](BACKLOG.md#lm-b10)에 남는다. VM01 Label 예약은 Main이 해제했고 이 문서는 다음 실행 권한을 부여하지 않는다. `baselinePassClaim=false`, `fullExecuted=false`, `qualification=false`이며 generator/build/FULL/최종 설치 자격·제품 Ready를 입증하지 않는다.
 
 기존 Label Modules3 **313 PASS / 939 ordered phase PASS**의 수탁 수용과 원래 reader의 실패는 [README 증거 경계](README.md#evidence-scope)·[중앙 준비도](../../../Program_Spec_Hub/READINESS.md)에 보존한다. 이 숫자를 새 guard 또는 V01–V08 전체 통과로 바꾸지 않는다. 향후 근거에는 수행 시각, exact 소스·테스트·artifact·provider, 환경/설정·입력/관측, 원본 경로·실패/미실행·적용 한계를 남긴다.
+
+
+<a id="slim2-test-isolation"></a>
+### pytest writer 격리
+
+`tests/conftest.py`는 실행별 basetemp 아래 control root와 기존 TEST_MODE override를 함께 설정한다. Python·PowerShell 자식은 같은 root를 상속하므로 실제 경쟁 거절을 유지하면서 서로 다른 시험 실행의 admission mutex 간섭을 피한다. 제품 mutex 이름·derivation과 최소 권한 요청은 그대로다. 실제 Tk·호스트 자격 증명 시험은 기존 headless harness의 차단·제외 범위를 따른다.
