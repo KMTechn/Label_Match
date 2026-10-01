@@ -40,11 +40,16 @@ class PackageOutboxProcessor:
         self.outbox = outbox
         self.client = client
         self._drain_lock = threading.Lock()
+        self._draining = False
         self.prepare_scanner_delivery = prepare_scanner_delivery
 
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0}
         with self._drain_lock:
+            if self._draining:
+                return counts
+            self._draining = True
+        try:
             attempted_keys: set[str] = set()
             for _ in range(max(0, int(limit))):
                 row = self.outbox.claim_next(exclude_keys=attempted_keys)
@@ -85,6 +90,15 @@ class PackageOutboxProcessor:
                         else:
                             self.outbox.save_command(key, source_id, command)
                         receipt = self.client.create_package(command)
+                    # Transport released writer admission. A newer claim/hold
+                    # owns the row if it changed while the request was away;
+                    # its next drain recovers the same central receipt.
+                    latest = self.outbox.get_by_set_id(draft.set_id)
+                    if (latest is None or latest['status'] != 'SENDING'
+                            or latest['attempt_count'] != row['attempt_count']
+                            or self.outbox.get_workbench_hold(draft.set_id) is not None
+                            or json.loads(latest['command_json'] or '{}') != command):
+                        continue
                     self._validate_receipt(draft, source_id, receipt, command=command)
                     consumption = (
                         receipt.get("data", receipt).get(
@@ -144,6 +158,9 @@ class PackageOutboxProcessor:
                         ),
                     )
                     counts["conflict"] += 1
+        finally:
+            with self._drain_lock:
+                self._draining = False
         return counts
 
     @staticmethod

@@ -2,6 +2,10 @@
 
 LM-A1/LM-B4: 빈 화면 종료 확인과 정상 F5 진입을 숨겼다. 기준일 전 날짜 교환의 비복구 기능·시험은 journal 복구 소비자와 설치 목록을 대조한 뒤 제거한다.
 
+<a id="busy-scan-durable-fifo"></a>
+
+후속: 남은 F5 journal 복구·옛 deferred validation의 busy 스캔 거절을 내구 FIFO와 정확히 한 번 적용으로 전환한다. 이번 잠금 컷은 정상 스캐너의 HTTP 무대기·fence 변화 뒤 같은 key 재대조 및 로컬 완료 저장 중 기존 메모리 FIFO의 보존을 검증하며, FIFO의 재시작 내구화는 별도 수용한다.
+
 G5·G8·G9·G10/P3: 중복 입력 보존, 포장 진행 현황·스캔 복귀, 옛 제품4 슬롯 문구, 세 가지 소리·연결/전송 대기 표시, CA 분류표 바이트 정렬은 소스에 반영했다. [현재 계약](contracts.md#scanner-only-packaging)의 focused/collect/stock 검증과 별도로 실제 화면 배율·스캐너 연속 입력·소리 청취·단절/재연결 장치 수용은 남아 있다. REWORK_GOOD_READY 교환의 중앙 출처 규칙 변경은 웹 레인 범위다.
 
 <a id="connection-observation-order"></a>

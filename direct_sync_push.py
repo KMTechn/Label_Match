@@ -41,7 +41,7 @@ from producer_runtime_client import (
     runtime_receipt_result,
     scrub_terminal_runtime_metadata,
 )
-from writer_session_fence import writer_sink
+from writer_session_fence import WriterFenceError, remote_request, writer_sink
 
 
 CONTRACT_VERSION = "producer-ingest-source-file-v1"
@@ -1361,7 +1361,10 @@ def upload_source_file(
             selected_ca = str(tls_ca_bundle_path or "").strip()
             if selected_ca:
                 request_kwargs["verify"] = selected_ca
-            response = session.post(credentials.endpoint_url, **request_kwargs)
+            with remote_request():
+                response = session.post(credentials.endpoint_url, **request_kwargs)
+    except WriterFenceError:
+        raise
     except RelayLeaseLostBeforeSourcePost:
         raise
     except Exception as exc:
@@ -2714,6 +2717,8 @@ def drain_one_relay_batch(
         )
     except RelayLeaseLostBeforeSourcePost:
         return _relay_status_update_conflict(row)
+    except WriterFenceError:
+        raise
     except Exception as exc:
         result = _upload_exception_result(row, exc)
         _set_claimed_relay_status(

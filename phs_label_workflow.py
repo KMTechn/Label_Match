@@ -30,7 +30,7 @@ from kmtech_zero_pe import (
     RasterCanvas,
     RasterImage,
 )
-from writer_session_fence import writer_sink
+from writer_session_fence import WriterFenceError, writer_sink
 import carrier_identity_port as carrier_identity
 from label_data_manager import read_recovery_file
 from label_recovery_schema import valid_recovery_business_date
@@ -3000,6 +3000,8 @@ class PHSLabelExchangeCoordinator:
                             evidence
                         ),
                     )
+                except WriterFenceError:
+                    raise
                 except Exception as exc:
                     error_message = (
                         str(exc) or exc.__class__.__name__
@@ -3023,6 +3025,8 @@ class PHSLabelExchangeCoordinator:
                                 error_message=error_message[:1024],
                             )
                         )
+                    except WriterFenceError:
+                        raise
                     except Exception as ack_error:
                         raise PHSPhysicalPrintError(
                             "실제 출력과 중앙 실패 ACK가 모두 복구 대기 중입니다."
@@ -3118,6 +3122,8 @@ class PHSLabelExchangeCoordinator:
                 authority_scope_id=scope,
                 expected_exchange_version=expected_version,
             )
+        except WriterFenceError:
+            raise
         except Exception:
             activated = self.client.get_phs_label_exchange(
                 exchange_id,
@@ -3704,6 +3710,8 @@ class PHSLabelExchangeCoordinator:
                             status="PRINTING",
                             target_prints=target_prints,
                         )
+                    except WriterFenceError:
+                        raise
                     except Exception as exc:
                         error_message = (
                             str(exc) or exc.__class__.__name__
@@ -3732,6 +3740,8 @@ class PHSLabelExchangeCoordinator:
                                     error_message=error_message[:1024],
                                 )
                             )
+                        except WriterFenceError:
+                            raise
                         except Exception as ack_error:
                             raise PHSPhysicalPrintError(
                                 "실제 출력과 중앙 실패 ACK가 모두 복구 대기 중입니다."
@@ -3899,6 +3909,8 @@ class PHSLabelExchangeCoordinator:
                 authority_scope_id=scope,
                 expected_exchange_version=expected_version,
             )
+        except WriterFenceError:
+            raise
         except Exception:
             activated = self.client.get_phs_label_exchange(
                 exchange_id,

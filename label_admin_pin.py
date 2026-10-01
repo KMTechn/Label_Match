@@ -18,7 +18,7 @@ from typing import Any, Mapping
 from direct_sync_push import SIGNATURE_VERSION
 from direct_sync_runtime import load_credentials_from_json
 from producer_runtime_client import canonical_json, _utc_now_text
-from writer_session_fence import writer_sink
+from writer_session_fence import remote_request, writer_sink
 
 
 CONTRACT_VERSION = "admin-pin.v1"
@@ -105,6 +105,7 @@ class AdminPinClient:
         return cls(load_credentials_from_json(path), tls_ca_bundle_path=tls_ca_bundle_path)
 
     @writer_sink("label_admin_pin_request")
+    @remote_request()
     def post(self, route: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         path = "/api/admin-pin/v1/" + route
         body = canonical_json(payload).encode("utf-8")

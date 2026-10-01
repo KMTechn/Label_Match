@@ -4,6 +4,8 @@
 
 <a id="scanner-only-packaging"></a>
 
+relay 업로드·runtime lease·포장 명령·PIN HTTP는 전송 구간에 공용 writer mutex를 내려놓고, 응답 뒤 재획득·fence 재검증 후에만 로컬에 적용한다. 포장/취소 전송기는 변경된 claim·명령을 재확인하고 같은 key로 다음 배경 대조를 이어간다. 정상 스캔의 checkpoint는 HTTP 지연을 기다리지 않는다([계약](contracts.md#scanner-only-packaging), [검증 경계](operations.md#remote-writer-admission)).
+
 fake Tk pump는 예약 callback이 계속 생겨도 반복마다 작업 스레드에 실행 기회를 준다. 기본 2초 제한과 완료 단언은 유지하며 실제 정지된 lane이 여전히 제한 시간에 실패하는 부정 시험으로 검사한다. 실제 Tk·스캐너·서버·설치 수용과 브랜치 전체 시험은 별도 통합 검증 범위다.
 
 DESIGN §1.7에 따라 조회 탭에서 스캐너 Entry 입력을 받으면 이번 세션 작업 화면으로 돌아가 같은 원문을 처리한다. 지난 날짜 조회는 오늘의 작업·중복 인덱스를 보존하며, 복귀 때 이전 날짜의 배경 조회/표시 generation을 무효화하고 보관한 오늘 화면으로 돌아간다. 초기화·오늘 인덱스 오류·저장 차단·중앙 처리 등 기존 안전 gate는 유지한다.

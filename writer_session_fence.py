@@ -380,9 +380,9 @@ def _acquire_named_mutex(name: str, timeout_seconds: float) -> _NamedMutexLease 
     kernel32.CreateMutexExW.restype = ctypes.c_void_p
     kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
     kernel32.WaitForSingleObject.restype = ctypes.c_ulong
-    # SYNCHRONIZE permits waiting; ReleaseMutex checks thread ownership.
+    # SYNCHRONIZE permits waiting; MUTEX_MODIFY_STATE permits ReleaseMutex.
     # Keep default security when an elevated same-user process holds the mutex.
-    handle = kernel32.CreateMutexExW(None, name, 0, 0x00100000)
+    handle = kernel32.CreateMutexExW(None, name, 0, 0x00100001)
     if not handle:
         raise WriterFenceError(
             "WRITER_MUTEX_CREATE_FAILED",
@@ -483,6 +483,9 @@ def writer_admission(
     """Admit one bounded mutation or deny it without persistent changes."""
 
     selected_source = str(source or "").strip()
+    blocked = getattr(_WRITER_LOCAL, "remote_apply_error", None)
+    if blocked is not None:
+        raise blocked
     if not selected_source:
         raise WriterFencedError("WRITER_SOURCE_MISSING", "writer source is required")
     depth = int(getattr(_WRITER_LOCAL, "depth", 0))
@@ -551,6 +554,7 @@ def writer_admission(
     try:
         yield
     finally:
+        _WRITER_LOCAL.remote_apply_error = None
         _WRITER_LOCAL.depth = 0
         _WRITER_LOCAL.allowed_sources = None
         _WRITER_LOCAL.lease = None
@@ -559,6 +563,55 @@ def writer_admission(
         _WRITER_LOCAL.environ = None
         _WRITER_LOCAL.timeout_seconds = None
         lease.release()
+
+
+@contextmanager
+def remote_request() -> Iterator[None]:
+    """Suspend a writer lease only for transport, then revalidate admission.
+
+    Callers keep their durable intent and must recheck its identity/version
+    before applying a response. A denied resume must propagate to the worker;
+    it must never be converted into a local retry write under the old lease.
+    """
+    blocked = getattr(_WRITER_LOCAL, "remote_apply_error", None)
+    if blocked is not None:
+        raise blocked
+    depth = int(getattr(_WRITER_LOCAL, "depth", 0))
+    if not depth:
+        yield
+        return
+    names = ("allowed_sources", "lease", "source", "control_root", "environ", "timeout_seconds")
+    saved = {name: getattr(_WRITER_LOCAL, name, None) for name in names}
+    lease = saved["lease"]
+    if not isinstance(lease, _NamedMutexLease) or not saved["source"] or saved["timeout_seconds"] is None:
+        raise WriterFencedError("WRITER_REMOTE_CONTEXT_INVALID", "remote writer context is inexact")
+    lease.suspend()
+    _WRITER_LOCAL.depth = 0
+    for name in names:
+        setattr(_WRITER_LOCAL, name, None)
+    try:
+        yield
+    finally:
+        error = None
+        resumed_sources = frozenset()
+        try:
+            lease.resume(float(saved["timeout_seconds"]))
+            if lease.abandoned:
+                raise WriterFencedError("WRITER_GATE_ABANDONED", "writer admission mutex was abandoned")
+            resumed_sources = _admitted_writer_sources(saved["control_root"],
+                source=saved["source"], environ=saved["environ"])
+            if resumed_sources is not None and resumed_sources != saved["allowed_sources"]:
+                raise WriterFencedError("ACTIVE_WRITER_FENCE", "writer delegation changed during remote request")
+        except WriterFenceError as exc:
+            error = exc
+        finally:
+            for name, value in saved.items():
+                setattr(_WRITER_LOCAL, name, value)
+            _WRITER_LOCAL.depth = depth
+            _WRITER_LOCAL.allowed_sources = resumed_sources if error is None else frozenset()
+            _WRITER_LOCAL.remote_apply_error = error
+        if error is not None:
+            raise error
 
 
 P = ParamSpec("P")
@@ -699,4 +752,5 @@ __all__ = [
     "writer_admission",
     "writer_admission_mutex_name",
     "writer_sink",
+    "remote_request",
 ]

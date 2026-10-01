@@ -1,5 +1,11 @@
 # Label_Match 운영·복구·검증
 
+<a id="remote-writer-admission"></a>
+
+relay 업로드·runtime lease·package client·PIN client는 HTTP 동안 writer lease를 일시 반환한다. 설치/fence 변화로 재획득 또는 재검증이 거부되면 UNKNOWN을 확정하지 않고 저장된 원 요청을 배경 재대조한다. lease 획득·쓰기 guard는 계속 적용되며, 로컬 체크포인트/완료 CSV → 표시 → 배경 전송 순서를 유지한다. `tests/lock_remote_guard.py`는 앱 독립 원본이며 `tests/conftest.py`가 실제 mutex·outbox/전송기 lock과 HTTP를 등록한다.
+
+실제 0.3·6·35초 전송 지연의 공개 스캔 입구와 fence 변화 뒤 같은 명령 영수증 복구는 `tests/test_scan_remote_lock.py`, 정상 완료 저장 중 FIFO 보존·순서·처리 1회는 `tests/test_label_completion_scan_queue.py`로 검사한다. headless 시험과 실제 Tk·스캐너·서버 수용은 구분한다. F5 관리 교환·옛 deferred validation의 busy 입력 및 FIFO의 재시작 내구화는 [후속 범위](BACKLOG.md#busy-scan-durable-fifo)다.
+
 작업 중 중복 제품은 오류음·안내 뒤 다음 제품을 바로 스캔한다. `진행 현황` 탭은 기기 인증으로 오늘 계획·포장 완료·남은 수량/상자를 읽으며 끊기면 마지막 값과 수신 시각을 남긴다. 탭을 연 채 스캔하면 원문을 작업 화면에서 처리한다. 연결 표시의 마지막 성공 **전송** 시각은 현황 수신 시각과 구분한다. 연결 실패 뒤에는 더 최근의 실제 현황 응답 또는 전송 ACK까지 끊김을 유지하며, relay의 로컬 idle·유효 lease만으로 정상 표시하지 않는다. 현황은 요청 시작 시각으로 비교하므로 늦게 끝난 옛 요청의 성공·실패가 더 새로운 연결 관측을 덮지 않는다. 저장된 오래된 retry의 늦은 조회도 새 실패로 승격하지 않는다. 전송 경로 전체의 시작 시각 기록은 [후속 범위](BACKLOG.md#connection-observation-order)다. 옛 현품표의 제품4는 31자·유효 6D 조건을 유지한다. [계약](contracts.md#scanner-only-packaging)과 현장 화면·실제 청취의 별도 확인 범위를 따른다.
 
 <a id="scanner-only-packaging"></a>

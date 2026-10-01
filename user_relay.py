@@ -21,7 +21,7 @@ from user_relay_stop_marker import (
     build_successor_marker,
     read_stop_marker,
 )
-from writer_session_fence import WriterFencedError, writer_admission, writer_sink
+from writer_session_fence import WriterFenceError, WriterFencedError, writer_admission, writer_sink
 
 USER_RELAY_MODE = "--label-match-user-relay"
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
@@ -459,6 +459,8 @@ def run_persistent_relay_loop(
                             "status": "UNKNOWN",
                             "reason": "relay cycle returned no status value",
                         }
+                except WriterFenceError:
+                    raise
                 except Exception as exc:
                     cycle = {
                         "status": "UNKNOWN",

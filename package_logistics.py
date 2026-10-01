@@ -38,7 +38,7 @@ from deferred_intent_capture import (
     ensure_deferred_intent_schema_compatibility,
     supersede_for_legacy_outbox,
 )
-from writer_session_fence import writer_sink
+from writer_session_fence import WriterFenceError, remote_request, writer_sink
 import carrier_identity_port as carrier_identity
 from package_validation import (
     _validate_projection,
@@ -2313,6 +2313,7 @@ class PackageLogisticsClient:
                 return None
             raise
 
+    @remote_request()
     def _request(self, method: str, path: str, *, body: bytes | None = None, key: str = ""):
         headers = {
             "Accept": "application/json",
@@ -2482,11 +2483,16 @@ class PackageCancellationOutboxProcessor:
         self.outbox = outbox
         self.client = client
         self._drain_lock = threading.Lock()
+        self._draining = False
 
     @writer_sink("package_cancellation_drain")
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0, "deferred": 0}
         with self._drain_lock:
+            if self._draining:
+                return counts
+            self._draining = True
+        try:
             for _ in range(max(0, int(limit))):
                 row = self.outbox.claim_next()
                 if row is None:
@@ -2529,6 +2535,11 @@ class PackageCancellationOutboxProcessor:
                             ),
                         }
                         receipt = self.client.cancel_package(command)
+                    latest = self.outbox.get_by_event_id(intent.cancellation_event_id)
+                    if (latest is None or latest['status'] != 'SENDING'
+                            or latest['attempt_count'] != row['attempt_count']
+                            or json.loads(latest['command_json'] or '{}') != command):
+                        continue
                     self._validate_receipt(row, receipt)
                     self.outbox.mark_acked(key, receipt)
                     counts["acked"] += 1
@@ -2557,6 +2568,9 @@ class PackageCancellationOutboxProcessor:
                         exc = PackageLogisticsError("saved package cancellation intent is invalid")
                     self.outbox.mark_conflict(key, exc)
                     counts["conflict"] += 1
+        finally:
+            with self._drain_lock:
+                self._draining = False
         counts["deferred"] = self.outbox.counts()["DEFERRED"]
         return counts
 

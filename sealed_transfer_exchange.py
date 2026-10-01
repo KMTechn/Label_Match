@@ -32,7 +32,7 @@ from package_logistics import (
     PackageCommandDraft,
 )
 import carrier_identity_port as carrier_identity
-from writer_session_fence import writer_sink
+from writer_session_fence import WriterFenceError, writer_sink
 
 
 SCHEMA_VERSION = "label-match-sealed-transfer-exchange-v1"
@@ -885,6 +885,8 @@ class SealedTransferExchangeCoordinator:
             self.store.record_receipt(row["intent_id"], receipt, new_seal_qr_payload=qr)
             # The new contract consumes electronic receipt evidence directly.
             return self._finish_scanner_exchange(self.store.load(row["intent_id"]))
+        except WriterFenceError:
+            raise
         except Exception as error:
             self.store.record_error(row["intent_id"], error)
             raise
@@ -1029,6 +1031,8 @@ class SealedTransferExchangeCoordinator:
             )
             if len(old_barcodes) > LEGACY_MAX_PAIRS:
                 self._require_capability(pair_count=len(old_barcodes))
+        except WriterFenceError:
+            raise
         except Exception as exc:
             raise SealedTransferExchangeAdmissionError(str(exc)) from exc
         row = self.store.prepare(
@@ -1794,6 +1798,8 @@ class SealedTransferExchangeCoordinator:
                             return review_result("중앙 교체 결과를 확인하지 못해 요청을 다시 보내지 않았습니다. 잠시 후 다시 확인하세요.")
                         else:
                             raise
+                    except WriterFenceError:
+                        raise
                     except Exception:
                         if operator_review:
                             return review_result("중앙 교체 결과를 확인하지 못해 요청을 다시 보내지 않았습니다. 잠시 후 다시 확인하세요.")
@@ -1805,6 +1811,8 @@ class SealedTransferExchangeCoordinator:
                                 row = self.store.record_receipt(
                                     intent_id, receipt, new_qr
                                 )
+                            except WriterFenceError:
+                                raise
                             except Exception:
                                 return review_result("중앙 응답을 확인하지 못해 요청을 다시 보내지 않았습니다. 관리자에게 확인을 요청하세요.")
                         else:
@@ -1824,6 +1832,8 @@ class SealedTransferExchangeCoordinator:
                     try:
                         if _json(self._build_command(row)) != row["command_json"]:
                             return review_result("현재 제품 상태가 저장된 교체 요청과 달라 재시도하지 않았습니다. 관리자에게 확인을 요청하세요.")
+                    except WriterFenceError:
+                        raise
                     except Exception:
                         return review_result("현재 제품 상태를 확인하지 못해 재시도하지 않았습니다. 잠시 후 다시 확인하세요.")
                     current = self.store.load(intent_id)
@@ -1852,6 +1862,8 @@ class SealedTransferExchangeCoordinator:
                     "SEALED_TRANSFER_EXCHANGE_RETRY_UNCERTAIN", str(exc)
                 )
             row = self.store.record_error(intent_id, exc)
+        except WriterFenceError:
+            raise
         except Exception as exc:
             message = f"local sealed transfer exchange failed: {exc.__class__.__name__}"
             error = (SealedTransferExchangeError(
