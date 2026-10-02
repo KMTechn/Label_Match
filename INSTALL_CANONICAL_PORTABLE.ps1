@@ -734,6 +734,9 @@ roster_transport_reverse = roster_transport_pair and (
 if roster_transport_reverse:
     # Refuse a downgrade before the new leaf's file-set difference obscures
     # the original directional Label_Match rejection.
+    reverse_additions = set(files(source, 'app')) ^ set(files(installed, 'app'))
+    if reverse_additions - set(roster_additions) or files(source, 'runtime').keys() != files(installed, 'runtime').keys():
+        raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     reverse_path = 'app/Label_Match.py'
     if not all((root / reverse_path).is_file() for root in (source, installed)) or release_digest(source / reverse_path) == release_digest(installed / reverse_path):
         reverse_path = roster_transport_path
