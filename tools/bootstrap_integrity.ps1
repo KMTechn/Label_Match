@@ -1,4 +1,179 @@
-param([string]$SharedCodeRoot = "")
+﻿param([string]$SharedCodeRoot = "")
+
+function Write-LabelAncestorPreparationEvent($Payload) {
+    if ($null -eq $Script:LabelAncestorPreparationEvents) {
+        $Script:LabelAncestorPreparationEvents = [Collections.Generic.List[object]]::new()
+    }
+    $Script:LabelAncestorPreparationEvents.Add($Payload)
+}
+
+function Get-InstallationPreparationExitCode($Failure) {
+    $exception=if($Failure -is [Exception]){$Failure}else{$Failure.Exception}
+    for($depth=0;$null -ne $exception -and $depth -lt 8;$depth++){
+        if($exception.Data.Contains('installation_preparation_exit_code')){return [int]$exception.Data['installation_preparation_exit_code']}
+        $exception=$exception.InnerException
+    }
+    return 66
+}
+
+function Get-InstallationPreparationDiagnostic([int]$ExitCode) {
+    $diagnostics=@{
+        61=@('UNSUPPORTED_ACL','상위 폴더 권한이 지원하는 기본값 또는 보호된 값과 다릅니다.')
+        62=@('REPARSE_POINT','설치 경로에 재분석 지점이 있어 바탕을 준비할 수 없습니다.')
+        63=@('UNTRUSTED_OWNER','설치 폴더 소유자를 신뢰할 수 없어 바탕을 준비할 수 없습니다.')
+        64=@('APP_PARENT_CREATE','보호된 앱 폴더를 만들지 못했습니다.')
+        65=@('CONTROL_CREATE','보호된 설치 제어·증거 폴더를 만들지 못했습니다.')
+        66=@('OTHER','설치 바탕 준비 중 오류가 발생했습니다.')
+    }
+    $entry=$diagnostics[$ExitCode]
+    if($null -eq $entry){return $null}
+    return [pscustomobject]@{code=('INSTALLATION_PREPARATION_'+$entry[0]);message=($entry[1]+' 지원 담당자에게 문의하세요.');exit_code=$ExitCode}
+}
+
+function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,[switch]$BeforeAppCreation) {
+    # Deliberately persistent, non-recursive protection of these two shared paths.
+    # Never restore their old permissions as part of an app rollback/uninstall.
+    if (-not ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($CodeParent))).Equals('C:\KMTech\Apps',[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Code parent must be a direct application directory under C:\KMTech\Apps.'
+    }
+    $records=@(); $plans=@()
+    function Get-KmtechAncestorAclShapeKey($Acl) {
+        (@($Acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object {
+            [string]$_.IdentityReference.Value+'|'+[int64]$_.FileSystemRights+'|'+[string]$_.AccessControlType+'|'+[int]$_.InheritanceFlags+'|'+[int]$_.PropagationFlags+'|'+[int]$_.IsInherited
+        } | Sort-Object) -join ';')
+    }
+    foreach ($path in @('C:\KMTech','C:\KMTech\Apps')) {
+        $reason=''
+        if (-not (Test-Path -LiteralPath $path)) {
+            if($AdmissionOnly){continue}
+            $ancestor=Split-Path -Parent $path
+            $entry=Get-Item -LiteralPath $ancestor -ErrorAction Stop
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { $reason='상위 폴더가 재분석 지점입니다' }
+            else { [void][IO.Directory]::CreateDirectory($path) }
+        }
+        $entry=Get-Item -LiteralPath $path -ErrorAction Stop
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { $reason='폴더가 재분석 지점입니다' }
+        $acl=Get-Acl -LiteralPath $path -ErrorAction Stop
+        $before=$acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
+        $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+        $shape=@(
+            'S-1-5-32-544|2032127|Allow|3|0', 'S-1-5-18|2032127|Allow|3|0',
+            'S-1-5-32-545|1179817|Allow|3|0', 'S-1-5-11|-536805376|Allow|3|2'
+        )
+        foreach($rule in $rules) {
+            if ([string]$rule.AccessControlType -cne 'Allow') { $reason='거부 권한 항목이 있습니다' }
+        }
+        $actualKey=Get-KmtechAncestorAclShapeKey $acl
+        $defaultKey=(@(($shape+@('S-1-5-11|1245631|Allow|0|0')) | ForEach-Object {$_+'|1'} | Sort-Object) -join ';')
+        $targetKey=(@(($shape+@('S-1-5-11|1179823|Allow|0|0')) | ForEach-Object {$_+'|0'} | Sort-Object) -join ';')
+        $defaultShape=($rules.Count -eq 5 -and -not $acl.AreAccessRulesProtected -and $actualKey -ceq $defaultKey)
+        $targetShape=($rules.Count -eq 5 -and $acl.AreAccessRulesProtected -and $actualKey -ceq $targetKey)
+        if($owner -cne 'S-1-5-32-544'){$reason='폴더 소유자가 예상과 다릅니다'}
+        if(-not $reason -and -not $defaultShape -and -not $targetShape){$reason='권한 모양이 지원하는 기본값 또는 보호된 값과 다릅니다'}
+        if($reason) {
+            Write-LabelAncestorPreparationEvent ([ordered]@{event='ANCESTOR_ACL_REJECTED';path=$path;reason=$reason;before_sddl=$before;changed=$false})
+            $failure=[InvalidOperationException]::new("설치 폴더 권한을 확인하세요: $path ($reason). 지원 담당자에게 문의하세요.")
+            $failure.Data['canonical_code']='LABEL_PLACEMENT_ANCESTOR_TRUST_FAILED'
+            $failure.Data['ancestor_trust_failure']=$failure.Message
+            $failure.Data['installation_preparation_exit_code']=if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){62}elseif($owner -cne 'S-1-5-32-544'){63}else{61}
+            throw $failure
+        }
+        $plans+=@{path=$path;shape_key=$actualKey;owner=$owner;group=$acl.GetGroup([Security.Principal.SecurityIdentifier]).Value;
+            protected=$acl.AreAccessRulesProtected;
+            default_shape=$defaultShape;target_shape=$targetShape}
+    }
+    if($AdmissionOnly){return}
+    # Both existing shapes are admitted before the first ACL write.
+    foreach($plan in $plans) {
+        $path=$plan.path
+        $entry=Get-Item -LiteralPath $path -ErrorAction Stop
+        if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Ancestor became a reparse point before protection.'}
+        $fresh=Get-Acl -LiteralPath $path -ErrorAction Stop
+        $freshSddl=$fresh.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
+        # Our preceding parent write can reorder this child's inherited ACEs.
+        # Reject changed permissions/identity/flags, then transform the fresh ACL.
+        if((Get-KmtechAncestorAclShapeKey $fresh) -cne $plan.shape_key -or
+            $fresh.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $plan.owner -or
+            $fresh.GetGroup([Security.Principal.SecurityIdentifier]).Value -cne $plan.group -or
+            $fresh.AreAccessRulesProtected -ne $plan.protected){throw 'Ancestor ACL changed during protection admission.'}
+        $acl=$fresh; $before=$freshSddl
+        Write-LabelAncestorPreparationEvent ([ordered]@{event='ANCESTOR_ACL_BEFORE';path=$path;before_sddl=$before;already_target=$plan.target_shape;intentional_persistent_change=$true})
+        if($plan.default_shape) {
+            $acl.SetAccessRuleProtection($true,$true)
+            # .NET can retain the inherited flag until persistence. Convert each
+            # copied ACE explicitly without remapping its generic/inherit-only mask.
+            $raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)
+            foreach($ace in $raw.DiscretionaryAcl){$ace.AceFlags=[Security.AccessControl.AceFlags]([int]$ace.AceFlags -band (-bnot [int][Security.AccessControl.AceFlags]::Inherited))}
+            $binary=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($binary,0)
+            $acl.SetSecurityDescriptorBinaryForm($binary,[Security.AccessControl.AccessControlSections]::Access)
+            $self=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {
+                $_.IdentityReference.Value -ceq 'S-1-5-11' -and [int64]$_.FileSystemRights -eq 1245631 -and [int]$_.InheritanceFlags -eq 0 -and [int]$_.PropagationFlags -eq 0
+            })
+            if($self.Count -ne 1){throw 'Ancestor ACL copied self-entry readback failed.'}
+            $acl.RemoveAccessRuleSpecific($self[0])
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new('S-1-5-11'),
+                [Security.AccessControl.FileSystemRights]1179823,'None','None','Allow'))
+            Set-Acl -LiteralPath $path -AclObject $acl -ErrorAction Stop
+        }
+        $afterAcl=Get-Acl -LiteralPath $path -ErrorAction Stop
+        $after=$afterAcl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
+        $afterRules=@($afterAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+        $afterKey=Get-KmtechAncestorAclShapeKey $afterAcl
+        if($afterAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544' -or -not $afterAcl.AreAccessRulesProtected -or $afterRules.Count -ne 5 -or $afterKey -cne $targetKey){throw 'Ancestor ACL protected readback failed.'}
+        $record=[ordered]@{path=$path;before_sddl=$before;after_sddl=$after;changed=$plan.default_shape;intentional_persistent_change=$true}
+        $records+=$record
+        Write-LabelAncestorPreparationEvent ([ordered]@{event='ANCESTOR_ACL_AFTER';record=$record})
+    }
+    # The app directory is the guarded leaf; Apps/KMTech are higher ancestors,
+    # where direct creation remains allowed. This also rejects user-owned squatters.
+    try { if(-not $BeforeAppCreation){Assert-LabelProtectedInstallPath $CodeParent} }
+    catch {
+        # Preserve the original trust exception as InnerException.
+        $failure=[InvalidOperationException]::new("설치 폴더 권한을 확인하세요: $CodeParent (코드 경로의 신뢰 재검사가 실패했습니다). 지원 담당자에게 문의하세요.",$_.Exception)
+        $failure.Data['canonical_code']='LABEL_PLACEMENT_ANCESTOR_TRUST_FAILED'
+        $failure.Data['ancestor_trust_failure']=$failure.Message
+        throw $failure
+    }
+    return [pscustomobject]@{status='VERIFIED';records=$records;rollback_restores_ancestor_permissions=$false}
+}
+
+function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedPreparation) {
+    if($AllowSupportedPreparation){Protect-KmtechCodeAncestors 'C:\KMTech\Apps\Label_Match' -AdmissionOnly}
+    $full=[IO.Path]::GetFullPath($Path);$leaf=$true
+    while($full) {
+        $shared=$full -in @('C:\KMTech','C:\KMTech\Apps')
+        if($AllowSupportedPreparation -and -not(Test-Path -LiteralPath $full) -and
+            ($shared -or $full -ieq 'C:\KMTech\Apps\Label_Match')){
+            $full=[IO.Path]::GetDirectoryName($full);$leaf=$false;continue
+        }
+        $entry=Get-Item -LiteralPath $full -ErrorAction Stop
+        if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){
+            $failure=[InvalidOperationException]::new('설치 경로 에 재분석 지점이 있습니다.')
+            $failure.Data['installation_preparation_exit_code']=62;throw $failure
+        }
+        $acl=Get-Acl -LiteralPath $full -ErrorAction Stop
+        if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cnotin @(
+            'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+        )){
+            $failure=[InvalidOperationException]::new('설치 경로 소유자를 신뢰할 수 없습니다.')
+            $failure.Data['installation_preparation_exit_code']=63;throw $failure
+        }
+        $mask=if($leaf){0x500D0156}else{0x500D0150}
+        foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+            if($rule.AccessControlType -eq 'Allow' -and
+                -not($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
+                $rule.IdentityReference.Value -cnotin @('S-1-5-18','S-1-5-32-544') -and
+                ([int64]$rule.FileSystemRights -band $mask) -and -not($AllowSupportedPreparation -and $shared)){
+                $failure=[InvalidOperationException]::new('설치 경로 권한에 일반 사용자 쓰기가 있습니다.')
+                $failure.Data['installation_preparation_exit_code']=61;throw $failure
+            }
+        }
+        if($full -eq [IO.Path]::GetPathRoot($full)){break}
+        $full=[IO.Path]::GetDirectoryName($full);$leaf=$false
+    }
+}
 
 $BootstrapIntegrityFileName = "bootstrap-integrity.json"
 $BootstrapIntegritySchema = "label-match-bootstrap-integrity-v1"
